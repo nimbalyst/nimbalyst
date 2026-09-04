@@ -6,7 +6,7 @@ import * as path from 'path';
 import { createRequire } from 'module';
 
 const require_ = createRequire(import.meta.url);
-const { prebuildsForTarget, pruneSqlitePrebuilds, pruneNodePtyPrebuilds } =
+const { prebuildsForTarget, pruneSqlitePrebuilds, pruneNodePtyPrebuilds, pruneOnnxRuntimeBinaries } =
   require_('../afterPack.js');
 
 const ALL_PREBUILDS = [
@@ -160,5 +160,53 @@ describe('pruneNodePtyPrebuilds', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'nim-afterpack-pty-empty-'));
     created.push(root);
     expect(pruneNodePtyPrebuilds(root, 'darwin', 'arm64')).toMatchObject({ skipped: true });
+  });
+});
+
+const ONNX_TARGETS = [
+  ['darwin', 'arm64'],
+  ['darwin', 'x64'],
+  ['linux', 'arm64'],
+  ['linux', 'x64'],
+  ['win32', 'arm64'],
+  ['win32', 'x64'],
+] as const;
+
+function makeOnnxResources(targets = ONNX_TARGETS): string {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'nim-afterpack-onnx-'));
+  created.push(root);
+  for (const [platform, arch] of targets) {
+    const dir = path.join(root, 'node_modules/onnxruntime-node/bin/napi-v3', platform, arch);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'onnxruntime_binding.node'), 'x'.repeat(1024));
+  }
+  return root;
+}
+
+describe('pruneOnnxRuntimeBinaries', () => {
+  it('keeps only the target runtime', () => {
+    const root = makeOnnxResources();
+    const result = pruneOnnxRuntimeBinaries(root, 'darwin', 'arm64');
+    const napiDir = path.join(root, 'node_modules/onnxruntime-node/bin/napi-v3');
+
+    expect(fs.existsSync(path.join(napiDir, 'darwin/arm64/onnxruntime_binding.node'))).toBe(true);
+    expect(fs.existsSync(path.join(napiDir, 'darwin/x64'))).toBe(false);
+    expect(fs.existsSync(path.join(napiDir, 'linux'))).toBe(false);
+    expect(result).toMatchObject({ keptCount: 1, removedCount: 5 });
+  });
+
+  it('keeps both slices for a universal mac target', () => {
+    const root = makeOnnxResources();
+    const result = pruneOnnxRuntimeBinaries(root, 'darwin', 'universal');
+
+    expect(result).toMatchObject({ keptCount: 2, removedCount: 4 });
+  });
+
+  it('fails instead of shipping keyword-only when the target binding is absent', () => {
+    const root = makeOnnxResources([['linux', 'x64']]);
+
+    expect(() => pruneOnnxRuntimeBinaries(root, 'darwin', 'arm64')).toThrow(
+      /silently fall back to keyword-only/,
+    );
   });
 });

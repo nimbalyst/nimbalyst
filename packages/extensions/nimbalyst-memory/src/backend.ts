@@ -24,14 +24,34 @@ import {
   buildProjectSearchResponse,
   buildPublicEngineStatus,
   createEmbedder,
+  defaultSources,
 } from '../engine/dist/index.js';
-import type {
-  EmbedderConfig,
-  EngineConfig,
-  SearchHit,
-  SourceSet,
-  VirtualRecord,
-} from '../engine/dist/index.js';
+import type { EngineConfig, SearchHit, VirtualRecord } from '../engine/dist/index.js';
+// The write gate. It runs on the LIVE `remember` path below rather than at
+// export time, because a credential is already a problem once it is on disk in
+// a fact file — waiting for the phase 4 replica to filter it would mean every
+// fact stored between now and then was screened by nothing.
+import { screenMemoryText } from '../engine/dist/redaction/index.js';
+// Deep imports rather than the engine barrel: the local-embedder surface is
+// self-contained, and pulling it through `index.js` would drag the barrel into
+// this module's import graph for no benefit.
+import {
+  downloadModel,
+  isLocalEmbedderSupported,
+  isModelCached,
+  type ModelDownloadProgress,
+} from '../engine/dist/embedders/localEmbedder.js';
+import {
+  readLocalEmbeddingPrefs,
+  writeLocalEmbeddingPrefs,
+} from '../engine/dist/embedders/localEmbeddingPrefs.js';
+import {
+  defaultLocalModel,
+  findLocalModel,
+  formatDownloadSize,
+  selectableLocalModels,
+} from '../engine/dist/embedders/localModels.js';
+import { fallbackFor, selectEmbedder } from '../engine/dist/embedders/selection.js';
 import {
   buildDistillMessages,
   parseDistillResponse,
@@ -175,20 +195,6 @@ function resolvePlanPath(ref: string): string {
   return `${PLANS_DIR}/${withExt}`;
 }
 
-/** The five default markdown source sets, tagged by source class. */
-function defaultSources(factsDir: string): SourceSet[] {
-  return [
-    { sourceClass: 'design', include: ['design/**/*.md'] },
-    { sourceClass: 'docs', include: ['docs/**/*.md'] },
-    // Plans/decisions/bugs already live as frontmatter markdown here, which is
-    // also how they project into tracker items (fm:<type>:<path>), so indexing
-    // these globs already grounds the agent in tracker content for v1.
-    { sourceClass: 'plans', include: ['nimbalyst-local/plans/**/*.md'] },
-    { sourceClass: 'claude', include: ['CLAUDE.md', '**/CLAUDE.md'] },
-    { sourceClass: 'facts', include: [`${factsDir}/**/*.md`] },
-  ];
-}
-
 /**
  * Tool descriptors advertised to the host. `name` doubles as the RPC method
  * name. Schemas mirror engine/src/mcp/server.ts. Voice-flagged tools are the
@@ -233,7 +239,9 @@ const TOOL_DESCRIPTORS = [
     name: 'remember',
     description:
       'Append a durable fact to memory (ADD-only; never overwrites). Use for ' +
-      'preferences, decisions, and project truths worth recalling later.',
+      'preferences, decisions, and project truths worth recalling later. ' +
+      'Secrets are redacted before storage, and a page that is mostly ' +
+      'credentials is refused outright (returns ok:false).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -307,6 +315,37 @@ const TOOL_DESCRIPTORS = [
     voiceAgent: false,
   },
   {
+    name: 'local_embeddings_status',
+    description:
+      'Report whether keyless on-device semantic search is available: the ' +
+      'candidate models with their download sizes, which one is selected, ' +
+      'whether its weights are already downloaded, and what retrieval is ' +
+      'actually running right now. Read-only; downloads nothing.',
+    inputSchema: { type: 'object', properties: {} },
+    voiceAgent: false,
+  },
+  {
+    name: 'set_local_embeddings',
+    description:
+      'Turn on-device semantic search on or off. Turning it ON DOWNLOADS a ' +
+      'model of tens to hundreds of megabytes (see local_embeddings_status for ' +
+      'the exact size) and then re-indexes the project, so it must be a ' +
+      'deliberate, user-initiated choice — never do this on your own ' +
+      'initiative. Retrieval keeps working as keyword search throughout.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        enabled: { type: 'boolean', description: 'True to download and enable, false to disable.' },
+        modelId: {
+          type: 'string',
+          description: 'Candidate id from local_embeddings_status (default: the recommended one).',
+        },
+      },
+      required: ['enabled'],
+    },
+    voiceAgent: false,
+  },
+  {
     name: 'list_facts',
     description:
       'List the durable facts currently stored in memory (the voice-memory ' +
@@ -376,7 +415,7 @@ export async function activate(ctx: ActivateCtx) {
     root: workspacePath,
     dbPath,
     factsDir: FACTS_DIR,
-    sources: defaultSources(FACTS_DIR),
+    sources: defaultSources(FACTS_DIR, workspacePath),
     // Keep stale/archived markdown out of the index so retrieval surfaces
     // current truth, not abandoned plans (e.g. nimbalyst-local/plans/archive/**
     // duplicating live design docs).
@@ -387,29 +426,65 @@ export async function activate(ctx: ActivateCtx) {
   };
 
   let engine: MemoryEngine | null = null;
-  let embedderConfig: EmbedderConfig = { kind: 'sparse' };
 
+  // App-level, workspace-independent, outside the project tree. `dataDir` is
+  // <userData>/extension-data/<ext>/<sha(workspace)>, so its parent is this
+  // extension's own storage across every workspace on the machine — which is
+  // the right granularity for a model that is byte-identical for all of them
+  // and costs tens to hundreds of megabytes to fetch.
+  const modelDir = path.join(path.dirname(dataDir), 'models');
+
+  let apiKey: string | null = null;
   try {
-    const { key } = await getApiKey('openai');
-    const retrievalKind = retrievalKindForOptionalProvider(Boolean(key));
-    if (retrievalKind === 'openai' && key) {
-      embedderConfig = { kind: 'openai', apiKey: key };
-    } else {
-      log('info', '[memory] optional semantic matching unavailable; local keyword retrieval active');
-    }
+    ({ key: apiKey } = await getApiKey('openai'));
   } catch {
-    log('warn', '[memory] optional semantic matching unavailable; local keyword retrieval active');
+    apiKey = null;
   }
 
-  try {
+  const prefs = readLocalEmbeddingPrefs(modelDir);
+  const stored = findLocalModel(prefs.modelId);
+  // A stored preference naming an asymmetric model (one written before the
+  // registry knew better, or hand-edited) resolves to the default rather than
+  // being run in a configuration it was not trained for.
+  const localModel = stored && !stored.asymmetric ? stored : defaultLocalModel();
+
+  // Cache-only probe. Never downloads: if the weights are absent this is false
+  // and the selection degrades to keyword retrieval rather than blocking
+  // activation on a network fetch.
+  const localModelCached = prefs.enabled
+    ? await isModelCached({ model: localModel.repo, dtype: localModel.dtype, cacheDir: modelDir })
+    : false;
+
+  let selection = selectEmbedder({
+    apiKeyConfigured: retrievalKindForOptionalProvider(Boolean(apiKey)) === 'openai',
+    apiKey,
+    localEnabled: prefs.enabled,
+    localModelCached,
+    localModel: localModel.repo,
+    cacheDir: modelDir,
+  });
+
+  /**
+   * Build the engine for a selection and start indexing in the background.
+   *
+   * Called at activation and again whenever the embedder changes (the user
+   * turning local embeddings on or off). Switching embedder changes the vector
+   * space, so the store's `embedderChanged` check forces a full re-index —
+   * which is why this is a restart of the engine and not a field assignment.
+   */
+  async function startEngine(want: typeof selection): Promise<void> {
     let embedder;
     try {
-      embedder = await createEmbedder(embedderConfig);
+      embedder = await createEmbedder(want.config);
     } catch (err) {
-      if (embedderConfig.kind !== 'openai') throw err;
-      log('warn', '[memory] optional semantic matching unavailable; local keyword retrieval active');
-      embedder = await createEmbedder({ kind: 'sparse' });
+      // Any construction failure — missing optional dependency, corrupt model
+      // cache, revoked key — degrades to BM25. Retrieval never goes dark.
+      want = fallbackFor(want);
+      log('warn', `[memory] ${want.reason}: ${(err as Error).message}`);
+      embedder = await createEmbedder(want.config);
     }
+    selection = want;
+    log('info', `[memory] ${want.reason}`);
 
     engine = MemoryEngine.create(config, embedder);
     log('info', `[memory] engine ready: root=${config.root} db=${config.dbPath}`);
@@ -417,17 +492,22 @@ export async function activate(ctx: ActivateCtx) {
     // Background initial index + live watch. Never blocks activation; the
     // tools serve a partial/empty index until the first pass completes.
     void (async () => {
+      const started = engine;
       try {
-        const status = engine!.status();
+        const status = started!.status();
         if (status.embedderChanged) log('info', '[memory] embedder changed — full re-index');
-        const result = await engine!.indexAll();
+        const result = await started!.indexAll();
         log('info', `[memory] indexed ${result.indexed} chunk(s) across ${result.files} file(s)`);
-        engine!.startWatching();
+        started!.startWatching();
         log('info', '[memory] watching for changes');
       } catch (err) {
         log('error', `[memory] initial index failed: ${(err as Error).message}`);
       }
     })();
+  }
+
+  try {
+    await startEngine(selection);
   } catch (err) {
     log('error', `[memory] engine init failed: ${(err as Error).message}`);
   }
@@ -536,13 +616,37 @@ export async function activate(ctx: ActivateCtx) {
       }) => {
         const text = String(params?.text ?? '');
         if (!text) throw new Error('text is required');
+
+        // Screen BEFORE the write. `remember` has stored whatever it was given
+        // since v1, including an API key pasted into a session; once a team
+        // shares this store that is an incident, and once it reaches the
+        // committed replica it is permanent in git history.
+        const screened = screenMemoryText(text);
+        if (!screened.ok) {
+          log('warn', `[memory] refused to store a fact: ${screened.blocks.map((b) => b.rule).join(', ')}`);
+          return {
+            ok: false,
+            stored: false,
+            reason: 'blocked-by-redaction',
+            blocks: screened.blocks.map((b) => ({ rule: b.rule, reason: b.reason })),
+          };
+        }
+
         const written = await requireEngine().remember({
-          text,
+          text: screened.text,
           category: params?.category != null ? String(params.category) : null,
           scope: params?.scope != null ? String(params.scope) : null,
           priority: typeof params?.priority === 'number' ? params.priority : 0,
         });
-        return { ok: true, path: written };
+        // Report the redaction rather than applying it quietly: a silent
+        // rewrite is indistinguishable from a miss, and the caller should know
+        // the stored fact is not what it handed over.
+        return {
+          ok: true,
+          path: written,
+          redacted: screened.redactions.length > 0,
+          redactions: screened.redactions.map((r) => ({ kind: r.kind, line: r.line, preview: r.preview })),
+        };
       },
 
       expand: async (params: { sourcePath?: string; headingPath?: unknown[] }) => {
@@ -606,6 +710,119 @@ export async function activate(ctx: ActivateCtx) {
         if (!sourcePath) throw new Error('sourcePath is required');
         const deleted = await requireEngine().deleteFact(sourcePath);
         return { deleted };
+      },
+
+      local_embeddings_status: async () => {
+        const current = findLocalModel(readLocalEmbeddingPrefs(modelDir).modelId) ?? defaultLocalModel();
+        const cached = await isModelCached({
+          model: current.repo,
+          dtype: current.dtype,
+          cacheDir: modelDir,
+        });
+        return {
+          // False when the optional dependency did not install (a platform with
+          // no onnxruntime binary). The UI hides the whole control rather than
+          // offering a switch that cannot work.
+          supported: await isLocalEmbedderSupported(),
+          enabled: readLocalEmbeddingPrefs(modelDir).enabled,
+          downloaded: cached,
+          // What is running RIGHT NOW, which is not the same as `enabled`:
+          // opted in with the weights still downloading reads enabled+sparse.
+          activeMode: selection.mode,
+          activeReason: selection.reason,
+          awaitingModelDownload: selection.awaitingModelDownload,
+          cacheDir: modelDir,
+          selectedModelId: current.id,
+          models: selectableLocalModels().map((m) => ({
+            id: m.id,
+            repo: m.repo,
+            dims: m.dims,
+            languages: m.languages,
+            note: m.note,
+            downloadBytes: m.downloadBytes,
+            downloadSize: formatDownloadSize(m.downloadBytes),
+            recommended: m.id === defaultLocalModel().id,
+          })),
+        };
+      },
+
+      set_local_embeddings: async (params: { enabled?: boolean; modelId?: string }) => {
+        const enabled = params?.enabled === true;
+        // No modelId keeps whatever the user already chose, so disabling and
+        // re-enabling cannot silently switch them to a different model (and a
+        // different download).
+        const requested = params?.modelId
+          ? String(params.modelId)
+          : readLocalEmbeddingPrefs(modelDir).modelId;
+        const model = findLocalModel(requested) ?? defaultLocalModel();
+        if (model.asymmetric) {
+          // Trained with distinct query/passage prefixes, which `Embedder.embed`
+          // cannot express. Refuse rather than run it wrong.
+          throw new Error(
+            `Local embedding model "${model.id}" needs separate query and passage prefixes, ` +
+              'which this engine cannot supply yet.'
+          );
+        }
+
+        if (!enabled) {
+          writeLocalEmbeddingPrefs(modelDir, { enabled: false, modelId: model.id });
+          // The weights stay on disk. Turning the feature off should not make
+          // turning it back on cost another download.
+          await engine?.close();
+          await startEngine(
+            selectEmbedder({
+              apiKeyConfigured: retrievalKindForOptionalProvider(Boolean(apiKey)) === 'openai',
+              apiKey,
+              localEnabled: false,
+              localModelCached: false,
+              localModel: model.repo,
+              cacheDir: modelDir,
+            })
+          );
+          return { ok: true, enabled: false, activeMode: selection.mode };
+        }
+
+        // The download. The ONLY place in this extension that fetches model
+        // weights, reached only from an explicit enable. Retrieval continues to
+        // serve keyword results throughout — the running engine is untouched
+        // until the bytes are on disk.
+        let lastLoggedPct = -1;
+        try {
+          await downloadModel({
+            model: model.repo,
+            dtype: model.dtype,
+            cacheDir: modelDir,
+            onProgress: (p: ModelDownloadProgress) => {
+              if (p.status !== 'progress' || p.progress == null) return;
+              const pct = Math.floor(p.progress / 25) * 25;
+              if (pct > lastLoggedPct) {
+                lastLoggedPct = pct;
+                log('info', `[memory] downloading ${model.repo} ${pct}%`);
+              }
+            },
+          });
+        } catch (err) {
+          // A failed download leaves the opt-in unwritten and the running
+          // engine alone: the user is exactly where they started, on keyword
+          // retrieval, with an error to read.
+          const message = (err as Error).message;
+          log('warn', `[memory] local embedding model download failed: ${message}`);
+          return { ok: false, enabled: false, activeMode: selection.mode, error: message };
+        }
+
+        writeLocalEmbeddingPrefs(modelDir, { enabled: true, modelId: model.id });
+        await engine?.close();
+        await startEngine(
+          selectEmbedder({
+            apiKeyConfigured: retrievalKindForOptionalProvider(Boolean(apiKey)) === 'openai',
+            apiKey,
+            localEnabled: true,
+            localModelCached: true,
+            localModel: model.repo,
+            cacheDir: modelDir,
+          })
+        );
+        return { ok: true, enabled: true, activeMode: selection.mode, model: model.repo };
       },
 
       rebuild: async () => {

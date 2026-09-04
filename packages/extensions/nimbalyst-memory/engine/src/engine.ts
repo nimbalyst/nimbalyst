@@ -9,7 +9,6 @@
  * these methods.
  */
 import { readFile, stat } from 'node:fs/promises';
-import path from 'node:path';
 import type {
   Embedder,
   EngineConfig,
@@ -19,6 +18,7 @@ import type {
   VirtualRecord,
 } from './types.js';
 import { SqliteStore } from './store/sqliteStore.js';
+import { resolveInRoots, resolveRoots, type ResolvedRoot } from './roots.js';
 import { Indexer, type IndexProgress } from './indexer/indexer.js';
 import { IndexWatcher } from './indexer/watcher.js';
 import { Retriever } from './retrieval/retriever.js';
@@ -52,8 +52,28 @@ export interface EngineStatus {
  *  (potentially many-minute) corpus pass completes. */
 const SNAPSHOT_REFRESH_EVERY_FILES = 25;
 
+/**
+ * Current `sourcePath` key format.
+ *
+ * 1 — bare POSIX path relative to the single engine root.
+ * 2 — same for the primary root, plus `@<rootId>/<rel>` for a source set with
+ *     its own root (see `roots.ts`).
+ *
+ * A store stamped with a DIFFERENT version is wiped and re-indexed: the format
+ * is the chunk primary key, so a partial migration leaves rows nothing can
+ * address or prune, and the index is explicitly rebuildable.
+ *
+ * An UNSTAMPED store is not wiped. Formats 1 and 2 agree on every path a format-1
+ * store can contain (it has no non-primary roots by construction), so stamping
+ * it is sufficient and re-embedding the whole corpus would buy nothing. The
+ * stamp exists to make the next format change a forced rebuild rather than this
+ * same reasoning done again from scratch.
+ */
+const SOURCE_PATH_FORMAT = 2;
+
 export class MemoryEngine {
   private store: SqliteStore;
+  private roots: ResolvedRoot[];
   private indexer: Indexer;
   private facts: FactsStore;
   private retriever: Retriever;
@@ -74,6 +94,7 @@ export class MemoryEngine {
     store: SqliteStore
   ) {
     this.store = store;
+    this.roots = resolveRoots(config.root, config.sources);
     this.indexer = new Indexer(config, store, embedder);
     this.facts = new FactsStore(config.root, config.factsDir);
     this.retriever = new Retriever(store.loadAll());
@@ -92,6 +113,21 @@ export class MemoryEngine {
       store.setEmbedderInfo(info);
       changed = true;
     }
+
+    // sourcePath key format. See SOURCE_PATH_FORMAT: a mismatch is a full
+    // rebuild, an absent stamp is just stamped.
+    const priorFormat = store.getSourcePathFormat();
+    if (priorFormat !== null && priorFormat !== SOURCE_PATH_FORMAT) {
+      config.onLog?.(
+        'info',
+        `[engine] sourcePath format ${priorFormat} -> ${SOURCE_PATH_FORMAT}; rebuilding the shadow index`
+      );
+      store.reset();
+      // Deliberately NOT `embedderChanged` — the embedder didn't change, and
+      // both callers re-index unconditionally at startup anyway.
+    }
+    if (priorFormat !== SOURCE_PATH_FORMAT) store.setSourcePathFormat(SOURCE_PATH_FORMAT);
+
     const engine = new MemoryEngine(config, embedder, store);
     engine.embedderChanged = changed;
     return engine;
@@ -212,10 +248,11 @@ export class MemoryEngine {
   ): Promise<Array<{ path: string; content: string; mtimeMs: number }>> {
     const files = await this.indexer.filesForClass(sourceClass);
     const stamped: Array<{ path: string; mtimeMs: number }> = [];
-    for (const rel of files) {
+    for (const sp of files) {
       try {
-        const st = await stat(path.join(this.config.root, rel));
-        stamped.push({ path: rel, mtimeMs: st.mtimeMs });
+        const { abs } = resolveInRoots(this.roots, sp);
+        const st = await stat(abs);
+        stamped.push({ path: sp, mtimeMs: st.mtimeMs });
       } catch {
         // File vanished between glob and stat — skip it.
       }
@@ -230,15 +267,44 @@ export class MemoryEngine {
     return out;
   }
 
-  /** Read a managed doc by relative path (guarded against escaping the root). */
-  async readDoc(relPath: string): Promise<{ path: string; content: string }> {
-    const abs = path.resolve(this.config.root, relPath);
-    const rootResolved = path.resolve(this.config.root);
-    if (abs !== rootResolved && !abs.startsWith(rootResolved + path.sep)) {
-      throw new Error(`read_doc: path escapes engine root: ${relPath}`);
+  /**
+   * Read a managed doc by `sourcePath` (or a bare primary-relative path).
+   *
+   * Guarded: the resolved path must land inside ONE OF the configured roots.
+   * This is a set-membership test, not a relaxation of the old single-root
+   * check — a path escaping the root it names still throws even when other
+   * roots exist, and there is no configuration that disables it. It is the only
+   * thing standing between this tool and arbitrary file reads.
+   */
+  async readDoc(sourcePath: string): Promise<{ path: string; content: string }> {
+    let resolved: { abs: string; sourcePath: string };
+    try {
+      resolved = resolveInRoots(this.roots, sourcePath);
+    } catch (err) {
+      throw new Error(`read_doc: ${(err as Error).message}`);
     }
-    const content = await readFile(abs, 'utf8');
-    return { path: path.relative(rootResolved, abs).split(path.sep).join('/'), content };
+    const content = await readFile(resolved.abs, 'utf8');
+    return { path: resolved.sourcePath, content };
+  }
+
+  /**
+   * Roots whose content is personal and machine-local. Anything that publishes
+   * indexed content off this machine (the phase-4 committed JSONL replica, team
+   * sync, an export) MUST exclude these — see `SourceRoot.personal`.
+   */
+  personalRoots(): ResolvedRoot[] {
+    return this.roots.filter((r) => r.personal);
+  }
+
+  /** True when a `sourcePath` belongs to a personal, machine-local root. */
+  isPersonalSourcePath(sourcePath: string): boolean {
+    try {
+      return resolveInRoots(this.roots, sourcePath).root.personal;
+    } catch {
+      // Unresolvable — treat as personal. A path we cannot attribute is never
+      // safe to publish.
+      return true;
+    }
   }
 
   // --- Facts ---------------------------------------------------------------

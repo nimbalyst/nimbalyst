@@ -11,7 +11,8 @@
  * created since the last index backfill. No query => most recent sessions.
  */
 
-import { AISessionsRepository, type SessionMeta } from '@nimbalyst/runtime';
+import type { SessionMeta } from '@nimbalyst/runtime';
+import { AISessionsRepository } from '@nimbalyst/runtime/storage/repositories/AISessionsRepository';
 import { SemanticCatalogService } from '../SemanticCatalogService';
 import { getDatabase } from '../../database/initialize';
 
@@ -22,11 +23,14 @@ export interface VoiceSessionResult {
   lastActive: string;
 }
 
-export interface VoiceSessionSearchResult {
-  success: boolean;
-  sessions?: VoiceSessionResult[];
-  error?: string;
-}
+export type VoiceSessionSearchResult =
+  | {
+      success: true;
+      sessions: VoiceSessionResult[];
+      /** False distinguishes an unavailable index from a valid semantic search with no hits. */
+      semanticSearchAvailable: boolean;
+    }
+  | { success: false; error: string };
 
 /** Human-friendly "last active" string for a session timestamp (ms). */
 function formatRelativeTime(ms: number): string {
@@ -62,6 +66,8 @@ export async function searchSessionsForVoice(
 
     const ordered: SessionMeta[] = [];
     const seen = new Set<string>();
+    const semanticCatalog = SemanticCatalogService.getInstance();
+    let semanticSearchAvailable = semanticCatalog.isAvailable(workspacePath);
     const push = (meta?: SessionMeta): void => {
       if (meta && !seen.has(meta.id)) {
         seen.add(meta.id);
@@ -71,12 +77,13 @@ export async function searchSessionsForVoice(
 
     if (trimmed) {
       // Session-scoped semantic search first (conceptual recall).
-      if (SemanticCatalogService.getInstance().isAvailable(workspacePath)) {
-        const hits = await SemanticCatalogService.getInstance().query(workspacePath, trimmed, 20, [
-          'sessions',
-        ]);
-        for (const hit of hits) {
-          if (hit.refType === 'session') push(metaById.get(hit.refId));
+      if (semanticSearchAvailable) {
+        const outcome = await semanticCatalog.query(workspacePath, trimmed, 20, ['sessions']);
+        semanticSearchAvailable = outcome.available;
+        if (outcome.available) {
+          for (const hit of outcome.results) {
+            if (hit.refType === 'session') push(metaById.get(hit.refId));
+          }
         }
       }
       // Merge FTS over titles + transcripts (exact terms + freshly created
@@ -120,7 +127,7 @@ export async function searchSessionsForVoice(
       lastActive: formatRelativeTime(s.updatedAt),
     }));
 
-    return { success: true, sessions };
+    return { success: true, sessions, semanticSearchAvailable };
   } catch (error) {
     return { success: false, error: error instanceof Error ? error.message : String(error) };
   }

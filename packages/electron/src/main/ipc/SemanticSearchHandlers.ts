@@ -4,11 +4,14 @@ import {
   type SemanticSearchResult,
 } from '../services/SemanticCatalogService';
 
+/** Stable rejection marker for renderer callers that want an unavailable state. */
+export const SEMANTIC_SEARCH_UNAVAILABLE = 'SEMANTIC_SEARCH_UNAVAILABLE';
+
 /**
  * IPC for Quick Open global semantic search. Workspace-scoped: the renderer
  * passes its `workspacePath` explicitly (no module-level "current workspace").
- * Both handlers return safely when the memory engine isn't running so the
- * renderer can hide the Memory tab without special-casing errors.
+ * Availability fails closed; query rejects with a stable marker when the
+ * engine is not ready so callers can distinguish that from a valid empty list.
  */
 export function registerSemanticSearchHandlers() {
   safeHandle(
@@ -29,12 +32,16 @@ export function registerSemanticSearchHandlers() {
       sourceClasses?: string[],
     ): Promise<SemanticSearchResult[]> => {
       if (!workspacePath || !query?.trim()) return [];
-      return SemanticCatalogService.getInstance().query(
+      const outcome = await SemanticCatalogService.getInstance().query(
         workspacePath,
         query,
         k ?? 20,
         Array.isArray(sourceClasses) && sourceClasses.length ? sourceClasses : undefined,
       );
+      if (!outcome.available) {
+        throw new Error(`${SEMANTIC_SEARCH_UNAVAILABLE}: memory index is not ready`);
+      }
+      return outcome.results;
     },
   );
 

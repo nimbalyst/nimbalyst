@@ -43,7 +43,7 @@ function main() {
   const collected = new Map();
 
   for (const rootKey of workspaceRoots) {
-    walkDependencyTree(rootKey, packages, visited, collected);
+    walkDependencyTree(rootKey, packages, visited, collected, true);
   }
 
   const records = [...collected.values()].sort((a, b) =>
@@ -126,7 +126,13 @@ function getWorkspaceRoots() {
   return roots;
 }
 
-function walkDependencyTree(key, packages, visited, collected) {
+function walkDependencyTree(
+  key,
+  packages,
+  visited,
+  collected,
+  includeOptionalDependencies = false,
+) {
   if (!key || visited.has(key)) return;
 
   const info = packages[key];
@@ -151,7 +157,14 @@ function walkDependencyTree(key, packages, visited, collected) {
     }
   }
 
-  for (const dependencyName of Object.keys(info.dependencies || {}).sort()) {
+  const dependencyNames = new Set([
+    ...Object.keys(info.dependencies || {}),
+    ...(includeOptionalDependencies
+      ? Object.keys(info.optionalDependencies || {})
+      : []),
+  ]);
+
+  for (const dependencyName of [...dependencyNames].sort()) {
     const dependencyKey = resolveDependencyKey(key, dependencyName, packages);
     if (dependencyKey) {
       walkDependencyTree(dependencyKey, packages, visited, collected);
@@ -530,4 +543,8 @@ function dedupeArtifacts(values) {
   return deduped;
 }
 
-main();
+if (require.main === module) {
+  main();
+}
+
+module.exports = { walkDependencyTree };

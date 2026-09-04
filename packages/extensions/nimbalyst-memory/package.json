@@ -10,7 +10,11 @@
     "build": "npm run build --prefix engine && vite build && vite build --config vite.backend.config.ts",
     "dev": "vite build --watch",
     "typecheck": "npm run typecheck --prefix engine && tsc --noEmit",
+    "memory:eval": "esbuild engine/src/eval/cli.ts --bundle --platform=node --target=node20 --format=esm --packages=external --outfile=engine/dist/eval-cli.mjs --log-level=warning && node engine/dist/eval-cli.mjs",
     "test": "echo \"engine tests run via root vitest\""
+  },
+  "optionalDependencies": {
+    "@huggingface/transformers": "^3.8.1"
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^4.3.0",

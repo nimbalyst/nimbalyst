@@ -310,6 +310,18 @@
         ]
       },
       {
+        "from": "../../node_modules/@huggingface/transformers",
+        "to": "node_modules/@huggingface/transformers"
+      },
+      {
+        "from": "../../node_modules/onnxruntime-node",
+        "to": "node_modules/onnxruntime-node"
+      },
+      {
+        "from": "../../node_modules/onnxruntime-common",
+        "to": "node_modules/onnxruntime-common"
+      },
+      {
         "from": "../../node_modules/@electric-sql/pglite/dist/pglite.data",
         "to": "pglite.data"
       },

@@ -17,8 +17,13 @@ import { builtinModules } from 'module';
 //   - better-sqlite3 is a native module (cannot be bundled); it ships to
 //     Contents/Resources/node_modules via electron-builder extraResources and
 //     resolves from the extension's on-disk location at runtime.
-//   - @huggingface/transformers is an optional local-embedder dep (unused in
-//     the OpenAI-only v1; externalized so it never bundles).
+//   - @huggingface/transformers backs the keyless local embedder. It cannot be
+//     bundled either: it loads onnxruntime-node, which is a native module. It
+//     is an OPTIONAL dependency and is imported lazily, so a build without it
+//     degrades to keyword retrieval instead of failing. Electron ships the
+//     Transformers and ONNX packages through extraResources, then afterPack
+//     prunes non-target native bindings and validates the packaged dependency
+//     closure before signing.
 export default defineConfig({
   mode: 'production',
   build: {

@@ -444,6 +444,20 @@ const WORKER_BUNDLES = [
     externals: [],
     nativeBinaries: [],
   },
+  {
+    // The memory backend is a utility-process module under Resources/extensions.
+    // Its local embedder is externalized and must resolve from Resources/node_modules.
+    name: 'memory-backend',
+    bundle: 'extensions/nimbalyst-memory/dist/backend.js',
+    externals: ['@huggingface/transformers', 'onnxruntime-node', 'onnxruntime-common'],
+    nativeBinaries: (targetArch === 'universal' ? ['x64', 'arm64'] : [targetArch]).map(
+      (arch) => ({
+        candidateRelPaths: [
+          `node_modules/onnxruntime-node/bin/napi-v3/${targetPlatform}/${arch}/onnxruntime_binding.node`,
+        ],
+      }),
+    ),
+  },
 ];
 
 console.log('\n[validate-packaged-sdks] Checking worker bundle externals...');
@@ -583,6 +597,12 @@ if (canBootCheck) {
         const r = db.prepare('select sqlite_version() as v').get();
         db.close();
         if (!r || !r.v) throw new Error('better-sqlite3 returned no sqlite_version');
+      `,
+      'onnxruntime-node': `
+        const ort = req('onnxruntime-node');
+        if (!ort || typeof ort.InferenceSession !== 'function') {
+          throw new Error('onnxruntime-node did not expose InferenceSession');
+        }
       `,
     };
 

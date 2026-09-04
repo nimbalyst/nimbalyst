@@ -86,6 +86,7 @@ exports.default = async function(context) {
 
   pruneSqlitePrebuilds(resourcesDir, platformName, arch);
   pruneNodePtyPrebuilds(resourcesDir, platformName, arch);
+  pruneOnnxRuntimeBinaries(resourcesDir, platformName, arch);
 
   // Ensure node-pty's `spawn-helper` is executable in the packaged tree.
   // node-pty ships via extraResources to resources/node-pty; the macOS/Linux
@@ -266,6 +267,50 @@ function pruneNodePtyPrebuilds(resourcesDir, platformName, arch) {
   console.log(
     `AfterPack: Pruned ${removedCount} non-target node-pty prebuilds ` +
     `(kept ${[...keep].join(', ')}, saved ${Math.round(removedSize / 1024 / 1024)}MB)`,
+  );
+  return { removedCount, keptCount, removedSize, skipped: false };
+}
+
+// @huggingface/transformers loads onnxruntime-node from Resources/node_modules.
+// The npm package carries native runtimes for every supported target (~200 MB),
+// so retain only the build target while failing closed if its binary is absent.
+exports.pruneOnnxRuntimeBinaries = pruneOnnxRuntimeBinaries;
+function pruneOnnxRuntimeBinaries(resourcesDir, platformName, arch) {
+  const napiDir = path.join(resourcesDir, 'node_modules/onnxruntime-node/bin/napi-v3');
+  if (!fs.existsSync(napiDir)) {
+    return { removedCount: 0, keptCount: 0, removedSize: 0, skipped: true };
+  }
+
+  const keepArchitectures = arch === 'universal' ? new Set(['x64', 'arm64']) : new Set([arch]);
+  let removedCount = 0;
+  let removedSize = 0;
+  let keptCount = 0;
+  for (const platformEntry of fs.readdirSync(napiDir, { withFileTypes: true })) {
+    if (!platformEntry.isDirectory()) continue;
+    const platformDir = path.join(napiDir, platformEntry.name);
+    for (const archEntry of fs.readdirSync(platformDir, { withFileTypes: true })) {
+      if (!archEntry.isDirectory()) continue;
+      const archDir = path.join(platformDir, archEntry.name);
+      if (platformEntry.name === platformName && keepArchitectures.has(archEntry.name)) {
+        if (fs.existsSync(path.join(archDir, 'onnxruntime_binding.node'))) keptCount++;
+        continue;
+      }
+      removedSize += getDirSize(archDir);
+      fs.rmSync(archDir, { recursive: true });
+      removedCount++;
+    }
+    if (fs.readdirSync(platformDir).length === 0) fs.rmSync(platformDir, { recursive: true });
+  }
+
+  if (keptCount !== keepArchitectures.size) {
+    throw new Error(
+      `AfterPack: onnxruntime-node is missing a native binding for ${platformName}-${arch}. ` +
+      'The packaged memory extension would silently fall back to keyword-only retrieval.',
+    );
+  }
+  console.log(
+    `AfterPack: Pruned ${removedCount} non-target onnxruntime directories ` +
+    `(kept ${platformName}-${[...keepArchitectures].join(',')}, saved ${Math.round(removedSize / 1024 / 1024)}MB)`,
   );
   return { removedCount, keptCount, removedSize, skipped: false };
 }

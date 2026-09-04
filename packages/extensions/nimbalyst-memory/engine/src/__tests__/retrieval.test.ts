@@ -1,8 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { tokenize, termFrequencies, Bm25Index } from '../retrieval/bm25.js';
-import { reciprocalRankFusion } from '../retrieval/rrf.js';
+import { isRankSensitive, maxRankSensitiveK, reciprocalRankFusion } from '../retrieval/rrf.js';
 import { cosineSimilarity } from '../retrieval/cosine.js';
-import { Retriever } from '../retrieval/retriever.js';
+import { DEFAULT_FUSION, Retriever } from '../retrieval/retriever.js';
 import { FakeEmbedder } from './fakeEmbedder.js';
 import type { StoredChunk } from '../types.js';
 
@@ -65,6 +65,68 @@ describe('reciprocalRankFusion', () => {
     expect(fused[0].id === 'x' || fused[0].id === 'y').toBe(true);
     expect(fused.slice(0, 2).map((f) => f.id).sort()).toEqual(['x', 'y']);
   });
+
+  // The defect NIM-5461 fixed. `k` is not a universal constant, it is a
+  // constant relative to candidate-pool depth: over a pool of depth D with L
+  // equally-weighted lists, an id in every list scores at least L/(k+D) while
+  // an id in one list scores at most 1/(k+1). Once L/(k+D) >= 1/(k+1), fusion
+  // stops combining ranks and starts counting arm agreement — the top hit of
+  // your best arm cannot outrank a chunk both arms ranked last. The shipped
+  // retriever had exactly this: k=60 over 50-deep pools, floor 2/110 = 0.01818
+  // above ceiling 1/61 = 0.01639, which is why the `claude` source class
+  // scored BELOW both of the arms being fused.
+  //
+  // Property, not a snapshot: it must keep holding if someone retunes k.
+  describe('rank sensitivity (a top-of-one-list hit is not buried by consensus)', () => {
+    const POOL = 50;
+
+    /** `only` leads list A and is absent from B; `both` is last in both. */
+    function poolsWhereOneArmIsConfident(): { a: string[]; b: string[] } {
+      const a = ['only', ...Array.from({ length: POOL - 2 }, (_, i) => `filler${i}`), 'both'];
+      const b = [...Array.from({ length: POOL - 1 }, (_, i) => `other${i}`), 'both'];
+      return { a, b };
+    }
+
+    it('at the shipped k, a confident single-arm hit outranks a bottom-of-both hit', () => {
+      const { a, b } = poolsWhereOneArmIsConfident();
+      const fused = reciprocalRankFusion(
+        [
+          { ids: a, weight: DEFAULT_FUSION.denseWeight },
+          { ids: b, weight: DEFAULT_FUSION.sparseWeight },
+        ],
+        DEFAULT_FUSION.rrfK
+      );
+      const rankOf = (id: string) => fused.findIndex((f) => f.id === id);
+      expect(rankOf('only')).toBeLessThan(rankOf('both'));
+      expect(fused[0].id).toBe('only');
+    });
+
+    it('at k=60 over a 50-deep pool it does NOT — the regime being guarded against', () => {
+      const { a, b } = poolsWhereOneArmIsConfident();
+      const fused = reciprocalRankFusion([{ ids: a }, { ids: b }], 60);
+      const rankOf = (id: string) => fused.findIndex((f) => f.id === id);
+      // Consensus wins despite `only` leading its list and `both` being last in both.
+      expect(rankOf('both')).toBeLessThan(rankOf('only'));
+    });
+
+    it('isRankSensitive draws the boundary where the arithmetic does', () => {
+      // Equal weights, 2 arms, 50-deep pool: k must be < (50-2)/(2-1) = 48.
+      expect(maxRankSensitiveK(POOL, 2)).toBe(47);
+      expect(isRankSensitive(47, POOL)).toBe(true);
+      expect(isRankSensitive(48, POOL)).toBe(false);
+      expect(isRankSensitive(60, POOL)).toBe(false);
+      // Weighting one arm up restores headroom that equal weights lack.
+      expect(isRankSensitive(60, POOL, [1, 0.2])).toBe(true);
+    });
+
+    it('the Retriever refuses to construct a consensus-dominated fusion', () => {
+      expect(() => new Retriever([], { rrfK: 60, sparseWeight: 1 })).toThrow(/consensus|rank/i);
+      // The harness's explicit opt-out still allows scoring the old config.
+      expect(
+        () => new Retriever([], { rrfK: 60, sparseWeight: 1, allowRankInsensitive: true })
+      ).not.toThrow();
+    });
+  });
 });
 
 async function buildChunks(
@@ -103,6 +165,57 @@ describe('Retriever (hybrid + expand)', () => {
     const [qv] = await embedder.embed(['realtime voice agent tools']);
     const hits = r.search('realtime voice agent tools', qv, 3);
     expect(hits[0].sourcePath).toBe('a.md');
+    expect(hits[0].citation).toBe('a.md#Voice');
+  });
+
+  it('keeps A2 page rows out of the chunk arms and out of results', async () => {
+    // A page row is a document-level SIGNAL, not an answer. If it leaked into
+    // `chunks` it would enter BM25 and cosine, letting the whole first 8 KB of
+    // a document compete with its own sections and surface as a headingless
+    // hit no caller could cite.
+    const chunks = await buildChunks([
+      { id: 'a.md#0', sourcePath: 'a.md', ordinal: 0, headingPath: ['Voice'], text: 'voice agent grounding realtime' },
+      { id: 'a.md#1', sourcePath: 'a.md', ordinal: 1, headingPath: ['Other'], text: 'unrelated trailing section' },
+    ]);
+    const page: StoredChunk = {
+      ...chunks[0],
+      id: 'a.md#page',
+      ordinal: -1,
+      headingPath: [],
+      text: 'voice agent grounding realtime unrelated trailing section',
+      granularity: 'page',
+      sparseTerms: {},
+    };
+    const r = new Retriever([...chunks, page]);
+    expect(r.size).toBe(2);
+    const hits = r.search('voice agent grounding realtime', chunks[0].denseEmbedding, 10);
+    expect(hits.every((h) => h.headingPath.length > 0)).toBe(true);
+    expect(hits.map((h) => h.citation)).not.toContain('a.md');
+  });
+
+  it('resolves a page-arm hit to the best chunk inside that document', async () => {
+    // With the page arm enabled, a document whose PAGE matches must still come
+    // back as a citable section — the arm ranks documents, fusion needs chunks.
+    const chunks = await buildChunks([
+      { id: 'a.md#0', sourcePath: 'a.md', ordinal: 0, headingPath: ['Intro'], text: 'introduction boilerplate' },
+      { id: 'a.md#1', sourcePath: 'a.md', ordinal: 1, headingPath: ['Voice'], text: 'voice agent grounding realtime tools' },
+    ]);
+    const embedder = new FakeEmbedder();
+    const [pageVec] = await embedder.embed(['introduction boilerplate voice agent grounding realtime tools']);
+    const page: StoredChunk = {
+      ...chunks[0],
+      id: 'a.md#page',
+      ordinal: -1,
+      headingPath: [],
+      text: 'introduction boilerplate voice agent grounding realtime tools',
+      granularity: 'page',
+      sparseTerms: {},
+      denseEmbedding: pageVec,
+    };
+    const r = new Retriever([...chunks, page], { pageWeight: 1 });
+    const [qv] = await embedder.embed(['voice agent grounding realtime tools']);
+    const hits = r.search('voice agent grounding realtime tools', qv, 5);
+    // The Voice section, not the page row and not the boilerplate intro.
     expect(hits[0].citation).toBe('a.md#Voice');
   });
 

@@ -40,6 +40,7 @@ interface ChunkRow {
   updated_at: number;
   ref_type: string;
   ref_id: string;
+  granularity: string;
 }
 
 export class SqliteStore {
@@ -69,7 +70,8 @@ export class SqliteStore {
         dims INTEGER NOT NULL,
         updated_at INTEGER NOT NULL,
         ref_type TEXT NOT NULL DEFAULT 'doc-file',
-        ref_id TEXT NOT NULL DEFAULT ''
+        ref_id TEXT NOT NULL DEFAULT '',
+        granularity TEXT NOT NULL DEFAULT 'chunk'
       );
       CREATE INDEX IF NOT EXISTS idx_chunks_source ON chunks(source_path);
       CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -94,6 +96,10 @@ export class SqliteStore {
       this.db.exec(`ALTER TABLE chunks ADD COLUMN ref_id TEXT NOT NULL DEFAULT ''`);
       this.db.exec(`UPDATE chunks SET ref_id = source_path WHERE ref_id = ''`);
     }
+    if (!names.has('granularity')) {
+      // Pre-A2 stores hold only chunk rows; the DEFAULT backfills them.
+      this.db.exec(`ALTER TABLE chunks ADD COLUMN granularity TEXT NOT NULL DEFAULT 'chunk'`);
+    }
   }
 
   // --- Embedder identity ---------------------------------------------------
@@ -115,6 +121,30 @@ export class SqliteStore {
       .prepare(`INSERT INTO meta(key, value) VALUES('embedder', ?)
                 ON CONFLICT(key) DO UPDATE SET value = excluded.value`)
       .run(JSON.stringify(info));
+  }
+
+  // --- sourcePath key format ------------------------------------------------
+
+  /**
+   * Version of the `source_path` key format the store was written with, or null
+   * for a store predating the stamp. `source_path` is the chunk primary-key
+   * prefix and the prune keyspace, so a format change makes every stored row
+   * unaddressable; the caller resets and re-indexes rather than half-migrating.
+   */
+  getSourcePathFormat(): number | null {
+    const row = this.db.prepare(`SELECT value FROM meta WHERE key = 'source_path_format'`).get() as
+      | { value: string }
+      | undefined;
+    if (!row) return null;
+    const n = Number(row.value);
+    return Number.isFinite(n) ? n : null;
+  }
+
+  setSourcePathFormat(version: number): void {
+    this.db
+      .prepare(`INSERT INTO meta(key, value) VALUES('source_path_format', ?)
+                ON CONFLICT(key) DO UPDATE SET value = excluded.value`)
+      .run(String(version));
   }
 
   /** Wipe all chunks (used when the embedder changes — vectors are non-comparable). */
@@ -159,10 +189,10 @@ export class SqliteStore {
     return this.db.prepare(`
       INSERT INTO chunks (id, source_path, source_class, heading_path, ordinal,
         content, content_hash, dense_embedding, sparse_terms, embedder_id, model, dims, updated_at,
-        ref_type, ref_id)
+        ref_type, ref_id, granularity)
       VALUES (@id, @source_path, @source_class, @heading_path, @ordinal,
         @content, @content_hash, @dense_embedding, @sparse_terms, @embedder_id, @model, @dims, @updated_at,
-        @ref_type, @ref_id)
+        @ref_type, @ref_id, @granularity)
       ON CONFLICT(id) DO UPDATE SET
         source_path = excluded.source_path,
         source_class = excluded.source_class,
@@ -177,7 +207,8 @@ export class SqliteStore {
         dims = excluded.dims,
         updated_at = excluded.updated_at,
         ref_type = excluded.ref_type,
-        ref_id = excluded.ref_id
+        ref_id = excluded.ref_id,
+        granularity = excluded.granularity
     `);
   }
 
@@ -201,6 +232,7 @@ export class SqliteStore {
           updated_at: c.updatedAt,
           ref_type: c.refType,
           ref_id: c.refId,
+          granularity: c.granularity ?? 'chunk',
         });
       }
     });
@@ -243,6 +275,7 @@ export class SqliteStore {
       updatedAt: r.updated_at,
       refType: r.ref_type,
       refId: r.ref_id,
+      granularity: (r.granularity as StoredChunk['granularity']) ?? 'chunk',
     };
   }
 

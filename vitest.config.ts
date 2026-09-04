@@ -138,6 +138,11 @@ const nodeOnly = [
   // include, paying an environment they cannot use.
   'packages/cli/src/**',
   'packages/tracker-core/src/**',
+  // The memory engine is host-agnostic with zero app imports, so nothing under
+  // it can reach a DOM. Its tests carried `// @vitest-environment node` pragmas
+  // that were inert for the same reason as the ones above, and the extension's
+  // own `src/` is excluded because that half really is React.
+  'packages/extensions/nimbalyst-memory/engine/src/**',
 ];
 
 // The node project's `include` and the jsdom project's `exclude` must describe

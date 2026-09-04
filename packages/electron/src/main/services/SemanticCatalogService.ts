@@ -16,7 +16,8 @@ import type {
   TrackerItemChangeEvent,
   SessionMeta,
 } from '@nimbalyst/runtime';
-import { AISessionsRepository, AgentMessagesRepository } from '@nimbalyst/runtime';
+import { AISessionsRepository } from '@nimbalyst/runtime/storage/repositories/AISessionsRepository';
+import { AgentMessagesRepository } from '@nimbalyst/runtime/storage/repositories/AgentMessagesRepository';
 import { getPrivilegedExtensionHost, type ModuleHandle } from '../extensions/PrivilegedExtensionHost';
 import { documentServices } from '../window/WindowManager';
 import { getAppSetting, setAppSetting } from '../utils/store';
@@ -39,6 +40,9 @@ const MAX_SESSIONS = 400;
 const SESSION_MSG_LIMIT = 60;
 const PER_MESSAGE_CAP = 2000;
 const SESSION_TEXT_CAP = 8000;
+
+/** Recheck a running engine while its initial index is still becoming ready. */
+const READINESS_RETRY_MS = 1000;
 
 /** Mirror of the engine-side VirtualRecord shape (host-agnostic by design). */
 interface VirtualRecord {
@@ -69,6 +73,32 @@ export interface SemanticSearchResult {
   similarity?: { cosine?: number; bm25?: number };
 }
 
+/**
+ * Keeps "index unavailable" distinct from "available with no matches" for
+ * main-process callers without changing the renderer's result-array contract.
+ */
+export type SemanticQueryOutcome =
+  | { available: false; results: [] }
+  | { available: true; results: SemanticSearchResult[] };
+
+/**
+ * The fields we read off the memory backend's read-only `status` RPC.
+ *
+ * `ready` is the backend module's own flag (`nimbalyst-memory/src/backend.ts`):
+ * `false` when the engine failed to construct, and in that branch none of the
+ * engine fields are present at all. The rest is
+ * `buildPublicEngineStatus(engine.status())` — the engine's `EngineStatus`
+ * minus `lastEmbedError`. Mirrored rather than imported so the main process
+ * does not depend on the extension's build output; the readiness test type-
+ * checks its fixtures against the real `EngineStatus`, so a field invented here
+ * fails to compile there.
+ */
+interface MemoryEngineStatus {
+  ready?: boolean;
+  chunks?: number;
+  indexing?: boolean;
+}
+
 interface PendingChanges {
   upserts: Map<string, VirtualRecord>;
   removes: Set<string>;
@@ -78,6 +108,11 @@ interface PendingChanges {
 interface WiredWorkspace {
   unwatch: () => void;
   pending: PendingChanges;
+}
+
+interface ReadinessCheck {
+  generation: number;
+  promise: Promise<void>;
 }
 
 /** Recursively pull visible text out of a Lexical editor-state JSON blob. */
@@ -137,6 +172,10 @@ function looksLikeJson(text: string): boolean {
 export class SemanticCatalogService {
   private static instance: SemanticCatalogService | null = null;
   private wired = new Map<string, WiredWorkspace>();
+  private readiness = new Map<string, boolean>();
+  private readinessGenerations = new Map<string, number>();
+  private readinessChecks = new Map<string, ReadinessCheck>();
+  private readinessRetryTimers = new Map<string, NodeJS.Timeout>();
   private started = false;
 
   static getInstance(): SemanticCatalogService {
@@ -159,17 +198,23 @@ export class SemanticCatalogService {
 
   private onModuleState(handle: ModuleHandle): void {
     if (handle.extensionId !== EXT_ID || handle.moduleId !== MODULE_ID) return;
-    if (handle.state.status === 'running') this.wireWorkspace(handle.workspacePath);
-    else this.unwireWorkspace(handle.workspacePath);
+    const generation = this.invalidateReadiness(handle.workspacePath);
+    if (handle.state.status === 'running') {
+      this.wireWorkspace(handle.workspacePath);
+      void this.refreshReadiness(handle.workspacePath, generation);
+    } else {
+      this.unwireWorkspace(handle.workspacePath);
+    }
   }
 
   // --- Quick Open query (Phase 3) ------------------------------------------
 
-  /** True when the memory engine is running for this workspace. */
+  /**
+   * Synchronous hot-path read of the last engine-readiness signal. Unknown and
+   * stale states fail closed; lifecycle events refresh the cache in background.
+   */
   isAvailable(workspacePath: string): boolean {
-    return (
-      getPrivilegedExtensionHost().getState(EXT_ID, MODULE_ID, workspacePath)?.status === 'running'
-    );
+    return this.readiness.get(workspacePath) === true;
   }
 
   async query(
@@ -177,8 +222,16 @@ export class SemanticCatalogService {
     query: string,
     k = 20,
     sourceClasses?: string[],
-  ): Promise<SemanticSearchResult[]> {
-    if (!query.trim() || !this.isAvailable(workspacePath)) return [];
+  ): Promise<SemanticQueryOutcome> {
+    if (!this.isAvailable(workspacePath)) {
+      // The index may have gained its first chunks since our last check (from
+      // the engine's own watcher, or a rebuild). Re-check so an actively
+      // searching user recovers within a second; the pending-timer guard in
+      // scheduleReadinessRefresh collapses a burst of keystrokes into one RPC.
+      this.scheduleReadinessRefresh(workspacePath, this.currentGeneration(workspacePath));
+      return { available: false, results: [] };
+    }
+    if (!query.trim()) return { available: true, results: [] };
     try {
       const res = await getPrivilegedExtensionHost().request<{ results: SemanticSearchResult[] }>({
         extensionId: EXT_ID,
@@ -188,11 +241,99 @@ export class SemanticCatalogService {
         params: { query, k, ...(sourceClasses?.length ? { sourceClasses } : {}) },
         requiredPermission: null,
       });
-      return res?.results ?? [];
+      return { available: true, results: res?.results ?? [] };
     } catch (err) {
       console.error('[SemanticCatalog] query failed:', (err as Error).message);
-      return [];
+      const generation = this.invalidateReadiness(workspacePath);
+      this.scheduleReadinessRefresh(workspacePath, generation);
+      return { available: false, results: [] };
     }
+  }
+
+  private currentGeneration(workspacePath: string): number {
+    // Absent means we have never seen the module run here, so every refresh
+    // path below no-ops — which is what we want when memory is disabled.
+    return this.readinessGenerations.get(workspacePath) ?? -1;
+  }
+
+  private invalidateReadiness(workspacePath: string): number {
+    const generation = (this.readinessGenerations.get(workspacePath) ?? 0) + 1;
+    this.readinessGenerations.set(workspacePath, generation);
+    this.readiness.set(workspacePath, false);
+    const timer = this.readinessRetryTimers.get(workspacePath);
+    if (timer) clearTimeout(timer);
+    this.readinessRetryTimers.delete(workspacePath);
+    return generation;
+  }
+
+  private refreshReadiness(workspacePath: string, generation: number): Promise<void> {
+    if (this.readinessGenerations.get(workspacePath) !== generation) return Promise.resolve();
+    const existing = this.readinessChecks.get(workspacePath);
+    if (existing?.generation === generation) return existing.promise;
+
+    const promise = (async () => {
+      const host = getPrivilegedExtensionHost();
+      if (host.getState(EXT_ID, MODULE_ID, workspacePath)?.status !== 'running') return;
+
+      let ready = false;
+      let fillingEmptyIndex = false;
+      try {
+        const status = await host.request<MemoryEngineStatus>({
+          extensionId: EXT_ID,
+          moduleId: MODULE_ID,
+          workspacePath,
+          method: 'status',
+          requiredPermission: null,
+        });
+        // Available means "the index holds something searchable", NOT "the
+        // initial pass has finished". The engine republishes its retrieval
+        // snapshot every 25 files during a full pass precisely so partial
+        // results are searchable in seconds instead of after a multi-minute
+        // corpus walk, so gating on `indexing` would blank Quick Open out on
+        // every cold start and discard that. What is genuinely unavailable is a
+        // cold, empty index: advertising search over zero chunks is what made
+        // Quick Open silently return nothing.
+        //
+        // Deliberately not consulted: `retrieval.mode === 'keyword-only'` and
+        // `denseChunks === 0` are *working* states (the sparse fallback), not
+        // unavailable ones.
+        ready = status?.ready === true && (status.chunks ?? 0) > 0;
+        fillingEmptyIndex = status?.ready === true && !ready && status.indexing === true;
+      } catch {
+        // Unknown readiness fails closed until a module transition or failed query retries it.
+      }
+
+      if (this.readinessGenerations.get(workspacePath) !== generation) return;
+      if (host.getState(EXT_ID, MODULE_ID, workspacePath)?.status !== 'running') return;
+      this.readiness.set(workspacePath, ready);
+      // Only poll while chunks are actively landing; this stops on the first
+      // non-empty status, or when the pass ends still empty.
+      if (fillingEmptyIndex) this.scheduleReadinessRefresh(workspacePath, generation);
+    })();
+
+    this.readinessChecks.set(workspacePath, { generation, promise });
+    void promise.finally(() => {
+      if (this.readinessChecks.get(workspacePath)?.promise === promise) {
+        this.readinessChecks.delete(workspacePath);
+      }
+    });
+    return promise;
+  }
+
+  private scheduleReadinessRefresh(workspacePath: string, generation: number): void {
+    if (this.readinessGenerations.get(workspacePath) !== generation) return;
+    if (
+      getPrivilegedExtensionHost().getState(EXT_ID, MODULE_ID, workspacePath)?.status !== 'running'
+    ) {
+      return;
+    }
+    if (this.readinessRetryTimers.has(workspacePath)) return;
+    const timer = setTimeout(() => {
+      this.readinessRetryTimers.delete(workspacePath);
+      void this.refreshReadiness(workspacePath, generation);
+    }, READINESS_RETRY_MS);
+    timer.unref?.();
+    this.readinessRetryTimers.set(workspacePath, timer);
   }
 
   // --- Tracker backfill + live sync (Phase 2) ------------------------------
@@ -310,6 +451,12 @@ export class SemanticCatalogService {
       params: { records },
       requiredPermission: null,
     });
+    // Our tracker/session records can be the first content in an otherwise
+    // empty index (a workspace with no indexable files), and nothing else would
+    // tell readiness that chunks now exist.
+    if (!this.isAvailable(workspacePath)) {
+      this.scheduleReadinessRefresh(workspacePath, this.currentGeneration(workspacePath));
+    }
   }
 
   // --- AI session indexing (Phase 4, opt-in / off by default) --------------

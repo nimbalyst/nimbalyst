@@ -6,7 +6,10 @@
  * repo with node_modules + multiple packages blows past the process fd limit
  * (EMFILE). That fd exhaustion also starves outbound sockets, so the OpenAI
  * query-embedding `fetch` fails and search silently degrades to sparse-only.
- * Scoping to the source bases keeps the watch set to a few small trees.
+ * Scoping to the source bases keeps the watch set to a few small trees. That
+ * scoping is now computed per root (see `computeWatchScopes`), so a source set
+ * with its own root is watched under that root rather than being silently
+ * resolved against the primary one.
  *
  * Debounces per-file and re-indexes (or drops) markdown files that belong to a
  * configured source set. After a batch settles it invokes `onSettled` so the
@@ -17,6 +20,7 @@ import path from 'node:path';
 import chokidar, { type FSWatcher } from 'chokidar';
 import fg from 'fast-glob';
 import type { EngineConfig, SourceSet } from '../types.js';
+import { rootForSet, type ResolvedRoot } from '../roots.js';
 import type { Indexer } from './indexer.js';
 
 const DEBOUNCE_MS = 400;
@@ -60,6 +64,41 @@ export function computeWatchScope(sources: SourceSet[]): {
   return { dirs, rootAnchoredGlobs };
 }
 
+/**
+ * Per-root watch scopes. Source sets are grouped by the root they index against
+ * before scoping, because the base-dir de-overlap above is only meaningful
+ * within a single root — `docs` under two different roots are two watch targets,
+ * not one, and the shorter-prefix check would otherwise collapse them.
+ *
+ * Root-anchored globs are handled differently per root, deliberately. On the
+ * PRIMARY root they stay file-enumerated: that root is a monorepo, and watching
+ * it recursively is the EMFILE bug in this file's header. A non-primary root is
+ * a purpose-scoped tree the caller declared precisely because it is small (the
+ * harness memory directory is ~90 files), so it is watched recursively — which
+ * is what lets a newly-added page index without a restart. A caller must not
+ * declare a huge tree as a source root.
+ */
+export function computeWatchScopes(
+  sources: SourceSet[],
+  roots: ResolvedRoot[]
+): Array<{ root: ResolvedRoot; dirs: string[]; rootAnchoredGlobs: string[] }> {
+  const byRoot = new Map<string, { root: ResolvedRoot; sets: SourceSet[] }>();
+  for (const set of sources) {
+    const root = rootForSet(roots, set);
+    const group = byRoot.get(root.dir) ?? { root, sets: [] };
+    group.sets.push(set);
+    byRoot.set(root.dir, group);
+  }
+  return Array.from(byRoot.values()).map(({ root, sets }) => {
+    const scope = computeWatchScope(sets);
+    if (root.id !== null && scope.rootAnchoredGlobs.length) {
+      // '' is the root itself; it subsumes every other base dir under it.
+      return { root, dirs: [''], rootAnchoredGlobs: [] };
+    }
+    return { root, ...scope };
+  });
+}
+
 export class IndexWatcher {
   private watcher: FSWatcher | null = null;
   private pending = new Map<string, 'upsert' | 'remove'>();
@@ -93,33 +132,35 @@ export class IndexWatcher {
    * what keeps the watch set tiny instead of the whole monorepo.
    */
   private resolveWatchTargets(): string[] {
-    const { dirs, rootAnchoredGlobs } = computeWatchScope(this.config.sources);
     const targets: string[] = [];
-    for (const d of dirs) {
-      const abs = path.join(this.config.root, d);
-      if (existsSync(abs)) targets.push(abs);
-    }
-    if (rootAnchoredGlobs.length) {
-      const files = fg.sync(rootAnchoredGlobs, {
-        cwd: this.config.root,
-        absolute: true,
-        dot: true,
-        onlyFiles: true,
-        followSymbolicLinks: false,
-        suppressErrors: true,
-        ignore: FG_IGNORE,
-      });
-      targets.push(...files);
+    for (const scope of computeWatchScopes(this.config.sources, this.indexer.sourceRoots())) {
+      for (const d of scope.dirs) {
+        const abs = path.join(scope.root.dir, d);
+        if (existsSync(abs)) targets.push(abs);
+      }
+      if (scope.rootAnchoredGlobs.length) {
+        const files = fg.sync(scope.rootAnchoredGlobs, {
+          cwd: scope.root.dir,
+          absolute: true,
+          dot: true,
+          onlyFiles: true,
+          followSymbolicLinks: false,
+          suppressErrors: true,
+          ignore: FG_IGNORE,
+        });
+        targets.push(...files);
+      }
     }
     return targets;
   }
 
   private queue(absPath: string, op: 'upsert' | 'remove'): void {
     if (!absPath.endsWith('.md')) return;
-    const sourceClass = this.indexer.classify(absPath);
-    if (!sourceClass) return;
-    const rel = path.relative(this.config.root, absPath).split(path.sep).join('/');
-    this.pending.set(rel, op);
+    // classify() also yields the canonical sourcePath — with more than one root
+    // the watcher can no longer derive it from config.root.
+    const hit = this.indexer.classify(absPath);
+    if (!hit) return;
+    this.pending.set(hit.sourcePath, op);
     if (this.timer) clearTimeout(this.timer);
     this.timer = setTimeout(() => void this.flush(), DEBOUNCE_MS);
   }
@@ -128,13 +169,13 @@ export class IndexWatcher {
     const batch = Array.from(this.pending.entries());
     this.pending.clear();
     this.timer = null;
-    for (const [rel, op] of batch) {
+    for (const [sourcePath, op] of batch) {
       try {
         if (op === 'remove') {
-          this.indexer.removeFile(rel);
+          this.indexer.removeFile(sourcePath);
         } else {
-          const sourceClass = this.indexer.classify(rel) ?? 'unknown';
-          await this.indexer.indexFile(rel, sourceClass);
+          const sourceClass = this.indexer.classify(sourcePath)?.sourceClass ?? 'unknown';
+          await this.indexer.indexFile(sourcePath, sourceClass);
         }
       } catch {
         // Best-effort; a failed file is retried on its next change event.

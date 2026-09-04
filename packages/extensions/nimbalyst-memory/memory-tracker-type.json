@@ -1,0 +1,316 @@
+{
+  "type": "memory",
+  "displayName": "Memory",
+  "displayNamePlural": "Memories",
+  "icon": "neurology",
+  "color": "#8b5cf6",
+  "modes": {
+    "inline": true,
+    "fullDocument": true
+  },
+  "idPrefix": "mem",
+  "idFormat": "ulid",
+  "fields": [
+    {
+      "name": "title",
+      "type": "string",
+      "required": true,
+      "displayInline": true
+    },
+    {
+      "name": "factId",
+      "type": "string",
+      "required": true,
+      "displayInline": false,
+      "readOnly": true,
+      "description": "Content-derived stable id and the replica sort key. Not the tracker item id."
+    },
+    {
+      "name": "memoryType",
+      "type": "select",
+      "required": true,
+      "default": "fact",
+      "displayInline": true,
+      "options": [
+        {
+          "value": "decision",
+          "label": "Decision",
+          "icon": "gavel"
+        },
+        {
+          "value": "preference",
+          "label": "Preference",
+          "icon": "tune"
+        },
+        {
+          "value": "instruction",
+          "label": "Instruction",
+          "icon": "assignment"
+        },
+        {
+          "value": "convention",
+          "label": "Convention",
+          "icon": "rule"
+        },
+        {
+          "value": "constraint",
+          "label": "Constraint",
+          "icon": "block"
+        },
+        {
+          "value": "error",
+          "label": "Error",
+          "icon": "bug_report"
+        },
+        {
+          "value": "fact",
+          "label": "Fact",
+          "icon": "info"
+        }
+      ],
+      "description": "A facet over the page, not a replacement for it."
+    },
+    {
+      "name": "scope",
+      "type": "select",
+      "required": true,
+      "default": "personal",
+      "displayInline": true,
+      "options": [
+        {
+          "value": "personal",
+          "label": "Personal",
+          "icon": "person"
+        },
+        {
+          "value": "project",
+          "label": "Project",
+          "icon": "folder"
+        },
+        {
+          "value": "team",
+          "label": "Team",
+          "icon": "group"
+        }
+      ],
+      "description": "Personal never reaches a shared repo or a team room."
+    },
+    {
+      "name": "status",
+      "type": "select",
+      "required": true,
+      "default": "candidate",
+      "displayInline": true,
+      "options": [
+        {
+          "value": "candidate",
+          "label": "Candidate",
+          "icon": "inbox",
+          "category": "backlog"
+        },
+        {
+          "value": "active",
+          "label": "Active",
+          "icon": "check_circle",
+          "category": "started"
+        },
+        {
+          "value": "superseded",
+          "label": "Superseded",
+          "icon": "history",
+          "category": "done"
+        },
+        {
+          "value": "archived",
+          "label": "Archived",
+          "icon": "archive",
+          "category": "cancelled"
+        }
+      ]
+    },
+    {
+      "name": "confidence",
+      "type": "number",
+      "required": false,
+      "default": 0.5,
+      "displayInline": true,
+      "description": "0-1. Distilled pages start below user-authored ones."
+    },
+    {
+      "name": "provenanceKind",
+      "type": "select",
+      "required": true,
+      "default": "user",
+      "displayInline": true,
+      "options": [
+        {
+          "value": "user",
+          "label": "User"
+        },
+        {
+          "value": "distilled",
+          "label": "Distilled"
+        },
+        {
+          "value": "promoted",
+          "label": "Promoted"
+        },
+        {
+          "value": "imported",
+          "label": "Imported"
+        }
+      ],
+      "description": "Team memory is ungoverned for the beta, so provenance display is the only detection mechanism for a bad shared page. Not decorative."
+    },
+    {
+      "name": "provenanceSession",
+      "type": "string",
+      "required": false,
+      "displayInline": false,
+      "description": "Session that produced the page, clickable through in the browser."
+    },
+    {
+      "name": "provenanceSource",
+      "type": "string",
+      "required": false,
+      "displayInline": false
+    },
+    {
+      "name": "validFrom",
+      "type": "datetime",
+      "required": false,
+      "displayInline": false,
+      "description": "When the claim started being true, not when it was written."
+    },
+    {
+      "name": "validTo",
+      "type": "datetime",
+      "required": false,
+      "displayInline": false,
+      "description": "Set once on supersede. Superseding narrows a window; it never erases."
+    },
+    {
+      "name": "expiresAt",
+      "type": "datetime",
+      "required": false,
+      "displayInline": false
+    },
+    {
+      "name": "supersedes",
+      "type": "relationship",
+      "required": false,
+      "displayInline": false,
+      "relationshipTypeKey": "supersedes",
+      "inverseRelationshipTypeKey": "superseded-by",
+      "inverseFieldId": "supersededBy",
+      "targetTrackerTypes": [
+        "memory"
+      ],
+      "multiValue": true,
+      "description": "Explicit retirement. Beats the validity window at read time."
+    },
+    {
+      "name": "supersededBy",
+      "type": "relationship",
+      "required": false,
+      "displayInline": true,
+      "relationshipTypeKey": "superseded-by",
+      "inverseRelationshipTypeKey": "supersedes",
+      "inverseFieldId": "supersedes",
+      "targetTrackerTypes": [
+        "memory"
+      ],
+      "multiValue": true
+    },
+    {
+      "name": "duplicates",
+      "type": "relationship",
+      "required": false,
+      "displayInline": false,
+      "relationshipTypeKey": "duplicates",
+      "inverseRelationshipTypeKey": "duplicates",
+      "inverseFieldId": "duplicates",
+      "targetTrackerTypes": [
+        "memory"
+      ],
+      "multiValue": true,
+      "description": "Ambiguous overlap awaiting a human decision."
+    },
+    {
+      "name": "redacted",
+      "type": "boolean",
+      "required": false,
+      "default": false,
+      "displayInline": false,
+      "description": "The write gate rewrote this body before storing it."
+    },
+    {
+      "name": "recallCount",
+      "type": "number",
+      "required": false,
+      "default": 0,
+      "displayInline": false,
+      "readOnly": true,
+      "description": "Volatile: database-only, never exported to the JSONL replica."
+    },
+    {
+      "name": "lastRecalledAt",
+      "type": "datetime",
+      "required": false,
+      "displayInline": false,
+      "readOnly": true,
+      "description": "Volatile: database-only, never exported to the JSONL replica."
+    },
+    {
+      "name": "tags",
+      "type": "array",
+      "itemType": "string",
+      "required": false,
+      "displayInline": false
+    },
+    {
+      "name": "created",
+      "type": "datetime",
+      "required": false,
+      "displayInline": false,
+      "readOnly": true
+    },
+    {
+      "name": "updated",
+      "type": "datetime",
+      "required": false,
+      "displayInline": false,
+      "readOnly": true
+    }
+  ],
+  "statusBarLayout": [
+    {
+      "row": [
+        {
+          "field": "status",
+          "width": 140
+        },
+        {
+          "field": "memoryType",
+          "width": 140
+        },
+        {
+          "field": "scope",
+          "width": 120
+        },
+        {
+          "field": "provenanceKind",
+          "width": 130
+        }
+      ]
+    }
+  ],
+  "inlineTemplate": "{icon} {title} {memoryType} {scope}",
+  "roles": {
+    "title": "title",
+    "workflowStatus": "status",
+    "tags": "tags"
+  },
+  "sharing": "personal",
+  "draftByDefault": false
+}

@@ -83,7 +83,7 @@ describe('Indexer', () => {
     expect(store.sourcePaths()).toEqual(['docs/current.md']);
     // classify (used by the watcher) also rejects excluded paths.
     expect(indexer.classify('docs/archive/old.md')).toBeNull();
-    expect(indexer.classify('docs/current.md')).toBe('docs');
+    expect(indexer.classify('docs/current.md')?.sourceClass).toBe('docs');
     store.close();
   });
 
@@ -101,6 +101,99 @@ describe('Indexer', () => {
     unlinkSync(gone, { force: true });
     await indexer.indexAll();
     expect(store.sourcePaths()).toEqual(['docs/keep.md']);
+    store.close();
+  });
+});
+
+/**
+ * A second root breaks the assumption that "relative to root" is a unique key.
+ * These cover the collision itself and the pruning that keys off it — a same-named
+ * file in two roots must not let one root's deletion evict the other's row.
+ */
+describe('Indexer with a second source root', () => {
+  function setupTwoRoots(): { root: string; second: string; config: EngineConfig } {
+    const { root, config } = setup();
+    const secondHome = mkdtempSync(path.join(tmpdir(), 'mem-idx-second-'));
+    roots.push(secondHome);
+    const second = path.join(secondHome, 'memory');
+    mkdirSync(second, { recursive: true });
+    config.sources = [
+      { sourceClass: 'docs', include: ['docs/**/*.md'] },
+      {
+        sourceClass: 'harness-memory',
+        include: ['**/*.md'],
+        root: { id: 'memory', path: second, personal: true },
+      },
+    ];
+    return { root, second, config };
+  }
+
+  it('keys a same-named file in each root distinctly, and reads each back', async () => {
+    const { root, second, config } = setupTwoRoots();
+    writeFileSync(path.join(root, 'docs/README.md'), '# Readme\nprimary copy');
+    writeFileSync(path.join(second, 'README.md'), '# Readme\nsecond-root copy');
+
+    const store = new SqliteStore(config.dbPath);
+    const indexer = new Indexer(config, store, new FakeEmbedder());
+    const result = await indexer.indexAll();
+    expect(result.files).toBe(2);
+    // Without the root prefix these two collide on the chunk primary key and one
+    // silently overwrites the other.
+    expect(store.sourcePaths().sort()).toEqual(['@memory/README.md', 'docs/README.md']);
+
+    const bySource = new Map(
+      store.sourcePaths().map((sp) => [sp, store.chunksForSource(sp).map((c) => c.text).join('')])
+    );
+    expect(bySource.get('docs/README.md')).toContain('primary copy');
+    expect(bySource.get('@memory/README.md')).toContain('second-root copy');
+
+    // refId is the openable identifier. A caller resolves a relative one against
+    // the workspace path, which cannot reach a second root — so those chunks
+    // carry an absolute path or the hit is findable but not openable.
+    expect(store.chunksForSource('docs/README.md')[0].refId).toBe('docs/README.md');
+    expect(store.chunksForSource('@memory/README.md')[0].refId).toBe(
+      path.join(second, 'README.md')
+    );
+    store.close();
+  });
+
+  it('attributes deletion pruning to the root the file was removed from', async () => {
+    const { root, second, config } = setupTwoRoots();
+    writeFileSync(path.join(root, 'docs/README.md'), '# Readme\nprimary copy');
+    const secondReadme = path.join(second, 'README.md');
+    writeFileSync(secondReadme, '# Readme\nsecond-root copy');
+
+    const store = new SqliteStore(config.dbPath);
+    const indexer = new Indexer(config, store, new FakeEmbedder());
+    await indexer.indexAll();
+
+    unlinkSync(secondReadme, { force: true });
+    await indexer.indexAll();
+    expect(store.sourcePaths()).toEqual(['docs/README.md']);
+    store.close();
+  });
+
+  it('classifies by root, so a glob on one root never claims the other root files', async () => {
+    const { root, second, config } = setupTwoRoots();
+    // 'docs/**/*.md' belongs to the primary root only.
+    mkdirSync(path.join(second, 'docs'), { recursive: true });
+    writeFileSync(path.join(second, 'docs/x.md'), '# X\nunder the second root');
+    writeFileSync(path.join(root, 'docs/x.md'), '# X\nunder the primary root');
+
+    const store = new SqliteStore(config.dbPath);
+    const indexer = new Indexer(config, store, new FakeEmbedder());
+
+    expect(indexer.classify(path.join(root, 'docs/x.md'))).toEqual({
+      sourceClass: 'docs',
+      sourcePath: 'docs/x.md',
+    });
+    // Matched by the second root's own '**/*.md', NOT by the primary 'docs' set.
+    expect(indexer.classify(path.join(second, 'docs/x.md'))).toEqual({
+      sourceClass: 'harness-memory',
+      sourcePath: '@memory/docs/x.md',
+    });
+    // Outside every root.
+    expect(indexer.classify(path.join(tmpdir(), 'nowhere-at-all', 'docs/x.md'))).toBeNull();
     store.close();
   });
 });
