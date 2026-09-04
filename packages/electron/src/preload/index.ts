@@ -2227,6 +2227,9 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // Switch a running claude-code-cli session's model via `/model` (NIM-806).
     setClaudeCliModel: (sessionId: string, model: string) =>
       ipcRenderer.invoke('claude-cli:set-model', { sessionId, model }),
+    // Retune a running claude-code-cli session's effort via `/effort`.
+    setClaudeCliEffort: (sessionId: string, effortLevel: string) =>
+      ipcRenderer.invoke('claude-cli:set-effort', { sessionId, effortLevel }),
     // Stop a claude-code-cli turn with escalation (NIM-814): Ctrl-C → Ctrl-C →
     // SIGINT, re-checking the PID turn state between steps.
     interruptClaudeCli: (sessionId: string) =>
