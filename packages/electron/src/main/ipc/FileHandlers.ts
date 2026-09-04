@@ -43,18 +43,9 @@ function getFileType(filePath: string): string {
     return typeMap[ext] || 'other';
 }
 
-// Helper function to get word count category
-function getWordCountCategory(content: string): 'small' | 'medium' | 'large' {
-    const wordCount = content.split(/\s+/).filter(word => word.length > 0).length;
-    if (wordCount < 500) return 'small';
-    if (wordCount < 2000) return 'medium';
-    return 'large';
-}
-
-// Helper function to check if content has frontmatter
-function hasFrontmatter(content: string): boolean {
-    return content.trimStart().startsWith('---');
-}
+// getWordCountCategory / hasFrontmatter lived here to build the `file_saved`
+// payload. Both went with that event -- they had no other caller, and the word
+// count in particular walked the whole document on every autosave.
 
 export function registerFileHandlers() {
     const analytics = AnalyticsService.getInstance();
@@ -285,13 +276,11 @@ export function registerFileHandlers() {
                 savingWindows.delete(windowId);
             }, AUTOSAVE_DELAY);
 
-            // Track successful file save
-            analytics.sendEvent('file_saved', {
-                saveType: saveSourceAnalytics.saveType,
-                fileType: getFileType(filePath),
-                hasFrontmatter: hasFrontmatter(content),
-                wordCount: getWordCountCategory(content)
-            });
+            // `file_saved` was removed here. It fired on every save including
+            // debounced autosave -- 650,472 events in 30 days, the second-largest
+            // event in the product -- and nothing consumed the count. Throttling
+            // it would only have produced an "active editing" proxy that also had
+            // no consumer. `file_save_failed` below is the signal worth keeping.
             saveFailureTelemetry.markSuccess(filePath);
 
             // Push file index update for .md files in sync-enabled projects

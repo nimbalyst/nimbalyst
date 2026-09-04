@@ -146,7 +146,7 @@ Follow these conventions for consistency:
 - Use **snake\_case** for event names: `file_opened`, `window_closed`, `ai_chat_started`
 - Use **noun\_verb** pattern: `file_opened`, `tab_switched`, `project_created`
 - Group related events with prefixes:
-  - `file_*`: File operations (`file_opened`, `file_saved`, `file_deleted`)
+  - `file_*`: File operations (`file_opened`, `file_created`, `file_deleted`)
   - `window_*`: Window management (`window_opened`, `window_closed`, `window_resized`)
   - `ai_*`: AI features (`ai_chat_started`, `ai_message_sent`, `ai_diff_applied`)
   - `project_*`: Project operations (`project_opened`, `project_created`)
@@ -226,8 +226,8 @@ analyticsService.sendEvent('file_opened', {
   sizeCategory: getSizeCategory(fileSize),    // 'small', 'medium', 'large'
 });
 
-// File saved
-analyticsService.sendEvent('file_saved', {
+// File created
+analyticsService.sendEvent('file_created', {
   fileType: 'markdown',
 });
 ```

@@ -5,6 +5,12 @@ import {safeHandle, safeOn} from "../utils/ipcRegistry";
 const analytics = AnalyticsService.getInstance();
 const featureUsage = FeatureUsageService.getInstance();
 
+/**
+ * Last version we reported `update_toast_shown` for, deduped across every
+ * renderer window for the process lifetime. See the handler below.
+ */
+let lastToastShownVersion: string | null = null;
+
 export function registerAnalyticsHandlers() {
   safeHandle("analytics:allowed", (): boolean => {
     return analytics.allowedToSendAnalytics();
@@ -61,7 +67,14 @@ export function registerAnalyticsHandlers() {
   // Track update toast actually displayed. Fired from the renderer after
   // suppression checks pass, so the count reflects real toast displays
   // rather than every electron-updater 'update-available' callback.
+  //
+  // Deduped here rather than in the renderer: `initUpdateListeners()` runs per
+  // window (App.tsx), and each renderer window is its own JS context, so a
+  // guard on that side -- closure or module scope -- is per-window and still
+  // multiplies by the number of open windows. Main is the only single owner.
   safeOn("analytics:update-toast-shown", (_event, data: { releaseChannel: string; newVersion: string }) => {
+    if (lastToastShownVersion === data.newVersion) return;
+    lastToastShownVersion = data.newVersion;
     analytics.sendEvent('update_toast_shown', {
       release_channel: data.releaseChannel,
       new_version: data.newVersion,

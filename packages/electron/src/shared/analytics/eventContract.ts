@@ -10,6 +10,14 @@
  * that is not in the schema throws, and a value that looks like a filesystem
  * path or an address throws, so a well-meaning `...spread` of some richer
  * object cannot quietly ship a username to PostHog.
+ *
+ * NOTE: satisfying this contract does NOT mean your event will be collected.
+ * PostHog project 234047 runs a server-side allow-list that drops any event
+ * whose name is not on it, before ingestion -- silently, with no error and no
+ * log. Adding an event means adding its name to `posthogIngestAllowList.ts`
+ * AND to the `Cost control allow-list` transformation in PostHog. See that
+ * file, and "A server-side allow-list drops unknown events" in
+ * docs/POSTHOG_EVENTS.md.
  */
 
 export const booleanRule = { type: 'boolean' } as const;

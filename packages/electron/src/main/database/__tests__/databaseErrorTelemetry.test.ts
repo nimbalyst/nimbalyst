@@ -237,6 +237,33 @@ describe('database error telemetry contract', () => {
     expect(limiter.admit(corrupt)).toBe(0);
   });
 
+  it('reports one failure category once even when it hits many tables', () => {
+    // The signature used to include tableName/operation/errorCode/sqlState, so
+    // a single wedged database reported once per table per statement kind and
+    // averaged 31 events per affected user. It is an aggregate health signal;
+    // the category is the part anyone charts.
+    let now = 0;
+    const limiter = new DatabaseErrorTelemetryLimiter(
+      DATABASE_ERROR_TELEMETRY_WINDOW_MS,
+      () => now,
+    );
+    const failureOn = (table: string) =>
+      buildDatabaseOperationErrorProperties({
+        backend: 'pglite',
+        error: new Error('current transaction is aborted'),
+        sql: `SELECT * FROM ${table}`,
+      });
+
+    expect(limiter.admit(failureOn('ai_sessions'))).toBe(0);
+    for (const table of ['documents', 'trackers', 'ai_agent_messages', 'worktrees']) {
+      expect(limiter.admit(failureOn(table))).toBeNull();
+    }
+
+    // Still quiet an hour later; the old 60s window would have re-reported 59 times.
+    now = 60 * 60 * 1000;
+    expect(limiter.admit(failureOn('ai_sessions'))).toBeNull();
+  });
+
   it('reads corruption as corruption rather than a full disk', () => {
     // SQLite's corruption error is literally "database disk image is
     // malformed", which a naive `disk` test mislabels as a full volume.

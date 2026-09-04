@@ -80,7 +80,17 @@ export interface DatabaseInitializationErrorProperties
   backend: DatabaseTelemetryBackend;
 }
 
-export const DATABASE_ERROR_TELEMETRY_WINDOW_MS = 60_000;
+/**
+ * One report per failure category per day, not per minute.
+ *
+ * The original 60s window was scoped to stop a wedged database emitting ~1,000
+ * events a minute, and it did. But paired with the high-cardinality signature
+ * below it still produced 25,901 events across 826 users in 30 days -- about 31
+ * each, for what is meant to be an aggregate health signal. A day-long window
+ * keeps the first occurrence (which is the one that tells you anything) and
+ * still reports the suppressed count if the problem outlives the window.
+ */
+export const DATABASE_ERROR_TELEMETRY_WINDOW_MS = 24 * 60 * 60 * 1000;
 
 /**
  * PostHog is an aggregate signal, not an error log.
@@ -106,14 +116,13 @@ export class DatabaseErrorTelemetryLimiter {
    * or `null` when this occurrence should itself be suppressed.
    */
   admit(properties: DatabaseOperationErrorProperties): number | null {
-    const signature = [
-      properties.backend,
-      properties.operation,
-      properties.errorCategory,
-      properties.errorCode,
-      properties.sqlState,
-      properties.tableName,
-    ].join(':');
+    // Deliberately coarse. Including operation/errorCode/sqlState/tableName made
+    // the signature high-cardinality enough that one underlying problem reported
+    // once per affected table per statement kind -- the same failure counted
+    // dozens of times. The category is what anyone actually charts; the exact
+    // code, sqlState and table are still on the event payload and in the local
+    // log for whoever opens one.
+    const signature = [properties.backend, properties.errorCategory].join(':');
 
     const timestamp = this.now();
     const entry = this.seen.get(signature);

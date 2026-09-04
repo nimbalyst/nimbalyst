@@ -249,6 +249,12 @@ const posthogClient = posthog.init(
     capture_heatmaps: false,
     disable_session_recording: true,
     capture_exceptions: false,
+    // posthog-js defaults these ON (`history_change` / `if_capture_pageview`),
+    // and not setting `defaults` leaves them on. In an Electron shell there is
+    // no meaningful page to view or leave -- a "pageview" is a window opening --
+    // so they produced 241,643 events in 30 days that nothing consumed.
+    capture_pageview: false,
+    capture_pageleave: false,
     session_idle_timeout_seconds: 30 * 60, // 30 minutes
     loaded: (posthog) => {
       console.log(`[RENDERER] PostHog loaded (analytics ID: ${posthog.get_distinct_id()}, session: ${posthog.get_session_id()}, official build: ${isOfficialBuild})`);
@@ -259,11 +265,11 @@ const posthogClient = posthog.init(
       // same values.
       posthog.register({ nimbalyst_version: nimbalystVersion, ...(releaseAttribution ?? {}) });
 
-      // Mark users as dev users if they've ever used a non-official build
-      // This property persists across all future events for this user
-      if (!isOfficialBuild) {
-        posthog.people.set_once({ is_dev_user: true });
-      }
+      // `is_dev_user` is NOT set with a standalone `people.set_once()` here.
+      // posthog-js turns that into a `$set` capture, and this callback runs on
+      // every renderer window load -- 669,977 events in 30 days for a flag that
+      // never changes after the first one. It rides along on outgoing events in
+      // `before_send` below instead, which costs nothing.
     },
     // Single choke point for every renderer capture. Consulting the consent
     // gate here (rather than relying only on opt_out_capturing) means no
@@ -272,6 +278,15 @@ const posthogClient = posthog.init(
     before_send: (event) => {
       if (process.env.PLAYWRIGHT_TEST) return null;
       if (!isAnalyticsConsentGranted()) return null;
+      // Mark users as dev users if they've ever used a non-official build.
+      // Attached to an event that was going to be sent anyway rather than
+      // captured on its own, mirroring AnalyticsService.sendEvent in main.
+      if (!isOfficialBuild && event) {
+        event.properties = {
+          ...event.properties,
+          $set_once: { is_dev_user: true, ...event.properties?.$set_once },
+        };
+      }
       return event;
     },
     debug: isDevInstallation

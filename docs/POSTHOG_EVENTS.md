@@ -71,7 +71,7 @@ The renderer resolves both from the main process rather than re-deriving them fr
 | Event Name | File(s) | Trigger | Properties | First Added (Public) | Significant Changes |
 | --- | --- | --- | --- | --- | --- |
 | `file_opened` | `FileHandlers.ts:85`<br/>`WorkspaceHandlers.ts:804` | User opens file via dialog or workspace tree | `source` (dialog/workspace)<br/>`fileType`<br/>`hasWorkspace` | v0.45.25 (2025-11-14) |  |
-| `file_saved` | `FileHandlers.ts` | File save operation succeeds | `saveType` (manual/auto)<br/>`fileType`<br/>`hasFrontmatter`<br/>`wordCount` | v0.45.25 (2025-11-14) | (pending release): Propagated the real autosave/manual source through file-save IPC |
+| `file_saved` | REMOVED | ~~File save operation succeeds~~ Removed (pending release): fired on every save including debounced autosave (650,472 events in 30 days, ~177 per user) and nothing consumed the count. `file_save_failed` remains. | — | v0.45.25 (2025-11-14) | (pending release): Removed<br/>(pending release): Propagated the real autosave/manual source through file-save IPC |
 | `file_save_failed` | `FileHandlers.ts` | File save operation fails; a continuous failure is emitted once per file/source/error-code incident until a successful save rearms it | `errorType` (permission/not_found/disk_full/is_directory/resource_limit/io/invalid_path/unknown)<br/>`errorCode` (allowlisted stable Node filesystem code or UNKNOWN)<br/>`fileType`<br/>`isAutoSave` | v0.45.25 (2025-11-14) | (pending release): Classified failures from stable Node error codes, propagated autosave source, and deduplicated continuous failures |
 | `file_created` | `FileHandlers.ts:399`<br/>`WorkspaceHandlers.ts:154` | User creates new file | `creationType` (new_file_menu/ai_tool)<br/>`fileType` (markdown/mockup/text/other) | v0.45.25 (2025-11-14) | v0.47.2 (2025-12-10): Added mockup fileType |
 | `file_renamed` | `WorkspaceHandlers.ts:592` | User renames file in workspace | None | v0.45.25 (2025-11-14) |  |
@@ -546,18 +546,52 @@ All events MUST follow these privacy rules:
 - **Official builds**: Created by GitHub release workflow with `OFFICIAL_BUILD=true`
 - **Filtering**: Use `WHERE is_dev_user != true` in PostHog to exclude dev users
 
+## A server-side allow-list drops unknown events
+
+**Capturing an event in code is not enough to get data. Read this before adding one.**
+
+Since 2026-09-04, PostHog project 234047 runs an ingestion transformation named **`Cost control allow-list`** (hog function `01a06d5f-4e7f-0000-e72c-e157df4146b8`, execution order 1) that **drops every event whose name is not on an explicit allow-list, before ingestion**. A new `sendEvent('my_event')` will be constructed, serialized, sent, and then silently discarded at the far end. Nothing errors, nothing logs, and the event simply never appears in PostHog.
+
+It exists because the org was ingesting ~6.5M events/month against a 1M/month free tier. The allow-list is the reason the bill is zero, so it is not going away — but it means the source of truth for "will this event arrive" lives in PostHog, not in this repo.
+
+**When adding an event you must also add its name to the allow-list**, at Data pipeline → Transformations → `Cost control allow-list` in project 234047. The repo-side mirror is `packages/electron/src/shared/analytics/posthogIngestAllowList.ts`; keep the two in sync and run `npm run check:analytics-allowlist` to verify.
+
+Two further behaviours worth knowing:
+
+- **High-volume events are sampled onto a 12.5% distinct-id panel**, not dropped. The panel is `sha256Hex(distinct_id)` first hex character in `['0','1']`, so the *same* users are kept across every sampled event and per-user rates stay exact — but absolute totals must be multiplied by 8. See `SAMPLED_EVENTS` in the mirror file for the current list.
+- **Transformations run before person resolution**, so they cannot read person properties such as `is_dev_user`. Any future filter on dev traffic has to put the flag on the event payload itself.
+
+If an event you expected is missing, check the transformation before you debug the client.
+
+### `update_toast_shown` is currently unreachable in production
+
+Verified 2026-09-04. The renderer only emits it from the `update-toast:show-available` handler, and the sole sender of that channel is inside the `NODE_ENV === 'test' || PLAYWRIGHT === '1'` block at the bottom of `autoUpdater.ts`. In production the "Update Available" toast was deliberately removed (per maintainer direction on #327, `autoDownload = true` means only the "Ready to install" toast is shown), and nothing in the renderer listens to the production `update-available` broadcast at all.
+
+Two consequences:
+
+- The 201,350 events measured in the 30 days to 2026-09-04 came from **older shipped builds**, where the event fired from `autoUpdater.ts` in main on every hourly `update-available` callback. The move to the renderer is still marked "(pending release)" below. Once it ships, this event goes to zero.
+- The toast users *do* see (`update-toast:show-ready` → `handleUpdateReady`) has **no instrumentation**, so `update_toast_action` currently has no denominator. If a shown/acted conversion rate is wanted, that is where the event needs to move — and it would need adding to the ingestion allow-list, since `update_toast_shown` is currently in `INTENTIONALLY_DROPPED`.
+
+The per-window duplication has been fixed regardless: dedup now lives in `AnalyticsHandlers.ts` (main), because `initUpdateListeners()` runs once per window and each renderer window is a separate JS context, so no renderer-side guard can dedup across windows.
+
+### Accepted cost: the hourly updater re-hash
+
+`update_download_completed` fires once per `update-downloaded` event, and `electron-updater` re-emits that from cache on every hourly poll while an update is downloaded but not yet installed. The event is now deduped per version, but the underlying poll still calls `hashFile()` on the cached installer each hour (`DownloadedUpdateHelper.js`), a full sha512 read of a ~150–250MB file. This is a **known and accepted cost** — skipping the poll would stop the app noticing a newer version superseding the pending one until restart. Do not re-file it as a bug.
+
 ## Adding New Events
 
 When adding new events:
 
-1. **Choose the right context**: Main process (AnalyticsService) or renderer (usePostHog)
-2. **Follow naming conventions**: Use `snake_case`, `noun_verb` pattern
-3. **Use categorical properties**: Bucket values instead of exact numbers
-4. **Update this document**: Add the event to the appropriate table with version columns:
+1. **Add the event name to the server-side allow-list** — see the section above. Without this the event is silently dropped and you will collect nothing.
+2. **Choose the right context**: Main process (AnalyticsService) or renderer (usePostHog)
+3. **Follow naming conventions**: Use `snake_case`, `noun_verb` pattern
+4. **Use categorical properties**: Bucket values instead of exact numbers
+5. **Budget the volume**: a single user should not emit more than a few hundred events in a day across *all* events. If your event can fire on autosave, a poll, a render, or a websocket callback, throttle it through `AnalyticsEmissionThrottle` (`packages/electron/src/shared/analytics/analyticsThrottle.ts`) before shipping it.
+6. **Update this document**: Add the event to the appropriate table with version columns:
   - Set "First Added (Public)" to `(pending release as of <commit-hash>)` until publicly released
   - Leave "Significant Changes" empty for new events
-5. **Document in code**: Add comment explaining what the event tracks
-6. **When modifying events**: Add entry to "Significant Changes" column (see Version Tracking section)
+7. **Document in code**: Add comment explaining what the event tracks
+8. **When modifying events**: Add entry to "Significant Changes" column (see Version Tracking section)
 
 ## Reference Documentation
 

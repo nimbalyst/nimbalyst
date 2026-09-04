@@ -82,6 +82,66 @@ export function classifyUpdateError(error: Error): string {
 }
 
 /**
+ * Dedup state for the two update analytics events that are driven by the hourly
+ * poll rather than by anything the user did.
+ *
+ * Kept as a plain value with pure transitions so the emission decision can be
+ * unit-tested without an Electron app global or a fake clock -- the same reason
+ * `classifyUpdateError` lives in this file. See
+ * `__tests__/autoUpdater.analyticsDedup.test.ts`.
+ */
+export interface UpdateAnalyticsState {
+  /** Version whose `update-downloaded` we have already reported. */
+  readonly lastDownloadedVersion: string | null;
+  /** `${stage}:${errorType}` we have already reported. */
+  readonly lastErrorKey: string | null;
+}
+
+export const EMPTY_UPDATE_ANALYTICS_STATE: UpdateAnalyticsState = {
+  lastDownloadedVersion: null,
+  lastErrorKey: null,
+};
+
+export interface EmitPlan {
+  readonly emit: boolean;
+  readonly next: UpdateAnalyticsState;
+}
+
+/**
+ * Whether to report `update_download_completed` for `version`.
+ *
+ * electron-updater caches the installer and re-emits `update-downloaded` from
+ * cache on every poll once a download is pending (`validateDownloadedPath`
+ * short-circuits to `done(false)` in AppUpdater). With an hourly poll that is
+ * one event per hour of uptime for as long as the user postpones the restart,
+ * which is where 474,881 events across 5,376 users came from. Report the first
+ * completion per version and stay quiet until a newer version supersedes it.
+ */
+export function planDownloadCompletedEmit(state: UpdateAnalyticsState, version: string): EmitPlan {
+  if (state.lastDownloadedVersion === version) return { emit: false, next: state };
+  return { emit: true, next: { ...state, lastDownloadedVersion: version } };
+}
+
+/**
+ * Whether to report `update_error` for this failure.
+ *
+ * Deliberately once per (stage, errorType) for the whole process lifetime. The
+ * previous guard cleared its key on every *successful* check, so the common
+ * real-world pattern -- a network that flaps between polls -- re-armed it every
+ * hour and produced 182,624 events. We want to know that a user hit an error
+ * class at all, not how many times the poll retried it.
+ */
+export function planUpdateErrorEmit(
+  state: UpdateAnalyticsState,
+  stage: string,
+  errorType: string,
+): EmitPlan {
+  const key = `${stage}:${errorType}`;
+  if (state.lastErrorKey === key) return { emit: false, next: state };
+  return { emit: true, next: { ...state, lastErrorKey: key } };
+}
+
+/**
  * Antivirus on Windows often holds a transient handle on the freshly-downloaded
  * installer, causing electron-updater's temp -> final rename to fail with EPERM
  * (occasionally EBUSY). Detect those errors so the caller can retry once.
