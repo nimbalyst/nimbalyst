@@ -13,6 +13,7 @@ export * from "./comments.js";
 export * from "./structuredInput.js";
 export * from "./feedbackRequest.js";
 export * from "./feedbackRequestRoom.js";
+export * from "./decisionBlock.js";
 export * from "./conversation.js";
 export * from "./conversationRoom.js";
 export * from "./teamInbox.js";
