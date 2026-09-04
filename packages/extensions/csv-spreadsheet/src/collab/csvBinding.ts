@@ -64,6 +64,10 @@ export class CsvBinding {
   /** Last CSV content pushed by us OR last received from a remote update. */
   private lastSyncedContent: string;
   private syncTimer: ReturnType<typeof setTimeout> | null = null;
+  /** One serialized drain for every immediate, debounced, and host flush request. */
+  private syncInFlight: Promise<void> | null = null;
+  /** Set by a caller that arrived while the current grid serialization was running. */
+  private syncRequested = false;
   private destroyed = false;
 
   constructor(
@@ -138,8 +142,28 @@ export class CsvBinding {
    * Immediate sync. Used at unmount time so an unsynced edit doesn't get
    * dropped on close. Also called by `scheduleSync` after the debounce.
    */
-  async syncNow(): Promise<void> {
-    if (this.destroyed) return;
+  syncNow(): Promise<void> {
+    if (this.destroyed) return Promise.resolve();
+    this.syncRequested = true;
+    if (this.syncInFlight) return this.syncInFlight;
+
+    // RevoGrid serialization is asynchronous. Two cell commits can therefore
+    // finish out of order: without one drain, the slower first snapshot diffs
+    // against and overwrites the newer second snapshot in Y.Text. Coalesce
+    // callers behind the active pass, then serialize the current grid again so
+    // every edit that arrived during that pass is represented by the last pass.
+    this.syncInFlight = (async () => {
+      while (this.syncRequested) {
+        this.syncRequested = false;
+        await this.syncOnce();
+      }
+    })().finally(() => {
+      this.syncInFlight = null;
+    });
+    return this.syncInFlight;
+  }
+
+  private async syncOnce(): Promise<void> {
     let current: string;
     try {
       current = await this.opts.getCurrentCsv();

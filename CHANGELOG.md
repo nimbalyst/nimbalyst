@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 <!-- Bug fixes go here -->
+- Rapid edits to a shared CSV spreadsheet in the web console no longer let an older asynchronous save overwrite the latest cell value.
 - SQLite migration no longer times out while copying large document histories (#1452).
 - The effort selector offered reasoning levels the selected Codex model does not accept; choosing Max on those models ran at xHigh without saying so.
 - A tool call to an extension that stopped responding waited forever instead of failing, leaving the agent stuck with nothing in the logs.

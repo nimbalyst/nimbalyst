@@ -81,3 +81,46 @@ describe('CsvBinding teardown', () => {
     yDoc.destroy();
   });
 });
+describe('CsvBinding local sync ordering', () => {
+  it('cannot let a slower earlier serialization overwrite a newer cell edit', async () => {
+    const yDoc = new Y.Doc();
+    const yText = getYCsv(yDoc);
+    const initial = 'Name,Count\nAlpha,1\n';
+    const firstEdit = 'Name,Count\nAlpha,2\n';
+    const secondEdit = 'Name,Count\nAlpha,3\n';
+    yText.insert(0, initial);
+
+    let current = firstEdit;
+    let releaseFirstSerialization: () => void = () => {};
+    const firstSerialization = new Promise<void>((resolve) => {
+      releaseFirstSerialization = resolve;
+    });
+    let serializationCount = 0;
+    const binding = new CsvBinding(yDoc, initial, {
+      getCurrentCsv: async () => {
+        serializationCount += 1;
+        const snapshot = current;
+        if (serializationCount === 1) await firstSerialization;
+        return snapshot;
+      },
+      onRemoteContent: () => {},
+    });
+
+    const firstSync = binding.syncNow();
+    await Promise.resolve();
+    current = secondEdit;
+    const secondSync = binding.syncNow();
+
+    // A second serializer here can resolve first and then be overwritten by the
+    // stale first snapshot. One in-flight drain must coalesce this request and
+    // read the current grid again after the first serializer finishes.
+    expect(serializationCount).toBe(1);
+    releaseFirstSerialization();
+    await Promise.all([firstSync, secondSync]);
+
+    expect(serializationCount).toBe(2);
+    expect(yText.toString()).toBe(secondEdit);
+    binding.destroy();
+    yDoc.destroy();
+  });
+});

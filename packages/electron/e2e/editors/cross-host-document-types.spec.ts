@@ -443,6 +443,29 @@ async function waitForContent(
   return type.readContent(page);
 }
 
+interface BrowserCollabCheckpoint {
+  containsMarker: boolean;
+  contentHash: string;
+  contentLength: number;
+  mountGeneration: number;
+}
+
+async function browserCollabCheckpoint(page: Page, marker: string): Promise<BrowserCollabCheckpoint> {
+  return page.evaluate((expectedMarker) => {
+    const harness = (window as any).__collabDocsHarness;
+    if (!harness) throw new Error('The web console collaboration checkpoint is unavailable');
+    return harness.checkpoint(expectedMarker);
+  }, marker);
+}
+
+async function flushBrowserCollab(page: Page): Promise<{ status: string }> {
+  return page.evaluate(() => {
+    const harness = (window as any).__collabDocsHarness;
+    if (!harness) throw new Error('The web console collaboration checkpoint is unavailable');
+    return harness.flush();
+  });
+}
+
 const crossHostTypes: CrossHostTypeDescriptor[] = [
   {
     documentType: 'csv',
@@ -550,15 +573,24 @@ let harness: TwoClientCollabHarness;
 let webConsole: WebConsoleClient;
 let teamProjectId: string;
 
-test.beforeAll(async ({}, testInfo) => {
+test.beforeEach(async ({}, testInfo) => {
   testInfo.setTimeout(300_000);
   harness = new TwoClientCollabHarness({
     clients: ['A'],
-    files: crossHostTypes.map((type) => ({
-      relativePath: `cross-host-certification${type.suffix}`,
-      content: type.seedContent,
-      client: 'A' as const,
-    })),
+    files: [
+      ...crossHostTypes.map((type) => ({
+        relativePath: `cross-host-certification${type.suffix}`,
+        content: type.seedContent,
+        client: 'A' as const,
+      })),
+      ...crossHostTypes
+        .filter((type) => type.documentType === 'csv')
+        .map((type) => ({
+          relativePath: 'browser-only-durability.csv',
+          content: type.seedContent,
+          client: 'A' as const,
+        })),
+    ],
   });
   await harness.start();
   // The browser client runs the real project-access gate, so it needs an org
@@ -572,13 +604,16 @@ test.beforeAll(async ({}, testInfo) => {
   await webConsole.start();
 });
 
-test.afterAll(async () => {
+test.afterEach(async ({}, testInfo) => {
+  testInfo.setTimeout(testInfo.timeout + 60_000);
   await webConsole?.stop();
   await harness?.stop();
 });
 
-async function shareFromDesktop(type: CrossHostTypeDescriptor): Promise<string> {
-  const sourceName = `cross-host-certification${type.suffix}`;
+async function shareFromDesktop(
+  type: CrossHostTypeDescriptor,
+  sourceName = `cross-host-certification${type.suffix}`,
+): Promise<string> {
   const page = harness.clientA.page;
   await page.getByTestId('files-mode-button').click();
   // `openFileFromTree` goes straight to the workspace select handler, so on a
@@ -615,6 +650,101 @@ async function shareFromDesktop(type: CrossHostTypeDescriptor): Promise<string> 
   if (!documentId) throw new Error(`Shared tab exposed no collab URI: ${uri ?? '<none>'}`);
   return documentId;
 }
+
+test('a browser-only CSV edit survives remount boundaries and a delayed desktop join', async () => {
+  test.setTimeout(300_000);
+  const type = crossHostTypes.find((candidate) => candidate.documentType === 'csv');
+  test.skip(!type, 'Run only when CSV is included in the cross-host type filter');
+
+  const documentId = await shareFromDesktop(type!, 'browser-only-durability.csv');
+  // The desktop created the room because browser-side CSV creation is not a
+  // product capability. It must be gone before the browser edits: hiding the
+  // tab or switching modes would leave its document provider connected and
+  // would fail to exercise the production incident this test exists for.
+  await harness.closeClient('A');
+
+  const browser = await webConsole.openPage({
+    serverUrl: harness.serverUrl,
+    orgId: harness.orgId,
+    teamProjectId,
+    memberId: BROWSER_MEMBER_ID,
+    displayName: BROWSER_DISPLAY_NAME,
+    documentId,
+  });
+  await expect(browser.locator(type!.editorSelector)).toBeVisible({
+    timeout: 60_000,
+  });
+  await expect(browser.locator('.collab-editor-surface')).toHaveAttribute('data-connection-state', 'live', {
+    timeout: 30_000,
+  });
+  await waitForContent(type!, browser, type!.seedMarkers);
+  const initialCheckpoint = await browserCollabCheckpoint(browser, 'Seeded bravo row');
+
+  const mountToken = await visibleGrid(browser).evaluate((grid) => {
+    const token = crypto.randomUUID();
+    grid.setAttribute('data-e2e-mount-token', token);
+    return token;
+  });
+  const firstMarker = `Browser first ${harness.runId.slice(-8)}`;
+  const marker = `Browser latest ${harness.runId.slice(-8)}`;
+  await type!.applyEdit(browser, 'browser', firstMarker);
+  await editCell(browser, firstMarker, marker);
+  const persistedMarkers = [...type!.seedMarkers.filter((seed) => seed !== 'Seeded bravo row'), marker];
+
+  // One edit touches the document index and the CSV binding also polls every
+  // second. Keep checking through both delayed paths: a single immediate read
+  // proves only that RevoGrid accepted the keystroke, not that the live mount
+  // or its Y.Text retained it.
+  for (let check = 0; check < 6; check += 1) {
+    await browser.waitForTimeout(1_000);
+    expect(await type!.readContent(browser)).toContain(marker);
+    await expect(visibleGrid(browser)).toHaveAttribute('data-e2e-mount-token', mountToken);
+  }
+  const browserCheckpoint = await browserCollabCheckpoint(browser, marker);
+  expect(browserCheckpoint).toMatchObject({
+    containsMarker: true,
+    mountGeneration: initialCheckpoint.mountGeneration,
+  });
+  expect(browserCheckpoint.contentLength).toBeGreaterThan(0);
+  expect(browserCheckpoint.contentHash).toMatch(/^[0-9a-f]{8}$/);
+  await expect(flushBrowserCollab(browser)).resolves.toMatchObject({
+    status: 'acknowledged',
+  });
+
+  // Closing the only client makes the room, rather than a peer's in-memory
+  // Y.Doc, the sole source for every assertion after this point.
+  await browser.close();
+  const freshBrowser = await webConsole.openPage({
+    serverUrl: harness.serverUrl,
+    orgId: harness.orgId,
+    teamProjectId,
+    memberId: BROWSER_MEMBER_ID,
+    displayName: BROWSER_DISPLAY_NAME,
+    documentId,
+  });
+  await expect(freshBrowser.locator(type!.editorSelector)).toBeVisible({
+    timeout: 60_000,
+  });
+  await expect(freshBrowser.locator('.collab-editor-surface')).toHaveAttribute('data-connection-state', 'live', {
+    timeout: 30_000,
+  });
+  await waitForContent(type!, freshBrowser, persistedMarkers);
+  await freshBrowser.close();
+
+  await harness.restartClient('A');
+  const desktop = await harness.openSharedMode('A');
+  const row = desktop
+    .getByTestId('collab-sidebar')
+    .locator('.file-tree-file')
+    .filter({ hasText: 'browser-only-durability.csv' });
+  await expect(row).toBeVisible({ timeout: 30_000 });
+  await row.click();
+  await expect(desktop.locator(type!.editorSelector).filter({ visible: true })).toBeVisible({
+    timeout: 20_000,
+  });
+  await desktop.locator('.collab-hydration-overlay').waitFor({ state: 'hidden', timeout: 20_000 });
+  await waitForContent(type!, desktop, persistedMarkers);
+});
 
 test('extension editors converge across an Electron and a browser host', async () => {
   test.setTimeout(420_000 * crossHostTypes.length);
@@ -745,13 +875,21 @@ test('extension editors converge across an Electron and a browser host', async (
         memberId: BROWSER_MEMBER_ID,
         displayName: BROWSER_DISPLAY_NAME,
       });
-      await listPage.getByTitle('New document').click();
-      await expect(listPage.getByRole('menuitem', { name: /Markdown/ })).toBeVisible({
-        timeout: 15_000,
-      });
-      await expect(
-        listPage.getByRole('menuitem', { name: new RegExp(type.displayName) }),
-      ).toHaveCount(0);
+      await expect(listPage.locator('.browser-collab-docs-shell')).toBeVisible({ timeout: 15_000 });
+      const createControl = listPage.getByTitle('New document');
+      if (await createControl.count()) {
+        await createControl.click();
+        await expect(listPage.getByRole('menuitem', { name: /Markdown/ })).toBeVisible({
+          timeout: 15_000,
+        });
+        await expect(
+          listPage.getByRole('menuitem', { name: new RegExp(type.displayName) }),
+        ).toHaveCount(0);
+      } else {
+        // The current console exposes no browser-side document creation at all,
+        // which is also a truthful implementation of this extension's gap.
+        await expect(createControl).toHaveCount(0);
+      }
       await listPage.close();
 
       // ---- 3 (asserted). Presence must cross in BOTH directions, carrying
@@ -768,6 +906,7 @@ test('extension editors converge across an Electron and a browser host', async (
         expect(browserSeen?.labels).toEqual([DESKTOP_DISPLAY_NAME]);
         expect(desktopSeen?.labels).toEqual([BROWSER_DISPLAY_NAME]);
       }
+      await browser.close();
     });
   }
 });

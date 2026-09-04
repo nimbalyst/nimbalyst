@@ -529,6 +529,18 @@ export class TwoClientCollabHarness {
       name: this.orgId,
       createdBy: this.ownerUserId,
     });
+    // TeamRoom's membership policy now requires the authenticated creator to
+    // install itself as the initial owner before it may add another member or
+    // grant project access. `set-metadata` records who created the team but does
+    // not create that roster row. Without this bootstrap the cross-host harness
+    // fails in setup with "Only admins can perform this action" and never opens
+    // a document.
+    await this.postInternal("add-member", {
+      userId: this.ownerUserId,
+      role: "owner",
+      email: `${this.ownerUserId}@example.test`,
+      actorUserId: this.ownerUserId,
+    });
     await this.postInternal("set-key-custody-mode", {
       mode: "server-managed",
       actorUserId: this.ownerUserId,
