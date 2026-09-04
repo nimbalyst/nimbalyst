@@ -1,0 +1,225 @@
+---
+title: Extension Ideas
+---
+
+# Extension Ideas
+> Brainstorming extensions for the Nimbalyst marketplace. Green = Tier 1 (build ASAP), Blue = Tier 2 (build soon), Purple = Tier 3 (differentiation).
+
+## Diagrams & Visual Editing {color: orange}
+> Leverage Nimbalyst's bidirectional custom editors -- the single biggest differentiator vs VSCode/Obsidian.
+
+### Mermaid WYSIWYG Editor {color: green, tags: tier-1, priority}
+> Visual drag-and-drop node editing, not just preview. AI generates mermaid from descriptions. VSCode Mermaid Preview: 2M+.
+### Excalidraw {status: in-progress, tags: exists}
+> Exists somewhat, but not AI integrated yet.
+### Flowchart Builder {color: blue}
+> Drag-and-drop with smart connectors. Draw.io: 3M VSCode.
+### PlantUML Editor
+> Rich UML canvas with bidirectional code/visual editing. VSCode PlantUML: 1.5M.
+### SVG Editor
+> Visual SVG path editor with node manipulation.
+### Slide Deck Presenter {color: blue, tags: tier-2}
+> Markdown-to-reveal.js presentations with speaker notes.
+### Timeline / Gantt Editor
+### ASCII Art / Box Drawing
+### Wireframe Kit
+> Lighter-weight MockupLM focused on wireframing speed.
+### Org Chart / Hierarchy Visualizer
+### Network Topology Diagrammer
+> AI generates from Terraform/CloudFormation.
+### D3 Chart Designer
+### Map Viewer
+> Geographic map with markers. Obsidian Map View: 310K.
+
+## Data & Spreadsheets {color: orange}
+
+### JSON/YAML Visual Editor {color: blue, tags: tier-2}
+> Tree-view and form-based editing with schema validation.
+### Excel/XLSX Editor
+> Full spreadsheet editing with formula support. VSCode Excel Viewer: 5M.
+### Database Schema Visualizer
+> ERD from Prisma/Drizzle schemas or live DB connections.
+### Datamodels {status: done, tags: exists}
+> Exists as a core plugin.
+### SQL Notebook
+> Jupyter-style notebooks for SQL with inline results and charts.
+### Parquet/Arrow Viewer
+### GraphQL Explorer
+### Regex Tester
+### Log Viewer
+> Structured log viewing with filtering and pattern detection.
+
+## Developer Tools {color: orange}
+
+### HTTP Client {color: green, tags: tier-1, priority}
+> .http file-based requests, git-committable. Thunder Client: 8M installs.
+### Docker Compose Visualizer {color: blue, tags: tier-2}
+> Visual diagram of services/networks/volumes. VSCode Docker: 46M.
+### Playwright Manager {tags: exists-idea}
+### Error Lens
+> Inline error/warning display. VSCode: 10M.
+### OpenAPI / Swagger Editor
+### Terraform Visualizer
+> VSCode Terraform: 5M.
+### CI/CD Pipeline Editor
+> Visual editor for GitHub Actions/CircleCI.
+### Dependency Graph
+### Environment Manager
+> Visual .env editor with secret masking.
+### Cron Expression Builder
+### Changelog Generator
+### Monorepo Navigator
+### Port Scanner / Service Monitor
+### Snippet Manager
+### GitHub Integration
+> PR management, Actions status, review queue.
+### Xcode Project Helper
+
+## Knowledge Management {color: orange}
+> Core Obsidian territory -- extensions here attract their user base.
+
+### Wiki Links + Backlinks {color: green, tags: tier-1, priority}
+> Obsidian's core draw, millions of users. [[wiki-style]] linking with backlink panel.
+### Graph View
+> Interactive force-directed graph of document links. Obsidian core feature.
+### Dataview / Query Engine
+> Query workspace files by frontmatter, tags, dates. Obsidian Dataview: 3.8M.
+### Daily Notes / Calendar {color: blue, tags: tier-2}
+> Calendar navigation, templates, periodic reviews. Obsidian Calendar: 2.4M.
+### Tag Manager
+> Bulk rename, merge, organize tags. Obsidian Tag Wrangler: 907K.
+### Omnisearch
+> Full-text search across all file types including PDFs/images via OCR. 1.3M.
+### Readwise / Highlights Sync
+### Zettelkasten System
+### Bookmarks / Favorites
+> VSCode Bookmarks: 4M.
+### Mindmap / Brainstormer {status: done, tags: exists}
+
+## AI-Enhanced Tools {color: orange}
+> Deep AI integration is a core Nimbalyst strength.
+
+### AI Prompt Library {color: purple, tags: tier-3}
+> Curated prompt templates integrating with slash commands.
+### Context7 / Doc Injector
+> Inject version-specific library docs into AI context. Top Claude Code MCP server.
+### Token / Context Visualizer
+### Smart Connections
+> AI-powered semantic linking. Obsidian: 852K.
+### AI Code Review
+### Test Generator
+### Documentation Generator
+### Meeting Notes Transcriber
+> Audio-to-document with summarization. Granola-style.
+### AI Writing Assistant
+> Inline suggestions, grammar checking in Lexical.
+### Codebase Q&A
+> RAG-based chat about the current codebase. Sourcegraph Cody: 1M.
+### Project Memory System
+> Hashtag-based context for AI sessions.
+### File Size Awareness
+
+## Themes & Appearance {color: orange}
+
+### Theme Pack {color: green, tags: tier-1, priority}
+> Catppuccin, Dracula, Nord, One Dark Pro, Monokai. Low effort, high install count.
+### Theme Studio
+> Visual theme designer with live preview of --nim-* variables. Obsidian Style Settings: 2.2M.
+### Icon Pack Manager
+> Material, Catppuccin, Seti icons. VSCode Material Icons: 20M.
+### Font Manager
+
+## Nimbalyst-Unique {color: purple}
+> Extensions that leverage capabilities no other editor has.
+
+### Session Analytics Dashboard {color: purple, tags: tier-3}
+> Visualize AI session patterns, cost tracking, productivity metrics.
+### Extension Builder {color: purple, tags: tier-3}
+> Build extensions for Nimbalyst inside Nimbalyst. Dog-food the system.
+### AI Session Replay
+> Replay sessions step-by-step for review or tutorials.
+### Workstream Burndown
+> Multi-session project tracking with velocity metrics.
+### Cross-File Refactoring Visualizer
+### Document-First API Designer
+> Write API docs in Lexical, AI generates OpenAPI spec + implementation.
+### Multi-Format Note Hub
+> Single note embedding multiple editor types inline.
+### AI Pair Programming Replay
+### Workspace Template Marketplace
+
+## Project Management {color: orange}
+
+### Kanban Board {tags: exists-idea}
+> Markdown-backed boards. Obsidian Kanban: 2.2M.
+### Standup Report Generator
+> Auto-generate from git activity + tracker items.
+### OKR / Goal Tracker
+### Sprint Board
+> Agile sprint planning with velocity charts and burndown.
+### Time Tracker
+> Automatic tracking by active files. WakaTime: 22M VSCode.
+### Pomodoro Timer
+### Habit Tracker
+
+## Integrations {color: orange}
+
+### Linear Integration {status: in-progress, tags: exists}
+> Already have Linear MCP.
+### Slack Notifier
+### Notion Sync
+### Obsidian Vault Compat
+> Read/write Obsidian vaults with wiki links. Migration opportunity.
+### Google Docs Import/Export
+### Webhook Manager
+### RSS Feed Reader
+### Todoist / Things Sync
+### Apple Shortcuts / Automator
+### Sentry Error Browser
+
+## Media & Creative {color: orange}
+
+### Color Palette Generator
+### Icon Library Browser
+> Search Lucide, Heroicons, Font Awesome.
+### Image Optimizer
+### AI Image Designer {tags: exists-idea}
+### Audio Waveform Viewer
+### QR Code Generator
+### Markdown Badge Generator
+
+## DevOps & Infrastructure {color: orange}
+
+### Kubernetes Dashboard
+> VSCode Kubernetes: 5M.
+### AWS Resource Browser
+> VSCode AWS Toolkit: 2M.
+### Cloudflare Dashboard
+> Manage Workers, Pages, D1, R2.
+### Server Monitor
+
+## Mobile & IoT {color: orange}
+
+### HomeKit Controller {status: in-progress, tags: exists}
+> Already have MCP.
+### 3D Model Viewer {status: in-progress, tags: exists}
+> nimbalyst-three-d exists.
+### MQTT Dashboard
+### Bluetooth LE Explorer
+
+## Writing & Documents {color: orange}
+
+### Spell Checker / Linter
+> VSCode: 8M, Obsidian Linter: 833K.
+### Blog Publisher
+> Publish to Medium, Dev.to, Ghost, WordPress.
+### Longform / Novel Writer
+> Chapter-based manuscript management. Obsidian Longform: 450K.
+### Academic Paper Writer
+### Translation Helper
+### Pandoc Export
+> One-click export to Word, PDF, LaTeX, ePub.
+### Document Templates Library {tags: exists-idea}
+### Review / Commenting System
+### Citation Manager
+### Typewriter Mode

@@ -1,0 +1,944 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Native iOS Voice Mode - Mockup</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'SF Pro Display', 'Helvetica Neue', sans-serif;
+      background: #1a1a1a;
+      color: #ffffff;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 32px;
+      padding: 32px;
+      justify-content: center;
+    }
+
+    .label {
+      font-size: 13px;
+      font-weight: 600;
+      color: #b3b3b3;
+      text-align: center;
+      margin-bottom: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    /* iPhone Frame */
+    .phone {
+      width: 375px;
+      height: 780px;
+      background: #1a1a1a;
+      border-radius: 40px;
+      border: 3px solid #4a4a4a;
+      overflow: hidden;
+      position: relative;
+      flex-shrink: 0;
+    }
+
+    /* Status bar */
+    .status-bar {
+      height: 54px;
+      padding: 14px 24px 0;
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      font-size: 15px;
+      font-weight: 600;
+      color: #ffffff;
+    }
+    .status-bar .icons {
+      display: flex;
+      gap: 5px;
+      align-items: center;
+      font-size: 12px;
+    }
+    .status-bar .icons svg { width: 16px; height: 16px; fill: #ffffff; }
+
+    /* Dynamic Island */
+    .dynamic-island {
+      position: absolute;
+      top: 12px;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 120px;
+      height: 34px;
+      background: #000000;
+      border-radius: 20px;
+      z-index: 10;
+    }
+
+    /* Nav bar */
+    .nav-bar {
+      height: 44px;
+      padding: 0 16px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .nav-bar .back {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      color: #60a5fa;
+      font-size: 17px;
+    }
+    .nav-bar .right {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    /* Large title */
+    .large-title {
+      padding: 0 16px 8px;
+      font-size: 34px;
+      font-weight: 700;
+      color: #ffffff;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    /* Session list */
+    .section-header {
+      padding: 24px 16px 8px;
+      font-size: 13px;
+      font-weight: 600;
+      color: #808080;
+      text-transform: uppercase;
+      letter-spacing: 0.3px;
+    }
+    .session-row {
+      padding: 12px 16px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      border-bottom: 0.5px solid rgba(255,255,255,0.08);
+    }
+    .session-content { flex: 1; min-width: 0; }
+    .session-title-row {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .session-name {
+      font-size: 16px;
+      font-weight: 500;
+      color: #ffffff;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .session-meta {
+      font-size: 13px;
+      color: #808080;
+      margin-top: 3px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .chevron {
+      color: #4a4a4a;
+      font-size: 18px;
+      flex-shrink: 0;
+    }
+
+    /* Badges */
+    .badge {
+      padding: 2px 7px;
+      border-radius: 10px;
+      font-size: 11px;
+      font-weight: 600;
+      display: inline-flex;
+      align-items: center;
+      gap: 3px;
+      flex-shrink: 0;
+    }
+    .badge-blue { background: rgba(96,165,250,0.2); color: #60a5fa; }
+
+    /* Unread dot */
+    .unread-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #60a5fa;
+      flex-shrink: 0;
+    }
+
+    /* Voice mic badge on session */
+    .voice-badge {
+      width: 20px;
+      height: 20px;
+      border-radius: 50%;
+      background: rgba(96,165,250,0.2);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+    }
+    .voice-badge svg { width: 11px; height: 11px; fill: #60a5fa; }
+
+    /* Executing spinner */
+    .spinner {
+      width: 14px;
+      height: 14px;
+      border: 2px solid rgba(96,165,250,0.3);
+      border-top-color: #60a5fa;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+      flex-shrink: 0;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ===== VOICE BUTTON - Circular floating indicator ===== */
+    .voice-btn-container {
+      position: absolute;
+      bottom: 44px;
+      left: 50%;
+      transform: translateX(-50%);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 8px;
+      z-index: 100;
+    }
+
+    .voice-btn {
+      width: 56px;
+      height: 56px;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      position: relative;
+    }
+    .voice-btn svg { width: 24px; height: 24px; fill: #ffffff; z-index: 2; position: relative; }
+
+    /* Listening state */
+    .voice-btn-listening {
+      background: #60a5fa;
+      box-shadow: 0 4px 20px rgba(96,165,250,0.4);
+    }
+    .voice-btn-listening::before {
+      content: '';
+      position: absolute;
+      inset: -8px;
+      border-radius: 50%;
+      border: 2px solid rgba(96,165,250,0.4);
+      animation: pulse-ring 2s ease-in-out infinite;
+    }
+    .voice-btn-listening::after {
+      content: '';
+      position: absolute;
+      inset: -16px;
+      border-radius: 50%;
+      border: 1px solid rgba(96,165,250,0.2);
+      animation: pulse-ring 2s ease-in-out infinite 0.3s;
+    }
+    @keyframes pulse-ring {
+      0%, 100% { transform: scale(0.9); opacity: 1; }
+      50% { transform: scale(1.1); opacity: 0.3; }
+    }
+
+    /* Speaking state */
+    .voice-btn-speaking {
+      background: #4ade80;
+      box-shadow: 0 4px 20px rgba(74,222,128,0.4);
+    }
+    .voice-btn-speaking::before {
+      content: '';
+      position: absolute;
+      inset: -8px;
+      border-radius: 50%;
+      border: 2px solid rgba(74,222,128,0.4);
+      animation: pulse-ring-green 1.2s ease-in-out infinite;
+    }
+    .voice-btn-speaking::after {
+      content: '';
+      position: absolute;
+      inset: -16px;
+      border-radius: 50%;
+      border: 1px solid rgba(74,222,128,0.2);
+      animation: pulse-ring-green 1.2s ease-in-out infinite 0.2s;
+    }
+    @keyframes pulse-ring-green {
+      0%, 100% { transform: scale(0.9); opacity: 1; }
+      50% { transform: scale(1.15); opacity: 0.2; }
+    }
+
+    /* Processing state */
+    .voice-btn-processing {
+      background: #3a3a3a;
+      border: 2px solid #4a4a4a;
+    }
+    .voice-btn-processing svg { fill: #808080; }
+
+    /* Idle state */
+    .voice-btn-idle {
+      width: 40px;
+      height: 40px;
+      background: rgba(96,165,250,0.12);
+      border: 1px solid rgba(96,165,250,0.25);
+    }
+    .voice-btn-idle svg { width: 18px; height: 18px; fill: rgba(96,165,250,0.5); }
+
+    .voice-btn-label {
+      font-size: 11px;
+      color: #808080;
+    }
+
+    /* Thinking dots */
+    .thinking-dots {
+      position: absolute;
+      bottom: -4px;
+      left: 50%;
+      transform: translateX(-50%);
+      display: flex;
+      gap: 4px;
+    }
+    .thinking-dot {
+      width: 5px;
+      height: 5px;
+      border-radius: 50%;
+      background: #b3b3b3;
+      animation: thinking 1.4s ease-in-out infinite;
+    }
+    .thinking-dot:nth-child(1) { animation-delay: 0s; }
+    .thinking-dot:nth-child(2) { animation-delay: 0.2s; }
+    .thinking-dot:nth-child(3) { animation-delay: 0.4s; }
+    @keyframes thinking {
+      0%, 80%, 100% { transform: scale(0.6); opacity: 0.4; }
+      40% { transform: scale(1); opacity: 1; }
+    }
+
+    /* ===== PENDING PROMPT CARD ===== */
+    .pending-card {
+      position: absolute;
+      bottom: 110px;
+      left: 16px;
+      right: 16px;
+      background: #2d2d2d;
+      border: 1px solid #4a4a4a;
+      border-radius: 16px;
+      padding: 16px;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+      z-index: 100;
+    }
+    .pending-card-header {
+      font-size: 12px;
+      font-weight: 600;
+      color: #808080;
+      text-transform: uppercase;
+      letter-spacing: 0.3px;
+      margin-bottom: 4px;
+    }
+    .pending-card-session {
+      font-size: 14px;
+      font-weight: 600;
+      color: #60a5fa;
+      margin-bottom: 12px;
+    }
+    .pending-card-prompt {
+      font-size: 15px;
+      color: #ffffff;
+      line-height: 1.5;
+      padding: 12px;
+      background: #1a1a1a;
+      border-radius: 10px;
+      margin-bottom: 14px;
+      border: 1px solid rgba(255,255,255,0.06);
+    }
+    .pending-card-countdown {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 14px;
+    }
+    .countdown-dots {
+      display: flex;
+      gap: 4px;
+    }
+    .countdown-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+    }
+    .countdown-dot-filled { background: #60a5fa; }
+    .countdown-dot-empty { background: #3a3a3a; }
+    .countdown-text {
+      font-size: 13px;
+      font-weight: 600;
+      color: #b3b3b3;
+    }
+    .pending-card-actions {
+      display: flex;
+      gap: 10px;
+    }
+    .pending-btn {
+      flex: 1;
+      padding: 10px;
+      border-radius: 10px;
+      font-size: 15px;
+      font-weight: 600;
+      text-align: center;
+    }
+    .pending-btn-cancel {
+      background: #3a3a3a;
+      color: #b3b3b3;
+    }
+    .pending-btn-send {
+      background: #60a5fa;
+      color: #ffffff;
+    }
+
+    /* Voice nav bar indicator */
+    .voice-nav-indicator {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      padding: 4px 10px;
+      border-radius: 12px;
+      background: rgba(96,165,250,0.15);
+      font-size: 12px;
+      font-weight: 600;
+      color: #60a5fa;
+    }
+    .voice-nav-indicator svg { width: 13px; height: 13px; fill: #60a5fa; }
+    .voice-nav-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: #60a5fa;
+      animation: pulse-dot 1.5s ease-in-out infinite;
+    }
+    @keyframes pulse-dot {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.3; }
+    }
+
+    /* Large title voice icon */
+    .voice-title-icon {
+      width: 28px;
+      height: 28px;
+      border-radius: 50%;
+      background: rgba(96,165,250,0.15);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    .voice-title-icon svg { width: 15px; height: 15px; fill: #60a5fa; }
+
+    /* Compose bar */
+    .compose-bar {
+      position: absolute;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      padding: 8px 16px;
+      padding-bottom: 34px;
+      background: rgba(26,26,26,0.95);
+      backdrop-filter: blur(20px);
+      border-top: 0.5px solid rgba(255,255,255,0.1);
+      display: flex;
+      align-items: flex-end;
+      gap: 8px;
+    }
+    .compose-input {
+      flex: 1;
+      background: #3a3a3a;
+      border-radius: 20px;
+      padding: 10px 16px;
+      font-size: 16px;
+      color: #808080;
+      min-height: 40px;
+    }
+    .send-btn {
+      width: 32px;
+      height: 32px;
+      border-radius: 50%;
+      background: #3a3a3a;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin-bottom: 4px;
+    }
+    .send-btn svg { width: 16px; height: 16px; fill: #666666; }
+
+    /* Transcript messages */
+    .transcript-area {
+      position: absolute;
+      top: 148px;
+      left: 0;
+      right: 0;
+      bottom: 82px;
+      padding: 12px 16px;
+      overflow: hidden;
+    }
+    .msg {
+      margin-bottom: 12px;
+      max-width: 85%;
+    }
+    .msg-user {
+      margin-left: auto;
+      background: #60a5fa;
+      color: #ffffff;
+      padding: 10px 14px;
+      border-radius: 18px 18px 4px 18px;
+      font-size: 15px;
+      line-height: 1.4;
+    }
+    .msg-assistant {
+      background: #2d2d2d;
+      color: #ffffff;
+      padding: 10px 14px;
+      border-radius: 18px 18px 18px 4px;
+      font-size: 15px;
+      line-height: 1.4;
+    }
+    .msg-tool {
+      background: rgba(167,139,250,0.1);
+      border: 1px solid rgba(167,139,250,0.2);
+      border-radius: 12px;
+      padding: 8px 12px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 13px;
+      color: #a78bfa;
+    }
+    .msg-tool svg { width: 14px; height: 14px; fill: #a78bfa; flex-shrink: 0; }
+
+    /* Home indicator */
+    .home-indicator {
+      position: absolute;
+      bottom: 8px;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 134px;
+      height: 5px;
+      background: rgba(255,255,255,0.3);
+      border-radius: 3px;
+    }
+
+    .mockup-section {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+    }
+
+    /* Scroll content */
+    .scroll-content {
+      position: absolute;
+      top: 98px;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      overflow: hidden;
+    }
+  </style>
+</head>
+<body>
+
+  <svg style="display:none">
+    <defs>
+      <symbol id="mic" viewBox="0 0 24 24">
+        <path d="M12 14c1.66 0 3-1.34 3-3V5c0-1.66-1.34-3-3-3S9 3.34 9 5v6c0 1.66 1.34 3 3 3zm-1-9c0-.55.45-1 1-1s1 .45 1 1v6c0 .55-.45 1-1 1s-1-.45-1-1V5z"/>
+        <path d="M17 11c0 2.76-2.24 5-5 5s-5-2.24-5-5H5c0 3.53 2.61 6.43 6 6.92V21h2v-3.08c3.39-.49 6-3.39 6-6.92h-2z"/>
+      </symbol>
+      <symbol id="speaker" viewBox="0 0 24 24">
+        <path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3c0-1.77-1.02-3.29-2.5-4.03v8.05c1.48-.73 2.5-2.25 2.5-4.02zM14 3.23v2.06c2.89.86 5 3.54 5 6.71s-2.11 5.85-5 6.71v2.06c4.01-.91 7-4.49 7-8.77s-2.99-7.86-7-8.77z"/>
+      </symbol>
+      <symbol id="chevron-back" viewBox="0 0 24 24">
+        <path d="M15.41 7.41L14 6l-6 6 6 6 1.41-1.41L10.83 12z"/>
+      </symbol>
+      <symbol id="chevron-right" viewBox="0 0 24 24">
+        <path d="M10 6L8.59 7.41 13.17 12l-4.58 4.59L10 18l6-6z"/>
+      </symbol>
+      <symbol id="wrench" viewBox="0 0 24 24">
+        <path d="M22.7 19l-9.1-9.1c.9-2.3.4-5-1.5-6.9-2-2-5-2.4-7.4-1.3L9 6 6 9 1.6 4.7C.4 7.1.9 10.1 2.9 12.1c1.9 1.9 4.6 2.4 6.9 1.5l9.1 9.1c.4.4 1 .4 1.4 0l2.3-2.3c.5-.4.5-1.1.1-1.4z"/>
+      </symbol>
+      <symbol id="arrow-up" viewBox="0 0 24 24">
+        <path d="M4 12l1.41 1.41L11 7.83V20h2V7.83l5.58 5.59L20 12l-8-8-8 8z"/>
+      </symbol>
+    </defs>
+  </svg>
+
+  <!-- SCREEN 1: Session List with Voice Active (Idle) -->
+  <div class="mockup-section">
+    <div class="label">Session List - Voice Idle</div>
+    <div class="phone">
+      <div class="dynamic-island"></div>
+      <div class="status-bar">
+        <span>9:41</span>
+        <div class="icons">
+          <span style="font-size: 11px;">5G</span>
+          <svg viewBox="0 0 24 24"><path d="M1 9l2 2c4.97-4.97 13.03-4.97 18 0l2-2C16.93 2.93 7.08 2.93 1 9zm8 8l3 3 3-3c-1.65-1.66-4.34-1.66-6 0zm-4-4l2 2c2.76-2.76 7.24-2.76 10 0l2-2C15.14 9.14 8.87 9.14 5 13z"/></svg>
+          <svg viewBox="0 0 24 24"><path d="M15.67 4H14V2h-4v2H8.33C7.6 4 7 4.6 7 5.33v15.34C7 21.4 7.6 22 8.33 22h7.33c.74 0 1.34-.6 1.34-1.33V5.33C17 4.6 16.4 4 15.67 4z"/></svg>
+        </div>
+      </div>
+
+      <div class="nav-bar">
+        <div class="back">
+          <svg><use href="#chevron-back"/></svg>
+          <span>Projects</span>
+        </div>
+        <div class="right">
+          <div class="voice-nav-indicator">
+            <svg><use href="#mic"/></svg>
+            <div class="voice-nav-dot"></div>
+            <span>Voice</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="large-title">
+        nimbalyst-editor
+        <div class="voice-title-icon">
+          <svg><use href="#mic"/></svg>
+        </div>
+      </div>
+
+      <div class="scroll-content">
+        <div class="section-header">Today</div>
+
+        <div class="session-row">
+          <div class="unread-dot"></div>
+          <div class="session-content">
+            <div class="session-title-row">
+              <span class="session-name">Fix login auth flow</span>
+              <div class="spinner"></div>
+            </div>
+            <div class="session-meta">
+              <span class="badge badge-blue">Claude Code</span>
+              <span>2m ago</span>
+            </div>
+          </div>
+          <div class="voice-badge">
+            <svg><use href="#mic"/></svg>
+          </div>
+          <span class="chevron"><svg width="18" height="18" fill="#4a4a4a"><use href="#chevron-right"/></svg></span>
+        </div>
+
+        <div class="session-row">
+          <div style="width:8px"></div>
+          <div class="session-content">
+            <div class="session-title-row">
+              <span class="session-name">Refactor database layer</span>
+            </div>
+            <div class="session-meta">
+              <span class="badge badge-blue">Claude Code</span>
+              <span>15m ago</span>
+            </div>
+          </div>
+          <span class="chevron"><svg width="18" height="18" fill="#4a4a4a"><use href="#chevron-right"/></svg></span>
+        </div>
+
+        <div class="session-row">
+          <div style="width:8px"></div>
+          <div class="session-content">
+            <div class="session-title-row">
+              <span class="session-name">Add dark mode support</span>
+            </div>
+            <div class="session-meta">
+              <span class="badge badge-blue">Claude Code</span>
+              <span>1h ago</span>
+            </div>
+          </div>
+          <span class="chevron"><svg width="18" height="18" fill="#4a4a4a"><use href="#chevron-right"/></svg></span>
+        </div>
+
+        <div class="section-header">Yesterday</div>
+
+        <div class="session-row">
+          <div style="width:8px"></div>
+          <div class="session-content">
+            <div class="session-title-row">
+              <span class="session-name">E2E test improvements</span>
+            </div>
+            <div class="session-meta">
+              <span class="badge badge-blue">Claude Code</span>
+              <span>Yesterday</span>
+            </div>
+          </div>
+          <span class="chevron"><svg width="18" height="18" fill="#4a4a4a"><use href="#chevron-right"/></svg></span>
+        </div>
+
+        <div class="session-row">
+          <div style="width:8px"></div>
+          <div class="session-content">
+            <div class="session-title-row">
+              <span class="session-name">Voice mode architecture</span>
+            </div>
+            <div class="session-meta">
+              <span class="badge badge-blue">Claude Code</span>
+              <span>Yesterday</span>
+            </div>
+          </div>
+          <span class="chevron"><svg width="18" height="18" fill="#4a4a4a"><use href="#chevron-right"/></svg></span>
+        </div>
+      </div>
+
+      <!-- Voice button - IDLE -->
+      <div class="voice-btn-container">
+        <div class="voice-btn voice-btn-idle">
+          <svg><use href="#mic"/></svg>
+        </div>
+        <span class="voice-btn-label">Tap to resume</span>
+      </div>
+
+      <div class="home-indicator"></div>
+    </div>
+  </div>
+
+  <!-- SCREEN 2: Session Detail - Listening -->
+  <div class="mockup-section">
+    <div class="label">Session Detail - Listening</div>
+    <div class="phone">
+      <div class="dynamic-island"></div>
+      <div class="status-bar">
+        <span>9:41</span>
+        <div class="icons">
+          <span style="font-size: 11px;">5G</span>
+          <svg viewBox="0 0 24 24"><path d="M1 9l2 2c4.97-4.97 13.03-4.97 18 0l2-2C16.93 2.93 7.08 2.93 1 9zm8 8l3 3 3-3c-1.65-1.66-4.34-1.66-6 0zm-4-4l2 2c2.76-2.76 7.24-2.76 10 0l2-2C15.14 9.14 8.87 9.14 5 13z"/></svg>
+          <svg viewBox="0 0 24 24"><path d="M15.67 4H14V2h-4v2H8.33C7.6 4 7 4.6 7 5.33v15.34C7 21.4 7.6 22 8.33 22h7.33c.74 0 1.34-.6 1.34-1.33V5.33C17 4.6 16.4 4 15.67 4z"/></svg>
+        </div>
+      </div>
+
+      <div class="nav-bar">
+        <div class="back">
+          <svg><use href="#chevron-back"/></svg>
+          <span>Sessions</span>
+        </div>
+        <div class="right">
+          <div class="voice-nav-indicator">
+            <svg><use href="#mic"/></svg>
+            <div class="voice-nav-dot"></div>
+          </div>
+        </div>
+      </div>
+
+      <div style="padding: 0 16px 4px; font-size: 17px; font-weight: 600; color: #ffffff; display: flex; align-items: center; gap: 6px;">
+        Fix login auth flow
+        <div class="spinner"></div>
+      </div>
+
+      <div class="transcript-area">
+        <div class="msg">
+          <div class="msg-user">Fix the authentication bug in the login handler</div>
+        </div>
+        <div class="msg" style="max-width: 50%;">
+          <div class="msg-tool">
+            <svg><use href="#wrench"/></svg>
+            <span>Read login-handler.ts</span>
+          </div>
+        </div>
+        <div class="msg" style="max-width: 50%;">
+          <div class="msg-tool">
+            <svg><use href="#wrench"/></svg>
+            <span>Edit login-handler.ts</span>
+          </div>
+        </div>
+        <div class="msg">
+          <div class="msg-assistant">I found and fixed the authentication bug. The issue was that the session token wasn't being refreshed before the expiry check...</div>
+        </div>
+      </div>
+
+      <!-- Voice button - LISTENING -->
+      <div class="voice-btn-container" style="bottom: 92px;">
+        <div class="voice-btn voice-btn-listening">
+          <svg><use href="#mic"/></svg>
+        </div>
+      </div>
+
+      <div class="compose-bar">
+        <div class="compose-input">Message...</div>
+        <div class="send-btn">
+          <svg><use href="#arrow-up"/></svg>
+        </div>
+      </div>
+
+      <div class="home-indicator"></div>
+    </div>
+  </div>
+
+  <!-- SCREEN 3: Session Detail - Speaking + Pending Prompt -->
+  <div class="mockup-section">
+    <div class="label">Speaking + Pending Prompt</div>
+    <div class="phone">
+      <div class="dynamic-island"></div>
+      <div class="status-bar">
+        <span>9:41</span>
+        <div class="icons">
+          <span style="font-size: 11px;">5G</span>
+          <svg viewBox="0 0 24 24"><path d="M1 9l2 2c4.97-4.97 13.03-4.97 18 0l2-2C16.93 2.93 7.08 2.93 1 9zm8 8l3 3 3-3c-1.65-1.66-4.34-1.66-6 0zm-4-4l2 2c2.76-2.76 7.24-2.76 10 0l2-2C15.14 9.14 8.87 9.14 5 13z"/></svg>
+          <svg viewBox="0 0 24 24"><path d="M15.67 4H14V2h-4v2H8.33C7.6 4 7 4.6 7 5.33v15.34C7 21.4 7.6 22 8.33 22h7.33c.74 0 1.34-.6 1.34-1.33V5.33C17 4.6 16.4 4 15.67 4z"/></svg>
+        </div>
+      </div>
+
+      <div class="nav-bar">
+        <div class="back">
+          <svg><use href="#chevron-back"/></svg>
+          <span>Sessions</span>
+        </div>
+        <div class="right">
+          <div class="voice-nav-indicator" style="background: rgba(74,222,128,0.15); color: #4ade80;">
+            <svg style="fill: #4ade80;"><use href="#speaker"/></svg>
+            <div class="voice-nav-dot" style="background: #4ade80;"></div>
+          </div>
+        </div>
+      </div>
+
+      <div style="padding: 0 16px 4px; font-size: 17px; font-weight: 600; color: #ffffff;">
+        Fix login auth flow
+      </div>
+
+      <div class="transcript-area">
+        <div class="msg">
+          <div class="msg-user">Fix the authentication bug in the login handler</div>
+        </div>
+        <div class="msg" style="max-width: 50%;">
+          <div class="msg-tool">
+            <svg><use href="#wrench"/></svg>
+            <span>Read login-handler.ts</span>
+          </div>
+        </div>
+        <div class="msg">
+          <div class="msg-assistant">I found and fixed the authentication bug. The issue was that the session token wasn't being refreshed before the expiry check...</div>
+        </div>
+      </div>
+
+      <!-- Pending Prompt Card -->
+      <div class="pending-card">
+        <div class="pending-card-header">Sending to</div>
+        <div class="pending-card-session">Fix login auth flow</div>
+        <div class="pending-card-prompt">"Add a unit test for the token refresh fix"</div>
+        <div class="pending-card-countdown">
+          <div class="countdown-dots">
+            <div class="countdown-dot countdown-dot-filled"></div>
+            <div class="countdown-dot countdown-dot-filled"></div>
+            <div class="countdown-dot countdown-dot-filled"></div>
+            <div class="countdown-dot countdown-dot-empty"></div>
+            <div class="countdown-dot countdown-dot-empty"></div>
+          </div>
+          <span class="countdown-text">3s</span>
+        </div>
+        <div class="pending-card-actions">
+          <div class="pending-btn pending-btn-cancel">Cancel</div>
+          <div class="pending-btn pending-btn-send">Send Now</div>
+        </div>
+      </div>
+
+      <!-- Voice button - SPEAKING -->
+      <div class="voice-btn-container" style="bottom: 92px;">
+        <div class="voice-btn voice-btn-speaking">
+          <svg><use href="#speaker"/></svg>
+        </div>
+      </div>
+
+      <div class="compose-bar">
+        <div class="compose-input">Message...</div>
+        <div class="send-btn">
+          <svg><use href="#arrow-up"/></svg>
+        </div>
+      </div>
+
+      <div class="home-indicator"></div>
+    </div>
+  </div>
+
+  <!-- SCREEN 4: Voice Button States Reference -->
+  <div class="mockup-section">
+    <div class="label">Voice Button States</div>
+    <div style="width: 375px; display: flex; flex-direction: column; gap: 32px; padding: 20px;">
+
+      <!-- Listening -->
+      <div style="display: flex; align-items: center; gap: 24px;">
+        <div style="position: relative;">
+          <div class="voice-btn voice-btn-listening">
+            <svg><use href="#mic"/></svg>
+          </div>
+        </div>
+        <div>
+          <div style="font-size: 15px; font-weight: 600; color: #ffffff; margin-bottom: 4px;">Listening</div>
+          <div style="font-size: 13px; color: #808080; line-height: 1.4;">Pulsing blue ring. User is speaking or agent is waiting for input.</div>
+        </div>
+      </div>
+
+      <!-- Processing -->
+      <div style="display: flex; align-items: center; gap: 24px;">
+        <div style="position: relative;">
+          <div class="voice-btn voice-btn-processing">
+            <svg><use href="#mic"/></svg>
+            <div class="thinking-dots">
+              <div class="thinking-dot"></div>
+              <div class="thinking-dot"></div>
+              <div class="thinking-dot"></div>
+            </div>
+          </div>
+        </div>
+        <div>
+          <div style="font-size: 15px; font-weight: 600; color: #ffffff; margin-bottom: 4px;">Processing</div>
+          <div style="font-size: 13px; color: #808080; line-height: 1.4;">Gray with thinking dots. Voice agent is preparing a response.</div>
+        </div>
+      </div>
+
+      <!-- Speaking -->
+      <div style="display: flex; align-items: center; gap: 24px;">
+        <div style="position: relative;">
+          <div class="voice-btn voice-btn-speaking">
+            <svg><use href="#speaker"/></svg>
+          </div>
+        </div>
+        <div>
+          <div style="font-size: 15px; font-weight: 600; color: #ffffff; margin-bottom: 4px;">Speaking</div>
+          <div style="font-size: 13px; color: #808080; line-height: 1.4;">Pulsing green ring. Agent is speaking a response aloud.</div>
+        </div>
+      </div>
+
+      <!-- Idle -->
+      <div style="display: flex; align-items: center; gap: 24px;">
+        <div style="position: relative; display: flex; flex-direction: column; align-items: center; gap: 6px;">
+          <div class="voice-btn voice-btn-idle">
+            <svg><use href="#mic"/></svg>
+          </div>
+          <span class="voice-btn-label">Tap to resume</span>
+        </div>
+        <div>
+          <div style="font-size: 15px; font-weight: 600; color: #ffffff; margin-bottom: 4px;">Idle</div>
+          <div style="font-size: 13px; color: #808080; line-height: 1.4;">Smaller, dimmed. Connected but silent. Tap to resume or waits for agent completion.</div>
+        </div>
+      </div>
+
+      <!-- Pending Prompt Card (standalone) -->
+      <div>
+        <div style="font-size: 11px; font-weight: 600; color: #808080; text-transform: uppercase; letter-spacing: 0.3px; margin-bottom: 12px;">Pending Prompt Card</div>
+        <div style="background: #2d2d2d; border: 1px solid #4a4a4a; border-radius: 16px; padding: 16px;">
+          <div class="pending-card-header">Sending to</div>
+          <div class="pending-card-session">Refactor database layer</div>
+          <div class="pending-card-prompt">"Extract the query builder into a separate module and add connection pooling"</div>
+          <div class="pending-card-countdown">
+            <div class="countdown-dots">
+              <div class="countdown-dot countdown-dot-filled"></div>
+              <div class="countdown-dot countdown-dot-filled"></div>
+              <div class="countdown-dot countdown-dot-filled"></div>
+              <div class="countdown-dot countdown-dot-filled"></div>
+              <div class="countdown-dot countdown-dot-empty"></div>
+            </div>
+            <span class="countdown-text">4s</span>
+          </div>
+          <div class="pending-card-actions">
+            <div class="pending-btn pending-btn-cancel">Cancel</div>
+            <div class="pending-btn pending-btn-send">Send Now</div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+</body>
+</html>

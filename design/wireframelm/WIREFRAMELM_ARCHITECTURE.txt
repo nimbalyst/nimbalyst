@@ -1,0 +1,309 @@
+================================================================================
+                        WIREFRAMELM ARCHITECTURE DIAGRAM
+================================================================================
+
+WIREFRAME DATA FLOW
+─────────────────────────────────────────────────────────────────────────────
+
+User Input (Chat)
+       │
+       ▼
+┌─────────────────────┐
+│   AIChatPanel.tsx   │ ◄─── Current Markup + Screenshot (optional)
+│  (Streaming UI)     │
+└──────────┬──────────┘
+           │
+           ▼
+┌─────────────────────┐
+│   AIService.ts      │ ◄─── Builds context from:
+│  (Tool wrapper)     │      - Full HTML markup
+└──────────┬──────────┘      - Selected element
+           │                  - Chat history
+           ▼
+┌─────────────────────────────────────┐
+│  Proxy Server (Express, port 3103)  │
+│  Handles CORS + SSE streaming       │
+└──────────┬────────────────────────────┘
+           │
+           ▼
+┌─────────────────────────────────────┐
+│  Anthropic API (claude-sonnet-4-5)  │
+│  - Tools: update_html, replace_text │
+│  - Max tokens: 8192                 │
+└──────────┬────────────────────────────┘
+           │
+           ▼
+     Tool Call Event
+           │
+      ┌────┴─────────┬──────────┐
+      │              │          │
+      ▼              ▼          ▼
+┌─────────────┐ ┌──────────────────────┐
+│update_html  │ │  replace_text        │
+│{html,       │ │  {old_text, new_text}│
+│ summary}    │ └──────────┬───────────┘
+│             │            │
+└──────┬──────┘            │
+       │        ┌──────────┘
+       │        │
+       ▼        ▼
+    Store Update (setMarkup)
+       │
+       ▼
+┌──────────────────────┐
+│  Zustand Store       │
+│  (useEditorStore)    │
+└──────────┬───────────┘
+           │
+    ┌──────┴──────┐
+    │             │
+    ▼             ▼
+Markup Update   Auto-snapshot
+    │             │
+    ▼             ▼
+┌─────────────────────────────┐
+│  EditorCanvas.tsx           │
+│  (Direct innerHTML render)  │
+└──────────┬──────────────────┘
+           │
+           ▼
+  Visual Update in Browser
+
+
+STATE STRUCTURE
+─────────────────────────────────────────────────────────────────────────────
+
+useEditorStore (Zustand)
+│
+├── Projects[]
+│   ├── id, name, timestamps
+│   ├── markup (string) ◄─── THE CORE: Plain HTML, no custom structure
+│   │
+│   ├── chatSessions[]
+│   │   ├── id, name
+│   │   ├── messages[] {role, content, imageAttachment?, toolCalls?}
+│   │   └── timestamps
+│   │
+│   └── snapshots[] (History/Undo-Redo)
+│       ├── id, timestamp
+│       ├── markup (saved state)
+│       ├── userPrompt?, aiSummary?
+│       └── parentSnapshotId?
+│
+├── currentProject
+├── selectedNodeId, hoveredNodeId
+├── viewMode ('edit' | 'interactive')
+├── theme ('light' | 'dark')
+├── zoom (%)
+├── isAIChatVisible, rightSidebarTab
+├── isAIProcessing, chatInput
+└── htmlEditorExpanded, htmlEditorHeight
+
+
+UI LAYOUT
+─────────────────────────────────────────────────────────────────────────────
+
+┌─────────────────────────────────────────────────────────────────┐
+│  EditorNavBar                                                    │
+│  [Projects]  [View Mode]  [Zoom]  [Theme]  [Examples] [Export]  │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                  │
+│  ┌────────────────────────────────────────┐  ┌──────────────┐  │
+│  │                                        │  │ RightSidebar │  │
+│  │  EditorCanvas                          │  │ ┌──────────┐ │  │
+│  │  (Edit Mode: select, hover, inspect)   │  │ │Inspector │ │  │
+│  │  or                                     │  │ ├──────────┤ │  │
+│  │  InteractiveCanvas                      │  │ │History   │ │  │
+│  │  (Interactive Mode: fully functional)  │  │ ├──────────┤ │  │
+│  │                                        │  │ │Chat      │ │  │
+│  │  - Shows rendered HTML                 │  │ │(AI Conv) │ │  │
+│  │  - Click to select elements            │  │ └──────────┘ │  │
+│  │  - Hover shows selection state         │  └──────────────┘  │
+│  │                                        │                    │
+│  └────────────────────────────────────────┘                    │
+│                                                                  │
+├─────────────────────────────────────────────────────────────────┤
+│  CollapsiblePanel (HTML Markup Editor)                           │
+│  ┌─────────────────────────────────────────────────────────┐   │
+│  │  <textarea>                                             │   │
+│  │  <div class="flex min-h-screen...">                    │   │
+│  │    <!-- User can edit HTML directly here -->           │   │
+│  │  </div>                                                │   │
+│  └─────────────────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────────────┘
+
+
+WEB COMPONENTS
+─────────────────────────────────────────────────────────────────────────────
+
+<wf-icon>          ◄─── Material Symbols icon
+  Attrs: name, size, fill, weight
+
+<wf-avatar>        ◄─── User avatar (with auto-initials)
+  Attrs: src, label, size, variant
+
+<wf-badge>         ◄─── Status badge
+  Attrs: label, variant, size
+
+<wf-divider>       ◄─── Separator
+  Attrs: variant, orientation
+
+
+THEMING SYSTEM
+─────────────────────────────────────────────────────────────────────────────
+
+CSS Variables (src/index.css)
+│
+├── Light Theme
+│   --background: 0 0% 100%
+│   --foreground: 222.2 84% 4.9%
+│   --muted: 210 40% 96.1%
+│   --primary: 221.2 83.2% 53.3%
+│   --card: 0 0% 100%
+│   --border: 214.3 31.8% 91.4%
+│
+└── Dark Theme (.dark class)
+    --background: 222.2 84% 4.9%
+    --foreground: 210 40% 98%
+    --muted: 217.2 32.6% 17.5%
+    --primary: 217.2 91.2% 59.8%
+    --card: 222.2 84% 4.9%
+    --border: 217.2 32.6% 17.5%
+
+         ┌──────────────────────────┐
+         │  Tailwind Config         │
+         │  colors: {               │
+         │    background: hsl(...)  │
+         │    foreground: hsl(...)  │
+         │    ...                   │
+         │  }                       │
+         └──────────────────────────┘
+
+
+AI TOOLS
+─────────────────────────────────────────────────────────────────────────────
+
+Tool: update_html
+├── Use: Complete rewrites, major changes
+├── Input: {html, summary}
+└── Effect: Replaces entire markup
+
+Tool: replace_text
+├── Use: Surgical edits, targeted changes
+├── Input: {old_text, new_text, summary}
+└── Effect: Finds and replaces text in markup
+
+Context Sent Each Request:
+┌──────────────────────────────┐
+│ Current HTML markup:         │
+│ ```html                      │
+│ <div>...</div>               │
+│ ```                          │
+│                              │
+│ Selected element:            │
+│ ```html                      │
+│ <button>...</button>         │
+│ ```                          │
+│                              │
+│ User message                 │
+└──────────────────────────────┘
+
+
+FILE FORMAT
+─────────────────────────────────────────────────────────────────────────────
+
+Plain HTML String (No Parsing!)
+│
+├── Standard HTML Elements
+│   └── <div>, <button>, <input>, etc.
+│
+├── Tailwind CSS Classes
+│   └── "flex gap-4 p-6 bg-background text-foreground"
+│
+└── Custom Web Components
+    └── <wf-icon>, <wf-avatar>, <wf-badge>, <wf-divider>
+
+Example:
+┌─────────────────────────────────────────┐
+│ markup: `<div class="flex gap-4">      │
+│   <div class="w-64 bg-muted">          │
+│     <h2>Sidebar</h2>                   │
+│   </div>                               │
+│   <div class="flex-1">                 │
+│     <h1>Main Content</h1>              │
+│   </div>                               │
+│ </div>`                                │
+│                                         │
+│ Rendered directly via innerHTML:        │
+│ containerRef.current.innerHTML = markup │
+└─────────────────────────────────────────┘
+
+
+BUILD & DEPLOYMENT
+─────────────────────────────────────────────────────────────────────────────
+
+Development:
+$ npm run dev         ◄─── Vite (3101) + Proxy (3103)
+
+Production:
+$ npm run build       ◄─── Vite build → dist/
+$ npm run build:lib   ◄─── Library build (Web Components)
+
+Proxy Server (server/proxy.js):
+├── Port: 3103
+├── CORS: Enabled
+├── Streaming: SSE events
+├── Key: ANTHROPIC_API_KEY from .env
+└── Middleware: express.json (50MB limit)
+
+
+INTEGRATION POINTS FOR NIMBALYST
+─────────────────────────────────────────────────────────────────────────────
+
+Data Format
+  └─ Plain HTML strings ✓ Compatible with Nimbalyst
+
+Web Components
+  └─ Can register globally or conditionally ✓
+
+CSS/Theme
+  └─ Semantic tokens can bridge with Nimbalyst ✓
+
+AI Tools
+  └─ Tool pattern matches Nimbalyst's approach ✓
+
+State
+  └─ Zustand coexists with Nimbalyst's state ✓
+
+Chat
+  └─ Modular, can integrate into AI panel ✓
+
+Snapshots
+  └─ Format compatible with document history ✓
+
+
+KEY DESIGN PRINCIPLES
+─────────────────────────────────────────────────────────────────────────────
+
+1. No Parser: Markup is never parsed into AST
+   → Simpler, faster, easier for LLMs
+
+2. Direct Rendering: innerHTML for preview
+   → Fast, visual feedback, true HTML
+
+3. Tool-Driven: Claude uses tool calls, not text output
+   → Predictable, exact changes
+
+4. Offline-First: localStorage persistence
+   → Works without backend
+
+5. Minimal Components: Only 4 Web Components
+   → Intentional simplicity, encourages standard HTML
+
+6. Semantic Tokens: CSS variables for theming
+   → Theme-agnostic designs
+
+7. Snapshot History: Git-like undo/redo
+   → Full state capture, clear semantics
+
+================================================================================

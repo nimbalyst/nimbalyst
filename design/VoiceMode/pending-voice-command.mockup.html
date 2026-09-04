@@ -1,0 +1,320 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Pending Voice Command</title>
+  <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Rounded:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200" rel="stylesheet" />
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen', 'Ubuntu', 'Cantarell', 'Fira Sans', 'Droid Sans', 'Helvetica Neue', sans-serif;
+      background: #1a1a1a;
+      padding: 40px;
+      display: flex;
+      justify-content: center;
+      align-items: flex-start;
+    }
+
+    .container {
+      width: 600px;
+      background: #242424;
+      border-radius: 8px;
+      overflow: hidden;
+    }
+
+    .material-symbols-rounded {
+      font-family: 'Material Symbols Rounded';
+      font-weight: normal;
+      font-style: normal;
+      font-size: 20px;
+      line-height: 1;
+      letter-spacing: normal;
+      text-transform: none;
+      display: inline-block;
+      white-space: nowrap;
+      word-wrap: normal;
+      direction: ltr;
+      -webkit-font-feature-settings: 'liga';
+      font-feature-settings: 'liga';
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* Pending Voice Command Card */
+    .pending-command-card {
+      background: #2a2a2a;
+      border: 1px solid #3b82f6;
+      border-radius: 8px;
+      margin: 12px;
+      overflow: hidden;
+      box-shadow: 0 4px 12px rgba(59, 130, 246, 0.15);
+    }
+
+    .pending-command-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 12px;
+      background: rgba(59, 130, 246, 0.1);
+      border-bottom: 1px solid rgba(59, 130, 246, 0.2);
+    }
+
+    .pending-command-title {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 13px;
+      font-weight: 500;
+      color: #3b82f6;
+    }
+
+    .pending-command-title .material-symbols-rounded {
+      font-size: 18px;
+    }
+
+    .cancel-button {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 24px;
+      height: 24px;
+      border: none;
+      background: transparent;
+      color: #9ca3af;
+      cursor: pointer;
+      border-radius: 4px;
+      transition: all 0.15s ease;
+    }
+
+    .cancel-button:hover {
+      background: rgba(239, 68, 68, 0.1);
+      color: #ef4444;
+    }
+
+    .cancel-button .material-symbols-rounded {
+      font-size: 18px;
+    }
+
+    .pending-command-body {
+      padding: 12px;
+    }
+
+    .command-textarea {
+      width: 100%;
+      min-height: 60px;
+      padding: 10px 12px;
+      border: 1px solid #404040;
+      border-radius: 6px;
+      background: #1f1f1f;
+      color: #e5e5e5;
+      font-family: inherit;
+      font-size: 14px;
+      line-height: 1.5;
+      resize: none;
+      transition: border-color 0.15s ease;
+    }
+
+    .command-textarea:focus {
+      outline: none;
+      border-color: #3b82f6;
+    }
+
+    .pending-command-footer {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 10px 12px;
+      border-top: 1px solid #333;
+    }
+
+    .countdown-section {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .countdown-ring {
+      position: relative;
+      width: 32px;
+      height: 32px;
+    }
+
+    .countdown-ring svg {
+      transform: rotate(-90deg);
+    }
+
+    .countdown-ring-bg {
+      fill: none;
+      stroke: #333;
+      stroke-width: 3;
+    }
+
+    .countdown-ring-progress {
+      fill: none;
+      stroke: #3b82f6;
+      stroke-width: 3;
+      stroke-linecap: round;
+      stroke-dasharray: 75.4;
+      stroke-dashoffset: 22.6; /* ~70% remaining */
+      transition: stroke-dashoffset 0.1s linear;
+    }
+
+    .countdown-text {
+      font-size: 13px;
+      font-weight: 500;
+      color: #9ca3af;
+    }
+
+    .countdown-text span {
+      color: #e5e5e5;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .action-buttons {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .edit-button {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 12px;
+      border: 1px solid #404040;
+      border-radius: 6px;
+      background: transparent;
+      color: #9ca3af;
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+
+    .edit-button:hover {
+      background: rgba(255, 255, 255, 0.05);
+      border-color: #505050;
+      color: #e5e5e5;
+    }
+
+    .edit-button .material-symbols-rounded {
+      font-size: 16px;
+    }
+
+    .send-button {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 14px;
+      border: none;
+      border-radius: 6px;
+      background: #3b82f6;
+      color: #ffffff;
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+
+    .send-button:hover {
+      background: #2563eb;
+    }
+
+    .send-button .material-symbols-rounded {
+      font-size: 16px;
+    }
+
+    /* AI Input placeholder below */
+    .ai-input-placeholder {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 12px;
+      border-top: 1px solid #333;
+    }
+
+    .ai-input-field {
+      flex: 1;
+      padding: 10px 14px;
+      border: 1px solid #404040;
+      border-radius: 8px;
+      background: #1f1f1f;
+      color: #6b7280;
+      font-size: 14px;
+    }
+
+    .ai-input-send {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 36px;
+      height: 36px;
+      border: none;
+      border-radius: 8px;
+      background: #333;
+      color: #6b7280;
+      cursor: not-allowed;
+    }
+
+    .ai-input-send .material-symbols-rounded {
+      font-size: 20px;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <!-- Pending Voice Command Card -->
+    <div class="pending-command-card">
+      <div class="pending-command-header">
+        <div class="pending-command-title">
+          <span class="material-symbols-rounded">mic</span>
+          Voice Command
+        </div>
+        <button class="cancel-button" title="Cancel">
+          <span class="material-symbols-rounded">close</span>
+        </button>
+      </div>
+
+      <div class="pending-command-body">
+        <textarea class="command-textarea" spellcheck="false">Add a function to calculate the total price</textarea>
+      </div>
+
+      <div class="pending-command-footer">
+        <div class="countdown-section">
+          <div class="countdown-ring">
+            <svg width="32" height="32" viewBox="0 0 32 32">
+              <circle class="countdown-ring-bg" cx="16" cy="16" r="12" />
+              <circle class="countdown-ring-progress" cx="16" cy="16" r="12" />
+            </svg>
+          </div>
+          <span class="countdown-text">Sending in <span>2.1s</span></span>
+        </div>
+
+        <div class="action-buttons">
+          <button class="edit-button">
+            <span class="material-symbols-rounded">edit</span>
+            Edit
+          </button>
+          <button class="send-button">
+            Send Now
+            <span class="material-symbols-rounded">arrow_forward</span>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- AI Input (for context) -->
+    <div class="ai-input-placeholder">
+      <input type="text" class="ai-input-field" placeholder="Ask Claude..." disabled />
+      <button class="ai-input-send" disabled>
+        <span class="material-symbols-rounded">arrow_upward</span>
+      </button>
+    </div>
+  </div>
+</body>
+</html>

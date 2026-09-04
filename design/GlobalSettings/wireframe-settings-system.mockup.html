@@ -1,0 +1,2203 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Nimbalyst Settings System - Wireframe</title>
+  <style>
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    :root {
+      --bg-primary: #ffffff;
+      --bg-secondary: #f8f9fa;
+      --bg-tertiary: #f1f3f4;
+      --bg-input: #ffffff;
+      --bg-hover: #f0f0f0;
+      --text-primary: #1a1a1a;
+      --text-secondary: #5f6368;
+      --text-muted: #9aa0a6;
+      --border-color: #e0e0e0;
+      --accent: #2563eb;
+      --accent-hover: #1d4ed8;
+      --accent-light: #eff6ff;
+      --warning: #f59e0b;
+      --success: #10b981;
+      --error: #ef4444;
+      --card-shadow: 0 1px 3px rgba(0,0,0,0.08);
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: var(--bg-primary);
+      color: var(--text-primary);
+      height: 100vh;
+      overflow: hidden;
+    }
+
+    .app-container {
+      display: flex;
+      height: 100vh;
+    }
+
+    /* Left Navigation Gutter */
+    .nav-gutter {
+      width: 48px;
+      background: var(--bg-tertiary);
+      border-right: 1px solid var(--border-color);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 8px 0;
+      gap: 4px;
+    }
+
+    .nav-gutter-item {
+      width: 36px;
+      height: 36px;
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      color: var(--text-secondary);
+      transition: all 0.15s;
+    }
+
+    .nav-gutter-item:hover {
+      background: var(--bg-hover);
+      color: var(--text-primary);
+    }
+
+    .nav-gutter-item.active {
+      background: var(--accent-light);
+      color: var(--accent);
+    }
+
+    .nav-gutter-spacer {
+      flex: 1;
+    }
+
+    /* Main Content Area */
+    .main-content {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    /* Settings Header */
+    .settings-header {
+      height: 52px;
+      background: var(--bg-secondary);
+      border-bottom: 1px solid var(--border-color);
+      display: flex;
+      align-items: center;
+      padding: 0 16px;
+      gap: 16px;
+    }
+
+    .settings-title {
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--text-primary);
+    }
+
+    .settings-search {
+      flex: 1;
+      max-width: 400px;
+      position: relative;
+    }
+
+    .settings-search input {
+      width: 100%;
+      height: 32px;
+      background: var(--bg-input);
+      border: 1px solid var(--border-color);
+      border-radius: 6px;
+      padding: 0 12px 0 32px;
+      color: var(--text-primary);
+      font-size: 13px;
+    }
+
+    .settings-search input:focus {
+      outline: none;
+      border-color: var(--accent);
+    }
+
+    .settings-search input::placeholder {
+      color: var(--text-muted);
+    }
+
+    .settings-search-icon {
+      position: absolute;
+      left: 10px;
+      top: 50%;
+      transform: translateY(-50%);
+      color: var(--text-muted);
+      font-size: 14px;
+    }
+
+    .scope-tabs {
+      display: flex;
+      gap: 4px;
+      background: var(--bg-tertiary);
+      padding: 3px;
+      border-radius: 6px;
+    }
+
+    .scope-tab {
+      padding: 6px 12px;
+      border-radius: 4px;
+      font-size: 12px;
+      cursor: pointer;
+      color: var(--text-secondary);
+      transition: all 0.15s;
+    }
+
+    .scope-tab:hover {
+      color: var(--text-primary);
+    }
+
+    .scope-tab.active {
+      background: var(--accent);
+      color: white;
+      font-weight: 500;
+    }
+
+    .view-toggle {
+      display: flex;
+      gap: 4px;
+      margin-left: auto;
+    }
+
+    .view-toggle button {
+      width: 32px;
+      height: 32px;
+      background: var(--bg-primary);
+      border: 1px solid var(--border-color);
+      border-radius: 6px;
+      color: var(--text-secondary);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+
+    .view-toggle button:hover {
+      color: var(--text-primary);
+      border-color: var(--text-muted);
+    }
+
+    .view-toggle button.active {
+      background: var(--accent-light);
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+
+    /* Settings Body */
+    .settings-body {
+      flex: 1;
+      display: flex;
+      overflow: hidden;
+    }
+
+    /* Categories Sidebar */
+    .categories-sidebar {
+      width: 220px;
+      background: var(--bg-secondary);
+      border-right: 1px solid var(--border-color);
+      overflow-y: auto;
+      padding: 12px 0;
+    }
+
+    .category-group {
+      margin-bottom: 8px;
+    }
+
+    .category-group-title {
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      color: var(--text-muted);
+      padding: 8px 16px 4px;
+      letter-spacing: 0.5px;
+    }
+
+    .category-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 16px;
+      cursor: pointer;
+      color: var(--text-secondary);
+      font-size: 13px;
+      transition: all 0.15s;
+    }
+
+    .category-item:hover {
+      background: var(--bg-hover);
+      color: var(--text-primary);
+    }
+
+    .category-item.active {
+      background: var(--accent-light);
+      color: var(--accent);
+      border-left: 2px solid var(--accent);
+      font-weight: 500;
+    }
+
+    .category-icon {
+      width: 18px;
+      height: 18px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 14px;
+    }
+
+    .category-badge {
+      margin-left: auto;
+      background: var(--warning);
+      color: #000;
+      font-size: 10px;
+      padding: 2px 6px;
+      border-radius: 10px;
+      font-weight: 600;
+    }
+
+    /* Settings Panel */
+    .settings-panel {
+      flex: 1;
+      overflow-y: auto;
+      padding: 24px 32px;
+      background: var(--bg-secondary);
+    }
+
+    .settings-section {
+      margin-bottom: 32px;
+    }
+
+    .settings-section-title {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text-primary);
+      margin-bottom: 16px;
+      padding-bottom: 8px;
+      border-bottom: 1px solid var(--border-color);
+    }
+
+    /* Setting Item */
+    .setting-item {
+      margin-bottom: 24px;
+      padding: 16px 20px;
+      background: var(--bg-primary);
+      border-radius: 12px;
+      border: 1px solid var(--border-color);
+      box-shadow: var(--card-shadow);
+    }
+
+    .setting-item:hover {
+      border-color: #ccc;
+    }
+
+    .setting-header {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      margin-bottom: 8px;
+    }
+
+    .setting-label {
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--text-primary);
+    }
+
+    .setting-key {
+      font-size: 11px;
+      color: var(--text-muted);
+      font-family: 'Monaco', 'Menlo', monospace;
+      margin-top: 2px;
+    }
+
+    .setting-description {
+      font-size: 12px;
+      color: var(--text-secondary);
+      line-height: 1.5;
+      margin-bottom: 12px;
+    }
+
+    .setting-override-badge {
+      font-size: 10px;
+      padding: 3px 8px;
+      border-radius: 4px;
+      background: var(--accent-light);
+      color: var(--accent);
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      font-weight: 500;
+    }
+
+    .setting-override-badge.project {
+      background: #ecfdf5;
+      color: var(--success);
+    }
+
+    /* Setting Controls */
+    .setting-control {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    /* Toggle Switch */
+    .toggle-switch {
+      width: 44px;
+      height: 24px;
+      background: #d1d5db;
+      border-radius: 12px;
+      position: relative;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+
+    .toggle-switch.active {
+      background: var(--accent);
+    }
+
+    .toggle-switch::after {
+      content: '';
+      position: absolute;
+      width: 18px;
+      height: 18px;
+      background: white;
+      border-radius: 50%;
+      top: 3px;
+      left: 3px;
+      transition: transform 0.2s;
+      box-shadow: 0 1px 3px rgba(0,0,0,0.2);
+    }
+
+    .toggle-switch.active::after {
+      transform: translateX(20px);
+    }
+
+    /* Text Input */
+    .setting-input {
+      flex: 1;
+      max-width: 400px;
+      height: 36px;
+      background: var(--bg-primary);
+      border: 1px solid var(--border-color);
+      border-radius: 6px;
+      padding: 0 12px;
+      color: var(--text-primary);
+      font-size: 13px;
+    }
+
+    .setting-input:focus {
+      outline: none;
+      border-color: var(--accent);
+    }
+
+    .setting-input.secure {
+      font-family: 'Monaco', 'Menlo', monospace;
+      letter-spacing: 2px;
+    }
+
+    /* Select Dropdown */
+    .setting-select {
+      min-width: 200px;
+      height: 36px;
+      background: var(--bg-primary);
+      border: 1px solid var(--border-color);
+      border-radius: 6px;
+      padding: 0 12px;
+      color: var(--text-primary);
+      font-size: 13px;
+      cursor: pointer;
+      appearance: none;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%235f6368' d='M6 8L2 4h8z'/%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: right 12px center;
+    }
+
+    .setting-select:focus {
+      outline: none;
+      border-color: var(--accent);
+    }
+
+    /* Model Selector */
+    .model-selector {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .model-selector-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .model-selector-actions {
+      display: flex;
+      gap: 8px;
+    }
+
+    .model-selector-actions button {
+      font-size: 11px;
+      padding: 4px 8px;
+      background: transparent;
+      border: 1px solid var(--border-color);
+      border-radius: 4px;
+      color: var(--text-secondary);
+      cursor: pointer;
+    }
+
+    .model-selector-actions button:hover {
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+
+    .model-list {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+    }
+
+    .model-chip {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 10px;
+      background: var(--bg-primary);
+      border: 1px solid var(--border-color);
+      border-radius: 6px;
+      font-size: 12px;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+
+    .model-chip:hover {
+      border-color: var(--accent);
+    }
+
+    .model-chip.selected {
+      background: var(--accent-light);
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+
+    .model-chip-check {
+      width: 14px;
+      height: 14px;
+      border: 1px solid var(--border-color);
+      border-radius: 3px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 10px;
+    }
+
+    .model-chip.selected .model-chip-check {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: white;
+    }
+
+    /* API Key Input */
+    .api-key-input {
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+
+    .api-key-input input {
+      flex: 1;
+      max-width: 350px;
+    }
+
+    .api-key-input button {
+      height: 36px;
+      padding: 0 12px;
+      background: var(--bg-primary);
+      border: 1px solid var(--border-color);
+      border-radius: 6px;
+      color: var(--text-secondary);
+      cursor: pointer;
+      font-size: 12px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+
+    .api-key-input button:hover {
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+
+    .api-key-input button.test-success {
+      border-color: var(--success);
+      color: var(--success);
+      background: #ecfdf5;
+    }
+
+    /* Status Indicators */
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--text-muted);
+    }
+
+    .status-dot.success {
+      background: var(--success);
+    }
+
+    .status-dot.warning {
+      background: var(--warning);
+    }
+
+    .status-dot.error {
+      background: var(--error);
+    }
+
+    /* JSON View */
+    .json-view {
+      display: none;
+      flex: 1;
+      padding: 24px;
+      background: var(--bg-secondary);
+    }
+
+    .json-view.active {
+      display: block;
+    }
+
+    .json-editor {
+      width: 100%;
+      height: calc(100vh - 180px);
+      background: var(--bg-primary);
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      padding: 16px;
+      font-family: 'Monaco', 'Menlo', monospace;
+      font-size: 13px;
+      color: var(--text-primary);
+      line-height: 1.6;
+      resize: none;
+      box-shadow: var(--card-shadow);
+    }
+
+    .json-editor:focus {
+      outline: none;
+      border-color: var(--accent);
+    }
+
+    /* Footer */
+    .settings-footer {
+      height: 56px;
+      background: var(--bg-secondary);
+      border-top: 1px solid var(--border-color);
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      padding: 0 24px;
+      gap: 12px;
+    }
+
+    .settings-footer button {
+      height: 36px;
+      padding: 0 20px;
+      border-radius: 6px;
+      font-size: 13px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+
+    .btn-secondary {
+      background: transparent;
+      border: 1px solid var(--border-color);
+      color: var(--text-secondary);
+    }
+
+    .btn-secondary:hover {
+      border-color: var(--text-muted);
+      color: var(--text-primary);
+    }
+
+    .btn-primary {
+      background: var(--accent);
+      border: none;
+      color: white;
+    }
+
+    .btn-primary:hover {
+      background: var(--accent-hover);
+    }
+
+    .btn-primary:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    /* Scrollbar */
+    ::-webkit-scrollbar {
+      width: 8px;
+      height: 8px;
+    }
+
+    ::-webkit-scrollbar-track {
+      background: transparent;
+    }
+
+    ::-webkit-scrollbar-thumb {
+      background: #d1d5db;
+      border-radius: 4px;
+    }
+
+    ::-webkit-scrollbar-thumb:hover {
+      background: #9ca3af;
+    }
+
+    /* Animation for tab switching */
+    .settings-panel, .json-view, .extensions-panel {
+      animation: fadeIn 0.15s ease;
+    }
+
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(4px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+
+    /* Extensions Panel */
+    .extensions-panel {
+      display: none;
+      flex: 1;
+      overflow-y: auto;
+      padding: 24px 32px;
+      background: var(--bg-secondary);
+    }
+
+    .extensions-panel.active {
+      display: block;
+    }
+
+    .extensions-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 20px;
+    }
+
+    .extensions-header h2 {
+      font-size: 16px;
+      font-weight: 600;
+      color: var(--text-primary);
+    }
+
+    .extensions-search {
+      position: relative;
+      width: 280px;
+    }
+
+    .extensions-search input {
+      width: 100%;
+      height: 36px;
+      background: var(--bg-primary);
+      border: 1px solid var(--border-color);
+      border-radius: 6px;
+      padding: 0 12px 0 36px;
+      font-size: 13px;
+      color: var(--text-primary);
+    }
+
+    .extensions-search input:focus {
+      outline: none;
+      border-color: var(--accent);
+    }
+
+    .extensions-search-icon {
+      position: absolute;
+      left: 12px;
+      top: 50%;
+      transform: translateY(-50%);
+      color: var(--text-muted);
+    }
+
+    .extensions-tabs {
+      display: flex;
+      gap: 4px;
+      margin-bottom: 20px;
+      border-bottom: 1px solid var(--border-color);
+    }
+
+    .extensions-tab {
+      padding: 10px 16px;
+      font-size: 13px;
+      color: var(--text-secondary);
+      cursor: pointer;
+      border-bottom: 2px solid transparent;
+      margin-bottom: -1px;
+      transition: all 0.15s;
+    }
+
+    .extensions-tab:hover {
+      color: var(--text-primary);
+    }
+
+    .extensions-tab.active {
+      color: var(--accent);
+      border-bottom-color: var(--accent);
+      font-weight: 500;
+    }
+
+    .extensions-tab .tab-count {
+      background: var(--bg-tertiary);
+      color: var(--text-secondary);
+      font-size: 11px;
+      padding: 2px 6px;
+      border-radius: 10px;
+      margin-left: 6px;
+    }
+
+    .extensions-tab.active .tab-count {
+      background: var(--accent-light);
+      color: var(--accent);
+    }
+
+    .extensions-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+      gap: 16px;
+    }
+
+    .extension-card {
+      background: var(--bg-primary);
+      border: 1px solid var(--border-color);
+      border-radius: 12px;
+      padding: 16px;
+      box-shadow: var(--card-shadow);
+      transition: all 0.15s;
+    }
+
+    .extension-card:hover {
+      border-color: #ccc;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+    }
+
+    .extension-card-header {
+      display: flex;
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+
+    .extension-icon {
+      width: 48px;
+      height: 48px;
+      border-radius: 10px;
+      background: var(--bg-tertiary);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 24px;
+      flex-shrink: 0;
+    }
+
+    .extension-icon.purple { background: #ede9fe; color: #7c3aed; }
+    .extension-icon.blue { background: #dbeafe; color: #2563eb; }
+    .extension-icon.green { background: #dcfce7; color: #16a34a; }
+    .extension-icon.orange { background: #ffedd5; color: #ea580c; }
+    .extension-icon.pink { background: #fce7f3; color: #db2777; }
+    .extension-icon.cyan { background: #cffafe; color: #0891b2; }
+
+    .extension-info {
+      flex: 1;
+      min-width: 0;
+    }
+
+    .extension-name {
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--text-primary);
+      margin-bottom: 2px;
+    }
+
+    .extension-author {
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+
+    .extension-description {
+      font-size: 13px;
+      color: var(--text-secondary);
+      line-height: 1.5;
+      margin-bottom: 12px;
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+    }
+
+    .extension-footer {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+
+    .extension-meta {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+
+    .extension-meta-item {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .extension-rating {
+      color: #f59e0b;
+    }
+
+    .extension-actions {
+      display: flex;
+      gap: 8px;
+    }
+
+    .btn-install {
+      height: 32px;
+      padding: 0 14px;
+      background: var(--accent);
+      border: none;
+      border-radius: 6px;
+      color: white;
+      font-size: 12px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+
+    .btn-install:hover {
+      background: var(--accent-hover);
+    }
+
+    .btn-installed {
+      height: 32px;
+      padding: 0 14px;
+      background: #ecfdf5;
+      border: 1px solid var(--success);
+      border-radius: 6px;
+      color: var(--success);
+      font-size: 12px;
+      font-weight: 500;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+
+    .btn-uninstall {
+      height: 32px;
+      padding: 0 10px;
+      background: transparent;
+      border: 1px solid var(--border-color);
+      border-radius: 6px;
+      color: var(--text-secondary);
+      font-size: 12px;
+      cursor: pointer;
+    }
+
+    .btn-uninstall:hover {
+      border-color: var(--error);
+      color: var(--error);
+    }
+
+    .extension-tags {
+      display: flex;
+      gap: 6px;
+      margin-bottom: 12px;
+    }
+
+    .extension-tag {
+      font-size: 10px;
+      padding: 3px 8px;
+      background: var(--bg-tertiary);
+      color: var(--text-secondary);
+      border-radius: 4px;
+    }
+
+    /* Featured Extension */
+    .extension-card.featured {
+      border-color: var(--accent);
+      background: linear-gradient(135deg, var(--bg-primary) 0%, var(--accent-light) 100%);
+    }
+
+    .featured-badge {
+      font-size: 10px;
+      padding: 2px 8px;
+      background: var(--accent);
+      color: white;
+      border-radius: 4px;
+      font-weight: 500;
+    }
+
+    /* Tool Packages Panel */
+    .packages-panel {
+      display: none;
+      flex: 1;
+      overflow-y: auto;
+      padding: 24px 32px;
+      background: var(--bg-secondary);
+    }
+
+    .packages-panel.active {
+      display: block;
+    }
+
+    .packages-header {
+      margin-bottom: 20px;
+    }
+
+    .packages-header h2 {
+      font-size: 16px;
+      font-weight: 600;
+      color: var(--text-primary);
+      margin-bottom: 8px;
+    }
+
+    .packages-header p {
+      font-size: 13px;
+      color: var(--text-secondary);
+      line-height: 1.5;
+    }
+
+    .packages-scope-notice {
+      background: var(--accent-light);
+      border: 1px solid var(--accent);
+      border-radius: 8px;
+      padding: 12px 16px;
+      margin-bottom: 20px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .packages-scope-notice.warning {
+      background: #fef3c7;
+      border-color: #f59e0b;
+    }
+
+    .packages-scope-notice svg {
+      flex-shrink: 0;
+      color: var(--accent);
+    }
+
+    .packages-scope-notice.warning svg {
+      color: #f59e0b;
+    }
+
+    .packages-scope-notice-text {
+      flex: 1;
+    }
+
+    .packages-scope-notice-text strong {
+      display: block;
+      font-size: 13px;
+      color: var(--text-primary);
+      margin-bottom: 2px;
+    }
+
+    .packages-scope-notice-text span {
+      font-size: 12px;
+      color: var(--text-secondary);
+    }
+
+    .packages-scope-notice button {
+      padding: 6px 12px;
+      background: var(--accent);
+      color: white;
+      border: none;
+      border-radius: 6px;
+      font-size: 12px;
+      font-weight: 500;
+      cursor: pointer;
+    }
+
+    .packages-scope-notice button:hover {
+      background: var(--accent-hover);
+    }
+
+    .packages-progress {
+      background: var(--bg-primary);
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      padding: 12px 16px;
+      margin-bottom: 20px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .packages-progress-bar {
+      flex: 1;
+      height: 6px;
+      background: var(--bg-tertiary);
+      border-radius: 3px;
+      overflow: hidden;
+    }
+
+    .packages-progress-fill {
+      height: 100%;
+      background: var(--accent);
+      border-radius: 3px;
+      transition: width 0.3s;
+    }
+
+    .packages-progress-text {
+      font-size: 13px;
+      color: var(--text-secondary);
+      white-space: nowrap;
+    }
+
+    .packages-section-title {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-bottom: 12px;
+    }
+
+    .package-card {
+      background: var(--bg-primary);
+      border: 1px solid var(--border-color);
+      border-radius: 12px;
+      padding: 16px;
+      margin-bottom: 12px;
+      box-shadow: var(--card-shadow);
+      transition: all 0.15s;
+    }
+
+    .package-card:hover {
+      border-color: #ccc;
+    }
+
+    .package-card.installed {
+      border-color: var(--success);
+      background: linear-gradient(135deg, var(--bg-primary) 0%, #ecfdf5 100%);
+    }
+
+    .package-card.recommended {
+      border-color: var(--accent);
+      background: linear-gradient(135deg, var(--bg-primary) 0%, var(--accent-light) 100%);
+    }
+
+    .package-card-header {
+      display: flex;
+      align-items: flex-start;
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+
+    .package-icon {
+      width: 40px;
+      height: 40px;
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+    }
+
+    .package-icon.blue { background: #dbeafe; color: #2563eb; }
+    .package-icon.purple { background: #ede9fe; color: #7c3aed; }
+    .package-icon.green { background: #dcfce7; color: #16a34a; }
+
+    .package-info {
+      flex: 1;
+      min-width: 0;
+    }
+
+    .package-name {
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--text-primary);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .package-name .recommended-badge {
+      font-size: 10px;
+      padding: 2px 6px;
+      background: var(--accent);
+      color: white;
+      border-radius: 4px;
+      font-weight: 500;
+    }
+
+    .package-description {
+      font-size: 13px;
+      color: var(--text-secondary);
+      margin-top: 4px;
+    }
+
+    .package-actions {
+      display: flex;
+      gap: 8px;
+      flex-shrink: 0;
+    }
+
+    .package-details {
+      margin-top: 12px;
+      padding-top: 12px;
+      border-top: 1px solid var(--border-color);
+    }
+
+    .package-details-toggle {
+      font-size: 12px;
+      color: var(--accent);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      background: none;
+      border: none;
+      padding: 0;
+    }
+
+    .package-details-toggle:hover {
+      text-decoration: underline;
+    }
+
+    .package-details-content {
+      margin-top: 12px;
+      display: none;
+    }
+
+    .package-details-content.expanded {
+      display: block;
+    }
+
+    .package-commands {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+
+    .package-command {
+      font-size: 11px;
+      padding: 4px 8px;
+      background: var(--bg-tertiary);
+      color: var(--text-secondary);
+      border-radius: 4px;
+      font-family: 'Monaco', 'Menlo', monospace;
+    }
+  </style>
+</head>
+<body>
+  <div class="app-container">
+    <!-- Left Navigation Gutter -->
+    <nav class="nav-gutter">
+      <div class="nav-gutter-item" title="Files">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M13 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V9z"/>
+          <polyline points="13,2 13,9 20,9"/>
+        </svg>
+      </div>
+      <div class="nav-gutter-item" title="Agent">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="12" cy="12" r="3"/>
+          <path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83M1 12h4M19 12h4M4.22 19.78l2.83-2.83M16.95 7.05l2.83-2.83"/>
+        </svg>
+      </div>
+      <div class="nav-gutter-item" title="Tracker">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <rect x="3" y="3" width="18" height="18" rx="2"/>
+          <path d="M9 9h6M9 13h6M9 17h4"/>
+        </svg>
+      </div>
+      <div class="nav-gutter-item active" title="Settings">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="12" cy="12" r="3"/>
+          <path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-2 2 2 2 0 01-2-2v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83 0 2 2 0 010-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 01-2-2 2 2 0 012-2h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 010-2.83 2 2 0 012.83 0l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 012-2 2 2 0 012 2v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 0 2 2 0 010 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 012 2 2 2 0 01-2 2h-.09a1.65 1.65 0 00-1.51 1z"/>
+        </svg>
+      </div>
+      <div class="nav-gutter-spacer"></div>
+      <div class="nav-gutter-item" title="Help">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="12" cy="12" r="10"/>
+          <path d="M9.09 9a3 3 0 015.83 1c0 2-3 3-3 3M12 17h.01"/>
+        </svg>
+      </div>
+    </nav>
+
+    <!-- Main Content -->
+    <div class="main-content">
+      <!-- Settings Header -->
+      <header class="settings-header">
+        <span class="settings-title">Settings</span>
+
+        <div class="settings-search">
+          <span class="settings-search-icon">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="11" cy="11" r="8"/>
+              <path d="M21 21l-4.35-4.35"/>
+            </svg>
+          </span>
+          <input type="text" placeholder="Search settings..." id="searchInput">
+        </div>
+
+        <div class="scope-tabs">
+          <div class="scope-tab active" data-scope="user">User</div>
+          <div class="scope-tab" data-scope="project">Project</div>
+        </div>
+
+        <div class="view-toggle">
+          <button class="active" id="guiViewBtn" title="GUI View">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <rect x="3" y="3" width="7" height="7"/>
+              <rect x="14" y="3" width="7" height="7"/>
+              <rect x="14" y="14" width="7" height="7"/>
+              <rect x="3" y="14" width="7" height="7"/>
+            </svg>
+          </button>
+          <button id="jsonViewBtn" title="JSON View">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <polyline points="16,18 22,12 16,6"/>
+              <polyline points="8,6 2,12 8,18"/>
+            </svg>
+          </button>
+        </div>
+      </header>
+
+      <!-- Settings Body -->
+      <div class="settings-body">
+        <!-- Categories Sidebar -->
+        <aside class="categories-sidebar">
+          <div class="category-group">
+            <div class="category-group-title">Project</div>
+            <div class="category-item" data-category="tool-packages">
+              <span class="category-icon">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z"/>
+                  <polyline points="7.5,4.21 12,6.81 16.5,4.21"/>
+                  <polyline points="7.5,19.79 7.5,14.6 3,12"/>
+                  <polyline points="21,12 16.5,14.6 16.5,19.79"/>
+                  <polyline points="3.27,6.96 12,12.01 20.73,6.96"/>
+                  <line x1="12" y1="22.08" x2="12" y2="12"/>
+                </svg>
+              </span>
+              Tool Packages
+              <span class="tab-count">1/3</span>
+            </div>
+          </div>
+
+          <div class="category-group">
+            <div class="category-group-title">AI Providers</div>
+            <div class="category-item active" data-category="claude-code">
+              <span class="category-icon">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                  <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/>
+                </svg>
+              </span>
+              Claude Code
+              <span class="status-dot success"></span>
+            </div>
+            <div class="category-item" data-category="claude">
+              <span class="category-icon">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                  <circle cx="12" cy="12" r="10"/>
+                </svg>
+              </span>
+              Claude API
+            </div>
+            <div class="category-item" data-category="openai">
+              <span class="category-icon">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                  <path d="M22.282 9.821a5.985 5.985 0 00-.516-4.91 6.046 6.046 0 00-6.51-2.9A6.065 6.065 0 0012 0a6.065 6.065 0 00-3.256 1.011 6.046 6.046 0 00-6.51 2.9 5.985 5.985 0 00-.516 4.91A6.065 6.065 0 000 12a6.065 6.065 0 001.718 3.179 5.985 5.985 0 00.516 4.91 6.046 6.046 0 006.51 2.9A6.065 6.065 0 0012 24a6.065 6.065 0 003.256-1.011 6.046 6.046 0 006.51-2.9 5.985 5.985 0 00.516-4.91A6.065 6.065 0 0024 12a6.065 6.065 0 00-1.718-3.179z"/>
+                </svg>
+              </span>
+              OpenAI
+              <span class="category-badge">!</span>
+            </div>
+            <div class="category-item" data-category="lmstudio">
+              <span class="category-icon">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <rect x="2" y="3" width="20" height="14" rx="2"/>
+                  <path d="M8 21h8M12 17v4"/>
+                </svg>
+              </span>
+              LM Studio
+            </div>
+          </div>
+
+          <div class="category-group">
+            <div class="category-group-title">Application</div>
+            <div class="category-item" data-category="editor">
+              <span class="category-icon">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/>
+                  <path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/>
+                </svg>
+              </span>
+              Editor
+            </div>
+            <div class="category-item" data-category="notifications">
+              <span class="category-icon">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M18 8A6 6 0 006 8c0 7-3 9-3 9h18s-3-2-3-9"/>
+                  <path d="M13.73 21a2 2 0 01-3.46 0"/>
+                </svg>
+              </span>
+              Notifications
+            </div>
+            <div class="category-item" data-category="sync">
+              <span class="category-icon">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <polyline points="23,4 23,10 17,10"/>
+                  <polyline points="1,20 1,14 7,14"/>
+                  <path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15"/>
+                </svg>
+              </span>
+              Sync
+            </div>
+            <div class="category-item" data-category="advanced">
+              <span class="category-icon">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <circle cx="12" cy="12" r="3"/>
+                  <path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-2 2 2 2 0 01-2-2v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83 0 2 2 0 010-2.83l.06-.06a1.65 1.65 0 00.33-1.82 1.65 1.65 0 00-1.51-1H3a2 2 0 01-2-2 2 2 0 012-2h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 010-2.83 2 2 0 012.83 0l.06.06a1.65 1.65 0 001.82.33H9a1.65 1.65 0 001-1.51V3a2 2 0 012-2 2 2 0 012 2v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 0 2 2 0 010 2.83l-.06.06a1.65 1.65 0 00-.33 1.82V9a1.65 1.65 0 001.51 1H21a2 2 0 012 2 2 2 0 01-2 2h-.09a1.65 1.65 0 00-1.51 1z"/>
+                </svg>
+              </span>
+              Advanced
+            </div>
+          </div>
+
+          <div class="category-group">
+            <div class="category-group-title">Extensions</div>
+            <div class="category-item" data-category="marketplace">
+              <span class="category-icon">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <circle cx="9" cy="21" r="1"/>
+                  <circle cx="20" cy="21" r="1"/>
+                  <path d="M1 1h4l2.68 13.39a2 2 0 002 1.61h9.72a2 2 0 002-1.61L23 6H6"/>
+                </svg>
+              </span>
+              Marketplace
+              <span class="category-badge" style="background: var(--accent); color: white;">New</span>
+            </div>
+            <div class="category-item" data-category="installed">
+              <span class="category-icon">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M21 16V8a2 2 0 00-1-1.73l-7-4a2 2 0 00-2 0l-7 4A2 2 0 003 8v8a2 2 0 001 1.73l7 4a2 2 0 002 0l7-4A2 2 0 0021 16z"/>
+                  <polyline points="3.27,6.96 12,12.01 20.73,6.96"/>
+                  <line x1="12" y1="22.08" x2="12" y2="12"/>
+                </svg>
+              </span>
+              Installed
+              <span class="tab-count">3</span>
+            </div>
+            <div class="category-item" data-category="mcp-servers">
+              <span class="category-icon">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <rect x="2" y="2" width="20" height="8" rx="2"/>
+                  <rect x="2" y="14" width="20" height="8" rx="2"/>
+                  <line x1="6" y1="6" x2="6.01" y2="6"/>
+                  <line x1="6" y1="18" x2="6.01" y2="18"/>
+                </svg>
+              </span>
+              MCP Servers
+            </div>
+          </div>
+        </aside>
+
+        <!-- Settings Panel (GUI View) -->
+        <main class="settings-panel" id="guiPanel">
+          <div class="settings-section">
+            <div class="settings-section-title">Claude Code Configuration</div>
+
+            <div class="setting-item">
+              <div class="setting-header">
+                <div>
+                  <div class="setting-label">Enable Claude Code</div>
+                  <div class="setting-key">ai.claudeCode.enabled</div>
+                </div>
+                <span class="setting-override-badge project">
+                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/>
+                    <polyline points="17,8 12,3 7,8"/>
+                    <line x1="12" y1="3" x2="12" y2="15"/>
+                  </svg>
+                  Project Override
+                </span>
+              </div>
+              <div class="setting-description">
+                Enable the Claude Code CLI-based agent for advanced code editing and MCP tool support.
+              </div>
+              <div class="setting-control">
+                <div class="toggle-switch active"></div>
+              </div>
+            </div>
+
+            <div class="setting-item">
+              <div class="setting-header">
+                <div>
+                  <div class="setting-label">Authentication Method</div>
+                  <div class="setting-key">ai.claudeCode.authMethod</div>
+                </div>
+              </div>
+              <div class="setting-description">
+                Choose how to authenticate with Claude Code. Browser login uses OAuth, API key requires an Anthropic API key.
+              </div>
+              <div class="setting-control">
+                <select class="setting-select">
+                  <option value="login" selected>Browser Login (OAuth)</option>
+                  <option value="api-key">API Key</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="setting-item">
+              <div class="setting-header">
+                <div>
+                  <div class="setting-label">Permission Mode</div>
+                  <div class="setting-key">ai.claudeCode.permissionMode</div>
+                </div>
+              </div>
+              <div class="setting-description">
+                Control how Claude Code handles tool permissions. "Plan" mode requires approval for file changes.
+              </div>
+              <div class="setting-control">
+                <select class="setting-select">
+                  <option value="plan" selected>Plan Mode (Safe)</option>
+                  <option value="auto-edit">Auto Edit</option>
+                  <option value="full-auto">Full Auto</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="setting-item">
+              <div class="setting-header">
+                <div>
+                  <div class="setting-label">Enabled Tools</div>
+                  <div class="setting-key">ai.claudeCode.allowedTools</div>
+                </div>
+              </div>
+              <div class="setting-description">
+                Select which tools Claude Code is allowed to use. Use caution when enabling file system tools.
+              </div>
+              <div class="setting-control">
+                <div class="model-selector">
+                  <div class="model-selector-header">
+                    <span style="font-size: 12px; color: var(--text-secondary);">6 tools selected</span>
+                    <div class="model-selector-actions">
+                      <button>Select All</button>
+                      <button>Deselect All</button>
+                    </div>
+                  </div>
+                  <div class="model-list">
+                    <div class="model-chip selected">
+                      <span class="model-chip-check">&#10003;</span>
+                      Read
+                    </div>
+                    <div class="model-chip selected">
+                      <span class="model-chip-check">&#10003;</span>
+                      Write
+                    </div>
+                    <div class="model-chip selected">
+                      <span class="model-chip-check">&#10003;</span>
+                      Edit
+                    </div>
+                    <div class="model-chip selected">
+                      <span class="model-chip-check">&#10003;</span>
+                      Bash
+                    </div>
+                    <div class="model-chip selected">
+                      <span class="model-chip-check">&#10003;</span>
+                      Glob
+                    </div>
+                    <div class="model-chip selected">
+                      <span class="model-chip-check">&#10003;</span>
+                      Grep
+                    </div>
+                    <div class="model-chip">
+                      <span class="model-chip-check"></span>
+                      WebFetch
+                    </div>
+                    <div class="model-chip">
+                      <span class="model-chip-check"></span>
+                      MCP
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="settings-section">
+            <div class="settings-section-title">API Configuration</div>
+
+            <div class="setting-item">
+              <div class="setting-header">
+                <div>
+                  <div class="setting-label">Anthropic API Key</div>
+                  <div class="setting-key">ai.claudeCode.apiKey</div>
+                </div>
+                <span class="setting-override-badge">
+                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <rect x="3" y="11" width="18" height="11" rx="2" ry="2"/>
+                    <path d="M7 11V7a5 5 0 0110 0v4"/>
+                  </svg>
+                  Secure
+                </span>
+              </div>
+              <div class="setting-description">
+                Your Anthropic API key for Claude Code authentication. Required when using API Key auth method.
+              </div>
+              <div class="setting-control">
+                <div class="api-key-input">
+                  <input type="password" class="setting-input secure" value="sk-ant-api03-****" placeholder="sk-ant-...">
+                  <button title="Show/Hide">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                      <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+                      <circle cx="12" cy="12" r="3"/>
+                    </svg>
+                  </button>
+                  <button class="test-success">
+                    <span class="status-dot success"></span>
+                    Connected
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </main>
+
+        <!-- JSON View -->
+        <div class="json-view" id="jsonPanel">
+          <textarea class="json-editor" spellcheck="false">{
+  // User Settings (read-only when viewing Project scope)
+
+  "ai.claudeCode.enabled": true,
+  "ai.claudeCode.authMethod": "login",
+  "ai.claudeCode.permissionMode": "plan",
+  "ai.claudeCode.allowedTools": [
+    "Read",
+    "Write",
+    "Edit",
+    "Bash",
+    "Glob",
+    "Grep"
+  ],
+
+  "ai.claude.enabled": true,
+  "ai.claude.models": [
+    "claude-sonnet-4-20250514",
+    "claude-3-5-haiku-20241022"
+  ],
+
+  "ai.openai.enabled": false,
+
+  "editor.theme": "crystal-dark",
+  "editor.autosave": true,
+  "editor.autosaveDelay": 1000,
+
+  "notifications.completionSound": true,
+  "notifications.soundType": "chime",
+  "notifications.osNotifications": true,
+
+  "advanced.showToolCalls": false,
+  "advanced.debugLogging": false,
+  "advanced.releaseChannel": "stable",
+  "advanced.analytics": true
+}</textarea>
+        </div>
+
+        <!-- Extensions Panel -->
+        <div class="extensions-panel" id="extensionsPanel">
+          <div class="extensions-header">
+            <h2>Extensions Marketplace</h2>
+            <div class="extensions-search">
+              <span class="extensions-search-icon">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <circle cx="11" cy="11" r="8"/>
+                  <path d="M21 21l-4.35-4.35"/>
+                </svg>
+              </span>
+              <input type="text" placeholder="Search extensions...">
+            </div>
+          </div>
+
+          <div class="extensions-tabs">
+            <div class="extensions-tab active">
+              Featured
+            </div>
+            <div class="extensions-tab">
+              Popular
+              <span class="tab-count">24</span>
+            </div>
+            <div class="extensions-tab">
+              AI Agents
+              <span class="tab-count">12</span>
+            </div>
+            <div class="extensions-tab">
+              Themes
+              <span class="tab-count">8</span>
+            </div>
+            <div class="extensions-tab">
+              Tools
+              <span class="tab-count">15</span>
+            </div>
+          </div>
+
+          <div class="extensions-grid">
+            <!-- Featured Extension -->
+            <div class="extension-card featured">
+              <div class="extension-card-header">
+                <div class="extension-icon purple">
+                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/>
+                  </svg>
+                </div>
+                <div class="extension-info">
+                  <div class="extension-name">Claude Code Tools</div>
+                  <div class="extension-author">by Anthropic</div>
+                </div>
+                <span class="featured-badge">Featured</span>
+              </div>
+              <div class="extension-description">
+                Enhanced MCP tools for Claude Code including advanced file operations, git integration, and project-aware context.
+              </div>
+              <div class="extension-tags">
+                <span class="extension-tag">MCP</span>
+                <span class="extension-tag">AI</span>
+                <span class="extension-tag">Tools</span>
+              </div>
+              <div class="extension-footer">
+                <div class="extension-meta">
+                  <span class="extension-meta-item">
+                    <span class="extension-rating">&#9733;&#9733;&#9733;&#9733;&#9733;</span>
+                    4.9
+                  </span>
+                  <span class="extension-meta-item">12.4k installs</span>
+                </div>
+                <div class="extension-actions">
+                  <button class="btn-installed">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3">
+                      <polyline points="20,6 9,17 4,12"/>
+                    </svg>
+                    Installed
+                  </button>
+                  <button class="btn-uninstall">Uninstall</button>
+                </div>
+              </div>
+            </div>
+
+            <!-- Extension 2 -->
+            <div class="extension-card">
+              <div class="extension-card-header">
+                <div class="extension-icon blue">
+                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <rect x="3" y="3" width="18" height="18" rx="2"/>
+                    <path d="M9 9h6M9 13h6M9 17h4"/>
+                  </svg>
+                </div>
+                <div class="extension-info">
+                  <div class="extension-name">Project Tracker Pro</div>
+                  <div class="extension-author">by Nimbalyst Team</div>
+                </div>
+              </div>
+              <div class="extension-description">
+                Advanced project management with Kanban boards, sprint planning, and team collaboration features.
+              </div>
+              <div class="extension-tags">
+                <span class="extension-tag">Productivity</span>
+                <span class="extension-tag">Teams</span>
+              </div>
+              <div class="extension-footer">
+                <div class="extension-meta">
+                  <span class="extension-meta-item">
+                    <span class="extension-rating">&#9733;&#9733;&#9733;&#9733;&#9734;</span>
+                    4.2
+                  </span>
+                  <span class="extension-meta-item">8.1k installs</span>
+                </div>
+                <div class="extension-actions">
+                  <button class="btn-install">Install</button>
+                </div>
+              </div>
+            </div>
+
+            <!-- Extension 3 -->
+            <div class="extension-card">
+              <div class="extension-card-header">
+                <div class="extension-icon green">
+                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M14.7 6.3a1 1 0 000 1.4l1.6 1.6a1 1 0 001.4 0l3.77-3.77a6 6 0 01-7.94 7.94l-6.91 6.91a2.12 2.12 0 01-3-3l6.91-6.91a6 6 0 017.94-7.94l-3.76 3.76z"/>
+                  </svg>
+                </div>
+                <div class="extension-info">
+                  <div class="extension-name">Code Refactor Agent</div>
+                  <div class="extension-author">by DevTools Inc</div>
+                </div>
+              </div>
+              <div class="extension-description">
+                AI-powered code refactoring suggestions with one-click apply. Supports TypeScript, Python, and Go.
+              </div>
+              <div class="extension-tags">
+                <span class="extension-tag">AI Agent</span>
+                <span class="extension-tag">Refactoring</span>
+              </div>
+              <div class="extension-footer">
+                <div class="extension-meta">
+                  <span class="extension-meta-item">
+                    <span class="extension-rating">&#9733;&#9733;&#9733;&#9733;&#9733;</span>
+                    4.8
+                  </span>
+                  <span class="extension-meta-item">5.6k installs</span>
+                </div>
+                <div class="extension-actions">
+                  <button class="btn-install">Install</button>
+                </div>
+              </div>
+            </div>
+
+            <!-- Extension 4 -->
+            <div class="extension-card">
+              <div class="extension-card-header">
+                <div class="extension-icon orange">
+                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <circle cx="12" cy="12" r="5"/>
+                    <line x1="12" y1="1" x2="12" y2="3"/>
+                    <line x1="12" y1="21" x2="12" y2="23"/>
+                    <line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/>
+                    <line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/>
+                    <line x1="1" y1="12" x2="3" y2="12"/>
+                    <line x1="21" y1="12" x2="23" y2="12"/>
+                    <line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/>
+                    <line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>
+                  </svg>
+                </div>
+                <div class="extension-info">
+                  <div class="extension-name">Sunset Theme Pack</div>
+                  <div class="extension-author">by Theme Studio</div>
+                </div>
+              </div>
+              <div class="extension-description">
+                Beautiful warm-toned themes including Sunset, Autumn, and Golden Hour. Easy on the eyes for long coding sessions.
+              </div>
+              <div class="extension-tags">
+                <span class="extension-tag">Theme</span>
+                <span class="extension-tag">Dark Mode</span>
+              </div>
+              <div class="extension-footer">
+                <div class="extension-meta">
+                  <span class="extension-meta-item">
+                    <span class="extension-rating">&#9733;&#9733;&#9733;&#9733;&#9734;</span>
+                    4.5
+                  </span>
+                  <span class="extension-meta-item">3.2k installs</span>
+                </div>
+                <div class="extension-actions">
+                  <button class="btn-install">Install</button>
+                </div>
+              </div>
+            </div>
+
+            <!-- Extension 5 -->
+            <div class="extension-card">
+              <div class="extension-card-header">
+                <div class="extension-icon pink">
+                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M21 11.5a8.38 8.38 0 01-.9 3.8 8.5 8.5 0 01-7.6 4.7 8.38 8.38 0 01-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 01-.9-3.8 8.5 8.5 0 014.7-7.6 8.38 8.38 0 013.8-.9h.5a8.48 8.48 0 018 8v.5z"/>
+                  </svg>
+                </div>
+                <div class="extension-info">
+                  <div class="extension-name">Doc Writer AI</div>
+                  <div class="extension-author">by WriterBot Labs</div>
+                </div>
+              </div>
+              <div class="extension-description">
+                Automatically generate documentation from your code. Supports JSDoc, Python docstrings, and markdown READMEs.
+              </div>
+              <div class="extension-tags">
+                <span class="extension-tag">AI Agent</span>
+                <span class="extension-tag">Documentation</span>
+              </div>
+              <div class="extension-footer">
+                <div class="extension-meta">
+                  <span class="extension-meta-item">
+                    <span class="extension-rating">&#9733;&#9733;&#9733;&#9733;&#9733;</span>
+                    4.7
+                  </span>
+                  <span class="extension-meta-item">7.8k installs</span>
+                </div>
+                <div class="extension-actions">
+                  <button class="btn-installed">
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3">
+                      <polyline points="20,6 9,17 4,12"/>
+                    </svg>
+                    Installed
+                  </button>
+                  <button class="btn-uninstall">Uninstall</button>
+                </div>
+              </div>
+            </div>
+
+            <!-- Extension 6 -->
+            <div class="extension-card">
+              <div class="extension-card-header">
+                <div class="extension-icon cyan">
+                  <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <polyline points="16,18 22,12 16,6"/>
+                    <polyline points="8,6 2,12 8,18"/>
+                  </svg>
+                </div>
+                <div class="extension-info">
+                  <div class="extension-name">Snippet Library</div>
+                  <div class="extension-author">by CodeSnips</div>
+                </div>
+              </div>
+              <div class="extension-description">
+                Personal snippet library with cloud sync. Create, organize, and quickly insert your favorite code patterns.
+              </div>
+              <div class="extension-tags">
+                <span class="extension-tag">Productivity</span>
+                <span class="extension-tag">Snippets</span>
+              </div>
+              <div class="extension-footer">
+                <div class="extension-meta">
+                  <span class="extension-meta-item">
+                    <span class="extension-rating">&#9733;&#9733;&#9733;&#9733;&#9734;</span>
+                    4.3
+                  </span>
+                  <span class="extension-meta-item">2.1k installs</span>
+                </div>
+                <div class="extension-actions">
+                  <button class="btn-install">Install</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Tool Packages Panel -->
+        <div class="packages-panel" id="packagesPanel">
+          <div class="packages-header">
+            <h2>Tool Packages for nimbalyst-editor</h2>
+            <p>Tool packages bundle custom commands and tracker schemas into curated sets for different workflows. Each package includes everything you need to get started quickly.</p>
+          </div>
+
+          <!-- Recommendation notice (shown when packages available) -->
+          <div class="packages-scope-notice" id="packageRecommendation">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/>
+            </svg>
+            <div class="packages-scope-notice-text">
+              <strong>Get started with recommended packages</strong>
+              <span>Based on your project, we recommend the Developer package for code analysis and testing tools.</span>
+            </div>
+            <button onclick="this.parentElement.style.display='none'">Dismiss</button>
+          </div>
+
+          <!-- Progress indicator -->
+          <div class="packages-progress">
+            <div class="packages-progress-bar">
+              <div class="packages-progress-fill" style="width: 33%"></div>
+            </div>
+            <span class="packages-progress-text">1 of 3 packages installed</span>
+          </div>
+
+          <!-- Available Packages -->
+          <div class="packages-section-title">Available Packages</div>
+
+          <!-- Core Package (Installed) -->
+          <div class="package-card installed">
+            <div class="package-card-header">
+              <div class="package-icon blue">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <path d="M22 11.08V12a10 10 0 11-5.93-9.14"/>
+                  <polyline points="22,4 12,14.01 9,11.01"/>
+                </svg>
+              </div>
+              <div class="package-info">
+                <div class="package-name">Core</div>
+                <div class="package-description">Essential planning and tracking commands for all workflows</div>
+              </div>
+              <div class="package-actions">
+                <span style="color: var(--success); font-size: 12px; font-weight: 500;">Installed</span>
+                <button class="btn-uninstall">Uninstall</button>
+              </div>
+            </div>
+            <div class="package-details">
+              <button class="package-details-toggle" onclick="this.nextElementSibling.classList.toggle('expanded'); this.querySelector('span').textContent = this.nextElementSibling.classList.contains('expanded') ? 'Hide details' : 'Show details'">
+                <span>Show details</span>
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <polyline points="6,9 12,15 18,9"/>
+                </svg>
+              </button>
+              <div class="package-details-content">
+                <div class="packages-section-title" style="margin-top: 0;">Included Commands</div>
+                <div class="package-commands">
+                  <span class="package-command">/plan</span>
+                  <span class="package-command">/track</span>
+                  <span class="package-command">/commit</span>
+                  <span class="package-command">/review-branch</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Developer Package (Recommended) -->
+          <div class="package-card recommended">
+            <div class="package-card-header">
+              <div class="package-icon purple">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <polyline points="16,18 22,12 16,6"/>
+                  <polyline points="8,6 2,12 8,18"/>
+                </svg>
+              </div>
+              <div class="package-info">
+                <div class="package-name">
+                  Developer
+                  <span class="recommended-badge">Recommended</span>
+                </div>
+                <div class="package-description">Code analysis, testing tools, and developer-focused tracker schemas</div>
+              </div>
+              <div class="package-actions">
+                <button class="btn-install">Install</button>
+              </div>
+            </div>
+            <div class="package-details">
+              <button class="package-details-toggle" onclick="this.nextElementSibling.classList.toggle('expanded'); this.querySelector('span').textContent = this.nextElementSibling.classList.contains('expanded') ? 'Hide details' : 'Show details'">
+                <span>Show details</span>
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <polyline points="6,9 12,15 18,9"/>
+                </svg>
+              </button>
+              <div class="package-details-content">
+                <div class="packages-section-title" style="margin-top: 0;">Included Commands</div>
+                <div class="package-commands">
+                  <span class="package-command">/analyze-code</span>
+                  <span class="package-command">/write-tests</span>
+                  <span class="package-command">/refactor</span>
+                  <span class="package-command">/debug</span>
+                  <span class="package-command">/lint</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Product Manager Package -->
+          <div class="package-card">
+            <div class="package-card-header">
+              <div class="package-icon green">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <rect x="3" y="3" width="18" height="18" rx="2"/>
+                  <path d="M9 9h6M9 13h6M9 17h4"/>
+                </svg>
+              </div>
+              <div class="package-info">
+                <div class="package-name">Product Manager</div>
+                <div class="package-description">Roadmap generation, user research tools, and product-focused tracker schemas</div>
+              </div>
+              <div class="package-actions">
+                <button class="btn-install">Install</button>
+              </div>
+            </div>
+            <div class="package-details">
+              <button class="package-details-toggle" onclick="this.nextElementSibling.classList.toggle('expanded'); this.querySelector('span').textContent = this.nextElementSibling.classList.contains('expanded') ? 'Hide details' : 'Show details'">
+                <span>Show details</span>
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <polyline points="6,9 12,15 18,9"/>
+                </svg>
+              </button>
+              <div class="package-details-content">
+                <div class="packages-section-title" style="margin-top: 0;">Included Commands</div>
+                <div class="package-commands">
+                  <span class="package-command">/roadmap</span>
+                  <span class="package-command">/user-story</span>
+                  <span class="package-command">/research</span>
+                  <span class="package-command">/prioritize</span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- User scope message (hidden by default, shown when User scope selected) -->
+          <div class="packages-scope-notice warning" id="userScopeNotice" style="display: none;">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="10"/>
+              <line x1="12" y1="8" x2="12" y2="12"/>
+              <line x1="12" y1="16" x2="12.01" y2="16"/>
+            </svg>
+            <div class="packages-scope-notice-text">
+              <strong>Tool Packages are project-specific</strong>
+              <span>Switch to Project scope to install packages for the current workspace.</span>
+            </div>
+            <button onclick="document.querySelector('[data-scope=project]').click()">Switch to Project</button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Footer -->
+      <footer class="settings-footer">
+        <button class="btn-secondary">Reset to Defaults</button>
+        <button class="btn-secondary">Cancel</button>
+        <button class="btn-primary">Save Changes</button>
+      </footer>
+    </div>
+  </div>
+
+  <script>
+    // Tab switching
+    document.querySelectorAll('.scope-tab').forEach(tab => {
+      tab.addEventListener('click', () => {
+        document.querySelectorAll('.scope-tab').forEach(t => t.classList.remove('active'));
+        tab.classList.add('active');
+      });
+    });
+
+    // View toggle
+    const guiBtn = document.getElementById('guiViewBtn');
+    const jsonBtn = document.getElementById('jsonViewBtn');
+    const guiPanel = document.getElementById('guiPanel');
+    const jsonPanel = document.getElementById('jsonPanel');
+    const extensionsPanel = document.getElementById('extensionsPanel');
+    const packagesPanel = document.getElementById('packagesPanel');
+
+    function hideAllPanels() {
+      guiPanel.style.display = 'none';
+      jsonPanel.classList.remove('active');
+      extensionsPanel.classList.remove('active');
+      packagesPanel.classList.remove('active');
+    }
+
+    function showSettingsPanel() {
+      hideAllPanels();
+      guiBtn.classList.add('active');
+      jsonBtn.classList.remove('active');
+      guiPanel.style.display = 'block';
+    }
+
+    guiBtn.addEventListener('click', () => {
+      // Only works when not in extensions/packages view
+      const activeCategory = document.querySelector('.category-item.active');
+      const cat = activeCategory?.dataset.category;
+      if (cat === 'marketplace' || cat === 'installed' || cat === 'tool-packages') return;
+
+      hideAllPanels();
+      guiBtn.classList.add('active');
+      jsonBtn.classList.remove('active');
+      guiPanel.style.display = 'block';
+    });
+
+    jsonBtn.addEventListener('click', () => {
+      // Only works when not in extensions/packages view
+      const activeCategory = document.querySelector('.category-item.active');
+      const cat = activeCategory?.dataset.category;
+      if (cat === 'marketplace' || cat === 'installed' || cat === 'tool-packages') return;
+
+      hideAllPanels();
+      jsonBtn.classList.add('active');
+      guiBtn.classList.remove('active');
+      jsonPanel.classList.add('active');
+    });
+
+    // Category selection
+    document.querySelectorAll('.category-item').forEach(item => {
+      item.addEventListener('click', () => {
+        document.querySelectorAll('.category-item').forEach(i => i.classList.remove('active'));
+        item.classList.add('active');
+
+        const category = item.dataset.category;
+        hideAllPanels();
+
+        // Show extensions panel for marketplace/installed categories
+        if (category === 'marketplace' || category === 'installed') {
+          extensionsPanel.classList.add('active');
+
+          // Update header based on category
+          const header = extensionsPanel.querySelector('h2');
+          if (category === 'installed') {
+            header.textContent = 'Installed Extensions';
+          } else {
+            header.textContent = 'Extensions Marketplace';
+          }
+        }
+        // Show tool packages panel
+        else if (category === 'tool-packages') {
+          packagesPanel.classList.add('active');
+        }
+        // Show settings panel for other categories
+        else {
+          if (jsonBtn.classList.contains('active')) {
+            jsonPanel.classList.add('active');
+          } else {
+            guiPanel.style.display = 'block';
+          }
+        }
+      });
+    });
+
+    // Extensions tabs
+    document.querySelectorAll('.extensions-tab').forEach(tab => {
+      tab.addEventListener('click', () => {
+        document.querySelectorAll('.extensions-tab').forEach(t => t.classList.remove('active'));
+        tab.classList.add('active');
+      });
+    });
+
+    // Toggle switches
+    document.querySelectorAll('.toggle-switch').forEach(toggle => {
+      toggle.addEventListener('click', () => {
+        toggle.classList.toggle('active');
+      });
+    });
+
+    // Model chips
+    document.querySelectorAll('.model-chip').forEach(chip => {
+      chip.addEventListener('click', () => {
+        chip.classList.toggle('selected');
+      });
+    });
+
+    // Install buttons
+    document.querySelectorAll('.btn-install').forEach(btn => {
+      btn.addEventListener('click', () => {
+        btn.textContent = 'Installing...';
+        btn.disabled = true;
+        setTimeout(() => {
+          btn.outerHTML = `<button class="btn-installed">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3">
+              <polyline points="20,6 9,17 4,12"/>
+            </svg>
+            Installed
+          </button>
+          <button class="btn-uninstall">Uninstall</button>`;
+        }, 1000);
+      });
+    });
+
+    // Search functionality (demo)
+    document.getElementById('searchInput').addEventListener('input', (e) => {
+      const query = e.target.value.toLowerCase();
+      document.querySelectorAll('.setting-item').forEach(item => {
+        const text = item.textContent.toLowerCase();
+        item.style.display = text.includes(query) ? 'block' : 'none';
+      });
+    });
+  </script>
+</body>
+</html>

@@ -1,0 +1,64 @@
+flowchart TB
+    subgraph Definition["Extension Definition"]
+        SDK["Extension SDK<br/>Types, Build Config, Vite"]
+        MANIFEST["manifest.json<br/>id, name, version, contributions"]
+    end
+
+    subgraph Main["Main Process (Electron)"]
+        HANDLERS["ExtensionHandlers<br/>IPC Handlers"]
+        FILETYPES["RegisteredFileTypes<br/>File Extension Registry"]
+        MCPSERVER["MCP Server<br/>Claude Code Tools"]
+    end
+
+    subgraph Renderer["Renderer Process"]
+        PLATFORM["ExtensionPlatformServiceImpl<br/>File I/O, Module Loading"]
+        LOADER["ExtensionLoader<br/>Discovery, Loading, Lifecycle"]
+
+        subgraph Bridges["Bridges"]
+            EDITOR_BRIDGE["ExtensionEditorBridge<br/>Custom Editors"]
+            PLUGIN_BRIDGE["ExtensionPluginBridge<br/>Slash Commands, Nodes"]
+            AITOOL_BRIDGE["ExtensionAIToolsBridge<br/>AI Tools"]
+        end
+
+        subgraph Registries["Registries"]
+            EDITOR_REG["customEditorRegistry"]
+            PLUGIN_REG["pluginRegistry"]
+            TOOL_REG["toolRegistry"]
+        end
+    end
+
+    subgraph Host["Host Dependencies"]
+        REACT["React, React-DOM"]
+        LEXICAL["Lexical Packages"]
+        SHIMS["es-module-shims<br/>Import Maps"]
+    end
+
+    subgraph Extensions["Extension Contributions"]
+        EXT_EDITOR["Custom Editors<br/>.csv, .excalidraw, .pdf"]
+        EXT_TOOLS["AI Tools<br/>datamodellm, excalidraw"]
+        EXT_PLUGINS["Plugins<br/>Commands, Nodes, Transformers"]
+    end
+
+    SDK --> MANIFEST
+    MANIFEST --> LOADER
+    LOADER --> PLATFORM
+    PLATFORM -->|IPC| HANDLERS
+
+    LOADER --> EDITOR_BRIDGE
+    LOADER --> PLUGIN_BRIDGE
+    LOADER --> AITOOL_BRIDGE
+
+    EDITOR_BRIDGE --> EDITOR_REG
+    PLUGIN_BRIDGE --> PLUGIN_REG
+    AITOOL_BRIDGE --> TOOL_REG
+
+    AITOOL_BRIDGE -->|IPC| MCPSERVER
+    HANDLERS --> FILETYPES
+
+    SHIMS --> PLATFORM
+    REACT --> SHIMS
+    LEXICAL --> SHIMS
+
+    EDITOR_REG --> EXT_EDITOR
+    PLUGIN_REG --> EXT_PLUGINS
+    TOOL_REG --> EXT_TOOLS
