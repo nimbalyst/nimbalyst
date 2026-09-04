@@ -1136,4 +1136,88 @@ describe('CodexAppServerProtocol', () => {
     expect((response as { result?: { decision?: string } }).result?.decision).toBe('denied');
     expect(approveFileChange).toHaveBeenCalledTimes(1);
   });
+
+  // Codex occasionally announces an MCP tool call via item/started and never
+  // sends a terminal item/completed. The call never reaches our MCP server and
+  // nothing settles it, so the transcript keeps it in flight forever and the
+  // agent goes on believing it is merely slow. Measured at 13/3856 (0.34%) of
+  // update_session_meta calls, clustered per session.
+  describe('orphaned MCP tool calls', () => {
+    type PushEntry =
+      | { kind: 'event'; event: ProtocolEvent }
+      | { kind: 'end' }
+      | { kind: 'fail'; error: Error };
+
+    /** Drive dispatchNotification directly -- the JSON-RPC harness adds nothing here. */
+    function drive(notifications: Array<[string, unknown]>): PushEntry[] {
+      const protocol = new CodexAppServerProtocol();
+      const pushed: PushEntry[] = [];
+      for (const [method, params] of notifications) {
+        (protocol as unknown as {
+          dispatchNotification: (
+            m: string, p: unknown, push: (e: PushEntry) => void,
+            raw: unknown, appendText: (s: string) => void,
+            setUsage: (u: unknown) => void, setContext: (c: unknown) => void,
+          ) => void;
+        }).dispatchNotification(method, params, (e) => pushed.push(e), {}, () => {}, () => {}, () => {});
+      }
+      return pushed;
+    }
+
+    const started = (id: string, tool: string) => [
+      'item/started',
+      { threadId: 't-1', turnId: 'turn-1', item: { id, type: 'mcpToolCall', server: 'nimbalyst', tool, arguments: { phase: 'validating' } } },
+    ] as [string, unknown];
+
+    const completed = (id: string, tool: string) => [
+      'item/completed',
+      { threadId: 't-1', turnId: 'turn-1', item: { id, type: 'mcpToolCall', server: 'nimbalyst', tool, status: 'completed', result: {} } },
+    ] as [string, unknown];
+
+    const turnCompleted = ['turn/completed', { threadId: 't-1', turn: { id: 'turn-1', status: 'completed' } }] as [string, unknown];
+
+    const toolCalls = (pushed: PushEntry[]) =>
+      pushed.filter((e): e is { kind: 'event'; event: ProtocolEvent } =>
+        e.kind === 'event' && e.event.type === 'tool_call');
+
+    it('settles a call that never completed, flagged for the host to repair', () => {
+      const calls = toolCalls(drive([started('call_1', 'update_session_meta'), turnCompleted]));
+
+      // One for item/started, one synthesized by the sweep.
+      expect(calls).toHaveLength(2);
+      const swept = calls[1].event.toolCall as { name?: string; result?: { success?: boolean }; orphaned?: boolean; arguments?: unknown };
+      expect(swept.name).toBe('mcp__nimbalyst__update_session_meta');
+      expect(swept.result?.success).toBe(false);
+      // The host re-applies from these, so they must survive the sweep.
+      expect(swept.orphaned).toBe(true);
+      expect(swept.arguments).toEqual({ phase: 'validating' });
+    });
+
+    it('leaves a normally-completed call alone', () => {
+      const pushed = drive([started('call_1', 'update_session_meta'), completed('call_1', 'update_session_meta'), turnCompleted]);
+      const orphaned = toolCalls(pushed).filter(
+        (c) => (c.event.toolCall as { orphaned?: boolean }).orphaned);
+      expect(orphaned).toHaveLength(0);
+    });
+
+    it('sweeps only the unsettled call when a turn mixes both', () => {
+      const calls = toolCalls(drive([
+        started('call_1', 'update_session_meta'),
+        started('call_2', 'tracker_get'),
+        completed('call_2', 'tracker_get'),
+        turnCompleted,
+      ]));
+      const orphaned = calls.filter((c) => (c.event.toolCall as { orphaned?: boolean }).orphaned);
+      expect(orphaned).toHaveLength(1);
+      expect((orphaned[0].event.toolCall as { name?: string }).name).toBe('mcp__nimbalyst__update_session_meta');
+    });
+
+    it('sweeps on a failed turn too, so a crash does not strand the call', () => {
+      const pushed = drive([started('call_1', 'update_session_meta'), ['error', { error: { message: 'boom' } }]]);
+      const orphaned = toolCalls(pushed).filter(
+        (c) => (c.event.toolCall as { orphaned?: boolean }).orphaned);
+      expect(orphaned).toHaveLength(1);
+      expect(pushed.at(-1)).toMatchObject({ kind: 'fail' });
+    });
+  });
 });

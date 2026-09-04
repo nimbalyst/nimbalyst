@@ -814,6 +814,74 @@ export class CodexAppServerProtocol implements AgentProtocol {
   }
 
   /**
+   * MCP tool calls codex has announced via `item/started` but not yet settled.
+   *
+   * Codex normally closes every one with an `item/completed`. Occasionally it
+   * does not: the call is announced, never reaches our MCP server, and no
+   * terminal event ever arrives. 13 of 3856 `update_session_meta` calls in one
+   * install ended this way, clustered — once a session started dropping them it
+   * kept dropping them. The server is not the culprit; a stale `/mcp/core`
+   * connection answers every POST with a fast 404, never a hang.
+   *
+   * The damage is that the transcript keeps an in-flight tool call forever and
+   * the agent goes on believing the call is merely slow. Sweeping at turn end
+   * settles it and gives us a log line naming the tool.
+   */
+  private inFlightMcpCalls = new Map<
+    string,
+    { server: string; tool: string; arguments?: unknown; startedAt: number }
+  >();
+
+  /**
+   * Settle every MCP tool call still open when a turn ends. A turn cannot end
+   * with a legitimately-pending tool call: codex blocks the turn on it.
+   */
+  private sweepOrphanedMcpCalls(
+    push: (entry: { kind: 'event'; event: ProtocolEvent } | { kind: 'end' } | { kind: 'fail'; error: Error }) => void,
+    threadId: string | undefined,
+    turnId: string | undefined,
+  ): void {
+    if (this.inFlightMcpCalls.size === 0) return;
+    const orphans = [...this.inFlightMcpCalls.entries()];
+    this.inFlightMcpCalls.clear();
+
+    for (const [itemId, call] of orphans) {
+      const waitedMs = Date.now() - call.startedAt;
+      console.warn(
+        `[CODEX][APPSERVER] tool call never settled: mcp__${call.server}__${call.tool} ` +
+          `(item ${itemId}, ${waitedMs}ms) -- the turn ended with it still in flight`
+      );
+      push({
+        kind: 'event',
+        event: {
+          type: 'tool_call',
+          toolCall: {
+            id: itemId,
+            name: `mcp__${call.server}__${call.tool}`,
+            arguments: call.arguments as Record<string, unknown> | undefined,
+            result: {
+              success: false,
+              error: `The ${call.tool} call was never completed by the agent transport (waited ${waitedMs}ms).`,
+            } as ToolResult,
+            // Rides on the toolCall, not the metadata: the transcript adapter
+            // forwards this object by reference, while metadata is dropped when
+            // the provider re-yields the chunk. The host reads it to repair
+            // calls whose effect would otherwise be silently lost.
+            orphaned: true,
+          } as NonNullable<ProtocolEvent['toolCall']> & { orphaned: boolean },
+          metadata: {
+            transport: 'app-server',
+            threadId,
+            turnId,
+            itemId,
+            orphaned: true,
+          },
+        },
+      });
+    }
+  }
+
+  /**
    * Translate a single codex notification into zero or more `ProtocolEvent`s.
    * Pushed entries terminate with either `{kind:'end'}` (turn/completed) or
    * `{kind:'fail',error}` (turn/failed).
@@ -897,6 +965,7 @@ export class CodexAppServerProtocol implements AgentProtocol {
         const n = params as unknown as TurnCompletedNotification;
         const usage = normalizeUsage(n.usage);
         if (usage) setUsage(usage);
+        this.sweepOrphanedMcpCalls(push, n.threadId, n.turn?.id);
         if (n.turn?.status === 'failed') {
           const msg = n.turn?.error?.message ?? 'turn failed';
           push({ kind: 'fail', error: new Error(msg) });
@@ -909,6 +978,7 @@ export class CodexAppServerProtocol implements AgentProtocol {
       case 'error': {
         const n = params as unknown as ErrorNotification;
         const msg = n?.error?.message ?? 'codex app-server error';
+        this.sweepOrphanedMcpCalls(push, undefined, undefined);
         push({ kind: 'fail', error: new Error(msg) });
         return;
       }
@@ -991,12 +1061,21 @@ export class CodexAppServerProtocol implements AgentProtocol {
         arguments?: unknown;
       };
       if (!mcp.server || !mcp.tool) return;
+      const startedId = (mcp as { id?: string }).id;
+      if (startedId) {
+        this.inFlightMcpCalls.set(startedId, {
+          server: mcp.server,
+          tool: mcp.tool,
+          arguments: mcp.arguments,
+          startedAt: Date.now(),
+        });
+      }
       push({
         kind: 'event',
         event: {
           type: 'tool_call',
           toolCall: {
-            id: (mcp as { id?: string }).id,
+            id: startedId,
             name: `mcp__${mcp.server}__${mcp.tool}`,
             arguments: mcp.arguments as Record<string, unknown> | undefined,
           },
@@ -1005,7 +1084,7 @@ export class CodexAppServerProtocol implements AgentProtocol {
             stage: 'started',
             threadId: n.threadId,
             turnId: n.turnId,
-            itemId: (mcp as { id?: string }).id,
+            itemId: startedId,
             method: 'item/started',
           },
         },
@@ -1106,6 +1185,8 @@ export class CodexAppServerProtocol implements AgentProtocol {
           error?: { message: string };
           status: string;
         };
+        const completedId = (mcp as { id?: string }).id;
+        if (completedId) this.inFlightMcpCalls.delete(completedId);
         push({
           kind: 'event',
           event: {
