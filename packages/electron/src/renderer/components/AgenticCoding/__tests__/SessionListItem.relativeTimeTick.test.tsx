@@ -6,7 +6,8 @@ import { render, cleanup, act } from '@testing-library/react';
 // Keep the component isolated, same setup as the sibling SessionListItem tests:
 // jotai atom reads return defaults, the store atom families are callable stubs,
 // and heavy children are stubbed so importing them has no side effects.
-vi.mock('jotai', () => ({
+vi.mock('jotai', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('jotai')>()),
   useAtomValue: () => undefined,
   useSetAtom: () => () => {},
 }));
