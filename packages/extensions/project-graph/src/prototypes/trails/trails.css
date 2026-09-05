@@ -1,0 +1,570 @@
+/*
+ * Evidence Trails prototype styles.
+ *
+ * Scoped entirely under `.pg-trails`. Colors resolve to canonical `--nim-*`
+ * theme tokens; the few accent hues fall back to the extension's existing
+ * `--pg-c-*` palette when this renders inside `.pg-root`, so light and dark
+ * themes both work without a second palette.
+ */
+
+.pg-trails {
+  container-type: inline-size;
+  container-name: pg-trails;
+
+  --pgt-gap: 12px;
+  --pgt-radius: 7px;
+  --pgt-tone: var(--nim-text-faint);
+
+  display: grid;
+  grid-template-columns: 264px minmax(0, 1fr) 320px;
+  gap: 1px;
+  height: 100%;
+  min-height: 0;
+  background: var(--nim-border);
+  color: var(--nim-text);
+  font-size: 12px;
+}
+
+.pg-trails h2 {
+  font-size: 15px;
+  font-weight: 560;
+  margin: 0 0 4px;
+  letter-spacing: -0.2px;
+}
+
+.pg-trails h3 {
+  font-size: 12px;
+  font-weight: 560;
+  margin: 12px 0 6px;
+  color: var(--nim-text);
+}
+
+.pg-trails p {
+  margin: 0 0 6px;
+  line-height: 1.45;
+}
+
+.pg-trails code {
+  font-size: 11px;
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: var(--nim-bg-tertiary);
+}
+
+.pg-trails-note {
+  color: var(--nim-text-muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.pg-trails-eyebrow {
+  display: block;
+  font-size: 10px;
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+  color: var(--nim-text-faint);
+  margin-bottom: 6px;
+}
+
+.pg-trails-rule {
+  height: 1px;
+  background: var(--nim-border);
+  margin: 12px 0;
+}
+
+/* ---------------------------------------------------------------- controls */
+
+.pg-trails-btn,
+.pg-trails-toggle,
+.pg-trails-crumb,
+.pg-trails-chip {
+  font: inherit;
+  color: var(--nim-text);
+  background: var(--nim-bg-tertiary);
+  border: 1px solid var(--nim-border);
+  border-radius: 5px;
+  padding: 5px 9px;
+  cursor: pointer;
+}
+
+.pg-trails-btn:hover,
+.pg-trails-toggle:hover,
+.pg-trails-crumb:hover,
+.pg-trails-chip:hover {
+  background: var(--nim-bg-hover);
+}
+
+.pg-trails-btn:disabled {
+  color: var(--nim-text-disabled);
+  cursor: default;
+}
+
+.pg-trails-btn:disabled:hover {
+  background: var(--nim-bg-tertiary);
+}
+
+.pg-trails-toggle[aria-pressed='true'] {
+  border-color: var(--nim-border-focus);
+  color: var(--nim-text);
+}
+
+.pg-trails-toggle[aria-pressed='false'] {
+  color: var(--nim-text-muted);
+}
+
+.pg-trails :focus-visible {
+  outline: 2px solid var(--nim-border-focus);
+  outline-offset: 1px;
+}
+
+/* ------------------------------------------------------------ start column */
+
+.pg-trails-start {
+  background: var(--nim-bg-secondary);
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.pg-trails-start-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.pg-trails-start-head h2 {
+  margin: 0;
+  margin-right: auto;
+}
+
+.pg-trails-search {
+  font: inherit;
+  width: 100%;
+  padding: 6px 8px;
+  border-radius: 5px;
+  border: 1px solid var(--nim-border);
+  background: var(--nim-bg);
+  color: var(--nim-text);
+}
+
+.pg-trails-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  border: 1px solid var(--nim-border);
+  border-radius: var(--pgt-radius);
+  background: var(--nim-bg);
+}
+
+.pg-trails-start-item {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-areas: 'kind label' 'kind meta';
+  gap: 1px 7px;
+  padding: 7px 9px;
+  border-bottom: 1px solid var(--nim-border);
+  cursor: pointer;
+}
+
+.pg-trails-start-item:hover {
+  background: var(--nim-bg-hover);
+}
+
+.pg-trails-start-item.is-active {
+  background: var(--nim-bg-active);
+}
+
+.pg-trails-start-item.is-focus {
+  background: var(--nim-bg-selected);
+}
+
+.pg-trails-start-label {
+  grid-area: label;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pg-trails-start-meta {
+  grid-area: meta;
+  font-size: 10px;
+  color: var(--nim-text-faint);
+}
+
+.pg-trails-kind {
+  grid-area: kind;
+  align-self: start;
+  font-size: 10px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  border: 1px solid var(--pgt-tone);
+  color: var(--pgt-tone);
+  white-space: nowrap;
+}
+
+.pg-trails-empty {
+  padding: 12px;
+  color: var(--nim-text-muted);
+}
+
+/* ----------------------------------------------------------- trail canvas */
+
+.pg-trails-canvas {
+  background: var(--nim-bg);
+  padding: 12px 16px 20px;
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.pg-trails-crumbs {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+
+.pg-trails-crumb.is-current {
+  border: none;
+  background: none;
+  color: var(--nim-text-muted);
+  padding: 5px 0;
+}
+
+.pg-trails-blank {
+  max-width: 560px;
+  padding-top: 24px;
+}
+
+.pg-trails-focus {
+  border: 1px solid var(--pgt-tone);
+  border-left-width: 3px;
+  border-radius: var(--pgt-radius);
+  background: var(--nim-bg-secondary);
+  padding: 12px 14px;
+}
+
+.pg-trails-focus-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 6px;
+}
+
+.pg-trails-status {
+  font-size: 10px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: var(--nim-bg-tertiary);
+  color: var(--nim-text-muted);
+}
+
+.pg-trails-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+}
+
+.pg-trails-membership {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--nim-border);
+}
+
+.pg-trails-chiprow {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.pg-trails-summary {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin: 14px 0 10px;
+}
+
+.pg-trails-unlinked {
+  border: 1px dashed var(--nim-warning);
+  border-radius: var(--pgt-radius);
+  padding: 12px 14px;
+  margin-bottom: 12px;
+}
+
+.pg-trails-unlinked h3 {
+  margin-top: 0;
+  color: var(--nim-warning);
+}
+
+/* Links whose far endpoint this snapshot never loaded. Dashed, like the other
+   "what we do not have" surfaces, and never styled as a resolved card. */
+.pg-trails-unresolved {
+  border: 1px dashed var(--nim-border);
+  border-radius: var(--pgt-radius);
+  padding: 10px 12px;
+  margin-bottom: 12px;
+}
+
+.pg-trails-unresolved-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.pg-trails-unresolved-list {
+  list-style: none;
+  margin: 6px 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.pg-trails-unresolved-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.pg-trails-unresolved-id {
+  font-family: var(--nim-font-mono, monospace);
+  font-size: 11px;
+  color: var(--nim-text-muted);
+  background: var(--nim-bg-tertiary);
+  border-radius: 4px;
+  padding: 1px 5px;
+  user-select: text;
+}
+
+/* -------------------------------------------------------------- lanes */
+
+.pg-trails-lanes {
+  display: flex;
+  flex-direction: column;
+  gap: var(--pgt-gap);
+}
+
+.pg-trails-lane {
+  border: 1px solid var(--nim-border);
+  border-left: 3px solid var(--nim-border);
+  border-radius: var(--pgt-radius);
+  padding: 9px 12px;
+  background: var(--nim-bg-secondary);
+}
+
+.pg-trails-lane.pg-trails-basis-explicit {
+  border-left-color: var(--nim-link);
+}
+
+.pg-trails-lane.pg-trails-basis-derived {
+  border-left-color: var(--nim-text-faint);
+  border-left-style: dashed;
+}
+
+.pg-trails-lane.pg-trails-basis-unknown {
+  border-left-color: var(--nim-warning);
+  border-left-style: dotted;
+}
+
+.pg-trails-lane-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.pg-trails-relation {
+  font-weight: 560;
+  color: var(--nim-text);
+}
+
+.pg-trails-basis-tag {
+  font-size: 10px;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: var(--nim-text-faint);
+}
+
+.pg-trails-lane-basis {
+  margin: 4px 0 8px;
+}
+
+.pg-trails-node {
+  font: inherit;
+  text-align: left;
+  display: grid;
+  gap: 1px;
+  width: 210px;
+  padding: 7px 9px;
+  cursor: pointer;
+  border: 1px solid var(--pgt-tone);
+  border-radius: var(--pgt-radius);
+  background: var(--nim-bg);
+  color: var(--nim-text);
+}
+
+.pg-trails-node:hover {
+  background: var(--nim-bg-hover);
+}
+
+.pg-trails-node.is-inspected {
+  background: var(--nim-bg-selected);
+  border-width: 2px;
+  padding: 6px 8px;
+}
+
+.pg-trails-node-kind {
+  font-size: 10px;
+  color: var(--pgt-tone);
+}
+
+.pg-trails-node-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pg-trails-node-meta {
+  font-size: 10px;
+  color: var(--nim-text-faint);
+}
+
+.pg-trails-more {
+  align-self: flex-start;
+  margin-top: 8px;
+}
+
+.pg-trails-gaps {
+  margin-top: 16px;
+  border: 1px solid var(--nim-border);
+  border-radius: var(--pgt-radius);
+  background: var(--nim-bg-secondary);
+  padding: 10px 14px;
+}
+
+.pg-trails-gaps ul {
+  margin: 0;
+  padding-left: 16px;
+  color: var(--nim-text-muted);
+}
+
+.pg-trails-gaps li {
+  margin-bottom: 5px;
+  line-height: 1.45;
+}
+
+/* ---------------------------------------------------------- inspector */
+
+.pg-trails-inspect {
+  background: var(--nim-bg-secondary);
+  padding: 12px 14px;
+  overflow-y: auto;
+  min-height: 0;
+}
+
+.pg-trails-basis-line {
+  border-left: 2px solid var(--nim-link);
+  padding: 6px 9px;
+  background: var(--nim-bg-tertiary);
+  border-radius: 0 5px 5px 0;
+}
+
+.pg-trails-basis-line.pg-trails-basis-derived {
+  border-left-color: var(--nim-text-faint);
+}
+
+.pg-trails-basis-line.pg-trails-basis-unknown {
+  border-left-color: var(--nim-warning);
+}
+
+.pg-trails-hop {
+  font: inherit;
+  text-align: left;
+  display: grid;
+  gap: 1px;
+  width: 100%;
+  margin-bottom: 6px;
+  padding: 7px 9px;
+  cursor: pointer;
+  border: 1px solid var(--nim-border);
+  border-radius: var(--pgt-radius);
+  background: var(--nim-bg);
+  color: var(--nim-text);
+}
+
+.pg-trails-hop:hover {
+  background: var(--nim-bg-hover);
+}
+
+/* -------------------------------------------------------------- tones */
+
+.pg-trails-tone-tracker {
+  --pgt-tone: var(--pg-c-task, var(--nim-info));
+}
+
+.pg-trails-tone-session {
+  --pgt-tone: var(--pg-c-session, var(--nim-warning));
+}
+
+.pg-trails-tone-git {
+  --pgt-tone: var(--pg-c-commit, var(--nim-text-muted));
+}
+
+.pg-trails-tone-file {
+  --pgt-tone: var(--pg-c-file, var(--nim-text-faint));
+}
+
+.pg-trails-tone-external {
+  --pgt-tone: var(--pg-c-github-issue, var(--nim-link));
+}
+
+/* The index emits `source: 'memory'` records; without a tone they render
+   untinted while every other source is tinted, which reads as a bug. */
+.pg-trails-tone-memory {
+  --pgt-tone: var(--pg-c-memory, var(--nim-primary));
+}
+
+.pg-trails-tone-system {
+  --pgt-tone: var(--nim-text-faint);
+}
+
+/* --------------------------------------------------------- responsive */
+
+@container pg-trails (max-width: 1040px) {
+  .pg-trails {
+    grid-template-columns: 232px minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr) minmax(160px, 34%);
+  }
+
+  .pg-trails-start {
+    grid-row: 1 / span 2;
+  }
+
+  .pg-trails-node {
+    width: 190px;
+  }
+}
+
+@container pg-trails (max-width: 720px) {
+  .pg-trails {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(120px, 26%) minmax(0, 1fr) minmax(140px, 30%);
+  }
+
+  .pg-trails-start {
+    grid-row: auto;
+  }
+
+  .pg-trails-node {
+    width: 100%;
+  }
+}

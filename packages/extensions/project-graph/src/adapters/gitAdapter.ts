@@ -1,6 +1,7 @@
 import type { Adapter, AdapterResult } from './types';
 import type { ProjectGraphEdge, ProjectGraphNode } from '../types';
 import { dirLabel, dirNodeId, moduleForPath } from './paths';
+import { provenanceFor } from './recordMapping';
 
 /**
  * Pulls recent commits and the files they touched out of git.
@@ -79,6 +80,7 @@ export const gitAdapter: Adapter = {
             type: 'touches',
             sourceId: commitId,
             targetId: dirId,
+            provenance: provenanceFor('touches'),
           });
         }
       }

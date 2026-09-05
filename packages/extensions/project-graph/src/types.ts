@@ -25,6 +25,7 @@ export type NodeSource =
   | 'file'
   | 'git'
   | 'external'
+  | 'memory'
   | 'system';
 
 export type NodeVisibility = 'local' | 'workspace-shared' | 'team-shared' | 'imported';
@@ -129,6 +130,8 @@ export interface ProjectGraphEdge {
   targetId: string;
   strength?: number;
   label?: string;
+  /** Evidence for this exact relation, including any aggregation of endpoints. */
+  provenance?: { kind: 'recorded' | 'derived' | 'unknown'; basis: string };
 }
 
 export interface ProjectGraphSnapshot {

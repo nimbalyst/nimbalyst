@@ -1,4 +1,4 @@
-import { ProjectGraphPanel } from './components/ProjectGraphPanel';
+import { ProjectGraphExperience } from './prototypes/ProjectGraphExperience';
 import './styles.css';
 
 export async function activate() {
@@ -12,6 +12,6 @@ export async function deactivate() {
 
 export const panels = {
   graph: {
-    component: ProjectGraphPanel,
+    component: ProjectGraphExperience,
   },
 };

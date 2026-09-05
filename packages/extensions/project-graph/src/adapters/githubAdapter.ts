@@ -1,5 +1,6 @@
 import type { Adapter, AdapterResult } from './types';
 import type { ProjectGraphEdge, ProjectGraphNode } from '../types';
+import { provenanceFor } from './recordMapping';
 
 /**
  * Pulls recent PRs and issues from GitHub via the `gh` CLI.
@@ -49,26 +50,34 @@ export const githubAdapter: Adapter = {
         return { nodes: [], edges: [], status: 'unavailable', message: 'gh CLI not installed' };
       }
 
+      // No `|| true`: swallowing a non-zero exit turned "GitHub could not be
+      // read" into "GitHub has no pull requests", which is a claim the source
+      // never made. Each command reports its own failure below.
       const [prResult, issueResult] = await Promise.all([
         host.exec(
-          `gh pr list --state all --limit ${MAX_PRS} --json number,title,state,author,closingIssuesReferences,createdAt,closedAt,mergedAt 2>/dev/null || true`,
+          `gh pr list --state all --limit ${MAX_PRS} --json number,title,state,author,closingIssuesReferences,createdAt,closedAt,mergedAt`,
           { timeout: 15000 },
         ),
         host.exec(
-          `gh issue list --state all --limit ${MAX_ISSUES} --json number,title,state,author,labels,createdAt,closedAt 2>/dev/null || true`,
+          `gh issue list --state all --limit ${MAX_ISSUES} --json number,title,state,author,labels,createdAt,closedAt`,
           { timeout: 15000 },
         ),
       ]);
 
       const nodes: ProjectGraphNode[] = [];
       const edges: ProjectGraphEdge[] = [];
+      const errors: string[] = [];
 
       // PRs
       let prs: GhPr[] = [];
-      try {
-        prs = prResult.stdout.trim() ? (JSON.parse(prResult.stdout) as GhPr[]) : [];
-      } catch {
-        prs = [];
+      if (!prResult.success) {
+        errors.push(`pull requests: ${(prResult.stderr || `exit ${prResult.exitCode}`).trim().slice(0, 160)}`);
+      } else {
+        try {
+          prs = prResult.stdout.trim() ? (JSON.parse(prResult.stdout) as GhPr[]) : [];
+        } catch (err) {
+          errors.push(`pull requests: unparseable gh output (${String(err).slice(0, 80)})`);
+        }
       }
       for (const pr of prs) {
         const id = `pr:${pr.number}`;
@@ -86,19 +95,42 @@ export const githubAdapter: Adapter = {
           status: pr.state.toLowerCase(),
           createdAt: parseIso(pr.createdAt),
           closedAt,
-          fields: { number: pr.number, title: pr.title, author: pr.author?.login },
+          // Native service timestamps, passed through verbatim. Consumers that
+          // project creation/close events read these; without them GitHub
+          // activity is invisible even though the service reported an exact
+          // time (September 5 review).
+          fields: {
+            number: pr.number,
+            title: pr.title,
+            author: pr.author?.login,
+            createdAt: pr.createdAt,
+            closedAt: pr.closedAt ?? undefined,
+            mergedAt: pr.mergedAt ?? undefined,
+            state: pr.state,
+            merged: pr.mergedAt != null,
+          },
         });
         for (const ref of pr.closingIssuesReferences ?? []) {
-          edges.push({ id: `${id}->issue:${ref.number}`, type: 'closes', sourceId: id, targetId: `issue:${ref.number}` });
+          edges.push({
+            id: `${id}->issue:${ref.number}`,
+            type: 'closes',
+            sourceId: id,
+            targetId: `issue:${ref.number}`,
+            provenance: provenanceFor('closes'),
+          });
         }
       }
 
       // Issues
       let issues: GhIssue[] = [];
-      try {
-        issues = issueResult.stdout.trim() ? (JSON.parse(issueResult.stdout) as GhIssue[]) : [];
-      } catch {
-        issues = [];
+      if (!issueResult.success) {
+        errors.push(`issues: ${(issueResult.stderr || `exit ${issueResult.exitCode}`).trim().slice(0, 160)}`);
+      } else {
+        try {
+          issues = issueResult.stdout.trim() ? (JSON.parse(issueResult.stdout) as GhIssue[]) : [];
+        } catch (err) {
+          errors.push(`issues: unparseable gh output (${String(err).slice(0, 80)})`);
+        }
       }
       for (const issue of issues) {
         const labels = (issue.labels ?? []).map(l => l.name);
@@ -115,10 +147,21 @@ export const githubAdapter: Adapter = {
           severity: isBug ? inferSeverity(labels) : undefined,
           createdAt: parseIso(issue.createdAt),
           closedAt: parseIso(issue.closedAt ?? null),
-          fields: { number: issue.number, title: issue.title, labels, author: issue.author?.login },
+          fields: {
+            number: issue.number,
+            title: issue.title,
+            labels,
+            author: issue.author?.login,
+            createdAt: issue.createdAt,
+            closedAt: issue.closedAt ?? undefined,
+            state: issue.state,
+          },
         });
       }
 
+      if (errors.length > 0) {
+        return { nodes, edges, status: 'error', message: errors.join('; ') };
+      }
       return { nodes, edges, status: 'ok' };
     } catch (err) {
       return { nodes: [], edges: [], status: 'error', message: String(err) };

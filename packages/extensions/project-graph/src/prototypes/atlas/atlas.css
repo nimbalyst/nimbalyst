@@ -1,0 +1,396 @@
+/* Project Atlas prototype. Scoped to `.pga-*`; themed only from `--nim-*`. */
+
+.pga-root {
+  --pga-bg: var(--nim-bg);
+  --pga-panel: var(--nim-bg-secondary);
+  --pga-tile: var(--nim-bg-tertiary);
+  --pga-tile-hover: var(--nim-bg-hover);
+  --pga-border: var(--nim-border);
+  --pga-border-strong: var(--nim-border-focus);
+  --pga-text: var(--nim-text);
+  --pga-text-dim: var(--nim-text-muted);
+  --pga-text-faint: var(--nim-text-faint);
+  --pga-accent: var(--nim-primary);
+  --pga-recorded: var(--nim-primary);
+  --pga-derived: var(--nim-info);
+  --pga-unclassified: var(--nim-text-faint);
+  --pga-shared: var(--nim-warning);
+
+  display: grid;
+  grid-template-rows: auto 1fr auto;
+  height: 100%;
+  width: 100%;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--pga-bg);
+  color: var(--pga-text);
+  font-size: 13px;
+  line-height: 1.45;
+  container-type: inline-size;
+  container-name: pga-atlas;
+}
+
+.pga-root *,
+.pga-root *::before,
+.pga-root *::after { box-sizing: border-box; }
+
+.pga-root button {
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+}
+
+.pga-root button:focus-visible,
+.pga-root select:focus-visible,
+.pga-root input:focus-visible {
+  outline: 2px solid var(--pga-accent);
+  outline-offset: 1px;
+}
+
+/* ---------- header ---------- */
+.pga-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--pga-border);
+}
+
+/* The host's global heading color is near-black and unreadable on the dark
+   surface, so the scoped color is set explicitly rather than inherited. */
+.pga-title {
+  font-size: 17px;
+  font-weight: 600;
+  margin: 0 0 3px;
+  letter-spacing: -0.2px;
+  color: var(--pga-text);
+}
+.pga-subtitle { margin: 0; color: var(--pga-text-dim); }
+.pga-header-stats { margin: 2px 0 0 auto; color: var(--pga-text-faint); font-size: 11px; text-align: right; }
+
+/* ---------- body ---------- */
+.pga-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 330px;
+  min-height: 0;
+  overflow: hidden;
+}
+
+@container pga-atlas (max-width: 860px) {
+  .pga-body {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(180px, 1fr) minmax(180px, 1fr);
+  }
+  .pga-detail { border-left: none; border-top: 1px solid var(--pga-border); }
+}
+
+.pga-map-scroll { min-width: 0; min-height: 0; overflow: auto; }
+
+.pga-map {
+  position: relative;
+  min-width: 0;
+  background-image: radial-gradient(
+    color-mix(in srgb, var(--pga-text) 12%, transparent) 0.7px,
+    transparent 0.7px
+  );
+  background-size: 20px 20px;
+}
+
+/* Sized from its width/height attributes so user units stay 1:1 with the
+   territory coordinates the layout produced. */
+.pga-connectors { position: absolute; top: 0; left: 0; pointer-events: none; }
+
+/* One stroke per provenance family. A derived link must never look like a
+   recorded one at a glance. */
+.pga-connector { fill: none; stroke-width: 2; opacity: 0.85; }
+.pga-connector-recorded-link { stroke: var(--pga-recorded); }
+.pga-connector-derived-link { stroke: var(--pga-derived); stroke-dasharray: 7 4; }
+.pga-connector-unclassified-link { stroke: var(--pga-unclassified); stroke-dasharray: 2 4; }
+.pga-connector-shared-membership { stroke: var(--pga-shared); stroke-dasharray: 5 4; }
+.pga-connector.is-open { stroke-width: 3.5; opacity: 1; }
+
+/* ---------- territories ---------- */
+.pga-territory {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 10px 12px;
+  text-align: left;
+  background: var(--pga-tile);
+  border: 1px solid var(--pga-border);
+  border-radius: 8px;
+  overflow: hidden;
+  transition: opacity 120ms ease, border-color 120ms ease;
+}
+
+.pga-territory:hover { background: var(--pga-tile-hover); }
+.pga-territory.is-selected { border-color: var(--pga-border-strong); box-shadow: inset 0 0 0 1px var(--pga-accent); }
+.pga-territory.is-dim { opacity: 0.5; }
+.pga-territory.is-unassigned { border-style: dashed; }
+
+.pga-territory-name {
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: -0.15px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pga-territory-basis,
+.pga-territory-types {
+  font-size: 10px;
+  color: var(--pga-text-faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pga-territory-counts { font-size: 11px; color: var(--pga-text-dim); }
+
+.pga-activity-bar {
+  display: block;
+  height: 6px;
+  margin-top: 3px;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--pga-text) 12%, transparent);
+  overflow: hidden;
+}
+
+.pga-activity-fill {
+  display: block;
+  height: 100%;
+  border-radius: 3px;
+  /* Uncovered remainder = last-observed markers. */
+  background: repeating-linear-gradient(
+    135deg,
+    var(--pga-shared) 0 3px,
+    transparent 3px 6px
+  );
+  background-color: color-mix(in srgb, var(--pga-shared) 35%, transparent);
+}
+
+.pga-activity-recorded { display: block; height: 100%; background: var(--pga-accent); border-radius: 3px; }
+.pga-activity-none { display: block; height: 100%; width: 0; }
+
+.pga-territory-activity { font-size: 11px; color: var(--pga-text-dim); }
+.pga-territory-activity.is-quiet { color: var(--pga-text-faint); font-style: italic; }
+
+.pga-bridge {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  padding: 3px 7px;
+  font-size: 10.5px;
+  white-space: nowrap;
+  background: var(--pga-panel);
+  border: 1px solid var(--pga-border);
+  border-radius: 5px;
+}
+
+.pga-bridge-recorded-link { border-color: var(--pga-recorded); }
+.pga-bridge-derived-link { border-color: var(--pga-derived); border-style: dashed; }
+.pga-bridge-unclassified-link { border-color: var(--pga-unclassified); border-style: dotted; }
+.pga-bridge-shared-membership { border-color: var(--pga-shared); border-style: dashed; }
+.pga-bridge.is-open { background: var(--nim-bg-selected); font-weight: 600; }
+
+/* ---------- detail panel ---------- */
+.pga-detail {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--pga-panel);
+  border-left: 1px solid var(--pga-border);
+  user-select: text;
+}
+
+.pga-detail-empty { padding: 16px 18px; gap: 8px; overflow: auto; }
+.pga-detail-empty p { margin: 0; color: var(--pga-text-dim); }
+
+.pga-detail-head { padding: 14px 16px 10px; border-bottom: 1px solid var(--pga-border); }
+
+.pga-eyebrow {
+  font-size: 9.5px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: var(--pga-text-faint);
+  margin-bottom: 6px;
+}
+
+.pga-detail-title-row { display: flex; align-items: center; gap: 8px; }
+.pga-detail-title { font-size: 15px; font-weight: 600; margin: 0; flex: 1; min-width: 0; color: var(--pga-text); }
+
+.pga-rename { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.pga-rename-input {
+  flex: 1 1 140px;
+  min-width: 0;
+  padding: 4px 7px;
+  font: inherit;
+  color: var(--pga-text);
+  background: var(--nim-bg);
+  border: 1px solid var(--pga-border-strong);
+  border-radius: 5px;
+}
+
+.pga-basis { margin: 6px 0 0; font-size: 11px; color: var(--pga-text-faint); }
+.pga-detail-counts { margin: 5px 0 0; font-size: 11.5px; color: var(--pga-text-dim); }
+.pga-detail-nav { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 9px; }
+
+.pga-mini-btn {
+  padding: 3px 8px;
+  font-size: 11px;
+  background: var(--nim-bg-tertiary);
+  border: 1px solid var(--pga-border);
+  border-radius: 5px;
+}
+.pga-mini-btn:hover { background: var(--nim-bg-hover); }
+
+.pga-tabs { display: flex; gap: 2px; padding: 8px 12px 0; border-bottom: 1px solid var(--pga-border); }
+.pga-tab {
+  padding: 5px 10px;
+  font-size: 11.5px;
+  color: var(--pga-text-dim);
+  background: none;
+  border: 1px solid transparent;
+  border-bottom: none;
+  border-radius: 5px 5px 0 0;
+}
+.pga-tab.is-active {
+  color: var(--pga-text);
+  background: var(--nim-bg-tertiary);
+  border-color: var(--pga-border);
+}
+
+.pga-detail-body { flex: 1; min-height: 0; overflow: auto; padding: 12px 16px 18px; }
+
+.pga-lens { display: flex; align-items: center; gap: 8px; font-size: 11.5px; color: var(--pga-text-dim); }
+.pga-lens select {
+  flex: 1;
+  min-width: 0;
+  padding: 3px 6px;
+  font: inherit;
+  color: var(--pga-text);
+  background: var(--nim-bg-tertiary);
+  border: 1px solid var(--pga-border);
+  border-radius: 5px;
+}
+
+.pga-hint { margin: 8px 0 0; font-size: 11px; color: var(--pga-text-faint); }
+.pga-empty { margin: 12px 0 0; color: var(--pga-text-dim); }
+.pga-empty-page { padding: 24px; max-width: 60ch; }
+.pga-count-line { margin: 10px 0 6px; font-size: 10.5px; color: var(--pga-text-faint); }
+
+.pga-list, .pga-evidence-list { list-style: none; margin: 0; padding: 0; }
+
+.pga-conn { padding: 9px 0; border-bottom: 1px solid var(--pga-border); }
+.pga-conn.is-open { background: color-mix(in srgb, var(--pga-accent) 8%, transparent); }
+
+.pga-conn-head {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 0;
+  text-align: left;
+  background: none;
+  border: none;
+}
+
+.pga-conn-title { flex: 1; min-width: 0; font-weight: 550; overflow: hidden; text-overflow: ellipsis; }
+
+.pga-family {
+  font-size: 9.5px;
+  padding: 1px 5px;
+  border-radius: 4px;
+  border: 1px solid var(--pga-border);
+  color: var(--pga-text-dim);
+  white-space: nowrap;
+}
+.pga-family-recorded-link { border-color: var(--pga-recorded); }
+.pga-family-derived-link { border-color: var(--pga-derived); }
+.pga-family-unclassified-link { border-color: var(--pga-unclassified); }
+.pga-family-shared-membership { border-color: var(--pga-shared); }
+
+.pga-relation-notes { list-style: none; margin: 5px 0 0; padding: 0; }
+.pga-relation-notes li {
+  font-size: 10.5px;
+  line-height: 1.4;
+  color: var(--pga-text-faint);
+  padding: 2px 0 2px 7px;
+  border-left: 2px solid var(--pga-derived);
+}
+.pga-relation-notes b { color: var(--pga-text-dim); font-weight: 550; }
+.pga-relation-notes b::after { content: ' — '; font-weight: 400; }
+.pga-conn-count { font-variant-numeric: tabular-nums; color: var(--pga-text-dim); }
+
+.pga-conn-why { margin: 5px 0 0; font-size: 11.5px; color: var(--pga-text-dim); }
+.pga-conn-relations { margin: 3px 0 0; font-size: 10.5px; color: var(--pga-text-faint); }
+
+.pga-evidence { display: flex; align-items: center; gap: 6px; border-bottom: 1px solid var(--pga-border); }
+.pga-evidence.is-selected { background: var(--nim-bg-selected); }
+
+.pga-evidence-btn {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 7px 4px;
+  text-align: left;
+  background: none;
+  border: none;
+}
+
+.pga-evidence-label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pga-evidence-btn small { font-size: 10px; color: var(--pga-text-faint); line-height: 1.35; }
+
+.pga-row-actions { display: flex; gap: 4px; flex-shrink: 0; }
+
+.pga-more {
+  margin-top: 8px;
+  padding: 4px 9px;
+  font-size: 11px;
+  background: var(--nim-bg-tertiary);
+  border: 1px solid var(--pga-border);
+  border-radius: 5px;
+}
+
+.pga-callout {
+  margin: 14px 0 0;
+  padding: 8px 10px;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--pga-text-dim);
+  background: var(--nim-bg-tertiary);
+  border-left: 2px solid var(--pga-accent);
+}
+
+/* ---------- footer ---------- */
+.pga-footer {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 7px 16px;
+  border-top: 1px solid var(--pga-border);
+  font-size: 11px;
+  color: var(--pga-text-dim);
+}
+
+.pga-footer-spacer { flex: 1; }
+.pga-footer-note { color: var(--pga-text-faint); }
+.pga-legend { display: flex; align-items: center; gap: 5px; }
+
+.pga-swatch { width: 9px; height: 9px; border-radius: 2px; display: inline-block; }
+.pga-swatch-recorded { background: var(--pga-accent); }
+.pga-swatch-observed {
+  margin-left: 8px;
+  background: repeating-linear-gradient(135deg, var(--pga-shared) 0 2px, transparent 2px 4px);
+  background-color: color-mix(in srgb, var(--pga-shared) 35%, transparent);
+}
+
+@container pga-atlas (max-width: 640px) {
+  .pga-header { flex-direction: column; gap: 4px; }
+  .pga-header-stats { margin-left: 0; text-align: left; }
+  .pga-footer { flex-wrap: wrap; gap: 8px; }
+}

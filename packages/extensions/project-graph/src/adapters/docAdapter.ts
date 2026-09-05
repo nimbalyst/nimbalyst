@@ -1,6 +1,7 @@
 import type { Adapter, AdapterResult } from './types';
 import type { ProjectGraphNode } from '../types';
 import { getFileDates } from './gitFileDates';
+import { enumerateFiles } from './fileEnumeration';
 
 /**
  * Scans `docs/`, `design/`, and `nimbalyst-local/architecture/` for
@@ -10,23 +11,37 @@ import { getFileDates } from './gitFileDates';
  * `design/**\/*-architecture*.md` are categorised as `architecture-doc`;
  * everything else is `markdown-doc`.
  */
-const ROOTS = ['docs', 'design', 'nimbalyst-local/architecture'];
-const MAX_PER_ROOT = 120;
+export const DOC_ROOTS = ['docs', 'design', 'nimbalyst-local/architecture'];
+/**
+ * A ceiling, not a page size: enumeration is complete below it and reports
+ * itself truncated above it. The old `head -120` per root silently dropped
+ * files and never said so.
+ */
+const DOC_SAFETY_MAX = 5000;
 
 export const docAdapter: Adapter = {
   id: 'docs',
   label: 'docs',
   async run(host): Promise<AdapterResult> {
     try {
-      const lookups = ROOTS.map(root =>
-        `[ -d ${root} ] && find ${root} -maxdepth 4 -type f \\( -name '*.md' -o -name '*.excalidraw' \\) 2>/dev/null | head -${MAX_PER_ROOT} || true`,
-      );
-      const found = await host.exec(lookups.join('; '), { timeout: 10000 });
-      if (!found.success) {
-        return { nodes: [], edges: [], status: 'error', message: found.stderr.slice(0, 200) };
+      const found = await enumerateFiles(host, {
+        roots: DOC_ROOTS,
+        namePatterns: ['*.md', '*.excalidraw'],
+        maxDepth: 4,
+        safetyMax: DOC_SAFETY_MAX,
+        timeoutMs: 10000,
+      });
+      const paths = found.paths;
+      const notes = [...found.errors];
+      if (found.truncationReason) notes.push(found.truncationReason);
+      if (paths.length === 0) {
+        return {
+          nodes: [],
+          edges: [],
+          status: found.errors.length > 0 ? 'error' : 'ok',
+          message: notes.length > 0 ? notes.join('; ') : undefined,
+        };
       }
-      const paths = Array.from(new Set(found.stdout.split('\n').map(s => s.trim()).filter(Boolean)));
-      if (paths.length === 0) return { nodes: [], edges: [], status: 'ok' };
 
       const dates = await getFileDates(host, paths);
 
@@ -48,7 +63,12 @@ export const docAdapter: Adapter = {
         };
       });
 
-      return { nodes, edges: [], status: 'ok' };
+      return {
+        nodes,
+        edges: [],
+        status: found.errors.length > 0 ? 'error' : 'ok',
+        message: notes.length > 0 ? notes.join('; ') : undefined,
+      };
     } catch (err) {
       return { nodes: [], edges: [], status: 'error', message: String(err) };
     }

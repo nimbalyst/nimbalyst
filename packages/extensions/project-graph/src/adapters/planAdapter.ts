@@ -1,6 +1,11 @@
 import type { Adapter, AdapterResult } from './types';
 import type { ProjectGraphNode } from '../types';
 import { getFileDates } from './gitFileDates';
+import { enumerateFiles, readFileHeads } from './fileEnumeration';
+
+export const PLAN_ROOTS = ['nimbalyst-local/plans'];
+/** Ceiling, not a page size — see {@link enumerateFiles}. */
+const PLAN_SAFETY_MAX = 2000;
 
 /**
  * Scans `nimbalyst-local/plans/*.md` for plan documents.
@@ -14,32 +19,25 @@ export const planAdapter: Adapter = {
   label: 'plans',
   async run(host): Promise<AdapterResult> {
     try {
-      const list = await host.exec(
-        `[ -d nimbalyst-local/plans ] && find nimbalyst-local/plans -maxdepth 2 -type f -name '*.md' 2>/dev/null | head -200 || true`,
-        { timeout: 8000 },
-      );
-      const paths = list.stdout.split('\n').map(s => s.trim()).filter(Boolean);
+      const found = await enumerateFiles(host, {
+        roots: PLAN_ROOTS,
+        namePatterns: ['*.md'],
+        maxDepth: 2,
+        safetyMax: PLAN_SAFETY_MAX,
+        timeoutMs: 8000,
+      });
+      const paths = found.paths;
+      const notes = [...found.errors];
+      if (found.truncationReason) notes.push(found.truncationReason);
+      const message = notes.length > 0 ? notes.join('; ') : undefined;
+      const status: AdapterResult['status'] = found.errors.length > 0 ? 'error' : 'ok';
       if (paths.length === 0) {
-        return { nodes: [], edges: [], status: 'ok' };
-      }
-
-      // Read frontmatter headers in one batched call. `head -c 4000` keeps each
-      // read bounded so a huge plan doesn't blow our buffer.
-      const heads = await host.exec(
-        paths.map(p => `echo "__PG_PLAN__:${p}"; head -c 4000 "${p}"`).join('; '),
-        { timeout: 15000 },
-      );
-      if (!heads.success) {
-        return { nodes: [], edges: [], status: 'error', message: heads.stderr.slice(0, 200) };
+        return { nodes: [], edges: [], status, message };
       }
 
       const nodes: ProjectGraphNode[] = [];
       const dates = await getFileDates(host, paths);
-      const blocks = heads.stdout.split('__PG_PLAN__:').filter(Boolean);
-      for (const block of blocks) {
-        const nl = block.indexOf('\n');
-        const path = (nl >= 0 ? block.slice(0, nl) : block).trim();
-        const body = nl >= 0 ? block.slice(nl + 1) : '';
+      for (const { path, body } of await readFileHeads(host, paths)) {
         const title = matchFrontmatterField(body, 'title') ?? deriveTitleFromPath(path);
         const status = matchFrontmatterField(body, 'status');
         const progress = parseInt(matchFrontmatterField(body, 'progress') ?? '', 10);
@@ -61,7 +59,7 @@ export const planAdapter: Adapter = {
         });
       }
 
-      return { nodes, edges: [], status: 'ok' };
+      return { nodes, edges: [], status, message };
     } catch (err) {
       return { nodes: [], edges: [], status: 'error', message: String(err) };
     }

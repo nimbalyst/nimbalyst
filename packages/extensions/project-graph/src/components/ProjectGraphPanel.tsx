@@ -79,7 +79,7 @@ const EMPTY_SNAPSHOT: ProjectGraphSnapshot = {
   stats: { nodeCount: 0, edgeCount: 0, countsByType: {} },
 };
 
-export function ProjectGraphPanel({ host }: PanelHostProps) {
+export function ProjectGraphPanel({ host, active = true }: PanelHostProps & { active?: boolean }) {
   // Snapshot is loaded from the adapter pipeline (git, plans, docs, github).
   // Until adapters resolve, we render an empty graph with a loading badge.
   const [snapshot, setSnapshot] = useState<ProjectGraphSnapshot>(EMPTY_SNAPSHOT);
@@ -255,7 +255,7 @@ export function ProjectGraphPanel({ host }: PanelHostProps) {
   // RAF play loop. Advances currentTime by `speed * realElapsedSec` until it
   // hits `timeRange.max`, then auto-pauses.
   useEffect(() => {
-    if (!playing) return;
+    if (!playing || !active) return;
     let raf = 0;
     let last = performance.now();
     const tick = (now: number) => {
@@ -273,7 +273,7 @@ export function ProjectGraphPanel({ host }: PanelHostProps) {
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [playing, speed, timeRange.max]);
+  }, [playing, speed, timeRange.max, active]);
 
   // If the user hits play while at the end, rewind to the start so something
   // visibly happens.
@@ -395,6 +395,7 @@ export function ProjectGraphPanel({ host }: PanelHostProps) {
   // F key fits to view, but only when typing in an input is not active.
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
+      if (!active || e.metaKey || e.ctrlKey || e.altKey) return;
       if (e.key !== 'f' && e.key !== 'F') return;
       const ae = document.activeElement;
       if (ae instanceof HTMLInputElement || ae instanceof HTMLTextAreaElement || (ae instanceof HTMLElement && ae.isContentEditable)) {
@@ -408,7 +409,7 @@ export function ProjectGraphPanel({ host }: PanelHostProps) {
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
-  }, [handleFit]);
+  }, [handleFit, active]);
 
   // Inject any project-defined color tokens onto the panel root so SVG
   // children can resolve `var(--pg-c-custom-foo)` via the colorToken.

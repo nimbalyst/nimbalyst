@@ -1,0 +1,793 @@
+/* Pulse prototype -- scoped to .pgp-pulse. Colors come from the host's unified
+   --nim-* tokens so the view follows the active theme. */
+
+/* `.pgp-pulse` exists only to be the query container. A `@container` condition
+   never matches the element that declares the container, so every responsive
+   rule below targets `.pgp-shell` and the variables they override live there
+   too -- on `.pgp-pulse` they would be unreachable from a container query. */
+.pgp-pulse {
+  container-type: inline-size;
+  container-name: pgp;
+  display: flex;
+  height: 100%;
+  min-height: 0;
+  width: 100%;
+  overflow: hidden;
+}
+
+.pgp-shell {
+  --pgp-bg: var(--nim-bg);
+  --pgp-panel: var(--nim-bg-secondary);
+  --pgp-sunken: var(--nim-bg-tertiary);
+  --pgp-border: var(--nim-border);
+  --pgp-focus: var(--nim-border-focus);
+  --pgp-text: var(--nim-text);
+  --pgp-muted: var(--nim-text-muted);
+  --pgp-faint: var(--nim-text-faint);
+  --pgp-accent: var(--nim-primary);
+  --pgp-warn: var(--nim-warning);
+
+  --pgp-label-w: 214px;
+  /* Columns stretch to fill the pane; the floor holds them scannable and forces
+     horizontal scroll once a long range no longer fits.
+
+     Two inputs decide that floor: the column count (written inline by the
+     component as `--pgp-cell-min-fit`) and the container width (the ceilings
+     below). `min()` combines them, because an inline custom property outranks
+     every rule here and would otherwise pin the floor at the wide value. */
+  --pgp-cell-min-fit: 34px;
+  --pgp-cell-min-max: 999px;
+  --pgp-cell-max: 220px;
+  --pgp-cell-h-fit: 30px;
+  --pgp-cell-h-max: 999px;
+  --pgp-cell-font-fit: 11px;
+  --pgp-inspector-w: 320px;
+
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: var(--pgp-bg);
+  color: var(--pgp-text);
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+.pgp-pulse *,
+.pgp-pulse *::before,
+.pgp-pulse *::after {
+  box-sizing: border-box;
+}
+
+/* ============ Period comparison ============ */
+.pgp-compare {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  padding: 6px 16px;
+  border-bottom: 1px solid var(--pgp-border);
+  background: var(--pgp-panel);
+  font-size: 12px;
+}
+
+.pgp-compare-delta {
+  font-variant-numeric: tabular-nums;
+  color: var(--pgp-accent);
+}
+
+/* An observed delta is a weaker statement than a complete one and must not
+   borrow the accent that reads as an established figure. */
+.pgp-compare-delta-observed {
+  color: var(--pgp-muted);
+}
+
+.pgp-compare-note {
+  flex: 1 1 260px;
+  min-width: 0;
+  color: var(--pgp-faint);
+}
+
+/* ============ Header ============ */
+.pgp-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  padding: 12px 16px 10px;
+  border-bottom: 1px solid var(--pgp-border);
+  background: var(--pgp-panel);
+}
+
+.pgp-header-titles {
+  min-width: 0;
+  flex: 1;
+}
+
+.pgp-title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: -0.2px;
+}
+
+.pgp-subtitle {
+  margin: 3px 0 0;
+  color: var(--pgp-muted);
+  font-size: 11.5px;
+}
+
+.pgp-header-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.pgp-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11px;
+  color: var(--pgp-muted);
+}
+
+.pgp-btn,
+.pgp-select,
+.pgp-input {
+  font: inherit;
+  font-size: 11.5px;
+  color: var(--pgp-text);
+  background: var(--pgp-sunken);
+  border: 1px solid var(--pgp-border);
+  border-radius: 5px;
+  padding: 4px 8px;
+  cursor: pointer;
+}
+
+.pgp-input {
+  cursor: text;
+  min-width: 150px;
+}
+
+.pgp-btn:hover,
+.pgp-select:hover {
+  background: var(--nim-bg-hover);
+}
+
+.pgp-btn:focus-visible,
+.pgp-select:focus-visible,
+.pgp-input:focus-visible,
+.pgp-colhead:focus-visible,
+.pgp-rowlabel-btn:focus-visible,
+.pgp-scope-btn:focus-visible,
+.pgp-link-btn:focus-visible,
+.pgp-episode-head:focus-visible,
+.pgp-cell:focus-visible {
+  outline: 2px solid var(--pgp-focus);
+  outline-offset: -1px;
+}
+
+.pgp-rename {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+}
+
+/* ============ Fact strip ============ */
+.pgp-facts {
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+  align-items: center;
+  padding: 7px 16px;
+  border-bottom: 1px solid var(--pgp-border);
+  font-size: 11.5px;
+  color: var(--pgp-muted);
+}
+
+.pgp-fact strong {
+  color: var(--pgp-text);
+  font-weight: 600;
+}
+
+.pgp-fact-observed {
+  color: var(--pgp-warn);
+}
+
+.pgp-fact-quiet {
+  color: var(--pgp-faint);
+  margin-left: auto;
+}
+
+.pgp-coverage {
+  display: flex;
+  gap: 16px;
+  flex-wrap: wrap;
+  padding: 6px 16px;
+  border-bottom: 1px solid var(--pgp-border);
+  background: color-mix(in srgb, var(--pgp-warn) 12%, transparent);
+  color: var(--pgp-text);
+  font-size: 11px;
+}
+
+/* ============ Body ============ */
+.pgp-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) var(--pgp-inspector-w);
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.pgp-grid-scroll {
+  min-width: 0;
+  overflow: auto;
+  padding: 10px 12px 12px;
+}
+
+.pgp-grid-empty {
+  padding: 28px 12px;
+  color: var(--pgp-muted);
+}
+
+.pgp-grid {
+  display: grid;
+  grid-template-columns:
+    var(--pgp-label-w)
+    repeat(var(--pgp-cols), minmax(min(var(--pgp-cell-min-fit), var(--pgp-cell-min-max)), 1fr));
+  gap: 2px;
+  width: 100%;
+  /* `min-width: min-content` is what makes the sticky column and header hold
+     while scrolled: without it the grid box stays at the scrollport width, its
+     tracks overflow past its own border, and `position: sticky` -- which is
+     bounded by this containing block -- stops holding partway across. A forced
+     day unit over a 90-day range is exactly that case. */
+  min-width: min-content;
+  /* Keeps a two- or three-bucket range from ballooning into giant blocks. */
+  max-width: calc(var(--pgp-label-w) + var(--pgp-cols) * (var(--pgp-cell-max) + 2px));
+}
+
+/* `display: contents` keeps the role="row" wrappers for assistive tech while
+   letting every cell participate in the one outer grid, so columns stay
+   aligned without relying on subgrid. */
+.pgp-row {
+  display: contents;
+}
+
+.pgp-corner {
+  position: sticky;
+  top: 0;
+  left: 0;
+  z-index: 4;
+  background: var(--pgp-bg);
+  display: flex;
+  align-items: flex-end;
+  font-size: 10px;
+  letter-spacing: 0.6px;
+  text-transform: uppercase;
+  color: var(--pgp-faint);
+  padding-bottom: 4px;
+}
+
+.pgp-colhead {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  background: var(--pgp-bg);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 1px;
+  padding: 3px 0 4px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  color: var(--pgp-muted);
+  cursor: pointer;
+  font: inherit;
+}
+
+.pgp-colhead:hover {
+  background: var(--nim-bg-hover);
+}
+
+.pgp-colhead-sub {
+  font-size: 9px;
+  color: var(--pgp-faint);
+  text-transform: uppercase;
+}
+
+.pgp-colhead-main {
+  font-size: 11px;
+  color: var(--pgp-text);
+}
+
+.pgp-colhead-partial {
+  border-bottom: 1px dashed var(--pgp-warn);
+}
+
+/* ============ Row labels ============ */
+.pgp-rowlabel {
+  position: sticky;
+  left: 0;
+  z-index: 2;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  padding-right: 6px;
+  background: var(--pgp-bg);
+}
+
+.pgp-rowlabel-btn {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 1px;
+  padding: 3px 6px;
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.pgp-rowlabel-btn:hover {
+  background: var(--nim-bg-hover);
+}
+
+.pgp-rowlabel-text {
+  font-size: 12px;
+  font-weight: 550;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pgp-rowlabel-meta {
+  font-size: 10px;
+  color: var(--pgp-faint);
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pgp-scope-btn {
+  flex: 0 0 auto;
+  width: 20px;
+  height: 20px;
+  display: grid;
+  place-items: center;
+  background: transparent;
+  border: 1px solid var(--pgp-border);
+  border-radius: 4px;
+  color: var(--pgp-muted);
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 1;
+}
+
+.pgp-scope-btn:hover {
+  background: var(--nim-bg-hover);
+  color: var(--pgp-text);
+}
+
+/* ============ Cells ============ */
+.pgp-cell {
+  position: relative;
+  height: min(var(--pgp-cell-h-fit), var(--pgp-cell-h-max));
+  display: grid;
+  place-items: center;
+  border-radius: 4px;
+  border: 1px solid transparent;
+  font-size: var(--pgp-cell-font-fit);
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+  user-select: none;
+}
+
+.pgp-heat-0 {
+  background: var(--pgp-sunken);
+  border-color: var(--pgp-border);
+}
+
+.pgp-heat-1 {
+  background: color-mix(in srgb, var(--pgp-accent) 24%, var(--pgp-sunken));
+}
+
+.pgp-heat-2 {
+  background: color-mix(in srgb, var(--pgp-accent) 45%, var(--pgp-sunken));
+}
+
+.pgp-heat-3 {
+  background: color-mix(in srgb, var(--pgp-accent) 68%, var(--pgp-sunken));
+}
+
+.pgp-heat-4 {
+  background: color-mix(in srgb, var(--pgp-accent) 90%, var(--pgp-sunken));
+}
+
+.pgp-heat-2 .pgp-cell-value,
+.pgp-heat-3 .pgp-cell-value,
+.pgp-heat-4 .pgp-cell-value {
+  color: var(--nim-bg);
+  font-weight: 600;
+}
+
+/* A bucket that predates every loaded record: unknown, not quiet. */
+.pgp-cell-unknown {
+  background: repeating-linear-gradient(
+    -45deg,
+    var(--pgp-sunken),
+    var(--pgp-sunken) 3px,
+    transparent 3px,
+    transparent 6px
+  );
+  border-color: color-mix(in srgb, var(--pgp-border) 70%, transparent);
+}
+
+/* Corner tick: at least one artifact here is only a last-observed timestamp. */
+.pgp-cell-observed::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 0;
+  height: 0;
+  border-top: 5px solid var(--pgp-warn);
+  border-left: 5px solid transparent;
+}
+
+.pgp-cell-value-observed {
+  color: var(--pgp-warn);
+}
+
+.pgp-cell-selected {
+  border-color: var(--pgp-focus);
+  box-shadow: inset 0 0 0 1px var(--pgp-focus);
+}
+
+/* ============ Legend ============ */
+.pgp-legend {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-top: 12px;
+  font-size: 10.5px;
+  color: var(--pgp-muted);
+}
+
+.pgp-legend-title {
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  font-size: 9.5px;
+  color: var(--pgp-faint);
+}
+
+.pgp-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.pgp-legend-note {
+  color: var(--pgp-faint);
+}
+
+.pgp-legend-caveat {
+  margin: 6px 0 0;
+  max-width: 70ch;
+  font-size: 10.5px;
+  color: var(--pgp-faint);
+}
+
+.pgp-unrecognized {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--pgp-border);
+}
+
+.pgp-swatch {
+  width: 12px;
+  height: 12px;
+  border-radius: 3px;
+  border: 1px solid var(--pgp-border);
+  display: inline-block;
+}
+
+.pgp-swatch-unknown {
+  background: repeating-linear-gradient(
+    -45deg,
+    var(--pgp-sunken),
+    var(--pgp-sunken) 3px,
+    transparent 3px,
+    transparent 6px
+  );
+}
+
+.pgp-swatch-observed {
+  background: var(--pgp-sunken);
+  border-top: 4px solid var(--pgp-warn);
+}
+
+/* ============ Inspector ============ */
+.pgp-inspector {
+  min-width: 0;
+  min-height: 0;
+  overflow: auto;
+  padding: 12px 14px 18px;
+  border-left: 1px solid var(--pgp-border);
+  background: var(--pgp-panel);
+}
+
+.pgp-inspector-empty h3 {
+  margin: 0 0 4px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.pgp-inspector-empty p,
+.pgp-note {
+  margin: 0 0 8px;
+  color: var(--pgp-muted);
+  font-size: 11.5px;
+}
+
+.pgp-eyebrow {
+  font-size: 9.5px;
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+  color: var(--pgp-faint);
+  margin-bottom: 4px;
+}
+
+.pgp-eyebrow-sub {
+  margin-top: 12px;
+}
+
+.pgp-selection-heading {
+  margin: 0 0 6px;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+.pgp-warn-line {
+  margin: 0 0 8px;
+  padding: 6px 8px;
+  border-left: 2px solid var(--pgp-warn);
+  background: color-mix(in srgb, var(--pgp-warn) 12%, transparent);
+  font-size: 11px;
+}
+
+.pgp-empty-line {
+  margin: 6px 0;
+  color: var(--pgp-muted);
+  font-size: 11.5px;
+}
+
+.pgp-count-line {
+  margin-top: 6px;
+  font-size: 10.5px;
+  color: var(--pgp-faint);
+}
+
+.pgp-episodes,
+.pgp-episode-events,
+.pgp-open-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.pgp-episode {
+  border: 1px solid var(--pgp-border);
+  border-radius: 6px;
+  padding: 8px;
+  margin-bottom: 8px;
+  background: var(--pgp-bg);
+}
+
+.pgp-episode-selected {
+  border-color: var(--pgp-focus);
+}
+
+.pgp-episode-head {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  width: 100%;
+  padding: 0;
+  background: transparent;
+  border: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.pgp-episode-title {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.pgp-episode-meta {
+  font-size: 10.5px;
+  color: var(--pgp-faint);
+}
+
+.pgp-episode-events li {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 6px;
+  align-items: baseline;
+  padding: 3px 0;
+  font-size: 11px;
+  border-top: 1px solid color-mix(in srgb, var(--pgp-border) 60%, transparent);
+}
+
+.pgp-kind {
+  font-size: 9.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  color: var(--pgp-accent);
+  white-space: nowrap;
+}
+
+.pgp-kind-observed {
+  color: var(--pgp-warn);
+}
+
+.pgp-event-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pgp-event-when {
+  color: var(--pgp-faint);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.pgp-episode-actions {
+  display: flex;
+  gap: 6px;
+  margin-top: 7px;
+}
+
+.pgp-open-state {
+  margin-top: 18px;
+  padding-top: 12px;
+  border-top: 1px solid var(--pgp-border);
+}
+
+.pgp-open-list li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: baseline;
+  padding: 3px 0;
+}
+
+.pgp-link-btn {
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+  min-width: 0;
+  padding: 0;
+  background: transparent;
+  border: none;
+  color: inherit;
+  font: inherit;
+  font-size: 11.5px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.pgp-open-status {
+  font-size: 9.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  color: var(--pgp-warn);
+  white-space: nowrap;
+}
+
+.pgp-open-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pgp-open-when {
+  font-size: 10px;
+  color: var(--pgp-faint);
+  white-space: nowrap;
+}
+
+/* ============ Footer ============ */
+.pgp-footer {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 16px;
+  border-top: 1px solid var(--pgp-border);
+  background: var(--pgp-panel);
+  font-size: 10.5px;
+  color: var(--pgp-muted);
+}
+
+.pgp-footer-right {
+  margin-left: auto;
+}
+
+/* ============ Responsive ============
+   Every selector here is a descendant of the `.pgp-pulse` query container. */
+@container pgp (max-width: 1000px) {
+  .pgp-shell {
+    --pgp-inspector-w: 274px;
+    --pgp-label-w: 180px;
+  }
+}
+
+@container pgp (max-width: 820px) {
+  /* Both rows are proportional. The inspector row used to be `auto`, sized to
+     its content, while the inspector inside it was capped at `max-height: 46%`
+     — a percentage against an auto-sized row, which left the pane far shorter
+     than the row it sat in and a band of dead space underneath (measured at
+     760px: a 446px row holding a 205px inspector, with the grid squeezed into
+     240px). Sizing the rows in `fr` and letting each pane scroll itself is what
+     removes the gap; neither pane may cap its own height here. */
+  .pgp-body {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1.2fr) minmax(0, 1fr);
+    overflow: hidden;
+  }
+
+  .pgp-inspector {
+    border-left: none;
+    border-top: 1px solid var(--pgp-border);
+    max-height: none;
+    min-height: 0;
+    overflow: auto;
+  }
+
+  .pgp-grid-scroll {
+    min-height: 0;
+  }
+
+  .pgp-fact-quiet {
+    display: none;
+  }
+}
+
+@container pgp (max-width: 560px) {
+  .pgp-shell {
+    /* Ceilings, not values: the component's column-count floor still applies
+       through the `min()` in `.pgp-grid` and `.pgp-cell`. */
+    --pgp-cell-min-max: 24px;
+    --pgp-cell-h-max: 24px;
+    --pgp-label-w: 148px;
+  }
+
+  .pgp-header {
+    flex-direction: column;
+  }
+
+  .pgp-header-controls {
+    justify-content: flex-start;
+  }
+}

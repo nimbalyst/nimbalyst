@@ -1,5 +1,6 @@
 import type { ProjectGraphEdge, ProjectGraphNode } from '../types';
 import { dirLabel, dirNodeId, moduleForPath, moduleParentId } from './paths';
+import { provenanceFor } from './recordMapping';
 
 /**
  * Edge enrichment: the per-adapter passes only know about their own slice of the
@@ -52,7 +53,9 @@ export function enrichGraph(
   const addEdge = (id: string, type: ProjectGraphEdge['type'], sourceId: string, targetId: string) => {
     if (edgeIds.has(id)) return;
     edgeIds.add(id);
-    edges.push({ id, type, sourceId, targetId });
+    // Both relations added here are computed from path shape, never read off a
+    // record. Saying so keeps the "explicit link" census honest.
+    edges.push({ id, type, sourceId, targetId, provenance: provenanceFor(type) });
   };
 
   // 1. Module containment (synthesize package parents as needed).

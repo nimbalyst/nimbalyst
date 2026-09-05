@@ -21,6 +21,19 @@ export interface LoadedSnapshot {
   snapshot: ProjectGraphSnapshot;
   diagnostics: SnapshotDiagnostics;
   clusters: LayoutClusterInfo[];
+  /**
+   * Every relation the adapters recorded, INCLUDING ones whose endpoint is not
+   * in `snapshot.nodes` because it fell outside this bounded snapshot.
+   *
+   * `snapshot.edges` stays filtered: the canvas cannot draw an arrow to a node
+   * it does not have. But dropping the relation entirely made "the sources
+   * recorded no link" indistinguishable from "the other end was not loaded",
+   * which is the false-absence claim the September 5 review flagged. Consumers
+   * that describe absence must read this, not `snapshot.edges`.
+   */
+  rawEdges: ProjectGraphEdge[];
+  /** Ids within {@link rawEdges} whose source or target is not loaded. */
+  unresolvedEdgeIds: string[];
 }
 
 /**
@@ -57,9 +70,12 @@ export async function loadProjectSnapshot(
   // and path-backed nodes -> their module. May add synthetic parent module nodes.
   enrichGraph(nodeById, edges, host.workspacePath);
 
-  // Drop edges that point at nodes no adapter produced (defensive — keeps the
-  // canvas from rendering dangling arrows when an adapter is unavailable).
-  const filteredEdges = edges.filter(e => nodeById.has(e.sourceId) && nodeById.has(e.targetId));
+  // Filtering happens at the LAYOUT boundary only: the canvas cannot draw an
+  // arrow to a node it does not have. The unfiltered set is returned alongside
+  // so callers can distinguish an unloaded endpoint from a missing relation.
+  const resolved = (e: ProjectGraphEdge) => nodeById.has(e.sourceId) && nodeById.has(e.targetId);
+  const filteredEdges = edges.filter(resolved);
+  const unresolvedEdgeIds = edges.filter(e => !resolved(e)).map(e => e.id);
 
   // Fill in createdAt for nodes that lack a native date (files, directories,
   // plans, docs) by taking the earliest createdAt among their dated neighbors.
@@ -120,5 +136,5 @@ export async function loadProjectSnapshot(
     })),
   };
 
-  return { snapshot, diagnostics, clusters: layout.clusters };
+  return { snapshot, diagnostics, clusters: layout.clusters, rawEdges: edges, unresolvedEdgeIds };
 }
