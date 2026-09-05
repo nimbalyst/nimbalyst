@@ -1,3 +1,5 @@
+import { database } from '../database/PGLiteDatabaseWorker';
+import { projectSessionList, readSessionLaunchCounts } from './sessionListProjection';
 import { SessionManager, ProviderFactory } from '@nimbalyst/runtime/ai/server';
 import { AISessionsRepository, TranscriptMigrationRepository } from '@nimbalyst/runtime';
 import {
@@ -515,43 +517,8 @@ export async function registerSessionHandlers() {
                 console.error('[SessionHandlers] Failed to get uncommitted counts:', error);
             }
 
-            // Use entry data directly - it already has all the info we need including updatedAt
-            const sessions = entries.map(entry => {
-                const uncommittedCount = uncommittedMap.get(entry.id) || 0;
-                return {
-                    id: entry.id,
-                    createdAt: entry.createdAt,
-                    updatedAt: entry.updatedAt,
-                    name: entry.title,
-                    title: entry.title,
-                    provider: entry.provider,
-                    model: entry.model,
-                    sessionType: entry.sessionType || 'session',
-                    agentRole: entry.agentRole || 'standard',
-                    createdBySessionId: entry.createdBySessionId || null,
-                    messageCount: entry.messageCount || 0,
-                    isArchived: entry.isArchived || false,
-                    isPinned: entry.isPinned || false,  // Include isPinned from repository
-                    worktreeId: entry.worktreeId,  // Include worktreeId from repository
-                    parentSessionId: entry.parentSessionId || null,  // Hierarchical workstream support
-                    childCount: entry.childCount || 0,  // Number of child sessions
-                    uncommittedCount,  // Number of uncommitted files
-                    hasUnread: entry.hasUnread || false,  // Unread state from metadata
-                    hasPendingInteractivePrompt: (entry as any).hasPendingInteractivePrompt || false,
-                    // Branch tracking - SEPARATE from hierarchical parentSessionId
-                    branchedFromSessionId: entry.branchedFromSessionId,
-                    branchPointMessageId: entry.branchPointMessageId,
-                    branchedAt: entry.branchedAt,
-                    // Kanban board phase and tags
-                    phase: (entry as any).phase || undefined,
-                    tags: (entry as any).tags || undefined,
-                    // Linked tracker item IDs
-                    linkedTrackerItemIds: (entry as any).linkedTrackerItemIds || undefined,
-                    metadata: {}
-                };
-            });
-
-            return { success: true, sessions };
+            const launchedSessionCounts = await readSessionLaunchCounts(database, workspacePath);
+            return { success: true, sessions: projectSessionList(entries, uncommittedMap), launchedSessionCounts };
         } catch (error) {
             console.error('[SessionHandlers] Failed to list sessions:', error);
             return { success: false, error: String(error), sessions: [] };
@@ -796,7 +763,13 @@ export async function registerSessionHandlers() {
             // Destroy any active provider (aborts lead query and kills all teammates)
             ProviderFactory.destroyProvider(sessionId);
 
+            const session = await AISessionsRepository.get(sessionId);
             await AISessionsRepository.delete(sessionId);
+            if (session?.workspacePath) {
+                for (const window of BrowserWindow.getAllWindows()) {
+                    if (!window.isDestroyed()) window.webContents.send('sessions:refresh-list', { workspacePath: session.workspacePath });
+                }
+            }
             return { success: true };
         } catch (error) {
             console.error('[SessionHandlers] Failed to delete session:', error);

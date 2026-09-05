@@ -20,6 +20,8 @@ import { store } from '@nimbalyst/runtime/store';
 import { ModelIdentifier, type ChatAttachment, type SessionData, type TranscriptViewMessage } from '@nimbalyst/runtime/ai/server/types';
 import type { SessionMeta } from '@nimbalyst/runtime';
 import deepEqual from 'fast-deep-equal';
+import { sessionLaunchCountsAtom } from './sessionLaunchCounts';
+import { sessionListMetadata } from './sessionListMetadata';
 import { workstreamStateAtom, setWorkstreamActiveChildAtom } from './workstreamState';
 import { aiInputHistoryAtom } from './aiInputUndo';
 
@@ -2210,6 +2212,8 @@ export const showArchivedSessionsAtom = atom<boolean>(false);
  *   If provided, uses this value instead of reading from showArchivedSessionsAtom.
  *   This avoids race conditions when the atom is updated but not yet committed.
  */
+let sessionListRefreshVersion = 0;
+
 export const refreshSessionListAtom = atom(
   null,
   async (get, set, includeArchivedOverride?: boolean) => {
@@ -2218,6 +2222,7 @@ export const refreshSessionListAtom = atom(
       return;
     }
 
+    const refreshVersion = ++sessionListRefreshVersion;
     const showArchived = includeArchivedOverride ?? get(showArchivedSessionsAtom);
 
     try {
@@ -2226,36 +2231,13 @@ export const refreshSessionListAtom = atom(
         includeArchived: showArchived,
       });
 
+      if (get(sessionListWorkspaceAtom) !== workspacePath || refreshVersion !== sessionListRefreshVersion) return;
+
       if (result.success && Array.isArray(result.sessions)) {
         // Map IPC results directly into registry (single pass, no intermediate type)
         const registry = new Map<string, SessionMeta>();
         for (const s of result.sessions) {
-          registry.set(s.id, {
-            id: s.id,
-            title: s.title || 'Untitled Session',
-            createdAt: s.createdAt,
-            updatedAt: s.updatedAt,
-            provider: s.provider || 'claude',
-            model: s.model,
-            sessionType: s.sessionType || 'session',
-            agentRole: s.agentRole || 'standard',
-            createdBySessionId: s.createdBySessionId || null,
-            messageCount: s.messageCount || 0,
-            workspaceId: workspacePath,
-            isArchived: s.isArchived || false,
-            isPinned: s.isPinned || false,
-            parentSessionId: s.parentSessionId || null,
-            worktreeId: s.worktreeId || null,
-            childCount: s.childCount || 0,
-            uncommittedCount: s.uncommittedCount || 0,
-            // Kanban board phase and tags from metadata JSONB
-            ...(s.phase && { phase: s.phase }),
-            ...(s.tags && { tags: s.tags }),
-            // Linked tracker item IDs from metadata JSONB
-            ...(s.linkedTrackerItemIds && { linkedTrackerItemIds: s.linkedTrackerItemIds }),
-            ...(s.agentRole && { agentRole: s.agentRole }),
-            ...(s.createdBySessionId !== undefined && { createdBySessionId: s.createdBySessionId }),
-          });
+          registry.set(s.id, sessionListMetadata(s, workspacePath));
 
           // Initialize unread state from database metadata (for cross-device sync)
           if (s.hasUnread) {
@@ -2270,11 +2252,12 @@ export const refreshSessionListAtom = atom(
         }
 
         set(sessionRegistryAtom, registry);
+        set(sessionLaunchCountsAtom, result.launchedSessionCounts ?? {});
       }
     } catch (error) {
       console.error('[sessions] Failed to refresh session list:', error);
     } finally {
-      set(sessionListLoadingAtom, false);
+      if (refreshVersion === sessionListRefreshVersion) set(sessionListLoadingAtom, false);
     }
   }
 );
@@ -2304,6 +2287,7 @@ export async function initSessionList(workspacePath: string): Promise<void> {
   }
 
   lastInitWorkspacePath = workspacePath;
+  if (store.get(sessionListWorkspaceAtom) !== workspacePath) store.set(sessionLaunchCountsAtom, {});
   store.set(sessionListWorkspaceAtom, workspacePath);
 
   // Trigger initial load and track the promise

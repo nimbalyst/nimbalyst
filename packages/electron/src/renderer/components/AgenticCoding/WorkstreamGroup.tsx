@@ -1,6 +1,7 @@
+import { SessionProviderIcon } from './SessionProviderIcon';
 import React, { useState, useCallback, useEffect, useRef, memo, useMemo } from 'react';
 import { useAtomValue, useSetAtom } from 'jotai';
-import { MaterialSymbol, ProviderIcon, copyToClipboard } from '@nimbalyst/runtime';
+import { MaterialSymbol, copyToClipboard } from '@nimbalyst/runtime';
 import {
   sessionProcessingAtom,
   sessionUnreadAtom,
@@ -1179,11 +1180,7 @@ const WorkstreamSessionItem: React.FC<WorkstreamSessionItemProps> = ({
       aria-label={`Session: ${displayTitle}`}
       aria-current={isActive ? 'page' : undefined}
     >
-      <div className={`workstream-session-item-icon shrink-0 flex items-center justify-center ${
-        isActive ? 'text-[var(--nim-primary)]' : 'text-[var(--nim-text-muted)]'
-      }`}>
-        <ProviderIcon provider={session.provider || 'claude'} size={14} />
-      </div>
+      <SessionProviderIcon sessionId={session.id} provider={session.provider} isActive={isActive} />
       {session.isPinned && (
         <MaterialSymbol icon="push_pin" size={10} className={`workstream-session-item-pin-icon shrink-0 -ml-1 opacity-70 ${
           isActive ? 'text-[var(--nim-primary)]' : 'text-[var(--nim-text-faint)]'

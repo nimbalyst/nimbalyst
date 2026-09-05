@@ -1,3 +1,4 @@
+import { SessionProviderIcon } from './SessionProviderIcon';
 import React, { useState, useCallback, useEffect, useRef, useMemo, memo } from 'react';
 import { useAtomValue, useSetAtom } from 'jotai';
 import { MaterialSymbol } from '@nimbalyst/runtime/ui/icons/MaterialSymbol';
@@ -501,7 +502,7 @@ export const SessionListItem = memo<SessionListItemProps>(function SessionListIt
             <line x1="8.5" y1="5.2" x2="11.5" y2="10.8" stroke="currentColor" strokeWidth="1" strokeLinecap="round"/>
           </svg>
         ) : (
-          <ProviderIcon provider={provider || 'claude'} size={16} />
+          <SessionProviderIcon sessionId={id} provider={provider} size={16} isActive={isActive} />
         )}
       </div>
       {isPinned && (

@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 <!-- New features go here -->
+- Session history marks sessions that launched other sessions with an icon and launch-count tooltip.
 - GPT-6 Astra can be selected for Codex sessions, with its Ultra reasoning level.
 
 ### Changed
