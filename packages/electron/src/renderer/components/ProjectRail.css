@@ -95,6 +95,52 @@
   pointer-events: none;
 }
 
+/* Each badge state borrows the symbol and colour the session list already
+   uses for it, so the rail and the sidebar read as one language. Shape
+   carries the meaning, not just the number: a count alone can't say whether
+   it means "still working" or "done, go read it". */
+
+/* Awaiting a question — blocked on you. Warning colour + pulse, matching
+   SessionStatusIndicator's `waiting-for-input`. */
+.project-rail-item-badge.is-awaiting {
+  background-color: var(--nim-warning, #f59e0b);
+  color: var(--nim-on-warning, #ffffff);
+  animation: project-rail-badge-pulse 2s ease-in-out infinite;
+}
+
+/* Still running — nothing to do yet. The spinner replaces the count
+   deliberately: how many are mid-flight isn't actionable, and a spinning
+   number is unreadable at 16px. */
+.project-rail-item-badge.is-running {
+  background-color: var(--nim-primary, #3b82f6);
+  opacity: 0.8;
+}
+
+.project-rail-item-badge.is-running .material-symbols-outlined {
+  animation: project-rail-badge-spin 1s linear infinite;
+}
+
+/* Finished and unread — the count is the point: N threads to go read. */
+.project-rail-item-badge.is-unread {
+  background-color: var(--nim-primary, #3b82f6);
+}
+
+@keyframes project-rail-badge-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+@keyframes project-rail-badge-spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .project-rail-item-badge.is-awaiting,
+  .project-rail-item-badge.is-running .material-symbols-outlined {
+    animation: none;
+  }
+}
+
 .project-rail-item-close {
   position: absolute;
   top: -4px;

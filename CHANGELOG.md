@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 <!-- New features go here -->
+- Multi-project rail badges now distinguish sessions waiting on your response, still running, and finished-unread, using the same indicators as the session list.
 
 ### Changed
 <!-- Changes to existing functionality go here -->

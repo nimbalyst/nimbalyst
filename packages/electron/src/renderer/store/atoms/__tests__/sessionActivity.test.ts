@@ -10,6 +10,8 @@ import {
   clearSessionStreamingAtom,
   markSessionUnreadAtom,
   clearSessionUnreadAtom,
+  markSessionAwaitingAtom,
+  clearSessionAwaitingAtom,
   clearWorkspaceActivityAtom,
   projectActivitySummaryAtom,
 } from '../sessionActivity';
@@ -128,6 +130,37 @@ describe('sessionActivity atoms', () => {
     });
   });
 
+  describe('awaiting', () => {
+    it('clears via the session index when no workspacePath is supplied', () => {
+      // Terminal lifecycle events often arrive without a workspacePath; the
+      // rail badge must still clear or it sticks forever.
+      jotaiStore.set(markSessionAwaitingAtom, { sessionId: 's1', workspacePath: PATH_A });
+      jotaiStore.set(clearSessionAwaitingAtom, { sessionId: 's1' });
+
+      expect(jotaiStore.get(globalSessionActivityAtom).has(PATH_A)).toBe(false);
+    });
+
+    it('keeps the workspace entry while other activity remains', () => {
+      jotaiStore.set(markSessionAwaitingAtom, { sessionId: 's1', workspacePath: PATH_A });
+      jotaiStore.set(markSessionUnreadAtom, { sessionId: 's2', workspacePath: PATH_A });
+      jotaiStore.set(clearSessionAwaitingAtom, { sessionId: 's1' });
+
+      expect(jotaiStore.get(globalSessionActivityAtom).get(PATH_A)?.unread.has('s2')).toBe(true);
+    });
+
+    it('does not drop a workspace whose only activity is an awaiting session', () => {
+      // Regression: the streaming/unread clear paths prune an entry when they
+      // see both those sets empty. Ignoring `awaiting` there silently deleted
+      // the question badge the moment an unrelated session went quiet.
+      jotaiStore.set(markSessionStreamingAtom, { sessionId: 's1', workspacePath: PATH_A });
+      jotaiStore.set(markSessionAwaitingAtom, { sessionId: 's2', workspacePath: PATH_A });
+      jotaiStore.set(clearSessionStreamingAtom, { sessionId: 's1' });
+
+      expect(jotaiStore.get(globalSessionActivityAtom).get(PATH_A)?.awaiting.has('s2')).toBe(true);
+      expect(jotaiStore.get(projectActivitySummaryAtom).get(PATH_A)?.awaiting).toBe(1);
+    });
+  });
+
   describe('projectActivitySummaryAtom', () => {
     it('summarizes streaming + unread counts per workspace', () => {
       jotaiStore.set(markSessionStreamingAtom, { sessionId: 's1', workspacePath: PATH_A });
@@ -136,8 +169,15 @@ describe('sessionActivity atoms', () => {
       jotaiStore.set(markSessionUnreadAtom, { sessionId: 's4', workspacePath: PATH_B });
 
       const summary = jotaiStore.get(projectActivitySummaryAtom);
-      expect(summary.get(PATH_A)).toEqual({ processing: 2, unread: 1 });
-      expect(summary.get(PATH_B)).toEqual({ processing: 0, unread: 1 });
+      expect(summary.get(PATH_A)).toEqual({ processing: 2, unread: 1, awaiting: 0 });
+      expect(summary.get(PATH_B)).toEqual({ processing: 0, unread: 1, awaiting: 0 });
+    });
+
+    it('reports awaiting counts for a workspace with no other activity', () => {
+      jotaiStore.set(markSessionAwaitingAtom, { sessionId: 's1', workspacePath: PATH_A });
+
+      const summary = jotaiStore.get(projectActivitySummaryAtom);
+      expect(summary.get(PATH_A)).toEqual({ processing: 0, unread: 0, awaiting: 1 });
     });
 
     it('omits workspaces with no activity', () => {

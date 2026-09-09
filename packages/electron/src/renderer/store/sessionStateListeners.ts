@@ -49,6 +49,8 @@ import { activeWorkspacePathAtom, multiProjectModeAtom, openProjectsAtom } from 
 import {
   markSessionStreamingAtom,
   clearSessionStreamingAtom,
+  markSessionAwaitingAtom,
+  clearSessionAwaitingAtom,
   markSessionUnreadAtom,
   clearSessionUnreadAtom,
   markSessionTurnActivityAtom,
@@ -303,6 +305,10 @@ export function initSessionStateListeners(): () => void {
       // after the session ended in the no-workspacePath race documented
       // above. Per @ghinkle's review on the closed #293.
       store.set(clearSessionStreamingAtom, { sessionId });
+      // Same workspace-agnostic reasoning as the streaming clear above: the
+      // rail's "awaiting a question" badge must not survive the session
+      // ending, and the terminal event may not carry a workspacePath.
+      store.set(clearSessionAwaitingAtom, { sessionId });
       // A session reached a terminal state, so it left the backend's active set.
       // Re-derive the processing atoms against that authoritative set now (debounced
       // ~600ms) instead of waiting up to 15s for the interval. A meta-agent header
@@ -366,6 +372,12 @@ export function initSessionStateListeners(): () => void {
         // sessionProcessingAtom true above means the indicator keeps showing.
         if (sessionMeta?.provider !== 'claude-code-cli') {
           store.set(sessionHasPendingInteractivePromptAtom(sessionId), true);
+          // Mirror the flag into cross-workspace activity so the rail can show
+          // the question badge for projects that aren't currently mounted.
+          // Gated on the same non-CLI check: the CLI's coarse `waiting` status
+          // fires mid-turn without a real user prompt (NIM-850), and a false
+          // question badge on the rail is worse than none.
+          store.set(markSessionAwaitingAtom, { sessionId, workspacePath: resolvedWorkspacePath });
         }
         // Treat "waiting on user" as still processing for rail badge purposes —
         // the user typically hasn't switched away because of the prompt.
@@ -721,6 +733,27 @@ export function initSessionStateListeners(): () => void {
   };
 
   /**
+   * Mirror a durable interactive prompt into cross-workspace rail activity.
+   *
+   * The prompt IPC payloads carry only `sessionId`, so the workspace is
+   * resolved from the session registry (active workspace) and otherwise from
+   * `sessionActivityIndexAtom`, which the atom itself consults on clear.
+   * When neither knows the session we skip rather than guess — a question
+   * badge on the wrong project is worse than a missing one, and the session
+   * being unknown to both means nothing has ever streamed for it here.
+   */
+  const setSessionAwaiting = (sessionId: string, awaiting: boolean) => {
+    if (!awaiting) {
+      store.set(clearSessionAwaitingAtom, { sessionId });
+      return;
+    }
+    const workspacePath = store.get(sessionRegistryAtom).get(sessionId)?.workspaceId;
+    if (workspacePath) {
+      store.set(markSessionAwaitingAtom, { sessionId, workspacePath });
+    }
+  };
+
+  /**
    * Handle AskUserQuestion events globally.
    * Sets the pending interactive prompt indicator for the sidebar.
    * Also pushes the prompt data directly into sessionPendingPromptsAtom
@@ -731,6 +764,7 @@ export function initSessionStateListeners(): () => void {
     const { sessionId, questionId } = data;
     if (!sessionId) return;
     store.set(sessionHasPendingInteractivePromptAtom(sessionId), true);
+    setSessionAwaiting(sessionId, true);
 
     // Push prompt data directly into the prompts atom so voice mode
     // can read it immediately. The DB may not have persisted it yet.
@@ -754,6 +788,7 @@ export function initSessionStateListeners(): () => void {
     const { sessionId } = data;
     if (!sessionId) return;
     store.set(sessionHasPendingInteractivePromptAtom(sessionId), false);
+    setSessionAwaiting(sessionId, false);
     // Remove the resolved prompt from the array
     if (data.questionId) {
       const current = store.get(sessionPendingPromptsAtom(sessionId));
@@ -771,6 +806,7 @@ export function initSessionStateListeners(): () => void {
     const { sessionId, requestId } = data;
     if (!sessionId) return;
     store.set(sessionHasPendingInteractivePromptAtom(sessionId), true);
+    setSessionAwaiting(sessionId, true);
     const prompt: PendingPrompt = {
       id: requestId,
       sessionId,
@@ -791,6 +827,7 @@ export function initSessionStateListeners(): () => void {
     const { sessionId, approved } = data;
     if (!sessionId) return;
     store.set(sessionHasPendingInteractivePromptAtom(sessionId), false);
+    setSessionAwaiting(sessionId, false);
     if (data.requestId) {
       const current = store.get(sessionPendingPromptsAtom(sessionId));
       store.set(sessionPendingPromptsAtom(sessionId), current.filter(p => p.promptId !== data.requestId));
@@ -815,6 +852,7 @@ export function initSessionStateListeners(): () => void {
     const { sessionId, requestId } = data;
     if (!sessionId) return;
     store.set(sessionHasPendingInteractivePromptAtom(sessionId), true);
+    setSessionAwaiting(sessionId, true);
     const prompt: PendingPrompt = {
       id: requestId,
       sessionId,
@@ -835,6 +873,7 @@ export function initSessionStateListeners(): () => void {
     const { sessionId, requestId } = data;
     if (!sessionId) return;
     store.set(sessionHasPendingInteractivePromptAtom(sessionId), false);
+    setSessionAwaiting(sessionId, false);
     const current = store.get(sessionPendingPromptsAtom(sessionId));
     store.set(sessionPendingPromptsAtom(sessionId), current.filter(p => p.promptId !== requestId));
   };
@@ -853,6 +892,7 @@ export function initSessionStateListeners(): () => void {
     const { sessionId, proposalId } = data;
     if (!sessionId) return;
     store.set(sessionHasPendingInteractivePromptAtom(sessionId), true);
+    setSessionAwaiting(sessionId, true);
     const prompt: PendingPrompt = {
       id: proposalId,
       sessionId,
@@ -879,6 +919,7 @@ export function initSessionStateListeners(): () => void {
     const { sessionId, proposalId } = data;
     if (!sessionId) return;
     store.set(sessionHasPendingInteractivePromptAtom(sessionId), false);
+    setSessionAwaiting(sessionId, false);
     const current = store.get(sessionPendingPromptsAtom(sessionId));
     store.set(sessionPendingPromptsAtom(sessionId), current.filter(p => p.promptId !== proposalId));
   };
@@ -893,6 +934,7 @@ export function initSessionStateListeners(): () => void {
     const { sessionId, promptId, args } = data;
     if (!sessionId || !promptId) return;
     store.set(sessionHasPendingInteractivePromptAtom(sessionId), true);
+    setSessionAwaiting(sessionId, true);
     const prompt: PendingPrompt = {
       id: promptId,
       sessionId,
@@ -913,6 +955,7 @@ export function initSessionStateListeners(): () => void {
     const { sessionId, promptId } = data;
     if (!sessionId) return;
     store.set(sessionHasPendingInteractivePromptAtom(sessionId), false);
+    setSessionAwaiting(sessionId, false);
     const current = store.get(sessionPendingPromptsAtom(sessionId));
     store.set(sessionPendingPromptsAtom(sessionId), current.filter(p => p.promptId !== promptId));
   };
