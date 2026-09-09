@@ -25,6 +25,7 @@ import { isAppleMobileWebKit } from '../../../utils/platform';
 import { usePendingPermissionNavigation } from './usePendingPermissionNavigation';
 import { usePendingQuestionNavigation } from './usePendingQuestionNavigation';
 import { AttachmentStagingDeniedCard } from './AttachmentStagingDeniedCard';
+import { useElapsedTimeRef } from './CustomToolWidgets/useElapsedTime';
 
 // Per-session VList cache - survives component remounts so returning to a session
 // doesn't re-measure all items from scratch
@@ -1351,6 +1352,21 @@ export const RichTranscriptView = React.forwardRef<
     return false;
   }, [messages, sessionStatus, isProcessing, hasPendingInteractivePrompt, runningTeammates]);
 
+  /**
+   * Anchored to the last user message, the same anchor "Finished in ..." uses.
+   * A turn resumed without a fresh user message reads high; inherited.
+   */
+  const turnStartedAt = useMemo(() => {
+    if (!isWaitingForResponse) return undefined;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].type === 'user_message') return messages[i].createdAt?.getTime();
+    }
+    return undefined;
+  }, [isWaitingForResponse, messages]);
+
+  // Ref callback rather than state; see the hook for why.
+  const turnElapsedRef = useElapsedTimeRef(turnStartedAt);
+
   // Compute waiting indicator text — show agent/teammate count when lead is idle but agents are running
   const waitingText = useMemo(() => {
     if (!isWaitingForResponse) return '';
@@ -2503,6 +2519,13 @@ export const RichTranscriptView = React.forwardRef<
                         <div className="rich-transcript-waiting-dot w-2 h-2 rounded-full bg-[var(--nim-primary)]" />
                       </div>
                       <span className="rich-transcript-waiting-text">{waitingText}</span>
+                      {turnStartedAt !== undefined && (
+                        <span
+                          ref={turnElapsedRef}
+                          className="rich-transcript-waiting-elapsed tabular-nums not-italic text-[var(--nim-text-faint)]"
+                          data-testid="turn-elapsed"
+                        />
+                      )}
                     </div>
                   )}
               </VList>
