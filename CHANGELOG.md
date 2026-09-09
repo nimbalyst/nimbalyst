@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 <!-- Bug fixes go here -->
+- On Linux the taskbar and window switcher show the Nimbalyst icon instead of a generic one, because the window now reports the same identity as its desktop entry (#697).
 
 ### Removed
 <!-- Removed features go here -->
