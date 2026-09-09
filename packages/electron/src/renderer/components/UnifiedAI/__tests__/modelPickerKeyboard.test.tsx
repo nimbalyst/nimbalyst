@@ -314,3 +314,56 @@ describe('AI model picker provider visibility', () => {
     expect(screen.queryByRole('button', { name: 'Local Model' })).toBeNull();
   });
 });
+
+describe('AI model picker search', () => {
+  it('filters models by name, ID, and provider while keeping keyboard navigation available', async () => {
+    Object.defineProperty(window, 'electronAPI', {
+      configurable: true,
+      value: {
+        aiGetModels: vi.fn().mockResolvedValue({
+          success: true,
+          grouped: {
+            opencode: [
+              { id: 'opencode:kimi-k2', name: 'Kimi K2', provider: 'opencode' },
+              { id: 'opencode:deepseek-v3', name: 'DeepSeek V3', provider: 'opencode' },
+            ],
+            claude: [{ id: 'claude:haiku', name: 'Haiku', provider: 'claude' }],
+          },
+        }),
+      },
+    });
+
+    renderModelSelector(
+      <ModelSelector currentModel="opencode:kimi-k2" onModelChange={() => {}} />,
+      true,
+    );
+
+    fireEvent.click(screen.getByTestId('model-picker'));
+    const search = await screen.findByRole('searchbox', { name: 'Search models' });
+
+    fireEvent.change(search, { target: { value: 'deepseek' } });
+    const deepSeek = screen.getByRole('button', { name: 'DeepSeek V3' });
+    expect(screen.queryByRole('button', { name: 'Kimi K2' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Haiku' })).toBeNull();
+
+    fireEvent.keyDown(search, { key: 'ArrowDown' });
+    expect(document.activeElement).toBe(deepSeek);
+
+    fireEvent.change(search, { target: { value: 'OpenCode' } });
+    screen.getByRole('button', { name: 'Kimi K2' });
+    screen.getByRole('button', { name: 'DeepSeek V3' });
+    expect(screen.queryByRole('button', { name: 'Haiku' })).toBeNull();
+
+    fireEvent.change(search, { target: { value: 'claude:haiku' } });
+    screen.getByRole('button', { name: 'Haiku' });
+    expect(screen.queryByRole('button', { name: 'Kimi K2' })).toBeNull();
+
+    fireEvent.change(search, { target: { value: 'not-a-model' } });
+    screen.getByText('No matching models');
+    screen.getByRole('button', { name: 'Configure models' });
+
+    fireEvent.keyDown(search, { key: 'Escape' });
+    fireEvent.click(screen.getByTestId('model-picker'));
+    expect((await screen.findByRole('searchbox', { name: 'Search models' }) as HTMLInputElement).value).toBe('');
+  });
+});
