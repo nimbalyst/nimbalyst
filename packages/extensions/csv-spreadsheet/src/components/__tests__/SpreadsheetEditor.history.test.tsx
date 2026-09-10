@@ -229,3 +229,24 @@ describe('SpreadsheetEditor save failures', () => {
     expect(host.setDirty).not.toHaveBeenCalledWith(false);
   });
 });
+
+describe('SpreadsheetEditor save failures', () => {
+  // The echo baseline and the dirty flag used to be updated before the write
+  // was awaited, so a rejected save left the editor marked clean against
+  // content that never reached disk -- silent divergence with nothing to
+  // retry from. The rejection has to surface instead.
+  it('stays dirty when the write to disk fails', async () => {
+    const host = createHost();
+    (host.saveContent as ReturnType<typeof vi.fn>).mockRejectedValueOnce(new Error('disk full'));
+
+    render(<SpreadsheetEditor host={host} />);
+    await waitFor(() => expect(lifecycleOptions.current).not.toBeNull());
+    (host.setDirty as ReturnType<typeof vi.fn>).mockClear();
+
+    await expect(lifecycleOptions.current!.onSave()).rejects.toThrow('disk full');
+
+    // markClean() drives setDirty(false). Reaching it despite a failed write is
+    // what made the divergence silent.
+    expect(host.setDirty).not.toHaveBeenCalledWith(false);
+  });
+});
