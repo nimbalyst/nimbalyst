@@ -125,9 +125,12 @@ export function buildSlashCommandOptions(
       score: scoreCommand(command.name, query),
     }))
     .filter(({ score }) => score > 0)
-    .sort((a, b) => hasQuery
-      ? a.command.name.localeCompare(b.command.name, undefined, { sensitivity: 'base' })
-      : b.score - a.score)
+    // Best match first (exact > prefix > word boundary > substring), alphabetical
+    // within a tier. Sorting purely by name let an alphabetically earlier substring
+    // match (/autocompact) outrank the exact name the user typed (/compact).
+    .sort((a, b) =>
+      b.score - a.score
+      || a.command.name.localeCompare(b.command.name, undefined, { sensitivity: 'base' }))
     .map(({ command }) => ({
       id: command.name,
       label: command.argumentHint
