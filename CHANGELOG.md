@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 <!-- New features go here -->
+- The effort level for a Claude Code CLI session can now be changed mid-session instead of only at launch.
 
 ### Changed
 <!-- Changes to existing functionality go here -->

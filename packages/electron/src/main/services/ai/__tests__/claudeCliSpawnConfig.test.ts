@@ -132,27 +132,29 @@ describe('buildClaudeCliSpawnConfig', () => {
    * whatever the CLI defaults to.
    */
   describe('effort level', () => {
-    it('forwards the resolved effort to the CLI', () => {
+    it('forwards the resolved effort to the CLI as --effort', () => {
       const cfg = buildClaudeCliSpawnConfig({ ...base, effortLevel: 'max' });
-      expect(cfg.env.CLAUDE_CODE_EFFORT_LEVEL).toBe('max');
+      expect(cfg.args).toContain('--effort');
+      expect(cfg.args[cfg.args.indexOf('--effort') + 1]).toBe('max');
     });
 
     it('forwards "high" too, so the selector matches the request (#844)', () => {
       const cfg = buildClaudeCliSpawnConfig({ ...base, effortLevel: 'high' });
-      expect(cfg.env.CLAUDE_CODE_EFFORT_LEVEL).toBe('high');
+      expect(cfg.args[cfg.args.indexOf('--effort') + 1]).toBe('high');
     });
 
     it('leaves the variable unset when no effort is resolved', () => {
       expect(buildClaudeCliSpawnConfig(base).env.CLAUDE_CODE_EFFORT_LEVEL).toBeUndefined();
     });
 
-    it('does not let an inherited env value override the resolved selection', () => {
+    it('clears an inherited env value so --effort is the thing in charge', () => {
       const cfg = buildClaudeCliSpawnConfig({
         ...base,
         baseEnv: { CLAUDE_CODE_EFFORT_LEVEL: 'low' },
         effortLevel: 'max',
       });
-      expect(cfg.env.CLAUDE_CODE_EFFORT_LEVEL).toBe('max');
+      expect(cfg.env.CLAUDE_CODE_EFFORT_LEVEL).toBeUndefined();
+      expect(cfg.args[cfg.args.indexOf('--effort') + 1]).toBe('max');
     });
 
     it('leaves an inherited value alone when nothing is selected', () => {
@@ -546,5 +548,60 @@ describe('buildClaudeCliSpawnConfig Windows .cmd newline handling (#684)', () =>
       expect(i).toBeGreaterThan(-1);
       expect(/[\r\n]/.test(cfg.args[i + 1])).toBe(true);
     }
+  });
+});
+
+/**
+ * Effort is passed as `--effort`, the CLI's own documented session flag, rather
+ * than by exporting CLAUDE_CODE_EFFORT_LEVEL into the process environment.
+ *
+ * Measured against claude 2.1.220 with `-p`, which is why the inherited-value
+ * case below matters:
+ *
+ *   env unset  + --effort high  -> runs at high
+ *   env = max  + --effort high  -> runs at MAX; the error names 'max'
+ *
+ * The environment variable outranks the flag, so setting the flag without also
+ * clearing an inherited value would leave the selector inert for anyone who has
+ * CLAUDE_CODE_EFFORT_LEVEL exported in their shell -- which is exactly the bug
+ * reported in #996.
+ *
+ * An env var is also the wrong shape for this: it is inherited by every process
+ * the CLI spawns, including all of its MCP servers. The flag is scoped to the
+ * session it was passed to.
+ */
+describe('buildClaudeCliSpawnConfig effort', () => {
+  const base = { cwd: '/work/proj', baseEnv: {} as Record<string, string | undefined> };
+
+  it('passes the selected level as --effort', () => {
+    const cfg = buildClaudeCliSpawnConfig({ ...base, effortLevel: 'high' });
+    expect(cfg.args).toContain('--effort');
+    expect(cfg.args[cfg.args.indexOf('--effort') + 1]).toBe('high');
+  });
+
+  it('does NOT export CLAUDE_CODE_EFFORT_LEVEL', () => {
+    const cfg = buildClaudeCliSpawnConfig({ ...base, effortLevel: 'high' });
+    expect(cfg.env.CLAUDE_CODE_EFFORT_LEVEL).toBeUndefined();
+  });
+
+  it('clears an inherited CLAUDE_CODE_EFFORT_LEVEL so the flag actually wins', () => {
+    const cfg = buildClaudeCliSpawnConfig({
+      ...base,
+      baseEnv: { CLAUDE_CODE_EFFORT_LEVEL: 'max' },
+      effortLevel: 'high',
+    });
+    expect(cfg.args[cfg.args.indexOf('--effort') + 1]).toBe('high');
+    expect(cfg.env.CLAUDE_CODE_EFFORT_LEVEL).toBeUndefined();
+  });
+
+  it('leaves an inherited value alone when nothing is selected', () => {
+    // No selection means "whatever the user configured stands" -- their shell
+    // export, or the CLI's own default. We do not override it with a guess.
+    const cfg = buildClaudeCliSpawnConfig({
+      ...base,
+      baseEnv: { CLAUDE_CODE_EFFORT_LEVEL: 'max' },
+    });
+    expect(cfg.args).not.toContain('--effort');
+    expect(cfg.env.CLAUDE_CODE_EFFORT_LEVEL).toBe('max');
   });
 });

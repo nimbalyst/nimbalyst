@@ -9,6 +9,7 @@ import { getTerminalSessionManager } from '../services/TerminalSessionManager';
 import { ensureClaudeCliSession, isClaudeCliInstalled } from '../services/ai/claudeCliLauncherSingleton';
 import { submitClaudeCliPromptProduction } from '../services/ai/claudeCliSubmitSingleton';
 import { switchClaudeCliModel } from '../services/ai/claudeCliModelSwitch';
+import { switchClaudeCliEffort } from '../services/ai/claudeCliEffortSwitch';
 import type { ClaudeCliDocumentContext } from '../services/ai/claudeCliPromptComposer';
 import type { ChatAttachment } from '@nimbalyst/runtime/ai/server/types';
 import { ShellDetector } from '../services/ShellDetector';
@@ -391,6 +392,35 @@ export function registerTerminalHandlers(): void {
         throw new Error(`Model "${payload.model}" cannot be applied to a Claude Code CLI session`);
       }
       return { success: true, cliArg: result.cliArg };
+    }
+  );
+
+  /**
+   * Retune a RUNNING claude-code-cli session's effort via `/effort <level>`.
+   *
+   * `--effort` is fixed for the life of the process, so without this the
+   * composer's effort selector had to be hidden once a session had spawned.
+   * Only works because the launch path no longer exports
+   * CLAUDE_CODE_EFFORT_LEVEL, which would outrank the slash command.
+   */
+  safeHandle(
+    'claude-cli:set-effort',
+    async (_event, payload: { sessionId: string; effortLevel: string }) => {
+      if (!payload?.sessionId || typeof payload.sessionId !== 'string') {
+        throw new Error('sessionId is required and must be a string');
+      }
+      if (!payload?.effortLevel || typeof payload.effortLevel !== 'string') {
+        throw new Error('effortLevel is required and must be a string');
+      }
+      const result = await switchClaudeCliEffort(payload, {
+        writeToTerminal: (sessionId: string, data: string) =>
+          manager.writeToTerminal(sessionId, data),
+        delay: (ms: number) => new Promise((resolve) => setTimeout(resolve, ms)),
+      });
+      if (!result.switched) {
+        throw new Error(`Effort "${payload.effortLevel}" is not a valid level`);
+      }
+      return { success: true, level: result.level };
     }
   );
 
