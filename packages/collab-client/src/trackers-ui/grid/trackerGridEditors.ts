@@ -61,6 +61,40 @@ export function commitOnNavigationKeys(
   }
 }
 
+/**
+ * Decide how the caret should sit when a cell editor mounts.
+ *
+ * RevoGrid opens an edit two ways. Enter/F2 opens with `val` still equal to the
+ * stored cell value, and select-all is right there -- typing replaces the cell.
+ * Typing a printable character opens the edit with `val` seeded to *that
+ * character* while the model still holds the original, and select-all would
+ * highlight the character the user just typed, so the next keystroke replaces
+ * it instead of appending ("Alpha" arrives as "lpha", #1199).
+ *
+ * Comparing the incoming `val` against the model's stored value is what
+ * separates the two cases; RevoGrid does not otherwise say which one happened.
+ */
+export function shouldSelectAllOnEdit(editCell: EditCell | undefined): boolean {
+  if (!editCell) return true;
+  const model = editCell.model as Record<PropertyKey, unknown> | undefined;
+  const stored = model?.[editCell.prop];
+  return String(editCell.val ?? '') === String(stored ?? '');
+}
+
+/** Focus the input and place the caret per {@link shouldSelectAllOnEdit}. */
+function focusWithCaret(input: HTMLInputElement | null, editCell: EditCell | undefined): void {
+  if (!input) return;
+  input.focus();
+  if (shouldSelectAllOnEdit(editCell)) {
+    input.select();
+    return;
+  }
+  const end = input.value.length;
+  // Some input types (number, url) reject setSelectionRange; focus alone
+  // already leaves the caret at the end for those, so ignore the throw.
+  try { input.setSelectionRange(end, end); } catch { /* unsupported input type */ }
+}
+
 /** Text-like editor covering string, multiline, number, user, and url cells. */
 function createInputEditor(
   descriptor: CellEditorDescriptor,
@@ -79,8 +113,7 @@ function createInputEditor(
         // The input mounts inside RevoGrid's own render pass; yield a tick so
         // focus lands after the cell is actually in the DOM.
         await new Promise(resolve => setTimeout(resolve, 0));
-        input?.focus();
-        input?.select();
+        focusWithCaret(input, editor.editCell);
       },
       render(createElement: HyperFunc<VNode>) {
         return createElement('input', {
