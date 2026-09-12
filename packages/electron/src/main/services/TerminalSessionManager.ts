@@ -51,6 +51,7 @@ import {
   type ClaudeCliInterruptResult,
 } from './ai/claudeCliInterrupt';
 import { detectCliPickerInChunk } from './ai/claudeCliInteractiveCommands';
+import { claudeCliInterruptGate } from './ai/claudeCliInterruptGate';
 import { broadcastClaudeCliRevealTerminal } from './ai/claudeCliRevealTerminal';
 import {
   getTerminalInstance,
@@ -1086,8 +1087,10 @@ export class TerminalSessionManager {
     return readClaudePidTurnState({ pid: terminal.pty.pid });
   }
 
-  /** Sessions with an interrupt escalation currently in flight (NIM-814). */
-  private claudeCliInterruptsInFlight = new Set<string>();
+  // Interrupt-in-flight tracking lives in the shared claudeCliInterruptGate so
+  // the queue flusher can hold off while an escalation runs (its re-check
+  // cannot tell a freshly flushed turn from the old turn refusing to die, and
+  // would Ctrl-C the queued prompt straight back into the prompt box).
 
   /**
    * Stop a Claude CLI turn with escalation (NIM-814): Ctrl-C, then a second
@@ -1103,11 +1106,11 @@ export class TerminalSessionManager {
       console.warn(`[TerminalSessionManager] Cannot interrupt ${sessionId}: terminal not found`);
       return { success: false };
     }
-    if (this.claudeCliInterruptsInFlight.has(sessionId)) {
+    if (claudeCliInterruptGate.isInFlight(sessionId)) {
       terminal.pty.write('\x03');
       return { success: true };
     }
-    this.claudeCliInterruptsInFlight.add(sessionId);
+    claudeCliInterruptGate.mark(sessionId);
     try {
       const result = await escalateClaudeCliInterrupt({
         write: (data) => terminal.pty.write(data),
@@ -1117,7 +1120,7 @@ export class TerminalSessionManager {
       });
       return { success: true, resolvedAfter: result.resolvedAfter };
     } finally {
-      this.claudeCliInterruptsInFlight.delete(sessionId);
+      claudeCliInterruptGate.clear(sessionId);
     }
   }
 
