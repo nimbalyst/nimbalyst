@@ -79,6 +79,9 @@ vi.mock('../../extensions/backendModuleLifecycle', () => ({
   getDefaultBackendModuleLifecycleDeps: vi.fn(() => ({})),
 }));
 
+import { ALPHA_FEATURES } from '../../../shared/alphaFeatures';
+import { DEVELOPER_FEATURES } from '../../../shared/developerFeatures';
+import { getAppSetting, setAppSetting } from '../../utils/store';
 import {
   ALLOWED_APP_KEYS,
   ALLOWED_WORKSPACE_KEYS,
@@ -179,5 +182,93 @@ describe('SettingsControlService.setIssueKeyPrefix', () => {
       ok: false,
       message: 'Prefix NIM is already used by project "Nimbalyst Core". Try NIMA.',
     });
+  });
+});
+
+describe('SettingsControlService.toggleFeature', () => {
+  // Developer Mode on, so the gate is never what a failure below is about.
+  function developerModeOn() {
+    vi.mocked(getAppSetting).mockImplementation((key: string) =>
+      key === 'developerMode' ? (true as never) : (undefined as never),
+    );
+  }
+
+  it('refuses a tag this build does not register instead of writing a dead key', async () => {
+    // #1501: `alphaFeatures.session-fleet: true` was persisted and shown as
+    // enabled, while no such feature exists -- so the flag "had no effect".
+    developerModeOn();
+    vi.mocked(setAppSetting).mockClear();
+
+    const result = await SettingsControlService.getInstance().toggleFeature('session-unknown-tag', {
+      bucket: 'alpha',
+      tag: 'session-fleet',
+      enabled: true,
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.message).toContain('session-fleet');
+    // The caller is told what it could have asked for.
+    for (const feature of ALPHA_FEATURES) {
+      expect(result.message).toContain(feature.tag);
+    }
+    expect(setAppSetting).not.toHaveBeenCalled();
+  });
+
+  it('still toggles every registered tag', async () => {
+    developerModeOn();
+
+    for (const [bucket, registry, key] of [
+      ['alpha', ALPHA_FEATURES, 'alphaFeatures'],
+      ['developer', DEVELOPER_FEATURES, 'developerFeatures'],
+    ] as const) {
+      for (const feature of registry) {
+        vi.mocked(setAppSetting).mockClear();
+        const result = await SettingsControlService.getInstance().toggleFeature(
+          `session-${bucket}-${feature.tag}`,
+          { bucket, tag: feature.tag, enabled: true },
+        );
+
+        expect(result, `${bucket}/${feature.tag} must remain toggleable`).toMatchObject({
+          ok: true,
+          after: true,
+        });
+        expect(setAppSetting).toHaveBeenCalledWith(key, { [feature.tag]: true });
+      }
+    }
+  });
+
+  it('rejects an unknown bucket rather than writing it into developerFeatures', async () => {
+    developerModeOn();
+    vi.mocked(setAppSetting).mockClear();
+
+    const result = await SettingsControlService.getInstance().toggleFeature('session-bad-bucket', {
+      // The MCP tool schema declares an enum but nothing enforces it at runtime,
+      // and the old key fallback made every unknown bucket a developer write.
+      bucket: 'gamma' as 'alpha',
+      tag: 'worktrees',
+      enabled: true,
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.message).toContain('gamma');
+    expect(setAppSetting).not.toHaveBeenCalled();
+  });
+
+  it('reports the missing tag before asking the user for Developer Mode', async () => {
+    // Developer Mode off: an unregistered tag can never be toggled, so sending
+    // the user to Settings > Advanced first would be a dead end.
+    vi.mocked(getAppSetting).mockImplementation(() => undefined as never);
+    vi.mocked(setAppSetting).mockClear();
+
+    const result = await SettingsControlService.getInstance().toggleFeature('session-no-devmode', {
+      bucket: 'alpha',
+      tag: 'session-fleet',
+      enabled: true,
+    });
+
+    expect(result.ok).toBe(false);
+    expect(result.requiresUserAction).toBeUndefined();
+    expect(result.message).toContain('session-fleet');
+    expect(setAppSetting).not.toHaveBeenCalled();
   });
 });
