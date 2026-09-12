@@ -1,9 +1,8 @@
 /**
- * When Codex fails to load `config.toml` because an MCP server entry uses a
- * remote `url` that the bundled Codex build does not accept (older builds only
- * support stdio MCP servers), the raw error is opaque: "url is not supported for
- * stdio in mcp_servers.<name>". Detect that case and return actionable guidance
- * that names the offending server and shows how to convert it to a stdio entry.
+ * When Codex resolves an MCP server as stdio but the merged configuration still
+ * contains a remote `url`, the raw error does not explain that two transports
+ * were combined. Detect that case and show valid, mutually exclusive HTTP and
+ * stdio shapes.
  *
  * Returns null when the error is not a recognized url-vs-stdio MCP config error,
  * so callers can fall back to the raw message.
@@ -18,21 +17,16 @@ export function describeCodexConfigError(raw: string): string | null {
   // TOML bare keys allow only [A-Za-z0-9_-]. A name with any other character
   // (e.g. a dot) must be quoted, or `[mcp_servers.a.b]` parses as nested tables.
   const tomlKey = /^[A-Za-z0-9_-]+$/.test(name) ? name : JSON.stringify(name);
-  const envKey = `${name.toUpperCase().replace(/[^A-Z0-9]+/g, '_')}_API_KEY`;
-
   return [
-    `The MCP server "${name}" in ~/.codex/config.toml uses a "url", which this Codex build does not support (it only launches stdio MCP servers via a "command"). Convert that entry, then restart.`,
+    `The MCP server "${name}" resolved to a mixed transport configuration containing both a stdio "command" and a remote "url". Keep exactly one transport, then restart.`,
     ``,
-    `Universal fix - wrap the remote server as a stdio process:`,
+    `For a Streamable HTTP server:`,
     `     [mcp_servers.${tomlKey}]`,
-    `     command = "npx"`,
-    `     args = ["-y", "mcp-remote", "<url>"]`,
+    `     url = "<url>"`,
     ``,
-    `If you run a local stdio build of this server (for example, a Personal API Key version that avoids OAuth token expiry), point Codex at it instead:`,
+    `For a local stdio server:`,
     `     [mcp_servers.${tomlKey}]`,
-    `     command = "python"`,
-    `     args = ["/path/to/${name}-server.py"]`,
-    `     [mcp_servers.${tomlKey}.env]`,
-    `     ${envKey} = "<your key>"`,
+    `     command = "<command>"`,
+    `     args = ["<arg>"]`,
   ].join('\n');
 }

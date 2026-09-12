@@ -17,10 +17,9 @@
  *   - servers answering 401 to an OAuth probe are classified as unauthorized and
  *     silently dropped, so they never reach the CLI at all
  *
- * `nativeHttpSupported` is deliberately opt-in per caller. Claude Code was
- * verified by A/B test (same PAT, identical prompt, identical tool results and
- * org access, four fewer processes). Codex, Codex ACP and Copilot share this code
- * path and have NOT been verified, so they keep the wrapper until they are.
+ * `nativeHttpSupported` is deliberately opt-in per caller. Claude Code and Codex
+ * have both been verified with their native Streamable HTTP transports. Unknown
+ * callers keep the wrapper until their transport support is verified.
  *
  * The declared config alone is NOT a sufficient discriminator (NIM-2433). A
  * server that was authorized through mcp-remote keeps its token in `~/.mcp-auth`
