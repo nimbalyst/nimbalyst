@@ -38,28 +38,13 @@ import {
 import { logger } from '../utils/logger';
 import { getShellEnvironment } from './shellEnvironment';
 import { ClaudeSettingsManager } from './ClaudeSettingsManager';
+import { extractScopedLimits, type ClaudeScopedLimit } from './claudeUsageLimits';
+
+export type { ClaudeUsageSeverity, ClaudeScopedLimit } from './claudeUsageLimits';
+export { extractScopedLimits } from './claudeUsageLimits';
 
 /** Env shape the Claude config-dir resolvers read. */
 type ClaudeEnv = Record<string, string | undefined>;
-
-export type ClaudeUsageSeverity = 'normal' | 'warning' | 'critical';
-
-/**
- * A weekly limit that applies to one model rather than the whole account —
- * "Fable (Weekly)", "Opus (Weekly)", and whatever the API scopes next.
- *
- * These arrive in the `limits[]` array as `kind: "weekly_scoped"` entries
- * carrying `scope.model.display_name`. The older dedicated `seven_day_opus`
- * field is still in the payload but now reports `null`, so a client that only
- * reads that field silently shows no per-model limit at all.
- */
-export interface ClaudeScopedLimit {
-  id: string; // stable key for React lists, e.g. "weekly_scoped:fable"
-  label: string; // model display name, e.g. "Fable"
-  utilization: number; // 0-100 percentage
-  resetsAt: string | null; // ISO timestamp
-  severity: ClaudeUsageSeverity;
-}
 
 export interface ClaudeUsageData {
   fiveHour: {
@@ -78,77 +63,6 @@ export interface ClaudeUsageData {
   scopedLimits?: ClaudeScopedLimit[];
   lastUpdated: number; // Unix timestamp
   error?: string;
-}
-
-/** Shape of one entry in the usage API's `limits[]` array. */
-interface RawUsageLimit {
-  kind?: string;
-  group?: string;
-  percent?: number;
-  severity?: string;
-  resets_at?: string | null;
-  scope?: {
-    model?: { id?: string | null; display_name?: string | null } | null;
-    surface?: unknown;
-  } | null;
-}
-
-const USAGE_SEVERITIES: ClaudeUsageSeverity[] = ['normal', 'warning', 'critical'];
-
-function normalizeSeverity(value: unknown): ClaudeUsageSeverity | null {
-  return USAGE_SEVERITIES.includes(value as ClaudeUsageSeverity)
-    ? (value as ClaudeUsageSeverity)
-    : null;
-}
-
-/** Fallback for payloads that omit `severity`, matching the popover's thresholds. */
-function severityFromUtilization(utilization: number): ClaudeUsageSeverity {
-  if (utilization >= 80) return 'critical';
-  if (utilization >= 50) return 'warning';
-  return 'normal';
-}
-
-/**
- * Pull the per-model weekly limits out of a usage API response.
- *
- * Falls back to synthesising an Opus entry from the legacy `seven_day_opus`
- * field so older server payloads (and anyone pinned to them) keep their bar.
- */
-export function extractScopedLimits(data: unknown): ClaudeScopedLimit[] {
-  const payload = (data ?? {}) as { limits?: unknown; seven_day_opus?: { utilization?: number; resets_at?: string | null } | null };
-  const rawLimits = Array.isArray(payload.limits) ? (payload.limits as RawUsageLimit[]) : [];
-
-  const scoped = rawLimits
-    .filter((limit) => limit?.kind === 'weekly_scoped' && Boolean(limit?.scope?.model?.display_name))
-    .map((limit, index) => {
-      const label = limit.scope!.model!.display_name as string;
-      const utilization = typeof limit.percent === 'number' ? limit.percent : 0;
-      return {
-        id: `weekly_scoped:${limit.scope?.model?.id || label.toLowerCase()}:${index}`,
-        label,
-        utilization,
-        resetsAt: limit.resets_at ?? null,
-        severity: normalizeSeverity(limit.severity) ?? severityFromUtilization(utilization),
-      };
-    });
-
-  if (scoped.length > 0) return scoped;
-
-  const legacyOpus = payload.seven_day_opus;
-  if (legacyOpus) {
-    const utilization = legacyOpus.utilization ?? 0;
-    return [
-      {
-        id: 'weekly_scoped:opus:legacy',
-        label: 'Opus',
-        utilization,
-        resetsAt: legacyOpus.resets_at ?? null,
-        severity: severityFromUtilization(utilization),
-      },
-    ];
-  }
-
-  return [];
 }
 
 interface KeychainCredentials {

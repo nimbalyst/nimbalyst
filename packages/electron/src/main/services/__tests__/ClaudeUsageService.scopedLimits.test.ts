@@ -13,7 +13,7 @@
  * that we trust the API's own severity grading instead of re-deriving one.
  */
 import { describe, it, expect } from 'vitest';
-import { extractScopedLimits } from '../ClaudeUsageService';
+import { extractScopedLimits } from '../claudeUsageLimits';
 
 /** Trimmed copy of a real response: legacy field null, scoped limit in limits[]. */
 const CURRENT_PAYLOAD = {
