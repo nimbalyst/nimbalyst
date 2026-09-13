@@ -36,8 +36,7 @@ describe('requiresMcpRemote', () => {
   });
 
   it('DOES require the wrapper when the CLI has no native HTTP transport', () => {
-    // Codex, Codex ACP and Copilot go through the same code path and were never
-    // verified. They keep the wrapper until someone measures them.
+    // Unknown/non-native callers keep the compatibility wrapper.
     const config = http({ headers: { Authorization: 'Bearer ghp_static' } });
     expect(requiresMcpRemote(config, { nativeHttpSupported: false })).toBe(true);
   });
@@ -93,10 +92,8 @@ describe('requiresMcpRemote', () => {
 });
 
 describe('Codex and Claude Code reach the same credential (NIM-2433)', () => {
-  // The regression guard. These two paths drifted apart once already: Codex wraps
-  // everything, Claude Code takes the native-HTTP shortcut, and a server whose
-  // only credential was a cached mcp-remote token went out bare on the Claude
-  // side and 401'd. Assert the OUTCOME matches, not the branch taken.
+  // Both CLIs speak Streamable HTTP natively. A server whose only credential is
+  // a cached mcp-remote token must still use the wrapper on both paths.
   const service = new MCPConfigService();
   let authDir: string;
 
@@ -142,7 +139,7 @@ describe('Codex and Claude Code reach the same credential (NIM-2433)', () => {
     const config = http();
     await writeCachedToken(config.url!);
 
-    const codex = await credentialSource(config, {});
+    const codex = await credentialSource(config, { nativeHttpSupported: true });
     const claudeCode = await credentialSource(config, { nativeHttpSupported: true });
 
     expect(claudeCode).toBe(codex);
@@ -157,17 +154,31 @@ describe('Codex and Claude Code reach the same credential (NIM-2433)', () => {
     await expect(credentialSource(config, { nativeHttpSupported: true }))
       .resolves.toBe('declared-config-only');
   });
+
+  it('preserves a Codex static-header server as Streamable HTTP', async () => {
+    // Regression: wrapping this as stdio and overlaying it on the same server in
+    // ~/.codex/config.toml leaves both `command` and `url`, which Codex rejects
+    // with "url is not supported for stdio" during thread/start.
+    const config = http({ headers: { Authorization: 'Key test-token' } });
+    const options = await resolveMcpRemoteRequirementOptions(config, {
+      nativeHttpSupported: true,
+    });
+
+    const runtime = service.processServerConfigForRuntime(config, options);
+
+    expect(runtime).toEqual(config);
+    expect(runtime.command).toBeUndefined();
+  });
 });
 
 describe('MCPConfigService.isOAuthAuthorized', () => {
   const service = new MCPConfigService();
 
   it('still probes mcp-remote for a native-OAuth server when the caller opted into the wrapper', async () => {
-    // Codex, Codex ACP and Copilot pass useMcpRemoteForNativeOAuth, meaning "wrap
-    // native-OAuth servers with mcp-remote". requiresMcpRemote answers "no wrapper"
-    // for anything carrying OAuth credentials, so skipping the probe on its say-so
-    // reported every such server authorized and stopped those providers dropping
-    // the unauthorized ones.
+    // Codex, Codex ACP and Copilot pass useMcpRemoteForNativeOAuth so the
+    // authorization gate still checks mcp-remote's credential state. Skipping
+    // the probe reported every such server authorized and stopped those
+    // providers dropping the unauthorized ones.
     checkMcpRemoteAuthStatus.mockResolvedValueOnce({ authorized: false });
 
     const config = http({ oauth: { clientId: 'abc' } } as Partial<MCPServerConfig>);

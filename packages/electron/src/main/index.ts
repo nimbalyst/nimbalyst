@@ -2141,14 +2141,26 @@ app.whenReady().then(async () => {
         const enabledServers: Record<string, any> = {};
         for (const [name, config] of Object.entries(allServers)) {
             if (isMCPServerEnabledForProvider(config as MCPServerConfig, MCP_PROVIDER_IDS.CODEX)) {
+                // Codex speaks Streamable HTTP natively. Rewriting a server that is
+                // also present in ~/.codex/config.toml to an mcp-remote stdio entry
+                // makes Codex deep-merge `command` with the persisted `url`, which
+                // is an invalid mixed-transport configuration.
+                const codexHttp = await mcpConfigService.resolveMcpRemoteOptions(
+                    config as MCPServerConfig,
+                    { nativeHttpSupported: true }
+                );
                 const isAuthorized = await mcpConfigService.isOAuthAuthorized(config as MCPServerConfig, {
+                    ...codexHttp,
                     useMcpRemoteForNativeOAuth: true,
                 });
                 if (!isAuthorized) {
                     logger.mcp.info(`[MCP] Skipping unauthorized OAuth server for Codex: ${name}`);
                     continue;
                 }
-                enabledServers[name] = mcpConfigService.processServerConfigForRuntime(config as any);
+                enabledServers[name] = mcpConfigService.processServerConfigForRuntime(
+                    config as MCPServerConfig,
+                    codexHttp
+                );
             }
         }
         return enabledServers;
