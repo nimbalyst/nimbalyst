@@ -63,9 +63,24 @@ const BARE_IDENTITY = /\b\w*(?:[Uu]serId|[Mm]emberId)\??\s*:\s*string\b/;
 const BARE_JWT = /\b\w*[Jj]wt\??\s*:\s*string\b/;
 const ERASED_GET_JWT = /\bgetJwt\??\s*:\s*\([^)]*\)\s*=>\s*Promise\s*<\s*string\s*>/;
 
+/**
+ * Repository keys are POSIX on every platform, so normalise once here rather
+ * than at each comparison site. `path.relative` emits `\` on Windows, and the
+ * baseline in `identity-scope-baseline.json` is written with `/` — without this
+ * the baseline `Map` lookup never matches on Windows and every baselined
+ * declaration is reported as a fresh violation.
+ */
+export function toPosixPath(filePath, separator = path.sep) {
+  return separator === '/' ? filePath : filePath.split(separator).join('/');
+}
+
+function toPosixRelative(root, filePath) {
+  return toPosixPath(path.relative(root, filePath));
+}
+
 function isSourceFile(filePath) {
   if (!/\.[cm]?tsx?$/.test(filePath)) return false;
-  if (filePath.includes(`${path.sep}__tests__${path.sep}`)) return false;
+  if (toPosixPath(filePath).includes('/__tests__/')) return false;
   return !/\.(?:test|spec)\.[cm]?tsx?$/.test(filePath);
 }
 
@@ -104,7 +119,7 @@ export function scanIdentityScopeViolations({
               : null;
         if (!rule || hasEscape(lines, lineIndex)) return;
         const violation = {
-          file: path.relative(root, filePath),
+          file: toPosixRelative(root, filePath),
           line: lineIndex + 1,
           rule,
           source: line.trim(),
