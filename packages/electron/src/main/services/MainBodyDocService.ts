@@ -103,8 +103,15 @@ interface BodyEntry {
    *  `applyMarkdown` calls await this so the binding writes against a
    *  populated Y.Doc, not an empty one. */
   ready: Promise<boolean>;
+  /** Most recent server-side room rejection, without body content. */
+  lastServerError: HeadlessBodyServerDiagnostic | null;
   destroyed: boolean;
 }
+
+export type HeadlessBodyServerDiagnostic = {
+  code: string;
+  message: string;
+};
 
 const entries = new Map<string, BodyEntry>();
 
@@ -287,6 +294,14 @@ async function acquireEntry(
   const config = await resolveConfig(workspacePath, itemId);
   if (!config) return null;
 
+  config.onServerError = (error) => {
+    // A body write result may need the underlying server classification. Keep
+    // only the protocol diagnostic, never document content or transport data.
+    if (entry) {
+      entry.lastServerError = { code: error.code, message: error.message };
+    }
+  };
+
   // Awareness suppression: this peer never registers focus tracking and we
   // never call `provider.setLocalAwareness`, so a warm renderer peer will not
   // see this service as a phantom user.
@@ -307,7 +322,12 @@ async function acquireEntry(
   });
 
   config.onStatusChange = (status: DocumentSyncStatus) => {
-    if (status === 'connected') connected = true;
+    if (status === 'connected') {
+      connected = true;
+      // A new successful connection supersedes diagnostics from the prior
+      // connection attempt; callers must not report a stale custody outage.
+      if (entry) entry.lastServerError = null;
+    }
   };
 
   entry = {
@@ -317,6 +337,7 @@ async function acquireEntry(
     idleTimer: null,
     touchedAt: Date.now(),
     ready,
+    lastServerError: null,
     destroyed: false,
   };
   entries.set(key, entry);
@@ -351,6 +372,19 @@ function destroyEntry(entry: BodyEntry): void {
 // ============================================================================
 // Public API
 // ============================================================================
+
+/**
+ * Return the current headless-peer server diagnostic for a body room.
+ * Callers must map codes to their own bounded public contract rather than
+ * returning a raw server message to an agent.
+ */
+export function getHeadlessBodyServerDiagnostic(
+  workspacePath: string,
+  itemId: string,
+): HeadlessBodyServerDiagnostic | null {
+  const diagnostic = entries.get(entryKey(workspacePath, itemId))?.lastServerError;
+  return diagnostic ? { ...diagnostic } : null;
+}
 
 /**
  * Apply a markdown body write to the live Y.Doc for `itemId`. If the workspace

@@ -76,6 +76,17 @@ interface DocumentSyncCommonConfig {
   onStatusChange?: (status: DocumentSyncStatus) => void;
 
   /**
+   * Called when the sync server rejects a room-level operation before it can
+   * become a local write failure. Hosts may map known server codes to a
+   * durable, user-actionable result without inspecting transport internals.
+   */
+  onServerError?: (error: {
+    type: 'error';
+    code: string;
+    message: string;
+  }) => void;
+
+  /**
    * Called when an update reached the Y.Doc but a listener threw while handling
    * it -- in practice, the Lexical binding aborting.
    *

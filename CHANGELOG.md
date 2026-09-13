@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 <!-- Bug fixes go here -->
+- Tracker body-write failures now identify an unavailable team key-custody service as non-retryable, while preserving the local body snapshot.
 - Accepting large document rewrites preserves paragraph order, and rejecting them restores the original formatting.
 - The Git panel names the signal when a push is killed before it finishes, instead of showing the hook's output as the error.
 - The GitHub panel no longer shows an unrelated AI session when the selected PR or issue has no matching session.

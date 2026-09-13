@@ -15,6 +15,7 @@ const {
   mockIsBuiltinTrackerSchema,
   mockGlobalRegistry,
   mockApplyHeadlessBodyMarkdown,
+  mockGetHeadlessBodyServerDiagnostic,
   mockOnTrackerItemApplied,
   mockAwaitServerIssueKey,
   mockDocumentServices,
@@ -67,6 +68,7 @@ const {
     validate: vi.fn(() => ({ valid: true, errors: [] as Array<{ field: string; message: string }> })),
   },
   mockApplyHeadlessBodyMarkdown: vi.fn<(...args: any[]) => Promise<boolean>>(async () => true),
+  mockGetHeadlessBodyServerDiagnostic: vi.fn(() => null),
   mockOnTrackerItemApplied: vi.fn<(listener: any) => () => void>(() => () => {}),
   mockAwaitServerIssueKey: vi.fn<(...args: any[]) => Promise<string | null>>(async () => null),
   mockDocumentServices: new Map<string, any>(),
@@ -170,6 +172,7 @@ vi.mock('electron', async () => ({
 const mockInitializeHeadlessBodyMarkdown = vi.hoisted(() => vi.fn(async (..._args: any[]) => {}));
 vi.mock('../../../services/MainBodyDocService', () => ({
   applyHeadlessBodyMarkdown: mockApplyHeadlessBodyMarkdown,
+  getHeadlessBodyServerDiagnostic: mockGetHeadlessBodyServerDiagnostic,
   initializeHeadlessBodyMarkdown: mockInitializeHeadlessBodyMarkdown,
 }));
 
@@ -2073,6 +2076,37 @@ describe('handleTrackerCreate session linking', () => {
         '[MCP Server] tracker_create collaborative body write failed:',
         expect.objectContaining({ itemId: 'bug_test', workspacePath: '/tmp/ws' }),
       );
+    } finally {
+      errorSpy.mockRestore();
+    }
+  });
+
+  it('reports custody unavailability as non-retryable for a shared create body', async () => {
+    setupCreateQueueWithDescription();
+    vi.mocked(shouldSyncTrackerItem).mockReturnValue(true);
+    vi.mocked(isTrackerSyncActive).mockReturnValue(false);
+    mockInitializeHeadlessBodyMarkdown.mockRejectedValueOnce(new Error('No acknowledgment'));
+    mockGetHeadlessBodyServerDiagnostic.mockReturnValueOnce({
+      code: 'key_custody_unavailable',
+      message: 'Server-managed key custody is unavailable for this organization',
+    });
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+    try {
+      const result = await handleTrackerCreate(
+        { id: 'bug_test', type: 'bug', title: 'Some bug', description: 'Body that did not propagate' },
+        '/tmp/ws',
+        undefined,
+      );
+      const payload = JSON.parse(result.content[0].text!);
+
+      expect(payload.structured.bodyWrite).toMatchObject({
+        status: 'failed',
+        collaborativeBodyStored: false,
+        diagnostic: { code: 'key_custody_unavailable', retryable: false },
+      });
+      expect(payload.structured.bodyWrite.message).toContain('Retrying will not help');
+      expect(payload.structured.bodyWrite.message).not.toContain('Retry the body write');
     } finally {
       errorSpy.mockRestore();
     }

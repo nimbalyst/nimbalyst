@@ -13,7 +13,11 @@ import {
 import { isTrackerSyncActive, isTrackerSyncConfigured, syncTrackerItem } from '../../services/TrackerSyncManager';
 import { awaitServerIssueKey } from '../../services/tracker/awaitServerIssueKey';
 import { isLocalIssueKey, resolveDisplayIssueKey } from '../../../shared/localIssueKey';
-import { applyHeadlessBodyMarkdown, initializeHeadlessBodyMarkdown } from '../../services/MainBodyDocService';
+import {
+  applyHeadlessBodyMarkdown,
+  getHeadlessBodyServerDiagnostic,
+  initializeHeadlessBodyMarkdown,
+} from '../../services/MainBodyDocService';
 import { initialTrackerBodyCache } from '../../services/tracker/trackerBodySnapshot';
 import { applyRelationshipFieldWrites } from '../../services/tracker/relationshipFieldWrite';
 import { appendActivity } from '../../services/tracker/trackerActivity';
@@ -2093,7 +2097,10 @@ export async function handleTrackerCreate(
       try {
         await initializeHeadlessBodyMarkdown(workspacePath, id, descriptionText);
       } catch (bodyError) {
-        bodyWriteResult = bodyWriteFailure(true);
+        bodyWriteResult = bodyWriteFailure(
+          true,
+          getHeadlessBodyServerDiagnostic(workspacePath, id),
+        );
         console.error('[MCP Server] tracker_create collaborative body write failed:', { itemId: id, workspacePath, error: bodyError });
       }
     }
@@ -2759,14 +2766,20 @@ export async function handleTrackerUpdate(
               collaborativeBodyStored === false &&
               shouldSyncTrackerItem(bodySharingPolicy, bodyItem)
             ) {
-              bodyWriteResult = bodyWriteFailure(true);
+              bodyWriteResult = bodyWriteFailure(
+                true,
+                getHeadlessBodyServerDiagnostic(workspacePath, row.id),
+              );
               console.error('[MCP Server] tracker_update collaborative body write failed:', {
                 itemId: row.id,
                 workspacePath,
               });
             }
           } catch (bodyError) {
-            bodyWriteResult = bodyWriteFailure(localSnapshotStored);
+            bodyWriteResult = bodyWriteFailure(
+              localSnapshotStored,
+              getHeadlessBodyServerDiagnostic(workspacePath, row.id),
+            );
             console.error('[MCP Server] tracker_update body Y.Doc seed failed:', bodyError);
           }
         }
