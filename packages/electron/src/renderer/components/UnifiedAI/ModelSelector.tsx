@@ -72,6 +72,7 @@ export function ModelSelector({
   const [providerLabels, setProviderLabels] = useState<Record<string, string>>({});
   const [providerIcons, setProviderIcons] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
   const aiProviderSettings = useAtomValue(aiProviderSettingsAtom);
   const advancedSettings = useAtomValue(advancedSettingsAtom);
   const { providers } = aiProviderSettings;
@@ -148,11 +149,15 @@ export function ModelSelector({
   useEffect(() => resetTypeahead, [resetTypeahead]);
 
   useEffect(() => {
-    if (!isOpen) resetTypeahead();
+    if (!isOpen) {
+      resetTypeahead();
+      setSearchQuery('');
+    }
   }, [isOpen, resetTypeahead]);
 
   const handleModelSelect = (modelId: string) => {
     resetTypeahead();
+    setSearchQuery('');
     onModelChange(modelId);
     setIsOpen(false);
   };
@@ -207,10 +212,15 @@ export function ModelSelector({
       event.preventDefault();
       event.stopPropagation();
       resetTypeahead();
+      setSearchQuery('');
       setIsOpen(false);
       onKeyboardDismiss?.();
       return;
     }
+
+    // Let the search field handle text entry without triggering the picker's
+    // existing typeahead navigation.
+    if (event.target instanceof HTMLInputElement) return;
 
     if (
       event.key.length !== 1
@@ -247,6 +257,12 @@ export function ModelSelector({
       .sort((a, b) => a.score - b.score);
 
     matches[0]?.option.focus();
+  };
+
+  const handleSearchKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
+    if (event.key !== 'ArrowDown') return;
+    event.preventDefault();
+    getEnabledModelOptions()[0]?.focus();
   };
 
   const getSettingsCategoryForModel = (modelId: string): SettingsCategory => {
@@ -372,8 +388,25 @@ export function ModelSelector({
     })),
   );
 
+  const normalizedSearchQuery = searchQuery.trim().toLowerCase();
+  const filteredModels = Object.fromEntries(
+    Object.entries(visibleModels)
+      .map(([provider, providerModels]) => [
+        provider,
+        providerModels.filter(model => {
+          if (!normalizedSearchQuery) return true;
+          return `${model.name} ${model.id} ${getProviderLabel(provider)}`
+            .toLowerCase()
+            .includes(normalizedSearchQuery);
+        }),
+      ] as const)
+      .filter(([, providerModels]) => providerModels.length > 0),
+  );
+  const hasVisibleModels = Object.keys(visibleModels).length > 0;
+  const hasFilteredModels = Object.keys(filteredModels).length > 0;
+
   // Group providers by type (agents vs models)
-  const groupedProviders = Object.entries(visibleModels).reduce((acc, [provider, providerModels]) => {
+  const groupedProviders = Object.entries(filteredModels).reduce((acc, [provider, providerModels]) => {
     const isAgent = getProviderType(provider) === 'agent';
     const type = isAgent ? 'agents' : 'models';
     if (!acc[type]) acc[type] = {};
@@ -431,12 +464,32 @@ export function ModelSelector({
             tabIndex={-1}
             {...getFloatingProps({ onKeyDown: handleMenuKeyDown })}
           >
+          {!loading && hasVisibleModels && (
+            <div className="model-selector-search sticky top-0 z-10 p-1 bg-[var(--nim-bg)]">
+              <div className="flex items-center gap-1.5 rounded border border-[var(--nim-border)] bg-[var(--nim-bg-secondary)] px-2 focus-within:border-[var(--nim-primary)]">
+                <MaterialSymbol icon="search" size={14} className="shrink-0 text-[var(--nim-text-faint)]" />
+                <input
+                  type="search"
+                  aria-label="Search models"
+                  data-testid="model-picker-search"
+                  className="min-w-0 flex-1 border-none bg-transparent py-1.5 text-xs text-[var(--nim-text)] outline-none placeholder:text-[var(--nim-text-faint)]"
+                  placeholder="Search models..."
+                  value={searchQuery}
+                  onChange={event => setSearchQuery(event.target.value)}
+                  onKeyDown={handleSearchKeyDown}
+                />
+              </div>
+            </div>
+          )}
           {loading ? (
             <div className="model-selector-loading p-3 text-center text-xs text-[var(--nim-text-faint)]">Loading models...</div>
-          ) : Object.keys(visibleModels).length === 0 ? (
+          ) : !hasVisibleModels ? (
             <div className="model-selector-empty p-3 text-center text-xs text-[var(--nim-text-faint)]">No models available</div>
           ) : (
             <>
+              {!hasFilteredModels && (
+                <div className="model-selector-empty p-3 text-center text-xs text-[var(--nim-text-faint)]">No matching models</div>
+              )}
               {/* Agents Section */}
               {groupedProviders.agents && Object.keys(groupedProviders.agents).length > 0 && (
                 <>
