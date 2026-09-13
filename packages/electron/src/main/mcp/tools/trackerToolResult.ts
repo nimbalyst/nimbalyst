@@ -90,7 +90,7 @@ export type BodyWriteFailure = {
 
 export function bodyWriteFailure(
   localSnapshotStored: boolean,
-  serverDiagnostic?: { code: string; message: string },
+  serverDiagnostic?: { code: string; message: string } | null,
 ): BodyWriteFailure {
   const custodyUnavailable = serverDiagnostic?.code === 'key_custody_unavailable';
   return {

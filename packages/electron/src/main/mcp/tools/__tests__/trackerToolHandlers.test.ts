@@ -68,7 +68,7 @@ const {
     validate: vi.fn(() => ({ valid: true, errors: [] as Array<{ field: string; message: string }> })),
   },
   mockApplyHeadlessBodyMarkdown: vi.fn<(...args: any[]) => Promise<boolean>>(async () => true),
-  mockGetHeadlessBodyServerDiagnostic: vi.fn(() => null),
+  mockGetHeadlessBodyServerDiagnostic: vi.fn<() => { code: string; message: string } | null>(() => null),
   mockOnTrackerItemApplied: vi.fn<(listener: any) => () => void>(() => () => {}),
   mockAwaitServerIssueKey: vi.fn<(...args: any[]) => Promise<string | null>>(async () => null),
   mockDocumentServices: new Map<string, any>(),
