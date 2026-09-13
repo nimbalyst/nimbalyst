@@ -71,22 +71,39 @@ export const UNPUBLISHED_ISSUE_KEY_MESSAGE = TRACKER_UNASSIGNED_ISSUE_KEY_MESSAG
 const PUBLISHED_ISSUE_KEY_PENDING_MESSAGE = 'This item is published, but its server-issued key is still pending.';
 const COLLABORATIVE_BODY_WRITE_FAILURE_MESSAGE =
   'The item fields and local body snapshot were saved, but the body was not stored in collaborative tracker content. Retry the body write before treating it as available to collaborators.';
+const KEY_CUSTODY_UNAVAILABLE_BODY_WRITE_FAILURE_MESSAGE =
+  'The item fields and local body snapshot were saved, but server-managed key custody is unavailable for this team, so the body was not stored in collaborative tracker content. Retrying will not help until team key custody is restored.';
+
+export type BodyWriteDiagnostic = {
+  code: 'key_custody_unavailable';
+  retryable: false;
+};
 
 export type BodyWriteFailure = {
   status: 'failed';
   itemFieldsStored: true;
   localSnapshotStored: boolean;
   collaborativeBodyStored: false;
+  diagnostic?: BodyWriteDiagnostic;
   message: string;
 };
 
-export function bodyWriteFailure(localSnapshotStored: boolean): BodyWriteFailure {
+export function bodyWriteFailure(
+  localSnapshotStored: boolean,
+  serverDiagnostic?: { code: string; message: string } | null,
+): BodyWriteFailure {
+  const custodyUnavailable = serverDiagnostic?.code === 'key_custody_unavailable';
   return {
     status: 'failed',
     itemFieldsStored: true,
     localSnapshotStored,
     collaborativeBodyStored: false,
-    message: localSnapshotStored
+    ...(custodyUnavailable
+      ? { diagnostic: { code: 'key_custody_unavailable' as const, retryable: false as const } }
+      : {}),
+    message: custodyUnavailable
+      ? KEY_CUSTODY_UNAVAILABLE_BODY_WRITE_FAILURE_MESSAGE
+      : localSnapshotStored
       ? COLLABORATIVE_BODY_WRITE_FAILURE_MESSAGE
       : 'The item fields were saved, but the body write did not complete locally or in collaborative tracker content. Retry the body write before treating it as stored.',
   };
