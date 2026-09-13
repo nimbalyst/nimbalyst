@@ -1,8 +1,8 @@
 /**
  * ClaudeUsagePopover - Detailed usage information popover
  *
- * Shows both session (5-hour) and weekly (7-day) usage with progress bars
- * and reset times.
+ * Shows session (5-hour), weekly (7-day), and any per-model weekly limits
+ * (e.g. Fable) with progress bars and reset times.
  */
 
 import React, { useEffect, RefObject } from 'react';
@@ -14,6 +14,7 @@ import {
   claudeUsageSessionColorAtom,
   claudeUsageWeeklyColorAtom,
   formatResetTime,
+  type ClaudeUsageSeverity,
 } from '../../store/atoms/claudeUsageAtoms';
 import { toggleGutterItemHiddenAtom } from '../../store/atoms/appSettings';
 import { useFloatingMenu, FloatingPortal } from '../../hooks/useFloatingMenu';
@@ -23,6 +24,13 @@ interface ClaudeUsagePopoverProps {
   onClose: () => void;
   onRefresh: () => Promise<void>;
 }
+
+/** The API grades scoped limits itself; reuse its verdict rather than re-deriving one. */
+const SEVERITY_COLORS: Record<ClaudeUsageSeverity, 'green' | 'yellow' | 'red'> = {
+  normal: 'green',
+  warning: 'yellow',
+  critical: 'red',
+};
 
 interface UsageSectionProps {
   title: string;
@@ -194,22 +202,19 @@ export const ClaudeUsagePopover: React.FC<ClaudeUsagePopoverProps> = ({
                 color={weeklyColor as 'green' | 'yellow' | 'red' | 'muted'}
                 windowDurationMs={7 * 24 * 60 * 60 * 1000} // 7 days
               />
-              {usage.sevenDayOpus && usage.sevenDayOpus.utilization > 0 && (
-                <UsageSection
-                  title="Opus (Weekly)"
-                  subtitle="7-day window"
-                  utilization={usage.sevenDayOpus.utilization}
-                  resetsAt={usage.sevenDayOpus.resetsAt}
-                  color={
-                    usage.sevenDayOpus.utilization >= 80
-                      ? 'red'
-                      : usage.sevenDayOpus.utilization >= 50
-                        ? 'yellow'
-                        : 'green'
-                  }
-                  windowDurationMs={7 * 24 * 60 * 60 * 1000} // 7 days
-                />
-              )}
+              {(usage.scopedLimits ?? [])
+                .filter((limit) => limit.utilization > 0)
+                .map((limit) => (
+                  <UsageSection
+                    key={limit.id}
+                    title={`${limit.label} (Weekly)`}
+                    subtitle="7-day window"
+                    utilization={limit.utilization}
+                    resetsAt={limit.resetsAt}
+                    color={SEVERITY_COLORS[limit.severity] ?? 'muted'}
+                    windowDurationMs={7 * 24 * 60 * 60 * 1000} // 7 days
+                  />
+                ))}
             </>
           )}
         </div>

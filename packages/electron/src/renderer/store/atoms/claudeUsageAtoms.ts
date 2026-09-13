@@ -12,10 +12,23 @@ export interface ClaudeUsageWindow {
   resetsAt: string | null; // ISO timestamp
 }
 
+export type ClaudeUsageSeverity = 'normal' | 'warning' | 'critical';
+
+/**
+ * A weekly limit scoped to one model (e.g. "Fable", "Opus"), mirrored from
+ * ClaudeUsageService. Sent over IPC alongside the account-wide windows.
+ */
+export interface ClaudeScopedLimit extends ClaudeUsageWindow {
+  id: string;
+  label: string;
+  severity: ClaudeUsageSeverity;
+}
+
 export interface ClaudeUsageData {
   fiveHour: ClaudeUsageWindow;
   sevenDay: ClaudeUsageWindow;
   sevenDayOpus?: ClaudeUsageWindow;
+  scopedLimits?: ClaudeScopedLimit[];
   lastUpdated: number; // Unix timestamp
   error?: string;
 }
