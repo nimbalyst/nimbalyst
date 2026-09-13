@@ -4,83 +4,43 @@ This document covers the file watching infrastructure, AI change tracking pipeli
 
 ## Architecture Overview
 
-```
-┌─────────────────────────────────────────────┐
-│  React UI Layer (Renderer)                  │
-│  - TabEditor (conflict handling, diff mode) │
-│  - HistoryDialog (snapshot comparison)      │
-│  - DiffPreview / TextDiffViewer             │
-│  - MonacoDiffViewer / DiffPreviewEditor     │
-│  - FilesEditedSidebar (file list)           │
-└──────────────┬──────────────────────────────┘
-               │ Reads from Jotai atoms
-┌──────────────▼──────────────────────────────┐
-│  Jotai Atoms (State Management)             │
-│  - sessionFileEditsAtom (per session)       │
-│  - sessionGitStatusAtom (per session)       │
-│  - sessionPendingReviewFilesAtom            │
-│  - workstreamFileEditsAtom (derived)        │
-│  - worktreeChangedFilesAtom (per worktree)  │
-│  - rawFileTreeAtom (workspace tree)         │
-└──────────────┬──────────────────────────────┘
-               │ Updated by central listeners
-┌──────────────▼──────────────────────────────┐
-│  Central IPC Listeners (Renderer)           │
-│  - fileStateListeners.ts                    │
-│  - fileTreeListeners.ts                     │
-└──────────────┬──────────────────────────────┘
-               │ IPC events from main process
-┌──────────────▼──────────────────────────────┐
-│  Main Process                               │
-│  - ChokidarFileWatcher (per-file)           │
-│  - OptimizedWorkspaceWatcher (per-workspace)│
-│  - GitRefWatcher (commits & staging)        │
-│  - SessionFileWatcher (AI change capture)   │
-│  - FileSnapshotCache (before/after state)   │
-│  - HistoryManager (snapshot storage)        │
-│  - SessionFileTracker (tool execution)      │
-│  - ToolCallMatcher (file-to-tool linking)   │
-└──────────────┬──────────────────────────────┘
-               │ SQL queries
-┌──────────────▼──────────────────────────────┐
-│  PGLite Database                            │
-│  - document_history (compressed snapshots)  │
-│  - session_files (file-session links)       │
-│  - ai_tool_call_file_edits (tool matching)  │
-└─────────────────────────────────────────────┘
+```mermaid
+flowchart BT
+  Native[WorkspaceNativeWatcher] --> Bus[WorkspaceEventBus subscriptions]
+  Recovery[RecoveringFileWatcher] --> Native
+  Bus --> Workspace[OptimizedWorkspaceWatcher]
+  Bus --> Session[SessionFileWatcher and history capture]
+  Reconciler[OpenFileReconciler: registered paths only] --> IPC[Central fileChangeListeners]
+  Workspace --> IPC
+  IPC --> Atoms[File signal atoms]
+  Atoms --> Store[DiskBackedStore and DiskChangeSubscription]
+  Store --> Model[DocumentModel and DiffSession]
+  Model --> UI[TabEditor and editor hosts]
 ```
 
 ---
 
 ## 1. File Watchers (Main Process)
 
-Four watcher types handle different scopes of file observation.
+Native workspace observation and independent open-file reconciliation share the renderer's ordered document pipeline. Git and session watchers have separate responsibilities.
 
-### ChokidarFileWatcher - Individual File Watching
+### WorkspaceEventBus - Recoverable Native Watchers
 
-**File:** `packages/electron/src/main/file/ChokidarFileWatcher.ts`
+[WorkspaceEventBus](../packages/electron/src/main/file/WorkspaceEventBus.ts) owns one logical entry per root. Its listener map survives native errors and event storms. [RecoveringFileWatcher](../packages/electron/src/main/file/RecoveringFileWatcher.ts) replaces the handle after 1, 5, 15, then 60 seconds; permission errors use 60 seconds. A minute of healthy operation resets backoff. Closing a failed native handle is deferred outside its event callback. Generation checks discard retired callbacks, rename checks, and setup completions. The last unsubscribe cancels retries and closes the handle.
 
-Watches individual open files for external changes (e.g., another editor or AI modifying the file on disk).
+[WorkspaceNativeWatcher](../packages/electron/src/main/file/WorkspaceNativeWatcher.ts) uses recursive `fs.watch` on macOS/Windows and chokidar on Linux. The circuit breaker trips above 5,000 delivered raw events in five seconds. Linux uses atomic writes, a 50 ms write-stability threshold, and depth 10; expanded and bypassed paths are restored onto replacement handles.
 
-**Configuration:**
-- `ignoreInitial: true` - Skip initial state events
-- `persistent: true` - Keep process running
-- `atomic: true` - Handle atomic writes (vim-style save)
-- `awaitWriteFinish: { stabilityThreshold: 10 }` - 10ms threshold for fast AI edit detection
-- `usePolling: false` - Uses native fs.watch
+Health (`starting`, `watching`, `recovering`, `stopped`) travels through `file:watch-health`. The centralized renderer listener warns after ten seconds of sustained recovery. Successful recovery requests open-file reconciliation and a debounced tree refresh. Diagnostics distinguish healthy handles from registered roots and include reconciliation counts. Recovery cannot reconstruct intermediate AI history events missed during downtime.
 
-**Data structure:** `Map<windowId, Map<filePath, FSWatcher>>` - per-window watcher tracking.
+### OpenFileReconciler - Independent Open-Document Checks
 
-**Key methods:**
-- `start(window, filePath)` - Begin watching a file (called when tab opens)
-- `stop(windowId)` - Stop all watchers for a window
-- `stopFile(windowId, filePath)` - Stop watching a specific file
+[OpenFileReconciler](../packages/electron/src/main/file/OpenFileReconciler.ts) checks only explicitly registered disk paths, including gitignored files and files outside workspace roots. [DiskChangeSubscription](../packages/electron/src/renderer/services/document-model/DiskChangeSubscription.ts), owned by DiskBackedStore, registers a sender-scoped token through [OpenFileHandlers](../packages/electron/src/main/ipc/OpenFileHandlers.ts). DocumentModelRegistry therefore covers Files mode, Agent mode, and hidden hosts without depending on tab visibility.
 
-**Events emitted:**
-- `file-changed-on-disk` - File content changed externally
-- `file-deleted` (via `notifyFileDeleted`) - File removed from disk
+One main-process timer stats registered paths every five seconds with at most four concurrent probes. Device, inode, size, mtime, and ctime detect replacements; forced reconciliation every sixty seconds catches unchanged metadata. Registration, focus, wake, and native recovery force an immediate pass. Requests coalesce while a path is busy. With zero registrations the timer stops and no probes run.
 
-**Error handling:** EMFILE/ENFILE errors are logged as warnings (file descriptor limits), other errors are rejected.
+`file:reconciled` carries a token and changed/deleted/error status. The central listener ignores disposed tokens. DiskChangeSubscription coalesces content reads, rejects stale completions, retries transient failures, and never substitutes empty content for an error. Deletion invalidates pending reads and enters the existing deletion protection. Final model disposal, rename, renderer navigation/crash, and window destruction release their own registrations. Late registration acknowledgements are released again. Open-document gitignore bypass ownership is separate from legacy/session cleanup.
+
+The old [FileWatcher](../packages/electron/src/main/file/FileWatcher.ts) start/stop API is a compatibility no-op; it does not create per-file chokidar handles.
 
 ### OptimizedWorkspaceWatcher - Workspace Directory Watching
 
@@ -156,7 +116,7 @@ Tracks file changes within a specific AI session for the change tracking pipelin
 
 **File:** `packages/electron/src/main/file/WorkspaceEventBus.ts`
 
-The gitignore bypass mechanism ensures that files written by AI tools to gitignored directories (e.g., `build/`, `dist/`, `node_modules/`) still trigger file change events. Without this, the watcher's gitignore filter silently drops events for AI-edited files in ignored paths, so the editor never learns about the change.
+The gitignore bypass mechanism ensures that files written by AI tools to gitignored directories (e.g., `temp/` or `nimbalyst-local/`) still trigger file change events. Without this, the watcher's gitignore filter silently drops events for AI-edited files in ignored paths, so the editor never learns about the change.
 
 #### Why It Exists
 
@@ -166,10 +126,10 @@ WorkspaceEventBus loads `.gitignore` (or fallback patterns) and filters all file
 
 | Function | Description |
 |----------|-------------|
-| `addGitignoreBypass(workspacePath, absolutePath)` | Register a path to bypass gitignore. Validates the path is inside the workspace. Events for this path dispatch with `gitignoreBypassed=true`. Also replays any recently dropped events from the replay buffer. |
-| `removeGitignoreBypass(workspacePath, absolutePath)` | Remove a path from the bypass set. |
+| `addGitignoreBypass(workspacePath, absolutePath, owner = "legacy")` | Register a path to bypass gitignore. Validates the path is inside the workspace. Events for this path dispatch with `gitignoreBypassed=true`. Also replays any recently dropped events from the replay buffer. |
+| `removeGitignoreBypass(workspacePath, absolutePath, owner = "legacy")` | Release only that owner; retain coverage while another owner remains. |
 | `hasGitignoreBypass(workspacePath, absolutePath)` | Check if a path is in the bypass set (testing/diagnostics). |
-| `clearGitignoreBypasses(workspacePath)` | Clear all bypass paths and the replay buffer for a workspace. Called during session cleanup. Also automatically runs when the last subscriber unsubscribes. |
+| `clearGitignoreBypasses(workspacePath)` | Clear legacy/session bypass ownership and the replay buffer, preserving open-document owners. Called during session cleanup. Also automatically runs when the last subscriber unsubscribes. |
 
 All paths are normalized to forward slashes internally for cross-platform consistency.
 
@@ -180,7 +140,7 @@ Because `fs.watch` events typically arrive within a few milliseconds of a file w
 - **Max entries:** 50 per workspace
 - **TTL:** 5 seconds (expired entries are pruned on each insertion)
 - **Behavior:** When `addGitignoreBypass` is called, matching entries in the replay buffer are re-dispatched to all listeners with `gitignoreBypassed=true`
-- **Rename handling:** Buffered `rename` events use an async `fs.access` check on replay to determine whether the event is an `add` or `unlink`, matching the live watcher behavior
+- **Rename handling:** Buffered `rename` events use a generation-guarded existence check with retries on replay to determine whether the event is an `add` or `unlink`, matching the live watcher behavior
 
 #### Who Registers Bypasses
 
@@ -193,15 +153,11 @@ Because `fs.watch` events typically arrive within a few milliseconds of a file w
 
 #### How OptimizedWorkspaceWatcher Handles Bypassed Events
 
-When events arrive with `gitignoreBypassed=true`:
-
-- **`onChange`**: Ignored entirely (no editor notification). SessionFileWatcher handles change detection for bypassed files.
-- **`onAdd`**: File tree refresh is triggered (so new AI-created files appear in the sidebar), but no `file-changed-on-disk` event is sent to editors.
-- **`onUnlink`**: File tree refresh is triggered, but no `file-changed-on-disk` or `file-deleted` event is sent to editors.
+Content changes notify editors even when gitignore was bypassed. Structural events refresh the tree and notify editors for Markdown and explicitly bypassed open files. Open-file reconciliation remains independent of these native filters.
 
 #### Markdown Always Bypasses
 
-Files with a `.md` extension always bypass gitignore filtering regardless of whether they are in the bypass set. This ensures documentation files in gitignored directories are always visible.
+Files with a `.md` extension bypass gitignore filtering regardless of whether they are in the bypass set. Hardcoded build/cache exclusions still apply; explicitly opened files in those directories are covered by reconciliation. This ensures documentation files in gitignored directories are always visible.
 
 ---
 
@@ -351,8 +307,10 @@ CREATE TABLE ai_tool_call_file_edits (
 
 | Channel | Payload | Source | Purpose |
 |---------|---------|--------|---------|
-| `file-changed-on-disk` | `{ path: string }` | ChokidarFileWatcher | File content changed externally |
-| `file-deleted` | `{ filePath: string }` | ChokidarFileWatcher | File removed from disk |
+| `file-changed-on-disk` | `{ path: string }` | OptimizedWorkspaceWatcher | File content changed externally |
+| `file-deleted` | `{ filePath: string }` | OptimizedWorkspaceWatcher | File removed from disk |
+| `file:reconciled` | `{ token, status, errorCode? }` | OpenFileReconciler | Open-document check result |
+| `file:watch-health` | `{ root, state, generation, reason?, nextRetryAt? }` | WorkspaceEventBus | Native watcher health |
 | `file-renamed` | `{ oldPath, newPath }` | File handlers | File renamed |
 | `workspace-file-tree-updated` | `{ fileTree: any[] }` | OptimizedWorkspaceWatcher | File tree structure changed |
 | `session-files:updated` | `sessionId: string` | SessionFileTracker | AI session edited files |
@@ -380,8 +338,9 @@ Follows the centralized listener pattern (see IPC_LISTENERS.md). Components neve
 ### IPC Handlers (Main Process)
 
 **File watcher control:**
-- `start-watching-file` - Starts ChokidarFileWatcher for a single file (called when tab opens)
-- `stop-watching-file` - Stops watching a specific file (called when tab closes)
+- `start-watching-file` / `stop-watching-file` - Compatibility calls and legacy bypass ownership
+- `file:register-open` / `file:unregister-open` - DiskBackedStore token lifetime, scoped to the sending renderer
+- `file:reconcile-open` - Force checks for the sending renderer
 
 **Folder events (selective watching):**
 - `workspace-folder-expanded` - Adds folder to OptimizedWorkspaceWatcher
@@ -448,21 +407,14 @@ TabEditor is the central component handling file change events for open files.
 - `pendingAIEditTagRef` - Current pending AI edit tag if in diff mode
 - `processingFileChangeRef` - Lock to prevent concurrent file change processing
 
-### File Change Handler Flow (`file-changed-on-disk`)
+### Ordered File Change Flow
 
-1. **Lock** processing with `processingFileChangeRef` to prevent races
-2. **Read** new content from disk
-3. **Check pending AI edit tags** (checked BEFORE time-based heuristic):
-   - If pending tag exists: enter/update diff mode (red/green diff display)
-   - Fetch oldContent from tag baseline
-   - Monaco: `showDiff(oldContent, newContent)`
-   - Lexical: `APPLY_MARKDOWN_REPLACE_COMMAND` with diff nodes
-   - Set `pendingAIEditTagRef` and `editorHasUnacceptedChangesAtom`
-4. **If no pending tag**, apply time-based heuristic:
-   - Skip if < 2000ms since last save AND content matches last saved content (own save echo)
-   - Otherwise reload from disk
-5. **Conflict detection** (dirty file + no pending tag + time > 2000ms):
-   - Show conflict dialog: "Reload from Disk" or "Keep Local Changes"
+1. `fileChangeListeners` updates path or registration-token atoms.
+2. DiskChangeSubscription coalesces reads and rejects stale completions before publishing content to DocumentModel.
+3. DocumentModel short-circuits unchanged content before history queries, except explicit pending-tag signals. DiffSession retains ownership of unresolved AI reviews.
+4. Clean editor hosts receive new bytes through verified reload/application paths. Persisted baselines advance only for applied content or a successful save.
+5. A dirty host that cannot accept external bytes retains its buffer and shows the existing nonmodal conflict banner. Reload re-reads disk, verifies application, and then clears dirty state; a late result cannot apply to a different or disposed model.
+6. Save verification compares the expected baseline against disk. Read errors fail before writing; rejected saves retain their last successfully persisted baseline.
 
 ### EditorHost Integration
 
@@ -534,7 +486,7 @@ Supports navigation between change groups via `scrollToChangeGroup()`.
 
 When an AI edits a file that's currently open:
 
-1. AI writes to disk -> ChokidarFileWatcher detects change
+1. AI writes to disk -> WorkspaceEventBus detects change
 2. TabEditor receives `file-changed-on-disk` event
 3. TabEditor checks for pending tags in `document_history` (status = `'pending-review'`)
 4. If pending tag found: enters diff mode (Monaco diff or Lexical diff with red/green nodes)
@@ -584,8 +536,9 @@ FilesEditedSidebar provides toggle-staging UI via `worktree:stage-file` IPC. The
 3. `initFileStateListeners(workspacePath)` and `initFileTreeListeners(workspacePath)` start renderer subscriptions
 
 ### File Open (Tab)
-1. TabEditor mounts -> `start-watching-file` IPC creates ChokidarFileWatcher
-2. `file-changed-on-disk` events flow to TabEditor for conflict/diff handling
+1. DocumentModelRegistry creates/reuses a model; DiskBackedStore registers an open-file token.
+2. Native and reconciled changes flow through the same ordered read/model pipeline.
+3. Final release disposes the store and unregisters the token; other owners retain coverage.
 
 ### AI Session Start
 1. SessionFileWatcher initialized with ref-counted shared watcher
@@ -625,7 +578,7 @@ the row and its baseline are never deleted. See GitHub #1403.
 2. When ref count reaches 0, shared watcher is closed
 
 ### App Quit
-1. `stopAllFileWatchers()` closes all ChokidarFileWatcher instances
+1. OpenFileReconciler stops its timer and releases registrations; legacy `stopAllFileWatchers()` remains a no-op.
 2. `stopAllWorkspaceWatchers()` closes OptimizedWorkspaceWatcher + GitRefWatcher (with 1000ms safety timeout for chokidar close)
 
 ---
@@ -661,7 +614,7 @@ The flag clears automatically on `loadContent()` or on `handleExternalChange` re
 `WindowManager` exposes `markRecentlyDeleted` / `clearRecentlyDeleted` / `isRecentlyDeleted`. The map is populated from three sources:
 
 - `WorkspaceHandlers` `delete-file`, `rename-file`, and `move-file` IPC handlers
-- `OptimizedWorkspaceWatcher.onUnlink` (covers external deletions discovered by the watcher, not just UI-initiated ones)
+- `OptimizedWorkspaceWatcher.onUnlink` and OpenFileHandlers reconciliation (cover external deletions, including missed native events)
 
 Entries are removed when the renderer fires `editor:released-deleted-path` after `loadContent` or `handleExternalChange` establishes a fresh baseline. A 5-minute absolute fallback prevents the map from growing without bound on a renderer crash. **No 10-second TTL** — that was the original (insufficient) approach.
 
@@ -749,7 +702,9 @@ The `save-file` IPC carries `auto` or `manual` as the save source. Main-process 
 
 | File | Purpose |
 |------|---------|
-| `packages/electron/src/main/file/ChokidarFileWatcher.ts` | Per-file watcher for open tabs |
+| `packages/electron/src/main/file/WorkspaceEventBus.ts` | Shared logical subscriptions and filtering |
+| `packages/electron/src/main/file/RecoveringFileWatcher.ts` | Native handle lifecycle and retry |
+| `packages/electron/src/main/file/OpenFileReconciler.ts` | Independent bounded open-file probes |
 | `packages/electron/src/main/file/OptimizedWorkspaceWatcher.ts` | Workspace directory watcher (platform-optimized) |
 | `packages/electron/src/main/file/GitRefWatcher.ts` | Git commit and staging detection |
 | `packages/electron/src/main/file/SessionFileWatcher.ts` | Per-session AI change tracking |

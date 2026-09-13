@@ -26,6 +26,8 @@ import * as path from 'path';
 
 import {
   MAX_RECONCILE_ATTEMPTS,
+  advanceCutoverPhase,
+  readCutoverJournal,
   clearCutoverJournal,
   fingerprintSource,
   fingerprintsMatch,
@@ -97,6 +99,7 @@ export type CutoverReconcileReason =
   | 'reconcile_attempts_exhausted';
 
 export type CutoverPlanStep =
+  | { action: 'await_startup_verification' }
   | { action: 'restore_source'; from: string; to: string }
   | { action: 'promote_staging'; from: string; to: string }
   | {
@@ -250,7 +253,7 @@ function complete(
     pgliteMigratedDir: journal.source.preservedPath,
     setBy: journal.commitSetBy ?? 'auto-migration',
   });
-  steps.push({ action: 'clear_journal' });
+  steps.push({ action: journal.phase === 'reopened_verified' ? 'clear_journal' : 'await_startup_verification' });
   return {
     disposition: 'complete',
     reasonCode,
@@ -550,6 +553,12 @@ export function applyCutoverPlan(
 ): void {
   for (const step of plan.steps) {
     switch (step.action) {
+      case 'await_startup_verification': {
+        const journal = readCutoverJournal(userDataPath);
+        if (!journal) throw new Error('Cutover journal disappeared before startup verification');
+        advanceCutoverPhase(userDataPath, journal, 'backend_committed');
+        break;
+      }
       case 'restore_source': {
         if (!cutoverFs.exists(step.from)) break; // already restored
         if (cutoverFs.exists(step.to)) {

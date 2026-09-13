@@ -61,6 +61,14 @@ vi.mock('../../database/initialize', () => ({
   getDatabase: () => null,
 }));
 
+// Keep schema loading independent of the team/auth graph during hook setup.
+vi.mock('../TeamService', () => ({
+  findTeamForWorkspace: vi.fn(async () => null),
+}));
+vi.mock('../TrackerIdentityService', () => ({
+  getCurrentIdentity: vi.fn(() => ({ displayName: 'Test User', email: 'test@example.com' })),
+}));
+
 interface FieldLike {
   name: string;
   required?: boolean;

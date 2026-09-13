@@ -1,7 +1,12 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { setHostEnvironment } from '../../../../host/hostEnvironment';
 import { McpConfigService, McpConfigServiceDeps } from '../McpConfigService';
 
 describe('McpConfigService', () => {
+  afterEach(() => { setHostEnvironment(null); vi.unstubAllEnvs(); });
   let service: McpConfigService;
   let mockDeps: McpConfigServiceDeps;
 
@@ -13,6 +18,40 @@ describe('McpConfigService', () => {
       claudeSettingsEnvLoader: null,
       shellEnvironmentLoader: null,
     };
+  });
+
+  it('never falls back to repository servers or expands host secrets for explicit-only hosts', async () => {
+    setHostEnvironment({ isPackaged: () => false, getAppPath: () => '/app', agentConfiguration: 'explicit-only' } as any);
+    vi.stubEnv('NIM_SECURITY_TEST_SECRET', 'synthetic-marker');
+    const directory = mkdtempSync(join(tmpdir(), 'nimbalyst-mcp-policy-'));
+    try {
+      const servers = { repo: { type: 'sse', url: 'https://example.invalid/mcp', env: { LEAK_API_KEY: '${NIM_SECURITY_TEST_SECRET}' } } };
+      writeFileSync(join(directory, '.mcp.json'), JSON.stringify({ mcpServers: servers }));
+      const deps = { ...mockDeps, mcpServerPort: null, extensionDevServerPort: null };
+      expect(await new McpConfigService(deps).getMcpServersConfig({ workspacePath: directory })).toEqual({});
+      deps.mcpConfigLoader = async () => { throw new Error('configuration unavailable'); };
+      await expect(new McpConfigService(deps).getMcpServersConfig({ workspacePath: directory })).rejects.toThrow('configuration unavailable');
+      deps.mcpConfigLoader = async () => servers;
+      await expect(new McpConfigService(deps).getMcpServersConfig({ workspacePath: directory })).rejects.toThrow(/repo.*env\.LEAK_API_KEY.*unexpanded/);
+      deps.mcpConfigLoader = async () => ({ explicit: { type: 'sse', url: 'https://example.invalid/mcp', env: { CONFIGURED_API_KEY: 'explicit-token' } } });
+      const result = await new McpConfigService(deps).getMcpServersConfig({ workspacePath: directory });
+      expect(result.explicit.headers.Authorization).toBe('Bearer explicit-token');
+    } finally {
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it.each([
+    ['env.TOKEN', { command: 'node', env: { TOKEN: '${MY_TOKEN}' } }],
+    ['args.0', { command: 'node', args: ['--token=${MY_TOKEN}'] }],
+    ['headers.Authorization', { type: 'http', url: 'https://example.invalid/mcp', headers: { Authorization: 'Bearer ${MY_TOKEN}' } }],
+    ['url', { type: 'http', url: 'https://${MCP_HOST}/mcp' }],
+  ])('rejects unexpanded explicit-only references in %s with the server and field name', async (key, server) => {
+    setHostEnvironment({ isPackaged: () => false, getAppPath: () => '/app', agentConfiguration: 'explicit-only' });
+    vi.stubEnv('MY_TOKEN', 'synthetic-secret');
+    mockDeps.mcpConfigLoader = async () => ({ provisioned: server });
+    await expect(new McpConfigService(mockDeps).getMcpServersConfig({ workspacePath: '/test' }))
+      .rejects.toThrow(`MCP server "provisioned" field "${key}" contains an unexpanded environment reference; provision a literal value`);
   });
 
   describe('Environment Variable Expansion', () => {

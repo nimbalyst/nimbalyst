@@ -6,7 +6,7 @@ const mocks = vi.hoisted(() => {
     unsubscribe: vi.fn(),
     addWatchedPath: vi.fn(),
     removeWatchedPath: vi.fn(),
-    getStats: vi.fn(() => ({ type: 'chokidar' })),
+    getStats: vi.fn(() => ({ type: 'chokidar', activeWorkspaces: 1, workspaces: [] })),
     getFolderContents: vi.fn(async () => []),
     getWindowId: vi.fn((window: any) => window?.id ?? null),
     markRecentlyDeleted: vi.fn(),
@@ -119,7 +119,7 @@ describe('OptimizedWorkspaceWatcher', () => {
       expect(mocks.unsubscribe).toHaveBeenCalledWith('/ws/a', 'workspace-watcher-1');
       expect(mocks.unsubscribe).toHaveBeenCalledWith('/ws/b', 'workspace-watcher-1');
       const stats = watcher.getStats();
-      expect(stats.activeWorkspaces).toBe(0);
+      expect(stats.registeredWorkspaces).toBe(0);
     });
 
     it('stop is idempotent', () => {
@@ -133,7 +133,7 @@ describe('OptimizedWorkspaceWatcher', () => {
       await watcher.stopAll();
 
       expect(mocks.unsubscribe).toHaveBeenCalledTimes(2);
-      expect(watcher.getStats().activeWorkspaces).toBe(0);
+      expect(watcher.getStats().registeredWorkspaces).toBe(0);
     });
   });
 
@@ -208,12 +208,13 @@ describe('OptimizedWorkspaceWatcher', () => {
   });
 
   describe('getStats', () => {
-    it('counts active workspaces and reports paths', async () => {
+    it('distinguishes native health from registered window roots', async () => {
       await watcher.start(fakeWindow(1), '/ws/a');
       await watcher.start(fakeWindow(2), '/ws/b');
 
       const stats = watcher.getStats();
-      expect(stats.activeWorkspaces).toBe(2);
+      expect(stats.registeredWorkspaces).toBe(2);
+      expect(stats.activeWorkspaces).toBe(1);
       expect(stats.workspaces.map((w: any) => w.workspacePath).sort()).toEqual(['/ws/a', '/ws/b']);
     });
   });

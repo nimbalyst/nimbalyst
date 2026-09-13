@@ -18,15 +18,12 @@ import { useAtom, useAtomValue, useSetAtom } from 'jotai';
 import { usePostHog } from 'posthog-js/react';
 import { MaterialSymbol } from '@nimbalyst/runtime/ui/icons/MaterialSymbol';
 import {
-  buildTrackerCreatePayload,
-  formatTrackerValidationErrors,
   globalRegistry,
 } from '@nimbalyst/runtime/plugins/TrackerPlugin/models';
 import { TrackerFieldPills } from '@nimbalyst/runtime/plugins/TrackerPlugin/components/TrackerFieldPills';
 import { useTrackerRelationshipCandidates } from '@nimbalyst/runtime/plugins/TrackerPlugin/components/useTrackerRelationshipCandidates';
 import { getTypeIcon } from '@nimbalyst/runtime/plugins/TrackerPlugin/components/trackerColumns';
 import { LaunchPopupShell, useLaunchPopupToggle } from '../LaunchPopup/LaunchPopupShell';
-import { errorNotificationService } from '../../services/ErrorNotificationService';
 import { trackerQuickCreateRequestAtom } from '../../store/atoms/appCommands';
 import {
   createEmptyTrackerQuickCreateDraft,
@@ -39,13 +36,13 @@ import { TrackerDuplicateStrip } from './TrackerDuplicateStrip';
 import { TrackerQuickCreateCreatedStrip } from './TrackerQuickCreateCreatedStrip';
 import { MemorySuggestionHint } from './MemorySuggestionHint';
 import { TrackerTypePicker } from './TrackerTypePicker';
+import { TrackerQuickCreateEditor } from './TrackerQuickCreateEditor';
+import { useTrackerQuickCreateSubmission } from './useTrackerQuickCreateSubmission';
 import { rankTrackerTypes } from './rankTrackerTypes';
 import { useTrackerDuplicates } from './useTrackerDuplicates';
 import {
-  carryStickyValues,
   carryValuesAcrossTypes,
   splitQuickCreateFields,
-  stickyQuickCreateFieldNames,
 } from './trackerQuickCreateFields';
 
 interface TrackerQuickCreatePopupProps {
@@ -175,11 +172,12 @@ export const TrackerQuickCreatePopup: React.FC<TrackerQuickCreatePopupProps> = (
   );
 
   const openTypePicker = useCallback(() => {
+    if (draft.submitting) return;
     setStage('type');
     setTypeQuery('');
     setTypeIndex(Math.max(typeChoices.findIndex((choice) => choice.model.type === selectedType), 0));
     requestAnimationFrame(() => typeSearchRef.current?.focus());
-  }, [typeChoices, selectedType]);
+  }, [typeChoices, selectedType, draft.submitting]);
 
   const setFieldValue = useCallback(
     (name: string, value: unknown) => {
@@ -193,67 +191,35 @@ export const TrackerQuickCreatePopup: React.FC<TrackerQuickCreatePopupProps> = (
     [setDraft],
   );
 
-  const handleCreate = useCallback(
-    (closeAfter: boolean) => {
-      if (!workspacePath || !selectedType || !draft.title.trim()) return;
+  const workspaceRef = useRef(workspacePath);
+  workspaceRef.current = workspacePath;
+  // While a create is in flight the title sits inside a disabled, inert
+  // fieldset, and focusing an inert element is a no-op. Ask for focus here and
+  // grant it once `submitting` has cleared and the fieldset is live again.
+  const pendingTitleFocus = useRef(false);
+  const onCreated = useCallback((itemId: string, closeAfter: boolean) => {
+    if (workspaceRef.current !== workspacePath) return;
+    setCreatedIds((current) => current.includes(itemId) ? current : [...current, itemId]);
+    posthog?.capture('tracker_quick_create_item_created', { trackerType: selectedType, sharing: model?.sharing ?? 'personal', duplicatesShown: matches.length, closedAfterCreate: closeAfter });
+    if (closeAfter) { setOpen(false); openItem(itemId); }
+    else pendingTitleFocus.current = true;
+  }, [workspacePath, selectedType, model?.sharing, matches.length, posthog, setOpen, openItem]);
+  useEffect(() => {
+    if (draft.submitting || !pendingTitleFocus.current) return;
+    pendingTitleFocus.current = false;
+    titleRef.current?.focus();
+  }, [draft.submitting]);
+  const handleCreate = useTrackerQuickCreateSubmission(workspacePath, draftAtom, onCreated);
+  const submitAndOpen = useCallback(() => { void handleCreate(true); }, [handleCreate]);
 
-      const built = buildTrackerCreatePayload(
-        selectedType,
-        { title: draft.title, description: draft.description, fields: draft.fields },
-        { workspacePath },
-      );
-      if (!built.ok) {
-        setError(formatTrackerValidationErrors(built.errors));
-        return;
-      }
-
-      const { payload } = built;
-      setError(null);
-      posthog?.capture('tracker_quick_create_item_created', {
-        trackerType: selectedType,
-        sharing: payload.sharing,
-        duplicatesShown: matches.length,
-        closedAfterCreate: closeAfter,
-      });
-
-      // Fire-and-forget, like the session popup: an error surfaces as a
-      // notification rather than blocking the next entry.
-      void window.electronAPI.documentService
-        .createTrackerItem(payload)
-        .then((result) => {
-          if (!result.success) throw new Error(result.error || 'Failed to create the tracker item.');
-        })
-        .catch((createError: unknown) => {
-          console.error('[TrackerQuickCreatePopup] Failed to create tracker item:', createError);
-          errorNotificationService.showError(
-            'Could not create the item',
-            createError instanceof Error ? createError.message : 'Failed to create the tracker item.',
-          );
-        });
-
-      setCreatedIds((current) => [...current, payload.id]);
-
-      const stickyNames = stickyQuickCreateFieldNames(selectedType, model);
-      const sticky = carryStickyValues(draft.fields, stickyNames);
-      setDraft((current) => ({
-        ...current,
-        type: selectedType,
-        title: '',
-        description: '',
-        fields: sticky.values,
-        carriedFields: sticky.carried,
-        recentTypes: [selectedType, ...current.recentTypes.filter((type) => type !== selectedType)],
-      }));
-
-      if (closeAfter) {
-        setOpen(false);
-        openItem(payload.id);
-        return;
-      }
-      titleRef.current?.focus();
-    },
-    [workspacePath, selectedType, draft, model, matches.length, posthog, setDraft, setOpen, openItem],
-  );
+  useEffect(() => {
+    if (!open || !workspacePath) return;
+    let cancelled = false;
+    window.electronAPI.documentService.listPendingTrackerCreations(workspacePath).then((ids) => {
+      if (!cancelled) setCreatedIds((current) => Array.from(new Set([...current, ...ids])));
+    }).catch((error) => { if (!cancelled) setError(error instanceof Error ? error.message : String(error)); });
+    return () => { cancelled = true; };
+  }, [open, workspacePath]);
 
   const handleOpenDuplicate = useCallback(
     (itemId: string) => {
@@ -269,6 +235,7 @@ export const TrackerQuickCreatePopup: React.FC<TrackerQuickCreatePopupProps> = (
     (event: React.KeyboardEvent<HTMLInputElement>) => {
       // Backspace on an empty title steps back to the type picker, the way
       // backspacing out of a token field works elsewhere.
+      if (event.nativeEvent.isComposing || draft.submitting) return;
       if (event.key === 'Backspace' && event.currentTarget.value === '') {
         event.preventDefault();
         openTypePicker();
@@ -294,19 +261,24 @@ export const TrackerQuickCreatePopup: React.FC<TrackerQuickCreatePopupProps> = (
         setActiveDuplicateIndex((current) => current - 1);
       }
     },
-    [activeDuplicateIndex, matches, handleCreate, handleOpenDuplicate, openTypePicker],
+    [activeDuplicateIndex, matches, handleCreate, handleOpenDuplicate, openTypePicker, draft.submitting],
   );
 
   // Popup-wide, not input-scoped: changing the type must work from the
   // description and the field pills too.
   const handlePopupKeyDown = useCallback(
     (event: React.KeyboardEvent<HTMLDivElement>) => {
+      // An Escape the body editor already consumed (closing its slash menu or
+      // link editor) must not reach the shell's dismiss listener on `document`.
+      if (event.key === 'Escape' && event.defaultPrevented) { event.stopPropagation(); return; }
+      if (event.defaultPrevented || event.nativeEvent.isComposing) return;
+      if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') { event.preventDefault(); void handleCreate(true); return; }
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 't') {
         event.preventDefault();
         openTypePicker();
       }
     },
-    [openTypePicker],
+    [openTypePicker, handleCreate],
   );
 
   if (!workspacePath) return null;
@@ -325,6 +297,7 @@ export const TrackerQuickCreatePopup: React.FC<TrackerQuickCreatePopupProps> = (
           <span className="shrink-0">New</span>
           <button
             type="button"
+            disabled={draft.submitting}
             data-testid="tracker-quick-create-type-chip"
             className="flex min-w-0 items-center gap-1 rounded px-1 py-0.5 font-semibold text-[var(--nim-text)] transition-colors hover:bg-[var(--nim-bg-hover)]"
             title={`Change type (${modifierLabel}+T)`}
@@ -372,6 +345,7 @@ export const TrackerQuickCreatePopup: React.FC<TrackerQuickCreatePopupProps> = (
         />
       ) : (
         <div className="tracker-quick-create-body flex flex-col" onKeyDown={handlePopupKeyDown}>
+          <fieldset disabled={draft.submitting} inert={draft.submitting} className="min-w-0 border-0 p-0" aria-busy={draft.submitting}>
           <input
             ref={titleRef}
             type="text"
@@ -400,14 +374,7 @@ export const TrackerQuickCreatePopup: React.FC<TrackerQuickCreatePopupProps> = (
             }
           />
 
-          <textarea
-            data-testid="tracker-quick-create-description"
-            className="tracker-quick-create-description select-text resize-none bg-transparent px-3 py-2 text-xs text-[var(--nim-text)] outline-none placeholder:text-[var(--nim-text-muted)]"
-            rows={2}
-            placeholder="Content"
-            value={draft.description}
-            onChange={(event) => setDraft((current) => ({ ...current, description: event.target.value }))}
-          />
+          <TrackerQuickCreateEditor key={draft.id} workspacePath={workspacePath} draftId={draft.id} draftAtom={draftAtom} onSubmit={submitAndOpen} />
 
           {selectedType && primary.length > 0 && (
             <TrackerFieldPills
@@ -449,28 +416,29 @@ export const TrackerQuickCreatePopup: React.FC<TrackerQuickCreatePopupProps> = (
             </>
           )}
 
-          {error && (
+          </fieldset>
+          {(error || draft.error) && (
             <div className="tracker-quick-create-error select-text border-t border-[var(--nim-border)] px-3 py-2 text-xs text-[var(--nim-error)]" role="alert">
-              {error}
+              {error || draft.error}
             </div>
           )}
 
           <div className="tracker-quick-create-actions flex items-center justify-between border-t border-[var(--nim-border)] px-3 py-2">
             <span className="text-[11px] text-[var(--nim-text-muted)]">
-              Enter to add another, {modifierLabel}+Enter to open it, {modifierLabel}+T to change type
+              Enter in Title to add another, {modifierLabel}+Enter to open it, {modifierLabel}+T to change type
             </span>
             <button
               type="button"
               data-testid="tracker-quick-create-submit"
               className="rounded bg-nim-primary px-2.5 py-1 text-xs text-white hover:bg-nim-primary-hover disabled:opacity-50"
-              disabled={!draft.title.trim() || !selectedType}
+              disabled={!draft.title.trim() || !selectedType || draft.submitting || draft.pendingImages > 0 || draft.failedImages.length > 0}
               onClick={() => handleCreate(false)}
             >
-              Add
+              {draft.submitting ? 'Saving…' : draft.error ? 'Retry' : 'Add'}
             </button>
           </div>
 
-          <TrackerQuickCreateCreatedStrip createdIds={createdIds} onOpenItem={openItem} />
+          <TrackerQuickCreateCreatedStrip createdIds={createdIds} onOpenItem={openItem} workspacePath={workspacePath} />
         </div>
       )}
     </LaunchPopupShell>

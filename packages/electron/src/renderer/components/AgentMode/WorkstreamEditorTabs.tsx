@@ -14,9 +14,10 @@ import React, { useCallback, useRef, forwardRef, useImperativeHandle, useEffect 
 import { useAtomValue, useSetAtom } from 'jotai';
 import { store } from '@nimbalyst/runtime/store';
 import { TabsProvider, useTabs, useTabsActions, useTabNavigationShortcuts } from '../../contexts/TabsContext';
+import { useNavigationDialogs } from '../../dialogs/useNavigationDialogs';
 import { TabManager } from '../TabManager/TabManager';
 import { TabContent } from '../TabContent/TabContent';
-import { setSessionTabCountAtom } from '../../store';
+import { setSessionTabCountAtom } from '../../store/atoms/sessionEditors';
 import {
   workstreamStateAtom,
   workstreamStatesLoadedAtom,
@@ -34,6 +35,10 @@ import {
   feedbackRequestTabUri,
   isFeedbackRequestTab,
 } from '../FeedbackRequest/feedbackRequestTab';
+import { MaterialSymbol } from '@nimbalyst/runtime/ui/icons/MaterialSymbol';
+import { FilePlacementControl, FilePlacementNotice } from './FilePlacementControl';
+import { agentFilePlacementAtom } from '../../store/atoms/agentFilePlacement';
+import { revealWorkstreamEditorAtom } from '../../store/atoms/agentFileViewer';
 import { shouldSkipResourceMirror } from './workstreamTabsMirror';
 import {
   revealEditorPosition,
@@ -59,6 +64,7 @@ interface WorkstreamEditorTabsProps {
   isActive?: boolean;
   onSwitchToAgentMode?: (planDocumentPath?: string, sessionId?: string) => void;
   onOpenSessionInChat?: (sessionId: string) => void;
+  onBeforeMove?: () => void;
   onTabDoubleClick?: (tabId: string) => void; // Double-click a tab (e.g. maximize editor)
 }
 
@@ -73,12 +79,16 @@ interface WorkstreamEditorTabsInnerProps {
   isActive: boolean;
   onSwitchToAgentMode?: (planDocumentPath?: string, sessionId?: string) => void;
   onOpenSessionInChat?: (sessionId: string) => void;
+  onBeforeMove?: () => void;
   onTabDoubleClick?: (tabId: string) => void;
 }
 
 const WorkstreamEditorTabsInner = forwardRef<WorkstreamEditorTabsRef, WorkstreamEditorTabsInnerProps>(
-  function WorkstreamEditorTabsInner({ workstreamId, workspacePath, basePath, isActive, onSwitchToAgentMode, onOpenSessionInChat, onTabDoubleClick }, ref) {
+  function WorkstreamEditorTabsInner({ workstreamId, workspacePath, basePath, isActive, onSwitchToAgentMode, onOpenSessionInChat, onTabDoubleClick, onBeforeMove }, ref) {
     const { tabs, activeTabId } = useTabs();
+    const filePlacement = useAtomValue(agentFilePlacementAtom);
+    const revealEditor = useSetAtom(revealWorkstreamEditorAtom);
+    const { openQuickOpen } = useNavigationDialogs();
     const tabsActions = useTabsActions();
     useTabNavigationShortcuts(isActive);
     const setTabCount = useSetAtom(setSessionTabCountAtom);
@@ -142,6 +152,7 @@ const WorkstreamEditorTabsInner = forwardRef<WorkstreamEditorTabsRef, Workstream
 
     // Sync tab count to Jotai atom and persist tabs when they change
     useEffect(() => {
+      if (restoreStateRef.current === 'pending') return;
       // console.log('[WorkstreamEditorTabs] Persist effect running, tabs:', tabs.length, 'restoreState:', restoreStateRef.current);
 
       if (tabs.length !== prevTabCountRef.current) {
@@ -196,6 +207,8 @@ const WorkstreamEditorTabsInner = forwardRef<WorkstreamEditorTabsRef, Workstream
         if (!detail || detail.workstreamId !== workstreamId) return;
         const trackerItemId = detail.trackerItemId;
         if (typeof trackerItemId !== 'string') return;
+        e.preventDefault();
+        revealEditor(workstreamId);
         const key = trackerResourceId(trackerItemId);
         const existing = tabsActions.findTabByPath(key);
         if (existing) {
@@ -206,7 +219,7 @@ const WorkstreamEditorTabsInner = forwardRef<WorkstreamEditorTabsRef, Workstream
       };
       window.addEventListener('nimbalyst:workstream-open-tracker', handler);
       return () => window.removeEventListener('nimbalyst:workstream-open-tracker', handler);
-    }, [workstreamId, tabsActions]);
+    }, [workstreamId, tabsActions, revealEditor]);
 
     // Same imperative open for a feedback request's results, and for the same
     // reason: the author comes back to a request long after the turn that sent
@@ -218,6 +231,8 @@ const WorkstreamEditorTabsInner = forwardRef<WorkstreamEditorTabsRef, Workstream
         const detail = (e as CustomEvent).detail;
         if (!detail || detail.workstreamId !== workstreamId) return;
         if (typeof detail.orgId !== 'string' || typeof detail.requestId !== 'string') return;
+        e.preventDefault();
+        revealEditor(workstreamId);
         const key = feedbackRequestTabUri({
           orgId: detail.orgId,
           requestId: detail.requestId,
@@ -228,7 +243,7 @@ const WorkstreamEditorTabsInner = forwardRef<WorkstreamEditorTabsRef, Workstream
       };
       window.addEventListener(FEEDBACK_REQUEST_OPEN_EVENT, handler);
       return () => window.removeEventListener(FEEDBACK_REQUEST_OPEN_EVENT, handler);
-    }, [workstreamId, tabsActions]);
+    }, [workstreamId, tabsActions, revealEditor]);
 
 
     // Subscribe to file-deletion atoms for every currently-open tab path so
@@ -265,6 +280,7 @@ const WorkstreamEditorTabsInner = forwardRef<WorkstreamEditorTabsRef, Workstream
     // This mirrors what EditorMode does, but for workstream editor tabs
     // basePath can be either workspacePath (main project) or worktreePath (for worktree sessions)
     useEffect(() => {
+      if (!isActive) return;
       const activeTab = activeTabId ? tabs.find(t => t.id === activeTabId) : undefined;
       // Only expose a real file path to plugins; tracker and feedback-request
       // tabs have none.
@@ -277,7 +293,7 @@ const WorkstreamEditorTabsInner = forwardRef<WorkstreamEditorTabsRef, Workstream
       (window as any).__workspacePath = basePath;
       // Also set the legacy property for compatibility
       (window as any).workspacePath = basePath;
-    }, [activeTabId, tabs, basePath]);
+    }, [activeTabId, tabs, basePath, isActive]);
 
     // Expose methods via ref
     useImperativeHandle(
@@ -347,14 +363,26 @@ const WorkstreamEditorTabsInner = forwardRef<WorkstreamEditorTabsRef, Workstream
       // No-op for now - files are opened via file clicks
     }, []);
 
-    // Don't render anything if no tabs
-    if (tabs.length === 0) {
-      return null;
-    }
+    const handleOpenFile = () => {
+      openQuickOpen({
+        workspacePath: basePath,
+        onFileSelect: (filePath) => {
+          tabsActions.addTab(filePath);
+          revealEditor(workstreamId);
+        },
+        onSessionSelect: (sessionId) => onOpenSessionInChat?.(sessionId),
+        onPromptSelect: (sessionId) => onOpenSessionInChat?.(sessionId),
+      });
+    };
 
     return (
-      <div className="workstream-editor-tabs flex flex-col h-full overflow-hidden">
-        <div className="workstream-editor-header shrink-0">
+      <div className="workstream-editor-tabs relative flex flex-col h-full overflow-hidden">
+        {filePlacement === 'right' && <div className="workstream-file-viewer-heading flex items-center gap-2 px-3 h-8 shrink-0 border-b border-nim text-xs text-nim-muted">
+          <MaterialSymbol icon="description" size={16} /> File viewer
+          {tabs.length > 0 && <button type="button" className="ml-auto cursor-pointer hover:text-nim" title="Maximize or restore file viewer" onClick={() => onTabDoubleClick?.(activeTabId ?? '')}><MaterialSymbol icon="fullscreen" size={16} /></button>}
+        </div>}
+        <div className="workstream-editor-header flex items-center shrink-0 border-b border-nim">
+          <div className="flex-1 min-w-0">
           <TabManager
             onTabClose={handleTabClose}
             onNewTab={handleNewTab}
@@ -364,8 +392,15 @@ const WorkstreamEditorTabsInner = forwardRef<WorkstreamEditorTabsRef, Workstream
           >
             <></>
           </TabManager>
+          </div>
+          <FilePlacementControl workstreamId={workstreamId} onBeforeMove={onBeforeMove} />
         </div>
-        <div className="workstream-editor-tabs-content flex-1 min-h-0 overflow-hidden">
+        {tabs.length === 0 && <div className="workstream-file-viewer-empty flex-1 flex flex-col items-center justify-center gap-3 p-4 text-center text-sm text-nim-muted">
+          <span>Open a file to view it here</span>
+          <button type="button" className="rounded border border-nim px-3 py-1.5 cursor-pointer hover:bg-nim-hover text-nim" onClick={handleOpenFile}>Open file…</button>
+        </div>}
+        <FilePlacementNotice />
+        <div className="workstream-editor-tabs-content flex-1 min-h-0 overflow-hidden" style={{ display: tabs.length ? undefined : 'none' }}>
           <TabContent
             workspaceId={basePath}
             workstreamId={workstreamId}
@@ -389,14 +424,14 @@ const WorkstreamEditorTabsInner = forwardRef<WorkstreamEditorTabsRef, Workstream
  * the workstreamState atom (workstreamStates workspace-state key).
  */
 export const WorkstreamEditorTabs = forwardRef<WorkstreamEditorTabsRef, WorkstreamEditorTabsProps>(
-  function WorkstreamEditorTabs({ workstreamId, workspacePath, basePath, isActive = true, onSwitchToAgentMode, onOpenSessionInChat, onTabDoubleClick }, ref) {
+  function WorkstreamEditorTabs({ workstreamId, workspacePath, basePath, isActive = true, onSwitchToAgentMode, onOpenSessionInChat, onTabDoubleClick, onBeforeMove }, ref) {
     const innerRef = useRef<WorkstreamEditorTabsRef>(null);
     // Use basePath if provided, otherwise fall back to workspacePath
     const effectiveBasePath = basePath || workspacePath;
 
     // Forward ref to inner component
     useImperativeHandle(ref, () => ({
-      openFile: (filePath: string) => innerRef.current?.openFile(filePath),
+      openFile: (filePath: string, location?: EditorRevealPosition) => innerRef.current?.openFile(filePath, location),
       openTracker: (trackerItemId: string) => innerRef.current?.openTracker(trackerItemId),
       hasTabs: () => innerRef.current?.hasTabs() ?? false,
       getActiveFilePath: () => innerRef.current?.getActiveFilePath() ?? null,
@@ -415,6 +450,7 @@ export const WorkstreamEditorTabs = forwardRef<WorkstreamEditorTabsRef, Workstre
           onSwitchToAgentMode={onSwitchToAgentMode}
           onOpenSessionInChat={onOpenSessionInChat}
           onTabDoubleClick={onTabDoubleClick}
+          onBeforeMove={onBeforeMove}
         />
       </TabsProvider>
     );

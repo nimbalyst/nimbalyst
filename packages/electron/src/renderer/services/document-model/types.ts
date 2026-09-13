@@ -227,7 +227,8 @@ export interface DocumentModelEditorHandle {
    * Subscribe to external content changes (file watcher, other editor saves, collab).
    * NOT called when this editor itself saves (echo suppression).
    */
-  onFileChanged(callback: (content: string | ArrayBuffer) => void): () => void;
+  /** Return false when the editor could not verify application; its baseline must stay unchanged. */
+  onFileChanged(callback: (content: string | ArrayBuffer) => unknown): () => void;
 
   /**
    * Subscribe to save requests from the DocumentModel's autosave timer.
@@ -319,12 +320,14 @@ export interface DocumentModelState {
 // -- Events -----------------------------------------------------------------
 
 export type DocumentModelEventType =
+  | 'external-conflict'
   | 'dirty-changed'
   | 'diff-state-changed'
   | 'content-saved'
   | 'attach-count-changed';
 
 export interface DocumentModelEvent {
+  diskContent?: string;
   type: DocumentModelEventType;
   filePath: string;
 }

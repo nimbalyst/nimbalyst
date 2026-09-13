@@ -68,6 +68,7 @@ export {
 // Session atoms (Electron IPC)
 export {
   sessionListAtom,
+  sessionRemoteHostAtom,
   activeSessionIdAtom,
   sessionProcessingAtom,
   sessionUnreadAtom,

@@ -21,6 +21,7 @@
  */
 import WebSocket from 'ws';
 import { randomUUID } from 'crypto';
+import { decodeStateVector, encodeStateVector } from 'yjs';
 import { ipcMain, type BrowserWindow } from 'electron';
 import {
   DocumentSyncProvider,
@@ -485,6 +486,46 @@ export async function readHeadlessBodyMarkdown(
       error: err instanceof Error ? err.message : String(err),
     });
     return null;
+  }
+}
+
+/**
+ * Open (or warm) the headless peer for an item's body room before anything
+ * else addresses that room. A DocumentRoom learns its own id from the first
+ * request it ever serves; the asset relay addresses it with the raw
+ * `tracker-content/<item>` path, and a room first touched that way remembered
+ * a truncated id and refused every later upgrade as not found. Connecting first
+ * makes the encoded upgrade the room's first request.
+ */
+export async function ensureHeadlessBodyRoom(workspacePath: string, itemId: string): Promise<void> {
+  const entry = await acquireEntry(workspacePath, itemId);
+  if (!entry) throw new Error('The team body is unavailable. Your content remains saved locally.');
+  if (!(await entry.ready) && !entry.provider.isSynced()) {
+    throw new Error('The team body room did not connect. Your content remains saved locally.');
+  }
+}
+
+/** Initialize a new item's body without replacing any observed edits or deletions. */
+export async function initializeHeadlessBodyMarkdown(workspacePath: string, itemId: string, markdown: string): Promise<void> {
+  const entry = await acquireEntry(workspacePath, itemId);
+  if (!entry || (!(await entry.ready) && !entry.provider.isSynced()) || entry.provider.hasUndecodedContent()) {
+    throw new Error('The team body is unavailable. Your content remains saved locally.');
+  }
+  const doc = entry.provider.getYDoc();
+  const before = encodeStateVector(doc);
+  const exported = await convertExportToFile('markdown', doc, { workspacePath });
+  const current = typeof exported === 'string' ? exported : new TextDecoder().decode(exported);
+  const unchanged = () => Buffer.from(encodeStateVector(doc)).equals(Buffer.from(before));
+  if (!unchanged()) throw new Error('The team body changed while publishing. Open the item to review it.');
+  if (current.trimEnd() !== markdown.trimEnd()) {
+    // Even an empty body with a state vector may have been deliberately cleared.
+    if (current || decodeStateVector(before).size > 0) {
+      throw new Error('The team body already has edits. Your saved creation content has been kept for review.');
+    }
+    await convertFromFileIntoDoc('seedFromFile', 'markdown', doc, markdown, { workspacePath }, unchanged);
+  }
+  if (!(await entry.provider.flushWithAck(SERVER_ACK_TIMEOUT_MS))) {
+    throw new Error('Team publication was not acknowledged. Retry to check whether it arrived.');
   }
 }
 

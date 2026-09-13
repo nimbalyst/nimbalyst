@@ -27,13 +27,9 @@ import { createFixtureInboxProvider } from '../inboxFixtureProvider';
 import { createInboxFixtures } from '../inboxFixtures';
 import type { HydratedInboxDelivery } from '../inboxTypes';
 
-vi.mock('@nimbalyst/runtime', async (importOriginal) => {
-  const runtime = await importOriginal<typeof import('@nimbalyst/runtime')>();
-  return {
-    ...runtime,
-    MaterialSymbol: ({ icon }: { icon: string }) => <span data-icon={icon} />,
-  };
-});
+vi.mock('@nimbalyst/runtime/ui/icons/MaterialSymbol', () => ({
+  MaterialSymbol: ({ icon }: { icon: string }) => <span data-icon={icon} />,
+}));
 
 describe('Inbox conversation posting', () => {
   afterEach(() => {

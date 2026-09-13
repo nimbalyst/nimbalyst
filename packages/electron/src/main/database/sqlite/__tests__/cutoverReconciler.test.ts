@@ -204,12 +204,14 @@ describe('cutover reconciliation', () => {
           }
           expect(first.pgliteCreationBlocked, label).toBe(false);
 
-          // Idempotence: the journal is gone, so a second launch does nothing
-          // and leaves the disk exactly as the first one left it.
+          // Reconciliation preserves pending verification across launches;
+          // only a verified startup may retire a forward-cutover journal.
           const before = fs.readdirSync(tmp).sort();
-          expect(readCutoverJournal(tmp), label).toBeNull();
+          const pending = first.outcome === 'completed' && phase !== 'reopened_verified';
+          if (pending) expect(readCutoverJournal(tmp)?.phase, label).toBe('backend_committed');
+          else expect(readCutoverJournal(tmp), label).toBeNull();
           const second = reconcileCutoverOnStartup({ userDataPath: tmp });
-          expect(second.outcome, label).toBe('none');
+          expect(second.outcome, label).toBe(pending ? 'completed' : 'none');
           expect(fs.readdirSync(tmp).sort(), label).toEqual(before);
         }
       }

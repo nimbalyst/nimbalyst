@@ -61,7 +61,7 @@
     "build": "npm run build:types && node scripts/build-dist.mjs && npm run check:production-output",
     "build:types": "node scripts/build-types.mjs",
     "check:production-output": "node scripts/check-production-output.mjs",
-    "typecheck": "tsc --noEmit && npm run check:bundle",
+    "typecheck": "npm run check:bundle",
     "test": "vitest --run --config vitest.config.ts",
     "check:bundle": "npm run build && tsc --noEmit && node ../../scripts/check-collab-bundle.mjs",
     "validate": "npm run typecheck && npm run test"

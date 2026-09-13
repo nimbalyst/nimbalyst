@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useAtomValue, useSetAtom } from 'jotai';
-import { MaterialSymbol, type SessionMeta } from '@nimbalyst/runtime';
+import { MaterialSymbol } from '@nimbalyst/runtime/ui/icons/MaterialSymbol';
+import type { SessionMeta } from '@nimbalyst/runtime/ai/adapters/sessionStore';
 import {
   agentBubbleStateAtom,
   agentSessionAttentionAtom,

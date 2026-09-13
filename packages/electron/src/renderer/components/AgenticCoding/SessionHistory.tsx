@@ -1,3 +1,4 @@
+import {selectedMachineAtom} from '../../store/atoms/remoteMachines';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useAtomValue, useSetAtom } from 'jotai';
 import { activeFileRepoPathAtom } from '../../store/atoms/workspaceRepos';
@@ -319,6 +320,7 @@ const SessionHistoryComponent: React.FC = () => {
 
   // === Atom subscriptions for session list ===
   // Use sessionListRootAtom to only show root sessions (not children of workstreams)
+  const selectedRemoteHost = useAtomValue(selectedMachineAtom(workspacePath));
   const allSessionsFromAtom = useAtomValue(sessionListRootAtom);
   const atomLoading = useAtomValue(sessionListLoadingAtom);
   const showArchivedAtom = useAtomValue(showArchivedSessionsAtom);
@@ -335,7 +337,8 @@ const SessionHistoryComponent: React.FC = () => {
   const isMetaAgentEnabled = useAtomValue(alphaFeatureEnabledAtom('meta-agent'));
 
   // === Super Loop state ===
-  const superLoops = useAtomValue(superLoopListAtom);
+  const localSuperLoops = useAtomValue(superLoopListAtom);
+  const superLoops = useMemo(() => selectedRemoteHost ? [] : localSuperLoops, [selectedRemoteHost, localSuperLoops]);
   const upsertSuperLoop = useSetAtom(upsertSuperLoopAtom);
   const removeSuperLoop = useSetAtom(removeSuperLoopAtom);
   const { openDialog: openSuperLoopDialog } = useSuperLoopDialog();
@@ -396,13 +399,13 @@ const SessionHistoryComponent: React.FC = () => {
   const iosMatchCount = useMemo(() => {
     let count = 0;
     for (const s of sessionRegistry.values()) {
-      if (s.workspaceId !== workspacePath) continue;
+      if (s.workspaceId !== workspacePath || (s.remoteHostDeviceId ?? '') !== selectedRemoteHost) continue;
       if (s.isArchived) continue;
       if (s.sessionType === 'workstream' || s.sessionType === 'blitz') continue;
       count++;
     }
     return count;
-  }, [sessionRegistry, workspacePath]);
+  }, [sessionRegistry, workspacePath, selectedRemoteHost]);
 
   const [sessions, setSessions] = useState<SessionItem[]>([]); // Filtered sessions to display
   const loading = atomLoading && allSessions.length === 0; // Only show loading on initial load
@@ -2194,12 +2197,14 @@ const SessionHistoryComponent: React.FC = () => {
       mode: 'agent',
       menuTestId: 'new-dropdown-button',
       primaryTrailing: getShortcutDisplay(KeyboardShortcuts.file.newSession),
-      items,
+      items: selectedRemoteHost ? items.map(item => ({...item, disabled: true, disabledReason: 'This operation is not available on the selected remote machine.'})) : items,
+      destination: selectedRemoteHost ? 'Selected remote machine' : null,
       onPrimary: () => createHandlersRef.current.onNewSession?.(),
     });
     return () => setTitleBarCreateMenu('agent', null);
   }, [
     setTitleBarCreateMenu,
+    selectedRemoteHost,
     hasWorktreeOption,
     hasBlitzOption,
     hasTerminalOption,
@@ -2861,7 +2866,7 @@ const SessionHistoryComponent: React.FC = () => {
     return (
       <div className="session-history flex flex-col h-full bg-[var(--nim-bg)] overflow-hidden">
         <div className="workspace-color-accent h-[3px] w-full opacity-90 shrink-0" style={{ backgroundColor: workspaceColor }} />
-        <WorkspaceSummaryHeader
+        <WorkspaceSummaryHeader showMachineSelector
           workspacePath={workspacePath}
           workspaceName={workspaceName}
           showAccent={false}
@@ -2973,7 +2978,7 @@ const SessionHistoryComponent: React.FC = () => {
     return (
       <div className="session-history flex flex-col h-full bg-[var(--nim-bg)] overflow-hidden">
         <div className="workspace-color-accent h-[3px] w-full opacity-90 shrink-0" style={{ backgroundColor: workspaceColor }} />
-        <WorkspaceSummaryHeader
+        <WorkspaceSummaryHeader showMachineSelector
           workspacePath={workspacePath}
           workspaceName={workspaceName}
           showAccent={false}
@@ -3026,7 +3031,7 @@ const SessionHistoryComponent: React.FC = () => {
     return (
       <div className="session-history flex flex-col h-full bg-[var(--nim-bg)] overflow-hidden">
         <div className="workspace-color-accent h-[3px] w-full opacity-90 shrink-0" style={{ backgroundColor: workspaceColor }} />
-        <WorkspaceSummaryHeader
+        <WorkspaceSummaryHeader showMachineSelector
           workspacePath={workspacePath}
           workspaceName={workspaceName}
           showAccent={false}
@@ -3081,7 +3086,7 @@ const SessionHistoryComponent: React.FC = () => {
   return (
     <div className="session-history flex flex-col h-full bg-[var(--nim-bg)] overflow-hidden">
       <div className="workspace-color-accent h-[3px] w-full opacity-90 shrink-0" style={{ backgroundColor: workspaceColor }} />
-      <WorkspaceSummaryHeader
+      <WorkspaceSummaryHeader showMachineSelector
         workspacePath={workspacePath}
         workspaceName={workspaceName}
         showAccent={false}

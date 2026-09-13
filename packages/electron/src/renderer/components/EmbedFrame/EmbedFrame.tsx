@@ -30,7 +30,8 @@ import React, {
   type ReactNode,
 } from 'react';
 import { useAtomValue } from 'jotai';
-import { isAbsolute, join, basename } from 'pathe';
+import { basename } from 'pathe';
+import { useEmbedFilePath } from './useEmbedFilePath';
 import {
   $getNodeByKey,
   type LexicalEditor,
@@ -100,33 +101,6 @@ function parseOptionalPx(value: string | undefined, min: number): number | null 
   const parsed = parseInt(value, 10);
   if (Number.isNaN(parsed)) return null;
   return Math.max(parsed, min);
-}
-
-function resolveEmbedPath(rawSrc: string, hostDocDir: string | null): string | null {
-  if (!rawSrc) return null;
-  // Bare URLs (http://, mailto:, etc.) never embed -- they shouldn't have
-  // gotten past `isEmbeddableUrl` in the first place, but be defensive.
-  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(rawSrc) && !/^file:\/\//i.test(rawSrc)) {
-    return null;
-  }
-  // Strip a leading `file://` if present so we get a filesystem path.
-  const stripped = rawSrc.replace(/^file:\/\//i, '');
-  if (isAbsolute(stripped)) return stripped;
-
-  // Convention:
-  //   * `./foo.x` or `../foo.x`  -> resolve relative to the host doc dir.
-  //   * Anything else (e.g. `nimbalyst-local/foo.excalidraw`, what the @
-  //     picker inserts) -> resolve relative to the workspace root.
-  // Users who want host-doc-relative paths use the `./` / `../` prefix.
-  const explicitlyDocRelative = stripped.startsWith('./') || stripped.startsWith('../');
-  const workspacePath = (window as unknown as { __workspacePath?: string }).__workspacePath;
-
-  if (explicitlyDocRelative) {
-    return hostDocDir ? join(hostDocDir, stripped) : null;
-  }
-  if (workspacePath) return join(workspacePath, stripped);
-  if (hostDocDir) return join(hostDocDir, stripped);
-  return null;
 }
 
 class EmbedErrorBoundary extends Component<
@@ -311,9 +285,8 @@ export const EmbedFrame: React.FC<EmbedFrameProps> = (props) => {
   const frameRef = useRef<HTMLDivElement>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
 
-  const absolutePath = useMemo(
-    () => resolveEmbedPath(src, documentDir),
-    [src, documentDir],
+  const { path: absolutePath, pending: pathPending, error: pathError } = useEmbedFilePath(
+    src, documentDir, activeWorkspacePath,
   );
 
   const localRegistration = useMemo(() => {
@@ -346,10 +319,11 @@ export const EmbedFrame: React.FC<EmbedFrameProps> = (props) => {
     return resolveSharedSpaceEmbedReference({
       src,
       hostOrgId: hostDocumentOrgId,
+      hostDocumentId: documentPath && isCollabUri(documentPath) ? parseCollabUri(documentPath).documentId : null,
       documents: sharedDocuments,
       folders: sharedFolders,
     })?.documentId ?? null;
-  }, [explicitCollaborativeReference, src, hostDocumentOrgId, sharedDocuments, sharedFolders]);
+  }, [explicitCollaborativeReference, src, hostDocumentOrgId, documentPath, sharedDocuments, sharedFolders]);
 
   const collaborativeReference = useMemo<CollaborativeEmbedReference | null>(() => {
     if (explicitCollaborativeReference) return explicitCollaborativeReference;
@@ -801,6 +775,10 @@ export const EmbedFrame: React.FC<EmbedFrameProps> = (props) => {
     );
   }
 
+  if (pathPending) {
+    return <div className="embed-frame" data-testid="embed-frame-loading">Resolving embedded file…</div>;
+  }
+
   if (!absolutePath) {
     return (
       <div className="embed-frame embed-frame--error" data-testid="embed-frame-unresolved">
@@ -815,7 +793,7 @@ export const EmbedFrame: React.FC<EmbedFrameProps> = (props) => {
         />
         <div className="embed-frame__body embed-frame__body--placeholder">
           <MaterialSymbol icon="link_off" size={28} />
-          <p>Could not resolve embed path</p>
+          <p>{pathError || 'Could not resolve embed path'}</p>
           <code>{src}</code>
         </div>
       </div>

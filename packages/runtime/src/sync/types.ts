@@ -10,6 +10,7 @@ import type { FleetActivitySnapshot, PushRejectionCause, SkipReason } from '@nim
 import type { AgentMessage } from '../ai/server/types';
 import type { PersonalJwt, PersonalMemberId } from '../auth/jwtScopes';
 import type { SyncedReadReceipt } from '../readReceipts/readReceipts';
+import type { PersonalSyncWriteGateSnapshot } from './personalSyncWriteGate';
 
 /** Caller-side knobs for {@link SyncProvider.requestMobilePush}. */
 export interface MobilePushOptions {
@@ -66,6 +67,19 @@ export interface SyncConfig {
    * If provided, takes precedence over static deviceInfo.
    */
   getDeviceInfo?: () => DeviceInfo;
+
+  /**
+   * Factory for every WebSocket this provider opens (the index room and each
+   * session room). Defaults to the global `WebSocket` constructor.
+   *
+   * Hosts that cannot use the global supply their own: the desktop renderer
+   * needs sockets proxied through the main process (a browser `Origin` header
+   * is rejected by the collab server), and a headless host may want to inject
+   * one rather than mutate `globalThis`. The returned object only has to
+   * satisfy the standard `WebSocket` interface this module uses --
+   * `readyState`, `send`, `close`, and the four `on*` handlers.
+   */
+  createWebSocket?: (url: string) => WebSocket;
 }
 
 /**
@@ -102,6 +116,28 @@ export interface SyncStatus {
   syncing: boolean;
   lastSyncedAt: number | null;
   error: string | null;
+}
+
+/**
+ * What became of a `pushChange`.
+ *
+ * Providers report failures by RETURNING this rather than throwing, so the
+ * fire-and-forget callers that have always ignored the result keep behaving
+ * exactly as they did -- no new rejection paths, no timing change. A caller that
+ * needs to know (the headless node, which must retain an unpublished transcript
+ * row and retry it) reads the outcome.
+ */
+export interface PushChangeOutcome {
+  /** True when the change was handed to the transport. */
+  published: boolean;
+  /** Why not. Present only when `published` is false. */
+  reason?: string;
+  /**
+   * False when the change was deliberately not sent -- filtered content, sync
+   * disabled for the session -- and re-sending it later would be wrong. Absent
+   * or true means the attempt failed and may be worth another.
+   */
+  retryable?: boolean;
 }
 
 export interface SyncProvider {
@@ -141,8 +177,20 @@ export interface SyncProvider {
     callback: (change: SessionChange) => void
   ): () => void;
 
-  /** Push local changes to sync */
-  pushChange(sessionId: string, change: SessionChange): void;
+  /**
+   * Push local changes to sync.
+   *
+   * Implementations that encrypt or send asynchronously return a promise that
+   * settles when the change has actually been handed to the transport, and may
+   * resolve with a `PushChangeOutcome` describing what happened. Callers that
+   * only fire-and-forget may ignore both; a caller that has to know the row
+   * reached the wire before it disconnects (the headless node's shutdown flush)
+   * awaits it and inspects the outcome.
+   */
+  pushChange(
+    sessionId: string,
+    change: SessionChange,
+  ): void | Promise<void | PushChangeOutcome>;
 
   /** Bulk update the sessions index with existing sessions */
   syncSessionsToIndex?(sessions: SessionIndexData[], options?: {
@@ -163,6 +211,11 @@ export interface SyncProvider {
 
   /** Fetch the current server index to compare with local state */
   fetchIndex?(): Promise<{
+    /** Absent on older providers. Partial coverage never permits absence-based reconciliation. */
+    complete?: boolean;
+    indexProtocolVersion?: 1 | 2;
+    /** Explicit server tombstones, including those retained across a full bootstrap. */
+    deletedSessionIds?: string[];
     sessions: Array<{
       sessionId: string;
       projectId: string;
@@ -394,11 +447,47 @@ export interface SyncProvider {
   isIndexReady?(): boolean;
 
   /**
+   * A counter that increases every time the index socket becomes usable again.
+   *
+   * The server binds a create-session claim to the SOCKET that received the
+   * broadcast: a response sent on a later socket is rejected and the requester
+   * is told the host vanished. Sampling `isIndexReady()` cannot detect that,
+   * because a full down-and-up cycle between two samples reads as "still
+   * ready". A caller that must not act on a claim it may no longer hold records
+   * this value when the broadcast arrives and compares it before responding.
+   *
+   * Monotonic within a provider instance; never reset.
+   */
+  getConnectionGeneration?(): number;
+
+  /**
+   * Subscribe to "the index socket is usable again", with the generation then
+   * in force. Returns an unsubscribe.
+   *
+   * Fires on every reconnect, including ones this process did not initiate --
+   * which is the point. Work that could not be sent on the socket that went
+   * away has to be retried when a socket comes back, not when the caller next
+   * happens to do something.
+   */
+  onConnectionGenerationChange?(callback: (generation: number) => void): () => void;
+
+  /**
    * Wait for the index to reach the `ready` state (open + stable). Resolves
    * immediately if already ready. Rejects after `timeoutMs` otherwise. Used by
    * the reconnect cascade to gate other providers on a verified-healthy index.
    */
   waitForIndexReady?(timeoutMs?: number): Promise<void>;
+
+  /**
+   * Whether this device may publish personal-sync ciphertext. Closed until a
+   * complete index read decrypts under this key, and after any row that does
+   * not, so a device holding the wrong key never rewrites the shared index
+   * (GitHub #1117). See `personalSyncWriteGate.ts`.
+   */
+  getPersonalSyncWriteGate?(): PersonalSyncWriteGateSnapshot;
+
+  /** Fires when the personal-sync write gate changes state. */
+  onPersonalSyncWriteGateChange?(callback: (snapshot: PersonalSyncWriteGateSnapshot) => void): () => void;
 
   /** Push a file index entry to the IndexRoom (for mobile markdown sync) */
   syncFileToIndex?(file: FileIndexData): void;
@@ -455,6 +544,8 @@ export interface SessionIndexData {
   workspaceId?: string;
   workspacePath?: string;
   messageCount: number;
+  /** False when a metadata-only query intentionally did not count messages. */
+  messageCountKnown?: boolean;
   updatedAt: number;
   createdAt: number;
   /** Raw metadata from PGLite - CollabV3Sync extracts what it needs for encrypted client metadata */
@@ -490,7 +581,14 @@ export type SessionChange =
 // We sync the raw database format; rendering uses canonical ai_transcript_events
 
 /** Queued prompt for cross-device sync */
+export interface RemoteTurnOptions {
+  mode?: "agent" | "planning";
+  model?: string;
+  effortLevel?: import("../ai/server/effortLevels").EffortLevel;
+}
+
 export interface SyncedQueuedPrompt {
+  options?: RemoteTurnOptions;
   id: string;           // Unique ID for this queued item
   prompt: string;       // The user's message
   timestamp: number;    // When queued
@@ -662,6 +760,13 @@ export interface ProjectConfig {
   lastCommandsUpdate: number;
   /** SHA-256 hash of the normalized git remote URL (for server-side project identity lookup) */
   gitRemoteHash?: string;
+  /**
+   * Action prompts from the workspace's ai-actions.md. Absent on desktops that
+   * predate this field, so consumers must treat "missing" as "none".
+   */
+  actions?: SyncedActionPrompt[];
+  /** Timestamp of last actions update */
+  lastActionsUpdate?: number;
 }
 
 /**
@@ -672,6 +777,34 @@ export interface SyncedSlashCommand {
   name: string;
   description?: string;
   source: 'builtin' | 'project' | 'user' | 'plugin';
+}
+
+/**
+ * An action prompt as mobile receives it.
+ *
+ * Unlike SyncedSlashCommand, this carries the prompt `body`. A slash command's
+ * content is a desktop-side file the desktop executes, so mobile only needs its
+ * name; an action prompt's body IS the artifact, and the desktop's own behavior
+ * is to paste it into the composer for the user to edit before sending. Mobile
+ * cannot reproduce that without the text. The blob is encrypted with the user's
+ * key, so this is the same exposure class as synced session titles and drafts.
+ *
+ * `foreground` is deliberately absent -- it is a desktop window concept.
+ */
+export interface SyncedActionPrompt {
+  /** kebab-case slug derived from the heading; stable across edits to the body */
+  id: string;
+  label: string;
+  /** The prompt text, verbatim. May be truncated -- see `truncated`. */
+  body: string;
+  /** Set when `body` was cut to fit the payload budget. */
+  truncated?: boolean;
+  /** Only present for launcher actions; same-session actions omit it. */
+  launch?: 'new-session';
+  /** provider:variant the action pins, when it declares one. */
+  model?: string;
+  autoSubmit?: boolean;
+  worktree?: boolean;
 }
 
 /**
@@ -699,6 +832,18 @@ export interface CreateSessionRequest {
   targetDeviceId?: string;
   /** Timestamp when request was created */
   timestamp: number;
+  /**
+   * `getConnectionGeneration()` as it was when this broadcast ARRIVED, before
+   * the provider decrypted it.
+   *
+   * The server binds the claim to the socket that received the broadcast, and
+   * decryption is asynchronous -- so a disconnect during that await delivers a
+   * request whose claim is already gone, and a listener that samples the
+   * generation on delivery reads the NEW one and concludes it still holds the
+   * claim. Compare against this instead. Absent from providers that do not
+   * track a generation.
+   */
+  receiptGeneration?: number;
 }
 
 /**

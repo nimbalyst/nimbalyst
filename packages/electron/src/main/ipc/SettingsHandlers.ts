@@ -1,4 +1,5 @@
 import { registerProviderCredentialHandlers } from './ProviderCredentialHandlers';
+import { registerCloudflareSandboxHandlers } from './CloudflareSandboxHandlers';
 import { BrowserWindow, safeStorage, session, dialog } from 'electron';
 import { applyAnalyticsEnabled } from '../services/analytics/applyAnalyticsEnabled';
 import { safeHandle, safeOn } from '../utils/ipcRegistry';
@@ -159,6 +160,7 @@ function getLocalNetworkIP(): string | null {
 
 export function registerSettingsHandlers() {
     registerProviderCredentialHandlers();
+    registerCloudflareSandboxHandlers();
     // ============================================================
     // Flat-key SettingsService (per-key reads/writes + broadcast)
     //

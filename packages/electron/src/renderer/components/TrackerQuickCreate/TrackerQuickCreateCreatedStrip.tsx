@@ -8,6 +8,7 @@
  */
 
 import React from 'react';
+import { TrackerCreationPublication } from './TrackerCreationPublication';
 import { useAtomValue } from 'jotai';
 import { trackerItemByIdAtom } from '@nimbalyst/runtime/plugins/TrackerPlugin/trackerDataAtoms';
 import { getRecordTitle } from '@nimbalyst/runtime/plugins/TrackerPlugin/trackerRecordAccessors';
@@ -42,13 +43,17 @@ const CreatedChip: React.FC<{ itemId: string; onOpenItem: (itemId: string) => vo
 export const TrackerQuickCreateCreatedStrip: React.FC<{
   createdIds: string[];
   onOpenItem: (itemId: string) => void;
-}> = ({ createdIds, onOpenItem }) => {
+  workspacePath: string;
+}> = ({ createdIds, onOpenItem, workspacePath }) => {
   if (createdIds.length === 0) return null;
 
   return (
     <div className="tracker-quick-create-created flex flex-wrap items-center gap-1 border-t border-[var(--nim-border)] bg-[var(--nim-bg-secondary)] px-3 py-1.5">
       {createdIds.map((itemId) => (
-        <CreatedChip key={itemId} itemId={itemId} onOpenItem={onOpenItem} />
+        <div key={itemId} className="tracker-quick-create-created-item flex flex-wrap items-center gap-2">
+          <CreatedChip itemId={itemId} onOpenItem={onOpenItem} />
+          <TrackerCreationPublication workspacePath={workspacePath} itemId={itemId} />
+        </div>
       ))}
     </div>
   );

@@ -31,6 +31,40 @@ public final class DocumentSyncManager: ObservableObject {
 
     /// Whether the active project's WebSocket is connected.
     @Published public var isConnected = false
+    @Published public private(set) var loadStates: [String: DocumentSyncState] = [:]
+    private var transfers: [String: DocumentSyncTransfer] = [:]
+    private var transferTimeouts: [String: Task<Void, Never>] = [:]
+    private let transferTimeout: Duration
+
+    public func state(for projectId: String) -> DocumentSyncState {
+        loadStates[projectId] ?? .connecting
+    }
+
+    func beginTransfer(_ projectId: String) {
+        transfers[projectId] = DocumentSyncTransfer()
+        loadStates[projectId] = .syncing(received: 0)
+        scheduleTransferTimeout(projectId)
+    }
+
+    private func scheduleTransferTimeout(_ projectId: String) {
+        transferTimeouts.removeValue(forKey: projectId)?.cancel()
+        transferTimeouts[projectId] = Task { [weak self] in
+            guard let duration = self?.transferTimeout else { return }
+            do { try await Task.sleep(for: duration) } catch { return }
+            self?.failProject(projectId, message: "File sync timed out before finishing. Please retry.")
+        }
+    }
+
+    func failProject(_ projectId: String, message: String) {
+        transferTimeouts.removeValue(forKey: projectId)?.cancel()
+        loadStates[projectId] = .failed(message)
+        logger.error("[DocSync] \(message)")
+    }
+
+    public func retryProject(_ projectId: String) {
+        disconnectProject(projectId)
+        connectProject(projectId)
+    }
 
     /// Notifies when a remote file content update arrives for a specific syncId.
     /// DocumentEditorView subscribes to this to refresh its WKWebView content.
@@ -45,11 +79,12 @@ public final class DocumentSyncManager: ObservableObject {
     /// Track per-project connection state for queueing decisions.
     private var projectConnected: [String: Bool] = [:]
 
-    public init(crypto: CryptoManager, database: DatabaseManager, serverUrl: String, userId: String) {
+    public init(crypto: CryptoManager, database: DatabaseManager, serverUrl: String, userId: String, transferTimeout: Duration = .seconds(30)) {
         self.crypto = crypto
         self.database = database
         self.serverUrl = serverUrl
         self.userId = userId
+        self.transferTimeout = transferTimeout
     }
 
     /// The user ID to use for room routing. Prefers authUserId (from JWT) over pairing userId.
@@ -61,9 +96,16 @@ public final class DocumentSyncManager: ObservableObject {
 
     /// Store auth credentials for connecting to project rooms.
     public func setAuth(authToken: String, authUserId: String?, orgId: String) {
+        let changed = self.authToken != authToken || self.authUserId != authUserId || self.orgId != orgId
         self.authToken = authToken
         self.authUserId = authUserId
         self.orgId = orgId
+        if changed {
+            let active = activeProjectId
+            for projectId in Array(projectClients.keys) { retryProject(projectId) }
+            activeProjectId = active
+            isConnected = active.flatMap { projectConnected[$0] } ?? false
+        }
     }
 
     /// Hash a project ID (workspace path) to match the desktop's SHA-256 room routing.
@@ -76,45 +118,46 @@ public final class DocumentSyncManager: ObservableObject {
     /// Connect to a project's ProjectSyncRoom for document sync.
     /// The projectId is the workspace path (matching Project.id).
     public func connectProject(_ projectId: String) {
-        guard let authToken = authToken, let orgId = orgId else {
-            return
-        }
-
-        let hashedId = hashProjectId(projectId)
-
-        // Already connected to this project
-        if let existing = projectClients[projectId], existing.isConnected {
-            activeProjectId = projectId
-            isConnected = true
-            return
-        }
-
         activeProjectId = projectId
-
+        guard let authToken = authToken, let orgId = orgId else {
+            failProject(projectId, message: "File sync is waiting for sign-in. Please retry after connecting.")
+            return
+        }
+        if let existing = projectClients[projectId], existing.isConnected {
+            isConnected = projectConnected[projectId] == true
+            return
+        }
+        projectClients.removeValue(forKey: projectId)?.disconnect()
+        loadStates[projectId] = .connecting
+        isConnected = false
+        scheduleTransferTimeout(projectId)
         let client = WebSocketClient()
         projectClients[projectId] = client
+        let roomId = "org:\(orgId):user:\(effectiveUserId):project:\(hashProjectId(projectId))"
 
-        let roomId = "org:\(orgId):user:\(effectiveUserId):project:\(hashedId)"
-        logger.info("[DocSync] Connecting to project room: \(roomId)")
-
-        client.onConnectionStateChanged = { [weak self] connected in
+        client.onConnectedAsync = { [weak self, weak client] in
+            guard let self, let client, self.projectClients[projectId] === client else { return }
+            self.projectConnected[projectId] = true
+            if self.activeProjectId == projectId { self.isConnected = true }
+            self.beginTransfer(projectId)
+            self.sendSyncRequest(projectId: projectId)
+            self.replayOfflineQueue(projectId: projectId)
+        }
+        client.onConnectionStateChanged = { [weak self, weak client] connected in
+            guard !connected else { return }
             Task { @MainActor in
-                guard let self = self else { return }
-                self.projectConnected[projectId] = connected
-                if self.activeProjectId == projectId {
-                    self.isConnected = connected
-                }
-                if connected {
-                    self.sendSyncRequest(projectId: projectId)
-                    self.replayOfflineQueue(projectId: projectId)
-                }
+                guard let self, let client, self.projectClients[projectId] === client else { return }
+                self.projectConnected[projectId] = false
+                if self.activeProjectId == projectId { self.isConnected = false }
             }
         }
-
-        client.onMessage = { [weak self] data in
-            Task { @MainActor in
-                self?.handleMessage(data, projectId: projectId)
-            }
+        client.onError = { [weak self, weak client] message in
+            guard let self, let client, self.projectClients[projectId] === client else { return }
+            self.failProject(projectId, message: message)
+        }
+        client.onMessageAsync = { [weak self, weak client] data in
+            guard let self, let client, self.projectClients[projectId] === client else { return }
+            self.handleMessage(data, projectId: projectId)
         }
 
         client.connect(serverUrl: serverUrl, roomId: roomId, authToken: authToken)
@@ -122,8 +165,11 @@ public final class DocumentSyncManager: ObservableObject {
 
     /// Disconnect from a project's sync room.
     public func disconnectProject(_ projectId: String) {
-        projectClients[projectId]?.disconnect()
-        projectClients.removeValue(forKey: projectId)
+        let client = projectClients.removeValue(forKey: projectId)
+        client?.disconnect()
+        transferTimeouts.removeValue(forKey: projectId)?.cancel()
+        transfers.removeValue(forKey: projectId)
+        loadStates.removeValue(forKey: projectId)
         projectConnected.removeValue(forKey: projectId)
         // Keep offline queue -- it will replay if we reconnect later
         if activeProjectId == projectId {
@@ -134,10 +180,13 @@ public final class DocumentSyncManager: ObservableObject {
 
     /// Disconnect from all project rooms.
     public func disconnectAll() {
-        for (_, client) in projectClients {
-            client.disconnect()
-        }
+        let clients = Array(projectClients.values)
         projectClients.removeAll()
+        for client in clients { client.disconnect() }
+        for timeout in transferTimeouts.values { timeout.cancel() }
+        transferTimeouts.removeAll()
+        transfers.removeAll()
+        loadStates.removeAll()
         projectConnected.removeAll()
         offlineQueues.removeAll()
         activeProjectId = nil
@@ -207,18 +256,24 @@ public final class DocumentSyncManager: ObservableObject {
             }
 
             let request = ProjectSyncRequestMessage(files: manifest)
-            client.send(request)
+            let data = try encoder.encode(request)
+            guard let json = String(data: data, encoding: .utf8) else { throw CocoaError(.fileReadInapplicableStringEncoding) }
+            client.sendRaw(json) { [weak self, weak client] error in
+                guard let self, let client, self.projectClients[projectId] === client, let error else { return }
+                self.failProject(projectId, message: "Could not request files: \(error.localizedDescription)")
+            }
             logger.info("[DocSync] Sent sync request for project \(projectId) with \(manifest.count) files")
         } catch {
-            logger.error("[DocSync] Failed to build sync request: \(error.localizedDescription)")
+            failProject(projectId, message: "Could not request files: \(error.localizedDescription)")
         }
     }
 
     // MARK: - Message Handling
 
-    private func handleMessage(_ data: Data, projectId: String) {
+    func handleMessage(_ data: Data, projectId: String) {
+        if case .failed = state(for: projectId) { return }
         guard let envelope = try? decoder.decode(ServerMessage.self, from: data) else {
-            logger.error("[DocSync] Failed to decode message envelope")
+            failProject(projectId, message: "File sync received an unreadable message. Please retry.")
             return
         }
 
@@ -235,7 +290,7 @@ public final class DocumentSyncManager: ObservableObject {
             handleYjsUpdateBroadcast(data, projectId: projectId)
         case "error":
             if let error = try? decoder.decode(ServerError.self, from: data) {
-                logger.error("[DocSync] Server error: \(error.message)")
+                failProject(projectId, message: error.message)
             }
         default:
             // logger.debug("[DocSync] Ignoring message type: \(envelope.type)")
@@ -246,58 +301,22 @@ public final class DocumentSyncManager: ObservableObject {
     // MARK: - Sync Response
 
     private func handleSyncResponse(_ data: Data, projectId: String) {
-        guard let response = try? decoder.decode(ProjectSyncResponse.self, from: data) else {
-            logger.error("[DocSync] Failed to decode sync response")
-            return
-        }
-
-        logger.info("[DocSync] Sync response: \(response.updatedFiles.count) updated, \(response.newFiles.count) new, \(response.needFromClient.count) needed, \(response.deletedSyncIds.count) deleted, \(response.yjsUpdates.count) yjs updates")
-
-        // For bulk syncs (>50 files), skip content decryption to avoid OOM.
-        // Content is decrypted on demand when the user opens a document.
-        // Individual file broadcasts always include content (they're single files).
-        let totalFiles = response.updatedFiles.count + response.newFiles.count
-        let isBulkSync = totalFiles > 50
-
-        for file in response.updatedFiles {
-            upsertFileEntry(file, projectId: projectId, skipContent: isBulkSync)
-        }
-
-        for file in response.newFiles {
-            upsertFileEntry(file, projectId: projectId, skipContent: isBulkSync)
-        }
-
-        if isBulkSync {
-            logger.info("[DocSync] Bulk sync: stored \(totalFiles) file metadata (content loaded on demand)")
-        }
-
-        // Process deletions
-        if !response.deletedSyncIds.isEmpty {
-            do {
-                try database.deleteDocuments(syncIds: response.deletedSyncIds)
-                logger.info("[DocSync] Deleted \(response.deletedSyncIds.count) files")
-            } catch {
-                logger.error("[DocSync] Failed to delete files: \(error.localizedDescription)")
+        do {
+            let response = try decoder.decode(ProjectSyncResponse.self, from: data)
+            var transfer = transfers[projectId] ?? DocumentSyncTransfer()
+            try transfer.accept(response)
+            try applyDocumentSyncBatch(response, projectId: projectId, crypto: crypto, database: database)
+            transfers[projectId] = transfer
+            loadStates[projectId] = transfer.complete ? .ready : .syncing(received: transfer.received)
+            if transfer.complete {
+                transferTimeouts.removeValue(forKey: projectId)?.cancel()
+            } else {
+                scheduleTransferTimeout(projectId)
             }
+        } catch {
+            logger.error("[DocSync] Batch failed: \(error.localizedDescription)")
+            failProject(projectId, message: "Could not read or save downloaded files. Please retry.")
         }
-
-        // Process Yjs updates (store latest sequence for each file)
-        for update in response.yjsUpdates {
-            do {
-                if var doc = try database.document(byId: update.syncId) {
-                    if update.sequence > doc.yjsSeq {
-                        doc.yjsSeq = update.sequence
-                        doc.updatedAt = Int(Date().timeIntervalSince1970 * 1000)
-                        try database.upsertDocument(doc)
-                    }
-                }
-            } catch {
-                logger.error("[DocSync] Failed to update Yjs seq for \(update.syncId): \(error.localizedDescription)")
-            }
-        }
-
-        // needFromClient: mobile doesn't originate files, so we ignore this for now.
-        // Desktop is the source of truth for file content.
     }
 
     // MARK: - Broadcast Handlers
@@ -425,29 +444,7 @@ public final class DocumentSyncManager: ObservableObject {
     /// Decrypt and cache content for a document that was stored without content during bulk sync.
     /// Returns the decrypted markdown, or nil if decryption fails.
     public func decryptContentOnDemand(_ document: SyncedDocument) -> String? {
-        guard document.contentDecrypted == nil,
-              let encrypted = document.encryptedContent,
-              let iv = document.contentIv else {
-            return document.contentDecrypted
-        }
-
-        guard let content = crypto.decryptOrNil(encryptedBase64: encrypted, ivBase64: iv) else {
-            logger.error("[DocSync] Failed to decrypt content on demand for \(document.id)")
-            return nil
-        }
-
-        // Cache the decrypted content and clear the encrypted blob
-        var updated = document
-        updated.contentDecrypted = content
-        updated.encryptedContent = nil
-        updated.contentIv = nil
-        do {
-            try database.upsertDocument(updated)
-        } catch {
-            logger.error("[DocSync] Failed to cache decrypted content for \(document.id): \(error.localizedDescription)")
-        }
-
-        return content
+        decryptDocumentContent(document, crypto: crypto, database: database)
     }
 
     // MARK: - Offline Queue

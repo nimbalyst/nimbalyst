@@ -1,4 +1,5 @@
 import { registerSessionPromptResponseHandler } from './sessionPromptResponseHandler';
+import { remoteSessions } from '../services/ai/remoteSessions';
 import { database } from '../database/PGLiteDatabaseWorker';
 import { projectSessionList, readSessionLaunchCounts } from './sessionListProjection';
 import { SessionManager, ProviderFactory } from '@nimbalyst/runtime/ai/server';
@@ -19,7 +20,7 @@ import type { SessionCreateResult } from '../../shared/ipc/types';
 import { AnalyticsService } from '../services/analytics/AnalyticsService';
 import { trackCreateAiSession } from '../services/analytics/sessionLaunchAnalytics';
 import { SessionCommitService } from '../services/SessionCommitService';
-import { findSessionIdsForFile } from '../services/sessionFilesByPath';
+import { findSessionAttributionForFile } from '../services/sessionFilesByPath';
 import { normalizeSessionPhaseMetadataUpdate } from '../services/session/sessionPhaseTransition';
 import { destroyProviderForArchivedSession } from '../services/ai/archiveSessionProviderLifecycle';
 import { resolveSessionModelSelection } from '../services/ai/sessionModelSelection';
@@ -509,7 +510,8 @@ export async function registerSessionHandlers() {
             }
 
             const launchedSessionCounts = await readSessionLaunchCounts(database, workspacePath);
-            return { success: true, sessions: projectSessionList(entries, uncommittedMap), launchedSessionCounts };
+            const sessions = await remoteSessions.list(workspacePath, projectSessionList(entries, uncommittedMap).map(session => ({ ...session, workspaceId: workspacePath })));
+            return { success: true, sessions: options?.includeArchived ? sessions : sessions.filter(session => !session.isArchived), launchedSessionCounts };
         } catch (error) {
             console.error('[SessionHandlers] Failed to list sessions:', error);
             return { success: false, error: String(error), sessions: [] };
@@ -524,6 +526,11 @@ export async function registerSessionHandlers() {
         options?: { includeArchived?: boolean }
     ) => {
         try {
+            if (await remoteSessions.get(parentSessionId, workspacePath)) {
+                const sessions = await remoteSessions.list(workspacePath, []);
+                return {success: true, children: sessions.filter(session => session.parentSessionId === parentSessionId && (options?.includeArchived || !session.isArchived))};
+            }
+
             const { database } = await import('../database/PGLiteDatabaseWorker');
             const includeArchived = options?.includeArchived === true;
             const archivedFilter = includeArchived
@@ -621,6 +628,13 @@ export async function registerSessionHandlers() {
         console.log('[SessionHandlers] sessions:create-child called with:', JSON.stringify(payload));
         try {
             const { parentSessionId, workspacePath, worktreeId, provider: rawProvider = 'claude-code', model: providedModel } = payload;
+            const remoteParent = await remoteSessions.get(parentSessionId, workspacePath);
+            if (remoteParent) {
+                const host = remoteParent.metadata?.remoteHostDeviceId as string;
+                const sessionId = await remoteSessions.create(workspacePath, host, {parentSessionId, model: providedModel, worktree: !!worktreeId});
+                return {success: true, sessionId, remoteHostDeviceId: host};
+            }
+
             // Use crypto.randomUUID() instead of dynamic import to avoid bundling issues
             const sessionId = crypto.randomUUID();
             console.log(`[SessionHandlers] Creating child session ${sessionId} for parent ${parentSessionId}`);
@@ -875,13 +889,15 @@ export async function registerSessionHandlers() {
 
             const projectPath = resolveProjectPath(workspaceId);
 
-            const sessionIds = await findSessionIdsForFile(database, {
+            const fileSessions = await findSessionAttributionForFile(database, {
                 workspaceId,
                 projectPath,
                 relativePath,
                 filePath,
             });
 
+            const sessionIds = fileSessions.map(s => s.id);
+            const fileAttribution = new Map(fileSessions.map(s => [s.id, s]));
             if (sessionIds.length === 0) {
                 return [];
             }
@@ -914,7 +930,8 @@ export async function registerSessionHandlers() {
                         updatedAt: session.updatedAt,
                         messageCount: entry?.messageCount || 0,
                         worktreeId: (session as any).worktreeId || null,
-                        isCurrentWorkspace: isCurrentWs
+                        isCurrentWorkspace: isCurrentWs,
+                        ...fileAttribution.get(session.id),
                     };
                 })
                 .sort((a, b) => {

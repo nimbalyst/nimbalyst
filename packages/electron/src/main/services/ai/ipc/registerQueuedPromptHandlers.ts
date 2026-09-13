@@ -7,6 +7,7 @@ import { getFileExtensionForAnalytics, safeSend } from '.././aiServiceUtils';
 import { flushNextClaudeCliQueuedPromptForSession } from '.././claudeCliQueueFlushSingleton';
 import { type AIServiceContext } from './AIServiceContext';
 import { getSessionStateManager } from '@nimbalyst/runtime/ai/server/SessionStateManager';
+import { remoteSessions } from '../remoteSessions';
 
 /**
  * Queued-prompt lifecycle: claim, complete, fail, list, create, delete, and the
@@ -25,6 +26,7 @@ export function registerQueuedPromptHandlers(ctx: AIServiceContext): void {
     sessionId: string,
     promptId: string
   ) => {
+    await remoteSessions.assertLocalExecution(sessionId);
     // Use the new QueuedPromptsStore for atomic claim
     const { getQueuedPromptsStore } = await import('../../RepositoryManager');
     const queueStore = getQueuedPromptsStore();
@@ -107,6 +109,7 @@ export function registerQueuedPromptHandlers(ctx: AIServiceContext): void {
     attachments?: any[],
     documentContext?: any
   ) => {
+    await remoteSessions.assertLocalExecution(sessionId);
     const { getQueuedPromptsStore } = await import('../../RepositoryManager');
     const queueStore = getQueuedPromptsStore();
 

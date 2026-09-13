@@ -76,10 +76,9 @@ vi.mock('@revolist/react-datagrid', async () => {
   };
 });
 
-vi.mock('@nimbalyst/runtime/plugins/TrackerPlugin', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@nimbalyst/runtime/plugins/TrackerPlugin')>();
+vi.mock('@nimbalyst/runtime/plugins/TrackerPlugin/components/useTrackerRows', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@nimbalyst/runtime/plugins/TrackerPlugin/components/useTrackerRows')>();
   return {
-    ...actual,
     // Only the edit path is under test here; the rest of the hook's surface is
     // stubbed so the grid's context menu renders closed.
     useTrackerRows: (options: Parameters<typeof actual.useTrackerRows>[0]) => useRealRows.current

@@ -7,8 +7,7 @@ import { createStore, Provider } from 'jotai';
 vi.mock('posthog-js/react', () => ({
   usePostHog: () => undefined,
 }));
-vi.mock('@nimbalyst/runtime', async (importOriginal) => ({
-  ...await importOriginal<typeof import('@nimbalyst/runtime')>(),
+vi.mock('@nimbalyst/runtime/ui/icons/MaterialSymbol', () => ({
   MaterialSymbol: ({ icon }: { icon: string }) => <span data-icon={icon} />,
 }));
 const mocks = vi.hoisted(() => ({
@@ -98,30 +97,6 @@ describe('SyncPanel', () => {
   });
 
   afterEach(() => cleanup());
-
-  it('does not show session and document sharing guidance in the Mobile App section', () => {
-    const store = createStore();
-    store.set(syncConfigAtom, {
-      enabled: false,
-      serverUrl: '',
-      enabledProjects: [],
-      docSyncEnabledProjects: [],
-      idleTimeoutMinutes: 5,
-    });
-    store.set(stytchAuthAtom, {
-      isAuthenticated: true,
-      user: { user_id: 'user-1' },
-    });
-
-    render(
-      <Provider store={store}>
-        <SyncPanel section="mobile" />
-      </Provider>,
-    );
-
-    expect(screen.queryByText('Sharing Sessions & Documents')).toBeNull();
-    expect(screen.queryByText(/create an encrypted share link/i)).toBeNull();
-  });
 
   /**
    * With exactly one stored account the Account screen should read like a

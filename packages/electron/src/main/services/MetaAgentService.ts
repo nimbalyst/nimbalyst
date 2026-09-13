@@ -1,3 +1,4 @@
+import type { OrchestrationMessageKind } from '@nimbalyst/runtime/ai/server/types';
 import path from 'path';
 import { BrowserWindow } from 'electron';
 import { randomUUID } from 'crypto';
@@ -264,8 +265,8 @@ export class MetaAgentService {
           this.getSessionResultJson(targetSessionId, workspaceId, options),
         listQueuedPrompts: (_metaSessionId, workspaceId, targetSessionId, options) =>
           this.listQueuedPromptsJson(targetSessionId, workspaceId, options),
-        sendPrompt: (metaSessionId, workspaceId, targetSessionId, prompt, interrupt) =>
-          this.sendPromptToSession(metaSessionId, targetSessionId, workspaceId, prompt, interrupt),
+        sendPrompt: (metaSessionId, workspaceId, targetSessionId, prompt, interrupt, messageKind) =>
+          this.sendPromptToSession(metaSessionId, targetSessionId, workspaceId, prompt, interrupt, messageKind),
         notifyUser: (callerSessionId, workspaceId, args) =>
           this.notifyUserJson(callerSessionId, workspaceId, args),
         respondToPrompt: (_metaSessionId, workspaceId, args) =>
@@ -1007,6 +1008,7 @@ export class MetaAgentService {
     workspaceId: string,
     prompt: string,
     interrupt = false,
+    messageKind: OrchestrationMessageKind = 'instruction',
   ): Promise<string> {
     if (!this.aiService) {
       throw new Error('AI service not initialized');
@@ -1027,6 +1029,7 @@ export class MetaAgentService {
     const promptProvenance: PromptProvenance = {
       actor: 'agent',
       origin: 'session-orchestration',
+      messageKind,
       originSessionId,
     };
 
@@ -1364,6 +1367,7 @@ export class MetaAgentService {
           promptProvenance: {
             actor: 'agent',
             origin: 'child-session-update',
+            messageKind: eventType === 'session:completed' ? 'report' : eventType === 'session:waiting' ? 'question' : 'error',
             originSessionId: session.id,
           },
         },

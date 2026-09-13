@@ -13,7 +13,7 @@ import {
   AgentToolDefinition,
 } from './types';
 import type { AgentCapabilities } from './agentCapabilities';
-import { toolRegistry, toAnthropicTools, toOpenAITools } from '../tools';
+import { toolRegistry, toAnthropicTools, toOpenAITools } from '../tools/definitions';
 import { buildSystemPrompt } from '../prompt';
 import {
   AgentMessageWriteQueue,

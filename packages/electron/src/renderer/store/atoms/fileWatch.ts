@@ -10,6 +10,13 @@
 
 import { atom } from 'jotai';
 import { atomFamily } from '../debug/atomFamilyRegistry';
+import type { FileWatchHealth } from '../../../shared/fileWatchHealth';
+
+export const fileWatcherHealthAtomFamily = atomFamily((_root: string) => atom<FileWatchHealth | null>(null));
+// Ignore signals for disposed registrations instead of resurrecting atom-family entries.
+export const activeFileReconciliations = new Set<string>();
+export const fileReconciliationAtomFamily = atomFamily((_token: string) =>
+  atom<{ status: 'changed' | 'deleted' | 'error'; errorCode?: string } | null>(null));
 
 export const fileChangedOnDiskAtomFamily = atomFamily((_filePath: string) =>
   atom(0)

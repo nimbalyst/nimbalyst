@@ -34,6 +34,8 @@ export interface TrackerCreatePayload {
   priority: string;
   workspace: string;
   description?: string;
+  content?: string;
+  creationRequestId?: string;
   owner?: string;
   tags?: string[];
   customFields?: Record<string, unknown>;
@@ -44,6 +46,8 @@ export interface TrackerCreatePayload {
 export interface TrackerCreateValues {
   title: string;
   description?: string;
+  content?: string;
+  creationRequestId?: string;
   /**
    * Field values keyed by their name **in this schema** — so a type whose
    * `workflowStatus` role points at `state` supplies `{ state: 'open' }`.
@@ -181,6 +185,8 @@ export function buildTrackerCreatePayload(
       priority: String(data[priorityField]),
       workspace: ctx.workspacePath,
       ...(description ? { description } : {}),
+      ...(values.content !== undefined ? { content: values.content } : {}),
+      ...(values.creationRequestId ? { creationRequestId: values.creationRequestId } : {}),
       ...(typeof ownerValue === 'string' && ownerValue ? { owner: ownerValue } : {}),
       ...(Array.isArray(tagsValue) && tagsValue.length > 0
         ? { tags: tagsValue.filter((tag): tag is string => typeof tag === 'string') }

@@ -98,6 +98,7 @@ public struct SessionDetailView: View {
 
     /// Slash commands synced from desktop for this project.
     @State private var projectCommands: [SyncedSlashCommand] = []
+    @State private var projectActions: [SyncedActionPrompt] = []
     @State private var projectCancellable: AnyDatabaseCancellable?
 
     /// Controller for transcript web view actions (scroll, prompts).
@@ -220,9 +221,11 @@ public struct SessionDetailView: View {
                 pendingAttachments: $composeState.attachments,
                 isExecuting: displaySession.isExecuting,
                 commands: projectCommands,
+                actions: projectActions,
                 onSend: sendPrompt,
                 onCancel: cancelSession,
                 onQueue: { text, attachments in sendPrompt(text, attachments) },
+                onLaunchAction: launchActionInNewSession,
                 focused: $composeFocused
             )
         }
@@ -879,7 +882,9 @@ public struct SessionDetailView: View {
             }
         )
 
-        // Observe project commands (for slash command typeahead)
+        // Observe project commands (slash command typeahead) and action prompts
+        // (the Actions picker). Both ride the same project config blob, so one
+        // observation feeds both.
         let projectId = session.projectId
         let projectObservation = ValueObservation.tracking { db in
             try Project.fetchOne(db, id: projectId)
@@ -891,6 +896,7 @@ public struct SessionDetailView: View {
             },
             onChange: { project in
                 projectCommands = project?.commands ?? []
+                projectActions = project?.actions ?? []
             }
         )
     }
@@ -1018,6 +1024,34 @@ public struct SessionDetailView: View {
         guard let syncManager = appState.syncManager else { return }
         syncManager.sendSessionControlMessage(sessionId: session.id, messageType: "cancel")
         AnalyticsManager.shared.capture("mobile_session_cancelled")
+    }
+
+    /// Open a new session from a `launch: new-session` action prompt.
+    ///
+    /// Mirrors the desktop, which launches a sibling in the current workstream:
+    /// when this session has a parent, the new one joins it; otherwise it is a
+    /// standalone session in the same project. The action's body becomes the
+    /// initial prompt, and the desktop that receives the request does the actual
+    /// creation.
+    private func launchActionInNewSession(_ action: SyncedActionPrompt) {
+        guard let syncManager = appState.syncManager else { return }
+        do {
+            try syncManager.createSession(
+                projectId: session.projectId,
+                initialPrompt: action.autoSubmit == false ? nil : action.body,
+                parentSessionId: session.parentSessionId,
+                provider: ModelPreferences.providerFromModelId(action.model),
+                model: action.model,
+                targetDeviceId: session.hostDeviceId,
+                initialDraft: action.autoSubmit == false ? action.body : nil
+            )
+            AnalyticsManager.shared.capture("mobile_action_prompt_launched_new_session", properties: [
+                "model": action.model ?? "inherit"
+            ])
+        } catch {
+            sendError = error.localizedDescription
+            logger.error("Failed to launch session from action prompt: \(error.localizedDescription)")
+        }
     }
 
     private func handleInteractiveResponse(_ action: String, _ promptId: String, _ body: [String: Any]) {

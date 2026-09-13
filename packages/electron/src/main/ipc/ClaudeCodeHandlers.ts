@@ -39,12 +39,7 @@ function resolveLoginCwd(workspacePath?: string): string | undefined {
  * Register Claude Code related IPC handlers
  */
 export function registerClaudeCodeHandlers() {
-  // NIM-1573: Log the bundled-runtime integrity once at init so an already-broken
-  // install (interrupted CLI self-update that orphaned claude.exe) is recorded
-  // honestly up front, not only when a session first fails. We deliberately do
-  // NOT restore an orphaned .old file -- a truncated download must not be
-  // resurrected; the disabled self-updater (sdkOptionsBuilder / env) stops the
-  // bleeding going forward and the run/login paths surface the honest message.
+  // #1476: resolution attempts manifest-verified recovery before reporting a missing runtime.
   try {
     if (!resolveNativeBinaryPath()) {
       const orphans = findOrphanedClaudeUpdateFiles();
@@ -168,8 +163,9 @@ export function registerClaudeCodeHandlers() {
     try {
       const platform = process.platform;
       analytics.sendEvent('do_claude_code_login', {platform: platform});
+      const env = setupClaudeCodeEnvironment();
       const binaryPath = resolveClaudeCodeExecutablePath({
-        pathValue: setupClaudeCodeEnvironment().PATH,
+        pathValue: env.PATH,
         allowSystemFallback: true,
       }) ?? (platform === 'win32' ? findWindowsClaudeExecutable() : null);
       if (!binaryPath) {
@@ -186,15 +182,17 @@ export function registerClaudeCodeHandlers() {
         const script = `
 tell application "Terminal"
   activate
-  do script "${cdPrefix}clear && echo 'Claude Code Authentication' && echo '' && echo 'Type /login and press Enter to authenticate.' && echo 'Complete the OAuth flow in your browser when prompted.' && echo 'When finished, type /quit to exit and close this window.' && echo '' && '${binaryPath}'"
+  do script "${cdPrefix}clear && echo 'Claude Code Authentication' && echo '' && echo 'Type /login and press Enter to authenticate.' && echo 'Complete the OAuth flow in your browser when prompted.' && echo 'When finished, type /quit to exit and close this window.' && echo '' && env DISABLE_AUTOUPDATER=1 DISABLE_UPDATES=1 ${shellQuote(binaryPath).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"
 end tell`;
 
         spawn('osascript', ['-e', script], {
+          env,
           detached: true,
           stdio: 'ignore'
         }).unref();
       } else if (platform === 'win32') {
         spawn('cmd', ['/c', 'start', '"Claude Code Authentication"', 'cmd', '/k', `echo Claude Code Authentication && echo. && echo Type /login and press Enter to authenticate. && echo Complete the OAuth flow in your browser when prompted. && echo When finished, type /quit to exit and close this window. && echo. && "${binaryPath}"`], {
+          env,
           detached: true,
           stdio: 'ignore',
           shell: true,
@@ -207,7 +205,8 @@ end tell`;
 
         for (const terminal of terminals) {
           try {
-            spawn(terminal, ['-e', `bash -c "${cdPrefix}clear; echo 'Claude Code Authentication'; echo ''; echo 'Type /login and press Enter to authenticate.'; echo 'Complete the OAuth flow in your browser when prompted.'; echo 'When finished, type /quit to exit.'; echo ''; '${binaryPath}'"`], {
+            spawn(terminal, ['-e', `bash -c "${cdPrefix}clear; echo 'Claude Code Authentication'; echo ''; echo 'Type /login and press Enter to authenticate.'; echo 'Complete the OAuth flow in your browser when prompted.'; echo 'When finished, type /quit to exit.'; echo ''; env DISABLE_AUTOUPDATER=1 DISABLE_UPDATES=1 ${shellQuote(binaryPath).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`], {
+              env,
               detached: true,
               stdio: 'ignore',
               ...(cwd ? { cwd } : {})
@@ -239,8 +238,9 @@ end tell`;
     try {
       const platform = process.platform;
       analytics.sendEvent('do_claude_code_logout', {platform: platform});
+      const env = setupClaudeCodeEnvironment();
       const binaryPath = resolveClaudeCodeExecutablePath({
-        pathValue: setupClaudeCodeEnvironment().PATH,
+        pathValue: env.PATH,
         allowSystemFallback: true,
       }) ?? (platform === 'win32' ? findWindowsClaudeExecutable() : null);
       if (!binaryPath) {
@@ -252,15 +252,17 @@ end tell`;
         const script = `
 tell application "Terminal"
   activate
-  do script "clear && echo 'Claude Code Logout' && echo '' && echo 'Type /logout and press Enter to logout:' && echo '' && '${binaryPath}'"
+  do script "clear && echo 'Claude Code Logout' && echo '' && echo 'Type /logout and press Enter to logout:' && echo '' && env DISABLE_AUTOUPDATER=1 DISABLE_UPDATES=1 ${shellQuote(binaryPath).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"
 end tell`;
 
         spawn('osascript', ['-e', script], {
+          env,
           detached: true,
           stdio: 'ignore'
         }).unref();
       } else if (platform === 'win32') {
         spawn('cmd', ['/c', 'start', '"Claude Code Logout"', 'cmd', '/k', `"${binaryPath}"`], {
+          env,
           detached: true,
           stdio: 'ignore',
           shell: true
@@ -271,7 +273,8 @@ end tell`;
 
         for (const terminal of terminals) {
           try {
-            spawn(terminal, ['-e', `bash -c "clear; echo 'Claude Code Logout'; echo ''; echo 'Type /logout and press Enter to logout:'; echo ''; '${binaryPath}'"`], {
+            spawn(terminal, ['-e', `bash -c "clear; echo 'Claude Code Logout'; echo ''; echo 'Type /logout and press Enter to logout:'; echo ''; env DISABLE_AUTOUPDATER=1 DISABLE_UPDATES=1 ${shellQuote(binaryPath).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`], {
+              env,
               detached: true,
               stdio: 'ignore'
             }).unref();

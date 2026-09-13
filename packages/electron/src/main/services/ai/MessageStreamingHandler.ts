@@ -1,3 +1,4 @@
+import { sessionInbox } from './sessionInboxService';
 import { codexQuestionTurns } from './codexQuestionTurns';
 /**
  * Streaming message handler for AIService.
@@ -1315,8 +1316,11 @@ export class MessageStreamingHandler {
       markAlive: (sessionId) => stateManager.markTurnAlive(sessionId),
     });
 
+    let inboxTurn: ReturnType<typeof sessionInbox.current>;
     let questionTurn: ReturnType<typeof codexQuestionTurns.current>;
     try {
+      inboxTurn = ['claude-code', 'openai-codex'].includes(session.provider)
+        ? await sessionInbox.begin(session.id, session.workspacePath ?? workspacePath) : undefined;
       questionTurn = session.provider === 'openai-codex' ? codexQuestionTurns.begin(session.id) : undefined;
       let fullResponse = '';
       let lastTextSection = '';  // Track text after the last tool call (for notifications)
@@ -2371,6 +2375,7 @@ export class MessageStreamingHandler {
             break;
 
           case 'complete':
+            await sessionInbox.end(inboxTurn, !hadError);
             await codexQuestionTurns.end(questionTurn);
             // if (isClaudeCode) {
             // }
@@ -3033,6 +3038,7 @@ export class MessageStreamingHandler {
 
       return { content: fullResponse };
     } catch (error) {
+      await sessionInbox.end(inboxTurn, false).catch(err => logger.main.error('[AIService] Inbox retirement failed:', err));
       const retirement = codexQuestionTurns.end(questionTurn);
       void retirement.catch(err => logger.main.error('[AIService] Question recovery failed after stream error:', err));
       const errorTime = Date.now() - startTime;
@@ -3156,6 +3162,7 @@ export class MessageStreamingHandler {
 
       throw error;
     } finally {
+      const inboxRetirement = sessionInbox.end(inboxTurn, false).catch(err => logger.main.error('[AIService] Inbox retirement failed:', err));
       const questionRetirement = codexQuestionTurns.end(questionTurn);
       // First, and outside anything that can throw: a session that keeps
       // reporting itself alive after its turn died is worse than the bug this
@@ -3163,7 +3170,7 @@ export class MessageStreamingHandler {
       // parked-generator case reaches neither exit and is covered by the
       // ticker's own expiry.
       stopTurnLiveness();
-      await questionRetirement;
+      await Promise.all([questionRetirement, inboxRetirement]);
 
       // A cancelled turn or a provider that disconnected mid-command never sends
       // the completion, so anything still open here will never settle on its

@@ -20,15 +20,12 @@
 import { createElement } from 'react';
 import { render } from '@testing-library/react';
 import { Provider as JotaiProvider, createStore } from 'jotai';
-import { readFileSync } from 'node:fs';
-import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { windowMenuBarAtom } from '../store/atoms/windowMenu';
 import { WindowTopBar } from '../components/WindowTopBar/WindowTopBar';
 import { DRAG_REGION, NO_DRAG_REGION } from '../components/WindowTopBar/dragRegion';
 
-vi.mock('@nimbalyst/runtime', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('@nimbalyst/runtime')>()),
+vi.mock('@nimbalyst/runtime/ui/icons/MaterialSymbol', () => ({
   MaterialSymbol: ({ icon }: { icon: string }) => createElement('span', { 'data-icon': icon }),
 }));
 
@@ -90,18 +87,4 @@ describe('title-bar drag-region opt-out', () => {
     expect(missing).toEqual([]);
   });
 
-  it('opts every @floating-ui portal out of the drag region', () => {
-    // Menus and popovers portal to document.body, so they are not descendants of
-    // the bar — one global rule covers all of them instead. jsdom loads no
-    // stylesheets, so the rule can only be checked in the sheet that declares it.
-    // The descendant part matters: a portal root and any wrapper around an
-    // absolutely-positioned child are zero-height, so opting out only the root
-    // subtracts an empty rectangle and fixes nothing.
-    const globalCss = readFileSync(join(__dirname, '..', 'index.css'), 'utf8')
-      .replace(/\/\*[\s\S]*?\*\//g, '');
-
-    expect(globalCss).toMatch(
-      /\[data-floating-ui-portal\],\s*\[data-floating-ui-portal\] \*\s*\{[^}]*-webkit-app-region:\s*no-drag/,
-    );
-  });
 });

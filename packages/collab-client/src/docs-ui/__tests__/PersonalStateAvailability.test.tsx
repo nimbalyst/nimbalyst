@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import React from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render } from '@testing-library/react';
+import { act, cleanup, fireEvent, render } from '@testing-library/react';
 import { atom, createStore, Provider } from 'jotai';
 import type { CollabHost } from '@nimbalyst/collab-client/core';
 import type { CollabDocsSession, SharedDocument } from '@nimbalyst/collab-client/docs';
@@ -49,7 +49,7 @@ const documents: SharedDocument[] = [
   },
 ];
 
-function createSurface(personalState: boolean, readReceipts: boolean, hostOverrides: Partial<CollabHost> = {}) {
+async function createSurface(personalState: boolean, readReceipts: boolean, hostOverrides: Partial<CollabHost> = {}) {
   const documentTypes = [] as const;
   const host = {
     surface: personalState ? 'desktop' : 'web_console',
@@ -97,22 +97,26 @@ function createSurface(personalState: boolean, readReceipts: boolean, hostOverri
     markDocumentViewed: vi.fn(),
   } as unknown as CollabDocsSession;
 
-  const view = render(
-    <Provider store={createStore()}>
-      <CollabDocsUIProvider session={session}>
-        <CollabSidebar />
-        <SharedDocsListView />
-      </CollabDocsUIProvider>
-    </Provider>,
-  );
+  let view!: ReturnType<typeof render>;
+  // Settle the member directory lookup before interacting with either surface.
+  await act(async () => {
+    view = render(
+      <Provider store={createStore()}>
+        <CollabDocsUIProvider session={session}>
+          <CollabSidebar />
+          <SharedDocsListView />
+        </CollabDocsUIProvider>
+      </Provider>,
+    );
+  });
   return { ...view, session, host };
 }
 
 afterEach(cleanup);
 
 describe('personal UI capability availability', () => {
-  it('keeps desktop personal affordances and removes them structurally when lanes are unavailable', () => {
-    const desktop = createSurface(true, true);
+  it('keeps desktop personal affordances and removes them structurally when lanes are unavailable', async () => {
+    const desktop = await createSurface(true, true);
     expect(desktop.container.querySelector('.collab-tree-filter')?.textContent)
       .toContain('Favorites');
     expect(desktop.container.querySelector('.collab-tree-filter')?.textContent)
@@ -126,7 +130,7 @@ describe('personal UI capability availability', () => {
     expect(desktop.container.querySelector('.shared-docs-review-dot')).not.toBeNull();
     desktop.unmount();
 
-    const browser = createSurface(false, false);
+    const browser = await createSurface(false, false);
     expect(browser.container.querySelector('.collab-tree-filter')).toBeNull();
     expect(browser.container.querySelector('.collab-fav-star')).toBeNull();
     expect(browser.container.querySelector('.doc-unread-dot')).toBeNull();
@@ -146,8 +150,8 @@ describe('personal UI capability availability', () => {
    * controller silently lost Rename while keeping Delete. Nothing in the markup
    * reveals which actions a browser host ends up with.
    */
-  it('keeps worker-backed document actions when the desktop local-origin controller is absent', () => {
-    const browser = createSurface(false, false);
+  it('keeps worker-backed document actions when the desktop local-origin controller is absent', async () => {
+    const browser = await createSurface(false, false);
     const documentRow = browser.container.querySelector('.file-tree-file')!;
     fireEvent.contextMenu(documentRow);
 
@@ -160,20 +164,28 @@ describe('personal UI capability availability', () => {
 });
 
 // Propagation alone does not cancel an anchor's native navigation.
-it.each(['Favorite', 'Unfavorite'])('cancels native document navigation when clicking %s in the browser sidebar', (label) => {
-  const browser = createSurface(true, false, {
+it.each(['Favorite', 'Unfavorite'])('cancels native document navigation when clicking %s in the browser sidebar', async (label) => {
+  const browser = await createSurface(true, false, {
     surface: 'web_console',
     artifactUrl: (ref) => `/org/test/project/test/document/${ref.kind === 'document' ? ref.documentId : ''}`,
   });
   const star = browser.container.querySelector(`.collab-fav-star[aria-label="${label}"]`)!;
   const link = star.closest('a')!;
-  expect(link.target).toBe('_blank');
+  const document = documents.find((document) => document.documentId === (label === 'Favorite' ? 'doc-newer' : 'doc-older'))!;
+  expect(link.target).toBe('');
+  expect(link.getAttribute('href')).toBe(`/org/test/project/test/document/${document.documentId}`);
   const click = new MouseEvent('click', { bubbles: true, cancelable: true });
   const dispatched = fireEvent(star, click);
   expect(browser.session.toggleFavorite).toHaveBeenCalledExactlyOnceWith(label === 'Favorite' ? 'doc-newer' : 'doc-older');
   expect(browser.host.openArtifact).not.toHaveBeenCalled();
   expect(click.defaultPrevented).toBe(true);
   expect(dispatched).toBe(false);
-  // Clicking the document itself must still allow the native new-tab action.
-  expect(fireEvent.click(link)).toBe(true);
+  // Clicking the document itself navigates in place through the host.
+  expect(fireEvent.click(link)).toBe(false);
+  expect(browser.host.openArtifact).toHaveBeenCalledExactlyOnceWith({
+    kind: 'document',
+    scope,
+    documentId: document.documentId,
+    teamProjectId: document.teamProjectId,
+  }, 'sidebar');
 });

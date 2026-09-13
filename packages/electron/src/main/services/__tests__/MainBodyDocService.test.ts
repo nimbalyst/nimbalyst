@@ -18,6 +18,7 @@
  * the state where the body exists nowhere but the file about to be overwritten.
  */
 import { EventEmitter } from 'events';
+import * as Y from 'yjs';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 const WORKSPACE = '/ws/A';
@@ -46,6 +47,8 @@ let rendererBehavior: 'applied' | 'refused' | 'silent';
 /** Markdown handed to the headless codec round trip, if it ran. */
 let headlessWrites: string[];
 let loggedErrors: string[];
+let liveDoc: Y.Doc;
+let exportedBody = '';
 
 vi.mock('ws', () => ({ default: class {} }));
 
@@ -63,7 +66,7 @@ vi.mock('@nimbalyst/runtime/sync', () => ({
     isSynced(): boolean { return providerConnects; }
     async flushWithAck(): Promise<boolean> { return providerAcks; }
     hasUndecodedContent(): boolean { return false; }
-    getYDoc(): unknown { return {}; }
+    getYDoc(): unknown { return liveDoc; }
     destroy(): void { /* no-op */ }
   },
 }));
@@ -72,7 +75,7 @@ vi.mock('../CollabConversionClient', () => ({
   convertFromFileIntoDoc: vi.fn(async (_op: string, _type: string, _doc: unknown, source: string) => {
     headlessWrites.push(source);
   }),
-  convertExportToFile: vi.fn(async () => ''),
+  convertExportToFile: vi.fn(async () => exportedBody),
   convertRecoveryPlaintext: vi.fn(async () => ''),
 }));
 
@@ -146,6 +149,8 @@ async function runWrite(itemId = ITEM_ID): Promise<boolean> {
 }
 
 beforeEach(() => {
+  liveDoc = new Y.Doc();
+  exportedBody = '';
   vi.resetModules();
   vi.useFakeTimers();
   ipcMain.removeAllListeners();
@@ -161,7 +166,35 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  liveDoc.destroy();
   vi.useRealTimers();
+});
+
+describe('new tracker body initialization', () => {
+  it('requires acknowledgment and never replaces existing or deliberately cleared content', async () => {
+    const { initializeHeadlessBodyMarkdown } = await loadService();
+    const initialize = async (itemId: string) => {
+      const settled = initializeHeadlessBodyMarkdown(WORKSPACE, itemId, MARKDOWN).then(() => null, (error) => error);
+      await vi.advanceTimersByTimeAsync(1000);
+      const error = await settled;
+      if (error) throw error;
+    };
+    await initialize('fresh');
+    expect(headlessWrites).toEqual([MARKDOWN]);
+    exportedBody = 'newer edits';
+    await expect(initialize('changed')).rejects.toThrow('already has edits');
+    exportedBody = '';
+    liveDoc.getText('history').insert(0, 'deleted');
+    liveDoc.getText('history').delete(0, 7);
+    await expect(initialize('cleared')).rejects.toThrow('already has edits');
+    expect(headlessWrites).toEqual([MARKDOWN]);
+    exportedBody = MARKDOWN;
+    providerAcks = false;
+    await expect(initialize('lost-ack')).rejects.toThrow('not acknowledged');
+    providerAcks = true;
+    await initialize('lost-ack');
+    expect(headlessWrites).toEqual([MARKDOWN]);
+  });
 });
 
 describe('MainBodyDocService renderer-first body writes', () => {

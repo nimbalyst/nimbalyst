@@ -124,7 +124,9 @@ export function startWorkspaceWatcher(window: BrowserWindow, workspacePath: stri
  */
 export function startRootWatcher(window: BrowserWindow, rootPath: string, owningWorkspace?: string) {
     // Use optimized chokidar-based workspace watcher
-    optimizedWorkspaceWatcher.start(window, rootPath);
+    void optimizedWorkspaceWatcher.start(window, rootPath).catch(error => {
+        logger.workspaceWatcher.error('Failed to register workspace watcher:', error);
+    });
 
     // One git-ref watcher per repo the root contains, not per root: a root may
     // be no repo at all (nothing to watch) or a container holding several

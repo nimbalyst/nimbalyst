@@ -9,7 +9,7 @@
  * 2. Exposed to the main process MCP server via IPC (for Claude Code)
  */
 
-import { toolRegistry, type ToolDefinition } from '../ai/tools';
+import { toolRegistry, type ToolDefinition } from '../ai/tools/definitions';
 import { editorRegistry } from '../ai/EditorRegistry';
 import { getExtensionLoader } from './ExtensionLoader';
 import { getEditorAPI as getCentralEditorAPI, flushEditorSave, getRegisteredPaths } from './ExtensionEditorAPIRegistry';

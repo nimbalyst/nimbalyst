@@ -22,6 +22,7 @@
  */
 
 import type { MigrationControlHandler } from './SQLiteDatabaseProxy';
+import { beginDatabaseMaintenance, endDatabaseMaintenance } from '../databaseMaintenance';
 
 export interface MigrationControlDeps {
   /** Close the live PGLite worker. Rejects if the close cannot be confirmed. */
@@ -35,9 +36,11 @@ export function createMigrationControl(deps: MigrationControlDeps): MigrationCon
   const log = deps.log ?? (() => {});
   return {
     closePglite: async () => {
+      beginDatabaseMaintenance();
       try {
         await deps.closePglite();
       } catch (err) {
+        endDatabaseMaintenance();
         // Rethrown, not swallowed. The cutover machine turns this into an
         // abort at `source_quiesced`, which leaves `pglite-db/` exactly where
         // it is and the backend flag untouched -- the install carries on with

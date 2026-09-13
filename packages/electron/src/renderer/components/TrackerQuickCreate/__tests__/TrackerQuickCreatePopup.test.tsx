@@ -10,6 +10,7 @@ import {
 import { trackerItemsMapAtom } from '@nimbalyst/runtime/plugins/TrackerPlugin/trackerDataAtoms';
 import type { TrackerRecord } from '@nimbalyst/runtime/core/TrackerRecord';
 import { trackerQuickCreateRequestAtom } from '../../../store/atoms/appCommands';
+import { createEmptyTrackerQuickCreateDraft, trackerQuickCreateDraftAtom } from '../../../store/atoms/trackerQuickCreate';
 import { trackerModeLayoutAtom } from '../../../store/atoms/trackers';
 import { windowModeAtom } from '../../../store/atoms/windowMode';
 import { TrackerQuickCreatePopup } from '../TrackerQuickCreatePopup';
@@ -70,6 +71,55 @@ function renderPopup(store: ReturnType<typeof createStore>) {
 describe('TrackerQuickCreatePopup', () => {
   let createTrackerItem: ReturnType<typeof vi.fn>;
 
+  it('sends Content as the body and retains the draft until creation is acknowledged', async () => {
+    let finish!: (value: unknown) => void;
+    createTrackerItem.mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
+    const store = createStore();
+    renderPopup(store);
+    const title = await openAndPickType(store, 'qc-task');
+    const draftAtom = trackerQuickCreateDraftAtom('/workspace');
+    act(() => store.set(draftAtom, (draft) => ({ ...draft, description: 'First paragraph\n\n**Details** Ω' })));
+    fireEvent.change(title, { target: { value: 'Keep my content' } });
+    fireEvent.keyDown(title, { key: 'Enter' });
+    await waitFor(() => expect(createTrackerItem).toHaveBeenCalledTimes(1));
+    expect(createTrackerItem.mock.calls[0][0]).toMatchObject({ content: 'First paragraph\n\n**Details** Ω' });
+    expect(store.get(draftAtom)).toMatchObject({ title: 'Keep my content', description: 'First paragraph\n\n**Details** Ω' });
+    fireEvent.keyDown(title, { key: 'Enter' });
+    expect(createTrackerItem).toHaveBeenCalledTimes(1);
+    await act(async () => finish({ success: true, item: { id: createTrackerItem.mock.calls[0][0].id } }));
+    await waitFor(() => expect(store.get(draftAtom).title).toBe(''));
+  });
+
+  it('retains a rejected create for retry with the same item identity', async () => {
+    createTrackerItem.mockResolvedValueOnce({ success: false, error: 'Disk full' });
+    const store = createStore();
+    renderPopup(store);
+    const title = await openAndPickType(store, 'qc-task');
+    fireEvent.change(title, { target: { value: 'Retry this item' } });
+    fireEvent.keyDown(title, { key: 'Enter', ctrlKey: true });
+    await screen.findByRole('alert');
+    expect((screen.getByTestId('tracker-quick-create-title') as HTMLInputElement).value).toBe('Retry this item');
+    fireEvent.click(screen.getByTestId('tracker-quick-create-submit'));
+    await waitFor(() => expect(createTrackerItem).toHaveBeenCalledTimes(2));
+    expect(createTrackerItem.mock.calls[1][0].id).toBe(createTrackerItem.mock.calls[0][0].id);
+  });
+
+  it('does not clear a newer draft when an earlier submission finishes', async () => {
+    let finish!: (value: unknown) => void;
+    createTrackerItem.mockImplementation(() => new Promise((resolve) => { finish = resolve; }));
+    const store = createStore();
+    renderPopup(store);
+    const title = await openAndPickType(store, 'qc-task');
+    fireEvent.change(title, { target: { value: 'First item' } });
+    fireEvent.keyDown(title, { key: 'Enter' });
+    await waitFor(() => expect(createTrackerItem).toHaveBeenCalledTimes(1));
+    const draftAtom = trackerQuickCreateDraftAtom('/workspace');
+    const newer = { ...createEmptyTrackerQuickCreateDraft(), type: 'qc-task', title: 'Newer draft', description: 'Do not clear this' };
+    act(() => store.set(draftAtom, newer));
+    await act(async () => finish({ success: true }));
+    expect(store.get(draftAtom)).toEqual(newer);
+  });
+
   beforeEach(() => {
     vi.stubGlobal('ResizeObserver', ResizeObserverStub);
     globalRegistry.register(bug);
@@ -78,7 +128,7 @@ describe('TrackerQuickCreatePopup', () => {
     Object.defineProperty(window, 'electronAPI', {
       configurable: true,
       value: {
-        documentService: { createTrackerItem },
+        documentService: { createTrackerItem, listPendingTrackerCreations: vi.fn().mockResolvedValue([]), getTrackerCreationStatus: vi.fn().mockResolvedValue(null) },
         semanticSearch: {
           isAvailable: vi.fn().mockResolvedValue(false),
           query: vi.fn().mockResolvedValue([]),

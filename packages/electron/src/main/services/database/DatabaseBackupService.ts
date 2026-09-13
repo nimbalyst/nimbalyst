@@ -4,6 +4,7 @@
  */
 
 import { app } from 'electron';
+import { databaseRequiresRestart } from '../../database/databaseMaintenance';
 import * as fs from 'fs/promises';
 import * as fsSync from 'fs';
 import * as path from 'path';
@@ -325,12 +326,17 @@ export class DatabaseBackupService {
       logger.main.info('[Backup Service] Backup already in flight; joining it instead of starting another');
       return this.inFlight;
     }
+    if (databaseRequiresRestart()) return Promise.resolve({ success: false, error: 'Database switch requires restart; backup was not started.' });
     // doCreateBackup catches everything it can, but the guard must clear on
     // any exit, so the finally is here rather than trusting that.
     this.inFlight = this.doCreateBackup().finally(() => {
       this.inFlight = null;
     });
     return this.inFlight;
+  }
+
+  async waitForCurrentBackup(): Promise<void> {
+    await this.inFlight;
   }
 
   private async doCreateBackup(): Promise<{ success: boolean; error?: string }> {

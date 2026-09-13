@@ -8,6 +8,7 @@ import { tmpdir } from 'os';
 import { reportDesktopActivity, setWindowFocused, setScreenLocked, setIdleThresholdMs, attemptReconnect } from '../services/SyncManager';
 import { startNetworkAvailability, onNetworkAvailable, notifyNetworkAvailable } from '../services/NetworkAvailability';
 import { AnalyticsService } from '../services/analytics/AnalyticsService';
+import { hasFocusedWindow } from '../services/analytics/dailyActiveHeartbeat';
 import { getPackageRoot } from '../utils/appPaths';
 import { resolveImageExtension } from '../utils/imageFormat';
 import { resolveWorkspaceAttachmentStagingDirectory } from '../services/attachments/attachmentStagingRoot';
@@ -15,6 +16,17 @@ import { resolveWorkspaceAttachmentStagingDirectory } from '../services/attachme
 /** Timestamp of last app_foregrounded event, used to throttle to once per 30 minutes */
 let lastForegroundedEventAt = 0;
 const FOREGROUND_THROTTLE_MS = 30 * 60 * 1000; // 30 minutes
+
+/**
+ * How often to re-check whether the daily-active heartbeat is due while the app
+ * simply stays focused. Focus alone is not enough: someone who leaves Nimbalyst
+ * open across local midnight never fires another focus event, and would go
+ * missing from DAU for the whole of the new day.
+ *
+ * The tick itself emits nothing — it is a date comparison — so the interval is
+ * about how fast a rolled-over day is noticed, not about volume.
+ */
+const DAILY_ACTIVE_CHECK_MS = 10 * 60 * 1000; // 10 minutes
 
 export function registerWindowHandlers() {
     // Get initial window state
@@ -226,6 +238,10 @@ export function registerWindowHandlers() {
             win.webContents.send('window:focus-changed', true);
         }
 
+        // Focus is our cleanest "a human is here" signal, so it drives the
+        // daily-active heartbeat. At most one event per install per local day.
+        AnalyticsService.getInstance().maybeEmitDailyActive();
+
         // Emit app_foregrounded for DAU tracking when a window gains focus,
         // throttled to once per 30 minutes to keep event volume low
         const now = Date.now();
@@ -234,6 +250,15 @@ export function registerWindowHandlers() {
             AnalyticsService.getInstance().sendEvent('app_foregrounded');
         }
     });
+
+    // Catch the day rolling over under an app that is focused but idle. Gated on
+    // a window actually being focused so an install nobody has touched stays out
+    // of DAU -- background-only installs were a third of the old inflated number.
+    setInterval(() => {
+        if (hasFocusedWindow(BrowserWindow.getAllWindows())) {
+            AnalyticsService.getInstance().maybeEmitDailyActive();
+        }
+    }, DAILY_ACTIVE_CHECK_MS).unref();
 
     app.on('browser-window-blur', (_event, win) => {
         // Check if any window is still focused

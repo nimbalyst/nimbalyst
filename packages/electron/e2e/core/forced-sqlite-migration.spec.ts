@@ -35,9 +35,12 @@
 import { test, expect } from '@playwright/test';
 import type { ElectronApplication, Page } from '@playwright/test';
 import * as fs from 'fs';
+import { PGlite } from '@electric-sql/pglite';
+import * as path from 'path';
 
 import { launchElectronApp, createTempWorkspace, waitForAppReady } from '../helpers';
 import {
+  DB_LIFECYCLE_DIR,
   DB_LIFECYCLE_ENV,
   FLAG_FILE,
   PGLITE_DIR,
@@ -182,4 +185,70 @@ test('an install with no rollout authorization boots normally on PGLite and keep
   expect(readFlag()).toMatchObject({ backend: 'pglite' });
   expect(dirsMatching('pglite-db.migrated-').length).toBe(0);
   expect(fs.existsSync(PGLITE_DIR)).toBe(true);
+});
+
+
+test('dry-run adoption preserves saved content through an immediate restart and acknowledges the cutover', async () => {
+  test.setTimeout(LIFECYCLE_TIMEOUT_MS);
+  pinToPglite();
+  const original = makeSentinel(workspace);
+  const added = { ...makeSentinel(workspace), filePath: path.join(workspace, 'added-after-dry-run.md') };
+  writeSentinelFile(original);
+  writeSentinelFile(added);
+  const journalPath = path.join(DB_LIFECYCLE_DIR, 'database-cutover.json');
+  {
+    const page = await launch();
+    await writeSentinel(page, original);
+    expect(await migrationCall(page, 'db:migration:dry-run')).toMatchObject({ success: true });
+    // Writes after the dry run must make it through final catch-up too.
+    await writeSentinel(page, added);
+    expect(await migrationCall(page, 'db:migration:adopt-dry-run')).toMatchObject({ success: true });
+    expect(JSON.parse(fs.readFileSync(journalPath, 'utf8')).phase).toBe('backend_committed');
+    expect(await migrationCall(page, 'db:migration:get-status')).toMatchObject({ operation: { status: 'awaiting-restart', requiresRestart: true } });
+    await shutdown();
+  }
+  {
+    const page = await launch();
+    expectSentinelIntact(await readSentinel(page, original), original, 'original content after immediate restart');
+    expectSentinelIntact(await readSentinel(page, added), added, 'post-dry-run content after immediate restart');
+    expect(fs.existsSync(journalPath)).toBe(false);
+  }
+});
+
+
+test('partial history recovery survives dry-run adoption and immediate restart', async () => {
+  test.setTimeout(LIFECYCLE_TIMEOUT_MS);
+  pinToPglite();
+  const sentinel = makeSentinel(workspace);
+  {
+    const page = await launch();
+    writeSentinelFile(sentinel);
+    await writeSentinel(page, sentinel);
+    await shutdown();
+  }
+  // Relax the isolated, closed E2E store's constraint to seed a genuinely missing snapshot.
+  const source = new PGlite({ dataDir: PGLITE_DIR });
+  try {
+    await source.waitReady;
+    await source.exec(`ALTER TABLE document_history ALTER COLUMN content DROP NOT NULL;
+      INSERT INTO document_history(workspace_id,file_path,content,timestamp,metadata)
+      SELECT 'history-recovery-test', 'history-recovery-' || n,
+        CASE WHEN n = 100 THEN NULL ELSE decode('00ff10','hex') END, ${Date.now()} + n, '{}'::jsonb
+      FROM generate_series(1,100) n`);
+  } finally { await source.close(); }
+  ensureConfiguredProject(workspace);
+  {
+    const page = await launch();
+    expect(await migrationCall(page, 'db:migration:dry-run')).toMatchObject({ success: true, result: { summary: { historyRowsQuarantined: 1 } } });
+    expect(await migrationCall(page, 'db:migration:get-status')).toMatchObject({ dryRunAvailable: { historyRowsQuarantined: 1 } });
+    expect(await migrationCall(page, 'db:migration:adopt-dry-run')).toMatchObject({ success: true, result: { historyRowsQuarantined: 1 } });
+    await shutdown();
+  }
+  {
+    const page = await launch();
+    expectSentinelIntact(await readSentinel(page, sentinel), sentinel, 'after partial-history adoption and immediate restart');
+    expect(await migrationCall(page, 'db:migration:get-status')).toMatchObject({ success: true, activeBackend: 'sqlite', historyRowsQuarantined: 1 });
+    expect(dirsMatching('pglite-db.migrated-')).toHaveLength(1);
+    await shutdown();
+  }
 });

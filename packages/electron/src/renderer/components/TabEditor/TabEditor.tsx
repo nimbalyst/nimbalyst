@@ -1514,6 +1514,10 @@ export const TabEditor: React.FC<TabEditorProps> = ({
 
     const cleanups: Array<() => void> = [];
 
+    if (documentModel) cleanups.push(documentModel.on('external-conflict', event => {
+      if (isDirtyRef.current && typeof event.diskContent === 'string') setAutosaveConflictDiskContent(event.diskContent);
+    }));
+
     // --- Autosave: DocumentModel calls onSaveRequested when it's time to save ---
     // Custom editors wire their own callback via EditorHost.subscribeToSaveRequests.
     // This handler covers built-in editors (Lexical/Monaco) that use getContentFnRef.
@@ -1586,7 +1590,7 @@ export const TabEditor: React.FC<TabEditorProps> = ({
             hasPendingTag: !!pendingAIEditTagRef.current,
             t: performance.now(),
           });
-          return;
+          return false;
         }
 
         // Skip if content is identical to what we already have.
@@ -1607,11 +1611,13 @@ export const TabEditor: React.FC<TabEditorProps> = ({
         // The baseline, the buffer and the dirty flag move together or not at
         // all -- see reloadFromDisk.ts for why an unverified baseline is a
         // silent data-loss path (#3684).
-        commitReloadOutcome(applyVerifiedReload(content), content);
+        const outcome = applyVerifiedReload(content);
+        commitReloadOutcome(outcome, content);
 
         setTimeout(() => {
           isApplyingExternalContentRef.current = false;
         }, 0);
+        return outcome.verified;
       }),
     );
 
@@ -3280,34 +3286,23 @@ export const TabEditor: React.FC<TabEditorProps> = ({
             </span>
             <button
               type="button"
-              onClick={() => {
-                const diskContent = autosaveConflictDiskContent;
-                if (typeof diskContent === 'string' && editorRef.current) {
-                  try {
-                    if (isMarkdown) {
-                      const transformers = getEditorTransformers();
-                      editorRef.current.update(() => {
-                        // Clearing a selected node without moving selection first makes
-                        // Lexical throw "selection has been lost ..." (NIM-2005).
-                        $setSelection(null);
-                        const root = $getRoot();
-                        root.clear();
-                        $convertFromEnhancedMarkdownString(diskContent, transformers);
-                      }, { tag: SKIP_SCROLL_INTO_VIEW_TAG });
-                    } else if (editorRef.current.setContent) {
-                      editorRef.current.setContent(diskContent);
-                    }
-                  } catch (err) {
-                    logger.ui.error('[TabEditor] Failed to reload disk content:', err);
+              onClick={async () => {
+                if (hasUnresolvedReview()) return;
+                const handle = documentModelHandleRef.current;
+                try {
+                  const result = await window.electronAPI.readFileContent(filePath);
+                  if (!handle || handle !== documentModelHandleRef.current || currentFilePathRef.current !== filePath) return;
+                  if (!result?.success || typeof result.content !== 'string' || hasUnresolvedReview()) return;
+                  const outcome = applyVerifiedReload(result.content);
+                  commitReloadOutcome(outcome, result.content);
+                  if (outcome.verified) {
+                    documentModel?.setLastPersistedContent(result.content);
+                    documentModelHandleRef.current?.setDirty(false);
+                    setAutosaveConflictDiskContent(null);
                   }
-                  contentRef.current = diskContent;
-                  initialContentRef.current = diskContent;
-                  lastSavedContentRef.current = diskContent;
-                  isDirtyRef.current = false;
-                  documentModelHandleRef.current?.setDirty(false);
-                  onDirtyChange?.(false);
+                } catch (error) {
+                  logger.ui.error('[TabEditor] Failed to reload disk content:', error);
                 }
-                setAutosaveConflictDiskContent(null);
               }}
               className="px-2 py-1 rounded border border-nim text-nim hover:bg-nim-active"
               data-testid="autosave-conflict-banner-reload"

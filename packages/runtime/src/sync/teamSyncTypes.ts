@@ -1,3 +1,4 @@
+import type { DocumentFeedbackIndexClientState } from './DocumentFeedbackIndexClient';
 /**
  * Types for TeamSync -- client-side team state sync layer.
  *
@@ -96,6 +97,8 @@ export interface TeamSyncConfig {
   ) => void;
 
   /** Called with the full participant-filtered feedback index snapshot. */
+  onDocumentFeedbackIndex?: (state: DocumentFeedbackIndexClientState) => void;
+
   onFeedbackIndexLoaded?: (entries: FeedbackRequestIndexEntry[]) => void;
 
   /** Called when one participant-filtered feedback index entry changes. */

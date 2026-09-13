@@ -25,6 +25,7 @@ import { emitMigrationOutcome } from './sqlite/migrationEventMapper';
 import { readCutoverJournal } from './sqlite/cutoverJournal';
 import { abortRequiresRelaunch } from './sqlite/cutoverMachine';
 import { withDatabaseOperationLock } from './databaseOperationLock';
+import { databaseRequiresRestart } from './databaseMaintenance';
 import { logger } from '../utils/logger';
 
 /**
@@ -143,7 +144,7 @@ async function forcedMigration(args: {
   // closing and cannot.
   const journal = readCutoverJournal(userDataPath);
   const abortSaidRelaunch = outcome.action === 'failed' && outcome.requiresRelaunch;
-  if (abortSaidRelaunch || abortRequiresRelaunch(null, journal?.phase ?? null)) {
+  if (databaseRequiresRestart() || abortSaidRelaunch || abortRequiresRelaunch(null, journal?.phase ?? null)) {
     logger.main.error(
       '[Database] Cutover stopped after PGLite was closed; relaunching so startup can reconcile it',
       { phase: journal?.phase ?? 'no-journal', operationId: journal?.operationId, action: outcome.action },

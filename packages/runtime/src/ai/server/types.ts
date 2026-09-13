@@ -2,8 +2,11 @@
  * Common types for AI provider abstraction
  */
 
-import type { ToolDefinition } from '../tools';
-import type { EditorContextItem } from '@nimbalyst/extension-sdk';
+import type { ToolDefinition } from '../tools/definitions';
+// Deep path, not the SDK barrel: `@nimbalyst/extension-sdk`'s index re-exports
+// modules that import `@nimbalyst/runtime`, which drags the whole editor tree
+// into the type graph of anything that touches session execution.
+import type { EditorContextItem } from '@nimbalyst/extension-sdk/types/editor';
 import type { EffortLevel, ThinkingMode } from './effortLevels';
 import type { ToolResult } from './protocols/ProtocolInterface';
 import { ModelIdentifier } from './ModelIdentifier';
@@ -13,7 +16,7 @@ import {
   normalizeClaudeCodeVariant,
 } from '../modelConstants';
 import type { TranscriptViewMessage } from './transcript/TranscriptProjector';
-export type { ToolDefinition } from '../tools';
+export type { ToolDefinition } from '../tools/definitions';
 export { ModelIdentifier } from './ModelIdentifier';
 export type { ToolResult } from './protocols/ProtocolInterface';
 export type { TranscriptViewMessage } from './transcript/TranscriptProjector';
@@ -86,7 +89,10 @@ export type PromptProvenanceOrigin =
   | 'mobile'
   | 'automation';
 
+export type OrchestrationMessageKind = 'instruction' | 'report' | 'status' | 'question' | 'error';
+
 export interface PromptProvenance {
+  messageKind?: OrchestrationMessageKind;
   actor: PromptActor;
   origin: PromptProvenanceOrigin;
   originSessionId?: string;

@@ -12,8 +12,7 @@ const { storage, createExtensionStorage } = vi.hoisted(() => {
   };
 });
 
-vi.mock('@nimbalyst/runtime', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('@nimbalyst/runtime')>()),
+vi.mock('@nimbalyst/runtime/extensions/ExtensionStorage', () => ({
   createExtensionStorage,
 }));
 

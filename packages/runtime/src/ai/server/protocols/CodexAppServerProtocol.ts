@@ -1,3 +1,4 @@
+import { previewForLog, summarizeNotificationParams, extractNotificationRouting } from './codexAppServer/notificationDiagnostics';
 /**
  * OpenAI Codex app-server Protocol Adapter
  *
@@ -40,6 +41,7 @@ import {
   ToolResult,
 } from './ProtocolInterface';
 import { JsonRpcClient } from './codexAppServer/jsonRpcClient';
+import { prepareCodexShellTracking, type CodexShellTrackingRegistration } from './codexAppServer/shellTracking';
 import {
   getCodexVendorPathEntries,
   resolveCodexBinaryPath,
@@ -132,84 +134,7 @@ interface AppServerSessionRaw {
   stderrTail: string[];
   /** Prevent duplicate cleanup from re-targeting a PID after it exits. */
   cleanupStarted: boolean;
-}
-
-function previewForLog(value: string | undefined, max = 300): string | undefined {
-  if (!value) return value;
-  return value.length > max ? `${value.slice(0, max)}...` : value;
-}
-
-function summarizeNotificationParams(
-  method: string,
-  paramsUnknown: unknown,
-): Record<string, unknown> | undefined {
-  const params = (paramsUnknown && typeof paramsUnknown === 'object')
-    ? paramsUnknown as Record<string, unknown>
-    : undefined;
-  if (!params) return undefined;
-
-  switch (method) {
-    case 'error':
-    case 'turn/failed': {
-      const errorObj = params.error as { message?: string; codexErrorInfo?: string; additionalDetails?: unknown } | undefined;
-      return {
-        threadId: params.threadId,
-        turnId: params.turnId,
-        willRetry: params.willRetry,
-        message: previewForLog(errorObj?.message),
-        codexErrorInfo: previewForLog(errorObj?.codexErrorInfo),
-        additionalDetails: errorObj?.additionalDetails,
-      };
-    }
-    case 'warning': {
-      return {
-        threadId: params.threadId,
-        turnId: params.turnId,
-        message: previewForLog(params.message as string | undefined),
-      };
-    }
-    case 'turn/completed': {
-      const turn = params.turn as { id?: string; status?: string; error?: { message?: string } } | undefined;
-      return {
-        threadId: params.threadId,
-        turnId: turn?.id ?? params.turnId,
-        status: turn?.status,
-        error: previewForLog(turn?.error?.message),
-      };
-    }
-    case 'mcpServer/startupStatus/updated': {
-      return {
-        name: params.name,
-        status: params.status,
-        error: previewForLog((params.error as string | null | undefined) ?? undefined),
-      };
-    }
-    default:
-      return undefined;
-  }
-}
-
-function extractNotificationRouting(paramsUnknown: unknown): {
-  threadId: string | null;
-  turnId: string | null;
-} {
-  if (!paramsUnknown || typeof paramsUnknown !== 'object') {
-    return { threadId: null, turnId: null };
-  }
-
-  const params = paramsUnknown as {
-    threadId?: unknown;
-    turnId?: unknown;
-    turn?: { id?: unknown };
-  };
-  const nestedTurnId = params.turn?.id;
-
-  return {
-    threadId: typeof params.threadId === 'string' && params.threadId ? params.threadId : null,
-    turnId: typeof params.turnId === 'string' && params.turnId
-      ? params.turnId
-      : (typeof nestedTurnId === 'string' && nestedTurnId ? nestedTurnId : null),
-  };
+  shellTracking?: CodexShellTrackingRegistration;
 }
 
 export class CodexAppServerProtocol implements AgentProtocol {
@@ -242,8 +167,11 @@ export class CodexAppServerProtocol implements AgentProtocol {
    */
   async createSession(options: SessionOptions): Promise<ProtocolSession> {
     const raw = await this.spawnAndInit(options);
-    const startParams = this.buildThreadStartParams(options);
-    const startResponse = await raw.client.request<ThreadStartResponse>('thread/start', startParams);
+    const startParams = this.buildThreadStartParams(raw.options);
+    const startResponse = await raw.client.request<ThreadStartResponse>('thread/start', startParams).catch(error => {
+      this.killChild(raw);
+      throw error;
+    });
     const threadId = startResponse?.thread?.id;
     if (!threadId) {
       this.killChild(raw);
@@ -273,7 +201,7 @@ export class CodexAppServerProtocol implements AgentProtocol {
    */
   async resumeSession(sessionId: string, options: SessionOptions): Promise<ProtocolSession> {
     const raw = await this.spawnAndInit(options);
-    const startParams = this.buildThreadStartParams(options);
+    const startParams = this.buildThreadStartParams(raw.options);
     // ThreadResumeParams accepts the same surface as ThreadStartParams minus
     // `ephemeral`. Drop it and replace `model: null` with omission so codex
     // can fall back to the persisted thread's model when we have no override.
@@ -486,6 +414,7 @@ export class CodexAppServerProtocol implements AgentProtocol {
         try { unsub(); } catch { /* noop */ }
       }
       raw.activeTurnId = null;
+      raw.shellTracking?.endTurn();
     }
   }
 
@@ -514,6 +443,7 @@ export class CodexAppServerProtocol implements AgentProtocol {
 
   abortSession(session: ProtocolSession): void {
     const raw = this.assertRaw(session);
+    raw.shellTracking?.endTurn();
     if (raw.activeTurnId && raw.threadId) {
       const params: TurnInterruptParams = { threadId: raw.threadId, turnId: raw.activeTurnId };
       raw.client.notify('turn/interrupt', params);
@@ -539,20 +469,23 @@ export class CodexAppServerProtocol implements AgentProtocol {
   private killChild(raw: AppServerSessionRaw): void {
     if (raw.cleanupStarted) return;
     raw.cleanupStarted = true;
+    raw.shellTracking?.dispose();
     try { raw.client.close('cleanup'); } catch { /* noop */ }
     this.terminateProcessTree(raw.child);
   }
 
   private async spawnAndInit(options: SessionOptions): Promise<AppServerSessionRaw> {
     const binary = resolveCodexBinaryPath(this.resolveCodexPathOverride);
+    const tracking = await prepareCodexShellTracking(options);
     const env = this.buildEnv(options, binary);
+    Object.assign(env, tracking?.registration.env);
     const cwd = options.workspacePath || process.cwd();
     // console.log('[CODEX][APPSERVER] spawning child:', {
     //   binary,
     //   cwd,
     //   helperPathEntries: getCodexVendorPathEntries(binary),
     // });
-    const child = spawn(binary, ['app-server', '--listen', 'stdio://'], {
+    const child = spawn(binary, [...(tracking?.args ?? []), 'app-server', '--listen', 'stdio://'], {
       env,
       cwd,
       stdio: ['pipe', 'pipe', 'pipe'],
@@ -573,6 +506,7 @@ export class CodexAppServerProtocol implements AgentProtocol {
         warn: (m, ...a) => console.warn('[CODEX][APPSERVER]', m, ...a),
       },
     });
+    child.once('exit', () => tracking?.registration.dispose());
     this.wireServerRequestHandlers(client);
     let initResponse: InitializeResponse;
     try {
@@ -581,16 +515,28 @@ export class CodexAppServerProtocol implements AgentProtocol {
         capabilities: { experimentalApi: true },
       });
       client.notify('initialized', {});
+      if (tracking) {
+        try {
+          const trust = await tracking.trust(client);
+          options = { ...options, raw: { ...options.raw, codexConfigOverrides: {
+            ...(options.raw?.codexConfigOverrides as Record<string, unknown> ?? {}), ...trust,
+          } } };
+        } catch (error) {
+          tracking.registration.dispose();
+          console.warn('[CodexShellTracking] Hooks unavailable; shell attribution disabled:', error);
+        }
+      }
     } catch (err) {
       try { client.close('init failed'); } catch { /* noop */ }
       this.terminateProcessTree(child);
+      tracking?.registration.dispose();
       const tail = stderrTail.join('').slice(-2000);
       const rawError = `${err instanceof Error ? err.message : String(err)}${tail ? `\nstderr tail: ${tail}` : ''}`;
       const configHint = describeCodexConfigError(rawError);
       throw new Error(`[CodexAppServer] initialize failed: ${rawError}${configHint ? `\n\n${configHint}` : ''}`);
     }
     this.registerSkillRoots(client, cwd);
-    return {
+    const raw: AppServerSessionRaw = {
       child,
       client,
       threadId: '',
@@ -600,7 +546,15 @@ export class CodexAppServerProtocol implements AgentProtocol {
       activeTurnId: null,
       stderrTail,
       cleanupStarted: false,
+      shellTracking: tracking?.registration,
     };
+    client.onNotification((method, params) => {
+      if ((method === 'turn/completed' || method === 'turn/failed') &&
+          extractNotificationRouting(params).threadId === raw.threadId) {
+        tracking?.registration.endTurn();
+      }
+    });
+    return raw;
   }
 
   /**

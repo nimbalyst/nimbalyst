@@ -1,0 +1,44 @@
+{
+  "name": "@nimbalyst/node",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Run a Nimbalyst agent session from a plain Node process — no Electron, no renderer",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "bin": {
+    "nimbalyst-node": "./dist/bin/nimbalyst-node.js"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "nimbalyst-node.config.example.json",
+    "nimbalyst-node.serve.config.example.json",
+    "workspaces.example.json"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@nimbalyst/runtime": "*",
+    "better-sqlite3": "13.0.1",
+    "uuid": "^14.0.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.12",
+    "@types/node": "^20.0.0",
+    "typescript": "^5.0.0"
+  }
+}

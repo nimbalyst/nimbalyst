@@ -15,6 +15,7 @@ import type { MCPServerConfig } from '../../../types/MCPServerConfig';
 import type { FileChangeFidelity } from '../providerFileTracking';
 import {
   HeadlessCliAgentProvider,
+  buildHeadlessChildEnvironment,
   type HeadlessCliAgentDescriptor,
   type HeadlessCliEnvironmentLoaders,
 } from './HeadlessCliAgentProvider';
@@ -120,9 +121,7 @@ export class CursorAgentProvider extends HeadlessCliAgentProvider {
         execFile(command, ['--list-models'], {
           timeout: 15_000,
           encoding: 'utf8',
-          env: CursorAgentProvider.enhancedPathLoader
-            ? { ...process.env, PATH: CursorAgentProvider.enhancedPathLoader() }
-            : process.env,
+          env: buildHeadlessChildEnvironment(CursorAgentProvider.loaders()),
         }, (error, stdout) => {
           if (error) reject(error);
           else resolve(stdout);

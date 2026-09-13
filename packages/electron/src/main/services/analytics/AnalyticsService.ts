@@ -6,6 +6,7 @@ import {app} from "electron";
 import {getReleaseChannel, isAnalyticsEnabled, setAnalyticsEnabled} from "../../utils/store";
 import {isGitAvailable} from "../../utils/gitUtils";
 import {bucketDaysSinceInstall, bucketLaunchNumber, decideLaunch, type BuildType} from "./launchAttribution";
+import {dailyActiveProperties, decideDailyActive} from "./dailyActiveHeartbeat";
 
 const POSTHOG_PROJECT_PUBLIC_ID = 'phc_s3lQIILexwlGHvxrMBqti355xUgkRocjMXW4LjV0ATw';
 
@@ -27,6 +28,12 @@ type AnalyticsSettings = {
    * the two above; it is a local integer and is never transmitted raw.
    */
   sessionsCreated?: number;
+  /**
+   * Local calendar date of the last `daily_active` heartbeat, so a restart
+   * partway through a day does not emit a second one. See
+   * `dailyActiveHeartbeat.ts`.
+   */
+  lastDailyActiveDate?: string;
 }
 
 export type { BuildType } from './launchAttribution';
@@ -257,6 +264,50 @@ export class AnalyticsService {
       event: 'nimbalyst_session_start',
       properties: eventProperties
     })
+  }
+
+  /**
+   * Emit `daily_active` if this install has not already emitted one today.
+   *
+   * Safe and cheap to call often — callers are expected to invoke this from any
+   * human-presence signal rather than to reason about whether it is due. Every
+   * call past the first in a day is a string comparison.
+   *
+   * Call sites must be genuine human activity. A timer that fires regardless of
+   * whether anyone is at the machine would recreate the inflated DAU this event
+   * exists to replace; see the header of `dailyActiveHeartbeat.ts`.
+   */
+  public maybeEmitDailyActive(now: Date = new Date()): void {
+    if (!this.allowedToSendAnalytics()) return;
+
+    const store = this.getSettingsStore();
+    const decision = decideDailyActive(
+      { lastDailyActiveDate: store.get('lastDailyActiveDate') },
+      now,
+    );
+    if (!decision.shouldEmit) return;
+
+    // Persist BEFORE capturing. `capture` is fire-and-forget into a batching
+    // queue, so a throw or a crash after it would leave the date unwritten and
+    // re-emit on the next focus, turning one event per day into one per focus.
+    store.set('lastDailyActiveDate', decision.next.lastDailyActiveDate);
+
+    const { daysSinceInstall } = this.recordLaunch();
+    this.postHogClient?.capture({
+      distinctId: this.getDistinctId(),
+      event: 'daily_active',
+      properties: {
+        ...dailyActiveProperties({
+          version: app.getVersion(),
+          platform: process.platform,
+          cpuArch: process.arch,
+          daysSinceInstall,
+          localDate: decision.localDate,
+          nowIso: now.toISOString(),
+        }),
+        ...this.releaseAttribution(),
+      },
+    });
   }
 
   public async destroy(): Promise<void> {

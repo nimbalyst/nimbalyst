@@ -1,3 +1,4 @@
+import { registerDocumentFeedbackIndexHandlers } from './DocumentFeedbackIndexHandlers';
 import { BrowserWindow } from 'electron';
 
 import type {
@@ -31,6 +32,7 @@ let cleanupIndexSubscription: (() => void) | null = null;
 
 export function registerFeedbackRequestHandlers(): void {
   if (cleanupSubscription) return;
+  registerDocumentFeedbackIndexHandlers();
   const service = getFeedbackRequestService();
   const indexService = getFeedbackRequestIndexService();
   safeHandle('document-decision:ensure-tracker', async (_event, input: DocumentDecisionTrackerInput) => ensureDocumentDecisionTracker(input));

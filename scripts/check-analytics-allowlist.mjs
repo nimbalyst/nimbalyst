@@ -45,11 +45,40 @@ const SCANNED_EXT = new Set(['.ts', '.tsx', '.js', '.jsx', '.mjs', '.swift', '.k
  * (`sendEvent('foo', ...)`), the second object-literal captures
  * (`capture({ event: 'foo' })`), which is how session start is emitted.
  */
-const CALL_SITE = /(?:sendEvent|sendTeamAnalyticsEvent|trackTeamAnalyticsEvent|captureImmediate|capture)\(\s*["']([a-z$][a-z0-9_$]*)["']/g;
-const EVENT_KEY = /\bevent:\s*["']([a-z$][a-z0-9_$]*)["']/g;
+const CALL_SITE = /(?:sendEvent|sendTeamAnalyticsEvent|trackTeamAnalyticsEvent|captureImmediate|capture|validateSessionLaunchEvent)\(\s*["']([a-z$][a-z0-9_$]*)["']/g;
+// Only inspect analytics payloads: `event: 'change'` can also be a watcher type
+// annotation or an unrelated internal message, neither of which reaches PostHog.
+const EVENT_KEY = /\b(?:capture(?:Immediate)?\(\s*|invoke\(\s*["']analytics:track["']\s*,\s*)\{[^{}]*?\bevent:\s*["']([a-z$][a-z0-9_$]*)["']/g;
 
 export const TEAM_SCHEMA_FILE = 'packages/electron/src/shared/analytics/teamAnalytics.ts';
 export const ALLOW_LIST_FILE = 'packages/electron/src/shared/analytics/posthogIngestAllowList.ts';
+export const INIT_CONFIG_FILE = 'packages/electron/src/renderer/index.tsx';
+
+/**
+ * `posthog.init` option that turns each SDK-default capture off, for the names
+ * in SDK_DISABLED_AT_CLIENT. These have no call site, so nothing else in this
+ * gate can see them.
+ */
+export const INIT_CONFIG_KEY = {
+  $pageview: 'capture_pageview',
+  $pageleave: 'capture_pageleave',
+  $autocapture: 'autocapture',
+};
+
+/**
+ * Schema maps whose KEYS are event names. These never reach a literal emission
+ * seam -- the emitter takes the name as a generic parameter -- so scanning call
+ * sites alone silently misses every event they declare.
+ *
+ * `SEND_WALL_EVENT_SCHEMAS` is why this list is not just the team schema: four
+ * live events (`ai_message_submit_attempted`, `composer_state_reported`,
+ * `ai_send_blocked`, and `create_ai_session` via its validator) went
+ * unclassified and were dropped at ingestion while this gate reported OK.
+ */
+export const SCHEMA_MAP_FILES = [
+  [TEAM_SCHEMA_FILE, 'TEAM_ANALYTICS_EVENT_SCHEMAS'],
+  ['packages/electron/src/shared/analytics/sendOutcomes.ts', 'SEND_WALL_EVENT_SCHEMAS'],
+];
 
 function walk(dir, out = []) {
   let entries;
@@ -73,37 +102,54 @@ function walk(dir, out = []) {
   return out;
 }
 
-/** Event names declared as keys of the team analytics schema map. */
-function teamSchemaEvents() {
-  const src = readFileSync(join(repoRoot, TEAM_SCHEMA_FILE), 'utf8');
-  const start = src.indexOf('export const TEAM_ANALYTICS_EVENT_SCHEMAS');
-  if (start === -1) return new Map();
-  const body = src.slice(start, src.indexOf('\n} as const', start));
+/** Event names declared as keys of the schema maps in SCHEMA_MAP_FILES. */
+function schemaMapEvents() {
   const found = new Map();
-  for (const m of body.matchAll(/^ {2}([a-z][a-z0-9_]*):\s*\{/gm)) {
-    found.set(m[1], `${TEAM_SCHEMA_FILE} (schema key)`);
+  for (const [file, constName] of SCHEMA_MAP_FILES) {
+    const src = readFileSync(join(repoRoot, file), 'utf8');
+    const start = src.indexOf(`export const ${constName}`);
+    // A renamed or removed map must not degrade into scanning nothing, which is
+    // how a gate goes quiet without anyone noticing.
+    if (start === -1) throw new Error(`Could not find ${constName} in ${file}`);
+    const body = src.slice(start, src.indexOf('\n} as const', start));
+    for (const m of body.matchAll(/^ {2}([a-z][a-z0-9_]*):\s*\{/gm)) {
+      if (!found.has(m[1])) found.set(m[1], `${file} (schema key)`);
+    }
   }
   return found;
 }
 
-/** Parse a `const NAME = [...]` string-array out of the allow-list module. */
+/**
+ * Parse an `export const NAME = [...]` string-array out of the allow-list module.
+ *
+ * Anchored on `export const` deliberately. Unanchored, the first mention of a
+ * list's name ANYWHERE in the file wins -- including inside a doc comment on a
+ * different list -- and `[^=]*=` then runs on to the next declaration, so the
+ * parser silently returns some other list's contents. One sentence of prose
+ * naming a sibling list was enough to make INTENTIONALLY_DROPPED parse as a
+ * one-element array and report ~180 correctly-classified events as unclassified.
+ */
 export function parseList(src, name) {
-  const m = src.match(new RegExp(`${name}[^=]*=\\s*\\[([\\s\\S]*?)\\]`));
+  const m = src.match(new RegExp(`export const ${name}[^=]*=\\s*\\[([\\s\\S]*?)\\]`));
   if (!m) throw new Error(`Could not parse ${name} from ${ALLOW_LIST_FILE}`);
   return new Set([...m[1].matchAll(/'([^']+)'/g)].map((x) => x[1]));
 }
 
+export function collectSourceEventNames(src) {
+  return [CALL_SITE, EVENT_KEY].flatMap((re) => {
+    re.lastIndex = 0;
+    return [...src.matchAll(re)].map((m) => m[1]);
+  });
+}
+
 /** Every analytics event name reachable from source, mapped to where it was first seen. */
 export function collectEventNames() {
-  const found = teamSchemaEvents();
+  const found = schemaMapEvents();
   for (const root of SCAN_ROOTS) {
     for (const file of walk(join(repoRoot, root))) {
       const src = readFileSync(file, 'utf8');
       const where = relative(repoRoot, file);
-      for (const re of [CALL_SITE, EVENT_KEY]) {
-        re.lastIndex = 0;
-        for (const m of src.matchAll(re)) if (!found.has(m[1])) found.set(m[1], where);
-      }
+      for (const name of collectSourceEventNames(src)) if (!found.has(name)) found.set(name, where);
     }
   }
   return found;
@@ -111,19 +157,21 @@ export function collectEventNames() {
 
 /**
  * Pure classification step: returns one message per problem, empty when clean.
- * `found` is a Map of name -> where; `lists` holds the four Sets.
+ * `found` is a Map of name -> where; `lists` holds the six Sets.
  */
 export function findClassificationErrors(found, lists) {
-  const { always, sampled, dropped, sdkOwned } = lists;
+  const { always, sampled, conditional, dropped, sdkOwned, sdkDisabled } = lists;
   const errors = [];
 
   for (const [name, where] of [...found].sort()) {
-    const count = [always, sampled, dropped, sdkOwned].filter((s) => s.has(name)).length;
+    const count = [always, sampled, conditional, dropped, sdkOwned, sdkDisabled].filter((s) =>
+      s.has(name),
+    ).length;
     if (count === 0) {
       errors.push(
         `  ${name}\n    first seen: ${where}\n` +
-          `    -> Not classified. Add it to INGESTED_ALWAYS, INGESTED_SAMPLED or\n` +
-          `       INTENTIONALLY_DROPPED in ${ALLOW_LIST_FILE}.\n` +
+          `    -> Not classified. Add it to INGESTED_ALWAYS, INGESTED_SAMPLED,\n` +
+          `       INGESTED_CONDITIONALLY or INTENTIONALLY_DROPPED in ${ALLOW_LIST_FILE}.\n` +
           `       If you want the data, you must ALSO add the name to the\n` +
           `       'Cost control allow-list' transformation in PostHog project 234047,\n` +
           `       or it will be silently dropped at ingestion.`,
@@ -152,9 +200,46 @@ export function readLists() {
   return {
     always: parseList(src, 'INGESTED_ALWAYS'),
     sampled: parseList(src, 'INGESTED_SAMPLED'),
+    conditional: parseList(src, 'INGESTED_CONDITIONALLY'),
     dropped: parseList(src, 'INTENTIONALLY_DROPPED'),
     sdkOwned: parseList(src, 'SDK_OWNED'),
+    sdkDisabled: parseList(src, 'SDK_DISABLED_AT_CLIENT'),
   };
+}
+
+/**
+ * Assert the renderer still switches off every name in SDK_DISABLED_AT_CLIENT.
+ *
+ * The rest of this gate reasons about names it can find at a call site. These
+ * have none -- the SDK emits them from its own defaults -- so the only evidence
+ * that they are off is the `posthog.init` config, and the only cost of them
+ * coming back on is a bill. `$pageview` alone was 241,643 events in 30 days
+ * against a 1M/month free tier.
+ *
+ * Pure over the config source so a test does not need the real file.
+ */
+export function checkInitConfigDisables(configSrc, sdkDisabled) {
+  const errors = [];
+  for (const name of [...sdkDisabled].sort()) {
+    const key = INIT_CONFIG_KEY[name];
+    if (!key) {
+      errors.push(
+        `  ${name}\n    -> In SDK_DISABLED_AT_CLIENT but has no entry in INIT_CONFIG_KEY,\n` +
+          `       so nothing verifies it is actually off. Add the posthog.init option name.`,
+      );
+      continue;
+    }
+    if (!new RegExp(`\\b${key}\\s*:\\s*false\\b`).test(configSrc)) {
+      errors.push(
+        `  ${name}\n    -> ${INIT_CONFIG_FILE} no longer sets \`${key}: false\`.\n` +
+          `       This name is on neither the PostHog allow-list nor any call site, so\n` +
+          `       re-enabling capture ships volume that is then discarded at ingestion.\n` +
+          `       If you want the data, add ${name} to the 'Cost control allow-list'\n` +
+          `       transformation in project 234047 and move it out of SDK_DISABLED_AT_CLIENT.`,
+      );
+    }
+  }
+  return errors;
 }
 
 function main() {
@@ -165,7 +250,11 @@ function main() {
     return;
   }
 
-  const errors = findClassificationErrors(found, readLists());
+  const lists = readLists();
+  const errors = [
+    ...findClassificationErrors(found, lists),
+    ...checkInitConfigDisables(readFileSync(join(repoRoot, INIT_CONFIG_FILE), 'utf8'), lists.sdkDisabled),
+  ];
 
   if (errors.length) {
     console.error(`\nAnalytics allow-list check failed (${errors.length} issue(s)):\n`);

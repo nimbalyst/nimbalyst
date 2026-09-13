@@ -1,3 +1,4 @@
+import { managedClaudeEnvironment } from '../../../../electron/managedClaudeEnvironment';
 /**
  * Builds the SDK options object for a Claude Code query() call.
  *
@@ -14,7 +15,7 @@ import type { ContentBlockParam, TextBlockParam, MessageParam } from '@anthropic
 // bump instead of silently becoming a no-op at runtime.
 import type { Options as ClaudeAgentSdkOptions, SettingSource } from '@anthropic-ai/claude-agent-sdk';
 import path from 'path';
-import { app } from 'electron';
+import { getHostEnvironment } from '../../../../host/hostEnvironment';
 import { ClaudeCodeDeps } from './dependencyInjection';
 import { resolveClaudeAgentCliPath } from './cliPathResolver';
 import { hasEnterpriseManagedMcpConfig } from './enterpriseMcpConfig';
@@ -235,7 +236,7 @@ export async function buildSdkOptions(
     // verbatim. In dev the SDK resolves its own native binary via
     // require.resolve, so a failure here is non-fatal; a user-configured custom
     // path also overrides.
-    if (app.isPackaged && !customPath) {
+    if (getHostEnvironment().isPackaged() && !customPath) {
       throw err instanceof Error ? err : new Error(String(err));
     }
     resolvedBinaryPath = undefined;
@@ -243,6 +244,7 @@ export async function buildSdkOptions(
   const effectivePath = customPath || resolvedBinaryPath;
   // console.log(`[CLAUDE-CODE] Binary path: custom=${customPath || '(none)'} resolved=${resolvedBinaryPath ?? '(none)'} effective=${effectivePath ?? '(none)'}`);
   const resolvedModel = resolveModelVariant();
+  const explicitOnly = getHostEnvironment().agentConfiguration === 'explicit-only';
 
   const options: ClaudeAgentSdkOptions = {
     pathToClaudeCodeExecutable: effectivePath,
@@ -258,7 +260,9 @@ export async function buildSdkOptions(
           preset: 'claude_code',
           append: systemPrompt
         },
-    settingSources,
+    settingSources: explicitOnly ? [] : settingSources,
+    // Headless provisioned servers must not be merged with repository or user discovery.
+    ...(explicitOnly ? { strictMcpConfig: true } : {}),
     // NIM-1988: this is the provider-owned, first-build snapshot, not a live
     // config read. The SDK rebuilds the API tool prefix on resumed turns, so a
     // server appearing/disappearing here would force a tools_changed miss over
@@ -315,6 +319,14 @@ export async function buildSdkOptions(
     },
   };
 
+  if (explicitOnly) {
+    // These channels are separate from filesystem settings. Assign through the
+    // SDK Options type so incompatible SDK changes are caught at compilation.
+    options.skills = [];
+    options.agents = {};
+    options.plugins = [];
+  }
+
   if (config.thinkingMode === 'disabled') {
     if (canDisableThinkingForModel(resolvedModel)) {
       options.thinking = { type: 'disabled' as const };
@@ -335,7 +347,7 @@ export async function buildSdkOptions(
   teammateManager.lastUsedPermissionsPath = permissionsPath;
 
   // Load extension plugins
-  if (ClaudeCodeDeps.extensionPluginsLoader) {
+  if (!explicitOnly && ClaudeCodeDeps.extensionPluginsLoader) {
     try {
       const extensionPlugins = await ClaudeCodeDeps.extensionPluginsLoader(workspacePath);
       if (extensionPlugins.length > 0) {
@@ -370,12 +382,25 @@ export async function buildSdkOptions(
   // the Claude native binary treats the mere presence of that variable as an
   // API-key auth signal, which can shadow a valid OAuth/CLI login and produce
   // "Authentication failed" even though accountInfo() succeeds in settings.
-  const { ANTHROPIC_API_KEY: _envAnthropicKey, OPENAI_API_KEY: _envOpenaiKey, ...sanitizedProcessEnv } = process.env;
-  const { ANTHROPIC_API_KEY: _shellAnthropicKey, OPENAI_API_KEY: _shellOpenaiKey, ...sanitizedShellEnv } = shellEnv;
-  const { ANTHROPIC_API_KEY: _settingsAnthropicKey, OPENAI_API_KEY: _settingsOpenaiKey, ...sanitizedSettingsEnv } = settingsEnv;
+  // Preserve only OS/runtime locations for a headless child. Repository MCP,
+  // hooks, endpoint overrides and unrelated host credentials are not inputs.
+  const platformKeys = new Set([
+    'PATH', 'HOME', 'USERPROFILE', 'SYSTEMROOT', 'WINDIR', 'COMSPEC', 'PATHEXT',
+    'TEMP', 'TMP', 'TMPDIR', 'LANG', 'LC_ALL', 'LC_CTYPE', 'USER', 'LOGNAME', 'SHELL',
+    'HTTPS_PROXY', 'HTTP_PROXY', 'NO_PROXY', 'NODE_EXTRA_CA_CERTS', 'SSL_CERT_FILE', 'SSL_CERT_DIR',
+    'CURL_CA_BUNDLE', 'REQUESTS_CA_BUNDLE', 'GIT_SSL_CAINFO',
+    'APPDATA', 'LOCALAPPDATA', 'SYSTEMDRIVE', 'HOMEDRIVE', 'HOMEPATH',
+    'PROGRAMFILES', 'PROGRAMFILES(X86)', 'NUMBER_OF_PROCESSORS', 'OS',
+  ]);
+  const inheritedEnv = explicitOnly
+    ? Object.fromEntries(Object.entries(process.env).filter(([key]) => platformKeys.has(key.toUpperCase())))
+    : process.env;
+  const { ANTHROPIC_API_KEY: _envAnthropicKey, OPENAI_API_KEY: _envOpenaiKey, ...sanitizedProcessEnv } = inheritedEnv;
+  const { ANTHROPIC_API_KEY: _shellAnthropicKey, OPENAI_API_KEY: _shellOpenaiKey, ...sanitizedShellEnv } = explicitOnly ? {} : shellEnv;
+  const { ANTHROPIC_API_KEY: _settingsAnthropicKey, OPENAI_API_KEY: _settingsOpenaiKey, ...sanitizedSettingsEnv } = explicitOnly ? {} : settingsEnv;
 
   const enableAgentTeams = sanitizedSettingsEnv.CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS === '1';
-  const env: any = {
+  const env: any = managedClaudeEnvironment({
     ...sanitizedProcessEnv,
     ...sanitizedShellEnv,
     ...sanitizedSettingsEnv,
@@ -403,7 +428,7 @@ export async function buildSdkOptions(
     // usage; setting this to `cli` aligns Nimbalyst's classification with
     // the official CLI and removes that asymmetry. The user can still
     // override via their own env var if they want the original sdk-ts label.
-    ...(process.env.CLAUDE_CODE_ENTRYPOINT == null && { CLAUDE_CODE_ENTRYPOINT: 'cli' }),
+    ...(sanitizedProcessEnv.CLAUDE_CODE_ENTRYPOINT == null && { CLAUDE_CODE_ENTRYPOINT: 'cli' }),
     // The Claude CLI currently defaults to xhigh when this variable is absent.
     // Always forward a resolved Nimbalyst selection, including "high", so the
     // effort shown in the selector matches the request sent to the CLI.
@@ -422,24 +447,6 @@ export async function buildSdkOptions(
       sanitizedShellEnv.CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT == null &&
       sanitizedSettingsEnv.CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT == null && {
         CLAUDE_CODE_MCP_TOOL_IDLE_TIMEOUT: '0',
-      }),
-    // NIM-1573: Pin the bundled native CLI's self-updater OFF. We ship a
-    // version-pinned binary and spawn it in place from app.asar.unpacked; the
-    // CLI's AutoUpdater does a non-atomic in-place `rename claude.exe ->
-    // claude.exe.old.<ts>` + re-download on version drift, and an interrupted
-    // update leaves an orphan with no `claude.exe`, permanently breaking Claude
-    // Code (surfacing a misleading libc/musl ReferenceError). The updater's gate
-    // honors DISABLE_UPDATES / DISABLE_AUTOUPDATER. Default only -- a user-set
-    // value (settings/shell/process env) still wins.
-    ...(sanitizedProcessEnv.DISABLE_AUTOUPDATER == null &&
-      sanitizedShellEnv.DISABLE_AUTOUPDATER == null &&
-      sanitizedSettingsEnv.DISABLE_AUTOUPDATER == null && {
-        DISABLE_AUTOUPDATER: '1',
-      }),
-    ...(sanitizedProcessEnv.DISABLE_UPDATES == null &&
-      sanitizedShellEnv.DISABLE_UPDATES == null &&
-      sanitizedSettingsEnv.DISABLE_UPDATES == null && {
-        DISABLE_UPDATES: '1',
       }),
     // #1177: Suppress the CLI's own "git status at the start of the
     // conversation" block. That block is rebuilt from the LIVE working tree by
@@ -461,7 +468,7 @@ export async function buildSdkOptions(
       sanitizedSettingsEnv.CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS == null && {
         CLAUDE_CODE_DISABLE_GIT_INSTRUCTIONS: '1',
       }),
-  };
+  });
 
   // NIM-376: Overlay enhanced PATH so the Claude Code SDK can find stdio MCP
   // subprocess binaries (`npx`, `uvx`, `docker`, ...) when Nimbalyst is launched
@@ -509,7 +516,7 @@ export async function buildSdkOptions(
   // find ~/.claude/. We no longer overlay setupClaudeCodeEnvironment() because
   // it was designed for the old Node.js execution path and its Object.assign
   // clobbered our sanitized env.
-  if (app.isPackaged) {
+  if (getHostEnvironment().isPackaged()) {
     if (customPath) {
       helperMethod = 'custom';
     } else {

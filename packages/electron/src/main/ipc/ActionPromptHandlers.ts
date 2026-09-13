@@ -15,6 +15,7 @@ import { getActionPromptService } from '../services/ActionPromptService';
 import { findWindowByWorkspace } from '../window/WindowManager';
 import { safeHandle } from '../utils/ipcRegistry';
 import { MetaAgentService } from '../services/MetaAgentService';
+import { syncProjectActionsToMobile } from '../services/SyncManager';
 
 const broadcastSubscribed = new Set<string>();
 
@@ -33,6 +34,11 @@ function ensureChangeBroadcast(workspacePath: string) {
     try {
       const result = await service.list();
       broadcastChanged(workspacePath, result);
+      // Mobile reads the same list, so an edit to ai-actions.md has to
+      // republish the project config blob as well as refresh the renderer.
+      syncProjectActionsToMobile(workspacePath, result.actions).catch(() => {
+        // Best-effort: sync may not be initialized.
+      });
     } catch (err) {
       console.error('[ActionPromptHandlers] Failed to broadcast changed list:', err);
     }
@@ -48,6 +54,12 @@ export function registerActionPromptHandlers() {
     const service = getActionPromptService(workspacePath);
     const result = await service.list();
     ensureChangeBroadcast(workspacePath);
+    // Seed the mobile-facing slice on first read. The composer mounts this and
+    // `slash-command:list` together, so both halves of the blob get populated
+    // without waiting for the user to edit anything.
+    syncProjectActionsToMobile(workspacePath, result.actions).catch(() => {
+      // Best-effort: sync may not be initialized.
+    });
     return result;
   });
 

@@ -16,8 +16,11 @@ import { Provider, createStore } from 'jotai';
 
 import { selectedOrgIdAtom } from '../../../store/atoms/orgScope';
 import { EMPTY_TEAM_INBOX_SNAPSHOT, teamInboxSnapshotAtom } from '../../../store/atoms/teamInbox';
+import { activeExtensionPanelAtom } from '../../../store/atoms/extensionPanels';
+import { windowModeAtom, setWindowModeAtom } from '../../../store/atoms/windowMode';
 
 const projectOrg = vi.hoisted(() => ({ current: null as { orgId: string; name: string } | null }));
+const extensionButtons = vi.hoisted(() => ({ current: [] as Array<{ id: string; label: string; icon: string; placement: 'sidebar'; isAlpha: boolean }> }));
 
 vi.mock('../../../hooks/useProjectOrg', () => ({
   useProjectOrg: () => ({ org: projectOrg.current, loading: false }),
@@ -30,7 +33,7 @@ vi.mock('../../../help', () => ({
   HelpTooltip: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }));
 vi.mock('../../../extensions/panels/usePanels', () => ({
-  useExtensionGutterButtons: () => [],
+  useExtensionGutterButtons: () => extensionButtons.current,
   useExtensionBottomPanelButtons: () => [],
 }));
 vi.mock('../AgentSessionsPopover', () => ({ AgentSessionsPopover: () => null }));
@@ -49,6 +52,7 @@ import { NavigationGutter } from '../NavigationGutter';
 afterEach(() => {
   cleanup();
   projectOrg.current = null;
+  extensionButtons.current = [];
 });
 
 function renderGutter(store = createStore(), onContentModeChange = vi.fn()) {
@@ -65,6 +69,25 @@ function renderGutter(store = createStore(), onContentModeChange = vi.fn()) {
 }
 
 describe('Org mode gutter item', () => {
+  it('keeps a deliberately opened sidebar panel after navigating from Agent to Files', () => {
+    const store = createStore();
+    store.set(windowModeAtom, 'agent');
+    extensionButtons.current = [{ id: 'extension.sidebar', label: 'Session Tree', icon: 'account_tree', placement: 'sidebar', isAlpha: false }];
+    render(
+      <Provider store={store}>
+        <NavigationGutter
+          contentMode="agent"
+          onContentModeChange={(mode) => store.set(setWindowModeAtom, mode)}
+          onExtensionPanelChange={(id) => store.set(activeExtensionPanelAtom, id)}
+          workspacePath="/workspace"
+        />
+      </Provider>,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Session Tree' }));
+    expect(store.get(windowModeAtom)).toBe('files');
+    expect(store.get(activeExtensionPanelAtom)).toBe('extension.sidebar');
+  });
+
   it('is absent when the project has no organization', () => {
     renderGutter();
     expect(screen.queryByTestId('org-mode-button')).toBeNull();

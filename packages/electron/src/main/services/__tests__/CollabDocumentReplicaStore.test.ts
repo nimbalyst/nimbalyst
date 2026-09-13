@@ -1,4 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+// @vitest-environment node
+import { afterAll, beforeAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { PGlite } from "@electric-sql/pglite";
 import * as fs from "fs/promises";
 import * as os from "os";
@@ -94,7 +95,7 @@ describe.each(["pglite", "sqlite"] as const)(
     let tempDir: string | null = null;
     let store: CollabDocumentReplicaStore;
 
-    beforeEach(async () => {
+    beforeAll(async () => {
       if (backend === "pglite") {
         const pglite = new PGlite();
         await pglite.exec(POSTGRES_SCHEMA);
@@ -121,10 +122,28 @@ describe.each(["pglite", "sqlite"] as const)(
         db = sqlite;
         close = () => sqlite.close();
       }
+    });
+
+    beforeEach(async () => {
+      // Each scenario gets a fresh service and empty persisted state, while
+      // retaining real backend transactions and the initialized schema.
+      for (const table of ["collab_document_replica_updates", "collab_document_outbox", "collab_document_replicas"]) {
+        const { rows } = await db.query<{ count: string | number }>(`SELECT COUNT(*) AS count FROM ${table}`);
+        expect(Number(rows[0].count)).toBe(0);
+      }
       store = new CollabDocumentReplicaStore(db, fixedKeyProvider);
     });
 
     afterEach(async () => {
+      vi.restoreAllMocks();
+      await db.runTransaction([
+        { sql: "DELETE FROM collab_document_replica_updates" },
+        { sql: "DELETE FROM collab_document_outbox" },
+        { sql: "DELETE FROM collab_document_replicas" },
+      ]);
+    });
+
+    afterAll(async () => {
       await close();
       if (tempDir) await fs.rm(tempDir, { recursive: true, force: true });
     });

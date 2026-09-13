@@ -20,6 +20,19 @@ import {
   extensionServerConfigKey,
   extensionServerEndpointPath,
 } from './mcpTopology';
+import { getHostEnvironment } from '../../../host/hostEnvironment';
+
+function requireLiteralConfig(serverName: string, value: unknown, key = ''): void {
+  if (typeof value === 'string' && /\$\{[^}]+\}/.test(value)) {
+    // Report the field, never its potentially sensitive contents.
+    throw new Error(`MCP server "${serverName}" field "${key}" contains an unexpanded environment reference; provision a literal value`);
+  }
+  if (value && typeof value === 'object') {
+    for (const [childKey, childValue] of Object.entries(value)) {
+      requireLiteralConfig(serverName, childValue, key ? `${key}.${childKey}` : childKey);
+    }
+  }
+}
 
 /**
  * How long a `nimbalyst` core tool call may sit without a response before the
@@ -267,6 +280,7 @@ export class McpConfigService {
           config[serverName] = processedConfig;
         }
       } catch (error) {
+        if (getHostEnvironment().agentConfiguration === 'explicit-only') throw error;
         console.error('[MCP-CONFIG] Failed to load MCP servers from config loader:', error);
         // Fall back to workspace-only loading
         await this.loadWorkspaceMcpServers(workspacePath, config);
@@ -295,6 +309,9 @@ export class McpConfigService {
    * @returns Processed server configuration
    */
   private async processServerConfig(serverName: string, serverConfig: any): Promise<any> {
+    if (getHostEnvironment().agentConfiguration === 'explicit-only') {
+      requireLiteralConfig(serverName, serverConfig);
+    }
     const processedConfig = { ...serverConfig };
     const transportType = processedConfig.type === 'sse' || processedConfig.type === 'http'
       ? processedConfig.type
@@ -364,11 +381,17 @@ export class McpConfigService {
    * @param config - Existing config object to merge into
    */
   private async loadWorkspaceMcpServers(workspacePath: string | undefined, config: any): Promise<void> {
+    if (getHostEnvironment().agentConfiguration === 'explicit-only') return;
     if (!workspacePath) return;
 
     try {
-      const fs = require('fs');
-      const path = require('path');
+      // Dynamic import, not `require`: this file is emitted as plain ESM for
+      // the Node target, where `require` is not defined. The failure was
+      // invisible -- the ReferenceError landed in the catch below, so workspace
+      // .mcp.json servers silently never loaded. Kept dynamic (rather than a
+      // top-level import) for the original reason `require` was used: it keeps
+      // `fs` out of the browser bundle's static graph.
+      const [fs, path] = await Promise.all([import('node:fs'), import('node:path')]);
       const mcpJsonPath = path.join(workspacePath, '.mcp.json');
 
       if (fs.existsSync(mcpJsonPath)) {
@@ -428,6 +451,7 @@ export class McpConfigService {
    * @returns Merged environment variable map
    */
   private async loadEnvironmentForExpansion(): Promise<Record<string, string | undefined>> {
+    if (getHostEnvironment().agentConfiguration === 'explicit-only') return {};
     const env: Record<string, string | undefined> = {
       ...(process.env as Record<string, string | undefined>)
     };

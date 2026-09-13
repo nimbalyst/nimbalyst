@@ -1,3 +1,5 @@
+import { dirname, isAbsolute, join } from 'pathe';
+import { getEmbedFilePathCandidates } from '../../editor/plugins/EmbedPlugin/embedFilePaths';
 import { parseCollabUri } from '@nimbalyst/collab-protocol';
 
 export interface ImportedDocumentReference {
@@ -8,14 +10,6 @@ export interface ImportedDocumentReference {
 
 export function normalizeDocumentLinkHref(rawHref: string): string {
   return rawHref.replace(/\\/g, '/').trim();
-}
-
-function isAbsolutePath(filePath: string): boolean {
-  return (
-    filePath.startsWith('/') ||
-    /^[A-Za-z]:\//.test(filePath) ||
-    filePath.startsWith('//')
-  );
 }
 
 function splitRoot(path: string): { root: string; rest: string } {
@@ -78,32 +72,6 @@ function normalizePath(path: string): string {
   }
 
   return resolved.join('/');
-}
-
-function getDirectoryName(filePath: string): string {
-  const normalized = normalizePath(filePath);
-  const { root, rest } = splitRoot(normalized);
-  const segments = rest.split('/').filter(Boolean);
-
-  if (segments.length <= 1) {
-    return root || '';
-  }
-
-  const directorySegments = segments.slice(0, -1);
-  if (root === '//') {
-    return `//${directorySegments.join('/')}`;
-  }
-  if (root) {
-    return `${root}${directorySegments.join('/')}`;
-  }
-  return directorySegments.join('/');
-}
-
-function joinAndNormalize(basePath: string, relativePath: string): string {
-  const normalizedBase = normalizePath(basePath).replace(/\/+$/, '');
-  return normalizePath(
-    normalizedBase ? `${normalizedBase}/${relativePath}` : relativePath,
-  );
 }
 
 function toWorkspaceRelativePath(
@@ -180,62 +148,16 @@ export function parseCollabReferenceDocumentId(href: string | null | undefined):
   }
 }
 
-/**
- * Candidate workspace paths for a link href, in the order they should be tried.
- *
- * A bare href like `sibling.md` is ambiguous here: markdown authors mean "next
- * to this document" (CommonMark), while `@` mention chips export a bare
- * *workspace-relative* path. So a bare href yields both, document-relative
- * first. Explicit `./` / `../` and absolute hrefs are unambiguous and yield one.
- */
+/** Resolve links with the same path policy as their embedded presentation. */
 export function resolveDocumentLinkLookupPaths(
   storedPath: string,
   currentDocumentPath: string | null,
   workspacePath: string | null,
 ): string[] {
-  const normalizedPath = normalizeDocumentLinkHref(storedPath);
-  if (!normalizedPath) {
-    return [];
+  let documentPath = currentDocumentPath ? normalizeDocumentLinkHref(currentDocumentPath) : null;
+  if (documentPath && !isAbsolute(documentPath) && workspacePath && !/^[a-z][a-z0-9+.-]*:/i.test(documentPath)) {
+    documentPath = join(workspacePath, documentPath);
   }
-
-  if (isAbsolutePath(normalizedPath)) {
-    if (!workspacePath) {
-      return [normalizePath(normalizedPath)];
-    }
-    return [
-      toWorkspaceRelativePath(normalizedPath, workspacePath) ??
-        normalizePath(normalizedPath),
-    ];
-  }
-
-  const relativeToDocument = (): string | null => {
-    if (!currentDocumentPath) {
-      return null;
-    }
-
-    const absoluteTarget = joinAndNormalize(
-      getDirectoryName(currentDocumentPath),
-      normalizedPath,
-    );
-
-    if (!workspacePath) {
-      return absoluteTarget;
-    }
-
-    return (
-      toWorkspaceRelativePath(absoluteTarget, workspacePath) ?? absoluteTarget
-    );
-  };
-
-  const isExplicitlyDocumentRelative =
-    normalizedPath.startsWith('./') || normalizedPath.startsWith('../');
-  if (isExplicitlyDocumentRelative) {
-    return [relativeToDocument() ?? normalizedPath];
-  }
-
-  const candidates = [relativeToDocument(), normalizePath(normalizedPath)];
-  return candidates.filter(
-    (candidate, index): candidate is string =>
-      Boolean(candidate) && candidates.indexOf(candidate) === index,
-  );
+  return getEmbedFilePathCandidates(storedPath, documentPath ? dirname(documentPath) : null, workspacePath)
+    .map(path => workspacePath ? toWorkspaceRelativePath(path, workspacePath) ?? path : path);
 }

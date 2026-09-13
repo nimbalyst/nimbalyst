@@ -282,11 +282,12 @@ export const NavigationGutter: React.FC<NavigationGutterProps> = ({
         className={navBtnClass(isActive)}
         onClick={() => {
           const newPanelId = isActive ? null : panel.id;
-          onExtensionPanelChange?.(newPanelId);
           // Sidebar panels work alongside files mode.
           if (panel.placement === 'sidebar' && newPanelId && contentMode !== 'files') {
             onContentModeChange('files');
           }
+          // Mode navigation dismisses panels; open the requested panel after it.
+          onExtensionPanelChange?.(newPanelId);
           posthog?.capture('extension_panel_toggled', {
             panelId: panel.id,
             placement: panel.placement,

@@ -1,8 +1,11 @@
 // @vitest-environment node
 import { describe, expect, it, vi, type Mock } from 'vitest';
+import * as os from 'os';
 import {
+  actionForChoice,
   applyDatabaseFailureChoice,
   buildDatabaseFailureDialog,
+  buildDatabaseFailureDiagnostics,
   type DatabaseFailureDialogHandlers,
 } from '../databaseFailureDialog';
 import type { RestorableBackup } from '../sqlite/recoveryArtifacts';
@@ -14,6 +17,31 @@ const backup = (name: string, bytes: number): RestorableBackup => ({
 });
 
 describe('buildDatabaseFailureDialog', () => {
+  it('copies diagnostics without restoring and offers an explicit startup retry', async () => {
+    const content = buildDatabaseFailureDialog([], { diagnostics: 'local failure details', retryStartup: true });
+    const handlers = { restore: vi.fn(), reveal: vi.fn(), copyDiagnostics: vi.fn(), retryStartup: vi.fn() };
+    expect(content.buttons[content.cancelId]).toBe('Quit');
+    const copied = await applyDatabaseFailureChoice(content, content.buttons.indexOf('Copy diagnostics'), handlers);
+    expect(copied).toMatchObject({ reportedAction: 'copy_diagnostics', restored: false });
+    expect(handlers.copyDiagnostics).toHaveBeenCalledWith('local failure details');
+    expect(handlers.restore).not.toHaveBeenCalled();
+    const retried = await applyDatabaseFailureChoice(content, content.buttons.indexOf('Retry startup'), handlers);
+    expect(retried).toMatchObject({ reportedAction: 'retry_startup', restored: true });
+    expect(handlers.retryStartup).toHaveBeenCalledOnce();
+  });
+
+  it('offers the recorded pre-migration source as an explicit rollback choice', async () => {
+    const rollbackSource = backup('pglite-db.migrated-recorded', 5000);
+    const content = buildDatabaseFailureDialog([], { rollbackSource });
+    const rollback = vi.fn(async () => ({ ok: true }));
+    const restore = vi.fn(async () => ({ ok: true }));
+    const outcome = await applyDatabaseFailureChoice(content, content.buttons.indexOf('Restore pre-migration database'), {
+      restore, rollback, reveal: vi.fn(),
+    });
+    expect(rollback).toHaveBeenCalledWith(rollbackSource);
+    expect(restore).not.toHaveBeenCalled();
+    expect(outcome.restored).toBe(true);
+  });
   // The regression that cost users their history. The old dialog ended with
   // "delete the database folder: <path>", people followed it, and the app came
   // back up looking healthy with every session gone. This must never return.
@@ -35,7 +63,8 @@ describe('buildDatabaseFailureDialog', () => {
     ]);
     expect(detail).toContain('pglite-db.backup-current (274 MB)');
     expect(detail).toContain('pglite-db.backup-2026-08-20T11-00-00-000Z (1.5 GB)');
-    expect(detail).toContain('Your data has not been lost');
+    expect(detail).toContain('Backup copies were found');
+    expect(detail).not.toContain('Your data has not been lost');
   });
 
   // Promising recoverable data that isn't there would be its own cruelty, and
@@ -56,6 +85,72 @@ describe('buildDatabaseFailureDialog', () => {
     expect(content.buttons[content.defaultId]).toBe('Restore Backup');
     expect(content.restoreCandidates[0].path).toBe(best.path);
     expect(content.buttons[content.cancelId]).toBe('Quit');
+  });
+
+  /**
+   * Ordering here is a safety property, not presentation. Index 0 is the slot
+   * the platform paints as primary and `defaultId` is what Enter hits, and the
+   * pre-migration rollback is the one action in this dialog that leaves the
+   * user without everything they saved since the switch. It may hold neither
+   * slot, whichever combination of buttons the failure happens to offer.
+   */
+  it('never puts the pre-migration rollback first or under Enter', () => {
+    const rollbackSource = backup('pglite-db.migrated-recorded', 5000);
+    const withBackup = [backup('pglite-db.backup-current', 900)];
+    for (const content of [
+      buildDatabaseFailureDialog(withBackup, { rollbackSource, retryStartup: true, diagnostics: 'd' }),
+      buildDatabaseFailureDialog(withBackup, { rollbackSource }),
+      buildDatabaseFailureDialog([], { rollbackSource, diagnostics: 'd' }),
+      buildDatabaseFailureDialog([], { rollbackSource }),
+    ]) {
+      expect(content.buttons[0]).not.toBe('Restore pre-migration database');
+      expect(content.buttons[content.defaultId]).not.toBe('Restore pre-migration database');
+      expect(content.buttons[content.cancelId]).toBe('Quit');
+      // Label-based dispatch has to survive the reordering.
+      expect(actionForChoice(content, content.buttons.indexOf('Restore pre-migration database'))).toBe('rollback');
+    }
+  });
+
+  it('defaults to retrying startup, and to Restore Backup when retry is not offered', () => {
+    const rollbackSource = backup('pglite-db.migrated-recorded', 5000);
+    const backups = [backup('pglite-db.backup-current', 900)];
+
+    const withRetry = buildDatabaseFailureDialog(backups, { rollbackSource, retryStartup: true, diagnostics: 'd' });
+    expect(withRetry.buttons[0]).toBe('Retry startup');
+    expect(withRetry.buttons[withRetry.defaultId]).toBe('Retry startup');
+
+    const withoutRetry = buildDatabaseFailureDialog(backups, { rollbackSource, diagnostics: 'd' });
+    expect(withoutRetry.buttons[withoutRetry.defaultId]).toBe('Restore Backup');
+    expect(withoutRetry.buttons.indexOf('Restore Backup'))
+      .toBeLessThan(withoutRetry.buttons.indexOf('Restore pre-migration database'));
+  });
+
+  // Rolling back is not "restore my data": it is "go back to the older copy
+  // and leave everything since behind". Saying so is the whole point.
+  it('says plainly what rolling back to the pre-migration database costs', () => {
+    const { detail } = buildDatabaseFailureDialog([], {
+      rollbackSource: backup('pglite-db.migrated-recorded', 5000),
+    });
+    expect(detail).toContain('pglite-db.migrated-recorded');
+    const text = detail.toLowerCase();
+    expect(text).toContain('before the switch');
+    expect(text).toContain('will not be in it');
+    expect(text).toContain('kept on disk');
+  });
+
+  // The copied diagnostics were already redacted; the text on screen was not,
+  // and an init failure names the database path, which carries the account
+  // name. A user photographing this dialog for support should not be
+  // publishing their own name with it.
+  it('keeps the account name out of the on-screen reason', () => {
+    const userDataPath = '/Users/someone/Library/Application Support/@nimbalyst/electron';
+    const { detail } = buildDatabaseFailureDialog([], {
+      userDataPath,
+      reason: `DATABASE_INIT_FAILED: could not open ${userDataPath}/pglite-db, nor ${os.homedir()}/scratch`,
+    });
+    expect(detail).toContain('DATABASE_INIT_FAILED');
+    expect(detail).not.toContain('/Users/someone');
+    expect(detail).not.toContain(os.homedir());
   });
 });
 
@@ -192,4 +287,12 @@ describe('applyDatabaseFailureChoice', () => {
     expect(await applyDatabaseFailureChoice(empty, 0, h)).toMatchObject({ action: 'quit' });
     expect(restore).not.toHaveBeenCalled();
   });
+});
+
+
+it('keeps account paths and raw error text out of copied diagnostics', () => {
+  const diagnostics = buildDatabaseFailureDiagnostics({ version: 'test', backend: 'sqlite', error: new Error('Failed to open /Users/private-account/secret-project.sqlite') });
+  expect(diagnostics).not.toContain('private-account');
+  expect(diagnostics).not.toContain('secret-project');
+  expect(JSON.parse(diagnostics)).toMatchObject({ version: 'test', backend: 'sqlite' });
 });

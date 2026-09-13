@@ -1,5 +1,6 @@
 import { BrowserWindow, type IpcMainEvent, type IpcMainInvokeEvent, app, shell } from 'electron';
 import { safeHandle, safeOn } from '../utils/ipcRegistry';
+import { registerTrackerCreationHandlers } from '../ipc/TrackerCreationHandlers';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import type {
@@ -15,6 +16,7 @@ import type {
 } from '@nimbalyst/runtime';
 import crypto from 'crypto';
 import { getCurrentIdentity } from './TrackerIdentityService';
+import { createNativeTrackerItem, type NativeTrackerCreatePayload } from './tracker/createNativeTrackerItem';
 import { applyCommentMutation, type CommentMutation } from './tracker/commentMutations';
 import { appendActivity } from './tracker/trackerActivity';
 import { COLUMN_ONLY_IDENTITY_KEYS, extractItemCustomFields } from './tracker/trackerRowCustomFields';
@@ -2965,122 +2967,16 @@ export class ElectronDocumentService implements DocumentService {
    * Used for proper collaborative tracked items created from the UI.
    * These items have empty document_path and don't correspond to any file.
    */
-  async createTrackerItem(payload: {
-    id: string;
-    type: string;
-    title: string;
-    status: string;
-    priority: string;
-    workspace: string;
-    description?: string;
-    owner?: string;
-    tags?: string[];
-    customFields?: Record<string, any>;
-    content?: any;
-    source?: string;
-    sourceRef?: string;
-    sharing?: 'personal' | 'team';
-    draftByDefault?: boolean;
-  }): Promise<TrackerItem> {
-    // Check if this type allows creation
-    const model = globalRegistry.get(payload.type);
-    if (model && model.creatable === false) {
-      throw new Error(`Cannot create items of type '${payload.type}': type is not creatable`);
-    }
+  assertWorkspace(workspacePath: string): void {
+    if (!workspacePath || path.resolve(workspacePath) !== path.resolve(this.workspacePath)) throw new Error('Workspace does not match the calling window');
+  }
 
-    // Stamp author identity on creation
-    // getCurrentIdentity imported statically at top of file
-    const authorIdentity = getCurrentIdentity(payload.workspace);
-
-    // Assign initial kanbanSortOrder: place new items at the top of their column.
-    // Query the current minimum sort key for this workspace+status so the new item sorts before it.
-    let initialSortOrder = 'a0';
-    try {
-      const minKeyResult = await database.query<any>(
-        `SELECT MIN(kanban_sort_order) as min_key FROM tracker_items WHERE workspace = $1 AND status = $2 AND kanban_sort_order IS NOT NULL`,
-        [payload.workspace, payload.status]
-      );
-      const minKey = minKeyResult.rows[0]?.min_key;
-      if (minKey) {
-        const { generateKeyBetween } = await import('@nimbalyst/runtime/utils/fractionalIndex');
-        initialSortOrder = generateKeyBetween(null, minKey);
-      }
-    } catch (e) {
-      // Non-fatal: fall back to default sort order
-    }
-
-    const data: Record<string, any> = {
-      title: payload.title,
-      status: payload.status,
-      priority: payload.priority,
-      kanbanSortOrder: initialSortOrder,
-      created: new Date().toISOString().split('T')[0],
-      authorIdentity,
-      reporterEmail: authorIdentity.email || authorIdentity.gitEmail || undefined,
-    };
-    if (payload.description) data.description = payload.description;
-    if (payload.owner) data.owner = payload.owner;
-    if (payload.tags && payload.tags.length > 0) data.tags = payload.tags;
-    if (payload.customFields) {
-      Object.assign(data, payload.customFields);
-    }
-
-    const source = payload.source || 'native';
-    const contentJson = payload.content ? JSON.stringify(payload.content) : null;
-    const sharingPolicy = getEffectiveTrackerSharingPolicy(payload.workspace, payload.type, payload);
-    const syncStatus = getInitialTrackerSyncStatus(sharingPolicy, data);
-
-    // NIM-454: persist the tracker-type tag on the row so the item reliably
-    // appears in its type view and syncs correctly, instead of relying on a
-    // read-time fallback. Mirrors the MCP create path (typeTags always includes
-    // the primary type). The DB layer maps a JS array to TEXT[] on PGLite / a
-    // JSON string on better-sqlite3.
-    const typeTags: string[] = [payload.type];
-
-    await database.query(
-      `INSERT INTO tracker_items (
-        id, type, type_tags, data, workspace, document_path, line_number,
-        created, updated, last_indexed, sync_status,
-        content, archived, source, source_ref
-      ) VALUES ($1, $2, $3, $4, $5, '', NULL, NOW(), NOW(), NOW(), $6, $7, FALSE, $8, $9)`,
-      [
-        payload.id,
-        payload.type,
-        typeTags,
-        JSON.stringify(data),
-        payload.workspace,
-        syncStatus,
-        contentJson,
-        source,
-        payload.sourceRef || null,
-      ]
-    );
-
-    const result = await database.query<any>(
-      `SELECT * FROM tracker_items WHERE id = $1`,
-      [payload.id]
-    );
-    if (result.rows.length === 0) {
-      throw new Error(`Failed to create tracker item ${payload.id}`);
-    }
-
-    // The insert leaves `local_key` NULL. Sweep before mapping, so the item
-    // handed to the watcher -- which the renderer inserts optimistically --
-    // carries its number instead of rendering keyless until the next re-list.
-    await this.assignLocalKeysFrom(result.rows);
-
-    const created = this.rowToTrackerItem(result.rows[0]);
-
-    // Notify watchers
-    const changeEvent: TrackerItemChangeEvent = {
-      added: [created],
-      updated: [],
-      removed: [],
-      timestamp: new Date(),
-    };
-    this.trackerItemWatchers.forEach(callback => callback(changeEvent));
-
-    return created;
+  async createTrackerItem(payload: NativeTrackerCreatePayload): Promise<TrackerItem> {
+    return createNativeTrackerItem(payload, {
+      assignLocalKeysFrom: (rows) => this.assignLocalKeysFrom(rows),
+      rowToTrackerItem: (row) => this.rowToTrackerItem(row),
+      notify: (change) => this.trackerItemWatchers.forEach((callback) => callback(change)),
+    });
   }
 
   /**
@@ -3881,59 +3777,8 @@ export function setupDocumentServiceHandlers(resolver: DocumentServiceResolver) 
     }
   });
 
-  // Create tracker item directly in PGLite (bypassing markdown files)
-  safeHandle('document-service:create-tracker-item', async (event, payload: {
-    id: string;
-    type: string;
-    title: string;
-    status: string;
-    priority: string;
-    workspace: string;
-    description?: string;
-    owner?: string;
-    tags?: string[];
-    customFields?: Record<string, any>;
-    sharing?: 'personal' | 'team';
-    draftByDefault?: boolean;
-  }) => {
-    try {
-      const sharingPolicy = getEffectiveTrackerSharingPolicy(payload.workspace, payload.type, payload);
-      // console.log('[DocumentService] create-tracker-item called:', {
-      //   id: payload.id,
-      //   type: payload.type,
-      //   requestedSharing: payload.sharing,
-      //   effectiveSharingPolicy: sharingPolicy,
-      //   workspace: payload.workspace,
-      // });
-      const item = await requireDocumentService(event).createTrackerItem(payload);
-      // console.log('[DocumentService] create-tracker-item created locally:', item.id);
-
-      if (shouldSyncTrackerItem(sharingPolicy, item)) {
-        const active = isTrackerSyncActive(payload.workspace);
-        // console.log('[DocumentService] create-tracker-item sync check:', { sharingPolicy, active });
-        if (active) {
-          try {
-            await syncTrackerItem(item);
-            // console.log('[DocumentService] create-tracker-item synced to TrackerRoom:', item.id);
-          } catch (syncErr) {
-            console.error('[DocumentService] create-tracker-item sync failed (item still created locally):', syncErr);
-          }
-        }
-      }
-
-      trackTrackerMutation({
-        itemId: item.id,
-        action: 'created',
-        collaborationScope: trackerCollaborationScope(sharingPolicy, item),
-        trackerType: item.type,
-        view: 'service',
-      });
-
-      return { success: true, item };
-    } catch (error) {
-      console.error('[DocumentService] create-tracker-item failed:', error);
-      return { success: false, error: error instanceof Error ? error.message : String(error) };
-    }
+  registerTrackerCreationHandlers(requireDocumentService, (item, shared) => {
+    trackTrackerMutation({ itemId: item.id, action: 'created', collaborationScope: shared ? 'shared' : 'personal', trackerType: item.type, view: 'service' });
   });
 
   /**

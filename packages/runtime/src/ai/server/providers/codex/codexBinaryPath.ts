@@ -91,7 +91,13 @@ function getResourcesRoots(resourcesPath: string): string[] {
 export function resolvePackagedCodexBinaryPath(
   options: CodexBinaryPathResolutionOptions = {}
 ): string | undefined {
-  const resourcesPath = options.resourcesPath ?? process.resourcesPath;
+  // Read locally rather than through a global `NodeJS.Process` augmentation.
+  // Electron declares `readonly resourcesPath: string`; redeclaring it globally
+  // as optional collides (TS2687/TS2717) and is only survivable because every
+  // config here sets skipLibCheck. Electron sets this; plain Node does not, and
+  // the guard below is what makes a headless host correct.
+  const hostProcess = process as NodeJS.Process & { resourcesPath?: string };
+  const resourcesPath = options.resourcesPath ?? hostProcess.resourcesPath;
   if (!resourcesPath) {
     return undefined;
   }

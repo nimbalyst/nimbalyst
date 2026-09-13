@@ -28,7 +28,13 @@ struct MetaAgentGrouping {
     let groupedSessionIds: Set<String>
 }
 
-/// Pure grouping logic, extracted so it can be unit-tested without a UI host.
+/// Pure grouping logic, and the reference definition of the desktop meta-agent
+/// grouping rules.
+///
+/// The sidebar itself resolves grouping in SQL now (`SessionListSQL.memberCTE`), so a
+/// collapsed group never materializes its children;
+/// `SessionListWindowTests.testGroupingMatchesReferenceGrouper` asserts that the SQL
+/// reproduces what this returns.
 ///
 /// Mirrors `SessionHistory.tsx` (~2119-2162): collect meta sessions by
 /// `agentRole == "meta-agent"`, attach children whose `createdBySessionId`
@@ -162,20 +168,24 @@ struct MetaAgentExpansion {
 /// The group-level context menu is attached to the header row ONLY, so it never leaks onto
 /// the child rows (which are now separate List rows rather than DisclosureGroup contents).
 struct MetaAgentGroupView<MenuContent: View>: View {
-    let group: MetaAgentGroup
+    let item: SessionListPageItem
+    /// The loaded page of sub-agent rows. A collapsed group loads none of them; a
+    /// large one loads a bounded page at a time.
+    let children: [SessionListRow]
+    let hasMoreChildren: Bool
     @Binding var isExpanded: Bool
     var voiceFocusedSessionId: String?
+    var onLoadMoreChildren: () -> Void
     /// Group-level context menu, attached to the header row only.
     @ViewBuilder var headerContextMenu: () -> MenuContent
 
-    /// Aggregate status across the meta session + all children
-    /// (mirrors desktop `MetaAgentGroupStatus`, which spans the whole group).
-    private var aggregateStatus: AggregatedStatus {
-        computeAggregatedStatus([group.metaSession] + group.children)
-    }
+    /// Aggregate status across the meta session + all children, computed in SQL over
+    /// the complete cached group (mirrors desktop `MetaAgentGroupStatus`, which spans
+    /// the whole group) rather than over the children that happen to be loaded.
+    private var aggregateStatus: AggregatedStatus { item.group.status }
 
     private var title: String {
-        group.metaSession.titleDecrypted ?? "Meta Agent"
+        item.parent.titleDecrypted ?? "Meta Agent"
     }
 
     var body: some View {
@@ -187,8 +197,11 @@ struct MetaAgentGroupView<MenuContent: View>: View {
                 .contextMenu { headerContextMenu() }
 
             if isExpanded {
-                ForEach(group.children) { child in
+                ForEach(children) { child in
                     childRow(child)
+                }
+                if hasMoreChildren {
+                    ChildPageLoader(onAppear: onLoadMoreChildren)
                 }
             }
         }
@@ -205,8 +218,8 @@ struct MetaAgentGroupView<MenuContent: View>: View {
         // trailing Spacer to fill the rest of the row.
         HStack(spacing: 8) {
             chevronToggle
-            NavigationLink(value: WorkspaceSelection.session(group.metaSession.id)) {
-                MetaAgentHeader(title: title, childCount: group.children.count, status: aggregateStatus)
+            NavigationLink(value: WorkspaceSelection.session(item.parent.id)) {
+                MetaAgentHeader(title: title, childCount: item.group.childCount, status: aggregateStatus)
             }
         }
     }
@@ -235,7 +248,7 @@ struct MetaAgentGroupView<MenuContent: View>: View {
     /// A child (sub-agent) session row, indented to nest under the meta header and
     /// navigating to its own transcript — exactly like a normal session row.
     @ViewBuilder
-    private func childRow(_ child: Session) -> some View {
+    private func childRow(_ child: SessionListRow) -> some View {
         NavigationLink(value: WorkspaceSelection.session(child.id)) {
             SessionRow(session: child, isChild: true, voiceFocusedSessionId: voiceFocusedSessionId)
                 .padding(.leading, 20)

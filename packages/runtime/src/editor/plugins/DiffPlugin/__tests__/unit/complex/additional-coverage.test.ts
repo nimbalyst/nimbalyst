@@ -7,6 +7,7 @@
  *
  */
 
+import { testComprehensiveDiff, normalizeMarkdown } from '../../utils/comprehensiveDiffTester';
 import {setupMarkdownDiffTest} from '../../utils/diffTestUtils';
 import { MARKDOWN_TEST_TRANSFORMERS } from "../../utils";
 import {$convertToMarkdownString} from '@lexical/markdown';
@@ -37,19 +38,8 @@ describe('Additional Coverage Tests', () => {
       const original = `This is ~~strikethrough with *italic and **bold** text* inside~~.`;
       const target = `This is ~~strikethrough with *italic and **bold modified** text* inside~~.`;
 
-      const result = setupMarkdownDiffTest(original, target);
-      // Use the enhanced exporter (the production export path). Upstream's
-      // own $convertToMarkdownString mishandles emphasis continuity across
-      // whitespace-only sibling text nodes that the diff plugin can leave
-      // behind; the enhanced exporter fixes that case (see
-      // EnhancedMarkdownExport.ts comment near hasTextFormat continuity check).
-      const actualMarkdown = result.diffEditor.getEditorState().read(() => {
-        return $convertToEnhancedMarkdownString(MARKDOWN_TEST_TRANSFORMERS, {
-          shouldPreserveNewLines: true,
-          includeFrontmatter: false,
-        });
-      });
-      expectMarkdownEquivalent(actualMarkdown, result.expectedMarkdown);
+      const result = testComprehensiveDiff(original, target);
+      expect(result.success, result.errors.join('\n')).toBe(true);
     });
 
     test('Format changes spanning multiple paragraphs', () => {
@@ -84,15 +74,8 @@ continues in next paragraph** end.`;
       const original = `This has **bold** text.`;
       const target = `This has bold and new text.`;
 
-      const result = setupMarkdownDiffTest(original, target);
-      const actualMarkdown = result.diffEditor.getEditorState().read(() => {
-        return $convertToMarkdownString(
-          MARKDOWN_TEST_TRANSFORMERS,
-          undefined,
-          true,
-        );
-      });
-      expectMarkdownEquivalent(actualMarkdown, result.expectedMarkdown);
+      const result = testComprehensiveDiff(original, target);
+      expect(result.success, result.errors.join('\n')).toBe(true);
     });
   });
 
@@ -333,4 +316,11 @@ $$`;
       expectMarkdownEquivalent(actualMarkdown, result.expectedMarkdown);
     });
   });
+});
+
+// Only serializer-equivalent thematic breaks are normalized; fenced contents
+// must remain byte-sensitive so this helper cannot hide a code edit.
+test('markdown comparison preserves thematic-break spellings inside code fences', () => {
+  expect(normalizeMarkdown('***')).toBe(normalizeMarkdown('---'));
+  expect(normalizeMarkdown('```md\n***\n```')).not.toBe(normalizeMarkdown('```md\n---\n```'));
 });

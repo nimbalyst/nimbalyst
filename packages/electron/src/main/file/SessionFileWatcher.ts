@@ -4,6 +4,7 @@ import { BrowserWindow } from 'electron';
 import { logger } from '../utils/logger';
 import type { FileSnapshotCache } from './FileSnapshotCache';
 import * as workspaceEventBus from './WorkspaceEventBus';
+import { markKnownFileWrite } from './knownFileWrites';
 
 const BINARY_EXTENSIONS = new Set([
   '.png', '.jpg', '.jpeg', '.gif', '.bmp', '.ico', '.webp', '.svg',
@@ -76,7 +77,8 @@ export class SessionFileWatcher {
    * Mark a file as recently saved by the editor.
    * Called from FileHandlers when the user saves a file (Cmd+S / autosave).
    */
-  static markEditorSave(filePath: string): void {
+  static markEditorSave(filePath: string, content?: string): void {
+    markKnownFileWrite(filePath, content);
     SessionFileWatcher.recentEditorSaves.set(path.normalize(filePath), Date.now());
   }
 

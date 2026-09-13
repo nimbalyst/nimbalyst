@@ -9,9 +9,41 @@
  * *fallback*, never a write — plus the sign-in rules, which are the difference
  * between "usable agent" and "agent that fails on the first turn".
  */
-import { describe, it, expect, beforeEach } from 'vitest';
-import { decideAvailability, __resetHeadlessAgentAvailabilityForTests } from '../headlessAgentAvailability';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { execFile } from 'child_process';
+import { decideAvailability, __resetHeadlessAgentAvailabilityForTests, refreshHeadlessAgentAvailability, getCachedHeadlessAgentAvailability } from '../headlessAgentAvailability';
 import { resolveProviderEnabled } from '../modelEnablementFilter';
+
+vi.mock('child_process', async (importOriginal) => ({
+  ...await importOriginal<typeof import('child_process')>(), execFile: vi.fn(),
+}));
+vi.mock('fs', async (importOriginal) => ({
+  ...await importOriginal<typeof import('fs')>(), existsSync: vi.fn(() => true),
+}));
+
+afterEach(() => { vi.unstubAllEnvs(); vi.clearAllMocks(); __resetHeadlessAgentAvailabilityForTests(); });
+
+it.each([undefined, '/fixture/bin'])('does not mistake inherited API keys for CLI login (PATH %s)', async (enhancedPath) => {
+  vi.stubEnv('CURSOR_API_KEY', 'synthetic-cursor');
+  vi.stubEnv('XAI_API_KEY', 'synthetic-xai');
+  vi.stubEnv('ANTHROPIC_AUTH_TOKEN', 'synthetic-anthropic');
+  const environments: NodeJS.ProcessEnv[] = [];
+  vi.mocked(execFile).mockImplementation(((_command: string, _args: string[], options: { env: NodeJS.ProcessEnv }, callback: (error: Error | null, stdout: string, stderr: string) => void) => {
+    const env = options.env;
+    environments.push(env);
+    callback(null, env.CURSOR_API_KEY || env.XAI_API_KEY ? 'Signed in' : 'Not logged in', '');
+  }) as unknown as typeof execFile);
+  await refreshHeadlessAgentAvailability(enhancedPath);
+  expect(getCachedHeadlessAgentAvailability('cursor-agent').signedIn).toBe(false);
+  expect(getCachedHeadlessAgentAvailability('grok-build').signedIn).toBe(false);
+  expect(environments).toHaveLength(2);
+  for (const env of environments) {
+    expect(env.ANTHROPIC_AUTH_TOKEN).toBeUndefined();
+    expect(env.HOME).toBe(process.env.HOME);
+    expect(env.PATH).toBe(enhancedPath ?? process.env.PATH);
+  }
+  expect(process.env.CURSOR_API_KEY).toBe('synthetic-cursor');
+});
 
 const EXE = '/Users/fixture/.local/bin/grok';
 

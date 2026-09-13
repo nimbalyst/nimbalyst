@@ -26,7 +26,22 @@ if [ "$(printf '%s\n' "$push_refs" | node scripts/prepush-test-gate.mjs --delive
   exit 0
 fi
 
-node scripts/check-toolchain.mjs "$(npm -v)"
+# Keep stage timings even when a command fails; never turn a failure into a
+# successful timing write. Epoch seconds are portable across Git Bash/macOS/Linux.
+mkdir -p .vitest
+printf '[]\n' > .vitest/last-prepush.json
+run_stage() {
+  stage_name=$1
+  shift
+  stage_start=$(date +%s)
+  stage_status=0
+  "$@" || stage_status=$?
+  stage_elapsed=$(( $(date +%s) - stage_start ))
+  echo "[pre-push] $stage_name: ${stage_elapsed}s (exit $stage_status)"
+  node scripts/record-prepush-stage.mjs "$stage_name" "$stage_elapsed" "$stage_status"
+  return "$stage_status"
+}
+run_stage toolchain node scripts/check-toolchain.mjs "$(npm -v)"
 
 # Validate package-lock.json is in sync with every workspace package.json
 # when the outgoing commits touch any manifest. This is exactly the check
@@ -37,7 +52,7 @@ base=$(node scripts/resolve-prepush-base.mjs)
 # Refuse to push escaped unit-test fixture commits (2026-07-22 incident: the
 # pre-push vitest run leaked "Test User" commits onto public main).
 echo "[pre-push] Checking outgoing commits for test-fixture authors..."
-node scripts/check-push-authors.mjs "$base..HEAD"
+run_stage authors node scripts/check-push-authors.mjs "$base..HEAD"
 
 # Hooks export repository-local GIT_* variables. In a linked worktree GIT_DIR
 # is absolute, so a real-Git test running in a temp directory can otherwise
@@ -48,37 +63,48 @@ git_local_env=$(git rev-parse --local-env-vars)
 unset $git_local_env
 unset GIT_NAMESPACE
 
-if ! git diff --quiet "$base" HEAD -- package-lock.json 'package.json' '*/package.json' 2>/dev/null; then
-  echo "[pre-push] Manifest/lockfile changed; validating lockfile sync (npm ci --dry-run)..."
-  if ! npm ci --dry-run >/dev/null 2>&1; then
-    echo ""
-    echo "[pre-push] ERROR: package-lock.json is out of sync with package.json."
-    echo "[pre-push] Run 'npm install' (Node 24 / npm 11 -- see .nvmrc) and commit the lockfile."
-    npm ci --dry-run 2>&1 | grep -E 'Invalid|Missing|EBADENGINE' | head -10
-    exit 1
+check_lockfile() {
+  if ! git diff --quiet "$base" HEAD -- package-lock.json 'package.json' '*/package.json' 2>/dev/null; then
+    echo "[pre-push] Manifest/lockfile changed; validating lockfile sync (npm ci --dry-run)..."
+    if ! npm ci --dry-run >/dev/null 2>&1; then
+      echo ""
+      echo "[pre-push] ERROR: package-lock.json is out of sync with package.json."
+      echo "[pre-push] Run 'npm install' (Node 24 / npm 11 -- see .nvmrc) and commit the lockfile."
+      npm ci --dry-run 2>&1 | grep -E 'Invalid|Missing|EBADENGINE' | head -10
+      return 1
+    fi
+    echo "[pre-push] Lockfile in sync."
   fi
-  echo "[pre-push] Lockfile in sync."
-fi
+
+}
+run_stage lockfile check_lockfile
 
 echo "[pre-push] Checking override/dep sync..."
-npm run check:override-sync
+run_stage override-sync npm run check:override-sync
 
 echo "[pre-push] Checking tracked text files for raw NUL bytes..."
-npm run check:text-nuls -- --ref HEAD
+run_stage text-nuls npm run check:text-nuls -- --ref HEAD
 
 echo "[pre-push] Building typecheck prerequisites and running the full typecheck..."
-npm run typecheck:prepush
+run_stage typecheck:prepush npm run typecheck:prepush
 
 echo "[pre-push] Verifying platform test-gate behavior..."
-npm run test:prepush-gate
+run_stage test:prepush-gate npm run test:prepush-gate
 
 # Every line printed here lands in the Git extension's Output panel, so the
 # prepush scripts use dot reporters, --silent=passed-only, and a quiet Vite
 # build. A passing push is ~84 lines instead of ~25500 (most of which was
 # console.log from the tests themselves). Failures still print in full.
 if [ "$(node scripts/prepush-test-gate.mjs)" = "run" ]; then
-  echo "[pre-push] Running non-provider unit tests..."
-  npm run test:prepush
+  # typecheck:prepush already rebuilt generated artifacts. Untracked changes to
+  # node_modules are not represented by Git; run test:prepush after manual edits
+  # to installed dependencies. Non-HEAD refs conservatively use the normal gate.
+  if [ "$(printf '%s\n' "$push_refs" | node scripts/prepush-test-gate.mjs --reuse)" = "reuse" ]; then
+    run_stage test:prepush-reused true
+  else
+    echo "[pre-push] Running non-provider unit tests..."
+    run_stage test:prepush npm run test:prepush
+  fi
 else
   echo "[pre-push] Skipping the full Vitest suite on local Windows; CI and non-Windows pushes still require it."
   echo "[pre-push] See docs/WINDOWS_PREPUSH_GATE.md for the tracked nonportable failures."

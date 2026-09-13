@@ -126,7 +126,8 @@ public final class AppState: ObservableObject {
     }
 
     /// Initialize with pre-built managers (for testing and previews).
-    public init(databaseManager: DatabaseManager) {
+    public init(databaseManager: DatabaseManager, documentSyncManager: DocumentSyncManager? = nil) {
+        self.documentSyncManager = documentSyncManager
         self.databaseManager = databaseManager
         self.indexLoadState = .loaded
         self.isPaired = true
@@ -614,6 +615,7 @@ public final class AppState: ObservableObject {
 
         // Observe encryption key mismatch (wrong pairing / stale key)
         sync.$encryptionKeyMismatch
+            .removeDuplicates()
             .receive(on: DispatchQueue.main)
             .sink { [weak self] mismatch in
                 self?.needsRepair = mismatch
@@ -712,7 +714,13 @@ public final class AppState: ObservableObject {
     /// row rather than navigate to a session the views can't yet resolve.
     @MainActor
     private func navigateWhenSessionAvailable(_ sessionId: String) async {
+        guard let requestedDatabase = databaseManager else {
+            voiceNavigationRequest = sessionId
+            return
+        }
+        syncManager?.requestSessionIndexLookup(sessionId: sessionId)
         for _ in 0..<25 { // ~5s max (25 * 200ms)
+            guard !Task.isCancelled, databaseManager === requestedDatabase else { return }
             if let db = databaseManager, (try? db.session(byId: sessionId)) != nil {
                 voiceNavigationRequest = sessionId
                 return
@@ -730,7 +738,8 @@ public final class AppState: ObservableObject {
     /// Create an AppState configured for screenshot capture.
     /// Uses an in-memory database with realistic demo data, bypasses auth/pairing.
     public static func forScreenshots() -> AppState {
-        let db = try! ScreenshotDataProvider.createPopulatedDatabase()
+        let historyCount = CommandLine.arguments.contains("--retained-history-fixture") ? 10_000 : 0
+        let db = try! ScreenshotDataProvider.createPopulatedDatabase(historyCount: historyCount)
         let state = AppState(databaseManager: db)
         state.isConnected = true
         state.screenshotMode = true

@@ -128,6 +128,31 @@ describe('routed folder scope', () => {
   });
 
   /**
+   * A host with no tree beside the list (the browser console) browses folders
+   * in it: the level's folders are rows, only the level's documents show, and
+   * a search leaves the level for the whole project.
+   */
+  it('browses folders as rows for a host with no tree', () => {
+    const onSelectFolder = vi.fn();
+    const root = renderDocsUI(<SharedDocsListView onSelectFolder={onSelectFolder} />);
+    expect(root.container.querySelectorAll('.shared-docs-folder-row')).toHaveLength(2);
+    expect(root.container.textContent).not.toContain('Sync protocol notes');
+    const engineering = [...root.container.querySelectorAll('.shared-docs-folder-row')]
+      .find((row) => row.textContent?.includes('Engineering'))!;
+    fireEvent.click(engineering);
+    expect(onSelectFolder).toHaveBeenCalledWith('folder-engineering');
+
+    cleanup();
+
+    const scoped = renderDocsUI(<SharedDocsListView folderId="folder-engineering" onSelectFolder={onSelectFolder} />);
+    expect(scoped.container.querySelectorAll('.shared-docs-folder-row')).toHaveLength(0);
+    expect(scoped.container.textContent).toContain('Sync protocol notes');
+    expect(scoped.container.textContent).not.toContain('Launch plan');
+    fireEvent.change(scoped.getByLabelText('Search shared documents'), { target: { value: 'launch' } });
+    expect(scoped.container.textContent).toContain('Launch plan');
+  });
+
+  /**
    * The route wins over the folder facet, so on a folder page the checkbox menu
    * was live but ignored: picking another folder, unchecking this one, and
    * Clear all mutated state the list no longer reads. The page reports its

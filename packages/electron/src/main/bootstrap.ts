@@ -26,6 +26,12 @@ import { app } from 'electron';
 import * as path from 'path';
 import Store, { hardenExistingSettings } from './utils/privateSettingsStore';
 import { createUncaughtExceptionHandler } from './uncaughtException';
+// Tells the runtime package which host it is running in, before any of its
+// modules resolve a binary path. Registration is a side effect of this import
+// rather than a call in this file's body: ESM evaluates all static imports
+// first, so a body statement here would lose the race to `./index.js` below.
+// This import must stay above that one.
+import './hostEnvironment';
 
 // CRITICAL: Strip inherited API keys from process.env before ANY downstream code
 // (SDKs, providers, services) can observe them. See CLAUDE.md, section

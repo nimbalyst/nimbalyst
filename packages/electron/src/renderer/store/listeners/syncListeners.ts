@@ -10,6 +10,8 @@
 import { store } from '@nimbalyst/runtime/store';
 import { syncStatusUpdateAtom, type SyncStatusUpdate } from '../atoms/syncStatus';
 
+import { initRemoteSessionListeners } from './remoteSessionViews';
+
 let initialized = false;
 
 export function initSyncListeners(): () => void {
@@ -17,6 +19,7 @@ export function initSyncListeners(): () => void {
     return () => {};
   }
   initialized = true;
+  const stopRemoteSessionListeners = initRemoteSessionListeners();
 
   const unsubscribe = window.electronAPI?.on?.(
     'sync:status-changed',
@@ -27,6 +30,7 @@ export function initSyncListeners(): () => void {
 
   return () => {
     initialized = false;
+    stopRemoteSessionListeners();
     if (typeof unsubscribe === 'function') {
       unsubscribe();
     }

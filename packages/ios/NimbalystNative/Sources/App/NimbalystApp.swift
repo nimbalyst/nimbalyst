@@ -385,13 +385,13 @@ public struct MainNavigationView: View {
         } message: {
             Text("Get notified when your AI sessions complete or need your attention, even when Nimbalyst is in the background.")
         }
-        .alert("Re-pair Required", isPresented: $appState.needsRepair) {
+        .alert("Unable to Decrypt Sessions", isPresented: $appState.needsRepair) {
             Button("Re-pair Now") {
                 appState.unpair()
             }
             Button("Dismiss", role: .cancel) {}
         } message: {
-            Text("Your sessions could not be decrypted. The encryption key on this device no longer matches the desktop app. Please re-pair by scanning the QR code from the desktop app's settings.")
+            Text("None of the sessions in a full sync could be decrypted with this device's key. If this continues, you may need to re-pair by scanning the QR code from the desktop app's settings.")
         }
         #if os(iOS)
         .alert(item: voiceActivationIssueBinding) { issue in

@@ -11,17 +11,18 @@ const {
   getAppPathMock: vi.fn(() => '/Applications/Nimbalyst.app/Contents/Resources/app.asar'),
 }));
 
-vi.mock('electron', () => ({
-  app: {
-    isPackaged: true,
+vi.mock('../../host/hostEnvironment', () => ({
+  getHostEnvironment: () => ({
+    isPackaged: () => true,
     getAppPath: getAppPathMock,
-  },
+  }),
 }));
 
 vi.mock('fs', () => ({
   default: {
     existsSync: existsSyncMock,
     readdirSync: readdirSyncMock,
+    lstatSync: vi.fn(() => ({ isFile: () => true })),
   },
 }));
 
@@ -103,11 +104,11 @@ describe('setupClaudeCodeEnvironment updater pin (NIM-1573)', () => {
     expect(env.DISABLE_UPDATES).toBe('1');
   });
 
-  it('does not clobber a user-set DISABLE_AUTOUPDATER', async () => {
+  it('#1476: overrides a user-set DISABLE_AUTOUPDATER', async () => {
     process.env.DISABLE_AUTOUPDATER = '0';
     const environment = await import('../claudeCodeEnvironment');
     const env = environment.setupClaudeCodeEnvironment();
-    expect(env.DISABLE_AUTOUPDATER).toBe('0');
+    expect(env.DISABLE_AUTOUPDATER).toBe('1');
   });
 });
 
@@ -151,12 +152,12 @@ describe('interrupted self-update detection (NIM-1573)', () => {
     const environment = await import('../claudeCodeEnvironment');
     const orphans = environment.findOrphanedClaudeUpdateFiles();
     expect(orphans).toEqual([
-      `${UNPACKED_SDK_DIR}/claude.old.1783585579626`,
       `${UNPACKED_SDK_DIR}/claude.old.1783585999999`,
+      `${UNPACKED_SDK_DIR}/claude.old.1783585579626`,
     ]);
   });
 
-  it('describeMissingClaudeRuntime names the interrupted-update case only when orphans exist', async () => {
+  it('#1476: missing-runtime diagnostics do not claim an interrupted update', async () => {
     const environment = await import('../claudeCodeEnvironment');
 
     // No orphans -> base "repair" message, no orphan/self-update note.
@@ -171,7 +172,7 @@ describe('interrupted self-update detection (NIM-1573)', () => {
     readdirSyncMock.mockReturnValue(['claude.old.1783585579626']);
     const withOrphan = environment.describeMissingClaudeRuntime();
     expect(withOrphan).toMatch(/repair Nimbalyst/i);
-    expect(withOrphan).toMatch(/interrupted Claude CLI self-update/i);
-    expect(withOrphan).toMatch(/orphaned/i);
+    expect(withOrphan).not.toMatch(/interrupted/i);
+    expect(withOrphan).toMatch(/preserved self-update/i);
   });
 });

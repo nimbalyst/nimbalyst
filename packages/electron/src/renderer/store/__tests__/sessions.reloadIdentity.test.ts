@@ -1,7 +1,9 @@
 // @vitest-environment node
 import { describe, it, expect } from 'vitest';
 import type { SessionData, TranscriptViewMessage } from '@nimbalyst/runtime/ai/server/types';
-import { preserveReloadIdentity } from '../atoms/sessions';
+import { preserveReloadIdentity, sessionRegistryAtom, sessionListRootAtom, sessionListWorkspaceAtom } from '../atoms/sessions';
+import {createStore} from 'jotai';
+import {selectedMachineAtom} from '../atoms/remoteMachines';
 
 function makeMessage(id: number, text: string): TranscriptViewMessage {
   return {
@@ -89,5 +91,23 @@ describe('preserveReloadIdentity', () => {
 
     expect(merged.metadata?.currentTeammates).toBe(currentTeammates);
     expect(merged.metadata?.sessionStatus).toBe('running');
+  });
+});
+
+
+describe('machine-scoped session lists', () => {
+  it('keeps the local and remote session groups separate for the same project', () => {
+    const store = createStore();
+    store.set(sessionListWorkspaceAtom, '/repo');
+    store.set(sessionRegistryAtom, new Map([
+      ['local', {id: 'local', createdAt: 1, updatedAt: 1}],
+      ['remote', {id: 'remote', createdAt: 2, updatedAt: 2, remoteHostDeviceId: 'sandbox'}],
+      ['other', {id: 'other', createdAt: 3, updatedAt: 3, remoteHostDeviceId: 'another-machine'}],
+    ]) as any);
+    expect(store.get(sessionListRootAtom).map(session => session.id)).toEqual(['local']);
+    store.set(selectedMachineAtom('/repo'), 'sandbox');
+    expect(store.get(sessionListRootAtom).map(session => session.id)).toEqual(['remote']);
+    store.set(selectedMachineAtom('/repo'), '');
+    expect(store.get(sessionListRootAtom).map(session => session.id)).toEqual(['local']);
   });
 });

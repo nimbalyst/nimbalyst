@@ -1,3 +1,4 @@
+// @vitest-environment node
 /**
  * Smoke tests for the read-only query path used by `host.data.query`.
  *
@@ -7,12 +8,13 @@
  * transaction, statement_timeout fires, CTEs run, and SET LOCAL doesn't leak.
  */
 
-import { describe, expect, it, beforeAll, afterAll } from 'vitest';
+import { describe, expect, it, beforeAll, afterAll, vi } from 'vitest';
 import { PGlite } from '@electric-sql/pglite';
 import * as path from 'path';
 import * as os from 'os';
 import * as fs from 'fs';
-import { clampReadOnlyTimeout, raceWithTimeout } from '../PGLiteDatabaseWorker';
+import { beginDatabaseMaintenance, resetDatabaseMaintenanceForTests } from '../databaseMaintenance';
+import { PGLiteDatabaseWorker, clampReadOnlyTimeout, raceWithTimeout } from '../PGLiteDatabaseWorker';
 
 interface Pg {
   exec(sql: string): Promise<unknown>;
@@ -191,4 +193,50 @@ describe('JS-level timeout race (wrapper enforces bound when backend does not)',
     expect(clampReadOnlyTimeout(1000)).toBe(1000); // mid-range passes
     expect(clampReadOnlyTimeout(60000)).toBe(30000); // clamped to ceiling
   });
+});
+
+
+describe('PGLite migration request lifetime', () => {
+  it('routes migration reads through retained request ownership without changing extension deadlines', async () => {
+    vi.useFakeTimers();
+    try {
+      const service = new PGLiteDatabaseWorker();
+      const posted: Array<{ id: string; type: string }> = [];
+      const internals = service as unknown as {
+        initialized: boolean;
+        worker: { postMessage: (message: { id: string; type: string }) => void };
+        requests: { receive: (response: { id: string; success: boolean; data: unknown }) => void };
+      };
+      internals.initialized = true;
+      internals.worker = { postMessage: (message) => posted.push(message) };
+      let completed = false;
+      const migration = service.queryForMigration('SELECT 1').catch((error) => { completed = true; return error; });
+      await vi.advanceTimersByTimeAsync(31_000);
+      expect(completed).toBe(false);
+      expect(() => service.assertMigrationAvailable()).toThrow(/has not finished/);
+      internals.requests.receive({ id: posted[0].id, success: true, data: { rows: [{ n: 1 }] } });
+      expect(await migration).toMatchObject({ code: 'migration_read_timeout', data: { sourceSettled: true } });
+      expect(() => service.assertMigrationAvailable()).not.toThrow();
+      const extension = service.queryReadOnly('SELECT 1', [], 100).catch((error) => error);
+      await vi.advanceTimersByTimeAsync(100);
+      expect((await extension).message).toContain('statement timeout');
+      internals.requests.receive({ id: posted[1].id, success: true, data: { rows: [] } });
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+
+it('fences worker requests during cutover while still allowing the owned close', async () => {
+  const worker = Object.create(PGLiteDatabaseWorker.prototype) as any;
+  worker.requests = { send: vi.fn(async () => ({ closed: true })) };
+  beginDatabaseMaintenance();
+  try {
+    expect(() => worker.sendMessage('query', { sql: 'SELECT 1' })).toThrow(/Restart Nimbalyst/);
+    expect(() => worker.sendMessage('exec', { sql: 'INSERT INTO ai_sessions VALUES (1)' })).toThrow(/Restart Nimbalyst/);
+    expect(worker.requests.send).not.toHaveBeenCalled();
+    await expect(worker.sendMessage('close')).resolves.toEqual({ closed: true });
+  } finally { resetDatabaseMaintenanceForTests(); }
 });

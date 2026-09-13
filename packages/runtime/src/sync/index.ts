@@ -60,6 +60,9 @@ export {
 } from './types';
 
 export { createCollabV3Sync } from './CollabV3Sync';
+export { createPersonalSyncWriteGate, describePersonalSyncWriteGate } from './personalSyncWriteGate';
+export type { PersonalSyncWriteGateSnapshot, PersonalSyncWriteGateState, PersonalSyncBlockReason } from './personalSyncWriteGate';
+export { IndexEntryDecryptionError, isIndexEntryDecryptionError } from './indexEntryDecryptionError';
 export { createExtensionAwarenessBridge } from './extensionAwarenessBridge';
 export type {
   ExtensionAwarenessBridge,
@@ -67,6 +70,7 @@ export type {
   ExtensionAwarenessUser,
 } from './extensionAwarenessBridge';
 export { deriveTrackerPersonalStateKey } from './trackerPersonalStateKey';
+export { deriveEncryptionKey, personalSyncEncryptionSalt } from './encryptionKey';
 export { setSyncImageCompressor } from './syncContentTruncator';
 export type { SyncImageCompressor } from './syncContentTruncator';
 

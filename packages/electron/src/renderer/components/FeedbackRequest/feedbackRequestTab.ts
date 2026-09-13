@@ -15,13 +15,12 @@
  */
 
 import { store } from '@nimbalyst/runtime/store';
+import { revealWorkstreamEditorAtom } from '../../store/atoms/agentFileViewer';
 
 import { setWindowModeAtom, windowModeAtom } from '../../store/atoms/windowMode';
 import {
   addWorkstreamFeedbackRequestAtom,
   feedbackRequestResource,
-  setWorkstreamLayoutModeAtom,
-  workstreamLayoutModeAtom,
   type WorkstreamResource,
 } from '../../store/atoms/workstreamState';
 
@@ -84,19 +83,19 @@ export function feedbackRequestResourceForTab(filePath: string): WorkstreamResou
  *   mirror is what keeps the two in step — so closing the tab removes it for
  *   good rather than leaving something to re-derive.
  *
- * Seeding before the reveal is load-bearing, not incidental ordering: the panel
- * collapses its editor area the moment a workstream has no open resources, so a
- * layout flip that arrives first is undone before the strip can open anything.
+ * The cancelable event acknowledges a mounted owner even while its viewer is
+ * hidden. Only an unhandled event seeds resources for mount-time restoration.
  */
 export function openFeedbackRequestResults(
   detail: FeedbackRequestTabRef & { workstreamId: string },
 ): void {
   const { workstreamId, orgId, requestId } = detail;
   const inAgentMode = store.get(windowModeAtom) === 'agent';
-  const layoutMode = store.get(workstreamLayoutModeAtom(workstreamId));
-
-  if (inAgentMode && layoutMode !== 'transcript') {
-    window.dispatchEvent(new CustomEvent(FEEDBACK_REQUEST_OPEN_EVENT, { detail }));
+  const event = new CustomEvent(FEEDBACK_REQUEST_OPEN_EVENT, { detail, cancelable: true });
+  window.dispatchEvent(event);
+  if (event.defaultPrevented) {
+    store.set(revealWorkstreamEditorAtom, workstreamId);
+    if (!inAgentMode) store.set(setWindowModeAtom, 'agent');
     return;
   }
 
@@ -106,9 +105,7 @@ export function openFeedbackRequestResults(
     orgId,
     requestId,
   });
-  if (layoutMode === 'transcript') {
-    store.set(setWorkstreamLayoutModeAtom, { workstreamId, mode: 'split' });
-  }
+  store.set(revealWorkstreamEditorAtom, workstreamId);
   if (!inAgentMode) {
     store.set(setWindowModeAtom, 'agent');
   }

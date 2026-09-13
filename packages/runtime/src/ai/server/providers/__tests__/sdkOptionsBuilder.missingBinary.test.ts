@@ -19,12 +19,11 @@ const { isPackagedRef, resolveCliMock } = vi.hoisted(() => ({
   resolveCliMock: vi.fn<() => Promise<string>>(),
 }));
 
-vi.mock('electron', () => ({
-  app: {
-    get isPackaged() {
-      return isPackagedRef.value;
-    },
-  },
+vi.mock('../../../../host/hostEnvironment', () => ({
+  getHostEnvironment: () => ({
+    isPackaged: () => isPackagedRef.value,
+    getAppPath: () => '/repo/packages/electron',
+  }),
 }));
 
 vi.mock('../claudeCode/cliPathResolver', () => ({

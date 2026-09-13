@@ -1,3 +1,4 @@
+import { initDocumentFeedbackListeners } from './documentFeedbackListeners';
 import type { Store } from 'jotai/vanilla/store';
 
 import type { FeedbackRequestServiceState } from '../../../shared/feedbackRequest';
@@ -51,7 +52,7 @@ export function initFeedbackRequestListeners(
   const timers = new Map<string, ReturnType<typeof setTimeout>>();
   const pendingIndexes = new Map<string, FeedbackRequestIndexChangedPayload>();
   const indexTimers = new Map<string, ReturnType<typeof setTimeout>>();
-  const unsubscribes = [window.electronAPI.on(
+  const unsubscribes = [initDocumentFeedbackListeners(targetStore), window.electronAPI.on(
     'feedback-request:state-changed',
     (value: unknown) => {
       if (!isFeedbackRequestState(value)) return;

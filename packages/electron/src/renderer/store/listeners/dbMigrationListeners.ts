@@ -14,8 +14,10 @@
  * the panel came back with no phase, no progress, and no completion summary.
  */
 
+import { newerMigrationOperation, type MigrationOperationSnapshot } from '../../../shared/migrationOperation';
 import { store } from '@nimbalyst/runtime/store';
 import {
+  dbMigrationOperationAtom,
   dbMigratedCopiesAtom,
   dbMigrationBlockedAtom,
   dbMigrationFailureAtom,
@@ -48,8 +50,31 @@ import {
  * showing nothing is a better outcome than the settings dialog failing to
  * mount, and a launch must not depend on this.
  */
+export function hydrateMigrationOperation(operation?: MigrationOperationSnapshot | null): boolean {
+  const current = store.get(dbMigrationOperationAtom);
+  if (!operation) return !current;
+  if (current?.revision === operation.revision) return true;
+  if (!newerMigrationOperation(current, operation)) return false;
+  store.set(dbMigrationOperationAtom, operation);
+  store.set(dbMigrationPhaseAtom, operation.phase as MigrationPhaseEvent ?? null);
+  store.set(dbMigrationProgressAtom, operation.progress as MigrationProgressEvent ?? null);
+  return true;
+}
+
 export async function refreshDbRecoveryState(): Promise<void> {
   if (!window.electronAPI) return;
+
+  try {
+    const resp = (await window.electronAPI.invoke('db:migration:get-status')) as
+      | { success: true; migrationBlocked?: MigrationBlockedState | null; operation?: MigrationOperationSnapshot | null }
+      | { success: false; error: string };
+    if (resp.success) {
+      store.set(dbMigrationBlockedAtom, resp.migrationBlocked ?? null);
+      hydrateMigrationOperation(resp.operation);
+    }
+  } catch {
+    // Leave the previous values alone.
+  }
 
   try {
     const resp = (await window.electronAPI.invoke('db:recovery:list-candidates')) as
@@ -77,14 +102,7 @@ export async function refreshDbRecoveryState(): Promise<void> {
     // Leave the previous values alone.
   }
 
-  try {
-    const resp = (await window.electronAPI.invoke('db:migration:get-status')) as
-      | { success: true; migrationBlocked?: MigrationBlockedState | null }
-      | { success: false; error: string };
-    if (resp.success) store.set(dbMigrationBlockedAtom, resp.migrationBlocked ?? null);
-  } catch {
-    // Leave the previous values alone.
-  }
+
 }
 
 export function initDbMigrationListeners(): () => void {
@@ -97,6 +115,7 @@ export function initDbMigrationListeners(): () => void {
   // preload's electronAPI.on strips the IPC event, so callbacks receive
   // (payload) directly -- not (event, payload).
   const unsubscribes = [
+    window.electronAPI.on('db:migration:operation', hydrateMigrationOperation),
     window.electronAPI.on('db:migration:phase', (payload: MigrationPhaseEvent) => {
       store.set(dbMigrationPhaseAtom, payload);
     }),

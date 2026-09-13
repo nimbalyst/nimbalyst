@@ -99,6 +99,10 @@ export type ProjectSyncServerMessage =
 /** Response to projectSyncRequest */
 export interface ProjectSyncResponseMessage {
   type: 'projectSyncResponse';
+  /** Absent together on legacy single-response servers. */
+  transferId?: string;
+  batchIndex?: number;
+  isLastBatch?: boolean;
   updatedFiles: ProjectSyncFileEntry[];
   yjsUpdates: ProjectSyncYjsUpdate[];
   newFiles: ProjectSyncFileEntry[];

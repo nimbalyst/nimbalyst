@@ -13,7 +13,8 @@ import {
 import { isTrackerSyncActive, isTrackerSyncConfigured, syncTrackerItem } from '../../services/TrackerSyncManager';
 import { awaitServerIssueKey } from '../../services/tracker/awaitServerIssueKey';
 import { isLocalIssueKey, resolveDisplayIssueKey } from '../../../shared/localIssueKey';
-import { applyHeadlessBodyMarkdown } from '../../services/MainBodyDocService';
+import { applyHeadlessBodyMarkdown, initializeHeadlessBodyMarkdown } from '../../services/MainBodyDocService';
+import { initialTrackerBodyCache } from '../../services/tracker/trackerBodySnapshot';
 import { applyRelationshipFieldWrites } from '../../services/tracker/relationshipFieldWrite';
 import { appendActivity } from '../../services/tracker/trackerActivity';
 import { assignLocalKeysToRows } from '../../services/tracker/localKeyAllocator';
@@ -60,6 +61,7 @@ import {
   resolveTrackerRowByReference,
 } from './trackerToolItemAccess';
 import { handleTrackerPublicationUpdate } from './trackerPublicationTool';
+import { prepareTrackerUpdateInput } from './trackerToolUpdateInput';
 import { handleGithubIssueOverlayCreate } from './githubIssueOverlayTool';
 import {
   bodyWriteFailure,
@@ -2036,21 +2038,23 @@ export async function handleTrackerCreate(
     }
 
     // Normalize literal \n sequences to real newlines (MCP tool args may contain escaped sequences)
-    const descriptionText = args.description
+    const descriptionText = typeof args.description === 'string'
       ? args.description.replace(/\\n/g, '\n')
       : null;
-    const contentJson = descriptionText
+    const contentJson = descriptionText !== null
       ? JSON.stringify(descriptionText)
       : null;
 
-    await db.query(
-      `INSERT INTO tracker_items (
+    const creationStatements = [{
+      sql: `INSERT INTO tracker_items (
         id, type, type_tags, data, workspace, document_path, line_number,
         created, updated, last_indexed, sync_status,
-        content, archived, source, source_ref
-      ) VALUES ($1, $2, $3, $4, $5, '', NULL, NOW(), NOW(), NOW(), $6, $7, FALSE, $8, $9)`,
-      [id, args.type, typeTags, JSON.stringify(data), workspacePath, syncStatus, contentJson, originSource, originSourceRef]
-    );
+        content, archived, source, source_ref, body_version
+      ) VALUES ($1, $2, $3, $4, $5, '', NULL, NOW(), NOW(), NOW(), $6, $7, FALSE, $8, $9, $10)`,
+      params: [id, args.type, typeTags, JSON.stringify(data), workspacePath, syncStatus, contentJson, originSource, originSourceRef, contentJson === null ? 0 : 1],
+    }];
+    if (contentJson !== null) creationStatements.push(initialTrackerBodyCache(id, contentJson));
+    await db.runTransaction(creationStatements);
 
     // Number the row before it is read back, so an agent-created item reports
     // its key in this tool's own result rather than only after the next list
@@ -2082,68 +2086,15 @@ export async function handleTrackerCreate(
       }
     }
 
-    // Route the description through the canonical body path so it shows up
-    // in the editor when the item is opened. The initial INSERT above sets
-    // `content` for backward compatibility, but that column alone is not
-    // enough: without this block `body_version` stays at 0,
-    // `tracker_body_cache` is never populated, and the live
-    // DocumentRoom Y.Doc is never seeded -- so the collaborative editor
-    // mounts empty. This mirrors `ElectronDocumentService.updateTrackerItemContent`
-    // inline so we do not depend on `documentServices` having an entry for
-    // this workspace (which is empty after a main-process hot-reload until
-    // the first window finishes wiring up).
+    // The body and cache committed with the item. Only published team items
+    // may contact the body room; personal items and team drafts stay local.
     let bodyWriteResult: BodyWriteFailure | undefined;
-    if (descriptionText) {
-      let localSnapshotStored = false;
+    if (descriptionText !== null && shouldSyncTrackerItem(sharingPolicy, data)) {
       try {
-        const bodyContentJson = JSON.stringify(descriptionText);
-        const bumpResult = await db.query<{ body_version: string | number | null }>(
-          `UPDATE tracker_items
-              SET content = $1,
-                  body_version = COALESCE(body_version, 0) + 1,
-                  updated = NOW()
-            WHERE id = $2
-            RETURNING body_version`,
-          [bodyContentJson, id]
-        );
-        const newBodyVersion = Number(bumpResult.rows[0]?.body_version ?? 0);
-        if (newBodyVersion > 0) {
-          await db.query(
-            `INSERT INTO tracker_body_cache (item_id, body_version, content, cached_at)
-             VALUES ($1, $2, $3, NOW())
-             ON CONFLICT (item_id, body_version) DO NOTHING`,
-            [id, newBodyVersion, bodyContentJson]
-          );
-        }
-        localSnapshotStored = true;
-
-        // Re-sync metadata so peers learn the bodyVersion bump (cold readers
-        // invalidate their cache and refetch from `tracker_body_cache`).
-        if (shouldSyncTrackerItem(sharingPolicy, data) && isTrackerSyncActive(workspacePath)) {
-          createdRow = await resolveTrackerRowByReference(db, id, workspacePath);
-          createdItem = createdRow ? rowToTrackerItem(createdRow) : createdItem;
-          if (createdItem) {
-            await syncTrackerItem(createdItem);
-          }
-        }
-
-        // Seed the live DocumentRoom Y.Doc so the collaborative editor mounts
-        // with content instead of waiting on a never-bootstrapped room. No-op
-        // for local trackers (resolveConfig returns null without a team).
-        const collaborativeBodyStored = await applyHeadlessBodyMarkdown(workspacePath, id, descriptionText);
-        if (
-          collaborativeBodyStored === false &&
-          shouldSyncTrackerItem(sharingPolicy, data)
-        ) {
-          bodyWriteResult = bodyWriteFailure(true);
-          console.error('[MCP Server] tracker_create collaborative body write failed:', {
-            itemId: id,
-            workspacePath,
-          });
-        }
+        await initializeHeadlessBodyMarkdown(workspacePath, id, descriptionText);
       } catch (bodyError) {
-        bodyWriteResult = bodyWriteFailure(localSnapshotStored);
-        console.error('[MCP Server] tracker_create body write failed:', bodyError);
+        bodyWriteResult = bodyWriteFailure(true);
+        console.error('[MCP Server] tracker_create collaborative body write failed:', { itemId: id, workspacePath, error: bodyError });
       }
     }
 
@@ -2247,22 +2198,7 @@ export async function handleTrackerUpdate(
   sessionId?: string | undefined
 ): Promise<McpToolResult> {
   try {
-    // NIM-438: a description delivered via the generic fields bag
-    // (fields.description) must update the canonical visible body the same way
-    // a top-level `description` does. The body-seed path keys off
-    // args.description, so hoist fields.description up to the top level (and
-    // drop it from the bag to avoid a redundant data.description write) before
-    // any field processing runs.
-    if (
-      args &&
-      args.fields &&
-      typeof args.fields === 'object' &&
-      args.fields.description !== undefined &&
-      args.description === undefined
-    ) {
-      args.description = args.fields.description;
-      delete args.fields.description;
-    }
+    prepareTrackerUpdateInput(args);
 
     // Make custom (.nimbalyst/trackers/*.yaml) types visible so primaryType
     // reassignment and schema validation accept them (NIM-760).

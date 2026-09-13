@@ -162,6 +162,7 @@ export function useTrackerContentCollab({
   const [status, setStatus] = useState<DocumentSyncStatus>('disconnected');
   const [providerEpoch, setProviderEpoch] = useState(0);
   const [bodyCacheMarkdown, setBodyCacheMarkdown] = useState<string | null>(null);
+  const [allowBootstrap, setAllowBootstrap] = useState(false);
   const syncProviderRef = useRef<DocumentSyncProvider | null>(null);
   const collabProviderRef = useRef<CollabLexicalProvider | null>(null);
   const acquisitionConfigRef = useRef<BodyDocAcquisition['config'] | null>(null);
@@ -198,6 +199,7 @@ export function useTrackerContentCollab({
     // below; missing-cache items (new, never-saved) stay null and fall
     // through to the caller's mdContent fallback.
     setBodyCacheMarkdown(null);
+    setAllowBootstrap(false);
 
     // Phase 4b cold-paint: fetch the latest `tracker_body_cache` row in
     // parallel with the Y.Doc connect. When present, the editor seeds
@@ -206,17 +208,29 @@ export function useTrackerContentCollab({
     // the bootstrap decision behind the server's initial sync response,
     // so a non-empty room still wins; the cache row is just an
     // optimistic paint with the *correct* body version.
-    const bodyCacheFetch: Promise<string | null> = (async () => {
-      try {
-        const result = await window.electronAPI.documentService.getTrackerBodyCacheForDetail({ itemId });
-        if (!result.success || !result.row) return null;
-        const raw = result.row.content;
-        if (raw == null) return null;
-        return typeof raw === 'string' ? raw : (raw?.markdown ?? null);
-      } catch (err) {
-        console.warn('[useTrackerContentCollab] body cache fetch failed:', err);
-        return null;
-      }
+    // Team creations that carry a receipt (`pending` or `published`) are seeded
+    // by the acknowledged main-process publisher. Replaying their local cache
+    // could publish private asset paths or resurrect a body deliberately cleared
+    // after creation. A `local` receipt (personal item) and a receipt lookup
+    // that fails keep the pre-receipt cold-paint path, so an older item never
+    // loses its paint to a new check. Both requests run in parallel: the
+    // receipt read must not add a round trip in front of every item open.
+    const bodyCacheFetch: Promise<{ markdown: string | null; bootstrap: boolean }> = (async () => {
+      const [receipt, result] = await Promise.all([
+        window.electronAPI.documentService.getTrackerCreationStatus({ workspacePath, itemId }).catch((err) => {
+          console.warn('[useTrackerContentCollab] creation receipt lookup failed:', err);
+          return null;
+        }),
+        window.electronAPI.documentService.getTrackerBodyCacheForDetail({ itemId }).catch((err) => {
+          console.warn('[useTrackerContentCollab] body cache fetch failed:', err);
+          return null;
+        }),
+      ]);
+      const bootstrap = !receipt || receipt.status === 'local';
+      if (!bootstrap || !result?.success || !result.row) return { markdown: null, bootstrap };
+      const raw = result.row.content;
+      if (raw == null) return { markdown: null, bootstrap };
+      return { markdown: typeof raw === 'string' ? raw : (raw?.markdown ?? null), bootstrap };
     })();
 
     const factory: BodyDocConfigFactory = async (id) => {
@@ -323,12 +337,13 @@ export function useTrackerContentCollab({
       // triggers the editor mount. Doing it after the acquire keeps the
       // releases ordered correctly on cancellation; the two requests ran
       // in parallel so this `await` is usually already settled.
-      const cachedMarkdown = await bodyCacheFetch;
+      const cached = await bodyCacheFetch;
       if (cancelled) {
         acq.release();
         return;
       }
-      setBodyCacheMarkdown(cachedMarkdown);
+      setBodyCacheMarkdown(cached.markdown);
+      setAllowBootstrap(cached.bootstrap);
       acquisition = acq;
       syncProviderRef.current = acq.syncProvider;
       acquisitionConfigRef.current = acq.config;
@@ -384,12 +399,9 @@ export function useTrackerContentCollab({
         yjsDocMap.set(id, provider.getYDoc());
         return provider;
       },
-      // Always true: Lexical's internal `_xmlText._length === 0` check is
-      // the real gate. Because `deferInitialSync` delays sync(true) until
-      // the server response is applied, bootstrap will only run when the
-      // shared text is still empty at that point (a new room). Non-empty
-      // rooms skip bootstrap and render the server state.
-      shouldBootstrap: true,
+      // Older items retain their cold-paint path; receipt-backed creations
+      // render the authoritative room and never replay the initial snapshot.
+      shouldBootstrap: allowBootstrap,
       username: userNameRef.current,
       cursorColor,
       initialEditorState: cachedMarkdown
@@ -403,7 +415,7 @@ export function useTrackerContentCollab({
           }
         : undefined,
     };
-  }, [cursorColor, providerEpoch, bodyCacheMarkdown]);
+  }, [cursorColor, providerEpoch, bodyCacheMarkdown, allowBootstrap]);
 
   const commentsConfig = useMemo<CommentsConfig | null>(() => {
     const config = acquisitionConfigRef.current;

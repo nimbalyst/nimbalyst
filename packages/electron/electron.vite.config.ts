@@ -116,6 +116,7 @@ const claudeAgentSdkVersion = (() => {
   return 'unknown';
 })();
 const trackerCoreSrcDir = resolve(__dirname, '../tracker-core/src');
+const collabProtocolSrcDir = resolve(__dirname, '../collab-protocol/src');
 const runtimeSrcDir = resolve(__dirname, '../runtime/src');
 const runtimeDistDir = resolve(__dirname, '../runtime/dist');
 const runtimeElectronMainEntry = resolve(runtimeSrcDir, 'electronMain.ts');
@@ -306,6 +307,7 @@ export default defineConfig({
         // Explicit subpath imports still resolve straight to runtime source.
         { find: '@nimbalyst/runtime', replacement: runtimeSrcDir },
         { find: '@nimbalyst/tracker-core', replacement: trackerCoreSrcDir },
+        { find: '@nimbalyst/collab-protocol', replacement: collabProtocolSrcDir },
         // The public SDK barrel includes renderer hooks which import the public
         // runtime barrel. Main only needs validation and protocol helpers.
         { find: /^@nimbalyst\/extension-sdk$/, replacement: extensionSdkElectronMainEntry },

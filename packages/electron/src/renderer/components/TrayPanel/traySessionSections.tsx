@@ -11,6 +11,11 @@ import type { TrayPanelSectionState, TrayPanelSession } from '../../../shared/tr
  * too, rather than by three people remembering to change all three.
  */
 
+/**
+ * The strip above these sections is on screen at the same time, so the two must
+ * agree on what a colour means: green runs, blue is finished-and-unread. These
+ * are the semantic vars for the literal hexes in `shared/fleetStripColors.ts`.
+ */
 export const STATE_STYLES: Record<
   TrayPanelSectionState,
   { label: string; colorClass: string; dotClass: string }
@@ -76,7 +81,7 @@ export function TrayStatusIndicator({
   // a tool call rendered as a bare row with no indicator at all.
   if (state === 'running') {
     return (
-      <div className="flex h-5 w-5 items-center justify-center text-[var(--nim-primary)] opacity-80" title="Running">
+      <div className="flex h-5 w-5 items-center justify-center text-[var(--nim-success)] opacity-80" title="Running">
         <MaterialSymbol icon="progress_activity" size={14} className="animate-spin" />
       </div>
     );

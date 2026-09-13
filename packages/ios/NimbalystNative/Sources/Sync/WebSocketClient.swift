@@ -27,6 +27,10 @@ final class WebSocketClient: @unchecked Sendable {
 
     /// Callback for received messages.
     var onMessage: ((Data) -> Void)?
+    /// Document downloads await application before requesting the next message.
+    var onMessageAsync: (@MainActor @Sendable (Data) async -> Void)?
+    var onConnectedAsync: (@MainActor @Sendable () async -> Void)?
+    var onError: (@MainActor @Sendable (String) -> Void)?
 
     /// Callback for connection state changes.
     var onConnectionStateChanged: ((Bool) -> Void)?
@@ -174,8 +178,23 @@ final class WebSocketClient: @unchecked Sendable {
         self.task = wsTask
         wsTask.resume()
 
-        onConnectionStateChanged?(true)
-        startReceiving(on: wsTask)
+        if let onConnectedAsync {
+            // A successful pong proves the upgrade completed; resume() alone does not.
+            wsTask.sendPing { [weak self] error in
+                Task { @MainActor in
+                    guard let self, self.task === wsTask else { return }
+                    if let error {
+                        self.handleDisconnect(for: wsTask, message: "Could not connect file sync: \(error.localizedDescription)")
+                        return
+                    }
+                    await onConnectedAsync()
+                    if self.task === wsTask { self.startReceiving(on: wsTask) }
+                }
+            }
+        } else {
+            onConnectionStateChanged?(true)
+            startReceiving(on: wsTask)
+        }
         if sendsDeviceAnnounce {
             startDeviceAnnounceTimer()
         }
@@ -228,6 +247,7 @@ final class WebSocketClient: @unchecked Sendable {
                 self?.logger.error("Send raw error: \(error.localizedDescription)")
             }
             Task { @MainActor in
+                guard let self, self.task === task else { return }
                 completion?(error)
             }
         }
@@ -242,6 +262,18 @@ final class WebSocketClient: @unchecked Sendable {
 
             switch result {
             case .success(let message):
+                if let handler = self.onMessageAsync {
+                    Task { @MainActor in
+                        guard self.task === wsTask else { return }
+                        switch message {
+                        case .string(let text): await handler(Data(text.utf8))
+                        case .data(let data): await handler(data)
+                        @unknown default: break
+                        }
+                        if self.task === wsTask { self.startReceiving(on: wsTask) }
+                    }
+                    return
+                }
                 switch message {
                 case .string(let text):
                     if let data = text.data(using: .utf8) {
@@ -257,29 +289,32 @@ final class WebSocketClient: @unchecked Sendable {
 
             case .failure(let error):
                 self.logger.error("Receive error: \(error.localizedDescription)")
-                self.handleDisconnect(for: wsTask)
+                self.handleDisconnect(for: wsTask, message: "File sync disconnected: \(error.localizedDescription)")
             }
         }
     }
 
     // MARK: - Reconnection
 
-    private func handleDisconnect(for wsTask: URLSessionWebSocketTask) {
+    private func handleDisconnect(for wsTask: URLSessionWebSocketTask, message: String = "File sync disconnected. Please retry.") {
         // Receive callbacks fire on a URLSession background queue.
         // Hop to main for Timer invalidation and shared state mutation.
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
             guard self.task === wsTask else { return }
+            wsTask.cancel(with: .goingAway, reason: nil)
             self.task = nil
             self.stopDeviceAnnounceTimer()
             self.stopPings()
             self.onConnectionStateChanged?(false)
+            self.onError?(message)
 
             guard !self.isIntentionallyClosed else { return }
 
             self.logger.info("Scheduling reconnect in \(self.reconnectDelay)s")
+            let generation = self.connectionGeneration
             DispatchQueue.main.asyncAfter(deadline: .now() + self.reconnectDelay) { [weak self] in
-                guard let self = self, !self.isIntentionallyClosed else { return }
+                guard let self = self, !self.isIntentionallyClosed, self.connectionGeneration == generation else { return }
                 self.performConnect()
             }
         }

@@ -42,6 +42,7 @@ import { NotificationsPanel } from '../GlobalSettings/panels/NotificationsPanel'
 import { VoiceModePanel } from './VoiceModePanel';
 import { MCPServersPanel } from '../GlobalSettings/panels/MCPServersPanel';
 import { ToolsMcpPanel } from './panels/ToolsMcpPanel';
+import { CloudflareSandboxesPanel } from './panels/CloudflareSandboxesPanel';
 import { ClaudeCodePluginsPanel } from '../GlobalSettings/panels/ClaudeCodePluginsPanel';
 import { ProjectPermissionsPanel } from './panels/ProjectPermissionsPanel';
 import { ProviderOverrideWrapper } from './panels/ProviderOverrideWrapper';
@@ -949,6 +950,9 @@ export function SettingsView({
         return <DatabasePanel />;
       case 'agent-features':
         return <AgentFeaturesPanel />;
+      case 'cloudflare-sandboxes':
+        // Self-contained; talks to the `cloudflare-sandbox:*` handlers directly.
+        return <CloudflareSandboxesPanel workspacePath={workspacePath ?? undefined} />;
       case 'beta-features':
         return <BetaFeaturesPanel />;
       case 'notifications':

@@ -11,12 +11,89 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 <!-- New features go here -->
 - Search the model picker by model name, ID, or provider.
+- Run sessions in your own Cloudflare sandbox with machine navigation, the shared composer, attachments and Actions, and profile/account selections remembered per project.
 
 ### Changed
 <!-- Changes to existing functionality go here -->
 
 ### Fixed
 <!-- Bug fixes go here -->
+- Accepting large document rewrites preserves paragraph order, and rejecting them restores the original formatting.
+- The Git panel names the signal when a push is killed before it finishes, instead of showing the hook's output as the error.
+- The GitHub panel no longer shows an unrelated AI session when the selected PR or issue has no matching session.
+- Open files recover from missed disk changes without reloading the app, preserve unsaved edits, and refuse saves when the disk version cannot be verified.
+- Slash-command search ranks exact matches first, then prefixes, with alphabetical ordering among equally relevant matches.
+- SQLite migrations retain progress across navigation, verify the switch after restart, and preserve recovery copies when history rows cannot be copied.
+- Cursor Agent no longer copies your global MCP server settings, including any secrets, into the project folder.
+- Repository-provided MCP servers no longer start for Grok Build or Cursor Agent in a workspace you have not trusted.
+- The macOS menu bar strip and the panel below it now agree on their status colors: running sessions are green, unread ones blue.
+
+### Removed
+<!-- Removed features go here -->
+
+## [0.77.5] - 2026-09-09
+
+
+### Added
+<!-- New features go here -->
+
+### Changed
+<!-- Changes to existing functionality go here -->
+
+### Fixed
+<!-- Bug fixes go here -->
+- Embedded file links resolve relative to their document, with `/` for workspace-root paths.
+- Claude Agent's bundled runtime no longer self-updates out of place; preserved copies are recovered automatically.
+- Coordinating agents read sibling reports during long-running work without replaying them as extra turns.
+- The new-item popup saves typed content as the body, accepts pasted or dropped screenshots, and keeps the draft if creation fails.
+- Items whose creation text was lost to that bug offer the saved description for copy or insertion into the body.
+- Git commit details scroll together with the commit list in short panels.
+
+### Removed
+<!-- Removed features go here -->
+
+## [0.77.4] - 2026-09-09
+
+
+### Added
+<!-- New features go here -->
+
+### Changed
+<!-- Changes to existing functionality go here -->
+- iOS pages the session index into a persistent cache, reducing stalls on accounts with large session histories.
+
+### Fixed
+<!-- Bug fixes go here -->
+- iOS no longer asks you to re-pair a working device because of partial sync failures or local database errors.
+- A desktop with a mismatched sync key now pauses session sync and reports the mismatch instead of deleting shared index entries.
+
+### Removed
+<!-- Removed features go here -->
+
+## [0.77.3] - 2026-09-08
+
+
+### Added
+<!-- New features go here -->
+- Jump to unanswered agent questions and automatically scroll to new ones.
+- Choose whether Agent mode opens file tabs above the transcript or in the right pane.
+- Pick one of your project's action prompts from the mobile composer's + menu to prefill it, or open a new session with it.
+- Browse folders on the Shared Docs home and right-click a row to open, rename, move, or trash it.
+
+### Changed
+<!-- Changes to existing functionality go here -->
+
+### Fixed
+<!-- Bug fixes go here -->
+- Deep links and notifications reveal their destination even when an extension panel is open.
+- Codex shell edits now appear in file-session links with inferred attribution and live updates.
+- Files on iOS load large projects reliably and show sync progress and retryable errors.
+- Display math beginning with a number renders correctly in chat.
+- SQLite migrations recover from slow batches and copy large session tables more efficiently.
+- Sent document questions now appear in Feedback with response progress and links back to each question.
+- Invalid tracker update requests are rejected instead of changing an unrelated item.
+- Slash command search results are sorted alphabetically.
+- File quick search opens from the Agent mode file viewer.
 
 ### Removed
 <!-- Removed features go here -->

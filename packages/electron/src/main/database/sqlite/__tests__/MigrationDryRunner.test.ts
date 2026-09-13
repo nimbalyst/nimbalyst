@@ -81,6 +81,32 @@ describe('MigrationDryRunner', () => {
     fs.rmSync(tmp, { recursive: true, force: true });
   });
 
+  it('waits for an in-flight source read before cancelling and preserves the previous successful artifact', async () => {
+    const previous = path.join(tmp, 'sqlite-db.dry-run-previous');
+    fs.mkdirSync(previous);
+    fs.writeFileSync(path.join(previous, '.dry-run-manifest.json'), 'previous successful result');
+    const cancellation = new Int32Array(new SharedArrayBuffer(4));
+    let release!: () => void;
+    let entered!: () => void;
+    const started = new Promise<void>(resolve => { entered = resolve; });
+    const blocked = new Promise<void>(resolve => { release = resolve; });
+    const reader: LivePgliteReader = { queryReadOnly: async <T,>(sql: string, params?: unknown[]) => {
+      entered(); await blocked;
+      return liveWorker(pglite).queryReadOnly<T>(sql, params);
+    } };
+    const run = new MigrationDryRunner({ userDataPath, schemaDir: SCHEMA_DIR, pglite: reader, cancellation: cancellation.buffer as SharedArrayBuffer }).run();
+    const rejection = expect(run).rejects.toThrow(/cancelled/);
+    await started;
+    Atomics.store(cancellation, 0, 1);
+    await Promise.resolve();
+    expect(fs.readdirSync(tmp).filter(name => name.startsWith('sqlite-db.dry-run-'))).toHaveLength(2);
+    release();
+    await rejection;
+    expect(fs.readdirSync(tmp).filter(name => name.startsWith('sqlite-db.dry-run-'))).toEqual(['sqlite-db.dry-run-previous']);
+    expect((await pglite.query('SELECT COUNT(*)::int AS n FROM ai_sessions')).rows).toEqual([{ n: 25 }]);
+    expect(readBackendState(tmp)).toBeNull();
+  });
+
   it('runs end-to-end and returns stats without touching pglite-db or writing the flag', async () => {
     const runner = new MigrationDryRunner({
       userDataPath,

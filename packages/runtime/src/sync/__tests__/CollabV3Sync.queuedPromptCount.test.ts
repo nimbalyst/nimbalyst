@@ -48,11 +48,14 @@ function indexUpdates(socket: FakeWebSocket): Array<Record<string, any>> {
 
 describe('CollabV3 queued prompt clearing', () => {
   beforeEach(() => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(10000);
     FakeWebSocket.instances = [];
     vi.stubGlobal('WebSocket', FakeWebSocket);
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     vi.unstubAllGlobals();
   });
 
@@ -73,6 +76,12 @@ describe('CollabV3 queued prompt clearing', () => {
     await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
     const indexSocket = FakeWebSocket.instances[0];
     indexSocket.open();
+    // The write gate opens only after a complete index read (GitHub #1117).
+    const fetching = provider.fetchIndex!();
+    await vi.waitFor(() => expect(indexSocket.send.mock.calls.some(([p]) => JSON.parse(p as string).type === 'indexPageRequest')).toBe(true));
+    const pageReq = indexSocket.send.mock.calls.map(([p]) => JSON.parse(p as string)).find((m) => m.type === 'indexPageRequest');
+    indexSocket.receive({ type: 'indexPageResponse', protocolVersion: 2, requestId: pageReq.requestId, mode: 'bootstrap', entries: [], complete: true, cursor: 0 });
+    await fetching;
 
     provider.syncSessionsToIndex?.([{
       id: 'session-1',

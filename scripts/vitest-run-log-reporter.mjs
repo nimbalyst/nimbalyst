@@ -17,11 +17,22 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import { randomUUID } from 'node:crypto';
+import { isFullSuiteInvocation } from './validation-inventory.mjs';
 import { computeTreeFingerprint } from './vitest-tree-fingerprint.mjs';
 
 const LOG_DIR = '.vitest';
 const LOG_FILE = 'last-run.log';
 const STATE_FILE = 'last-run.json';
+const FULL_STATE_FILE = 'last-full-run.json';
+
+function writeState(file, state) {
+  fs.mkdirSync(LOG_DIR, { recursive: true });
+  const target = path.join(LOG_DIR, file);
+  const temp = `${target}.${process.pid}.tmp`;
+  fs.writeFileSync(temp, `${JSON.stringify(state, null, 2)}\n`);
+  fs.renameSync(temp, target);
+}
 
 // Vitest colourises expected/received diffs. Escape codes are noise in a file
 // that gets opened in an editor as often as it gets `cat`ed.
@@ -32,6 +43,15 @@ const plain = (value) => String(value).replace(ANSI, '');
 export default class RunLogReporter {
   onTestRunStart() {
     this.startedAt = new Date();
+    this.invocation = process.argv.slice(2);
+    this.fullSuite = isFullSuiteInvocation(this.invocation);
+    this.runId = randomUUID();
+    // Invalidate an older success before running. A killed/aborted process must
+    // not leave that success eligible for reuse on an unchanged checkout.
+    if (this.fullSuite) writeState(FULL_STATE_FILE, {
+      runId: this.runId, complete: false, result: 'RUNNING',
+      invocation: this.invocation.join(' '), startedAt: this.startedAt.toISOString(),
+    });
     // Fingerprint the tree the run is about to test, not the tree it finishes
     // against. An edit made mid-run genuinely does invalidate these results,
     // and recording the start state is what lets `test:last` say so.
@@ -73,13 +93,18 @@ export default class RunLogReporter {
       }
     }
 
-    const ok = failed === 0 && unhandledErrors.length === 0;
+    const collectionErrors = testModules.flatMap((module) => module.errors());
+    const complete = ['passed', 'failed'].includes(reason) && testModules.length > 0
+      && collectionErrors.length === 0;
+    const ok = reason === 'passed' && failed === 0 && unhandledErrors.length === 0
+      && collectionErrors.length === 0 && passed > 0;
+    const errors = [...unhandledErrors, ...collectionErrors];
     const rel = (p) => path.relative(process.cwd(), p);
 
     // A one-file run overwrites a full-suite run's record. Recording the argv
     // makes a partial log say so, instead of quietly reading as "everything
     // passed" and hiding the failures the full run had already found.
-    lines.push(`vitest ${process.argv.slice(2).join(' ') || 'run'}`);
+    lines.push(`vitest ${this.invocation.join(' ') || 'run'}`);
     lines.push(`started:  ${this.startedAt?.toISOString() ?? 'unknown'}`);
     lines.push(`finished: ${new Date().toISOString()}`);
     lines.push(`reason:   ${reason}`);
@@ -91,9 +116,9 @@ export default class RunLogReporter {
     );
     lines.push('');
 
-    if (unhandledErrors.length > 0) {
-      lines.push(`--- ${unhandledErrors.length} unhandled error(s) ---`);
-      for (const err of unhandledErrors) {
+    if (errors.length > 0) {
+      lines.push(`--- ${errors.length} unhandled error(s) ---`);
+      for (const err of errors) {
         lines.push(err?.stack ?? err?.message ?? String(err));
         lines.push('');
       }
@@ -128,22 +153,26 @@ export default class RunLogReporter {
       fs.writeFileSync(path.join(LOG_DIR, LOG_FILE), lines.join('\n'), 'utf-8');
       // The machine-readable half. `test:last` reads this to decide whether the
       // human log above is still describing the code on disk.
-      fs.writeFileSync(
-        path.join(LOG_DIR, STATE_FILE),
-        `${JSON.stringify(
-          {
-            finishedAt: new Date().toISOString(),
-            invocation: process.argv.slice(2).join(' '),
-            result: ok ? 'PASS' : 'FAIL',
-            counts: { passed, failed, skipped },
-            failingFiles: failuresByModule.map((f) => rel(f.moduleId)),
-            fingerprint: this.fingerprint ?? null,
-          },
-          null,
-          2,
-        )}\n`,
-        'utf-8',
-      );
+      const state = {
+        runId: this.runId,
+        startedAt: this.startedAt?.toISOString() ?? null,
+        finishedAt: new Date().toISOString(),
+        invocation: this.invocation.join(' '),
+        complete,
+        reason,
+        result: ok ? 'PASS' : 'FAIL',
+        counts: { passed, failed, skipped },
+        files: testModules.length,
+        elapsedSeconds: this.startedAt ? (Date.now() - this.startedAt.getTime()) / 1000 : null,
+        failingFiles: failuresByModule.map((f) => rel(f.moduleId)),
+        fingerprint: this.fingerprint ?? null,
+      };
+      writeState(STATE_FILE, state);
+      if (this.fullSuite) {
+        const current = JSON.parse(fs.readFileSync(path.join(LOG_DIR, FULL_STATE_FILE), 'utf8'));
+        // A later full run owns the record, even if an older run finishes last.
+        if (current.runId === this.runId) writeState(FULL_STATE_FILE, state);
+      }
       if (!ok) {
         console.error(`\n[run-log] ${failed} failure(s) recorded in ${LOG_DIR}/${LOG_FILE}`);
         console.error('[run-log] review with: npm run test:last');

@@ -383,21 +383,6 @@ export class WindowedTreeMatcher {
       isTextual: (n) => n.type === 'text' || n.type === 'paragraph' || n.type === 'heading' || n.type === 'list' || n.type === 'listitem' || n.type === 'mermaid' || n.type === 'decision',
     });
 
-    // console.log(`\n[TreeMatcher] TOPT produced ${diffOps.length} operations for ${sourceNodes.length} source → ${targetNodes.length} target nodes:`);
-    // diffOps.filter(op => op.aPath?.length === 1 || op.bPath?.length === 1).forEach((op, i) => {
-    //   if (op.op === 'equal' || op.op === 'replace') {
-    //     const aIdx = op.aPath?.[0];
-    //     const bIdx = op.bPath?.[0];
-    //     console.log(`  [${i}] ${op.op.toUpperCase()}: source[${aIdx}] "${op.a.text?.substring(0, 30)}" → target[${bIdx}] "${op.b.text?.substring(0, 30)}"`);
-    //   } else if (op.op === 'delete') {
-    //     const aIdx = op.aPath?.[0];
-    //     console.log(`  [${i}] DELETE: source[${aIdx}] "${op.a.text?.substring(0, 30)}"`);
-    //   } else if (op.op === 'insert') {
-    //     const bIdx = op.bPath?.[0];
-    //     console.log(`  [${i}] INSERT: target[${bIdx}] "${op.b.text?.substring(0, 30)}"`);
-    //   }
-    // });
-
     const diffs: NodeDiff[] = [];
     const sequence: NodeDiff[] = [];
 
@@ -703,6 +688,12 @@ export class WindowedTreeMatcher {
     for (const candidate of candidateMatches) {
       if (sourceMatched.has(candidate.sourceIdx)) continue;
       if (targetMatched.has(candidate.targetIdx)) continue;
+      // Fallback similarity must not turn a move into an in-place update.
+      // Crossing an established anchor leaves the accepted paragraph at its
+      // old position. Unmatched pairs become remove/add operations below.
+      if ([...targetToSource].some(([target, source]) =>
+        (target < candidate.targetIdx && source >= candidate.sourceIdx)
+        || (target > candidate.targetIdx && source <= candidate.sourceIdx))) continue;
 
       const sourceNode = sourceNodes[candidate.sourceIdx];
       const targetNode = targetNodes[candidate.targetIdx];
@@ -792,10 +783,11 @@ export class WindowedTreeMatcher {
       sequence.push(diff);
     }
 
-    // DON'T convert DELETE+INSERT into UPDATE!
-    // If a node moves position (different source/target index), it should be DELETE+INSERT
-    // UPDATE is only for content changes at the same logical position
-    // Keeping DELETE+INSERT allows the node to be physically moved
+    // Fallback matches can supply anchors that were absent during the first pass.
+    for (const diff of diffs) {
+      if (diff.changeType === 'add') diff.sourceIndex = this.determineInsertionIndex(
+        diff.targetIndex, sourceNodes.length, targetNodes.length, targetToSource);
+    }
 
     sequence.sort((a, b) => a.targetIndex - b.targetIndex);
 

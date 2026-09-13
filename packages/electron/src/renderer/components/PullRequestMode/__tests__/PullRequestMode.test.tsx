@@ -57,13 +57,16 @@ vi.mock('../../ChatSidebar', async () => {
   const ReactModule = await import('react');
   return {
     ChatSidebar: ReactModule.forwardRef(function MockChatSidebar(
-      props: { isCollapsed?: boolean },
+      props: { isCollapsed?: boolean; onSessionIdChange?: (id: string) => void },
       ref: React.ForwardedRef<unknown>,
     ) {
       ReactModule.useImperativeHandle(ref, () => ({
         focusInput: vi.fn(),
         insertPrompt: vi.fn(),
-        loadSession: mocks.loadSession,
+        loadSession: (id: string) => {
+          mocks.loadSession(id);
+          props.onSessionIdChange?.(id);
+        },
         createNewSession: mocks.createChatSession,
       }));
       return (
@@ -307,7 +310,7 @@ describe('PullRequestMode session follows PR selection', () => {
     });
   });
 
-  it('leaves the chat pane alone when the selected PR has no linked session', async () => {
+  it('does not load a session when the selected PR has no linked session', async () => {
     renderMode();
     await act(async () => {});
 

@@ -39,6 +39,8 @@ export interface ChatSidebarProps {
   onSessionIdChange?: (sessionId: string | null) => void;
   /** Whether to select/create a session automatically on mount. */
   autoInitializeSession?: boolean;
+  /** Content for an intentionally empty sidebar, instead of the load-error message. */
+  emptyState?: React.ReactNode;
   /** Title used when this sidebar creates a new standard chat session. */
   newSessionTitle?: string;
   /** Optional initial draft for newly-created standard chat sessions. */
@@ -68,6 +70,7 @@ export const ChatSidebar = forwardRef<ChatSidebarRef, ChatSidebarProps>(({
   sessionId: controlledSessionId,
   onSessionIdChange,
   autoInitializeSession = true,
+  emptyState,
   newSessionTitle = 'Chat',
   newSessionDraft,
   linkedSession,
@@ -365,11 +368,11 @@ export const ChatSidebar = forwardRef<ChatSidebarRef, ChatSidebarProps>(({
   if (!sessionId) {
     return (
       <div
-        className="chat-sidebar chat-sidebar-error flex flex-col h-full overflow-hidden bg-nim border-l border-nim relative items-center justify-center text-nim-muted"
+        className={`chat-sidebar ${emptyState ? 'chat-sidebar-empty' : 'chat-sidebar-error'} flex flex-col h-full overflow-hidden bg-nim border-l border-nim relative items-center justify-center text-nim-muted`}
         style={{ width: onWidthChange ? width : undefined }}
         data-session-id={sessionId}
       >
-        <p>Failed to load chat session</p>
+        {emptyState ?? <p>Failed to load chat session</p>}
       </div>
     );
   }

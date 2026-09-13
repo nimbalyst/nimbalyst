@@ -26,6 +26,7 @@ export interface ElectronCollabDocumentsDataSourceEvents {
   observeStatus?: (status: ReturnType<TeamSyncProvider['getStatus']>, error?: unknown) => void;
   onOrgSettingsUpdated?: NonNullable<TeamSyncConfig['onOrgSettingsUpdated']>;
   onConversationDescriptorUpdated?: NonNullable<TeamSyncConfig['onConversationDescriptorUpdated']>;
+  onDocumentFeedbackIndex?: NonNullable<TeamSyncConfig['onDocumentFeedbackIndex']>;
   onFeedbackIndexLoaded?: NonNullable<TeamSyncConfig['onFeedbackIndexLoaded']>;
   onFeedbackIndexChanged?: NonNullable<TeamSyncConfig['onFeedbackIndexChanged']>;
   onMemberAdded?: NonNullable<TeamSyncConfig['onMemberAdded']>;

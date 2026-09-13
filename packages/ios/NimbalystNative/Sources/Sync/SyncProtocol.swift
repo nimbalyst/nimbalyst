@@ -138,6 +138,49 @@ struct ServerProjectEntry: Codable {
 struct ProjectConfig: Codable {
     let commands: [SyncedSlashCommand]
     let lastCommandsUpdate: Int
+    /// Absent on desktops that predate action sync.
+    let actions: [SyncedActionPrompt]?
+    let lastActionsUpdate: Int?
+}
+
+/// The parts of the project config blob that get stored on `Project`.
+///
+/// Each is nil when the blob carried nothing for it, which is distinct from an
+/// empty list only in that we avoid writing "[]" over a column needlessly.
+struct DecodedProjectConfig {
+    let commandsJson: String?
+    let actionsJson: String?
+
+    static let empty = DecodedProjectConfig(commandsJson: nil, actionsJson: nil)
+}
+
+/// Project a decrypted project-config JSON string onto the columns `Project`
+/// stores.
+///
+/// Free function rather than inline at the call sites because the blob is
+/// decoded in two places (index sync response and project broadcast) that must
+/// not drift, and because this way it is testable without crypto or a socket.
+func decodeProjectConfig(fromJson configJson: String) -> DecodedProjectConfig {
+    guard let configData = configJson.data(using: .utf8),
+          let config = try? JSONDecoder().decode(ProjectConfig.self, from: configData) else {
+        return .empty
+    }
+
+    var commandsJson: String? = nil
+    if let encoded = try? JSONEncoder().encode(config.commands),
+       let jsonStr = String(data: encoded, encoding: .utf8) {
+        commandsJson = jsonStr
+    }
+
+    var actionsJson: String? = nil
+    if let actions = config.actions,
+       !actions.isEmpty,
+       let encoded = try? JSONEncoder().encode(actions),
+       let jsonStr = String(data: encoded, encoding: .utf8) {
+        actionsJson = jsonStr
+    }
+
+    return DecodedProjectConfig(commandsJson: commandsJson, actionsJson: actionsJson)
 }
 
 /// Lightweight slash command manifest synced from desktop.
@@ -146,6 +189,57 @@ public struct SyncedSlashCommand: Codable, Identifiable {
     public let description: String?
     public let source: String  // "builtin" | "project" | "user" | "plugin"
     public var id: String { name }
+}
+
+/// An action prompt from the desktop workspace's ai-actions.md.
+///
+/// Unlike `SyncedSlashCommand` this carries the prompt `body`: the desktop
+/// pastes it into its composer for the user to edit before sending, and the
+/// phone cannot reproduce that from a name alone.
+///
+/// Every field past `body` is optional because same-session actions -- the
+/// common case -- send none of them, and because older desktops send a subset.
+public struct SyncedActionPrompt: Codable, Identifiable {
+    /// kebab-case slug of the heading; stable across edits to the body.
+    public let id: String
+    public let label: String
+    public let body: String
+    /// Set when the desktop cut the body to fit the payload budget.
+    public let truncated: Bool?
+    /// "new-session" for launcher actions; absent for same-session actions.
+    public let launch: String?
+    /// provider:variant the action pins, when it declares one.
+    public let model: String?
+    public let autoSubmit: Bool?
+    public let worktree: Bool?
+
+    public init(
+        id: String,
+        label: String,
+        body: String,
+        truncated: Bool? = nil,
+        launch: String? = nil,
+        model: String? = nil,
+        autoSubmit: Bool? = nil,
+        worktree: Bool? = nil
+    ) {
+        self.id = id
+        self.label = label
+        self.body = body
+        self.truncated = truncated
+        self.launch = launch
+        self.model = model
+        self.autoSubmit = autoSubmit
+        self.worktree = worktree
+    }
+
+    /// Whether picking this action should open a new session rather than
+    /// prefill the current composer.
+    public var launchesNewSession: Bool { launch == "new-session" }
+
+    /// Worktree launches need a worktree created first, which the phone cannot
+    /// drive yet. Such actions are shown but not offered as launchers.
+    public var isSupportedOnMobile: Bool { !(worktree ?? false) }
 }
 
 /// Session broadcast from index room.
@@ -331,6 +425,7 @@ struct EncryptedCreateSessionRequest: Codable {
     let model: String?
     let agentRole: String?
     let timestamp: Int
+    var targetDeviceId: String? = nil
 }
 
 // MARK: - Worktree Creation Request
@@ -572,7 +667,14 @@ struct FileYjsCompactMessage: Encodable {
 
 /// Response to projectSyncRequest.
 struct ProjectSyncResponse: Codable {
+    enum CodingKeys: String, CodingKey {
+        case type, transferId, batchIndex, isLastBatch
+        case updatedFiles, newFiles, yjsUpdates, needFromClient, deletedSyncIds
+    }
     let type: String
+    var transferId: String? = nil
+    var batchIndex: Int? = nil
+    var isLastBatch: Bool? = nil
     /// Files the client is missing or has stale content for.
     let updatedFiles: [ProjectSyncFileEntry]
     /// Yjs updates the client hasn't seen.

@@ -25,6 +25,8 @@ export interface TrackerCreatePayload {
     priority: string;
     workspace: string;
     description?: string;
+    content?: string;
+    creationRequestId?: string;
     owner?: string;
     tags?: string[];
     customFields?: Record<string, unknown>;
@@ -34,6 +36,8 @@ export interface TrackerCreatePayload {
 export interface TrackerCreateValues {
     title: string;
     description?: string;
+    content?: string;
+    creationRequestId?: string;
     /**
      * Field values keyed by their name **in this schema** — so a type whose
      * `workflowStatus` role points at `state` supplies `{ state: 'open' }`.

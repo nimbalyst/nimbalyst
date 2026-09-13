@@ -1,4 +1,5 @@
 import Foundation
+import GRDB
 
 /// Provides an in-memory database pre-populated with realistic demo data
 /// for App Store screenshot capture. Used with `--screenshot-mode` launch argument.
@@ -6,13 +7,29 @@ import Foundation
 public struct ScreenshotDataProvider {
 
     /// Creates an in-memory DatabaseManager populated with realistic demo data.
-    public static func createPopulatedDatabase() throws -> DatabaseManager {
+    public static func createPopulatedDatabase(historyCount: Int = 0) throws -> DatabaseManager {
         let db = try DatabaseManager()
         try insertProjects(db)
         try insertSessions(db)
+        if historyCount > 0 { try insertRetainedHistory(db, count: min(historyCount, 10_000)) }
         try insertMessages(db)
         try db.refreshAllProjectStats()
         return db
+    }
+
+    /// Synthetic metadata only, for simulator acceptance with a large retained
+    /// history. The caller is restricted to debug screenshot mode and this
+    /// database is always in memory.
+    private static func insertRetainedHistory(_ db: DatabaseManager, count: Int) throws {
+        let now = currentEpochMs()
+        try db.writer.write { database in
+            for index in 0..<count {
+                let stamp = now - 86_400_000 - (count - index) * 60_000
+                try Session(id: "retained-\(index)", projectId: "/Users/demo/sources/nimbalyst",
+                            titleDecrypted: String(format: "Retained history %05d", index),
+                            provider: "claude-code", createdAt: stamp, updatedAt: stamp).save(database)
+            }
+        }
     }
 
     // MARK: - Projects

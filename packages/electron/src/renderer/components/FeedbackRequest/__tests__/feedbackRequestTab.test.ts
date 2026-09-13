@@ -211,8 +211,8 @@ describe('openFeedbackRequestResults', () => {
 
   it('hands the open to a mounted strip instead of writing behind it', () => {
     store.set(windowModeAtom, 'agent');
-    const workstreamId = newWorkstream('split');
-    const handler = vi.fn();
+    const workstreamId = newWorkstream('transcript'); // Mounted editor can now be hidden.
+    const handler = vi.fn((event: Event) => event.preventDefault());
     window.addEventListener(FEEDBACK_REQUEST_OPEN_EVENT, handler);
 
     openFeedbackRequestResults({ workstreamId, orgId: 'org-1', requestId: 'req-1' });

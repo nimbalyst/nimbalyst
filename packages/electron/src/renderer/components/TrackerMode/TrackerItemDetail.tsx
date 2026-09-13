@@ -12,7 +12,9 @@ import { useAtomValue, useSetAtom } from 'jotai';
 import { NimbalystEditor, MaterialSymbol, ProviderIcon } from '@nimbalyst/runtime';
 import type { EditorConfig } from '@nimbalyst/runtime/editor';
 import { $convertFromEnhancedMarkdownString, getEditorTransformers } from '@nimbalyst/runtime/editor';
-import { $getRoot, $setSelection } from 'lexical';
+import { $getRoot, $setSelection, type LexicalEditor } from 'lexical';
+import { TrackerSavedDescription } from './TrackerSavedDescription';
+import { TrackerCreationPublication } from '../TrackerQuickCreate/TrackerCreationPublication';
 import * as Y from 'yjs';
 import type { TrackerRecord } from '@nimbalyst/runtime/core/TrackerRecord';
 import {
@@ -471,7 +473,6 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
   const [localTitle, setLocalTitle] = useState(item ? getRecordTitle(item) : '');
   // Title is a textarea so long titles wrap; it grows with its content (NIM-1615).
   const titleRef = useAutoSizedTitle(localTitle);
-  const [localDescription, setLocalDescription] = useState(item ? (item.fields.description as string ?? '') : '');
   const [localCustomFields, setLocalCustomFields] = useState<Record<string, any>>({});
   // Per-field debounce timers (not one shared timer) so editing one field never
   // drops another field's pending save, and so reconciliation can tell which
@@ -519,7 +520,6 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
   useEffect(() => {
     if (!item) return;
     setLocalTitle(getRecordTitle(item));
-    setLocalDescription(item.fields.description as string ?? '');
     setLocalCustomFields({});
     // Clear any stale per-field debounce timers from the previous item and seed
     // the reconciliation baseline with the new item's persisted fields.
@@ -842,6 +842,8 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
   // re-create -- a new config identity remounts the editor and drops the
   // Y.Doc binding -- and republished on unmount so a stale editor never
   // outlives the item.
+  const [recoveryEditor, setRecoveryEditor] = useState<LexicalEditor | null>(null);
+  useEffect(() => setRecoveryEditor(null), [itemId]);
   const bodyEditorReadyRef = useRef(onBodyEditorReady);
   bodyEditorReadyRef.current = onBodyEditorReady;
   useEffect(() => () => bodyEditorReadyRef.current?.(null), [itemId]);
@@ -1027,8 +1029,6 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
   const handleTextFieldChange = useCallback((fieldName: string, value: any) => {
     if (fieldName === 'title') {
       setLocalTitle(value);
-    } else if (fieldName === 'description') {
-      setLocalDescription(value);
     } else {
       setLocalCustomFields(prev => ({ ...prev, [fieldName]: value }));
     }
@@ -1174,6 +1174,7 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
         }
       },
       onEditorReady: (editor: any) => {
+        setRecoveryEditor(editor);
         bodyEditorReadyRef.current?.(editor);
       },
     };
@@ -1189,12 +1190,6 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
     // back to the per-item PGLite markdown for new items that have never
     // been saved (no cache row yet).
     const hookInitial = collabConfig.initialEditorState;
-    // electron-log's renderer transport serializes only the first arg
-    // as a string -- inline the diagnostic into the message itself so
-    // a future cold-paint failure is debuggable from the log file.
-    console.log(
-      `[TrackerItemDetail] Building collab editor config itemId=${item?.id} shouldBootstrap=${collabConfig.shouldBootstrap} mdContentLen=${mdContent?.length ?? 0} hasHookInitial=${!!hookInitial}`,
-    );
     return {
       isRichText: true,
       editable: true,
@@ -1206,17 +1201,14 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
       collaboration: {
         ...collabConfig,
         initialEditorState: hookInitial
-          ?? (mdContent
+          ?? (collabConfig.shouldBootstrap && mdContent
             ? () => {
-                console.log('[TrackerItemDetail] initialEditorState fn CALLED',
-                  { itemId: item?.id, mdContentLen: mdContent.length });
                 // Clearing a selected node without moving selection first makes
                 // Lexical throw "selection has been lost ..." (NIM-2005).
                 $setSelection(null);
                 const root = $getRoot();
                 root.clear();
                 $convertFromEnhancedMarkdownString(mdContent, getEditorTransformers());
-                console.log('[TrackerItemDetail] seeded editor root, children:', root.getChildrenSize());
               }
             : undefined),
       },
@@ -1237,6 +1229,7 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
         // editor reference we cannot recover when CollaborationPlugin's
         // bootstrap check declines to fire `initialEditorState`.
         collabEditorInstanceRef.current = editor;
+        setRecoveryEditor(editor);
         bodyEditorReadyRef.current?.(editor);
       },
     };
@@ -1755,6 +1748,11 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
             Content
           </label>
           )}
+          {hasRichContent && workspacePath && <TrackerCreationPublication workspacePath={workspacePath} itemId={item.id} />}
+          {hasRichContent && typeof item.fields.description === 'string' && <TrackerSavedDescription
+            key={item.id} description={item.fields.description} currentBody={contentMarkdown} editor={recoveryEditor}
+            canInsert={editable && contentLoaded && (contentMode === 'local-pglite' || (contentMode === 'collaborative' && hasSyncedOnce && collabStatus === 'connected'))}
+          />}
           {contentMode === 'local-pglite' && localEditorConfig ? (
             <div
               className={`tracker-content-editor bg-nim overflow-hidden ${focusActive ? 'flex-1 min-h-0' : 'min-h-[200px] border border-nim rounded'}`}

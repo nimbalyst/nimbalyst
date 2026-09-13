@@ -24,6 +24,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 import type { BackendState, DatabaseBackend } from './BackendSelector';
+import type { CutoverVerification } from './cutoverVerification';
+import type { MigrationCompletedOutcome } from './migrationOutcome';
 
 /**
  * The six phases, in order. Each one is written only after the work it names
@@ -71,6 +73,8 @@ export interface CutoverSourceFingerprint {
 }
 
 export interface CutoverJournal {
+  verification?: CutoverVerification;
+  pendingOutcome?: MigrationCompletedOutcome;
   /** Bumped only if the shape changes incompatibly; an unknown version holds. */
   version: 1;
   operationId: string;

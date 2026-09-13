@@ -9,7 +9,8 @@ import {
   trackerModeDocumentItemIdAtom,
   trackerModeLayoutAtom,
 } from '../../atoms/trackers';
-import { windowModeAtom } from '../../atoms/windowMode';
+import { resetWindowMode, windowModeAtom } from '../../atoms/windowMode';
+import { activeExtensionPanelAtom, extensionPanelStateAtomFamily } from '../../atoms/extensionPanels';
 import { initDeepLinkListeners } from '../deepLinkListeners';
 import {
   resetCommentPanelRequests,
@@ -42,6 +43,9 @@ describe('tracker deep-link routing', () => {
     pendingTrackerPayload = null;
     store.set(activeWorkspacePathAtom, '/workspace/source');
     store.set(windowModeAtom, 'files');
+    store.set(extensionPanelStateAtomFamily('/workspace/target'), {
+      panelId: 'com.nimbalyst.project-graph.graph', bottomPanelId: null, revision: 1, hydrated: true,
+    });
     store.set(pendingCollabDocumentAtom, null);
     store.set(
       orgWindowRouteAtomFamily(PROJECT_ORG_MODE_SURFACE_ID),
@@ -78,6 +82,7 @@ describe('tracker deep-link routing', () => {
   afterEach(() => {
     cleanup?.();
     cleanup = undefined;
+    resetWindowMode();
     store.set(activeWorkspacePathAtom, null);
     store.set(windowModeAtom, 'files');
     store.set(pendingCollabDocumentAtom, null);
@@ -96,6 +101,7 @@ describe('tracker deep-link routing', () => {
 
     expect(store.get(activeWorkspacePathAtom)).toBe('/workspace/target');
     expect(store.get(windowModeAtom)).toBe('collab');
+    expect(store.get(activeExtensionPanelAtom)).toBeNull();
     expect(store.get(pendingCollabDocumentAtom)).toMatchObject({
       documentId: 'doc-target',
       scopeKey: '/workspace/target',
@@ -138,6 +144,7 @@ describe('tracker deep-link routing', () => {
 
     expect(store.get(activeWorkspacePathAtom)).toBe('/workspace/target');
     expect(store.get(windowModeAtom)).toBe('tracker');
+    expect(store.get(activeExtensionPanelAtom)).toBeNull();
     expect(store.get(trackerModeLayoutAtom)).toMatchObject({
       selectedType: 'all',
       selectedItemId: 'tracker-plain',
@@ -178,6 +185,7 @@ describe('tracker deep-link routing', () => {
 
     expect(store.get(activeWorkspacePathAtom)).toBe('/workspace/target');
     expect(store.get(windowModeAtom)).toBe('org');
+    expect(store.get(activeExtensionPanelAtom)).toBeNull();
     // "Awaiting my reply" is the row a feedback request belongs to, and the
     // reason axis is navigation now — landing on All would show the recipient
     // every delivery except, potentially, the one they clicked a link for.

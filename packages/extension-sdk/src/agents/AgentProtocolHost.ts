@@ -40,7 +40,11 @@
  * (Section 4.3) for the full host contract.
  */
 
-import type { MCPServerConfig } from './index';
+// Explicit .js: this specifier survives into the emitted declaration, and a
+// consumer typechecking under node16/nodenext resolution rejects an
+// extensionless relative import with TS2835. Runtime's Node build cannot repair
+// a dependency's declarations, so it has to be correct at the source.
+import type { MCPServerConfig } from './index.js';
 
 /**
  * Permission posture the host has set for the current turn.

@@ -44,6 +44,8 @@ import type { CutoverFs } from './cutoverJournal';
 export interface RollbackRequest {
   userDataPath: string;
   operationId?: string;
+  /** Explicitly verified, recorded source selected by startup recovery. */
+  sourceOverride?: string;
   /**
    * Close the live SQLite worker. If this rejects the rollback stops before
    * anything is renamed -- a store we cannot prove is closed is a store that
@@ -129,7 +131,7 @@ export async function runRollback(req: RollbackRequest): Promise<RollbackResult>
 
   // Resolved before the quiesce so a refusal costs the user nothing: the app
   // is still running on the database it had.
-  const source = resolveRollbackSource(userDataPath);
+  const source = req.sourceOverride ? { dir: req.sourceOverride, from: 'recorded' as const } : resolveRollbackSource(userDataPath);
   if (fs.existsSync(pgliteDir)) {
     throw new Error(
       'pglite-db/ already exists; refusing to overwrite it. Nothing has been changed.',

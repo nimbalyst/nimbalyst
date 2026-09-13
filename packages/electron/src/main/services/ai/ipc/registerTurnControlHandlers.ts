@@ -1,3 +1,4 @@
+import { sessionInbox } from '../sessionInboxService';
 import { safeHandle } from '../../../utils/ipcRegistry';
 import { logger } from '../../../utils/logger';
 import { getTerminalSessionManager } from '../../TerminalSessionManager';
@@ -80,6 +81,7 @@ export function registerTurnControlHandlers(ctx: AIServiceContext): void {
       // ownership lease, so when the dispatch this cancel displaced finally
       // settles it releases nothing rather than releasing whatever prompt
       // took the session next (#1018).
+      await sessionInbox.end(sessionInbox.current(sessionId), false).catch(err => logger.main.error('[AIService] Inbox retirement failed during interruption:', err));
       ctx.sessionsProcessingQueue.delete(sessionId);
       try {
         const { getQueuedPromptsStore } = await import('../../RepositoryManager');
@@ -105,6 +107,7 @@ export function registerTurnControlHandlers(ctx: AIServiceContext): void {
     // error chunk without settling). Cancel must still be authoritative --
     // otherwise the stale 'running' state in SessionStateManager survives and
     // the renderer's processing reconcile re-asserts the spinner seconds later.
+    await sessionInbox.end(sessionInbox.current(sessionId), false).catch(err => logger.main.error('[AIService] Inbox retirement failed during cancellation:', err));
     console.warn(`[AIService] Cancel: no active provider for session ${sessionId} - clearing stale running state`);
     await ctx.forceSessionIdleOnCancel(sessionId);
     return { success: true };

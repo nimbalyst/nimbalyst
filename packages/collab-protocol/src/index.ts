@@ -25,3 +25,8 @@ export * from "./teamRoom.js";
 export * from "./projectSync.js";
 
 export * from "./documentDecision.js";
+
+export * from "./documentFeedbackIndex.js";
+
+export * from "./indexReplication.js";
+export * from "./sessionRetention.js";

@@ -958,12 +958,18 @@ contextBridge.exposeInMainWorld('electronAPI', {
       priority: string;
       workspace: string;
       description?: string;
+      creationRequestId?: string;
+      content?: unknown;
       owner?: string;
       tags?: string[];
       customFields?: Record<string, any>;
       sharing?: 'personal' | 'team';
       draftByDefault?: boolean;
-    }) => ipcRenderer.invoke('document-service:create-tracker-item', item) as Promise<{ success: boolean; item?: any; error?: string }>,
+    }) => ipcRenderer.invoke('document-service:create-tracker-item', item) as Promise<{ success: boolean; item?: any; error?: string; publication?: import("@nimbalyst/runtime/core/trackerCreation").TrackerCreationPublication }>,
+    publishTrackerCreation: (payload: { workspacePath: string; itemId: string }) => ipcRenderer.invoke('tracker-creation:publish', payload) as Promise<import('@nimbalyst/runtime/core/trackerCreation').TrackerCreationPublication>,
+    getTrackerCreationStatus: (payload: { workspacePath: string; itemId: string }) => ipcRenderer.invoke('tracker-creation:status', payload) as Promise<import('@nimbalyst/runtime/core/trackerCreation').TrackerCreationPublication | null>,
+    listPendingTrackerCreations: (workspacePath: string) => ipcRenderer.invoke('tracker-creation:pending', { workspacePath }) as Promise<string[]>,
+    stageTrackerImage: (payload: { workspacePath: string; bytes: ArrayBuffer; mimeType: string }) => ipcRenderer.invoke('tracker-creation:stage-image', payload) as Promise<{ relativePath: string }>,
     updateTrackerItem: (payload: {
       itemId: string;
       updates: Record<string, any>;

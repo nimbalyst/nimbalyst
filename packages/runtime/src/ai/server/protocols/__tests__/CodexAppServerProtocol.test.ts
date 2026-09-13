@@ -1,3 +1,4 @@
+import {setCodexShellTrackingHost} from '../codexAppServer/shellTracking';
 // Unit tests for CodexAppServerProtocol against a mock JSON-RPC peer.
 //
 // We stub `child_process.spawn` so the protocol talks to a fake codex
@@ -135,7 +136,27 @@ describe('CodexAppServerProtocol', () => {
   });
 
   afterEach(() => {
+    setCodexShellTrackingHost(undefined);
     if (!child.killed) child.kill();
+  });
+
+  it.each(['start','resume'])('binds host hooks to %s and trusts only the exact session hook hashes',async(kind)=>{
+    const dispose=vi.fn(),endTurn=vi.fn();
+    const host=vi.fn(async()=>({command:'owned-hook',env:{NIMBALYST_SHELL_HOOK_URL:'http://fixture'},dispose,endTurn}));setCodexShellTrackingHost(host);
+    const protocol=new CodexAppServerProtocol();const options={workspacePath:'/tmp/ws',raw:{nimbalystSessionId:'owner'}};
+    const promise=kind==='start'?protocol.createSession(options):protocol.resumeSession('thread-hook',options);
+    const init=await nextWrittenMatching(child,'initialize');child.emitLine({id:init.id,result:{}});
+    const list=await nextWrittenMatching(child,'hooks/list');
+    const own=(eventName:string)=>({source:'sessionFlags',handlerType:'command',command:'owned-hook',matcher:'^(Bash|apply_patch|mcp__.*)$',eventName,key:eventName,currentHash:'hash-'+eventName,enabled:true});
+    child.emitLine({id:list.id,result:{data:[{hooks:[own('preToolUse'),own('postToolUse'),{...own('preToolUse'),source:'user',key:'untrusted-user',command:'other-hook'}]}]}});
+    const request=await nextWrittenMatching(child,'thread/'+kind);const config=(request.params as any).config;
+    expect(Object.keys(config.hooks.state).sort()).toEqual(['postToolUse','preToolUse']);
+    expect(config.hooks.PreToolUse[0].hooks[0].command).toBe('owned-hook');
+    expect(host).toHaveBeenCalledWith('owner','/tmp/ws');
+    expect(spawnMock.mock.calls[0][2].env.NIMBALYST_SHELL_HOOK_URL).toBe('http://fixture');
+    child.emitLine({id:request.id,result:{thread:{id:'thread-hook'}}});const session=await promise;
+    child.emitLine({method:'turn/completed',params:{threadId:'thread-hook',turn:{id:'t',status:'completed'}}});expect(endTurn).toHaveBeenCalled();
+    protocol.cleanupSession(session);expect(dispose).toHaveBeenCalled();
   });
 
   it('spawns the codex binary, completes the initialize handshake, and starts a thread', async () => {

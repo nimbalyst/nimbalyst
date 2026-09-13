@@ -97,6 +97,8 @@ const noSharedDocuments: Atom<SharedDocument[]> = atom<SharedDocument[]>([]);
  * it for labels, and an unnamed tab is a far better failure than an editor
  * route that will not render at all.
  */
+const noSharedFolders: Atom<SharedFolder[]> = atom<SharedFolder[]>([]);
+
 export function useSharedDocumentTitles(): Map<string, string> {
   const value = useContext(CollabDocsUIContext);
   const documents = useAtomValue(value?.session.atoms.allSharedDocuments ?? noSharedDocuments);
@@ -109,12 +111,19 @@ export function useSharedDocumentTitles(): Map<string, string> {
   );
 }
 
+/**
+ * The project's first-class folders, for a host that files a new item
+ * somewhere and has no tree of its own to read them from.
+ */
+export function useSharedFolders(): SharedFolder[] {
+  const value = useContext(CollabDocsUIContext);
+  return useAtomValue(value?.session.atoms.sharedFolders ?? noSharedFolders);
+}
+
 export interface SharedDocumentBreadcrumb {
   documentTitle: string | null;
   folders: Array<{ folderId: string; name: string }>;
 }
-
-const noSharedFolders: Atom<SharedFolder[]> = atom<SharedFolder[]>([]);
 
 /** Resolved first-class folder ancestry for browser/native breadcrumb chrome. */
 export function useSharedDocumentBreadcrumb(

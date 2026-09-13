@@ -34,6 +34,16 @@ class WorkspaceFileAttributionPolicyRegistry {
     this.policies.delete(sessionId);
   }
 
+  /** Active sessions whose workspace can contain this candidate path. */
+  getSessionIds(workspacePath: string, filePath?: string): string[] {
+    const workspace = path.resolve(workspacePath);
+    return [...this.policies].filter(([, policy]) => {
+      if (!filePath) return policy.workspacePath === workspace;
+      const rel = path.relative(policy.workspacePath, filePath);
+      return !!rel && rel !== '..' && !rel.startsWith('..' + path.sep) && !path.isAbsolute(rel);
+    }).map(([id]) => id);
+  }
+
   isDisabled(sessionId: string, workspacePath: string): boolean {
     const policy = this.policies.get(sessionId);
     return policy?.mode === 'disabled'

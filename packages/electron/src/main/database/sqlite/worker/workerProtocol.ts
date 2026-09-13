@@ -34,7 +34,9 @@ export interface SerializedError {
   stack?: string;
   code?: string;
   /**
-   * Structured payload for errors that carry a decision. `MigrationRefusedError`
+   * Structured payload for migration read settlement and refusal decisions.
+   * Retry eligibility requires the sourceSettled acknowledgement; preserve it
+   * across both worker hops. `MigrationRefusedError`
    * puts its `MigrationRefusal` here so main gets the reason code and bucketed
    * facts intact instead of having to parse them back out of `message`.
    */
@@ -163,7 +165,7 @@ export interface ExecPayload {
 }
 
 export interface TransactionPayload {
-  statements: Array<{ sql: string; params?: unknown[] }>;
+  statements: Array<{ sql: string; params?: unknown[]; expectedRows?: number }>;
 }
 
 // ============================================================================
@@ -323,6 +325,7 @@ export type WorkerRequestType =
   | 'verifyBackup'
   | 'getBackupStatus'
   | 'cleanupBackups'
+  | 'verifyCutover'
   | 'migrationPreflight'
   | 'migrationStart'
   | 'migrationStartDryRun'

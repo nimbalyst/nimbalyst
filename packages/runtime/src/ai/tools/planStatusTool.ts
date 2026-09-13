@@ -1,4 +1,4 @@
-import type { ToolDefinition } from './index';
+import type { ToolDefinition } from './definitions';
 
 export const PLAN_STATUS_TOOL: ToolDefinition = {
   name: 'updatePlanStatus',

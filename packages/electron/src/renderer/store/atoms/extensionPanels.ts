@@ -6,6 +6,8 @@
  */
 
 import { atom } from 'jotai';
+import { atomFamily } from '../debug/atomFamilyRegistry';
+import { activeWorkspacePathAtom } from './openProjects';
 
 /**
  * AI context from an extension panel.
@@ -49,3 +51,39 @@ export const setExtensionPanelAIContextAtom = atom(
     set(extensionPanelAIContextAtom, context);
   }
 );
+
+interface ExtensionPanelState {
+  panelId: string | null;
+  bottomPanelId: string | null;
+  revision: number;
+  hydrated: boolean;
+}
+
+export const extensionPanelStateAtomFamily = atomFamily((_workspacePath: string) =>
+  atom<ExtensionPanelState>({ panelId: null, bottomPanelId: null, revision: 0, hydrated: false }),
+);
+
+function panelAtom(field: 'panelId' | 'bottomPanelId') {
+  return atom(
+    (get) => get(extensionPanelStateAtomFamily(get(activeWorkspacePathAtom) ?? ''))[field],
+    (get, set, update: string | null | ((previous: string | null) => string | null)) => {
+      const stateAtom = extensionPanelStateAtomFamily(get(activeWorkspacePathAtom) ?? '');
+      const state = get(stateAtom);
+      set(stateAtom, {
+        ...state,
+        [field]: typeof update === 'function' ? update(state[field]) : update,
+        revision: state.revision + 1,
+      });
+    },
+  );
+}
+
+export const activeExtensionPanelAtom = panelAtom('panelId');
+export const activeExtensionBottomPanelAtom = panelAtom('bottomPanelId');
+
+export const dismissExtensionPanelsAtom = atom(null, (get, set) => {
+  const stateAtom = extensionPanelStateAtomFamily(get(activeWorkspacePathAtom) ?? '');
+  const state = get(stateAtom);
+  // Record even a same-mode navigation before panel hydration has finished.
+  set(stateAtom, { ...state, panelId: null, bottomPanelId: null, revision: state.revision + 1 });
+});

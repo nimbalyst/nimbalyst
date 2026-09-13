@@ -7,6 +7,13 @@ import {
 } from '../documentLinkPaths';
 
 describe('documentLinkPaths', () => {
+  it('opens workspace-root links and explicit filesystem URLs consistently with embeds', () => {
+    expect(resolveDocumentLinkLookupPaths('/mockups/panel.mockup.html', '/workspace/docs/host.md', '/workspace'))
+      .toEqual(['mockups/panel.mockup.html', '/mockups/panel.mockup.html']);
+    expect(resolveDocumentLinkLookupPaths('file:///tmp/panel.mockup.html', '/workspace/docs/host.md', '/workspace'))
+      .toEqual(['/tmp/panel.mockup.html']);
+  });
+
   it('preserves the authored markdown label and does not invent a document id for imported links', () => {
     expect(
       buildImportedDocumentReference('Spec', './docs/other-doc.md'),

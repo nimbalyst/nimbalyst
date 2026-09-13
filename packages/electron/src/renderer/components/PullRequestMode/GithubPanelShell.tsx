@@ -18,6 +18,7 @@ import {
   useEffect,
   useImperativeHandle,
   useRef,
+  useState,
 } from 'react';
 import { useAtomValue, useSetAtom } from 'jotai';
 import { ResizablePanel } from '../AgenticCoding/ResizablePanel';
@@ -83,6 +84,11 @@ export const GithubPanelShell = forwardRef<GithubPanelChatHandle, GithubPanelShe
     const layout = useAtomValue(prModeLayoutAtom);
     const setLayout = useSetAtom(setPrModeLayoutAtom);
     const chatSidebarRef = useRef<ChatSidebarRef>(null);
+    const selectionScope = JSON.stringify([workspacePath, selectionKey]);
+    const [chatSelection, setChatSelection] = useState<{ key: string; id: string | null } | null>(null);
+    const handleSessionIdChange = useCallback((id: string | null) => {
+      setChatSelection({ key: selectionScope, id });
+    }, [selectionScope]);
 
     const handleSidebarWidthChange = useCallback(
       (width: number) => setLayout({ sidebarWidth: width }),
@@ -127,28 +133,17 @@ export const GithubPanelShell = forwardRef<GithubPanelChatHandle, GithubPanelShe
       openSession: openSessionInChat,
     }), [expandChat, toggleChatCollapsed, openSessionInChat]);
 
-    /**
-     * Selecting an item points the chat pane at that item's most recent linked
-     * session, so the conversation follows the selection. Kept per selection key
-     * so a manual session switch within one item isn't undone by a re-render,
-     * and skipped when the item has no linked session — the pane keeps what it
-     * had. A collapsed pane stays collapsed; selecting an item isn't a request
-     * to open the chat.
-     */
-    const autoOpenedSelectionRef = useRef<string | null>(null);
+    // Clear the old conversation on selection changes, then follow the first
+    // linked session when it resolves. Explicit choices stay put within an item.
     useEffect(() => {
-      if (!selectionKey) {
-        autoOpenedSelectionRef.current = null;
-        return;
+      if (chatSelection?.key === selectionScope && chatSelection.id) return;
+      const mostRecent = selectionKey ? selectionSessions?.[0] : undefined;
+      if (mostRecent) {
+        chatSidebarRef.current?.loadSession(mostRecent.id);
+      } else if (chatSelection?.key !== selectionScope) {
+        handleSessionIdChange(null);
       }
-      if (autoOpenedSelectionRef.current === selectionKey) return;
-      // Sessions resolve asynchronously (tracker items, worktree lookup); until
-      // one shows up this effect re-runs and stays a no-op.
-      const mostRecent = selectionSessions?.[0];
-      if (!mostRecent) return;
-      autoOpenedSelectionRef.current = selectionKey;
-      chatSidebarRef.current?.loadSession(mostRecent.id);
-    }, [selectionKey, selectionSessions]);
+    }, [selectionKey, selectionScope, selectionSessions, chatSelection, handleSessionIdChange]);
 
     // NOTE: every hook above must run before this early return, or a workspace
     // without a GitHub remote changes the hook count and React throws "Rendered
@@ -195,6 +190,10 @@ export const GithubPanelShell = forwardRef<GithubPanelChatHandle, GithubPanelShe
         <ChatSidebar
           ref={chatSidebarRef}
           workspacePath={workspacePath}
+          sessionId={chatSelection?.key === selectionScope ? chatSelection.id : null}
+          onSessionIdChange={handleSessionIdChange}
+          autoInitializeSession={false}
+          emptyState={<p>No related AI session</p>}
           isActive={isActive}
           isCollapsed={layout.chatCollapsed}
           onToggleCollapse={toggleChatCollapsed}

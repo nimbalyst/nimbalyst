@@ -24,6 +24,9 @@ import {
   withDatabaseOperationLock,
 } from '../../database/databaseOperationLock';
 import { readBackendState, writeBackendState } from '../../database/sqlite/BackendSelector';
+import { databaseRequiresRestart, resetDatabaseMaintenanceForTests } from '../../database/databaseMaintenance';
+import { cancelMigrationDryRun, migrationOperationSnapshot, migrationNeedsQuitDrain } from '../../database/migrationOperation';
+import { logger } from '../../utils/logger';
 
 const handlers = new Map<string, (event: unknown, ...args: any[]) => any>();
 
@@ -31,6 +34,7 @@ const relaunch = vi.fn();
 const quit = vi.fn();
 
 vi.mock('electron', () => ({
+  BrowserWindow: { getAllWindows: () => [] },
   app: {
     getPath: () => '',
     relaunch: () => relaunch(),
@@ -48,18 +52,19 @@ vi.mock('../../utils/logger', () => ({
   logger: { main: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } },
 }));
 
+const sendEvent = vi.hoisted(() => vi.fn());
 vi.mock('../../services/analytics/AnalyticsService', () => ({
-  AnalyticsService: { getInstance: () => ({ sendEvent: vi.fn() }) },
+  AnalyticsService: { getInstance: () => ({ sendEvent }) },
 }));
 
 /** Stands in for the SQLite worker proxy; the only thing rollback asks of it. */
 const closeLiveSqlite = vi.fn(async () => {});
-const getMigrationProxy = vi.fn(async () => {
+const getMigrationProxy = vi.fn<() => Promise<{ startDryRun: () => Promise<never> }>>(async () => {
   throw new Error('the proxy should not have been reached');
 });
 
 vi.mock('../../database/initialize', () => ({
-  getLiveSqliteDatabaseProxy: () => ({ close: () => closeLiveSqlite() }),
+  getLiveSqliteDatabaseProxy: () => ({ close: () => closeLiveSqlite(), queryReadOnly: async () => ({ rows: [] }) }),
   getMigrationProxy: () => getMigrationProxy(),
   stopPeriodicBackupTimer: vi.fn(),
 }));
@@ -100,6 +105,8 @@ describe('migration IPC channels', () => {
     recorded = path.join(userDataPath, 'pglite-db.migrated-2026-01-05T00-00-00-000Z');
     handlers.clear();
     resetDatabaseOperationLockForTests();
+    resetDatabaseMaintenanceForTests();
+    sendEvent.mockClear();
     relaunch.mockClear();
     quit.mockClear();
     closeLiveSqlite.mockClear();
@@ -153,7 +160,7 @@ describe('migration IPC channels', () => {
     expect(readBackendState(userDataPath)?.backend).toBe('sqlite');
   });
 
-  it('rollback restores the recorded store and releases the lock afterwards', async () => {
+  it('rollback restores the recorded store and retains the restart fence afterwards', async () => {
     migratedInstall();
     // A second preserved store that sorts later. The rollback that shipped
     // took the lexically last name, which is this one.
@@ -161,6 +168,11 @@ describe('migration IPC channels', () => {
     fs.mkdirSync(stranger, { recursive: true });
     fs.writeFileSync(path.join(stranger, MARKER), 'an unrelated preserved store');
 
+    closeLiveSqlite.mockImplementationOnce(async () => {
+      expect(databaseRequiresRestart()).toBe(true);
+      expect(migrationOperationSnapshot()).toMatchObject({ kind: 'rollback', status: 'running', requiresRestart: true });
+      expect(migrationNeedsQuitDrain()).toBe(true);
+    });
     const result = await invoke('db:migration:rollback');
 
     expect(result.success).toBe(true);
@@ -174,9 +186,29 @@ describe('migration IPC channels', () => {
     expect(fs.readdirSync(userDataPath).some((e) => e.startsWith('sqlite-db.rolledback-'))).toBe(true);
     expect(fs.existsSync(path.join(stranger, MARKER))).toBe(true);
 
-    // The lock is released on the way out, so a second operation can run.
+    // The lease is released, but this process still owns a closed engine.
     const second = await withDatabaseOperationLock('recovery', async () => 'ran');
-    expect(second).toEqual({ acquired: true, value: 'ran' });
+    expect(second.acquired).toBe(false);
+    expect(await invoke('db:migration:get-status')).toMatchObject({ requiresRestart: true, operation: { kind: 'rollback', status: 'awaiting-restart' } });
+  });
+
+  it('a rollback refused before close leaves ordinary access available', async () => {
+    const result = await invoke('db:migration:rollback');
+    expect(result.success).toBe(false);
+    expect(closeLiveSqlite).not.toHaveBeenCalled();
+    expect(databaseRequiresRestart()).toBe(false);
+    expect(migrationOperationSnapshot()).toMatchObject({ kind: 'rollback', status: 'failed' });
+    expect((await withDatabaseOperationLock('recovery', async () => {})).acquired).toBe(true);
+  });
+
+  it.each([true, false])('dry-run cancellation=%s reports only actual failures', async (cancelled) => {
+    getMigrationProxy.mockResolvedValueOnce({ startDryRun: async () => {
+      if (cancelled) cancelMigrationDryRun(migrationOperationSnapshot()!.id);
+      throw new Error(cancelled ? 'Dry run cancelled. The active database is unchanged.' : 'source read failed');
+    } });
+    expect((await invoke('db:migration:dry-run')).success).toBe(false);
+    expect(sendEvent.mock.calls.filter(call => call[0] === 'migration_dry_run_failed')).toHaveLength(cancelled ? 0 : 1);
+    if (cancelled) expect(logger.main.info).toHaveBeenCalledWith(expect.stringContaining('cancelled'));
   });
 
   it('reports the status of whichever operation holds the lock', async () => {

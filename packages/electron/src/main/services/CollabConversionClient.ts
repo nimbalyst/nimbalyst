@@ -256,6 +256,7 @@ export async function convertFromFileIntoDoc(
   yDoc: Doc,
   source: string | Uint8Array,
   options?: CollabConversionOptions,
+  canApply?: () => boolean,
 ): Promise<void> {
   const response = unwrap(await requestCollabConversion(
     { op, documentType, state: encodeStateAsUpdate(yDoc), source },
@@ -264,6 +265,7 @@ export async function convertFromFileIntoDoc(
   if (response.op !== 'seedFromFile' && response.op !== 'applyFromFile') {
     throw new Error(`Unexpected conversion response '${response.op}' for ${op}`);
   }
+  if (canApply && !canApply()) throw new Error('Document changed during conversion; no content was applied');
   applyUpdate(yDoc, response.update, COLLAB_CONVERSION_ORIGIN);
 }
 

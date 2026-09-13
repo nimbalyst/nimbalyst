@@ -10,7 +10,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 <!-- New features go here -->
-- A Live Activity on the Lock Screen and in the Dynamic Island shows what your session fleet is doing, ranks the sessions waiting on you, and opens one when you tap it; turn it off in Settings.
 
 ### Changed
 <!-- Changes to existing functionality go here -->
@@ -21,23 +20,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 <!-- Removed features go here -->
 
-## [1.2.0] - 2026-07-03
+## [1.2.0] - 2026-09-09
 
 
 ### Added
+- A Live Activity on the Lock Screen and in the Dynamic Island shows what your session fleet is doing, ranks the sessions waiting on you, and opens one when you tap it; turn it off in Settings.
+- Answer desktop action prompts (permission requests, plan approvals, questions) from the mobile composer.
+- Create and follow Meta Agent sessions from iOS, with child sessions grouped under their parent.
+- Sign in to multiple accounts, with team rooms, direct messages, and team notifications.
+- Claude Opus 5, GPT-5.6, Gemini, Grok Build, and Cursor Agent.
 - Mobile voice agent can open new sessions, manage existing sessions, and surface and answer a session's pending prompts
 - Voice mode shows live tool-call activity while the agent works
 - Memory recall and search results render as transcript cards
 - Live tracker reference links in transcripts
-- Create a Meta Agent from iOS (alpha-gated, synced from desktop)
 
 ### Changed
+- The session list loads from a persistent cache and pages in older sessions, so it opens fast and stops reshuffling mid-turn.
+- Start a voice session from a session list, and voice replies are terser.
 - Voice mode is pausable and stoppable from the floating mic
 - Unified iOS voice onto the gpt-realtime model
 - Session transcript images are zoomable, uncropped, and copyable
 - More file paths and links in transcripts are tappable
 
 ### Fixed
+- Large projects load, and interrupted file syncs resume.
+- Notifications reach the right phone and open the session they name.
+- Sessions survive layout changes and no longer open on another session's transcript.
+- Desktop screenshots render in the mobile transcript again.
+- Pairing links open the in-app scanner, and false "re-pair required" warnings are gone.
+- Sign-in failures are reported instead of failing silently.
+- Sync resilience after network changes, sleep, token refresh, and account switching.
 - Voice mode no longer interrupts itself when speakers are open
 - Fixed garbled and clicking voice audio on iOS
 - Fixed iOS audio after waking from sleep

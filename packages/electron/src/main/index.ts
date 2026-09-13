@@ -142,7 +142,7 @@ import { registerExportHandlers } from './ipc/ExportHandlers';
 import { registerSemanticSearchHandlers } from './ipc/SemanticSearchHandlers';
 import { SemanticCatalogService } from './services/SemanticCatalogService';
 import { registerShareHandlers } from './ipc/ShareHandlers';
-import { MCPConfigService } from './services/MCPConfigService';
+import { MCPConfigService, loadTrustGatedMcpServers } from './services/MCPConfigService';
 import { compressImage, shouldCompress } from './services/ImageCompressor';
 import { setMcpConfigServiceGetter } from './mcpConfigServiceRef';
 import { ClaudeCliLauncherConfig } from './services/ai/claudeCliLauncherSingleton';
@@ -229,6 +229,7 @@ import {
 import { configureMcpServers } from '@nimbalyst/runtime/ai/server';
 import { matchesAllowPattern } from '@nimbalyst/runtime/ai/server/permissions/toolPermissionHelpers';
 import { resolveCodexPreEditHookScriptPath } from './services/ai/codexPreEditHookPath';
+import {configureCodexShellTracking} from './services/ai/codexShellTrackingHost';
 import { createGrokAskUserQuestionHandler } from './services/ai/grokAskUserQuestionHandler';
 import { executeGeminiTool } from './services/ai/geminiToolExecutor';
 import { sessionFileTracker } from './services/SessionFileTracker';
@@ -255,17 +256,10 @@ import { gitRefWatcher } from './file/GitRefWatcher';
 import { autoUpdaterService, AutoUpdaterService } from './services/autoUpdater';
 import { initializeDatabase } from './database/initialize';
 import { database, HandledError } from './database/PGLiteDatabaseWorker';
-import { buildDatabaseInitializationErrorProperties } from './database/DatabaseErrorTelemetry';
-import { findRestorableBackups } from './database/sqlite/recoveryArtifacts';
-import {
-    applyDatabaseFailureChoice,
-    buildDatabaseFailureDialog,
-} from './database/databaseFailureDialog';
-import {
-    mayTryAnotherCandidate,
-    reconcileRecoveryOnStartup,
-    restoreFromNamedBackup,
-} from './database/recovery';
+import { drainMigrationForQuit, migrationNeedsQuitDrain } from './database/migrationOperation';
+import { endDatabaseOperationShutdown } from './database/databaseOperationLock';
+import { showDatabaseStartupFailure } from './database/showDatabaseStartupFailure';
+import { reconcileRecoveryOnStartup } from './database/recovery';
 import { resolveDatabaseUserDataPath } from './database/userDataPath';
 import { resolveTrackerDeepLinkId } from './services/tracker/resolveTrackerDeepLinkId';
 import { AnalyticsService } from "./services/analytics/AnalyticsService.ts";
@@ -1899,142 +1893,7 @@ app.whenReady().then(async () => {
             return;
         }
 
-        const errorMessage = error instanceof Error ? error.message : String(error);
-
-        // Detect WASM runtime crash (PGLite uses WASM internally)
-        // Note: 'Aborted' comes from worker.js when it detects RuntimeError or WASM abort
-        const isWasmRuntimeCrash = errorMessage.includes('exit(1)') ||
-                                   errorMessage.includes('Program terminated') ||
-                                   errorMessage.includes('ExitStatus') ||
-                                   errorMessage.includes('Aborted') ||
-                                   errorMessage.includes('DATABASE_INIT_FAILED');
-
-        // Which dialog the user gets must not depend on how the database failed.
-        // The recovery dialog used to be reachable only through the WASM-crash
-        // branch above, so the journaled-cutover hard stop -- the most serious
-        // state there is, where the install's only real store sits at a
-        // preserved path -- fell through to a bare showErrorBox and quit. Its
-        // message says "Settings -> Database can restore it", which the user
-        // cannot reach once the app has quit. If there is anything recoverable
-        // on disk, say so and offer to reveal it, whatever the error was.
-        // Same root the database and its backups actually live under, which is
-        // not `app.getPath('userData')` when `NIMBALYST_USER_DATA_PATH` is set.
-        const userDataPath = resolveDatabaseUserDataPath();
-        const backups = findRestorableBackups(userDataPath);
-        const canOfferRecovery = isWasmRuntimeCrash || backups.length > 0;
-
-        // Send analytics about the failure. The detailed engine text stays in
-        // the local log above -- init failures name the database path, which
-        // carries the user's account name. PostHog gets fixed codes instead.
-        try {
-            const analytics = AnalyticsService.getInstance();
-            const initializationError = buildDatabaseInitializationErrorProperties(
-                error,
-                database.getEngine(),
-            );
-            analytics.sendEvent('known_error', {
-                errorId: isWasmRuntimeCrash
-                    ? 'pglite_wasm_runtime_crash'
-                    : 'database_initialization_failed',
-                context: 'database_initialization',
-                ...initializationError,
-            });
-        } catch {
-            // Analytics failure shouldn't block error handling
-        }
-
-        // Show appropriate error dialog
-        if (canOfferRecovery) {
-            // This dialog used to end with "delete the database folder: <path>".
-            // Users followed it, and because the project list lives in
-            // electron-store rather than the database, the app came back up
-            // looking healthy with every session and all document history gone
-            // (#1347). Never instruct a delete: say what is recoverable, and
-            // give the user a way to reach it.
-            const content = buildDatabaseFailureDialog(backups);
-
-            const choice = dialog.showMessageBoxSync({
-                type: 'error',
-                title: content.title,
-                message: content.message,
-                detail: content.detail,
-                buttons: content.buttons,
-                defaultId: content.defaultId,
-                cancelId: content.cancelId,
-                noLink: true,
-            });
-
-            // Resolve the click by the LABEL the user read, not by index. This
-            // branch used to be `content.revealPath !== null && choice === 0`,
-            // which was written when index 0 was "Show Backups"; once Restore
-            // took that slot, the primary action of the dialog opened a Finder
-            // window and quit (#1347).
-            const dialogOutcome = await applyDatabaseFailureChoice(content, choice, {
-                restore: async (candidate) => {
-                    logger.main.info('[Database] Restoring from the failure dialog', {
-                        name: candidate.name,
-                        bytes: candidate.bytes,
-                    });
-                    // The full recovery transaction: the copy is staged and
-                    // verified before the live database moves anywhere, the swap
-                    // is a rename, and the displaced database is kept.
-                    const outcome = await restoreFromNamedBackup({
-                        backupPath: candidate.path,
-                        backupName: candidate.name,
-                    });
-                    if (!outcome.ok) {
-                        logger.main.error('[Database] Restore failed', outcome);
-                        return {
-                            ok: false,
-                            message: outcome.message,
-                            // Whether the dialog may fall through to the next
-                            // copy. False once this attempt has moved something.
-                            canTryAnother: mayTryAnotherCandidate(outcome),
-                        };
-                    }
-                    logger.main.info('[Database] Restore succeeded', {
-                        indicators: outcome.indicators,
-                        displacedLivePath: outcome.artifacts.displacedLivePath,
-                    });
-                    return { ok: true };
-                },
-                reveal: (revealPath) => {
-                    try {
-                        shell.showItemInFolder(revealPath);
-                    } catch (revealErr) {
-                        logger.main.warn('[Database] Could not reveal backup folder', revealErr);
-                    }
-                },
-                onRestoreFailed: (message) => {
-                    dialog.showErrorBox('Nimbalyst - Restore Failed', message);
-                },
-            });
-
-            if (dialogOutcome.restored) {
-                // Initialization already failed in this process, so the rest of
-                // startup never ran. Come back up cleanly on the restored
-                // database rather than trying to resume from here.
-                app.relaunch();
-            }
-
-            // NIM-3624: this dialog was previously invisible in telemetry, so
-            // there was no way to see how many users it sent to delete their
-            // database. Report that it was shown and what the user did.
-            try {
-                AnalyticsService.getInstance().sendEvent('database_init_failure_dialog', {
-                    backup_count: backups.length,
-                    largest_backup_bytes: backups.reduce((max, b) => Math.max(max, b.bytes), 0),
-                    action: dialogOutcome.reportedAction,
-                });
-            } catch {
-                // Analytics failure shouldn't block error handling
-            }
-        } else {
-            dialog.showErrorBox(
-                'Nimbalyst - Database Initialization Failed',
-                `Failed to initialize the database system.\n\nError: ${errorMessage}\n\nNimbalyst cannot continue without the database.`
-            );
-        }
+        await showDatabaseStartupFailure(error);
 
         // Exit the app
         app.quit();
@@ -2331,22 +2190,25 @@ app.whenReady().then(async () => {
         workspacePath?: string,
     ): Promise<Record<string, any>> => {
         if (!mcpConfigService) {
-            throw new Error('MCP config service not initialized');
+            // Never throw from here: the runtime's config service treats a
+            // throwing loader as permission to load `<workspace>/.mcp.json`
+            // itself, without the trust gate below.
+            logger.mcp.warn(`[MCP] MCP config service not initialized; ${displayName} gets no servers`);
+            return {};
         }
-        const mergedConfig = await mcpConfigService.getMergedConfig(workspacePath);
-        const enabledServers: Record<string, any> = {};
-        for (const [name, config] of Object.entries(mergedConfig.mcpServers || {})) {
-            if (!isMCPServerEnabledForProvider(config as MCPServerConfig, providerId)) continue;
-            const isAuthorized = await mcpConfigService.isOAuthAuthorized(config as MCPServerConfig, {
-                useMcpRemoteForNativeOAuth: true,
-            });
-            if (!isAuthorized) {
-                logger.mcp.info(`[MCP] Skipping unauthorized OAuth server for ${displayName}: ${name}`);
-                continue;
-            }
-            enabledServers[name] = mcpConfigService.processServerConfigForRuntime(config as any);
-        }
-        return enabledServers;
+        // The trust read is passed as a thunk so it runs inside the loader's
+        // fail-closed catch: a throw out of the permission store here would
+        // otherwise reach the runtime's ungated fallback loader.
+        // getPermissionMode resolves worktrees to the project that owns trust,
+        // matching the path the turn's own permission check uses.
+        return loadTrustGatedMcpServers({
+            service: mcpConfigService,
+            providerId,
+            displayName,
+            workspacePath,
+            getTrustMode: () =>
+                workspacePath ? getPermissionService().getPermissionMode(workspacePath) : null,
+        });
     };
 
     CopilotCLIProvider.setMCPConfigLoader(async (workspacePath?: string) => {
@@ -2376,8 +2238,9 @@ app.whenReady().then(async () => {
     // list or a session/new payload. So its loader writes the filtered set to
     // disk before returning it -- the returned value still feeds the provider's
     // mcpServerCount, but the file is what the CLI acts on. Only
-    // `nimbalyst:`-prefixed entries are touched; see
-    // HeadlessAgentMcpConfigService.
+    // `nimbalyst:`-prefixed entries are touched, and any server carrying a
+    // resolved credential is withheld rather than written into the user's
+    // repository; see HeadlessAgentMcpConfigService.
     const syncHeadlessAgentMcpConfig = async (
         target: HeadlessAgentMcpTarget,
         providerId: MCPProviderId,
@@ -2386,9 +2249,18 @@ app.whenReady().then(async () => {
     ): Promise<Record<string, any>> => {
         const servers = await loadEnabledMcpServersFor(providerId, displayName, workspacePath);
         try {
-            const written = await headlessAgentMcpConfigService.sync(target, servers, workspacePath);
+            const { path: written, cleanedWorkspacePath } = await headlessAgentMcpConfigService.sync(
+                target,
+                servers,
+                workspacePath,
+            );
             if (written) {
                 logger.mcp.info(`[MCP] Wrote ${Object.keys(servers).length} server(s) for ${displayName}: ${written}`);
+            }
+            if (cleanedWorkspacePath) {
+                logger.mcp.info(
+                    `[MCP] Removed Nimbalyst MCP entries an earlier version wrote inside the workspace: ${cleanedWorkspacePath}`,
+                );
             }
         } catch (error) {
             // A turn with no MCP servers is far better than a turn that cannot
@@ -2678,6 +2550,31 @@ app.whenReady().then(async () => {
     // the prompt cache. The provider resolves this once per session and freezes
     // it.
     ClaudeCodeProvider.setGitContextLoader((workspacePath: string) => getAgentGitContext(workspacePath));
+    // Document history for the agent tool hooks. The runtime used to import
+    // HistoryManager by a relative path out of its own package, which dragged
+    // the desktop app into every graph that touched session execution.
+    ClaudeCodeProvider.setHistoryManager({
+      createSnapshot: async (filePath, content, snapshotType, message, metadata) => {
+        await historyManager.createSnapshot(filePath, content, snapshotType as any, message, metadata);
+      },
+      getPendingTags: async (filePath) => {
+        const tags = await historyManager.getPendingTags(filePath);
+        return tags.map((tag) => ({ id: tag.id, createdAt: tag.createdAt, sessionId: tag.sessionId }));
+      },
+      tagFile: async (workspacePath, filePath, tagId, content, metadata) => {
+        await historyManager.createTag(
+          workspacePath,
+          filePath,
+          tagId,
+          content,
+          metadata?.sessionId || 'unknown',
+          metadata?.toolUseId || ''
+        );
+      },
+      updateTagStatus: async (filePath, tagId, status) => {
+        await historyManager.updateTagStatus(filePath, tagId, status as any);
+      },
+    });
     ClaudeCodeProvider.setAttachmentStagingLoader((workspacePath: string) => ({
       root: resolveWorkspaceAttachmentStagingDirectory(workspacePath),
       mode: getAttachmentStagingConfig().mode,
@@ -2697,6 +2594,7 @@ app.whenReady().then(async () => {
     // disk. The new app-server transport recovers pre-edit content from the
     // diff text in item/completed and does not need this hook.
     OpenAICodexProvider.setPreEditHookScriptPathResolver(resolveCodexPreEditHookScriptPath);
+    configureCodexShellTracking();
     OpenAICodexProvider.setPreEditSidecarDirResolver((sessionId: string) => {
       if (!sessionId) return undefined;
       const safeId = sessionId.replace(/[^A-Za-z0-9_-]/g, '_');
@@ -3571,7 +3469,25 @@ app.on('activate', () => {
 });
 
 // Before quit handler
+let migrationQuitDraining = false;
 app.on('before-quit', async (event) => {
+    if (migrationQuitDraining || migrationNeedsQuitDrain()) {
+        event.preventDefault();
+        if (!migrationQuitDraining) {
+            migrationQuitDraining = true;
+            try {
+                await drainMigrationForQuit();
+            } catch (error) {
+                logger.main.warn('[Migration] Quit drain failed', error);
+                migrationQuitDraining = false;
+                endDatabaseOperationShutdown();
+                return;
+            }
+            migrationQuitDraining = false;
+            app.quit();
+        }
+        return;
+    }
     getCollabOutboxDrainCoordinator().stop();
     getCollabAssetOutboxDrainCoordinator().stop();
     console.log('[QUIT] before-quit event triggered');
@@ -3637,6 +3553,7 @@ app.on('before-quit', async (event) => {
 
         if (response.response !== 0) {
             // User cancelled - stay running.
+            endDatabaseOperationShutdown();
             console.log('[QUIT] User cancelled quit due to active AI session');
             analytics.sendEvent('quit_confirmation_result', {
                 result: 'cancelled'

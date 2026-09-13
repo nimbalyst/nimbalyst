@@ -27,6 +27,34 @@ export type ImageCompressor = (
   options?: { targetSizeBytes?: number }
 ) => Promise<{ buffer: Buffer; mimeType: string; wasCompressed: boolean }>;
 export type ExtensionFileTypesLoader = () => Set<string>;
+
+/**
+ * Document history, as the agent tool hooks consume it: snapshot a file before
+ * an edit, and tag edited files for review.
+ *
+ * This is a port because the implementation is Electron's `HistoryManager`, and
+ * ClaudeCodeProvider used to import it by a relative path that escaped the
+ * runtime package entirely (`../../../../../electron/src/main/HistoryManager`).
+ * That single edge pulled ~51 files of the desktop app -- the settings store,
+ * the credential vault, the logger -- into the graph of anything that touched
+ * session execution, which no headless host can satisfy.
+ *
+ * Deliberately optional. `AgentToolHooks` already treats an absent history
+ * manager as a supported state and guards every call site, so a host with no
+ * document history skips snapshotting rather than failing.
+ */
+export type HistoryManagerPort = {
+  createSnapshot: (
+    filePath: string,
+    content: string,
+    snapshotType: string,
+    message: string,
+    metadata?: any
+  ) => Promise<void>;
+  getPendingTags: (filePath: string) => Promise<Array<{ id: string; createdAt: Date; sessionId?: string }>>;
+  tagFile: (workspacePath: string, filePath: string, tagId: string, content: string, metadata?: any) => Promise<void>;
+  updateTagStatus: (filePath: string, tagId: string, status: string) => Promise<void>;
+};
 /**
  * Resolves the git snapshot (branch, main branch, recent commits) stated at the
  * top of a session's system prompt. Returns null when the workspace is not a
@@ -124,6 +152,10 @@ export const ClaudeCodeDeps = {
   // Used in planning mode to allow editing extension-registered file types (e.g., .mockup.html)
   extensionFileTypesLoader: null as ExtensionFileTypesLoader | null,
 
+  // Snapshots and review tags for files the agent edits. Null on a host with no
+  // document history, which the tool hooks handle by skipping snapshotting.
+  historyManager: null as HistoryManagerPort | null,
+
   // ---- Plan Tracking ----
 
   PLAN_TRACKING_DEFAULT: true as const,
@@ -202,6 +234,10 @@ export const ClaudeCodeDeps = {
 
   setExtensionFileTypesLoader(loader: ExtensionFileTypesLoader | null): void {
     this.extensionFileTypesLoader = loader;
+  },
+
+  setHistoryManager(historyManager: HistoryManagerPort | null): void {
+    this.historyManager = historyManager;
   },
 
   setPlanTrackingEnabled(enabled: boolean): void {

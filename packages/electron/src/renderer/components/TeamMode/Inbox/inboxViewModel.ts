@@ -1,3 +1,4 @@
+import type { DocumentFeedbackInboxDelivery } from '../../../store/atoms/documentFeedbackInbox';
 /**
  * Pure view-model logic for the messaging Inbox.
  *
@@ -113,15 +114,15 @@ export const SOURCE_KIND_LABELS: Record<InboxSourceKind, string> = {
 };
 
 /**
- * The one source kind that asks for something back.
+ * Typed requests whose authorized state still asks this viewer for an answer.
  *
  * A comment or a mention is a statement the reader may act on; a feedback
  * request is a question with typed answers waiting on them, and the row has to
  * say so before it is opened. Derived from the source kind alone — response
  * state lives on the request resource, which a delivery does not carry.
  */
-export function awaitsResponse(sourceKind: InboxSourceKind | undefined): boolean {
-  return sourceKind === 'feedbackRequest';
+export function awaitsResponse(sourceKind: InboxSourceKind | undefined, reason?: string, documentDecisionNeedsResponse?: boolean): boolean {
+  return sourceKind === 'feedbackRequest' || (sourceKind === 'documentDecision' && reason === 'assignment' && documentDecisionNeedsResponse === true);
 }
 
 /**
@@ -310,7 +311,7 @@ export function toRowView(delivery: HydratedInboxDelivery, options: { now: numbe
     type: typeIdentity(sourceKind, { itemType, sourceTitle }),
     // Redacted with the source kind: a revoked row must not disclose that
     // someone was waiting on an answer from this reader.
-    awaitsResponse: awaitsResponse(sourceKind),
+    awaitsResponse: awaitsResponse(sourceKind, delivery.reason, delivery.documentDecisionNeedsResponse),
     archived: !!delivery.dismissedAt,
     sourceTitle,
     actor,
@@ -392,11 +393,12 @@ function deliveryFilterSubject(
   delivery: TeamInboxMaterializedDelivery,
 ): InboxFilterSubject {
   const source = delivery.unavailable ? undefined : delivery.source;
-  const sourceKind = source && 'sourceKind' in source ? source.sourceKind : undefined;
+  const sourceKind = source && 'sourceKind' in source ? source.sourceKind
+    : source && 'resourceKind' in source && source.resourceKind === 'document' && source.eventClass.startsWith('documentDecision') ? 'documentDecision' : undefined;
   return {
     reason: delivery.reason,
     subscription: delivery.subscription,
-    awaitsResponse: awaitsResponse(sourceKind),
+    awaitsResponse: awaitsResponse(sourceKind, delivery.reason, (delivery as DocumentFeedbackInboxDelivery).documentDecisionNeedsResponse),
     archived: !!delivery.dismissedAt,
   };
 }

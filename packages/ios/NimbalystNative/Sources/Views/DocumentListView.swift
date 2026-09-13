@@ -1,5 +1,6 @@
 import SwiftUI
 import GRDB
+import Combine
 
 /// Displays synced documents for a project as a collapsible file tree
 /// with path flattening (single-child directory chains collapsed into one row).
@@ -13,6 +14,8 @@ struct DocumentListView: View {
     @State private var searchText = ""
     @State private var isLoading = true
     @State private var expandedPaths: Set<String> = []
+    @State private var syncState: DocumentSyncState = .connecting
+    @State private var observationError: String?
 
     init(project: Project, selection: Binding<WorkspaceSelection?>) {
         self.project = project
@@ -33,12 +36,26 @@ struct DocumentListView: View {
 
     var body: some View {
         Group {
-            if isLoading {
-                ProgressView()
+            if let observationError {
+                syncError(observationError)
+            } else if isLoading {
+                ProgressView("Loading files…")
             } else if documents.isEmpty {
-                emptyState
+                switch syncState {
+                case .ready: emptyState
+                case .failed(let message): syncError(message)
+                case .connecting, .syncing: ProgressView("Syncing files…")
+                }
             } else {
-                documentTree
+                VStack(spacing: 0) {
+                    switch syncState {
+                    case .failed(let message): syncError(message)
+                    case .connecting: ProgressView("Connecting file sync…").padding(8)
+                    case .syncing(let received): ProgressView("Syncing files… \(received) received").padding(8)
+                    case .ready: Text("\(documents.count) files").font(.caption).foregroundStyle(.secondary).padding(8)
+                    }
+                    documentTree
+                }
             }
         }
         .searchable(text: $searchText, prompt: "Search files")
@@ -49,6 +66,9 @@ struct DocumentListView: View {
         }
         .onDisappear {
             cancellable?.cancel()
+        }
+        .onReceive(appState.documentSyncManager?.$loadStates.eraseToAnyPublisher() ?? Just([:]).eraseToAnyPublisher()) { states in
+            syncState = states[project.id] ?? .connecting
         }
         .onChange(of: expandedPaths) {
             saveExpandedPaths()
@@ -102,8 +122,24 @@ struct DocumentListView: View {
         }
     }
 
+    private func syncError(_ message: String) -> some View {
+        VStack(spacing: 8) {
+            Text(message).font(.caption).multilineTextAlignment(.center)
+            Button("Retry") {
+                observationError = nil
+                startObserving()
+                appState.documentSyncManager?.retryProject(project.id)
+            }
+        }
+        .padding()
+    }
+
     private func startObserving() {
-        guard let db = appState.databaseManager else { return }
+        cancellable?.cancel()
+        guard let db = appState.databaseManager else {
+            observationError = "Files are unavailable until this account connects."
+            return
+        }
 
         let projectId = project.id
         let observation = ValueObservation.tracking { db in
@@ -115,7 +151,10 @@ struct DocumentListView: View {
 
         cancellable = observation.start(
             in: db.writer,
-            onError: { _ in },
+            onError: { error in
+                observationError = "Could not load files. Please retry."
+                isLoading = false
+            },
             onChange: { newDocs in
                 withAnimation {
                     documents = newDocs
@@ -126,7 +165,11 @@ struct DocumentListView: View {
     }
 
     private func connectDocSync() {
-        appState.documentSyncManager?.connectProject(project.id)
+        guard let manager = appState.documentSyncManager else {
+            observationError = "File sync is unavailable until this account connects."
+            return
+        }
+        manager.connectProject(project.id)
     }
 
     private var expandedPathsKey: String {

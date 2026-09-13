@@ -32,9 +32,11 @@ import {
   type PGLiteHandle,
 } from './PGLiteToSQLiteMigrator';
 import { MigrationProgressReporter } from './MigrationProgressReporter';
+import { captureCutoverVerification } from './cutoverVerification';
+import { deferCutoverOutcome } from './cutoverStartup';
 import { asCutoverAbort, runCutover } from './cutoverMachine';
 import type { CutoverFs } from './cutoverJournal';
-import { DRY_RUN_MANIFEST_FILENAME } from './MigrationDryRunner';
+import { findDryRunArtifact } from './dryRunArtifact';
 import { classifyDatabaseError } from '../DatabaseErrorTelemetry';
 import { dirSizeBytes } from './dirSize';
 import { findRestorableBackups } from './recoveryArtifacts';
@@ -108,6 +110,7 @@ export interface AdopterOptions {
 }
 
 export interface AdoptResult {
+  historyRowsQuarantined?: number;
   rowsAdded: number;
   perTable: Array<{ name: string; added: number }>;
   pgliteMigratedDir: string;
@@ -127,7 +130,9 @@ export class MigrationAdopter {
   constructor(private opts: AdopterOptions) {}
 
   private report(body: MigrationOutcomeBody): void {
-    this.opts.onOutcome?.(buildMigrationOutcome('adopt', this.opts.operation, body));
+    const outcome = buildMigrationOutcome('adopt', this.opts.operation, body);
+    if (outcome.kind === 'completed' && deferCutoverOutcome(this.opts.userDataPath, outcome)) return;
+    this.opts.onOutcome?.(outcome);
   }
 
   /**
@@ -135,29 +140,7 @@ export class MigrationAdopter {
    * dry-run is available to adopt.
    */
   findDryRunDir(): { dir: string; manifest: DryRunManifest } | null {
-    const userData = this.opts.userDataPath;
-    if (!fs.existsSync(userData)) return null;
-    const candidates = fs
-      .readdirSync(userData)
-      .filter((d) => d.startsWith('sqlite-db.dry-run-'))
-      .map((d) => path.join(userData, d))
-      .filter((d) => {
-        try { return fs.statSync(d).isDirectory(); } catch { return false; }
-      });
-    if (candidates.length === 0) return null;
-    // Newest first by mtime so we pick up the most recent dry-run.
-    candidates.sort((a, b) => fs.statSync(b).mtimeMs - fs.statSync(a).mtimeMs);
-    for (const dir of candidates) {
-      const manifestPath = path.join(dir, DRY_RUN_MANIFEST_FILENAME);
-      if (!fs.existsSync(manifestPath)) continue;
-      try {
-        const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf-8')) as DryRunManifest;
-        return { dir, manifest };
-      } catch {
-        // Corrupt manifest; skip this dir and try the next one.
-      }
-    }
-    return null;
+    return findDryRunArtifact(this.opts.userDataPath);
   }
 
   async run(): Promise<AdoptResult> {
@@ -257,7 +240,7 @@ export class MigrationAdopter {
       }
 
       const sqliteHandle = sqlite;
-      let finalCatchUp = { rowsAdded: 0, perTable: [] as Array<{ name: string; added: number }> };
+      let finalCatchUp: { historyRowsQuarantined?: number; rowsAdded: number; perTable: Array<{ name: string; added: number }> } = { rowsAdded: 0, perTable: [] as Array<{ name: string; added: number }> };
       phase = 'cutover';
       await runCutover({
         userDataPath: userData,
@@ -305,9 +288,12 @@ export class MigrationAdopter {
               await closedSource.close();
             }
           })();
+          reporter?.announcePhase('verifying-integrity');
+          const verification = captureCutoverVerification(sqliteHandle);
           phase = 'closing-sqlite';
           await sqliteHandle.close();
           sqlite = null;
+          return verification;
         },
       }).catch((err) => {
         const abort = asCutoverAbort(err);
@@ -319,6 +305,7 @@ export class MigrationAdopter {
       const rowsAdded = catchResult.rowsAdded + finalCatchUp.rowsAdded;
       const perTable = mergeAddedTables(catchResult.perTable, finalCatchUp.perTable);
       const result: AdoptResult = {
+        historyRowsQuarantined: finalCatchUp.historyRowsQuarantined,
         rowsAdded,
         perTable,
         pgliteMigratedDir,
@@ -334,6 +321,7 @@ export class MigrationAdopter {
       // works without a new channel — only the fields it actually displays
       // need to be present.
       const summary: MigrationSummary = {
+        historyRowsQuarantined: finalCatchUp.historyRowsQuarantined,
         totalRowsCopied: rowsAdded,
         tablesCopied: perTable.map((t) => ({ name: t.name, rows: t.added })),
         durationMs,
@@ -341,7 +329,7 @@ export class MigrationAdopter {
         foreignKeyViolations: 0,
         spotCheckCount: 0,
       };
-      reporter?.emitComplete(summary);
+      reporter?.announcePhase('finalizing');
 
       this.report({
         kind: 'completed',

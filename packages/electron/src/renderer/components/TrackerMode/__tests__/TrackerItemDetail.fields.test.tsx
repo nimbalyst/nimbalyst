@@ -70,6 +70,7 @@ beforeEach(() => {
     documentService: {
       updateTrackerItem,
       createTrackerItem,
+      getTrackerCreationStatus: vi.fn().mockResolvedValue(null),
       updateTrackerItemInFile: vi.fn().mockResolvedValue({ success: true }),
       getTrackerItemContent: vi.fn().mockResolvedValue({ success: true, content: '' }),
       saveTrackerItemContent: vi.fn().mockResolvedValue({ success: true }),

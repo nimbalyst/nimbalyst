@@ -17,8 +17,8 @@
  * a dark wallpaper -- not worth reasoning about further here.
  */
 
+import { FLEET_STRIP_COLORS as COLORS } from '../../shared/fleetStripColors';
 import type { StripView } from './stripStateMachine';
-import type { PriorityState } from './fleetSnapshot';
 
 /**
  * Menu bar item height in DIP.
@@ -40,23 +40,6 @@ const GLYPH_SIZE = 18;
 
 /** Hard ceiling on the offscreen canvas, and therefore on a captured strip. */
 export const STRIP_MAX_WIDTH = 300;
-
-const COLORS: Record<PriorityState | 'running', string> = {
-  approval: '#fbbf24',
-  decision: '#f0abfc',
-  failed: '#ef4444',
-  running: '#60a5fa',
-  // The mockups' "done" green. Note the resting strip cannot reuse the running
-  // blue for unread, since two blue dot-and-digit pairs would be unreadable
-  // side by side -- so finished-and-unread is green here where the tray panel
-  // uses its blue unread dot.
-  completed: '#4ade80',
-  // Running, drained. Same family as `running` rather than a new hue: a stalled
-  // session is a running one that stopped talking, and the strip already spends
-  // amber on both approvals and the hot age, so a fourth warm colour would
-  // collide with one of them.
-  stalled: '#94a3b8',
-};
 
 const FOREGROUND = 'rgba(255,255,255,0.94)';
 

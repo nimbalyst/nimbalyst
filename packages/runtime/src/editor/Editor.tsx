@@ -32,7 +32,7 @@ import DraggableBlockPlugin from './plugins/DraggableBlockPlugin';
 import EmojiPickerPlugin from './plugins/EmojiPickerPlugin';
 import FloatingLinkEditorPlugin from './plugins/FloatingLinkEditorPlugin';
 import FloatingTextFormatToolbarPlugin from './plugins/FloatingTextFormatToolbarPlugin';
-import { setImagePluginCallbacks } from './plugins/ImagesPlugin';
+import { getImagePluginCallbacks, setImagePluginCallbacks } from './plugins/ImagesPlugin';
 import { KanbanBoardPlugin } from './plugins/KanbanBoardPlugin';
 import MarkdownShortcutPlugin from './plugins/MarkdownShortcutPlugin';
 import ShortcutsPlugin from './plugins/ShortcutsPlugin';
@@ -122,14 +122,21 @@ export default function Editor({ config = DEFAULT_EDITOR_CONFIG }: EditorProps):
   );
 
   // Image plugin uses module-level callback slots so the headless
-  // ImagesExtension command handler doesn't need props.
+  // ImagesExtension command handler doesn't need props. An editor mounted over
+  // another (a popup with its own upload target) hands the slot back on unmount
+  // so the editor underneath does not keep resolving through it.
   useEffect(() => {
-    setImagePluginCallbacks({
+    const previous = getImagePluginCallbacks();
+    const mine = {
       onImageDoubleClick: config.onImageDoubleClick,
       onImageDragStart: config.onImageDragStart,
       onUploadAsset: config.onUploadAsset,
       resolveImageSrc: config.resolveImageSrc,
-    });
+    };
+    setImagePluginCallbacks(mine);
+    return () => {
+      if (getImagePluginCallbacks() === mine) setImagePluginCallbacks(previous);
+    };
   }, [
     config.onImageDoubleClick,
     config.onImageDragStart,

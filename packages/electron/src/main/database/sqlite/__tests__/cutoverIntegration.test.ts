@@ -31,6 +31,8 @@ import { SQLiteDatabaseProxy } from '../SQLiteDatabaseProxy';
 import { MigrationAdopter } from '../MigrationAdopter';
 import { readBackendState } from '../BackendSelector';
 import { createMigrationControl } from '../migrationControl';
+import { assertDatabaseAvailable, resetDatabaseMaintenanceForTests } from '../../databaseMaintenance';
+import { withDatabaseOperationLock, resetDatabaseOperationLockForTests } from '../../databaseOperationLock';
 import { abortRequiresRelaunch, asCutoverAbort } from '../cutoverMachine';
 import { readCutoverJournal, type CutoverFs } from '../cutoverJournal';
 import { DRY_RUN_MANIFEST_FILENAME } from '../MigrationDryRunner';
@@ -107,6 +109,7 @@ describe('cutover failure handling', () => {
   let pgliteDir: string;
 
   beforeEach(() => {
+    resetDatabaseMaintenanceForTests();
     tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'nim-cutover-'));
     pgliteDir = path.join(tmp, 'pglite-db');
     fs.mkdirSync(pgliteDir, { recursive: true });
@@ -169,6 +172,7 @@ describe('cutover failure handling', () => {
     expect(fs.readdirSync(tmp).filter((d) => d.startsWith('pglite-db.migrated-'))).toEqual([]);
     expect(readBackendState(tmp)?.backend).not.toBe('sqlite');
     expect(readCutoverJournal(tmp)).toBeNull();
+    expect(() => assertDatabaseAvailable()).not.toThrow();
   });
 
   it('migration: a rename the OS refuses aborts the cutover instead of flipping the flag anyway', async () => {
@@ -254,7 +258,7 @@ describe('cutover failure handling', () => {
     expect(readBackendState(tmp)?.backend).not.toBe('sqlite');
   });
 
-  it('adoption: promotes the dry run, preserves the source, and leaves no journal', async () => {
+  it('adoption: preserves the source and retains the journal until startup verifies the promoted database', async () => {
     const dryRunDir = path.join(tmp, 'sqlite-db.dry-run-2026-09-02T00-00-00-000Z');
     fs.mkdirSync(dryRunDir, { recursive: true });
     fs.writeFileSync(path.join(dryRunDir, DRY_RUN_MANIFEST_FILENAME), JSON.stringify(MANIFEST));
@@ -275,10 +279,10 @@ describe('cutover failure handling', () => {
     expect(fs.existsSync(path.join(result.pgliteMigratedDir, 'PG_VERSION'))).toBe(true);
     expect(readBackendState(tmp)?.backend).toBe('sqlite');
     expect(readBackendState(tmp)?.pgliteMigratedDir).toBe(result.pgliteMigratedDir);
-    expect(readCutoverJournal(tmp)).toBeNull();
+    expect(readCutoverJournal(tmp)?.phase).toBe('backend_committed');
   });
 
-  it('a completed migration leaves no journal behind', async () => {
+  it('a promoted migration still requires startup verification', async () => {
     const orchestrator = new MigrationOrchestrator({
       userDataPath: tmp,
       schemaDir: SCHEMA_DIR,
@@ -291,7 +295,7 @@ describe('cutover failure handling', () => {
     await orchestrator.run();
 
     expect(readBackendState(tmp)?.backend).toBe('sqlite');
-    expect(readCutoverJournal(tmp)).toBeNull();
+    expect(readCutoverJournal(tmp)?.phase).toBe('backend_committed');
     expect(fs.readdirSync(tmp).filter((d) => d.startsWith('pglite-db.migrated-'))).toHaveLength(1);
   });
 });
@@ -315,6 +319,20 @@ describe('cutover failure handling', () => {
  * and a build artifact dependency for no extra coverage.
  */
 describe('the worker control bridge', () => {
+  beforeEach(() => {
+    resetDatabaseMaintenanceForTests();
+    resetDatabaseOperationLockForTests();
+  });
+
+  it('keeps ordinary access and a second operation fenced after source close', async () => {
+    const close = vi.fn(async () => {});
+    await createMigrationControl({ closePglite: close }).closePglite();
+    expect(close).toHaveBeenCalledOnce();
+    expect(() => assertDatabaseAvailable()).toThrow(/Restart Nimbalyst/);
+    const second = vi.fn(async () => {});
+    expect((await withDatabaseOperationLock('dry-run', second)).acquired).toBe(false);
+    expect(second).not.toHaveBeenCalled();
+  });
   function proxyWithStubWorker(): { proxy: SQLiteDatabaseProxy; posted: unknown[] } {
     const posted: unknown[] = [];
     const proxy = new SQLiteDatabaseProxy({ dbDir: '/unused', schemaDir: '/unused' });

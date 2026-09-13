@@ -309,7 +309,68 @@ public final class DatabaseManager: @unchecked Sendable {
             }
         }
 
+        // Action prompts from the desktop workspace's ai-actions.md, stored as a
+        // JSON blob beside the slash commands they arrive with. NULL means the
+        // desktop predates action sync or the workspace has no actions; both
+        // read as an empty picker.
+        migrator.registerMigration("v15_project_action_prompts") { db in
+            try db.alter(table: "projects") { t in
+                t.add(column: "actionsJson", .text)
+            }
+        }
+
+        // Indexes for the bounded sidebar window (see SessionListQueries.swift). The
+        // list orders by (projectId, updatedAt DESC, id DESC) and resolves group
+        // membership through worktreeId; the pre-existing idx_sessions_updated is not
+        // usable for either because it is not project-scoped. Adding indexes rewrites
+        // no rows, so an existing install keeps its cache.
+        migrator.registerMigration("v16_session_list_window_indexes") { db in
+            try db.execute(sql: """
+                CREATE INDEX IF NOT EXISTS idx_sessions_project_updated
+                ON sessions(projectId, updatedAt DESC, id DESC)
+                """)
+            try db.execute(sql: """
+                CREATE INDEX IF NOT EXISTS idx_sessions_project_worktree
+                ON sessions(projectId, worktreeId)
+                WHERE worktreeId IS NOT NULL
+                """)
+            // Running / queued / pinned sessions stay reachable from outside the loaded
+            // page, and they can be arbitrarily old, so that query cannot use the
+            // recency index. A partial index keeps it proportional to how many sessions
+            // actually need attention rather than to history.
+            try db.execute(sql: """
+                CREATE INDEX IF NOT EXISTS idx_sessions_project_attention
+                ON sessions(projectId, updatedAt DESC, id DESC)
+                WHERE isExecuting = 1 OR hasQueuedPrompts = 1 OR isPinned = 1
+                """)
+        }
+
+        // Derived projection of the sidebar's display groups, so a page of the session
+        // list is a bounded index read instead of a re-aggregation of history. Creating
+        // tables and triggers is additive; no session row is touched.
+        migrator.registerMigration("v17_session_list_group_projection") { db in
+            try SessionListProjection.ensureSchema(db)
+        }
+
+        migrator.registerMigration("v18_session_list_auxiliary_indexes") { db in
+            try db.execute(sql: """
+                CREATE INDEX IF NOT EXISTS idx_sessions_workstream_page
+                ON sessions(projectId, updatedAt DESC, id DESC) WHERE sessionType = 'workstream';
+                CREATE INDEX IF NOT EXISTS idx_sessions_archived_project
+                ON sessions(projectId) WHERE isArchived = 1;
+                CREATE INDEX IF NOT EXISTS idx_sessions_phase_project
+                ON sessions(projectId) WHERE phase IS NOT NULL AND phase <> '';
+                """)
+        }
+
+        migrator.registerMigration(IndexReplicationStore.migrationIdentifier) { db in
+            try IndexReplicationStore.createSchema(db)
+        }
+
         try migrator.migrate(writer)
+        // The projection is derived data with its own shape marker; a recorded
+        // migration says nothing about which shape it created.
+        try writer.write { db in try SessionListProjection.ensureSchema(db) }
     }
 
     // MARK: - Project Queries

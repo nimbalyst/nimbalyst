@@ -1,3 +1,4 @@
+import { withDocumentFeedbackAtom } from './documentFeedbackInbox';
 import type { TeamInboxSnapshot, TeamPresenceMember } from '@nimbalyst/runtime/sync';
 import { atom } from 'jotai';
 import { selectAtom } from 'jotai/utils';
@@ -27,6 +28,8 @@ export const EMPTY_TEAM_INBOX_SNAPSHOT: TeamInboxSnapshot = {
 export const teamInboxSnapshotAtom = atom<TeamInboxSnapshot>(
   EMPTY_TEAM_INBOX_SNAPSHOT,
 );
+
+export const feedbackAwareTeamInboxSnapshotAtom = withDocumentFeedbackAtom(teamInboxSnapshotAtom);
 
 /**
  * One organization's slice of the fan-in, held apart from the snapshot itself.
@@ -71,7 +74,7 @@ export const orgInboxFilterCountAtomFamily = atomFamily((key: string) => {
   const orgId = key.slice(0, separator);
   const filter = key.slice(separator + 1) as InboxFilterId;
   return selectAtom(
-    teamInboxSnapshotAtom,
+    feedbackAwareTeamInboxSnapshotAtom,
     (snapshot) => inboxNavCount(snapshot, orgId, filter),
   );
 });

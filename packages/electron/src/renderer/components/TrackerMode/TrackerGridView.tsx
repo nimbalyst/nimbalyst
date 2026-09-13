@@ -24,24 +24,12 @@ import type {
 import { useAtomValue } from 'jotai';
 import type { TrackerItemType } from '@nimbalyst/runtime/core/DocumentService';
 import type { TrackerRecord } from '@nimbalyst/runtime/core/TrackerRecord';
-import {
-  useTrackerRows,
-  resolveColumnsForType,
-  getDefaultColumnConfig,
-  getFieldForColumn,
-  getCellValue,
-  coerceCellValue,
-  withEffectiveUpdated,
-  filterTrackerRecords,
-  getTrackerGroupLabel,
-  getTypeColor,
-  sortTrackerRecords,
-  globalRegistry,
-  TrackerRowContextMenu,
-  type TrackerColumnDef,
-  type TrackerLinkedSessionOption,
-  type TypeColumnConfig,
-} from '@nimbalyst/runtime/plugins/TrackerPlugin';
+import { useTrackerRows } from '@nimbalyst/runtime/plugins/TrackerPlugin/components/useTrackerRows';
+import { resolveColumnsForType, getDefaultColumnConfig, getFieldForColumn, getCellValue, getTypeColor, type TrackerColumnDef, type TypeColumnConfig } from '@nimbalyst/runtime/plugins/TrackerPlugin/components/trackerColumns';
+import { coerceCellValue } from '@nimbalyst/runtime/plugins/TrackerPlugin/components/trackerCellEditors';
+import { withEffectiveUpdated, filterTrackerRecords, getTrackerGroupLabel, sortTrackerRecords } from '@nimbalyst/runtime/plugins/TrackerPlugin/components/trackerRowData';
+import { globalRegistry } from '@nimbalyst/runtime/plugins/TrackerPlugin/models/TrackerDataModel';
+import { TrackerRowContextMenu, type TrackerLinkedSessionOption } from '@nimbalyst/runtime/plugins/TrackerPlugin/components/TrackerRowContextMenu';
 import { isCollectionType } from '@nimbalyst/runtime/plugins/TrackerPlugin/models/trackerCollections';
 import {
   formatTrackerUndoToast,

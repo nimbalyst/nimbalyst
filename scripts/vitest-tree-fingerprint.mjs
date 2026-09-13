@@ -43,7 +43,15 @@ const IGNORED_DIRS = [
  * reporter's own output dirties the tree it just fingerprinted, making every
  * run read back as STALE.
  */
+/**
+ * Root-level archives of the local-only directory (`nimbalyst-local.zip`). They
+ * are untracked, never test inputs, and can run to hundreds of megabytes; every
+ * fingerprint reads each dirty path in full, twice per push.
+ */
+const LOCAL_ARCHIVE = /^nimbalyst-local\.[\w.]+$/;
+
 const isIgnored = (repoPath) =>
+  LOCAL_ARCHIVE.test(repoPath) ||
   IGNORED_DIRS.some(
     (dir) =>
       repoPath === dir || repoPath.startsWith(`${dir}/`) || repoPath.includes(`/${dir}/`),
@@ -109,6 +117,7 @@ export function computeTreeFingerprint(
   cwd = process.cwd(),
   env = process.env,
   extraRoots = extraRootsFromEnv(env),
+  toolchain = { nodeMajor: process.versions.node.split(".")[0], platform: process.platform, arch: process.arch },
 ) {
   let root;
   let head;
@@ -155,19 +164,21 @@ export function computeTreeFingerprint(
   // untouched and the run reads back as CURRENT when it is anything but.
   const extras = [];
   for (const extraRoot of extraRoots) {
-    const extra = computeTreeFingerprint(extraRoot, env, []);
-    if (extra) extras.push({ root: extra.root, digest: extra.digest, files: extra.files });
+    const extra = computeTreeFingerprint(extraRoot, env, [], toolchain);
+    if (!extra) return null;
+    extras.push({ root: extra.root, digest: extra.digest, files: extra.files });
   }
 
   const digest = sha256(
     [
       head,
+      JSON.stringify(toolchain),
       ...files.map((f) => `${f.status} ${f.hash} ${f.path}`),
       ...extras.map((e) => `extra ${e.root} ${e.digest}`),
     ].join('\n'),
   ).slice(0, 16);
 
-  return { root, head, files, extras, digest };
+  return { root, head, files, extras, toolchain, digest };
 }
 
 /**
@@ -219,6 +230,10 @@ export function compareTreeFingerprint(recorded, cwd = process.cwd(), env = proc
     if (recordedExtras.get(extra.root) !== extra.digest) {
       changed.push({ path: extra.root, change: 'sibling checkout changed since run' });
     }
+  }
+
+  if (JSON.stringify(recorded.toolchain) !== JSON.stringify(now.toolchain)) {
+    changed.push({ path: 'Node/platform/architecture', change: 'toolchain changed since run' });
   }
 
   if (changed.length === 0 && recorded.head !== now.head) {

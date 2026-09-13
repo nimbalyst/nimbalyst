@@ -17,6 +17,11 @@
 /** Keys deleted from any CLI agent child environment. */
 export const SCRUBBED_PROVIDER_API_KEY_ENV_VARS = [
   'ANTHROPIC_API_KEY',
+  'ANTHROPIC_AUTH_TOKEN',
+  'CLAUDE_CODE_OAUTH_TOKEN',
+  'GEMINI_API_KEY',
+  'GOOGLE_API_KEY',
+  'OPENROUTER_API_KEY',
   'OPENAI_API_KEY',
   'CURSOR_API_KEY',
   'XAI_API_KEY',

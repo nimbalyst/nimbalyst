@@ -56,6 +56,16 @@ vi.mock('../../database/initialize', () => ({
   getDatabase: () => null,
 }));
 
+// Schema projection only needs a team-name lookup here. Loading TeamService
+// pulls in the runtime and sync/auth graph, timing out setup under suite load.
+vi.mock('../TeamService', () => ({
+  findTeamForWorkspace: vi.fn(async () => null),
+}));
+// Watcher attribution is not exercised by these direct schema operations.
+vi.mock('../TrackerIdentityService', () => ({
+  getCurrentIdentity: vi.fn(() => ({})),
+}));
+
 /** The destructive-change guard rail's opt-in, on every schema write path. */
 interface TestSchemaWriteOptions {
   confirmDestructive?: boolean;

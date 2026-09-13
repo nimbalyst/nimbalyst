@@ -1,7 +1,8 @@
 import { SessionProviderIcon } from './SessionProviderIcon';
 import React, { useState, useCallback, useEffect, useRef, memo, useMemo } from 'react';
 import { useAtomValue, useSetAtom } from 'jotai';
-import { MaterialSymbol, copyToClipboard } from '@nimbalyst/runtime';
+import { MaterialSymbol } from '@nimbalyst/runtime/ui/icons/MaterialSymbol';
+import { copyToClipboard } from '@nimbalyst/runtime/utils/clipboard';
 import {
   sessionProcessingAtom,
   sessionUnreadAtom,

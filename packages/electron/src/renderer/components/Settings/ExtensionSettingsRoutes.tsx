@@ -1,10 +1,10 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import {
-  createExtensionStorage,
-  getExtensionLoader,
   type LoadedExtensionSettingsRoute,
   type SettingsRouteProjectTarget,
-} from '@nimbalyst/runtime';
+} from '@nimbalyst/runtime/extensions/types';
+import { createExtensionStorage } from '@nimbalyst/runtime/extensions/ExtensionStorage';
+import { getExtensionLoader } from '@nimbalyst/runtime/extensions/ExtensionLoader';
 import { useTheme } from '../../hooks/useTheme';
 import type { ExtensionSettingsRoute } from './settingsRoutes';
 

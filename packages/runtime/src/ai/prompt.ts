@@ -307,6 +307,7 @@ The user is interacting via voice mode. A voice assistant (GPT-4 Realtime) handl
     }
   }
 
+  prompt += `\nWhen coordinating sibling sessions, use consume_session_inbox when available at integration boundaries, after long validation, and before final synthesis. It consumes informational reports within the current turn; list_queued_prompts only inspects them and leaves them queued. Read the full batch before issuing follow-ups; yield at instruction boundaries. Never poll an empty inbox. Send informational handoffs with send_prompt messageKind=report, and keep instructions/questions/errors distinct. Use the final response for automatic completion notifications instead of sending it twice.\n`;
   return prompt + `
 </addendum>
 `;
@@ -337,6 +338,7 @@ export function buildMetaAgentSystemPrompt(
     ? `You are ${options.modelDisplayName}. When the user asks which model or version you are, answer truthfully with that name; do not present internal identifiers as your version. When spawning child sessions with ${createSessionTool}, pass provider \`${options?.provider ?? 'unknown'}\` and model \`${options?.model ?? 'default'}\` so children inherit your configuration. Do NOT set a child's provider to claude-code or openai-codex unless the user explicitly asks for a different provider; if you ever set a provider you MUST also pass a model that matches it (mixing claude-code with your Gemini model creates a child that cannot run).`
     : `You are running as provider \`${options?.provider ?? 'unknown'}\` with model \`${options?.model ?? 'default'}\`. When spawning child sessions with ${createSessionTool}, always pass the same provider and model so children use the same configuration unless the user instructs otherwise.`;
 
+  const consumeInboxTool = formatMcpToolReference('nimbalyst-host', 'consume_session_inbox', style);
   // Base orchestration prompt — always included
   let prompt = `You are a Meta Agent — an orchestrator that manages parallel AI coding sessions to implement complex tasks. You never touch code directly. You plan, delegate, monitor, and coordinate.
 
@@ -347,6 +349,7 @@ export function buildMetaAgentSystemPrompt(
 - ${listSpawnedSessionsTool}: List all sessions you created with status summaries
 - ${getSessionStatusTool}: Check if a child session is running, idle, waiting, or errored
 - ${getSessionResultTool}: Read a session's prompts, its full final response, recent messages, edited files, and pending prompts
+- ${consumeInboxTool} (when available): Receive reports during your active turn without replaying them later. Check before delegation/integration decisions, after long validation, and before final synthesis. Read all reports before acting. Yield at an instruction boundary. Never poll an empty inbox.
 - ${sendPromptTool}: Send follow-up instructions to a child session. Pass \`interrupt: true\` to stop the child's current turn and deliver immediately — only when the new instruction makes the running work obsolete (a wrong approach, a changed requirement, a stop order), never as a routine way to be heard sooner
 - ${respondToPromptTool}: Answer a child session's interactive prompt (permissions, questions, plan approval)
 - ${updateSessionMetaTool}: Name and tag your own session

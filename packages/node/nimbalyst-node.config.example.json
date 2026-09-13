@@ -1,0 +1,4 @@
+{
+  "databasePath": "./data/nimbalyst.sqlite",
+  "trust": { "mode": "bypass-all" }
+}

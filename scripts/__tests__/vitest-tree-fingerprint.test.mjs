@@ -67,6 +67,11 @@ test('a recorded run reads CURRENT until a real source edit, then STALE naming t
     );
   }
 
+  // A zipped-up local-only directory at the root is not a test input either,
+  // and hashing one costs a full read of the archive on every fingerprint.
+  writeFileSync(path.join(repo, 'nimbalyst-local.zip'), 'PK');
+  assert.equal(compareTreeFingerprint(recorded, repo, ENV).verdict, 'current');
+
   writeFileSync(path.join(repo, 'src.ts'), 'export const a = 2;\n');
   const afterEdit = compareTreeFingerprint(recorded, repo, ENV);
   assert.equal(afterEdit.verdict, 'stale');
@@ -109,4 +114,35 @@ test('an edit in a sibling checkout the suite tests reads as STALE', (t) => {
     afterSiblingEdit.changed.map((c) => c.change),
     ['sibling checkout changed since run'],
   );
+});
+
+test('toolchain changes invalidate the fingerprint and missing external inputs fail closed', (t) => {
+  const repo = makeRepo();
+  t.after(() => rmSync(repo, { recursive: true, force: true }));
+  const current = computeTreeFingerprint(repo, ENV);
+  for (const change of [{ nodeMajor: '999' }, { platform: 'other' }, { arch: 'other' }]) {
+    const old = computeTreeFingerprint(repo, ENV, [], { ...current.toolchain, ...change });
+    assert.equal(compareTreeFingerprint(old, repo, ENV).verdict, 'stale');
+  }
+  assert.equal(computeTreeFingerprint(repo, ENV, [path.join(repo, 'missing')]), null);
+});
+
+import { fullSuiteReuseDecision } from '../prepush-test-gate.mjs';
+import { fullSuiteInvocation } from '../validation-inventory.mjs';
+
+test('a real checkout reuses a full pass; source and lock edits made after it cannot reuse it', (t) => {
+  const repo = makeRepo();
+  t.after(() => rmSync(repo, { recursive: true, force: true }));
+  const fingerprint = computeTreeFingerprint(repo, ENV);
+  const record = { invocation: fullSuiteInvocation, complete: true, result: 'PASS', fingerprint };
+  const decide = (value = record) => fullSuiteReuseDecision({ record: value, comparison: compareTreeFingerprint(value.fingerprint, repo, ENV),
+    stdin: `refs/heads/main ${fingerprint.head} refs/heads/main ${'0'.repeat(40)}`, git: (...args) => git(repo, ...args), ci: 'false' });
+  assert.equal(decide().reuse, true);
+  writeFileSync(path.join(repo, 'package-lock.json'), '{}');
+  assert.equal(decide().reuse, false);
+  // A run that fingerprinted the dirty lockfile tested exactly this tree.
+  assert.equal(decide({ ...record, fingerprint: computeTreeFingerprint(repo, ENV) }).reuse, true);
+  rmSync(path.join(repo, 'package-lock.json'));
+  writeFileSync(path.join(repo, 'src.ts'), 'changed');
+  assert.equal(decide().reuse, false);
 });

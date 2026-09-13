@@ -85,6 +85,7 @@ const {
 vi.mock('../../../database/initialize', () => ({
   getDatabase: () => ({
     query: mockQuery,
+    runTransaction: async (statements: Array<{ sql: string; params: unknown[] }>) => { for (const statement of statements) await mockQuery(statement.sql, statement.params); },
     getEngine: mockGetEngine,
   }),
 }));
@@ -166,8 +167,10 @@ vi.mock('electron', async () => ({
 // DocumentRoom Y.Doc when description changes, otherwise the body lands
 // only in PGLite + cache and shared `fullDocument` trackers (incident,
 // plan, decision) render blank for every peer.
+const mockInitializeHeadlessBodyMarkdown = vi.hoisted(() => vi.fn(async (..._args: any[]) => {}));
 vi.mock('../../../services/MainBodyDocService', () => ({
   applyHeadlessBodyMarkdown: mockApplyHeadlessBodyMarkdown,
+  initializeHeadlessBodyMarkdown: mockInitializeHeadlessBodyMarkdown,
 }));
 
 // Counter behaviour lives in tracker/__tests__/localKeyAllocator.test.ts; the
@@ -1904,9 +1907,8 @@ describe('handleTrackerCreate session linking', () => {
     });
     mockQuery
       .mockResolvedValueOnce({ rows: [] }) // INSERT
-      .mockResolvedValueOnce({ rows: [createdRow] }) // resolve created
-      .mockResolvedValueOnce({ rows: [{ body_version: 1 }] }) // UPDATE content + body_version
       .mockResolvedValueOnce({ rows: [] }) // INSERT tracker_body_cache
+      .mockResolvedValueOnce({ rows: [createdRow] }) // resolve created
       .mockResolvedValueOnce({ rows: [createdRow] }); // notifyTrackerItemAdded
   }
 
@@ -2009,7 +2011,7 @@ describe('handleTrackerCreate session linking', () => {
     expect(data.createdByAgent).toBe(false);
   });
 
-  it('seeds body cache and the live Y.Doc when creating with a description', async () => {
+  it('seeds the body cache without team traffic for personal creation', async () => {
     setupCreateQueueWithDescription();
 
     const result = await handleTrackerCreate(
@@ -2019,12 +2021,6 @@ describe('handleTrackerCreate session linking', () => {
     );
 
     expect(result.isError).toBe(false);
-
-    const updateContentSql = mockQuery.mock.calls.find(
-      (c) => /UPDATE tracker_items[\s\S]+SET content[\s\S]+body_version/.test(String(c[0])),
-    );
-    expect(updateContentSql).toBeDefined();
-    expect(String(updateContentSql![0])).toMatch(/RETURNING body_version/);
 
     const cacheInsert = mockQuery.mock.calls.find(
       (c) => /INSERT INTO tracker_body_cache/.test(String(c[0])),
@@ -2036,19 +2032,23 @@ describe('handleTrackerCreate session linking', () => {
       JSON.stringify('Created body text'),
     ]);
 
-    expect(mockApplyHeadlessBodyMarkdown).toHaveBeenCalledTimes(1);
-    expect(mockApplyHeadlessBodyMarkdown).toHaveBeenCalledWith(
-      '/tmp/ws',
-      'bug_test',
-      'Created body text',
-    );
+    expect(mockApplyHeadlessBodyMarkdown).not.toHaveBeenCalled();
+    expect(mockInitializeHeadlessBodyMarkdown).not.toHaveBeenCalled();
+  });
+
+  it('persists an explicitly empty create body instead of treating it as omitted', async () => {
+    setupCreateQueueWithDescription();
+    const result = await handleTrackerCreate({ id: 'bug_test', type: 'bug', title: 'Empty body', description: '' }, '/tmp/ws', undefined);
+    expect(result.isError).toBe(false);
+    const cache = mockQuery.mock.calls.find(([sql]) => /INSERT INTO tracker_body_cache/.test(String(sql)));
+    expect(cache?.[1]).toEqual(['bug_test', 1, JSON.stringify('')]);
   });
 
   it('reports partial success when a shared create cannot store the collaborative body', async () => {
     setupCreateQueueWithDescription();
     vi.mocked(shouldSyncTrackerItem).mockReturnValue(true);
     vi.mocked(isTrackerSyncActive).mockReturnValue(false);
-    mockApplyHeadlessBodyMarkdown.mockResolvedValueOnce(false);
+    mockInitializeHeadlessBodyMarkdown.mockRejectedValueOnce(new Error('No acknowledgment'));
     const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
 
     try {
@@ -2071,7 +2071,7 @@ describe('handleTrackerCreate session linking', () => {
       expect(payload.summary).toContain('body was not stored in collaborative tracker content');
       expect(errorSpy).toHaveBeenCalledWith(
         '[MCP Server] tracker_create collaborative body write failed:',
-        { itemId: 'bug_test', workspacePath: '/tmp/ws' },
+        expect.objectContaining({ itemId: 'bug_test', workspacePath: '/tmp/ws' }),
       );
     } finally {
       errorSpy.mockRestore();
@@ -2721,6 +2721,36 @@ describe('handleTrackerUpdate description / collab body', () => {
       );
     } finally {
       errorSpy.mockRestore();
+    }
+  });
+
+  it.each([
+    { itemId: 'partner-person_target' },
+    { itemId: 'NIM-4275' },
+    {}, { id: null }, { id: '' }, { id: ' \t ' }, { id: 42 },
+  ])('rejects malformed update target %j without touching an unkeyed frontmatter item', async (target) => {
+    const plan = makeItem({ id: 'fm:plan:plans/unrelated.md', issueKey: undefined, source: 'frontmatter' });
+    mockDocumentServices.set('/tmp/ws', mockDocService);
+    mockDocService.getTrackerItemById.mockReset().mockResolvedValue(null);
+    mockDocService.listTrackerItems.mockReset().mockResolvedValue([plan]);
+    mockQuery.mockReset().mockResolvedValue({ rows: [] });
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+    try {
+      const result = await handleTrackerUpdate({ ...target, status: 'in-progress' }, '/tmp/ws');
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toContain('tracker_update requires a non-empty string id');
+      expect(result.content[0].text).toContain('Use id, not itemId');
+      expect(mockDocService.getTrackerItemById).not.toHaveBeenCalled();
+      expect(mockDocService.listTrackerItems).not.toHaveBeenCalled();
+      expect(mockDocService.ensureTrackerProjection).not.toHaveBeenCalled();
+      expect(mockDocService.updateTrackerItemInFile).not.toHaveBeenCalled();
+      expect(mockDocService.setTrackerItemPublished).not.toHaveBeenCalled();
+      expect(mockQuery).not.toHaveBeenCalled();
+      expect(mockApplyHeadlessBodyMarkdown).not.toHaveBeenCalled();
+      expect(vi.mocked(syncTrackerItem)).not.toHaveBeenCalled();
+    } finally {
+      errorSpy.mockRestore();
+      mockDocService.listTrackerItems.mockResolvedValue([]);
     }
   });
 

@@ -24,6 +24,7 @@ import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useAtom } from 'jotai';
 import { MaterialSymbol } from '@nimbalyst/runtime/ui/icons/MaterialSymbol';
 import {
+  dbMigrationOperationAtom,
   dbMigrationFailureAtom,
   dbMigrationPhaseAtom,
   dbMigrationProgressAtom,
@@ -34,7 +35,9 @@ import {
   type MigrationProgressEvent as ProgressEvent,
   type MigrationSummary,
 } from '../../../store/atoms/dbMigration';
-import { refreshDbRecoveryState } from '../../../store/listeners/dbMigrationListeners';
+import type { MigrationOperationSnapshot } from '../../../../shared/migrationOperation';
+import { hydrateMigrationOperation, refreshDbRecoveryState } from '../../../store/listeners/dbMigrationListeners';
+import { HistoryMigrationWarning, Stat, DryRunResultCard, DryRunProgress, AdoptDryRunSection, type DryRunResult } from './database/MigrationProgressViews';
 import { formatBytes, formatDuration } from './database/dbFormat';
 import { RecoverySection } from './database/RecoverySection';
 import {
@@ -45,7 +48,10 @@ import {
 type Backend = 'pglite' | 'sqlite';
 
 interface MigrationStatus {
+  operation?: MigrationOperationSnapshot | null;
+  dryRunAvailable?: { completedAt: string; totalRows: number; historyRowsQuarantined?: number } | null;
   activeBackend: Backend;
+  historyRowsQuarantined?: number;
   pgliteDirExists: boolean;
   sqliteDirExists: boolean;
   migratedDirs: string[];
@@ -53,19 +59,6 @@ interface MigrationStatus {
   runningDryRun: boolean;
 }
 
-interface DryRunResult {
-  summary: {
-    tablesCopied: Array<{ name: string; rows: number }>;
-    totalRowsCopied: number;
-    durationMs: number;
-    foreignKeyViolations: number;
-    integrityCheck: string;
-    spotCheckCount: number;
-  };
-  dryRunDir: string;
-  sqliteFileBytes: number;
-  pgliteDirBytes: number;
-}
 
 interface PreflightResult {
   ok: boolean;
@@ -76,6 +69,7 @@ interface PreflightResult {
 }
 
 export function DatabasePanel(): React.ReactElement {
+  const [operation] = useAtom(dbMigrationOperationAtom);
   const [status, setStatus] = useState<MigrationStatus | null>(null);
   const [statusError, setStatusError] = useState<string | null>(null);
   const [dryRunResult, setDryRunResult] = useState<DryRunResult | null>(null);
@@ -94,13 +88,37 @@ export function DatabasePanel(): React.ReactElement {
   const [dryRunAvailable, setDryRunAvailable] = useState<{
     completedAt: string;
     totalRows: number;
+    historyRowsQuarantined?: number;
   } | null>(null);
   const [adoptRunning, setAdoptRunning] = useState(false);
   const [adoptError, setAdoptError] = useState<string | null>(null);
   const [adoptResult, setAdoptResult] = useState<{
+    historyRowsQuarantined?: number;
     rowsAdded: number;
     durationMs: number;
   } | null>(null);
+
+  useEffect(() => {
+    if (!operation) return;
+    const running = operation.status === 'running' || operation.status === 'cancelling';
+    const response = operation.response as { success: boolean; result?: DryRunResult & { rowsAdded: number; durationMs: number; historyRowsQuarantined?: number }; error?: string; summary?: MigrationSummary } | undefined;
+    setDryRunRunning(operation.kind === 'dry-run' && running);
+    setAdoptRunning(operation.kind === 'adoption' && running);
+    setMigrationRunning(operation.kind === 'migration' && running);
+    if (operation.kind === 'dry-run') {
+      setDryRunError(response && !response.success ? response.error ?? null : null);
+      if (response?.success && response.result) {
+        setDryRunResult(response.result);
+        setDryRunAvailable({ completedAt: new Date().toISOString(), totalRows: response.result.summary.totalRowsCopied, historyRowsQuarantined: response.result.summary.historyRowsQuarantined });
+      }
+    }
+    if (operation.kind === 'adoption') {
+      if (running) setDryRunAvailable(previous => previous ?? { completedAt: new Date().toISOString(), totalRows: 0 });
+      setAdoptError(response && !response.success ? response.error ?? null : null);
+      if (response?.success && response.result) setAdoptResult(response.result);
+    }
+    if (operation.kind === 'migration' && response?.success && response.summary) setMigrationSummary(response.summary);
+  }, [operation, setMigrationRunning, setMigrationSummary]);
 
   const loadStatus = useCallback(async () => {
     if (!window.electronAPI) return;
@@ -112,9 +130,11 @@ export function DatabasePanel(): React.ReactElement {
         setStatusError(resp.error);
         return;
       }
+      if (hydrateMigrationOperation(resp.operation)) setDryRunAvailable(resp.dryRunAvailable ?? null);
       setStatusError(null);
       setStatus({
         activeBackend: resp.activeBackend,
+        historyRowsQuarantined: resp.historyRowsQuarantined,
         pgliteDirExists: resp.pgliteDirExists,
         sqliteDirExists: resp.sqliteDirExists,
         migratedDirs: resp.migratedDirs,
@@ -123,21 +143,6 @@ export function DatabasePanel(): React.ReactElement {
       });
     } catch (err) {
       setStatusError(String((err as Error).message ?? err));
-    }
-
-    // Detect whether a previous dry-run is sitting on disk and adoptable.
-    try {
-      const resp = (await window.electronAPI.invoke('db:migration:dry-run-status')) as
-        | { success: true; available: false }
-        | { success: true; available: true; completedAt: string; totalRows: number }
-        | { success: false; error: string };
-      if (resp.success && resp.available) {
-        setDryRunAvailable({ completedAt: resp.completedAt, totalRows: resp.totalRows });
-      } else {
-        setDryRunAvailable(null);
-      }
-    } catch {
-      setDryRunAvailable(null);
     }
 
     // Set-aside databases, preserved copies, and any durable refusal. Lives in
@@ -202,12 +207,13 @@ export function DatabasePanel(): React.ReactElement {
     setProgress(null);
     try {
       const resp = (await window.electronAPI.invoke('db:migration:adopt-dry-run')) as
-        | { success: true; result: { rowsAdded: number; durationMs: number } }
+        | { success: true; result: { rowsAdded: number; durationMs: number; historyRowsQuarantined?: number } }
         | { success: false; error: string };
       if (!resp.success) {
         setAdoptError(resp.error);
       } else {
         setAdoptResult({
+          historyRowsQuarantined: resp.result.historyRowsQuarantined,
           rowsAdded: resp.result.rowsAdded,
           durationMs: resp.result.durationMs,
         });
@@ -304,6 +310,12 @@ export function DatabasePanel(): React.ReactElement {
 
   return (
     <div className="provider-panel flex flex-col">
+      {operation?.status === 'awaiting-restart' && (
+        <div role="status" className="p-3 mb-4 border rounded-md">
+          Database switch requires a restart. Nimbalyst will verify the database on the next startup.
+          <button type="button" className="setting-button ml-2" onClick={() => { void window.electronAPI?.invoke('db:migration:restart'); }}>Restart Nimbalyst</button>
+        </div>
+      )}
       <div className="provider-panel-header mb-6 pb-4 border-b border-[var(--nim-border)]">
         <h3 className="provider-panel-title text-xl font-semibold leading-tight mb-2 text-[var(--nim-text)]">
           Database Storage
@@ -357,19 +369,26 @@ export function DatabasePanel(): React.ReactElement {
           </h4>
           <p className="provider-panel-hint text-sm text-[var(--nim-text-muted)] mb-3">
             Copies your data into a throwaway SQLite database alongside the live one,
-            reports row counts and integrity, then deletes the temporary copy.
+            reports row counts and integrity, then keeps the successful copy for switching.
             Your real PGLite database is never touched. Available only while PGLite is active.
           </p>
 
           <button
             type="button"
             onClick={startDryRun}
-            disabled={dryRunRunning}
+            disabled={dryRunRunning || adoptRunning || migrationRunning || operation?.status === 'awaiting-restart'}
             className="nim-database-dry-run-button setting-button inline-flex items-center gap-2 py-1.5 px-3 rounded-md text-sm font-medium bg-[var(--nim-primary)] text-white border-0 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed hover:bg-[var(--nim-primary-hover)]"
           >
             <MaterialSymbol icon={dryRunRunning ? 'sync' : 'play_arrow'} size={16} />
             {dryRunRunning ? 'Running dry run...' : 'Run dry-run migration'}
           </button>
+
+          {dryRunRunning && operation?.kind === 'dry-run' && (
+            <button type="button" className="setting-button ml-2" disabled={operation.status === 'cancelling'}
+              onClick={() => { void window.electronAPI?.invoke('db:migration:cancel-dry-run', operation.id); }}>
+              {operation.status === 'cancelling' ? 'Cancelling after the current read...' : 'Cancel dry run'}
+            </button>
+          )}
 
           {(dryRunRunning && (phase || progress)) && (
             <DryRunProgress phase={phase} progress={progress} />
@@ -377,7 +396,7 @@ export function DatabasePanel(): React.ReactElement {
 
           {dryRunError && (
             <div className="mt-3 p-3 rounded-md bg-[rgba(220,38,38,0.1)] border border-[rgba(220,38,38,0.3)] text-sm text-[var(--nim-text)] nim-database-dry-run-error">
-              Dry run failed: {dryRunError}
+              {operation?.status === 'cancelled' ? 'Dry run cancelled: ' : 'Dry run failed: '}{dryRunError}
             </div>
           )}
 
@@ -424,6 +443,7 @@ export function DatabasePanel(): React.ReactElement {
         </div>
       )}
 
+      <HistoryMigrationWarning count={status?.historyRowsQuarantined} />
       {status?.activeBackend === 'sqlite' && (
         <div className="provider-panel-section mb-6 nim-database-already-migrated">
           <h4 className="provider-panel-section-title text-base font-semibold mb-2 text-[var(--nim-text)]">
@@ -481,60 +501,6 @@ export function DatabasePanel(): React.ReactElement {
           onCopyDiagnostic={() => { void copyDiagnosticInfo(); }}
         />
       )}
-    </div>
-  );
-}
-
-function DryRunResultCard({ result }: { result: DryRunResult }): React.ReactElement {
-  const sizeChange = result.sqliteFileBytes - result.pgliteDirBytes;
-  const sizeChangePct = result.pgliteDirBytes > 0
-    ? ((sizeChange / result.pgliteDirBytes) * 100).toFixed(1)
-    : '0';
-  return (
-    <div className="p-3 rounded-md bg-[var(--nim-bg-secondary)] border border-[var(--nim-border)]">
-      <div className="grid grid-cols-2 gap-3 text-sm mb-3">
-        <Stat label="Rows copied" value={result.summary.totalRowsCopied.toLocaleString()} />
-        <Stat label="Tables" value={String(result.summary.tablesCopied.length)} />
-        <Stat label="Duration" value={formatDuration(result.summary.durationMs)} />
-        <Stat label="FK violations" value={String(result.summary.foreignKeyViolations)} ok={result.summary.foreignKeyViolations === 0} />
-        <Stat label="Integrity" value={result.summary.integrityCheck} ok={result.summary.integrityCheck === 'ok'} />
-        <Stat
-          label="On-disk"
-          value={`${formatBytes(result.sqliteFileBytes)} vs ${formatBytes(result.pgliteDirBytes)} (${sizeChange >= 0 ? '+' : ''}${sizeChangePct}%)`}
-        />
-      </div>
-
-      <details className="mt-2 nim-database-dry-run-per-table">
-        <summary className="cursor-pointer text-xs text-[var(--nim-text-muted)] hover:text-[var(--nim-text)]">
-          Per-table breakdown ({result.summary.tablesCopied.length} tables)
-        </summary>
-        <table className="w-full mt-2 text-xs">
-          <thead>
-            <tr className="text-left text-[var(--nim-text-muted)] border-b border-[var(--nim-border)]">
-              <th className="py-1 pr-2">Table</th>
-              <th className="py-1 text-right">Rows copied</th>
-            </tr>
-          </thead>
-          <tbody>
-            {result.summary.tablesCopied.map((t) => (
-              <tr key={t.name} className="border-b border-[var(--nim-border)] last:border-b-0">
-                <td className="py-1 pr-2 text-[var(--nim-text)] font-mono">{t.name}</td>
-                <td className="py-1 text-right text-[var(--nim-text)]">{t.rows.toLocaleString()}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </details>
-    </div>
-  );
-}
-
-function Stat({ label, value, ok }: { label: string; value: string; ok?: boolean }): React.ReactElement {
-  const colorClass = ok === false ? 'text-[var(--nim-error)]' : 'text-[var(--nim-text)]';
-  return (
-    <div className="flex flex-col gap-0">
-      <span className="text-xs text-[var(--nim-text-muted)]">{label}</span>
-      <span className={`text-sm font-medium ${colorClass}`}>{value}</span>
     </div>
   );
 }
@@ -637,6 +603,7 @@ function MigrationModal(props: {
           <div className="space-y-4">
             <div className="rounded-md border border-[var(--nim-border)] bg-[var(--nim-bg-secondary)] p-4">
               <div className="text-sm font-medium text-[var(--nim-text)]">Migration complete</div>
+              <HistoryMigrationWarning count={summary.historyRowsQuarantined} />
               <div className="mt-2 grid grid-cols-2 gap-3 text-sm">
                 <Stat label="Rows transferred" value={summary.totalRowsCopied.toLocaleString()} />
                 <Stat label="Tables migrated" value={String(summary.tablesCopied.length)} />
@@ -670,136 +637,6 @@ function MigrationModal(props: {
           </div>
         )}
       </div>
-    </div>
-  );
-}
-
-const PHASE_LABELS: Record<string, string> = {
-  preparing: 'Preparing',
-  copying: 'Copying data',
-  'rebuilding-fts': 'Rebuilding full-text search index',
-  'verifying-counts': 'Verifying row counts',
-  'verifying-spot-check': 'Spot-checking copied rows',
-  'verifying-integrity': 'Verifying database integrity',
-  'verifying-foreign-keys': 'Verifying foreign keys',
-  finalizing: 'Finalizing',
-};
-
-function DryRunProgress({
-  phase,
-  progress,
-}: {
-  phase: PhaseEvent | null;
-  progress: ProgressEvent | null;
-}): React.ReactElement {
-  const phaseKey = phase?.phase ?? progress?.phase ?? 'preparing';
-  const phaseLabel = PHASE_LABELS[phaseKey] ?? phaseKey;
-  const currentTable = progress?.currentTable ?? phase?.info?.currentTable;
-  const tableRowsCopied = progress?.tableRowsCopied ?? 0;
-  const tableRowsExpected = progress?.tableRowsExpected ?? 0;
-  const rowsCopied = progress?.rowsCopied ?? 0;
-  const rowsExpected = progress?.rowsExpected ?? 0;
-  const tablesCompleted = progress?.tablesCompleted ?? 0;
-  const tablesTotal = progress?.tablesTotal ?? 0;
-  const percent = progress?.percentOfTotal ?? 0;
-  const elapsed = progress?.elapsedMs ?? 0;
-  const isCopying = phaseKey === 'copying';
-
-  return (
-    <div className="mt-3 space-y-2 rounded-md border border-[var(--nim-border)] bg-[var(--nim-bg-secondary)] p-3 text-xs nim-database-dry-run-progress">
-      <div className="flex items-baseline justify-between gap-3">
-        <div className="font-medium text-[var(--nim-text)]">{phaseLabel}</div>
-        {currentTable && (
-          <div className="text-[var(--nim-text-muted)]">{currentTable}</div>
-        )}
-      </div>
-      <div className="h-1.5 overflow-hidden rounded-full bg-[var(--nim-bg-primary)]">
-        <div
-          className="h-full bg-[var(--nim-primary)] transition-all"
-          style={{ width: `${Math.min(100, Math.max(0, percent))}%` }}
-        />
-      </div>
-      <div className="flex flex-wrap justify-between gap-x-4 gap-y-1 text-[var(--nim-text-muted)]">
-        <span>
-          Tables {tablesCompleted} / {tablesTotal}
-        </span>
-        <span>
-          Rows {rowsCopied.toLocaleString()}
-          {rowsExpected > 0 && ` / ${rowsExpected.toLocaleString()}`}
-        </span>
-        <span>Elapsed {formatDuration(elapsed)}</span>
-      </div>
-      {isCopying && tableRowsExpected > 0 && (
-        <div className="text-[var(--nim-text-muted)]">
-          This table: {tableRowsCopied.toLocaleString()} / {tableRowsExpected.toLocaleString()}
-        </div>
-      )}
-    </div>
-  );
-}
-
-function AdoptDryRunSection({
-  available,
-  running,
-  phase,
-  progress,
-  error,
-  result,
-  onAdopt,
-}: {
-  available: { completedAt: string; totalRows: number };
-  running: boolean;
-  phase: PhaseEvent | null;
-  progress: ProgressEvent | null;
-  error: string | null;
-  result: { rowsAdded: number; durationMs: number } | null;
-  onAdopt: () => void;
-}): React.ReactElement {
-  const ageHrs = (Date.now() - new Date(available.completedAt).getTime()) / 3_600_000;
-  const ageBlurb = ageHrs < 1
-    ? 'less than an hour ago'
-    : ageHrs < 24
-      ? `${Math.round(ageHrs)} hour${ageHrs >= 1.5 ? 's' : ''} ago`
-      : `${Math.round(ageHrs / 24)} day${ageHrs >= 36 ? 's' : ''} ago`;
-  return (
-    <div className="mt-4 p-4 rounded-md border border-[var(--nim-border)] bg-[var(--nim-bg-secondary)] nim-database-adopt-dry-run">
-      <div className="text-sm font-medium text-[var(--nim-text)] mb-1">
-        Switch to your dry-run SQLite copy
-      </div>
-      <p className="text-xs text-[var(--nim-text-muted)] mb-3">
-        A successful dry-run from {ageBlurb} is saved on disk
-        ({available.totalRows.toLocaleString()} rows). Nimbalyst can promote
-        it to be your active database — it&apos;ll copy anything new since the
-        dry-run, then flip the backend flag. The current PGLite directory is
-        preserved for rollback.
-      </p>
-      <button
-        type="button"
-        onClick={onAdopt}
-        disabled={running}
-        className="setting-button inline-flex items-center gap-2 py-1.5 px-3 rounded-md text-sm font-medium bg-[var(--nim-primary)] text-white border-0 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed hover:bg-[var(--nim-primary-hover)] nim-database-adopt-button"
-      >
-        <MaterialSymbol icon={running ? 'sync' : 'swap_horiz'} size={16} />
-        {running ? 'Switching...' : 'Switch to this SQLite copy'}
-      </button>
-
-      {running && (phase || progress) && (
-        <DryRunProgress phase={phase} progress={progress} />
-      )}
-
-      {error && (
-        <div className="mt-3 p-3 rounded-md bg-[rgba(220,38,38,0.1)] border border-[rgba(220,38,38,0.3)] text-sm text-[var(--nim-text)]">
-          Switch failed: {error}
-        </div>
-      )}
-
-      {result && (
-        <div className="mt-3 p-3 rounded-md border border-[var(--nim-border)] bg-[var(--nim-bg-primary)] text-sm text-[var(--nim-text)]">
-          Switched to SQLite. Caught up {result.rowsAdded.toLocaleString()} new
-          row{result.rowsAdded === 1 ? '' : 's'} in {formatDuration(result.durationMs)}.
-          Please relaunch Nimbalyst for the change to take effect.
-        </div>
-      )}
     </div>
   );
 }

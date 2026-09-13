@@ -192,6 +192,7 @@ describe('WorkspaceEventBus circuit breaker teardown (#629)', () => {
 
   afterEach(() => {
     resetBus();
+    vi.useRealTimers();
   });
 
   afterAll(() => {
@@ -210,6 +211,37 @@ describe('WorkspaceEventBus circuit breaker teardown (#629)', () => {
     expect(close).not.toHaveBeenCalled();
   });
 
+  it('recovers delivery to the original subscriber after a storm (#1499)', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'Date'] });
+    const listener = createListener();
+    await subscribe(WORKSPACE, 'window', listener);
+    const staleCallback = mockWatcherCallbacks[0];
+    fireBurst(CIRCUIT_BREAKER_THRESHOLD + 2);
+    await flushImmediate();
+    vi.mocked(listener.onChange).mockClear();
+
+    await vi.advanceTimersByTimeAsync(1000);
+    expect(mockFsWatch).toHaveBeenCalledTimes(2);
+    fireWatchEvent('change', 'note.md');
+    expect(listener.onChange).toHaveBeenCalledWith(`${WORKSPACE}/note.md`, undefined);
+    staleCallback('change', 'stale.md');
+    expect(listener.onChange).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not lose concurrently registered subscribers or double-count duplicate IDs', async () => {
+    const first = createListener();
+    const second = createListener();
+    await Promise.all([subscribe(WORKSPACE, 'first', first), subscribe(WORKSPACE, 'second', second)]);
+    await subscribe(WORKSPACE, 'second', second);
+    expect(mockFsWatch).toHaveBeenCalledTimes(1);
+    fireWatchEvent('change', 'note.md');
+    expect(first.onChange).toHaveBeenCalledTimes(1);
+    expect(second.onChange).toHaveBeenCalledTimes(1);
+    unsubscribe(WORKSPACE, 'first');
+    unsubscribe(WORKSPACE, 'second');
+    expect(getBusEntryCount()).toBe(0);
+  });
+
   it('closes the watcher on the next tick after tripping', async () => {
     await subscribe(WORKSPACE, 'sub', createListener());
     const close = latestCloseMock();
@@ -220,8 +252,8 @@ describe('WorkspaceEventBus circuit breaker teardown (#629)', () => {
     await flushImmediate();
 
     expect(close).toHaveBeenCalledTimes(1);
-    // Registry entry is removed synchronously when the breaker trips.
-    expect(getBusEntryCount()).toBe(0);
+    // Logical subscribers remain registered while the native handle recovers.
+    expect(getBusEntryCount()).toBe(1);
   });
 
   it('closes exactly once even when the burst keeps delivering after the trip', async () => {

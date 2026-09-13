@@ -99,7 +99,69 @@ type SyncedMessage = AgentMessage;
  * Get all sessions for sync (no workspace filter)
  * Uses the module-level db reference set by createPGLiteSessionStore
  */
-export async function getAllSessionsForSync(includeMessages = false): Promise<Array<{
+/**
+ * Metadata keys the personal-sync wire actually consumes:
+ * `tutorial` gates eligibility (`filterSessionsForPersonalSync`), `hostDeviceId`
+ * is copied onto the index entry (`buildSyncedSessionIndexFields`), and the rest
+ * feed the encrypted client metadata (`buildClientMetadataFromRaw`). Everything
+ * else in the blob -- transcript summaries, provider scratch state -- is dead
+ * weight this query used to carry for every session in the database.
+ */
+const SYNCED_METADATA_KEYS = [
+  'tutorial',
+  'hostDeviceId',
+  'tokenUsage',
+  'phase',
+  'tags',
+  'draftInput',
+  'draftUpdatedAt',
+] as const;
+
+/**
+ * Projects the consumed keys in SQL, so a session's full metadata blob
+ * (transcript summaries, provider scratch state) never crosses the database
+ * boundary for every row in the account.
+ *
+ * One string serves both backends: `dialectTranslator` rewrites
+ * `jsonb_build_object` to `json_object`, and `->` is a JSON accessor on both
+ * PGLite and SQLite (>= 3.38), preserving nested objects/arrays as JSON rather
+ * than re-quoting them as strings.
+ *
+ * Nulls are stripped in JS afterwards, not here: `jsonb_strip_nulls` has no
+ * safe SQLite translation, and an absent key must stay absent -- `draftInput`
+ * distinguishes "" (explicit clear) from "not set".
+ */
+export function buildSyncedMetadataProjectionSql(column: string): string {
+  const pairs = SYNCED_METADATA_KEYS.map((key) => `'${key}', ${column}->'${key}'`).join(', ');
+  return `jsonb_build_object(${pairs})`;
+}
+
+function projectSyncedMetadata(metadata: Record<string, any> | undefined): Record<string, any> | undefined {
+  if (!metadata) return metadata;
+  const projected: Record<string, any> = {};
+  for (const key of SYNCED_METADATA_KEYS) {
+    const value = metadata[key];
+    // SQL always emits every key; a key the row never had comes back null and
+    // must not become a present-but-null field on the wire.
+    if (value !== undefined && value !== null) projected[key] = value;
+  }
+  return projected;
+}
+
+export interface AllSessionsForSyncOptions {
+  /**
+   * Called once per DISTINCT local workspace path, not once per session. The
+   * caller owns worktree-to-project resolution (`resolveProjectPath`), which
+   * touches the disk; keeping it out here also keeps this module dialect- and
+   * filesystem-independent. Omit to load every project.
+   */
+  isProjectEnabled?: (workspaceId: string) => boolean;
+}
+
+export async function getAllSessionsForSync(
+  includeMessages = false,
+  options?: AllSessionsForSyncOptions,
+): Promise<Array<{
   id: string;
   title: string;
   provider: string;
@@ -118,6 +180,8 @@ export async function getAllSessionsForSync(includeMessages = false): Promise<Ar
   workspaceId?: string;
   workspacePath?: string;
   messageCount: number;
+  /** False: this query deliberately does not count messages -- see the mapper. */
+  messageCountKnown?: boolean;
   updatedAt: number;
   createdAt: number;
   metadata?: Record<string, any>;
@@ -136,16 +200,43 @@ export async function getAllSessionsForSync(includeMessages = false): Promise<Ar
   }
   const ensureTime = performance.now() - startTime;
 
+  // Resolve the enabled-project filter against the DISTINCT workspace paths
+  // first, so the session scan below never materializes rows the caller is
+  // going to discard. `IN (...)` with expanded placeholders works on both
+  // PGLite and SQLite; `= ANY($1)` would be Postgres-only.
+  let projectFilterSql = '';
+  let projectFilterParams: string[] = [];
+  if (options?.isProjectEnabled) {
+    const { rows: projectRows } = await moduleDb.query<any>(
+      `SELECT DISTINCT workspace_id FROM ai_sessions WHERE workspace_id IS NOT NULL`
+    );
+    projectFilterParams = projectRows
+      .map((row: any) => row.workspace_id as string)
+      .filter((workspaceId: string) => options.isProjectEnabled!(workspaceId));
+    if (projectFilterParams.length === 0) {
+      // No enabled project has any local session. Scanning would return rows
+      // that are all filtered out anyway.
+      return [];
+    }
+    const placeholders = projectFilterParams.map((_, i) => `$${i + 1}`).join(', ');
+    projectFilterSql = `WHERE s.workspace_id IN (${placeholders})`;
+  }
+
   const queryStart = performance.now();
   // The COUNT(m.id) projection used to live here, but the mapper below hardcodes
   // messageCount: 0, so the LEFT JOIN + GROUP BY produced ~2.4s of wasted work
   // on databases with ~1k sessions. Stripped down to an indexed SELECT.
+  // s.draft_input is deliberately absent: the mapper drops it (drafts sync on
+  // change, not in bulk), so selecting it only widened every row. s.metadata is
+  // projected down to the keys the sync wire reads, in SQL, for the same reason.
   const { rows } = await moduleDb.query<any>(
-    `SELECT s.id, s.provider, s.model, s.mode, s.session_type, s.parent_session_id, s.agent_role, s.created_by_session_id, s.title, s.workspace_id, s.draft_input,
+    `SELECT s.id, s.provider, s.model, s.mode, s.session_type, s.parent_session_id, s.agent_role, s.created_by_session_id, s.title, s.workspace_id,
             s.worktree_id, s.is_archived, s.is_pinned, s.branched_from_session_id, s.branch_point_message_id, s.branched_at,
-            s.created_at, s.updated_at, s.metadata
+            s.created_at, s.updated_at, ${buildSyncedMetadataProjectionSql('s.metadata')} AS metadata
      FROM ai_sessions s
-     ORDER BY s.updated_at DESC`
+     ${projectFilterSql}
+     ORDER BY s.updated_at DESC`,
+    projectFilterParams.length > 0 ? projectFilterParams : undefined
   );
   const queryTime = performance.now() - queryStart;
 
@@ -181,12 +272,18 @@ export async function getAllSessionsForSync(includeMessages = false): Promise<Ar
       workspacePath: row.workspace_id, // workspace_id is the path in this system
       // NOTE: Do NOT include draftInput in bulk sync - it should only sync when actually changed
       // Including it here causes spurious metadata_updated events for all sessions on startup
+      //
+      // No COUNT join here: it cost seconds on a large database. The zero is a
+      // placeholder, and `messageCountKnown: false` is what stops the sync
+      // producer from publishing it over the server's real count.
       messageCount: 0,
+      messageCountKnown: false,
       updatedAt: toMillis(row.updated_at)!,
       createdAt: toMillis(row.created_at)!,
       // Sync clients (mobile, peer devices) expect a parsed object here.
-      // See `parseJsonColumn` for the SQLite/PGLite shape difference.
-      metadata: normalizeJsonObject(row.metadata),
+      // See `parseJsonColumn` for the SQLite/PGLite shape difference; the
+      // projection then keeps only what the wire reads.
+      metadata: projectSyncedMetadata(normalizeJsonObject(row.metadata)),
       messages: undefined as SyncedMessage[] | undefined,
     };
   }));

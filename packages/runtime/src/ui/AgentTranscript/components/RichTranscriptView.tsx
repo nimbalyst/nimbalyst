@@ -22,7 +22,10 @@ import { useTranscriptToolWidgetRegistryVersion } from '../contributions';
 import { ToolCallChanges } from './ToolCallChanges';
 import { setSessionIsAtBottom, getSessionIsAtBottom } from '../../../store/atoms/transcriptScroll';
 import { isAppleMobileWebKit } from '../../../utils/platform';
+import { usePendingPermissionNavigation } from './usePendingPermissionNavigation';
+import { usePendingQuestionNavigation } from './usePendingQuestionNavigation';
 import { AttachmentStagingDeniedCard } from './AttachmentStagingDeniedCard';
+import { useElapsedTimeRef } from './CustomToolWidgets/useElapsedTime';
 
 // Per-session VList cache - survives component remounts so returning to a session
 // doesn't re-measure all items from scratch
@@ -1182,8 +1185,6 @@ export const RichTranscriptView = React.forwardRef<
     onSearchBarVisibilityChange?.(showSearchBar);
   }, [showSearchBar, onSearchBarVisibilityChange]);
 
-  const pendingPermissionsVisibleRef = useRef(true);
-  const [showPermissionBanner, setShowPermissionBanner] = useState(false);
   const [isScrollReady, setIsScrollReady] = useState(false);
   const [isContainerVisible, setIsContainerVisible] = useState(true);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -1198,6 +1199,12 @@ export const RichTranscriptView = React.forwardRef<
   // iOS WKWebView uses a smaller buffer for memory pressure.
   const isMobileWebKit = useMemo(() => isAppleMobileWebKit(), []);
   const vlistBufferSize = isMobileWebKit ? MOBILE_TRANSCRIPT_BUFFER_PX : DESKTOP_TRANSCRIPT_BUFFER_PX;
+
+  const { pendingPermissionIndices, pendingPermissionsVisibleRef, showPermissionBanner, setShowPermissionBanner } =
+    usePendingPermissionNavigation({ messages, sessionId, sessionStatus, isProcessing, currentTeammates, vlistRef });
+  const { pendingQuestions, jumpToQuestion } = usePendingQuestionNavigation({
+    messages, sessionId, vlistRef, scrollContainerRef, ready: isScrollReady && isContainerVisible,
+  });
 
   const settings = propsSettings || defaultSettings;
   const previousRenderRef = useRef<{
@@ -1345,6 +1352,21 @@ export const RichTranscriptView = React.forwardRef<
     return false;
   }, [messages, sessionStatus, isProcessing, hasPendingInteractivePrompt, runningTeammates]);
 
+  /**
+   * Anchored to the last user message, the same anchor "Finished in ..." uses.
+   * A turn resumed without a fresh user message reads high; inherited.
+   */
+  const turnStartedAt = useMemo(() => {
+    if (!isWaitingForResponse) return undefined;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].type === 'user_message') return messages[i].createdAt?.getTime();
+    }
+    return undefined;
+  }, [isWaitingForResponse, messages]);
+
+  // Ref callback rather than state; see the hook for why.
+  const turnElapsedRef = useElapsedTimeRef(turnStartedAt);
+
   // Compute waiting indicator text — show agent/teammate count when lead is idle but agents are running
   const waitingText = useMemo(() => {
     if (!isWaitingForResponse) return '';
@@ -1417,69 +1439,6 @@ export const RichTranscriptView = React.forwardRef<
     return indices;
   }, [messages]);
 
-  // Find pending (unresolved) ToolPermission widgets and the VList indices where they're actually rendered.
-  // Tool messages are hidden (display:none) and rendered inside the next assistant message via toolMessagesBefore,
-  // so we need to find the assistant message index for scroll targeting.
-  const pendingPermissionIndices = useMemo(() => {
-    // Don't show banner for stopped/completed sessions.
-    // Session is active if processing, running/waiting status, or teammates are still running.
-    const hasActiveTeammates = currentTeammates?.some(t => t.status === 'running' || t.status === 'idle') ?? false;
-    const sessionActive = isProcessing || sessionStatus === 'running' || sessionStatus === 'waiting' || hasActiveTeammates;
-    if (!sessionActive) return [];
-    const indices: number[] = [];
-    for (let i = 0; i < messages.length; i++) {
-      const msg = messages[i];
-      if (isToolLikeMessage(msg) && msg.toolCall?.toolName === 'ToolPermission' && !msg.toolCall.result) {
-        // Find the next assistant message that renders this tool via toolMessagesBefore
-        let targetIdx = i + 1;
-        while (targetIdx < messages.length && isToolLikeMessage(messages[targetIdx])) {
-          targetIdx++;
-        }
-        if (targetIdx < messages.length && messages[targetIdx].type === 'assistant_message') {
-          indices.push(targetIdx); // Scroll to the assistant message that contains this widget
-        } else {
-          indices.push(i); // Orphaned tool - rendered at its own index
-        }
-      }
-    }
-    return indices;
-  }, [messages, isProcessing, sessionStatus, currentTeammates]);
-
-  // Update banner visibility when pending permissions are resolved or new ones appear
-  useEffect(() => {
-    if (pendingPermissionIndices.length === 0) {
-      setShowPermissionBanner(false);
-      pendingPermissionsVisibleRef.current = true;
-    } else {
-      // Always show banner initially when pending permissions exist.
-      // The onScroll handler will hide it if the permissions are actually visible.
-      // This fixes the case where auto-scroll pushes past the permission widget
-      // while isAtBottom is true (making us incorrectly assume visibility).
-      setShowPermissionBanner(true);
-      pendingPermissionsVisibleRef.current = false;
-
-      // Schedule a visibility check after auto-scroll completes (auto-scroll uses double RAF).
-      // Triple RAF ensures we run after auto-scroll's double RAF + the resulting scroll event.
-      requestAnimationFrame(() => {
-        requestAnimationFrame(() => {
-          requestAnimationFrame(() => {
-            if (pendingPermissionIndices.length === 0) return;
-            if (!vlistRef.current) return;
-            const offset = vlistRef.current.scrollOffset;
-            const viewportSize = vlistRef.current.viewportSize;
-            const firstVisibleIdx = vlistRef.current.findItemIndex(offset);
-            const lastVisibleIdx = vlistRef.current.findItemIndex(offset + viewportSize);
-            const anyVisible = pendingPermissionIndices.some(
-              idx => idx >= firstVisibleIdx && idx <= lastVisibleIdx
-            );
-            pendingPermissionsVisibleRef.current = anyVisible;
-            setShowPermissionBanner(!anyVisible);
-          });
-        });
-      });
-    }
-  }, [pendingPermissionIndices, sessionId]);
-
   // Expose scroll method via ref
   React.useImperativeHandle(ref, () => ({
     scrollToMessage: (index: number) => {
@@ -1518,19 +1477,24 @@ export const RichTranscriptView = React.forwardRef<
 
     // Single RAF: wrapper is opacity:0 until scroll-ready, so intermediate state is invisible.
     // With itemSize hint + cache, VList can estimate scroll position accurately on first try.
-    requestAnimationFrame(() => {
-      vlistRef.current?.scrollToIndex(messages.length - 1, { align: 'end' });
-      requestAnimationFrame(() => {
+    let frame: number;
+    frame = requestAnimationFrame(() => {
+      if (pendingQuestions.length === 0) {
+        vlistRef.current?.scrollToIndex(messages.length - 1, { align: 'end' });
+      }
+      frame = requestAnimationFrame(() => {
         setIsScrollReady(true);
       });
     });
+    return () => cancelAnimationFrame(frame);
   }, [sessionId, isContainerVisible]); // Re-run when session changes or container becomes visible
 
   // Auto-scroll to bottom when messages change (if user was at bottom)
   useEffect(() => {
+    if (pendingQuestions.length > 0) return;
     const wasAtBottom = getAtBottomState();
 
-    requestAnimationFrame(() => {
+    const frame = requestAnimationFrame(() => {
       if (!vlistRef.current) return;
       const scrollSize = vlistRef.current.scrollSize;
       const viewportSize = vlistRef.current.viewportSize;
@@ -1545,7 +1509,8 @@ export const RichTranscriptView = React.forwardRef<
         setAtBottomState(true);
       }
     });
-  }, [getAtBottomState, messages, isWaitingForResponse, setAtBottomState]);
+    return () => cancelAnimationFrame(frame);
+  }, [getAtBottomState, messages, isWaitingForResponse, setAtBottomState, pendingQuestions.length]);
 
   // Listen for routed search events from AgentWorkstreamPanel
   // Only respond if this session is the active one
@@ -1763,6 +1728,7 @@ export const RichTranscriptView = React.forwardRef<
       return (
         <div
           key={toolRenderKey}
+          data-transcript-tool-id={depth === 0 && !supersededToolIndices.has(toolIndex) ? tool.providerToolCallId : undefined}
           className={`rich-transcript-tool-container mb-2 ${depth > 0 ? 'nested ml-0' : ''}`}
           style={{ marginLeft: depth > 0 ? '1rem' : '0' }}
         >
@@ -2471,7 +2437,7 @@ export const RichTranscriptView = React.forwardRef<
       {/* Messages */}
       <div
         ref={scrollContainerRef}
-        className="rich-transcript-scroll-container flex-1 relative overflow-hidden"
+        className="rich-transcript-scroll-container flex-1 min-h-0 relative overflow-hidden"
       >
         <div className={`rich-transcript-content mx-auto py-1 h-full ${settings.compactMode ? 'compact' : 'normal'}`}>
           {messages.length === 0 && !isWaitingForResponse ? (
@@ -2553,6 +2519,13 @@ export const RichTranscriptView = React.forwardRef<
                         <div className="rich-transcript-waiting-dot w-2 h-2 rounded-full bg-[var(--nim-primary)]" />
                       </div>
                       <span className="rich-transcript-waiting-text">{waitingText}</span>
+                      {turnStartedAt !== undefined && (
+                        <span
+                          ref={turnElapsedRef}
+                          className="rich-transcript-waiting-elapsed tabular-nums not-italic text-[var(--nim-text-faint)]"
+                          data-testid="turn-elapsed"
+                        />
+                      )}
                     </div>
                   )}
               </VList>
@@ -2590,6 +2563,18 @@ export const RichTranscriptView = React.forwardRef<
           </button>
         </div>
       </div>
+      {pendingQuestions.length > 0 && (
+        <div className="rich-transcript-question-navigation shrink-0 flex justify-end border-t border-[var(--nim-border)] bg-[var(--nim-bg)] px-3 py-2">
+          <button
+            onClick={() => jumpToQuestion(pendingQuestions[0])}
+            aria-label="Jump to question"
+            className="rich-transcript-question-button flex items-center gap-1.5 px-3 py-1.5 bg-[var(--nim-primary)] text-[var(--nim-on-primary)] rounded-md text-xs font-medium cursor-pointer border-none hover:brightness-110"
+          >
+            <MaterialSymbol icon="help" size={16} />
+            Jump to question
+          </button>
+        </div>
+      )}
     </div>
   );
 });

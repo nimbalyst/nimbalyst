@@ -189,7 +189,7 @@ interface ResolutionEntry {
 interface EditorAttachment {
   id: string;
   isDirty: boolean;
-  fileChangedCallbacks: Set<(content: string | ArrayBuffer) => void>;
+  fileChangedCallbacks: Set<(content: string | ArrayBuffer) => unknown>;
   saveRequestedCallbacks: Set<() => void | Promise<void>>;
   diffRequestedCallbacks: Set<(state: DiffState) => void>;
   diffResolvedCallbacks: Set<(accepted: boolean) => void>;
@@ -230,22 +230,9 @@ export class DocumentModel {
 
   // -- Coordination state ---------------------------------------------------
 
-  /** Last content that was persisted to the backing store. */
-  /**
-   * Content the attached editors are known to be in sync with. This is the
-   * conflict baseline handed to the backing store, so it must never describe
-   * content no editor accepted -- otherwise a stale editor's save passes the
-   * conflict check and clobbers whoever wrote the file (#3684).
-   */
+  /** Verified editor baseline used to reject a save over unseen disk content (#1499). */
   private lastPersistedContent: string | ArrayBuffer | null = null;
-  /**
-   * The last content we observed on disk, whether or not any editor took it.
-   * Split out from `lastPersistedContent` because echo suppression wants "have
-   * I already seen these bytes" while the conflict baseline wants "are my
-   * editors in sync". Conflating them is what let the file watcher advance the
-   * baseline past a dirty editor and mask a divergence -- named in
-   * HiddenTabManager's NIM-905 comment, worked around there, fixed here.
-   */
+  /** Latest disk observation, separate from the baseline when a dirty editor refused a reload. */
   private lastSeenDiskContent: string | ArrayBuffer | null = null;
 
   /**
@@ -623,6 +610,8 @@ export class DocumentModel {
    * on a successful `loadContent()` (which establishes a fresh baseline).
    */
   markDeleted(): void {
+    this.lastCommittedExternalSequence = this.nextExternalSequence;
+    this.clearExternalChangeRetry();
     if (this.deleted) return;
     this.deleted = true;
     // Don't preserve a stale lastPersistedContent baseline -- if a recreated
@@ -764,16 +753,22 @@ export class DocumentModel {
 
     this.isSaving = true;
     try {
-      // The baseline the store must check against is what we believed was on
-      // disk *before* this write, so capture it before advancing (#3684).
-      const expectedDiskContent =
-        typeof this.lastPersistedContent === 'string' ? this.lastPersistedContent : undefined;
-      // Update lastPersistedContent BEFORE writing to disk.
-      // The file watcher can fire before save() returns, and we need
-      // echo suppression to see the new content as "ours".
-      this.lastPersistedContent = content;
+      const persisted = this.lastPersistedContent;
+      const seen = this.lastSeenDiskContent;
+      const observation = this.nextExternalSequence;
+      const expectedDiskContent = typeof persisted === 'string' ? persisted : undefined;
+      // Only echo suppression is optimistic; the conflict baseline moves after a successful write.
       this.lastSeenDiskContent = content;
-      await this.backingStore.save(content, expectedDiskContent);
+      try {
+        await this.backingStore.save(content, expectedDiskContent);
+      } catch (error) {
+        // A later external observation owns its own baseline and must not be rewound.
+        if (this.nextExternalSequence === observation) {
+          if (this.lastSeenDiskContent === content) this.lastSeenDiskContent = seen;
+        }
+        throw error;
+      }
+      this.lastPersistedContent = content;
       this.resetAutosaveFailureState();
 
       // Clear dirty flag for the saving editor
@@ -880,15 +875,19 @@ export class DocumentModel {
     this.externalChangeRetryTimer = setTimeout(() => {
       this.externalChangeRetryTimer = null;
       if (this.disposed) return;
-      void this.backingStore.load().then(
-        (content) =>
-          this.handleExternalChange({
+      const source = this.backingStore;
+      const observation = this.nextExternalSequence;
+      void source.load().then(
+        (content) => {
+          if (source !== this.backingStore || this.deleted || observation !== this.nextExternalSequence) return;
+          return this.handleExternalChange({
             content,
             timestamp: Date.now(),
             // Force the tag lookup: the content may be byte-identical to what we
             // last saw, and it is precisely the tag we failed to resolve.
             checkPendingTags: true,
-          }),
+          });
+        },
         (loadErr) => {
           console.error(
             `[DocumentModel] External change retry read failed for ${this.filePath}:`,
@@ -937,7 +936,7 @@ export class DocumentModel {
    * event. Nothing in here may touch `currentSession` -- the commit half does
    * that, on the queue, under the ordering check.
    */
-  private async prepareExternalChange(sequence: number, info: ExternalChangeInfo): Promise<void> {
+  private async prepareExternalChange(sequence: number, info: ExternalChangeInfo, source = this.backingStore): Promise<void> {
     const lastLen = typeof this.lastPersistedContent === 'string' ? this.lastPersistedContent.length : -1;
     diffTrace('DocumentModel.handleExternalChange enter', {
       path: this.filePath,
@@ -972,7 +971,7 @@ export class DocumentModel {
     });
 
     if (activeTags.length === 0) {
-      await this.mutations.run(() => this.commitExternalContent(sequence, info));
+      await this.mutations.run(() => { if (source === this.backingStore) this.commitExternalContent(sequence, info); });
       return;
     }
 
@@ -998,7 +997,7 @@ export class DocumentModel {
       baselineContent = null;
     }
 
-    await this.mutations.run(() => this.commitDiffPayload(sequence, info, tag, baselineContent));
+    await this.mutations.run(() => { if (source === this.backingStore) this.commitDiffPayload(sequence, info, tag, baselineContent); });
   }
 
   /**
@@ -1046,10 +1045,7 @@ export class DocumentModel {
     if (this.notifyFileChanged(info.content)) {
       this.lastPersistedContent = info.content;
     } else {
-      console.warn(
-        `[DocumentModel] External change not delivered to every editor for ${this.filePath}; ` +
-          `holding the conflict baseline so a stale buffer cannot overwrite it`,
-      );
+      if (typeof info.content === 'string') this.emit('external-conflict', info.content);
     }
   }
 
@@ -2099,7 +2095,7 @@ export class DocumentModel {
       }
       for (const cb of att.fileChangedCallbacks) {
         try {
-          cb(content);
+          if (cb(content) === false) deliveredToAll = false;
         } catch (err) {
           console.error('[DocumentModel] Error in file changed callback:', err);
           deliveredToAll = false;
@@ -2123,8 +2119,8 @@ export class DocumentModel {
     };
   }
 
-  private emit(type: DocumentModelEventType): void {
-    const event: DocumentModelEvent = { type, filePath: this.filePath };
+  private emit(type: DocumentModelEventType, diskContent?: string): void {
+    const event: DocumentModelEvent = { type, filePath: this.filePath, ...(diskContent !== undefined ? { diskContent } : {}) };
     const listeners = this.eventListeners.get(type);
     if (listeners) {
       for (const listener of listeners) {

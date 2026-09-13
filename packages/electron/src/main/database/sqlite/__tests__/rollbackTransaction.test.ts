@@ -107,7 +107,7 @@ describe('migration rollback', () => {
     expect(fs.existsSync(path.join(stranger, MARKER))).toBe(true);
     expect(readBackendState(tmp)?.backend).toBe('pglite');
     expect(readBackendState(tmp)?.setBy).toBe('rollback');
-    expect(readCutoverJournal(tmp)).toBeNull();
+    expect(readCutoverJournal(tmp)?.phase).toBe('backend_committed');
   });
 
   it('refuses when the recorded store is gone and the disk offers a choice', async () => {
@@ -189,7 +189,7 @@ describe('migration rollback', () => {
         'the database this install migrated from',
       );
       expect(readBackendState(tmp)?.backend).toBe('pglite');
-      expect(readCutoverJournal(tmp)).toBeNull();
+      expect(readCutoverJournal(tmp)?.phase).toBe('backend_committed');
     });
 
     it('blocks opening SQLite while it cannot finish', async () => {

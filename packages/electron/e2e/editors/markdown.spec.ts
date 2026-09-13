@@ -119,7 +119,7 @@ test.beforeAll(async () => {
     'utf8'
   );
 
-  electronApp = await launchElectronApp({ workspace: workspaceDir });
+  electronApp = await launchElectronApp({ workspace: workspaceDir, mainPath: process.env.NIMBALYST_E2E_MAIN_PATH });
   page = await electronApp.firstWindow();
   await page.waitForLoadState('domcontentloaded');
   await waitForAppReady(page);
@@ -249,38 +249,72 @@ test('edited content is saved when tab is closed', async () => {
   expect(savedContent).toContain(marker);
 });
 
-// Skip: File watcher tests for markdown are flaky - needs investigation
-test.skip('external file change auto-reloads when editor is clean', async () => {
+test('external changes reconcile without native notifications (#1499)', async () => {
+  test.setTimeout(60_000);
   const mdPath = path.join(workspaceDir, 'external-change-test.md');
   const externalContent = '# Modified Externally\n\nThis was modified outside the editor.\n';
-
-  // Open the markdown file
   await openFileFromTree(page, 'external-change-test.md');
-
-  // Wait for Lexical editor to load
-  await page.waitForSelector(ACTIVE_EDITOR_SELECTOR, { timeout: TEST_TIMEOUTS.EDITOR_LOAD });
-  await page.waitForTimeout(500);
-
-  // Verify no dirty indicator (editor is clean)
-  const tabElement = getTabByFileName(page, 'external-change-test.md');
-  await expect(tabElement.locator(PLAYWRIGHT_TEST_SELECTORS.tabDirtyIndicator))
-    .toHaveCount(0);
-
-  // Verify original content
-  const editor = page.locator(ACTIVE_EDITOR_SELECTOR);
+  const tabEditor = page.locator(`${PLAYWRIGHT_TEST_SELECTORS.tabEditor}[data-file-path="${mdPath}"]`);
+  const editor = tabEditor.locator(PLAYWRIGHT_TEST_SELECTORS.contentEditable);
   await expect(editor).toContainText('External Change Test');
-
-  // Modify file externally
-  await fs.writeFile(mdPath, externalContent, 'utf8');
-
-  // Wait for file watcher to detect and reload
-  await page.waitForTimeout(1500);
-
-  // Verify editor shows new content (no conflict dialog)
-  await expect(editor).toContainText('Modified Externally', { timeout: 5000 });
-  await expect(editor).not.toContainText('External Change Test');
-
-  // Close the tab to clean up
+  // Suppress native editor notifications only in this isolated app.
+  await electronApp.evaluate(({ BrowserWindow }) => {
+    for (const window of BrowserWindow.getAllWindows()) {
+      const contents = window.webContents as any;
+      const original = contents.send.bind(contents);
+      contents.__nativeSend1499 = original;
+      contents.send = (channel: string, ...args: unknown[]) => {
+        if (channel !== 'file-changed-on-disk') original(channel, ...args);
+      };
+    }
+  });
+  try {
+    await fs.writeFile(`${mdPath}.replacement`, externalContent, 'utf8');
+    await fs.rename(`${mdPath}.replacement`, mdPath);
+    await expect(editor).toContainText('Modified Externally', { timeout: 10_000 });
+    await expect(editor).not.toContainText('External Change Test');
+    // Cross an autosave interval before checking bytes: a refresh alone is insufficient.
+    await page.waitForTimeout(2500);
+    expect(await fs.readFile(mdPath, 'utf8')).toBe(externalContent);
+    await openFileFromTree(page, 'copy-test.md');
+    await expect(editor).toBeHidden();
+    const backgroundContent = '# Background disk version\n\nUpdated while another tab is active.\n';
+    await fs.writeFile(mdPath, backgroundContent, 'utf8');
+    await expect(editor).toContainText('Background disk version', { timeout: 10_000 });
+    await getTabByFileName(page, 'external-change-test.md').click();
+    await expect(editor).toBeVisible();
+    await editor.click();
+    await page.keyboard.press('End');
+    await page.keyboard.type(' LOCAL UNSAVED');
+    const newer = '# Newer disk version\n\nExternal content to preserve.\n';
+    await fs.writeFile(mdPath, newer, 'utf8');
+    await page.evaluate(() => window.electronAPI.invoke('file:reconcile-open'));
+    await expect(tabEditor.locator(PLAYWRIGHT_TEST_SELECTORS.autosaveConflictBanner)).toBeVisible();
+    await expect(editor).toContainText('LOCAL UNSAVED');
+    await page.waitForTimeout(2500);
+    expect(await fs.readFile(mdPath, 'utf8')).toBe(newer);
+    await tabEditor.locator(PLAYWRIGHT_TEST_SELECTORS.autosaveConflictReload).click();
+    await expect(editor).toContainText('Newer disk version');
+    await expect(tabEditor.locator(PLAYWRIGHT_TEST_SELECTORS.autosaveConflictBanner)).toHaveCount(0);
+    await tabEditor.locator(PLAYWRIGHT_TEST_SELECTORS.editorMoreActions).click();
+    await page.locator(PLAYWRIGHT_TEST_SELECTORS.editorDropdownItem, { hasText: 'Toggle Source Mode' }).click();
+    const source = tabEditor.locator(PLAYWRIGHT_TEST_SELECTORS.monacoViewLines);
+    await expect(source).toContainText('Newer disk version');
+    const sourceContent = '# Changed in source mode\n\nStill observed.\n';
+    await fs.writeFile(mdPath, sourceContent, 'utf8');
+    await page.evaluate(() => window.electronAPI.invoke('file:reconcile-open'));
+    await expect(source).toContainText('Changed in source mode');
+    await electronApp.evaluate(({ BrowserWindow }) => BrowserWindow.getFocusedWindow()?.webContents.send('file-save'));
+    await page.waitForTimeout(2500);
+    expect(await fs.readFile(mdPath, 'utf8')).toBe(sourceContent);
+  } finally {
+    await electronApp.evaluate(({ BrowserWindow }) => {
+      for (const window of BrowserWindow.getAllWindows()) {
+        const contents = window.webContents as any;
+        if (contents.__nativeSend1499) { contents.send = contents.__nativeSend1499; delete contents.__nativeSend1499; }
+      }
+    });
+  }
   await closeTabByFileName(page, 'external-change-test.md');
 });
 

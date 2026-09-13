@@ -21,6 +21,7 @@ import { AgentCapabilities, BUILTIN_AGENT_CAPABILITIES } from '../agentCapabilit
 import type { FileChangeFidelity } from '../providerFileTracking';
 import { CodexSDKProtocol } from '../protocols/CodexSDKProtocol';
 import { CodexAppServerProtocol, type CodexAppServerHostBindings } from '../protocols/CodexAppServerProtocol';
+import {setCodexShellTrackingHost} from '../protocols/codexAppServer/shellTracking';
 import { AgentProtocol, ProtocolEvent, ProtocolSession } from '../protocols/ProtocolInterface';
 import { isNonRenderingAppServerItemStarted } from '../transcript/parsers/CodexAppServerRawParser';
 import { capAppServerItemParamsForStorage } from '../../../storage/toolOutputBudget';
@@ -315,6 +316,10 @@ export class OpenAICodexProvider extends BaseAgentProvider {
 
   public static setAppServerHostBindings(bindings: CodexAppServerHostBindings | null): void {
     OpenAICodexProvider.appServerHostBindings = bindings;
+  }
+
+  public static setShellTrackingHost(host: Parameters<typeof setCodexShellTrackingHost>[0]): void {
+    setCodexShellTrackingHost(host);
   }
 
   // Host-supplied auth gate. Returns whether OpenAI auth is currently required
@@ -1100,12 +1105,8 @@ export class OpenAICodexProvider extends BaseAgentProvider {
       // Merge in shell env vars and the enhanced PATH so the Codex agent can see system tools.
       let codexEnv = OpenAICodexProvider.buildCodexEnvironment();
 
-      // Layer session-specific env vars for the PreToolUse hook. The hook
-      // script reads NIMBALYST_PRE_EDIT_DIR to know where to write per-path
-      // pre-edit snapshots, and ELECTRON_RUN_AS_NODE makes process.execPath
-      // (an Electron binary) run as plain Node so we don't have to ship a
-      // separate Node runtime. When the resolver isn't wired up (tests, older
-      // electron builds) the hook is simply not configured.
+      // The SDK pre-edit hook uses Electron as Node and writes snapshots to
+      // this session's sidecar directory. App-server observation is host-owned.
       const sidecarDir = this.transport === 'sdk' && sessionId
         ? OpenAICodexProvider.preEditSidecarDirResolver?.(sessionId)
         : undefined;
@@ -1123,8 +1124,6 @@ export class OpenAICodexProvider extends BaseAgentProvider {
         baseEnv.ELECTRON_RUN_AS_NODE = '1';
         codexEnv = baseEnv;
         // console.log('[CODEX] Pre-edit hook env configured:', { sessionId, sidecarDir });
-      } else if (sessionId) {
-        // console.log('[CODEX] Pre-edit hook sidecar dir resolver returned undefined', { sessionId });
       }
 
       const resolvedModel = await this.getConfiguredModel();
@@ -1148,6 +1147,7 @@ export class OpenAICodexProvider extends BaseAgentProvider {
           disallowedTools: ['Read', 'Write', 'Edit', 'MultiEdit', 'Glob', 'Grep', 'LS', 'Bash', 'WebFetch', 'WebSearch', 'Task', 'Agent'].filter(t => !BaseAgentProvider.META_AGENT_ALLOWED_TOOLS.includes(t)),
         } : {}),
         raw: {
+          nimbalystSessionId: sessionId,
           systemPrompt,
           abortSignal: abortController.signal,
           agentVerified: permissionDecision.agentVerified === true,

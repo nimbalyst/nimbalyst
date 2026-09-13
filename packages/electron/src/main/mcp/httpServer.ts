@@ -1,3 +1,4 @@
+import { handleConsumeSessionInbox } from './tools/consumeSessionInbox';
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
@@ -517,6 +518,9 @@ function createSharedMcpServer(
 
     try {
       switch (toolName) {
+        case 'consume_session_inbox':
+          if (extra.requestId === undefined) throw new Error('Inbox request identity is required');
+          return handleConsumeSessionInbox(sessionId, request);
         case "applyDiff":
           return handleApplyDiff(args, sessionId, workspacePath);
 

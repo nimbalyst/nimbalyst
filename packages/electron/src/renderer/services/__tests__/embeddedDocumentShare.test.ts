@@ -61,6 +61,32 @@ function catalog() {
 }
 
 describe("embedded document cascade sharing", () => {
+  it.each([
+    ['panel.mockup.html', '/workspace/docs/panel.mockup.html'],
+    ['./panel.mockup.html', '/workspace/docs/panel.mockup.html'],
+    ['../panel.mockup.html', '/workspace/panel.mockup.html'],
+    ['/mockups/panel.mockup.html', '/workspace/mockups/panel.mockup.html'],
+    ['file:///tmp/panel.mockup.html', '/tmp/panel.mockup.html'],
+    ['mockups/panel.mockup.html', '/workspace/mockups/panel.mockup.html'],
+    ['/tmp/panel.mockup.html', '/tmp/panel.mockup.html'],
+  ])('shares and rewrites %s using Markdown path conventions', async (href, expectedPath) => {
+    const markdown = `[Panel](${href})`;
+    const input = { markdown, sourceFilePath: '/workspace/docs/host.md', workspacePath: '/workspace' };
+    const candidates = await discoverEmbeddedDocuments({
+      ...input,
+      embeddableExtensions: ['.mockup.html'],
+      catalog: catalog() as never,
+      expectedOrgId: 'team-1',
+      fileExists: async (path) => path === expectedPath,
+      findExisting: async () => null,
+    });
+    expect(candidates.map(candidate => candidate.absolutePath)).toEqual([expectedPath]);
+    expect(rewriteEmbeddedDocumentLinks({
+      ...input, candidates,
+      sharedReferences: new Map([[expectedPath, { documentId: 'panel', orgId: 'team-1' }]]),
+    })).toContain('nimbalyst://doc/panel');
+  });
+
   it("discovers only paragraph-isolated registered embed links and deduplicates paths", async () => {
     const findExisting = vi.fn(async (absolutePath: string) =>
       absolutePath.endsWith("wireframe.mockup.html")
@@ -77,7 +103,7 @@ describe("embedded document cascade sharing", () => {
         "",
         "[Plain markdown](./notes.md)",
         "",
-        "[Root sheet](sheets/forecast.calc.md)",
+        "[Root sheet](/sheets/forecast.calc.md)",
       ].join("\n"),
       sourceFilePath: "/workspace/docs/host.md",
       workspacePath: "/workspace",

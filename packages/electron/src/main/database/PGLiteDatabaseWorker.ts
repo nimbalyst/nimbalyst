@@ -9,11 +9,12 @@ import { app, dialog } from 'electron';
 import path from 'path';
 import { getPackageRoot } from '../utils/appPaths';
 import { logger } from '../utils/logger';
-import { v4 as uuidv4 } from 'uuid';
 import { AnalyticsService } from '../services/analytics/AnalyticsService';
 import type { SQLiteDatabase } from './sqlite/SQLiteDatabase';
 import { DatabaseBackupService } from '../services/database/DatabaseBackupService';
-import { deserializeWorkerError } from './workerErrorSerialization';
+import { WorkerRequestTracker } from './WorkerRequestTracker';
+import { assertDatabaseAvailable } from './databaseMaintenance';
+import { MigrationSourceReader } from './sqlite/migrationSourceRead';
 import { resolveDatabaseUserDataPath } from './userDataPath';
 import {
   buildDatabaseOperationErrorProperties,
@@ -72,11 +73,6 @@ export function raceWithTimeout<T>(work: Promise<T>, timeoutMs: number): Promise
  * Exported so unit tests can pin the value if reasoning ever shifts.
  */
 export const INIT_TIMEOUT_MS = 120_000;
-
-interface PendingRequest {
-  resolve: (value: any) => void;
-  reject: (error: Error) => void;
-}
 
 // ============================================================================
 // Database Performance Stats
@@ -219,7 +215,11 @@ class DatabaseStats {
 
 export class PGLiteDatabaseWorker {
   private worker: Worker | null = null;
-  private pendingRequests = new Map<string, PendingRequest>();
+  private requests = new WorkerRequestTracker((message) => {
+    if (!this.worker) throw new Error('Worker not initialized');
+    this.worker.postMessage(message);
+  });
+  private migrationReader = new MigrationSourceReader();
   private initialized = false;
   private initPromise: Promise<void> | null = null;
   private analytics = AnalyticsService.getInstance();
@@ -364,43 +364,23 @@ export class PGLiteDatabaseWorker {
 
     // Set up message handler
     this.worker.on('message', (response) => {
-      const pending = this.pendingRequests.get(response.id);
-      if (pending) {
-        this.pendingRequests.delete(response.id);
-        if (response.success) {
-          // Store worker-reported execution time for stats
-          if (response.execMs !== undefined) {
-            this.lastExecMs = response.execMs;
-          }
-          pending.resolve(response.data);
-        } else {
-          pending.reject(deserializeWorkerError(response.errorData, response.error));
-        }
+      if (this.requests.receive(response) && response.execMs !== undefined) {
+        this.lastExecMs = response.execMs;
       }
     });
 
     // Set up error handler
     this.worker.on('error', (error) => {
       logger.main.error('[PGLite Worker] Worker error:', error);
-      // Reject all pending requests with the original error
-      this.pendingRequests.forEach((pending) => {
-        pending.reject(error);
-      });
-      this.pendingRequests.clear();
+      this.requests.rejectAll(error);
     });
 
     // Set up exit handler
     this.worker.on('exit', (code) => {
-      if (code !== 0) {
-        logger.main.error(`[PGLite Worker] Worker exited with code ${code}`);
-        // Reject all pending requests
-        this.pendingRequests.forEach((pending) => {
-          pending.reject(new Error(`Worker exited with code ${code}`));
-        });
-        this.pendingRequests.clear();
-        this.initialized = false;
-        this.worker = null;
-      }
+      if (code !== 0) logger.main.error(`[PGLite Worker] Worker exited with code ${code}`);
+      this.requests.rejectAll(new Error(`Worker exited with code ${code}`));
+      this.initialized = false;
+      this.worker = null;
     });
   }
 
@@ -763,30 +743,9 @@ export class PGLiteDatabaseWorker {
    * Send a message to the worker and wait for response
    * @param timeoutMs - Timeout in milliseconds (default: 30000)
    */
-  private sendMessage(type: string, payload?: any, timeoutMs: number = 30000): Promise<any> {
-    return new Promise((resolve, reject) => {
-      if (!this.worker) {
-        reject(new Error('Worker not initialized'));
-        return;
-      }
-
-      const id = uuidv4();
-      this.pendingRequests.set(id, { resolve, reject });
-
-      this.worker.postMessage({
-        id,
-        type,
-        payload
-      });
-
-      // Timeout (default 30 seconds, can be extended for long operations)
-      setTimeout(() => {
-        if (this.pendingRequests.has(id)) {
-          this.pendingRequests.delete(id);
-          reject(new Error(`Request ${type} timed out`));
-        }
-      }, timeoutMs);
-    });
+  private sendMessage(type: string, payload?: any, timeoutMs: number | null = 30000): Promise<any> {
+    if (type !== 'close' && type !== 'verifyBackup') assertDatabaseAvailable();
+    return this.requests.send(type, payload, timeoutMs);
   }
 
   // Threshold for logging slow queries (milliseconds)
@@ -893,6 +852,27 @@ export class PGLiteDatabaseWorker {
     }
   }
 
+  /** Internal migration bridge only; extension queryReadOnly keeps its deadline. */
+  async queryForMigration<T = unknown>(sql: string, params?: unknown[], timeoutMs = 30_000): Promise<{ rows: T[] }> {
+    if (!this.initialized) throw new Error('Database not initialized. Call initialize() first.');
+    const start = performance.now();
+    const tableName = this.extractTableName(sql);
+    try {
+      return await this.migrationReader.read(
+        // No transport rejection timer: ownership lasts until response or exit.
+        () => this.sendMessage('queryReadOnly', { sql, params, timeoutMs: clampReadOnlyTimeout(timeoutMs) }, null),
+        clampReadOnlyTimeout(timeoutMs),
+      );
+    } finally {
+      this.stats.record(tableName, 'read', performance.now() - start, this.lastExecMs);
+      this.lastExecMs = undefined;
+    }
+  }
+
+  assertMigrationAvailable(): void {
+    this.migrationReader.assertAvailable();
+  }
+
   /**
    * Execute a statement (no return value)
    * @param timeoutMs - Timeout in milliseconds (default: 30000, use longer for index creation)
@@ -933,7 +913,7 @@ export class PGLiteDatabaseWorker {
     }
   }
 
-  async runTransaction(statements: Array<{ sql: string; params?: any[] }>): Promise<void> {
+  async runTransaction(statements: Array<{ sql: string; params?: any[]; expectedRows?: number }>): Promise<void> {
     if (!this.initialized) {
       throw new Error('Database not initialized. Call initialize() first.');
     }
@@ -1136,7 +1116,7 @@ export interface AppDatabase {
   query<T = any>(sql: string, params?: any[]): Promise<{ rows: T[] }>;
   queryReadOnly<T = any>(sql: string, params?: any[], timeoutMs?: number): Promise<{ rows: T[] }>;
   exec(sql: string, timeoutMs?: number): Promise<void>;
-  runTransaction(statements: Array<{ sql: string; params?: any[] }>): Promise<void>;
+  runTransaction(statements: Array<{ sql: string; params?: any[]; expectedRows?: number }>): Promise<void>;
   close(): Promise<void>;
   getStats(): Promise<any>;
   getDB(): any;
@@ -1227,7 +1207,7 @@ class ActiveDatabaseFacade implements AppDatabase {
     }
   }
 
-  async runTransaction(statements: Array<{ sql: string; params?: any[] }>): Promise<void> {
+  async runTransaction(statements: Array<{ sql: string; params?: any[]; expectedRows?: number }>): Promise<void> {
     try {
       await this.active.runTransaction(statements);
     } catch (error) {

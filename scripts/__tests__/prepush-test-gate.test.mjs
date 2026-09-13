@@ -10,7 +10,8 @@ test('keeps the full suite enabled outside local Windows', () => {
 });
 
 test('skips only the known nonportable suite on local Windows', () => {
-  assert.equal(shouldRunFullPrePushSuite({ platform: 'win32' }), false);
+  // Model a local shell explicitly, even when this test runs under CI=true.
+  assert.equal(shouldRunFullPrePushSuite({ platform: 'win32', ci: '' }), false);
   assert.equal(shouldRunFullPrePushSuite({ platform: 'win32', ci: 'false' }), false);
 });
 
@@ -50,4 +51,37 @@ test('never waves a push through on missing refs or a failing git', () => {
     pushDeliversNewCommits({ stdin: `refs/heads/old ${'0'.repeat(40)} refs/heads/old abc123\n`, git }),
     false
   );
+});
+
+import { fullSuiteReuseDecision } from '../prepush-test-gate.mjs';
+import { fullSuiteInvocation } from '../validation-inventory.mjs';
+
+test('reuses only complete passing matching HEAD results; all uncertainty runs the suite', () => {
+  const sha = 'a'.repeat(40);
+  const good = {
+    record: { invocation: fullSuiteInvocation, complete: true, result: 'PASS' },
+    comparison: { verdict: 'current', now: { head: sha, files: [], extras: [] } },
+    stdin: `refs/heads/main ${sha} refs/heads/main ${'b'.repeat(40)}`,
+    git: () => sha,
+    ci: 'false',
+  };
+  assert.equal(fullSuiteReuseDecision(good).reuse, true);
+  // A dirty tree whose content the run fingerprinted is the tree that passed;
+  // parallel sessions keep the checkout permanently dirty, so this is the
+  // common case, not an edge.
+  assert.equal(
+    fullSuiteReuseDecision({ ...good, comparison: { ...good.comparison, now: { ...good.comparison.now, files: [{ path: 'dirty.ts' }] } } }).reuse,
+    true,
+  );
+  for (const overrides of [
+    { record: null },
+    { record: { ...good.record, invocation: 'run one.test.ts' } },
+    { record: { ...good.record, complete: false } },
+    { record: { ...good.record, result: 'FAIL' } },
+    { comparison: { verdict: 'stale' } },
+    { comparison: { verdict: 'unknown' } },
+    { stdin: '' }, { stdin: 'malformed' }, { git: () => 'b'.repeat(40) },
+    { git: () => { throw new Error('unavailable'); } }, { ci: 'true' },
+  ]) assert.equal(fullSuiteReuseDecision({ ...good, ...overrides }).reuse, false, JSON.stringify(overrides));
+  assert.equal(fullSuiteReuseDecision({ ...good, stdin: `${good.stdin}\nrefs/tags/v1 ${'c'.repeat(40)} refs/tags/v1 ${'0'.repeat(40)}` }).reuse, true);
 });

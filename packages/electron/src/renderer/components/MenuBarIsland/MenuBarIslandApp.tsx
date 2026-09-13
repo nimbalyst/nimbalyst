@@ -1,6 +1,7 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useAtomValue } from 'jotai';
 import { MaterialSymbol } from '@nimbalyst/runtime/ui/icons/MaterialSymbol';
+import { FLEET_STRIP_COLORS as STRIP_COLORS } from '../../../shared/fleetStripColors';
 import {
   ISLAND_EXPANDED_WIDTH,
   MENU_BAR_ISLAND_CHANNELS,
@@ -43,20 +44,6 @@ const FOCUS_RING = 'focus:outline-none focus-visible:outline-2 focus-visible:out
 
 /** Menu bar row height. The collapsed pill fills it exactly. */
 const STRIP_HEIGHT = 30;
-
-/** Matches the tray strip's palette (see main/tray/stripMarkup.ts). */
-const STRIP_COLORS = {
-  approval: '#fbbf24',
-  decision: '#f0abfc',
-  failed: '#ef4444',
-  running: '#60a5fa',
-  completed: '#4ade80',
-  // Running, drained. Same family as `running` rather than a new hue, because a
-  // stalled session *is* a running one that stopped talking -- and because the
-  // strip already spends amber on approvals and on the hot age, so a fourth
-  // warm colour would collide with one of them.
-  stalled: '#94a3b8',
-} as const;
 
 function CountPair({ color, count }: { color: string; count: number }) {
   return (

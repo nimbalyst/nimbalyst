@@ -37,26 +37,35 @@ These releases set `kernel.apparmor_restrict_unprivileged_userns=1`, which stops
 
 **The simplest fix is to install the `.deb` instead** — it is unaffected.
 
-To stay on the AppImage, grant it the one permission it needs. Create `/etc/apparmor.d/nimbalyst`, replacing the path with wherever you keep the AppImage:
+To stay on the AppImage, grant it the one permission it needs. Create `/etc/apparmor.d/nimbalyst-appimage`, replacing the path with wherever you keep the AppImage:
 
 ```
 abi <abi/4.0>,
 include <tunables/global>
 
-profile nimbalyst /home/YOUR_USER/Applications/Nimbalyst-Linux.AppImage flags=(unconfined) {
+profile nimbalyst-appimage /home/YOUR_USER/Applications/Nimbalyst-Linux.AppImage flags=(unconfined) {
   userns,
 
-  include if exists <local/nimbalyst>
+  include if exists <local/nimbalyst-appimage>
 }
 ```
 
 Load it:
 
 ```bash
-sudo apparmor_parser -r /etc/apparmor.d/nimbalyst
+sudo apparmor_parser -r /etc/apparmor.d/nimbalyst-appimage
 ```
 
 The AppImage now starts, with the Chromium sandbox still on. The profile is scoped to that one path, so the rest of the system hardening is untouched. If you move or rename the AppImage, update the path in the profile and reload it.
+
+Keep the `nimbalyst-appimage` name. The `.deb` installs its own profile at `/etc/apparmor.d/nimbalyst`: installing the package overwrites that file, removing it deletes the file, and loading a profile replaces any loaded profile with the same name. With a name of its own, the AppImage profile survives the `.deb` on the same machine.
+
+If you followed an earlier version of this page, check `/etc/apparmor.d/nimbalyst`. If it names your AppImage path, it is the old profile: unload and delete it. If it names `/opt/Nimbalyst/nimbalyst`, it belongs to the `.deb`, so leave it alone.
+
+```bash
+sudo apparmor_parser -R /etc/apparmor.d/nimbalyst
+sudo rm /etc/apparmor.d/nimbalyst
+```
 
 Do not use `--no-sandbox` to work around this. It starts the app by turning off the renderer sandbox, which is the protection the error is about.
 

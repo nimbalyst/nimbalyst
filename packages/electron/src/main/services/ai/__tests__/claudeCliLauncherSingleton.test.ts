@@ -3,6 +3,29 @@ import { tmpdir } from 'os';
 import { join } from 'path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+// Test singleton coordination without initializing the host's file, auth,
+// extension, or auto-naming services through their runtime barrel imports.
+vi.mock('../HooklessAgentFileWatcher', () => ({
+  HooklessAgentFileWatcher: class {
+    ensureForSession = vi.fn(async () => undefined);
+    stopForSession = vi.fn(async () => undefined);
+    scheduleStop = vi.fn();
+  },
+}));
+vi.mock('../claudeCliSessionAutoNameSingleton', () => ({
+  maybeAutoNameClaudeCliSessionProduction: vi.fn(async () => undefined),
+}));
+vi.mock('../../AgentWorkflowService', () => ({
+  getAgentWorkflowService: () => ({ getClaudeProviderPluginPaths: async () => [] }),
+}));
+vi.mock('../../PermissionService', () => ({
+  getPermissionService: () => ({ getPermissionMode: () => 'default' }),
+}));
+vi.mock('../../../utils/store', () => ({ getDefaultEffortLevel: () => undefined }));
+vi.mock('../../attachments/attachmentStagingRoot', () => ({
+  resolveAttachmentStagingAllowDirectories: () => [],
+}));
+
 describe('claudeCliLauncherSingleton', () => {
   beforeEach(() => {
     vi.resetModules();
@@ -41,7 +64,7 @@ describe('claudeCliLauncherSingleton', () => {
       }),
       configureMcpServers: vi.fn(),
     }));
-    vi.doMock('../../CLIManager', () => ({
+    vi.doMock('../../shellEnvironment', () => ({
       getEnhancedPath: () => '/bin',
       getShellEnvironment: () => ({}),
     }));
@@ -79,7 +102,7 @@ describe('claudeCliLauncherSingleton', () => {
         get: vi.fn(async (id: string) => (worktree && worktree.id === id ? { path: worktree.path } : null)),
       }),
     }));
-    vi.doMock('../../database/initialize', () => ({
+    vi.doMock('../../../database/initialize', () => ({
       getDatabase: () => ({}),
     }));
 
@@ -87,10 +110,6 @@ describe('claudeCliLauncherSingleton', () => {
     return { ...mod, manager, stateManager, launch };
   }
 
-  // loadHarness() dynamically imports the real launcher module after
-  // vi.resetModules(), which cold-loads electron/analytics/store + the runtime
-  // MCP config chain (~4s). That's fine solo but crosses the 5s default under
-  // full-suite parallel CPU contention, so give these a generous timeout.
   it('coalesces concurrent ensure calls for the same session', async () => {
     const h = await loadHarness();
     let releaseLaunch: (() => void) | undefined;

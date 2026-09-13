@@ -9,8 +9,8 @@
  * to.
  */
 
-import { describe, expect, it } from 'vitest';
-import { resolveTrackerRowByReference } from '../trackerToolItemAccess';
+import { describe, expect, it, vi } from 'vitest';
+import { resolveTrackerItemFromDocumentService, resolveTrackerRowByReference } from '../trackerToolItemAccess';
 
 interface Row {
   id: string;
@@ -48,6 +48,32 @@ const ROWS: Row[] = [
   { id: 'b', workspace: '/src/site', local_key: 'NIM.4', issue_key: null },
   { id: 'c', workspace: '/src/app', local_key: 'NIM.9', issue_key: 'NIM-212' },
 ];
+
+describe('tracker reference validation', () => {
+  const unrelated = { id: 'fm:plan:plans/unrelated.md' };
+  const target = { id: 'partner-person_target', issueKey: 'NIM-4275', localKey: 'NIM.8' };
+  const getTrackerItemById = vi.fn(async (id: string) => id === target.id ? target : null);
+  const listTrackerItems = vi.fn(async () => [unrelated, target]);
+  const service = { getTrackerItemById, listTrackerItems } as unknown as Parameters<typeof resolveTrackerItemFromDocumentService>[0];
+
+  it.each([undefined, null, '', ' \t ', 42, {}])('rejects invalid reference %j before any lookup', async (reference) => {
+    getTrackerItemById.mockClear();
+    listTrackerItems.mockClear();
+    const db = fakeDb(ROWS);
+    await expect(resolveTrackerItemFromDocumentService(service, reference as string)).rejects.toThrow('Tracker reference must be a non-empty string');
+    await expect(resolveTrackerRowByReference(db, reference as string, '/src/app')).rejects.toThrow('Tracker reference must be a non-empty string');
+    expect(getTrackerItemById).not.toHaveBeenCalled();
+    expect(listTrackerItems).not.toHaveBeenCalled();
+    expect(db.calls).toEqual([]);
+  });
+
+  it('resolves explicit identities past an unkeyed frontmatter item', async () => {
+    for (const reference of [target.id, target.issueKey, target.localKey]) {
+      await expect(resolveTrackerItemFromDocumentService(service, reference)).resolves.toBe(target);
+    }
+    await expect(resolveTrackerItemFromDocumentService(service, 'unknown')).resolves.toBeNull();
+  });
+});
 
 describe('resolveTrackerRowByReference', () => {
   it('resolves a local number inside the project that issued it', async () => {

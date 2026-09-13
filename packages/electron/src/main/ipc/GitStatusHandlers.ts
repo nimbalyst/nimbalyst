@@ -1,3 +1,4 @@
+import { shellFileAttribution } from '../services/ai/codexShellTrackingHost';
 import { resolve, relative, isAbsolute } from 'path';
 import { SessionFilesRepository } from '@nimbalyst/runtime';
 import { GitStatusService } from '../services/GitStatusService';
@@ -236,6 +237,7 @@ export function registerGitStatusHandlers(): void {
       error?: string;
     }> => {
       try {
+        await shellFileAttribution.flush();
         const mapStatus = (s: string): 'added' | 'modified' | 'deleted' => {
           if (s === 'untracked') return 'added';
           if (s === 'deleted') return 'deleted';

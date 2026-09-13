@@ -12,6 +12,7 @@ node_modules/
 
 # Build outputs
 dist/
+dist-node/
 #build/
 esm/build/
 split/build/

@@ -87,6 +87,12 @@ export class CollabAssetOutboxDrainCoordinator {
     this.unsubscribeAuth = null;
   }
 
+  /** Await the same serialized drain used by background retry before publishing references. */
+  async drainNow(accountId: string): Promise<void> {
+    if (!net.isOnline() || getPersonalUserId() !== accountId) throw new Error('Screenshot upload is unavailable');
+    await this.drainer.drainOnce(accountId);
+  }
+
   trigger(source: string): void {
     if (!net.isOnline()) return;
     const accountId = getPersonalUserId();

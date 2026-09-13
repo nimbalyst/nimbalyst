@@ -2,6 +2,31 @@ import XCTest
 
 final class NavigationContinuityTests: XCTestCase {
     @MainActor
+    func testFilesDownloadsLargeProjectAndRetriesInterruptedSync() throws {
+        continueAfterFailure = false
+        guard let server = ProcessInfo.processInfo.environment["NIMBALYST_DOCUMENT_FIXTURE_URL"] else {
+            throw XCTSkip("Requires the local document-sync-fixture.cjs server; see ios/TESTING.md")
+        }
+        XCUIDevice.shared.orientation = .portrait
+        let app = XCUIApplication()
+        app.launchArguments = ["--screenshot-mode", "--screenshot-screen=sessions", "--document-sync-fixture=\(server)", "-hasPromptedForNotifications", "YES"]
+        app.launch()
+        defer { app.terminate() }
+        let filesTab = app.buttons["Files"]
+        XCTAssertTrue(filesTab.waitForExistence(timeout: 10))
+        filesTab.tap()
+        XCTAssertFalse(app.staticTexts["No Documents"].exists)
+        XCTAssertTrue(app.buttons["Retry"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.staticTexts["Document 0000.md"].exists)
+        app.buttons["Retry"].tap()
+        let completed = app.staticTexts["2,293 files"]
+        XCTAssertTrue(completed.waitForExistence(timeout: 15))
+        app.staticTexts["Document 0000.md"].tap()
+        XCTAssertTrue(app.webViews.firstMatch.waitForExistence(timeout: 10))
+        XCTAssertTrue(app.webViews.staticTexts["Downloaded document"].waitForExistence(timeout: 10))
+    }
+
+    @MainActor
     func testEmptyListsWaitForIndexSync() {
         continueAfterFailure = false
         XCUIDevice.shared.orientation = .portrait
@@ -16,6 +41,31 @@ final class NavigationContinuityTests: XCTestCase {
             XCTAssertTrue(app.staticTexts["No \(noun)"].waitForExistence(timeout: 15), "A completed empty response must finish loading")
             XCTAssertFalse(loading.exists)
         }
+    }
+
+    @MainActor
+    func testSearchOpensOldSessionWithTenThousandRetainedRows() {
+        continueAfterFailure = false
+        XCUIDevice.shared.orientation = .portrait
+        let app = XCUIApplication()
+        app.launchArguments = ["--screenshot-mode", "--screenshot-screen=navigation",
+                               "--retained-history-fixture", "-hasPromptedForNotifications", "YES"]
+        app.launch()
+        defer { app.terminate() }
+        let project = app.staticTexts["nimbalyst"].firstMatch
+        XCTAssertTrue(project.waitForExistence(timeout: 20))
+        project.tap()
+        XCTAssertTrue(app.staticTexts["Implement dark mode theme switching"].firstMatch.waitForExistence(timeout: 10))
+        let search = app.searchFields.firstMatch
+        if !search.isHittable { app.swipeDown() }
+        XCTAssertTrue(search.waitForExistence(timeout: 5))
+        search.tap()
+        search.typeText("Retained history 00000")
+        let oldest = app.staticTexts["Retained history 00000"].firstMatch
+        XCTAssertTrue(oldest.waitForExistence(timeout: 10), "Search must reach history beyond the materialized window")
+        oldest.tap()
+        XCTAssertTrue(app.navigationBars["Retained history 00000"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.descendants(matching: .any)["session-compose-input"].firstMatch.waitForExistence(timeout: 10))
     }
 
     @MainActor

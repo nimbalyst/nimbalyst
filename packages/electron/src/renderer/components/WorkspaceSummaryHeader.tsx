@@ -1,4 +1,7 @@
 import React from 'react';
+import {useAtomValue} from 'jotai';
+import {selectedMachineAtom} from '../store/atoms/remoteMachines';
+import {RemoteMachineSelector} from './RemoteMachineSelector';
 import { getFileName } from '../utils/pathUtils';
 
 export function generateWorkspaceAccentColor(path: string): string {
@@ -14,6 +17,7 @@ export function generateWorkspaceAccentColor(path: string): string {
 
 interface WorkspaceSummaryHeaderProps {
   workspacePath: string;
+  showMachineSelector?: boolean;
   workspaceName?: string;
   actions?: React.ReactNode;
   subtitle?: React.ReactNode;
@@ -25,12 +29,14 @@ interface WorkspaceSummaryHeaderProps {
 export function WorkspaceSummaryHeader({
   workspacePath,
   workspaceName,
+  showMachineSelector = false,
   actions,
   subtitle,
   showAccent = true,
   headerClassName = '',
   actionsClassName = '',
 }: WorkspaceSummaryHeaderProps) {
+  const remoteHost = useAtomValue(selectedMachineAtom(workspacePath));
   const displayName = workspaceName || getFileName(workspacePath) || 'Workspace';
 
   return (
@@ -61,11 +67,12 @@ export function WorkspaceSummaryHeader({
             </div>
           ) : null}
         </div>
+        {showMachineSelector && <RemoteMachineSelector workspacePath={workspacePath} />}
         <div
           className="workspace-summary-header-path mt-0.5 text-[11px] text-[var(--nim-text-muted)] overflow-hidden text-ellipsis whitespace-nowrap opacity-75 font-normal"
           title={workspacePath}
         >
-          {workspacePath}
+          {showMachineSelector && remoteHost ? "Remote workspace" : workspacePath}
         </div>
       </div>
     </>

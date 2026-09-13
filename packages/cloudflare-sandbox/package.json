@@ -1,0 +1,22 @@
+{
+  "name": "@nimbalyst/cloudflare-sandbox",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Cloudflare sandbox management deployed into the user's own account",
+  "scripts": {
+    "build": "node scripts/build-artifact.mjs",
+    "test:artifact": "node --test scripts/build-artifact.test.mjs scripts/rpc-helper.test.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run src/__tests__"
+  },
+  "dependencies": {
+    "@cloudflare/sandbox": "0.13.0-next.751.1"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "5.20260908.1",
+    "capnweb": "0.8.0",
+    "esbuild": "0.28.1",
+    "typescript": "~5.9.3"
+  }
+}

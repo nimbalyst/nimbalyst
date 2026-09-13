@@ -30,6 +30,8 @@ import {
   globalSessionTurnActivityAtom,
 } from '../atoms/sessionActivity';
 import { activeWorkspacePathAtom, openProjectsAtom } from '../atoms/openProjects';
+import { activeExtensionPanelAtom, activeExtensionBottomPanelAtom } from '../atoms/extensionPanels';
+import { resetWindowMode, windowModeAtom } from '../atoms/windowMode';
 import {
   initWorkstreamState,
   setWorkstreamActiveChildAtom,
@@ -118,6 +120,7 @@ afterEach(() => {
   cleanup?.();
   cleanup = null;
   errorNotificationService.clearAll();
+  resetWindowMode();
   store.set(activeWorkspacePathAtom, null);
   store.set(sessionListWorkspaceAtom, null);
   store.set(openProjectsAtom, []);
@@ -175,6 +178,9 @@ describe('notification click navigation', () => {
     initWorkstreamState(workspacePath);
     store.set(activeWorkspacePathAtom, workspacePath);
     store.set(sessionListWorkspaceAtom, workspacePath);
+    store.set(windowModeAtom, 'agent');
+    store.set(activeExtensionPanelAtom, 'com.nimbalyst.project-graph.graph');
+    store.set(activeExtensionBottomPanelAtom, 'extension.bottom');
     seedRegistry([
       { id: parentId, workspaceId: workspacePath, sessionType: 'workstream' },
       { id: sid, workspaceId: workspacePath, parentSessionId: parentId },
@@ -221,6 +227,8 @@ describe('notification click navigation', () => {
       id: parentId,
     });
     expect(store.get(workstreamActiveChildAtom(parentId))).toBe(sid);
+    expect(store.get(activeExtensionPanelAtom)).toBeNull();
+    expect(store.get(activeExtensionBottomPanelAtom)).toBeNull();
   });
 
   it('fails visibly without selecting a different session when the target is missing', async () => {

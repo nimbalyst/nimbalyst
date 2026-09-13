@@ -1,9 +1,34 @@
-import type { ComponentProps, MouseEventHandler } from 'react';
+import type { ComponentProps, MouseEvent, MouseEventHandler } from 'react';
 
-/** Browser documents are native links; desktop hosts retain their open action. */
+/** A left click with no modifier: the one activation the host handles itself. */
+function isPlainActivation(event: MouseEvent<HTMLElement>): boolean {
+  return event.button === 0 && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey;
+}
+
+/**
+ * Browser documents are real links; desktop hosts retain their open action.
+ *
+ * In the browser a plain click runs the host's open action, which navigates the
+ * current tab, while a modified click (cmd, ctrl, shift, middle) is left to the
+ * browser so a second tab opens the way it does in any web app. The link never
+ * carries `target="_blank"`: inside Nimbalyst's in-app browser every popup is
+ * forwarded to the system browser, so a forced new tab sent each document
+ * click out of the app.
+ */
 export function SharedDocumentLink({ href, onClick, onContextMenu, ...props }: Omit<ComponentProps<'a'>, 'href' | 'onClick' | 'onContextMenu'> & { href?: string | null; onClick?: MouseEventHandler<HTMLElement>; onContextMenu?: MouseEventHandler<HTMLElement> }) {
   if (href) {
-    const link = <a {...props} href={href} target="_blank" rel="noopener" onClick={(event) => event.stopPropagation()} />;
+    const link = (
+      <a
+        {...props}
+        href={href}
+        onClick={(event) => {
+          event.stopPropagation();
+          if (!isPlainActivation(event)) return;
+          event.preventDefault();
+          onClick?.(event);
+        }}
+      />
+    );
     if (!onContextMenu) return link;
     return <span className="shared-document-link-row relative block">
       {link}

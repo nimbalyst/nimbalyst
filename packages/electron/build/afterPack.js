@@ -9,6 +9,7 @@
 const path = require('path');
 const fs = require('fs');
 const { spawnSync } = require('child_process');
+const { relocateClaudeRuntime } = require('./claude-runtime.js');
 const { validatePackagedTutorialProject } = require('./validate-extra-resources.js');
 
 exports.default = async function(context) {
@@ -83,6 +84,8 @@ exports.default = async function(context) {
       console.log(`AfterPack: Pruned ${removedCount} non-target SDK platform packages from asar`);
     }
   }
+
+  relocateClaudeRuntime(resourcesDir, platformName, arch);
 
   pruneSqlitePrebuilds(resourcesDir, platformName, arch);
   pruneNodePtyPrebuilds(resourcesDir, platformName, arch);

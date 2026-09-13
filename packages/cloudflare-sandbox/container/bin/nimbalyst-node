@@ -1,0 +1,76 @@
+#!/bin/sh
+# Entry point for the Nimbalyst headless runner inside a Cloudflare Sandbox.
+#
+#   nimbalyst-node --config /var/lib/nimbalyst/nimbalyst-node.config.json \
+#                  --workspace /workspace/repo \
+#                  --prompt "..."
+#   nimbalyst-node --smoke      # self-check; run during the image build
+#
+# Two things it exists to guarantee:
+#
+#  1. The runner uses OUR Node (/opt/nimbalyst/node), never the base image's,
+#     which belongs to the sandbox control server's JS executors.
+#  2. It never runs as uid 0. Claude Code refuses permission bypass as root, and
+#     a headless turn has nobody to answer a prompt, so running as root turns
+#     every tool call into a hang. Exec commands arrive as root, so this drops
+#     to the unprivileged `nimbalyst` user itself rather than relying on the
+#     caller to remember.
+#
+# It passes no credentials and sets no provider environment variables. The
+# runner reads everything, credentials included, from its --config file.
+set -eu
+
+NODE_BIN=/opt/nimbalyst/node/bin/node
+APP_DIR=/opt/nimbalyst/app
+CLI="${APP_DIR}/packages/node/dist/bin/nimbalyst-node.js"
+SMOKE="${APP_DIR}/nimbalyst-smoke.mjs"
+RUN_USER=nimbalyst
+RUN_HOME=/home/nimbalyst
+
+target="${CLI}"
+if [ "${1:-}" = "--smoke" ]; then
+  target="${SMOKE}"
+  shift
+fi
+
+# HTTPS egress is intercepted by Cloudflare. Trust only its fixed runtime CA,
+# never a certificate path or TLS override inherited from the caller. Node's
+# extra CA is additive; curl/Git/OpenSSL need a complete bundle. Assemble a
+# process-local bundle without requiring another write to the system store.
+RUNTIME_CA=/etc/cloudflare/certs/cloudflare-containers-ca.crt
+if [ -r "${RUNTIME_CA}" ]; then
+  ca_bundle="$(mktemp /tmp/nimbalyst-ca.XXXXXX)"
+  cat /etc/ssl/certs/ca-certificates.crt "${RUNTIME_CA}" > "${ca_bundle}"
+  chmod 0644 "${ca_bundle}"
+  set -- NODE_EXTRA_CA_CERTS="${RUNTIME_CA}" SSL_CERT_FILE="${ca_bundle}" \
+    CURL_CA_BUNDLE="${ca_bundle}" REQUESTS_CA_BUNDLE="${ca_bundle}" GIT_SSL_CAINFO="${ca_bundle}" \
+    "${NODE_BIN}" "${target}" "$@"
+else
+  set -- "${NODE_BIN}" "${target}" "$@"
+fi
+
+if [ "$(id -u)" = "0" ]; then
+  # Also safe when invoked explicitly by an administrator outside normal startup.
+  # --bounding-set -all as well as the uid change: dropping to uid 10001 leaves
+  # the capability bounding set intact, so a setuid-root binary reached later
+  # could hand capabilities back to the tree that just gave up root.
+  exec setpriv --no-new-privs --bounding-set -all \
+    --reuid="${RUN_USER}" --regid="${RUN_USER}" --init-groups \
+    env -i HOME="${RUN_HOME}" PATH="/usr/local/bin:/usr/bin:/bin" LANG=C.UTF-8 \
+    "$@"
+fi
+
+# The ordinary path: the image sets USER 10001, so the runner is already
+# unprivileged and the branch above never fires. It still needs no_new_privs,
+# which is what stops a setuid binary from raising privilege later -- any
+# process may set it for itself, root or not, and it is inherited across exec.
+#
+# What is NOT done here, deliberately: the capability bounding set is left
+# alone. Emptying it needs CAP_SETPCAP, which uid 10001 does not have, so
+# attempting it would simply fail. The bounding set is only an escalation route
+# if a setuid-root binary exists to be executed, and the image strips the setuid
+# and setgid bits from every file during the build instead -- that removes the
+# target rather than the permission to reach it.
+exec setpriv --no-new-privs \
+  env -i HOME="${RUN_HOME}" PATH="/usr/local/bin:/usr/bin:/bin" LANG=C.UTF-8 \
+  "$@"

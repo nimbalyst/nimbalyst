@@ -35,6 +35,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { AntigravityServerManager } from '@nimbalyst/runtime/ai/server/providers/geminiAntigravity/AntigravityServerManager';
+import { scrubProviderApiKeys } from '@nimbalyst/runtime/ai/server/providerApiKeyScrub';
 
 export type HeadlessAgentId = 'grok-build' | 'cursor-agent' | 'antigravity-gemini-agent';
 
@@ -237,9 +238,7 @@ export function refreshHeadlessAgentAvailability(
   const enhancedPath = enhancedPathOverride ?? safeLoadEnhancedPath();
 
   inFlight = (async () => {
-    const env: NodeJS.ProcessEnv = enhancedPath
-      ? { ...process.env, PATH: enhancedPath }
-      : process.env;
+    const env = scrubProviderApiKeys({ ...process.env, ...(enhancedPath ? { PATH: enhancedPath } : {}) });
     const next: Partial<Record<HeadlessAgentId, HeadlessAgentAvailability>> = {};
 
     await Promise.all((Object.keys(PROBE_SPECS) as HeadlessAgentId[]).map(async (agent) => {

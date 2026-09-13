@@ -26,6 +26,8 @@
  */
 
 import * as fs from 'fs';
+import { randomUUID } from 'crypto';
+import { writeJsonAtomic } from './cutoverJournal';
 import * as path from 'path';
 import { SQLiteDatabase } from './SQLiteDatabase';
 import {
@@ -38,7 +40,8 @@ import {
 import { MigrationProgressReporter } from './MigrationProgressReporter';
 
 /** Filename for the manifest written into each dry-run dir on success. */
-export const DRY_RUN_MANIFEST_FILENAME = '.dry-run-manifest.json';
+export { DRY_RUN_MANIFEST_FILENAME } from './dryRunArtifact';
+import { DRY_RUN_MANIFEST_FILENAME } from './dryRunArtifact';
 
 /**
  * The minimum surface the dry-runner needs from the live PGLite worker.
@@ -54,6 +57,7 @@ export interface LivePgliteReader {
 }
 
 export interface DryRunOptions {
+  cancellation?: SharedArrayBuffer;
   /** User data dir. The dry-run SQLite directory is created under here. */
   userDataPath: string;
   /** Absolute path to the SQLite schema directory. */
@@ -92,31 +96,17 @@ export class MigrationDryRunner {
     const log = this.opts.log ?? (() => {});
     const reporter = this.opts.reporter;
 
-    // Clean up any previous dry-run directories. We only keep the latest one
-    // so the user can adopt it; older ones are stale (PGLite has moved on).
-    try {
-      for (const entry of fs.readdirSync(this.opts.userDataPath)) {
-        if (entry.startsWith('sqlite-db.dry-run-')) {
-          const stale = path.join(this.opts.userDataPath, entry);
-          try {
-            fs.rmSync(stale, { recursive: true, force: true });
-            log('info', '[dry-run] removed stale dry-run dir', { stale });
-          } catch {
-            // Best effort; we'll create the new one regardless.
-          }
-        }
-      }
-    } catch {
-      // userDataPath unreadable; ignore — fs.mkdirSync below will fail loudly.
-    }
-
     const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-    const dryRunDir = path.join(this.opts.userDataPath, `sqlite-db.dry-run-${stamp}`);
+    const dryRunDir = path.join(this.opts.userDataPath, `sqlite-db.dry-run-${stamp}-${randomUUID()}`);
     fs.mkdirSync(dryRunDir, { recursive: true });
 
     log('info', '[dry-run] starting', { dryRunDir });
 
-    const adapter = buildReadOnlyAdapter(this.opts.pglite, this.opts.pgliteTimeoutMs ?? 30_000);
+    const cancellation = this.opts.cancellation ? new Int32Array(this.opts.cancellation) : undefined;
+    const checkCancelled = () => {
+      if (cancellation && Atomics.load(cancellation, 0)) throw new Error('Dry run cancelled. The active database is unchanged.');
+    };
+    const adapter = buildReadOnlyAdapter(this.opts.pglite, this.opts.pgliteTimeoutMs ?? 30_000, checkCancelled);
     let sqlite: SQLiteDatabase | null = null;
     let summary: MigrationSummary | null = null;
 
@@ -141,28 +131,16 @@ export class MigrationDryRunner {
         log,
       });
 
+      checkCancelled();
       const sqliteFile = path.join(dryRunDir, 'nimbalyst.sqlite');
       const sqliteFileBytes = fs.existsSync(sqliteFile) ? fs.statSync(sqliteFile).size : 0;
       const pgliteDir = path.join(this.opts.userDataPath, 'pglite-db');
       const pgliteDirBytes = fs.existsSync(pgliteDir) ? dirSizeBytes(pgliteDir) : 0;
 
-      // Persist the manifest so a later "adopt" can do a cursor-based catch-up
-      // copy of rows PGLite has gained since the dry-run.
-      if (summary.manifest) {
-        try {
-          fs.writeFileSync(
-            path.join(dryRunDir, DRY_RUN_MANIFEST_FILENAME),
-            JSON.stringify(summary.manifest, null, 2),
-          );
-        } catch (manifestErr) {
-          log('warn', '[dry-run] failed to write manifest', {
-            err: (manifestErr as Error).message,
-          });
-        }
-      }
-
       await sqlite.close();
       sqlite = null;
+      // A completed manifest is published only after the database is closed.
+      if (summary.manifest) writeJsonAtomic(path.join(dryRunDir, DRY_RUN_MANIFEST_FILENAME), summary.manifest);
 
       reporter?.emitComplete(summary);
 
@@ -184,6 +162,17 @@ export class MigrationDryRunner {
             dryRunDir,
             err: (rmErr as Error).message,
           });
+        }
+      }
+
+      // Replace the last successful artifact only after the new copy closed
+      // and its manifest is durable. A cancelled retry keeps the old result.
+      if (summary.manifest && fs.existsSync(path.join(dryRunDir, DRY_RUN_MANIFEST_FILENAME))) {
+        for (const entry of fs.readdirSync(this.opts.userDataPath)) {
+          const stale = path.join(this.opts.userDataPath, entry);
+          if (entry.startsWith('sqlite-db.dry-run-') && stale !== dryRunDir) {
+            try { fs.rmSync(stale, { recursive: true, force: true }); } catch { /* best effort */ }
+          }
         }
       }
 
@@ -223,10 +212,14 @@ export class MigrationDryRunner {
 function buildReadOnlyAdapter(
   reader: LivePgliteReader,
   timeoutMs: number,
+  checkCancelled: () => void,
 ): PGLiteHandle {
   return {
     async query<T>(sql: string, params?: unknown[]): Promise<{ rows: T[] }> {
-      return reader.queryReadOnly<T>(sql, params, timeoutMs);
+      checkCancelled();
+      const result = await reader.queryReadOnly<T>(sql, params, timeoutMs);
+      checkCancelled();
+      return result;
     },
     async exec(_sql: string): Promise<unknown> {
       throw new Error('MigrationDryRunner adapter is read-only; exec() is not supported');

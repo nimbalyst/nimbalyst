@@ -750,6 +750,7 @@ interface ElectronAPI {
       priority: string;
       workspace: string;
       description?: string;
+      creationRequestId?: string;
       owner?: string;
       tags?: string[];
       customFields?: Record<string, any>;
@@ -758,7 +759,11 @@ interface ElectronAPI {
       content?: any;
       source?: string;
       sourceRef?: string;
-    }) => Promise<{ success: boolean; item?: any; error?: string }>;
+    }) => Promise<{ success: boolean; item?: any; error?: string; publication?: import("@nimbalyst/runtime/core/trackerCreation").TrackerCreationPublication }>;
+    publishTrackerCreation: (payload: { workspacePath: string; itemId: string }) => Promise<import('@nimbalyst/runtime/core/trackerCreation').TrackerCreationPublication>;
+    getTrackerCreationStatus: (payload: { workspacePath: string; itemId: string }) => Promise<import('@nimbalyst/runtime/core/trackerCreation').TrackerCreationPublication | null>;
+    listPendingTrackerCreations: (workspacePath: string) => Promise<string[]>;
+    stageTrackerImage: (payload: { workspacePath: string; bytes: ArrayBuffer; mimeType: string }) => Promise<{ relativePath: string }>;
     updateTrackerItem: (payload: {
       itemId: string;
       updates: Record<string, any>;

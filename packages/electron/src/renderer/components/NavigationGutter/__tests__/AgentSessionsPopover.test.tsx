@@ -14,14 +14,13 @@ import {
 import { settingAtom } from '../../../store/atoms/settingAtomFamily';
 import { AgentSessionsPopover } from '../AgentSessionsPopover';
 
-vi.mock('@nimbalyst/runtime', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@nimbalyst/runtime')>();
-  return {
-    ...actual,
-    MaterialSymbol: ({ icon }: { icon: string }) => <span>{icon}</span>,
-    ProviderIcon: ({ provider }: { provider: string }) => <span>{provider}</span>,
-  };
-});
+vi.mock('@nimbalyst/runtime/ui/icons/MaterialSymbol', () => ({
+  MaterialSymbol: ({ icon }: { icon: string }) => <span>{icon}</span>,
+}));
+vi.mock('@nimbalyst/runtime/ui/icons/ProviderIcons', () => ({
+  ProviderIcon: ({ provider }: { provider: string }) => <span>{provider}</span>,
+  resolveProviderIcon: (provider: string) => provider,
+}));
 
 vi.mock('../../AgenticCoding/SessionListItem', () => ({
   SessionStatusIndicator: ({ sessionId }: { sessionId: string }) => <span data-testid={`status-${sessionId}`} />,

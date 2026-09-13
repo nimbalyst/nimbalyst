@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
 /**
@@ -13,7 +14,7 @@ const mocks = vi.hoisted(() => {
     existsSync: vi.fn(() => true),
     statSync: vi.fn(() => ({ isDirectory: () => true })),
     resolveClaudeCodeExecutablePath: vi.fn(() => '/bundled/claude'),
-    setupClaudeCodeEnvironment: vi.fn(() => ({ PATH: '/fake/path' })),
+    setupClaudeCodeEnvironment: vi.fn(() => ({ PATH: '/fake/path', DISABLE_AUTOUPDATER: '1', DISABLE_UPDATES: '1' })),
     sendEvent: vi.fn(),
   };
 });
@@ -87,6 +88,17 @@ describe('claude-code:login opens the terminal in the project folder', () => {
 
   afterEach(() => {
     setPlatform(originalPlatform);
+  });
+
+  it.each(['win32', 'linux', 'darwin'] as const)('#1476: login and logout protect the managed executable on %s', async (platform) => {
+    setPlatform(platform);
+    for (const action of ['login', 'logout']) {
+      mocks.spawn.mockClear();
+      await mocks.handlers.get(`claude-code:${action}`)!({}, '/project');
+      const [, args, options] = firstSpawnCall();
+      expect(options.env).toMatchObject({ PATH: '/fake/path', DISABLE_AUTOUPDATER: '1', DISABLE_UPDATES: '1' });
+      if (platform === 'darwin') expect(args[1]).toContain('env DISABLE_AUTOUPDATER=1 DISABLE_UPDATES=1');
+    }
   });
 
   it('darwin: injects a cd into the project folder before launching the CLI', async () => {

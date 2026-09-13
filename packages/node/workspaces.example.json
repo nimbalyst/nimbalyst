@@ -1,0 +1,10 @@
+{
+  "workspaces": [
+    {
+      "projectId": "/Users/someone/sources/stravu-editor",
+      "repoUrl": "https://github.com/nimbalyst/nimbalyst.git",
+      "branch": "main",
+      "checkoutDir": "/workspace/stravu-editor"
+    }
+  ]
+}

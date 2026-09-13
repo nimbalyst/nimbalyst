@@ -15,6 +15,8 @@ import { store } from '@nimbalyst/runtime/store';
 import type { ContentMode } from '../../types/WindowModeTypes';
 import { DocumentModelRegistry } from '../../services/document-model/DocumentModelRegistry';
 import { FEATURE_USAGE_KEYS } from '../../../shared/featureUsage';
+import { dismissExtensionPanelsAtom } from './extensionPanels';
+import { activeWorkspacePathAtom } from './openProjects';
 
 // Re-export ContentMode for convenience (TODO: rename type to WindowMode)
 export type { ContentMode };
@@ -71,6 +73,9 @@ export const setWindowModeAtom = atom(
   null,
   (get, set, mode: ContentMode) => {
     const previousMode = get(windowModeAtom);
+    // Explicit navigation must reveal its destination even if the underlying
+    // mode is unchanged. Hydration writes windowModeAtom directly instead.
+    set(dismissExtensionPanelsAtom);
     set(windowModeAtom, mode);
 
     // Flush dirty editors on any mode switch.
@@ -88,7 +93,7 @@ export const setWindowModeAtom = atom(
       }
     }
 
-    const workspacePath = get(windowModeWorkspaceAtom);
+    const workspacePath = get(activeWorkspacePathAtom) ?? get(windowModeWorkspaceAtom);
     if (workspacePath) {
       initializedModes.set(workspacePath, mode);
       schedulePersist(workspacePath, mode);
@@ -133,9 +138,11 @@ export async function initWindowMode(workspacePath: string): Promise<void> {
       );
 
       const validModes: ContentMode[] = ['files', 'agent', 'tracker', 'collab', 'org', 'pr-review', 'settings'];
-      const restoredMode = validModes.includes(workspaceState?.activeMode)
+      const savedMode = validModes.includes(workspaceState?.activeMode)
         ? workspaceState.activeMode as ContentMode
         : 'files';
+      // A deep link may have selected a mode while the saved state was loading.
+      const restoredMode = initializedModes.get(workspacePath) ?? savedMode;
       initializedModes.set(workspacePath, restoredMode);
 
       // Only the workspace that is still active may publish into the global

@@ -79,6 +79,7 @@ describe('PGLiteQueuedPromptsStore.sweepExecutingOnBoot', () => {
     const calls: { sql: string; params?: any[] }[] = [];
     const db: DbStub = {
       query: (async (sql: string, params?: any[]) => {
+        if (sql.includes("inboxDelivery' IS NOT NULL")) return { rows: [] };
         calls.push({ sql, params });
         // Pass 1: completed-update returns rows with delivery AND output evidence
         if (sql.includes("SET status = 'completed'")) {
@@ -143,6 +144,7 @@ describe('PGLiteQueuedPromptsStore.sweepExecutingOnBoot', () => {
     const calls: { sql: string; params?: any[] }[] = [];
     const db: DbStub = {
       query: (async (sql: string, params?: any[]) => {
+        if (sql.includes("inboxDelivery' IS NOT NULL")) return { rows: [] };
         calls.push({ sql, params });
         if (sql.includes("SET status = 'completed'")) {
           return { rows: [] };
@@ -250,6 +252,7 @@ describe('PGLiteQueuedPromptsStore.sweepExecutingForSession', () => {
     const calls: { sql: string; params?: any[] }[] = [];
     const db: DbStub = {
       query: (async (sql: string, params?: any[]) => {
+        if (sql.includes("inboxDelivery' IS NOT NULL")) return { rows: [] };
         calls.push({ sql, params });
         if (sql.includes("SET status = 'completed'")) {
           return { rows: [{ id: 'answered-1' }] };

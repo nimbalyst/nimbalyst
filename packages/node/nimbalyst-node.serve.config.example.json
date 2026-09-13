@@ -1,0 +1,14 @@
+{
+  "databasePath": "./nimbalyst.sqlite",
+  "trust": { "mode": "bypass-all" },
+  "sync": {
+    "serverUrl": "https://sync.nimbalyst.com",
+    "credentialPath": "./node-credential.json",
+    "encryptionKeySeed": "<base64, 32 bytes>",
+    "personalOrgId": "organization-...",
+    "personalUserId": "member-...",
+    "deviceId": "sandbox-<deploymentId>",
+    "deviceName": "Cloudflare sandbox"
+  },
+  "workspacesPath": "./workspaces.json"
+}

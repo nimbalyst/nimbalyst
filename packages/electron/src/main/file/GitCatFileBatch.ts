@@ -187,6 +187,7 @@ export class GitCatFileBatch {
 
     if (header.endsWith(' missing')) {
       this.queue.shift()?.resolve(null);
+      if (this.queue.length === 0) this.touchIdleTimer();
       return true;
     }
 
@@ -224,6 +225,9 @@ export class GitCatFileBatch {
     this.awaitingBody = null;
     const pending = this.queue.shift();
     if (!pending) return true;
+    // A slow read may outlive the timer set when it was enqueued. Start the
+    // idle interval when the last response drains, including oversized bodies.
+    if (this.queue.length === 0) this.touchIdleTimer();
 
     if (body.discard) {
       pending.resolve(null);

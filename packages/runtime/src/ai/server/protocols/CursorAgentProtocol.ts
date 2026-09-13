@@ -127,7 +127,7 @@ export class CursorAgentProtocol implements AgentProtocol {
       }
     } catch (error) {
       if (message.abortSignal?.aborted) return;
-      yield { type: 'error', error: describeCursorFailure(error) };
+      yield { type: 'error', error: describeCursorFailure(error, this.cursorPath) };
       return;
     }
 
@@ -151,7 +151,7 @@ export class CursorAgentProtocol implements AgentProtocol {
   ): string[] {
     const args = [
       '--resume', session.id,
-      '-p', message.content,
+      '-p',
       '--output-format', 'stream-json',
     ];
     // Stored model ids are namespaced (`cursor-agent:auto`); the CLI wants the
@@ -163,6 +163,8 @@ export class CursorAgentProtocol implements AgentProtocol {
     // `--trust` avoids a workspace prompt no one can answer headlessly.
     // Nimbalyst gates the turn up front instead; the settings panel says so.
     args.push('--force', '--trust');
+    // The prompt is positional; leading dashes must never become CLI options.
+    args.push('--', message.content);
     return args;
   }
 }
@@ -201,7 +203,7 @@ async function defaultCreateChat(opts: {
   });
 }
 
-function describeCursorFailure(error: unknown): string {
+function describeCursorFailure(error: unknown, executablePath: string): string {
   if (error instanceof HeadlessNdjsonExitError) {
     const stderr = error.stderr.toLowerCase();
     if (/not logged in|unauthorized|authentication/.test(stderr)) {
@@ -210,10 +212,16 @@ function describeCursorFailure(error: unknown): string {
     return error.message;
   }
   const messageText = error instanceof Error ? error.message : String(error);
-  if (/ENOENT|spawn/i.test(messageText)) {
+  if (['E2BIG', 'ENAMETOOLONG'].includes((error as NodeJS.ErrnoException)?.code ?? '') || /\b(?:E2BIG|ENAMETOOLONG)\b/i.test(messageText)) {
+    return 'Cursor prompt was too large to start the CLI. Shorten the prompt or reduce the attached document context and try again.';
+  }
+  if ((error as NodeJS.ErrnoException)?.code === 'ENOENT' || /\bENOENT\b/i.test(messageText)) {
     return 'The Cursor CLI was not found. Install it with:\n\n'
       + '  curl -fsSL https://cursor.com/install | bash\n\n'
       + 'Then run `cursor-agent login` to authenticate.';
+  }
+  if (['EACCES', 'EPERM'].includes((error as NodeJS.ErrnoException)?.code ?? '') || /\b(?:EACCES|EPERM)\b/i.test(messageText)) {
+    return `The Cursor CLI was found at "${executablePath}" but is not executable. Check its execution permissions or reinstall the CLI, then try again.`;
   }
   return messageText;
 }

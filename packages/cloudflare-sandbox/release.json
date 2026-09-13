@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "sdkVersion": "0.13.0-next.751.1",
+  "image": "docker.io/nimbalyst/sandbox-node@sha256:397f91761fa7ea963fc79689ed143758f9ad57238c809acfc5d75806d2f83ff7",
+  "publishedImage": {
+    "image": "docker.io/nimbalyst/sandbox-node@sha256:397f91761fa7ea963fc79689ed143758f9ad57238c809acfc5d75806d2f83ff7",
+    "sdkVersion": "0.13.0-next.751.1",
+    "baseImageDigest": "sha256:712d12b2bd6f91ae66d83cebd9f7a0bfa684ae3e3100299c315d20d2ce38b8b1"
+  }
+}

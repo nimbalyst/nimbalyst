@@ -2,161 +2,29 @@ import SwiftUI
 import Combine
 import GRDB
 
-// MARK: - Time Period Grouping
-
-enum TimePeriod: String, CaseIterable {
-    case today = "Today"
-    case yesterday = "Yesterday"
-    case thisWeek = "This Week"
-    case lastWeek = "Last Week"
-    case thisMonth = "This Month"
-    case older = "Older"
-
-    static func classify(epochMs: Int) -> TimePeriod {
-        let date = Date(timeIntervalSince1970: Double(epochMs) / 1000)
-        let calendar = Calendar.current
-        let now = Date()
-
-        if calendar.isDateInToday(date) {
-            return .today
-        } else if calendar.isDateInYesterday(date) {
-            return .yesterday
-        } else {
-            let startOfWeek = calendar.dateInterval(of: .weekOfYear, for: now)?.start ?? now
-            let startOfLastWeek = calendar.date(byAdding: .weekOfYear, value: -1, to: startOfWeek) ?? now
-            let startOfMonth = calendar.dateInterval(of: .month, for: now)?.start ?? now
-
-            if date >= startOfWeek {
-                return .thisWeek
-            } else if date >= startOfLastWeek {
-                return .lastWeek
-            } else if date >= startOfMonth {
-                return .thisMonth
-            } else {
-                return .older
-            }
-        }
-    }
-}
-
-/// A unified item in the session list: either a standalone session or a workstream/worktree group.
-enum SessionListItem: Identifiable {
-    case session(Session)
-    case group(WorkstreamGroup)
-
-    var id: String {
-        switch self {
-        case .session(let s): return s.id
-        case .group(let g): return "group-\(g.parent.id)"
-        }
-    }
-
-    var effectiveUpdatedAt: Int {
-        switch self {
-        case .session(let s): return s.updatedAt
-        case .group(let g): return g.latestUpdate
-        }
-    }
-}
-
-struct GroupedSessionItems: Identifiable {
-    let period: TimePeriod
-    let items: [SessionListItem]
-    var id: String { period.rawValue }
-}
-
-// MARK: - Workstream Group Model
-
-struct WorkstreamGroup: Identifiable {
-    let parent: Session
-    let children: [Session]
-    /// Whether this group represents a git worktree (vs a workstream).
-    let isWorktree: Bool
-    var id: String { parent.id }
-
-    /// Most recent update across all children (or parent if no children).
-    var latestUpdate: Int {
-        children.map(\.updatedAt).max() ?? parent.updatedAt
-    }
-}
-
-// MARK: - Aggregated Status
-
-enum AggregatedStatus {
-    case waitingForInput  // hasPendingPrompt + isExecuting
-    case processing       // isExecuting
-    case pendingPrompt    // hasQueuedPrompts
-    case unread           // hasUnread
-    case idle
-}
-
-func computeAggregatedStatus(_ children: [Session]) -> AggregatedStatus {
-    if children.contains(where: { $0.hasQueuedPrompts && $0.isExecuting }) {
-        return .waitingForInput
-    }
-    if children.contains(where: { $0.isExecuting }) {
-        return .processing
-    }
-    if children.contains(where: { $0.hasQueuedPrompts }) {
-        return .pendingPrompt
-    }
-    if children.contains(where: { $0.hasUnread }) {
-        return .unread
-    }
-    return .idle
-}
-
-// MARK: - Phase Filter
-
-enum PhaseFilter: String, CaseIterable {
-    case all = "All"
-    case active = "Active"
-    case planning = "Planning"
-    case complete = "Done"
-
-    /// Whether a session matches this filter.
-    func matches(_ session: Session) -> Bool {
-        switch self {
-        case .all: return true
-        case .active: return session.phase == "implementing" || session.phase == "validating"
-        case .planning: return session.phase == "planning" || session.phase == "backlog"
-        case .complete: return session.phase == "complete"
-        }
-    }
-
-    /// Whether a workstream group matches (any child matches, or the group has no phase info).
-    func matchesGroup(_ group: WorkstreamGroup) -> Bool {
-        if self == .all { return true }
-        // Show workstream if any child matches the filter
-        return group.children.contains { matches($0) }
-    }
-}
-
-// MARK: - Project Tab
-
-enum ProjectTab: String, CaseIterable {
-    case sessions = "Sessions"
-    case files = "Files"
-}
-
 /// Displays sessions for a given project with status badges, pull-to-refresh,
-/// search, hierarchical workstream grouping, and reactive GRDB observation.
+/// search, hierarchical grouping, and reactive GRDB observation.
+///
+/// The list renders a bounded window: filtering, hierarchy grouping and aggregate
+/// status all run in SQL (`SessionListQueries.swift`), and `SessionListWindowModel`
+/// holds at most a few hundred projected rows regardless of how much history the
+/// account has retained. Row views live in `SessionListRows.swift`.
 public struct SessionListView: View {
     @EnvironmentObject var appState: AppState
     public let project: Project
+    public let hostDeviceId: String?
     @Binding private var selection: WorkspaceSelection?
 
-    @State private var sessions: [Session] = []
-    @State private var cancellable: AnyDatabaseCancellable?
-    @State private var observationState: IndexLoadState = .loading
-    @State private var expandedWorkstreams: Set<String> = []
-    /// Meta-agent groups that are COLLAPSED. Stored as the inverse of expansion so the
-    /// default state is expanded, mirroring desktop (see `MetaAgentExpansion`).
+    @StateObject private var model = SessionListWindowModel()
+    /// Workstream/worktree groups the user has opened (default collapsed).
+    @State private var expandedGroupKeys: Set<String> = []
+    /// Meta-agent groups the user has closed (default expanded, mirroring desktop).
     @State private var collapsedMetaAgents: Set<String> = []
     @State private var selectedTab: ProjectTab = .sessions
 
-    public init(project: Project, selection: Binding<WorkspaceSelection?>) {
+    public init(project: Project, selection: Binding<WorkspaceSelection?>, hostDeviceId: String? = nil) {
         self.project = project
+        self.hostDeviceId = hostDeviceId
         _selection = selection
     }
 
@@ -168,6 +36,20 @@ public struct SessionListView: View {
     @State private var showModelPicker = false
     /// Desktop-controlled alpha gate for the Meta Agent UI, synced via SyncedSettings.
     @State private var metaAgentEnabled = FeaturePreferences.metaAgentEnabled
+    /// Cached results remain usable while replication establishes full coverage.
+    @State private var coverage = IndexCoverage()
+
+    private var historyComplete: Bool { coverage.historyComplete }
+
+    private var historyCoverage: AnyPublisher<IndexCoverage, Never> {
+        appState.syncManager?.$indexCoverage
+            .removeDuplicates {
+                $0.historyComplete == $1.historyComplete && $0.hasError == $1.hasError
+                    && $0.compatibility == $1.compatibility
+            }
+            .eraseToAnyPublisher()
+        ?? Just(IndexCoverage(historyComplete: appState.screenshotMode)).eraseToAnyPublisher()
+    }
 
     private var voiceFocusedSessionId: String? {
         #if os(iOS)
@@ -178,157 +60,22 @@ public struct SessionListView: View {
         #endif
     }
 
-    private var filteredSessions: [Session] {
-        var result = sessions
-
-        // Filter archived sessions unless showArchived is enabled
-        if !showArchived {
-            result = result.filter { !$0.isArchived }
-        }
-
-        if !searchText.isEmpty {
-            result = result.filter { session in
-                session.titleDecrypted?.localizedCaseInsensitiveContains(searchText) == true
-            }
-        }
-
-        // Phase filter applies to standalone sessions only (workstream groups filter their children)
-        // but we keep all sessions here and apply group-level filtering in the computed properties
-
-        return result
+    /// Everything the window query filters on. Any change to this restarts the
+    /// observation, so it is deliberately the only input the query depends on.
+    private var filter: SessionListFilter {
+        SessionListFilter(
+            projectId: project.id,
+            includeArchived: showArchived,
+            searchText: searchText.isEmpty ? nil : searchText,
+            phase: phaseFilter,
+            metaAgentEnabled: metaAgentEnabled,
+            hostDeviceId: hostDeviceId
+        )
     }
 
-    /// Whether any sessions are archived (controls visibility of the archive toggle).
-    private var hasArchivedSessions: Bool {
-        sessions.contains { $0.isArchived }
-    }
-
-    /// Whether any sessions have phase data (controls visibility of the filter picker).
-    private var hasPhaseData: Bool {
-        sessions.contains { $0.phase != nil && !($0.phase?.isEmpty ?? true) }
-    }
-
-    // MARK: - Hierarchy Computation
-
-    /// Meta-agent grouping (gated on the desktop alpha flag). When disabled, returns
-    /// empty so the list behaves exactly as before. Mirrors `SessionHistory.tsx`.
-    private var metaAgentGrouping: MetaAgentGrouping {
-        MetaAgentGrouper.group(sessions: filteredSessions, enabled: metaAgentEnabled)
-    }
-
-    /// Sessions excluding any that belong to a meta-agent group, so meta sessions and
-    /// their children don't ALSO render as flat / workstream / worktree rows.
-    private var sessionsForStandardGrouping: [Session] {
-        let metaIds = metaAgentGrouping.groupedSessionIds
-        guard !metaIds.isEmpty else { return filteredSessions }
-        return filteredSessions.filter { !metaIds.contains($0.id) }
-    }
-
-    /// Workstream and worktree parent sessions with their children, sorted by most recent activity.
-    private var workstreamGroups: [WorkstreamGroup] {
-        // Operate on sessions that aren't already claimed by a meta-agent group.
-        let base = sessionsForStandardGrouping
-
-        // 1. Workstream groups (sessionType == "workstream" with parentSessionId children)
-        let parentIds = Set(base.filter { $0.sessionType == "workstream" }.map(\.id))
-        let childrenByParent = Dictionary(grouping: base.filter { session in
-            if let pid = session.parentSessionId, parentIds.contains(pid) {
-                return true
-            }
-            return false
-        }) { $0.parentSessionId! }
-
-        var groups = base
-            .filter { $0.sessionType == "workstream" }
-            .map { parent in
-                let children = (childrenByParent[parent.id] ?? [])
-                    .sorted { $0.updatedAt > $1.updatedAt }
-                return WorkstreamGroup(parent: parent, children: children, isWorktree: false)
-            }
-
-        // 2. Worktree groups (sessions with a worktreeId, not already in a workstream)
-        // Even a single session with a worktreeId forms a worktree group (matching desktop behavior)
-        let workstreamMemberIds = Set(parentIds.union(childrenByParent.values.flatMap { $0.map(\.id) }))
-        let worktreeSessions = base.filter { session in
-            session.worktreeId != nil && !workstreamMemberIds.contains(session.id)
-        }
-        let sessionsByWorktree = Dictionary(grouping: worktreeSessions) { $0.worktreeId! }
-        for (_, sessions) in sessionsByWorktree {
-            let sorted = sessions.sorted { $0.createdAt < $1.createdAt }
-            guard let parent = sorted.first else { continue }
-            if sorted.count == 1 {
-                // Single-session worktree: renders as direct NavigationLink
-                groups.append(WorkstreamGroup(parent: parent, children: [], isWorktree: true))
-            } else {
-                // Multi-session worktree: ALL sessions are children (parent is just for group identity/header)
-                let children = sorted.sorted { $0.updatedAt > $1.updatedAt }
-                groups.append(WorkstreamGroup(parent: parent, children: children, isWorktree: true))
-            }
-        }
-
-        groups.sort { $0.latestUpdate > $1.latestUpdate }
-
-        // Apply phase filter: only show groups that have matching children
-        if phaseFilter == .all { return groups }
-        return groups.filter { phaseFilter.matchesGroup($0) }
-    }
-
-    /// IDs of all sessions that belong to a workstream or worktree group.
-    private var groupedSessionIds: Set<String> {
-        var ids = Set<String>()
-        for group in workstreamGroups {
-            ids.insert(group.parent.id)
-            for child in group.children {
-                ids.insert(child.id)
-            }
-        }
-        return ids
-    }
-
-    /// Sessions that are standalone: not in any workstream, worktree, or meta-agent group.
-    private var standaloneSessions: [Session] {
-        let grouped = groupedSessionIds
-        // `sessionsForStandardGrouping` already drops meta-agent sessions and their
-        // children, so they never fall through to the flat/time-grouped list.
-        return sessionsForStandardGrouping.filter { session in
-            // Exclude sessions in groups
-            if grouped.contains(session.id) { return false }
-            // Exclude workstream parents (shouldn't happen, but safety)
-            if session.sessionType == "workstream" { return false }
-            // Apply phase filter
-            if phaseFilter != .all && !phaseFilter.matches(session) { return false }
-            return true
-        }
-    }
-
-    /// All items (standalone sessions + workstream/worktree groups) interleaved by time period.
-    private var allItemsGroupedByPeriod: [GroupedSessionItems] {
-        var items: [SessionListItem] = []
-
-        // Add standalone sessions
-        for session in standaloneSessions {
-            items.append(.session(session))
-        }
-
-        // Add workstream/worktree groups
-        for group in workstreamGroups {
-            items.append(.group(group))
-        }
-
-        // Group by time period, sorted by most recent within each period
-        let byPeriod = Dictionary(grouping: items) { item in
-            TimePeriod.classify(epochMs: item.effectiveUpdatedAt)
-        }
-        return TimePeriod.allCases.compactMap { period in
-            guard let periodItems = byPeriod[period], !periodItems.isEmpty else { return nil }
-            let sorted = periodItems.sorted { $0.effectiveUpdatedAt > $1.effectiveUpdatedAt }
-            return GroupedSessionItems(period: period, items: sorted)
-        }
-    }
-
-    /// All workstream parents for context menu "Move to Workstream" submenu.
-    private var workstreamParents: [Session] {
-        filteredSessions.filter { $0.sessionType == "workstream" }
+    private var selectedSessionId: String? {
+        if case .session(let id) = selection { return id }
+        return nil
     }
 
     public var body: some View {
@@ -359,30 +106,7 @@ public struct SessionListView: View {
         .onChange(of: selectedTab) { _, _ in
             selection = nil
         }
-        .toolbar {
-            ToolbarItem(placement: .primaryAction) {
-                HStack(spacing: 12) {
-                    #if os(iOS)
-                    if let voice = appState.voiceAgent, voice.state != .disconnected {
-                        VoiceStatusPill(state: voice.state)
-                    }
-                    #endif
-                    if selectedTab == .sessions && hasArchivedSessions {
-                        Button {
-                            withAnimation { showArchived.toggle() }
-                        } label: {
-                            Image(systemName: showArchived ? "archivebox.fill" : "archivebox")
-                                .font(.system(size: 14))
-                                .foregroundStyle(showArchived ? NimbalystColors.primary : .secondary)
-                        }
-                    }
-                    connectionIndicator
-                    if selectedTab == .sessions {
-                        creationMenu
-                    }
-                }
-            }
-        }
+        .toolbar { toolbarContent }
         .sheet(isPresented: $showModelPicker) {
             ModelPickerView(
                 models: appState.availableModels,
@@ -393,26 +117,36 @@ public struct SessionListView: View {
         }
         .onAppear {
             loadExpandedState()
-            loadMetaAgentExpansionState()
             metaAgentEnabled = FeaturePreferences.metaAgentEnabled
             appState.configureVoiceAgent(forProject: project.id)
             resolveDefaultModel()
         }
         .task(id: appState.databaseManager.map(ObjectIdentifier.init)) {
-            sessions = []
-            startObserving()
+            model.setPersistedExpansion(expandedKeys: expandedGroupKeys, collapsedKeys: collapsedMetaAgentKeys)
+            model.start(database: appState.databaseManager, filter: filter)
+            model.setFocus(sessionId: selectedSessionId)
+            model.isHistoryComplete = historyComplete
+        }
+        .onChange(of: historyComplete) { _, complete in
+            model.isHistoryComplete = complete
+        }
+        .onReceive(historyCoverage) { coverage = $0 }
+        .onChange(of: filter) { _, newFilter in
+            model.setFilter(newFilter)
+        }
+        .onChange(of: selectedSessionId) { _, newValue in
+            model.setFocus(sessionId: newValue)
         }
         .onChange(of: appState.availableModels) { _, _ in
             resolveDefaultModel()
         }
         .onChange(of: project.id) { _, _ in
-            cancellable?.cancel()
-            startObserving()
             loadExpandedState()
-            loadMetaAgentExpansionState()
+            model.setPersistedExpansion(expandedKeys: expandedGroupKeys, collapsedKeys: collapsedMetaAgentKeys)
+            model.start(database: appState.databaseManager, filter: filter)
         }
         .onDisappear {
-            cancellable?.cancel()
+            model.stop()
         }
         // Refresh the meta-agent gate at the root so a desktop flip is caught even when the
         // user is on a non-Sessions tab. The creation menu's listener is only mounted while
@@ -422,12 +156,42 @@ public struct SessionListView: View {
         }
     }
 
+    @ToolbarContentBuilder
+    private var toolbarContent: some ToolbarContent {
+        ToolbarItem(placement: .primaryAction) {
+            HStack(spacing: 12) {
+                #if os(iOS)
+                if let voice = appState.voiceAgent, voice.state != .disconnected {
+                    VoiceStatusPill(state: voice.state)
+                }
+                #endif
+                if selectedTab == .sessions && model.facets.hasArchived {
+                    archiveToggle
+                }
+                connectionIndicator
+                if selectedTab == .sessions {
+                    creationMenu
+                }
+            }
+        }
+    }
+
+    private var archiveToggle: some View {
+        Button {
+            withAnimation { showArchived.toggle() }
+        } label: {
+            Image(systemName: showArchived ? "archivebox.fill" : "archivebox")
+                .font(.system(size: 14))
+                .foregroundStyle(showArchived ? NimbalystColors.primary : .secondary)
+        }
+    }
+
     // MARK: - Session List Content
 
     @ViewBuilder
     private var sessionListRows: some View {
         // Phase filter - only show when sessions have phase data
-        if hasPhaseData {
+        if model.facets.hasPhaseData {
             Picker("Filter", selection: $phaseFilter) {
                 ForEach(PhaseFilter.allCases, id: \.self) { filter in
                     Text(filter.rawValue).tag(filter)
@@ -438,86 +202,138 @@ public struct SessionListView: View {
             .listRowInsets(EdgeInsets(top: 4, leading: 16, bottom: 4, trailing: 16))
         }
 
+        // Scrolling back up past the window's head re-attaches the page that was
+        // dropped, so trimming is invisible rather than a dead end at the top.
+        if model.canLoadPrevious {
+            pageLoaderRow { model.loadPreviousPage() }
+        }
+
         // Meta-agent groups always render first, in their own section (mirrors desktop,
         // which places the "Meta Agent" group at the very top). Gated on the alpha flag.
-        if metaAgentEnabled && !metaAgentGrouping.groups.isEmpty {
+        if metaAgentEnabled && !model.metaAgentItems.isEmpty {
             Section("Meta Agent") {
-                ForEach(metaAgentGrouping.groups) { group in
-                    metaAgentGroupView(group)
+                ForEach(model.metaAgentItems) { item in
+                    metaAgentGroupView(item)
                 }
             }
         }
 
         // All items interleaved by time period
-        ForEach(allItemsGroupedByPeriod) { periodGroup in
+        ForEach(model.sections) { periodGroup in
             Section(periodGroup.period.rawValue) {
                 ForEach(periodGroup.items) { item in
                     sessionListItemView(item)
                 }
             }
         }
-    }
 
-    // MARK: - Meta Agent Group View
-
-    @ViewBuilder
-    private func metaAgentGroupView(_ group: MetaAgentGroup) -> some View {
-        // The group context menu is passed INTO the view so it can be attached to the
-        // header row only. `MetaAgentGroupView` now emits the header and each child as
-        // separate List rows, so a call-site `.contextMenu` would leak onto the children.
-        MetaAgentGroupView(
-            group: group,
-            isExpanded: Binding(
-                get: { !collapsedMetaAgents.contains(group.id) },
-                set: { newValue in setMetaAgentExpanded(newValue, for: group.id) }
-            ),
-            voiceFocusedSessionId: voiceFocusedSessionId,
-            headerContextMenu: { metaAgentGroupContextMenu(for: group) }
-        )
-    }
-
-    // MARK: - Context Menu for Meta Agent Groups
-
-    @ViewBuilder
-    private func metaAgentGroupContextMenu(for group: MetaAgentGroup) -> some View {
-        Button {
-            archiveMetaAgentGroup(group, archive: !group.metaSession.isArchived)
-        } label: {
-            Label(
-                group.metaSession.isArchived ? "Unarchive Group" : "Archive Group",
-                systemImage: group.metaSession.isArchived ? "arrow.uturn.backward" : "archivebox"
-            )
+        if model.hasMore || model.exceptionsHaveMore {
+            pageLoaderRow {
+                model.loadNextPage(anchorId: model.sections.last?.items.last?.id)
+                // The running/queued/pinned lane pages alongside the timeline it is
+                // merged into, so an overflowing lane is reachable by scrolling rather
+                // than silently capped.
+                model.loadMoreExceptions()
+            }
         }
 
-        Button(role: .destructive) {
-            deleteMetaAgentGroup(group)
-        } label: {
-            Label("Delete Group", systemImage: "trash")
+        if isSearching && !model.isHistoryComplete && !model.isEmpty {
+            searchCoverageRow
         }
+    }
+
+    private var isSearching: Bool { !searchText.isEmpty }
+
+    /// Cached results are shown immediately, but until sync coverage is known complete
+    /// they cannot be presented as the whole answer -- including when they are empty.
+    private var searchCoverageRow: some View {
+        HStack(spacing: 6) {
+            if coverage.hasError || appState.indexLoadState == .failed {
+                Image(systemName: "exclamationmark.arrow.trianglehead.2.clockwise.rotate.90")
+            } else if coverage.compatibility != .legacyServer {
+                ProgressView().controlSize(.small)
+            }
+            Text(incompleteHistoryDescription)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .listRowSeparator(.hidden)
+    }
+
+    /// Pulls an adjacent page into the window as it scrolls into view.
+    private func pageLoaderRow(_ load: @escaping () -> Void) -> some View {
+        HStack {
+            Spacer()
+            ProgressView().controlSize(.small)
+            Spacer()
+        }
+        .listRowSeparator(.hidden)
+        .onAppear(perform: load)
     }
 
     private var sessionListContent: some View {
-        Group {
+        ScrollViewReader { proxy in
             List(selection: $selection) {
                 sessionListRows
             }
             .listStyle(.plain)
+            // Holding the reader's place when the window trims its head is the only
+            // reason a page leaving memory is invisible.
+            .onChange(of: model.scrollAnchor) { _, anchor in
+                guard let anchor else { return }
+                proxy.scrollTo(anchor, anchor: .top)
+                model.clearScrollAnchor()
+            }
         }
         .searchable(text: $searchText, prompt: "Search sessions")
         .refreshable {
-            startObserving()
+            model.refresh()
             appState.requestSync()
             try? await Task.sleep(nanoseconds: 500_000_000)
         }
         .overlay {
-            if sessions.isEmpty {
+            if model.isEmpty && !historyComplete && (coverage.hasError || appState.indexLoadState == .failed || coverage.compatibility == .legacyServer) && model.state == .loaded {
+                VStack(spacing: 12) {
+                    Image(systemName: coverage.hasError || appState.indexLoadState == .failed ? "exclamationmark.arrow.trianglehead.2.clockwise.rotate.90" : "clock.arrow.circlepath").font(.largeTitle)
+                    Text("History may be incomplete")
+                    Text(incompleteHistoryDescription).font(.caption)
+                }
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .padding()
+            } else if model.isEmpty {
+                // An empty list during history fill is still loading. An empty
+                // search result is not: the placeholder's own copy says the search
+                // is still being checked, and a spinner would run for the whole
+                // bootstrap.
                 IndexListPlaceholder(
                     noun: "Sessions", symbol: "bubble.left.and.bubble.right",
-                    emptyDescription: "Start a session in Nimbalyst on your computer, or tap + to create one.",
-                    observationState: observationState
+                    emptyDescription: emptyDescription,
+                    observationState: model.state == .loaded && !model.isHistoryComplete && !isSearching ? .loading : model.state
                 )
             }
         }
+    }
+
+    private var incompleteHistoryDescription: String {
+        if coverage.hasError || appState.indexLoadState == .failed {
+            return "Couldn’t check available sessions. Pull down to retry."
+        }
+        if coverage.compatibility == .legacyServer {
+            return "Showing cached history. Full history sync needs a server update."
+        }
+        return "Still syncing available sessions"
+    }
+
+    /// An empty search result is only definitive once history coverage is complete.
+    private var emptyDescription: String {
+        if isSearching && !model.isHistoryComplete {
+            return "Still checking available cloud sessions for matches."
+        }
+        if isSearching {
+            return "No sessions match this search."
+        }
+        return "Start a session in Nimbalyst on your computer, or tap + to create one."
     }
 
     // MARK: - Creation Menu
@@ -593,54 +409,89 @@ public struct SessionListView: View {
     @ViewBuilder
     private func sessionListItemView(_ item: SessionListItem) -> some View {
         switch item {
-        case .group(let group):
+        case .group(let pageItem):
             WorkstreamSection(
-                group: group,
-                isExpanded: Binding(
-                    get: { expandedWorkstreams.contains(group.parent.id) },
-                    set: { newValue in
-                        if newValue {
-                            expandedWorkstreams.insert(group.parent.id)
-                        } else {
-                            expandedWorkstreams.remove(group.parent.id)
-                        }
-                        saveExpandedState()
-                    }
-                ),
-                voiceFocusedSessionId: voiceFocusedSessionId
+                item: pageItem,
+                children: model.children[pageItem.group.key] ?? [],
+                hasMoreChildren: model.childrenHaveMore.contains(pageItem.group.key),
+                isExpanded: groupExpansionBinding(for: pageItem.group.key),
+                voiceFocusedSessionId: voiceFocusedSessionId,
+                onLoadMoreChildren: { model.loadMoreChildren(groupKey: pageItem.group.key) }
             )
             .contextMenu {
-                groupContextMenu(for: group)
+                groupContextMenu(for: pageItem)
             }
-        case .session(let session):
-            NavigationLink(value: WorkspaceSelection.session(session.id)) {
+        case .session(let row):
+            NavigationLink(value: WorkspaceSelection.session(row.id)) {
                 SessionRow(
-                    session: session,
+                    session: row,
                     voiceFocusedSessionId: voiceFocusedSessionId
                 )
             }
             .contextMenu {
-                standaloneContextMenu(for: session)
+                standaloneContextMenu(for: row)
             }
         }
     }
 
-    // MARK: - Context Menu for Standalone Sessions
+    // MARK: - Meta Agent Group View
 
     @ViewBuilder
-    private func standaloneContextMenu(for session: Session) -> some View {
+    private func metaAgentGroupView(_ item: SessionListPageItem) -> some View {
+        // The group context menu is passed INTO the view so it can be attached to the
+        // header row only. `MetaAgentGroupView` emits the header and each child as
+        // separate List rows, so a call-site `.contextMenu` would leak onto the children.
+        MetaAgentGroupView(
+            item: item,
+            children: model.children[item.group.key] ?? [],
+            hasMoreChildren: model.childrenHaveMore.contains(item.group.key),
+            isExpanded: metaExpansionBinding(for: item),
+            voiceFocusedSessionId: voiceFocusedSessionId,
+            onLoadMoreChildren: { model.loadMoreChildren(groupKey: item.group.key) },
+            headerContextMenu: { metaAgentGroupContextMenu(for: item) }
+        )
+    }
+
+    // MARK: - Context Menus
+
+    @ViewBuilder
+    private func metaAgentGroupContextMenu(for item: SessionListPageItem) -> some View {
         Button {
-            convertToWorkstream(session: session)
+            archiveGroup(item, archive: !item.parent.isArchived)
+        } label: {
+            Label(
+                item.parent.isArchived ? "Unarchive Group" : "Archive Group",
+                systemImage: item.parent.isArchived ? "arrow.uturn.backward" : "archivebox"
+            )
+        }
+
+        Button(role: .destructive) {
+            deleteGroup(item)
+        } label: {
+            Label("Delete Group", systemImage: "trash")
+        }
+    }
+
+    @ViewBuilder
+    private func standaloneContextMenu(for row: SessionListRow) -> some View {
+        Button {
+            convertToWorkstream(session: row)
         } label: {
             Label("Start Workstream", systemImage: "folder.badge.plus")
         }
 
-        if !workstreamParents.isEmpty {
+        if !model.workstreamParents.isEmpty {
             Menu("Move to Workstream") {
-                ForEach(workstreamParents) { ws in
-                    Button(ws.titleDecrypted ?? "Workstream") {
-                        reparentSession(sessionId: session.id, newParentId: ws.id)
+                if model.canLoadPreviousWorkstreams {
+                    Button("Newer Workstreams") { model.loadNewerWorkstreams() }
+                }
+                ForEach(model.workstreamParents) { workstream in
+                    Button(workstream.titleDecrypted ?? "Workstream") {
+                        reparentSession(sessionId: row.id, newParentId: workstream.id)
                     }
+                }
+                if model.workstreamParentsHaveMore {
+                    Button("Older Workstreams") { model.loadOlderWorkstreams() }
                 }
             }
         }
@@ -648,27 +499,25 @@ public struct SessionListView: View {
         Divider()
 
         Button {
-            archiveSession(session, archive: !session.isArchived)
+            archiveSession(row, archive: !row.isArchived)
         } label: {
             Label(
-                session.isArchived ? "Unarchive" : "Archive",
-                systemImage: session.isArchived ? "arrow.uturn.backward" : "archivebox"
+                row.isArchived ? "Unarchive" : "Archive",
+                systemImage: row.isArchived ? "arrow.uturn.backward" : "archivebox"
             )
         }
 
         Button(role: .destructive) {
-            deleteSession(session)
+            deleteSession(row)
         } label: {
             Label("Delete", systemImage: "trash")
         }
     }
 
-    // MARK: - Context Menu for Workstream/Worktree Groups
-
     @ViewBuilder
-    private func groupContextMenu(for group: WorkstreamGroup) -> some View {
+    private func groupContextMenu(for item: SessionListPageItem) -> some View {
         Button {
-            createChildSession(parentId: group.parent.id)
+            createChildSession(parentId: item.parent.id, groupKey: item.group.key)
         } label: {
             Label("Add Session", systemImage: "plus.bubble")
         }
@@ -676,16 +525,16 @@ public struct SessionListView: View {
         Divider()
 
         Button {
-            archiveSession(group.parent, archive: !group.parent.isArchived)
+            archiveSession(item.parent, archive: !item.parent.isArchived)
         } label: {
             Label(
-                group.parent.isArchived ? "Unarchive" : "Archive",
-                systemImage: group.parent.isArchived ? "arrow.uturn.backward" : "archivebox"
+                item.parent.isArchived ? "Unarchive" : "Archive",
+                systemImage: item.parent.isArchived ? "arrow.uturn.backward" : "archivebox"
             )
         }
 
         Button(role: .destructive) {
-            deleteSession(group.parent)
+            deleteSession(item.parent)
         } label: {
             Label("Delete", systemImage: "trash")
         }
@@ -730,80 +579,73 @@ public struct SessionListView: View {
         }
     }
 
-
-    // MARK: - GRDB Observation
-
-    private func startObserving() {
-        cancellable?.cancel()
-        observationState = .loading
-        guard let db = appState.databaseManager else { return }
-
-        let projectId = project.id
-        let observation = ValueObservation.tracking { db in
-            // Fetch ALL sessions for this project, including workstream parents.
-            // The view separates them into groups vs standalone display.
-            try Session
-                .filter(Session.Columns.projectId == projectId)
-                .order(Session.Columns.updatedAt.desc)
-                .fetchAll(db)
-        }
-
-        cancellable = observation.start(
-            in: db.writer,
-            onError: { error in
-                observationState = .failed
-                print("Session observation error: \(error)")
-            },
-            onChange: { newSessions in
-                withAnimation {
-                    sessions = newSessions
-                    observationState = .loaded
-                }
-            }
-        )
-    }
-
     // MARK: - Expand/Collapse Persistence
 
     private var expandedStateKey: String {
-        "expandedWorkstreams_\(project.id)"
+        "expandedSessionGroups_\(project.id)"
+    }
+
+    /// Meta-agent collapse is persisted by session id (see `MetaAgentExpansion`); the
+    /// window addresses groups by key, so translate at the boundary.
+    private var collapsedMetaAgentKeys: Set<String> {
+        Set(collapsedMetaAgents.map { "meta:\($0)" })
     }
 
     private func loadExpandedState() {
         if let data = UserDefaults.standard.data(forKey: expandedStateKey),
-           let ids = try? JSONDecoder().decode(Set<String>.self, from: data) {
-            expandedWorkstreams = ids
+           let keys = try? JSONDecoder().decode(Set<String>.self, from: data) {
+            expandedGroupKeys = keys
+        } else {
+            expandedGroupKeys = []
         }
+        collapsedMetaAgents = MetaAgentExpansion(projectId: project.id).collapsedIds()
     }
 
     private func saveExpandedState() {
-        if let data = try? JSONEncoder().encode(expandedWorkstreams) {
+        if let data = try? JSONEncoder().encode(expandedGroupKeys) {
             UserDefaults.standard.set(data, forKey: expandedStateKey)
         }
     }
 
-    /// Load persisted meta-agent collapsed state (default expanded, mirroring desktop).
-    private func loadMetaAgentExpansionState() {
-        collapsedMetaAgents = MetaAgentExpansion(projectId: project.id).collapsedIds()
+    private func groupExpansionBinding(for groupKey: String) -> Binding<Bool> {
+        Binding(
+            get: { model.isExpanded(groupKey) },
+            set: { expanded in
+                if expanded {
+                    expandedGroupKeys.insert(groupKey)
+                } else {
+                    expandedGroupKeys.remove(groupKey)
+                }
+                saveExpandedState()
+                model.setPersistedExpansion(expandedKeys: expandedGroupKeys, collapsedKeys: collapsedMetaAgentKeys)
+                model.setExpanded(expanded, groupKey: groupKey)
+            }
+        )
     }
 
-    /// Toggle and persist the expanded/collapsed state for a single meta-agent group.
-    private func setMetaAgentExpanded(_ expanded: Bool, for metaSessionId: String) {
-        if expanded {
-            collapsedMetaAgents.remove(metaSessionId)
-        } else {
-            collapsedMetaAgents.insert(metaSessionId)
-        }
-        MetaAgentExpansion(projectId: project.id).setCollapsedIds(collapsedMetaAgents)
+    private func metaExpansionBinding(for item: SessionListPageItem) -> Binding<Bool> {
+        Binding(
+            get: { model.isExpanded(item.group.key) },
+            set: { expanded in
+                if expanded {
+                    collapsedMetaAgents.remove(item.parent.id)
+                } else {
+                    collapsedMetaAgents.insert(item.parent.id)
+                }
+                MetaAgentExpansion(projectId: project.id).setCollapsedIds(collapsedMetaAgents)
+                model.setPersistedExpansion(expandedKeys: expandedGroupKeys, collapsedKeys: collapsedMetaAgentKeys)
+                model.setExpanded(expanded, groupKey: item.group.key)
+            }
+        )
     }
 
     // MARK: - Actions
 
-    private func deleteSession(_ session: Session) {
+    private func deleteSession(_ row: SessionListRow) {
         guard let db = appState.databaseManager else { return }
         do {
-            try db.deleteSession(session.id)
-            if selection == .session(session.id) { selection = nil }
+            try db.deleteSession(row.id)
+            if selection == .session(row.id) { selection = nil }
             try db.refreshSessionCount(forProject: project.id)
         } catch {
             print("Failed to delete session: \(error)")
@@ -819,7 +661,8 @@ public struct SessionListView: View {
                 projectId: project.id,
                 initialPrompt: nil,
                 provider: ModelPreferences.providerFromModelId(selectedModelId),
-                model: selectedModelId
+                model: selectedModelId,
+                targetDeviceId: hostDeviceId
             )
             AnalyticsManager.shared.capture("mobile_session_created", properties: [
                 "model": selectedModelId ?? "default"
@@ -842,7 +685,8 @@ public struct SessionListView: View {
                 initialPrompt: nil,
                 sessionType: "workstream",
                 provider: ModelPreferences.providerFromModelId(selectedModelId),
-                model: selectedModelId
+                model: selectedModelId,
+                targetDeviceId: hostDeviceId
             )
             AnalyticsManager.shared.capture("mobile_workstream_created")
         } catch {
@@ -863,7 +707,8 @@ public struct SessionListView: View {
                 initialPrompt: nil,
                 provider: ModelPreferences.providerFromModelId(selectedModelId),
                 model: selectedModelId,
-                agentRole: "meta-agent"
+                agentRole: "meta-agent",
+                targetDeviceId: hostDeviceId
             )
             AnalyticsManager.shared.capture("mobile_meta_agent_created", properties: [
                 "model": selectedModelId ?? "default"
@@ -877,7 +722,7 @@ public struct SessionListView: View {
     }
 
     /// Create a child session within a workstream.
-    private func createChildSession(parentId: String) {
+    private func createChildSession(parentId: String, groupKey: String) {
         guard let sync = appState.syncManager else { return }
         do {
             try sync.createSession(
@@ -885,12 +730,12 @@ public struct SessionListView: View {
                 initialPrompt: nil,
                 parentSessionId: parentId,
                 provider: ModelPreferences.providerFromModelId(selectedModelId),
-                model: selectedModelId
+                model: selectedModelId,
+                targetDeviceId: hostDeviceId
             )
             AnalyticsManager.shared.capture("mobile_child_session_created")
             // Auto-expand the parent workstream
-            expandedWorkstreams.insert(parentId)
-            saveExpandedState()
+            groupExpansionBinding(for: groupKey).wrappedValue = true
         } catch {
             print("Failed to create child session: \(error)")
         }
@@ -902,8 +747,7 @@ public struct SessionListView: View {
         do {
             try sync.updateSessionParent(sessionId: sessionId, parentSessionId: newParentId)
             // Auto-expand the target workstream
-            expandedWorkstreams.insert(newParentId)
-            saveExpandedState()
+            groupExpansionBinding(for: "ws:\(newParentId)").wrappedValue = true
         } catch {
             print("Failed to reparent session: \(error)")
         }
@@ -913,16 +757,19 @@ public struct SessionListView: View {
     /// Creates a workstream parent and reparents the session under it.
     /// Since session creation is async (via WebSocket), we watch for the new workstream
     /// to appear and then reparent the original session under it.
-    private func convertToWorkstream(session: Session) {
-        guard let sync = appState.syncManager else { return }
+    private func convertToWorkstream(session: SessionListRow) {
+        guard let sync = appState.syncManager, let db = appState.databaseManager else { return }
         do {
-            // Snapshot current workstream IDs so we can detect the new one
-            let existingIds = Set(sessions.filter { $0.sessionType == "workstream" }.map(\.id))
+            // Snapshot current workstream IDs so we can detect the new one. This is a
+            // bounded query rather than a scan of the loaded list, so it works the same
+            // whether or not the existing workstreams are inside the current window.
+            let existingIds = Set(try db.workstreamParents(projectId: project.id, limit: 200).map(\.id))
 
             try sync.createSession(
                 projectId: project.id,
                 initialPrompt: nil,
-                sessionType: "workstream"
+                sessionType: "workstream",
+                targetDeviceId: hostDeviceId
             )
             AnalyticsManager.shared.capture("mobile_convert_to_workstream")
 
@@ -931,19 +778,18 @@ public struct SessionListView: View {
             // The task outlives the `do/catch` below, so it has to report its own
             // failures — an unhandled throw here would abandon the reparent with
             // the session silently left at the top level.
+            let projectId = project.id
             Task {
                 let sessionId = session.id
                 do {
                     for _ in 0..<20 { // Poll for up to ~10s
                         try await Task.sleep(nanoseconds: 500_000_000)
-                        let newWorkstream = sessions.first { s in
-                            s.sessionType == "workstream" && !existingIds.contains(s.id)
-                        }
-                        if let ws = newWorkstream {
-                            try sync.updateSessionParent(sessionId: sessionId, parentSessionId: ws.id)
+                        let created = try db.workstreamParents(projectId: projectId, limit: 200)
+                            .first { !existingIds.contains($0.id) }
+                        if let workstream = created {
+                            try sync.updateSessionParent(sessionId: sessionId, parentSessionId: workstream.id)
                             await MainActor.run {
-                                expandedWorkstreams.insert(ws.id)
-                                saveExpandedState()
+                                groupExpansionBinding(for: "ws:\(workstream.id)").wrappedValue = true
                             }
                             return
                         }
@@ -958,47 +804,51 @@ public struct SessionListView: View {
     }
 
     /// Archive or unarchive a session.
-    private func archiveSession(_ session: Session, archive: Bool) {
+    private func archiveSession(_ row: SessionListRow, archive: Bool) {
         guard let sync = appState.syncManager else { return }
         do {
-            try sync.setSessionArchived(sessionId: session.id, isArchived: archive)
-            if archive && !showArchived && selection == .session(session.id) { selection = nil }
+            try sync.setSessionArchived(sessionId: row.id, isArchived: archive)
+            if archive && !showArchived && selection == .session(row.id) { selection = nil }
             AnalyticsManager.shared.capture(archive ? "mobile_session_archived" : "mobile_session_unarchived")
         } catch {
             print("Failed to \(archive ? "archive" : "unarchive") session: \(error)")
         }
     }
 
-    /// Archive (or unarchive) a whole meta-agent group: the meta session and all of
-    /// its sub-agents. Mirrors desktop `handleArchiveMetaAgentSession` /
-    /// `getMetaAgentGroupSessionIds`.
-    private func archiveMetaAgentGroup(_ group: MetaAgentGroup, archive: Bool) {
-        guard let sync = appState.syncManager else { return }
-        let sessionIds = [group.metaSession.id] + group.children.map(\.id)
+    /// Archive (or unarchive) a whole group. Membership comes from SQL, so it covers
+    /// every cached member rather than the page of children that happens to be loaded.
+    private func archiveGroup(_ item: SessionListPageItem, archive: Bool) {
+        guard let sync = appState.syncManager, let db = appState.databaseManager else { return }
         do {
+            let sessionIds = try db.sessionListGroupMemberIds(
+                filter: .locating(projectId: project.id, metaAgentEnabled: metaAgentEnabled),
+                groupKey: item.group.key
+            )
             for sessionId in sessionIds {
                 try sync.setSessionArchived(sessionId: sessionId, isArchived: archive)
                 if archive && !showArchived && selection == .session(sessionId) { selection = nil }
             }
             AnalyticsManager.shared.capture(archive ? "mobile_session_archived" : "mobile_session_unarchived")
         } catch {
-            print("Failed to \(archive ? "archive" : "unarchive") meta agent group: \(error)")
+            print("Failed to \(archive ? "archive" : "unarchive") group: \(error)")
         }
     }
 
-    /// Delete a whole meta-agent group: the meta session and all of its sub-agents.
-    /// Mirrors desktop `handleDeleteMetaAgentSession` / `getMetaAgentGroupSessionIds`.
-    private func deleteMetaAgentGroup(_ group: MetaAgentGroup) {
+    /// Delete a whole group: the header session and everything under it.
+    private func deleteGroup(_ item: SessionListPageItem) {
         guard let db = appState.databaseManager else { return }
-        let sessionIds = [group.metaSession.id] + group.children.map(\.id)
         do {
+            let sessionIds = try db.sessionListGroupMemberIds(
+                filter: .locating(projectId: project.id, metaAgentEnabled: metaAgentEnabled),
+                groupKey: item.group.key
+            )
             for sessionId in sessionIds {
                 try db.deleteSession(sessionId)
                 if selection == .session(sessionId) { selection = nil }
             }
             try db.refreshSessionCount(forProject: project.id)
         } catch {
-            print("Failed to delete meta agent group: \(error)")
+            print("Failed to delete group: \(error)")
         }
     }
 
@@ -1014,290 +864,6 @@ public struct SessionListView: View {
         }
         DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
             isCreatingSession = false
-        }
-    }
-}
-
-// MARK: - WorkstreamSection
-
-struct WorkstreamSection: View {
-    let group: WorkstreamGroup
-    @Binding var isExpanded: Bool
-    var voiceFocusedSessionId: String?
-
-    var body: some View {
-        Group {
-            if group.children.isEmpty {
-                // Single-session worktree: navigable row for the session
-                NavigationLink(value: WorkspaceSelection.session(group.parent.id)) {
-                    WorkstreamHeader(
-                        title: group.parent.titleDecrypted ?? (group.isWorktree ? "Worktree" : "Workstream"),
-                        childCount: 0,
-                        status: computeAggregatedStatus([group.parent]),
-                        isWorktree: group.isWorktree
-                    )
-                }
-            } else {
-                DisclosureGroup(isExpanded: $isExpanded) {
-                    ForEach(group.children) { child in
-                        NavigationLink(value: WorkspaceSelection.session(child.id)) {
-                            SessionRow(
-                                session: child,
-                                isChild: true,
-                                voiceFocusedSessionId: voiceFocusedSessionId
-                            )
-                        }
-                    }
-                } label: {
-                    WorkstreamHeader(
-                        title: group.parent.titleDecrypted ?? (group.isWorktree ? "Worktree" : "Workstream"),
-                        childCount: group.children.count,
-                        status: computeAggregatedStatus(group.children),
-                        isWorktree: group.isWorktree
-                    )
-                }
-            }
-        }
-    }
-}
-
-// MARK: - WorkstreamHeader
-
-struct WorkstreamHeader: View {
-    let title: String
-    let childCount: Int
-    let status: AggregatedStatus
-    var isWorktree: Bool = false
-
-    var body: some View {
-        HStack(spacing: 8) {
-            Image(systemName: isWorktree ? "arrow.triangle.branch" : "folder.fill")
-                .font(.system(size: 14))
-                .foregroundStyle(isWorktree ? .orange : NimbalystColors.primary)
-
-            Text(title)
-                .font(.body)
-                .fontWeight(.medium)
-                .lineLimit(1)
-
-            Text("\(childCount)")
-                .font(.caption2)
-                .fontWeight(.medium)
-                .padding(.horizontal, 6)
-                .padding(.vertical, 2)
-                .background(Color.secondary.opacity(0.15))
-                .clipShape(Capsule())
-
-            Spacer()
-
-            statusIndicator
-        }
-        .padding(.vertical, 4)
-    }
-
-    @ViewBuilder
-    private var statusIndicator: some View {
-        switch status {
-        case .waitingForInput:
-            Image(systemName: "exclamationmark.bubble.fill")
-                .font(.caption)
-                .foregroundStyle(.orange)
-        case .processing:
-            ProgressView()
-                .controlSize(.small)
-        case .pendingPrompt:
-            Image(systemName: "clock.fill")
-                .font(.caption)
-                .foregroundStyle(.orange)
-        case .unread:
-            Circle()
-                .fill(NimbalystColors.primary)
-                .frame(width: 8, height: 8)
-        case .idle:
-            EmptyView()
-        }
-    }
-}
-
-// MARK: - Session Row
-
-struct SessionRow: View {
-    let session: Session
-    var isChild: Bool = false
-    var voiceFocusedSessionId: String? = nil
-
-    var body: some View {
-        HStack(spacing: 8) {
-            // Unread indicator
-            Circle()
-                .fill(NimbalystColors.primary)
-                .frame(width: 8, height: 8)
-                .opacity(session.hasUnread ? 1 : 0)
-
-            VStack(alignment: .leading, spacing: 4) {
-                HStack(spacing: 6) {
-                    Text(session.titleDecrypted ?? "Untitled Session")
-                        .font(isChild ? .callout : .body)
-                        .fontWeight(session.hasUnread ? .semibold : .regular)
-                        .lineLimit(1)
-                        .foregroundStyle(session.isArchived ? .secondary : .primary)
-
-                    Spacer()
-
-                    // Voice focus indicator
-                    if voiceFocusedSessionId == session.id {
-                        Image(systemName: "mic.fill")
-                            .font(.caption2)
-                            .foregroundStyle(NimbalystColors.primary)
-                    }
-
-                    // Status indicators - pending prompt takes priority (it's actionable)
-                    if session.hasQueuedPrompts {
-                        Image(systemName: "clock.fill")
-                            .foregroundStyle(.orange)
-                            .font(.caption)
-                    } else if session.isExecuting {
-                        ProgressView()
-                            .controlSize(.small)
-                    }
-                }
-
-                HStack(spacing: 6) {
-                    if session.isArchived {
-                        Image(systemName: "archivebox")
-                            .font(.caption2)
-                            .foregroundStyle(.secondary)
-                    }
-
-                    ProviderBadge(provider: session.provider, model: session.model)
-
-                    if let phase = session.phase, !phase.isEmpty {
-                        PhaseBadge(phase: phase)
-                    }
-
-                    Spacer()
-
-                    Text(RelativeTimestamp.format(epochMs: session.updatedAt))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-            }
-        }
-        .padding(.vertical, 4)
-    }
-}
-
-// MARK: - Phase Badge
-
-struct PhaseBadge: View {
-    let phase: String
-
-    var body: some View {
-        Text(displayName)
-            .font(.caption2)
-            .fontWeight(.medium)
-            .padding(.horizontal, 5)
-            .padding(.vertical, 1)
-            .background(phaseColor.opacity(0.15))
-            .foregroundStyle(phaseColor)
-            .clipShape(Capsule())
-    }
-
-    private var displayName: String {
-        switch phase {
-        case "backlog": return "Backlog"
-        case "planning": return "Planning"
-        case "implementing": return "Implementing"
-        case "validating": return "Validating"
-        case "complete": return "Complete"
-        default: return phase.capitalized
-        }
-    }
-
-    private var phaseColor: Color {
-        switch phase {
-        case "backlog": return Color(hex: 0x6b7280)  // gray
-        case "planning": return Color(hex: 0x60a5fa)  // blue
-        case "implementing": return Color(hex: 0xeab308)  // yellow
-        case "validating": return Color(hex: 0xa78bfa)  // purple
-        case "complete": return Color(hex: 0x4ade80)  // green
-        default: return .gray
-        }
-    }
-}
-
-// MARK: - Tag Pill
-
-struct TagPill: View {
-    let tag: String
-
-    var body: some View {
-        Text(tag)
-            .font(.system(size: 9))
-            .padding(.horizontal, 4)
-            .padding(.vertical, 1)
-            .background(Color.secondary.opacity(0.12))
-            .foregroundStyle(.secondary)
-            .clipShape(Capsule())
-    }
-}
-
-/// Badge showing the AI provider name with model info and appropriate color.
-struct ProviderBadge: View {
-    let provider: String?
-    let model: String?
-
-    var body: some View {
-        if let name = displayName {
-            Text(name)
-                .font(.caption2)
-                .fontWeight(.medium)
-                .padding(.horizontal, 6)
-                .padding(.vertical, 2)
-                .background(badgeColor.opacity(0.15))
-                .foregroundStyle(badgeColor)
-                .clipShape(Capsule())
-        }
-    }
-
-    private var displayName: String? {
-        // Delegate to the shared model label helper so iOS stays in sync with
-        // the Electron-side tables in `packages/runtime/src/ai/modelConstants.ts`.
-        // Returns nil for unknown provider/model combos so the badge is hidden
-        // rather than showing a guessed label.
-        ModelLabel.shortLabel(provider: provider, model: model)
-    }
-
-    private var badgeColor: Color {
-        let prov = provider?.lowercased() ?? ""
-        switch prov {
-        case "claude-code", "claude": return NimbalystColors.primary
-        case "openai": return .green
-        case "lm-studio": return .purple
-        default: return .gray
-        }
-    }
-}
-
-/// Compact context usage indicator showing percentage with color coding.
-struct ContextUsageBadge: View {
-    let percent: Int
-
-    var body: some View {
-        Text("\(percent)%")
-            .font(.caption2)
-            .fontWeight(.medium)
-            .monospacedDigit()
-            .foregroundStyle(badgeColor)
-    }
-
-    private var badgeColor: Color {
-        if percent >= 90 {
-            return NimbalystColors.error
-        } else if percent >= 70 {
-            return NimbalystColors.warning
-        } else {
-            return NimbalystColors.textFaint
         }
     }
 }

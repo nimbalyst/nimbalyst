@@ -1,3 +1,4 @@
+import type { DocumentFeedbackInboxDelivery } from '../../../store/atoms/documentFeedbackInbox';
 /**
  * The Inbox data seam.
  *
@@ -20,7 +21,7 @@ import type {
 import type { Store } from 'jotai/vanilla/store';
 import { createContext, useContext } from 'react';
 
-import { teamInboxSnapshotAtom } from '../../../store/atoms/teamInbox';
+import { feedbackAwareTeamInboxSnapshotAtom as teamInboxSnapshotAtom } from '../../../store/atoms/teamInbox';
 import { buildConversationDeepLink } from '../../../../shared/conversationDeepLinks';
 import { buildFeedbackRequestDeepLink } from '../../../../shared/feedbackRequestLinks';
 import type {
@@ -167,6 +168,7 @@ function mapDelivery(
     createdAt: delivery.createdAt,
     readAt: delivery.readAt,
     dismissedAt: delivery.dismissedAt,
+    documentDecisionNeedsResponse: (delivery as DocumentFeedbackInboxDelivery).documentDecisionNeedsResponse,
     availability: unavailable ? 'accessRemoved' : 'available',
     subscription: delivery.subscription,
     hasUnreadActivity: delivery.hasUnreadActivity,

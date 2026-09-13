@@ -34,6 +34,11 @@ const { verdict, changed } = compareTreeFingerprint(state?.fingerprint ?? null);
 const failing = state?.failingFiles ?? [];
 
 const banner = [];
+let fullState;
+try { fullState = JSON.parse(fs.readFileSync(path.join(LOG_DIR, 'last-full-run.json'), 'utf8')); } catch {}
+banner.push(`Last invocation: ${state?.invocation ?? 'unknown'} (${state?.complete ? 'complete' : 'incomplete/legacy'})`);
+if (fullState) banner.push(`Last full suite: ${fullState.result}, ${fullState.complete ? 'complete' : 'incomplete'}, ${fullState.finishedAt ?? fullState.startedAt}`);
+else banner.push('No separate full-suite record.');
 if (verdict === 'current') {
   banner.push('CURRENT -- the working tree is unchanged since this run.');
   banner.push('These results still hold. Re-running the suite cannot tell you anything new.');

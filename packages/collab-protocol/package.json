@@ -10,11 +10,18 @@
   "types": "./src/index.ts",
   "exports": {
     ".": {
+      "node": {
+        "types": "./dist/index.d.ts",
+        "import": "./dist/index.js",
+        "default": "./dist/index.js"
+      },
       "types": "./src/index.ts",
       "default": "./src/index.ts"
     }
   },
   "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "prepare": "npm run build",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {

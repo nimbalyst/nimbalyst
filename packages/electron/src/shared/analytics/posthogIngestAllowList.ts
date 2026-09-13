@@ -28,6 +28,11 @@
  * errors, and the mobile and collaboration surfaces.
  */
 export const INGESTED_ALWAYS = [
+  // The DAU heartbeat: one per install per local day, only when a human is
+  // present. Must never be sampled -- sampling it would make DAU a scaled
+  // estimate again, which is the thing it exists to stop being. See
+  // `main/services/analytics/dailyActiveHeartbeat.ts`.
+  'daily_active',
   'ai_message_sent',
   'user_created',
   'onboarding_completed',
@@ -85,6 +90,55 @@ export const INGESTED_SAMPLED = [
 export const PANEL_BUCKETS = ['0', '1'] as const;
 
 /**
+ * Ingested only when the PAYLOAD matches a condition, not on the name alone.
+ *
+ * `$set` in full is ~19,000/day -- the single largest event in the project --
+ * and stays dropped. But PERSON PROPERTIES ride on it, and dropping the name
+ * silently zeroed several of them on 2026-09-04. Signup email went unnoticed
+ * for five days, until the PM asked why there were no signups.
+ *
+ * The transformation now keeps a `$set` whose `$set`/`$set_once` payload carries
+ * any of these low-volume, high-value keys (~320/day, under 2% of the event's
+ * volume), across `posthog-ios`, `posthog-android` and desktop `posthog-js`:
+ *
+ *   email, user_role, referral_source, referral_search_detail, has_ios_signin
+ *
+ * The expensive per-action counters stay dropped -- session_count,
+ * last_session_at, has_opened_markdown, has_opened_visual_editor,
+ * has_tracker_activity, ~22,000/day between them. The ones worth keeping moved
+ * onto the once-a-day `daily_active` payload instead; see its `$set` block in
+ * `main/services/analytics/dailyActiveHeartbeat.ts`.
+ *
+ * The general lesson, which is why this exists as its own list rather than a
+ * comment on the dropped one: an event name can be almost worthless by volume
+ * and still be the sole carrier of something the business counts on. A person
+ * property is invisible in any list of EVENT names, so it cannot be audited by
+ * reading this file. Check what rides on a name before dropping it wholesale.
+ */
+export const INGESTED_CONDITIONALLY = [
+  '$set',
+] as const;
+
+/**
+ * The person-property keys that make a `$set` worth ingesting. MUST match the
+ * key list in the transformation exactly -- it tests for these names and drops
+ * the event when none are present.
+ *
+ * This is the fragile seam. The transformation matches on the NAME of a key it
+ * has no way to validate, so renaming `email` in the code that produces it
+ * silently stops signup collection with no error anywhere. That is precisely
+ * how five days of signups were lost. `onboardingAnalytics.test.ts` pins the
+ * producer's output against this list so a rename fails the build instead.
+ */
+export const KEPT_PERSON_PROPERTIES = [
+  'email',
+  'user_role',
+  'referral_source',
+  'referral_search_detail',
+  'has_ios_signin',
+] as const;
+
+/**
  * Emitted by the PostHog SDKs themselves rather than by our code, so they
  * never appear at a call site in this repo. Listed here so the gate does not
  * report them as a stale allow-list entry.
@@ -94,6 +148,38 @@ export const SDK_OWNED = [
   '$create_alias',
   '$opt_in',
   '$workflows_conversion',
+] as const;
+
+/**
+ * SDK-emitted names we switched OFF in `posthog.init`, so they are neither
+ * captured by the client nor kept by the transformation.
+ *
+ * These are the blind spot in every other list here. They have no call site, so
+ * the gate cannot find them; they are not `SDK_OWNED`, because that list means
+ * "emitted and kept"; and they are not `INTENTIONALLY_DROPPED`, because that
+ * list means "still emitted, discarded server-side". A name that is off in both
+ * places appears nowhere at all, which is exactly what happened to `$pageview`.
+ *
+ * `$pageview` had a consumer -- the saved "Users by Version over Time" insight,
+ * which counted `$pageview` DAU by `nimbalyst_version`. Turning capture off in
+ * the renderer and omitting the name from the transformation on the same day
+ * blanked that report, and nothing anywhere said so. It now reads the
+ * `daily_active` heartbeat instead, which is a better basis: unsampled, one per
+ * install per local day, and only when a human is present.
+ *
+ * Before switching an SDK-default capture off, search the PostHog project for
+ * saved insights built on it. A name with no call site in this repo can still
+ * be load-bearing for somebody's dashboard.
+ *
+ * `checkInitConfigDisables` in `scripts/check-analytics-allowlist.mjs` asserts
+ * the renderer still sets each of these to `false`, so re-enabling one is a
+ * deliberate edit in two places rather than a silent return of ~240k
+ * events/month against a 1M/month free tier.
+ */
+export const SDK_DISABLED_AT_CLIENT = [
+  '$pageview',
+  '$pageleave',
+  '$autocapture',
 ] as const;
 
 /**
@@ -109,7 +195,6 @@ export const SDK_OWNED = [
  * here burning client CPU to produce something nobody receives.
  */
 export const INTENTIONALLY_DROPPED = [
-  '$set',
   'account_deletion_completed',
   'account_deletion_confirmed',
   'account_deletion_failed',
@@ -122,8 +207,15 @@ export const INTENTIONALLY_DROPPED = [
   'ai_diff_rejected',
   'ai_effort_level_changed',
   'ai_message_queued',
+  // Dropped by accident rather than by choice: these four are emitted through a
+  // schema map or a validator wrapper, so the gate could not see them and
+  // nobody classified them when the allow-list was written. They have been
+  // discarded at ingestion ever since. Listed here because that IS what happens
+  // today -- promote any of them if the data is wanted.
+  'ai_message_submit_attempted',
   'ai_model_selected',
   'ai_response_received',
+  'ai_send_blocked',
   'ai_session_resumed',
   'ai_stream_content_used',
   'ai_stream_interrupted',
@@ -158,9 +250,11 @@ export const INTENTIONALLY_DROPPED = [
   'collab_server_mutation_rejected',
   'collab_share_asset_migration_completed',
   'collab_sync_attempt_completed',
+  'composer_state_reported',
   'construct',
   'content_mode_switched',
   'content_shared',
+  'create_ai_session',
   'create_document_tool',
   'database_corruption_detected',
   'database_corruption_recovery_choice',
@@ -217,6 +311,7 @@ export const INTENTIONALLY_DROPPED = [
   'migration_dry_run_completed',
   'migration_dry_run_failed',
   'mobile_account_deleted',
+  'mobile_action_prompt_launched_new_session',
   'mobile_analytics_opt_out',
   'mobile_child_session_created',
   'mobile_convert_to_workstream',

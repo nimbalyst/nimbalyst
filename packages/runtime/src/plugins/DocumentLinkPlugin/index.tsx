@@ -23,6 +23,7 @@ import { TypeaheadMenuOption } from "../../editor";
 import { fuzzyFilterDocuments } from '../../utils/fuzzyMatch';
 import { MaterialSymbol } from "../../ui";
 import { $createEmbeddedFileNode } from '../../editor/plugins/EmbedPlugin/EmbeddedFileNode';
+import { createEmbedFileHref } from '../../editor/plugins/EmbedPlugin/embedFilePaths';
 import { isEmbeddableUrl } from '../../editor/plugins/EmbedPlugin/embeddableExtensions';
 import { useDocumentPath } from '../../DocumentPathContext';
 import {
@@ -625,11 +626,11 @@ export function DocumentLinkPlugin({
       // Markdown link paths always use forward slashes regardless of OS.
       const linkPath = doc.path.replace(/\\/g, '/');
 
-      // Embeddable files (e.g. `.excalidraw`) get inserted as block-level
-      // EmbeddedFileNodes so they render inline immediately. Other files
-      // use the existing inline DocumentReferenceNode.
+      // Embeddable files use a block; other references stay inline.
       if (isEmbeddableUrl(linkPath)) {
-        $insertEmbedBlock(selection, { src: linkPath, label: doc.name, attrs: {} });
+        const workspacePath = (window as unknown as { __workspacePath?: string }).__workspacePath ?? null;
+        const src = createEmbedFileHref(linkPath, currentDocumentPath, workspacePath);
+        $insertEmbedBlock(selection, { src, label: doc.name, attrs: {} });
         return;
       }
 
@@ -640,17 +641,15 @@ export function DocumentLinkPlugin({
         doc.workspace
       );
 
-      // Typeahead has already removed the trigger text; just insert at caret
       selection.insertNodes([replacementNode]);
 
-      // Add a trailing space and place cursor after it
       const spaceNode = $createTextNode(' ');
       replacementNode.insertAfter(spaceNode);
       spaceNode.select();
     });
 
     closeMenu();
-  }, [editor, documents]);
+  }, [editor, documents, currentDocumentPath]);
 
   return (
     <>

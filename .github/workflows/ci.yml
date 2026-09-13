@@ -9,6 +9,14 @@ on:
     branches:
       - main
 
+permissions:
+  contents: read
+
+# Superseded PRs can stop; main runs remain available to release consumers.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
   # Make npm resilient to transient registry socket drops (ECONNRESET) on the
@@ -20,15 +28,37 @@ env:
   npm_config_fetch_timeout: '300000'
 
 jobs:
+  changes:
+    name: Validation selection
+    runs-on: ubuntu-latest
+    outputs:
+      docs-only: ${{ steps.select.outputs.docs-only }}
+      sandbox: ${{ steps.select.outputs.sandbox }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
+        with:
+          node-version: '24'
+      - id: select
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: node scripts/ci-changes.mjs "$BASE_SHA" "$HEAD_SHA"
+
   unit-tests:
+    needs: changes
     name: Unit Tests
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout code
+        if: needs.changes.outputs.docs-only != 'true'
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
       - name: Setup Node.js
+        if: needs.changes.outputs.docs-only != 'true'
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: '24'
@@ -39,6 +69,7 @@ jobs:
       # metadata and patches are unchanged. We rely on exact-key match (no
       # restore-keys) so we never run with a partially-stale tree.
       - name: Cache node_modules
+        if: needs.changes.outputs.docs-only != 'true'
         id: cache-node-modules
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -49,7 +80,12 @@ jobs:
           key: node-modules-${{ runner.os }}-node24-${{ hashFiles('**/package-lock.json', 'patches/**') }}
 
       - name: Install dependencies
-        if: steps.cache-node-modules.outputs.cache-hit != 'true'
+        if: needs.changes.outputs.docs-only != 'true' && steps.cache-node-modules.outputs.cache-hit != 'true'
+        env:
+          # @vscode/ripgrep's postinstall resolves its prebuilt binary through
+          # api.github.com; unauthenticated runners share a 60 req/hr limit per
+          # egress IP and intermittently fail the whole install.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: npm ci
 
       # tracker-core and extension-sdk are consumed through their built `dist`,
@@ -59,35 +95,60 @@ jobs:
       # or downstream vite builds fail with: Failed to resolve entry for
       # package "@nimbalyst/tracker-core".
       - name: Build workspace deps
-        run: npm run build:workspace-deps
+        if: needs.changes.outputs.docs-only != 'true'
+        run: node scripts/run-validation.mjs workspace-deps
 
       # docsUiStoreBinding.test.tsx imports the built bundle entry
       # (@nimbalyst/collab-bundle/docs-ui -> dist/docs-ui.js) on purpose: it
       # gates the store binding that only exists once the bundle is built. The
       # pre-push hook gets that dist for free because typecheck:prepush runs
       # the collab-bundle typecheck (which builds) before vitest; CI has to
-      # build it explicitly or the import cannot resolve.
+      # build it explicitly or the import cannot resolve. Not cached: the
+      # bundle pulls from runtime, collab-client, tracker-core, and protocol,
+      # and a key that misses one of those inputs restores a stale bundle.
       - name: Build collab-bundle
-        run: npm run build --workspace=@nimbalyst/collab-bundle
+        if: needs.changes.outputs.docs-only != 'true'
+        run: node scripts/run-validation.mjs bundle-build
 
       - name: Check override/dep sync
+        if: needs.changes.outputs.docs-only != 'true'
         run: npm run check:override-sync
 
       - name: Check tracked text files for raw NUL bytes
+        if: needs.changes.outputs.docs-only != 'true'
         run: npm run check:text-nuls -- --ref HEAD
 
+      - name: Static invariants and scanner regression tests
+        if: needs.changes.outputs.docs-only != 'true'
+        run: node scripts/run-validation.mjs scripts
+
+      - name: Sandbox artifact and image checks
+        if: needs.changes.outputs.sandbox == 'true'
+        run: node scripts/run-validation.mjs sandbox
+
       - name: Run unit tests
-        run: npm run test:unit -- --run
+        if: needs.changes.outputs.docs-only != 'true'
+        run: |
+          set -o pipefail
+          node scripts/run-validation.mjs unit 2>&1 | tee /tmp/vitest-ci.log
+
+      - name: Record Vitest summary
+        id: vitest-summary
+        if: always() && needs.changes.outputs.docs-only != 'true'
+        run: node scripts/record-vitest-summary.mjs /tmp/vitest-ci.log
 
   typecheck:
+    needs: changes
     name: TypeScript Check
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout code
+        if: needs.changes.outputs.docs-only != 'true'
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
       - name: Setup Node.js
+        if: needs.changes.outputs.docs-only != 'true'
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: '24'
@@ -95,6 +156,7 @@ jobs:
           cache-dependency-path: '**/package-lock.json'
 
       - name: Cache node_modules
+        if: needs.changes.outputs.docs-only != 'true'
         id: cache-node-modules
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -105,22 +167,32 @@ jobs:
           key: node-modules-${{ runner.os }}-node24-${{ hashFiles('**/package-lock.json', 'patches/**') }}
 
       - name: Install dependencies
-        if: steps.cache-node-modules.outputs.cache-hit != 'true'
+        if: needs.changes.outputs.docs-only != 'true' && steps.cache-node-modules.outputs.cache-hit != 'true'
+        env:
+          # @vscode/ripgrep's postinstall resolves its prebuilt binary through
+          # api.github.com; unauthenticated runners share a 60 req/hr limit per
+          # egress IP and intermittently fail the whole install.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: npm ci
 
       # Build packages consumed through their `dist` (required before typecheck
       # and before the runtime build). See the note in the Unit Tests job: a
       # node_modules cache hit skips the install that would have built these.
       - name: Build workspace deps
-        run: npm run build:workspace-deps
+        if: needs.changes.outputs.docs-only != 'true'
+        run: node scripts/run-validation.mjs workspace-deps
 
       - name: Public extension SDK smoke checks
+        if: needs.changes.outputs.docs-only != 'true'
         run: npm run extension-sdk:check-public
 
       # Cache the runtime build output (~46s vite build). Key includes
       # everything the build reads: runtime sources/config, extension-sdk
       # sources (consumed via workspace), dependency patches, and the lock file.
+      # Never key this on the whole tree: that hash changes on every commit, so
+      # the cache can only ever hit on a re-run of the same commit.
       - name: Cache runtime build
+        if: needs.changes.outputs.docs-only != 'true'
         id: cache-runtime-dist
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -128,53 +200,41 @@ jobs:
           key: runtime-dist-${{ runner.os }}-node24-${{ hashFiles('packages/runtime/src/**', 'packages/runtime/vite.config.*', 'packages/runtime/package.json', 'packages/runtime/tsconfig*.json', 'packages/extension-sdk/src/**', 'package-lock.json', 'patches/**') }}
 
       - name: Build runtime
-        if: steps.cache-runtime-dist.outputs.cache-hit != 'true'
+        if: needs.changes.outputs.docs-only != 'true' && steps.cache-runtime-dist.outputs.cache-hit != 'true'
         working-directory: packages/runtime
         run: npm run build
 
-      # Typecheck core packages
-      - name: TypeScript check - electron
-        working-directory: packages/electron
-        run: npx tsc --noEmit
+      # The cache contains the browser dist only. A cache miss builds dist-node
+      # as part of the runtime build; a hit still needs its Node declarations.
+      - name: Build Node runtime on cache hit
+        if: needs.changes.outputs.docs-only != 'true' && steps.cache-runtime-dist.outputs.cache-hit == 'true'
+        run: npm run build:node --workspace=@nimbalyst/runtime
 
-      - name: TypeScript check - runtime
-        working-directory: packages/runtime
-        run: npx tsc --noEmit
+      # This consumes runtime's built Node exports, so it must run after runtime
+      # rather than in npm ci's workspace prepare lifecycle.
+      - name: Build Node package
+        if: needs.changes.outputs.docs-only != 'true'
+        run: npm run build --workspace=@nimbalyst/node
 
-      - name: TypeScript check - extension-sdk
-        working-directory: packages/extension-sdk
-        run: npx tsc --noEmit
-
-      # Typecheck extensions
-      - name: TypeScript check - extensions/pdf-viewer
-        working-directory: packages/extensions/pdf-viewer
-        run: npx tsc --noEmit
-
-      - name: TypeScript check - extensions/extension-dev-kit
-        working-directory: packages/extensions/extension-dev-kit
-        run: npx tsc --noEmit
-
-      - name: TypeScript check - extensions/datamodellm
-        working-directory: packages/extensions/datamodellm
-        run: npx tsc --noEmit
-
-      - name: TypeScript check - extensions/csv-spreadsheet
-        working-directory: packages/extensions/csv-spreadsheet
-        run: npx tsc --noEmit
+      - name: Typecheck every workspace from the shared inventory
+        if: needs.changes.outputs.docs-only != 'true'
+        run: node scripts/run-validation.mjs typecheck-ready
 
   # Cheap Ubuntu smoke that catches transcript bundle breakage from runtime
   # changes without paying the 10x macOS multiplier. The full iOS simulator
-  # build still runs in ios-transcript-tests.yml on push to main and on PRs
-  # that touch packages/ios/**.
+  # workflow is separate; this job establishes only web transcript output.
   transcript-bundle:
+    needs: changes
     name: Transcript Bundle
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout code
+        if: needs.changes.outputs.docs-only != 'true'
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
       - name: Setup Node.js
+        if: needs.changes.outputs.docs-only != 'true'
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: '24'
@@ -182,6 +242,7 @@ jobs:
           cache-dependency-path: '**/package-lock.json'
 
       - name: Cache node_modules
+        if: needs.changes.outputs.docs-only != 'true'
         id: cache-node-modules
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -192,19 +253,27 @@ jobs:
           key: node-modules-${{ runner.os }}-node24-${{ hashFiles('**/package-lock.json', 'patches/**') }}
 
       - name: Install dependencies
-        if: steps.cache-node-modules.outputs.cache-hit != 'true'
+        if: needs.changes.outputs.docs-only != 'true' && steps.cache-node-modules.outputs.cache-hit != 'true'
+        env:
+          # @vscode/ripgrep's postinstall resolves its prebuilt binary through
+          # api.github.com; unauthenticated runners share a 60 req/hr limit per
+          # egress IP and intermittently fail the whole install.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: npm ci
 
       # See the note in the Unit Tests job: a node_modules cache hit skips the
       # install that would have built these, and the transcript bundle pulls in
       # runtime source that imports @nimbalyst/tracker-core.
       - name: Build workspace deps
-        run: npm run build:workspace-deps
+        if: needs.changes.outputs.docs-only != 'true'
+        run: node scripts/run-validation.mjs workspace-deps
 
       - name: Build transcript bundle
-        run: npm run ios:build:transcript
+        if: needs.changes.outputs.docs-only != 'true'
+        run: node scripts/run-validation.mjs transcript
 
       - name: Verify transcript bundle output
+        if: needs.changes.outputs.docs-only != 'true'
         run: |
           if [ ! -f "packages/ios/dist-transcript/transcript.html" ]; then
             echo "Error: transcript.html not found in packages/ios/dist-transcript/"

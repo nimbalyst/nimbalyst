@@ -33,7 +33,12 @@ export const COLLAB_BUNDLE_EAGER_GZIP_BUDGET_BYTES = {
   // is about the board's own cost, not the console's first paint.
   canvas: 118_000,
   editor: 320_000,
-  'docs-ui': 70_000,
+  // Measured at 70,625 gzip bytes on 2026-09-08, when the list took over
+  // folder browsing from the tree for the browser console (folder rows, the
+  // browse scope, the row "more" action). The row context menu itself is
+  // lazy-loaded from the list and is not in this graph; a static import of
+  // `SharedDocsItemMenu` is what would push this over again.
+  'docs-ui': 74_000,
   // Sep 5 privacy-aware document transport graph measured 35,049 bytes.
   // Keep a narrow allowance for the supported response/refresh contract.
   'feedback-ui': 35_500,

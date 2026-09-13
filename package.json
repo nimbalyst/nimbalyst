@@ -16,14 +16,14 @@
   },
   "scripts": {
     "build": "npm run build --prefix packages/runtime",
-    "build:workspace-deps": "npm run build --workspace=@nimbalyst/tracker-core --workspace=@nimbalyst/extension-sdk",
+    "build:workspace-deps": "npm run build --workspace=@nimbalyst/tracker-core --workspace=@nimbalyst/extension-sdk --workspace=@nimbalyst/collab-protocol",
     "typecheck": "node scripts/run-workspace-script.mjs typecheck",
-    "typecheck:prepush": "npm run build:workspace-deps && npm run build --workspace=@nimbalyst/runtime -- --logLevel warn && npm run build --prefix packages/extensions/nimbalyst-memory/engine && npm run typecheck",
+    "typecheck:prepush": "node scripts/run-validation.mjs typecheck",
     "test": "npm run test:unit",
     "test:unit": "vitest",
     "test:prepush": "vitest --run --reporter=dot --reporter=./scripts/vitest-run-log-reporter.mjs --silent=passed-only",
     "test:last": "node scripts/vitest-last-run.mjs",
-    "test:prepush-gate": "node --test --test-reporter=dot scripts/__tests__/prepush-test-gate.test.mjs scripts/__tests__/check-analytics-allowlist.test.mjs scripts/__tests__/check-collab-client-boundaries.test.mjs scripts/__tests__/check-identity-scopes.test.mjs scripts/__tests__/check-json-accessor-indexes.test.mjs scripts/__tests__/check-main-bundle-graph.test.mjs scripts/__tests__/check-push-authors.test.mjs scripts/__tests__/check-renderer-sync-sockets.test.mjs scripts/__tests__/check-shared-document-nodes.test.mjs scripts/__tests__/check-text-file-nuls.test.mjs scripts/__tests__/check-toolchain.test.mjs scripts/__tests__/check-tracker-policy-reads.test.mjs scripts/__tests__/main-bundle-require-policy.test.mjs scripts/__tests__/run-workspace-script.test.mjs scripts/__tests__/vitest-tree-fingerprint.test.mjs packages/electron/scripts/__tests__/dev-user2.test.mjs",
+    "test:prepush-gate": "node scripts/run-validation.mjs scripts sandbox",
     "test:unit:ui": "vitest --ui",
     "test:unit:coverage": "vitest --coverage",
     "test:provider:integration": "cross-env RUN_AI_PROVIDER_TESTS=true vitest --run",
@@ -33,6 +33,7 @@
     "check:text-nuls": "node scripts/check-text-file-nuls.mjs",
     "check:bundle-graph": "node scripts/check-main-bundle-graph.mjs",
     "check:collab-client-boundaries": "node scripts/check-collab-client-boundaries.mjs",
+    "check:runtime-host-boundary": "node scripts/check-runtime-host-boundary.mjs",
     "check:identity-scopes": "node scripts/check-identity-scopes.mjs",
     "extension-sdk:check-public": "bash scripts/extension-sdk-public-checks.sh",
     "analyze": "node scripts/bundle-size.js",
@@ -60,7 +61,8 @@
     "check:shared-document-nodes": "node scripts/check-shared-document-nodes.mjs",
     "check:team-lane-crypto-names": "node scripts/check-team-lane-crypto-names.mjs",
     "check:tracker-policy-reads": "node scripts/check-tracker-policy-reads.mjs",
-    "check:analytics-allowlist": "node scripts/check-analytics-allowlist.mjs"
+    "check:analytics-allowlist": "node scripts/check-analytics-allowlist.mjs",
+    "test:cloudflare-sandbox": "node scripts/ensure-sandbox-dependencies.mjs && npm run typecheck --prefix packages/cloudflare-sandbox && npm run test:artifact --prefix packages/cloudflare-sandbox && node --test packages/cloudflare-sandbox/container/checks/image-pins.test.mjs"
   },
   "devDependencies": {
     "@babel/plugin-transform-flow-strip-types": "^7.24.7",
@@ -111,6 +113,7 @@
     "packages/runtime",
     "packages/cli",
     "packages/tracker-core",
+    "packages/node",
     "packages/core",
     "packages/collab-protocol",
     "packages/collab-client",

@@ -1,16 +1,11 @@
+import { ClaudeRuntimeStatus } from './ClaudeRuntimeStatus';
 import React, { useState, useEffect, useCallback } from 'react';
 import { useAtomValue, useSetAtom } from 'jotai';
 import { activeWorkspacePathAtom } from '../../../store/atoms/openProjects';
 import { ProviderConfig, Model } from '../../Settings/SettingsView';
-import {ClaudeForWindowsInstallation} from "../../../../main/services/CLIManager.ts";
-import {usePostHog} from "posthog-js/react";
 import { hiddenGutterItemsAtom, toggleGutterItemHiddenAtom } from '../../../store/atoms/appSettings';
 import { SettingsToggle, ToggleSwitch } from '../SettingsToggle';
 import { AlphaBadge, SETTINGS_ALPHA_TOOLTIP } from '../../common/AlphaBadge';
-
-// Built-in SDK version (injected at build time via electron.vite.config.ts define)
-declare const __CLAUDE_AGENT_SDK_VERSION__: string;
-const BUNDLED_SDK_VERSION = typeof __CLAUDE_AGENT_SDK_VERSION__ !== 'undefined' ? __CLAUDE_AGENT_SDK_VERSION__ : 'unknown';
 
 /** Props for the sibling Claude Code CLI subsection. */
 interface ClaudeCliBundle {
@@ -133,6 +128,7 @@ export function ClaudeCodePanel({
   const loginCwd = workspacePath ?? activeWorkspacePath ?? undefined;
   const [loginStatus, setLoginStatus] = useState<{
     isLoggedIn: boolean;
+    error?: string;
     hasOAuthToken: boolean;
     isExpired: boolean;
     expiresAt?: string;
@@ -147,9 +143,7 @@ export function ClaudeCodePanel({
   const [selectedAuthMethod, setSelectedAuthMethod] = useState<AuthMethod>(
     config.authMethod as AuthMethod || 'login'
   );
-  const [isCheckingClaudeWindowsStatus, setIsCheckingClaudeWindowsStatus] = useState(true);
-  const [claudeCodeWindowsStatus, setClaudeCodeWindowsStatus] = useState<ClaudeForWindowsInstallation | null>(null);
-  const posthog = usePostHog();
+  const [runtimeRevision, setRuntimeRevision] = useState(0);
 
   // Environment variables state
   const [envVars, setEnvVars] = useState<Record<string, string>>({});
@@ -181,7 +175,6 @@ export function ClaudeCodePanel({
   // Plan tracking toggle - stores plans in nimbalyst-local/plans/ with tracking frontmatter
   const [planTrackingEnabled, setPlanTrackingEnabledState] = useState(true);
 
-  const isWindowsPlatform = process.platform === 'win32';
 
   // Load environment variables
   const loadEnvVars = useCallback(async () => {
@@ -233,12 +226,6 @@ export function ClaudeCodePanel({
   }, [envVars]);
 
   useEffect(() => {
-    // Only check Windows installation status on Windows
-    if (isWindowsPlatform) {
-      checkClaudeCodeWindowsInstallation();
-    } else {
-      setIsCheckingClaudeWindowsStatus(false);
-    }
     checkLoginStatus();
     loadEnvVars();
 
@@ -257,30 +244,6 @@ export function ClaudeCodePanel({
       setLoginStatus({ isLoggedIn: false, hasOAuthToken: false, isExpired: true });
     }
   };
-
-  const checkClaudeCodeWindowsInstallation = async () => {
-    try {
-      setIsCheckingClaudeWindowsStatus(true);
-      console.log('[ClaudeCodePanel] Checking Claude Code Installation Status on Windows...');
-      const installation = await window.electronAPI.cliCheckClaudeCodeWindowsInstallation();
-      console.log('[ClaudeCodePanel] Claude Code installation status:', JSON.stringify(installation));
-      setClaudeCodeWindowsStatus(installation);
-      if (installation.isPlatformWindows) {
-        posthog.capture('check_claude_code_windows_installation', installation)
-      }
-    } catch (error) {
-      // ignore
-    } finally {
-      setIsCheckingClaudeWindowsStatus(false);
-    }
-  };
-
-  function isClaudeCodeWindowsReady(): boolean {
-    if (isWindowsPlatform) {
-      return Boolean(claudeCodeWindowsStatus?.claudeCodeVersion);
-    }
-    return true;
-  }
 
   // Load standalone binary setting and check availability
   const loadSettings = async () => {
@@ -346,6 +309,7 @@ export function ClaudeCodePanel({
         await window.electronAPI.settingsSet('ai.customClaudeCodePath', newPath);
         setGlobalCustomClaudeCodePath(newPath);
       }
+      setRuntimeRevision(revision => revision + 1);
     } catch (error) {
       console.error('[ClaudeCodePanel] Failed to save custom Claude Code path:', error);
       setCustomClaudeCodePathState(previousPath);
@@ -498,64 +462,12 @@ export function ClaudeCodePanel({
         onChange={handleToggleAgentTeams}
       />
 
-      { isWindowsPlatform && isCheckingClaudeWindowsStatus && (
-        <div className="installation-status p-4 rounded-lg bg-[rgba(245,158,11,0.05)] border border-[rgba(245,158,11,0.2)]">
-          <div className="installation-status-row flex items-center gap-3 py-1">
-            <span className="installation-status-label text-sm font-medium text-[var(--nim-text-muted)]">Checking Claude Code Installation...</span>
-          </div>
-        </div>
-      )}
-      { !isCheckingClaudeWindowsStatus && (
-        <div className="provider-panel-section py-4 mb-4 border-b border-[var(--nim-border)] last:border-b-0 last:mb-0 last:pb-0">
-          { isWindowsPlatform ? (
-            <>
-              <h4 className="provider-panel-section-title text-base font-semibold mb-3 text-[var(--nim-text)]">Claude Code for Windows Installation</h4>
-              <p className="text-xs text-[var(--nim-text-muted)] mt-3 leading-relaxed">
-                Nimbalyst requires Claude Code for Windows to be installed to use the Claude Code provider.
-              </p>
-              { Boolean(claudeCodeWindowsStatus?.claudeCodeVersion) ? (
-                <div className="installation-status mt-3 p-4 rounded-lg bg-[rgba(16,185,129,0.05)] border border-[rgba(16,185,129,0.2)]">
-                  <div className="installation-status-row flex items-center gap-3 py-1">
-                    <span className="installation-status-label text-sm font-medium text-[var(--nim-text-muted)]">Claude Code Version:</span>
-                    <span className="installation-status-value text-sm text-[var(--nim-text)]">{claudeCodeWindowsStatus?.claudeCodeVersion}</span>
-                  </div>
-                </div>
-              ): (
-                <div className="installation-status mt-3 p-4 rounded-lg bg-[rgba(239,68,68,0.05)] border border-[rgba(239,68,68,0.2)]">
-                  <div className="text-xs text-[var(--nim-text-muted)] mt-3 leading-relaxed">
-                    <p className="mb-2">Install Claude Code for Windows by following the instructions below:</p>
-                    <ol className="list-decimal list-inside space-y-1 mb-4">
-                      <li>Install <a href="https://git-scm.com/install/windows" className="text-[var(--nim-link)] hover:underline">Git for Windows</a>. This is a prerequisite for installing Claude Code</li>
-                      <li>Install <a href="https://code.claude.com/docs/en/overview#windows" className="text-[var(--nim-link)] hover:underline">Claude Code for Windows</a>.</li>
-                      <li>When finished, click the button below to recheck / verify the installation.</li>
-                    </ol>
-                    <button className="nim-btn-primary" onClick={checkClaudeCodeWindowsInstallation}>Re-verify Claude Code Installation</button>
-                  </div>
-                </div>
-              )}
-            </>
-          ): (
-            <>
-              <h4 className="provider-panel-section-title text-base font-semibold mb-3 text-[var(--nim-text)]">Claude Agent SDK</h4>
-              <div className="installation-status p-4 rounded-lg bg-[rgba(16,185,129,0.05)] border border-[rgba(16,185,129,0.2)]">
-                <div className="installation-status-row flex items-center gap-3 py-1">
-                  <span className="installation-status-label text-sm font-medium text-[var(--nim-text-muted)]">Version:</span>
-                  <span className="installation-status-value text-sm text-[var(--nim-text)]">{BUNDLED_SDK_VERSION}</span>
-                </div>
-                <div className="installation-status-row flex items-center gap-3 py-1">
-                  <span className="installation-status-label text-sm font-medium text-[var(--nim-text-muted)]">Source:</span>
-                  <span className="installation-status-value text-sm text-[var(--nim-text)]">Built-in (bundled with app)</span>
-                </div>
-                <p className="text-xs leading-relaxed text-[var(--nim-text-muted)] mt-3">
-                  Nimbalyst includes the Claude Agent SDK. No additional installation required.
-                </p>
-              </div>
-            </>
-          )}
-        </div>
+      <ClaudeRuntimeStatus scope={scope} workspacePath={workspacePath} revision={runtimeRevision} />
+      {loginStatus?.error && (
+        <p className="claude-runtime-error text-sm text-[var(--nim-error)] select-text" role="alert">{loginStatus.error}</p>
       )}
 
-      {config.enabled && isClaudeCodeWindowsReady() && (
+      {config.enabled && (
         <>
           <div className="provider-panel-section py-4 mb-4 border-b border-[var(--nim-border)] last:border-b-0 last:mb-0 last:pb-0">
             <h4 className="provider-panel-section-title text-base font-semibold mb-3 text-[var(--nim-text)]">Authentication</h4>

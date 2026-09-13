@@ -21,6 +21,7 @@ const { mockQuery, mockDocumentServices } = vi.hoisted(() => ({
 vi.mock('../../../database/initialize', () => ({
   getDatabase: () => ({
     query: mockQuery,
+    runTransaction: async (statements: Array<{ sql: string; params: unknown[] }>) => { for (const statement of statements) await mockQuery(statement.sql, statement.params); },
     getEngine: vi.fn(() => 'pglite'),
   }),
 }));
@@ -88,15 +89,11 @@ function makeRow(overrides: Record<string, unknown> = {}) {
 
 function setupCreateQueue(type: string, hasDescription = false) {
   const createdRow = makeRow({ id: `${type}_test`, type, type_tags: [type], workspace: '/tmp/ws' });
-  mockQuery
-    .mockResolvedValueOnce({ rows: [] }) // INSERT
-    .mockResolvedValueOnce({ rows: [createdRow] }); // resolve created
-  if (hasDescription) {
-    mockQuery
-      .mockResolvedValueOnce({ rows: [{ body_version: 1 }] }) // UPDATE content
-      .mockResolvedValueOnce({ rows: [] }); // INSERT tracker_body_cache
-  }
-  mockQuery.mockResolvedValueOnce({ rows: [createdRow] }); // notifyTrackerItemAdded
+  mockQuery.mockResolvedValueOnce({ rows: [] }); // INSERT item
+  if (hasDescription) mockQuery.mockResolvedValueOnce({ rows: [] }); // cache in same transaction
+  mockQuery.mockResolvedValueOnce({ rows: [createdRow] }); // resolve created
+  mockQuery.mockResolvedValueOnce({ rows: [createdRow] }); // notify
+
 }
 
 /** The data JSONB handed to the INSERT. */

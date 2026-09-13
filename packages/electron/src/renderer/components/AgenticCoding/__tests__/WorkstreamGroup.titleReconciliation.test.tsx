@@ -4,16 +4,12 @@ import { Provider } from 'jotai';
 import { act, cleanup, render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('@nimbalyst/runtime', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@nimbalyst/runtime')>();
+vi.mock('@nimbalyst/runtime/ui/icons/MaterialSymbol', () => ({ MaterialSymbol: () => null }));
+vi.mock('@nimbalyst/runtime/ui/icons/ProviderIcons', () => ({ ProviderIcon: () => null, resolveProviderIcon: (provider: string) => provider }));
+vi.mock('@nimbalyst/runtime/utils/clipboard', () => ({ copyToClipboard: vi.fn() }));
+vi.mock('@nimbalyst/runtime/ui/AgentTranscript/session/sessionRefAtoms', async () => {
   const { atom } = await import('jotai');
-  return {
-    ...actual,
-    MaterialSymbol: () => null,
-    ProviderIcon: () => null,
-    copyToClipboard: vi.fn(),
-    sessionRefMapAtom: atom(new Map()),
-  };
+  return { sessionRefMapAtom: atom(new Map()) };
 });
 vi.mock('../SessionContextMenu', () => ({ SessionContextMenu: () => null }));
 vi.mock('../SessionRelativeTime', () => ({ SessionRelativeTime: () => null }));

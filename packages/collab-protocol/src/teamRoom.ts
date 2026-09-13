@@ -1,3 +1,4 @@
+import type { DocumentFeedbackIndexSyncMessage, DocumentFeedbackIndexSnapshotMessage } from './documentFeedbackIndex.js';
 /**
  * TeamRoom wire protocol.
  *
@@ -26,6 +27,7 @@ export interface OrgSettings {
 // ============================================================================
 
 export type TeamClientMessage =
+  | DocumentFeedbackIndexSyncMessage
   | TeamSyncRequestMessage
   | FeedbackIndexSyncRequestMessage
   | TeamDocumentCommentNotifyMessage
@@ -205,6 +207,7 @@ export interface TeamDocumentCommentNotifyMessage {
 // ============================================================================
 
 export type TeamServerMessage =
+  | DocumentFeedbackIndexSnapshotMessage
   | TeamSyncResponseMessage
   | FeedbackIndexSyncResponseMessage
   | FeedbackIndexBroadcastMessage

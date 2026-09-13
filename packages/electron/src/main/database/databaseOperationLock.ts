@@ -25,6 +25,8 @@
  * `DatabaseOperationKind` is the checklist.
  */
 
+import { databaseRequiresRestart } from './databaseMaintenance';
+
 export type DatabaseOperationKind =
   /** Selected-artifact recovery from Settings or the failure dialog. */
   | 'recovery'
@@ -49,6 +51,11 @@ export type DatabaseOperationResult<T> =
   | { acquired: true; value: T }
   | { acquired: false; heldBy: DatabaseOperationKind; heldSince: string };
 
+let shuttingDown = false;
+export function beginDatabaseOperationShutdown(): void { shuttingDown = true; }
+/** Quit was abandoned; the active lease and restart fence still apply. */
+export function endDatabaseOperationShutdown(): void { shuttingDown = false; }
+
 let held: DatabaseOperationLease | null = null;
 
 /** What is running right now, if anything. Read-only; never gates on this. */
@@ -68,6 +75,9 @@ export async function withDatabaseOperationLock<T>(
   kind: DatabaseOperationKind,
   fn: () => Promise<T>,
 ): Promise<DatabaseOperationResult<T>> {
+  if (databaseRequiresRestart() || shuttingDown) {
+    return { acquired: false, heldBy: 'migration', heldSince: held?.startedAt ?? 'restart required' };
+  }
   if (held) {
     return { acquired: false, heldBy: held.kind, heldSince: held.startedAt };
   }
@@ -84,6 +94,8 @@ export function describeOperationConflict(
   heldBy: DatabaseOperationKind,
   heldSince: string,
 ): string {
+  if (shuttingDown) return 'Nimbalyst is closing. Database operations are unavailable.';
+  if (databaseRequiresRestart()) return 'The database switch requires a restart before another operation can start.';
   return `Another database operation (${heldBy}, started ${heldSince}) is in progress. `
     + 'Wait for it to finish and try again.';
 }
@@ -91,4 +103,5 @@ export function describeOperationConflict(
 /** Test seam. Production never releases the lock any way but the `finally`. */
 export function resetDatabaseOperationLockForTests(): void {
   held = null;
+  shuttingDown = false;
 }

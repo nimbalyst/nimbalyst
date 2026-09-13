@@ -56,6 +56,11 @@ jobs:
           cache-dependency-path: '**/package-lock.json'
 
       - name: Install dependencies
+        env:
+          # @vscode/ripgrep's postinstall resolves its prebuilt binary through
+          # api.github.com; unauthenticated runners share a 60 req/hr limit per
+          # egress IP and intermittently fail the whole install.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: npm ci
 
       - name: Verify expected version matches package.json
@@ -203,6 +208,11 @@ jobs:
           cache-dependency-path: '**/package-lock.json'
 
       - name: Install dependencies
+        env:
+          # @vscode/ripgrep's postinstall resolves its prebuilt binary through
+          # api.github.com; unauthenticated runners share a 60 req/hr limit per
+          # egress IP and intermittently fail the whole install.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: npm ci
 
       - name: Publish to npm (Trusted Publishing via OIDC)

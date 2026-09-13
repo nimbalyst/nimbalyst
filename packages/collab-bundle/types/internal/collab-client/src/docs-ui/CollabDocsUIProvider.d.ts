@@ -1,6 +1,6 @@
 import React from 'react';
 import type { CollabHost, CollabScope } from '../core/index';
-import type { CollabDocsSession, SharedDocument } from '../docs/index';
+import type { CollabDocsSession, SharedDocument, SharedFolder } from '../docs/index';
 export type { CollabTreeFilter, CollabDocsUIStatus, PendingCollabFolder } from '../docs/index';
 export interface CollabLocalOriginActions {
     available: boolean;
@@ -37,19 +37,12 @@ export interface CollabDocsUIProviderProps {
 }
 export declare function CollabDocsUIProvider({ session, controller, children, }: CollabDocsUIProviderProps): React.JSX.Element;
 export declare function useCollabDocsUI(): CollabDocsUIContextValue;
-/**
- * Display names for every shared document in the session, keyed by document id.
- *
- * For hosts that render their own tab strip or breadcrumb outside this package.
- * It exists here rather than in the host because the session's atoms belong to
- * the Jotai instance bundled with this package: a host reading them through its
- * own `jotai` import gets a second store and an empty result.
- *
- * Unlike `useCollabDocsUI` this does not throw without a provider. Callers use
- * it for labels, and an unnamed tab is a far better failure than an editor
- * route that will not render at all.
- */
 export declare function useSharedDocumentTitles(): Map<string, string>;
+/**
+ * The project's first-class folders, for a host that files a new item
+ * somewhere and has no tree of its own to read them from.
+ */
+export declare function useSharedFolders(): SharedFolder[];
 export interface SharedDocumentBreadcrumb {
     documentTitle: string | null;
     folders: Array<{

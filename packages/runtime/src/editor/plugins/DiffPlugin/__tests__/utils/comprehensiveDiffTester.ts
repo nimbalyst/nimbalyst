@@ -71,8 +71,21 @@ export interface ComprehensiveDiffResult {
 /**
  * Normalize markdown for comparison
  */
-function normalizeMarkdown(markdown: string): string {
-  return markdown
+export function normalizeMarkdown(markdown: string): string {
+  // Lexical exports thematic breaks as --- regardless of the imported spelling.
+  // Preserve literal *** / ___ lines inside fenced code; they are content there.
+  let fence: string | null = null;
+  const canonical = markdown.split('\n').map(line => {
+    const marker = line.match(/^ {0,3}(`{3,}|~{3,})/);
+    if (marker) {
+      if (!fence) fence = marker[1];
+      else if (marker[1][0] === fence[0] && marker[1].length >= fence.length
+        && line.slice(marker[0].length).trim() === '') fence = null;
+      return line;
+    }
+    return !fence && /^ {0,3}(?:(?:\* *){3,}|(?:_ *){3,})$/.test(line) ? '---' : line;
+  }).join('\n');
+  return canonical
     .trim()
     .replace(/\r\n/g, '\n')
     .replace(/\n{3,}/g, '\n\n')

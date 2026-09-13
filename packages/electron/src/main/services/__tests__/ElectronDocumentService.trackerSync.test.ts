@@ -47,6 +47,9 @@ mockSafeHandle.mockImplementation((channel: string, handler: (...args: any[]) =>
 vi.mock('../../database/PGLiteDatabaseWorker', () => ({
   database: {
     query: mockQuery,
+    runTransaction: async (statements: Array<{ sql: string; params: unknown[] }>) => {
+      for (const statement of statements) await mockQuery(statement.sql, statement.params);
+    },
   },
 }));
 
@@ -55,6 +58,9 @@ vi.mock('../TrackerSyncManager', () => ({
   syncTrackerItem: mockSyncTrackerItem,
   unsyncTrackerItem: mockUnsyncTrackerItem,
   isTrackerSyncActive: mockIsTrackerSyncActive,
+  onTrackerItemApplied: () => () => {},
+  onTrackerSyncWorkspaceConnected: () => () => {},
+  getTrackerItemForSync: async () => null,
 }));
 
 vi.mock('../../utils/store', () => ({

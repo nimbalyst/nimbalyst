@@ -37,8 +37,10 @@ final class SyncIntegrationTests: XCTestCase {
             XCTAssertEqual(try? self.database.sessions(forProject: projectPath).count, 1)
             imported.fulfill()
         }
-        sync.handleIndexMessage(try JSONSerialization.data(withJSONObject: payload))
-        XCTAssertEqual(sync.indexLoadState, .loading)
+        // The production entry point: JSON decode happens off the main actor,
+        // and only the routing decision comes back to it.
+        await sync.receiveIndexMessage(try JSONSerialization.data(withJSONObject: payload))
+        XCTAssertTrue(sync.lastIndexDecodeWasOffMainActor, "Index decode must not run on the main actor")
         await fulfillment(of: [imported], timeout: 5)
         subscription.cancel()
 
@@ -46,18 +48,35 @@ final class SyncIntegrationTests: XCTestCase {
             "projects": [["encryptedProjectId": "invalid", "projectIdIv": "invalid"]]]
         let failed = expectation(description: "Decryption failure is not an empty index")
         let failureSubscription = sync.$indexLoadState.filter { $0 == .failed }.prefix(1).sink { _ in failed.fulfill() }
-        sync.handleIndexMessage(try JSONSerialization.data(withJSONObject: invalidImport))
+        await sync.receiveIndexMessage(try JSONSerialization.data(withJSONObject: invalidImport))
         await fulfillment(of: [failed], timeout: 5)
         failureSubscription.cancel()
 
         let empty = expectation(description: "A successful empty retry completes loading")
-        let emptySubscription = sync.$indexLoadState.filter { $0 == .loaded }.prefix(1).sink { _ in empty.fulfill() }
-        sync.handleIndexMessage(Data(#"{"type":"indexSyncResponse","sessions":[],"projects":[]}"#.utf8))
+        // Record the sequence rather than sampling it: an arriving response has
+        // to publish .loading before it completes, and starting from .failed
+        // makes that a real transition rather than the initial state. Sampling
+        // the property right after the call cannot assert this -- the import can
+        // finish first, and the test would be checking a race.
+        var observedStates: [IndexLoadState] = []
+        let emptySubscription = sync.$indexLoadState.sink { state in
+            observedStates.append(state)
+            if state == .loaded { empty.fulfill() }
+        }
+        await sync.receiveIndexMessage(Data(#"{"type":"indexSyncResponse","sessions":[],"projects":[]}"#.utf8))
         await fulfillment(of: [empty], timeout: 5)
         emptySubscription.cancel()
+        XCTAssertEqual(
+            Array(observedStates.prefix(3)),
+            [.failed, .loading, .loaded],
+            "An arriving index response enters loading before it completes"
+        )
 
-        sync.handleIndexMessage(Data(#"{"type":"indexSyncResponse","sessions":null}"#.utf8))
+        // An undecodable response is a failure, not an empty index -- and the
+        // rows imported earlier are still there.
+        await sync.receiveIndexMessage(Data(#"{"type":"indexSyncResponse","sessions":null}"#.utf8))
         XCTAssertEqual(sync.indexLoadState, .failed)
+        XCTAssertEqual(try database.sessions(forProject: projectPath).count, 1)
     }
 
     /// Simulate receiving a server session entry, decrypting it, and storing it.

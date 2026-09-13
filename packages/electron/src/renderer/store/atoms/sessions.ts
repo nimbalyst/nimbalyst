@@ -1,3 +1,4 @@
+import {selectedMachineAtom, machineSessionSelectionsAtom} from './remoteMachines';
 /**
  * AI Session Atoms
  *
@@ -675,6 +676,10 @@ export const sessionStoreAtom = atomFamily((_sessionId: string) =>
   atom<SessionData | null>(null)
 );
 
+export const sessionRemoteHostAtom = atomFamily((sessionId: string) => atom(get =>
+  get(sessionRegistryAtom).get(sessionId)?.remoteHostDeviceId ?? get(sessionStoreAtom(sessionId))?.metadata?.remoteHostDeviceId
+));
+
 /**
  * @deprecated Use sessionStoreAtom instead
  */
@@ -1171,6 +1176,7 @@ export const loadSessionChildrenAtom = atom(
           if (!registry.has(child.id)) {
             registry.set(child.id, {
               id: child.id,
+              remoteHostDeviceId: child.remoteHostDeviceId,
               title: child.title || 'Untitled Session',
               createdAt: child.createdAt,
               updatedAt: child.updatedAt,
@@ -1295,6 +1301,7 @@ export const createChildSessionAtom = atom(
         // This prevents showing default values before loadSessionDataAtom runs
         set(sessionStoreAtom(result.sessionId), {
           id: result.sessionId,
+          ...(result.remoteHostDeviceId ? {metadata: {remoteHostDeviceId: result.remoteHostDeviceId}} : {}),
           title: 'New Session',
           provider: resolvedProvider,
           model: model || 'claude-code:sonnet',
@@ -2151,9 +2158,11 @@ export const sessionListRootAtom = atom<SessionListItem[]>((get) => {
   const registry = get(sessionRegistryAtom);
   const workspacePath = get(sessionListWorkspaceAtom) || '';
   const showArchived = get(showArchivedSessionsAtom);
+  const host = get(selectedMachineAtom(workspacePath));
 
   return Array.from(registry.values())
     .filter(s => {
+      if ((s.remoteHostDeviceId ?? "") !== host) return false;
       if (!showArchived && s.isArchived) return false;
       // Meta-agent sessions are included - they're rendered via MetaAgentGroup in SessionHistory
       if (s.agentRole === 'meta-agent') return true;
@@ -2460,6 +2469,14 @@ export const setSelectedWorkstreamAtom = atom(
   }) => {
     const prev = get(selectedWorkstreamAtom(workspacePath));
     set(selectedWorkstreamAtom(workspacePath), selection);
+    if (selection) {
+      const session = get(sessionRegistryAtom).get(selection.id);
+      if (session) {
+        const host = session.remoteHostDeviceId ?? '';
+        set(selectedMachineAtom(workspacePath), host);
+        set(machineSessionSelectionsAtom(workspacePath), previous => ({...previous, [host]: selection.id}));
+      }
+    }
 
     // Fire the selection hook (e.g., exit kanban view).
     // This fires on EVERY selection, including re-selecting the same session,

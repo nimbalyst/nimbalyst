@@ -3,11 +3,18 @@ import { parseFullDocumentTrackerId } from '@nimbalyst/runtime/plugins/TrackerPl
 import { isLocalIssueKey, isLocalKeyReference } from '../../../shared/localIssueKey';
 import type { ElectronDocumentService } from '../../services/ElectronDocumentService';
 
+function assertTrackerReference(reference: unknown): asserts reference is string {
+  if (typeof reference !== 'string' || !reference.trim()) {
+    throw new Error('Tracker reference must be a non-empty string');
+  }
+}
+
 export async function resolveTrackerRowByReference(
   db: { query: <T = any>(sql: string, params?: any[]) => Promise<{ rows: T[] }> },
   reference: string,
   workspacePath?: string,
 ): Promise<any | null> {
+  assertTrackerReference(reference);
   // Legacy provisional keys are not stable references. New items never
   // receive them, but refusing old values prevents a stale LC reference from
   // resolving to whichever historical row happens to carry it.
@@ -91,6 +98,7 @@ export async function resolveTrackerItemFromDocumentService(
   docService: ElectronDocumentService | undefined,
   reference: string,
 ): Promise<TrackerItem | null> {
+  assertTrackerReference(reference);
   if (!docService) return null;
 
   const byId = await docService.getTrackerItemById(reference);

@@ -1,3 +1,4 @@
+import { sessionInbox } from './sessionInboxService';
 import { resolveProviderApiKey } from './resolveProviderApiKey';
 import { SAVED_CREDENTIAL, withoutProviderConfigCredentials } from '../../../shared/providerCredentials';
 import { getProviderCredentials } from '../credentials/providerCredentials';
@@ -486,6 +487,7 @@ export class AIService {
       return { success: true, method: 'terminal-ctrl-c' };
     }
 
+    await sessionInbox.end(sessionInbox.current(sessionId), false).catch(err => logger.main.error('[AIService] Inbox retirement failed during interruption:', err));
     const provider = ProviderFactory.getProvider(session.provider as AIProviderType, sessionId);
     if (!provider) {
       return { success: false, error: 'No active provider for session' };

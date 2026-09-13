@@ -126,6 +126,19 @@ describe('send_prompt interrupt', () => {
     expect(result.processingTriggered).toBe(false);
   });
 
+  it('preserves explicit report semantics while defaulting untyped sends to instructions', async () => {
+    const h = setup({ status: 'running' });
+    await send(h);
+    expect(h.service.aiService.queuePromptForSession).toHaveBeenLastCalledWith(TARGET, 'do the thing', undefined, {
+      promptProvenance: { actor: 'agent', origin: 'session-orchestration', originSessionId: 'origin', messageKind: 'instruction' },
+    });
+    await h.service.sendPromptToSession('origin', TARGET, WORKSPACE, 'validation findings', false, 'report');
+    expect(h.service.aiService.queuePromptForSession).toHaveBeenLastCalledWith(TARGET, 'validation findings', undefined, {
+      promptProvenance: { actor: 'agent', origin: 'session-orchestration', originSessionId: 'origin', messageKind: 'report' },
+    });
+    expect(h.interruptCurrentTurn).not.toHaveBeenCalled();
+  });
+
   it('does not interrupt a session waiting on an interactive prompt', async () => {
     const h = setup({ status: 'waiting_for_input' });
     const result = await send(h, true);

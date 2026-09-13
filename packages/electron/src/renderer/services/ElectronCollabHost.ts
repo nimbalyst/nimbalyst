@@ -487,6 +487,12 @@ export class ElectronCollabHost implements CollabHost<ElectronDocsCapability> {
       onConversationDescriptorUpdated: (descriptor) => {
         void applyConversationDescriptorBroadcast({ orgId: scope.orgId, descriptor });
       },
+      onDocumentFeedbackIndex: (state) => {
+        void window.electronAPI.invoke('document-feedback-index:replace', {
+          workspacePath: scope.scopeKey, orgId: scope.orgId,
+          teamMemberId: scope.indexConfig.teamMemberId, state,
+        }).catch(error => console.error('[ElectronCollabHost] Document feedback index failed:', error));
+      },
       onFeedbackIndexLoaded: (entries) => {
         void window.electronAPI.invoke('feedback-request-index:replace-snapshot', {
           target: { workspacePath: scope.scopeKey, orgId: scope.orgId },

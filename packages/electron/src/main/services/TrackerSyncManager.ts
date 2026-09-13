@@ -164,6 +164,9 @@ const statusListeners = new Set<StatusListener>();
 type AppliedItemListener = (workspacePath: string, applied: AppliedTrackerItem) => void;
 const appliedItemListeners = new Set<AppliedItemListener>();
 
+type ConnectedListener = (workspacePath: string) => void;
+const connectedListeners = new Set<ConnectedListener>();
+
 function notifyStatus(status: TrackerSyncStatus): void {
   for (const cb of statusListeners) {
     try { cb(status); } catch (err) { logger.main.warn('[TrackerSyncManager] status listener error:', err); }
@@ -225,6 +228,22 @@ export function getTrackerSyncStatus(): TrackerSyncStatus {
 export function onTrackerItemApplied(listener: AppliedItemListener): () => void {
   appliedItemListeners.add(listener);
   return () => appliedItemListeners.delete(listener);
+}
+
+/**
+ * Observe a workspace's engine reaching `connected`, on every connect. Main-process
+ * work that must resume after an offline gap (creation-body publication) hangs
+ * off this rather than the aggregate status, which cannot say which workspace.
+ */
+export function onTrackerSyncWorkspaceConnected(listener: ConnectedListener): () => void {
+  connectedListeners.add(listener);
+  return () => connectedListeners.delete(listener);
+}
+
+/** Read an item through the workspace's sync store; null when the workspace has no engine. */
+export async function getTrackerItemForSync(workspacePath: string, itemId: string): Promise<TrackerItem | null> {
+  const entry = engines.get(workspacePath);
+  return entry ? entry.store.getTrackerItem(itemId) : null;
 }
 
 function currentAggregateStatus(): TrackerSyncStatus {
@@ -433,6 +452,11 @@ async function doInitializeTrackerSync(workspacePath: string): Promise<void> {
         void backfillSharedLocalItems(workspacePath).catch(err => {
           logger.main.warn('[TrackerSyncManager] backfillSharedLocalItems failed for', workspacePath, err);
         });
+        for (const cb of connectedListeners) {
+          try { cb(workspacePath); } catch (err) {
+            logger.main.warn('[TrackerSyncManager] connected listener threw:', err);
+          }
+        }
       }
     },
     onPresenceChange: (members) => {

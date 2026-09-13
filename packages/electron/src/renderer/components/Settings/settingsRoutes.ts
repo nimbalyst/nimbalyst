@@ -8,6 +8,7 @@ export type ApplicationSettingsCategory =
   | 'advanced'
   | 'database'
   | 'agent-features'
+  | 'cloudflare-sandboxes'
   | 'beta-features'
   | 'claude-code'
   | 'claude'
@@ -140,6 +141,7 @@ const builtinSettingsRouteDefinitions: readonly Omit<BuiltinSettingsRoute, 'sour
   { id: 'themes', scope: 'application', group: 'Application', label: 'Themes', icon: 'palette' },
   { id: 'voice-mode', scope: 'application', group: 'Application', label: 'Voice Mode', icon: 'mic', isAlpha: true },
   { id: 'agent-features', scope: 'application', group: 'Application', label: 'Agent Features', icon: 'science', isAlpha: true },
+  { id: 'cloudflare-sandboxes', scope: 'application', group: 'Application', label: 'Cloudflare Sandboxes', icon: 'cloud', isAlpha: true, isAvailable: developerOnly },
   { id: 'advanced', scope: 'application', group: 'Application', label: 'Advanced', icon: 'settings' },
   { id: 'database', scope: 'application', group: 'Application', label: 'Database', icon: 'database', isAlpha: true, isAvailable: developerOnly },
   { id: 'beta-features', scope: 'application', group: 'Application', label: 'Beta Features', icon: 'biotech', isAvailable: () => false },

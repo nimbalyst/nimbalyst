@@ -27,10 +27,23 @@ export interface SharedDocsListViewProps {
      */
     folderId?: string | null;
     /**
+     * Browse folders inside the list. Supplied by a host that has no folder tree
+     * beside this view (the browser console): the current level's subfolders
+     * render as rows above its documents, and clicking one reports it so the
+     * host can route there. Searching, another segment, or a type/people facet
+     * leaves the level and covers the whole project again. Desktop leaves this
+     * unset: its tree owns folders and the list stays a flat view of everything.
+     */
+    onSelectFolder?: (folderId: string) => void;
+    /**
      * Creates a shared document. Supplied by the host so this view reuses the one
      * creation path (sidebar -> title bar) rather than carrying a second copy of
      * the descriptor and name-conflict handling.
      */
     onCreateDocument?: () => void;
+    /** Replaces the "Shared" label in the header: a project switcher, say. */
+    title?: React.ReactNode;
+    /** Host controls beside the search box: a New menu for a host with no tree. */
+    headerActions?: React.ReactNode;
 }
 export declare const SharedDocsListView: React.FC<SharedDocsListViewProps>;

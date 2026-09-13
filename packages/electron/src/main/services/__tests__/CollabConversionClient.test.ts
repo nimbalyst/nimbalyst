@@ -146,6 +146,15 @@ describe('CollabConversionClient', () => {
     expect(textCodec.exportToFile(live)).toBe('after');
   });
 
+  it('does not apply an initial body when the document changed during conversion', async () => {
+    addHostWindow(1);
+    const live = new Y.Doc();
+    textCodec.seedFromFile(live, 'keep these edits');
+    await expect(convertFromFileIntoDoc('seedFromFile', 'text-fixture', live, 'stale creation', undefined, () => false))
+      .rejects.toThrow('Document changed');
+    expect(textCodec.exportToFile(live)).toBe('keep these edits');
+  });
+
   it('surfaces an unregistered document type as an error, not a partial result', async () => {
     addHostWindow(1);
 

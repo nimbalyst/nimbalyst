@@ -18,9 +18,13 @@ import { store } from '@nimbalyst/runtime/store';
 import { diffTrace } from '@nimbalyst/runtime/utils/debugFlags';
 import {
   fileChangedOnDiskAtomFamily,
+  fileWatcherHealthAtomFamily, fileReconciliationAtomFamily, activeFileReconciliations,
   fileDeletedAtomFamily,
   historyPendingTagCreatedAtomFamily,
 } from '../atoms/fileWatch';
+
+import type { FileWatchHealth } from '../../../shared/fileWatchHealth';
+import { errorNotificationService } from '../../services/ErrorNotificationService';
 
 let initialized = false;
 
@@ -31,6 +35,31 @@ export function initFileChangeListeners(): () => void {
   initialized = true;
 
   const cleanups: Array<() => void> = [];
+  const warnings = new Map<string, { timer?: ReturnType<typeof setTimeout>; shown: boolean }>();
+  const healthCleanup = window.electronAPI?.on?.('file:watch-health', (data: FileWatchHealth & { root: string }) => {
+    if (!data?.root) return;
+    store.set(fileWatcherHealthAtomFamily(data.root), data);
+    const existing = warnings.get(data.root);
+    if (data.state === 'watching' || data.state === 'stopped') {
+      if (existing?.timer) clearTimeout(existing.timer);
+      if (existing?.shown && data.state === 'watching') errorNotificationService.showInfo('File updates resumed', 'Open files are being checked for changes.');
+      warnings.delete(data.root);
+    } else if (data.state === 'recovering' && !existing) {
+      const warning = { shown: false, timer: undefined as ReturnType<typeof setTimeout> | undefined };
+      warning.timer = setTimeout(() => {
+        warning.timer = undefined;
+        warning.shown = true;
+        errorNotificationService.showWarning('File updates delayed', 'Automatic file updates are recovering. Open files will continue to be checked for changes.', { duration: 10_000 });
+      }, 10_000);
+      warnings.set(data.root, warning);
+    }
+  });
+  if (typeof healthCleanup === 'function') cleanups.push(healthCleanup);
+  const reconcileCleanup = window.electronAPI?.on?.('file:reconciled', (data: { token: string; status: 'changed' | 'deleted' | 'error'; errorCode?: string }) => {
+    if (data && activeFileReconciliations.has(data.token)) store.set(fileReconciliationAtomFamily(data.token), { status: data.status, errorCode: data.errorCode });
+  });
+  if (typeof reconcileCleanup === 'function') cleanups.push(reconcileCleanup);
+  cleanups.push(() => { for (const warning of warnings.values()) if (warning.timer) clearTimeout(warning.timer); });
 
   const u1 = window.electronAPI?.on?.('file-changed-on-disk', (data: { path: string }) => {
     if (!data?.path) return;

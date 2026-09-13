@@ -16,6 +16,8 @@
  * blocks main. We keep the IPC channel names and response shapes intact so
  * the renderer (`DatabasePanel.tsx`) doesn't change.
  */
+import { findDryRunArtifact } from '../database/sqlite/dryRunArtifact';
+import { runMigrationOperation, migrationOperationSnapshot, dryRunCancellationBuffer, cancelMigrationDryRun } from '../database/migrationOperation';
 import { app } from 'electron';
 import * as path from 'path';
 import { safeHandle } from '../utils/ipcRegistry';
@@ -45,6 +47,7 @@ import {
 } from '../database/databaseOperationLock';
 import { AnalyticsService } from '../services/analytics/AnalyticsService';
 import { randomUUID } from 'crypto';
+import { beginDatabaseMaintenance, databaseRequiresRestart } from '../database/databaseMaintenance';
 import * as fs from 'fs';
 
 /**
@@ -75,6 +78,11 @@ function getUserDataPath(): string {
   return resolveDatabaseUserDataPath();
 }
 
+function completedDryRun(): { completedAt: string; totalRows: number; historyRowsQuarantined: number } | null {
+  const found = findDryRunArtifact(getUserDataPath());
+  return found ? { historyRowsQuarantined: found.manifest.perTable.find(t => t.name === 'document_history')?.rowsQuarantined ?? 0, completedAt: found.manifest.completedAt, totalRows: found.manifest.perTable.reduce((sum, table) => sum + table.rows, 0) } : null;
+}
+
 export function registerMigrationHandlers(): void {
   safeHandle('db:migration:get-status', async () => {
     try {
@@ -86,14 +94,27 @@ export function registerMigrationHandlers(): void {
       const migratedDirs = fs
         .readdirSync(userDataPath)
         .filter((d) => d.startsWith('pglite-db.migrated-'));
+      let historyRowsQuarantined = 0;
+      const live = getLiveSqliteDatabaseProxy();
+      if (resolved.backend === 'sqlite' && live && !databaseRequiresRestart()) {
+        const exists = await live.queryReadOnly("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'migration_history_quarantine'");
+        if (exists.rows.length) {
+          const count = await live.queryReadOnly<{ n: number }>('SELECT count(*) AS n FROM migration_history_quarantine');
+          historyRowsQuarantined = Number(count.rows[0]?.n ?? 0);
+        }
+      }
       return {
         success: true,
+        historyRowsQuarantined,
         activeBackend: resolved.backend,
         flagState: state,
         pgliteDirExists: fs.existsSync(pgliteDir),
         sqliteDirExists: fs.existsSync(sqliteDir),
         migratedDirs,
         running: currentDatabaseOperation()?.kind === 'migration',
+        operation: migrationOperationSnapshot(),
+        dryRunAvailable: completedDryRun(),
+        requiresRestart: databaseRequiresRestart(),
         runningDryRun: currentDatabaseOperation()?.kind === 'dry-run',
         // Typed durable refusal, so Settings can name the reason and offer a
         // retry instead of showing a boot that silently did nothing.
@@ -103,6 +124,14 @@ export function registerMigrationHandlers(): void {
       return { success: false, error: (err as Error).message };
     }
   });
+
+  safeHandle('db:migration:restart', async () => {
+    if (!databaseRequiresRestart()) return { success: false };
+    relaunchAfterReply();
+    return { success: true };
+  });
+
+  safeHandle('db:migration:cancel-dry-run', async (_event, id: string) => ({ success: cancelMigrationDryRun(id) }));
 
   safeHandle('db:migration:preflight', async () => {
     try {
@@ -118,7 +147,7 @@ export function registerMigrationHandlers(): void {
   });
 
   safeHandle('db:migration:start', async () => {
-    const held = await withDatabaseOperationLock('migration', async () => {
+    const held = await withDatabaseOperationLock('migration', () => runMigrationOperation('migration', async () => {
       const userDataPath = getUserDataPath();
       try {
         const proxy = await getMigrationProxy();
@@ -139,7 +168,7 @@ export function registerMigrationHandlers(): void {
         // this handler did -- means every later query runs against a closed
         // worker. Relaunch so startup can reconcile the journal.
         const journal = readCutoverJournal(userDataPath);
-        if (abortRequiresRelaunch(asCutoverAbort(err), journal?.phase ?? null)) {
+        if (databaseRequiresRestart() || abortRequiresRelaunch(asCutoverAbort(err), journal?.phase ?? null)) {
           logger.main.error(
             '[Migration] Cutover stopped after PGLite was closed; relaunching so startup can reconcile it',
             { phase: journal?.phase ?? 'no-journal', operationId: journal?.operationId },
@@ -153,7 +182,7 @@ export function registerMigrationHandlers(): void {
         }
         return { success: false as const, error: (err as Error).message };
       }
-    });
+    }));
     return held.acquired ? held.value : conflict(held.heldBy, held.heldSince);
   });
 
@@ -163,10 +192,11 @@ export function registerMigrationHandlers(): void {
   // FK + integrity status, on-disk SQLite size, and the pglite-db/ size for
   // comparison. Never touches pglite-db, never writes the flag.
   safeHandle('db:migration:dry-run', async () => {
-    const held = await withDatabaseOperationLock('dry-run', async () => {
+    const held = await withDatabaseOperationLock('dry-run', () => runMigrationOperation('dry-run', async () => {
       try {
         const proxy = await getMigrationProxy();
         const { result } = await proxy.startDryRun({
+          cancellation: dryRunCancellationBuffer(),
           userDataPath: getUserDataPath(),
           schemaDir: getSchemaDir(),
         });
@@ -176,12 +206,17 @@ export function registerMigrationHandlers(): void {
         );
         return { success: true as const, result };
       } catch (err) {
-        AnalyticsService.getInstance().sendEvent('migration_dry_run_failed', {
-          ...classifyDatabaseError(err),
-        });
+        const cancellation = dryRunCancellationBuffer();
+        if (cancellation && Atomics.load(new Int32Array(cancellation), 0)) {
+          logger.main.info('[Migration] Dry run cancelled; active database unchanged');
+        } else {
+          AnalyticsService.getInstance().sendEvent('migration_dry_run_failed', {
+            ...classifyDatabaseError(err),
+          });
+        }
         return { success: false as const, error: (err as Error).message };
       }
-    });
+    }));
     return held.acquired ? held.value : conflict(held.heldBy, held.heldSince);
   });
 
@@ -190,7 +225,7 @@ export function registerMigrationHandlers(): void {
   // via a cursor-based catch-up copy of anything PGLite has gained since the
   // dry-run ran. Avoids re-paying the full migration cost.
   safeHandle('db:migration:adopt-dry-run', async () => {
-    const held = await withDatabaseOperationLock('adoption', async () => {
+    const held = await withDatabaseOperationLock('adoption', () => runMigrationOperation('adoption', async () => {
       const userDataPath = getUserDataPath();
       try {
         const proxy = await getMigrationProxy();
@@ -206,7 +241,7 @@ export function registerMigrationHandlers(): void {
         // Adoption runs the same cutover, so it can close PGLite and stop for
         // the same reasons a migration can.
         const journal = readCutoverJournal(userDataPath);
-        if (abortRequiresRelaunch(asCutoverAbort(err), journal?.phase ?? null)) {
+        if (databaseRequiresRestart() || abortRequiresRelaunch(asCutoverAbort(err), journal?.phase ?? null)) {
           logger.main.error(
             '[Adopt] Cutover stopped after PGLite was closed; relaunching so startup can reconcile it',
             { phase: journal?.phase ?? 'no-journal', operationId: journal?.operationId },
@@ -220,25 +255,15 @@ export function registerMigrationHandlers(): void {
         }
         return { success: false as const, error: (err as Error).message };
       }
-    });
+    }));
     return held.acquired ? held.value : conflict(held.heldBy, held.heldSince);
   });
 
   // Expose whether an adoptable dry-run exists, so the UI can show the button.
   safeHandle('db:migration:dry-run-status', async () => {
     try {
-      const proxy = await getMigrationProxy();
-      const status = await proxy.dryRunStatus({
-        userDataPath: getUserDataPath(),
-        schemaDir: getSchemaDir(),
-      });
-      if (!status.available) return { success: true, available: false };
-      return {
-        success: true,
-        available: true,
-        completedAt: status.completedAt,
-        totalRows: status.totalRows,
-      };
+      const status = completedDryRun();
+      return status ? { success: true, available: true, ...status } : { success: true, available: false };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
@@ -257,7 +282,7 @@ export function registerMigrationHandlers(): void {
   });
 
   safeHandle('db:migration:rollback', async () => {
-    const held = await withDatabaseOperationLock('rollback', async () => {
+    const held = await withDatabaseOperationLock('rollback', () => runMigrationOperation('rollback', async () => {
       try {
         stopPeriodicBackupTimer();
         // Runs on main rather than in the SQLite worker. It is filesystem work
@@ -273,7 +298,10 @@ export function registerMigrationHandlers(): void {
             // must be shut down before sqlite-db/ can be renamed. A close that
             // rejects aborts the rollback before anything moves.
             const liveSqlite = getLiveSqliteDatabaseProxy();
-            if (liveSqlite) await liveSqlite.close();
+            if (liveSqlite) {
+              beginDatabaseMaintenance();
+              await liveSqlite.close();
+            }
           },
           log: (level, msg, meta) => logger.main[level](msg, meta),
         });
@@ -282,7 +310,7 @@ export function registerMigrationHandlers(): void {
         logger.main.error('[Rollback] failed', err);
         return { success: false as const, error: (err as Error).message };
       }
-    });
+    }));
     return held.acquired ? held.value : conflict(held.heldBy, held.heldSince);
   });
 

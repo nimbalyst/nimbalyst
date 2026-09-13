@@ -705,6 +705,34 @@ export interface RunGitCommandResult {
   error?: string;
 }
 
+/**
+ * A `close` with no exit code means git was terminated by a signal, not that
+ * it finished. Reporting the captured stderr in that case is misleading: a
+ * push whose pre-push hook had fully passed died this way on 2026-09-11, and
+ * the panel showed the hook's own noise as if the hook had rejected it. Only
+ * the signal name says what happened (SIGHUP from a pty teardown, SIGTERM
+ * from a lock cleanup, SIGKILL from the OS), so it leads the message and the
+ * last lines of output follow for context.
+ */
+export function describeSignalExit(
+  args: string[],
+  signal: string,
+  stderr: string
+): string {
+  const tail = stderr
+    .trim()
+    .split("\n")
+    .filter((line) => !line.startsWith("    at "))
+    .slice(-12)
+    .join("\n");
+  const command = ["git", ...args.slice(0, 1)].join(" ");
+  return (
+    `${command} was terminated by ${signal} before it finished. ` +
+    `Its hooks did not reject it; another process signalled git.` +
+    (tail ? `\n\nLast output:\n${tail}` : "")
+  );
+}
+
 export async function runGitCommandStreaming(
   service: GitOperationLogService,
   workspacePath: string,
@@ -761,8 +789,13 @@ export async function runGitCommandStreaming(
     child.once("error", (error) => {
       void settle(-1, error.message);
     });
-    child.once("close", (code) => {
-      void settle(code ?? -1);
+    child.once("close", (code, signal) => {
+      void settle(
+        code ?? -1,
+        code === null && signal
+          ? describeSignalExit(args, signal, stderr)
+          : undefined
+      );
     });
   });
 }

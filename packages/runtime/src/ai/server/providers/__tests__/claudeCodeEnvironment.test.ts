@@ -7,8 +7,15 @@ const mockApp = {
   getAppPath: vi.fn(() => '/repo/packages/electron'),
 };
 
-vi.mock('electron', () => ({
-  app: mockApp,
+// Mocked rather than injected via setHostEnvironment: this suite calls
+// vi.resetModules() before each test, so a dynamically-imported module gets a
+// fresh copy of the host singleton that no earlier setter call reached. A
+// vi.mock is re-applied to every module graph and survives the reset.
+vi.mock('../../../../host/hostEnvironment', () => ({
+  getHostEnvironment: () => ({
+    isPackaged: () => mockApp.isPackaged,
+    getAppPath: () => mockApp.getAppPath(),
+  }),
 }));
 
 describe('claudeCodeEnvironment', () => {

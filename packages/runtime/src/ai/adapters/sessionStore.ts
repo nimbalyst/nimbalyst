@@ -9,6 +9,8 @@ export type ChatSession = SessionData;
  * This is the single source of truth for session list/registry items.
  */
 export interface SessionMeta {
+  /** Read-only desktop mirror; execution remains on this remote device. */
+  remoteHostDeviceId?: string;
   id: string;
   title: string;
   provider: string;

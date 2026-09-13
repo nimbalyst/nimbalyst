@@ -39,6 +39,8 @@ import {
   type PGLiteHandle,
 } from './PGLiteToSQLiteMigrator';
 import { MigrationProgressReporter } from './MigrationProgressReporter';
+import { captureCutoverVerification } from './cutoverVerification';
+import { deferCutoverOutcome } from './cutoverStartup';
 import { asCutoverAbort, runCutover } from './cutoverMachine';
 import type { CutoverFs } from './cutoverJournal';
 import { classifyDatabaseError } from '../DatabaseErrorTelemetry';
@@ -239,7 +241,9 @@ export class MigrationOrchestrator {
    * one place that decides what a result looks like.
    */
   private report(body: MigrationOutcomeBody): void {
-    this.opts.onOutcome?.(buildMigrationOutcome('migrate', this.opts.operation, body));
+    const outcome = buildMigrationOutcome('migrate', this.opts.operation, body);
+    if (outcome.kind === 'completed' && deferCutoverOutcome(this.opts.userDataPath, outcome)) return;
+    this.opts.onOutcome?.(outcome);
   }
 
   /**
@@ -391,11 +395,16 @@ export class MigrationOrchestrator {
               await closedSource.close();
             }
           })();
+          copied.historyRowsQuarantined = finalCatchUp.historyRowsQuarantined;
+          copied.manifest = finalCatchUp.manifest;
           copied.totalRowsCopied += finalCatchUp.rowsAdded;
           copied.tablesCopied = mergeCopiedTables(copied.tablesCopied, finalCatchUp.perTable);
+          reporter?.announcePhase('verifying-integrity');
+          const verification = captureCutoverVerification(sqliteHandle);
           phase = 'closing-sqlite';
           await sqliteHandle.close();
           sqlite = null;
+          return verification;
         },
       }).catch((err) => {
         const abort = asCutoverAbort(err);
@@ -411,7 +420,7 @@ export class MigrationOrchestrator {
       if (this.opts.onCutoverSuccess) {
         await this.opts.onCutoverSuccess({ sqliteDir, pgliteMigratedDir, summary });
       }
-      reporter?.emitComplete(summary);
+      reporter?.announcePhase('finalizing');
       log('info', '[orchestrator] migration succeeded', summary);
 
       this.report({

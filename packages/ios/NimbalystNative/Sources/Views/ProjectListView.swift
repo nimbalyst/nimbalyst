@@ -25,7 +25,9 @@ public struct ProjectListView: View {
                         onSelectProject(project)
                     } label: {
                         ProjectRow(project: project)
+                            .contentShape(Rectangle())
                     }
+                    .buttonStyle(.plain)
                 }
             } header: {
                 brandingHeader

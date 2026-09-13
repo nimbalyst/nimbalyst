@@ -1,0 +1,16 @@
+.tracker-quick-create-rich-content {
+  min-width: 0;
+  background: var(--nim-bg);
+}
+.tracker-quick-create-rich-editor {
+  height: 260px;
+  min-height: 120px;
+  max-height: 40vh;
+  overflow: hidden;
+}
+.tracker-quick-create-rich-editor .editor-container {
+  min-height: 0;
+}
+.tracker-quick-create-rich-editor .ContentEditable__root {
+  padding: 8px 12px;
+}

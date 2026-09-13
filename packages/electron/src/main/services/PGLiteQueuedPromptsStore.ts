@@ -258,7 +258,7 @@ export function createPGLiteQueuedPromptsStore(
       if (!includeCompleted) {
         query += ` AND status NOT IN ('completed', 'failed')`;
       }
-      query += ` ORDER BY created_at ASC`;
+      query += ` ORDER BY created_at ASC, id ASC`;
 
       const { rows } = await db.query<any>(query, [sessionId]);
       return rows.map(rowToQueuedPrompt);
@@ -270,7 +270,7 @@ export function createPGLiteQueuedPromptsStore(
       const { rows } = await db.query<any>(
         `SELECT * FROM queued_prompts
          WHERE session_id = $1 AND status = 'pending'
-         ORDER BY created_at ASC`,
+         ORDER BY created_at ASC, id ASC`,
         [sessionId]
       );
 
@@ -338,7 +338,7 @@ export function createPGLiteQueuedPromptsStore(
       await db.query(
         `UPDATE queued_prompts
          SET status = 'completed', completed_at = CURRENT_TIMESTAMP, error_message = NULL
-         WHERE id = $1`,
+         WHERE id = $1 AND document_context->'inboxDelivery' IS NULL`,
         [id]
       );
 
@@ -351,7 +351,7 @@ export function createPGLiteQueuedPromptsStore(
       await db.query(
         `UPDATE queued_prompts
          SET status = 'failed', completed_at = CURRENT_TIMESTAMP, error_message = $2
-         WHERE id = $1`,
+         WHERE id = $1 AND document_context->'inboxDelivery' IS NULL`,
         [id, errorMessage]
       );
 
@@ -361,11 +361,12 @@ export function createPGLiteQueuedPromptsStore(
     async delete(id: string): Promise<void> {
       await ensureReady();
 
-      await db.query(
-        `DELETE FROM queued_prompts WHERE id = $1`,
+      const deleted = await db.query(
+        `DELETE FROM queued_prompts WHERE id = $1 AND status = 'pending' RETURNING id`,
         [id]
       );
 
+      if (!deleted.rows.length) throw new Error('Queued prompt was already claimed or removed; refresh the queue before editing it');
       console.log(`[QueuedPromptsStore] Deleted prompt ${id}`);
     },
 
@@ -375,7 +376,7 @@ export function createPGLiteQueuedPromptsStore(
       const { rows } = await db.query<{ id: string }>(
         `UPDATE queued_prompts
          SET status = 'pending', claimed_at = NULL
-         WHERE session_id = $1 AND status = 'executing'
+         WHERE session_id = $1 AND status = 'executing' AND document_context->'inboxDelivery' IS NULL
          RETURNING id`,
         [sessionId]
       );
@@ -392,7 +393,7 @@ export function createPGLiteQueuedPromptsStore(
       const { rows } = await db.query<{ id: string }>(
         `UPDATE queued_prompts
          SET status = 'pending', claimed_at = NULL
-         WHERE status = 'executing'
+         WHERE status = 'executing' AND document_context->'inboxDelivery' IS NULL
          RETURNING id`
       );
 
@@ -404,6 +405,12 @@ export function createPGLiteQueuedPromptsStore(
 
     async sweepExecutingOnBoot(): Promise<{ completed: number; failed: number; rolledBack: number }> {
       await ensureReady();
+      const inboxResult = await db.query(
+        `UPDATE queued_prompts SET status = 'failed', completed_at = CURRENT_TIMESTAMP, error_message = $1
+         WHERE status = 'executing' AND document_context->'inboxDelivery' IS NOT NULL RETURNING id`,
+        ['Inbox reports were recorded during an interrupted turn; delivery is uncertain and will not be replayed automatically.'],
+      );
+
 
       // Pass 1: rows whose user message was already logged to
       // ai_agent_messages AND that have agent output after the claim --
@@ -437,7 +444,7 @@ export function createPGLiteQueuedPromptsStore(
       const completedResult = await db.query<{ id: string }>(
         `UPDATE queued_prompts
          SET status = 'completed', completed_at = CURRENT_TIMESTAMP
-         WHERE (
+         WHERE document_context->'inboxDelivery' IS NULL AND (
            (status = 'executing' AND claimed_at IS NOT NULL
             AND EXISTS (
               SELECT 1 FROM ai_agent_messages m
@@ -452,7 +459,7 @@ export function createPGLiteQueuedPromptsStore(
                 AND m.created_at >= queued_prompts.claimed_at
             ))
            OR
-           (status = 'pending'
+           (status = 'pending' AND document_context->'promptProvenance'->>'messageKind' IS NULL
             AND EXISTS (
               SELECT 1 FROM ai_agent_messages m
               WHERE m.session_id = queued_prompts.session_id
@@ -461,7 +468,7 @@ export function createPGLiteQueuedPromptsStore(
                 AND POSITION(queued_prompts.prompt IN m.content) > 0
             ))
            OR
-           (status = 'pending'
+           (status = 'pending' AND document_context->'promptProvenance'->>'messageKind' IS NULL
             AND created_at < NOW() - INTERVAL '1 day')
          )
          RETURNING id`
@@ -500,12 +507,12 @@ export function createPGLiteQueuedPromptsStore(
       const rolledBackResult = await db.query<{ id: string }>(
         `UPDATE queued_prompts
          SET status = 'pending', claimed_at = NULL
-         WHERE status = 'executing'
+         WHERE status = 'executing' AND document_context->'inboxDelivery' IS NULL
          RETURNING id`
       );
 
       const completed = completedResult.rows.length;
-      const failed = failedResult.rows.length;
+      const failed = failedResult.rows.length + inboxResult.rows.length;
       const rolledBack = rolledBackResult.rows.length;
 
       if (completed > 0 || failed > 0 || rolledBack > 0) {
@@ -519,6 +526,12 @@ export function createPGLiteQueuedPromptsStore(
 
     async sweepExecutingForSession(sessionId: string): Promise<{ completed: number; failed: number; rolledBack: number }> {
       await ensureReady();
+      const inboxResult = await db.query(
+        `UPDATE queued_prompts SET status = 'failed', completed_at = CURRENT_TIMESTAMP, error_message = $1
+         WHERE status = 'executing' AND document_context->'inboxDelivery' IS NOT NULL AND session_id = $2 RETURNING id`,
+        ['Inbox reports were recorded during an interrupted turn; delivery is uncertain and will not be replayed automatically.', sessionId],
+      );
+
 
       // Pass 1: same delivery + output-evidence check as
       // sweepExecutingOnBoot, but scoped to a single session. Used on
@@ -527,7 +540,7 @@ export function createPGLiteQueuedPromptsStore(
       const completedResult = await db.query<{ id: string }>(
         `UPDATE queued_prompts
          SET status = 'completed', completed_at = CURRENT_TIMESTAMP
-         WHERE status = 'executing'
+         WHERE status = 'executing' AND document_context->'inboxDelivery' IS NULL
            AND session_id = $1
            AND claimed_at IS NOT NULL
            AND EXISTS (
@@ -557,7 +570,7 @@ export function createPGLiteQueuedPromptsStore(
       const failedResult = await db.query<{ id: string }>(
         `UPDATE queued_prompts
          SET status = 'failed', completed_at = CURRENT_TIMESTAMP, error_message = $2
-         WHERE status = 'executing'
+         WHERE status = 'executing' AND document_context->'inboxDelivery' IS NULL
            AND session_id = $1
            AND claimed_at IS NOT NULL
            AND EXISTS (
@@ -581,13 +594,13 @@ export function createPGLiteQueuedPromptsStore(
       const rolledBackResult = await db.query<{ id: string }>(
         `UPDATE queued_prompts
          SET status = 'pending', claimed_at = NULL
-         WHERE status = 'executing' AND session_id = $1
+         WHERE status = 'executing' AND session_id = $1 AND document_context->'inboxDelivery' IS NULL
          RETURNING id`,
         [sessionId]
       );
 
       const completed = completedResult.rows.length;
-      const failed = failedResult.rows.length;
+      const failed = failedResult.rows.length + inboxResult.rows.length;
       const rolledBack = rolledBackResult.rows.length;
 
       if (completed > 0 || failed > 0 || rolledBack > 0) {

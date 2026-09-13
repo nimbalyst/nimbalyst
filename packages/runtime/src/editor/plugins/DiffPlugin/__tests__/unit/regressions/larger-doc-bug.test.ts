@@ -4,9 +4,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import {testComprehensiveDiff} from '../../utils/comprehensiveDiffTester';
-import * as fs from 'fs';
-import * as path from 'path';
+import { largeDocumentDiff } from '../../utils/largeDocumentDiff';
 
 describe('Larger document with section additions', () => {
   it('should handle large document diff without errors', () => {
@@ -16,24 +14,8 @@ describe('Larger document with section additions', () => {
      * This ensures all node types can receive diff states properly.
      */
 
-    // Read the actual test files
-    const oldMarkdown = fs.readFileSync(
-      path.join(__dirname, '../larger/test-old.md'),
-      'utf8'
-    );
-    const newMarkdown = fs.readFileSync(
-      path.join(__dirname, '../larger/test-new.md'),
-      'utf8'
-    );
-
-    // Run comprehensive diff test
-    const result = testComprehensiveDiff(oldMarkdown, newMarkdown);
-
-    // Print errors if any
-    if (!result.success) {
-      console.log('\n=== ERRORS ===');
-      result.errors.forEach(err => console.log(err));
-    }
+    const { result } = largeDocumentDiff('test');
+    expect(result.success, result.errors.join('\n')).toBe(true);
 
     // Verify diff states were applied (not all unchanged)
     const nodesWithDiffState = result.withDiff.nodes.filter(n => n.diffState !== null);
@@ -51,8 +33,7 @@ describe('Larger document with section additions', () => {
     const bestPracticesWithDiff = bestPracticesNodes.filter(n => n.diffState !== null);
     expect(bestPracticesWithDiff.length, 'Best Practices should be marked as changed').toBeGreaterThan(0);
 
-    // Large-doc serializer can differ slightly while preserving content.
-    expect(result.afterAccept.markdown.length).toBeGreaterThan(0);
-    expect(result.afterReject.markdown.length).toBeGreaterThan(0);
+    expect(result.acceptMatchesNew.matches).toBe(true);
+    expect(result.rejectMatchesOld.matches).toBe(true);
   });
 });

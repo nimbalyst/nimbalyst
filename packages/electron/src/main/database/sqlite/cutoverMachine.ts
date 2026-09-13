@@ -34,6 +34,7 @@ import {
   readBackendState,
   type DatabaseBackend,
 } from './BackendSelector';
+import type { CutoverVerification } from './cutoverVerification';
 
 export interface CutoverRequest {
   userDataPath: string;
@@ -70,7 +71,7 @@ export interface CutoverRequest {
    * Optional last pass over the now-frozen source (the exact catch-up) plus
    * closing the target handle. Runs after the quiesce and before the rename.
    */
-  finalizeTarget?: () => Promise<void>;
+  finalizeTarget?: () => Promise<CutoverVerification | void>;
   /** Open the committed backend and read back what we expect. */
   reopenAndVerify?: () => Promise<void>;
   cutoverFs?: CutoverFs;
@@ -232,11 +233,18 @@ export async function runCutover(req: CutoverRequest): Promise<CutoverResult> {
   // true the moment `quiesceSource` resolves. Writing it after `finalizeTarget`
   // instead left a catch-up failure looking, to every reader of the journal,
   // like a launch that still had PGLite open.
+  journal.source.fingerprint = fingerprintSource(req.sourceLiveDir);
   journal = advanceCutoverPhase(userDataPath, journal, 'source_quiesced');
 
   try {
-    await req.finalizeTarget?.();
+    const verification = await req.finalizeTarget?.();
+    // The live source may have changed since prepared. Capture its frozen
+    // identity after the final close, immediately before preservation.
+    journal = { ...journal, source: { ...journal.source, fingerprint: fingerprintSource(req.sourceLiveDir) }, ...(verification ? { verification } : {}) };
+    writeCutoverJournal(userDataPath, journal);
   } catch (err) {
+    journal.source.fingerprint = fingerprintSource(req.sourceLiveDir);
+    writeCutoverJournal(userDataPath, journal);
     // PGLite is closed but the source directory is untouched, so the next
     // launch opens it exactly as before. The journal stays: the reconciler
     // restores the flag and clears it.
@@ -296,6 +304,12 @@ export async function runCutover(req: CutoverRequest): Promise<CutoverResult> {
     );
   }
   journal = advanceCutoverPhase(userDataPath, journal, 'backend_committed');
+
+  // A promoted store has not been opened by the next process. Leave the
+  // journal until that production startup acknowledges its content reads.
+  if (!req.reopenAndVerify) {
+    return { preservedDir: req.sourcePreservedDir, targetDir: req.targetLiveDir };
+  }
 
   // --- reopened_verified ----------------------------------------------------
   try {

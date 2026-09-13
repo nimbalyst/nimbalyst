@@ -15,6 +15,7 @@
 import { describe, expect, it, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
 import { PGlite } from '@electric-sql/pglite';
 import * as fs from 'fs';
+import { deserialize } from 'node:v8';
 import * as os from 'os';
 import * as path from 'path';
 import { SQLiteDatabase } from '../SQLiteDatabase';
@@ -27,6 +28,34 @@ import {
 
 // Resolve to the shipping schema file.
 const SCHEMA_DIR = path.resolve(__dirname, '..', 'schemas');
+
+describe('PGLiteToSQLiteMigrator cutover whitelist', () => {
+  it('includes tool usage counters and backfill state in the cutover whitelist', () => {
+    expect(__TEST_HOOKS.COPY_TABLES).toEqual(
+      expect.arrayContaining([
+        'tool_usage_counters',
+        'tool_usage_backfill_meta',
+        'tool_usage_backfill_sessions',
+      ]),
+    );
+  });
+
+  // Omitting these silently drops every user's commit provenance on cutover.
+  it('includes the session commit ledger in the cutover whitelist', () => {
+    expect(__TEST_HOOKS.COPY_TABLES).toEqual(
+      expect.arrayContaining(['session_commits', 'session_commit_backfill_meta']),
+    );
+  });
+
+  it('preserves feedback request caches and indexes during backend cutover', () => {
+    expect(__TEST_HOOKS.COPY_TABLES).toEqual(expect.arrayContaining([
+      'feedback_request_cache',
+      'feedback_request_index',
+      'feedback_request_index_backfill',
+    ]));
+  });
+
+});
 
 describe('PGLiteToSQLiteMigrator', () => {
   let tmp: string;
@@ -58,31 +87,6 @@ describe('PGLiteToSQLiteMigrator', () => {
     await sqlite.close();
     await pglite.close();
     fs.rmSync(tmp, { recursive: true, force: true });
-  });
-
-  it('includes tool usage counters and backfill state in the cutover whitelist', () => {
-    expect(__TEST_HOOKS.COPY_TABLES).toEqual(
-      expect.arrayContaining([
-        'tool_usage_counters',
-        'tool_usage_backfill_meta',
-        'tool_usage_backfill_sessions',
-      ]),
-    );
-  });
-
-  // Omitting these silently drops every user's commit provenance on cutover.
-  it('includes the session commit ledger in the cutover whitelist', () => {
-    expect(__TEST_HOOKS.COPY_TABLES).toEqual(
-      expect.arrayContaining(['session_commits', 'session_commit_backfill_meta']),
-    );
-  });
-
-  it('preserves feedback request caches and indexes during backend cutover', () => {
-    expect(__TEST_HOOKS.COPY_TABLES).toEqual(expect.arrayContaining([
-      'feedback_request_cache',
-      'feedback_request_index',
-      'feedback_request_index_backfill',
-    ]));
   });
 
   it('replaces the SQLite bootstrap backfill cutoff with the PGLite source cutoff', async () => {
@@ -255,6 +259,12 @@ describe('PGLiteToSQLiteMigrator', () => {
         content TEXT NOT NULL,
         cached_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         PRIMARY KEY (item_id, body_version)
+      );
+
+      CREATE TABLE tracker_creation_receipts (
+        item_id TEXT PRIMARY KEY REFERENCES tracker_items(id) ON DELETE CASCADE,
+        workspace TEXT NOT NULL, request_hash TEXT NOT NULL,
+        publication_status TEXT NOT NULL, error TEXT, updated TIMESTAMPTZ DEFAULT NOW()
       );
 
       CREATE TABLE tracker_transactions (
@@ -461,6 +471,11 @@ describe('PGLiteToSQLiteMigrator', () => {
       ['tr-1', 1, '# Login broken\n\nFails on Safari.'],
     );
 
+    await pglite.query(
+      'INSERT INTO tracker_creation_receipts (item_id, workspace, request_hash, publication_status, error) VALUES ($1,$2,$3,$4,$5)',
+      ['tr-1', 'ws-A', 'request-hash', 'pending', 'Acknowledgment lost'],
+    );
+
     // tracker_transactions
     await pglite.query(
       `INSERT INTO tracker_transactions(client_mutation_id, item_id, workspace_path, state, kind, payload)
@@ -547,6 +562,9 @@ describe('PGLiteToSQLiteMigrator', () => {
       '2026-07-15T05:00:00.000Z',
     );
 
+    expect(sqlite.getRawHandle()!.prepare('SELECT request_hash, publication_status, error FROM tracker_creation_receipts WHERE item_id = ?').get('tr-1'))
+      .toEqual({ request_hash: 'request-hash', publication_status: 'pending', error: 'Acknowledgment lost' });
+
     // Progress events fired through every phase and ended at 100%.
     const phases = new Set(progressEvents.map((p) => p.phase));
     expect(phases.has('copying')).toBe(true);
@@ -555,6 +573,100 @@ describe('PGLiteToSQLiteMigrator', () => {
     expect(phases.has('verifying-foreign-keys')).toBe(true);
     expect(phases.has('finalizing')).toBe(true);
     expect(progressEvents[progressEvents.length - 1].percentOfTotal).toBe(100);
+  });
+
+  async function seedHistory(count: number, badIds: number[]) {
+    await seedPgliteSchema();
+    await pglite.exec('ALTER TABLE document_history ALTER COLUMN content DROP NOT NULL');
+    await pglite.exec(`INSERT INTO document_history(workspace_id, file_path, content, timestamp)
+      SELECT 'ws-A', 'history-' || n, decode('00ff10', 'hex'), n FROM generate_series(1, ${count}) n`);
+    for (const id of badIds) await pglite.query(
+      `UPDATE document_history SET content = NULL WHERE id = $1`, [id]);
+  }
+
+  it('migrates nullable metadata and JSONB string scalars intact without quarantine', async () => {
+    await seedHistory(3, []);
+    await pglite.exec(`ALTER TABLE document_history ALTER COLUMN metadata DROP NOT NULL;
+      UPDATE document_history SET metadata = CASE id WHEN 1 THEN '"invalid-json-text"'::jsonb WHEN 2 THEN NULL ELSE 'null'::jsonb END`);
+    const summary = await new PGLiteToSQLiteMigrator().migrate({ pglite, sqlite, spotCheckPerTable: 3 });
+    expect(summary.historyRowsQuarantined).toBe(0);
+    expect(sqlite.getRawHandle()!.prepare('SELECT metadata, content FROM document_history ORDER BY id').all()).toEqual([
+      { metadata: '"invalid-json-text"', content: Buffer.from([0, 255, 16]) },
+      { metadata: '{}', content: Buffer.from([0, 255, 16]) },
+      { metadata: '{}', content: Buffer.from([0, 255, 16]) },
+    ]);
+  });
+
+  it('rebuilds history quarantine during full recopy without retaining stale omissions', async () => {
+    await seedHistory(300, [50, 100]);
+    const migrator = new PGLiteToSQLiteMigrator();
+    const first = await migrator.migrate({ pglite, sqlite });
+    await pglite.exec("UPDATE document_history SET content = decode('00ff10', 'hex') WHERE id = 50");
+    const manifest = { ...first.manifest!, perTable: first.manifest!.perTable.filter(t => t.name !== 'document_history') };
+    const next = await migrator.catchUp({ pglite, sqlite, manifest });
+    expect(next.historyRowsQuarantined).toBe(1);
+    expect(sqlite.getRawHandle()!.prepare('SELECT source_id FROM migration_history_quarantine').all()).toEqual([{ source_id: 100 }]);
+    expect(sqlite.getRawHandle()!.prepare('SELECT count(*) AS n FROM document_history').get()).toEqual({ n: 299 });
+  });
+
+  it('quarantines isolated history rows, verifies only copied samples, and retains originals after reopen', async () => {
+    await seedHistory(100, [50]);
+    const summary = await new PGLiteToSQLiteMigrator().migrate({ pglite, sqlite, batchSize: 100, spotCheckPerTable: 100 });
+    expect(summary.historyRowsQuarantined).toBe(1);
+    expect(summary.tablesCopied.find(t => t.name === 'document_history')?.rows).toBe(99);
+    expect(summary.manifest?.perTable.find(t => t.name === 'document_history')).toMatchObject({ rows: 99, cursorMax: 100, rowsQuarantined: 1 });
+    expect(summary.integrityCheck).toBe('ok');
+    expect(summary.foreignKeyViolations).toBe(0);
+    expect((await pglite.query('SELECT count(*) AS n FROM document_history')).rows).toEqual([{ n: 100 }]);
+    await sqlite.close();
+    sqlite = new SQLiteDatabase({ dbDir: sqliteDir, schemaDir: SCHEMA_DIR });
+    await sqlite.initialize();
+    const row = sqlite.getRawHandle()!.prepare('SELECT source_row, reason_code FROM migration_history_quarantine WHERE source_id = 50').get() as { source_row: Buffer; reason_code: string };
+    expect(deserialize(row.source_row)).toMatchObject({ id: 50, metadata: {}, content: null });
+    expect(row.reason_code).toBe('history_null_required_value');
+    expect(sqlite.getRawHandle()!.prepare('SELECT count(*) AS n FROM document_history').get()).toEqual({ n: 99 });
+  });
+
+  it('enforces a cumulative history loss budget across catch-up and retains the skipped high-water mark', async () => {
+    await seedHistory(100, [100]);
+    const migrator = new PGLiteToSQLiteMigrator();
+    const first = await migrator.migrate({ pglite, sqlite });
+    const noChange = await migrator.catchUp({ pglite, sqlite, manifest: first.manifest! });
+    expect(noChange.manifest.perTable.find(t => t.name === 'document_history')).toMatchObject({ rows: 99, cursorMax: 100, rowsQuarantined: 1 });
+    await pglite.exec(`INSERT INTO document_history(workspace_id,file_path,content,timestamp,metadata)
+      VALUES ('ws-A','new-bad',NULL,101,'{}'::jsonb)`);
+    await expect(migrator.catchUp({ pglite, sqlite, manifest: noChange.manifest })).rejects.toThrow(/history.*limit/i);
+    expect(sqlite.getRawHandle()!.prepare('SELECT count(*) AS n FROM migration_history_quarantine').get()).toEqual({ n: 1 });
+    await pglite.exec(`INSERT INTO document_history(workspace_id,file_path,content,timestamp)
+      SELECT 'ws-A','new-good-' || n,decode('00','hex'),n FROM generate_series(102,200) n`);
+    const next = await migrator.catchUp({ pglite, sqlite, manifest: noChange.manifest });
+    expect(next.historyRowsQuarantined).toBe(2);
+    expect(next.manifest.perTable.find(t => t.name === 'document_history')).toMatchObject({ rows: 198, cursorMax: 200, rowsQuarantined: 2 });
+  });
+
+  it('drains the history cursor even when deletions make the estimated catch-up delta zero', async () => {
+    await seedHistory(100, [100]);
+    const migrator = new PGLiteToSQLiteMigrator();
+    const first = await migrator.migrate({ pglite, sqlite });
+    await pglite.exec(`DELETE FROM document_history WHERE id = 1;
+      INSERT INTO document_history(workspace_id,file_path,content,timestamp)
+      VALUES ('ws-A','new-after-deletion',decode('abcd','hex'),101)`);
+    const next = await migrator.catchUp({ pglite, sqlite, manifest: first.manifest! });
+    expect(next.manifest.perTable.find(t => t.name === 'document_history')).toMatchObject({ cursorMax: 101, rowsQuarantined: 1 });
+    expect(sqlite.getRawHandle()!.prepare('SELECT content FROM document_history WHERE id = 101').get()).toEqual({ content: Buffer.from([171, 205]) });
+  });
+
+  it('keeps message row failures fatal', async () => {
+    await seedPgliteSchema();
+    await seedRows();
+    await pglite.exec('ALTER TABLE ai_agent_messages ALTER COLUMN content DROP NOT NULL; UPDATE ai_agent_messages SET content = NULL');
+    await expect(new PGLiteToSQLiteMigrator().migrate({ pglite, sqlite })).rejects.toThrow(/NOT NULL/);
+  });
+
+  it('refuses history omissions above one percent and rolls back the whole failed batch', async () => {
+    await seedHistory(100, [50, 100]);
+    await expect(new PGLiteToSQLiteMigrator().migrate({ pglite, sqlite, batchSize: 100 })).rejects.toThrow(/history.*limit/i);
+    expect(sqlite.getRawHandle()!.prepare('SELECT count(*) AS n FROM document_history').get()).toEqual({ n: 0 });
   });
 
   it('translates BYTEA -> Buffer roundtrips intact', async () => {
@@ -579,6 +691,116 @@ describe('PGLiteToSQLiteMigrator', () => {
       .get('src/binary.bin') as { content: Buffer };
     expect(Buffer.isBuffer(row.content)).toBe(true);
     expect(row.content.equals(payload)).toBe(true);
+  });
+
+  it('recovers a settled source timeout from the last committed message without losing or duplicating rows', async () => {
+    await seedPgliteSchema();
+    await pglite.query("INSERT INTO ai_sessions(id, provider) VALUES ('recovery', 'claude-code')");
+    for (let i = 1; i <= 7; i++) {
+      await pglite.query(
+        "INSERT INTO ai_agent_messages(session_id, source, direction, content) VALUES ('recovery', 'claude-code', 'input', $1)",
+        [`message-${i}`],
+      );
+    }
+    const attempts: unknown[][] = [];
+    const progress: number[] = [];
+    let failed = false;
+    const source: PGLiteHandle = {
+      async query<T>(sql: string, params?: unknown[]) {
+        if (sql.startsWith('SELECT * FROM "ai_agent_messages"')) {
+          attempts.push([...params!]);
+          if (params?.[0] === 2 && params.length === 2 && !failed) {
+            failed = true;
+            throw Object.assign(new Error('Migration source read exceeded its deadline'), {
+              code: 'migration_read_timeout',
+              data: { sourceSettled: true, elapsedMs: 31_000 },
+            });
+          }
+        }
+        return pglite.query<T>(sql, params as unknown[]);
+      },
+      exec: (sql) => pglite.exec(sql),
+      close: async () => {},
+    };
+    const summary = await new PGLiteToSQLiteMigrator().migrate({
+      pglite: source, sqlite, batchSize: 2,
+      onProgress: (p) => {
+        if (p.phase === 'copying' && p.currentTable === 'ai_agent_messages') progress.push(p.tableRowsCopied);
+      },
+    });
+    expect(failed).toBe(true);
+    expect(attempts.slice(0, 3)).toEqual([[2], [2, 2], [2, 1]]);
+    expect(progress.filter((n) => n === 2)).toHaveLength(1);
+    expect(sqlite.getRawHandle()!.prepare('SELECT id, content FROM ai_agent_messages ORDER BY id').all())
+      .toEqual(Array.from({ length: 7 }, (_, i) => ({ id: i + 1, content: `message-${i + 1}` })));
+    expect(summary.integrityCheck).toBe('ok');
+  });
+
+  it('keyset-pages text IDs but fully reconciles lower inserts, updates, and deletions at adoption', async () => {
+    await seedPgliteSchema();
+    for (const id of ['b', 'c', 'd']) {
+      await pglite.query("INSERT INTO ai_sessions(id, provider, title) VALUES ($1, 'claude-code', $1)", [id]);
+      await pglite.query("INSERT INTO session_files(id, session_id, workspace_id, file_path, link_type) VALUES ($1, 'b', 'ws', $1, 'read')", [id]);
+    }
+    const pages: string[] = [];
+    const source: PGLiteHandle = {
+      async query<T>(sql: string, params?: unknown[]) {
+        if (/^SELECT \* FROM "(ai_sessions|session_files)"/.test(sql)) {
+          expect(sql).not.toContain('OFFSET');
+          pages.push(sql);
+        }
+        return pglite.query<T>(sql, params as unknown[]);
+      },
+      exec: (sql) => pglite.exec(sql), close: async () => {},
+    };
+    const migrator = new PGLiteToSQLiteMigrator();
+    const summary = await migrator.migrate({ pglite: source, sqlite, batchSize: 2 });
+    for (const table of ['ai_sessions', 'session_files']) {
+      expect(summary.manifest!.perTable.find((entry) => entry.name === table)?.cursorMax).toBeUndefined();
+      expect(pages.some((sql) => sql.includes(`"${table}"`) && sql.includes('"id" > $1'))).toBe(true);
+    }
+    await pglite.query("INSERT INTO ai_sessions(id, provider, title) VALUES ('a', 'claude-code', 'new')");
+    await pglite.query("UPDATE ai_sessions SET title = 'updated' WHERE id = 'c'");
+    await pglite.query("DELETE FROM session_files WHERE id = 'd'");
+    await pglite.query("DELETE FROM ai_sessions WHERE id = 'd'");
+    await pglite.query("INSERT INTO session_files(id, session_id, workspace_id, file_path, link_type) VALUES ('a', 'a', 'ws', 'new', 'read')");
+    await pglite.query("UPDATE session_files SET file_path = 'updated' WHERE id = 'c'");
+    const catchUpProgress: MigrationProgress[] = [];
+    await migrator.catchUp({ pglite: source, sqlite, batchSize: 2, manifest: summary.manifest!, onProgress: p => catchUpProgress.push(p) });
+    expect(catchUpProgress.some(p => p.currentTable === 'ai_sessions' && p.tableRowsCopied === 2 && p.tableRowsExpected === 3)).toBe(true);
+    expect(sqlite.getRawHandle()!.prepare('SELECT id, title FROM ai_sessions ORDER BY id').all()).toEqual([
+      { id: 'a', title: 'new' }, { id: 'b', title: 'b' }, { id: 'c', title: 'updated' },
+    ]);
+    expect(sqlite.getRawHandle()!.prepare('SELECT id, file_path FROM session_files ORDER BY id').all()).toEqual([
+      { id: 'a', file_path: 'new' }, { id: 'b', file_path: 'b' }, { id: 'c', file_path: 'updated' },
+    ]);
+  });
+
+  it.each([
+    { code: 'migration_read_timeout', settled: true, elapsedMs: 31_000, attempts: 2 },
+    { code: 'migration_read_timeout', settled: true, elapsedMs: 180_000, attempts: 1 },
+    { code: 'migration_read_timeout', settled: false, elapsedMs: 31_000, attempts: 1 },
+    { code: 'XX000', settled: true, elapsedMs: 31_000, attempts: 1 },
+  ])('bounds source retry and preserves terminal errors: $code / $settled / $elapsedMs', async ({ code, settled, elapsedMs, attempts }) => {
+    await seedPgliteSchema();
+    await pglite.query("INSERT INTO ai_sessions(id, provider) VALUES ('failure', 'claude-code')");
+    let reads = 0;
+    const error = Object.assign(new Error('source failure'), { code, data: { sourceSettled: settled, elapsedMs } });
+    const source: PGLiteHandle = {
+      async query<T>(sql: string, params?: unknown[]) {
+        if (sql.startsWith('SELECT * FROM "ai_sessions"')) { reads++; throw error; }
+        return pglite.query<T>(sql, params as unknown[]);
+      },
+      exec: (sql) => pglite.exec(sql), close: async () => {},
+    };
+    const result = new PGLiteToSQLiteMigrator().migrate({ pglite: source, sqlite, batchSize: 2 });
+    if (code === 'migration_read_timeout' && settled) {
+      await expect(result).rejects.toMatchObject({ code: 'migration_batch_timeout', cause: error });
+    } else {
+      await expect(result).rejects.toBe(error);
+    }
+    expect(reads).toBe(attempts);
+    expect(sqlite.getRawHandle()!.prepare('SELECT COUNT(*) AS n FROM ai_sessions').get()).toEqual({ n: 0 });
   });
 
   it('caps document_history batches for initial copy and catch-up before wide rows reach the worker bridge', async () => {

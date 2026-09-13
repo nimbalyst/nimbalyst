@@ -1,4 +1,4 @@
-import type { ToolDefinition } from './index';
+import type { ToolDefinition } from './definitions';
 
 export const DOCUMENT_TOOLS: ToolDefinition[] = [
   {

@@ -27,6 +27,7 @@
 import { atom } from 'jotai';
 import { atomFamily } from '../debug/atomFamilyRegistry';
 import { store } from '@nimbalyst/runtime/store';
+import { agentFilePlacementAtom, setAgentFilePlacementAtom } from './agentFilePlacement';
 
 // ============================================================
 // Utilities
@@ -61,6 +62,11 @@ function deepMergeWorkstreamState(
     }
   }
 
+  result.rightPanelMode = normalizeRightPanelMode(result.rightPanelMode);
+  const previousMode = normalizeRightPanelMode(result.lastAuxiliaryPanelMode);
+  result.lastAuxiliaryPanelMode = previousMode === 'file-viewer' ? 'edited-files' : previousMode;
+  result.fileViewerWidth = typeof result.fileViewerWidth === 'number' && Number.isFinite(result.fileViewerWidth)
+    ? Math.max(150, result.fileViewerWidth) : null;
   return result;
 }
 
@@ -103,7 +109,12 @@ export type FileScopeMode = 'current-changes' | 'session-files' | 'all-changes';
  * - review: collapsed inline diffs for the workstream's changes
  * - session-chat: a paired conversation that can inspect and interact with the active session
  */
-export type AgentRightPanelMode = 'edited-files' | 'review' | 'session-chat';
+export type AgentRightPanelMode = 'edited-files' | 'review' | 'session-chat' | 'file-viewer';
+export type AgentAuxiliaryPanelMode = Exclude<AgentRightPanelMode, 'file-viewer'>;
+
+function normalizeRightPanelMode(value: unknown): AgentRightPanelMode {
+  return value === 'review' || value === 'session-chat' || value === 'file-viewer' ? value : 'edited-files';
+}
 
 // ============================================================
 // Workstream Resources (typed editor tabs)
@@ -232,6 +243,9 @@ export interface WorkstreamState {
   filesSidebarVisible: boolean;
   /** Content displayed in the Agent mode right panel */
   rightPanelMode: AgentRightPanelMode;
+  lastAuxiliaryPanelMode: AgentAuxiliaryPanelMode;
+  /** Null uses 45% of the available workstream width until resized. */
+  fileViewerWidth: number | null;
   /** Normal chat session paired with each source session in the right panel. */
   sessionChatSessionIds: Record<string, string>;
 
@@ -274,6 +288,8 @@ function createDefaultState(id: string): WorkstreamState {
     splitRatio: 0.5,
     filesSidebarVisible: true,
     rightPanelMode: 'edited-files',
+    lastAuxiliaryPanelMode: 'edited-files',
+    fileViewerWidth: null,
     sessionChatSessionIds: {},
     openResources: [],
     activeResourceId: null,
@@ -493,7 +509,11 @@ export const workstreamFilesSidebarVisibleAtom = atomFamily((id: string) =>
  * Active content mode for the Agent right panel.
  */
 export const workstreamRightPanelModeAtom = atomFamily((id: string) =>
-  atom((get) => get(workstreamStateAtom(id)).rightPanelMode)
+  atom((get) => {
+    const state = get(workstreamStateAtom(id));
+    return state.rightPanelMode === 'file-viewer' && get(agentFilePlacementAtom) === 'above'
+      ? state.lastAuxiliaryPanelMode : state.rightPanelMode;
+  })
 );
 
 /**
@@ -732,11 +752,17 @@ export const toggleWorkstreamFilesSidebarAtom = atom(
 export const setWorkstreamRightPanelModeAtom = atom(
   null,
   (
-    _get,
+    get,
     set,
     { workstreamId, mode }: { workstreamId: string; mode: AgentRightPanelMode }
   ) => {
-    set(workstreamStateAtom(workstreamId), { rightPanelMode: mode });
+    const previous = get(workstreamRightPanelModeAtom(workstreamId));
+    if (mode === 'file-viewer') set(setAgentFilePlacementAtom, 'right');
+    set(workstreamStateAtom(workstreamId), {
+      rightPanelMode: mode,
+      lastAuxiliaryPanelMode: mode !== 'file-viewer' ? mode
+        : previous !== 'file-viewer' ? previous : get(workstreamStateAtom(workstreamId)).lastAuxiliaryPanelMode,
+    });
   }
 );
 
@@ -1120,6 +1146,8 @@ export const convertToWorkstreamAtom = atom(
       splitRatio: currentState.splitRatio,
       filesSidebarVisible: currentState.filesSidebarVisible,
       rightPanelMode: currentState.rightPanelMode,
+      lastAuxiliaryPanelMode: currentState.lastAuxiliaryPanelMode,
+      fileViewerWidth: currentState.fileViewerWidth,
       sessionChatSessionIds: currentState.sessionChatSessionIds,
       openResources: currentState.openResources,
       activeResourceId: currentState.activeResourceId,
@@ -1143,6 +1171,8 @@ export const convertToWorkstreamAtom = atom(
       splitRatio: 0.5,
       filesSidebarVisible: true,
       rightPanelMode: 'edited-files',
+      lastAuxiliaryPanelMode: 'edited-files',
+      fileViewerWidth: null,
       sessionChatSessionIds: {},
       openResources: [],
       activeResourceId: null,
@@ -1310,13 +1340,16 @@ export async function loadWorkstreamState(workstreamId: string): Promise<void> {
       const { openResources, activeResourceId } = migrateWorkstreamResources(
         saved as LegacyWorkstreamTabState
       );
+      const restored = deepMergeWorkstreamState(current, saved as WorkstreamState);
       const merged: WorkstreamState = {
         ...current,
         // UI state from persisted
         layoutMode: (saved as WorkstreamState).layoutMode ?? current.layoutMode,
         splitRatio: (saved as WorkstreamState).splitRatio ?? current.splitRatio,
         filesSidebarVisible: (saved as WorkstreamState).filesSidebarVisible ?? current.filesSidebarVisible,
-        rightPanelMode: (saved as WorkstreamState).rightPanelMode ?? current.rightPanelMode,
+        rightPanelMode: normalizeRightPanelMode((saved as WorkstreamState).rightPanelMode ?? current.rightPanelMode),
+        lastAuxiliaryPanelMode: restored.lastAuxiliaryPanelMode,
+        fileViewerWidth: restored.fileViewerWidth,
         sessionChatSessionIds:
           (saved as WorkstreamState).sessionChatSessionIds ?? current.sessionChatSessionIds,
         openResources,

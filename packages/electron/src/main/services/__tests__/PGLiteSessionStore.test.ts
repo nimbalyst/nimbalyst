@@ -72,6 +72,161 @@ describe('PGLiteSessionStore personal sync snapshot', () => {
       'personal-session',
     ]);
   });
+
+  // The startup/incremental reconciliation used to load every session row in
+  // the database (with its full metadata blob) and throw away the disabled
+  // projects in JS afterwards. Push the filter into SQL, resolving worktree
+  // paths once per distinct project rather than once per session.
+  it('loads only sessions from projects the caller enabled', async () => {
+    const calls: Array<{ sql: string; params: any[] }> = [];
+    const db = {
+      query: vi.fn(async (sql: string, params: any[] = []) => {
+        calls.push({ sql, params });
+        if (sql.includes('DISTINCT')) {
+          return {
+            rows: [
+              { workspace_id: '/enabled' },
+              { workspace_id: '/enabled_worktrees/feature' },
+              { workspace_id: '/disabled' },
+            ],
+          };
+        }
+        return {
+          rows: [
+            {
+              id: 'enabled-session',
+              workspace_id: '/enabled',
+              provider: 'claude-code',
+              title: 'Enabled',
+              created_at: new Date(0),
+              updated_at: new Date(0),
+              metadata: null,
+            },
+          ],
+        };
+      }),
+    };
+    createPGLiteSessionStore(db as any);
+
+    const sessions = await getAllSessionsForSync(false, {
+      // Stands in for SyncManager's resolveProjectPath()-aware check.
+      isProjectEnabled: (workspaceId: string) => workspaceId.startsWith('/enabled'),
+    });
+
+    expect(sessions.map((s) => s.id)).toEqual(['enabled-session']);
+    const sessionQuery = calls.find((call) => !call.sql.includes('DISTINCT'))!;
+    expect(sessionQuery.sql).toContain('WHERE s.workspace_id IN ($1, $2)');
+    expect(sessionQuery.params).toEqual(['/enabled', '/enabled_worktrees/feature']);
+  });
+
+  it('never scans sessions when no project is enabled', async () => {
+    const db = {
+      query: vi.fn(async () => ({ rows: [{ workspace_id: '/disabled' }] })),
+    };
+    createPGLiteSessionStore(db as any);
+
+    const sessions = await getAllSessionsForSync(false, { isProjectEnabled: () => false });
+
+    expect(sessions).toEqual([]);
+    expect(db.query).toHaveBeenCalledTimes(1);
+  });
+
+  it('marks the message count unknown so a metadata-only publish cannot zero it', async () => {
+    const db = {
+      query: vi.fn(async (sql: string) => ({
+        rows: sql.includes('DISTINCT') ? [] : [
+          {
+            id: 's1',
+            workspace_id: '/project',
+            provider: 'claude-code',
+            title: 'A',
+            created_at: new Date(0),
+            updated_at: new Date(0),
+            metadata: null,
+          },
+        ],
+      })),
+    };
+    createPGLiteSessionStore(db as any);
+
+    const [session] = await getAllSessionsForSync();
+
+    // This query has no COUNT join, so the 0 is a placeholder. The flag is what
+    // stops the sync producer publishing it over the server's real count.
+    expect(session.messageCount).toBe(0);
+    expect(session.messageCountKnown).toBe(false);
+  });
+
+  it('asks the database for the projected metadata, not the whole blob', async () => {
+    const calls: string[] = [];
+    const db = {
+      query: vi.fn(async (sql: string) => {
+        calls.push(sql);
+        return { rows: [] };
+      }),
+    };
+    createPGLiteSessionStore(db as any);
+
+    await getAllSessionsForSync();
+
+    // The projection has to be in SQL: trimming after the fact still pays the
+    // transfer cost for every session's transcript summaries.
+    expect(calls[0]).toContain("jsonb_build_object('tutorial', s.metadata->'tutorial'");
+    expect(calls[0]).not.toMatch(/,\s*s\.metadata\s+FROM/);
+    // Real-engine behavior for both backends is covered by
+    // syncMetadataProjection.dialects.test.ts.
+  });
+
+  it('drops null metadata keys the projection always emits, on both row shapes', async () => {
+    // What the SQL projection returns: every consumed key, null where the row
+    // did not have one.
+    const present = {
+      tokenUsage: { totalTokens: 10, contextWindow: 200_000 },
+      phase: 'implementing',
+      tags: ['sync'],
+      hostDeviceId: 'desktop-1',
+      tutorial: false,
+    };
+    // The projection emits all seven keys; these two were never set on the row.
+    const projected = { ...present, draftInput: null, draftUpdatedAt: null };
+    const db = {
+      query: vi.fn(async () => ({
+        rows: [
+          {
+            // SQLite hands back JSON columns as raw strings.
+            id: 'sqlite-row',
+            workspace_id: '/project',
+            provider: 'claude-code',
+            title: 'A',
+            created_at: new Date(0),
+            updated_at: new Date(0),
+            metadata: JSON.stringify(projected),
+          },
+          {
+            // PGLite hands back the parsed object.
+            id: 'pglite-row',
+            workspace_id: '/project',
+            provider: 'claude-code',
+            title: 'B',
+            created_at: new Date(0),
+            updated_at: new Date(0),
+            metadata: { ...projected },
+          },
+        ],
+      })),
+    };
+    createPGLiteSessionStore(db as any);
+
+    const sessions = await getAllSessionsForSync();
+
+    expect(sessions).toHaveLength(2);
+    for (const session of sessions) {
+      // A null draftInput must stay ABSENT: present-but-null would publish a
+      // draft clear the user never made.
+      expect(session.metadata).toEqual(present);
+      expect('draftInput' in (session.metadata ?? {})).toBe(false);
+    }
+  });
 });
 
 // Regression (GitHub #925 item 3 / NIM-1831): archiving a workstream PARENT

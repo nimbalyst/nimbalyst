@@ -38,12 +38,14 @@ export function usePrTrackerContext(
   const items = useMemo(() => references.get(prNumber) ?? [], [references, prNumber]);
 
   // The worktree linked to this PR (created via "Open in Worktree"). One-shot
-  // lookup — worktree↔PR links only change through that action, and the panel
-  // remounts per selected PR.
-  const [worktreeId, setWorktreeId] = useState<string | null>(null);
+  // lookup. Tag the result with its selection so the previous PR's worktree
+  // cannot appear as a match before the next lookup effect clears it.
+  const selectionKey = JSON.stringify([workspacePath, remote, prNumber]);
+  const [worktree, setWorktree] = useState<{ key: string; id: string | null } | null>(null);
+  const worktreeId = worktree?.key === selectionKey ? worktree.id : null;
   useEffect(() => {
     let cancelled = false;
-    setWorktreeId(null);
+    setWorktree(null);
     // prNumber 0 = no PR selected; the mode still calls this hook so the hook
     // order stays stable.
     if (!remote || !prNumber) return;
@@ -54,13 +56,13 @@ export function usePrTrackerContext(
         const match = worktrees.find(
           (w) => w.prNumber === prNumber && w.prRemote?.toLowerCase() === remote.toLowerCase(),
         );
-        setWorktreeId(match?.id ?? null);
+        setWorktree({ key: selectionKey, id: match?.id ?? null });
       })
       .catch(() => {});
     return () => {
       cancelled = true;
     };
-  }, [workspacePath, remote, prNumber]);
+  }, [workspacePath, remote, prNumber, selectionKey]);
 
   const sessions = useMemo(() => {
     const byId = new Map<string, SessionMeta>();

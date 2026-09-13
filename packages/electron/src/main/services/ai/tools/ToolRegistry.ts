@@ -4,7 +4,7 @@ import type { ToolDefinition } from '@nimbalyst/runtime/ai/server/types';
 import {
   ToolRegistry as RuntimeToolRegistry,
   toolRegistry as runtimeToolRegistry,
-} from '@nimbalyst/runtime/ai/tools';
+} from '@nimbalyst/runtime/ai/tools/definitions';
 
 let bridgeInitialized = false;
 

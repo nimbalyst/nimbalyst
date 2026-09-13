@@ -47,6 +47,12 @@ import { getRelativeTimeString } from './time';
 import { bucketItemCount, bucketQueryLength, stableCategory } from './analytics';
 import { useCollabDocsUI } from './CollabDocsUIProvider';
 import { resolveSharedDocumentTypePresentation } from './documentPresentation';
+import type { SharedDocsMenuState, SharedDocsMenuTarget } from './SharedDocsItemMenu';
+
+// Loaded on demand: the row menu carries a move dialog and a rename modal that
+// nobody needs until they right-click, and the docs-ui entry has an eager-size
+// budget the static import pushed over.
+const SharedDocsItemMenu = React.lazy(() => import('./SharedDocsItemMenu').then((module) => ({ default: module.SharedDocsItemMenu })));
 
 export interface SharedDocsListViewProps {
   /**
@@ -57,11 +63,24 @@ export interface SharedDocsListViewProps {
    */
   folderId?: string | null;
   /**
+   * Browse folders inside the list. Supplied by a host that has no folder tree
+   * beside this view (the browser console): the current level's subfolders
+   * render as rows above its documents, and clicking one reports it so the
+   * host can route there. Searching, another segment, or a type/people facet
+   * leaves the level and covers the whole project again. Desktop leaves this
+   * unset: its tree owns folders and the list stays a flat view of everything.
+   */
+  onSelectFolder?: (folderId: string) => void;
+  /**
    * Creates a shared document. Supplied by the host so this view reuses the one
    * creation path (sidebar -> title bar) rather than carrying a second copy of
    * the descriptor and name-conflict handling.
    */
   onCreateDocument?: () => void;
+  /** Replaces the "Shared" label in the header: a project switcher, say. */
+  title?: React.ReactNode;
+  /** Host controls beside the search box: a New menu for a host with no tree. */
+  headerActions?: React.ReactNode;
 }
 
 type Segment = 'all' | 'favorites' | 'review' | 'recent' | 'sharedWithMe' | 'sharedByMe';
@@ -127,7 +146,7 @@ function memberName(
   return 'Unknown';
 }
 
-export const SharedDocsListView: React.FC<SharedDocsListViewProps> = ({ folderId, onCreateDocument }) => {
+export const SharedDocsListView: React.FC<SharedDocsListViewProps> = ({ folderId, onSelectFolder, onCreateDocument, title, headerActions }) => {
   const { scope, host, session } = useCollabDocsUI();
 
   const documentTypesRevision = useSyncExternalStore(
@@ -172,6 +191,19 @@ export const SharedDocsListView: React.FC<SharedDocsListViewProps> = ({ folderId
   const [selectedTypes, setSelectedTypes] = useState<Set<string>>(new Set());
   const [selectedPeople, setSelectedPeople] = useState<Set<string>>(new Set());
   const [selectedFolders, setSelectedFolders] = useState<Set<string>>(new Set());
+  // The row context menu: right-click anywhere on a row, or the row's "more"
+  // action, which anchors it under the button instead of at the pointer.
+  const [rowMenu, setRowMenu] = useState<SharedDocsMenuState | null>(null);
+  const openRowMenu = useCallback((event: React.MouseEvent, target: SharedDocsMenuTarget, anchor?: Element) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (anchor) {
+      const rect = anchor.getBoundingClientRect();
+      setRowMenu({ x: rect.left, y: rect.bottom, target });
+    } else {
+      setRowMenu({ x: event.clientX, y: event.clientY, target });
+    }
+  }, []);
   const homeOpenedRef = React.useRef(false);
   const lastTrackedQueryRef = React.useRef('');
 
@@ -325,13 +357,31 @@ export const SharedDocsListView: React.FC<SharedDocsListViewProps> = ({ folderId
   }, [openableDocs, folderNames]);
 
   // --- Facet + search filtering ---
+  const trimmedQuery = query.trim().toLowerCase();
+  const browseMode = Boolean(onSelectFolder);
+  // Browsing: the list is standing in for a folder tree at one level, so it
+  // shows that level's folders and only that level's documents. Anything that
+  // asks a project-wide question -- a search, another segment, a facet --
+  // leaves the level, the way a search leaves the folder in a file browser.
+  const browsing = browseMode
+    && segment === 'all'
+    && !trimmedQuery
+    && selectedTypes.size === 0
+    && selectedPeople.size === 0;
   // A routed folder is a scope, not a facet: it overrides the dropdown so the
   // list can never disagree with the URL the user is looking at.
-  const scopedFolders = useMemo(
-    () => (folderId ? new Set([folderId]) : selectedFolders),
-    [folderId, selectedFolders],
-  );
-  const trimmedQuery = query.trim().toLowerCase();
+  const scopedFolders = useMemo(() => {
+    if (browsing) return new Set([folderId ?? ROOT_FOLDER]);
+    if (folderId && !browseMode) return new Set([folderId]);
+    return selectedFolders;
+  }, [browseMode, browsing, folderId, selectedFolders]);
+  const folderRows = useMemo(() => {
+    if (!browsing) return [];
+    const parent = folderId ?? null;
+    return (folders as SharedFolder[])
+      .filter((folder) => (folder.parentFolderId ?? null) === parent)
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }, [browsing, folderId, folders]);
   const filteredDocs = useMemo(() => {
     return segmentDocs.filter((d) => {
       if (trimmedQuery && !docName(d).toLowerCase().includes(trimmedQuery)) return false;
@@ -500,9 +550,13 @@ export const SharedDocsListView: React.FC<SharedDocsListViewProps> = ({ folderId
     <div className="shared-docs-list-view h-full flex flex-col min-h-0 bg-nim select-text">
       {/* Header */}
       <div className="shared-docs-list-header flex items-center gap-3 px-4 py-2.5 border-b border-nim shrink-0">
-        <div className="flex items-center gap-2 shrink-0">
-          <MaterialSymbol icon="groups" size={20} className="text-[var(--nim-text-muted)]" />
-          <span className="text-[15px] font-semibold text-[var(--nim-text)]">Shared</span>
+        <div className="shared-docs-list-title flex items-center gap-2 shrink-0">
+          {title ?? (
+            <>
+              <MaterialSymbol icon="groups" size={20} className="text-[var(--nim-text-muted)]" />
+              <span className="text-[15px] font-semibold text-[var(--nim-text)]">Shared</span>
+            </>
+          )}
         </div>
         <div className="shared-docs-list-search flex items-center gap-2 flex-1 max-w-[520px] mx-auto rounded-md px-3 py-1.5 bg-[var(--nim-bg-secondary)] border border-[var(--nim-border)] focus-within:border-[var(--nim-primary)]">
           <MaterialSymbol icon="search" size={17} className="text-[var(--nim-text-muted)]" />
@@ -516,6 +570,7 @@ export const SharedDocsListView: React.FC<SharedDocsListViewProps> = ({ folderId
           />
           <kbd className="shrink-0 text-[10.5px] text-[var(--nim-text-faint)] border border-[var(--nim-border)] rounded px-1 py-0.5">⌘K</kbd>
         </div>
+        {headerActions}
         {onCreateDocument ? (
           <button
             type="button"
@@ -612,7 +667,7 @@ export const SharedDocsListView: React.FC<SharedDocsListViewProps> = ({ folderId
               className="shared-docs-facet shared-docs-facet-scope flex items-center gap-1 px-2.5 py-1 rounded-md text-[12px] border whitespace-nowrap bg-[var(--nim-bg-active)] text-[var(--nim-text)] border-[var(--nim-border)]"
               data-facet="folder"
               data-facet-scope="route"
-              title="This page shows one folder. Use the document tree or the breadcrumb to open another."
+              title="This page shows one folder. Use the breadcrumb to open another."
             >
               <MaterialSymbol icon="folder" size={15} />
               {folderNames.get(folderId) ?? 'Unknown folder'}
@@ -632,7 +687,7 @@ export const SharedDocsListView: React.FC<SharedDocsListViewProps> = ({ folderId
 
       {/* Table */}
       <div className="shared-docs-table flex-1 overflow-y-auto min-h-0">
-        {sortedDocs.length === 0 ? (
+        {sortedDocs.length === 0 && folderRows.length === 0 ? (
           <div className="shared-docs-empty flex flex-col items-center justify-center h-full text-center px-6 py-16">
             <MaterialSymbol icon={emptyState.icon} size={34} className="text-[var(--nim-text-faint)]" />
             <p className="mt-3 mb-0 text-[14px] font-medium text-[var(--nim-text)]">{emptyState.title}</p>
@@ -655,10 +710,54 @@ export const SharedDocsListView: React.FC<SharedDocsListViewProps> = ({ folderId
                 {readReceiptsAvailable && (
                   <HeaderCell label="Viewed by me" column="viewedByMe" sortColumn={sortColumn} sortDirection={sortDirection} onSort={handleSort} />
                 )}
-                <HeaderCell label="Folder" column="folder" sortColumn={sortColumn} sortDirection={sortDirection} onSort={handleSort} />
+                {/* Every row on a browsed level shares one folder; the column
+                    would repeat the breadcrumb on every line. */}
+                {!browsing && (
+                  <HeaderCell label="Folder" column="folder" sortColumn={sortColumn} sortDirection={sortDirection} onSort={handleSort} />
+                )}
               </tr>
             </thead>
             <tbody>
+              {folderRows.map((folder) => {
+                const folderLabel = folder.decryptFailed ? 'Locked folder' : folder.name;
+                return (
+                  <tr
+                    key={folder.folderId}
+                    className="shared-docs-row shared-docs-folder-row group cursor-pointer border-b border-[var(--nim-border)] hover:bg-[var(--nim-bg-hover)]"
+                    onClick={() => onSelectFolder?.(folder.folderId)}
+                    onContextMenu={(event) => openRowMenu(event, { kind: 'folder', folder })}
+                    data-folder-id={folder.folderId}
+                  >
+                    {readReceiptsAvailable && <td className="px-2 py-2" />}
+                    {personalStateAvailable && <td className="px-2 py-2" />}
+                    <td className="px-2 py-2 align-middle">
+                      <div className="flex items-center gap-2.5 min-w-0">
+                        <span className="shrink-0 w-6 h-6 rounded-md flex items-center justify-center text-[var(--nim-text-muted)] bg-[var(--nim-bg-secondary)]">
+                          <MaterialSymbol icon="folder" size={16} />
+                        </span>
+                        <SharedDocumentLink
+                          className="truncate text-[13.5px] text-[var(--nim-text)] no-underline"
+                          href={host.artifactUrl?.({ kind: 'folder', scope, folderId: folder.folderId })}
+                          onClick={() => onSelectFolder?.(folder.folderId)}
+                        >
+                          {folderLabel}
+                        </SharedDocumentLink>
+                        <span className="shared-docs-row-actions ml-auto flex items-center gap-0.5 opacity-0 group-hover:opacity-100 pl-2">
+                          <RowAction icon="more_horiz" title="More actions" onClick={(e) => openRowMenu(e, { kind: 'folder', folder }, e.currentTarget)} />
+                        </span>
+                      </div>
+                    </td>
+                    <td className="px-2 py-2 align-middle whitespace-nowrap text-[12.5px] text-[var(--nim-text-muted)]">Folder</td>
+                    <td className="px-2 py-2 align-middle whitespace-nowrap">
+                      <UserAvatar identity={memberName(folder.createdBy, members, myMemberIds)} showName size={20} />
+                    </td>
+                    <td className="px-2 py-2 align-middle whitespace-nowrap text-[12.5px] text-[var(--nim-text-muted)]">
+                      {folder.updatedAt ? getRelativeTimeString(folder.updatedAt) : <span className="text-[var(--nim-text-faint)]">—</span>}
+                    </td>
+                    {readReceiptsAvailable && <td className="px-2 py-2" />}
+                  </tr>
+                );
+              })}
               {sortedDocs.map((doc) => {
                 const pres = typePresentation(doc);
                 const color = sharedDocTypeColor(pres.typeLabel, doc.documentType);
@@ -672,6 +771,7 @@ export const SharedDocsListView: React.FC<SharedDocsListViewProps> = ({ folderId
                     key={doc.documentId}
                     className="shared-docs-row group cursor-pointer border-b border-[var(--nim-border)] hover:bg-[var(--nim-bg-hover)]"
                     onClick={() => openDoc(doc)}
+                    onContextMenu={(event) => openRowMenu(event, { kind: 'document', document: doc })}
                     data-document-id={doc.documentId}
                   >
                     {readReceiptsAvailable && (
@@ -714,6 +814,7 @@ export const SharedDocsListView: React.FC<SharedDocsListViewProps> = ({ folderId
                         <span className="shared-docs-row-actions ml-auto flex items-center gap-0.5 opacity-0 group-hover:opacity-100 pl-2">
                           <RowAction icon="open_in_new" title="Open" onClick={(e) => { e.stopPropagation(); openDoc(doc); }} />
                           <RowAction icon="link" title="Copy link" onClick={(e) => { e.stopPropagation(); copyLink(doc); }} />
+                          <RowAction icon="more_horiz" title="More actions" onClick={(e) => openRowMenu(e, { kind: 'document', document: doc }, e.currentTarget)} />
                         </span>
                       </div>
                     </td>
@@ -757,16 +858,18 @@ export const SharedDocsListView: React.FC<SharedDocsListViewProps> = ({ folderId
                       </td>
                     )}
                     {/* Folder */}
-                    <td className="px-2 py-2 align-middle whitespace-nowrap">
-                      {folderName ? (
-                        <span className="shared-docs-folder-chip inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11.5px] text-[var(--nim-text-muted)] bg-[var(--nim-bg-secondary)] border border-[var(--nim-border)]">
-                          <MaterialSymbol icon="folder" size={13} />
-                          {folderName}
-                        </span>
-                      ) : (
-                        <span className="text-[var(--nim-text-faint)] text-[12px]">—</span>
-                      )}
-                    </td>
+                    {!browsing && (
+                      <td className="px-2 py-2 align-middle whitespace-nowrap">
+                        {folderName ? (
+                          <span className="shared-docs-folder-chip inline-flex items-center gap-1 rounded-md px-1.5 py-0.5 text-[11.5px] text-[var(--nim-text-muted)] bg-[var(--nim-bg-secondary)] border border-[var(--nim-border)]">
+                            <MaterialSymbol icon="folder" size={13} />
+                            {folderName}
+                          </span>
+                        ) : (
+                          <span className="text-[var(--nim-text-faint)] text-[12px]">—</span>
+                        )}
+                      </td>
+                    )}
                   </tr>
                 );
               })}
@@ -787,6 +890,9 @@ export const SharedDocsListView: React.FC<SharedDocsListViewProps> = ({ folderId
         <span className="text-[var(--nim-text-faint)]">·</span>
         <span>Sorted by {sortLabel}</span>
       </div>
+      <React.Suspense fallback={null}>
+        <SharedDocsItemMenu state={rowMenu} onClose={() => setRowMenu(null)} onOpenFolder={onSelectFolder} />
+      </React.Suspense>
     </div>
   );
 };

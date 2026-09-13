@@ -260,7 +260,7 @@ export class SQLiteDatabase {
     await this.runWriteExec(sql);
   }
 
-  async runTransaction(statements: Array<{ sql: string; params?: unknown[] }>): Promise<void> {
+  async runTransaction(statements: Array<{ sql: string; params?: unknown[]; expectedRows?: number }>): Promise<void> {
     if (!this.initialized || !this.db) {
       throw new Error('SQLiteDatabase not initialized. Call initialize() first.');
     }
@@ -270,8 +270,12 @@ export class SQLiteDatabase {
       for (const statement of statements) {
         const adapted = adaptSqlForSQLite(statement.sql, statement.params ?? []);
         const prepared = db.prepare(adapted.sql);
-        if (stmtReturnsRows(prepared)) prepared.all(...adapted.params);
+        let rows: unknown[] = [];
+        if (stmtReturnsRows(prepared)) rows = prepared.all(...adapted.params);
         else prepared.run(...adapted.params);
+        if (statement.expectedRows !== undefined && rows.length !== statement.expectedRows) {
+          throw new Error('Transaction conflict: guarded statement did not match');
+        }
       }
     });
     run();

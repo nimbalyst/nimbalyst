@@ -21,6 +21,7 @@
  * `{success,data}|{success:false,error}` response keyed by id.
  */
 
+import { createMigrationBridgeReader, deserializeBridgeError } from './migrationReadBridge';
 import { parentPort } from 'worker_threads';
 import { performance } from 'node:perf_hooks';
 import inspector from 'node:inspector';
@@ -29,6 +30,7 @@ import * as fs from 'fs';
 import { v4 as uuidv4 } from 'uuid';
 import { PGlite } from '@electric-sql/pglite';
 import { SQLiteDatabase } from '../SQLiteDatabase';
+import { verifyCutoverContent, type CutoverVerification } from '../cutoverVerification';
 import { SQLiteBackupService } from '../../../services/database/SQLiteBackupService';
 import { verifyBackupOffThread } from '../backupVerification';
 import { createRecoveryVerifier } from '../../recovery/recoveryVerification';
@@ -54,8 +56,6 @@ import {
   type GetPerformancePayload,
   type VerifyBackupPayload,
   type PragmaReadPayload,
-  type PgliteReadRequestPayload,
-  type PgliteReadResponsePayload,
   type WorkerControlRequestPayload,
   type ToolRetentionPayload,
 } from './workerProtocol';
@@ -266,23 +266,7 @@ function makeReporter(): MigrationProgressReporter {
 }
 
 function buildPgliteReader(): OrchestratorLivePgliteReader {
-  return {
-    async queryReadOnly<T>(
-      sql: string,
-      params?: unknown[],
-      timeoutMs?: number,
-    ): Promise<{ rows: T[] }> {
-      // The bridge timeout is the per-request timeout plus a small headroom
-      // so the worker doesn't bail before main has a chance to respond.
-      const t = timeoutMs ?? 30_000;
-      const result = await bridgeRequest<PgliteReadResponsePayload<T>>(
-        'pgliteReadRequest',
-        { sql, params, timeoutMs: t } as PgliteReadRequestPayload,
-        t + 10_000,
-      );
-      return { rows: result.rows };
-    },
-  };
+  return createMigrationBridgeReader(bridgeRequest);
 }
 
 async function bridgeClosePglite(): Promise<void> {
@@ -385,6 +369,12 @@ async function handle(req: RequestEnvelope): Promise<unknown> {
 
     case 'isInitialized':
       return { initialized: sqlite?.isInitialized() ?? false };
+
+    case 'verifyCutover': {
+      const { receipt } = req.payload as { receipt?: CutoverVerification };
+      verifyCutoverContent(ensureInitialized(), receipt);
+      return { verified: true };
+    }
 
     case 'query': {
       const { sql, params } = req.payload as QueryPayload;
@@ -687,11 +677,7 @@ parentPort.on('message', async (msg: RequestEnvelope | BridgeResponseEnvelope) =
     if (msg.success) {
       pending.resolve(msg.data);
     } else {
-      const err = new Error(msg.error?.message ?? 'Bridge request failed');
-      if (msg.error?.name) err.name = msg.error.name;
-      if (msg.error?.stack) err.stack = msg.error.stack;
-      if (msg.error?.code) (err as { code?: string }).code = msg.error.code;
-      pending.reject(err);
+      pending.reject(deserializeBridgeError(msg.error));
     }
     return;
   }

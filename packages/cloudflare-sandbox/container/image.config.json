@@ -1,0 +1,30 @@
+{
+  "$comment": [
+    "Every version this image depends on, pinned in one place.",
+    "sandbox.sdkVersion MUST equal the @cloudflare/sandbox version the Worker package depends on:",
+    "the container server inside the base image and the SDK in the Worker speak a versioned protocol,",
+    "and a mismatch shows up as an opaque exec failure at runtime rather than a build error.",
+    "imageDigest pins the exact base manifest; imageRef is the human-readable equivalent."
+  ],
+  "sandbox": {
+    "sdkVersion": "0.13.0-next.751.1",
+    "imageRef": "docker.io/cloudflare/sandbox:0.13.0-next.751.1",
+    "imageDigest": "sha256:712d12b2bd6f91ae66d83cebd9f7a0bfa684ae3e3100299c315d20d2ce38b8b1",
+    "platform": "linux/amd64",
+    "baseDistro": "ubuntu:22.04",
+    "entrypoint": ["/usr/bin/tini", "--", "/container-server/sandbox"]
+  },
+  "node": {
+    "version": "24.21.0",
+    "tarballSha256": "fd8e59d5a511510f6a298afb548f18c7d2b1be404d8b4a27d94fbe49f56cb2d6",
+    "installPrefix": "/opt/nimbalyst/node"
+  },
+  "app": {
+    "prefix": "/opt/nimbalyst/app",
+    "dataDir": "/var/lib/nimbalyst",
+    "workspaceDir": "/workspace",
+    "user": "nimbalyst",
+    "uid": 10001
+  },
+  "imageName": "nimbalyst/sandbox-node"
+}

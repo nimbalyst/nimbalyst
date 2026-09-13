@@ -92,6 +92,7 @@ describe('TeamSyncProvider organization settings', () => {
   it('requests and forwards the participant-filtered feedback index stream', async () => {
     const onFeedbackIndexLoaded = vi.fn();
     const onFeedbackIndexChanged = vi.fn();
+    const onDocumentFeedbackIndex = vi.fn();
     const provider = new TeamSyncProvider({
       serverUrl: 'ws://example.test',
       getJwt: async () => asTeamJwt('token'),
@@ -99,6 +100,7 @@ describe('TeamSyncProvider organization settings', () => {
       teamMemberId: asTeamMemberId('user-1'),
       onFeedbackIndexLoaded,
       onFeedbackIndexChanged,
+      onDocumentFeedbackIndex,
     });
     const sent: Array<{ type: string }> = [];
     (provider as any).send = (message: { type: string }) => sent.push(message);
@@ -136,6 +138,9 @@ describe('TeamSyncProvider organization settings', () => {
     expect(sent.map((message) => message.type)).toContain('feedbackIndexSync');
     expect(onFeedbackIndexLoaded).toHaveBeenCalledWith([indexEntry]);
     expect(onFeedbackIndexChanged).toHaveBeenCalledWith(indexEntry);
+    await (provider as any).handleMessage({ data: JSON.stringify({ type: 'documentFeedbackIndexSnapshot', entries: [], generation: 4, status: 'partial' }) });
+    expect(onDocumentFeedbackIndex).toHaveBeenLastCalledWith(expect.objectContaining({ status: 'partial', generation: 4 }));
     provider.destroy();
+    expect(onDocumentFeedbackIndex).toHaveBeenLastCalledWith(expect.objectContaining({ status: 'disconnected', entries: [] }));
   });
 });

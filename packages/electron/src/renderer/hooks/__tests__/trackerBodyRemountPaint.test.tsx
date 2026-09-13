@@ -246,6 +246,7 @@ describe('shared tracker body paints on reopen (NIM-1985 harness)', () => {
 
     (window as any).electronAPI = {
       documentService: {
+        getTrackerCreationStatus: vi.fn().mockResolvedValue(null),
         getTrackerBodyCacheForDetail: vi.fn(async () => ({
           success: true,
           row: { content: BODY_MARKDOWN },
@@ -258,6 +259,30 @@ describe('shared tracker body paints on reopen (NIM-1985 harness)', () => {
   afterEach(() => {
     cleanup();
     _resetBodyDocCacheForTests();
+  });
+
+  it.each(['pending', 'published'])('never seeds a receipt-backed %s creation from its local cache', async (status) => {
+    (window as any).electronAPI.documentService.getTrackerCreationStatus.mockResolvedValue({ itemId: ITEM_ID, status });
+    render(<TrackerBodyHarness />);
+    await settle();
+    expect(document.body.textContent).not.toContain(MARKER);
+    expect(roomBytes()).toBeLessThan(100);
+  });
+
+  it.each([
+    ['a local (personal) receipt', { itemId: ITEM_ID, status: 'local' }],
+    ['a failed receipt lookup', new Error('handler missing')],
+  ])('keeps the cold-paint path for %s', async (_label, receipt) => {
+    // Only team creations the main publisher seeds may skip bootstrap; a
+    // personal item later shared, or an older main process without the
+    // receipt handler, must paint exactly as before receipts existed.
+    const status = (window as any).electronAPI.documentService.getTrackerCreationStatus;
+    if (receipt instanceof Error) status.mockRejectedValue(receipt);
+    else status.mockResolvedValue(receipt);
+    render(<div data-testid="detail"><TrackerBodyHarness /></div>);
+    await settle();
+    expectPainted('detail', 'cold cache, empty room');
+    expect(roomBytes()).toBeGreaterThan(100);
   });
 
   it('close -> reopen against a warm BodyDocCache entry', async () => {

@@ -1,4 +1,5 @@
 // @vitest-environment jsdom
+import { documentFeedbackIndexesAtom } from '../../../../store/atoms/documentFeedback';
 /**
  * The one thing about this surface that is invisible on screen: which atom key
  * it reads.
@@ -15,7 +16,7 @@
 
 import React from 'react';
 import { Provider, createStore } from 'jotai';
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 import type { FeedbackRequestIndexEntry } from '@nimbalyst/collab-protocol';
 import { asTeamMemberId } from '@nimbalyst/runtime/auth/jwtScopes';
@@ -51,7 +52,7 @@ const ENTRY = {
 } as FeedbackRequestIndexEntry;
 
 describe('FeedbackSection', () => {
-  it('lists the entries the index listener wrote for the active viewer', () => {
+  it('lists the entries the index listener wrote for the active viewer', async () => {
     Object.defineProperty(window, 'electronAPI', {
       configurable: true,
       value: { invoke: vi.fn().mockResolvedValue({ entries: [] }) },
@@ -78,6 +79,26 @@ describe('FeedbackSection', () => {
       </Provider>,
     );
 
-    expect(screen.getByTestId('feedback-row').dataset.requestId).toBe('req-1');
+    await waitFor(() => expect(screen.getByTestId('feedback-row').dataset.requestId).toBe('request:req-1'));
   });
+});
+
+
+it('finds sent document questions without a legacy request and opens the exact block', async () => {
+  const invoke = vi.fn().mockResolvedValue(true);
+  Object.defineProperty(window, 'electronAPI', { configurable: true, value: { invoke } });
+  const store = createStore();
+  store.set(documentFeedbackIndexesAtom, {
+    [feedbackRequestIndexTargetKey(TARGET)]: {
+      ...TARGET, teamMemberId: 'me', state: { epoch: 'one', sequence: 1, generation: 1, status: 'ready', entries: [{
+        orgId: 'org-1', projectId: 'project', documentId: 'doc', blockId: 'question / 1', title: 'Document question',
+        sentBy: 'me', sentAt: 1, updatedAt: 1, sealed: false, availability: 'available', recipientCount: 1,
+        answeredCount: 0, quorum: 1, isRecipient: false, needsMyResponse: false,
+      }] },
+    },
+  });
+  render(<Provider store={store}><FeedbackSection orgId="org-1" workspacePath="/workspace" now={2} /></Provider>);
+  fireEvent.click(screen.getByTestId('feedback-filter-sentByMe'));
+  fireEvent.click(screen.getByText('Document question'));
+  await waitFor(() => expect(invoke).toHaveBeenCalledWith('deep-link:open-inbox-source', 'nimbalyst://doc/doc?orgId=org-1&projectId=project&blockId=question+%2F+1'));
 });

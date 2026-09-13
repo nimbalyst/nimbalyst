@@ -20,6 +20,7 @@ describe('ElectronCollabDocumentsDataSource', () => {
   it('projects provider snapshots/events and routes commands through the provider', async () => {
     let config!: TeamSyncConfig;
     const observeStatus = vi.fn();
+    const onDocumentFeedbackIndex = vi.fn();
     const provider = {
       connect: vi.fn(async () => undefined),
       getStatus: vi.fn(() => 'connected' as const),
@@ -49,7 +50,7 @@ describe('ElectronCollabDocumentsDataSource', () => {
     const source = new ElectronCollabDocumentsDataSource({
       scope,
       getJwt: async () => asTeamJwt('team-jwt'),
-      events: { observeStatus },
+      events: { observeStatus, onDocumentFeedbackIndex },
       createProvider: (nextConfig) => {
         config = nextConfig;
         return provider as any;
@@ -77,6 +78,9 @@ describe('ElectronCollabDocumentsDataSource', () => {
     });
     config.onFoldersRemoved?.(['folder-1'], ['doc-1']);
     config.onStatusChange?.('connected');
+    const inventory = { epoch: 'socket', sequence: 1, generation: 1, status: 'ready' as const, entries: [] };
+    config.onDocumentFeedbackIndex?.(inventory);
+    expect(onDocumentFeedbackIndex).toHaveBeenCalledWith(inventory);
     await source.command({ type: 'update-document-title', documentId: 'doc-1', title: 'Renamed' });
 
     expect(changes).toEqual(['items-upserted', 'containers-removed', 'status']);

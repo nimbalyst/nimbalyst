@@ -19,6 +19,23 @@ function makeDocument(overrides: Partial<SharedDocument> & { documentId: string;
 }
 
 describe('resolveSharedSpaceEmbedReference', () => {
+  it.each([
+    ['panel.mockup.html', 'sibling'],
+    ['./panel.mockup.html', 'sibling'],
+    ['../panel.mockup.html', 'root'],
+    ['/panel.mockup.html', 'root'],
+    ['/design/panel.mockup.html', 'sibling'],
+  ])('resolves %s from the shared host folder', (src, documentId) => {
+    const documents = [
+      makeDocument({ documentId: 'host', title: 'design/host.md', documentType: 'markdown' }),
+      makeDocument({ documentId: 'sibling', title: 'design/panel.mockup.html' }),
+      makeDocument({ documentId: 'root', title: 'panel.mockup.html' }),
+    ];
+    expect(resolveSharedSpaceEmbedReference({
+      src, hostOrgId: ORG_ID, hostDocumentId: 'host', documents, folders: [],
+    })).toEqual({ documentId, orgId: ORG_ID });
+  });
+
   it('resolves a workspace-relative link against a legacy path-in-title shared document', () => {
     const documents: SharedDocument[] = [
       makeDocument({
@@ -155,7 +172,6 @@ describe('resolveSharedSpaceEmbedReference', () => {
     ['an absolute path', '/Users/someone/mockups/panel.mockup.html'],
     ['an explicit shared-document URI', 'nimbalyst://doc/abc?orgId=xyz'],
     ['a web URL', 'https://example.com/panel.mockup.html'],
-    ['a parent-relative path', '../mockups/panel.mockup.html'],
     ['an empty target', ''],
   ])('does not resolve %s', (_label, src) => {
     const documents = [makeDocument({ documentId: 'doc-f', title: 'mockups/panel.mockup.html' })];

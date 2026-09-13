@@ -1,3 +1,4 @@
+import {selectedMachineAtom, machineSessionSelectionsAtom} from '../atoms/remoteMachines';
 /**
  * Action atoms for SessionHistory.
  *
@@ -140,9 +141,12 @@ export const openSessionInTabActionAtom = atom(null, async (get, set, sessionId:
     const sessionListItem = result.sessions.find((s: any) => s.id === sessionId);
 
     const registry = get(sessionRegistryAtom);
+    set(selectedMachineAtom(workspacePath), sessionListItem?.remoteHostDeviceId ?? "");
+    set(machineSessionSelectionsAtom(workspacePath), previous => ({...previous, [sessionListItem?.remoteHostDeviceId ?? ""]: sessionId}));
     if (sessionListItem && !registry.has(sessionId)) {
       set(addSessionFullAtom, {
         id: sessionListItem.id,
+        remoteHostDeviceId: sessionListItem.remoteHostDeviceId,
         title: sessionListItem.title || 'Untitled Session',
         createdAt: sessionListItem.createdAt,
         updatedAt: sessionListItem.updatedAt,
@@ -244,6 +248,9 @@ export const selectSessionActionAtom = atom(null, async (get, set, sessionId: st
 
   const registry = get(sessionRegistryAtom);
   const sessionMeta = registry.get(sessionId);
+  const host = sessionMeta?.remoteHostDeviceId ?? "";
+  set(selectedMachineAtom(workspacePath), host);
+  set(machineSessionSelectionsAtom(workspacePath), previous => ({...previous, [host]: sessionId}));
 
   if (sessionMeta?.parentSessionId) {
     if (sessionMeta.worktreeId) {
@@ -421,6 +428,17 @@ export const createNewSessionActionAtom = atom(
       : input ?? {};
     const model = options.model ?? get(defaultAgentModelAtom);
     const title = options.title ?? 'New Session';
+    const host = get(selectedMachineAtom(workspacePath));
+    if (host) {
+      try {
+      const id = await window.electronAPI.invoke('ai:createRemoteSession', workspacePath, host, {model: options.model ?? (model?.startsWith('claude-code:') ? model : undefined)});
+      if (options.initialDraft) await window.electronAPI.invoke('ai:saveRemoteDraft', id, workspacePath, {text: options.initialDraft, attachments: []});
+      set(machineSessionSelectionsAtom(workspacePath), previous => ({...previous, [host]: id}));
+      if (options.selectSession !== false) window.dispatchEvent(new CustomEvent('open-ai-session', {detail: {sessionId: id, workspacePath}}));
+      return id;
+      } catch (error) { errorNotificationService.showError("Could not create remote session", String(error)); return undefined; }
+    }
+
 
     try {
       const sessionId = options.sessionId ?? crypto.randomUUID();
@@ -499,6 +517,10 @@ export const createNewWorktreeSessionActionAtom = atom(
     const workspacePath = getWorkspacePath(get);
     if (!workspacePath || typeof window === 'undefined' || !window.electronAPI) return undefined;
 
+    if (get(selectedMachineAtom(workspacePath))) {
+      errorNotificationService.showError("Remote worktree unavailable", "Worktrees are not supported by this remote host yet.");
+      return undefined;
+    }
     if (!get(worktreesFeatureAvailableAtom)) return undefined;
     if (get(isGitRepoAtom(workspacePath)) === false) return undefined;
 

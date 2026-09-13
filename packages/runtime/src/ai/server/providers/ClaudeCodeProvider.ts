@@ -65,7 +65,6 @@ import { ToolPermissionService } from '../permissions/ToolPermissionService';
 import { AgentToolHooks } from '../permissions/AgentToolHooks';
 import { McpConfigService } from '../services/McpConfigService';
 import { getMcpConfigService, isInternalMcpServerEnabled, areTrackerToolsEnabled, resolveTrackersWorkspacePath } from '../services/mcpServerConfig';
-import { historyManager } from '../../../../../electron/src/main/HistoryManager';
 import {
   applyToolResultToToolCall,
   isSearchableAssistantChunk,
@@ -98,7 +97,7 @@ import {
   handleToolPermissionFallback as handleToolPermissionFallbackHelper,
   handleToolPermissionWithService as handleToolPermissionWithServiceHelper,
 } from './claudeCode/toolAuthorization';
-import { ClaudeCodeDeps } from './claudeCode/dependencyInjection';
+import { ClaudeCodeDeps, type HistoryManagerPort } from './claudeCode/dependencyInjection';
 import { resolvePermissionMode, type PromptStreamController } from './claudeCode/sdkOptionsBuilder';
 import { resolveEffectiveSessionMode } from './claudeCode/resolveEffectiveSessionMode';
 import { resolveClaudeConfigDir } from './claudeCode/claudeConfigDir';
@@ -467,37 +466,10 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
         this.teammateManager.handlePreToolUse(toolName, toolInput, toolUseID, sessionId),
       isTeammateSession: !!isTeammateSession,
       permissionsPath,
-      historyManager: this.createHistoryManagerAdapter(),
+      // Undefined on a host with no document history; AgentToolHooks guards
+      // every call site and skips snapshotting rather than failing.
+      historyManager: ClaudeCodeDeps.historyManager ?? undefined,
     });
-  }
-
-  private createHistoryManagerAdapter() {
-    return {
-      createSnapshot: async (filePath: string, content: string, snapshotType: string, message: string, metadata?: any) => {
-        await historyManager.createSnapshot(filePath, content, snapshotType as any, message, metadata);
-      },
-      getPendingTags: async (filePath: string) => {
-        const tags = await historyManager.getPendingTags(filePath);
-        return tags.map(tag => ({
-          id: tag.id,
-          createdAt: tag.createdAt,
-          sessionId: tag.sessionId
-        }));
-      },
-      tagFile: async (workspacePath: string, filePath: string, tagId: string, content: string, metadata?: any) => {
-        await historyManager.createTag(
-          workspacePath,
-          filePath,
-          tagId,
-          content,
-          metadata?.sessionId || 'unknown',
-          metadata?.toolUseId || ''
-        );
-      },
-      updateTagStatus: async (filePath: string, tagId: string, status: string) => {
-        await historyManager.updateTagStatus(filePath, tagId, status as any);
-      }
-    };
   }
 
   // ExitPlanMode confirmation response type
@@ -526,6 +498,7 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
   public static setAttachmentStagingLoader(loader: ((workspacePath: string) => { root: string; mode: 'temp' | 'workspace' | 'custom' }) | null): void { ClaudeCodeDeps.setAttachmentStagingLoader(loader); }
   public static setAttachmentDenyRulesLoader(loader: ((workspacePath: string) => Promise<string[]>) | null): void { ClaudeCodeDeps.setAttachmentDenyRulesLoader(loader); }
   public static setSecurityLogger(logger: ((message: string, data?: any) => void) | null): void { BaseAgentProvider.setSecurityLogger(logger); }
+  public static setHistoryManager(historyManager: HistoryManagerPort | null): void { ClaudeCodeDeps.setHistoryManager(historyManager); }
   public static setImageCompressor(compressor: ((buffer: Buffer, mimeType: string, options?: { targetSizeBytes?: number }) => Promise<{ buffer: Buffer; mimeType: string; wasCompressed: boolean }>) | null): void { ClaudeCodeDeps.setImageCompressor(compressor); }
   public static setClaudeSettingsPatternSaver(saver: ((workspacePath: string, pattern: string) => Promise<void>) | null): void { ClaudeCodeDeps.setClaudeSettingsPatternSaver(saver); }
   public static setClaudeSettingsPatternChecker(checker: ((workspacePath: string, pattern: string) => Promise<boolean>) | null): void { ClaudeCodeDeps.setClaudeSettingsPatternChecker(checker); }

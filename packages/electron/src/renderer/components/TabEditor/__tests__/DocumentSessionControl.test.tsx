@@ -1,3 +1,4 @@
+import {workspaceFileLinksRevisionAtom} from '../../../store/atoms/sessionFiles';
 // @vitest-environment jsdom
 /**
  * The header-bar session control: a chip for the last session that touched the
@@ -6,7 +7,7 @@
  */
 import React from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { createStore, Provider as JotaiProvider } from 'jotai';
 import { sessionRefMapAtom } from '@nimbalyst/runtime/ui/AgentTranscript/session/sessionRefAtoms';
 import {
@@ -32,8 +33,8 @@ function fileSession(overrides: Partial<FileSession> & Pick<FileSession, 'id'>):
   };
 }
 
-function renderControl(options: { actions?: DocumentSessionActions; registryTitle?: string } = {}) {
-  const store = createStore();
+function renderControl(options: { actions?: DocumentSessionActions; registryTitle?: string; store?: ReturnType<typeof createStore> } = {}) {
+  const store = options.store ?? createStore();
   if (options.registryTitle) {
     store.set(
       sessionRefMapAtom,
@@ -116,4 +117,14 @@ describe('DocumentSessionControl', () => {
     fireEvent.click(screen.getByTestId('document-session-new'));
     expect(startNew).toHaveBeenCalled();
   });
+});
+
+it('refreshes an already-open file after link notifications and orders by file edit time',async()=>{
+  const store=createStore();renderControl({store});
+  await waitFor(()=>expect(invoke).toHaveBeenCalledTimes(1));
+  invoke.mockResolvedValue([fileSession({id:'older-edit',updatedAt:999,lastFileEditAt:20}),fileSession({id:'new-edit',updatedAt:1,lastFileEditAt:30,fileAttribution:'inferred'})]);
+  act(()=>store.set(workspaceFileLinksRevisionAtom(WORKSPACE),1));
+  expect((await screen.findByTestId('document-session-chip')).getAttribute('data-session-id')).toBe('new-edit');
+  fireEvent.click(screen.getByTestId('document-session-caret'));
+  expect(await screen.findByText('Inferred edit')).toBeTruthy();
 });

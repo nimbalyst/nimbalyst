@@ -97,6 +97,14 @@ export class MigrationProgressReporter {
     }
   };
 
+  announcePhase(phase: MigrationPhase): void {
+    if (this.timer) clearTimeout(this.timer);
+    this.timer = null;
+    this.latestProgress = null;
+    this.lastPhase = phase;
+    this.broadcast(CHANNEL_PHASE, { phase });
+  }
+
   /** Force-flush the most recent progress event. Call at end of migration. */
   flush(): void {
     if (this.timer) {

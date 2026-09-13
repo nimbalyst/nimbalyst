@@ -13,6 +13,7 @@ vi.mock("../gitEnv", () => ({
 }));
 
 import {
+  describeSignalExit,
   formatGitCommand,
   GitOperationLogService,
   runGitCommandStreaming,
@@ -372,5 +373,24 @@ describe("GitOperationLogService", () => {
       events.some((event) => event.startsWith("running:git version "))
     ).toBe(true);
     expect(events.at(-1)).toMatch(/^success:git version /);
+  });
+
+  it("names the signal when git dies before exiting, instead of blaming the hook", () => {
+    // The hook's stderr right up to the kill looks like a normal passing run.
+    const hookStderr = [
+      "[pre-push] typecheck:prepush: 86s (exit 0)",
+      "Error: Not implemented: navigation (except hash changes)",
+      "    at module.exports (jsdom/not-implemented.js:9:17)",
+      "[pre-push] test:prepush: 266s (exit 0)",
+    ].join("\n");
+
+    const message = describeSignalExit(["push", "origin", "main"], "SIGHUP", hookStderr);
+
+    expect(message).toMatch(/^git push was terminated by SIGHUP before it finished\./);
+    expect(message).toContain("another process signalled git");
+    // Context survives, stack-trace noise does not.
+    expect(message).toContain("[pre-push] test:prepush: 266s (exit 0)");
+    expect(message).not.toContain("    at module.exports");
+    expect(describeSignalExit(["fetch"], "SIGKILL", "")).not.toContain("Last output");
   });
 });

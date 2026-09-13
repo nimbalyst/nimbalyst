@@ -1,6 +1,6 @@
 {
   "name": "@nimbalyst/electron",
-  "version": "0.77.2",
+  "version": "0.77.5",
   "private": true,
   "license": "MIT",
   "author": "Nimbalyst Team",
@@ -18,7 +18,8 @@
     "dev:loop": "./scripts/dev-loop.sh",
     "licenses:generate": "node build/generate-third-party-licenses.js",
     "licenses:check": "node build/generate-third-party-licenses.js --check",
-    "build": "npm run licenses:generate && cross-env NODE_OPTIONS='--max-old-space-size=8192' electron-vite build && npm run build:worker",
+    "build": "npm run licenses:generate && cross-env NODE_OPTIONS='--max-old-space-size=8192' electron-vite build && npm run build:worker && npm run build:cloudflare-sandbox",
+    "build:cloudflare-sandbox": "npm ci --prefix ../cloudflare-sandbox --workspaces=false --ignore-scripts --no-audit --no-fund && npm run build --prefix ../cloudflare-sandbox",
     "build:worker": "node build/build-worker.js",
     "build:extensions": "node build/build-extensions.js",
     "typecheck": "tsc --noEmit",
@@ -249,6 +250,11 @@
     ],
     "extraResources": [
       {
+        "from": "../cloudflare-sandbox/dist",
+        "to": "cloudflare-sandbox",
+        "filter": ["worker.mjs", "manifest.json", "rpc-helper.mjs"]
+      },
+      {
         "from": "../../node_modules/node-pty",
         "to": "node-pty"
       },
@@ -361,6 +367,10 @@
       {
         "from": "resources/codex-pre-edit-hook.mjs",
         "to": "codex-pre-edit-hook.mjs"
+      },
+      {
+        "from": "resources/codex-shell-hook.cjs",
+        "to": "codex-shell-hook.cjs"
       },
       {
         "from": "resources/claudeCliPermissionHook.cjs",

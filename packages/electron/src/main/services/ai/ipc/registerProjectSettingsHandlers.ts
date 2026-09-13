@@ -78,6 +78,7 @@ export function registerProjectSettingsHandlers(ctx: AIServiceContext): void {
     const defaultProvider = ctx.getSettingsStore().get('defaultProvider', 'claude-code') as string;
 
     const globalSettings = {
+      customClaudeCodePath: ctx.getSettingsStore().get('customClaudeCodePath', '') as string,
       defaultProvider,
       apiKeys: ctx.maskApiKeys(apiKeys),
       providerSettings,

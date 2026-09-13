@@ -33,6 +33,14 @@
       "types": "./dist/collab/index.d.ts",
       "import": "./dist/collab/index.js"
     },
+    "./agents": {
+      "types": "./dist/agents/index.d.ts",
+      "import": "./dist/agents/index.js"
+    },
+    "./types/editor": {
+      "types": "./dist/types/editor.d.ts",
+      "import": "./dist/types/editor.js"
+    },
     "./vite": {
       "types": "./dist/vite.d.ts",
       "import": "./dist/vite.js"

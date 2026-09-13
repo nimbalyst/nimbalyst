@@ -15,6 +15,7 @@ import type {
 import {$createTextNode, $isElementNode, $isTextNode, $parseSerializedNode} from 'lexical';
 
 import {diffWords} from './diffWords';
+import { $applyFormattedTextDiff, textFormatMap } from './formattedTextDiff';
 import type {DiffSegment} from './diffUtils';
 import {$setDiffState} from './DiffState';
 
@@ -305,22 +306,8 @@ export function $applyInlineTextDiff(
       return;
     }
 
-    // Text has changed - use inline diff with formatting preservation
-    // Build a map of character position -> formatting for target text
-    const targetFormatMap: number[] = [];
-    let pos = 0;
-    for (const child of targetChildren) {
-      const textNode = child as SerializedTextNode;
-      const format = textNode.format || 0;
-      for (let i = 0; i < textNode.text.length; i++) {
-        targetFormatMap[pos++] = format;
-      }
-    }
-
-    // For source, use first node's format (or 0 if no children)
-    const sourceFormat = sourceChildren.length > 0
-      ? ((sourceChildren[0] as SerializedTextNode).format || 0)
-      : 0;
+    const sourceFormats = textFormatMap(sourceChildren);
+    const targetFormats = textFormatMap(targetChildren);
 
     // Sentence-level pre-pass. If source and target share an identical
     // opening or closing run of sentences, peel those off and apply the
@@ -332,8 +319,8 @@ export function $applyInlineTextDiff(
       $emitSentenceTrimmedDiff(
         containerNode,
         trim,
-        targetFormatMap,
-        sourceFormat,
+        sourceFormats,
+        targetFormats,
       );
       return;
     }
@@ -370,13 +357,7 @@ export function $applyInlineTextDiff(
       return;
     }
 
-    $applyWordLevelInlineDiff(
-      containerNode,
-      diffSegments,
-      targetFormatMap,
-      sourceFormat,
-      0,
-    );
+    $applyFormattedTextDiff(containerNode, diffSegments, sourceFormats, targetFormats);
     return;
   }
 
@@ -597,15 +578,8 @@ function $applyPairwiseChildDiff(
       }
 
       const segments = diffWords(sText, tText);
-      // Single-text-node format map: every char in the target shares tFmt.
-      const targetFormatMap: number[] = new Array(tText.length).fill(tFmt);
-      $applyWordLevelInlineDiff(
-        containerNode,
-        segments,
-        targetFormatMap,
-        sFmt,
-        0,
-      );
+      $applyFormattedTextDiff(containerNode, segments,
+        new Array(sText.length).fill(sFmt), new Array(tText.length).fill(tFmt));
       continue;
     }
 
@@ -677,128 +651,23 @@ function $applyBlockFallback(
   }
 }
 
-/**
- * Render the word-level diff segments inline into the container, preserving
- * per-character target formatting on equal/insert runs and source formatting
- * on delete runs. Equal/insert runs walk through `targetFormatMap` starting
- * at `targetMapOffset` so this can be used either over the full target text
- * (offset 0) or over a slice of it (offset = prefix length, when applied to
- * the differing middle inside a sentence-trimmed paragraph).
- */
-function $applyWordLevelInlineDiff(
-  containerNode: ElementNode,
-  diffSegments: DiffSegment[],
-  targetFormatMap: number[],
-  sourceFormat: number,
-  targetMapOffset: number,
-): void {
-  let targetPos = targetMapOffset;
-
-  for (const segment of diffSegments) {
-    if (segment.type === 'equal') {
-      for (let i = 0; i < segment.text.length; i++) {
-        const char = segment.text[i];
-        const format = targetFormatMap[targetPos++] || 0;
-        if (i === 0 || targetFormatMap[targetPos - 2] !== format) {
-          const textNode = $createTextNode(char);
-          textNode.setFormat(format);
-          containerNode.append(textNode);
-        } else {
-          const lastChild = containerNode.getLastChild();
-          if (lastChild && $isTextNode(lastChild)) {
-            lastChild.setTextContent(lastChild.getTextContent() + char);
-          }
-        }
-      }
-    } else if (segment.type === 'delete') {
-      const textNode = $createTextNode(segment.text);
-      textNode.setFormat(sourceFormat);
-      $setDiffState(textNode, 'removed');
-      containerNode.append(textNode);
-    } else {
-      // insert
-      for (let i = 0; i < segment.text.length; i++) {
-        const char = segment.text[i];
-        const format = targetFormatMap[targetPos++] || 0;
-        if (i === 0 || targetFormatMap[targetPos - 2] !== format) {
-          const textNode = $createTextNode(char);
-          textNode.setFormat(format);
-          $setDiffState(textNode, 'added');
-          containerNode.append(textNode);
-        } else {
-          const lastChild = containerNode.getLastChild();
-          if (lastChild && $isTextNode(lastChild)) {
-            lastChild.setTextContent(lastChild.getTextContent() + char);
-          }
-        }
-      }
-    }
-  }
-}
-
-/**
- * Render a sentence-trimmed diff: emit the unchanged opening sentences as
- * plain text, diff the differing middle (word-level if it isn't fragmented,
- * inline block remove+add if it is), then emit the unchanged closing
- * sentences as plain text.
- *
- * The middle uses an inline block remove+add (rather than the sibling-split
- * used by whole-paragraph block fallback) because we can't sibling-split a
- * mid-paragraph slice without breaking the framing sentences out into their
- * own paragraphs. The unchanged framing sentences provide enough visual
- * anchoring that the in-paragraph remove+add reads cleanly even when source
- * and target middles run adjacent.
- */
+/** Preserve framing sentences while retaining both versions of their formatting. */
 function $emitSentenceTrimmedDiff(
   containerNode: ElementNode,
   trim: SentenceTrimResult,
-  fullTargetFormatMap: number[],
-  sourceFormat: number,
+  sourceFormats: number[],
+  targetFormats: number[],
 ): void {
-  const {prefix, middleSource, middleTarget, suffix} = trim;
-
-  if (prefix) {
-    const node = $createTextNode(prefix);
-    node.setFormat(sourceFormat);
-    containerNode.append(node);
-  }
-
-  if (middleSource || middleTarget) {
-    const middleSegments = diffWords(middleSource, middleTarget);
-    if (
-      shouldFallbackToBlockDiff(middleSegments, middleSource, middleTarget)
-    ) {
-      if (middleSource) {
-        const removed = $createTextNode(middleSource);
-        removed.setFormat(sourceFormat);
-        $setDiffState(removed, 'removed');
-        containerNode.append(removed);
-      }
-      if (middleTarget) {
-        const added = $createTextNode(middleTarget);
-        added.setFormat(sourceFormat);
-        $setDiffState(added, 'added');
-        containerNode.append(added);
-      }
-    } else {
-      // Word-level for the middle. The prefix is text-identical between
-      // source and target, so the middle's bytes start at `prefix.length`
-      // in the (full-text) target format map.
-      $applyWordLevelInlineDiff(
-        containerNode,
-        middleSegments,
-        fullTargetFormatMap,
-        sourceFormat,
-        prefix.length,
-      );
-    }
-  }
-
-  if (suffix) {
-    const node = $createTextNode(suffix);
-    node.setFormat(sourceFormat);
-    containerNode.append(node);
-  }
+  const { prefix, middleSource, middleTarget, suffix } = trim;
+  const middle = diffWords(middleSource, middleTarget);
+  const segments: DiffSegment[] = [];
+  if (prefix) segments.push({ type: 'equal', text: prefix });
+  if (shouldFallbackToBlockDiff(middle, middleSource, middleTarget)) {
+    if (middleSource) segments.push({ type: 'delete', text: middleSource });
+    if (middleTarget) segments.push({ type: 'insert', text: middleTarget });
+  } else segments.push(...middle);
+  if (suffix) segments.push({ type: 'equal', text: suffix });
+  $applyFormattedTextDiff(containerNode, segments, sourceFormats, targetFormats);
 }
 
 /**

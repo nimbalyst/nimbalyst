@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
 /**
@@ -30,6 +31,8 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
 }));
 
 vi.mock('@nimbalyst/runtime/electron/claudeCodeEnvironment', () => ({
+  resolveNativeBinaryPath: vi.fn(() => '/bundled/claude'),
+  describeMissingClaudeRuntime: () => 'Bundled runtime missing. Update or repair Nimbalyst.',
   setupClaudeCodeEnvironment: mocks.setupClaudeCodeEnvironment,
   resolveClaudeCodeExecutablePath: mocks.resolveClaudeCodeExecutablePath,
 }));
@@ -87,7 +90,8 @@ describe('claude-code:check-login honesty', () => {
     const result = await invokeCheckLogin();
 
     expect(result.isLoggedIn).toBe(false);
-    expect(result.error).toBeTruthy();
+    expect(result.error).toContain('Update or repair Nimbalyst');
+    expect(result.isExpired).toBe(false);
     // Must NOT silently fall through to the SDK (which could self-resolve system claude).
     expect(mocks.query).not.toHaveBeenCalled();
   });

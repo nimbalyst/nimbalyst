@@ -2,7 +2,7 @@
  * File operation tools that use the FileSystemService abstraction
  */
 
-import type { ToolContext, ToolDefinition } from './index';
+import type { ToolContext, ToolDefinition } from './definitions';
 import {
   getFileSystemService,
   getFileSystemServiceFor,

@@ -18,6 +18,10 @@
 
 import { spawn, type ChildProcessWithoutNullStreams } from 'child_process';
 import { terminateOwnedProcessTree } from '../processTreeTermination';
+import { scrubProviderApiKeys } from '../../providerApiKeyScrub';
+
+// Allow full-file edit records up to 32 MiB of UTF-8, but bound newline-free output.
+const MAX_STDOUT_LINE_BYTES = 32 * 1024 * 1024;
 
 export interface HeadlessNdjsonRunOptions {
   /** Executable to run. Resolved by the caller, never a bare name if avoidable. */
@@ -71,7 +75,7 @@ export async function* runHeadlessNdjson(
 ): AsyncGenerator<HeadlessNdjsonItem> {
   const child: ChildProcessWithoutNullStreams = spawn(options.command, options.args, {
     cwd: options.cwd,
-    env: options.env ? { ...options.env } : { ...process.env } as Record<string, string>,
+    env: options.env ? { ...options.env } : scrubProviderApiKeys({ ...process.env }),
     stdio: ['pipe', 'pipe', 'pipe'],
     shell: false,
   });
@@ -96,23 +100,33 @@ export async function* runHeadlessNdjson(
     child.on('close', (code, signal) => resolve({ code, signal }));
     child.on('error', reject);
   });
+  // Overflow or early consumer exit can skip the await below; handle late errors.
+  void exited.catch(() => {});
 
   try {
-    let buffer = '';
+    let fragments: string[] = [];
+    let pendingBytes = 0;
     child.stdout.setEncoding('utf8');
     for await (const chunk of child.stdout as AsyncIterable<string>) {
-      buffer += chunk;
-      let newlineIndex = buffer.indexOf('\n');
-      while (newlineIndex !== -1) {
-        const line = buffer.slice(0, newlineIndex);
-        buffer = buffer.slice(newlineIndex + 1);
-        const item = parseLine(line);
+      let offset = 0;
+      while (offset < chunk.length) {
+        const newlineIndex = chunk.indexOf('\n', offset);
+        const fragment = chunk.slice(offset, newlineIndex === -1 ? undefined : newlineIndex);
+        pendingBytes += Buffer.byteLength(fragment, 'utf8');
+        if (pendingBytes > MAX_STDOUT_LINE_BYTES) {
+          throw new Error('Agent stdout line exceeded the 32 MiB limit. The agent process was terminated.');
+        }
+        fragments.push(fragment);
+        if (newlineIndex === -1) break;
+        const item = parseLine(fragments.join(''));
+        fragments = [];
+        pendingBytes = 0;
         if (item) yield item;
-        newlineIndex = buffer.indexOf('\n');
+        offset = newlineIndex + 1;
       }
     }
     // A CLI that exits without a trailing newline still owes us its last event.
-    const tail = parseLine(buffer);
+    const tail = parseLine(fragments.join(''));
     if (tail) yield tail;
 
     const { code, signal } = await exited;

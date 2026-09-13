@@ -13,13 +13,16 @@ vi.mock('jotai', async () => {
   };
 });
 
-vi.mock('@nimbalyst/runtime', () => ({
+vi.mock('@nimbalyst/runtime/ui/icons/MaterialSymbol', () => ({
   MaterialSymbol: ({ icon, className }: { icon: string; className?: string }) => (
     <span data-icon={icon} className={className} />
   ),
-  ProviderIcon: ({ provider }: { provider: string }) => <span data-provider={provider} />,
-  copyToClipboard: vi.fn(),
 }));
+vi.mock('@nimbalyst/runtime/ui/icons/ProviderIcons', () => ({
+  ProviderIcon: ({ provider }: { provider: string }) => <span data-provider={provider} />,
+  resolveProviderIcon: (provider: string) => provider,
+}));
+vi.mock('@nimbalyst/runtime/utils/clipboard', () => ({ copyToClipboard: vi.fn() }));
 
 vi.mock('../../../store', () => {
   const value = (testValue: unknown) => ({ __testValue: testValue });

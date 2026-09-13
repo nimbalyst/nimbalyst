@@ -15,6 +15,8 @@ import { ModelRegistry, ProviderFactory } from '@nimbalyst/runtime/ai/server';
 import { resolveEffortLevel, resolveThinkingMode } from '@nimbalyst/runtime/ai/server/effortLevels';
 import { type AIProviderType, type DocumentContext, type Message, type SessionType } from '@nimbalyst/runtime/ai/server/types';
 import * as fs from 'fs';
+import { remoteSessions } from '../remoteSessions';
+import { registerRemoteSessionHandlers } from './registerRemoteSessionHandlers';
 
 /**
  * Session CRUD and the send-message entry point.
@@ -23,6 +25,7 @@ import * as fs from 'fs';
  * assigns from the streaming handler before the registrars run.
  */
 export function registerSessionHandlers(ctx: AIServiceContext): void {
+  registerRemoteSessionHandlers();
   // Create new session with provider and model selection
   safeHandle('ai:createSession', async (
     event,
@@ -288,7 +291,10 @@ export function registerSessionHandlers(ctx: AIServiceContext): void {
     return session;
   });
 
-  safeHandle('ai:sendMessage', ctx.sendMessageHandler);
+  safeHandle('ai:sendMessage', async (...args: Parameters<NonNullable<typeof ctx.sendMessageHandler>>) => {
+    if (args[3]) await remoteSessions.assertLocalExecution(args[3]);
+    return ctx.sendMessageHandler!(...args);
+  });
 
   // Get session history (full session data with messages - slow)
   safeHandle('ai:getSessions', async (event, workspacePath?: string) => {
@@ -297,7 +303,8 @@ export function registerSessionHandlers(ctx: AIServiceContext): void {
 
   // Get session list (lightweight - just metadata, no messages)
   safeHandle('ai:getSessionList', async (event, workspacePath?: string) => {
-    return await ctx.sessionManager.getSessionList(workspacePath);
+    const local = await ctx.sessionManager.getSessionList(workspacePath);
+    return workspacePath ? remoteSessions.list(workspacePath, local) : local;
   });
 
   // Load a session
@@ -307,6 +314,10 @@ export function registerSessionHandlers(ctx: AIServiceContext): void {
   // to avoid queuing redundant heavy DB queries in PGLite's single-threaded worker
   const loadSessionInFlight = new Map<string, Promise<any>>();
   safeHandle('ai:loadSession', async (event, sessionId: string, workspacePath?: string, trackAsResume?: boolean) => {
+    if (workspacePath && remoteSessions.isRemote(sessionId)) {
+      const remote = await remoteSessions.get(sessionId, workspacePath);
+      if (remote) return remote;
+    }
     const existing = loadSessionInFlight.get(sessionId);
     if (existing && !trackAsResume) {
       return existing;
@@ -314,7 +325,8 @@ export function registerSessionHandlers(ctx: AIServiceContext): void {
 
     const loadPromise = (async () => {
     const loadStart = performance.now();
-    const session = await ctx.sessionManager.loadSession(sessionId, workspacePath);
+    const session = await ctx.sessionManager.loadSession(sessionId, workspacePath)
+      ?? (workspacePath ? await remoteSessions.get(sessionId, workspacePath) : null);
     const loadTime = performance.now() - loadStart;
     if (!session) {
       console.log(`[SESSION] Session not found: ${sessionId} (this is normal if the session was deleted)`);

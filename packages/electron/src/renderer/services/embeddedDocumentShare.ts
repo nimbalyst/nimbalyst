@@ -1,4 +1,5 @@
-import { parseEmbedAttrs, serializeEmbedAttrs } from "@nimbalyst/runtime";
+import { parseEmbedAttrs, serializeEmbedAttrs } from "@nimbalyst/runtime/editor/plugins/EmbedPlugin/embedAttrs";
+import { getEmbedFilePathCandidates, findExistingEmbedFilePath } from "@nimbalyst/runtime/editor/plugins/EmbedPlugin/embedFilePaths";
 import {
   NIMBALYST_CANVAS_NAMESPACE,
   parseCanvasDocument,
@@ -188,7 +189,7 @@ function matchingEmbeddableExtension(
   );
 }
 
-export function resolveEmbeddedDocumentPath(
+function resolveCanvasFilePath(
   href: string,
   sourceFilePath: string,
   workspacePath: string
@@ -218,37 +219,27 @@ export async function discoverEmbeddedDocuments(
   const candidates = new Map<string, EmbeddedDocumentCandidate>();
   const parts = input.markdown.split(/(\r?\n)/);
 
-  // Collect first (the walk is synchronous), then resolve. Occurrence counts
-  // have to be complete before the async work so a repeated embed is only
-  // probed and shared once.
-  const sites: {
-    link: ParsedBlockLink;
-    fileExtension: string;
-    absolutePath: string;
-  }[] = [];
+  const sites: { link: ParsedBlockLink; fileExtension: string }[] = [];
   forEachBlockLink(parts, (link) => {
-    const fileExtension = matchingEmbeddableExtension(
-      link.href,
-      input.embeddableExtensions
-    );
-    if (!fileExtension) return;
-    const absolutePath = resolveEmbeddedDocumentPath(
-      link.href,
-      input.sourceFilePath,
-      input.workspacePath
-    );
-    if (!absolutePath) return;
-    sites.push({ link, fileExtension, absolutePath });
+    const fileExtension = matchingEmbeddableExtension(link.href, input.embeddableExtensions);
+    if (fileExtension) sites.push({ link, fileExtension });
   });
-
-  for (const { link, fileExtension, absolutePath } of sites) {
+  const resolutions = new Map<string, string | null>();
+  for (const { link, fileExtension } of sites) {
+    if (!resolutions.has(link.href)) {
+      resolutions.set(link.href, await findExistingEmbedFilePath(
+        getEmbedFilePathCandidates(link.href, dirname(input.sourceFilePath), input.workspacePath),
+        input.fileExists,
+      ));
+    }
+    const absolutePath = resolutions.get(link.href);
+    if (!absolutePath) continue;
     const existing = candidates.get(absolutePath);
     if (existing) {
       existing.occurrences += 1;
       continue;
     }
 
-    if (!(await input.fileExists(absolutePath))) continue;
     const fileName = basename(absolutePath);
     // Embed eligibility is standalone shareability — there is deliberately no separate
     // embed capability. If a type should ever be shareable but not embeddable, that
@@ -293,7 +284,7 @@ export async function discoverCanvasEmbeddedDocuments(
         ? node.file
         : null;
     if (!sourceHref) continue;
-    const absolutePath = resolveEmbeddedDocumentPath(
+    const absolutePath = resolveCanvasFilePath(
       sourceHref,
       input.sourceFilePath,
       input.workspacePath
@@ -346,11 +337,9 @@ export function rewriteEmbeddedDocumentLinks(
   const parts = input.markdown.split(/(\r?\n)/);
 
   forEachBlockLink(parts, (link, index) => {
-    const absolutePath = resolveEmbeddedDocumentPath(
-      link.href,
-      input.sourceFilePath,
-      input.workspacePath
-    );
+    const absolutePath = getEmbedFilePathCandidates(
+      link.href, dirname(input.sourceFilePath), input.workspacePath,
+    ).find(path => candidatesByPath.has(path));
     if (!absolutePath) return;
     const candidate = candidatesByPath.get(absolutePath);
     const reference = input.sharedReferences.get(absolutePath);
@@ -387,7 +376,7 @@ export function rewriteCanvasEmbeddedDocuments(
         ? node.file
         : null;
     if (!sourceHref) return node;
-    const absolutePath = resolveEmbeddedDocumentPath(
+    const absolutePath = resolveCanvasFilePath(
       sourceHref,
       input.sourceFilePath,
       input.workspacePath

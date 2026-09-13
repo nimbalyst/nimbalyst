@@ -171,7 +171,8 @@ beforeEach(() => {
   });
   (window as any).electronAPI = {
     documentService: {
-      getTrackerBodyCacheForDetail: vi.fn(async () => ({
+      getTrackerCreationStatus: vi.fn().mockResolvedValue(null),
+        getTrackerBodyCacheForDetail: vi.fn(async () => ({
         success: true,
         row: { content: BODY },
       })),

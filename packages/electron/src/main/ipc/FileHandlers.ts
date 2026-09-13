@@ -5,6 +5,8 @@ import { basename, join, dirname, extname } from 'path';
 import { windowStates, savingWindows, recentlyDeletedFiles, findWindowByFilePath, createWindow, getWindowId, windows, documentServices } from '../window/WindowManager';
 import { loadFileIntoWindow, saveFile } from '../file/FileOperations';
 import { shouldBlockEmptyOverwrite, wouldDiscardUnseenContent, writeRecoverySnapshot } from '../file/safeFileWrite';
+import { registerOpenFileHandlers } from './OpenFileHandlers';
+import { verifyFileSave } from '../file/verifyFileSave';
 import { openFileWithDialog, openFile } from '../file/FileOpener';
 import { startFileWatcher, stopFileWatcher } from '../file/FileWatcher';
 import { AUTOSAVE_DELAY } from '../utils/constants';
@@ -48,6 +50,7 @@ function getFileType(filePath: string): string {
 // count in particular walked the whole document on every autosave.
 
 export function registerFileHandlers() {
+    registerOpenFileHandlers();
     const analytics = AnalyticsService.getInstance();
     const saveFailureTelemetry = new FileSaveFailureTelemetryDeduper();
 
@@ -169,25 +172,8 @@ export function registerFileHandlers() {
                 return { success: false, deleted: true, filePath };
             }
 
-            // Check for conflicts with external changes before saving
-            if (lastKnownContent !== undefined && existsSync(filePath)) {
-                try {
-                    const currentDiskContent = readFileSync(filePath, 'utf-8');
-                    if (currentDiskContent !== lastKnownContent) {
-                        console.log('[SAVE] ⚠ Conflict detected - file changed on disk since last load');
-
-                        return {
-                            success: false,
-                            conflict: true,
-                            filePath,
-                            diskContent: currentDiskContent
-                        };
-                    }
-                } catch (readError) {
-                    console.error('[SAVE] Failed to check for conflicts:', readError);
-                    // Continue with save if we can't read the file
-                }
-            }
+            const verificationFailure = verifyFileSave(filePath, lastKnownContent);
+            if (verificationFailure) return verificationFailure;
 
             // Don't recreate a file that was deleted from disk
             if (!existsSync(filePath)) {
@@ -235,7 +221,7 @@ export function registerFileHandlers() {
 
             // Mark that we're saving to prevent file watcher from reacting
             savingWindows.add(windowId);
-            SessionFileWatcher.markEditorSave(filePath);
+            SessionFileWatcher.markEditorSave(filePath, content);
 
             saveFile(filePath, content);
 
@@ -345,7 +331,7 @@ export function registerFileHandlers() {
 
                 // Mark that we're saving to prevent file watcher from reacting
                 savingWindows.add(windowId);
-                SessionFileWatcher.markEditorSave(filePath);
+                SessionFileWatcher.markEditorSave(filePath, content);
 
                 if (state) {
                     state.filePath = filePath;

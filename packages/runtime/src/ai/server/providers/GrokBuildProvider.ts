@@ -23,6 +23,7 @@ import { generateToolPattern } from '../permissions/toolPermissionHelpers';
 import { handleToolPermissionFallback } from './claudeCode/toolAuthorization';
 import {
   HeadlessCliAgentProvider,
+  buildHeadlessChildEnvironment,
   type HeadlessCliAgentDescriptor,
   type HeadlessCliEnvironmentLoaders,
 } from './HeadlessCliAgentProvider';
@@ -192,9 +193,7 @@ export class GrokBuildProvider extends HeadlessCliAgentProvider {
         execFile(command, ['models'], {
           timeout: 10_000,
           encoding: 'utf8',
-          env: GrokBuildProvider.enhancedPathLoader
-            ? { ...process.env, PATH: GrokBuildProvider.enhancedPathLoader() }
-            : process.env,
+          env: buildHeadlessChildEnvironment(GrokBuildProvider.loaders()),
         }, (error, stdout) => {
           if (error) reject(error);
           else resolve(stdout);

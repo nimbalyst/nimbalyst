@@ -1,3 +1,4 @@
+import type { OrchestrationMessageKind } from '@nimbalyst/runtime/ai/server/types';
 /**
  * Meta-agent (child-session orchestration) tool surface — `create_session`,
  * `spawn_session`, `send_prompt`, `list_queued_prompts`, `respond_to_prompt`,
@@ -125,7 +126,8 @@ interface MetaAgentToolFns {
     workspaceId: string,
     targetSessionId: string,
     prompt: string,
-    interrupt?: boolean
+    interrupt?: boolean,
+    messageKind?: OrchestrationMessageKind
   ) => Promise<string>;
   notifyUser: (
     metaSessionId: string,
@@ -320,6 +322,11 @@ export const META_AGENT_TOOL_DEFS: Array<{
     },
   },
   {
+    name: "consume_session_inbox",
+    description: "Receive a bounded batch of reports for your CURRENT active turn and record receipt so they do not replay as another turn. Takes no session ID. When coordinating children, call before delegation/integration decisions, after long validation, and before final synthesis. Read the whole batch before acting. A boundary means yield at a safe point for normal queue delivery. Do not poll an empty inbox; end the turn when no independent work remains. Supports Claude Code and Codex MCP turns with verifiable tool-call identity.",
+    inputSchema: { type: "object", properties: { checkpointId: { type: "string", description: "Unique name for this checkpoint (letters, digits, underscores or hyphens; max 100). Reuse only when retrying this same read; use a new name for a later checkpoint." } }, required: ["checkpointId"] },
+  },
+  {
     name: "list_queued_prompts",
     description:
       "Inspect queued prompts for a session. By default returns only pending/executing rows with bounded prompt previews; set includeCompleted to audit recently consumed rows.",
@@ -347,7 +354,7 @@ export const META_AGENT_TOOL_DEFS: Array<{
   {
     name: "send_prompt",
     description:
-      "Queue a follow-up prompt for a child session. If the session is idle, prompt processing starts immediately.",
+      "Queue a follow-up prompt for a session. If idle, processing starts immediately. Use messageKind=report for informational handoffs that may be consumed mid-turn; instructions/questions/errors retain normal turn delivery. Send material changes once; avoid acknowledgements and routine progress. Use the final response for automatic completion notifications instead of a duplicate send.",
     inputSchema: {
       type: "object",
       properties: {
@@ -358,6 +365,11 @@ export const META_AGENT_TOOL_DEFS: Array<{
         prompt: {
           type: "string",
           description: "The follow-up prompt to send.",
+        },
+        messageKind: {
+          type: "string",
+          enum: ["instruction", "report", "status", "question", "error"],
+          description: "Defaults to instruction. report/status are informational context that the recipient can consume mid-turn; never label a request to change work as a report.",
         },
         interrupt: {
           type: "boolean",
@@ -550,12 +562,14 @@ export async function dispatchMetaAgentTool(
         }
       );
     case "send_prompt":
+      if (args?.messageKind !== undefined && !['instruction', 'report', 'status', 'question', 'error'].includes(String(args.messageKind))) throw new Error('Invalid orchestration messageKind');
       return toolFns.sendPrompt(
         aiSessionId,
         effectiveWorkspaceId,
         (args?.sessionId as string) ?? "",
         (args?.prompt as string) ?? "",
-        args?.interrupt === true
+        args?.interrupt === true,
+        (args?.messageKind as OrchestrationMessageKind | undefined) ?? 'instruction'
       );
     case "notify_user":
       return toolFns.notifyUser(aiSessionId, effectiveWorkspaceId, (args ?? {}) as NotifyUserArgs);

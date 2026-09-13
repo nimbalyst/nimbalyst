@@ -1,0 +1,54 @@
+// Emits the session-execution subset of the runtime to `dist-node/` as plain,
+// module-per-file Node ESM -- the `@nimbalyst/tracker-core` pattern.
+//
+// The default build is a chunked Vite browser bundle whose `lib.entry` is just
+// `index` and `ui/index`, so every deep path in the `exports` map resolves to a
+// file that was never emitted. Electron does not notice because
+// `electron.vite.config.ts` aliases `@nimbalyst/runtime/<subpath>` straight to
+// source. A plain Node host has no such alias, which is what this target is for.
+//
+// Scope is deliberately session execution and personal sync, plus whatever they
+// pull in. `scripts/check-runtime-host-boundary.mjs`
+// guards that closure against regrowing back into the editor tree.
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist-node",
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "noEmit": false,
+    // The base config sets `allowImportingTsExtensions`, which forces `noEmit`.
+    "allowImportingTsExtensions": false,
+    "types": [],
+    // Select collab-protocol's built declarations instead of pulling its source
+    // into this program outside rootDir. Bundler consumers retain source exports.
+    "customConditions": ["node"],
+    // Narrower than the base `paths`: `@nimbalyst/extension-sdk` is dropped so it
+    // resolves through node_modules and its own `exports` map, exactly as it will
+    // for a real Node consumer. Mapping it to `../extension-sdk/src` instead puts
+    // that package's files in this program, and `tsc` then refuses to emit them
+    // from outside `rootDir` (TS6059).
+    "paths": {
+      "@nimbalyst/runtime": ["./src/index.ts"],
+      "@nimbalyst/runtime/*": ["./src/*"]
+    }
+  },
+  "include": [],
+  "files": [
+    "src/ai/server/SessionManager.ts",
+    "src/ai/adapters/sessionStore.ts",
+    "src/ai/server/providers/ClaudeCodeProvider.ts",
+    // Personal-sync key derivation. A separate entry point rather than part of
+    // the session-execution closure: the headless host needs it, and importing
+    // it through `./sync` would drag the whole sync barrel and the Y.js graph
+    // in for a twenty-line function with no imports of its own.
+    "src/sync/encryptionKey.ts",
+    "src/sync/CollabV3Sync.ts",
+    "src/sync/SyncedSessionStore.ts",
+    "src/sync/types.ts",
+    "src/sync/syncClientInfo.ts",
+    "src/sync/nodeCredentialToken.ts"
+  ]
+}

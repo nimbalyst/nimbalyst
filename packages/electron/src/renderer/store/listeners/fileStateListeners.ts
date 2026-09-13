@@ -15,6 +15,7 @@
 import { store } from '@nimbalyst/runtime/store';
 import {
   sessionFileEditsAtom,
+  workspaceFileLinksRevisionAtom,
   sessionGitStatusAtom,
   setSessionPendingReviewFilesAtom,
   workspaceUncommittedFilesAtom,
@@ -275,6 +276,7 @@ export function initFileStateListeners(workspacePath: string): () => void {
 
           // Set edits immediately without enrichment
           store.set(sessionFileEditsAtom(sessionId), edits);
+          store.set(workspaceFileLinksRevisionAtom(workspacePath), n => n + 1);
 
           // Debounce the enrichment to avoid rapid-fire IPC calls during active sessions.
           // Short delay (200ms) since incremental matching now runs during the session.

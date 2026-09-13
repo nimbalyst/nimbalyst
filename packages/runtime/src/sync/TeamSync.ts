@@ -1,3 +1,4 @@
+import { DocumentFeedbackIndexClient } from './DocumentFeedbackIndexClient';
 /**
  * TeamSyncProvider
  *
@@ -50,6 +51,7 @@ const RECONNECT_MAX_MS = 30_000;
 
 export class TeamSyncProvider {
   private config: TeamSyncConfig;
+  private readonly documentFeedbackIndex: DocumentFeedbackIndexClient;
   private ws: WebSocket | null = null;
   private status: TeamSyncStatus = 'disconnected';
   private destroyed = false;
@@ -95,6 +97,7 @@ export class TeamSyncProvider {
 
   constructor(config: TeamSyncConfig) {
     this.config = config;
+    this.documentFeedbackIndex = new DocumentFeedbackIndexClient(state => this.config.onDocumentFeedbackIndex?.(state));
   }
 
   // --------------------------------------------------------------------------
@@ -435,6 +438,9 @@ export class TeamSyncProvider {
         case 'conversationDescriptorUpdated':
           this.config.onConversationDescriptorUpdated?.(message.descriptor);
           break;
+        case 'documentFeedbackIndexSnapshot':
+          this.documentFeedbackIndex.receive(message);
+          break;
         case 'feedbackIndexSyncResponse':
           this.config.onFeedbackIndexLoaded?.(message.entries);
           break;
@@ -557,6 +563,7 @@ export class TeamSyncProvider {
     this.send({ type: 'docIndexSync' });
     this.send({ type: 'folderIndexSync' });
     this.send({ type: 'feedbackIndexSync' });
+    if (this.config.onDocumentFeedbackIndex) this.documentFeedbackIndex.start(() => this.send({ type: 'documentFeedbackIndexSync' }));
 
   }
 
@@ -923,6 +930,7 @@ export class TeamSyncProvider {
   }
 
   private setStatus(status: TeamSyncStatus): void {
+    if (status === 'disconnected') this.documentFeedbackIndex.disconnect();
     if (this.status === status) return;
     this.status = status;
     this.config.onStatusChange?.(status);

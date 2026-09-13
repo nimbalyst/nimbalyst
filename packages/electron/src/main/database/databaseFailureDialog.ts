@@ -16,8 +16,35 @@
  * data, and it only promises recoverable data when some actually exists.
  */
 
+import * as os from 'os';
+import { buildDatabaseInitializationErrorProperties } from './DatabaseErrorTelemetry';
+import type { CutoverJournal } from './sqlite/cutoverJournal';
 import type { RestorableBackup } from './sqlite/recoveryArtifacts';
 import { formatBytes } from './sqlite/recoveryArtifacts';
+
+/** The one destructive choice here: it discards everything saved since the switch. */
+const ROLLBACK_BUTTON = 'Restore pre-migration database';
+
+/**
+ * Replace the two paths that carry the account name with placeholders.
+ *
+ * `buildDatabaseFailureDiagnostics` keeps paths out of the copied text by
+ * only ever emitting bounded codes, so there was nothing to reuse: the raw
+ * engine error still went on screen verbatim, and a database init failure
+ * names the database path. Users photograph this dialog for support.
+ */
+export function redactAccountPaths(text: string, userDataPath?: string): string {
+  const escape = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  let redacted = text;
+  // Longest first: the userData path normally sits under the home directory.
+  for (const [value, placeholder] of [
+    [userDataPath, '<app data>'],
+    [os.homedir(), '<home>'],
+  ] as const) {
+    if (value) redacted = redacted.replace(new RegExp(escape(value), 'g'), placeholder);
+  }
+  return redacted;
+}
 
 export interface DatabaseFailureDialogContent {
   title: string;
@@ -47,15 +74,26 @@ export interface DatabaseFailureDialogContent {
    * `database/recovery/recoveryTransaction.ts`.
    */
   restoreCandidates: RestorableBackup[];
+  rollbackSource?: RestorableBackup;
+  diagnostics?: string;
+  retryStartup?: boolean;
 }
 
 export function buildDatabaseFailureDialog(
   backups: RestorableBackup[],
+  options: {
+    rollbackSource?: RestorableBackup;
+    diagnostics?: string;
+    reason?: string;
+    retryStartup?: boolean;
+    /** Redacted out of `reason`, along with the home directory. */
+    userDataPath?: string;
+  } = {},
 ): DatabaseFailureDialogContent {
   const hasBackups = backups.length > 0;
 
   const recovery = hasBackups
-    ? `Your data has not been lost. These copies are on this computer right now:\n\n` +
+    ? `Backup copies were found on this computer:\n\n` +
       backups.map((b) => `   - ${b.name} (${formatBytes(b.bytes)})`).join('\n') +
       `\n\nDo not remove the database folder -- these backups are what it would be restored from.\n\n` +
       `Restore Backup starts with the copy holding the most, and tries the next one if that copy ` +
@@ -73,25 +111,53 @@ export function buildDatabaseFailureDialog(
       `2. Restart your computer, which clears stale database locks\n` +
       `3. If it still will not start, contact support before changing anything on disk\n\n`;
 
+  // Cheapest and least destructive first. Rolling back to the pre-migration
+  // store comes after both, because it is the only choice here that leaves
+  // the user without work they have already done.
+  const actions = [
+    ...(options.retryStartup ? ['Retry startup'] : []),
+    ...(hasBackups ? ['Restore Backup', 'Show Backups'] : []),
+    ...(options.rollbackSource ? [ROLLBACK_BUTTON] : []),
+    ...(options.diagnostics ? ['Copy diagnostics'] : []),
+  ];
+  // Index 0 is the slot the platform paints as primary, so the rollback may
+  // not hold it even when it is the only action on offer -- Quit takes the
+  // first slot in that case rather than the last.
+  const buttons = actions[0] === ROLLBACK_BUTTON ? ['Quit', ...actions] : [...actions, 'Quit'];
+
   return {
     title: 'Nimbalyst - Database Initialization Failed',
     message: 'The database could not be started.',
-    detail: recovery + steps + `Nimbalyst will close if you quit.`,
-    // Restore is the action this dialog exists for. Listing the backups was
-    // the fix for "delete the database folder"; it still left the user reading
-    // that their data was safe with no way to reach it (#1347).
-    buttons: hasBackups ? ['Restore Backup', 'Show Backups', 'Quit'] : ['Quit'],
-    defaultId: 0,
+    detail: (options.reason ? `${redactAccountPaths(options.reason, options.userDataPath)}\n\n` : '') + recovery +
+      (options.rollbackSource
+        ? `The database as it was before the switch to the new engine is also still here (${options.rollbackSource.name}). ` +
+          `Restore pre-migration database goes back to it: anything saved since the switch will not be in it, ` +
+          `and the newer database is kept on disk.\n\n`
+        : '') +
+      steps + `Nimbalyst will close if you quit.`,
+    buttons,
+    // Retry first -- a transient failure costs nothing to re-run. Then the
+    // rolling backup, which the recovery transaction verifies and which keeps
+    // the displaced database. Never the rollback, and never a bare Quit while
+    // something recoverable is on offer (#1347).
+    defaultId: options.retryStartup
+      ? buttons.indexOf('Retry startup')
+      : hasBackups
+        ? buttons.indexOf('Restore Backup')
+        : buttons.findIndex((button) => button !== ROLLBACK_BUTTON),
     // Escape lands on Quit, never on an action that touches the database.
-    cancelId: hasBackups ? 2 : 0,
+    cancelId: buttons.indexOf('Quit'),
     // `findRestorableBackups` returns richest-first, so this is the copy the
     // Restore button starts with and the one Show Backups reveals.
     revealPath: hasBackups ? backups[0].path : null,
     restoreCandidates: backups,
+    rollbackSource: options.rollbackSource,
+    diagnostics: options.diagnostics,
+    retryStartup: options.retryStartup,
   };
 }
 
-export type DatabaseFailureDialogAction = 'restore' | 'reveal' | 'quit';
+export type DatabaseFailureDialogAction = 'restore' | 'rollback' | 'diagnostics' | 'retry' | 'reveal' | 'quit';
 
 /**
  * What the button index the user picked actually means. Kept next to the
@@ -104,6 +170,12 @@ export function actionForChoice(
   choice: number,
 ): DatabaseFailureDialogAction {
   switch (content.buttons[choice]) {
+    case ROLLBACK_BUTTON:
+      return 'rollback';
+    case 'Retry startup':
+      return 'retry';
+    case 'Copy diagnostics':
+      return 'diagnostics';
     case 'Restore Backup':
       return 'restore';
     case 'Show Backups':
@@ -129,6 +201,9 @@ export interface DatabaseFailureRestoreResult {
 
 export interface DatabaseFailureDialogHandlers {
   restore(candidate: RestorableBackup): Promise<DatabaseFailureRestoreResult>;
+  rollback?(candidate: RestorableBackup): Promise<DatabaseFailureRestoreResult>;
+  copyDiagnostics?(text: string): void;
+  retryStartup?(): void;
   reveal(revealPath: string): void;
   /** Called with the text to put in front of the user when a restore fails. */
   onRestoreFailed?(message: string): void;
@@ -137,7 +212,7 @@ export interface DatabaseFailureDialogHandlers {
 export interface DatabaseFailureChoiceOutcome {
   action: DatabaseFailureDialogAction;
   /** Bounded analytics value; one of a fixed set. */
-  reportedAction: 'restore_succeeded' | 'restore_failed' | 'show_backups' | 'quit';
+  reportedAction: 'restore_succeeded' | 'restore_failed' | 'show_backups' | 'copy_diagnostics' | 'retry_startup' | 'quit';
   /** True when the app should relaunch onto the restored database. */
   restored: boolean;
 }
@@ -160,6 +235,24 @@ export async function applyDatabaseFailureChoice(
   handlers: DatabaseFailureDialogHandlers,
 ): Promise<DatabaseFailureChoiceOutcome> {
   const action = actionForChoice(content, choice);
+
+  if (action === 'retry' && content.retryStartup && handlers.retryStartup) {
+    handlers.retryStartup();
+    return { action, reportedAction: 'retry_startup', restored: true };
+  }
+
+  if (action === 'rollback' && content.rollbackSource && handlers.rollback) {
+    let result: DatabaseFailureRestoreResult;
+    try { result = await handlers.rollback(content.rollbackSource); } catch (error) {
+      result = { ok: false, message: error instanceof Error ? error.message : String(error) };
+    }
+    if (!result.ok) handlers.onRestoreFailed?.(result.message ?? 'Pre-migration recovery did not complete. All copies have been retained.');
+    return { action, reportedAction: result.ok ? 'restore_succeeded' : 'restore_failed', restored: result.ok };
+  }
+  if (action === 'diagnostics' && content.diagnostics) {
+    handlers.copyDiagnostics?.(content.diagnostics);
+    return { action, reportedAction: 'copy_diagnostics', restored: false };
+  }
 
   if (action === 'restore' && content.restoreCandidates.length > 0) {
     const failures: string[] = [];
@@ -189,4 +282,19 @@ export async function applyDatabaseFailureChoice(
   }
 
   return { action: 'quit', reportedAction: 'quit', restored: false };
+}
+
+
+/** Shareable diagnosis: bounded codes and lifecycle state, never paths or row IDs. */
+export function buildDatabaseFailureDiagnostics(args: {
+  version: string;
+  backend: 'sqlite' | 'pglite';
+  error: unknown;
+  cutover?: CutoverJournal;
+}): string {
+  return JSON.stringify({
+    version: args.version,
+    ...buildDatabaseInitializationErrorProperties(args.error, args.backend),
+    cutover: args.cutover ? { operation: args.cutover.operation, phase: args.cutover.phase, reconcileAttempts: args.cutover.reconcileAttempts } : null,
+  }, null, 2);
 }

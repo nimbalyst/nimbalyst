@@ -159,9 +159,8 @@ public struct PendingSessionView: View {
             if let session = resolver.session {
                 onResolve(session)
             } else {
-                // The tap beat sync here; ask for the index again rather than
-                // waiting on whatever the reconnect cadence happens to be.
-                appState.requestSync()
+                // Fetch the requested row before continuing background history.
+                appState.syncManager?.requestSessionIndexLookup(sessionId: resolver.sessionId)
             }
         }
     }
@@ -180,6 +179,7 @@ public struct PendingSessionView: View {
                     .multilineTextAlignment(.center)
                 Button("Retry Sync") {
                     appState.requestSync()
+                    appState.syncManager?.requestSessionIndexLookup(sessionId: resolver.sessionId)
                 }
                 .buttonStyle(.bordered)
             } else {

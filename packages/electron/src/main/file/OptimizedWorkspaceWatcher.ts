@@ -2,6 +2,7 @@ import { BrowserWindow } from 'electron';
 import { getFolderContents } from '../utils/FileTree';
 import { logger } from '../utils/logger';
 import { getWindowId, markRecentlyDeleted } from '../window/WindowManager';
+import { openFileReconciler } from './OpenFileReconciler';
 import * as workspaceEventBus from './WorkspaceEventBus';
 
 /**
@@ -90,49 +91,64 @@ export class OptimizedWorkspaceWatcher {
         const subscriberId = `workspace-watcher-${windowId}`;
         this.subscriberIds.set(windowId, subscriberId);
 
-        await workspaceEventBus.subscribe(workspacePath, subscriberId, {
-            onChange: (filePath: string) => {
-                // Content modification -- notify editors, do NOT rebuild file tree.
-                // We send for bypassed (gitignored-but-tracked) files too: SessionFileWatcher
-                // skips events that pass through `markEditorSave` (restore from history,
-                // manual Cmd+S, autosave), so without this branch a gitignored .md file
-                // open in the editor would never reload after the user wrote to it.
-                if (!window.isDestroyed()) {
-                    window.webContents.send('file-changed-on-disk', { path: filePath });
-                }
-            },
-            onAdd: (filePath: string, gitignoreBypassed?: boolean) => {
-                // Always refresh file tree for new files — the tree builder has its
-                // own EXCLUDED_DIRS filtering, so gitignored files in non-excluded
-                // dirs (e.g. AI-created files) will correctly appear.
-                triggerUpdate();
-                if (gitignoreBypassed) return; // SessionFileWatcher handles editor notifications
-                if (!window.isDestroyed()) {
-                    window.webContents.send('file-changed-on-disk', { path: filePath });
-                }
-            },
-            onUnlink: (filePath: string, gitignoreBypassed?: boolean) => {
-                // Always refresh file tree for deleted files
-                triggerUpdate();
-                if (gitignoreBypassed) return; // SessionFileWatcher handles editor notifications
-                // Track the deletion in the lifecycle-bound recentlyDeleted
-                // map so a stale autosave from any surviving editor cannot
-                // recreate the file with old content. Cleared by
-                // editor:released-deleted-path once the renderer has fully
-                // released the path AND observed a fresh load.
-                markRecentlyDeleted(filePath);
-                if (!window.isDestroyed()) {
-                    window.webContents.send('file-changed-on-disk', { path: filePath });
-                    window.webContents.send('file-deleted', { filePath });
-                }
-            },
-            // The file-tree builder shows gitignored paths that aren't in
-            // EXCLUDED_DIRS (e.g. `temp/`, `nimbalyst-local/`, `test-results/`),
-            // so we need refresh events for gitignored adds/unlinks too. Without
-            // this, an agent's `mkdir tmp` against a `tmp/` gitignore pattern
-            // never reaches the sidebar until the workspace reopens.
-            receiveGitignoredStructureEvents: true,
-        });
+        let recovering = false;
+        try {
+            await workspaceEventBus.subscribe(workspacePath, subscriberId, {
+                onHealthChanged: (health) => {
+                    if (!window.isDestroyed()) window.webContents.send('file:watch-health', { root: workspacePath, ...health });
+                    if (health.state === 'recovering') recovering = true;
+                    if (health.state === 'watching' && recovering) {
+                        recovering = false;
+                        triggerUpdate();
+                        void openFileReconciler.reconcileRoot(workspacePath);
+                    }
+                },
+                onChange: (filePath: string) => {
+                    // Content modification -- notify editors, do NOT rebuild file tree.
+                    // We send for bypassed (gitignored-but-tracked) files too: SessionFileWatcher
+                    // skips events that pass through `markEditorSave` (restore from history,
+                    // manual Cmd+S, autosave), so without this branch a gitignored .md file
+                    // open in the editor would never reload after the user wrote to it.
+                    if (!window.isDestroyed()) {
+                        window.webContents.send('file-changed-on-disk', { path: filePath });
+                    }
+                },
+                onAdd: (filePath: string, gitignoreBypassed?: boolean) => {
+                    // Always refresh file tree for new files — the tree builder has its
+                    // own EXCLUDED_DIRS filtering, so gitignored files in non-excluded
+                    // dirs (e.g. AI-created files) will correctly appear.
+                    triggerUpdate();
+                    if (gitignoreBypassed && !filePath.toLowerCase().endsWith('.md') && !workspaceEventBus.hasGitignoreBypass(workspacePath, filePath)) return;
+                    if (!window.isDestroyed()) {
+                        window.webContents.send('file-changed-on-disk', { path: filePath });
+                    }
+                },
+                onUnlink: (filePath: string, gitignoreBypassed?: boolean) => {
+                    // Always refresh file tree for deleted files
+                    triggerUpdate();
+                    if (gitignoreBypassed && !filePath.toLowerCase().endsWith('.md') && !workspaceEventBus.hasGitignoreBypass(workspacePath, filePath)) return;
+                    // Track the deletion in the lifecycle-bound recentlyDeleted
+                    // map so a stale autosave from any surviving editor cannot
+                    // recreate the file with old content. Cleared by
+                    // editor:released-deleted-path once the renderer has fully
+                    // released the path AND observed a fresh load.
+                    markRecentlyDeleted(filePath);
+                    if (!window.isDestroyed()) {
+                        window.webContents.send('file-changed-on-disk', { path: filePath });
+                        window.webContents.send('file-deleted', { filePath });
+                    }
+                },
+                // The file-tree builder shows gitignored paths that aren't in
+                // EXCLUDED_DIRS (e.g. `temp/`, `nimbalyst-local/`, `test-results/`),
+                // so we need refresh events for gitignored adds/unlinks too. Without
+                // this, an agent's `mkdir tmp` against a `tmp/` gitignore pattern
+                // never reaches the sidebar until the workspace reopens.
+                receiveGitignoredStructureEvents: true,
+            });
+        } catch (error) {
+            this.stopRoot(windowId, workspacePath);
+            throw error;
+        }
     }
 
     // ---------------------------------------------------------------
@@ -301,7 +317,10 @@ export class OptimizedWorkspaceWatcher {
         const busStats = workspaceEventBus.getStats();
         return {
             type: busStats.type,
-            activeWorkspaces: stats.length,
+            activeWorkspaces: busStats.activeWorkspaces,
+            registeredWorkspaces: stats.length,
+            health: busStats.workspaces,
+            reconciliation: openFileReconciler.getStats(),
             workspaces: stats,
         };
     }

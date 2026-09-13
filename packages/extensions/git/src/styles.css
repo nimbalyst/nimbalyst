@@ -426,7 +426,7 @@
 .git-log-detail-panel {
   flex-shrink: 0;
   border-left: 1px solid var(--nim-border);
-  overflow-y: auto;
+  overflow: hidden;
   background: var(--nim-bg);
   display: flex;
   flex-direction: column;
@@ -453,7 +453,9 @@
 .git-detail-vertical {
   display: flex;
   flex-direction: column;
-  height: 100%;
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
 }
 
 .git-detail-session {
@@ -506,14 +508,11 @@
   word-break: break-word;
   color: var(--nim-text);
   border-bottom: 1px solid var(--nim-border);
-  overflow-y: auto;
-  max-height: 140px;
   flex-shrink: 0;
 }
 
 .git-detail-files {
-  flex: 1;
-  overflow-y: auto;
+  flex-shrink: 0;
   padding: 4px 0;
   border-bottom: 1px solid var(--nim-border);
 }

@@ -23,7 +23,7 @@ vi.mock('electron', async () => ({
 }));
 
 import { SQLiteDatabase } from '../../database/sqlite/SQLiteDatabase';
-import { findSessionIdsForFile, worktreeRootRange } from '../sessionFilesByPath';
+import { findSessionAttributionForFile, findSessionIdsForFile, worktreeRootRange } from '../sessionFilesByPath';
 
 const PROJECT = '/Users/dev/sources/app';
 const WORKTREE = '/Users/dev/sources/app_worktrees/feature-a';
@@ -110,4 +110,12 @@ describe('findSessionIdsForFile', () => {
     expect(matchPlan).toContain('idx_session_files_file');
     expect(matchPlan).not.toContain('SCAN session_files');
   });
+});
+
+it('returns latest per-file edit provenance for multiple sessions without inferring whole-file ownership',async()=>{
+  const filePath=`${PROJECT}/shared.ts`;
+  await link('A',PROJECT,filePath);await link('B',PROJECT,filePath);
+  await sqlite.query('UPDATE session_files SET timestamp=$1, metadata=$2 WHERE session_id=$3',[new Date(1000),JSON.stringify({source:'shell-hook-inferred'}),'B']);
+  const rows=await findSessionAttributionForFile(sqlite,{workspaceId:PROJECT,projectPath:PROJECT,relativePath:'/shared.ts',filePath});
+  expect(rows).toEqual(expect.arrayContaining([{id:'A',lastFileEditAt:0,fileAttribution:'recorded'},{id:'B',lastFileEditAt:1000,fileAttribution:'inferred'}]));
 });

@@ -116,8 +116,9 @@ export function createPgliteRecoveryVerifier(opts: {
         if (settled) return;
         settled = true;
         if (timer) clearTimeout(timer);
-        void worker?.terminate();
-        resolve(result);
+        // The caller may rename this store after verification; wait for the
+        // verification worker to release its handle first.
+        void (worker?.terminate() ?? Promise.resolve()).then(() => resolve(result), () => resolve(unreadable('Verification worker did not stop')));
       };
 
       /**

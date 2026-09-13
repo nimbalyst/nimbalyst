@@ -84,6 +84,7 @@ export type InboxAgentDispatchState = 'pending' | 'dispatched';
 
 export interface HydratedInboxDelivery
   extends Omit<InboxDelivery, 'source' | 'actor' | 'preview' | 'recipientUserId'> {
+  documentDecisionNeedsResponse?: boolean;
   teamMemberId: TeamMemberId;
   orgName: string;
   projectId?: string;

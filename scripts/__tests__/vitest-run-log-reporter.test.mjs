@@ -1,0 +1,42 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import Reporter from '../vitest-run-log-reporter.mjs';
+import { fullSuiteArgs } from '../validation-inventory.mjs';
+
+test('preserves full results across focused runs, invalidates at start, and rejects cancellation and collection errors', (t) => {
+  const cwd = process.cwd();
+  const argv = process.argv;
+  const dir = mkdtempSync(path.join(tmpdir(), 'run-reporter-'));
+  process.chdir(dir);
+  t.after(() => { process.chdir(cwd); process.argv = argv; rmSync(dir, { recursive: true, force: true }); });
+  const read = () => JSON.parse(readFileSync('.vitest/last-full-run.json', 'utf8'));
+  const module = { moduleId: '/test.ts', errors: () => [], children: { allTests: () => [{ result: () => ({ state: 'passed' }) }] } };
+  const start = (args = fullSuiteArgs) => {
+    process.argv = ['node', 'vitest', ...args];
+    const reporter = new Reporter(); reporter.onTestRunStart(); return reporter;
+  };
+  start().onTestRunEnd([module], [], 'passed');
+  const success = read();
+  assert.equal(success.complete, true);
+  assert.equal(success.result, 'PASS');
+  start(['run', 'test.ts']).onTestRunEnd([module], [], 'passed');
+  assert.deepEqual(read(), success);
+  const interrupted = start();
+  assert.equal(read().complete, false);
+  interrupted.onTestRunEnd([module], [], 'interrupted');
+  assert.equal(read().complete, false);
+  assert.equal(read().result, 'FAIL');
+  start().onTestRunEnd([{ ...module, errors: () => [{ message: 'collect failed' }] }], [], 'failed');
+  assert.equal(read().complete, false);
+  assert.equal(read().result, 'FAIL');
+  const older = start();
+  const newer = start();
+  older.onTestRunEnd([module], [], 'passed');
+  assert.equal(read().runId, newer.runId);
+  assert.equal(read().complete, false);
+  newer.onTestRunEnd([module], [], 'passed');
+  assert.equal(read().result, 'PASS');
+});

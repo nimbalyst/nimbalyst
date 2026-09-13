@@ -1,3 +1,5 @@
+import { documentFeedbackIndexAtomFamily } from '../../../store/atoms/documentFeedback';
+import { documentFeedbackDeepLink, selectUnifiedFeedbackRows } from './documentFeedbackListModel';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { MaterialSymbol } from '@nimbalyst/runtime/ui/icons/MaterialSymbol';
 import { useAtomValue } from 'jotai';
@@ -13,8 +15,6 @@ import { FeedbackRequestSurface } from '../../FeedbackRequest/FeedbackRequestSur
 import { FeedbackRow } from './FeedbackRow';
 import {
   FEEDBACK_LIST_FILTERS,
-  selectFeedbackRows,
-  toFeedbackRowView,
   type FeedbackListFilterId,
 } from './feedbackListModel';
 
@@ -36,25 +36,6 @@ function primeFeedbackRequestIndex(target: FeedbackRequestIndexTarget): void {
     });
 }
 
-/**
- * The organization's feedback surface: every request this member is party to.
- *
- * A request is a resource, not a message, and until now it only existed as one
- * dismissible inbox delivery (recipient) or one closable results tab (author).
- * This is where it stays findable afterwards — open, answered and closed — and
- * where opening one lands on the same rich request UI it was delivered in.
- *
- * It sits beside the Inbox, as its own destination rather than a seventh Inbox
- * row, because the two read different sources: every Inbox row is an
- * `InboxDelivery` addressed to one recipient, so a request *you* sent has no
- * delivery and can never appear there (#3704). This list is the org-scoped
- * index, which does carry it. The Inbox remains the delivery path; this is the
- * inventory.
- *
- * The list is the org-scoped index, which the server already filtered to the
- * viewer's participation. Nothing here re-implements that gate; a request this
- * member cannot see never reaches the atom.
- */
 export function FeedbackSection({
   orgId,
   workspacePath,
@@ -84,6 +65,8 @@ export function FeedbackSection({
     [target],
   );
   const entries = useAtomValue(feedbackRequestIndexListAtomFamily(targetKey));
+  const documentIndex = useAtomValue(documentFeedbackIndexAtomFamily(targetKey));
+  const [openError, setOpenError] = useState('');
   // The team-room identity main verified for this index. Filters are asked
   // against it rather than against a roster lookup, so "sent by me" can never
   // disagree with the participation filter that produced these rows.
@@ -98,6 +81,7 @@ export function FeedbackSection({
   useEffect(() => {
     if (!workspacePath) return;
     primeFeedbackRequestIndex(target);
+    void window.electronAPI.invoke('document-feedback-index:list', target).catch(error => setOpenError(String(error)));
   }, [target, workspacePath]);
 
   useEffect(() => {
@@ -109,26 +93,27 @@ export function FeedbackSection({
   // Frozen per render pass so labels stay put while the user types.
   const now = useMemo(() => nowProp ?? Date.now(), [nowProp, entries, tick]);
 
-  const { entries: visible, counts } = useMemo(
-    () => selectFeedbackRows({ entries, filter, query, viewerUserId }),
-    [entries, filter, query, viewerUserId],
-  );
-  const rows = useMemo(
-    () => visible.map((entry) => toFeedbackRowView({
-      entry,
-      viewerUserId,
-      memberNames,
-      now,
-    })),
-    [memberNames, now, viewerUserId, visible],
-  );
+  const effectiveViewer = documentIndex?.teamMemberId || viewerUserId || '';
+  const { rows, counts } = useMemo(() => selectUnifiedFeedbackRows({
+    requests: viewerUserId === effectiveViewer ? entries : [], questions: documentIndex?.teamMemberId === effectiveViewer ? documentIndex.state.entries : [],
+    filter, query, viewerUserId: effectiveViewer, memberNames, now,
+  }), [entries, viewerUserId, documentIndex, filter, query, effectiveViewer, memberNames, now]);
+  const selectRow = useCallback((id: string) => {
+    const row = rows.find(row => row.id === id);
+    if (!row) return;
+    setOpenError('');
+    if (row.target.kind === 'request') { setSelectedId(row.target.requestId); return; }
+    void window.electronAPI.invoke('deep-link:open-inbox-source', documentFeedbackDeepLink(row.target.entry))
+      .then(opened => { if (!opened) setOpenError('This question could not be opened.'); })
+      .catch(error => setOpenError(error instanceof Error ? error.message : 'This question could not be opened.'));
+  }, [rows]);
   // Resolved against the whole index rather than the filtered rows, unlike the
   // Inbox: answering the request you are reading moves it out of "Needs my
   // response", and the pane must not blank out underneath the person who just
   // submitted. The row simply stops being listed.
   const selectedEntry = useMemo(
-    () => entries.find((entry) => entry.requestId === selectedId) ?? null,
-    [entries, selectedId],
+    () => viewerUserId === effectiveViewer ? entries.find((entry) => entry.requestId === selectedId) ?? null : null,
+    [entries, selectedId, viewerUserId, effectiveViewer],
   );
 
   const clearFilters = useCallback(() => {
@@ -216,6 +201,13 @@ export function FeedbackSection({
         </div>
       </header>
 
+      {openError && <div role="alert" className="px-5 py-2 text-[var(--nim-text-muted)]">{openError}</div>}
+      {documentIndex?.state.status !== 'ready' && <div role="status" className="px-5 py-2 text-[var(--nim-text-muted)]">
+        {documentIndex?.state.status === 'unsupported' ? 'Document questions require an updated collaboration server.'
+          : documentIndex?.state.status === 'error' ? 'Some document questions could not be loaded. Retrying…'
+          : documentIndex?.state.status === 'disconnected' ? 'Reconnect to load document questions.'
+          : 'Loading document questions…'}
+      </div>}
       <div className="feedback-body flex min-h-0 flex-1">
         <div
           className={`feedback-list-pane min-w-0 flex-1 overflow-y-auto ${
@@ -231,7 +223,7 @@ export function FeedbackSection({
                 message="Connecting to this project's shared area. Feedback requests appear once it resolves."
               />
             )
-            : !viewerUserId
+            : !effectiveViewer
               ? (
                 // No verified team-room identity has ever written this index,
                 // which is a signed-out client and a not-yet-synced one alike.
@@ -249,7 +241,9 @@ export function FeedbackSection({
                     testId="feedback-empty"
                     icon="ballot"
                     message={counts.all === 0
-                      ? 'No feedback requests yet. When someone asks you for feedback — or you ask your team — the request lands here and stays after it is answered.'
+                      ? documentIndex?.state.status === 'ready'
+                        ? 'No feedback requests yet. When someone asks you for feedback — or you ask your team — the request lands here and stays after it is answered.'
+                        : 'Document questions will appear once the inventory is available.'
                       : 'No requests match this filter.'}
                     action={counts.all === 0
                       ? undefined
@@ -262,8 +256,8 @@ export function FeedbackSection({
                       <FeedbackRow
                         key={row.id}
                         row={row}
-                        selected={row.id === selectedId}
-                        onSelect={setSelectedId}
+                        selected={row.target.kind === 'request' && row.target.requestId === selectedId}
+                        onSelect={selectRow}
                       />
                     ))}
                   </div>

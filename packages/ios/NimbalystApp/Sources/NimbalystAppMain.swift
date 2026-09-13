@@ -56,7 +56,10 @@ struct NimbalystAppMain: App {
 
     init() {
         #if DEBUG
-        if CommandLine.arguments.contains("--screenshot-mode") {
+        if CommandLine.arguments.contains("--screenshot-mode"),
+           let server = CommandLine.arguments.first(where: { $0.hasPrefix("--document-sync-fixture=") }) {
+            _appState = StateObject(wrappedValue: AppState.forDocumentSyncTesting(serverUrl: String(server.dropFirst("--document-sync-fixture=".count))))
+        } else if CommandLine.arguments.contains("--screenshot-mode") {
             _appState = StateObject(wrappedValue: CommandLine.arguments.contains("--loading-fixture")
                 ? AppState.forLoadingScreenshots() : AppState.forScreenshots())
         } else {

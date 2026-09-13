@@ -21,7 +21,12 @@ import type {
   ChatSession,
 } from '../ai/adapters/sessionStore';
 import type { AgentMessage } from '../ai/server/types';
-import type { SyncProvider, SessionChange, SyncedSessionMetadata } from './types';
+import type {
+  PushChangeOutcome,
+  SyncProvider,
+  SessionChange,
+  SyncedSessionMetadata,
+} from './types';
 import { SYNC_RELEVANT_FIELDS, hasSortRelevantChange } from './syncableMetadata';
 
 export interface SyncedSessionStoreOptions {
@@ -293,17 +298,34 @@ export function createMessageSyncHandler(syncProvider: SyncProvider) {
   return {
     /**
      * Call this after a message is created to sync it.
+     *
+     * Returns what became of the publication rather than throwing, so the
+     * fire-and-forget desktop call sites are untouched -- they ignore the value
+     * and see exactly today's behaviour, including today's swallowing of a
+     * connect failure. A caller that must not lose the row (the headless node,
+     * which retains it and retries on the next reconnect) reads the outcome:
+     * `{ published: false }` used to be indistinguishable from success, so a
+     * node that had never connected reported zero failed rows while sending
+     * nothing at all.
+     *
      * @param message The message to sync
      * @param sessionUpdatedAt Optional timestamp (ms) for session updated_at - MUST match local DB
      */
-    async onMessageCreated(message: AgentMessage, sessionUpdatedAt?: number): Promise<void> {
+    async onMessageCreated(
+      message: AgentMessage,
+      sessionUpdatedAt?: number,
+    ): Promise<PushChangeOutcome> {
       // Provider-latched auth mismatch (JWT sub != configured personalMemberId) means
       // the server will reject every connection until the user re-auths or
       // settings change. Skip the connect attempt entirely; the latch
       // clears on reconnectIndex() / disconnectAll() so legitimate auth
       // refreshes still get through on the next message.
       if (syncProvider.isAuthMismatched?.()) {
-        return;
+        return {
+          published: false,
+          reason: 'the provider has latched a JWT/personal-member mismatch',
+          retryable: true,
+        };
       }
 
       // Auto-connect session if not already connected
@@ -314,12 +336,23 @@ export function createMessageSyncHandler(syncProvider: SyncProvider) {
           // console.log(`[MessageSyncHandler] Successfully connected session ${message.sessionId}`);
         } catch (error) {
           logConnectFailure(message.sessionId, error);
-          return;
+          return {
+            published: false,
+            reason: error instanceof Error ? error.message : String(error),
+            retryable: true,
+          };
         }
       }
 
       // console.log(`[MessageSyncHandler] Pushing message_added for session ${message.sessionId}`);
-      syncProvider.pushChange(message.sessionId, {
+      // Awaited, so the returned promise covers the WHOLE publication --
+      // encryption and hand-off to the transport included, not just the decision
+      // to publish. A caller that has to know the row is on the wire before it
+      // disconnects (the headless node flushes before shutdown) otherwise sees a
+      // resolved promise while the send is still pending, and the transcript is
+      // stranded on a machine nobody can open. Desktop call sites ignore the
+      // return value and are unaffected.
+      const outcome = await syncProvider.pushChange(message.sessionId, {
         type: 'message_added',
         message,
       });
@@ -327,11 +360,15 @@ export function createMessageSyncHandler(syncProvider: SyncProvider) {
       // Also update the session index with the same timestamp used in local DB
       // This ensures updated_at matches exactly for sync comparisons
       if (sessionUpdatedAt !== undefined) {
-        syncProvider.pushChange(message.sessionId, {
+        await syncProvider.pushChange(message.sessionId, {
           type: 'metadata_updated',
           metadata: { updatedAt: sessionUpdatedAt },
         });
       }
+
+      // A provider that reports nothing is assumed to have published: that is
+      // what every caller assumed before outcomes existed.
+      return outcome ?? { published: true };
     },
 
     /**

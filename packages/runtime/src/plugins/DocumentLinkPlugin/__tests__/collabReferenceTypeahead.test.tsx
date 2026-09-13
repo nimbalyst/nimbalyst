@@ -20,7 +20,8 @@ import {
   PASTE_COMMAND,
   type LexicalEditor,
 } from 'lexical';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { DocumentPathProvider } from '../../../DocumentPathContext';
 
 import type { DocumentService } from '../../../core/DocumentService';
 import { DocumentLinkPlugin, type CollabReferenceSource } from '../index';
@@ -46,9 +47,10 @@ type TypeaheadProps = {
 
 afterEach(() => {
   setEmbeddableExtensions([]);
+  vi.unstubAllGlobals();
 });
 
-function renderTypeahead(source: CollabReferenceSource) {
+function renderTypeahead(source: CollabReferenceSource | null, documentPath: string | null = null) {
   let latest: TypeaheadProps | null = null;
   let editor: LexicalEditor | null = null;
 
@@ -73,12 +75,14 @@ function renderTypeahead(source: CollabReferenceSource) {
       }}
     >
       <CaptureEditor />
+      <DocumentPathProvider documentPath={documentPath}>
       <DocumentLinkPlugin
-        documentService={{} as DocumentService}
+        documentService={{ listDocuments: async () => [{ id: 'local-panel', name: 'Panel', path: 'docs/panel.mockup.html' }] } as unknown as DocumentService}
         TypeaheadMenuPlugin={TypeaheadStub}
         triggerFn={() => null}
         collabReferenceSource={source}
       />
+      </DocumentPathProvider>
     </LexicalComposer>,
   );
 
@@ -307,5 +311,17 @@ describe('collab reference paste', () => {
   it('ignores a paste that is not a shared-doc link', async () => {
     const harness = renderTypeahead(sourceWithSpec());
     expect(await pasteInto(harness, 'https://example.com/spec-1')).toBe(false);
+  });
+});
+
+it('inserts a local picker embed relative to its host document', async () => {
+  vi.stubGlobal('__workspacePath', '/ws');
+  setEmbeddableExtensions(['.mockup.html']);
+  const harness = renderTypeahead(null, '/ws/docs/host.md');
+  await primeAndSelect(harness, 'local-panel');
+  harness.editor.getEditorState().read(() => {
+    const embed = $getRoot().getFirstChild();
+    if (!$isEmbeddedFileNode(embed)) throw new Error('Expected a file embed');
+    expect(embed.getSrc()).toBe('./panel.mockup.html');
   });
 });

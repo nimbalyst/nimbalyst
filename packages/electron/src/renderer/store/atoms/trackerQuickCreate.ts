@@ -2,6 +2,7 @@ import { atom } from 'jotai';
 import { atomFamily } from '../debug/atomFamilyRegistry';
 
 export interface TrackerQuickCreateDraft {
+  id: string;
   /** Selected tracker type; null until the popup resolves a default. */
   type: string | null;
   title: string;
@@ -13,10 +14,16 @@ export interface TrackerQuickCreateDraft {
   /** Types in most-recently-used order; drives the pill row's ordering. */
   recentTypes: string[];
   showMoreFields: boolean;
+  submitting: boolean;
+  error: string | null;
+  pendingImages: number;
+  stagedImages: Array<{ src: string; altText: string }>;
+  failedImages: Array<{ id: string; file: File; error: string }>;
 }
 
 export function createEmptyTrackerQuickCreateDraft(): TrackerQuickCreateDraft {
   return {
+    id: `tri_${crypto.randomUUID()}`,
     type: null,
     title: '',
     description: '',
@@ -24,6 +31,11 @@ export function createEmptyTrackerQuickCreateDraft(): TrackerQuickCreateDraft {
     carriedFields: [],
     recentTypes: [],
     showMoreFields: false,
+    submitting: false,
+    error: null,
+    pendingImages: 0,
+    stagedImages: [],
+    failedImages: [],
   };
 }
 

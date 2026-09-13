@@ -1,3 +1,10 @@
+import type {
+  IndexPageRequestMessage,
+  IndexPageResponseMessage,
+  IndexChangesAvailableMessage,
+  PersonalStatePageRequestMessage,
+  PersonalStatePageResponseMessage,
+} from './indexReplication.js';
 /**
  * PersonalSessionRoom + PersonalIndexRoom wire protocol.
  *
@@ -6,12 +13,14 @@
  * and one `ClientMessage` / `ServerMessage` union here.
  */
 
-
 // ============================================================================
 // Client -> Server Messages
 // ============================================================================
 
 export type ClientMessage =
+  | { type: 'beginSessionReplay'; activityAt: number }
+  | IndexPageRequestMessage
+  | PersonalStatePageRequestMessage
   | SyncRequestMessage
   | AppendMessageMessage
   | UpdateMetadataMessage
@@ -503,6 +512,10 @@ export interface EncryptedSettingsPayload {
 // ============================================================================
 
 export type ServerMessage =
+  | { type: 'indexSessionExpired'; sessionId: string; activityAt: number }
+  | IndexChangesAvailableMessage
+  | IndexPageResponseMessage
+  | PersonalStatePageResponseMessage
   | SyncResponseMessage
   | MessageBroadcastMessage
   | MetadataBroadcastMessage
@@ -731,6 +744,7 @@ export interface ErrorMessage {
   type: 'error';
   code: string;
   message: string;
+  requestId?: string;
 }
 
 // ============================================================================
@@ -816,6 +830,26 @@ export interface SessionMetadata {
   isExecuting?: boolean;
 }
 
+/** Encrypted queued-prompt preview retained in the personal session index. */
+export interface IndexEncryptedQueuedPrompt {
+  options?: { mode?: "agent" | "planning"; model?: string; effortLevel?: string };
+  id: string;
+  encryptedPrompt: string;
+  iv: string;
+  timestamp: number;
+  source?: string;
+  encryptedAttachments?: Array<{
+    id: string;
+    filename: string;
+    mimeType: string;
+    encryptedData: string;
+    iv: string;
+    size: number;
+    width?: number;
+    height?: number;
+  }>;
+}
+
 /** Session entry in the PersonalIndexRoom */
 export interface SessionIndexEntry {
   sessionId: string;
@@ -830,12 +864,17 @@ export interface SessionIndexEntry {
   provider: string;
   model?: string;
   mode?: 'agent' | 'planning';
-  messageCount: number;
+  /** Omit when a metadata-only publisher has no authoritative count. */
+  messageCount?: number;
   lastMessageAt: number;
   createdAt: number;
   updatedAt: number;
   /** Whether the session is currently executing (processing AI request) */
   isExecuting?: boolean;
+  /** Omitted preserves the stored queue; zero is an explicit empty queue. */
+  queuedPromptCount?: number;
+  /** Omitted preserves the stored preview; an empty array clears it. */
+  encryptedQueuedPrompts?: IndexEncryptedQueuedPrompt[];
   /** Parent session ID for workstream/worktree hierarchy (plaintext UUID) */
   parentSessionId?: string;
   /** Structural type: 'session' (normal), 'workstream' (parent container), 'blitz' (quick task) */

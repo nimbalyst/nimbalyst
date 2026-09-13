@@ -11,6 +11,7 @@
  * every event while unmounted.
  */
 
+import type { MigrationOperationSnapshot } from '../../../shared/migrationOperation';
 import { atom } from 'jotai';
 
 export interface MigrationProgressEvent {
@@ -35,6 +36,7 @@ export interface MigrationPhaseEvent {
 }
 
 export interface MigrationSummary {
+  historyRowsQuarantined?: number;
   totalRowsCopied: number;
   tablesCopied: Array<{ name: string; rows: number }>;
   durationMs: number;
@@ -150,3 +152,5 @@ export const dbRecoveryLiveAtom = atom<LiveDatabaseView | null>(null);
 export const dbRecoveryOfferAtom = atom<RecoveryCandidateView | null>(null);
 
 export const dbMigratedCopiesAtom = atom<MigratedCopyView[]>([]);
+
+export const dbMigrationOperationAtom = atom<MigrationOperationSnapshot | null>(null);
