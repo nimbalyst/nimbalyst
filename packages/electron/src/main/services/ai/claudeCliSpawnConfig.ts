@@ -83,6 +83,12 @@ export interface ClaudeCliSpawnInput {
   sessionId?: string;
   /** Resolved Claude model variant (e.g. `opus`, `sonnet`). */
   model?: string;
+  /**
+   * Effort level for the session (`--effort`). Omit to leave the CLI on whatever
+   * the user already configured, via their own `CLAUDE_CODE_EFFORT_LEVEL` export
+   * or its built-in default.
+   */
+  effortLevel?: string;
   /** Resume an existing CLI session id (`--resume <id>`). */
   resumeSessionId?: string;
   /** Resume the most recent CLI session (`--continue`). Ignored if `resumeSessionId` is set. */
@@ -273,6 +279,14 @@ export function buildClaudeCliSpawnConfig(input: ClaudeCliSpawnInput): ClaudeCli
   if (modelArg) {
     args.push('--model', modelArg);
   }
+  // `--effort`, not a CLAUDE_CODE_EFFORT_LEVEL export. The env var is inherited
+  // by every process the CLI spawns (including all of its MCP servers), and it
+  // OUTRANKS the flag — measured on 2.1.220, `env=max` + `--effort high` runs at
+  // max and the API error names 'max'. The inherited value is cleared below so
+  // the flag is actually the thing in charge.
+  if (input.effortLevel) {
+    args.push('--effort', input.effortLevel);
+  }
   if (input.mcpConfigPath) {
     // NIM-2372: additive only. We deliberately do NOT pair this with
     // `--strict-mcp-config` any more — that made the binary ignore its own
@@ -385,11 +399,12 @@ export function buildClaudeCliSpawnConfig(input: ClaudeCliSpawnInput): ClaudeCli
   if (merged.ENABLE_TOOL_SEARCH == null) {
     merged.ENABLE_TOOL_SEARCH = 'true';
   }
-  // Mirrors the Agent SDK path. Set after baseEnv so an explicit selection wins
-  // over an inherited value; when nothing is selected the inherited value (or
-  // the CLI's own default) stands.
+  // An inherited CLAUDE_CODE_EFFORT_LEVEL beats `--effort`, so a user who has it
+  // exported would see the selector do nothing — which is the bug #996 reported.
+  // Only cleared when we actually pass the flag; with no selection their export
+  // is theirs to keep.
   if (input.effortLevel) {
-    merged.CLAUDE_CODE_EFFORT_LEVEL = input.effortLevel;
+    delete merged.CLAUDE_CODE_EFFORT_LEVEL;
   }
   if (input.extraEnv) {
     Object.assign(merged, input.extraEnv);
