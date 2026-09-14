@@ -7,6 +7,7 @@ import test from 'node:test';
 import {
   BASELINE_PATH,
   scanIdentityScopeViolations,
+  toPosixPath,
 } from '../check-identity-scopes.mjs';
 
 function withFixture(source, run) {
@@ -20,6 +21,27 @@ function withFixture(source, run) {
     fs.rmSync(root, { recursive: true, force: true });
   }
 }
+
+// Baseline keys are POSIX on every platform. Before the fix, violation keys were
+// built with `path.relative`, which emits `\` on Windows -- so the baseline Map
+// lookup never matched there and every baselined declaration was re-reported.
+// Driving this through `path.win32` rather than the ambient separator means the
+// regression is caught on Linux CI too, where it is otherwise invisible.
+test('repository keys are POSIX regardless of the platform separator', () => {
+  assert.equal(
+    toPosixPath(
+      path.win32.join('packages', 'electron', 'src', 'main', 'services', 'Foo.ts'),
+      path.win32.sep,
+    ),
+    'packages/electron/src/main/services/Foo.ts',
+  );
+  assert.equal(
+    toPosixPath(path.posix.join('src', 'fixture.ts'), path.posix.sep),
+    'src/fixture.ts',
+  );
+  // A POSIX filename may legitimately contain a backslash; it is not a separator there.
+  assert.equal(toPosixPath('src/od\\d.ts', path.posix.sep), 'src/od\\d.ts');
+});
 
 test('rejects bare identity and JWT declarations', () => {
   withFixture(`
