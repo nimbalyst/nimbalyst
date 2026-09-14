@@ -104,7 +104,10 @@ export function scanIdentityScopeViolations({
               : null;
         if (!rule || hasEscape(lines, lineIndex)) return;
         const violation = {
-          file: path.relative(root, filePath),
+          // POSIX separators: the baseline is checked in with forward slashes,
+          // so a Windows path.relative() matches nothing and every baselined
+          // entry reports as both a violation and stale.
+          file: path.relative(root, filePath).split(path.sep).join('/'),
           line: lineIndex + 1,
           rule,
           source: line.trim(),
