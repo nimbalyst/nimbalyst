@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 <!-- Bug fixes go here -->
+- On Windows, Gemini connects to the Antigravity editor you already have open instead of quietly starting a second copy of its language server.
 - Antigravity's Gemini picker now offers the current Flash generations instead of retired ones, so new sessions no longer fail with "Gemini 3.5 Flash is no longer available".
 - Prevent unexpected errors during Git history reads and voice cleanup.
 

@@ -429,10 +429,17 @@ export class AntigravityServerManager {
     const [csrf, ports] = line.split('|');
     const portList = (ports || '').split(',').map((x) => parseInt(x, 10)).filter(Boolean);
     if (!csrf || portList.length === 0) return null;
-    // Lower port = HTTPS, higher = HTTP.
-    const httpsPort = Math.min(...portList);
-    const ep: AntigravityEndpoint = { httpsPort, csrf, owned: false };
-    return (await this.isHealthy(ep)) ? ep : null;
+    // Probe each listener rather than assuming the lower port is the TLS one.
+    // That ordering is incidental to the IDE build and was observed inverted
+    // on 2026-09-15 (1792 spoke plain HTTP, 51717 spoke TLS); since `rpc` uses
+    // https.request, picking the HTTP port fails the handshake, discovery
+    // reports no hub, and Nimbalyst spawns a second language_server instead of
+    // attaching to the user's running editor. The macOS path already does this.
+    for (const httpsPort of portList) {
+      const ep: AntigravityEndpoint = { httpsPort, csrf, owned: false };
+      if (await this.isHealthy(ep)) return ep;
+    }
+    return null;
   }
 
   /**
