@@ -25,6 +25,13 @@ export interface WorkspaceActivity {
   streaming: Set<string>;
   /** Session IDs with unread output (last message after lastReadAt). */
   unread: Set<string>;
+  /**
+   * Session IDs blocked on a durable interactive prompt (AskUserQuestion,
+   * ExitPlanMode, ToolPermission, …). Cross-workspace mirror of
+   * `sessionHasPendingInteractivePromptAtom`, which only ever holds the
+   * active workspace's sessions.
+   */
+  awaiting: Set<string>;
 }
 
 /**
@@ -60,7 +67,12 @@ export const workspaceSessionTurnActivityAtom = atomFamily((workspacePath: strin
 );
 
 function emptyActivity(): WorkspaceActivity {
-  return { streaming: new Set(), unread: new Set() };
+  return { streaming: new Set(), unread: new Set(), awaiting: new Set() };
+}
+
+/** True when no session in this workspace needs anything from the rail. */
+function isIdle(entry: WorkspaceActivity): boolean {
+  return entry.streaming.size === 0 && entry.unread.size === 0 && entry.awaiting.size === 0;
 }
 
 /**
@@ -165,7 +177,7 @@ export const clearSessionStreamingAtom = atom(
     const nextStreaming = new Set(existing.streaming);
     nextStreaming.delete(sessionId);
     const next = { ...existing, streaming: nextStreaming };
-    if (next.streaming.size === 0 && next.unread.size === 0) {
+    if (isIdle(next)) {
       map.delete(path);
     } else {
       map.set(path, next);
@@ -211,7 +223,55 @@ export const clearSessionUnreadAtom = atom(
     const nextUnread = new Set(existing.unread);
     nextUnread.delete(sessionId);
     const next = { ...existing, unread: nextUnread };
-    if (next.streaming.size === 0 && next.unread.size === 0) {
+    if (isIdle(next)) {
+      map.delete(path);
+    } else {
+      map.set(path, next);
+    }
+    set(globalSessionActivityAtom, map);
+  }
+);
+
+/**
+ * Mark a session as blocked on a durable interactive prompt.
+ */
+export const markSessionAwaitingAtom = atom(
+  null,
+  (get, set, payload: { sessionId: string; workspacePath: string }) => {
+    const { sessionId, workspacePath } = payload;
+    const map = new Map(get(globalSessionActivityAtom));
+    const entry = { ...(map.get(workspacePath) ?? emptyActivity()) };
+    if (entry.awaiting.has(sessionId)) return;
+    entry.awaiting = new Set(entry.awaiting).add(sessionId);
+    map.set(workspacePath, entry);
+    set(globalSessionActivityAtom, map);
+
+    const index = new Map(get(sessionActivityIndexAtom));
+    index.set(sessionId, workspacePath);
+    set(sessionActivityIndexAtom, index);
+  }
+);
+
+/**
+ * Clear the awaiting flag for a session. Like `clearSessionStreamingAtom`,
+ * `workspacePath` is optional so terminal events that lack it still resolve
+ * via `sessionActivityIndexAtom`.
+ */
+export const clearSessionAwaitingAtom = atom(
+  null,
+  (get, set, payload: { sessionId: string; workspacePath?: string }) => {
+    const { sessionId } = payload;
+    const path = payload.workspacePath ?? get(sessionActivityIndexAtom).get(sessionId);
+    if (!path) return;
+
+    const map = new Map(get(globalSessionActivityAtom));
+    const existing = map.get(path);
+    if (!existing || !existing.awaiting.has(sessionId)) return;
+
+    const nextAwaiting = new Set(existing.awaiting);
+    nextAwaiting.delete(sessionId);
+    const next = { ...existing, awaiting: nextAwaiting };
+    if (isIdle(next)) {
       map.delete(path);
     } else {
       map.set(path, next);
@@ -256,6 +316,8 @@ export const clearWorkspaceActivityAtom = atom(
 export interface ProjectActivitySummary {
   processing: number;
   unread: number;
+  /** Sessions blocked on a question. Outranks the other two in the rail badge. */
+  awaiting: number;
 }
 
 /**
@@ -268,8 +330,12 @@ export const projectActivitySummaryAtom = atom<Map<string, ProjectActivitySummar
   const activity = get(globalSessionActivityAtom);
   const out = new Map<string, ProjectActivitySummary>();
   for (const [path, entry] of activity) {
-    if (entry.streaming.size === 0 && entry.unread.size === 0) continue;
-    out.set(path, { processing: entry.streaming.size, unread: entry.unread.size });
+    if (isIdle(entry)) continue;
+    out.set(path, {
+      processing: entry.streaming.size,
+      unread: entry.unread.size,
+      awaiting: entry.awaiting.size,
+    });
   }
   return out;
 });
