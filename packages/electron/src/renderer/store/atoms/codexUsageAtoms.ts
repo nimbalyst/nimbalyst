@@ -86,7 +86,14 @@ export function getCodexUsageWindows(usage: CodexUsageData | null): CodexUsageWi
 export function getMostConstrainedCodexWindow(
   usage: CodexUsageData | null
 ): CodexUsageWindowEntry | null {
-  return getCodexUsageWindows(usage).reduce<CodexUsageWindowEntry | null>(
+  const allWindows = getCodexUsageWindows(usage);
+  // The gutter is labelled simply "Codex Usage", so prefer the account-wide
+  // bucket when the account response also includes model-scoped buckets such
+  // as GPT-5.3 Codex Spark. The detailed popover still renders every bucket.
+  const accountWindows = allWindows.filter((entry) => entry.limit.id === 'codex');
+  const candidateWindows = accountWindows.length > 0 ? accountWindows : allWindows;
+
+  return candidateWindows.reduce<CodexUsageWindowEntry | null>(
     (mostConstrained, entry) =>
       !mostConstrained || entry.window.usedPercent > mostConstrained.window.usedPercent
         ? entry
