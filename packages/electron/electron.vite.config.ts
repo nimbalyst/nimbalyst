@@ -315,7 +315,8 @@ export default defineConfig({
       ]
     },
     build: {
-      target: 'node16',
+      // Target modern Node syntax supported by the bundled Electron runtime.
+      target: 'node22',
       sourcemap: isDev,
       rollupOptions: {
         input: {

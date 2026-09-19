@@ -22,6 +22,8 @@ import {
   dispatchAppActionHref,
   isAppActionHref,
 } from '../../../utils/appActionLinks';
+import { copyToClipboard } from '../../../utils/clipboard';
+import { MaterialSymbol } from '../../icons/MaterialSymbol';
 
 // Inject MarkdownRenderer styles once (for syntax highlighting, scrollbar, and overflow wrapper)
 const injectMarkdownRendererStyles = () => {
@@ -38,6 +40,18 @@ const injectMarkdownRendererStyles = () => {
     }
     .overflow-wrapper:hover .wrap-toggle {
       opacity: 1;
+    }
+
+    /* Code block copy button visibility */
+    .code-block-copy-button {
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.15s ease;
+    }
+    .code-block-container:hover .code-block-copy-button,
+    .code-block-copy-button:focus-visible {
+      opacity: 1;
+      pointer-events: auto;
     }
 
     /* Word wrap enabled state */
@@ -171,6 +185,83 @@ function nextFallbackKey(): string {
   return `cb:fallback:${_wrapFallbackCounter}`;
 }
 
+const COPY_LABEL_RESET_DELAY_MS = 1500;
+
+// Hover-visible "Copy" button rendered in the corner of a fenced code block.
+// Relies on the nearest ancestor with class `code-block-container` for hover
+// visibility (see injected styles above) - callers must provide that ancestor.
+// Sized to fit inside a single-line block, which is only 27px tall - a larger
+// button would hang out of its bottom edge.
+const CodeBlockCopyButton: React.FC<{ codeString: string }> = ({ codeString }) => {
+  const [copied, setCopied] = useState(false);
+  const resetTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const isMountedRef = useRef(true);
+
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+      if (resetTimeoutRef.current) clearTimeout(resetTimeoutRef.current);
+    };
+  }, []);
+
+  const handleCopy = useCallback(async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    try {
+      await copyToClipboard(codeString);
+    } catch (err) {
+      console.error('Failed to copy code block:', err);
+      return;
+    }
+    // react-markdown can remount this block mid-stream (see OverflowWrapper
+    // comments below), so the click's own instance may already be gone.
+    if (!isMountedRef.current) return;
+    setCopied(true);
+    if (resetTimeoutRef.current) clearTimeout(resetTimeoutRef.current);
+    resetTimeoutRef.current = setTimeout(() => {
+      if (isMountedRef.current) setCopied(false);
+    }, COPY_LABEL_RESET_DELAY_MS);
+  }, [codeString]);
+
+  return (
+    <button
+      type="button"
+      className={`code-block-copy-button p-0.5 rounded-md bg-[var(--nim-bg-secondary)] border border-[var(--nim-border)] cursor-pointer transition-all flex items-center justify-center hover:bg-[var(--nim-bg-hover)]`}
+      data-testid="code-block-copy-button"
+      onClick={handleCopy}
+      title="Copy code"
+      aria-label={copied ? 'Copied' : 'Copy code'}
+    >
+      <MaterialSymbol
+        icon={copied ? 'check' : 'content_copy'}
+        size={14}
+        className={copied ? 'text-[var(--nim-success)]' : 'text-[var(--nim-text-faint)]'}
+      />
+    </button>
+  );
+};
+
+// Lightweight hover container for single-line code blocks (no overflow
+// measurement needed - just hosts the copy button in the corner).
+// Like OverflowWrapper this container fills the row rather than hugging the
+// code: a one-line block that shrink-wraps its text leaves the button crammed
+// against the last character. The button sits *inside* the block, in room
+// reserved by the right padding on the code element itself (see codeStyle), so
+// the block's background runs behind it and no text is ever covered.
+const CodeBlockContainer: React.FC<{
+  children: React.ReactNode;
+  codeString: string;
+}> = ({ children, codeString }) => (
+  <div className="code-block-container relative block max-w-full">
+    {children}
+    {/* Vertically centred rather than pinned to the top: the block is only one
+        line tall, so centring is what gives the button even margins. */}
+    <div className="absolute right-1 top-0 bottom-0 flex items-center">
+      <CodeBlockCopyButton codeString={codeString} />
+    </div>
+  </div>
+);
+
 // Wrapper for any element that might overflow horizontally.
 // Uses IntersectionObserver to defer scrollWidth measurement until visible,
 // and ResizeObserver to re-check on size changes - avoids forced reflow during
@@ -180,7 +271,9 @@ const OverflowWrapper: React.FC<{
   /** Stable id for wrap-preference persistence across remounts. Compose
    *  from messageId + AST node offset at the call site. */
   persistKey?: string;
-}> = ({ children, persistKey }) => {
+  /** Raw code text for the hover-visible copy button. */
+  codeString: string;
+}> = ({ children, persistKey, codeString }) => {
   // Freeze the key once per mount so the same wrap-preference slot is used
   // for the lifetime of this instance. Re-mounts re-evaluate useMemo and
   // pick up the persisted preference (if any) for the resolved key.
@@ -234,21 +327,26 @@ const OverflowWrapper: React.FC<{
   }, [children]);
 
   return (
-    <div className={`overflow-wrapper relative ${wordWrap ? 'word-wrap-enabled' : ''}`}>
+    <div className={`overflow-wrapper code-block-container relative ${wordWrap ? 'word-wrap-enabled' : ''}`}>
       <div ref={contentRef} className="overflow-content max-w-full overflow-x-auto whitespace-pre">
         {children}
       </div>
-      {(isOverflowing || wordWrap) && (
-        <label className="wrap-toggle flex items-center gap-1 absolute top-1 right-1 text-[0.6875rem] text-[var(--nim-text-faint)] cursor-pointer select-none bg-[var(--nim-bg-secondary)] py-0.5 px-1.5 rounded">
-          <input
-            type="checkbox"
-            checked={wordWrap}
-            onChange={(e) => setWordWrap(e.target.checked)}
-            className="w-3 h-3 m-0 cursor-pointer accent-[var(--nim-primary)]"
-          />
-          <span className="leading-none">Wrap</span>
-        </label>
-      )}
+      {/* top-3, not top-1: the code block carries a 0.5rem top margin, so a
+          4px inset would float the controls above its rounded top edge. */}
+      <div className="absolute top-3 right-1 flex items-center gap-1">
+        {(isOverflowing || wordWrap) && (
+          <label className="wrap-toggle flex items-center gap-1 text-[0.6875rem] text-[var(--nim-text-faint)] cursor-pointer select-none bg-[var(--nim-bg-secondary)] p-1.5 rounded-md border border-[var(--nim-border)]">
+            <input
+              type="checkbox"
+              checked={wordWrap}
+              onChange={(e) => setWordWrap(e.target.checked)}
+              className="w-3 h-3 m-0 cursor-pointer accent-[var(--nim-primary)]"
+            />
+            <span className="leading-none">Wrap</span>
+          </label>
+        )}
+        <CodeBlockCopyButton codeString={codeString} />
+      </div>
     </div>
   );
 };
@@ -585,11 +683,17 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({
         urlTransform={transcriptUrlTransform}
         components={{
           // Code blocks with syntax highlighting
-          code({ node, inline, className, children, ...props }: any) {
+          code({ node, inline, className, children, isCodeBlock, ...props }: any) {
             const match = /language-(\w+)/.exec(className || '');
             const language = match ? match[1] : '';
             const codeString = String(children).replace(/\n$/, '');
             const isSingleLine = !codeString.includes('\n');
+            // react-markdown v9+ dropped the `inline` prop, so it's never set;
+            // `isCodeBlock` is injected by the `pre` override below and is the
+            // only reliable signal that this `<code>` came from a ``` fence
+            // rather than a `single-backtick` inline span - used to gate the
+            // hover-visible copy button to fenced blocks only.
+            const isFencedBlock = Boolean(isCodeBlock);
 
             // True inline code (backticks in text)
             if (inline) {
@@ -611,9 +715,20 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({
               );
             }
 
+            // Only a fenced single-line block carries a copy button, so only it
+            // reserves room on the right for one. Inline spans reach this same
+            // style (the `inline` branch above is dead - react-markdown v9+
+            // never sets the prop) and must keep their tight padding.
+            const reservesCopyButtonRoom = isFencedBlock && isSingleLine;
             const codeStyle: React.CSSProperties = {
               backgroundColor: 'var(--nim-bg-tertiary)',
-              padding: isSingleLine ? '0.25rem 0.5rem' : '0.75rem',
+              // 2rem clears the 20px button plus its 4px inset - reserved
+              // permanently so hovering never resizes the block.
+              padding: reservesCopyButtonRoom
+                ? '0.25rem 2rem 0.25rem 0.5rem'
+                // Keep multiline controls above the text, including when a
+                // long first line scrolls underneath their right-hand edge.
+                : isSingleLine ? '0.25rem 0.5rem' : '2.25rem 0.75rem 0.75rem',
               borderRadius: isSingleLine ? '0.25rem' : '0.375rem',
               fontSize: '0.8125rem',
               lineHeight: isSingleLine ? '1.4' : '1.5',
@@ -640,10 +755,14 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({
                   {codeString}
                 </SyntaxHighlighter>
               );
-              // Only wrap multi-line blocks with OverflowWrapper
+              if (!isFencedBlock) return syntaxBlock;
               return isSingleLine
-                ? syntaxBlock
-                : <OverflowWrapper persistKey={codeBlockPersistKey(node)}>{syntaxBlock}</OverflowWrapper>;
+                ? <CodeBlockContainer codeString={codeString}>{syntaxBlock}</CodeBlockContainer>
+                : (
+                  <OverflowWrapper persistKey={codeBlockPersistKey(node)} codeString={codeString}>
+                    {syntaxBlock}
+                  </OverflowWrapper>
+                );
             }
 
             // Code block without language
@@ -651,7 +770,9 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({
               <code
                 className={className}
                 style={{
-                  display: isSingleLine ? 'inline-block' : 'block',
+                  // Fenced blocks fill the row so the copy button has room;
+                  // inline spans must stay inline or they break the sentence.
+                  display: isFencedBlock || !isSingleLine ? 'block' : 'inline-block',
                   ...codeStyle,
                   fontFamily: 'var(--font-mono, monospace)',
                   color: 'var(--nim-text)'
@@ -661,13 +782,32 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({
                 {children}
               </code>
             );
-            // Only wrap multi-line blocks with OverflowWrapper
+            if (!isFencedBlock) return codeBlock;
             return isSingleLine
-              ? codeBlock
-              : <OverflowWrapper persistKey={codeBlockPersistKey(node)}>{codeBlock}</OverflowWrapper>;
+              ? <CodeBlockContainer codeString={codeString}>{codeBlock}</CodeBlockContainer>
+              : (
+                <OverflowWrapper persistKey={codeBlockPersistKey(node)} codeString={codeString}>
+                  {codeBlock}
+                </OverflowWrapper>
+              );
           },
-          // Remove default pre wrapper - we handle styling in code component
-          pre: ({ children }) => <>{children}</>,
+          // Remove the default `<pre>` wrapper - styling is handled in the code
+          // component - but tag the surviving `<code>` child as a fenced block
+          // first. react-markdown only wraps fenced (```) code in `<pre>`;
+          // single-backtick inline code renders bare, so this is the only
+          // reliable way left to tell them apart (see `isFencedBlock` above).
+          pre: ({ children }) => (
+            <>
+              {React.Children.map(children, (child) =>
+                // Only tag component children (the `code` override's output), never a
+                // raw host element - cloning a custom prop onto e.g. a plain `<pre><div>`
+                // from a future plugin would trip React's unrecognized-DOM-prop warning.
+                React.isValidElement(child) && typeof child.type !== 'string'
+                  ? React.cloneElement(child as React.ReactElement<any>, { isCodeBlock: true } as any)
+                  : child
+              )}
+            </>
+          ),
           // Headings
           h1: ({ node: _node, children, style, ...props }: any) => (
             <h1 {...props} style={{

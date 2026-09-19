@@ -62,6 +62,20 @@ test('catches identity names an exact-name allowlist would miss', () => {
   });
 });
 
+test('violation file paths use forward slashes regardless of OS path separator', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'identity-scope-check-'));
+  const target = path.join(root, 'src', 'nested', 'deep');
+  fs.mkdirSync(target, { recursive: true });
+  fs.writeFileSync(path.join(target, 'fixture.ts'), 'interface Wrong { userId: string }');
+  try {
+    const violations = scanIdentityScopeViolations({ root, targets: ['src'] });
+    assert.equal(violations.length, 1);
+    assert.equal(violations[0].file, 'src/nested/deep/fixture.ts');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test('a baselined declaration is forgiven exactly once per occurrence', () => {
   withFixture([
     'interface One {',
