@@ -128,6 +128,12 @@ import { createAskUserQuestionListeners } from './askUserQuestionListeners';
 // open, so one prompt settling cannot clear the indicator for another that is
 // still waiting on the user. Refs #1549.
 import { openPrompt, resolvePrompt, hasOpenPrompts } from './openPromptRegistry';
+import { isSessionBlockedOnUser, onSessionUnblocked } from './idleWakeSignals';
+import {
+  decideIdleWake,
+  deferIdleWakeMessage,
+  takeDeferredIdleWakeMessages,
+} from './idleWakeGating';
 import { getAgentWorkflowService } from '../AgentWorkflowService';
 import { repairOrphanedSessionMetaCall } from './repairOrphanedSessionMetaCall';
 import { getMetaAgentOpenAITools } from '../../mcp/metaAgentServer';
@@ -325,6 +331,10 @@ async function getWorkspacePathForSession(sessionId: string): Promise<string | n
 export class MessageStreamingHandler {
   private readonly svc: AIServiceInternal;
   private readonly unsubscribeBatchListener: () => void;
+  // Replaced on every handle() call, like the provider listeners below: handle()
+  // re-wires its subscriptions per ai:sendMessage, so a plain subscribe would add
+  // one more open-prompt listener per message sent.
+  private unsubscribePromptCleared?: () => void;
   // Per-provider map of event -> currently-installed listener. Used by
   // installListener so handle() can re-wire its own subscriptions on every
   // ai:sendMessage call without nuking listeners owned by other modules.
@@ -374,6 +384,8 @@ export class MessageStreamingHandler {
   /** Used by AIService teardown to unwire the singleton batch listener. */
   destroy(): void {
     this.unsubscribeBatchListener();
+    this.unsubscribePromptCleared?.();
+    this.unsubscribePromptCleared = undefined;
   }
 
   /**
@@ -1115,32 +1127,18 @@ export class MessageStreamingHandler {
     // When the lead is active, messages are delivered via interrupt + streamInput
     // inside ClaudeCodeProvider.sendMessage(). This handler covers the idle case
     // by triggering a new sendMessage call with the teammate's message.
-    const onTeammateMessageWhileIdle = async (data: {
-      sessionId: string;
-      message: string;
-    }) => {
-      if (!data.sessionId) {
-        logger.main.warn('[AIService] teammate:messageWhileIdle with no sessionId');
-        return;
-      }
-      // Guard: don't trigger sendMessage if session was already ended
-      // (e.g., all teammates completed between message queue and this handler)
-      const sessionStateManager = getSessionStateManager();
-      if (!sessionStateManager.isSessionActive(data.sessionId)) {
-        logger.main.info(`[AIService] Ignoring teammate message for ended session ${data.sessionId}`);
-        return;
-      }
-      logger.main.info(`[AIService] Teammate message while lead idle, triggering sendMessage for session ${data.sessionId}`);
+    const deliverIdleMessage = async (
+      sessionId: string,
+      message: string,
+      workspacePath: string,
+    ) => {
       try {
         // Ensure the session is marked as running so the UI shows the stop button.
         // sendMessageHandler also calls startSession, but there can be a gap between
         // the setImmediate and when that runs. Re-calling startSession is safe (idempotent).
-        await sessionStateManager.startSession({
-          sessionId: data.sessionId,
-          workspacePath: effectiveWorkspacePath,
-        });
+        await getSessionStateManager().startSession({ sessionId, workspacePath });
 
-        const targetWindow = findWindowByWorkspace(effectiveWorkspacePath);
+        const targetWindow = findWindowByWorkspace(workspacePath);
         if (targetWindow && !targetWindow.isDestroyed()) {
           // Create a mock event and call sendMessage directly
           const mockEvent = {
@@ -1152,7 +1150,7 @@ export class MessageStreamingHandler {
             // Fire-and-forget: sendMessage will stream results to the renderer
             setImmediate(async () => {
               try {
-                await this.svc.sendMessageHandler!(mockEvent, data.message, {} as any, data.sessionId, effectiveWorkspacePath);
+                await this.svc.sendMessageHandler!(mockEvent, message, {} as any, sessionId, workspacePath);
               } catch (err) {
                 logger.main.error('[AIService] Failed to process teammate message while idle:', err);
               }
@@ -1163,7 +1161,54 @@ export class MessageStreamingHandler {
         logger.main.error('[AIService] Failed to handle teammate message while idle:', error);
       }
     };
+
+    const onTeammateMessageWhileIdle = async (data: {
+      sessionId: string;
+      message: string;
+    }) => {
+      if (!data.sessionId) {
+        logger.main.warn('[AIService] teammate:messageWhileIdle with no sessionId');
+        return;
+      }
+      const decision = decideIdleWake({
+        // Don't trigger sendMessage if the session was already ended
+        // (e.g., all teammates completed between message queue and this handler)
+        sessionActive: getSessionStateManager().isSessionActive(data.sessionId),
+        hasPendingPrompt: isSessionBlockedOnUser(data.sessionId),
+      });
+
+      if (decision.action === 'drop') {
+        logger.main.info(`[AIService] Ignoring teammate message for ended session ${data.sessionId}`);
+        return;
+      }
+      if (decision.action === 'defer') {
+        deferIdleWakeMessage(data.sessionId, data.message);
+        logger.main.info(`[AIService] Holding teammate message for session ${data.sessionId}: lead is waiting on an interactive prompt`);
+        return;
+      }
+
+      logger.main.info(`[AIService] Teammate message while lead idle, triggering sendMessage for session ${data.sessionId}`);
+      await deliverIdleMessage(data.sessionId, data.message, effectiveWorkspacePath);
+    };
     this.installListener(provider, 'teammate:messageWhileIdle', onTeammateMessageWhileIdle);
+
+    // Release what the guard above held back, once the user has answered (or the
+    // prompt was abandoned). The session's own workspace is resolved rather than
+    // captured: this subscription outlives the handle() call that installed it.
+    this.unsubscribePromptCleared?.();
+    this.unsubscribePromptCleared = onSessionUnblocked((sessionId) => {
+      const held = takeDeferredIdleWakeMessages(sessionId);
+      if (held.length === 0) return;
+      if (!getSessionStateManager().isSessionActive(sessionId)) {
+        logger.main.info(`[AIService] Dropping ${held.length} held teammate message(s) for ended session ${sessionId}`);
+        return;
+      }
+      logger.main.info(`[AIService] Releasing ${held.length} held teammate message(s) for session ${sessionId}`);
+      void getWorkspacePathForSession(sessionId).then((workspacePath) => {
+        if (!workspacePath) return;
+        void deliverIdleMessage(sessionId, held.join('\n\n'), workspacePath);
+      });
+    });
 
     // Listen for all teammates completing. When the lead finished but teammates
     // were still active, endSession was deferred. Now that all teammates are

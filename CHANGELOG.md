@@ -32,6 +32,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A team project's knowledge relationship verbs are shared with teammates and the web console instead of staying on the machine that defined them
 - Improved load performance for very large Codex sessions
 - A session no longer stays marked as running after its turn ended while a question to you was still open
+- A session waiting on your answer is no longer interrupted when a background task finishes, so the question stays open and the results arrive once you have replied (#1557).
 
 ### Removed
 <!-- Removed features go here -->
