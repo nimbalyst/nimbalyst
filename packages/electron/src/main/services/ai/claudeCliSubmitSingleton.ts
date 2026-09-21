@@ -1,3 +1,4 @@
+import { claimExternalSessionForLocalExecution } from '../externalSessions/ExternalSessionService';
 /**
  * Production wiring for `submitClaudeCliPrompt` (NIM-806 — input integration).
  *
@@ -23,6 +24,7 @@ import { getAttachmentStagingConfig } from '../../utils/store';
 export async function submitClaudeCliPromptProduction(
   input: SubmitClaudeCliPromptInput,
 ): Promise<{ submitted: boolean }> {
+  await claimExternalSessionForLocalExecution(input.sessionId);
   const manager = getTerminalSessionManager();
   const result = await submitClaudeCliPrompt(input, {
     writeToTerminal: (sessionId: string, data: string) => manager.writeToTerminal(sessionId, data),

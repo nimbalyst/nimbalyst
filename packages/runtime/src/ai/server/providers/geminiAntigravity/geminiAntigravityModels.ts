@@ -29,23 +29,74 @@ import type { AntigravityModelInfo, AntigravityServerManager } from './Antigravi
 const GOOGLE_API_PROVIDER = 'API_PROVIDER_GOOGLE_GEMINI';
 
 /**
+ * Oldest Flash generation still offered in the picker, as `[major, minor]`.
+ *
+ * The backend retires Flash generations well before the language server stops
+ * listing them: `gemini-3-flash-agent` is still in `GetAvailableModels` (as
+ * "Gemini 3.5 Flash (High)") on Antigravity 2.12.2, but a turn against it now
+ * fails with "Gemini 3.5 Flash is no longer available. Please switch to Gemini
+ * 3.7 Flash in the latest version of Antigravity." -- #1519. Entitlement does
+ * not catch this either; the account is still entitled to a model the backend
+ * refuses to serve. So the catalog alone cannot be trusted and the floor has
+ * to be explicit.
+ *
+ * A floor rather than a fixed list so the next generation is picked up without
+ * a code change: when 3.9 Flash lands, discovery offers it and only the
+ * retired tiers stay hidden.
+ */
+const MIN_FLASH_GENERATION: readonly [major: number, minor: number] = [3, 7];
+
+/**
+ * Matches the Flash agent labels and nothing else.
+ *
+ * Anchored on both ends deliberately. The catalog also carries "Gemini 3.5
+ * Flash Lite" and "Gemini 3.1 Flash Image", which are different products that
+ * happen to share the prefix -- an unanchored match would drag them in.
+ */
+const FLASH_LABEL = /^Gemini (\d+)(?:\.(\d+))? Flash(?: \((?:High|Medium|Low)\))?$/;
+
+/**
+ * Generation of a Flash agent label as `[major, minor]`, or null when the
+ * label is not a Flash agent at all.
+ */
+function flashGeneration(displayName: string): [number, number] | null {
+  const match = FLASH_LABEL.exec(displayName);
+  if (!match) return null;
+  return [Number(match[1]), match[2] === undefined ? 0 : Number(match[2])];
+}
+
+/**
+ * True when `displayName` is a Flash agent at or above `MIN_FLASH_GENERATION`.
+ *
+ * Compared component-wise rather than as a decimal so a future "Gemini 3.10
+ * Flash" sorts after 3.9 instead of before 3.2.
+ */
+export function isOfferedFlashModel(displayName: string): boolean {
+  const generation = flashGeneration(displayName);
+  if (!generation) return false;
+  const [major, minor] = generation;
+  const [minMajor, minMinor] = MIN_FLASH_GENERATION;
+  return major !== minMajor ? major > minMajor : minor >= minMinor;
+}
+
+/**
  * Fallback catalog, used only until the language server has been reached once.
  *
- * These are the ids that existing Gemini session rows persist, so they must
- * keep their exact keys -- a session created against
- * `antigravity-gemini-agent:gemini-3-flash-agent` has to keep resolving. The
- * display names are the server's own labels, which do not match the keys
- * (`gemini-3-flash-agent` is labelled "Gemini 3.5 Flash (High)").
+ * Seeded with 3.7 rather than the newer 3.8 on purpose: this list is what a
+ * user sees before discovery has run, so it has to be a generation every
+ * entitled account can actually serve, and 3.7 Flash is the one the backend
+ * itself names in the #1519 error. Discovery adds 3.8 as soon as the server is
+ * reachable.
  */
 export const SEED_GEMINI_MODELS: ReadonlyArray<{ key: string; displayName: string }> =
   Object.freeze([
-    { key: 'gemini-3-flash-agent', displayName: 'Gemini 3.5 Flash (High)' },
-    { key: 'gemini-3.5-flash-low', displayName: 'Gemini 3.5 Flash (Medium)' },
-    { key: 'gemini-3.5-flash-extra-low', displayName: 'Gemini 3.5 Flash (Low)' },
+    { key: 'gemini-3.7-flash-high', displayName: 'Gemini 3.7 Flash (High)' },
+    { key: 'gemini-3.7-flash-low', displayName: 'Gemini 3.7 Flash (Low)' },
+    { key: 'gemini-3.7-flash-medium', displayName: 'Gemini 3.7 Flash (Medium)' },
   ]);
 
 /** Default model key for a new Gemini session. */
-export const DEFAULT_GEMINI_MODEL_KEY = 'gemini-3-flash-agent';
+export const DEFAULT_GEMINI_MODEL_KEY = 'gemini-3.7-flash-medium';
 
 /**
  * Strip the `antigravity-gemini-agent:` namespace off a stored model id.
@@ -67,6 +118,15 @@ export function bareGeminiModelKey(raw: string | undefined | null): string {
  * it would only produce a confusing error after the user picked it. When the
  * entitlement set is empty (an older server that does not report it) the
  * catalog is used unfiltered rather than showing nothing.
+ *
+ * Also restricted to Flash agents at or above `MIN_FLASH_GENERATION`. Retired
+ * tiers stay in the live catalog and stay entitled long after the backend
+ * stops serving them, so neither signal can be relied on -- see #1519.
+ *
+ * Existing sessions are not rewritten. A session row that persisted a retired
+ * key keeps resolving, because resolution reads the stored key and never
+ * consults this list; such a session will keep failing at request time until
+ * the user picks a current model.
  */
 export function selectGeminiModels(
   catalog: Map<string, AntigravityModelInfo>,
@@ -79,6 +139,7 @@ export function selectGeminiModels(
     // An unlabelled entry is an internal/experimental slot (the server returns
     // several with no displayName). Nothing useful to show the user.
     if (!info.displayName) continue;
+    if (!isOfferedFlashModel(info.displayName)) continue;
     out.push({ key: info.key, displayName: info.displayName });
   }
   return out.sort((a, b) => a.displayName.localeCompare(b.displayName));

@@ -48,6 +48,18 @@ const NODE_OK = { success: true, data: { ...OK.data, node: {
   running: true, processId: 'node-1', startedAt: 123, exitCode: null, recentLog: 'ready',
 } } };
 
+it('preserves allowlisted provisioning stages in safe diagnostics, never arbitrary helper text', () => {
+  for (const stage of ['path-check', 'egress', 'directory', 'create', 'write', 'permissions', 'cleanup']) {
+    const reason = `node-provision-${stage}-failed`;
+    expect(() => parseHelperResponse({ success: false, error: 'node-provision-failed', reason })).toThrow(expect.objectContaining({
+      sandboxErrorCode: 'node-provision-failed', event: reason, userMessage: expect.any(String),
+    }));
+  }
+  expect(() => parseHelperResponse({ success: false, error: 'node-provision-failed', reason: 'node-provision-secret-failed' })).toThrow(expect.objectContaining({
+    event: 'helper-failure', userMessage: undefined,
+  }));
+});
+
 it('passes node requests through stdin payloads and requires a complete node response', async () => {
   const run = vi.fn(async () => NODE_OK);
   const client = new ChildProcessControlClient(run);
@@ -64,6 +76,12 @@ it('passes node requests through stdin payloads and requires a complete node res
   ]);
   expect(() => client.stopNode(TARGET, {} as never)).toThrow(SandboxOperationError);
   expect(run).toHaveBeenCalledTimes(4);
+});
+
+it('classifies legacy Worker provisioning errors by the requested operation without hiding missing start configuration', async () => {
+  const client = new ChildProcessControlClient(async () => ({ success: false, error: 'node-not-provisioned', reason: 'node-not-provisioned' }));
+  await expect(client.provision(TARGET, { files: [], allowedHosts: [] })).rejects.toMatchObject({ sandboxErrorCode: 'node-provision-failed' });
+  await expect(client.startNode(TARGET, { configPath: '/home/nimbalyst/config' })).rejects.toMatchObject({ sandboxErrorCode: 'node-not-provisioned' });
 });
 
 it('strictly rejects malformed or inconsistent node status fields', () => {

@@ -1,0 +1,124 @@
+{
+  "recordings": [
+    {
+      "model": "gpt-live-1",
+      "voice": "ash",
+      "recordedAt": "2026-09-13T16:42:51.237Z",
+      "transcript": " Hello! I can help you explore ideas, work through problems, and keep your projects moving.",
+      "usage": {
+        "seconds": 13
+      },
+      "file": "ash.mp3",
+      "sha256": "014b9ec997045023258bcc30e90e60489dfde057b7d4b448865679562c482b53",
+      "durationSeconds": 5.075875
+    },
+    {
+      "model": "gpt-live-1",
+      "voice": "echo",
+      "recordedAt": "2026-09-13T16:43:06.965Z",
+      "transcript": "Hello! I can help you explore ideas, work through problems, and keep your projects moving.",
+      "usage": {
+        "seconds": 13
+      },
+      "file": "echo.mp3",
+      "sha256": "d4f605cb6223cf14a06b79aa6305f96a697b65b93838656c139d10fab1d63888",
+      "durationSeconds": 4.951208
+    },
+    {
+      "model": "gpt-live-1",
+      "voice": "verse",
+      "recordedAt": "2026-09-13T16:43:22.605Z",
+      "transcript": "Hello! I can help you explore ideas, work through problems, and keep your projects moving.",
+      "usage": {
+        "seconds": 14
+      },
+      "file": "verse.mp3",
+      "sha256": "04ad03082583ff0c59062691e59ce2ce32549c423064f97b6b557de8545b89c5",
+      "durationSeconds": 4.817667
+    },
+    {
+      "model": "gpt-live-1",
+      "voice": "cedar",
+      "recordedAt": "2026-09-13T16:43:38.255Z",
+      "transcript": "Hello! I can help you explore ideas, work through problems, and keep your projects moving.",
+      "usage": {
+        "seconds": 14
+      },
+      "file": "cedar.mp3",
+      "sha256": "e62314e9af0273d0b60d40821339d2884ce6c04b89fc781776ddd57984ad9ed4",
+      "durationSeconds": 4.175583
+    },
+    {
+      "model": "gpt-live-1",
+      "voice": "coral",
+      "recordedAt": "2026-09-13T16:45:08.708Z",
+      "transcript": "Hello! I can help you explore ideas, work through problems, and keep your projects moving.",
+      "usage": {
+        "seconds": 13
+      },
+      "file": "coral.mp3",
+      "sha256": "3e2e57650b0bec8924adc43bed699f84d1c31da8ac96eb6b60efd6222269ea9f",
+      "durationSeconds": 5.101417
+    },
+    {
+      "model": "gpt-live-1",
+      "voice": "sage",
+      "recordedAt": "2026-09-13T16:45:24.340Z",
+      "transcript": "Hello! I can help you explore ideas, work through problems, and keep your projects moving.",
+      "usage": {
+        "seconds": 13
+      },
+      "file": "sage.mp3",
+      "sha256": "43df6df91c4bd5d138b4dda74bae2104fe53f61ddf28e10d32e5ce83bdfa6122",
+      "durationSeconds": 5.459708
+    },
+    {
+      "model": "gpt-live-1",
+      "voice": "shimmer",
+      "recordedAt": "2026-09-13T16:45:39.886Z",
+      "transcript": "Hello! I can help you explore ideas, work through problems, and keep your projects moving.",
+      "usage": {
+        "seconds": 13
+      },
+      "file": "shimmer.mp3",
+      "sha256": "a311c24d80ff148afd982449945116d25a6c2bcc2d8a017e4d845e7fe52d618d",
+      "durationSeconds": 4.894958
+    },
+    {
+      "model": "gpt-live-1",
+      "voice": "ballad",
+      "recordedAt": "2026-09-13T16:45:55.422Z",
+      "transcript": "Hello! I can help you explore ideas, work through problems, and keep your projects moving.",
+      "usage": {
+        "seconds": 14
+      },
+      "file": "ballad.mp3",
+      "sha256": "b8184da223e37cb68a7fc370ee0fd5e57dc2dfb50b5274557f3af22587703d05",
+      "durationSeconds": 5.180458
+    },
+    {
+      "model": "gpt-live-1",
+      "voice": "marin",
+      "recordedAt": "2026-09-13T16:46:10.955Z",
+      "transcript": "Hello! I can help you explore ideas, work through problems, and keep your projects moving.",
+      "usage": {
+        "seconds": 14
+      },
+      "file": "marin.mp3",
+      "sha256": "d5fa8f9bde19ad59ba95fa7143dca0255c2b52b8b945303034e469e42d097234",
+      "durationSeconds": 4.718708
+    },
+    {
+      "model": "gpt-live-1",
+      "voice": "alloy",
+      "recordedAt": "2026-09-13T16:46:26.487Z",
+      "transcript": " Hello! I can help you explore ideas, work through problems, and keep your projects moving.",
+      "usage": {
+        "seconds": 13
+      },
+      "file": "alloy.mp3",
+      "sha256": "329526847ddbc9ae271bc248729bbe41300b347d8c52d06979ca8267bb77d23b",
+      "durationSeconds": 5.122917
+    }
+  ]
+}

@@ -61,7 +61,12 @@ export const ClaudeUsageIndicator: React.FC<ClaudeUsageIndicatorProps> = ({ clas
   const tooltipContent = usage?.error
     ? `Claude usage unavailable: ${usage.error}`
     : usage
-      ? `Session: ${Math.round(utilization)}% (resets ${formatResetTime(usage.fiveHour.resetsAt)})`
+      ? [
+          `Session: ${Math.round(utilization)}% used (resets ${formatResetTime(usage.fiveHour.resetsAt)})`,
+          ...(usage.weeklyModelLimits ?? []).map(limit =>
+            `${limit.model}: ${Math.round(limit.utilization)}% used this week (resets ${formatResetTime(limit.resetsAt)})`
+          ),
+        ].join('\n')
       : 'Claude usage unavailable';
 
   return (

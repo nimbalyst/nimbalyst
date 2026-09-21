@@ -16,7 +16,7 @@ import {
   sessionParentIdAtom,
 } from '../atoms/sessions';
 import { workstreamStateAtom } from '../atoms/workstreamState';
-import { sessionRefMapAtom, type SessionRefMeta } from '@nimbalyst/runtime';
+import { sessionRefMapAtom, type SessionRefMeta } from '@nimbalyst/runtime/ui/AgentTranscript/session/sessionRefAtoms';
 
 // Track pending refresh to debounce rapid-fire events
 let pendingRefreshTimer: NodeJS.Timeout | null = null;
@@ -70,6 +70,8 @@ export function initSessionListListeners(): () => void {
         ...(updates.tags !== undefined && { tags: updates.tags as string[] }),
         ...(updates.title !== undefined && { title: updates.title as string }),
         ...(updates.provider !== undefined && { provider: updates.provider as string }),
+        ...((updates.externalSource === 'claude-code' || updates.externalSource === 'openai-codex') && { externalSource: updates.externalSource }),
+        ...(typeof updates.externalLastActivityAt === 'number' && { externalLastActivityAt: updates.externalLastActivityAt }),
         ...(updates.model !== undefined && { model: updates.model as string }),
         ...(updates.sessionType !== undefined && {
           sessionType: updates.sessionType as 'session' | 'workstream' | 'blitz' | 'voice'

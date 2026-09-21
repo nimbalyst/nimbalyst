@@ -356,7 +356,7 @@ export function AdvancedPanel() {
       <div className="provider-panel-section py-4 mb-4 border-b border-[var(--nim-border)] last:border-b-0 last:mb-0 last:pb-0">
         <h4 className="provider-panel-section-title text-base font-semibold mb-3 text-[var(--nim-text)]">Release Channel</h4>
         <p className="text-sm leading-relaxed text-[var(--nim-text-muted)] mb-4">
-          Choose which release stream Nimbalyst pulls auto-updates from. Alpha and beta features are configured separately on each feature&apos;s settings page.
+          Choose which release stream Nimbalyst pulls auto-updates from. Switching channels keeps your installed version until a newer release is available. Installing an older version requires a manual download and install. Alpha and beta features are configured separately on each feature&apos;s settings page.
         </p>
 
         <div className="setting-item py-3">

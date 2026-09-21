@@ -201,3 +201,6 @@ export type {
   TrackerContextMenuPoint,
   TrackerContextMenuProps,
 } from './detail/TrackerContextMenu';
+
+export { getSupportedTrackerOrderingColumns } from '@nimbalyst/runtime/plugins/TrackerPlugin/models/trackerOrdering';
+export { TRACKER_GROUPING_OPTIONS } from '@nimbalyst/runtime/plugins/TrackerPlugin/models/trackerGrouping';

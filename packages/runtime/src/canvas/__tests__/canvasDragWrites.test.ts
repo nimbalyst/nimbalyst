@@ -18,6 +18,8 @@
  * concurrent edit surviving the commit.
  */
 import { describe, expect, it } from 'vitest';
+
+import { applyCanvasDragCancellation } from '../canvasDragSnapping';
 import type { NodeChange } from '@xyflow/react';
 import * as Y from 'yjs';
 
@@ -332,5 +334,47 @@ describe('drag write amplification', () => {
     expect(card?.text).toBe('their rewrite');
     expect({ x: card?.x, y: card?.y }).toEqual({ x: 1200, y: 600 });
     test.destroy();
+  });
+});
+
+/**
+ * Escape mid-drag has to survive the rest of the gesture.
+ *
+ * React Flow owns the pointer capture, so cancelling cannot stop the drag --
+ * the frames keep arriving, including the `dragging: false` one that the commit
+ * path turns into the durable write. The cancellation therefore has to hold
+ * until that frame passes, and it has to hold *only* until then, or the next
+ * drag is dead on arrival.
+ */
+describe('a cancelled drag', () => {
+  const moving = (dragging: boolean) => ({
+    id: 'a',
+    type: 'position' as const,
+    position: { x: 40, y: 40 },
+    dragging,
+  });
+
+  it('passes everything through when nothing was cancelled', () => {
+    const changes = [moving(true)];
+    const result = applyCanvasDragCancellation(changes, false);
+    expect(result.changes).toBe(changes);
+    expect(result.stillCancelled).toBe(false);
+  });
+
+  it('drops the positions and stays cancelled until the gesture ends', () => {
+    const midway = applyCanvasDragCancellation([moving(true)], true);
+    expect(midway.changes).toEqual([]);
+    expect(midway.stillCancelled).toBe(true);
+
+    const ending = applyCanvasDragCancellation([moving(false)], true);
+    expect(ending.changes).toEqual([]);
+    // The very frame that would have been committed is the one that clears it.
+    expect(ending.stillCancelled).toBe(false);
+  });
+
+  it('leaves selection changes alone -- Escape cancelled a move', () => {
+    const select = { id: 'a', type: 'select' as const, selected: true };
+    const result = applyCanvasDragCancellation([moving(true), select], true);
+    expect(result.changes).toEqual([select]);
   });
 });

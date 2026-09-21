@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import React from 'react';
-import { Provider, createStore } from 'jotai';
+import { createHydratedOrgStore } from './organizationTestStore';
+import { Provider } from 'jotai';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, render, waitFor } from '@testing-library/react';
 
@@ -17,6 +18,7 @@ vi.mock('../../../contexts/DialogContext', () => ({
 }));
 
 import { TeamManagementApp } from '../TeamManagementApp';
+import { organizationDirectoryStateAtom, organizationDirectoryAtom } from '../../../store/atoms/settingsDomains';
 import { selectedOrgIdAtom } from '../../../store/atoms/orgScope';
 import { consumeInboxRowSelectionRequest } from '../orgWindowCommandBus';
 import { ORG_WINDOW_SURFACE_ID, orgWindowRouteAtomFamily } from '../orgWindowState';
@@ -94,7 +96,7 @@ describe('TeamManagementApp retargeting', () => {
       '',
       '/?mode=team-management&orgId=org-a&feedbackRequestId=request-1',
     );
-    const store = createStore();
+    const store = await createHydratedOrgStore();
     render(<Provider store={store}><TeamManagementApp /></Provider>);
 
     await waitFor(() => expect(store.get(orgWindowRouteAtom).view).toBe('inbox'));
@@ -114,7 +116,7 @@ describe('TeamManagementApp retargeting', () => {
   });
 
   it('re-seeds the atom when retargeted at the org it was opened with', async () => {
-    const store = createStore();
+    const store = await createHydratedOrgStore();
     render(<Provider store={store}><TeamManagementApp /></Provider>);
 
     await waitFor(() => expect(store.get(selectedOrgIdAtom)).toBe('org-a'));
@@ -129,7 +131,7 @@ describe('TeamManagementApp retargeting', () => {
   });
 
   it('re-resolves the default when re-opened untargeted from the Window menu', async () => {
-    const store = createStore();
+    const store = await createHydratedOrgStore();
     render(<Provider store={store}><TeamManagementApp /></Provider>);
 
     await waitFor(() => expect(store.get(selectedOrgIdAtom)).toBe('org-a'));
@@ -146,12 +148,12 @@ describe('TeamManagementApp retargeting', () => {
 
     // Re-opening untargeted must resolve again, not sit on the unbound surface.
     retarget({ orgId: null });
-    await waitFor(() => expect(listOrganizations.mock.calls.length).toBeGreaterThan(callsBefore));
+    expect(listOrganizations.mock.calls.length).toBe(callsBefore);
     await waitFor(() => expect(store.get(selectedOrgIdAtom)).toBe('org-b'));
   });
 
   it('remembers a targeted open as the last selected organization', async () => {
-    const store = createStore();
+    const store = await createHydratedOrgStore();
     render(<Provider store={store}><TeamManagementApp /></Provider>);
 
     await waitFor(() => expect(settings.get(LAST_SELECTED_ORG_SETTING_KEY)).toBe('org-a'));
@@ -169,7 +171,7 @@ describe('TeamManagementApp retargeting', () => {
       pendingGeneralRoute('org-invite'),
     );
     settings.set(LAST_SELECTED_ORG_SETTING_KEY, 'org-a');
-    const store = createStore();
+    const store = await createHydratedOrgStore();
 
     render(<Provider store={store}><TeamManagementApp /></Provider>);
 
@@ -193,7 +195,7 @@ describe('TeamManagementApp retargeting', () => {
       pendingGeneralRoute('org-never-joined'),
     );
     settings.set(LAST_SELECTED_ORG_SETTING_KEY, 'org-b');
-    const store = createStore();
+    const store = await createHydratedOrgStore();
 
     render(<Provider store={store}><TeamManagementApp /></Provider>);
 
@@ -204,4 +206,18 @@ describe('TeamManagementApp retargeting', () => {
       pendingGeneralRoute('org-never-joined'),
     );
   });
+
+  it('preserves a pending destination while another account has only a partial directory', async () => {
+    window.history.replaceState({}, '', '/?mode=team-management');
+    settings.set(ORG_WINDOW_PENDING_ROUTE_SETTING_KEY, pendingGeneralRoute('org-invite'));
+    const store = await createHydratedOrgStore();
+    store.set(organizationDirectoryStateAtom, {
+      entries: [{ orgId: 'org-a', name: 'Acme', role: 'owner' }], status: 'loading', complete: false,
+    });
+    render(<Provider store={store}><TeamManagementApp /></Provider>);
+    await waitFor(() => expect(store.get(selectedOrgIdAtom)).toBe('org-invite'));
+    act(() => store.set(organizationDirectoryAtom, [{ orgId: 'org-invite', name: 'Invited org', role: 'member' }]));
+    await waitFor(() => expect(store.get(selectedOrgIdAtom)).toBe('org-invite'));
+  });
+
 });

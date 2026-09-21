@@ -20,7 +20,7 @@ The release process is divided into two phases so alpha users can test a publish
 
 #### 1. Prepare Release Notes
 
-As you work, add changes to the `[Unreleased]` section of `CHANGELOG.md`:
+When preparing a commit or release, add changes to the `[Unreleased]` section of `CHANGELOG.md` (not during implementation). Before creating the release, reconcile notable Added/Changed/Removed capabilities and relevant commits against [FEATURE_INVENTORY.md](./docs/FEATURE_INVENTORY.md), update missing or obsolete entries, and report the updated sections or a short "No inventory impact" reason. Follow the root [CLAUDE.md](./CLAUDE.md) rule, including shared-file ownership and checking unclear claims against current code.
 
 ```markdown
 ## [Unreleased]
@@ -231,6 +231,8 @@ Once the release flow becomes PR-native, the admin bypass narrows to pull reques
 ## iOS Release Workflow
 
 iOS uses a separate release process from Electron, with its own versioning, changelog, and git tags.
+
+Before tagging, reconcile the iOS release's capabilities against the Mobile (iOS) and shared sections of [FEATURE_INVENTORY.md](./docs/FEATURE_INVENTORY.md), following the same inventory check as the desktop release. Preserve platform differences and do not describe unfinished mobile work as shipped.
 
 ### Tag Convention
 

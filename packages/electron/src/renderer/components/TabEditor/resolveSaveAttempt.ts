@@ -1,5 +1,12 @@
 import { resolveSaveFailureType, type FileSaveResult } from '../../utils/fileSaveResult';
 
+export function customEditorSaveBaseline(local: string, acknowledged: string | ArrayBuffer | null): string {
+  // Custom editors receive reloads directly through their host subscription.
+  // The model advances only after clean recipients accept the notification;
+  // the built-in editor's local cache does not participate in that path.
+  return typeof acknowledged === 'string' ? acknowledged : local;
+}
+
 export interface SaveAttemptResult extends FileSaveResult {
   /** Always set by the main process, on both the success and failure paths. */
   filePath: string;

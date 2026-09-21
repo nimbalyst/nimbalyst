@@ -58,6 +58,7 @@ import { setTrackerIssueKeyPrefix } from './TrackerSyncManager';
 import { updateNativeTheme, updateWindowTitleBars } from '../theme/ThemeManager';
 import { createWindow, findWindowByWorkspace } from '../window/WindowManager';
 import { getWorkspaceWindowState } from '../utils/store';
+import { getWorkspaceSettingsOverview } from './workspaceSettingsOverview';
 
 // ─── Allow / deny lists ─────────────────────────────────────────────
 
@@ -189,16 +190,7 @@ export class SettingsControlService {
       settingsAgentToolsDisabled: isSettingsAgentToolsDisabled(),
     };
     if (workspacePath) {
-      const ws = getWorkspaceState(workspacePath);
-      overview.workspace = {
-        path: workspacePath,
-        accountId: ws.accountId ?? null,
-        trackerSharingMigration: ws.trackerSharingMigration ?? null,
-        issueKeyPrefix: ws.issueKeyPrefix ?? null,
-        sessionSyncEnabled: (sync?.enabledProjects ?? []).includes(workspacePath),
-        docSyncEnabled: (sync?.docSyncEnabledProjects ?? []).includes(workspacePath),
-        agentPermissionMode: ws.agentPermissions?.permissionMode ?? null,
-      };
+      overview.workspace = getWorkspaceSettingsOverview(workspacePath, getWorkspaceState(workspacePath), sync);
     }
     return overview;
   }

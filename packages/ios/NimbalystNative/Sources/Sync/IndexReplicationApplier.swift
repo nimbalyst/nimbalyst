@@ -182,6 +182,15 @@ enum IndexReplicationApplier {
             result.purgedTombstoneCount = try store.purgeRetainedTombstones(db).count
             result.cursor = pending.cursor
             try store.commitCursor(db, cursor: pending.cursor, historyComplete: true)
+            // Expired rows no longer enumerated by the server stop contributing
+            // to the advisory. This changes bookkeeping only, never cached data.
+            try db.execute(sql: """
+                UPDATE index_row_revision SET unreadable = 0
+                WHERE unreadable = 1 AND NOT EXISTS (
+                    SELECT 1 FROM index_bootstrap_seen seen
+                    WHERE seen.runId = ? AND seen.entity = index_row_revision.entity AND seen.id = index_row_revision.id
+                )
+                """, arguments: [runId])
             try store.clearSeen(db, runId: runId)
             try store.clearFinalization(db, runId: runId)
         }

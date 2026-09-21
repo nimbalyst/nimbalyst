@@ -9,6 +9,7 @@ Before launching parallel work, list the files each slice will touch and confirm
 A disjointness check that only compares the *source* files is not a disjointness check. These are touched by nearly every task and are the usual collision:
 
 - `CHANGELOG.md` — see below, this one has its own rule
+- `docs/FEATURE_INVENTORY.md` — the integrating session owns it; slices send capability changes, platform/opt-in limits, and source evidence in their handoff. The integrator applies the update before the batch's final handoff or commit proposal, following the root `CLAUDE.md` rule.
 - `CLAUDE.md`, `.claude/rules/*`, `docs/*` — guidance edits
 - `package.json` / `package-lock.json` — any dependency change
 - Barrel files (`index.ts`), shared type modules, and central registries such as `KeyboardShortcutsDialog.tsx` or a store's atom index

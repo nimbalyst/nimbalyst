@@ -17,7 +17,7 @@
     "./dist/validate.js": "./dist/validate.browser.js"
   },
   "nimbalyst": {
-    "minAppVersion": "0.75.5"
+    "minAppVersion": "0.78.0"
   },
   "publishConfig": {
     "access": "public"

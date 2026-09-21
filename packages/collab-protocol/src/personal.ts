@@ -333,6 +333,8 @@ export interface UnregisterLiveActivityTokenMessage {
   type: 'unregisterLiveActivityToken';
   deviceId: string;
   kind?: LiveActivityTokenKind;
+  /** Optional identity prevents an old activity from unregistering a newer token. */
+  token?: string;
 }
 
 /**
@@ -758,6 +760,8 @@ export interface ErrorMessage {
 export interface DeviceInfo {
   /** Unique device ID (stable across sessions, generated per device) */
   deviceId: string;
+  /** Server-owned inventory visibility; never affects session ownership. */
+  inventoryHidden?: boolean;
   /** Human-readable device name (e.g., "MacBook Pro", "iPhone 15") */
   name: string;
   /** Device type for icon display */

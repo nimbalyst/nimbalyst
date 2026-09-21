@@ -66,6 +66,12 @@ beforeEach(() => {
 });
 
 describe('handleMobileVoiceToolCall', () => {
+  it('rejects a scoped summary that resolved a different session by title', async () => {
+    getSessionSummaryForVoice.mockResolvedValue({ success: true, summary: 'Wrong session', details: { sessionId: 'other' } });
+    expect((await handleMobileVoiceToolCall('get_session_summary', '{"session_id":"s1"}', '/ws', 's1')).success).toBe(false);
+    getSessionSummaryForVoice.mockResolvedValue({ success: true, summary: 'Right session', details: { sessionId: 's1' } });
+    expect((await handleMobileVoiceToolCall('get_session_summary', '{"session_id":"s1"}', '/ws', 's1')).result).toBe('Right session');
+  });
   it('runs a voice tool requested by its bare name (mobile is prefix-agnostic)', async () => {
     isBackendTool.mockReturnValue(true);
     handleBackendTool.mockResolvedValue({ content: [{ type: 'text', text: 'Found 3 docs' }], isError: false });

@@ -1,10 +1,4 @@
-/**
- * AI Test Helpers
- *
- * Shared utilities for testing AI features in the Nimbalyst editor.
- * These helpers encapsulate common patterns for interacting with the AI chat,
- * agent mode, and document editing.
- */
+/** Shared helpers for AI chat, agent mode, and document editing E2E tests. */
 
 import type { Page, ElectronApplication } from '@playwright/test';
 import { expect } from '@playwright/test';
@@ -33,7 +27,8 @@ export const PLAYWRIGHT_TEST_SELECTORS = {
   projectRail: '[data-testid="project-rail"]',
   projectRailItem: '[data-testid="project-rail-item"]',
 
-  // Workspace and file tree
+  // Workspace, file tree, and structured editors
+  spreadsheetGrid: 'revo-grid',
   workspaceSidebar: '.workspace-sidebar',
   fileTreeContainer: '.workspace-file-tree',
   fileTreeItem: '.file-tree-name',
@@ -68,6 +63,8 @@ export const PLAYWRIGHT_TEST_SELECTORS = {
   chatInput: 'textarea.ai-chat-input-field', // DEPRECATED: ambiguous - matches both Files mode and Agent mode. Use filesChatInput or agentChatInput instead.
   filesChatInput: '[data-testid="files-mode-chat-input"]',
   agentChatInput: '[data-testid="agent-mode-chat-input"]',
+  actionPromptsDropdown: '[data-testid="action-prompts-dropdown"]',
+  actionPromptsPanel: '[data-testid="action-prompts-dropdown-panel"]',
   newSessionButton: '[data-testid="new-session-button"]',
   noSessionSelected: 'text="No session selected"',
 

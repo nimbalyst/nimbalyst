@@ -46,6 +46,10 @@ import {
   type CanvasAwarenessPatch,
 } from './canvasBinding';
 import { canvasCollabCodec } from './canvasCollabCodec';
+import {
+  canvasPanelStateKey,
+  type CanvasPanelState,
+} from './canvasPanelState';
 import { canvasWorkingSetRegistry } from './canvasPresence';
 import { CanvasSurface } from './CanvasSurface';
 import { useCanvasComments } from './useCanvasComments';
@@ -107,6 +111,27 @@ export function CanvasEditor({ host }: EditorHostProps): ReactElement {
     const stored: unknown = host.storage.get(viewportKey);
     storedViewport.current = isViewport(stored) ? stored : null;
   }
+  // Chrome preferences ride the same seam, read once at mount for the same
+  // reason. Unlike the viewport these are not validated here: the surface's own
+  // `canvasPanelStateFrom` merges whatever comes back against the defaults, so
+  // there is one place that knows what a preference is worth.
+  const panelKey = canvasPanelStateKey(host.filePath);
+  const storedPanelState = useRef<unknown>(undefined);
+  const hasReadPanelState = useRef(false);
+  if (!hasReadPanelState.current) {
+    hasReadPanelState.current = true;
+    storedPanelState.current = host.storage.get(panelKey);
+  }
+
+  const handlePanelStateChange = useCallback(
+    (next: CanvasPanelState) => {
+      // Not debounced: a toggle is a click, not a wheel. Fire and forget, as
+      // with the viewport -- a lost preference is not worth a dialog.
+      void host.storage.set(panelKey, { ...next });
+    },
+    [host, panelKey]
+  );
+
   const viewportTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(
     () => () => {
@@ -294,6 +319,27 @@ export function CanvasEditor({ host }: EditorHostProps): ReactElement {
 
   useEffect(() => {
     if (collaborative) return;
+    host.registerEditorAPI({
+      // Explicit host reload, unlike watcher updates, may replace a dirty
+      // buffer. Return the actual saved representation for host verification.
+      reloadContent(text: string): string {
+        const source = parseLocalSource(text);
+        const yDoc = localYDocRef.current;
+        if (!yDoc) throw new Error('Canvas is not ready to reload');
+        canvasCollabCodec.applyFromFile(yDoc, source);
+        const exported = canvasCollabCodec.exportToFile(yDoc);
+        const buffer = typeof exported === 'string' ? exported : new TextDecoder().decode(exported);
+        lastSavedTextRef.current = text;
+        dirtyRef.current = false;
+        setError(null);
+        return buffer;
+      },
+    });
+    return () => host.registerEditorAPI(null);
+  }, [host, collaborative, parseLocalSource]);
+
+  useEffect(() => {
+    if (collaborative) return;
     return host.onSaveRequested(async () => {
       const yDoc = localYDocRef.current;
       if (!yDoc || errorRef.current !== null) return;
@@ -455,6 +501,8 @@ export function CanvasEditor({ host }: EditorHostProps): ReactElement {
         onEditBoundary={handleEditBoundary}
         onViewportChange={handleViewportChange}
         initialViewport={storedViewport.current ?? null}
+        initialPanelState={storedPanelState.current}
+        onPanelStateChange={handlePanelStateChange}
         onAwarenessChange={collaborative ? handleAwarenessChange : undefined}
         awarenessEntries={presenceEntries}
         localClientId={presenceClientId}

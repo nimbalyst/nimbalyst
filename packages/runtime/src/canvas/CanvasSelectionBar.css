@@ -1,0 +1,178 @@
+/*
+ * Chrome for the two floating control surfaces the board grew in Phase 1: the
+ * contextual selection bar and the right-click menu. They share one file
+ * because they share one visual language -- the same glass panel, the same
+ * button, the same separator -- and splitting them would mean keeping two
+ * copies of it in sync.
+ *
+ * Board layout lives in CanvasSurface.css. Nothing here positions anything:
+ * the bar is placed by React Flow's `Panel`, the menus by floating-ui.
+ */
+
+.canvas-selection-bar {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 4px 6px;
+  background: var(--nim-bg-secondary);
+  border: 1px solid var(--nim-border);
+  border-radius: 8px;
+  box-shadow: 0 2px 10px rgb(0 0 0 / 35%);
+}
+
+.canvas-selection-bar__count {
+  padding: 2px 8px;
+  font-size: 11px;
+  color: var(--nim-text-muted);
+  background: var(--nim-bg-tertiary);
+  border-radius: 10px;
+}
+
+.canvas-selection-bar__separator {
+  width: 1px;
+  height: 18px;
+  margin: 0 4px;
+  background: var(--nim-border);
+}
+
+.canvas-selection-bar__button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  font-size: 12px;
+  line-height: 18px;
+  white-space: nowrap;
+  color: var(--nim-text-muted);
+  background: transparent;
+  border: none;
+  border-radius: 5px;
+  cursor: pointer;
+}
+
+.canvas-selection-bar__button:hover,
+.canvas-selection-bar__button--open {
+  background: var(--nim-bg-hover);
+  color: var(--nim-text);
+}
+
+.canvas-selection-bar__button--danger:hover {
+  color: var(--nim-error);
+}
+
+.canvas-selection-bar__swatch {
+  width: 14px;
+  height: 14px;
+  border: 1px solid var(--nim-border);
+  border-radius: 50%;
+}
+
+/* --- Popovers ----------------------------------------------------------- */
+
+.canvas-selection-bar__menu,
+.canvas-selection-bar__colors,
+.canvas-context-menu {
+  z-index: 20;
+  padding: 4px;
+  background: var(--nim-bg-secondary);
+  border: 1px solid var(--nim-border);
+  border-radius: 8px;
+  box-shadow: 0 4px 16px rgb(0 0 0 / 40%);
+}
+
+.canvas-selection-bar__menu-item,
+.canvas-context-menu__item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 24px;
+  width: 100%;
+  padding: 5px 8px;
+  font-size: 12px;
+  text-align: left;
+  white-space: nowrap;
+  color: var(--nim-text);
+  background: transparent;
+  border: none;
+  border-radius: 5px;
+  cursor: pointer;
+}
+
+.canvas-selection-bar__menu-item:hover,
+.canvas-context-menu__item:hover {
+  background: var(--nim-bg-hover);
+}
+
+.canvas-selection-bar__menu-shortcut,
+.canvas-context-menu__shortcut {
+  font-size: 11px;
+  color: var(--nim-text-muted);
+}
+
+.canvas-selection-bar__colors {
+  display: grid;
+  grid-template-columns: repeat(4, 20px);
+  gap: 6px;
+}
+
+.canvas-selection-bar__color-chip {
+  width: 20px;
+  height: 20px;
+  border: 1px solid var(--nim-border);
+  border-radius: 50%;
+  cursor: pointer;
+}
+
+.canvas-selection-bar__color-chip--current {
+  outline: 2px solid var(--nim-accent);
+  outline-offset: 1px;
+}
+
+/* A diagonal slash so "no colour" reads as a choice, not a missing swatch. */
+.canvas-selection-bar__color-chip--none {
+  background: linear-gradient(
+    to bottom right,
+    transparent calc(50% - 1px),
+    var(--nim-text-muted) calc(50% - 1px),
+    var(--nim-text-muted) calc(50% + 1px),
+    transparent calc(50% + 1px)
+  );
+}
+
+/* --- Context menu ------------------------------------------------------- */
+
+.canvas-context-menu {
+  min-width: 190px;
+}
+
+.canvas-context-menu__item--danger {
+  color: var(--nim-error);
+}
+
+.canvas-context-menu__item[aria-disabled='true'] {
+  color: var(--nim-text-muted);
+  cursor: default;
+}
+
+.canvas-context-menu__item[aria-disabled='true']:hover {
+  background: transparent;
+}
+
+.canvas-context-menu__separator {
+  height: 1px;
+  margin: 4px 2px;
+  background: var(--nim-border);
+}
+
+/* --- Locked cards ------------------------------------------------------- */
+
+.canvas-card--locked .canvas-card__lock {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+  z-index: 2;
+  font-size: 11px;
+  line-height: 1;
+  color: var(--nim-text-muted);
+  pointer-events: none;
+}

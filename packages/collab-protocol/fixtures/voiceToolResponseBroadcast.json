@@ -1,0 +1,12 @@
+{
+  "type": "voiceToolResponseBroadcast",
+  "response": {
+    "requestId": "voice-response-fixture",
+    "success": false,
+    "encryptedResult": "c3ludGhldGljLWVuY3J5cHRlZFJlc3VsdA==",
+    "resultIv": "aUvbtXqhKyBijZfj",
+    "encryptedError": "c3ludGhldGljLWVuY3J5cHRlZEVycm9y",
+    "errorIv": "wHRSHU2+Do2NCFDb"
+  },
+  "fromConnectionId": "voice-response-connection"
+}

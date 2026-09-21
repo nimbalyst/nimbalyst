@@ -271,6 +271,17 @@ export class TranscriptTransformer {
     // instead of in-memory maps (no batch state to carry over)
     const toolEventIds = new Map<string, number>();
     const subagentEventIds = new Map<string, number>();
+    // A late sidecar arrives after its Agent/Task spawn's batch. Restore the
+    // canonical subagent identities before the parser makes synchronous routing
+    // decisions; an empty map would send child tools to the top-level transcript.
+    if (afterId > 0) {
+      for (const event of await this.transcriptStore.getSessionEvents(sessionId, { eventTypes: ['subagent'] })) {
+        if (event.subagentId) {
+          subagentEventIds.set(event.subagentId, event.id);
+          toolEventIds.set(event.subagentId, event.id);
+        }
+      }
+    }
 
     const context: ParseContext = {
       sessionId,

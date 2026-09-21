@@ -53,6 +53,14 @@ beforeEach(() => {
 });
 
 describe('answerSessionPromptForVoice', () => {
+  it('never interprets a negated or qualified approval as yes', async () => {
+    findWindowByWorkspace.mockReturnValue(makeWindow({ s1: sessionWith({ promptType: 'permission_request', status: 'pending', requestId: 'p', toolName: 'Bash' }) }));
+    for (const answer of ["don't approve", "yes, but don't run it", 'not yet', 'yes if the tests pass']) {
+      resolveVoicePromptResponse.mockClear();
+      await answerSessionPromptForVoice(WS, 's1', answer);
+      expect(resolveVoicePromptResponse.mock.calls.some(([, payload]) => payload.response.decision === 'allow')).toBe(false);
+    }
+  });
   it('maps a spoken answer to the matching option of a pending question', async () => {
     findWindowByWorkspace.mockReturnValue(
       makeWindow({

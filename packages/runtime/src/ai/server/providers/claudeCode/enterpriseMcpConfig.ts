@@ -9,7 +9,7 @@
  *   if (mcpConfig && !every(s => s.type === 'sdk' && s.name === 'claude-vscode'))
  *     fail("You cannot dynamically configure MCP servers when an enterprise MCP config is present")
  *
- * Nimbalyst dropped strict mode outright, which clears the first guard. The
+ * Nimbalyst omits strict mode under lockdown, which clears the first guard. The
  * second still rejects ANY server we pass — the Agent SDK serializes its
  * `mcpServers` option into `--mcp-config`, so both provider paths are affected,
  * and the only name the allowlist admits is the VS Code extension's own. We do
@@ -23,10 +23,9 @@
  *   Windows C:\Program Files\ClaudeCode
  *   other   /etc/claude-code
  *
- * The binary's own predicate is "the file parses to a non-null config", not mere
- * existence — so a stray unparseable file must NOT strip our tools. Cached for
- * the process lifetime: an admin push that lands mid-session needs a restart to
- * take effect on the CLI side anyway.
+ * Since CLI 2.1.271, unreadable or malformed managed files retain exclusive
+ * control too. Fail closed unless the file is absent. The probe is cached for
+ * the Nimbalyst process lifetime.
  */
 
 import { readFileSync } from 'node:fs';
@@ -54,17 +53,11 @@ export function resolveEnterpriseManagedMcpConfigPath(
 
 export interface EnterpriseMcpConfigDeps {
   platform?: NodeJS.Platform;
-  /** Read the managed file; return null when it does not exist / cannot be read. */
+  /** Read the managed file; return null when absent, throw on other failures. */
   readFile?: (filePath: string) => string | null;
 }
 
-const defaultReadFile = (filePath: string): string | null => {
-  try {
-    return readFileSync(filePath, 'utf8');
-  } catch {
-    return null;
-  }
-};
+const defaultReadFile = (filePath: string): string => readFileSync(filePath, 'utf8');
 
 let cached: boolean | undefined;
 
@@ -77,19 +70,12 @@ export function hasEnterpriseManagedMcpConfig(deps: EnterpriseMcpConfigDeps = {}
 
   const platform = deps.platform ?? process.platform;
   const read = deps.readFile ?? defaultReadFile;
-  const contents = read(resolveEnterpriseManagedMcpConfigPath(platform));
-
-  let present = false;
-  if (contents !== null) {
-    try {
-      present = JSON.parse(contents) !== null;
-    } catch {
-      present = false;
-    }
+  try {
+    cached = read(resolveEnterpriseManagedMcpConfigPath(platform)) !== null;
+  } catch (error) {
+    cached = (error as NodeJS.ErrnoException)?.code !== 'ENOENT';
   }
-
-  cached = present;
-  return present;
+  return cached;
 }
 
 /** Test-only: clear the cached probe. */

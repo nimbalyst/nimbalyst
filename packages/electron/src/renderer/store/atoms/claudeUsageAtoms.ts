@@ -7,18 +7,8 @@
 
 import { atom } from 'jotai';
 
-export interface ClaudeUsageWindow {
-  utilization: number; // 0-100 percentage
-  resetsAt: string | null; // ISO timestamp
-}
-
-export interface ClaudeUsageData {
-  fiveHour: ClaudeUsageWindow;
-  sevenDay: ClaudeUsageWindow;
-  sevenDayOpus?: ClaudeUsageWindow;
-  lastUpdated: number; // Unix timestamp
-  error?: string;
-}
+import type { ClaudeUsageData } from '../../../shared/claudeUsage';
+export type { ClaudeUsageData, ClaudeUsageWindow } from '../../../shared/claudeUsage';
 
 /**
  * Current Claude usage data from the API.

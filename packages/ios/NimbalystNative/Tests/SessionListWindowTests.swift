@@ -26,8 +26,30 @@ final class SessionListWindowTests: XCTestCase {
             try database.execute(sql: "UPDATE sessions SET hostDeviceId = 'sandbox' WHERE id = 's-000001'")
             try database.execute(sql: "UPDATE sessions SET hostDeviceId = 'desktop' WHERE id <> 's-000001'")
         }
+        try db.refreshSessionListProjection(projectId: projectId, metaAgentEnabled: true)
         let page = try db.sessionListPage(filter: SessionListFilter(projectId: projectId, hostDeviceId: "sandbox"), after: nil, limit: 100)
         XCTAssertEqual(page.items.map { $0.parent.id }, ["s-000001"])
+    }
+
+    func testDesktopHistoryMatchesSearchWithoutAttributingLegacySessionsToAHost() throws {
+        let db = try makeDatabase()
+        try db.writer.write { database in
+            for (id, host) in [("legacy", nil), ("desktop", "desktop"), ("sandbox", "sandbox"), ("other", "other-desktop")] {
+                try Session(id: id, projectId: "/p", titleDecrypted: "SDK update",
+                            hostDeviceId: host, createdAt: 1, updatedAt: 1).save(database)
+            }
+        }
+        try db.refreshSessionListProjection(projectId: projectId, metaAgentEnabled: true)
+        var desktop = SessionListFilter(projectId: projectId, hostDeviceId: "desktop", includeUnattributedSessions: true)
+        for search in [nil, "Sdk"] {
+            desktop.searchText = search
+            let page = try db.sessionListPage(filter: desktop, after: nil, limit: 100)
+            XCTAssertEqual(Set(page.items.map(\.parent.id)), ["legacy", "desktop"])
+            let sandbox = SessionListFilter(projectId: projectId, searchText: search, hostDeviceId: "sandbox")
+            let remote = try db.sessionListPage(filter: sandbox, after: nil, limit: 100)
+            XCTAssertEqual(remote.items.map(\.parent.id), ["sandbox"])
+        }
+        XCTAssertNil(try db.session(byId: "legacy")?.hostDeviceId, "Visibility is not execution ownership")
     }
 
     // MARK: - Fixtures
@@ -483,6 +505,43 @@ final class SessionListWindowTests: XCTestCase {
     }
 
     // MARK: - Window model
+
+    @MainActor
+    func testCreatedSessionReturnsToNewestWindowAfterPagingIntoHistory() async throws {
+        let db = try makeDatabase()
+        try seed(db, count: 450)
+        let model = SessionListWindowModel()
+        model.start(database: db, filter: filter())
+        defer { model.stop() }
+        try await settle(model)
+        for _ in 0..<4 {
+            model.loadNextPage(anchorId: nil)
+            try await settle(model)
+        }
+        XCTAssertTrue(model.canLoadPrevious)
+        let tracker = SessionCreationTracker(database: db, lookup: { _ in }, onReady: { _, _ in })
+        var selection: WorkspaceSelection?
+        let ready = expectation(description: "Created row selected")
+        let observer = tracker.$completion.compactMap { $0 }.sink { completion in
+            guard completion.requestId == "new-request", let id = completion.sessionId else { return }
+            model.refresh()
+            selection = .session(id)
+            model.setFocus(sessionId: id)
+            ready.fulfill()
+        }
+        defer { observer.cancel() }
+        tracker.register("new-request")
+        tracker.receive(CreateSessionResponse(requestId: "new-request", success: true, sessionId: "newest", error: nil))
+        XCTAssertNil(selection)
+        let visible = expectation(description: "Projection publishes newest row")
+        let rows = model.$sections.filter { _ in model.firstItemKey == "s:newest" }.prefix(1).sink { _ in visible.fulfill() }
+        defer { rows.cancel() }
+        try db.upsertSession(Session(id: "newest", projectId: projectId, titleDecrypted: "New session", createdAt: 9_000_000, updatedAt: 9_000_000))
+        await fulfillment(of: [ready, visible], timeout: 5)
+        XCTAssertEqual(selection, .session("newest"))
+        XCTAssertEqual(model.firstItemKey, "s:newest")
+        XCTAssertFalse(model.canLoadPrevious)
+    }
 
     @MainActor
     func testWindowStaysBoundedWhilePagingThroughHistory() async throws {

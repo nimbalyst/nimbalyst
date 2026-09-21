@@ -14,6 +14,7 @@
  */
 
 import type { BrowserWindow } from 'electron';
+import { explicitVoiceDecision } from './mobileVoicePromptContract';
 import { loadVoiceSession } from './voiceSessionLoader';
 import {
   resolveVoicePromptResponse,
@@ -29,15 +30,7 @@ export interface VoiceAnswerResult {
 
 /** Interpret a spoken yes/no-ish answer. Returns true/false, or null if unclear. */
 function interpretAffirmative(text: string): boolean | null {
-  const t = text.trim().toLowerCase();
-  if (!t) return null;
-  if (/\b(yes|yeah|yep|yup|sure|ok|okay|approve|approved|allow|accept|confirm|go ahead|do it|proceed|sounds good|please do)\b/.test(t)) {
-    return true;
-  }
-  if (/\b(no|nope|deny|denied|don'?t|do not|reject|decline|cancel|stop|never mind|nevermind)\b/.test(t)) {
-    return false;
-  }
-  return null;
+  return explicitVoiceDecision(text);
 }
 
 /** Pick the option label that best matches the spoken answer, or null. */

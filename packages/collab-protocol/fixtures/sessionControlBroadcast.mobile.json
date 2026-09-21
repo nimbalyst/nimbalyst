@@ -1,0 +1,15 @@
+{
+  "type": "sessionControlBroadcast",
+  "message": {
+    "sessionId": "a9724085-1664-4183-8554-bacab2816579",
+    "messageType": "interrupt",
+    "payload": {
+      "reason": "User requested stop"
+    },
+    "timestamp": 1789232405000,
+    "sentBy": "mobile",
+    "sentByDeviceId": "da19537a-3c36-4008-84cf-db587a631d89",
+    "targetDeviceId": "dfeee86a-36b2-411e-811b-cedabd8a08f6"
+  },
+  "fromConnectionId": "synthetic-connection"
+}

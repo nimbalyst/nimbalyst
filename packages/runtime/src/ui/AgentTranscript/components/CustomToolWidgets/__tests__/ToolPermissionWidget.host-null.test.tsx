@@ -18,7 +18,7 @@
 
 import React from 'react';
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 import { Provider as JotaiProvider } from 'jotai';
 import { store } from '../../../../../store/store';
 import { setInteractiveWidgetHost } from '../../../../../store/atoms/interactiveWidgetHost';
@@ -63,6 +63,21 @@ describe('ToolPermissionWidget — host-null regression (#276)', () => {
 
   beforeEach(() => {
     setInteractiveWidgetHost(sessionId, null);
+  });
+
+  it('starts a constrained request on deny and offers only one-call approval', async () => {
+    const host = makeFakeHost();
+    setInteractiveWidgetHost(sessionId, host);
+    const message = makeMessage();
+    Object.assign(message.toolCall.arguments, { defaultToNo: true, suppressAlwaysAllowRule: true });
+    renderWithStore(<ToolPermissionWidget message={message} sessionId={sessionId} isExpanded={false} onToggle={() => {}} />);
+    expect(document.activeElement).toBe(screen.getByTestId('tool-permission-deny'));
+    expect(screen.queryByTestId('tool-permission-allow-session')).toBeNull();
+    expect(screen.queryByTestId('tool-permission-allow-always')).toBeNull();
+    await act(async () => {
+      fireEvent.click(screen.getByTestId('tool-permission-allow-once'));
+    });
+    expect(host.toolPermissionSubmit).toHaveBeenCalledWith('req-stuck-on-gh-api', { decision: 'allow', scope: 'once' });
   });
 
   it('renders the action buttons even when host is null', () => {

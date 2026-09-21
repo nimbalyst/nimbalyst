@@ -29,11 +29,13 @@ import { setCanvasCallbacks } from '@nimbalyst/runtime/canvas';
 import { customEditorRegistry } from '../CustomEditors/registry';
 import { EmbedFrame } from './EmbedFrame';
 import { CanvasCardHost } from './CanvasCardHost';
+import { CanvasCardPreview } from './CanvasCardPreview';
 import { canvasCardCommentCounts } from './canvasCardCommentCounts';
 import { canvasCardRevisions } from './canvasCardRevisions';
 import { dispatchCanvasAgentThread } from './canvasAgentDispatch';
 import { pickCanvasCardReference } from './pickCanvasCardReference';
 import { canvasDropSource } from './canvasDropSource';
+import { openFileInTab, workspaceAbsolutePath } from './embeddedFileIo';
 
 export { EmbedFrame } from './EmbedFrame';
 export { createEmbeddedFileHost } from './createEmbeddedFileHost';
@@ -50,6 +52,11 @@ export function registerEmbedFrame(): void {
   // whether the surface arranging those references is a document or a board.
   setCanvasCallbacks({
     renderCard: CanvasCardHost,
+    renderCardPreview: CanvasCardPreview,
+    openScreenshotSource: path => {
+      const absolutePath = workspaceAbsolutePath(path);
+      if (absolutePath) openFileInTab(absolutePath);
+    },
     // The other half of a card's dual comment count: threads inside the card's
     // own document, which live in that document's room and never merge with the
     // board's own threads.

@@ -115,6 +115,7 @@ export const ToolPermissionWidget: React.FC<CustomToolWidgetProps> = ({
   const pattern = (args.pattern || toolName) as string;
   const patternDisplayName = (args.patternDisplayName || getPatternDisplayName(pattern)) as string;
   const isDestructive = (args.isDestructive || false) as boolean;
+  const suppressAlwaysAllowRule = args.suppressAlwaysAllowRule === true;
   const warnings: string[] = (args.warnings || []) as string[];
   const workspacePath = (args.workspacePath || '') as string;
 
@@ -416,18 +417,20 @@ export const ToolPermissionWidget: React.FC<CustomToolWidgetProps> = ({
               <div className="mb-2">
                 <span className="font-semibold text-nim">Allow Once:</span> Allow just this request
               </div>
-              <div className="mb-2">
-                <span className="font-semibold text-nim">Session:</span> Allow{' '}
-                <span className="font-mono text-[10px] text-nim-faint bg-nim-secondary px-1 py-0.5 rounded">
-                  {patternDisplayName}
-                </span> until you close the app
-              </div>
-              <div className="mb-0">
-                <span className="font-semibold text-nim">Always:</span> Save to{' '}
-                <span className="font-mono text-[10px] text-nim-faint bg-nim-secondary px-1 py-0.5 rounded">
-                  .claude/settings.local.json
-                </span>
-              </div>
+              {!suppressAlwaysAllowRule && <>
+                <div className="mb-2">
+                  <span className="font-semibold text-nim">Session:</span> Allow{' '}
+                  <span className="font-mono text-[10px] text-nim-faint bg-nim-secondary px-1 py-0.5 rounded">
+                    {patternDisplayName}
+                  </span> until you close the app
+                </div>
+                <div className="mb-0">
+                  <span className="font-semibold text-nim">Always:</span> Save to{' '}
+                  <span className="font-mono text-[10px] text-nim-faint bg-nim-secondary px-1 py-0.5 rounded">
+                    .claude/settings.local.json
+                  </span>
+                </div>
+              </>}
               <div className="mt-2 pt-2 border-t border-nim text-nim-faint">
                 Pattern: <span className="font-mono text-[10px] text-nim-faint bg-nim-secondary px-1 py-0.5 rounded">{pattern}</span>
               </div>
@@ -479,6 +482,7 @@ export const ToolPermissionWidget: React.FC<CustomToolWidgetProps> = ({
           <button
             type="button"
             data-testid="tool-permission-deny"
+            autoFocus={args.defaultToNo === true}
             onClick={handleDeny}
             disabled={isSubmitting}
             className="px-3 py-1.5 rounded-md text-[11px] font-medium cursor-pointer border border-nim bg-nim-tertiary text-nim whitespace-nowrap transition-all duration-150 hover:bg-nim-hover disabled:opacity-50 disabled:cursor-not-allowed"
@@ -494,28 +498,30 @@ export const ToolPermissionWidget: React.FC<CustomToolWidgetProps> = ({
           >
             Allow Once
           </button>
-          <div className="w-px h-5 bg-nim mx-1" />
-          <button
-            type="button"
-            data-testid="tool-permission-allow-session"
-            onClick={handleAllowSession}
-            disabled={isSubmitting}
-            title={`Allow ${patternDisplayName} for this session`}
-            className="px-3 py-1.5 rounded-md text-[11px] font-medium cursor-pointer border border-nim-primary bg-transparent text-nim-primary whitespace-nowrap transition-all duration-150 hover:bg-[color-mix(in_srgb,var(--nim-primary)_10%,transparent)] disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            Session
-          </button>
-          <button
-            type="button"
-            data-testid="tool-permission-allow-always"
-            onClick={handleAllowAlways}
-            disabled={isSubmitting}
-            title={`Save ${patternDisplayName} to .claude/settings.local.json`}
-            className="px-3 py-1.5 rounded-md text-[11px] font-medium cursor-pointer border-none bg-nim-primary text-nim-on-primary whitespace-nowrap transition-all duration-150 hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            Always
-          </button>
-          {isWebFetchRequest && (
+          {!suppressAlwaysAllowRule && <>
+            <div className="w-px h-5 bg-nim mx-1" />
+            <button
+              type="button"
+              data-testid="tool-permission-allow-session"
+              onClick={handleAllowSession}
+              disabled={isSubmitting}
+              title={`Allow ${patternDisplayName} for this session`}
+              className="px-3 py-1.5 rounded-md text-[11px] font-medium cursor-pointer border border-nim-primary bg-transparent text-nim-primary whitespace-nowrap transition-all duration-150 hover:bg-[color-mix(in_srgb,var(--nim-primary)_10%,transparent)] disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              Session
+            </button>
+            <button
+              type="button"
+              data-testid="tool-permission-allow-always"
+              onClick={handleAllowAlways}
+              disabled={isSubmitting}
+              title={`Save ${patternDisplayName} to .claude/settings.local.json`}
+              className="px-3 py-1.5 rounded-md text-[11px] font-medium cursor-pointer border-none bg-nim-primary text-nim-on-primary whitespace-nowrap transition-all duration-150 hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              Always
+            </button>
+          </>}
+          {isWebFetchRequest && !suppressAlwaysAllowRule && (
             <>
               <div className="w-px h-5 bg-nim mx-1" />
               <button
@@ -533,9 +539,9 @@ export const ToolPermissionWidget: React.FC<CustomToolWidgetProps> = ({
         </div>
 
         {/* Pattern info */}
-        <div className="text-[11px] text-nim-faint">
+        {!suppressAlwaysAllowRule && <div className="text-[11px] text-nim-faint">
           Session/Always will allow: <span className="font-medium text-nim-muted bg-nim-tertiary px-1.5 py-0.5 rounded text-[10px]">{patternDisplayName}</span>
-        </div>
+        </div>}
       </div>
     </div>
   );

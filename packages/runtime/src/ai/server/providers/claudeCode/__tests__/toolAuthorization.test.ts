@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, it, expect, vi } from 'vitest';
 import { handleToolPermissionWithService, handleToolPermissionFallback } from '../toolAuthorization';
 import { generateToolPattern } from '../../../permissions/toolPermissionHelpers';
@@ -37,6 +38,14 @@ describe('handleToolPermissionWithService', () => {
   }
 
   describe('Zod schema compliance', () => {
+    it('carries SDK prompt constraints to the durable message and permission service', async () => {
+      const deps = createDeps();
+      const hints = { defaultToNo: true, suppressAlwaysAllowRule: true };
+      await handleToolPermissionWithService(deps, createParams({ options: { signal: new AbortController().signal, ...hints } }));
+      expect(JSON.parse(deps.logAgentMessage.mock.calls[0][1]).input).toMatchObject(hints);
+      expect(deps.requestToolPermission).toHaveBeenCalledWith(expect.objectContaining(hints));
+    });
+
     it('allow decision includes updatedInput', async () => {
       const deps = createDeps();
       const result = await handleToolPermissionWithService(deps, createParams());
@@ -178,6 +187,21 @@ describe('handleToolPermissionFallback', () => {
   });
 
   describe('pattern persistence', () => {
+    it.each(['session', 'always', 'always-all'])('limits a stale %s response to one call when rule creation is suppressed', async (scope) => {
+      const deps = createDeps();
+      const hints = { defaultToNo: true, suppressAlwaysAllowRule: true };
+      const promise = handleToolPermissionFallback(deps, createParams({ options: { signal: new AbortController().signal, ...hints } }));
+      await vi.waitFor(() => expect(deps.permissions.pendingToolPermissions.size).toBe(1));
+      const [, pending] = [...deps.permissions.pendingToolPermissions.entries()][0];
+      pending.resolve({ decision: 'allow', scope });
+      expect((await promise).behavior).toBe('allow');
+      expect(deps.savePattern).not.toHaveBeenCalled();
+      expect(deps.permissions.sessionApprovedPatterns.size).toBe(0);
+      expect(pending.request).toMatchObject(hints);
+      expect(JSON.parse(deps.logAgentMessage.mock.calls[0][1]).input).toMatchObject(hints);
+      expect(deps.emit).toHaveBeenCalledWith('toolPermission:resolved', expect.objectContaining({ response: { decision: 'allow', scope: 'once' } }));
+    });
+
     it('allow-always saves pattern to disk', async () => {
       const deps = createDeps();
       const params = createParams();

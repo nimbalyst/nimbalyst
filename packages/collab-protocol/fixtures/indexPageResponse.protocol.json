@@ -1,0 +1,118 @@
+{
+  "type": "indexPageResponse",
+  "protocolVersion": 2,
+  "requestId": "page-request-fixture",
+  "mode": "delta",
+  "entries": [
+    {
+      "entity": "session",
+      "id": "a9724085-1664-4183-8554-bacab2816579",
+      "revision": 41,
+      "deleted": false,
+      "session": {
+        "sessionId": "a9724085-1664-4183-8554-bacab2816579",
+        "encryptedProjectId": "c3ludGhldGljLWVuY3J5cHRlZFByb2plY3RJZA==",
+        "projectIdIv": "M2xKL/5rOY2t5oHT",
+        "encryptedTitle": "c3ludGhldGljLWVuY3J5cHRlZFRpdGxl",
+        "titleIv": "b2R0vxqcS04MqB/B",
+        "provider": "claude-code",
+        "model": "claude-code:opus",
+        "mode": "agent",
+        "sessionType": "session",
+        "parentSessionId": "a5de55cd-12cf-465c-8d0a-7317274054a7",
+        "worktreeId": "a2c022e4-7941-42bc-8675-fb4025dec120",
+        "hostDeviceId": "def0f44b-d861-4b6c-89ad-3ff6d9b048e8",
+        "agentRole": "standard",
+        "createdBySessionId": "a7b533c3-ded4-4108-8460-ea5f6728be1b",
+        "isArchived": false,
+        "isPinned": true,
+        "branchedFromSessionId": "a64e2a70-0f7c-4d32-8f8e-3e29dcfead90",
+        "branchPointMessageId": 12,
+        "branchedAt": 1789232402000,
+        "messageCount": 14,
+        "lastMessageAt": 1789232403000,
+        "createdAt": 1789232401000,
+        "updatedAt": 1789232408000,
+        "isExecuting": true,
+        "queuedPromptCount": 1,
+        "encryptedQueuedPrompts": [
+          {
+            "options": {
+              "mode": "planning",
+              "model": "claude-code:opus",
+              "effortLevel": "high"
+            },
+            "id": "ac3914c4-11c1-43d2-84d3-8342b00c2954",
+            "encryptedPrompt": "c3ludGhldGljLWVuY3J5cHRlZFByb21wdA==",
+            "iv": "ShaKvfkgxy4L+kvl",
+            "timestamp": 1789232405000,
+            "encryptedAttachments": [
+              {
+                "id": "a02a5d5f-a820-40f1-8426-c5b1284964bd",
+                "filename": "diagram.png",
+                "mimeType": "image/png",
+                "encryptedData": "c3ludGhldGljLWVuY3J5cHRlZERhdGE=",
+                "iv": "5pxhlBfODSFnFy9v",
+                "size": 2048,
+                "width": 640,
+                "height": 480
+              }
+            ],
+            "source": "mobile"
+          }
+        ],
+        "encryptedClientMetadata": "c3ludGhldGljLWVuY3J5cHRlZENsaWVudE1ldGFkYXRh",
+        "clientMetadataIv": "19lPpw1kfStVEIC5",
+        "lastReadAt": 1789232407000
+      }
+    },
+    {
+      "entity": "project",
+      "id": "c3ludGhldGljLWVuY3J5cHRlZFByb2plY3RJZA==",
+      "revision": 42,
+      "deleted": false,
+      "project": {
+        "encryptedProjectId": "c3ludGhldGljLWVuY3J5cHRlZFByb2plY3RJZA==",
+        "projectIdIv": "2fKwRjYFC2EyJ6Oo",
+        "encryptedName": "c3ludGhldGljLWVuY3J5cHRlZE5hbWU=",
+        "nameIv": "F+Gt/YGpbMtIb0Nl",
+        "encryptedPath": "c3ludGhldGljLWVuY3J5cHRlZFBhdGg=",
+        "pathIv": "2XIdJPSjwvfb78BF",
+        "sessionCount": 2,
+        "lastActivityAt": 1789232415000,
+        "syncEnabled": true,
+        "gitRemoteHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "encryptedConfig": "c3ludGhldGljLWVuY3J5cHRlZENvbmZpZw==",
+        "configIv": "ddX472gdDKfVkYrL"
+      }
+    },
+    {
+      "entity": "file",
+      "id": "ac07f5bc-038b-42e0-8bbe-3bf9cde1ea47",
+      "revision": 43,
+      "deleted": false,
+      "file": {
+        "docId": "ac07f5bc-038b-42e0-8bbe-3bf9cde1ea47",
+        "encryptedProjectId": "c3ludGhldGljLWVuY3J5cHRlZFByb2plY3RJZA==",
+        "projectIdIv": "UKPDttEfvR3aw6oJ",
+        "encryptedRelativePath": "c3ludGhldGljLWVuY3J5cHRlZFJlbGF0aXZlUGF0aA==",
+        "relativePathIv": "oQddFuRJcZzJq1Wx",
+        "encryptedTitle": "c3ludGhldGljLWVuY3J5cHRlZFRpdGxl",
+        "titleIv": "BmxECWGE7EzeQAjY",
+        "lastModifiedAt": 1789232414000,
+        "syncedAt": 1789232409000
+      }
+    },
+    {
+      "entity": "session",
+      "id": "deleted-session",
+      "revision": 44,
+      "deleted": true,
+      "removalReason": "expired"
+    }
+  ],
+  "nextPageToken": "synthetic-next-page",
+  "cursor": 44,
+  "complete": false,
+  "resetRequired": false
+}

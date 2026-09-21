@@ -96,6 +96,7 @@ import {
 import {
   handleToolPermissionFallback as handleToolPermissionFallbackHelper,
   handleToolPermissionWithService as handleToolPermissionWithServiceHelper,
+  type ToolPermissionOptions,
 } from './claudeCode/toolAuthorization';
 import { ClaudeCodeDeps, type HistoryManagerPort } from './claudeCode/dependencyInjection';
 import { resolvePermissionMode, type PromptStreamController } from './claudeCode/sdkOptionsBuilder';
@@ -111,11 +112,9 @@ import {
   shouldExitDrain,
   classifyDrainOutcome,
   shouldSettleTaskFromToolResult,
-  shouldRecordTerminalNotification,
+  isBackgroundLaunchAcknowledgement,
   shouldFinalizeForSettledBackgroundTasks,
   extractToolResultText,
-  mapTaskUpdatedPatchStatus,
-  shouldApplyTaskUpdatedStatus,
   isNotificationFlushResult,
   shouldArmGraceTimerForResult,
   shouldContinueWithTaskResults,
@@ -123,6 +122,7 @@ import {
   type DrainExitCause,
   type TaskTerminalNotification,
 } from './claudeCode/subagentDrain';
+import { applySystemTaskChunk, recordBackgroundEvidence, type TrackedSystemTask } from './claudeCode/systemTaskChunks';
 import {
   raceNextChunkWithStallWatchdog,
   resolveStreamStallMs,
@@ -255,22 +255,9 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
   private teammateManager: TeammateManager;
 
   // SDK-native sub-agent task tracking (task_started/task_progress/task_notification)
-  private activeTasks = new Map<string, {
-    taskId: string;
-    description: string;
-    taskType?: string;
-    status: 'running' | 'completed' | 'failed' | 'stopped';
-    startedAt: number;
-    toolUseId?: string;
-    toolCount: number;
-    tokenCount: number;
-    durationMs: number;
-    lastToolName?: string;
-    summary?: string;
-    // Set from task_updated patches (is_backgrounded): the task's tool call
-    // returned a launch acknowledgement, not a completion. See NIM-1470.
-    isBackgrounded?: boolean;
-  }>();
+  // Shape and lifecycle rules live in claudeCode/systemTaskChunks.ts, which is
+  // the only writer.
+  private activeTasks = new Map<string, TrackedSystemTask>();
 
   // Terminal task_notification chunks for background tasks — recorded while
   // draining after the lead turn ended (NIM-1470), and also when a backgrounded
@@ -1195,17 +1182,22 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
                       // launch acknowledgement while it is still running; settling
                       // on it killed the task at turn-end teardown. NIM-1470.
                       if (task.toolUseId !== item.toolUseId) continue;
-                      if (!shouldSettleTaskFromToolResult(task, item.content)) {
-                        // Declining to settle IS the observation that this
-                        // tool_result was a launch acknowledgement, and the CLI
-                        // does not always send the task_updated patch that sets
-                        // is_backgrounded — so record it here, or the terminal-
-                        // notification gate cannot trust the flag. Running tasks
-                        // only: a terminal one declines for that reason alone and
-                        // says nothing about how it was launched. #1410.
-                        if (task.status === 'running') task.isBackgrounded = true;
-                        break;
+                      // A launch acknowledgement is positive evidence the task
+                      // was backgrounded, whatever state it is in by now. The
+                      // CLI does not always follow it with a task_updated patch,
+                      // so this is how a command launched in the foreground and
+                      // then auto-backgrounded gets promoted (#1493) — and, for
+                      // a fast task that already reported terminally, it is the
+                      // only thing that can release the notification held for
+                      // it. Keyed off the content, not off a declined settle:
+                      // a terminal task declines for that reason alone and says
+                      // nothing about how it was launched. #1410 / #1470.
+                      if (isBackgroundLaunchAcknowledgement(item.content)) {
+                        if (recordBackgroundEvidence(task, this.drainTerminalNotifications)) {
+                          this.emitTaskUpdate(sessionId).catch(() => {});
+                        }
                       }
+                      if (!shouldSettleTaskFromToolResult(task, item.content)) break;
                       task.status = toolCall.isError ? 'failed' : 'completed';
                       const summaryText = extractToolResultText(item.content);
                       if (summaryText) task.summary = summaryText.substring(0, 200);
@@ -2362,85 +2354,18 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
     }
   }
 
-  /** Handle system task chunks (task_started, task_progress, task_notification) */
+  /** Handle system task chunks (task_started, task_progress, task_notification). */
   private handleSystemTask(subtype: string, chunk: any, sessionId: string | undefined): void {
-    if (subtype === 'task_started') {
-      this.activeTasks.set(chunk.task_id, {
-        taskId: chunk.task_id,
-        description: chunk.description || '',
-        taskType: chunk.task_type,
-        status: 'running',
-        startedAt: Date.now(),
-        toolUseId: chunk.tool_use_id,
-        toolCount: 0,
-        tokenCount: 0,
-        durationMs: 0,
-      });
-      console.log(`[CLAUDE-CODE] SUBAGENT_TASK started: id=${chunk.task_id} type=${chunk.task_type ?? 'n/a'} desc="${(chunk.description || '').substring(0, 80)}"`);
-      this.emitTaskUpdate(sessionId).catch(() => {});
-    } else if (subtype === 'task_progress') {
-      const existing = this.activeTasks.get(chunk.task_id);
-      if (existing) {
-        existing.toolCount = chunk.usage?.tool_uses ?? existing.toolCount;
-        existing.tokenCount = chunk.usage?.total_tokens ?? existing.tokenCount;
-        existing.durationMs = chunk.usage?.duration_ms ?? existing.durationMs;
-        existing.lastToolName = chunk.last_tool_name ?? existing.lastToolName;
-        this.emitTaskUpdate(sessionId).catch(() => {});
-      }
-    } else if (subtype === 'task_notification') {
-      const existing = this.activeTasks.get(chunk.task_id);
-      if (existing) {
-        existing.status = chunk.status || 'completed';
-        existing.summary = chunk.summary;
-        if (chunk.usage) {
-          existing.toolCount = chunk.usage.tool_uses ?? existing.toolCount;
-          existing.tokenCount = chunk.usage.total_tokens ?? existing.tokenCount;
-          existing.durationMs = chunk.usage.duration_ms ?? existing.durationMs;
-        }
-        console.log(`[CLAUDE-CODE] SUBAGENT_TASK notification: id=${chunk.task_id} status=${existing.status} draining=${this.drainingBackgroundTasks}`);
-        // Capture terminal notifications for background tasks so
-        // finalizeBackgroundDrain can wake the session with the results (the
-        // CLI's own continuation turn cannot be surfaced — the consumer already
-        // received complete). While draining, that is every task still running
-        // at the lead's result (NIM-1470); off the drain path it is backgrounded
-        // tasks only, so a foreground Task does not produce a spurious extra
-        // continuation turn (#1410).
-        if (shouldRecordTerminalNotification(existing, this.drainingBackgroundTasks)) {
-          const status = existing.status === 'running' ? 'completed' : existing.status;
-          this.drainTerminalNotifications.push({
-            taskId: chunk.task_id,
-            description: existing.description,
-            status,
-            summary: chunk.summary,
-            outputFile: chunk.output_file,
-            // A 'stopped' that arrives after our grace timer closed the stream
-            // is our own kill, not a user stop — report it as one. #1355.
-            killedByTeardown: status === 'stopped' && this.drainGraceExpired,
-            elapsedMs: Date.now() - existing.startedAt,
-          });
-        }
-        this.emitTaskUpdate(sessionId).catch(() => {});
-      }
-    } else if (subtype === 'task_updated') {
-      // Wire-safe TaskState patch (status / is_backgrounded / description).
-      // is_backgrounded is the authoritative "the tool_result was a launch
-      // acknowledgement" signal used by shouldSettleTaskFromToolResult.
-      const existing = this.activeTasks.get(chunk.task_id);
-      const patch = chunk.patch;
-      if (existing && patch && typeof patch === 'object') {
-        if (patch.is_backgrounded === true) existing.isBackgrounded = true;
-        if (typeof patch.description === 'string' && patch.description) existing.description = patch.description;
-        // While draining, terminal status comes ONLY from task_notification —
-        // settling on the (earlier) terminal patch exits the drain loop before
-        // the notification is read, and the wake continuation never fires.
-        const mapped = mapTaskUpdatedPatchStatus(patch.status);
-        if (shouldApplyTaskUpdatedStatus(mapped, this.drainingBackgroundTasks)) {
-          existing.status = mapped!;
-        }
-        if (typeof patch.error === 'string' && patch.error) existing.summary = patch.error;
-        this.emitTaskUpdate(sessionId).catch(() => {});
-      }
-    }
+    const changed = applySystemTaskChunk({
+      subtype,
+      chunk,
+      tasks: this.activeTasks,
+      draining: this.drainingBackgroundTasks,
+      graceExpired: this.drainGraceExpired,
+      notifications: this.drainTerminalNotifications,
+      log: (message) => console.log(message),
+    });
+    if (changed) this.emitTaskUpdate(sessionId).catch(() => {});
   }
 
   private processTeammateToolResult(
@@ -3275,7 +3200,7 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
     return async (
       toolName: string,
       input: any,
-      options: { signal: AbortSignal; suggestions?: any[]; toolUseID?: string }
+      options: ToolPermissionOptions
     ): Promise<{ behavior: 'allow' | 'deny'; updatedInput?: any; message?: string }> => {
       const callNum = ++canUseToolCallCount;
       const callStart = Date.now();
@@ -3329,7 +3254,7 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
   private async resolveImmediateToolDecision(
     toolName: string,
     input: any,
-    options: { signal: AbortSignal; suggestions?: any[]; toolUseID?: string },
+    options: ToolPermissionOptions,
     sessionId: string | undefined,
     pathForTrust: string | undefined
   ): Promise<{ behavior: 'allow' | 'deny'; updatedInput?: any; message?: string } | null> {
@@ -3360,7 +3285,7 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
   private async handleToolPermissionWithService(
     toolName: string,
     input: any,
-    options: { signal: AbortSignal; suggestions?: any[]; toolUseID?: string },
+    options: ToolPermissionOptions,
     sessionId: string,
     workspacePath: string,
     permissionsPath: string | undefined,
@@ -3388,7 +3313,7 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
   private async handleToolPermissionFallback(
     toolName: string,
     input: any,
-    options: { signal: AbortSignal; suggestions?: any[]; toolUseID?: string },
+    options: ToolPermissionOptions,
     sessionId: string | undefined,
     workspacePath: string | undefined
   ): Promise<{ behavior: 'allow' | 'deny'; updatedInput?: any; message?: string }> {

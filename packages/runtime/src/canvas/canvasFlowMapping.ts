@@ -101,6 +101,111 @@ export interface CanvasFlowOptions {
    */
   selectedIds?: ReadonlySet<string>;
   readOnly?: boolean;
+  /**
+   * The armed pointer tool. With the hand tool a left drag pans the board, so
+   * no card may claim the gesture; omit it and the board behaves as select.
+   */
+  tool?: 'select' | 'hand';
+}
+
+/**
+ * Whether a card may be dragged by its own body.
+ *
+ * Four independent reasons it may not, and they are easy to get wrong one at a
+ * time because each is invisible until you try to drag something:
+ *
+ * - **Read-only.** Nothing on the board moves.
+ * - **Active.** An activated card owns the pointer; dragging it by its body
+ *   would fight text selection inside it, so the handle goes away until Escape.
+ * - **Locked.** Locking is an editing convenience, and "it still moves when I
+ *   drag it" is the one thing it must not do.
+ * - **Hand tool.** A left drag pans. A card that also accepted the drag would
+ *   move instead of the board, which is the opposite of what the tool means.
+ */
+export function canvasNodeDraggable(input: {
+  readOnly: boolean;
+  active: boolean;
+  locked: boolean;
+  tool?: 'select' | 'hand';
+}): boolean {
+  return (
+    !input.readOnly && !input.active && !input.locked && input.tool !== 'hand'
+  );
+}
+
+/**
+ * Whether *React Flow* may select a card when it hit-tests one.
+ *
+ * Two cards it may not, and the second is the interesting one:
+ *
+ * - **Active.** A hot card is being typed into, not picked.
+ * - **A frame, always.** A rubber band dragged across a board is aimed at the
+ *   cards inside a frame, never at the frame itself, and sweeping the frame up
+ *   is worse than useless: moving it carries everything it contains.
+ *
+ * Making frames unselectable *only for the duration of a marquee* is the
+ * obvious version of this and it does not work. React Flow starts the band and
+ * performs its first hit test in the same event, before any state-driven prop
+ * reaches its store, so a band opened over a frame and released without a
+ * further pointer move still takes the frame -- and its pointer-cancel path
+ * never fires `onSelectionEnd`, so a cancelled band would leave frames
+ * permanently unselectable. A constant has neither problem.
+ *
+ * The cost is that clicking a frame has to be answered by the surface instead,
+ * in `onNodeClick` via `canvasClickSelection`. React Flow calls `onClick`
+ * outside its own `isSelectable` gate and `onContextMenu` unconditionally
+ * (verified in @xyflow/react 12.11.5), and it renders `selected` from the
+ * controlled node prop rather than from selectability, so a frame still paints
+ * as selected, still resizes, and still opens its context menu. `draggable` is
+ * independent of `selectable`, so frame drag is untouched.
+ */
+export function canvasNodeSelectable(input: {
+  active: boolean;
+  frame: boolean;
+}): boolean {
+  return !input.active && !input.frame;
+}
+
+/**
+ * The selection a click produces, for the cards React Flow will not select.
+ *
+ * The same two rules React Flow applies to everything else -- a plain click
+ * replaces the selection, a Shift or Cmd/Ctrl click toggles -- except that the
+ * unit being selected is the *group*, not the card. Group membership is flat and
+ * symmetric, so a click that took one member and left the rest would be a
+ * selection no subsequent drag, nudge, or delete could act on coherently.
+ *
+ * **Toggling has to be group-aware here and not downstream.** Expanding the
+ * result afterwards works for a click that selects and is exactly wrong for one
+ * that deselects: removing the clicked card leaves its siblings selected, and
+ * the expansion then reads a still-selected sibling and puts the card straight
+ * back. Shift+click on a grouped card would do nothing at all.
+ *
+ * Pure, because both halves of that are invisible until someone tries to
+ * Shift+click a frame out of a selection and it will not go.
+ */
+export function canvasClickSelection(
+  current: ReadonlySet<string>,
+  id: string,
+  additive: boolean,
+  nodes: readonly CanvasAnyNode[]
+): ReadonlySet<string> {
+  const clicked = nodes.find((node) => node.id === id);
+  const group = clicked === undefined ? null : canvasNodeGroup(clicked);
+  const members =
+    group === null
+      ? [id]
+      : nodes
+          .filter((node) => canvasNodeGroup(node) === group)
+          .map((node) => node.id);
+
+  if (!additive) return new Set(members);
+  const next = new Set(current);
+  // The clicked card decides the direction for the whole group, so a group in a
+  // half-selected state resolves one way rather than flipping member by member.
+  if (current.has(id)) for (const member of members) next.delete(member);
+  else for (const member of members) next.add(member);
+  return next;
 }
 
 /** Fold React Flow's `select` changes into the surface's selection set. */
@@ -240,9 +345,13 @@ export function orderCanvasNodes(
  */
 export function toFlowNodes(
   document: CanvasDocument,
-  options: CanvasFlowOptions = {}
+  options: CanvasFlowOptions = {},
+  previousNodes: readonly CanvasFlowNode[] = []
 ): CanvasFlowNode[] {
   const readOnly = options.readOnly === true;
+  const previousData = new Map(
+    previousNodes.map((node) => [node.id, node.data])
+  );
   /*
    * The activation gate, and the one invariant NIM-3845 leaves behind: a hot
    * card may never sit under a scale transform.
@@ -261,11 +370,24 @@ export function toFlowNodes(
   return orderCanvasNodes(document.nodes ?? []).map((node, index) => {
     const kind = canvasCardKind(node);
     const active = activationAllowed && options.activeNodeId === node.id;
+    const locked = isCanvasNodeLocked(node);
     const lod: CanvasCardLod = active
       ? 'hot'
       : kind === 'reference'
       ? options.lod?.get(node.id) ?? 'cold'
       : 'warm';
+    const previous = previousData.get(node.id);
+    // Camera and selection changes must not repaint every card's contents.
+    // Keep the descriptor when the document node and its rendering inputs agree.
+    const data =
+      previous &&
+      previous.node === node &&
+      previous.kind === kind &&
+      previous.active === active &&
+      previous.lod === lod &&
+      previous.readOnly === readOnly
+        ? previous
+        : { node, kind, active, lod, readOnly };
     return {
       id: node.id,
       type: CANVAS_FLOW_NODE_TYPE,
@@ -274,14 +396,16 @@ export function toFlowNodes(
       height: node.height,
       zIndex: index,
       selected: options.selectedIds?.has(node.id) === true,
-      // An activated card owns the pointer: dragging it by its own body would
-      // fight text selection inside it, so the drag handle goes away until the
-      // user presses Escape.
-      draggable: !readOnly && !active,
-      selectable: !active,
+      draggable: canvasNodeDraggable({
+        readOnly,
+        active,
+        locked,
+        ...(options.tool === undefined ? {} : { tool: options.tool }),
+      }),
+      selectable: canvasNodeSelectable({ active, frame: kind === 'group' }),
       connectable: !readOnly && !active,
       deletable: !readOnly,
-      data: { node, kind, active, lod, readOnly },
+      data,
     };
   });
 }
@@ -480,7 +604,10 @@ export function stepCanvasGesture(
   const kind = canvasGestureKind(changes);
   const base =
     kind === 'discrete' ? document : withCanvasNodeGeometry(document, held);
-  const next = applyCanvasNodeChanges(base, snap ? snap(changes, base) : changes);
+  const next = applyCanvasNodeChanges(
+    base,
+    snap ? snap(changes, base) : changes
+  );
 
   if (kind === 'transient') {
     return {
@@ -589,6 +716,8 @@ export function applyCanvasNodeChanges(
   let next: CanvasAnyNode[] = nodes;
   let changed = false;
   const removed = new Set<string>();
+  /** Ids this batch has already translated as a follower of some drag. */
+  const carried = new Set<string>();
 
   const replace = (
     id: string,
@@ -614,14 +743,14 @@ export function applyCanvasNodeChanges(
         if (x === current.x && y === current.y) break;
         const dx = x - current.x;
         const dy = y - current.y;
-        // A frame carries whatever it encloses. Cards the user is dragging
-        // themselves in the same batch are skipped so a group-plus-child
-        // selection cannot move a child twice.
-        if (canvasCardKind(current) === 'group') {
-          for (const contained of containedNodeIds(next, current)) {
-            if (movedIds.has(contained)) continue;
-            replace(contained, (node) => translateNode(node, dx, dy));
-          }
+        // A frame carries what it encloses and a group member carries its
+        // siblings; locked cards follow neither. `carried` is what earlier
+        // changes in this same batch have already moved, so two dragged members
+        // of one group cannot translate the same sibling twice.
+        for (const id of canvasDragFollowers(next, current, movedIds)) {
+          if (carried.has(id)) continue;
+          carried.add(id);
+          replace(id, (node) => translateNode(node, dx, dy));
         }
         replace(change.id, (node) => ({ ...node, x, y }));
         break;
@@ -727,8 +856,93 @@ function translateNode(
   return { ...node, x: node.x + dx, y: node.y + dy };
 }
 
-/** Ids of the nodes wholly inside `group`'s current bounds, excluding itself. */
-function containedNodeIds(
+/** Whether the board has been told this card does not move. */
+export function isCanvasNodeLocked(node: CanvasAnyNode): boolean {
+  return node[NIMBALYST_CANVAS_NAMESPACE]?.locked === true;
+}
+
+/** The group a card belongs to, or null for a card in no group. */
+function canvasNodeGroup(node: CanvasAnyNode): string | null {
+  const group = node[NIMBALYST_CANVAS_NAMESPACE]?.group;
+  return typeof group === 'string' && group !== '' ? group : null;
+}
+
+/**
+ * Every card that has to move with `dragged`, and why each one does.
+ *
+ * Two kinds of membership travel with a drag, and React Flow knows about
+ * neither of them:
+ *
+ * - **Containment.** A frame carries what it encloses. The format gives a group
+ *   node no membership at all, so containment is read from the geometry.
+ * - **Groups.** Group membership is flat and symmetric, so dragging one member
+ *   drags the rest. React Flow cannot do this for us even when the surface has
+ *   expanded the selection, because it snapshots the nodes a drag moves at
+ *   pointer-down: press-dragging an *unselected* member moves that member only,
+ *   and the expansion lands a frame too late.
+ *
+ * Both are followed transitively -- a group whose member is a frame carries that
+ * frame's contents -- with a visited set, so a frame that contains a member of
+ * its own group cannot loop.
+ *
+ * **A locked card never follows, and never passes the drag on.** Locking's one
+ * job is that the card does not move; a frame dragged around a locked card
+ * leaves it exactly where it is.
+ *
+ * `alreadyMoving` is every id React Flow is moving under its own change in this
+ * same batch, plus whatever earlier changes in the batch have already carried.
+ * Without it a group-plus-child selection moves the child twice, once per delta.
+ *
+ * Pure and exported for the test: "I dragged a group and half of it stayed
+ * behind" and "the locked card moved anyway" are both invisible until after the
+ * gesture has already committed.
+ */
+export function canvasDragFollowers(
+  nodes: readonly CanvasAnyNode[],
+  dragged: CanvasAnyNode,
+  alreadyMoving: ReadonlySet<string> = new Set<string>()
+): string[] {
+  const byId = new Map(nodes.map((node) => [node.id, node] as const));
+  const seen = new Set<string>([dragged.id]);
+  const queue: CanvasAnyNode[] = [dragged];
+  const followers: string[] = [];
+
+  while (queue.length > 0) {
+    const node = queue.shift() as CanvasAnyNode;
+    const candidates: string[] = [];
+    if (canvasCardKind(node) === 'group') {
+      candidates.push(...containedCanvasNodeIds(nodes, node));
+    }
+    const group = canvasNodeGroup(node);
+    if (group !== null) {
+      for (const sibling of nodes) {
+        if (canvasNodeGroup(sibling) === group) candidates.push(sibling.id);
+      }
+    }
+
+    for (const id of candidates) {
+      if (seen.has(id)) continue;
+      seen.add(id);
+      const candidate = byId.get(id);
+      if (candidate === undefined || isCanvasNodeLocked(candidate)) continue;
+      // Already carrying its own delta: it still passes the drag on to whatever
+      // follows *it*, which is why the walk continues rather than stopping.
+      if (!alreadyMoving.has(id)) followers.push(id);
+      queue.push(candidate);
+    }
+  }
+  return followers;
+}
+
+/**
+ * Ids of the nodes wholly inside `group`'s current bounds, excluding itself.
+ *
+ * Exported because containment is what a frame *is* on this board -- the format
+ * gives a group node no membership at all -- so every command that moves a
+ * frame has to ask the same question a drag asks, and asking it a second way
+ * would be a second answer.
+ */
+export function containedCanvasNodeIds(
   nodes: readonly CanvasAnyNode[],
   group: CanvasAnyNode
 ): string[] {
@@ -942,6 +1156,30 @@ export function zoomViewportAtPoint(
     limits.maxZoom,
     Math.max(limits.minZoom, zoom * Math.pow(2, -wheel.deltaY * scale))
   );
+  if (next === zoom || !Number.isFinite(next) || zoom === 0) return null;
+  return {
+    x: point.x - ((point.x - viewport.x) / zoom) * next,
+    y: point.y - ((point.y - viewport.y) / zoom) * next,
+    zoom: next,
+  };
+}
+
+/**
+ * The viewport at an exact scale, holding `point` still.
+ *
+ * Same arithmetic as `zoomViewportAtPoint` with the wheel curve taken out: the
+ * zoom widget's presets name a scale directly ("100%") rather than a number of
+ * ticks. The anchor is the middle of the surface rather than the pointer,
+ * because the user was reading the board, not aiming at it.
+ */
+export function zoomViewportToScale(
+  viewport: CanvasViewport,
+  point: { x: number; y: number },
+  scale: number,
+  limits: { minZoom: number; maxZoom: number }
+): CanvasViewport | null {
+  const zoom = viewport.zoom;
+  const next = Math.min(limits.maxZoom, Math.max(limits.minZoom, scale));
   if (next === zoom || !Number.isFinite(next) || zoom === 0) return null;
   return {
     x: point.x - ((point.x - viewport.x) / zoom) * next,

@@ -48,7 +48,7 @@ export default defineConfig({
         'yjs',
         /^y-protocols(\/.*)?$/,
       ],
-      // NOTE: zustand, html2canvas, @xyflow/react are bundled by the extension
+      // NOTE: zustand, @xyflow/react are bundled by the extension
       // This gives the extension control over its own versions
       output: {
         // Provide global variables for externals

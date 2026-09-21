@@ -28,7 +28,7 @@ export function PDFViewerEditor({ host }: EditorHostProps) {
   });
 
   // Use the EditorHost's loadBinaryContent for cross-platform compatibility
-  const { document, totalPages, loading, error } = usePDFDocument(
+  const { document, totalPages, firstPageWidth, loading, error } = usePDFDocument(
     host.loadBinaryContent.bind(host),
     filePath
   );
@@ -118,6 +118,7 @@ export function PDFViewerEditor({ host }: EditorHostProps) {
       <PDFScrollView
         document={document}
         totalPages={totalPages}
+        firstPageWidth={firstPageWidth}
         scale={scale}
         fitToWidth={fitToWidth}
         theme={theme}

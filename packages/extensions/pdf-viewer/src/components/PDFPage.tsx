@@ -1,5 +1,5 @@
-import { useRef, useEffect, useState, useMemo } from 'react';
-import type { PDFDocumentProxy } from '../hooks/usePDFDocument';
+import { useRef, useEffect, useState } from 'react';
+import type { PDFDocumentProxy, PDFViewport } from '../hooks/usePDFDocument';
 
 // Get PDF.js from host for TextLayer class
 const pdfjsLib = (window as any).__nimbalyst_extensions['pdfjs-dist'];
@@ -8,8 +8,6 @@ interface PDFPageProps {
   document: PDFDocumentProxy | null;
   pageNumber: number;
   scale: number;
-  width: number;
-  height: number;
 }
 
 // Custom hook for debounced value
@@ -27,27 +25,15 @@ function useDebouncedValue<T>(value: T, delay: number): T {
   return debouncedValue;
 }
 
-export function PDFPage({ document, pageNumber, scale, width, height }: PDFPageProps) {
+export function PDFPage({ document, pageNumber, scale }: PDFPageProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const textLayerRef = useRef<HTMLDivElement>(null);
   const renderTaskRef = useRef<any>(null);
   const [rendering, setRendering] = useState(false);
+  const [viewport, setViewport] = useState<PDFViewport | null>(null);
 
   // Debounce scale changes to prevent excessive re-renders during zoom
   const debouncedScale = useDebouncedValue(scale, 100);
-
-  // Memoize container styles
-  const containerStyle = useMemo(
-    () => ({
-      width,
-      height,
-      display: 'flex' as const,
-      justifyContent: 'center' as const,
-      alignItems: 'center' as const,
-      position: 'relative' as const,
-    }),
-    [width, height]
-  );
 
   useEffect(() => {
     if (!document || !canvasRef.current) return;
@@ -73,6 +59,8 @@ export function PDFPage({ document, pageNumber, scale, width, height }: PDFPageP
         if (!context) return;
 
         const viewport = page.getViewport({ scale: debouncedScale });
+        // #1525: layout and both render layers must share this page's geometry.
+        setViewport(viewport);
 
         // Set canvas dimensions
         canvas.width = viewport.width;
@@ -142,16 +130,20 @@ export function PDFPage({ document, pageNumber, scale, width, height }: PDFPageP
   }, [document, pageNumber, debouncedScale]);
 
   return (
-    <div className="relative flex justify-center items-center bg-white shadow-[0_2px_8px_rgba(0,0,0,0.1)] rounded-sm" style={containerStyle}>
-      <canvas ref={canvasRef} style={{ maxWidth: '100%', maxHeight: '100%', display: 'block' }} />
+    <div
+      className="pdf-page relative bg-white shadow-[0_2px_8px_rgba(0,0,0,0.1)] rounded-sm"
+      data-page-number={pageNumber}
+      style={{ width: viewport?.width, height: viewport?.height, flexShrink: 0, position: 'relative' }}
+    >
+      <canvas ref={canvasRef} style={{ width: viewport?.width, height: viewport?.height, display: 'block' }} />
       <div
         ref={textLayerRef}
         className="textLayer"
         style={{
           position: 'absolute',
           top: 0,
-          left: '50%',
-          transform: 'translateX(-50%)',
+          left: 0,
+          visibility: rendering ? 'hidden' : 'visible',
         }}
       />
       {rendering && (

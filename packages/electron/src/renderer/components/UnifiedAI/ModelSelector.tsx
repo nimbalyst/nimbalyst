@@ -36,6 +36,8 @@ interface Model {
 type ProviderType = 'agent' | 'model';
 
 interface ModelSelectorProps {
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
   currentModel: string;  // Full provider:model ID
   onModelChange: (modelId: string) => void;
   sessionHasMessages?: boolean;  // Whether current session has any messages
@@ -58,6 +60,8 @@ interface ModelSelectorProps {
 }
 
 export function ModelSelector({
+  open,
+  onOpenChange,
   currentModel,
   onModelChange,
   sessionHasMessages = false,
@@ -67,7 +71,12 @@ export function ModelSelector({
   openRequest,
   onKeyboardDismiss,
 }: ModelSelectorProps) {
-  const [isOpen, setIsOpen] = useState(false);
+  const [internalOpen, setInternalOpen] = useState(false);
+  const isOpen = open ?? internalOpen;
+  const setIsOpen = React.useCallback((value: boolean) => {
+    if (open === undefined) setInternalOpen(value);
+    else onOpenChange?.(value);
+  }, [open, onOpenChange]);
   const [models, setModels] = useState<Record<string, Model[]>>({});
   const [providerLabels, setProviderLabels] = useState<Record<string, string>>({});
   const [providerIcons, setProviderIcons] = useState<Record<string, string>>({});
@@ -127,7 +136,7 @@ export function ModelSelector({
     if (openRequest === undefined || openRequest === lastOpenRequestRef.current) return;
     lastOpenRequestRef.current = openRequest;
     setIsOpen(true);
-  }, [openRequest]);
+  }, [openRequest, setIsOpen]);
 
   // Preload before the user opens the picker. The main process serves its last
   // successful catalog immediately and refreshes stale providers in the
@@ -448,7 +457,7 @@ export function ModelSelector({
         aria-label={`Current model: ${getCurrentModelName()}`}
         data-testid="model-picker"
         {...getReferenceProps({
-          onClick: () => setIsOpen(open => !open),
+          onClick: () => setIsOpen(!isOpen),
         })}
       >
         <span className="model-selector-label overflow-hidden text-ellipsis">{getCurrentModelName()}</span>

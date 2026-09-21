@@ -2,6 +2,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { RemoteSessionMirror } from '../RemoteSessionMirror';
 import type { SessionChange, SyncProvider } from '@nimbalyst/runtime/sync/types';
+import { logger } from '../../../utils/logger';
 
 function fixture() {
   const entry = { sessionId: 'remote', hostDeviceId: 'sandbox-1', projectId: '/repo', title: 'Remote test', provider: 'claude-code', messageCount: 0, createdAt: 100, updatedAt: 200, lastMessageAt: 200 };
@@ -21,7 +22,7 @@ function fixture() {
     connect: vi.fn(async () => {}), disconnect: vi.fn(),
     pushChange: vi.fn(async (_id: string, _change: SessionChange) => ({ published: true })), sendSessionControlMessage: vi.fn(async () => {}),
   };
-  const deps = { hasLocalSession: vi.fn(async () => false), listChanged: vi.fn() };
+  const deps = { localSessionIds: vi.fn(async () => new Set<string>()), hasLocalSession: vi.fn(async () => false), listChanged: vi.fn() };
   const mirror = new RemoteSessionMirror(deps);
   mirror.setProvider(provider as unknown as SyncProvider);
   return { mirror, entry, deps, provider, offChange, offStatus,
@@ -30,6 +31,15 @@ function fixture() {
 
 afterEach(() => vi.useRealTimers());
 describe('remote desktop mirrors', () => {
+  it.each([true, false])('logs the provider reason and retains the user-facing queue failure (retryable=%s)', async (retryable) => {
+    const f = fixture();
+    const warn = vi.spyOn(logger.main, 'warn').mockImplementation(() => {});
+    try {
+      f.provider.pushChange.mockResolvedValueOnce({ published: false, retryable, reason: 'remote queue disconnected' } as never);
+      await expect(f.mirror.queue('remote', '/repo', 'prompt')).rejects.toThrow('The prompt could not be sent');
+      expect(warn).toHaveBeenCalledWith(expect.stringMatching(/session remote: remote queue disconnected/));
+    } finally { warn.mockRestore(); }
+  });
   it('reconnects an observed transcript before queueing after an idle socket expires', async () => {
     const f = fixture();
     const stop = await f.mirror.watch('remote', '/repo', vi.fn());
@@ -63,6 +73,7 @@ describe('remote desktop mirrors', () => {
     expect(await f.mirror.list('/other', [])).toEqual([]);
     expect(await f.mirror.list('/repo', [])).toEqual([expect.objectContaining({ id: 'remote', remoteHostDeviceId: 'sandbox-1', workspaceId: '/repo' })]);
     f.deps.hasLocalSession.mockResolvedValue(true);
+    f.deps.localSessionIds.mockResolvedValue(new Set(['remote']));
     expect(await f.mirror.list('/repo', [])).toEqual([]);
     expect(await f.mirror.get('remote', '/repo')).toBeNull();
     await expect(f.mirror.watch('remote', '/repo', vi.fn())).rejects.toThrow('not available');
@@ -153,4 +164,39 @@ describe('remote desktop mirrors', () => {
     await expect(pending).rejects.toThrow('sync changed');
     expect(second.provider.pushChange).not.toHaveBeenCalled();
   });
+});
+
+it('omits stale unrelated desktops while retaining remote project history and excluding locally owned history', async () => {
+  const f = fixture();
+  f.provider.getConnectedDevices.mockReturnValue([
+    {deviceId: 'old-desktop', name: 'This Mac before rename', type: 'desktop', isOnline: false},
+    {deviceId: 'other-live', name: 'Second directory', type: 'desktop'},
+    {deviceId: 'sandbox-1', name: 'Sandbox', type: 'headless', isOnline: false},
+  ] as any);
+  expect((await f.mirror.hosts('/repo')).map(d => d.deviceId)).toEqual(['other-live', 'sandbox-1']);
+  f.deps.hasLocalSession.mockResolvedValue(true);
+    f.deps.localSessionIds.mockResolvedValue(new Set(['remote']));
+  expect((await f.mirror.hosts('/repo')).map(d => d.deviceId)).toEqual(['other-live']);
+});
+
+it('keeps a configured sleeping sandbox but suppresses hidden history without making it locally executable', async () => {
+  const f = fixture();
+  Object.assign(f.deps, {configuredHostIds: () => new Set(['sandbox-1'])});
+  f.provider.getConnectedDevices.mockReturnValue([{deviceId: 'sandbox-1', type: 'headless', isOnline: false, inventoryHidden: false}] as any);
+  expect((await f.mirror.hosts('/unrelated')).map(d => d.deviceId)).toEqual(['sandbox-1']);
+  f.provider.getConnectedDevices.mockReturnValue([{deviceId: 'sandbox-1', type: 'headless', isOnline: false, inventoryHidden: true}] as any);
+  expect(await f.mirror.hosts('/repo')).toEqual([]);
+  expect(await f.mirror.list('/repo', [])).toHaveLength(1);
+  await expect(f.mirror.assertLocalExecution('remote')).rejects.toThrow('host');
+});
+
+it('keeps desktop history readable after its presence record expires and inventory metadata survives', async () => {
+  const f = fixture();
+  f.entry.hostDeviceId = 'retired-desktop';
+  f.provider.getConnectedDevices.mockReturnValue([{deviceId: 'retired-desktop', name: 'Previous installation', type: 'unknown', isOnline: false, inventoryHidden: true}] as any);
+  expect(await f.mirror.list('/repo', [])).toHaveLength(1);
+  expect(await f.mirror.hosts('/repo')).toEqual([]);
+  f.provider.getConnectedDevices.mockReturnValue([{deviceId: 'retired-desktop', name: 'Previous installation', type: 'unknown', isOnline: false, inventoryHidden: false}] as any);
+  expect((await f.mirror.hosts('/repo')).map(d => d.deviceId)).toEqual(['retired-desktop']);
+  await expect(f.mirror.assertLocalExecution('remote')).rejects.toThrow('host');
 });

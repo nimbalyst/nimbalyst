@@ -15,7 +15,6 @@
 import { store } from '@nimbalyst/runtime/store';
 import {
   sessionFileEditsAtom,
-  workspaceFileLinksRevisionAtom,
   sessionGitStatusAtom,
   setSessionPendingReviewFilesAtom,
   workspaceUncommittedFilesAtom,
@@ -29,6 +28,8 @@ import { getRelativeWorkspacePath, isPathInWorkspace } from '../../../shared/pat
 import { createToolCallMatchesCoalescer } from './toolCallMatchesCoalescer';
 import { createPerKeyDebouncer } from './perKeyDebounce';
 import { loadSessionFilesResult } from '../../services/sessionFilesLoader';
+import { createFileSessionLinksInvalidator, fileSessionLinksRevisionAtom } from '../atoms/fileSessionLinks';
+import { shellTrackingRevisionAtom } from '../atoms/shellTracking';
 
 /**
  * Track which workspace path is currently open.
@@ -233,6 +234,12 @@ export function initFileStateListeners(workspacePath: string): () => void {
   const pendingCountDebounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
   const sessionFilesFetchTimers = new Map<string, ReturnType<typeof setTimeout>>();
   const SESSION_FILES_FETCH_DEBOUNCE_MS = 250;
+  const invalidateFileLinks = createFileSessionLinksInvalidator(key => {
+    // Unopened files fetch fresh on mount; do not allocate an atom for every edit.
+    if (Array.from(fileSessionLinksRevisionAtom.getParams()).includes(key)) {
+      store.set(fileSessionLinksRevisionAtom(key), n => n + 1);
+    }
+  });
   // session-files:updated fires once per file edit (hundreds/sec during active
   // AI tool execution); coalesce its per-session git-status refresh so bursts
   // collapse into a single trailing git:get-file-status call per session.
@@ -276,7 +283,7 @@ export function initFileStateListeners(workspacePath: string): () => void {
 
           // Set edits immediately without enrichment
           store.set(sessionFileEditsAtom(sessionId), edits);
-          store.set(workspaceFileLinksRevisionAtom(workspacePath), n => n + 1);
+          invalidateFileLinks(sessionId, result.files);
 
           // Debounce the enrichment to avoid rapid-fire IPC calls during active sessions.
           // Short delay (200ms) since incremental matching now runs during the session.
@@ -300,15 +307,8 @@ export function initFileStateListeners(workspacePath: string): () => void {
             void refreshSessionGitStatus(sessionId);
           });
 
-          // Note: we used to also fetch pending-review files here to keep the
-          // atom in sync, but that fired once per session-files:updated event
-          // -- and the file-attribution service emits one per file edit during
-          // AI tool execution (hundreds per second in active sessions). The
-          // history:pending-count-changed handler below already covers this
-          // case with proper per-workspace debouncing, and emitPendingCountChanged
-          // is called from every site that mutates pending-review state
-          // (createTag, markTagReviewed, clearAllPending, etc.). Don't
-          // re-add this without a debounce.
+          // Pending-review state refreshes separately via the debounced
+          // history:pending-count-changed listener below.
         }
       } catch (error) {
         console.error('[fileStateListeners] Failed to fetch file edits for session:', sessionId, error);
@@ -328,6 +328,10 @@ export function initFileStateListeners(workspacePath: string): () => void {
         sessionId,
         setTimeout(() => {
           sessionFilesFetchTimers.delete(sessionId);
+          // Invalidate coverage independently of whether the file-list query succeeds.
+          if (Array.from(shellTrackingRevisionAtom.getParams()).includes(sessionId)) {
+            store.set(shellTrackingRevisionAtom(sessionId), revision => revision + 1);
+          }
           void runSessionFilesRefresh(sessionId);
         }, SESSION_FILES_FETCH_DEBOUNCE_MS)
       );

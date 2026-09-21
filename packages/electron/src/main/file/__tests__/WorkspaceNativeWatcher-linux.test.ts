@@ -59,7 +59,8 @@ it("recovers a failed Linux chokidar handle and fences its late events", async (
     handles[1].emit("change", "/test/root/note.md");
     expect(deliver).toHaveBeenCalledExactlyOnceWith(
       "change",
-      "/test/root/note.md"
+      "/test/root/note.md",
+      expect.any(Number)
     );
   } finally {
     await lifecycle.stop();

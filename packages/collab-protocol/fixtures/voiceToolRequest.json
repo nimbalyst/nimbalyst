@@ -1,0 +1,13 @@
+{
+  "type": "voiceToolRequest",
+  "request": {
+    "requestId": "voice-request-fixture",
+    "encryptedProjectId": "c3ludGhldGljLWVuY3J5cHRlZFByb2plY3RJZA==",
+    "projectIdIv": "eTNOfTPQ7UrJrrdn",
+    "encryptedToolName": "c3ludGhldGljLWVuY3J5cHRlZFRvb2xOYW1l",
+    "toolNameIv": "2GC88DUVf1uddmZa",
+    "encryptedArgs": "c3ludGhldGljLWVuY3J5cHRlZEFyZ3M=",
+    "argsIv": "7P7zPfFyLbT9Kw9j",
+    "timestamp": 1789232405000
+  }
+}

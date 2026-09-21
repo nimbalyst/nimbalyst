@@ -2,10 +2,13 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render, screen, waitFor } from '@testing-library/react';
 
-vi.mock('@nimbalyst/runtime', () => ({
+vi.mock('@nimbalyst/runtime/ui/icons/MaterialSymbol', () => ({
   MaterialSymbol: ({ icon }: { icon: string }) => <span data-icon={icon} />,
 }));
 
+import { getDefaultStore } from 'jotai';
+const store = getDefaultStore();
+import { organizationDirectoryAtom } from '../../../../store/atoms/settingsDomains';
 import { AccountOrgList } from '../AccountOrgList';
 import type { AccountOrganizationGroup } from '../accountOrganizations';
 import { dialogRef } from '../../../../contexts/DialogContext';
@@ -32,6 +35,7 @@ function group(overrides: Partial<AccountOrganizationGroup> = {}): AccountOrgani
 
 describe('AccountOrgList', () => {
   beforeEach(() => {
+    store.set(organizationDirectoryAtom, []);
     openManagementWindow.mockReset().mockResolvedValue({ success: true });
     acceptInvite.mockReset().mockResolvedValue({ success: true });
     openDialog.mockReset();

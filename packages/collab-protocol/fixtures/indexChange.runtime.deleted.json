@@ -1,0 +1,7 @@
+{
+  "entity": "session",
+  "id": "deleted-session",
+  "revision": 44,
+  "deleted": true,
+  "removalReason": "expired"
+}

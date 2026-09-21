@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { readFile } from 'fs/promises';
 import { resolve } from 'path';
 import { createHash } from 'crypto';
@@ -93,6 +94,7 @@ vi.mock('../StytchAuthService', () => ({
   updateSessionTokenForAccount: vi.fn(),
   getStytchUserId: vi.fn(() => 'user-1'),
   getUserEmail: vi.fn(() => 'user@test.com'),
+  getSyncAccount: vi.fn(() => null),
   getPersonalOrgId: vi.fn(() => 'personal-1'),
   getPersonalUserId: vi.fn(() => 'user-1'),
 }));
@@ -120,6 +122,7 @@ import {
   pendingInviteForEmail,
   registerTeamHandlers,
 } from '../TeamService';
+import { getPersonalSessionJwtForAccount } from '../StytchAuthService';
 import type { TeamDetails } from '../TeamService';
 import { registerTeamCustodyHandlers } from '../TeamCustodyService';
 import { registerOrgProjectWalkHandlers } from '../OrgProjectWalkService';
@@ -419,4 +422,40 @@ describe('team:find-pending-invite-for-email handler', () => {
     await expect(invokeHandler('member@example.com'))
       .resolves.toEqual({ success: true, invitation: null });
   });
+});
+
+
+describe('team:list completeness', () => {
+  beforeEach(() => {
+    accountsMock.mockReturnValue([{ personalOrgId: 'personal-1', email: 'a@example.com', sessionStatus: 'active' }]);
+    vi.mocked(getPersonalSessionJwtForAccount).mockReturnValue('personal-jwt' as never);
+    fetchMock.mockReset().mockResolvedValue({ ok: true, status: 200, json: async () => ({ teams: [] }) });
+    invalidateListTeamsCache();
+    registerTeamHandlers();
+  });
+
+  it('does not report an empty success before the personal JWT is restored, and recovers on the next read', async () => {
+    vi.mocked(getPersonalSessionJwtForAccount).mockReturnValueOnce(null);
+    const list = handlers.get('team:list')!;
+    await expect(list({})).resolves.toMatchObject({ success: false, complete: false, teams: [], retryable: true });
+    expect(fetchMock).not.toHaveBeenCalled();
+    await expect(list({})).resolves.toMatchObject({ success: true, complete: true, teams: [] });
+  });
+
+  it('does not turn an authenticated zero-account snapshot into a conclusive empty list', async () => {
+    accountsMock.mockReturnValue([]);
+    await expect(handlers.get('team:list')!({})).resolves.toMatchObject({ success: false, complete: false });
+  });
+
+  it('returns healthy-account rows but never declares a partial multi-account directory complete', async () => {
+    accountsMock.mockReturnValue([
+      { personalOrgId: 'personal-1', email: 'a@example.com', sessionStatus: 'active' },
+      { personalOrgId: 'personal-2', email: 'b@example.com', sessionStatus: 'active' },
+    ]);
+    vi.mocked(getPersonalSessionJwtForAccount).mockReturnValueOnce(null);
+    fetchMock.mockResolvedValue({ ok: true, status: 200, json: async () => ({ teams: [{ orgId: 'org-b', name: 'Beta', role: 'owner' }] }) });
+    const result = await handlers.get('team:list')!({});
+    expect(result).toMatchObject({ success: false, complete: false, teams: [{ orgId: 'org-b' }] });
+  });
+
 });

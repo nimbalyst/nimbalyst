@@ -135,6 +135,28 @@ function makeRuntime(overrides: Partial<ServeRuntimeDeps> = {}) {
   };
 }
 
+it('awaits queue publication before the next execution and reports failed outcomes with reasons', async () => {
+  let finishQueue!: (value: { published: false; reason: string }) => void;
+  const pendingQueue = new Promise<{ published: false; reason: string }>((resolve) => { finishQueue = resolve; });
+  const pushChange = vi.fn(async (_sessionId, change) => {
+    if (change.metadata.queuedPrompts) return pendingQueue;
+    return { published: false, reason: 'execution disconnected' };
+  });
+  const f = makeRuntime({ sync: { pushChange } });
+  f.sessionProjects.set('s1', PROJECT_ID);
+  for (const id of ['q1', 'q2']) f.queue.offer({ id, sessionId: 's1', prompt: id, createdAt: 1 });
+  await f.runtime.recoverPersistedQueue();
+  await vi.waitFor(() => expect(pushChange).toHaveBeenCalledWith('s1', expect.objectContaining({ metadata: expect.objectContaining({ queuedPrompts: expect.any(Array) }) })));
+  expect(f.turns).toHaveLength(1);
+  finishQueue({ published: false, reason: 'queue disconnected' });
+  await f.runtime.idle();
+  expect(f.turns).toHaveLength(2);
+  expect(f.events).toEqual(expect.arrayContaining([
+    { event: 'queue-publish-failed', fields: expect.objectContaining({ sessionId: 's1', reason: 'queue disconnected' }) },
+    { event: 'execution-state-not-published', fields: expect.objectContaining({ sessionId: 's1', reason: 'execution disconnected' }) },
+  ]));
+});
+
 function request(overrides: Partial<CreateSessionRequest> = {}): CreateSessionRequest {
   return {
     requestId: 'req-1',

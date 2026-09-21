@@ -53,9 +53,6 @@ export const sessionFileEditsAtom = atomFamily((sessionId: string) =>
   atom<FileEditWithSession[]>([])
 );
 
-/** Coalesced file-link updates, including sessions outside the mounted chat. */
-export const workspaceFileLinksRevisionAtom = atomFamily((_workspace: string) => atom(0));
-
 /**
  * Git status for files in a session.
  * Updated by: git:status-changed IPC event

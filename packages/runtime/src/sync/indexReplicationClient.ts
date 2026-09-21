@@ -44,7 +44,8 @@ export interface DecryptedIndexChange<S, P, F> {
   entity: IndexEntity;
   id: string;
   revision: number;
-  deleted: boolean;
+  deleted?: boolean;
+  unreadable?: boolean;
   removalReason?: 'expired' | 'deleted';
   session?: S;
   project?: P;
@@ -78,7 +79,7 @@ export interface IndexReplicationMirror<S, P, F> {
   /** Throws unless coverage is complete -- see the absence rule above. */
   snapshot(): { sessions: S[]; projects: P[]; files: F[] };
   /** Live rows regardless of coverage, for diagnostics and live-update fan-out. */
-  peek(entity: IndexEntity, id: string): { revision: number; deleted: boolean } | undefined;
+  peek(entity: IndexEntity, id: string): { revision: number; deleted?: boolean } | undefined;
   /**
    * Ids the server has explicitly tombstoned. This is deletion EVIDENCE, as
    * distinct from a row simply not being present -- reconciliation republishes
@@ -92,6 +93,7 @@ export interface IndexReplicationMirror<S, P, F> {
    */
   forget(entity: IndexEntity, id: string): void;
   rowCount(): number;
+  skippedRowCount(): number;
   /**
    * Replace every row, the cursor and coverage with another mirror's. Used to
    * swap in a freshly rebuilt baseline atomically: rows the server dropped
@@ -107,7 +109,8 @@ export interface MirrorRow<S, P, F> {
   entity: IndexEntity;
   id: string;
   revision: number;
-  deleted: boolean;
+  deleted?: boolean;
+  unreadable?: boolean;
   removalReason?: 'expired' | 'deleted';
   value?: S | P | F;
 }
@@ -135,6 +138,7 @@ export function createIndexReplicationMirror<S, P, F>(): IndexReplicationMirror<
           id: change.id,
           revision: change.revision,
           deleted: change.deleted,
+          unreadable: change.unreadable,
           removalReason: change.removalReason,
           value: change.session ?? change.project ?? change.file,
         });
@@ -195,7 +199,7 @@ export function createIndexReplicationMirror<S, P, F>(): IndexReplicationMirror<
     deletedIds(entity) {
       const ids: string[] = [];
       for (const row of rows.values()) {
-        if (row.entity === entity && row.deleted && row.removalReason !== 'expired') ids.push(row.id);
+        if (row.entity === entity && row.deleted === true && row.removalReason !== 'expired') ids.push(row.id);
       }
       return ids;
     },
@@ -204,6 +208,11 @@ export function createIndexReplicationMirror<S, P, F>(): IndexReplicationMirror<
     },
     rowCount() {
       return rows.size;
+    },
+    skippedRowCount() {
+      let count = 0;
+      for (const row of rows.values()) if (row.entity === 'session' && row.unreadable && row.deleted !== true) count++;
+      return Math.min(count, 999_999);
     },
     adopt(source) {
       const state = source.exportState();

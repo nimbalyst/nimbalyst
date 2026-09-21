@@ -423,6 +423,35 @@ export async function getSessionMessagesForSyncBatch(
   return result;
 }
 
+/** Provider variants use the same on-disk resume identity. */
+export function providerSessionAliases(provider: string): [string, string] {
+  if (provider === 'claude-code' || provider === 'claude-code-cli') return ['claude-code', 'claude-code-cli'];
+  if (provider === 'openai-codex' || provider === 'openai-codex-acp') return ['openai-codex', 'openai-codex-acp'];
+  return [provider, provider];
+}
+
+/** Resolve only within the provider and workspace; never guess between resume handles. */
+export async function resolveProviderSessionId(
+  db: PGliteLike,
+  provider: string,
+  providerSessionId: string,
+  workspaceId: string,
+  sourceWorkspacePath = workspaceId,
+): Promise<string | null> {
+  const [canonicalProvider, alias] = providerSessionAliases(provider);
+  const { rows } = await db.query<{ id: string }>(
+    `SELECT id FROM ai_sessions
+     WHERE provider IN ($1, $4) AND provider_session_id = $2 AND workspace_id IN ($3, $5)
+     UNION ALL
+     SELECT id FROM ai_sessions
+     WHERE id = $2 AND provider IN ($1, $4) AND workspace_id IN ($3, $5) AND provider_session_id IS NULL
+     LIMIT 2`,
+    [canonicalProvider, providerSessionId, workspaceId, alias, sourceWorkspacePath],
+  );
+  if (rows.length > 1) throw new Error('Ambiguous external provider session identity');
+  return rows[0]?.id ?? null;
+}
+
 export function createPGLiteSessionStore(db: PGliteLike, ensureDbReady?: EnsureReadyFn): SessionStore {
   // Store db reference for module-level functions
   moduleDb = db;
@@ -634,6 +663,12 @@ export function createPGLiteSessionStore(db: PGliteLike, ensureDbReady?: EnsureR
       }
     },
 
+    async findByProviderSessionId(provider: string, providerSessionId: string, workspaceId: string): Promise<ChatSession | null> {
+      await ensureReady();
+      const id = await resolveProviderSessionId(db, provider, providerSessionId, workspaceId);
+      return id ? this.get(id) : null;
+    },
+
     async get(sessionId: string): Promise<ChatSession | null> {
       await ensureReady();
       const { rows } = await db.query<any>(
@@ -834,6 +869,10 @@ export function createPGLiteSessionStore(db: PGliteLike, ensureDbReady?: EnsureR
           // Replaces the legacy `metadata.pendingAskUserQuestion` flag,
           // which nothing was writing.
           hasPendingInteractivePrompt: !!metadata.hasPendingPrompt,
+          externalSource: metadata.externalSource === 'claude-code' || metadata.externalSource === 'openai-codex'
+            ? metadata.externalSource : undefined,
+          externalLastActivityAt: typeof metadata.externalLastActivityAt === 'number' && Number.isFinite(metadata.externalLastActivityAt)
+            ? metadata.externalLastActivityAt : undefined,
           // Kanban board phase and tags from metadata JSONB
           phase: metadata.phase ?? undefined,
           tags: Array.isArray(metadata.tags) ? metadata.tags : undefined,

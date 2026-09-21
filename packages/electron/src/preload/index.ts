@@ -1,3 +1,4 @@
+import type { OrganizationDirectoryResult } from '../shared/organizationDirectory';
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import { createIpcSubscriber } from './ipcSubscriptions.ts';
 import {ClaudeForWindowsInstallation} from "../main/services/CLIManager.ts";
@@ -1780,7 +1781,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // Team Management (all member ops take explicit orgId -- per-workspace, not global)
   team: {
-    list: (options?: { forceRefresh?: boolean }) => ipcRenderer.invoke('team:list', options),
+    list: (options?: { forceRefresh?: boolean }): Promise<OrganizationDirectoryResult> => ipcRenderer.invoke('team:list', options),
     /** Open (or focus + retarget) the dedicated org-management window. */
     openManagementWindow: (target?: {
       orgId?: string;
@@ -1855,7 +1856,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Typed organization facade. The legacy `team` bridge remains as a
   // compatibility adapter while settings and older extensions migrate.
   organization: {
-    list: () => ipcRenderer.invoke('team:list'),
+    list: (): Promise<OrganizationDirectoryResult> => ipcRenderer.invoke('team:list'),
     get: (orgId: string) => ipcRenderer.invoke('team:get', orgId),
     rename: (orgId: string, name: string) =>
       ipcRenderer.invoke('team:rename', orgId, name),

@@ -1,0 +1,18 @@
+{
+  "type": "createSessionRequestBroadcast",
+  "request": {
+    "requestId": "a163759e-8b77-4eec-88b6-15e4b20ab332",
+    "encryptedProjectId": "c3ludGhldGljLWVuY3J5cHRlZFByb2plY3RJZA==",
+    "projectIdIv": "eTNOfTPQ7UrJrrdn",
+    "timestamp": 1789232405000,
+    "encryptedInitialPrompt": "c3ludGhldGljLWVuY3J5cHRlZEluaXRpYWxQcm9tcHQ=",
+    "initialPromptIv": "hiOEpjgauIX3VaCW",
+    "sessionType": "session",
+    "parentSessionId": "a5de55cd-12cf-465c-8d0a-7317274054a7",
+    "provider": "claude-code",
+    "model": "claude-code:opus",
+    "agentRole": "standard"
+  },
+  "targetDeviceId": "dfeee86a-36b2-411e-811b-cedabd8a08f6",
+  "fromConnectionId": "synthetic-connection"
+}

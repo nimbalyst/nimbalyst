@@ -11,6 +11,16 @@ function makeProvider() {
 }
 
 describe('pushExecutionStateToMobile', () => {
+  it('warns with the session and reason when execution state is not published', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const provider = { pushChange: vi.fn().mockResolvedValue({ published: false, reason: 'index disconnected' }) };
+      await pushExecutionStateToMobile(makeEvent('session:completed'), provider as any);
+      expect(warn).toHaveBeenCalledWith(expect.stringMatching(/s1.*index disconnected/));
+    } finally {
+      warn.mockRestore();
+    }
+  });
   it('pushes isExecuting=true on session:started', () => {
     const provider = makeProvider();
     pushExecutionStateToMobile(makeEvent('session:started'), provider as any);

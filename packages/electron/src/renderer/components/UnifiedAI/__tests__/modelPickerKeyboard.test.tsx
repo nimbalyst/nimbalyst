@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { Provider, createStore } from 'jotai';
 import { ModelSelector } from '../ModelSelector';
+import { AIInputControls } from '../AIInputControls';
 import { isOpenModelPickerShortcut } from '../AIInput';
 import { advancedSettingsAtom } from '../../../store/atoms/appSettings';
 
@@ -24,6 +25,8 @@ vi.mock('@nimbalyst/runtime/ai/server/types', () => ({
 vi.mock('../../../help', () => ({
   HelpTooltip: ({ children }: { children: React.ReactNode }) => <>{children}</>,
 }));
+
+vi.mock('../ContextUsageDisplay', () => ({ ContextUsageDisplay: () => null }));
 
 afterEach(() => cleanup());
 
@@ -365,5 +368,98 @@ describe('AI model picker search', () => {
     fireEvent.keyDown(search, { key: 'Escape' });
     fireEvent.click(screen.getByTestId('model-picker'));
     expect((await screen.findByRole('searchbox', { name: 'Search models' }) as HTMLInputElement).value).toBe('');
+  });
+});
+
+describe('AI input menu handoff', () => {
+  function setup({ showEffort = true, disabledEffort = false, actions = true } = {}) {
+    Object.defineProperty(window, 'electronAPI', {
+      configurable: true,
+      value: {
+        aiGetModels: vi.fn().mockResolvedValue({ success: true, grouped: {
+          agents: [{ id: 'agents:example', name: 'Example', provider: 'agents' }],
+        } }),
+        invoke: vi.fn().mockResolvedValue({
+          actions: actions ? [{ id: 'review', label: 'Review', body: 'Review the changes' }] : [],
+          fileExists: actions,
+        }),
+      },
+    });
+    const onModelChange = vi.fn();
+    const onLevelChange = vi.fn();
+    const onInsert = vi.fn();
+    function Harness() {
+      const input = React.useRef<HTMLTextAreaElement>(null);
+      const [request, setRequest] = React.useState(0);
+      return <>
+        <textarea aria-label="Prompt" ref={input} onKeyDown={event => {
+          if (isOpenModelPickerShortcut(event)) {
+            event.preventDefault();
+            setRequest(value => value + 1);
+          }
+        }} />
+        <AIInputControls currentModel="agents:example" onModelChange={onModelChange}
+          showEffortLevel={showEffort} effortLevel="high" onEffortLevelChange={onLevelChange}
+          reasoningControlsDisabled={disabledEffort} workspacePath="/menu-test"
+          modelPickerOpenRequest={request} focusInput={() => input.current?.focus()}
+          onActionInsert={onInsert} />
+      </>;
+    }
+    renderModelSelector(<Harness />);
+    const input = screen.getByRole('textbox', { name: 'Prompt' });
+    input.focus();
+    fireEvent.keyDown(input, { key: 'M', metaKey: true, shiftKey: true });
+    return { input, onModelChange, onLevelChange, onInsert };
+  }
+
+  it('hands focus between portaled menus without selecting, and restores the prompt on Escape', async () => {
+    const { input, onModelChange, onLevelChange, onInsert } = setup();
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Example' })));
+    fireEvent.keyDown(document.activeElement!, { key: 'Tab' });
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('menuitemradio', { name: 'High' })));
+    expect(screen.getAllByRole('menu')).toHaveLength(1);
+    fireEvent.keyDown(document.activeElement!, { key: 'ArrowUp' });
+    expect(document.activeElement).toBe(screen.getByRole('menuitemradio', { name: 'Medium' }));
+    fireEvent.keyDown(document.activeElement!, { key: 'Tab' });
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByTestId('action-prompts-dropdown-panel')));
+    expect(onModelChange).not.toHaveBeenCalled();
+    expect(onLevelChange).not.toHaveBeenCalled();
+    expect(onInsert).not.toHaveBeenCalled();
+    fireEvent.keyDown(document.activeElement!, { key: 'Tab', shiftKey: true });
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('menuitemradio', { name: 'High' })));
+    fireEvent.keyDown(document.activeElement!, { key: 'Tab', shiftKey: true });
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Example' })));
+    fireEvent.keyDown(document.activeElement!, { key: 'Tab', shiftKey: true });
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByTestId('action-prompts-dropdown-panel')));
+    fireEvent.keyDown(document.activeElement!, { key: 'Escape' });
+    await act(async () => {});
+    expect(document.activeElement).toBe(input);
+    expect(screen.queryByRole('menu')).toBeNull();
+  });
+
+  it.each([{ showEffort: false }, { disabledEffort: true }])('skips unavailable effort and allows action selection: %j', async options => {
+    const { onInsert } = setup(options);
+    await screen.findByRole('button', { name: 'Example' });
+    fireEvent.keyDown(document.activeElement!, { key: 'Tab' });
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByTestId('action-prompts-dropdown-panel')));
+    await screen.findByTestId('action-prompt-item-review');
+    await act(async () => { fireEvent.keyDown(document.activeElement!, { key: 'Enter' }); });
+    expect(onInsert).toHaveBeenCalledWith('Review the changes');
+    expect(screen.queryByRole('menu')).toBeNull();
+  });
+
+  it('can leave an empty Actions menu using Tab or Escape', async () => {
+    const { input } = setup({ actions: false });
+    await screen.findByRole('button', { name: 'Example' });
+    fireEvent.keyDown(document.activeElement!, { key: 'Tab', shiftKey: true });
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByTestId('action-prompts-dropdown-panel')));
+    fireEvent.keyDown(document.activeElement!, { key: 'Tab' });
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('button', { name: 'Example' })));
+    fireEvent.keyDown(document.activeElement!, { key: 'Tab' });
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole('menuitemradio', { name: 'High' })));
+    fireEvent.keyDown(document.activeElement!, { key: 'Escape' });
+    await act(async () => {});
+    expect(document.activeElement).toBe(input);
+    expect(screen.queryByRole('menu')).toBeNull();
   });
 });

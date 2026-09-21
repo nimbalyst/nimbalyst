@@ -1,6 +1,5 @@
-/**
- * IPC handlers for session-file link operations
- */
+import { getShellTrackingCoverage } from '../services/ai/codexShellTrackingHost';
+/** IPC handlers for session-file link operations. */
 
 import { AISessionsRepository, SessionFilesRepository, type FileLinkType, type FileLink } from '@nimbalyst/runtime';
 import { promises as fs } from 'fs';
@@ -69,8 +68,7 @@ function invalidateSessionCache(sessionId: string): void {
 }
 
 export function setupSessionFileHandlers(): void {
-  // All direct-DB session_files writers route their post-write notification
-  // through sessionFilesNotify; give it the cache invalidator (NIM-816).
+  safeHandle('session-files:coverage', (_event, ids: string[]) => getShellTrackingCoverage(ids));
   registerSessionFilesCacheInvalidator(invalidateSessionCache);
   /**
    * Add a file link to a session (used by AI and tests)

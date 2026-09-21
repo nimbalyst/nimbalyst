@@ -18,9 +18,10 @@ import {selectedMachineAtom, machineSessionSelectionsAtom} from './remoteMachine
 import { atom } from 'jotai';
 import { atomFamily } from '../debug/atomFamilyRegistry';
 import { store } from '@nimbalyst/runtime/store';
-import { ModelIdentifier, type ChatAttachment, type SessionData, type TranscriptViewMessage } from '@nimbalyst/runtime/ai/server/types';
+import { ModelIdentifier, type ChatAttachment, type SessionData } from '@nimbalyst/runtime/ai/server/types';
 import type { SessionMeta } from '@nimbalyst/runtime';
 import deepEqual from 'fast-deep-equal';
+import { captureTranscriptMessages, reconcileTranscriptMessages } from '../transcriptReconciliation';
 import { sessionLaunchCountsAtom } from './sessionLaunchCounts';
 import { sessionListMetadata } from './sessionListMetadata';
 import { workstreamStateAtom, setWorkstreamActiveChildAtom } from './workstreamState';
@@ -1771,6 +1772,7 @@ export const loadSessionDataAtom = atom(
     const draftWasHydrated = get(sessionDraftHydratedAtom(sessionId));
     const draftModifiedAtStart = get(sessionDraftLocalModifiedAtAtom(sessionId));
 
+    const messagesAtStart = captureTranscriptMessages(get(sessionStoreAtom(sessionId))?.messages ?? []);
     const loadPromise = (async () => {
     try {
       const sessionData = await window.electronAPI.aiLoadSession(sessionId, workspacePath);
@@ -1781,6 +1783,10 @@ export const loadSessionDataAtom = atom(
           console.warn(`[sessions] Session ${sessionId} has invalid model "${model}" - this indicates a bug in session creation`);
         }
 
+        sessionData.messages = reconcileTranscriptMessages(
+          get(sessionStoreAtom(sessionId))?.messages ?? [], sessionData.messages ?? [],
+          { startedWith: messagesAtStart },
+        );
         // Set sessionStoreAtom - derived atoms (mode, model, archived) will automatically sync
         set(sessionStoreAtom(sessionId), sessionData);
 
@@ -1943,6 +1949,7 @@ export const reloadSessionDataAtom = atom(
     const currentVersion = (existingPending?.version || 0) + 1;
     const thisReload = { version: currentVersion, aborted: false };
     pendingReloads.set(sessionId, thisReload);
+    const messagesAtStart = captureTranscriptMessages(get(sessionStoreAtom(sessionId))?.messages ?? []);
 
     try {
       const sessionData = await window.electronAPI.aiLoadSession(sessionId, workspacePath);
@@ -1955,48 +1962,10 @@ export const reloadSessionDataAtom = atom(
       if (sessionData) {
         const current = get(sessionStoreAtom(sessionId));
 
-        // Merge messages: preserve local-only optimistic messages not yet in database.
-        // Optimistic messages (added in-memory by the renderer before the provider
-        // persists them) have negative IDs (id < 0). They must be preserved across
-        // DB reloads so chat bubbles don't flicker away while waiting for the
-        // provider to persist the canonical version.
+        sessionData.messages = reconcileTranscriptMessages(
+          current?.messages ?? [], sessionData.messages ?? [], { startedWith: messagesAtStart },
+        );
         if (current) {
-          const dbMessages = sessionData.messages || [];
-          const localMessages = current.messages || [];
-
-          // Collect optimistic messages (negative IDs) that aren't yet in the DB.
-          // These were added locally before the provider persisted them.
-          // Drop any optimistic message whose type+text matches a DB message
-          // with a similar timestamp (within 5s tolerance). The timestamp check
-          // avoids premature eviction when a user sends two identical messages
-          // (e.g. "yes" twice). Use safe getTime() in case createdAt is a string
-          // after IPC serialization rather than a Date object.
-          const safeGetTime = (d: Date | string | unknown): number => {
-            if (d instanceof Date) return d.getTime();
-            if (typeof d === 'string') return new Date(d).getTime();
-            return 0;
-          };
-          const optimisticMessages = localMessages.filter(
-            (m: TranscriptViewMessage) =>
-              m.id < 0 &&
-              !dbMessages.some(
-                (db: TranscriptViewMessage) =>
-                  db.type === m.type &&
-                  db.text === m.text &&
-                  Math.abs(safeGetTime(db.createdAt) - safeGetTime(m.createdAt)) < 5000
-              )
-          );
-
-          if (optimisticMessages.length > 0) {
-            // Append optimistic messages after DB messages so they appear at
-            // the correct position (end of transcript). They'll be naturally
-            // replaced on the next reload once the provider has persisted
-            // canonical versions with real positive IDs.
-            sessionData.messages = [...dbMessages, ...optimisticMessages];
-          } else {
-            sessionData.messages = dbMessages;
-          }
-
           // Preserve read state
           const preservedTimestamp = current.lastReadMessageTimestamp || 0;
           const dbTimestamp = sessionData.lastReadMessageTimestamp || 0;

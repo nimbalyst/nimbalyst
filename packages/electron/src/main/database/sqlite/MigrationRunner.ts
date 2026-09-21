@@ -243,6 +243,8 @@ export function getMigrations(schemaDir: string): Migration[] {
     },
     { version: 41, name: 'document_feedback_index', sqlFile: path.join(schemaDir, '0041_document_feedback_index.sql') },
     { version: 42, name: 'tracker_creation_receipts', sqlFile: path.join(schemaDir, '0042_tracker_creation_receipts.sql') },
+    { version: 43, name: 'shell_tracking_coverage', sqlFile: path.join(schemaDir, '0043_shell_tracking_coverage.sql') },
+    { version: 44, name: 'external_session_cursors', sqlFile: path.join(schemaDir, '0044_external_session_cursors.sql') },
   ];
 }
 

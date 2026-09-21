@@ -5,6 +5,8 @@ import { EFFORT_LEVELS, DEFAULT_EFFORT_LEVEL, clampEffortLevel, getAvailableEffo
 import { FloatingPortal, useFloatingMenu } from '../../hooks/useFloatingMenu';
 
 interface EffortLevelSelectorProps {
+  open?: boolean;
+  onOpenChange?: (open: boolean) => void;
   level: EffortLevel;
   onLevelChange: (level: EffortLevel) => void;
   disabled?: boolean;
@@ -17,8 +19,8 @@ interface EffortLevelSelectorProps {
   modelId?: string;
 }
 
-export function EffortLevelSelector({ level, onLevelChange, disabled = false, disabledTitle, modelId }: EffortLevelSelectorProps) {
-  const menu = useFloatingMenu({ placement: 'top-start', offsetPx: 4 });
+export function EffortLevelSelector({ open, onOpenChange, level, onLevelChange, disabled = false, disabledTitle, modelId }: EffortLevelSelectorProps) {
+  const menu = useFloatingMenu({ placement: 'top-start', offsetPx: 4, open, onOpenChange });
   const { isOpen, setIsOpen } = menu;
 
   useEffect(() => {
@@ -32,6 +34,19 @@ export function EffortLevelSelector({ level, onLevelChange, disabled = false, di
   const availableLevels = getAvailableEffortLevels(modelId);
   const effectiveLevel = clampEffortLevel(level, modelId);
   const currentLevel = availableLevels.find((l) => l.key === effectiveLevel) ?? EFFORT_LEVELS.find((l) => l.key === DEFAULT_EFFORT_LEVEL)!;
+
+  const setMenuRef = React.useCallback((node: HTMLDivElement | null) => {
+    menu.refs.setFloating(node);
+    node?.querySelector<HTMLButtonElement>('[aria-checked="true"]')?.focus();
+  }, [menu.refs.setFloating]);
+
+  const handleKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
+    event.preventDefault();
+    const options = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>('button'));
+    const index = options.indexOf(document.activeElement as HTMLButtonElement);
+    options[(index + (event.key === 'ArrowDown' ? 1 : -1) + options.length) % options.length]?.focus();
+  };
 
   return (
     <div className="effort-level-selector relative inline-block">
@@ -57,14 +72,17 @@ export function EffortLevelSelector({ level, onLevelChange, disabled = false, di
       {isOpen && (
         <FloatingPortal>
           <div
-            ref={menu.refs.setFloating}
+            ref={setMenuRef}
             style={menu.floatingStyles}
             {...menu.getFloatingProps()}
+            onKeyDown={handleKeyDown}
             className="effort-level-selector-menu min-w-[120px] overflow-y-auto rounded-lg p-1 z-[1000] bg-[var(--nim-bg)] border border-[var(--nim-border)] shadow-[0_4px_12px_rgba(0,0,0,0.15)]"
           >
             {availableLevels.map((l) => (
               <button
                 key={l.key}
+                role="menuitemradio"
+                aria-checked={l.key === effectiveLevel}
                 className={`flex items-center justify-between gap-2 px-2 py-1.5 w-full border-none rounded text-xs cursor-pointer transition-[background] duration-150 text-left text-[var(--nim-text)] hover:bg-[var(--nim-bg-hover)] ${
                   l.key === effectiveLevel ? 'bg-[var(--nim-bg-secondary)] text-[var(--nim-primary)]' : ''
                 }`}

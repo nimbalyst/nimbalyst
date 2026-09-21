@@ -17,7 +17,7 @@
  * engine has restored its projection.
  */
 
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { MaterialSymbol } from '@nimbalyst/runtime/ui/icons/MaterialSymbol';
 import type { TrackerIdentity } from '@nimbalyst/runtime/core/DocumentService';
 import type { TrackerCommentEntry } from '@nimbalyst/runtime/sync/trackerProtocol';
@@ -53,6 +53,9 @@ export interface TrackerCommentsSectionProps {
   readOnly?: boolean;
   /** Lets an asynchronous server refusal retire the matching optimistic row. */
   mutationRejection?: TrackerMutationRejection | null;
+  collapsedComposer?: boolean;
+  draft?: string;
+  onDraftChange?: (text: string) => void;
 }
 
 function clientMutationIdFrom(result: unknown): string | undefined {
@@ -69,8 +72,21 @@ export const TrackerCommentsSection: React.FC<TrackerCommentsSectionProps> = ({
   formatTimestamp,
   readOnly = false,
   mutationRejection = null,
+  collapsedComposer = false,
+  draft,
+  onDraftChange,
 }) => {
-  const [newComment, setNewComment] = useState('');
+  const [localDraft, setLocalDraft] = useState('');
+  const newComment = draft ?? localDraft;
+  const setNewComment = onDraftChange ?? setLocalDraft;
+  const latestDraft = useRef(newComment);
+  latestDraft.current = newComment;
+  const restoreDraft = useCallback((body: string) => {
+    const current = latestDraft.current;
+    setNewComment(current && current !== body ? `${body}\n\n${current}` : body);
+  }, [setNewComment]);
+  const [composerOpen, setComposerOpen] = useState(false);
+  const Composer = collapsedComposer ? 'textarea' : 'input';
   const [submitting, setSubmitting] = useState(false);
   const [pending, setPending] = useState<PendingComment[]>([]);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -110,16 +126,18 @@ export const TrackerCommentsSection: React.FC<TrackerCommentsSectionProps> = ({
   useEffect(() => {
     const clientMutationId = mutationRejection?.clientMutationId;
     if (!mutationRejection || !clientMutationId) return;
-    const rejectedPending = pending.some((comment) => comment.clientMutationId === clientMutationId);
+    const rejectedPending = pending.find((comment) => comment.clientMutationId === clientMutationId);
     if (!rejectedPending) return;
+    restoreDraft(rejectedPending.body);
     setPending((previous) => previous.filter((comment) => comment.clientMutationId !== clientMutationId));
     setError(formatTrackerMutationRejection(mutationRejection));
-  }, [mutationRejection, pending]);
+  }, [mutationRejection, pending, restoreDraft]);
 
   const handleSubmit = useCallback(async () => {
     const body = newComment.trim();
     if (!body || submitting) return;
     setSubmitting(true);
+    setComposerOpen(true);
     const optimistic: PendingComment = {
       id: `pending_${Date.now()}`,
       body,
@@ -131,7 +149,7 @@ export const TrackerCommentsSection: React.FC<TrackerCommentsSectionProps> = ({
     const outcome = await run({ kind: 'add', body });
     if (!outcome.accepted) {
       setPending((previous) => previous.filter((comment) => comment.id !== optimistic.id));
-      setNewComment(body);
+      restoreDraft(body);
     } else {
       const clientMutationId = clientMutationIdFrom(outcome.result);
       if (clientMutationId) {
@@ -141,7 +159,7 @@ export const TrackerCommentsSection: React.FC<TrackerCommentsSectionProps> = ({
       }
     }
     setSubmitting(false);
-  }, [newComment, run, submitting]);
+  }, [newComment, run, submitting, setNewComment, restoreDraft]);
 
   const handleEditSave = useCallback(async (commentId: string) => {
     const body = editBody.trim();
@@ -197,7 +215,7 @@ export const TrackerCommentsSection: React.FC<TrackerCommentsSectionProps> = ({
                     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleEditSave(comment.id); }
                     if (e.key === 'Escape') { setEditingId(null); }
                   }}
-                  className="flex-1 bg-nim-secondary border border-nim rounded px-2 py-1 text-xs text-nim outline-none focus:border-nim-primary"
+                  className="min-w-0 flex-1 bg-nim-secondary border border-nim rounded px-2 py-1 text-xs text-nim outline-none focus:border-nim-primary"
                 />
                 <button
                   onClick={() => handleEditSave(comment.id)}
@@ -219,15 +237,18 @@ export const TrackerCommentsSection: React.FC<TrackerCommentsSectionProps> = ({
           </div>
         );
       })}
-      {readOnly ? null : (
-        <div className="flex gap-1">
-          <input
-            type="text"
+      {readOnly ? null : collapsedComposer && !composerOpen && !newComment ? (
+        <button type="button" className="tracker-add-comment" onClick={() => setComposerOpen(true)}>Add comment</button>
+      ) : (
+        <div className="tracker-comment-composer flex gap-1">
+          <Composer
+            {...(collapsedComposer ? { rows: 3 } : { type: 'text' })}
+            aria-label="Comment"
             value={newComment}
             onChange={e => setNewComment(e.target.value)}
-            onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSubmit(); } }}
+            onKeyDown={e => { if (e.key === 'Enter' && ((!collapsedComposer && !e.shiftKey) || e.metaKey || e.ctrlKey)) { e.preventDefault(); handleSubmit(); } }}
             placeholder="Add a comment..."
-            className="flex-1 bg-nim-secondary border border-nim rounded px-2 py-1 text-xs text-nim placeholder:text-nim-faint outline-none focus:border-nim-primary"
+            className="min-w-0 flex-1 bg-nim-secondary border border-nim rounded px-2 py-1 text-xs text-nim placeholder:text-nim-faint outline-none focus:border-nim-primary"
             data-testid="tracker-comment-input"
           />
           <button

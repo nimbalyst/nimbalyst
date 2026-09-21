@@ -7,6 +7,8 @@ description: Prepare and execute an alpha release (patch/minor/major)
 
 Prepare an alpha release following this workflow.
 
+**Inventory check (both auto and interactive modes):** Before running the release script, reconcile the release's notable Added/Changed/Removed capabilities and relevant commits against `docs/FEATURE_INVENTORY.md`, following the root `CLAUDE.md` feature-inventory rule. Update missing, incomplete, or obsolete entries; verify unclear scope against current code. Report the updated sections or a short "No inventory impact" reason. Preserve unrelated pending edits, and do not treat uncommitted or planned work as shipped.
+
 ## AUTO MODE DETECTION
 
 If `{{arg1}}` contains `auto` (for example `patch auto`), run the full process without stopping for approval:

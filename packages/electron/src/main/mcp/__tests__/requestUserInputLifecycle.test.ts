@@ -326,4 +326,21 @@ describe('RequestUserInput lifecycle', () => {
       },
     });
   });
+
+  // Codex CLI approves MCP tool calls by `readOnlyHint` and treats an
+  // unannotated tool as a write needing approval. Under the
+  // `approval_policy: 'never'` Nimbalyst uses in every non-Agent-verified mode
+  // that is an outright failure ("MCP tool call requires approval, but approval
+  // policy is never"), and the call never reaches this process -- the user gets
+  // a question card nothing can answer. See #1553.
+  it.each(['AskUserQuestion', 'PromptForUserInput'])(
+    'declares %s read-only so Codex does not gate it behind an approval it cannot ask for',
+    (toolName) => {
+      const tool = getInteractiveToolSchemas('schema-test').find(
+        (candidate) => candidate.name === toolName,
+      ) as { annotations?: { readOnlyHint?: boolean } } | undefined;
+
+      expect(tool?.annotations?.readOnlyHint).toBe(true);
+    },
+  );
 });

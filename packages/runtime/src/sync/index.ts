@@ -53,6 +53,9 @@ export type {
   SyncedAvailableModel,
   SyncedTrackerPersonalStateChange,
   EncryptedTrackerPersonalStatePayload,
+  SessionIndexData,
+  PushChangeOutcome,
+  IndexPublishOutcome,
 } from './types';
 export {
   filterSessionsForPersonalSync,

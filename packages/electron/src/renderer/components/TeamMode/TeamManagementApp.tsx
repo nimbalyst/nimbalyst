@@ -3,7 +3,7 @@ import { useAtomValue, useSetAtom } from 'jotai';
 
 import { DialogProvider } from '../../contexts/DialogContext';
 import { selectedOrgIdAtom } from '../../store/atoms/orgScope';
-import { organizationDirectoryAtom } from '../../store/atoms/settingsDomains';
+import { organizationDirectoryStateAtom } from '../../store/atoms/settingsDomains';
 import { OrgModeHost } from './OrgModeHost';
 import { useOrgWindowCommandSource } from './useOrgWindowCommandSource';
 import { useOrgWindowPendingRoute } from './onboarding/useOrgWindowPendingRoute';
@@ -20,7 +20,6 @@ import {
   persistLastSelectedOrgId,
   readLastSelectedOrgId,
   resolveOrgWindowTargetId,
-  type OrgChoice,
 } from './defaultOrg';
 import './TeamManagementWindow.css';
 
@@ -76,7 +75,7 @@ export function TeamManagementApp() {
     orgWindowRouteAtomFamily(ORG_WINDOW_SURFACE_ID),
   );
   const selectedOrgId = useAtomValue(selectedOrgIdAtom);
-  const hydratedOrganizations = useAtomValue(organizationDirectoryAtom);
+  const directory = useAtomValue(organizationDirectoryStateAtom);
   const [target, setTarget] = useState(readTarget);
   // Mounted at the window root, not inside OrgModeHost: the Messages shortcuts
   // have to work on every surface this window shows, the loading and
@@ -100,18 +99,15 @@ export function TeamManagementApp() {
       return () => { cancelled = true; };
     }
 
-    setTargetResolved(false);
+    // Keep the host mounted while the shared directory refreshes; its loading
+    // state must not reset conversations or replace a pending destination.
     void Promise.all([
       readLastSelectedOrgId(),
       readOrgWindowPendingRoute(),
-      window.electronAPI?.organization?.list?.().catch(() => null),
     ])
-      .then(([lastSelectedOrgId, storedPendingRoute, directory]) => {
+      .then(([lastSelectedOrgId, storedPendingRoute]) => {
         if (cancelled) return;
         const pendingRoute = parsePendingRoute(storedPendingRoute);
-        const organizations: OrgChoice[] = directory?.success && Array.isArray(directory.teams)
-          ? directory.teams
-          : hydratedOrganizations;
         // The pending hand-off is an explicit destination, kept even while
         // team:list is empty or partial — silently choosing the first visible
         // org would route an invited member into the wrong tenant — but only
@@ -119,7 +115,8 @@ export function TeamManagementApp() {
         const resolvedOrgId = resolveOrgWindowTargetId(
           pendingRoute?.orgId,
           lastSelectedOrgId,
-          organizations,
+          directory.entries,
+          directory.complete,
         );
         setSelectedOrgId(resolvedOrgId);
         if (resolvedOrgId && resolvedOrgId === pendingRoute?.orgId) {
@@ -134,7 +131,7 @@ export function TeamManagementApp() {
       });
     return () => { cancelled = true; };
   }, [
-    hydratedOrganizations,
+    directory,
     target.orgId,
     target.retargetNonce,
     setSelectedOrgId,

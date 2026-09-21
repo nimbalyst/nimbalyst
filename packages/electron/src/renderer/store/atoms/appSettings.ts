@@ -78,8 +78,15 @@ export interface SystemPromptConfig {
   append?: string;
 }
 
+/**
+ * Which speech transport voice mode connects to. GPT-Live is the default.
+ */
+export type VoiceEngineSetting = 'realtime' | 'live';
+
 export interface VoiceModeSettings {
   enabled: boolean;
+  /** Speech transport. Default 'live'. */
+  engine: VoiceEngineSetting;
   voice: VoiceId;
   /** OpenAI Realtime speech-to-speech model. Default 'gpt-realtime-2'. */
   model: RealtimeModel;
@@ -98,6 +105,7 @@ export interface VoiceModeSettings {
  */
 const defaultVoiceModeSettings: VoiceModeSettings = {
   enabled: false,
+  engine: 'live',
   voice: 'alloy',
   model: 'gpt-realtime-2',
   reasoningEffort: 'low',
@@ -230,6 +238,7 @@ export async function initVoiceModeSettings(): Promise<VoiceModeSettings> {
     if (settings) {
       return {
         enabled: settings.enabled || false,
+        engine: settings.engine ?? defaultVoiceModeSettings.engine,
         voice: settings.voice || 'alloy',
         model: settings.model ?? defaultVoiceModeSettings.model,
         reasoningEffort: settings.reasoningEffort ?? defaultVoiceModeSettings.reasoningEffort,

@@ -11,6 +11,7 @@ vi.mock('node:util', async (importOriginal) => {
   };
 });
 vi.mock('fs/promises');
+vi.mock('../ripgrepPath', () => ({ getRipgrepPath: () => '/bundled/rg' }));
 vi.mock('glob');
 vi.mock('../utils/logger', () => ({
   logger: {
@@ -98,7 +99,7 @@ describe('ElectronFileSystemService', () => {
       });
 
       expect(mockExecAsync).toHaveBeenCalledWith(
-        'rg',
+        '/bundled/rg',
         expect.arrayContaining(['-g', '*.ts']),
         expect.any(Object),
       );

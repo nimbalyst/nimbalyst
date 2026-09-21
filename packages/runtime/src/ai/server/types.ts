@@ -1,3 +1,4 @@
+import type { PermissionPromptHints } from './permissions/permissionPromptPolicy';
 /**
  * Common types for AI provider abstraction
  */
@@ -827,7 +828,7 @@ export type InteractivePromptStatus = 'pending' | 'resolved' | 'cancelled';
 /**
  * Permission request message - persisted when SDK needs tool approval
  */
-export interface PermissionRequestContent {
+export interface PermissionRequestContent extends PermissionPromptHints {
   type: 'permission_request';
   requestId: string;
   toolName: string;

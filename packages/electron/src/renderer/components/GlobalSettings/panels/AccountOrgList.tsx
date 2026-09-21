@@ -12,12 +12,12 @@
  */
 
 import React, { useState } from 'react';
-import { useSetAtom } from 'jotai';
+import { useAtomValue, useSetAtom } from 'jotai';
 import { MaterialSymbol } from '@nimbalyst/runtime/ui/icons/MaterialSymbol';
 
 import { AlphaBadge } from '../../common/AlphaBadge';
 import { TEAM_BETA_TOOLTIP } from '../../common/TeamBetaNotice';
-import { organizationCreationEnabled } from '../../../store/atoms/settingsDomains';
+import { organizationDirectoryStateAtom, organizationCreationEnabled } from '../../../store/atoms/settingsDomains';
 // Imported from the registry/context directly rather than the `dialogs` barrel,
 // which pulls every dialog component (and the extension SDK) into this panel.
 import { DIALOG_IDS } from '../../../dialogs/registry';
@@ -225,6 +225,7 @@ export function AccountOrgList({
   group: AccountOrganizationGroup;
   indented?: boolean;
 }) {
+  const directory = useAtomValue(organizationDirectoryStateAtom);
   const { org: projectOrg } = useProjectOrg();
   const setWindowMode = useSetAtom(setWindowModeAtom);
   // Organization creation is disabled while Teams is finished: with no
@@ -245,9 +246,14 @@ export function AccountOrgList({
           openProjectOrgMode={() => setWindowMode('org')}
         />
       ))}
-      {group.organizations.length === 0 && (
+      {group.organizations.length === 0 && directory.complete && (
         <p className="account-org-empty m-0 text-[11px] text-[var(--nim-text-muted)]" data-testid="account-org-empty">
           No organizations
+        </p>
+      )}
+      {!directory.complete && directory.status !== 'signed-out' && (
+        <p className="account-org-status m-0 text-[11px] text-[var(--nim-text-muted)]" role="status">
+          {directory.status === 'error' ? directory.error : 'Loading organizations…'}
         </p>
       )}
       {organizationCreationEnabled && (

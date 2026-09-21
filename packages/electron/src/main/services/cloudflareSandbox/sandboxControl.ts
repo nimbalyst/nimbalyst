@@ -132,7 +132,17 @@ export class ChildProcessControlClient implements SandboxControlClient {
       operation,
       ...(request === undefined ? {} : { request }),
     }, this.#timeoutMs);
-    return parseNodeStatusResponse(raw);
+    try {
+      return parseNodeStatusResponse(raw);
+    } catch (error) {
+      // Older deployed Workers used the missing-config code for every failed
+      // provision. Starting with an absent config remains a distinct failure.
+      if (operation === "provision" && error instanceof SandboxOperationError
+        && error.sandboxErrorCode === "node-not-provisioned") {
+        throw new SandboxOperationError("node-provision-failed", "node-provision-failed");
+      }
+      throw error;
+    }
   }
 
   stop(
@@ -182,6 +192,7 @@ const HELPER_CODES = new Set<CloudflareSandboxErrorCode>([
   "wrangler-unsupported",
   "container-unavailable",
   "node-not-provisioned",
+  "node-provision-failed",
   "node-start-failed",
   "grant-failed",
   "unknown",
@@ -203,6 +214,13 @@ const HELPER_REASON_MESSAGES: Record<string, string> = {
   "rpc-failed": "The sandbox did not respond to the request.",
   "invalid-path": "Sandbox files must be located under /home/nimbalyst/ without traversal or symbolic links.",
   "node-not-provisioned": "Provision the sandbox node configuration before starting it.",
+  "node-provision-path-check-failed": "The sandbox could not check the agent's file paths. Check its status before connecting again.",
+  "node-provision-egress-failed": "The sandbox could not configure the agent's network access. Check its status before connecting again.",
+  "node-provision-directory-failed": "The sandbox could not prepare the agent's directories. Check its status before connecting again.",
+  "node-provision-create-failed": "The sandbox could not create the agent's private files. Check its status before connecting again.",
+  "node-provision-write-failed": "The sandbox could not write the agent's configuration. Check its status before connecting again.",
+  "node-provision-permissions-failed": "The sandbox could not secure the agent's file permissions. Check its status before connecting again.",
+  "node-provision-cleanup-failed": "The sandbox could not remove an incomplete agent file after setup failed. Check its status before connecting again.",
   "node-start-failed": "The sandbox node could not start. Check its status and recent logs.",
   "grant-failed": "The sandbox device authorization could not be completed.",
 };
@@ -254,12 +272,11 @@ export function parseHelperResponse(raw: unknown): SandboxManagerStatus {
       ? (envelope.error as CloudflareSandboxErrorCode)
       : "container-unavailable";
     const reason = typeof envelope.reason === "string" ? envelope.reason : "";
+    const knownReason = Object.prototype.hasOwnProperty.call(HELPER_REASON_MESSAGES, reason);
     throw new SandboxOperationError(
       code,
-      "helper-failure",
-      Object.prototype.hasOwnProperty.call(HELPER_REASON_MESSAGES, reason)
-        ? HELPER_REASON_MESSAGES[reason]
-        : undefined
+      knownReason && reason.startsWith("node-provision-") ? reason : "helper-failure",
+      knownReason ? HELPER_REASON_MESSAGES[reason] : undefined
     );
   }
 

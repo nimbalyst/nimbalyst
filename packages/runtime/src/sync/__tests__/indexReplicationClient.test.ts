@@ -68,6 +68,30 @@ function pageCollector() {
 }
 
 describe('index replication mirror', () => {
+  it('counts only unreadable non-deleted sessions for the notice', () => {
+    const mirror = createIndexReplicationMirror<Session, Project, File>();
+    mirror.apply([
+      { entity: 'session', id: 's', revision: 1, unreadable: true },
+      { entity: 'project', id: 'p', revision: 2, unreadable: true },
+      { entity: 'file', id: 'f', revision: 3, unreadable: true },
+      { entity: 'session', id: 'deleted', revision: 4, unreadable: true, deleted: true },
+    ]);
+    expect(mirror.skippedRowCount()).toBe(1);
+  });
+
+  it('retains unreadable revisions without snapshot values or deletion evidence', () => {
+    const mirror = createIndexReplicationMirror<Session, Project, File>();
+    mirror.apply([change({ id: 's1', revision: 1, deleted: true, session: undefined })]);
+    mirror.apply([{ entity: 'session', id: 's1', revision: 2, unreadable: true }]);
+    mirror.markComplete();
+    expect(mirror.snapshot().sessions).toEqual([]);
+    expect(mirror.deletedIds('session')).toEqual([]);
+    expect(mirror.skippedRowCount()).toBe(1);
+    expect(mirror.apply([change({ id: 's1', revision: 1 })])).toEqual([]);
+    mirror.apply([change({ id: 's1', revision: 3 })]);
+    expect(mirror.skippedRowCount()).toBe(0);
+    expect(mirror.snapshot().sessions).toHaveLength(1);
+  });
   it('keeps expiry ordering without treating it as a permanent user deletion', () => {
     const mirror = createIndexReplicationMirror<Session, Project, File>();
     mirror.apply([change({ id: 'old', revision: 2, deleted: true, removalReason: 'expired', session: undefined }),

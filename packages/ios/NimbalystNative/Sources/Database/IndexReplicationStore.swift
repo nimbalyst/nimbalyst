@@ -70,8 +70,14 @@ final class IndexReplicationStore: Sendable {
             SELECT COUNT(*) FROM sqlite_master
             WHERE type = 'table' AND name IN (\(Self.tableNames.map { "'\($0)'" }.joined(separator: ", ")))
         """) ?? 0
-        if present == Self.tableNames.count { return }
-        try Self.createSchema(db)
+        if present != Self.tableNames.count { try Self.createSchema(db) }
+        // Older installs already have the revision table. Check live schema so
+        // a rolled-back transaction cannot leave a cached migration flag behind.
+        let columns = try Row.fetchAll(db, sql: "PRAGMA table_info(index_row_revision)")
+        if !columns.contains(where: { ($0["name"] as String) == "unreadable" }) {
+            try db.execute(sql: "ALTER TABLE index_row_revision ADD COLUMN unreadable INTEGER NOT NULL DEFAULT 0")
+        }
+        try db.execute(sql: "CREATE INDEX IF NOT EXISTS index_row_revision_unreadable ON index_row_revision(unreadable) WHERE unreadable = 1")
     }
 
     /// The schema, for central registration:
@@ -89,6 +95,7 @@ final class IndexReplicationStore: Sendable {
                 id TEXT NOT NULL,
                 revision INTEGER NOT NULL,
                 deleted INTEGER NOT NULL DEFAULT 0,
+                unreadable INTEGER NOT NULL DEFAULT 0,
                 PRIMARY KEY (entity, id)
             )
         """)
@@ -176,15 +183,20 @@ final class IndexReplicationStore: Sendable {
         entity: IndexReplicationEntity,
         id: String,
         revision: Int,
-        deleted: Bool
+        deleted: Bool,
+        unreadable: Bool = false
     ) throws {
         try db.execute(
             sql: """
-                INSERT INTO index_row_revision (entity, id, revision, deleted) VALUES (?, ?, ?, ?)
-                ON CONFLICT(entity, id) DO UPDATE SET revision = excluded.revision, deleted = excluded.deleted
+                INSERT INTO index_row_revision (entity, id, revision, deleted, unreadable) VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(entity, id) DO UPDATE SET revision = excluded.revision, deleted = excluded.deleted, unreadable = excluded.unreadable
             """,
-            arguments: [entity.rawValue, id, revision, deleted ? 1 : 0]
+            arguments: [entity.rawValue, id, revision, deleted ? 1 : 0, unreadable ? 1 : 0]
         )
+    }
+
+    func skippedRowCount(_ db: Database) throws -> Int {
+        try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM (SELECT 1 FROM index_row_revision WHERE unreadable = 1 AND entity = 'session' AND deleted = 0 LIMIT 999999)") ?? 0
     }
 
     static func key(_ entity: String, _ id: String) -> String { "\(entity)\u{1f}\(id)" }

@@ -1,3 +1,4 @@
+import { shellCoverageDetails, type ShellCoverageSummary } from '../../../ai/shellTrackingCoverage';
 /**
  * Producer half of the commit-request contract. The consumer half —
  * `isCommitRequestMessage` / `parseCommitRequest` in `../components/CommitRequestCard`
@@ -21,6 +22,7 @@ export interface CommitPromptFile {
 }
 
 export interface CommitContext {
+  coverage?: ShellCoverageSummary[];
   success: boolean;
   files: CommitPromptFile[];
   scenario: 'single' | 'workstream' | 'worktree';
@@ -138,6 +140,12 @@ export function buildCommitPrompt({
   workstreamSessionCount?: number;
 }): string {
   let message = COMMIT_PROMPT_PREFIX;
+  const coverageReasons = shellCoverageDetails(commitContext.coverage ?? []);
+  if (coverageReasons.length) {
+    message += '\n\nFile tracking incomplete: ' + coverageReasons.join('; ') + '. ' +
+      'The recorded file list may omit edits. Reconcile your actual work with current diffs and git status before proposing a commit. ' +
+      'Git status does not establish session ownership. Preserve explicitly selected file boundaries and do not include unrelated changes.';
+  }
 
   if (commitContext.success && commitContext.files.length > 0) {
     let formatted: ReturnType<typeof formatFileSection>;

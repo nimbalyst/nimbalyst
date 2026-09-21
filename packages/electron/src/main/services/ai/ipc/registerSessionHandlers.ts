@@ -1,3 +1,4 @@
+import { warnIfUnpublished } from '@nimbalyst/runtime/sync/pushOutcome';
 import { TrayManager } from '../../../tray/TrayManager';
 import { safeHandle } from '../../../utils/ipcRegistry';
 import { logger } from '../../../utils/logger';
@@ -432,12 +433,17 @@ export function registerSessionHandlers(ctx: AIServiceContext): void {
     // and should not cause the session to resort to the top of the list on other devices.
     const syncProvider = getSyncProvider();
     if (metadata.metadata?.lastReadAt && syncProvider) {
-      syncProvider.pushChange(sessionId, {
-        type: 'metadata_updated',
-        metadata: {
-          lastReadAt: metadata.metadata.lastReadAt,
-        },
-      });
+      try {
+        const outcome = await syncProvider.pushChange(sessionId, {
+          type: 'metadata_updated',
+          metadata: {
+            lastReadAt: metadata.metadata.lastReadAt,
+          },
+        });
+        warnIfUnpublished(message => logger.main.warn(message), sessionId, '[AIService] Failed to publish sync change', outcome);
+      } catch (error) {
+        logger.main.warn(`[AIService] Failed to publish sync change for session ${sessionId}:`, error);
+      }
     }
 
     return { success: true };

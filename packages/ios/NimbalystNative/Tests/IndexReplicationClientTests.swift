@@ -70,6 +70,7 @@ final class IndexReplicationClientTests: XCTestCase {
         historyComplete: Bool = false,
         pendingRunId: String? = nil,
         missingAncestors: [String] = [],
+        skippedRowCount: Int = 0,
         failure: String? = nil
     ) {
         guard let pending = maintenance.last else { return XCTFail("No maintenance was requested") }
@@ -77,6 +78,7 @@ final class IndexReplicationClientTests: XCTestCase {
             generation: 1, id: pending.id, request: pending.request,
             cursorState: .init(cursor: cursor, historyComplete: historyComplete),
             pendingFinalizationRunId: pendingRunId, missingAncestorIds: missingAncestors,
+            skippedRowCount: skippedRowCount,
             ranOffMainActor: true, failure: failure
         ))
     }
@@ -127,12 +129,15 @@ final class IndexReplicationClientTests: XCTestCase {
     /// mistaken for an old server, and must not empty the list.
     func testTimeoutIsAFailureRatherThanALegacyDiagnosis() async throws {
         let client = makeClient(timeout: 0.1)
+        var recoveries = 0
+        client.onRequestTimeout = { recoveries += 1 }
         client.start()
         try await Task.sleep(nanoseconds: 400_000_000)
 
         XCTAssertEqual(legacyFallbacks, 0)
         XCTAssertEqual(client.coverage.compatibility, .unsupported)
         XCTAssertFalse(client.coverage.historyComplete)
+        XCTAssertEqual(recoveries, 1, "A silent application channel must trigger transport recovery")
     }
 
     // MARK: - Sequencing
@@ -249,8 +254,10 @@ final class IndexReplicationClientTests: XCTestCase {
     func testResetClearsTheCursorOffMainAndThenBootstraps() throws {
         let client = makeClient()
         client.start()
-        completeMaintenance(client, cursor: 99, historyComplete: true)
+        completeMaintenance(client, cursor: 99, historyComplete: true, skippedRowCount: 2)
         XCTAssertTrue(client.coverage.historyComplete)
+        XCTAssertEqual(client.coverage.skippedRowCount, 2)
+        XCTAssertEqual(client.coverage.skippedRowsNotice, "2 synced sessions were written with a different sync key and are not shown here. Re-pair this phone from your computer.")
 
         client.handle(outcome: outcome(sent[0], .reset))
         XCTAssertFalse(client.coverage.historyComplete, "A reset withdraws the coverage claim")
@@ -260,6 +267,15 @@ final class IndexReplicationClientTests: XCTestCase {
 
         completeMaintenance(client)
         XCTAssertEqual(sent.last?.mode, "bootstrap")
+        XCTAssertEqual(client.coverage.skippedRowCount, 0)
+        XCTAssertNil(client.coverage.skippedRowsNotice)
+    }
+
+    func testSkippedSessionNoticeUsesSingularPhoneCopy() {
+        var coverage = IndexCoverage()
+        XCTAssertNil(coverage.skippedRowsNotice)
+        coverage.skippedRowCount = 1
+        XCTAssertEqual(coverage.skippedRowsNotice, "1 synced session was written with a different sync key and is not shown here. Re-pair this phone from your computer.")
     }
 
     // MARK: - Crash recovery

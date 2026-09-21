@@ -11,14 +11,14 @@
  *   caret. Clicking the chip opens that session; only the caret opens the menu,
  *   matching how the chip behaves everywhere else.
  *
- * The list loads on mount rather than on first open, because the chip has to
- * know the last session before the user clicks anything. That is one query per
- * open editor tab; the main-process handler caches, and tab counts are small.
+ * Visible headers load eagerly; hidden editors wait until shown. File-scoped
+ * invalidation and shared in-flight reads avoid workspace-wide refresh storms.
  */
 
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useAtomValue } from 'jotai';
-import { workspaceFileLinksRevisionAtom } from '../../store/atoms/sessionFiles';
+import { fileSessionLinkKey, fileSessionLinksRevisionAtom } from '../../store/atoms/fileSessionLinks';
+import { loadFileSessions } from '../../services/fileSessionsLoader';
 import { ProviderIcon } from '@nimbalyst/runtime/ui/icons/ProviderIcons';
 import { SessionReferenceChip } from '@nimbalyst/runtime/ui/AgentTranscript/session/SessionReferenceChip';
 import { useFloatingMenu, FloatingPortal } from '../../hooks/useFloatingMenu';
@@ -131,18 +131,27 @@ export const DocumentSessionControl: React.FC<DocumentSessionControlProps> = ({
 
   const [sessions, setSessions] = useState<FileSession[]>([]);
   const [loading, setLoading] = useState(false);
-  const fileLinksRevision = useAtomValue(workspaceFileLinksRevisionAtom(workspaceId ?? ''));
+  const fileLinksRevision = useAtomValue(fileSessionLinksRevisionAtom(fileSessionLinkKey(workspaceId ?? '', filePath)));
+  const containerRef = useRef<HTMLDivElement>(null);
+  const [visible, setVisible] = useState(() => typeof IntersectionObserver === 'undefined');
+
+  useEffect(() => {
+    if (!containerRef.current || typeof IntersectionObserver === 'undefined') return;
+    const observer = new IntersectionObserver(([entry]) => setVisible(entry.isIntersecting));
+    observer.observe(containerRef.current);
+    return () => observer.disconnect();
+  }, []);
 
   useEffect(() => {
     if (!filePath || !workspaceId || !window.electronAPI) {
       setSessions([]);
       return;
     }
+    if (!visible) return;
 
     let cancelled = false;
     setLoading(true);
-    window.electronAPI
-      .invoke('sessions:get-by-file', workspaceId, filePath)
+    loadFileSessions(workspaceId, filePath, fileLinksRevision)
       .then((result: FileSession[]) => {
         if (cancelled) return;
         setSessions(Array.isArray(result) ? result : []);
@@ -157,7 +166,7 @@ export const DocumentSessionControl: React.FC<DocumentSessionControlProps> = ({
       });
 
     return () => { cancelled = true; };
-  }, [filePath, workspaceId, fileLinksRevision]);
+  }, [filePath, workspaceId, fileLinksRevision, visible]);
 
   // The pill is "the last session that touched this file". The handler already
   // sorts current-workspace sessions first, which is not the same as most
@@ -256,7 +265,7 @@ export const DocumentSessionControl: React.FC<DocumentSessionControlProps> = ({
   );
 
   return (
-    <div className="document-session-control relative flex items-center" data-testid="document-session-control">
+    <div ref={containerRef} className="document-session-control relative flex items-center" data-testid="document-session-control">
       {trigger}
 
       {isOpen && (

@@ -154,7 +154,7 @@ const FieldRow = memo(function FieldRow({
   const showDescription = viewMode === 'full' && field.description;
 
   return (
-    <div className="datamodel-field-row">
+    <div className="datamodel-field-row" data-field-name={field.name}>
       {/* Hidden target handles */}
       <Handle
         type="target"

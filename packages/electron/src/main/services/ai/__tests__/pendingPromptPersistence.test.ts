@@ -1,17 +1,19 @@
+// @vitest-environment node
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
 const updateMetadata = vi.fn();
 const getSession = vi.fn();
 const requestMobilePush = vi.fn();
+const pushChange = vi.fn().mockResolvedValue({ published: true });
 const trayManager = { onPromptCreated: vi.fn(), onPromptResolved: vi.fn() };
 
-vi.mock('@nimbalyst/runtime', () => ({
+vi.mock('@nimbalyst/runtime/storage/repositories/AISessionsRepository', () => ({
   AISessionsRepository: {
     updateMetadata: (...args: unknown[]) => updateMetadata(...args),
     get: (...args: unknown[]) => getSession(...args),
   },
 }));
-vi.mock('../../SyncManager', () => ({ getSyncProvider: () => null }));
+vi.mock('../../SyncManager', () => ({ getSyncProvider: () => ({ pushChange }) }));
 vi.mock('../mobilePushRequest', () => ({
   requestMobilePush: (...args: unknown[]) => requestMobilePush(...args),
 }));
@@ -27,6 +29,13 @@ import {
   resetPendingPromptTracking,
   setSessionPendingPrompt,
 } from '../pendingPromptPersistence';
+import { logger } from '../../../utils/logger';
+
+it('warns with the session and reason when pending-prompt sync is not published', async () => {
+  pushChange.mockResolvedValueOnce({ published: false, reason: 'index disconnected' });
+  await setSessionPendingPrompt('unpublished-session', false);
+  expect(logger.main.warn).toHaveBeenCalledWith(expect.stringMatching(/unpublished-session.*index disconnected/));
+});
 
 describe('pending-prompt in-memory mirror (NIM-2208)', () => {
   beforeEach(() => {

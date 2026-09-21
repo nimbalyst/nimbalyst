@@ -35,12 +35,20 @@ type RealtimeModel = 'gpt-realtime-2' | 'gpt-realtime';
 // Realtime reasoning-effort throttle.
 type RealtimeReasoningEffort = 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
 
+// Which speech transport to connect to. GPT-Live is the default.
+type VoiceEngineId = 'realtime' | 'live';
+
 interface VoiceModeSettings {
   enabled: boolean;
+  // Speech transport. Default 'live'.
+  engine?: VoiceEngineId;
   voice?: VoiceId;
-  // Realtime speech-to-speech model. Default 'gpt-realtime-2'.
+  // Realtime speech-to-speech model. Default 'gpt-realtime-2'. Realtime-only:
+  // this must never be sent to the Live endpoint, and the Live path must not
+  // read it. The two engines' model settings are independent so a Live startup
+  // failure falls back to Realtime with Realtime's own configuration intact.
   model?: RealtimeModel;
-  // Reasoning-effort throttle for the realtime model. Default 'low'.
+  // Reasoning-effort throttle for the realtime model. Default 'low'. Realtime-only.
   reasoningEffort?: RealtimeReasoningEffort;
   showTranscription?: boolean;
   // Turn detection / VAD settings
@@ -51,6 +59,47 @@ interface VoiceModeSettings {
   codingAgentPrompt?: SystemPromptConfig;
   // Delay before auto-submitting voice commands (0-10000ms, default 3000)
   submitDelayMs?: number;
+}
+
+export interface VoiceEngineResolution {
+  /** The engine to actually connect with. */
+  engine: VoiceEngineId;
+  /** Set only when the requested engine could not be used. */
+  fallbackFrom?: VoiceEngineId;
+  /** User-facing reason for the fallback. Empty when none happened. */
+  reason: string;
+}
+
+/**
+ * Decide which engine to start, given what the user asked for and whether this
+ * account/build can actually run Live.
+ *
+ * Falling back must be reported, not silent: a user who opted into Live and
+ * quietly got Realtime would attribute Realtime's behavior to Live for the rest
+ * of the evaluation.
+ */
+export function resolveVoiceEngine(requested: unknown, liveSupported: boolean): VoiceEngineResolution {
+  if (requested === 'realtime') return { engine: 'realtime', reason: '' };
+  if (liveSupported) return { engine: 'live', reason: '' };
+  return {
+    engine: 'realtime',
+    fallbackFrom: 'live',
+    reason: 'GPT-Live is not available for this account; using the Realtime engine instead.',
+  };
+}
+
+/**
+ * The Realtime model string, or `undefined` on any other engine.
+ *
+ * Realtime model names are meaningless to the Live endpoint, and sending one
+ * there produces a confusing startup error rather than a clean fallback. Route
+ * the setting through here so that cannot happen by omission.
+ */
+export function realtimeModelForEngine(
+  engine: VoiceEngineId,
+  model: RealtimeModel | undefined,
+): RealtimeModel | undefined {
+  return engine === 'realtime' ? (model ?? 'gpt-realtime-2') : undefined;
 }
 
 export function initVoiceModeSettingsHandler() {
@@ -69,6 +118,7 @@ export function initVoiceModeSettingsHandler() {
       const settings = settingsStore.get('voiceMode') as VoiceModeSettings | undefined;
       return settings || {
         enabled: false,
+        engine: 'live',
         voice: 'alloy',
         showTranscription: true,
         submitDelayMs: 3000,
@@ -77,6 +127,7 @@ export function initVoiceModeSettingsHandler() {
       console.error('[VoiceModeSettings] Failed to get settings', { error });
       return {
         enabled: false,
+        engine: 'live',
         voice: 'alloy',
         showTranscription: true,
         submitDelayMs: 3000,

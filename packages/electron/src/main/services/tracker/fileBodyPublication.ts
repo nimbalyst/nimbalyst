@@ -9,6 +9,7 @@ import {
   extractFrontmatter as extractTrackerFrontmatter,
   updateFrontmatter,
   EXTENSION_OWNED_KEYS,
+  FrontmatterWriteError,
   LEGACY_KEY_TO_TYPE,
 } from '@nimbalyst/runtime/plugins/TrackerPlugin/documentHeader/frontmatterUtils';
 import { database } from '../../database/PGLiteDatabaseWorker';
@@ -43,6 +44,54 @@ interface SetPublishedDependencies extends PublicationDependencies {
     relativePath: string,
     nowShared: boolean,
   ) => Promise<boolean>;
+}
+
+/**
+ * Stand-in id for the preflight below. The real id does not exist until the row
+ * is promoted, and promotion is exactly what the preflight has to run BEFORE --
+ * so the rehearsal uses a value of the same shape. Any header that accepts this
+ * accepts the real id: both are plain identifier strings, and the writers'
+ * refusals are properties of the header, not of the value.
+ */
+const PREFLIGHT_TRACKER_ID = 'tr_preflight';
+
+/**
+ * The rehearsal id, guaranteed to differ from what the file already says.
+ *
+ * The writer skips an op whose value already matches the file, and an op that
+ * changes nothing is never validated -- correct for a real write, fatal for a
+ * rehearsal. A file whose `trackerId` happened to equal the fixed stand-in
+ * would rehearse a no-op and let the real stamp fail after promotion.
+ */
+function rehearsalTrackerId(content: string): string {
+  const current = extractTrackerFrontmatter(content)?.trackerId;
+  return current === PREFLIGHT_TRACKER_ID ? `${PREFLIGHT_TRACKER_ID}_alt` : PREFLIGHT_TRACKER_ID;
+}
+
+/**
+ * Rehearse a frontmatter write and turn a refusal into an actionable error.
+ *
+ * The frontmatter writers refuse a header they cannot rewrite without losing
+ * the author's YAML -- a flow mapping at the root, an anchored or aliased key,
+ * a duplicated key (GitHub #1552). Sharing promotes the tracker row to a new
+ * persisted id BEFORE it writes `trackerId` into the file, so a refusal
+ * discovered at write time would leave the row promoted under an id the file
+ * never records. Running the same writers in memory first, on the content we
+ * are about to write, keeps that failure ahead of every side effect.
+ *
+ * The rehearsed result is discarded: nothing is persisted here.
+ */
+function rehearseFrontmatterWrite(relativePath: string, write: () => void): void {
+  try {
+    write();
+  } catch (err) {
+    if (err instanceof FrontmatterWriteError) {
+      throw new Error(
+        `Cannot update the tracker frontmatter in ${relativePath}: ${err.message} Edit the file's YAML header so it can be updated, then try again.`,
+      );
+    }
+    throw err;
+  }
 }
 
 function sharedTrackerProvenanceBody(itemId: string): string {
@@ -138,6 +187,24 @@ export async function writeSharedTrackerProvenanceFile(
 ): Promise<void> {
   const fullPath = path.join(workspacePath, relativePath);
   const existing = await fs.readFile(fullPath, 'utf-8');
+  const next = buildSharedTrackerProvenanceContent(existing, itemId);
+  if (next !== existing) {
+    await fs.writeFile(fullPath, next, 'utf-8');
+  }
+}
+
+/**
+ * The provenance pointer's content, as a pure function of the file's current
+ * content.
+ *
+ * Split out from the write so the publication preflight can rehearse the WHOLE
+ * pipeline -- the `share` / `trackerId` stamp and this cleanup -- against the
+ * same code the cleanup runs. The cleanup deletes `share` and rewrites a nested
+ * legacy block, both of which the frontmatter writers can refuse on a header
+ * the initial stamp accepted; discovering that at cleanup time would leave the
+ * row promoted and the body already moved (GitHub #1552).
+ */
+export function buildSharedTrackerProvenanceContent(existing: string, itemId: string): string {
   let withoutFileSharingState = setShareInFrontmatter(existing, null);
 
   // Older plan extensions sometimes nested `share` inside their owned block.
@@ -168,10 +235,7 @@ export async function writeSharedTrackerProvenanceFile(
 
   const withTrackerId = setTrackerIdInFrontmatter(withoutFileSharingState, itemId);
   const frontmatterMatch = withTrackerId.match(/^(---\r?\n[\s\S]*?\r?\n---\r?\n)/);
-  const next = `${frontmatterMatch?.[1] ?? ''}${sharedTrackerProvenanceBody(itemId)}`;
-  if (next !== existing) {
-    await fs.writeFile(fullPath, next, 'utf-8');
-  }
+  return `${frontmatterMatch?.[1] ?? ''}${sharedTrackerProvenanceBody(itemId)}`;
 }
 
 /**
@@ -588,6 +652,23 @@ export async function setFileBackedTrackerItemPublished(
     }
   }
 
+  // Prove the file's header can take the `share` / `trackerId` write before the
+  // row is promoted or demoted -- see `rehearseFrontmatterWrite`. Only the
+  // header shape is being tested here, so this content is NOT reused for the
+  // write: demotion flushes the room body back into the file, and the write
+  // below must read that fresher copy or it would revert a teammate's edits.
+  const preflightContent = await fs.readFile(fullPath, 'utf-8');
+  rehearseFrontmatterWrite(relativePath, () => {
+    const probeId = published ? rehearsalTrackerId(preflightContent) : null;
+    const withShare = setShareInFrontmatter(preflightContent, published ? shareFlag : null);
+    const stamped = setTrackerIdInFrontmatter(withShare, probeId);
+    // Publication does not end at the stamp: the origin file is rewritten into
+    // a provenance pointer afterwards, which deletes `share` and strips nested
+    // legacy sharing state. Rehearse that too -- it refuses headers the stamp
+    // accepts, and by the time it runs the row is promoted and the body moved.
+    if (published) buildSharedTrackerProvenanceContent(stamped, probeId!);
+  });
+
   // PROMOTE on share / DE-PROMOTE on unshare, before anything touches the
   // room. The item's public id is the room address, so minting the stable id
   // here is what keeps the sharer's local file path off the wire and out of
@@ -604,6 +685,9 @@ export async function setFileBackedTrackerItemPublished(
   // Single file write: `trackerId` and `share` land together so a rescan can
   // never observe a half-promoted file.
   try {
+    // Re-read: promotion/demotion can have rewritten the file (the demote path
+    // flushes the room body back into it), and that copy is the authoritative
+    // one to stamp.
     const content = await fs.readFile(fullPath, 'utf-8');
     const withShare = setShareInFrontmatter(content, published ? shareFlag : null);
     const updatedContent = setTrackerIdInFrontmatter(withShare, published ? row.id : null);
@@ -673,12 +757,14 @@ export async function setFileBackedTrackerItemPublished(
  * Per row:
  *   1. read the body from the OLD `tracker-content/fm:…` room -- NOT from the
  *      markdown file, which has been diverging since the moment of the share,
- *   2. promote the row (the `issue_number` / `issue_key` columns ride along
+ *   2. rehearse the frontmatter stamp so a header the writers refuse skips the
+ *      row before anything is promoted,
+ *   3. promote the row (the `issue_number` / `issue_key` columns ride along
  *      with the rename, so NIM-2324 stays NIM-2324),
- *   3. write `trackerId` into the file's frontmatter,
- *   4. seed the new room with the carried body and push the item under the new
+ *   4. write `trackerId` into the file's frontmatter,
+ *   5. seed the new room with the carried body and push the item under the new
  *      id,
- *   5. tombstone the old id so teammates' `fm:` row disappears instead of
+ *   6. tombstone the old id so teammates' `fm:` row disappears instead of
  *      lingering as a duplicate.
  *
  * Candidates are selected by ID SHAPE, not by `source`: the sync round-trip
@@ -736,10 +822,30 @@ export async function migrateSharedFrontmatterItemsToStableIds(
       const body = (roomBody && roomBody.trim()) ? roomBody : (typeof cachedBody === 'string' ? cachedBody : '');
       const bodySource = (roomBody && roomBody.trim()) ? 'room' : (body ? 'local-cache' : 'empty');
 
-      // 2. Promote (issue_number / issue_key follow the row).
+      // 2. Prove the file can be stamped BEFORE promoting, so a header the
+      // writers refuse skips the row instead of leaving it promoted under an id
+      // the file never records.
+      const preflightContent = await fs.readFile(fullPath, 'utf-8');
+      rehearseFrontmatterWrite(relativePath, () => {
+        const probeId = rehearsalTrackerId(preflightContent);
+        const stamped = setTrackerIdInFrontmatter(preflightContent, probeId);
+        // `normalizePromotedOriginFile` rewrites this file into a provenance
+        // pointer further down, between the body move and the old room's
+        // tombstone. Rehearsing it here is deliberately conservative: a header
+        // it would refuse skips the row rather than stranding a promoted row
+        // with an untombstoned predecessor.
+        buildSharedTrackerProvenanceContent(stamped, probeId);
+      });
+
+      // 3. Promote (issue_number / issue_key follow the row).
       const { newId, oldId } = await promoteFileBackedTrackerRow(row);
 
-      // 3. Mark the file as promoted so the next scan leaves it alone.
+      // 4. Mark the file as promoted so the next scan leaves it alone. Read the
+      // file again rather than reusing step 2's copy: the rehearsal only proved
+      // the header's shape, and the file is the authoritative body. The
+      // frontmatter refusal was ruled out in step 2, so an IO failure is what
+      // normally lands here; the migration continues and the next scan
+      // re-stamps.
       try {
         const content = await fs.readFile(fullPath, 'utf-8');
         await fs.writeFile(fullPath, setTrackerIdInFrontmatter(content, newId), 'utf-8');
@@ -747,7 +853,7 @@ export async function migrateSharedFrontmatterItemsToStableIds(
         console.error(`[DocumentService] migrate: could not stamp trackerId into ${relativePath}:`, err);
       }
 
-      // 4. Carry the body into the new room and push the item under the new id.
+      // 5. Carry the body into the new room and push the item under the new id.
       let bodyMoved = true;
       if (body) {
         await dependencies.updateTrackerItemContent(newId, body);
@@ -770,7 +876,7 @@ export async function migrateSharedFrontmatterItemsToStableIds(
       // alone would delete that last copy for a body nothing ever moved.
       await normalizePromotedOriginFile(dependencies.workspacePath, relativePath, newId);
 
-      // 5. Tombstone the old id. The local row is already renamed, so this
+      // 6. Tombstone the old id. The local row is already renamed, so this
       // only removes the stale `fm:` entry from the team room.
       try {
         await unsyncTrackerItem(oldId, dependencies.workspacePath);

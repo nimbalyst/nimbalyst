@@ -38,26 +38,11 @@ import {
 import { logger } from '../utils/logger';
 import { getShellEnvironment } from './shellEnvironment';
 import { ClaudeSettingsManager } from './ClaudeSettingsManager';
+import { parseWeeklyModelLimits, type ClaudeUsageData } from '../../shared/claudeUsage';
+export type { ClaudeUsageData } from '../../shared/claudeUsage';
 
 /** Env shape the Claude config-dir resolvers read. */
 type ClaudeEnv = Record<string, string | undefined>;
-
-export interface ClaudeUsageData {
-  fiveHour: {
-    utilization: number; // 0-100 percentage
-    resetsAt: string | null; // ISO timestamp
-  };
-  sevenDay: {
-    utilization: number;
-    resetsAt: string | null;
-  };
-  sevenDayOpus?: {
-    utilization: number;
-    resetsAt: string | null;
-  };
-  lastUpdated: number; // Unix timestamp
-  error?: string;
-}
 
 interface KeychainCredentials {
   claudeAiOauth?: {
@@ -401,6 +386,7 @@ class ClaudeUsageServiceImpl {
             utilization: data.seven_day_opus.utilization ?? 0,
             resetsAt: data.seven_day_opus.resets_at ?? null,
           } : undefined,
+          weeklyModelLimits: parseWeeklyModelLimits(data.limits),
           lastUpdated: Date.now(),
         };
       } catch (error) {

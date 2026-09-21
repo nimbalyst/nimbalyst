@@ -57,7 +57,7 @@ packages/ios/
 
 ### iPhone and iPad Navigation
 - One `NavigationSplitView` and `WorkspaceNavigationState` on every device and orientation: the session/file sidebar sits beside the detail on wide screens and collapses into a stack on narrow screens.
-- Never replace the navigation tree based on size class; rotation and window resizing must preserve the active session and unsent compose state. Sidebar rows share stable `WorkspaceSelection` values, including sessions opened by notification or voice.
+- Never replace the navigation tree based on size class; rotation and window resizing must preserve the active session and unsent compose state. Sidebar rows use List tags with stable `WorkspaceSelection` values, including sessions opened by notification or voice. Do not mix `NavigationLink(value:)` pushes with the selection-driven detail stack: the duplicate navigation can disappear the visible transcript and cancel its session connection.
 - SwiftUI may remount the detail while collapsing columns. Keep `SessionComposeState` (text, pending attachments, and draft timestamps) in `WorkspaceNavigationState`, above the split view, and clear that cache when the account changes.
 
 ### Session Fleet Live Activity

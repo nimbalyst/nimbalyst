@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
-import React from 'react';
+import React, { useState } from 'react';
 import { Provider } from 'jotai';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { store } from '@nimbalyst/runtime/store';
 
@@ -77,6 +77,48 @@ beforeEach(() => {
 afterEach(cleanup);
 
 describe('CloudflareSandboxNodePanel', () => {
+  it('refreshes a failed connection before retrying and retains its error across the revision change', async () => {
+    const failed = { success: false, error: { code: 'node-not-provisioned', message: 'Provisioning failed.' } };
+    const refreshed = { ...deployment(null), revision: 'rev-9', container: { status: 'stopped' as const, observedAt: null, message: null } };
+    let finishRefresh!: (response: unknown) => void;
+    invoke.mockImplementation(async channel => channel === CLOUDFLARE_SANDBOX_CHANNELS.getDeployment
+      ? new Promise(resolve => { finishRefresh = resolve; }) : failed);
+    function Harness() {
+      const [value, setValue] = useState<SandboxDeployment | null>(deployment(connectedNode({ running: false })));
+      return value && <CloudflareSandboxNodePanel deployment={value} onDeploymentChange={setValue} />;
+    }
+    store.set(activeWorkspacePathAtom, WORKSPACE);
+    render(<Provider store={store}><Harness /></Provider>);
+    fireEvent.click(screen.getByTestId('cloudflare-connect-node'));
+    await waitFor(() => expect(finishRefresh).toBeTypeOf('function'));
+    expect(disabled('cloudflare-connect-node')).toBe(true);
+    await act(async () => { finishRefresh({ success: true, data: refreshed }); });
+    await waitFor(() => expect(screen.getByTestId('cloudflare-node-status').textContent).toContain('Not connected'));
+    expect(screen.getByTestId('cloudflare-node-error').textContent).toContain('Provisioning failed.');
+    invoke.mockResolvedValue({ success: true, data: deployment(connectedNode()) });
+    fireEvent.click(screen.getByTestId('cloudflare-connect-node'));
+    await waitFor(() => expect(invoke.mock.calls.filter(([channel]) => channel === CLOUDFLARE_SANDBOX_CHANNELS.connectNode)).toHaveLength(2));
+    expect(invoke.mock.calls.filter(([channel]) => channel === CLOUDFLARE_SANDBOX_CHANNELS.connectNode)[1][1]).toMatchObject({ revision: 'rev-9' });
+  });
+
+  it.each([{ deploymentId: 'replacement' }, { revision: 'newer-observation' }])('does not overwrite a newer panel target %j with a failed operation refresh', async change => {
+    let finishRefresh!: (response: unknown) => void;
+    invoke.mockImplementation(async channel => channel === CLOUDFLARE_SANDBOX_CHANNELS.getDeployment
+      ? new Promise(resolve => { finishRefresh = resolve; })
+      : { success: false, error: { code: 'node-not-provisioned', message: 'Old failure' } });
+    const onChange = vi.fn();
+    store.set(activeWorkspacePathAtom, WORKSPACE);
+    const panel = (value: SandboxDeployment) => <Provider store={store}><CloudflareSandboxNodePanel deployment={value} onDeploymentChange={onChange} /></Provider>;
+    const { rerender } = render(panel(deployment(null)));
+    fireEvent.click(screen.getByTestId('cloudflare-connect-node'));
+    await waitFor(() => expect(finishRefresh).toBeTypeOf('function'));
+    rerender(panel({ ...deployment(null), ...change }));
+    await act(async () => { finishRefresh({ success: true, data: { ...deployment(null), revision: 'rev-9' } }); });
+    await waitFor(() => expect(disabled('cloudflare-connect-node')).toBe(false));
+    expect(onChange).not.toHaveBeenCalled();
+    expect(screen.queryByTestId('cloudflare-node-error')).toBeNull();
+  });
+
   it('connects with the deployment target and the open workspace, and refuses without one', async () => {
     const { unmount } = renderPanel(null);
 
@@ -149,5 +191,6 @@ describe('CloudflareSandboxNodePanel', () => {
     fireEvent.click(screen.getByTestId('cloudflare-node-refresh'));
     await waitFor(() => screen.getByTestId('cloudflare-node-error'));
     expect(screen.getByTestId('cloudflare-node-error').textContent).toContain('no agent node');
+    expect(screen.getByTestId('cloudflare-node-error').textContent).toContain('Refresh the sandbox before retrying.');
   });
 });

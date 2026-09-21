@@ -1,0 +1,16 @@
+{
+  "type": "projectBroadcast",
+  "project": {
+    "encryptedProjectId": "c3ludGhldGljLWVuY3J5cHRlZFByb2plY3RJZA==",
+    "projectIdIv": "2fKwRjYFC2EyJ6Oo",
+    "encryptedName": "c3ludGhldGljLWVuY3J5cHRlZE5hbWU=",
+    "nameIv": "F+Gt/YGpbMtIb0Nl",
+    "encryptedPath": "c3ludGhldGljLWVuY3J5cHRlZFBhdGg=",
+    "pathIv": "2XIdJPSjwvfb78BF",
+    "sessionCount": 2,
+    "lastActivityAt": 1789232415000,
+    "syncEnabled": true,
+    "gitRemoteHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "fromConnectionId": "project-connection"
+}

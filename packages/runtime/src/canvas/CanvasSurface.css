@@ -67,70 +67,195 @@
   color: var(--nim-text-faint);
 }
 
-.canvas-surface .react-flow__controls {
-  background: var(--nim-bg-secondary);
-  border: 1px solid var(--nim-border);
-  border-radius: 6px;
-  box-shadow: 0 2px 8px rgb(0 0 0 / 30%);
-}
-
-.canvas-surface .react-flow__controls-button {
-  background: var(--nim-bg-secondary);
-  border-bottom: 1px solid var(--nim-border);
-  fill: var(--nim-text-muted);
-  color: var(--nim-text-muted);
-}
-
-.canvas-surface .react-flow__controls-button:hover {
-  background: var(--nim-bg-hover);
-}
-
-.canvas-surface .react-flow__controls-button svg {
-  fill: var(--nim-text-muted);
-}
-
 .canvas-surface .react-flow__panel {
   color: var(--nim-text);
 }
 
-/* --- Board toolbar ------------------------------------------------------ */
+/* --- Tool rail ----------------------------------------------------------
+   A React Flow panel, so its corner is `top-left`; the translate is what puts
+   it against the middle of the left edge as in the mockup, clear of the
+   presence roster opposite and of the selection bar above. */
 
-.canvas-toolbar {
+/* Two classes deep so it outranks React Flow's own `.react-flow__panel.top`,
+   which pins `top: 0`. */
+.canvas-surface .canvas-tool-rail {
+  top: 50%;
   display: flex;
-  gap: 4px;
+  flex-direction: column;
+  gap: 2px;
   padding: 4px;
+  background: var(--nim-bg-secondary);
+  border: 1px solid var(--nim-border);
+  border-radius: 8px;
+  box-shadow: 0 2px 8px rgb(0 0 0 / 30%);
+  transform: translateY(-50%);
+}
+
+.canvas-tool-rail__button {
+  position: relative;
+  display: grid;
+  width: 30px;
+  height: 30px;
+  color: var(--nim-text-muted);
+  cursor: pointer;
+  background: transparent;
+  border: none;
+  border-radius: 5px;
+  place-items: center;
+}
+
+.canvas-tool-rail__button:hover {
+  color: var(--nim-text);
+  background: var(--nim-bg-hover);
+}
+
+.canvas-tool-rail__button--active {
+  color: var(--nim-text);
+  background: var(--nim-bg-active, var(--nim-bg-hover));
+  box-shadow: inset 0 0 0 1px var(--nim-border-focus, var(--nim-border));
+}
+
+/* The key letter, small enough to read past rather than read. */
+.canvas-tool-rail__hint {
+  position: absolute;
+  right: 2px;
+  bottom: 1px;
+  font-size: 8px;
+  line-height: 1;
+  color: var(--nim-text-faint);
+  pointer-events: none;
+}
+
+.canvas-tool-rail__separator {
+  height: 1px;
+  margin: 3px 4px;
+  background: var(--nim-border);
+}
+
+/* --- Zoom widget -------------------------------------------------------- */
+
+/* The minimap is a bottom-right panel too, and it mounts after the widget, so
+   by default it paints straight over the controls. It is lifted clear of the
+   widget's height, and the widget is raised above React Flow's panel z-index so
+   that the minimap can never cover the minimap toggle. */
+.canvas-surface .react-flow__minimap {
+  bottom: 56px;
+}
+
+.canvas-surface .canvas-zoom-widget {
+  z-index: 6;
+}
+
+.canvas-zoom-widget {
+  display: flex;
+  gap: 2px;
+  align-items: center;
+  padding: 3px 5px;
   background: var(--nim-bg-secondary);
   border: 1px solid var(--nim-border);
   border-radius: 8px;
   box-shadow: 0 2px 8px rgb(0 0 0 / 30%);
 }
 
-.canvas-toolbar__button {
-  padding: 4px 10px;
-  font-size: 12px;
-  line-height: 18px;
+.canvas-zoom-widget__button {
+  display: grid;
+  width: 26px;
+  height: 26px;
   color: var(--nim-text-muted);
+  cursor: pointer;
   background: transparent;
   border: none;
   border-radius: 5px;
-  cursor: pointer;
+  place-items: center;
 }
 
-.canvas-toolbar__button:hover {
-  background: var(--nim-bg-hover);
+.canvas-zoom-widget__button:hover {
   color: var(--nim-text);
+  background: var(--nim-bg-hover);
 }
 
-.canvas-toolbar__button--view {
-  margin-left: 4px;
-  border-left: 1px solid var(--nim-border);
-  border-radius: 0 5px 5px 0;
+.canvas-zoom-widget__button--on {
+  color: var(--nim-text);
+  background: var(--nim-bg-active, var(--nim-bg-hover));
 }
 
-@container canvas-surface (max-width: 420px) {
-  .canvas-toolbar__button {
-    padding: 4px 6px;
-  }
+.canvas-zoom-widget__readout {
+  min-width: 46px;
+  padding: 4px 6px;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  line-height: 18px;
+  color: var(--nim-text);
+  text-align: center;
+  cursor: pointer;
+  background: transparent;
+  border: none;
+  border-radius: 5px;
+}
+
+.canvas-zoom-widget__readout:hover {
+  background: var(--nim-bg-hover);
+}
+
+.canvas-zoom-widget__separator {
+  width: 1px;
+  height: 16px;
+  margin: 0 3px;
+  background: var(--nim-border);
+}
+
+/* Portalled out of the board, so it is styled from the document root rather
+   than from inside `.canvas-surface`. */
+.canvas-zoom-widget__menu {
+  z-index: 60;
+  min-width: 200px;
+  padding: 4px;
+  background: var(--nim-bg-secondary);
+  border: 1px solid var(--nim-border);
+  border-radius: 8px;
+  box-shadow: 0 6px 20px rgb(0 0 0 / 35%);
+}
+
+.canvas-zoom-widget__item {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  width: 100%;
+  padding: 5px 8px;
+  font-size: 12px;
+  line-height: 18px;
+  color: var(--nim-text);
+  text-align: left;
+  cursor: pointer;
+  background: transparent;
+  border: none;
+  border-radius: 5px;
+}
+
+.canvas-zoom-widget__item:hover {
+  background: var(--nim-bg-hover);
+}
+
+.canvas-zoom-widget__item-check {
+  display: grid;
+  width: 14px;
+  color: var(--nim-text-muted);
+  place-items: center;
+}
+
+.canvas-zoom-widget__item-label {
+  flex: 1;
+}
+
+.canvas-zoom-widget__item-shortcut {
+  font-size: 11px;
+  color: var(--nim-text-faint);
+}
+
+.canvas-zoom-widget__menu-separator {
+  height: 1px;
+  margin: 4px 2px;
+  background: var(--nim-border);
 }
 
 /* --- Alignment guides ---------------------------------------------------
@@ -174,7 +299,8 @@
      first in every one of these lists so a claim stays visible on a card that
      is also selected or activated -- the two say different things and must not
      hide each other. */
-  box-shadow: var(--nim-canvas-card-rings, 0 0 #0000), 0 2px 8px rgb(0 0 0 / 25%);
+  box-shadow: var(--nim-canvas-card-rings, 0 0 #0000),
+    0 2px 8px rgb(0 0 0 / 25%);
 }
 
 .canvas-card--selected {
@@ -185,7 +311,8 @@
 
 .canvas-card--active {
   border-color: var(--nim-primary);
-  box-shadow: var(--nim-canvas-card-rings, 0 0 #0000), 0 0 0 2px var(--nim-primary);
+  box-shadow: var(--nim-canvas-card-rings, 0 0 #0000),
+    0 0 0 2px var(--nim-primary);
 }
 
 .canvas-card--accented {
@@ -431,6 +558,17 @@
   border: 2px dashed var(--nim-primary);
   border-radius: 4px;
   background: color-mix(in srgb, var(--nim-primary) 6%, transparent);
+}
+
+/* The hand tool has to say so before the drag starts, not after: with
+   `panOnDrag` true the pane is grabbable everywhere, and an arrow pointer over
+   a board that is about to pan reads as a board that is about to select. */
+.canvas-surface--hand .react-flow__pane {
+  cursor: grab;
+}
+
+.canvas-surface--hand .react-flow__pane.dragging {
+  cursor: grabbing;
 }
 
 .canvas-card__resize-line {
@@ -805,11 +943,6 @@
   border: 1px solid var(--nim-border);
 }
 
-.canvas-toolbar__button--armed {
-  color: var(--nim-bg);
-  background: var(--nim-accent);
-}
-
 /* --- Revision rail ------------------------------------------------------
    Screen space rather than board space, like the comment composer: a strip of
    dates and prompts under React Flow's transform is unreadable at any zoom
@@ -1034,4 +1167,52 @@
 
 .canvas-agent-request__button--confirm:hover {
   filter: brightness(1.1);
+}
+
+.canvas-card__screen-image {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+}
+.canvas-card__screen-caption {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 7px 10px;
+  font-size: 12px;
+  color: var(--nim-text);
+}
+.canvas-card__screen-caption > span:last-child:not(:first-child) {
+  color: var(--nim-text-secondary);
+  font-size: 10px;
+}
+
+.canvas-screen-title {
+  flex: 1;
+  min-width: 0;
+  text-align: left;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.canvas-screen-title--button, .canvas-screen-title--input {
+  pointer-events: auto;
+  color: inherit;
+  font: inherit;
+  background: transparent;
+  border: 0;
+  padding: 0;
+  line-height: inherit;
+}
+.canvas-screen-title--button { cursor: text; }
+.canvas-screen-title--input { outline: 1px solid var(--nim-accent); background: var(--nim-bg); }
+.canvas-card__screen-image > .canvas-card__image {
+  flex: 1;
+  min-height: 0;
+}
+.canvas-zoom-widget {
+  max-width: calc(100% - 100px);
+  flex-wrap: wrap;
 }

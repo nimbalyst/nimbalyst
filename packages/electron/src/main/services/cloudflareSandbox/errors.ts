@@ -53,6 +53,8 @@ const MESSAGES: Record<CloudflareSandboxErrorCode, string> = {
   // after an idle sleep rather than a fault. The message says what to do.
   "node-not-provisioned":
     "This sandbox has no agent node in it. Connect the node again. The container discards its files whenever it sleeps.",
+  "node-provision-failed":
+    "Nimbalyst could not prepare the sandbox agent. Check the sandbox status before connecting again.",
   "node-start-failed":
     "The agent node could not start in this sandbox. Check its recent output and try connecting again.",
   "grant-failed":

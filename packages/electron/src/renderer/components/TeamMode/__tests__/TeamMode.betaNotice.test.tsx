@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import React from 'react';
-import { Provider, createStore } from 'jotai';
+import { createHydratedOrgStore } from './organizationTestStore';
+import { Provider } from 'jotai';
 import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -43,7 +44,7 @@ describe('TeamMode beta disclosure', () => {
   it('shows the notice only on the unbound organization surface', async () => {
     installApi([]);
     render(
-      <Provider store={createStore()}>
+      <Provider store={await createHydratedOrgStore()}>
         <OrgModeHost orgId={null} surfaceId={ORG_WINDOW_SURFACE_ID} chrome="window" />
       </Provider>,
     );
@@ -52,7 +53,7 @@ describe('TeamMode beta disclosure', () => {
     cleanup();
     installApi([team]);
     render(
-      <Provider store={createStore()}>
+      <Provider store={await createHydratedOrgStore()}>
         <OrgModeHost orgId="org-1" surfaceId={ORG_WINDOW_SURFACE_ID} chrome="window" />
       </Provider>,
     );

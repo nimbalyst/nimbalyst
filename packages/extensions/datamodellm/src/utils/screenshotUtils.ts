@@ -4,7 +4,7 @@
  * Captures the data model canvas as a PNG image.
  */
 
-import html2canvas from 'html2canvas';
+import { screenshotService } from '@nimbalyst/extension-sdk';
 
 /**
  * Capture the data model canvas as a base64-encoded PNG
@@ -15,39 +15,7 @@ import html2canvas from 'html2canvas';
 export async function captureDataModelCanvas(
   canvasElement: HTMLElement
 ): Promise<string> {
-  // Find the React Flow viewport element
-  const viewport = canvasElement.querySelector('.react-flow__viewport') as HTMLElement;
-  if (!viewport) {
-    throw new Error('Could not find React Flow viewport');
-  }
-
-  const width = canvasElement.offsetWidth;
-  const height = canvasElement.offsetHeight;
-
-  if (width === 0 || height === 0) {
-    throw new Error(`Canvas has zero dimensions: ${width}x${height}`);
-  }
-
-  // Capture the canvas
-  const canvas = await html2canvas(canvasElement, {
-    backgroundColor: null, // Preserve transparency
-    scale: 2, // Higher resolution
-    logging: false,
-    useCORS: false,
-    allowTaint: true,
-    foreignObjectRendering: true,
-    imageTimeout: 0,
-    width,
-    height,
-    windowWidth: width,
-    windowHeight: height,
-  });
-
-  // Convert to base64 (strip the data URL prefix)
-  const dataUrl = canvas.toDataURL('image/png');
-  const base64Data = dataUrl.replace(/^data:image\/png;base64,/, '');
-
-  return base64Data;
+  return screenshotService.captureElement(canvasElement);
 }
 
 /**

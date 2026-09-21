@@ -56,7 +56,9 @@ struct NimbalystAppMain: App {
 
     init() {
         #if DEBUG
-        if CommandLine.arguments.contains("--screenshot-mode"),
+        if CommandLine.arguments.contains("--screenshot-mode"), CommandLine.arguments.contains("--session-creation-fixture") {
+            _appState = StateObject(wrappedValue: AppState.forSessionCreationTesting())
+        } else if CommandLine.arguments.contains("--screenshot-mode"),
            let server = CommandLine.arguments.first(where: { $0.hasPrefix("--document-sync-fixture=") }) {
             _appState = StateObject(wrappedValue: AppState.forDocumentSyncTesting(serverUrl: String(server.dropFirst("--document-sync-fixture=".count))))
         } else if CommandLine.arguments.contains("--screenshot-mode") {
@@ -95,10 +97,11 @@ struct NimbalystAppMain: App {
             NSLog("[ScenePhase] changed to: \(String(describing: newPhase))")
             switch newPhase {
             case .active:
-                appState.syncManager?.setAppInForeground(true)
-                appState.documentSyncManager?.reconnectIfNeeded()
-            case .inactive, .background:
-                appState.syncManager?.setAppInForeground(false)
+                appState.setAppInForeground(true)
+            case .background:
+                appState.setAppInForeground(false)
+            case .inactive:
+                break
             @unknown default:
                 break
             }

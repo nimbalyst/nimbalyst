@@ -3,12 +3,14 @@ options:
   bundleIdPrefix: com.nimbalyst
   deploymentTarget:
     iOS: "18.0"
-  xcodeVersion: "16.0"
+  xcodeVersion: "27.0"
   createIntermediateGroups: true
 settings:
   base:
     SWIFT_VERSION: "5.9"
     DEVELOPMENT_TEAM: "X8S24QHAT9"
+    ENABLE_USER_SCRIPT_SANDBOXING: YES
+    STRING_CATALOG_GENERATE_SYMBOLS: YES
 packages:
   NimbalystNative:
     path: ../NimbalystNative
@@ -68,6 +70,9 @@ targets:
         INFOPLIST_FILE: Sources/Info.plist
         CODE_SIGN_STYLE: Automatic
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        # Vite emits content-hashed assets that cannot be listed before the build.
+        # Xcode script sandboxing only permits exact output paths, not directory trees.
+        ENABLE_USER_SCRIPT_SANDBOXING: NO
     preBuildScripts:
       - name: Build Transcript Web Bundle
         script: |

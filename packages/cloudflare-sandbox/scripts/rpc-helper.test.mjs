@@ -106,10 +106,15 @@ test('child protocol suppresses Wrangler diagnostics without breaking write call
 });
 
 test('node failure frames retain only fixed reasons', () => {
+  for (const stage of ['path-check', 'egress', 'directory', 'create', 'write', 'permissions', 'cleanup']) {
+    const reason = `node-provision-${stage}-failed`;
+    assert.deepEqual(controlFailure(new Error(reason)), { success: false, error: 'node-provision-failed', reason });
+  }
   for (const reason of ['invalid-path', 'node-start-failed', 'node-not-provisioned', 'grant-failed']) {
     assert.deepEqual(controlFailure(new Error(reason)), { success: false, error: reason === 'invalid-path' ? 'unknown' : reason, reason });
   }
   assert.deepEqual(controlFailure(new Error('credentials: synthetic-secret')), { success: false, error: 'container-unavailable', reason: 'rpc-failed' });
+  assert.deepEqual(controlFailure(new Error('node-provision-secret-failed')), { success: false, error: 'container-unavailable', reason: 'rpc-failed' });
 });
 
 test('child failures distinguish expired SSO, missing consent, and invalid config without diagnostics', async () => {

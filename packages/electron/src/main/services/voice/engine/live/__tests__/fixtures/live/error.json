@@ -1,0 +1,10 @@
+{
+  "type": "error",
+  "event_id": "error_1",
+  "error": {
+    "type": "invalid_request_error",
+    "code": null,
+    "message": "The supplied command could not be processed.",
+    "client_event_id": "result_1"
+  }
+}

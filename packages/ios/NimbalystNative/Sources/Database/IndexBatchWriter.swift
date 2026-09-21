@@ -12,6 +12,7 @@ enum IndexWriteOperation: Sendable {
     case project(DecryptedProjectEntry, revision: Int?)
     case delete(key: IndexEntityKey, revision: Int?)
     case file(IndexReplicationStore.IndexFileMetadata, revision: Int?)
+    case unreadable(entity: IndexReplicationEntity, id: String, revision: Int)
 }
 
 /// How one entity is identified on the wire versus locally.
@@ -167,6 +168,7 @@ enum IndexBatchWriter {
             if let store {
                 let keys: [(entity: IndexReplicationEntity, id: String)] = operations.compactMap { operation in
                     switch operation {
+                    case .unreadable(let entity, let id, _): return (entity, id)
                     case .session(let decrypted, let revision):
                         return revision == nil ? nil : (.session, decrypted.sessionId)
                     case .project(let decrypted, let revision):
@@ -188,9 +190,9 @@ enum IndexBatchWriter {
                 return revision <= existing.revision
             }
 
-            func record(_ entity: IndexReplicationEntity, _ id: String, _ revision: Int?, deleted: Bool) throws {
+            func record(_ entity: IndexReplicationEntity, _ id: String, _ revision: Int?, deleted: Bool, unreadable: Bool = false) throws {
                 guard let revision, let store else { return }
-                try store.recordRevision(db, entity: entity, id: id, revision: revision, deleted: deleted)
+                try store.recordRevision(db, entity: entity, id: id, revision: revision, deleted: deleted, unreadable: unreadable)
                 revisions[IndexReplicationStore.key(entity, id)] = .init(revision: revision, deleted: deleted)
             }
 
@@ -204,7 +206,7 @@ enum IndexBatchWriter {
                 switch operation {
                 case .session(let decrypted, _): return decrypted.sessionId
                 case .delete(let key, _): return key.entity == .session ? key.localId : nil
-                case .project, .file: return nil
+                case .project, .file, .unreadable: return nil
                 }
             }
             var stored: [String: Session] = [:]
@@ -255,6 +257,13 @@ enum IndexBatchWriter {
                 operationIndex += 1
                 if operationIndex % 20 == 0 { try checkCancelled() }
                 switch operation {
+                case .unreadable(let entity, let id, let revision):
+                    guard !isStale(entity, id, revision) else {
+                        outcome.staleRejected += 1
+                        continue
+                    }
+                    // Keep the last readable cache. Only ordering and the advisory count change.
+                    try record(entity, id, revision, deleted: false, unreadable: true)
                 case .project(let decrypted, let revision):
                     guard !isStale(.project, decrypted.wireId, revision) else {
                         outcome.staleRejected += 1

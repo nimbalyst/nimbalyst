@@ -156,7 +156,7 @@
   border: 1px solid var(--nim-border);
   background-color: var(--nim-bg-secondary);
   box-shadow: 0 2px 8px var(--nim-shadow);
-  transition: all 0.2s ease;
+  transition: box-shadow 0.2s ease, border-color 0.2s ease;
 }
 
 .datamodel-entity-selected {
@@ -805,3 +805,12 @@
   background-color: var(--nim-bg-hover);
 }
 
+
+.datamodel-layout-controls { display: flex; align-items: center; gap: 4px; }
+.datamodel-layout-direction { max-width: 120px; }
+.datamodel-canvas { position: relative; }
+.datamodel-layout-error { position: absolute; top: 8px; left: 50%; transform: translateX(-50%); z-index: 5; max-width: 80%; padding: 8px 12px; border: 1px solid var(--nim-border); border-radius: 6px; background: var(--nim-bg-secondary); color: var(--nim-text); font-size: 12px; }
+.react-flow__edge-interaction:hover .datamodel-edge { stroke: var(--nim-primary) !important; stroke-width: 5px; }
+.react-flow__edge-interaction:hover line { stroke: var(--nim-primary); stroke-width: 5px; }
+
+.datamodel-screenshot-error { color: var(--nim-text); background: var(--nim-bg-secondary); padding: 8px 12px; border-bottom: 1px solid var(--nim-border); }

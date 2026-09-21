@@ -22,6 +22,7 @@ import {
   PendingPermission,
 } from '../providers/ProviderPermissionMixin';
 import { AgentMessagesRepository } from '../../../storage/repositories/AgentMessagesRepository';
+import { constrainPermissionResponse, permissionPromptHints, type PermissionPromptHints } from './permissionPromptPolicy';
 
 /**
  * Configuration options for ToolPermissionService
@@ -56,7 +57,7 @@ export interface ToolPermissionServiceOptions {
 /**
  * Permission request parameters
  */
-export interface PermissionRequest {
+export interface PermissionRequest extends PermissionPromptHints {
   /**
    * Unique request ID
    */
@@ -196,7 +197,7 @@ export class ToolPermissionService {
 
     // Wait for response (from IPC or polling)
     try {
-      const response = await responsePromise;
+      const response = constrainPermissionResponse(await responsePromise, request);
 
       // Save pattern if user chose "Always" or "Always All"
       if ((response.scope === 'always' || response.scope === 'always-all') && response.decision === 'allow') {
@@ -341,7 +342,7 @@ export class ToolPermissionService {
    * @param options - Tool permission request options
    * @returns Promise that resolves with user's decision
    */
-  async requestToolPermission(options: {
+  async requestToolPermission(options: PermissionPromptHints & {
     requestId: string;
     sessionId: string;
     workspacePath: string;
@@ -440,6 +441,7 @@ export class ToolPermissionService {
 
     // Create simplified request structure for UI widget
     const request = {
+      ...permissionPromptHints(options),
       id: requestId,
       toolName,
       rawCommand,
@@ -498,7 +500,7 @@ export class ToolPermissionService {
 
     try {
       // Wait for user response
-      const response = await responsePromise;
+      const response = constrainPermissionResponse(await responsePromise, options);
 
       this.securityLogger('[ToolPermissionService] User response received', {
         toolName,

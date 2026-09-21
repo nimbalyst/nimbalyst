@@ -97,6 +97,8 @@ export interface CanvasMeta {
 export interface CanvasNodeNimbalystExtension {
   reference?: CanvasNodeReference;
   label?: string;
+  locked?: boolean;
+  group?: string;
   [key: string]: unknown;
 }
 
@@ -330,7 +332,7 @@ const REFERENCE_SHAPE: CanvasKeyShape = {
   children: { sharedAs: { order: ['uri', 'revisionId'] } },
 };
 const NODE_EXTENSION_SHAPE: CanvasKeyShape = {
-  order: ['reference', 'label'],
+  order: ['reference', 'label', 'locked', 'group'],
   children: { reference: REFERENCE_SHAPE },
 };
 const EDGE_EXTENSION_SHAPE: CanvasKeyShape = {

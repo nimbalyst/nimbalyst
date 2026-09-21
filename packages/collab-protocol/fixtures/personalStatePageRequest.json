@@ -1,0 +1,6 @@
+{
+  "type": "personalStatePageRequest",
+  "requestId": "personal-page-request",
+  "pageToken": "personal-page-token",
+  "limit": 30
+}

@@ -1044,9 +1044,9 @@ export function createDefaultNodeEnvironment(): SandboxNodeEnvironment {
           if (settled) return;
           settled = true;
           unsubscribe();
-          // `sendCreateSessionRequest` resolves even when it could not send, so
-          // a timeout is the only signal that covers both "never delivered" and
-          // "delivered but never answered".
+          // `sendCreateSessionRequest` rejects when it could not send, but a
+          // delivered request the node never answers produces no signal at all,
+          // so the timeout is the single failure path for both cases.
           reject(
             new SandboxOperationError(
               "unknown",

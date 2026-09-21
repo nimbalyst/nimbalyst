@@ -21,11 +21,13 @@
  *    before every turn would silently discard the agent's uncommitted work.
  */
 
+import { warnIfUnpublished } from '@nimbalyst/runtime/sync/pushOutcome';
 import type {
   EncryptedAttachment,
   CreateSessionRequest,
   CreateSessionResponse,
   SessionChange,
+  PushChangeOutcome,
   SessionControlMessage,
   SyncedQueuedPrompt,
 } from '@nimbalyst/runtime/sync/types';
@@ -37,7 +39,7 @@ import type { CheckoutOutcome } from './repoCheckout.js';
 /** The slice of `SyncProvider` this runtime actually uses. */
 export interface ServeSyncProvider {
   sendSessionControlMessage?(message: SessionControlMessage): Promise<void>;
-  pushChange(sessionId: string, change: SessionChange): void | Promise<unknown>;
+  pushChange(sessionId: string, change: SessionChange): void | Promise<void | PushChangeOutcome>;
   sendCreateSessionResponse?(response: CreateSessionResponse): Promise<void>;
 }
 
@@ -194,7 +196,7 @@ export function createServeRuntime(deps: ServeRuntimeDeps): ServeRuntime {
     await respond({ requestId, success: false, error: reason });
   }
 
-  function publishQueue(sessionId: string): void {
+  async function publishQueue(sessionId: string): Promise<void> {
     const pending: SyncedQueuedPrompt[] = deps.queue.listPending(sessionId).map((row) => ({
       id: row.id,
       prompt: row.prompt,
@@ -206,10 +208,11 @@ export function createServeRuntime(deps: ServeRuntimeDeps): ServeRuntime {
     // No `updatedAt`: draining a queue is not new content and must not resort
     // the session list on every other device.
     try {
-      deps.sync.pushChange(sessionId, {
+      const outcome = await deps.sync.pushChange(sessionId, {
         type: 'metadata_updated',
         metadata: { queuedPrompts: pending },
       });
+      warnIfUnpublished(() => deps.log('queue-publish-failed', { sessionId, reason: outcome?.reason ?? 'not published' }), sessionId, 'Queue publish', outcome);
     } catch (error) {
       deps.log('queue-publish-failed', {
         sessionId,
@@ -221,11 +224,9 @@ export function createServeRuntime(deps: ServeRuntimeDeps): ServeRuntime {
   async function publishExecution(sessionId: string, isExecuting: boolean): Promise<void> {
     try {
       const outcome = await deps.sync.pushChange(sessionId, { type: 'metadata_updated', metadata: { isExecuting } });
-      if (outcome && typeof outcome === 'object' && 'published' in outcome && !outcome.published) {
-        deps.log('execution-state-not-published', { sessionId, isExecuting });
-      }
-    } catch {
-      deps.log('execution-state-not-published', { sessionId, isExecuting });
+      warnIfUnpublished(() => deps.log('execution-state-not-published', { sessionId, isExecuting, reason: outcome?.reason ?? 'not published' }), sessionId, 'Execution publish', outcome);
+    } catch (error) {
+      deps.log('execution-state-not-published', { sessionId, isExecuting, reason: error instanceof Error ? error.message : String(error) });
     }
   }
 
@@ -317,7 +318,7 @@ export function createServeRuntime(deps: ServeRuntimeDeps): ServeRuntime {
       if (!deps.queue.claim(row.id)) break;
 
       await runOne(sessionId, row, workspacePath);
-      publishQueue(sessionId);
+      await publishQueue(sessionId);
     }
   }
 
@@ -683,7 +684,7 @@ export function createServeRuntime(deps: ServeRuntimeDeps): ServeRuntime {
 
       for (const sessionId of sessions) {
         if (interrupted.some((row) => row.sessionId === sessionId)) {
-          publishQueue(sessionId);
+          await publishQueue(sessionId);
         }
         if (deps.queue.listPending(sessionId).length > 0) {
           deps.log('queue-recovered', {

@@ -6,10 +6,18 @@ class ControlError extends Error {
   constructor(code, reason) { super(reason); this.code = code; this.reason = reason; }
 }
 
+const PROVISION_FAILURES = new Set([
+  'node-provision-path-check-failed', 'node-provision-egress-failed',
+  'node-provision-directory-failed', 'node-provision-create-failed',
+  'node-provision-write-failed', 'node-provision-permissions-failed',
+  'node-provision-cleanup-failed',
+]);
+
 /** Only fixed codes/reasons cross the child boundary; raw diagnostics stay private. */
 export function controlFailure(error) {
   if (error instanceof ControlError) return { success: false, error: error.code, reason: error.reason };
   const reason = error?.message;
+  if (PROVISION_FAILURES.has(reason)) return { success: false, error: 'node-provision-failed', reason };
   if (['invalid-path', 'invalid-request', 'node-not-provisioned', 'node-start-failed', 'grant-failed'].includes(reason)) {
     return { success: false, error: reason.startsWith('node-') || reason === 'grant-failed' ? reason : 'unknown', reason };
   }

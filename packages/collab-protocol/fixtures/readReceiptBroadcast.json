@@ -1,0 +1,12 @@
+{
+  "type": "readReceiptBroadcast",
+  "receipt": {
+    "receiptKey": "1111111111111111111111111111111111111111111111111111111111111111",
+    "encryptedReceipt": "c3ludGhldGljLWVuY3J5cHRlZFJlY2VpcHQ=",
+    "receiptIv": "B1+CZVnW1OApcuQu",
+    "deviceId": "de51fbb1-d809-42a4-8b1e-a25699843002",
+    "version": 1789232410000,
+    "timestamp": 1789232405000
+  },
+  "fromConnectionId": "receipt-connection"
+}

@@ -7,7 +7,10 @@ export interface PendingAskUserQuestionEntry {
 }
 
 interface HandleAskUserQuestionDeps {
-  emit: (event: 'askUserQuestion:pending' | 'askUserQuestion:answered', payload: any) => void;
+  emit: (
+    event: 'askUserQuestion:pending' | 'askUserQuestion:answered' | 'askUserQuestion:cancelled',
+    payload: any,
+  ) => void;
   logAgentMessage: (sessionId: string, content: string) => Promise<void>;
   onError: (error: unknown) => void;
   pendingAskUserQuestions: Map<string, PendingAskUserQuestionEntry>;
@@ -40,6 +43,16 @@ export async function handleAskUserQuestionTool(
 
   const questionId = toolUseID || `ask-${sessionId || 'unknown'}-${Date.now()}`;
 
+  // `addEventListener('abort', ...)` does NOT fire on a signal that is already
+  // aborted, so a question raised against a torn-down turn used to register a
+  // waiter nothing could ever settle: the tool call hung and the session sat on
+  // "waiting for your input" with no widget anyone could answer. Check the
+  // signal explicitly at every point where we are about to commit to waiting.
+  // See #1549.
+  if (signal.aborted) {
+    return { behavior: 'deny', message: 'Request aborted' };
+  }
+
   if (sessionId) {
     await deps.logAgentMessage(
       sessionId,
@@ -50,8 +63,17 @@ export async function handleAskUserQuestionTool(
         input: { questions }
       })
     );
+
+    // The abort can land during that persistence await. The tool_use is in the
+    // transcript now, so close it out rather than leaving a question widget
+    // rendered forever in "pending".
+    if (signal.aborted) {
+      logCancelledToolResult(deps, questionId);
+      return { behavior: 'deny', message: 'Request aborted' };
+    }
   }
 
+  let onAbort: (() => void) | undefined;
   const answersPromise = new Promise<Record<string, string>>((resolve, reject) => {
     deps.pendingAskUserQuestions.set(questionId, {
       resolve,
@@ -59,10 +81,11 @@ export async function handleAskUserQuestionTool(
       questions
     });
 
-    signal.addEventListener('abort', () => {
+    onAbort = () => {
       deps.pendingAskUserQuestions.delete(questionId);
       reject(new Error('Request aborted'));
-    }, { once: true });
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
   });
 
   if (sessionId) {
@@ -79,7 +102,14 @@ export async function handleAskUserQuestionTool(
   });
 
   try {
+    // Only a correlated host response settles this waiter: the IPC answer path
+    // and the transcript poller both look the questionId up in this map before
+    // resolving, so there is no route by which an unmatched SDK-side completion
+    // becomes an `answers` payload here.
     const answers = await answersPromise;
+    // Both resolvers delete their own entry; deleting again is how a resolve
+    // that raced the delete avoids leaving a settled waiter in the map.
+    deps.pendingAskUserQuestions.delete(questionId);
     deps.emit('askUserQuestion:answered', {
       questionId,
       sessionId,
@@ -96,27 +126,50 @@ export async function handleAskUserQuestionTool(
       }
     };
   } catch (error) {
+    deps.pendingAskUserQuestions.delete(questionId);
     deps.onError(error);
 
     // Log a cancelled tool result so the widget transitions from "pending" to "cancelled".
     // This covers all rejection paths: abort signal, explicit cancel, rejectAllPendingQuestions.
-    if (deps.sessionId) {
-      deps.logAgentMessage(
-        deps.sessionId,
-        JSON.stringify({
-          type: 'nimbalyst_tool_result',
-          tool_use_id: questionId,
-          result: JSON.stringify({ cancelled: true, respondedAt: Date.now() }),
-          is_error: true
-        })
-      ).catch(() => {});
-    }
+    logCancelledToolResult(deps, questionId);
+
+    // The host cleared its pending-prompt state only on
+    // `askUserQuestion:answered`, so a cancelled or aborted question left the
+    // session stuck advertising a question that no longer exists. #1549.
+    deps.emit('askUserQuestion:cancelled', {
+      questionId,
+      sessionId,
+      questions,
+      timestamp: Date.now()
+    });
 
     return {
       behavior: 'deny',
       message: error instanceof Error ? error.message : 'Question cancelled'
     };
+  } finally {
+    // The signal outlives this call (it belongs to the turn), so a listener
+    // left behind holds the closure -- and every question asked in a turn --
+    // until the turn's controller is collected.
+    if (onAbort) signal.removeEventListener('abort', onAbort);
   }
+}
+
+/** Close out the transcript tool_use so its widget leaves the "pending" state. */
+function logCancelledToolResult(
+  deps: Pick<HandleAskUserQuestionDeps, 'sessionId' | 'logAgentMessage'>,
+  questionId: string,
+): void {
+  if (!deps.sessionId) return;
+  deps.logAgentMessage(
+    deps.sessionId,
+    JSON.stringify({
+      type: 'nimbalyst_tool_result',
+      tool_use_id: questionId,
+      result: JSON.stringify({ cancelled: true, respondedAt: Date.now() }),
+      is_error: true
+    })
+  ).catch(() => {});
 }
 
 interface PollForAskUserQuestionResponseDeps {

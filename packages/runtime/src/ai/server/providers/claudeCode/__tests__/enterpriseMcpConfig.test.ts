@@ -32,16 +32,23 @@ describe('resolveEnterpriseManagedMcpConfigPath', () => {
 });
 
 describe('hasEnterpriseManagedMcpConfig', () => {
-  it('is true only when the managed file exists and parses (the binary requires config !== null)', () => {
+  it('keeps managed MCP control for malformed files and disables it only when absent', () => {
     const read = (contents: string | null) => ({ platform: 'darwin' as const, readFile: () => contents });
 
     expect(hasEnterpriseManagedMcpConfig(read('{"mcpServers":{}}'))).toBe(true);
     __resetEnterpriseManagedMcpConfigCache();
     expect(hasEnterpriseManagedMcpConfig(read(null))).toBe(false);
     __resetEnterpriseManagedMcpConfigCache();
-    // A malformed file must NOT strip Nimbalyst's tools — the binary would not
-    // treat it as an enterprise config either.
-    expect(hasEnterpriseManagedMcpConfig(read('{not json'))).toBe(false);
+    // CLI 2.1.271 retains exclusive control even when the config cannot parse.
+    expect(hasEnterpriseManagedMcpConfig(read('{not json'))).toBe(true);
+  });
+
+  it.each(['EACCES', 'EPERM', 'EISDIR'])('keeps managed MCP control when reading fails with %s', code => {
+    expect(hasEnterpriseManagedMcpConfig({ readFile: () => { throw Object.assign(new Error('Cannot read managed config'), { code }); } })).toBe(true);
+  });
+
+  it('treats a missing managed file as unrestricted', () => {
+    expect(hasEnterpriseManagedMcpConfig({ readFile: () => { throw Object.assign(new Error('Missing'), { code: 'ENOENT' }); } })).toBe(false);
   });
 
   it('caches the probe (the file cannot appear mid-session without an IT push + restart)', () => {

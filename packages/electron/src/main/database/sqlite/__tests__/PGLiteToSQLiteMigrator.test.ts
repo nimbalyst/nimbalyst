@@ -89,6 +89,50 @@ describe('PGLiteToSQLiteMigrator', () => {
     fs.rmSync(tmp, { recursive: true, force: true });
   });
 
+  it('preserves external per-file cursors through conversion, final catch-up, and target reopen', async () => {
+    await seedPgliteSchema();
+    // Execute the shipping cursor migration on the isolated source.
+    const worker = fs.readFileSync(path.resolve(__dirname, '../../worker.js'), 'utf8');
+    const migration = worker.match(/\/\/ External session persistence migration\.[\s\S]*?this\.db\.exec\(`([\s\S]*?)`\)/)?.[1];
+    if (!migration) throw new Error('Missing external session PGLite migration');
+    await pglite.exec(migration);
+    await pglite.query(`INSERT INTO ai_sessions (id, provider, provider_session_id, workspace_id)
+      VALUES ('claude-local', 'claude-code', 'external', '/workspace'),
+             ('codex-local', 'openai-codex', 'external', '/other-workspace')`);
+    const initialCursor = JSON.stringify({ byteOffset: 1024, lastEntryUuid: 'entry-a', fileSize: 1100, inode: 42 });
+    const insertCursor = (provider: string, file: string, workspace: string, session: string, cursor: string) =>
+      pglite.query(`INSERT INTO external_session_cursors (provider, external_id, file_path, workspace_path, session_id, cursor)
+        VALUES ($1, 'external', $2, $3, $4, $5)`, [provider, file, workspace, session, cursor]);
+    await insertCursor('claude-code', '/logs/main.jsonl', '/worktree', 'claude-local', initialCursor);
+    await insertCursor('claude-code', '/logs/subagents/z.jsonl', '/worktree', 'claude-local', initialCursor);
+    await insertCursor('openai-codex', '/logs/rollout.jsonl', '/other-workspace', 'codex-local', initialCursor);
+    const select = 'SELECT * FROM external_session_cursors ORDER BY provider, external_id, file_path';
+    const sourceRows = () => pglite.query(select).then(result => result.rows);
+    const targetRows = () => sqlite.getRawHandle()!.prepare(select).all();
+
+    const migrator = new PGLiteToSQLiteMigrator();
+    const summary = await migrator.migrate({ pglite, sqlite, batchSize: 1, spotCheckPerTable: 3 });
+    expect(targetRows()).toEqual(await sourceRows());
+    expect(summary.tablesCopied).toContainEqual({ name: 'external_session_cursors', rows: 3 });
+    const manifestEntry = summary.manifest!.perTable.find(entry => entry.name === 'external_session_cursors');
+    expect(manifestEntry).toMatchObject({ rows: 3, cursorColumn: undefined, cursorMax: undefined });
+
+    // The row count stays constant: final reconciliation must copy in-place
+    // resets and late sidecars, and delete a vanished row, regardless of PK order.
+    const resetCursor = JSON.stringify({ byteOffset: 64, lastEntryUuid: null, fileSize: 64, inode: 99 });
+    await pglite.query('UPDATE external_session_cursors SET cursor = $1 WHERE file_path = $2', [resetCursor, '/logs/main.jsonl']);
+    await pglite.query('DELETE FROM external_session_cursors WHERE file_path = $1', ['/logs/subagents/z.jsonl']);
+    await insertCursor('claude-code', '/logs/subagents/a.jsonl', '/worktree', 'claude-local', resetCursor);
+    await migrator.catchUp({ pglite, sqlite, manifest: summary.manifest!, batchSize: 1 });
+    expect(targetRows()).toEqual(await sourceRows());
+
+    await sqlite.close();
+    sqlite = new SQLiteDatabase({ dbDir: sqliteDir, schemaDir: SCHEMA_DIR, sampleRate: 0 });
+    await sqlite.initialize();
+    expect(targetRows()).toEqual(await sourceRows());
+    expect(sqlite.getRawHandle()!.pragma('foreign_key_check')).toEqual([]);
+  });
+
   it('replaces the SQLite bootstrap backfill cutoff with the PGLite source cutoff', async () => {
     await pglite.exec(`
       CREATE TABLE tool_usage_backfill_meta (

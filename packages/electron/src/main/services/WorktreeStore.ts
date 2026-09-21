@@ -217,8 +217,6 @@ export function createWorktreeStore(db: PGliteLike, ensureDbReady?: EnsureReadyF
     async list(workspaceId: string, includeArchived = false): Promise<Worktree[]> {
       await ensureReady();
 
-      logger.info('Listing worktrees', { workspaceId, includeArchived });
-
       const archiveFilter = includeArchived ? '' : 'AND (is_archived = FALSE OR is_archived IS NULL)';
       const { rows } = await db.query<WorktreeRow>(
         `SELECT * FROM worktrees
@@ -229,7 +227,6 @@ export function createWorktreeStore(db: PGliteLike, ensureDbReady?: EnsureReadyF
 
       const worktrees = rows.map(mapWorktreeRow);
 
-      logger.info('Found worktrees', { count: worktrees.length });
       return worktrees;
     },
 

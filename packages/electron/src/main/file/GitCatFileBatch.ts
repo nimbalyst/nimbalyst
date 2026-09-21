@@ -126,6 +126,11 @@ export class GitCatFileBatch {
       // handler would tear down its successor and null out that caller's result.
       child.on('error', () => this.handleExit(child));
       child.on('exit', () => this.handleExit(child));
+      // Pipe failures are emitted by stdin, not the child or the write's
+      // try/catch. Keep this listener after disposal to absorb late EPIPEs.
+      child.stdin.on('error', () => {
+        if (this.child === child) this.dispose();
+      });
       // Drain stderr so a non-repo directory's complaint cannot fill the pipe.
       child.stderr.resume();
 

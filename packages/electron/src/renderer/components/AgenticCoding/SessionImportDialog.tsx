@@ -1,23 +1,20 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { getRelativeTimeString } from '../../utils/dateFormatting';
 import { getFileName } from '../../utils/pathUtils';
-import type { TokenUsageCategory } from '@nimbalyst/runtime/ai/server/types';
+import type { ExternalSessionSelection, ExternalSessionSummary, ExternalSessionScanResponse } from '../../../shared/externalSessions';
 
-interface SessionToImport {
-  sessionId: string;
-  workspacePath: string;
-  title: string;
-  createdAt: number;
-  updatedAt: number;
-  messageCount: number;
-  tokenUsage: {
-    inputTokens: number;
-    outputTokens: number;
-    totalTokens: number;
-    categories?: TokenUsageCategory[];
-  };
-  syncStatus: 'new' | 'up-to-date' | 'needs-update';
+interface SessionToImport extends ExternalSessionSummary {
   selected: boolean;
+}
+
+const selectionKey = (session: ExternalSessionSelection) =>
+  JSON.stringify([session.providerId, session.sessionId, session.workspacePath]);
+
+function totalTokens(usage: unknown): number | undefined {
+  if (usage && typeof usage === 'object' && 'totalTokens' in usage && typeof usage.totalTokens === 'number') {
+    return usage.totalTokens;
+  }
+  return undefined;
 }
 
 interface SessionsByWorkspace {
@@ -27,7 +24,7 @@ interface SessionsByWorkspace {
 interface SessionImportDialogProps {
   isOpen: boolean;
   onClose: () => void;
-  onImport: (sessionIds: string[]) => Promise<void>;
+  onImport: (sessions: ExternalSessionSelection[]) => Promise<void>;
   currentWorkspacePath: string;
   filterByWorkspace?: boolean; // If true, only show sessions for current workspace
 }
@@ -60,12 +57,12 @@ export const SessionImportDialog: React.FC<SessionImportDialogProps> = ({
     setScopeNotice(null);
 
     try {
-      const scanSessions = async (workspacePath?: string) => {
-        return window.electronAPI.invoke('claude-code:scan-sessions', { workspacePath });
+      const scanSessions = async (workspacePath?: string): Promise<ExternalSessionScanResponse> => {
+        return window.electronAPI.invoke('external-sessions:scan', { workspacePath });
       };
 
       // Prefer the current workspace for performance, but do not fail closed if
-      // Claude stored the sessions under a sibling worktree, nested package
+      // the CLI stored the sessions under a sibling worktree, nested package
       // workspace, or a differently-resolved path.
       let result = await scanSessions(filterByWorkspace ? currentWorkspacePath : undefined);
 
@@ -77,13 +74,13 @@ export const SessionImportDialog: React.FC<SessionImportDialogProps> = ({
       ) {
         result = await scanSessions();
         if (result.success && Array.isArray(result.sessions) && result.sessions.length > 0) {
-          setScopeNotice('No sessions matched this exact workspace path. Showing all Claude Agent sessions instead.');
+          setScopeNotice('No sessions matched this exact workspace path. Showing sessions from all workspaces instead.');
         }
       }
 
       if (result.success && Array.isArray(result.sessions)) {
         // Auto-select new and needs-update sessions
-        const sessionsWithSelection = result.sessions.map((s: any) => ({
+        const sessionsWithSelection = result.sessions.map((s) => ({
           ...s,
           selected: s.syncStatus === 'new' || s.syncStatus === 'needs-update',
         }));
@@ -113,11 +110,11 @@ export const SessionImportDialog: React.FC<SessionImportDialogProps> = ({
   }, [currentWorkspacePath, filterByWorkspace]);
 
   const handleImport = async () => {
-    const selectedSessionIds = sessions
+    const selectedSessions = sessions
       .filter(s => s.selected)
-      .map(s => s.sessionId);
+      .map(({ providerId, sessionId, workspacePath }) => ({ providerId, sessionId, workspacePath }));
 
-    if (selectedSessionIds.length === 0) {
+    if (selectedSessions.length === 0) {
       return;
     }
 
@@ -125,7 +122,7 @@ export const SessionImportDialog: React.FC<SessionImportDialogProps> = ({
     setError(null);
 
     try {
-      await onImport(selectedSessionIds);
+      await onImport(selectedSessions);
       onClose();
     } catch (err) {
       console.error('[SessionImportDialog] Failed to import sessions:', err);
@@ -135,9 +132,9 @@ export const SessionImportDialog: React.FC<SessionImportDialogProps> = ({
     }
   };
 
-  const toggleSession = (sessionId: string) => {
+  const toggleSession = (key: string) => {
     setSessions(prev =>
-      prev.map(s => (s.sessionId === sessionId ? { ...s, selected: !s.selected } : s))
+      prev.map(s => (selectionKey(s) === key ? { ...s, selected: !s.selected } : s))
     );
   };
 
@@ -213,7 +210,7 @@ export const SessionImportDialog: React.FC<SessionImportDialogProps> = ({
         onClick={(e) => e.stopPropagation()}
       >
         <div className="session-import-dialog-header flex items-center justify-between px-5 py-4 border-b border-[var(--nim-border)]">
-          <h2 className="m-0 text-base font-semibold text-[var(--nim-text)]">Import Claude Agent Sessions</h2>
+          <h2 className="m-0 text-base font-semibold text-[var(--nim-text)]">Import earlier sessions</h2>
           <button
             className="session-import-dialog-close bg-transparent border-none text-[var(--nim-text-muted)] cursor-pointer p-1 flex items-center justify-center rounded transition-colors duration-150 hover:bg-[var(--nim-bg-hover)] hover:text-[var(--nim-text)]"
             onClick={onClose}
@@ -227,7 +224,7 @@ export const SessionImportDialog: React.FC<SessionImportDialogProps> = ({
 
         {loading ? (
           <div className="session-import-dialog-loading py-10 px-5 text-center text-[var(--nim-text-muted)]">
-            <p>Scanning ~/.claude/projects/...</p>
+            <p>Scanning Claude Code and Codex sessions...</p>
           </div>
         ) : error ? (
           <div className="session-import-dialog-error py-10 px-5 text-center text-[var(--nim-text-muted)]">
@@ -294,7 +291,7 @@ export const SessionImportDialog: React.FC<SessionImportDialogProps> = ({
             <div className="session-import-dialog-content flex-1 overflow-y-auto py-3">
               {workspacePaths.length === 0 ? (
                 <div className="session-import-empty py-10 px-5 text-center text-[var(--nim-text-muted)]">
-                  <p>No Claude Agent sessions found</p>
+                  <p>No Claude Code or Codex sessions found</p>
                   <p className="session-import-empty-hint text-[13px] mt-2 text-[var(--nim-text-faint)]">
                     Sessions from the CLI will appear here
                   </p>
@@ -346,25 +343,31 @@ export const SessionImportDialog: React.FC<SessionImportDialogProps> = ({
                         <div className="session-import-session-list p-0">
                           {workspaceSessions.map(session => (
                             <div
-                              key={session.sessionId}
-                              data-id={session.sessionId}
+                              key={selectionKey(session)}
+                              data-id={selectionKey(session)}
                               className="session-import-session-item flex items-start gap-2.5 py-3 pr-5 pl-[50px] border-t border-[var(--nim-border)] transition-colors duration-150 hover:bg-[var(--nim-bg-hover)]"
                             >
                               <input
                                 type="checkbox"
                                 checked={session.selected}
-                                onChange={() => toggleSession(session.sessionId)}
+                                onChange={() => toggleSession(selectionKey(session))}
                                 aria-label={`Select ${session.title}`}
                                 className="mt-0.5 cursor-pointer"
                               />
                               <div className="session-import-session-info flex-1 min-w-0">
                                 <div className="session-import-session-title text-sm text-[var(--nim-text)] font-medium mb-1">{session.title}</div>
                                 <div className="session-import-session-meta text-xs text-[var(--nim-text-muted)] flex items-center gap-1.5">
+                                  <span>{session.providerId === 'claude-code' ? 'Claude Code' : 'Codex'}</span>
+                                  <span>•</span>
                                   <span>{getRelativeTimeString(session.updatedAt)}</span>
-                                  <span>•</span>
-                                  <span>{session.messageCount} messages</span>
-                                  <span>•</span>
-                                  <span>{session.tokenUsage.totalTokens.toLocaleString()} tokens</span>
+                                  {typeof session.messageCount === 'number' && <>
+                                    <span>•</span>
+                                    <span>{session.messageCount} messages</span>
+                                  </>}
+                                  {totalTokens(session.tokenUsage) !== undefined && <>
+                                    <span>•</span>
+                                    <span>{totalTokens(session.tokenUsage)?.toLocaleString()} tokens</span>
+                                  </>}
                                   <span>•</span>
                                   <span
                                     className={`session-import-status-badge px-1.5 py-0.5 rounded text-[11px] font-medium ${

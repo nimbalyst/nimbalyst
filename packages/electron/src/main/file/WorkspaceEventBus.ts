@@ -2,7 +2,8 @@ import * as fs from 'fs';
 import * as fsPromises from 'fs/promises';
 import * as path from 'path';
 import { RecoveringFileWatcher } from './RecoveringFileWatcher';
-import { createWorkspaceNativeWatcher, supportsRecursiveWatch, type NativeWatchHandle } from './WorkspaceNativeWatcher';
+import { createWorkspaceNativeWatcher, drainNativeFileEvents, supportsRecursiveWatch, type NativeWatchHandle } from './WorkspaceNativeWatcher';
+import { deliverObservedFileEvent, drainRenameEvents } from './WorkspaceEventDelivery';
 import { pathExistsAfterRename } from './pathExistsAfterRename';
 import type { FileWatchHealth } from '../../shared/fileWatchHealth';
 import ignore, { Ignore } from 'ignore';
@@ -135,6 +136,8 @@ export type WorkspaceEventType = 'change' | 'add' | 'unlink';
 type GitignoreChangeHandler = (workspacePath: string) => void;
 
 export interface WorkspaceEventListener {
+  /** Raw observation time is retained across bounded native delivery and rename probes. */
+  onObserved?: (event: 'change' | 'add' | 'unlink', filePath: string, observedAt: number) => void;
   onHealthChanged?: (health: FileWatchHealth) => void;
   onChange: (filePath: string, gitignoreBypassed?: boolean) => void;
   onAdd: (filePath: string, gitignoreBypassed?: boolean) => void;
@@ -431,6 +434,14 @@ function refreshGitignoreFiltersForEvent(
 // WorkspaceEventBus
 // ---------------------------------------------------------------------------
 
+/** Drain accepted native work before changing attribution ownership boundaries. */
+export async function drainWorkspaceEvents(workspace: string): Promise<void> {
+  const key = path.resolve(workspace);
+  const handle = busEntries.get(key)?.lifecycle.handle;
+  if (handle) await drainNativeFileEvents(handle);
+  await drainRenameEvents(key);
+}
+
 /** Global registry of shared watchers, keyed by normalized workspace path. */
 const busEntries = new Map<string, BusEntry>();
 
@@ -480,7 +491,7 @@ export async function subscribe(
         return !!relative && (shouldIgnoreHardcoded(relative) ||
           (isGitignoredScoped(filePath, key, entry) && getGitignoreAction(filePath, entry) === 'drop'));
       },
-      (type, filePath) => deliverNativeEvent(entry, type, filePath, current),
+      (type, filePath, observedAt) => deliverNativeEvent(entry, type, filePath, current, observedAt),
     );
     if (watcher && 'add' in watcher) {
       for (const file of new Set([...entry.expandedPaths, ...entry.gitignoreBypassPaths])) watcher.add(file);
@@ -809,6 +820,7 @@ function deliverNativeEvent(
   type: 'change' | 'rename' | 'add' | 'unlink',
   filePath: string,
   current: () => boolean,
+  observedAt = Date.now(),
 ): void {
   if (!current() || shouldIgnoreHardcoded(path.relative(entry.workspaceAbs, filePath))) return;
   refreshGitignoreFiltersForEvent(filePath, type, entry);
@@ -818,19 +830,5 @@ function deliverNativeEvent(
     addToReplayBuffer(entry, filePath, type);
     if (type === 'change') return;
   }
-  const publish = (event: 'change' | 'add' | 'unlink') => {
-    if (!current()) return;
-    for (const listener of entry.listeners.values()) {
-      if (dropped && !listener.receiveGitignoredStructureEvents) continue;
-      try {
-        if (event === 'change') listener.onChange(filePath, bypassed || undefined);
-        else if (event === 'add') listener.onAdd(filePath, bypassed || undefined);
-        else listener.onUnlink(filePath, bypassed || undefined);
-      } catch (error) { logger.main.error('[WorkspaceEventBus] File listener failed:', error); }
-    }
-  };
-  if (type === 'rename') {
-    void pathExistsAfterRename(filePath).then(exists => publish(exists ? 'add' : 'unlink'))
-      .catch(error => logger.main.error('[WorkspaceEventBus] Rename check failed:', error));
-  } else publish(type);
+  deliverObservedFileEvent(entry.workspaceAbs, entry.listeners, type, filePath, current, observedAt, bypassed, dropped);
 }

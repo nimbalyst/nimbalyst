@@ -80,6 +80,72 @@ describe('TranscriptRuntime', () => {
     expect(all.map((e) => e.searchableText)).toEqual(['first message', 'second message']);
   });
 
+  it('carries one store generation through callbacks, snapshots, projection and tool updates', async () => {
+    const messages: RawMessage[] = [
+      {
+        id: 1,
+        sessionId: 's1',
+        source: 'openai-codex',
+        direction: 'output',
+        createdAt: new Date(0),
+        metadata: { transport: 'app-server', editGroupId: 'nimtc|tool|0|1' },
+        content: JSON.stringify({
+          method: 'item/started',
+          params: {
+            threadId: 'thread',
+            turnId: 'turn',
+            item: {
+              id: 'tool',
+              type: 'mcpToolCall',
+              server: 'synthetic',
+              tool: 'tool',
+              arguments: {},
+            },
+          },
+        }),
+      },
+    ];
+    const runtime = new TranscriptRuntime(makeRawStore(messages));
+    const notifications: Array<{ id: number; transcriptGeneration?: number }> = [];
+    runtime.setOnEventWritten((event) => notifications.push(event));
+    const initial = await runtime.getCanonicalEvents('s1', 'openai-codex');
+    const generation = initial[0].transcriptGeneration;
+    expect(generation).toEqual(expect.any(Number));
+    expect(notifications[0]).toBe(initial[0]);
+    expect((await runtime.getViewMessages('s1', 'openai-codex'))[0].transcriptGeneration).toBe(
+      generation,
+    );
+    messages.push({
+      ...messages[0],
+      id: 2,
+      content: JSON.stringify({
+        method: 'item/completed',
+        params: {
+          threadId: 'thread',
+          turnId: 'turn',
+          item: {
+            id: 'tool',
+            type: 'mcpToolCall',
+            server: 'synthetic',
+            tool: 'tool',
+            arguments: {},
+            status: 'completed',
+            result: 'done',
+          },
+        },
+      }),
+    });
+    await runtime.processNewMessages('s1', 'openai-codex');
+    const completed = await runtime.getCanonicalEvents('s1', 'openai-codex');
+    expect(completed).toHaveLength(1);
+    expect(completed[0].payload.status).toBe('completed');
+    expect(completed[0].transcriptGeneration).toBe(generation);
+    expect(notifications.every((event) => event.transcriptGeneration === generation)).toBe(true);
+    await runtime.forceReparseSession('s1', 'openai-codex');
+    const rebuilt = await runtime.getCanonicalEvents('s1', 'openai-codex');
+    expect(rebuilt[0].transcriptGeneration).toBeGreaterThan(generation!);
+  });
+
   it('MRU eviction discards the least recently used session when the cap is reached', async () => {
     const sessions = ['s1', 's2', 's3'];
     const raw = makeRawStore(sessions.map((sid, i) => userInput(i + 1, sid, `prompt ${sid}`)));

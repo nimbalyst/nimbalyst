@@ -1,4 +1,5 @@
-import { shellFileAttribution } from '../services/ai/codexShellTrackingHost';
+import type { ShellCoverageSummary } from '@nimbalyst/runtime/ai/shellTrackingCoverage';
+import { getShellTrackingCoverage } from '../services/ai/codexShellTrackingHost';
 import { resolve, relative, isAbsolute } from 'path';
 import { SessionFilesRepository } from '@nimbalyst/runtime';
 import { GitStatusService } from '../services/GitStatusService';
@@ -235,9 +236,10 @@ export function registerGitStatusHandlers(): void {
       }>;
       scenario: 'single' | 'workstream' | 'worktree';
       error?: string;
+      coverage?: ShellCoverageSummary[];
     }> => {
       try {
-        await shellFileAttribution.flush();
+        const coverage = await getShellTrackingCoverage([sessionId, ...(childSessionIds ?? [])], true);
         const mapStatus = (s: string): 'added' | 'modified' | 'deleted' => {
           if (s === 'untracked') return 'added';
           if (s === 'deleted') return 'deleted';
@@ -277,7 +279,7 @@ export function registerGitStatusHandlers(): void {
             status: mapStatus(s.status),
             repo: owningRepo(s.filePath),
           }));
-          return { success: true, files, scenario: 'worktree' as const };
+          return { success: true, files, scenario: 'worktree' as const, coverage };
         }
 
         const isWorkstream = childSessionIds && childSessionIds.length > 1;
@@ -292,7 +294,7 @@ export function registerGitStatusHandlers(): void {
         }
 
         if (editedFiles.length === 0) {
-          return { success: true, files: [], scenario };
+          return { success: true, files: [], scenario, coverage };
         }
 
         // Get all uncommitted file statuses, across every repo in the workspace
@@ -320,7 +322,7 @@ export function registerGitStatusHandlers(): void {
           });
         }
 
-        return { success: true, files, scenario };
+        return { success: true, files, scenario, coverage };
       } catch (error) {
         console.error('[GitStatusHandlers] Failed to get commit context:', error);
         return {

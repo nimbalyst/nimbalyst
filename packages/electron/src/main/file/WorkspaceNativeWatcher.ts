@@ -1,12 +1,18 @@
 import * as fs from "fs";
 import * as path from "path";
+import { NativeFileEventQueue } from "./NativeFileEventQueue";
 import chokidar, { type FSWatcher } from "chokidar";
 
 export const supportsRecursiveWatch =
   process.platform === "darwin" || process.platform === "win32";
 export type NativeWatchHandle = fs.FSWatcher | FSWatcher;
 
-/** Raw pressure is counted before ignores, which cannot protect the native callback queue. */
+const queues = new WeakMap<NativeWatchHandle, NativeFileEventQueue>();
+export function drainNativeFileEvents(handle: NativeWatchHandle): Promise<void> {
+  return queues.get(handle)?.drain() ?? Promise.resolve();
+}
+
+/** Native failures and a bounded processing backlog remain recoverable. */
 export function createWorkspaceNativeWatcher(
   root: string,
   current: () => boolean,
@@ -14,26 +20,12 @@ export function createWorkspaceNativeWatcher(
   ignored: (filePath: string) => boolean,
   deliver: (
     type: "change" | "rename" | "add" | "unlink",
-    filePath: string
+    filePath: string,
+    observedAt?: number
   ) => void
 ): NativeWatchHandle {
-  const timestamps = new Array<number>(5000).fill(0);
-  let index = 0;
-  const dispatch = (
-    type: "change" | "rename" | "add" | "unlink",
-    filePath: string
-  ) => {
-    if (!current()) return;
-    const now = Date.now();
-    const oldest = timestamps[index];
-    timestamps[index] = now;
-    index = (index + 1) % timestamps.length;
-    if (oldest > 0 && now - oldest < 5000) {
-      fail("event_storm");
-      return;
-    }
-    deliver(type, filePath);
-  };
+  const queue = new NativeFileEventQueue(current, deliver, fail);
+  const dispatch = queue.push.bind(queue);
   const watcher = supportsRecursiveWatch
     ? fs.watch(root, { recursive: true }, (type, filename) => {
         if (filename) dispatch(type, path.join(root, filename));
@@ -53,12 +45,14 @@ export function createWorkspaceNativeWatcher(
         .on("change", (file) => dispatch("change", file))
         .on("add", (file) => dispatch("add", file))
         .on("unlink", (file) => dispatch("unlink", file));
+  queues.set(watcher, queue);
   watcher.on("error", (error: unknown) => {
     if (current())
       fail((error as NodeJS.ErrnoException)?.code ?? "watcher_error");
   });
   if (supportsRecursiveWatch)
     (watcher as fs.FSWatcher).on("close", () => {
+      queue.stop();
       if (current()) fail("unexpected_close");
     });
   return watcher;

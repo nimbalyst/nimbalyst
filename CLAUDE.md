@@ -16,6 +16,16 @@ Guidance for Claude Code (claude.ai/code) when working in this repository.
 
 **At release time, condense — don't ship the dev-time bullets verbatim.** `[Unreleased]` accumulates verbose per-commit bullets during development. Before tagging, collapse them: merge a feature's scattered bullets into one line, drop scaffolding, squash near-duplicates. If the release notes are longer than the equivalent section in a recent shipped version, cut harder.
 
+### Keep the Feature Inventory Current
+
+**When adding, significantly expanding, or removing a notable product capability, update [FEATURE_INVENTORY.md](./docs/FEATURE_INVENTORY.md) during implementation.** Examples include a new editor, provider integration, collaboration workflow, automation, or CLI capability. It applies to every agent provider and to ordinary prompts as well as skills. The CHANGELOG's commit-time rule does not defer inventory maintenance.
+
+**Inclusion test: would someone exploring what Nimbalyst can do look for this capability by itself?** Remote agent execution and structured teammate feedback qualify. Elapsed-time counters, status badges, button placement, resizing, and automatic scrolling do not. User-visible does not automatically mean inventory-worthy. The inventory is a curated capability reference, not an exhaustive UI checklist or a second changelog.
+
+Read the relevant section first; group related functionality under an existing capability. Keep only details needed to understand its scope, platform, opt-in requirements, or material limitations. Correct obsolete claims even when the correction is small. Routine fixes, performance improvements, refactors, tests, dependency/model-version bumps, and interaction polish need no entry. Do not record plans or internal scaffolding as working features.
+
+In a parallel batch, the integrating session owns the inventory; slices report the capability change and evidence instead of editing this shared file. Before the final handoff or commit proposal, report **"Feature inventory updated"** with the section, or **"No inventory impact"** with a short reason. A slice handing the update to its integrator must say it is pending; the integrator must apply it before the batch is handed off. At release preparation, reconcile the release's Added/Changed/Removed capabilities against the inventory, checking current code when scope is unclear.
+
 ### Parallel Sessions Must Not Share Files
 
 Before launching parallel work, list the files each slice will touch and confirm the sets are disjoint — including shared files like `CHANGELOG.md`, `package.json`, barrels, and central registries, which a source-only check misses. If two slices need the same file, they are one slice. Slices never run the full gate; the orchestrator runs it once. See [parallel-sessions.md](./.claude/rules/parallel-sessions.md).

@@ -9,6 +9,7 @@
  */
 
 import { KeyboardShortcuts } from '../../shared/KeyboardShortcuts';
+import { CANVAS_HELP_CONTENT } from '@nimbalyst/runtime/canvas/canvasHelpContent';
 import { getRegisteredPanels } from '../extensions/panels/PanelRegistry';
 import { getRegisteredKeybindings } from '../extensions/commands/ExtensionCommandRegistry';
 
@@ -28,6 +29,7 @@ export interface HelpEntry {
  * Central registry of help content, keyed by data-testid
  */
 export const HelpContent: Record<string, HelpEntry> = {
+  ...CANVAS_HELP_CONTENT,
   // ============================================================================
   // Teams - Security & encryption (Epic H2)
   // ============================================================================

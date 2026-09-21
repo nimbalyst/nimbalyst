@@ -1,11 +1,12 @@
 {
   "name": "@nimbalyst/electron",
-  "version": "0.77.5",
+  "version": "0.78.2",
   "private": true,
   "license": "MIT",
   "author": "Nimbalyst Team",
   "description": "Electron app for Nimbalyst",
   "homepage": "https://nimbalyst.com",
+  "desktopName": "nimbalyst.desktop",
   "main": "out/main/index.js",
   "bin": {
     "nimbalyst": "./bin/nimbalyst"
@@ -53,7 +54,7 @@
     "marketing:screenshots:grep": "playwright test --config=marketing/playwright.marketing.config.ts --grep"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "0.3.257",
+    "@anthropic-ai/claude-agent-sdk": "0.3.272",
     "@anthropic-ai/sdk": "^0.115.0",
     "@electric-sql/pglite": "0.3.14",
     "@electron-toolkit/utils": "^4.0.0",

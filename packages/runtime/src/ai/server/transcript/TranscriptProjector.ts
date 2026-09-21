@@ -57,6 +57,8 @@ export interface ToolCallDiffLoadResult {
 
 export interface TranscriptViewMessage {
   id: number;
+  /** Matches the canonical event's ephemeral runtime store generation. */
+  transcriptGeneration?: number;
   sequence: number;
   createdAt: Date;
   type: TranscriptEventType;
@@ -227,6 +229,7 @@ function projectEvent(
 ): TranscriptViewMessage {
   const base: TranscriptViewMessage = {
     id: event.id,
+    ...(event.transcriptGeneration !== undefined ? { transcriptGeneration: event.transcriptGeneration } : {}),
     sequence: event.sequence,
     createdAt: event.createdAt,
     type: event.eventType,

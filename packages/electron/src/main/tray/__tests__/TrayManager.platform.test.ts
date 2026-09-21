@@ -232,6 +232,12 @@ describe('TrayManager - cross-platform initialisation (#39)', () => {
     expect(systemPrefsSubscribe).not.toHaveBeenCalled();
   });
 
+  it('warns with the session and reason when read state is not published', async () => {
+    syncPushChange.mockResolvedValueOnce({ published: false, reason: 'index disconnected' });
+    await (TrayManager.getInstance() as any).persistReadState('unpublished-session', 123);
+    expect(loggerWarn).toHaveBeenCalledWith(expect.stringMatching(/unpublished-session.*index disconnected/));
+  });
+
   it('does not return early on Windows', async () => {
     restorePlatform = stubPlatform('win32');
     const tm = TrayManager.getInstance();

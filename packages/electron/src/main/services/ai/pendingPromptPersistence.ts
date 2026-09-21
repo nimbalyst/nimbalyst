@@ -1,3 +1,4 @@
+import { warnIfUnpublished } from '@nimbalyst/runtime/sync/pushOutcome';
 /**
  * Persist the per-session "interactive prompt is open" bit to
  * `ai_sessions.metadata.hasPendingPrompt` and push the same change to
@@ -19,7 +20,8 @@
  * menu bar panel. Notify here and there is nothing left to forget.
  */
 
-import { AISessionsRepository } from '@nimbalyst/runtime';
+import { AISessionsRepository } from '@nimbalyst/runtime/storage/repositories/AISessionsRepository';
+import type { SessionChange } from '@nimbalyst/runtime/sync/types';
 import { getSyncProvider } from '../SyncManager';
 import { requestMobilePush } from './mobilePushRequest';
 import { TrayManager } from '../../tray/TrayManager';
@@ -94,10 +96,12 @@ export async function setSessionPendingPrompt(
   try {
     const sp = getSyncProvider();
     if (sp) {
-      sp.pushChange(sessionId, {
+      const metadata: Extract<SessionChange, { type: 'metadata_updated' }>['metadata'] = { hasPendingPrompt, updatedAt: Date.now() };
+      const outcome = await sp.pushChange(sessionId, {
         type: 'metadata_updated',
-        metadata: { hasPendingPrompt, updatedAt: Date.now() } as any,
+        metadata,
       });
+      warnIfUnpublished(message => logger.main.warn(message), sessionId, '[pendingPromptPersistence] Failed to publish pending prompt', outcome);
     }
   } catch (err) {
     logger.main.warn(

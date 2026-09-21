@@ -30,6 +30,7 @@ import { loadFileIntoWindow } from './file/FileOperations';
 import { createApplicationMenu } from './menu/ApplicationMenu';
 import { updateNativeTheme, updateWindowTitleBars } from './theme/ThemeManager';
 import { restoreSessionState, saveSessionState } from './session/SessionState';
+import { createRestartShutdown } from './session/restartShutdown';
 import { setSafeModeSessionStateProtection } from './session/safeModeSessionState';
 import { isSafeModeArgument } from './session/startupSafeMode';
 import { getRestartSignalPath } from './utils/appPaths';
@@ -63,6 +64,7 @@ import { registerActionPromptHandlers } from './ipc/ActionPromptHandlers';
 import { registerClaudeCodeHandlers } from './ipc/ClaudeCodeHandlers';
 import { registerCodexAuthHandlers } from './ipc/CodexAuthHandlers';
 import { initializeClaudeCodeSessionHandlers } from './ipc/ClaudeCodeSessionHandlers';
+import { getExternalSessionService, stopExternalSessionService } from './services/externalSessions/ExternalSessionService';
 import { registerNotificationHandlers } from './ipc/NotificationHandlers';
 import { registerPermissionHandlers } from './ipc/PermissionHandlers';
 import { registerGitStatusHandlers } from './ipc/GitStatusHandlers';
@@ -1965,6 +1967,7 @@ app.whenReady().then(async () => {
     registerClaudeCodeHandlers();
     registerCodexAuthHandlers();
     initializeClaudeCodeSessionHandlers();  // Initialize Claude Code session import
+    getExternalSessionService().initialize(); // Explicit opt-in only; waits for first usable before watching.
     registerAnalyticsHandlers();
     registerFeatureUsageHandlers();
     registerNotificationHandlers();
@@ -3468,8 +3471,23 @@ app.on('activate', () => {
     }
 });
 
-// Before quit handler
 let migrationQuitDraining = false;
+const shutdownForRestart = createRestartShutdown({
+    beginRestart: () => {
+        console.log('[QUIT] Restart signal detected, saving session state before restart');
+        isAppRestarting = true;
+        isAppQuitting = true;
+        if (sessionSaveInterval) clearInterval(sessionSaveInterval);
+        sessionSaveInterval = null;
+    },
+    stopExternalSessions: stopExternalSessionService,
+    saveSessionState,
+    flushPendingBackups: flushPendingCollabBackups,
+    quit: () => {
+        console.log('[QUIT] Session state saved for restart');
+        app.quit();
+    },
+});
 app.on('before-quit', async (event) => {
     if (migrationQuitDraining || migrationNeedsQuitDrain()) {
         event.preventDefault();
@@ -3494,41 +3512,27 @@ app.on('before-quit', async (event) => {
 
     // If auto-updater is updating, don't prevent quit
     if (AutoUpdaterService.isUpdatingApp()) {
+        void stopExternalSessionService(); // Revoke immediately, including the updater's early-exit path.
         console.log('[QUIT] Auto-updater is updating, allowing quit');
+        return;
+    }
+
+    // Handle repeated restart requests before the already-quitting shortcut.
+    if (fs.existsSync(getRestartSignalPath())) {
+        try {
+            await shutdownForRestart(event);
+        } catch (error) {
+            console.error('[QUIT] Error saving session state for restart:', error);
+            dialog.showErrorBox('Unable to restart Nimbalyst',
+                'Restart stopped before closing your project windows. Please try restarting again.\n\n' +
+                (error instanceof Error ? error.message : String(error)));
+        }
+        // Don't delete the file here - dev-loop.sh needs it to know to restart
         return;
     }
 
     // If we're already quitting, don't prevent default to avoid infinite loop
     if (isAppQuitting) {
-        console.log('[QUIT] Already quitting, allowing default behavior');
-        return;
-    }
-
-    // Check if this is a programmatic restart request (from MCP restart_nimbalyst tool)
-    const restartSignalPath = getRestartSignalPath();
-    if (fs.existsSync(restartSignalPath)) {
-        console.log('[QUIT] Restart signal detected, saving session state before restart');
-        // Mark as restarting BEFORE saving to prevent window close handlers from overwriting
-        isAppRestarting = true;
-        // Stop the periodic session-save timer and mark quitting so NO further
-        // save can fire after windows tear down. Without this the periodic save
-        // (guarded only by !isAppQuitting) could run over an emptied windows map
-        // and overwrite the good state with `{ windows: [] }` -- the restart
-        // would then come back to the Workspace Manager with no projects (NIM-869).
-        isAppQuitting = true;
-        if (sessionSaveInterval) {
-            clearInterval(sessionSaveInterval);
-            sessionSaveInterval = null;
-        }
-        // Save session state so the session is restored after restart
-        try {
-            await saveSessionState();
-            await flushPendingCollabBackups();
-            console.log('[QUIT] Session state saved for restart');
-        } catch (error) {
-            console.error('[QUIT] Error saving session state for restart:', error);
-        }
-        // Don't delete the file here - dev-loop.sh needs it to know to restart
         return;
     }
 
@@ -3578,6 +3582,9 @@ app.on('before-quit', async (event) => {
 
     // Mark app as quitting to prevent interval operations
     isAppQuitting = true;
+
+    // Revoke source readers and drain their commits before database shutdown.
+    await stopExternalSessionService();
 
     // Live collaboration backups are debounced. Flush the latest decrypted
     // snapshots before renderer teardown so a quick quit cannot drop them.

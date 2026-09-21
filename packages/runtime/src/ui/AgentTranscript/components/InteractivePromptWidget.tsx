@@ -176,6 +176,7 @@ const PermissionRequestWidget: React.FC<PermissionRequestWidgetProps> = ({
       <div className="interactive-prompt__actions flex flex-wrap gap-2 mb-2">
         <button
           className="interactive-prompt__button interactive-prompt__button--deny px-3 py-1.5 text-xs font-medium rounded-md border border-[var(--nim-border)] cursor-pointer transition-all bg-[var(--nim-bg-tertiary)] text-[var(--nim-text-muted)] hover:bg-[var(--nim-error)] hover:text-white hover:border-[var(--nim-error)] disabled:opacity-50 disabled:cursor-not-allowed"
+          autoFocus={content.defaultToNo === true}
           onClick={() => onSubmit('deny', 'once')}
           disabled={isSubmitting}
         >
@@ -188,29 +189,31 @@ const PermissionRequestWidget: React.FC<PermissionRequestWidgetProps> = ({
         >
           Allow Once
         </button>
-        <div className="interactive-prompt__separator w-px bg-[var(--nim-border)] mx-1" />
-        <button
-          className="interactive-prompt__button interactive-prompt__button--session px-3 py-1.5 text-xs font-medium rounded-md border border-[var(--nim-border)] cursor-pointer transition-all bg-[var(--nim-bg-tertiary)] text-[var(--nim-text-muted)] hover:bg-[var(--nim-primary)] hover:text-white hover:border-[var(--nim-primary)] disabled:opacity-50 disabled:cursor-not-allowed"
-          onClick={() => onSubmit('allow', 'session')}
-          disabled={isSubmitting}
-          title={`Allow ${content.patternDisplayName} for this session`}
-        >
-          Session
-        </button>
-        <button
-          className="interactive-prompt__button interactive-prompt__button--always px-3 py-1.5 text-xs font-medium rounded-md border border-[var(--nim-border)] cursor-pointer transition-all bg-[var(--nim-bg-tertiary)] text-[var(--nim-text-muted)] hover:bg-[var(--nim-primary)] hover:text-white hover:border-[var(--nim-primary)] disabled:opacity-50 disabled:cursor-not-allowed"
-          onClick={() => onSubmit('allow', 'always')}
-          disabled={isSubmitting}
-          title={`Save ${content.patternDisplayName} to settings`}
-        >
-          Always
-        </button>
+        {!content.suppressAlwaysAllowRule && <>
+          <div className="interactive-prompt__separator w-px bg-[var(--nim-border)] mx-1" />
+          <button
+            className="interactive-prompt__button interactive-prompt__button--session px-3 py-1.5 text-xs font-medium rounded-md border border-[var(--nim-border)] cursor-pointer transition-all bg-[var(--nim-bg-tertiary)] text-[var(--nim-text-muted)] hover:bg-[var(--nim-primary)] hover:text-white hover:border-[var(--nim-primary)] disabled:opacity-50 disabled:cursor-not-allowed"
+            onClick={() => onSubmit('allow', 'session')}
+            disabled={isSubmitting}
+            title={`Allow ${content.patternDisplayName} for this session`}
+          >
+            Session
+          </button>
+          <button
+            className="interactive-prompt__button interactive-prompt__button--always px-3 py-1.5 text-xs font-medium rounded-md border border-[var(--nim-border)] cursor-pointer transition-all bg-[var(--nim-bg-tertiary)] text-[var(--nim-text-muted)] hover:bg-[var(--nim-primary)] hover:text-white hover:border-[var(--nim-primary)] disabled:opacity-50 disabled:cursor-not-allowed"
+            onClick={() => onSubmit('allow', 'always')}
+            disabled={isSubmitting}
+            title={`Save ${content.patternDisplayName} to settings`}
+          >
+            Always
+          </button>
+        </>}
       </div>
 
       {/* Pattern info */}
-      <div className="interactive-prompt__pattern-info text-[11px] text-[var(--nim-text-faint)]">
+      {!content.suppressAlwaysAllowRule && <div className="interactive-prompt__pattern-info text-[11px] text-[var(--nim-text-faint)]">
         Session/Always will allow: <span className="interactive-prompt__pattern-badge inline-block px-1.5 py-0.5 bg-[var(--nim-bg-tertiary)] rounded font-mono text-[10px]">{content.patternDisplayName}</span>
-      </div>
+      </div>}
     </div>
   );
 };

@@ -16,13 +16,11 @@
  * `EditorHost` plumbing. Widening it later is easy; narrowing it once two hosts
  * depend on it is not.
  *
- * `cold` never reaches the host. A cold card is drawn by the canvas from data it
- * already has (label, target, type) and by definition loads no extension code,
- * so routing it through a host renderer would only create a path where "cold"
- * accidentally mounts something.
+ * `cold` never reaches the editor renderer. The optional preview slot may
+ * supply a lightweight image; otherwise the canvas draws its label summary.
  */
 
-import type { ComponentType } from 'react';
+import type { ComponentType, ReactNode } from 'react';
 
 import type { CanvasDocReference, CanvasFileReference } from './CanvasDocument';
 // Type-only, and circular on purpose: `canvasRevisions` needs the reference
@@ -81,6 +79,18 @@ export interface CanvasCardRenderProps {
   detail: 'warm' | 'hot';
 }
 
+/** Lightweight content may replace a cold summary or a warm editor. */
+export interface CanvasCardPreviewProps {
+  nodeId: string;
+  reference: CanvasCardReference;
+  label: string;
+  detail: 'cold' | 'warm' | 'hot';
+  width: number;
+  height: number;
+  /** Return this for unsupported references and when editing. */
+  children: ReactNode;
+}
+
 /**
  * The host's answer to "how many unresolved comments are inside this card's own
  * document?" -- the *other* half of the dual count, and the half the canvas
@@ -128,6 +138,11 @@ export interface CanvasCallbacks {
    * rather than a wall of blanks.
    */
   renderCard?: ComponentType<CanvasCardRenderProps>;
+
+  /** Must not open editors or rooms for cold cards. Optional per host. */
+  renderCardPreview?: ComponentType<CanvasCardPreviewProps>;
+  /** Open a screenshot's recorded source file in the host editor. */
+  openScreenshotSource?(path: string): void;
 
   /** In-document comment counts for reference cards. Optional; see above. */
   cardComments?: CanvasCardCommentSource;

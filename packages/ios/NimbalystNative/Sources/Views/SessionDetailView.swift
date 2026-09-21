@@ -87,10 +87,8 @@ public struct SessionDetailView: View {
     @FocusState private var composeFocused: Bool
     /// Error message shown when prompt send fails.
     @State private var sendError: String?
-    /// Warning shown when prompt was sent but desktop hasn't picked it up.
-    @State private var deliveryWarning: String?
-    /// Timer that fires if desktop doesn't start executing after a prompt send.
-    @State private var deliveryTimeoutItem: DispatchWorkItem?
+    /// Tracks desktop activity after sending, including turns that finish quickly.
+    @StateObject private var delivery = PromptDeliveryTracker()
 
     /// Queued prompts for this session (from GRDB observation).
     @State private var queuedPrompts: [QueuedPrompt] = []
@@ -324,6 +322,7 @@ public struct SessionDetailView: View {
             appState.syncManager?.joinSessionRoom(sessionId: session.id)
         }
         .onDisappear {
+            delivery.cancel()
             sessionCancellable?.cancel()
             messagesCancellable?.cancel()
             projectCancellable?.cancel()
@@ -383,20 +382,12 @@ public struct SessionDetailView: View {
             Text(sendError ?? "")
         }
         .alert("Delivery Warning", isPresented: Binding(
-            get: { deliveryWarning != nil },
-            set: { if !$0 { deliveryWarning = nil } }
+            get: { delivery.warning != nil },
+            set: { if !$0 { delivery.warning = nil } }
         )) {
-            Button("OK") { deliveryWarning = nil }
+            Button("OK") { delivery.warning = nil }
         } message: {
-            Text(deliveryWarning ?? "")
-        }
-        .onChange(of: liveSession?.isExecuting) { _, isExec in
-            // Desktop picked up the prompt - cancel the delivery timeout
-            if isExec == true {
-                deliveryTimeoutItem?.cancel()
-                deliveryTimeoutItem = nil
-                deliveryWarning = nil
-            }
+            Text(delivery.warning ?? "")
         }
         .onChange(of: messages.count) { _, _ in
             // Re-check reveal: messages may have arrived after onReady fired
@@ -693,8 +684,7 @@ public struct SessionDetailView: View {
         // Cancel any pending per-session debounces/timers.
         draftDebounceItem?.cancel()
         draftDebounceItem = nil
-        deliveryTimeoutItem?.cancel()
-        deliveryTimeoutItem = nil
+        delivery.cancel()
         promptRefreshWorkItem?.cancel()
         promptRefreshWorkItem = nil
 
@@ -710,7 +700,6 @@ public struct SessionDetailView: View {
         composeState.lastLocalEditAt = 0
         composeState.lastSubmitAt = 0
         sendError = nil
-        deliveryWarning = nil
         fileSheetDocument = nil
         fileNotAvailableToast = nil
 
@@ -861,6 +850,7 @@ public struct SessionDetailView: View {
             },
             onChange: { updatedSession in
                 liveSession = updatedSession
+                delivery.observeExecution(sessionId: sessionId, isExecuting: updatedSession?.isExecuting == true)
             }
         )
 
@@ -879,6 +869,7 @@ public struct SessionDetailView: View {
             onChange: { newMessages in
                 hasObservedInitialMessages = true
                 messages = newMessages
+                delivery.observeMessages(newMessages)
             }
         )
 
@@ -938,26 +929,20 @@ public struct SessionDetailView: View {
         composeState.lastSubmitAt = Int(Date().timeIntervalSince1970 * 1000)
         syncManager.updateDraftInput(sessionId: session.id, draftInput: "")
 
+        let sessionId = session.id
+        let requestId = delivery.begin(sessionId: sessionId, isExecuting: (liveSession ?? session).isExecuting,
+                                       messages: messages, now: composeState.lastSubmitAt)
         Task {
             do {
-                try await syncManager.sendPrompt(sessionId: session.id, text: text, attachments: attachments)
+                try await syncManager.sendPrompt(sessionId: sessionId, text: text, attachments: attachments)
                 AnalyticsManager.shared.capture("mobile_ai_message_sent", properties: [
                     "hasAttachments": !attachments.isEmpty,
                     "attachmentCount": attachments.count,
                 ])
 
-                // Start a delivery timeout -- if the session doesn't start executing
-                // within 10s, warn the user that the desktop may not have received it.
-                deliveryTimeoutItem?.cancel()
-                let timeout = DispatchWorkItem { [self] in
-                    // Only warn if session still hasn't started executing
-                    if !(liveSession?.isExecuting ?? false) {
-                        deliveryWarning = "Your prompt was sent but the desktop hasn't started processing it. Make sure the desktop app is running and connected."
-                    }
-                }
-                deliveryTimeoutItem = timeout
-                DispatchQueue.main.asyncAfter(deadline: .now() + 10, execute: timeout)
+                delivery.sent(requestId)
             } catch {
+                guard delivery.failed(requestId) else { return }
                 // Restore the draft so the user doesn't lose their text
                 composeState.text = text
                 sendError = "Failed to send: \(error.localizedDescription)"

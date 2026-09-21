@@ -1,0 +1,48 @@
+{
+  "type": "metadataBroadcast",
+  "metadata": {
+    "encryptedProjectId": "c3ludGhldGljLWVuY3J5cHRlZFByb2plY3RJZA==",
+    "projectIdIv": "OPMddWTXdiiu294z",
+    "encryptedTitle": "c3ludGhldGljLWVuY3J5cHRlZFRpdGxl",
+    "titleIv": "Yp1n5HwermUjX8gi",
+    "provider": "claude-code",
+    "model": "claude-code:opus",
+    "mode": "agent",
+    "createdAt": 1789232401000,
+    "updatedAt": 1789232408000,
+    "pendingExecution": {
+      "messageId": "ae2bea39-b23d-4c35-81aa-f3f821c61382",
+      "sentAt": 1789232404000,
+      "sentBy": "mobile"
+    },
+    "isExecuting": true,
+    "encryptedQueuedPrompts": [
+      {
+        "options": {
+          "mode": "planning",
+          "model": "claude-code:opus",
+          "effortLevel": "high"
+        },
+        "id": "adc66e8b-11ca-4d2c-86b5-d1b73faf9233",
+        "encryptedPrompt": "c3ludGhldGljLWVuY3J5cHRlZFByb21wdA==",
+        "iv": "vFNipSsPf3kXvH44",
+        "timestamp": 1789232405000,
+        "encryptedAttachments": [
+          {
+            "id": "ab072fe2-4a8d-499e-8c42-2c34bdf82a6c",
+            "filename": "diagram.png",
+            "mimeType": "image/png",
+            "encryptedData": "c3ludGhldGljLWVuY3J5cHRlZERhdGE=",
+            "iv": "yH6Vxk+7185MHGKg",
+            "size": 2048,
+            "width": 640,
+            "height": 480
+          }
+        ]
+      }
+    ],
+    "encryptedClientMetadata": "c3ludGhldGljLWVuY3J5cHRlZENsaWVudE1ldGFkYXRh",
+    "clientMetadataIv": "B9VXsXJgPL9CyKT6"
+  },
+  "fromConnectionId": "synthetic-connection"
+}

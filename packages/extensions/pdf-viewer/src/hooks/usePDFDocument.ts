@@ -31,6 +31,7 @@ export interface PDFViewport {
 export interface UsePDFDocumentResult {
   document: PDFDocumentProxy | null;
   totalPages: number;
+  firstPageWidth: number | null;
   loading: boolean;
   error: string | null;
 }
@@ -52,6 +53,7 @@ export function usePDFDocument(
 ): UsePDFDocumentResult {
   const [document, setDocument] = useState<PDFDocumentProxy | null>(null);
   const [totalPages, setTotalPages] = useState(0);
+  const [firstPageWidth, setFirstPageWidth] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -101,6 +103,10 @@ export function usePDFDocument(
 
         if (cancelled) return;
 
+        // Fit uses the displayed width, including PDF rotation and crop boxes.
+        const firstPage = await pdf.getPage(1);
+        if (cancelled) return;
+        setFirstPageWidth(firstPage.getViewport({ scale: 1 }).width);
         setDocument(pdf);
         setTotalPages(pdf.numPages);
         setLoading(false);
@@ -122,5 +128,5 @@ export function usePDFDocument(
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filePath]);
 
-  return { document, totalPages, loading, error };
+  return { document, totalPages, firstPageWidth, loading, error };
 }

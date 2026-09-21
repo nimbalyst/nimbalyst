@@ -1,3 +1,4 @@
+import { CodexWindowsSandboxSection } from './CodexWindowsSandboxSection';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useAtomValue, useSetAtom } from 'jotai';
 import { ProviderConfig, Model } from '../../Settings/SettingsView';
@@ -171,6 +172,8 @@ export function OpenAICodexPanel({
         checked={usageIndicatorEnabled}
         onChange={setUsageIndicatorEnabled}
       />
+
+      {config.enabled && process.platform === 'win32' && <CodexWindowsSandboxSection />}
 
       {acpEnabled && (
         <div className="provider-panel-section py-4 mb-4 border-b border-[var(--nim-border)]">

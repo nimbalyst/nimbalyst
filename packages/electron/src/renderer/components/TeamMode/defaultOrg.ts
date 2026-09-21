@@ -59,14 +59,16 @@ export function resolveOrgWindowTargetId(
   pendingOrgId: string | null | undefined,
   lastSelectedOrgId: string | null | undefined,
   organizations: OrgChoice[],
+  complete = true,
 ): string | null {
   const active = activeOrganizations(organizations);
   if (pendingOrgId) {
     const directorySilent = active.length === 0;
-    if (directorySilent || active.some((organization) => organization.orgId === pendingOrgId)) {
+    if (!complete || directorySilent || active.some((organization) => organization.orgId === pendingOrgId)) {
       return pendingOrgId;
     }
   }
+  if (!complete && lastSelectedOrgId) return lastSelectedOrgId;
   return resolveDefaultOrgId(lastSelectedOrgId, organizations);
 }
 

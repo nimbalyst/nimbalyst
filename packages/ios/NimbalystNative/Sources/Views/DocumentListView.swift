@@ -354,9 +354,8 @@ struct FileTreeRow: View {
 
     var body: some View {
         if let doc = node.document {
-            NavigationLink(value: WorkspaceSelection.document(doc.id)) {
-                rowContent
-            }
+            rowContent
+                .tag(WorkspaceSelection.document(doc.id))
         } else {
             Button(action: onToggle) {
                 rowContent

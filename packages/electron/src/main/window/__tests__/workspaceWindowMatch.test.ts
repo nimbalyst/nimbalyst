@@ -11,6 +11,9 @@ import {
 const PROJECT_A = '/Users/dev/project-a';
 const PROJECT_B = '/Users/dev/project-b';
 const WORKTREE_A = '/Users/dev/project-a-worktrees/feature';
+/** PROJECT_A reached through a symlink: one directory, two spellings (#1551). */
+const REAL_A = '/Volumes/disk/project-a';
+const WORKTREE_REAL_A = '/Volumes/disk/project-a-worktrees/feature';
 
 /** No worktrees unless a test opts in, so the exact tier is what is under test. */
 const noWorktrees = {
@@ -132,6 +135,120 @@ describe('matchWorkspaceWindow', () => {
         expect(
             matchWorkspaceWindow([{ windowId: 1, workspacePath: PROJECT_B }], PROJECT_A, noWorktrees)
         ).toBeNull();
+    });
+
+    /**
+     * GitHub #1551. A project reached through a symlink (or spelled with
+     * different case) has two names for one directory. The window rail holds the
+     * spelling the project was opened by, while a worktree resolves to the
+     * realpath'd parent, so the exact-string tiers miss and a queued prompt for
+     * a session in that worktree is deferred forever with `no-window`.
+     *
+     * The resolvers stay injected: alias-awareness arrives as another resolver,
+     * `resolveProjectPathCandidates`, so the matcher still has no filesystem.
+     */
+    // Untyped so the extra resolver is passed through without an excess-property
+    // error while `WorktreeResolvers` still carries it as optional.
+
+    /** Two checkouts of one repo: same parent, different working directories. */
+    const REPO_B = '/Users/dev/repo-b';
+    const WORKTREE_B1 = '/Users/dev/repo-b-worktrees/branch-one';
+    const WORKTREE_B2 = '/Users/dev/repo-b-worktrees/branch-two';
+    const siblingWorktrees = {
+        isWorktreePath: (p: string) => p.includes('-worktrees/'),
+        resolveProjectPath: (p: string) => (p.includes('-worktrees/') ? p.split('-worktrees/')[0] : p),
+        resolveProjectPathCandidates: (p: string) => [
+            p.includes('-worktrees/') ? p.split('-worktrees/')[0] : p,
+        ],
+    };
+
+    const aliasAware = {
+        isWorktreePath: (p: string) => p.includes('-worktrees/'),
+        resolveProjectPath: (p: string) => (p.includes('-worktrees/') ? p.split('-worktrees/')[0] : p),
+        resolveProjectPathCandidates: (p: string) => {
+            const root = p.includes('-worktrees/') ? p.split('-worktrees/')[0] : p;
+            return root === REAL_A || root === PROJECT_A ? [REAL_A, PROJECT_A] : [root];
+        },
+    };
+
+    it('matches a window holding the as-opened spelling when asked for the realpath', () => {
+        const candidates: WorkspaceWindowCandidate[] = [
+            { windowId: 1, workspacePath: PROJECT_A, activeWorkspacePath: PROJECT_A },
+        ];
+
+        expect(matchWorkspaceWindow(candidates, REAL_A, aliasAware)).toEqual({
+            windowId: 1,
+            // The window's own key, so focus/activate messages address it by the
+            // string it registered under.
+            matchedPath: PROJECT_A,
+            isActive: true,
+            kind: 'active',
+        });
+    });
+
+    it("matches a worktree request against the parent's as-opened spelling", () => {
+        const candidates: WorkspaceWindowCandidate[] = [
+            { windowId: 2, workspacePath: PROJECT_A, activeWorkspacePath: PROJECT_A },
+        ];
+
+        expect(matchWorkspaceWindow(candidates, WORKTREE_REAL_A, aliasAware)).toEqual({
+            windowId: 2,
+            matchedPath: PROJECT_A,
+            isActive: true,
+            kind: 'worktree-parent',
+        });
+    });
+
+    it('does not treat an unrelated project as an alias', () => {
+        expect(
+            matchWorkspaceWindow([{ windowId: 3, workspacePath: PROJECT_B }], REAL_A, aliasAware)
+        ).toBeNull();
+    });
+
+    it('does not collapse two worktrees of one repo into each other', () => {
+        // Sibling checkouts share a parent, so their candidate lists are equal.
+        // They are still different working directories: a prompt for branch-one
+        // must not be delivered to the window holding branch-two.
+        const candidates: WorkspaceWindowCandidate[] = [
+            { windowId: 1, workspacePath: WORKTREE_B2, activeWorkspacePath: WORKTREE_B2 },
+        ];
+
+        expect(matchWorkspaceWindow(candidates, WORKTREE_B1, siblingWorktrees)).toBeNull();
+    });
+
+    it('still matches the real parent project for a worktree request', () => {
+        const candidates: WorkspaceWindowCandidate[] = [
+            { windowId: 1, workspacePath: WORKTREE_B2 },
+            { windowId: 2, workspacePath: REPO_B, activeWorkspacePath: REPO_B },
+        ];
+
+        expect(matchWorkspaceWindow(candidates, WORKTREE_B1, siblingWorktrees)).toEqual({
+            windowId: 2,
+            matchedPath: REPO_B,
+            isActive: true,
+            kind: 'worktree-parent',
+        });
+    });
+
+    it('reports the spelling the window is showing when its rail holds two aliases', () => {
+        // The rail's first entry and the visible project are the same directory
+        // under two names; answering with the inactive one would send a switch
+        // message to a window that is already there.
+        const candidates: WorkspaceWindowCandidate[] = [
+            {
+                windowId: 1,
+                workspacePath: REAL_A,
+                activeWorkspacePath: PROJECT_A,
+                additionalWorkspacePaths: [PROJECT_A],
+            },
+        ];
+
+        expect(matchWorkspaceWindow(candidates, REAL_A, aliasAware)).toEqual({
+            windowId: 1,
+            matchedPath: PROJECT_A,
+            isActive: true,
+            kind: 'active',
+        });
     });
 });
 

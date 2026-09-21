@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as fs from 'fs';
 import * as fsp from 'fs/promises';
@@ -32,7 +33,7 @@ describe('ActionPromptService', () => {
     expect(result.filePath).toBe(actionsFile);
   });
 
-  it('caches the parsed result until clearCache() is called', async () => {
+  it('rereads edits and deletion when native events are missed (#1524)', async () => {
     fs.mkdirSync(path.dirname(actionsFile), { recursive: true });
     fs.writeFileSync(actionsFile, '## First\nbody one\n', 'utf8');
 
@@ -41,15 +42,33 @@ describe('ActionPromptService', () => {
     expect(first.actions).toHaveLength(1);
     expect(first.actions[0].label).toBe('First');
 
-    // Edit the file -- without invalidation, the cache should serve stale data.
+    // No watcher callback: an edit during watcher downtime must still be visible.
     fs.writeFileSync(actionsFile, '## Second\nbody two\n', 'utf8');
-    const cached = await service.list();
-    expect(cached.actions[0].label).toBe('First');
-
-    service.clearCache();
     const fresh = await service.list();
     expect(fresh.actions).toHaveLength(1);
     expect(fresh.actions[0].label).toBe('Second');
+    fs.unlinkSync(actionsFile);
+    expect((await service.list()).fileExists).toBe(false);
+  });
+
+  it('reasserts its subscription on list after the bus loses subscribers', async () => {
+    const bus = await import('../../file/WorkspaceEventBus');
+    const service = new ActionPromptService(workspacePath);
+    await service.list();
+    vi.mocked(bus.subscribe).mockClear();
+    await service.list();
+    expect(bus.subscribe).toHaveBeenCalledTimes(1);
+    await service.dispose();
+  });
+
+  it('does not report a read error as a missing file and recovers on the next read', async () => {
+    fs.mkdirSync(actionsFile, { recursive: true });
+    const service = new ActionPromptService(workspacePath);
+    await expect(service.list()).rejects.toThrow();
+    fs.rmdirSync(actionsFile);
+    fs.writeFileSync(actionsFile, '## Recovered\nUsable again.\n');
+    expect((await service.list()).actions[0].label).toBe('Recovered');
+    await service.dispose();
   });
 
   it('ensureFileExists() seeds the default template when the file is missing', async () => {
@@ -71,7 +90,7 @@ describe('ActionPromptService', () => {
     expect(content).toBe('## Existing\ncustom body\n');
   });
 
-  it('notifies change listeners and clears cache on workspace fs events', async () => {
+  it('notifies change listeners on workspace fs events', async () => {
     fs.mkdirSync(path.dirname(actionsFile), { recursive: true });
     fs.writeFileSync(actionsFile, '## Original\noriginal body\n', 'utf8');
 

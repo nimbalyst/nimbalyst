@@ -88,3 +88,5 @@ export { TrackerActionList } from './detail/TrackerActionList';
 export type { TrackerItemAction, TrackerActionListProps, } from './detail/TrackerActionList';
 export { TrackerContextMenu } from './detail/TrackerContextMenu';
 export type { TrackerContextMenuPoint, TrackerContextMenuProps, } from './detail/TrackerContextMenu';
+export { getSupportedTrackerOrderingColumns } from '../../../runtime/src/plugins/TrackerPlugin/models/trackerOrdering';
+export { TRACKER_GROUPING_OPTIONS } from '../../../runtime/src/plugins/TrackerPlugin/models/trackerGrouping';

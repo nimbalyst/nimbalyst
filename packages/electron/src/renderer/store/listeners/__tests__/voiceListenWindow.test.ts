@@ -37,6 +37,27 @@ describe('VoiceListenWindowController', () => {
     expect(onExpire).toHaveBeenCalledTimes(1);
   });
 
+  it('renews a Live speech lease during a long utterance, then releases it', () => {
+    for (let i = 0; i < 30; i++) {
+      controller.speechStarted(1500);
+      controller.start('post-turn');
+      vi.advanceTimersByTime(1000);
+    }
+    expect(onExpire).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(500);
+    expect(controller.isUserSpeechActive).toBe(false);
+    vi.advanceTimersByTime(WINDOW_MS);
+    expect(onExpire).toHaveBeenCalledTimes(1);
+  });
+
+  it('cancels speech lease recovery on explicit sleep or session teardown', () => {
+    controller.speechStarted(1500);
+    controller.reset();
+    vi.advanceTimersByTime(WINDOW_MS * 2);
+    expect(onExpire).not.toHaveBeenCalled();
+    expect(controller.isUserSpeechActive).toBe(false);
+  });
+
   it('speechStarted clears a running timer so it cannot expire mid-utterance', () => {
     controller.start('speech-stopped');
     vi.advanceTimersByTime(WINDOW_MS - 1);

@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import React from 'react';
-import { Provider, createStore } from 'jotai';
+import { createHydratedOrgStore } from './organizationTestStore';
+import { Provider } from 'jotai';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -120,8 +121,8 @@ function CommandSource() {
   return null;
 }
 
-function renderWindow(deliveries: unknown[] = []) {
-  const store = createStore();
+async function renderWindow(deliveries: unknown[] = []) {
+  const store = await createHydratedOrgStore();
   store.set(conversationDirectoryAtomFamily('org-1'), conversations);
   store.set(orgSettingsAtomFamily('org-1'), {
     version: 1,
@@ -158,7 +159,7 @@ describe('org window keyboard messaging commands', () => {
 
   it('opens the compose destination picker on Cmd+K', async () => {
     installApi();
-    renderWindow();
+    await renderWindow();
     await waitFor(() => screen.getByTestId('org-room-item-general'));
     expect(screen.queryByTestId('compose-destination-dialog')).toBeNull();
 
@@ -169,7 +170,7 @@ describe('org window keyboard messaging commands', () => {
 
   it('opens the picker from the Messages menu over IPC', async () => {
     installApi();
-    renderWindow();
+    await renderWindow();
     await waitFor(() => screen.getByTestId('org-room-item-general'));
 
     act(() => { ipcListeners.get(ORG_WINDOW_COMMAND_CHANNEL)?.('newMessage'); });
@@ -179,7 +180,7 @@ describe('org window keyboard messaging commands', () => {
 
   it('ignores an unknown command from the main process', async () => {
     installApi();
-    renderWindow();
+    await renderWindow();
     await waitFor(() => screen.getByTestId('org-room-item-general'));
 
     act(() => { ipcListeners.get(ORG_WINDOW_COMMAND_CHANNEL)?.('drop-database'); });
@@ -189,7 +190,7 @@ describe('org window keyboard messaging commands', () => {
 
   it('walks the sidebar order with next / previous conversation, wrapping', async () => {
     installApi();
-    const store = renderWindow();
+    const store = await renderWindow();
     await waitFor(() => screen.getByTestId('org-room-item-general'));
 
     // Sorted: Design, then General pinned to the top — so the order is
@@ -209,7 +210,7 @@ describe('org window keyboard messaging commands', () => {
 
   it('returns to the inbox on Cmd+I', async () => {
     installApi();
-    const store = renderWindow();
+    const store = await renderWindow();
     await waitFor(() => screen.getByTestId('org-room-item-general'));
     act(() => { store.set(orgWindowRouteAtom, { view: 'conversation', conversationId: 'general' }); });
 
@@ -220,7 +221,7 @@ describe('org window keyboard messaging commands', () => {
 
   it('routes to the inbox and latches a search-focus request on Cmd+F', async () => {
     installApi();
-    const store = renderWindow();
+    const store = await renderWindow();
     await waitFor(() => screen.getByTestId('org-room-item-general'));
     act(() => { store.set(orgWindowRouteAtom, { view: 'conversation', conversationId: 'general' }); });
 
@@ -234,7 +235,7 @@ describe('org window keyboard messaging commands', () => {
 
   it('marks every unread delivery in the organization read on Cmd+Shift+U', async () => {
     installApi();
-    renderWindow([
+    await renderWindow([
       { id: 'd1', orgId: 'org-1', source: { orgId: 'org-1', sourceKind: 'roomMessage', sourceId: 'general', commentId: 'm1' } },
       { id: 'd2', orgId: 'org-1', readAt: 5, hasUnreadActivity: true, source: { orgId: 'org-1', sourceKind: 'roomMessage', sourceId: 'design', commentId: 'm2' } },
       // Already read, and another organization's — neither belongs in the batch.
@@ -250,7 +251,7 @@ describe('org window keyboard messaging commands', () => {
 
   it('does not call markRead when the organization has nothing unread', async () => {
     installApi();
-    renderWindow();
+    await renderWindow();
     await waitFor(() => screen.getByTestId('org-room-item-general'));
 
     pressKey({ key: 'U', metaKey: true, shiftKey: true });

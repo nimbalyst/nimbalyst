@@ -98,6 +98,8 @@ export type CloudflareSandboxErrorCode =
    * ephemeral, so the answer is to connect the node again, not to retry.
    */
   | 'node-not-provisioned'
+  /** Preparing the node's files or outbound policy failed. */
+  | 'node-provision-failed'
   /** The node configuration is in place but the process would not start. */
   | 'node-start-failed'
   /** The device-authorization grant against the sync server did not complete. */

@@ -12,3 +12,6 @@
 import { atom } from 'jotai';
 
 export const openAICodexAuthVersionAtom = atom(0);
+
+import type { WindowsSandboxState } from '@nimbalyst/runtime/ai/server/protocols/codexAppServer/windowsSandbox';
+export const openAICodexSandboxStateAtom = atom<WindowsSandboxState | null>(null);

@@ -30,6 +30,7 @@ export interface SyncCredentials {
 }
 
 const CREDENTIALS_FILE = 'sync-credentials.enc';
+const CREDENTIAL_LOAD_ERROR = 'Sync credentials could not be loaded. The existing encryption key file has been preserved.';
 
 let cachedCredentials: SyncCredentials | null = null;
 
@@ -94,25 +95,31 @@ function saveCredentials(credentials: SyncCredentials): void {
 function loadCredentials(): SyncCredentials | null {
   const credentialsPath = getCredentialsPath();
 
-  if (!fs.existsSync(credentialsPath)) {
-    return null;
+  let fileData: Buffer;
+  try {
+    fileData = fs.readFileSync(credentialsPath);
+  } catch (error) {
+    // Only a missing file permits creating a key. Access/keychain failures must
+    // never replace the key that existing synced data was encrypted with.
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw new Error(CREDENTIAL_LOAD_ERROR);
   }
 
   try {
-    const fileData = fs.readFileSync(credentialsPath);
-
-    if (isSafeStorageAvailable()) {
-      // Decrypt using OS keychain
-      const decrypted = safeStorage.decryptString(fileData);
-      return JSON.parse(decrypted);
-    } else {
-      // Fallback: try to read as plain JSON
-      const jsonData = fileData.toString('utf8');
-      return JSON.parse(jsonData);
+    const jsonData = isSafeStorageAvailable()
+      ? safeStorage.decryptString(fileData)
+      : fileData.toString('utf8');
+    const credentials = JSON.parse(jsonData) as SyncCredentials | null;
+    // Keep the existing minimum seed length requirement (32 bytes in base64),
+    // but preserve invalid credentials for recovery instead of rotating them.
+    if (!credentials || typeof credentials.encryptionKeySeed !== 'string' || credentials.encryptionKeySeed.length < 43) {
+      throw new Error('Invalid credential seed');
     }
-  } catch (error) {
-    logger.main.error('[CredentialService] Failed to load credentials:', error);
-    return null;
+    return credentials;
+  } catch {
+    // JSON parse errors can contain credential contents; do not expose them in
+    // logs or IPC errors. Failure leaves the file and the cache untouched.
+    throw new Error(CREDENTIAL_LOAD_ERROR);
   }
 }
 
@@ -140,22 +147,7 @@ export function getCredentials(): SyncCredentials {
       createdAt: new Date(credentials.createdAt).toISOString(),
     });
   } else {
-    // Validate seed has sufficient entropy.
-    // crypto.randomBytes(32).toString('base64') produces a 44-char string (32 bytes = 256 bits).
-    // Reject anything shorter than 43 chars (minimum for 32 bytes of base64).
-    const MIN_SEED_LENGTH = 43;
-    if (!credentials.encryptionKeySeed || credentials.encryptionKeySeed.length < MIN_SEED_LENGTH) {
-      logger.main.error(
-        '[CredentialService] Encryption seed too short or missing, regenerating.',
-        { length: credentials.encryptionKeySeed?.length ?? 0 }
-      );
-      credentials = createCredentials();
-      saveCredentials(credentials);
-    } else {
-      logger.main.info('[CredentialService] Loaded existing credentials', {
-        createdAt: new Date(credentials.createdAt).toISOString(),
-      });
-    }
+    logger.main.info('[CredentialService] Loaded existing credentials');
   }
 
   // Cache for subsequent calls

@@ -13,6 +13,8 @@ export function sessionListMetadata(
     updatedAt: s.updatedAt,
     provider: s.provider || "claude",
     model: s.model,
+    externalSource: s.externalSource,
+    externalLastActivityAt: s.externalLastActivityAt,
     sessionType: s.sessionType || "session",
     agentRole: s.agentRole || "standard",
     createdBySessionId: s.createdBySessionId || null,

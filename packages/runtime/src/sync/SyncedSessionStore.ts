@@ -1,3 +1,4 @@
+import { warnIfUnpublished } from './pushOutcome';
 /**
  * SyncedSessionStore - Decorator that adds sync capabilities to any SessionStore.
  *
@@ -121,20 +122,24 @@ export function createSyncedSessionStore(
     }
   }
 
-  // Push a change to sync (fire and forget)
+  // Await publication so asynchronous failures cannot escape the warning path.
   // metadata_updated changes can flow via the index channel even without a session room connection,
   // so we allow them through regardless of connectedSessions state.
-  function pushToSync(sessionId: string, change: SessionChange): void {
+  async function pushToSync(sessionId: string, change: SessionChange): Promise<void> {
     if (!connectedSessions.has(sessionId) && change.type !== 'metadata_updated') return;
 
     try {
-      syncProvider.pushChange(sessionId, change);
+      const outcome = await syncProvider.pushChange(sessionId, change);
+      warnIfUnpublished(message => console.warn(message), sessionId, '[SyncedSessionStore] Failed to publish change', outcome);
     } catch (error) {
       console.warn(`[SyncedSessionStore] Failed to push change for ${sessionId}:`, error);
     }
   }
 
   return {
+    findByProviderSessionId: baseStore.findByProviderSessionId?.bind(baseStore),
+    getMany: baseStore.getMany?.bind(baseStore),
+
     async ensureReady(): Promise<void> {
       return baseStore.ensureReady();
     },
@@ -156,7 +161,8 @@ export function createSyncedSessionStore(
         if (payload.workspaceId !== undefined) {
           metadata.workspaceId = payload.workspaceId;
         }
-        pushToSync(payload.id, {
+        // First render must not wait for index publication; pushToSync catches internally.
+        void pushToSync(payload.id, {
           type: 'metadata_updated',
           metadata: metadata as unknown as SyncedSessionMetadata,
         });
@@ -196,7 +202,8 @@ export function createSyncedSessionStore(
       // Creating a WebSocket connection for every metadata update (like draft input changes)
       // causes massive performance issues when many session tabs are open.
       // If the session isn't connected yet, the update will be synced when it is.
-      pushToSync(sessionId, {
+      // Draft writes must not queue behind index publication; pushToSync catches internally.
+      void pushToSync(sessionId, {
         type: 'metadata_updated',
         metadata: syncMetadata as unknown as SyncedSessionMetadata,
       });
@@ -230,7 +237,7 @@ export function createSyncedSessionStore(
     async delete(sessionId: string): Promise<void> {
       // Push deletion to sync first
       if (connectedSessions.has(sessionId)) {
-        pushToSync(sessionId, { type: 'session_deleted' });
+        await pushToSync(sessionId, { type: 'session_deleted' });
         syncProvider.disconnect(sessionId);
         connectedSessions.delete(sessionId);
       }
@@ -257,7 +264,8 @@ export function createSyncedSessionStore(
       // This is critical for mobile sync - title changes must reach other devices
       if (result) {
         await ensureSyncConnected(sessionId);
-        pushToSync(sessionId, {
+        // Naming must not wait for index publication; pushToSync catches internally.
+        void pushToSync(sessionId, {
           type: 'metadata_updated',
           metadata: { title, updatedAt: Date.now() },
         });
@@ -356,14 +364,16 @@ export function createMessageSyncHandler(syncProvider: SyncProvider) {
         type: 'message_added',
         message,
       });
+      warnIfUnpublished(message => console.warn(message), message.sessionId, '[MessageSyncHandler] Failed to publish message', outcome);
 
       // Also update the session index with the same timestamp used in local DB
       // This ensures updated_at matches exactly for sync comparisons
       if (sessionUpdatedAt !== undefined) {
-        await syncProvider.pushChange(message.sessionId, {
+        const metadataOutcome = await syncProvider.pushChange(message.sessionId, {
           type: 'metadata_updated',
           metadata: { updatedAt: sessionUpdatedAt },
         });
+        warnIfUnpublished(message => console.warn(message), message.sessionId, '[MessageSyncHandler] Failed to publish timestamp', metadataOutcome);
       }
 
       // A provider that reports nothing is assumed to have published: that is

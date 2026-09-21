@@ -9,7 +9,8 @@ import {
 } from 'react';
 import { useAtomValue, useStore } from 'jotai';
 
-import { organizationDirectoryAtom } from '../../store/atoms/settingsDomains';
+import { organizationDirectoryStateAtom, personalAccountsAtom } from '../../store/atoms/settingsDomains';
+import { refreshOrganizationDirectory } from '../../store/listeners/stytchAuthListeners';
 import { OrgModeBody } from './OrgModeBody';
 import { OrgModeUnboundArm } from './OrgModeUnboundArm';
 import { OrgWindowTitleBar } from './OrgWindowTitleBar';
@@ -22,9 +23,8 @@ import { isActiveMembership, persistLastSelectedOrgId } from './defaultOrg';
 import type { OrgModeHostProps, OrgModeHostRef, TeamSummary } from './orgModeTypes';
 import { normalizeTeamAnalyticsCallerRole } from '../../../shared/analytics/teamAnalytics';
 import { trackTeamAnalyticsEvent } from '../../utils/teamAnalytics';
-import { CONSOLE_ORIGIN } from '../../../shared/consoleOrigin';
 
-export type { OrgModeChrome, OrgModeHostProps, OrgModeHostRef } from './orgModeTypes';
+export type { OrgModeChrome, OrgModeHostProps, OrgModeHostRef, TeamSummary } from './orgModeTypes';
 
 export const OrgModeHost = forwardRef<OrgModeHostRef, OrgModeHostProps>(
   function OrgModeHost(props, ref) {
@@ -57,13 +57,18 @@ function OrgModeHostContent({
   onOrgIdChange,
   sidebarCollapsed,
 }: OrgModeHostProps & { sidebarCollapsed: boolean }) {
-  const hydratedOrganizations = useAtomValue(organizationDirectoryAtom);
-  const [team, setTeam] = useState<TeamSummary | null>(null);
-  const [organizations, setOrganizations] = useState<TeamSummary[]>([]);
-  const [boundEmail, setBoundEmail] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [organizationLoadError, setOrganizationLoadError] = useState<string | null>(null);
-  const [organizationReloadNonce, setOrganizationReloadNonce] = useState(0);
+  const directory = useAtomValue(organizationDirectoryStateAtom);
+  const accounts = useAtomValue(personalAccountsAtom);
+  const organizations = directory.entries;
+  const [workspaceTarget, setWorkspaceTarget] = useState<{ path: string; orgId: string | null } | null>(null);
+  const workspaceOrgId = workspaceTarget && workspaceTarget.path === workspacePath ? workspaceTarget.orgId : null;
+  const [workspaceLoading, setWorkspaceLoading] = useState(false);
+  const [localError, setLocalError] = useState<string | null>(null);
+  const team = organizations.find((organization) =>
+    organization.orgId === (orgId ?? workspaceOrgId) && isActiveMembership(organization.membershipType)) ?? null;
+  const personalOrgId = team?.boundPersonalOrgId ?? team?.owningPersonalOrgId;
+  const boundEmail = accounts.find((account) => account.personalOrgId === personalOrgId)?.email ?? team?.sourceEmail ?? null;
+  const organizationLoadError = directory.status === 'error' ? directory.error ?? 'Organizations could not be loaded.' : localError;
   const surfaceOpenRecordedRef = useRef(false);
 
   const selectOrganization = useCallback((orgId: string) => {
@@ -77,79 +82,43 @@ function OrgModeHostContent({
     void persistLastSelectedOrgId(orgId);
   }, [onOrgIdChange, organizations]);
 
-  const reloadOrganizations = useCallback(
-    () => setOrganizationReloadNonce((value) => value + 1),
-    [],
-  );
+  const reloadOrganizations = useCallback(() => {
+    setLocalError(null);
+    refreshOrganizationDirectory();
+  }, []);
 
   useEffect(() => {
-    if (!isActive) return;
-    setLoading(true);
-    setOrganizationLoadError(null);
+    if (!isActive || orgId || !workspacePath || !directory.complete) {
+      setWorkspaceLoading(false);
+      return;
+    }
     let cancelled = false;
-    void Promise.all([
-      // Only the workspace-hosted surface falls back to the workspace's team.
-      // The standalone org window always targets an explicitly selected org.
-      workspacePath
-        ? window.electronAPI.team.findForWorkspace(workspacePath)
-        : Promise.resolve(null),
-      window.electronAPI.stytch.getAccounts(),
-      // Always listed: the switcher offers every active membership, not just
-      // the targeted one. `team:list` is cached in main, so this is cheap.
-      window.electronAPI.organization.list(),
-    ]).then(([result, accounts, directory]) => {
+    setWorkspaceLoading(true);
+    void window.electronAPI.team.findForWorkspace(workspacePath).then((result: { success?: boolean; complete?: boolean; team?: TeamSummary | null; orgId?: string; error?: string } | null) => {
       if (cancelled) return;
-      if (directory?.success === false) {
-        throw new Error(directory.error || 'Organization directory unavailable');
+      if (result?.success === false || result?.complete === false) {
+        throw new Error(result?.error || 'Workspace organization could not be loaded.');
       }
-      const workspaceTeam = result?.team ?? result ?? null;
-      const listedOrganizations: TeamSummary[] =
-        directory?.success && Array.isArray(directory.teams)
-          ? directory.teams
-          : [];
-      const organizations = listedOrganizations.length > 0
-        ? listedOrganizations
-        : hydratedOrganizations;
-      setOrganizations(organizations);
-      const selectedTeam = orgId
-        ? organizations.find((organization) =>
-          organization.orgId === orgId && isActiveMembership(organization.membershipType)) ?? null
-        : null;
-
-      const found = orgId ? selectedTeam : workspaceTeam;
-      setTeam(found?.orgId ? found : null);
-      if (!surfaceOpenRecordedRef.current) {
-        surfaceOpenRecordedRef.current = true;
-        trackTeamAnalyticsEvent('team_surface_opened', {
-          surface: 'desktop',
-          entryPoint: 'account_org_list',
-          hasActiveOrganization: !!found?.orgId,
-          callerRole: normalizeTeamAnalyticsCallerRole(found?.role),
-        });
-      }
-      const personalOrgId = found?.boundPersonalOrgId ?? found?.owningPersonalOrgId;
-      setBoundEmail(accounts.find((account) => account.personalOrgId === personalOrgId)?.email ?? found?.sourceEmail ?? null);
-      setLoading(false);
-    }).catch((error) => {
-      if (!cancelled) {
-        setOrganizationLoadError(
-          error instanceof Error ? error.message : String(error),
-        );
-        setLoading(false);
-      }
-    });
+      setWorkspaceTarget({ path: workspacePath, orgId: (result?.team ?? result)?.orgId ?? null });
+      setLocalError(null);
+    }).catch((error: unknown) => {
+      if (!cancelled) setLocalError(error instanceof Error ? error.message : String(error));
+    }).finally(() => { if (!cancelled) setWorkspaceLoading(false); });
     return () => { cancelled = true; };
-  }, [
-    hydratedOrganizations,
-    isActive,
-    organizationReloadNonce,
-    orgId,
-    workspacePath,
-  ]);
+  }, [directory, isActive, orgId, workspacePath]);
+
+  useEffect(() => {
+    if (!isActive || !directory.complete || workspaceLoading || (!orgId && workspacePath && workspaceTarget?.path !== workspacePath) || surfaceOpenRecordedRef.current) return;
+    surfaceOpenRecordedRef.current = true;
+    trackTeamAnalyticsEvent('team_surface_opened', {
+      surface: 'desktop', entryPoint: 'account_org_list', hasActiveOrganization: !!team,
+      callerRole: normalizeTeamAnalyticsCallerRole(team?.role),
+    });
+  }, [directory.complete, isActive, orgId, team, workspaceLoading, workspacePath, workspaceTarget]);
 
   // Every arm carries the title-bar strip: the traffic lights are drawn over
   // the window whatever it is showing, and they must never land on content.
-  if (loading) {
+  if (!team && (directory.status === 'loading' || workspaceLoading)) {
     return (
       <section className="org-mode-host team-mode team-mode-loading-arm flex h-full flex-col overflow-hidden bg-[var(--nim-bg)] text-[var(--nim-text)]" data-component="OrgModeHost">
         {chrome === 'window' && <OrgWindowTitleBar />}
@@ -167,21 +136,29 @@ function OrgModeHostContent({
         loadError={organizationLoadError}
         onSelectOrganization={selectOrganization}
         onReload={reloadOrganizations}
-        onLoadError={setOrganizationLoadError}
+        onLoadError={setLocalError}
       />
     );
   }
 
   return (
-    <OrgModeBody
-      team={team}
-      organizations={organizations}
-      boundEmail={boundEmail}
-      workspacePath={workspacePath}
-      surfaceId={surfaceId}
-      chrome={chrome}
-      sidebarCollapsed={sidebarCollapsed}
-      onSelectOrganization={selectOrganization}
-    />
+    <div className="org-mode-directory-host flex h-full min-h-0 flex-col">
+      {!directory.complete && (
+        <div className="org-mode-directory-status px-4 py-2 text-sm text-nim-muted" role="status">
+          {directory.status === 'error' ? organizationLoadError : 'Refreshing organizations…'}
+          {directory.status === 'error' && <button type="button" onClick={reloadOrganizations}>Retry</button>}
+        </div>
+      )}
+      <OrgModeBody
+        team={team}
+        organizations={organizations}
+        boundEmail={boundEmail}
+        workspacePath={workspacePath}
+        surfaceId={surfaceId}
+        chrome={chrome}
+        sidebarCollapsed={sidebarCollapsed}
+        onSelectOrganization={selectOrganization}
+      />
+    </div>
   );
 }

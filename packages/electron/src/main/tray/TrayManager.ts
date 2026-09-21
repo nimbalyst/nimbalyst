@@ -1,3 +1,4 @@
+import { warnIfUnpublished } from '@nimbalyst/runtime/sync/pushOutcome';
 /**
  * TrayManager - System tray icon and menu for AI session status
  *
@@ -1739,10 +1740,11 @@ export class TrayManager {
         },
       });
       if (syncProvider) {
-        syncProvider.pushChange(sessionId, {
+        const outcome = await syncProvider.pushChange(sessionId, {
           type: 'metadata_updated',
           metadata: { lastReadAt },
         });
+        warnIfUnpublished(message => logger.main.warn(message), sessionId, '[TrayManager] Failed to publish read state', outcome);
       }
     } catch (error) {
       logger.main.error('[TrayManager] Failed to persist read state from tray action:', error);

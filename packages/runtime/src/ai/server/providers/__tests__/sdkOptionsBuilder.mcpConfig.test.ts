@@ -141,7 +141,8 @@ describe('buildSdkOptions MCP config (NIM-2372)', () => {
     expect(childEnv.PATH).toBeTruthy();
   });
 
-  it('drops the whole mcpServers map under enterprise MCP lockdown (the binary rejects any dynamic config)', async () => {
+  it.each([false, true])('avoids conflicting MCP options under enterprise lockdown (explicit-only: %s)', async (explicitOnly) => {
+    if (explicitOnly) setHostEnvironment({ isPackaged: () => false, getAppPath: () => '/app', agentConfiguration: 'explicit-only' });
     const deps = makeDeps({
       getMcpServersSnapshot: async () => ({ nimbalyst: { type: 'sse', url: 'http://127.0.0.1:1/mcp' } }),
       hasEnterpriseMcpLockdown: () => true,
@@ -150,6 +151,7 @@ describe('buildSdkOptions MCP config (NIM-2372)', () => {
     const { options } = await buildSdkOptions(deps, makeParams());
 
     expect(options.mcpServers).toEqual({});
+    expect(options.strictMcpConfig).toBeUndefined();
   });
 
   it('passes the snapshot through when there is no lockdown', async () => {

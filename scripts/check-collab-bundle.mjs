@@ -25,20 +25,32 @@ export const COLLAB_BUNDLE_EAGER_GZIP_BUDGET_BYTES = {
   // hands to a pinned extension, and nothing else. If this jumps, the comment
   // UI has grown an editor or transport dependency it should not have.
   // Initially 29,203 gzip bytes; same ~26% headroom as the shells above.
-  'commenting-ui': 37_000,
+  // Measured at 39,571 gzip bytes on 2026-09-12: the comment UI itself did not
+  // change, but its static path includes the shared floating-ui chunk, which
+  // grew when the canvas selection bar and context menu started using
+  // FloatingFocusManager and useListNavigation. Reset with ~11% headroom.
+  'commenting-ui': 44_000,
   // Project Canvas: React Flow, the card tree, the binding, and the SDK's
   // collaborative-editor hook. Measured at 94,278 gzip bytes on first build;
   // same ~26% headroom as the shells above. This entry is never eager in a
   // host -- the console imports it only when a board opens -- so the ceiling
   // is about the board's own cost, not the console's first paint.
-  canvas: 118_000,
+  // Measured at 145,660 gzip bytes on 2026-09-12 after the canvas controls
+  // landed (command registry, selection bar, context menu, zoom widget, tool
+  // rail, keyboard map, lock/group, plus the floating-ui focus and list
+  // navigation hooks their menus use). Reset with ~10% headroom.
+  canvas: 160_000,
   editor: 320_000,
   // Measured at 70,625 gzip bytes on 2026-09-08, when the list took over
   // folder browsing from the tree for the browser console (folder rows, the
   // browse scope, the row "more" action). The row context menu itself is
   // lazy-loaded from the list and is not in this graph; a static import of
   // `SharedDocsItemMenu` is what would push this over again.
-  'docs-ui': 74_000,
+  // Measured at 75,122 gzip bytes on 2026-09-12. The docs UI did not change;
+  // its static path includes the shared floating-ui chunk, which grew when the
+  // canvas menus started using FloatingFocusManager and useListNavigation.
+  // Reset with ~6% headroom.
+  'docs-ui': 80_000,
   // Sep 5 privacy-aware document transport graph measured 35,049 bytes.
   // Keep a narrow allowance for the supported response/refresh contract.
   'feedback-ui': 35_500,

@@ -14,8 +14,10 @@
 import React from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import type { EditorHost } from '@nimbalyst/runtime';
-import { getExtensionLoader, getBaseThemeColors, hasExtensionEditorAPI, getExtensionEditorAPI, type ExtendedThemeColors } from '@nimbalyst/runtime';
-import { waitForEditorRegistration } from './waitForEditorRegistration';
+import { getExtensionLoader, initializeExtensions, DocumentPathProvider, MarkdownEditor, MonacoEditor, getBaseThemeColors, hasExtensionEditorAPI, getExtensionEditorAPI, type ExtendedThemeColors } from '@nimbalyst/runtime';
+import { captureNativeElement, captureNativeRect, visibleCaptureRect, type CaptureRect } from './nativeScreenshot';
+import { resolveScreenshotEditor } from './resolveScreenshotEditor';
+import { ImageViewer } from '../components/ImageViewer';
 import { assertFileSaveSucceeded } from '../utils/fileSaveResult';
 import { createProjectFileSystemHost } from './projectFileSystemHost';
 // Note: Window globals for mockup annotations are declared in @nimbalyst/runtime
@@ -109,14 +111,12 @@ interface OffscreenEditorInstance {
   host: EditorHost;
 }
 
-export interface CaptureRect {
-  x: number;
-  y: number;
-  width: number;
-  height: number;
-}
+export type { CaptureRect } from './nativeScreenshot';
 
 class OffscreenEditorRendererImpl {
+  // Different file requests share the capture window. Never reposition a second
+  // editor until the first capture has restored the shared container.
+  private captureQueue: Promise<void> = Promise.resolve();
   private editors = new Map<string, OffscreenEditorInstance>();
   private hiddenContainer: HTMLDivElement | null = null;
 
@@ -164,29 +164,14 @@ class OffscreenEditorRendererImpl {
       return;
     }
 
-    // Find extension that handles this file
+    // Wait for startup registration before deciding whether an extension overrides
+    // a built-in type. The same pipeline also mounts Markdown, code, and images.
+    await initializeExtensions();
     const extensionLoader = getExtensionLoader();
-
-    // Extract file extension (including multi-part extensions like .mockup.html)
-    const fileName = filePath.split('/').pop() || filePath;
-    const firstDotIndex = fileName.indexOf('.');
-    const fileExtension = firstDotIndex >= 0 ? fileName.slice(firstDotIndex) : '';
-
-    if (!fileExtension) {
-      throw new Error(`File has no extension: ${filePath}`);
-    }
-
-    // Use the extension loader's built-in method to find the editor. In the
-    // hidden capture window, mount requests can arrive before the extension
-    // system has registered its editors (main only waits a fixed 1s after
-    // load), so wait bounded for registration instead of failing the race.
-    const editorInfo = await waitForEditorRegistration(
-      () => extensionLoader.findEditorForExtension(fileExtension)
-    ).catch(() => null);
-
-    if (!editorInfo) {
-      throw new Error(`No custom editor registered for ${filePath} (extension: ${fileExtension})`);
-    }
+    const editor = resolveScreenshotEditor(filePath, suffix =>
+      extensionLoader.findEditorForExtension(suffix)?.component
+    );
+    const fileName = filePath.split(/[\\/]/).pop() ?? filePath;
 
     // Create container for this editor
     const container = document.createElement('div');
@@ -200,10 +185,14 @@ class OffscreenEditorRendererImpl {
     // Create React root and mount editor
     const root = createRoot(container);
 
-    const EditorComponent = editorInfo.component as React.ComponentType<{ host: EditorHost }>;
-    root.render(
-      React.createElement(EditorComponent, { host })
-    );
+    let renderedEditor: React.ReactNode;
+    switch (editor.type) {
+      case 'custom': renderedEditor = React.createElement(editor.component, { host }); break;
+      case 'markdown': renderedEditor = React.createElement(MarkdownEditor, { host, config: { editable: false, showToolbar: false } }); break;
+      case 'image': renderedEditor = React.createElement(ImageViewer, { filePath, fileName }); break;
+      case 'code': renderedEditor = React.createElement(MonacoEditor, { host, fileName, config: { editorOptions: { readOnly: true } } }); break;
+    }
+    root.render(React.createElement(DocumentPathProvider, { documentPath: filePath, children: renderedEditor }));
 
     // Store instance
     this.editors.set(filePath, {
@@ -445,9 +434,13 @@ class OffscreenEditorRendererImpl {
    *
    * Returns base64-encoded PNG data.
    */
-  public async captureScreenshot(filePath: string, selector?: string, theme?: string): Promise<string> {
-    const electronAPI = (window as any).electronAPI;
+  public captureScreenshot(filePath: string, selector?: string, theme?: string): Promise<string> {
+    const capture = this.captureQueue.then(() => this.captureScreenshotNow(filePath, selector, theme));
+    this.captureQueue = capture.then(() => {}, () => {});
+    return capture;
+  }
 
+  private async captureScreenshotNow(filePath: string, selector?: string, theme?: string): Promise<string> {
     // If the editor's registered API supports direct PNG export, use it.
     // This produces a clean, auto-cropped image with no toolbar UI.
     // Extensions opt in by adding an exportToPngBlob method to their registered API.
@@ -467,11 +460,7 @@ class OffscreenEditorRendererImpl {
     const visibleRect = this.findVisibleEditorRect(filePath, selector);
     if (visibleRect) {
       // console.log('[OffscreenEditorRenderer] Capturing visible editor for', filePath);
-      const result = await electronAPI.invoke('offscreen-editor:native-capture', { rect: visibleRect });
-      if (!result.success) {
-        throw new Error(result.error || 'Native capture failed');
-      }
-      return result.imageBase64;
+      return captureNativeRect(visibleRect);
     }
 
     // Fall back to offscreen editor -- position, capture, restore all here
@@ -525,28 +514,7 @@ class OffscreenEditorRendererImpl {
         throw new Error(`Element not found: ${selector || 'container'}`);
       }
 
-      const domRect = targetElement.getBoundingClientRect();
-
-      if (domRect.width <= 0 || domRect.height <= 0) {
-        throw new Error(`Editor element has zero dimensions: ${domRect.width}x${domRect.height}`);
-      }
-
-      const rect = {
-        x: Math.round(domRect.x),
-        y: Math.round(domRect.y),
-        width: Math.round(domRect.width),
-        height: Math.round(domRect.height),
-      };
-
-      // console.log('[OffscreenEditorRenderer] Capturing offscreen editor:', rect.width, 'x', rect.height);
-
-      // Invoke native capture -- main process calls capturePage(rect)
-      const result = await electronAPI.invoke('offscreen-editor:native-capture', { rect });
-      if (!result.success) {
-        throw new Error(result.error || 'Native capture failed');
-      }
-
-      return result.imageBase64;
+      return await captureNativeElement(targetElement);
     } finally {
       // ALWAYS restore -- this runs even if capture throws
       for (const [prop, value] of Object.entries(originalStyles)) {
@@ -604,36 +572,11 @@ class OffscreenEditorRendererImpl {
    * Returns null if no visible editor is found.
    */
   private findVisibleEditorRect(filePath: string, selector?: string): CaptureRect | null {
-    // Check for visible Excalidraw editor via central registry
-    if (filePath.endsWith('.excalidraw') && hasExtensionEditorAPI(filePath)) {
-      const editors = document.querySelectorAll('.excalidraw-editor');
-      if (editors.length > 0) {
-        const el = (selector ? editors[0].querySelector(selector) : editors[0]) as HTMLElement;
-        if (el) {
-          const rect = el.getBoundingClientRect();
-          if (rect.width > 0 && rect.height > 0) {
-            return { x: Math.round(rect.x), y: Math.round(rect.y), width: Math.round(rect.width), height: Math.round(rect.height) };
-          }
-        }
-      }
-    }
-
-    // Check for any visible editor by data-file-path attribute
-    const editorWrapper = document.querySelector(`[data-file-path="${filePath}"]`) as HTMLElement | null;
-    if (editorWrapper) {
-      const rect = editorWrapper.getBoundingClientRect();
-      if (rect.width > 0 && rect.height > 0) {
-        // For mockups/iframe editors, try to find the content area
-        const contentArea = editorWrapper.querySelector('.flex-1.overflow-hidden') as HTMLElement | null;
-        if (contentArea) {
-          const contentRect = contentArea.getBoundingClientRect();
-          if (contentRect.width > 0 && contentRect.height > 0) {
-            return { x: Math.round(contentRect.x), y: Math.round(contentRect.y), width: Math.round(contentRect.width), height: Math.round(contentRect.height) };
-          }
-        }
-
-        return { x: Math.round(rect.x), y: Math.round(rect.y), width: Math.round(rect.width), height: Math.round(rect.height) };
-      }
+    // Never capture a different tab when the requested file is hidden.
+    for (const wrapper of document.querySelectorAll<HTMLElement>(`[data-file-path="${CSS.escape(filePath)}"]`)) {
+      const target = selector ? wrapper.querySelector<HTMLElement>(selector) : wrapper;
+      if (!target) continue;
+      try { return visibleCaptureRect(target); } catch { /* Try another mounted instance. */ }
     }
 
     return null;

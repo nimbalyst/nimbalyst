@@ -59,9 +59,6 @@ public struct ProjectListView: View {
         }
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
-                connectionIndicator
-            }
-            ToolbarItem(placement: .primaryAction) {
                 accountSwitcher
             }
             #if os(iOS)
@@ -137,22 +134,6 @@ public struct ProjectListView: View {
         return UIImage(named: lastIcon)
     }
     #endif
-
-    private var isDesktopConnected: Bool {
-        if appState.screenshotMode { return true }
-        return appState.syncManager?.connectedDevices.contains(where: { $0.type == "desktop" }) ?? false
-    }
-
-    private var connectionIndicator: some View {
-        HStack(spacing: 4) {
-            Image(systemName: "desktopcomputer")
-                .font(.system(size: 14))
-                .foregroundStyle(appState.isConnected ? .primary : .secondary)
-            Circle()
-                .fill(isDesktopConnected ? Color.green : (appState.isConnected ? Color.orange : Color.gray))
-                .frame(width: 8, height: 8)
-        }
-    }
 
     private var accountSwitcher: some View {
         Menu {

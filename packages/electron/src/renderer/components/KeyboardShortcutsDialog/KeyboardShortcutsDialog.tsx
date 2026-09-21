@@ -7,6 +7,7 @@ import {
   type RegisteredKeybinding,
 } from '../../extensions/commands/ExtensionCommandRegistry';
 import { getExtensionLoader } from '@nimbalyst/runtime';
+import { CANVAS_SHORTCUT_TABLE } from '@nimbalyst/runtime/canvas/canvasKeymap';
 import { developerModeAtom } from '../../store/atoms/appSettings';
 
 interface KeyboardShortcutsDialogProps {
@@ -25,6 +26,25 @@ interface ShortcutGroup {
 type TabId = 'general' | 'editor' | 'extensions';
 
 const IS_MAC = navigator.platform.toUpperCase().indexOf('MAC') >= 0;
+
+const canvasKeyTokens: Record<string, string> = {
+  Mod: 'Cmd',
+  ArrowLeft: '←',
+  ArrowRight: '→',
+  ArrowUp: '↑',
+  ArrowDown: '↓',
+  '+': 'Plus',
+  '-': 'Minus',
+};
+
+// Shared across renders: never mutate this group or its shortcuts in place.
+const canvasShortcuts: ShortcutGroup = {
+  title: 'Project Canvas',
+  shortcuts: CANVAS_SHORTCUT_TABLE.map(({ label, keys }) => ({
+    label,
+    shortcut: keys.map(key => canvasKeyTokens[key] ?? key).join('+'),
+  })),
+};
 
 /**
  * Convert a manifest key string like "ctrl+shift+g" to the display format
@@ -113,7 +133,7 @@ export function KeyboardShortcutsDialog({ isOpen, onClose }: KeyboardShortcutsDi
 
   if (!isOpen) return null;
 
-  // All general shortcuts are defined in: packages/electron/src/shared/KeyboardShortcuts.ts
+  // Application shortcuts come from shared/KeyboardShortcuts.ts; canvas shortcuts come from the runtime keymap.
   const generalShortcuts: ShortcutGroup[] = [
     {
       title: 'File',
@@ -148,6 +168,7 @@ export function KeyboardShortcutsDialog({ isOpen, onClose }: KeyboardShortcutsDi
         { label: 'Reject Current Action', shortcut: KeyboardShortcuts.edit.reject }, // shared/KeyboardShortcuts.ts:36 - Cmd+Shift+Backspace
         { label: 'Toggle Plan Mode (Claude Code)', shortcut: 'Shift+Tab' }, // AIInput.tsx - toggle between Plan/Agent mode
         { label: 'Choose AI Model (AI input focused)', shortcut: 'Cmd+Shift+M' }, // AIInput.tsx
+        { label: 'Next / Previous AI menu (model, effort, actions)', shortcut: 'Tab / Shift+Tab' }, // AIInputControls.tsx
       ],
     },
     {
@@ -217,6 +238,7 @@ export function KeyboardShortcutsDialog({ isOpen, onClose }: KeyboardShortcutsDi
         { label: 'Redo grid edit', shortcut: IS_MAC ? '⌘+Shift+Z' : 'Ctrl+Shift+Z' },
       ],
     },
+    canvasShortcuts,
   ];
 
   // Editor shortcuts are defined in: packages/runtime/src/editor/plugins/ShortcutsPlugin/shortcuts.ts

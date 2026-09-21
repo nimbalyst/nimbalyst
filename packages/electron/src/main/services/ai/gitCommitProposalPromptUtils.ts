@@ -1,5 +1,6 @@
 import {
   resolveGitCommitProposalLookup,
+  parseCodexToolLookupId,
   type GitCommitProposalLookupCandidate,
 } from '@nimbalyst/runtime/ai/server/toolLookupIds';
 
@@ -14,6 +15,7 @@ export function resolveGitCommitProposalPromptIdFromRows(
   promptId: string,
   proposalRows: Array<{ content: string; created_at: Date | string }>,
   responseRows: Array<{ content: string }>,
+  allowSinglePendingFallback = true,
 ): string | null {
   const proposals: GitCommitProposalLookupCandidate[] = [];
   for (const row of proposalRows) {
@@ -50,6 +52,12 @@ export function resolveGitCommitProposalPromptIdFromRows(
     (proposal) => !respondedProposalIds.has(proposal.proposalId),
   );
 
+  if (!allowSinglePendingFallback) {
+    const rawId = parseCodexToolLookupId(promptId)?.itemId;
+    const exact = proposals.filter(p => p.proposalId === promptId || p.toolUseId === promptId || (rawId && p.toolUseId === rawId));
+    return exact.length === 1 ? exact[0].proposalId : null;
+  }
+
   const resolvedUnresolved = resolveGitCommitProposalLookup(promptId, unresolvedProposals);
   if (resolvedUnresolved) {
     return resolvedUnresolved;
@@ -60,7 +68,7 @@ export function resolveGitCommitProposalPromptIdFromRows(
     return resolvedAny;
   }
 
-  if (unresolvedProposals.length === 1) {
+  if (allowSinglePendingFallback && unresolvedProposals.length === 1) {
     return unresolvedProposals[0].proposalId;
   }
 
@@ -77,6 +85,7 @@ export function resolveGitCommitProposalPromptIdFromRows(
 export async function resolveGitCommitProposalPromptId(
   sessionId: string,
   promptId: string,
+  allowSinglePendingFallback = true,
 ): Promise<string> {
   if (!sessionId || !promptId) {
     return promptId;
@@ -104,14 +113,16 @@ export async function resolveGitCommitProposalPromptId(
       [sessionId],
     );
 
-    const resolvedId = resolveGitCommitProposalPromptIdFromRows(promptId, proposalRows, responseRows);
+    const resolvedId = resolveGitCommitProposalPromptIdFromRows(promptId, proposalRows, responseRows, allowSinglePendingFallback);
     if (resolvedId) {
       // console.log(
       //   `[gitCommitProposalPromptUtils] Remapped git commit prompt ID from ${promptId} to ${resolvedId}`,
       // );
       return resolvedId;
     }
+    if (!allowSinglePendingFallback) throw new Error('Cannot identify this exact commit proposal. Refresh the session before answering.');
   } catch (error) {
+    if (!allowSinglePendingFallback) throw error;
     console.warn('[gitCommitProposalPromptUtils] Failed to resolve git commit prompt ID:', error);
   }
 

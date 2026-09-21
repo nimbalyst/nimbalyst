@@ -1,0 +1,59 @@
+diff --git a/node_modules/@revolist/revogrid/dist/collection/components/data/column.service.js b/node_modules/@revolist/revogrid/dist/collection/components/data/column.service.js
+index fdd8af9..33d6db8 100644
+--- a/node_modules/@revolist/revogrid/dist/collection/components/data/column.service.js
++++ b/node_modules/@revolist/revogrid/dist/collection/components/data/column.service.js
+@@ -4,7 +4,7 @@
+ import { getSourceItem, getVisibleSourceItem } from "../../store/index";
+ import { CELL_CLASS, DISABLED_CLASS, getCellRaw, getCellData, } from "../../utils";
+ import { getRange } from "../../store/index";
+-import { isGroupingColumn } from "../../plugins/groupingRow/grouping.service";
++import { isGrouping, isGroupingColumn } from "../../plugins/groupingRow/grouping.service";
+ import slice from "lodash/slice";
+ export function getCellEditor(column, editors = {}) {
+     const editor = column === null || column === void 0 ? void 0 : column.editor;
+@@ -152,7 +152,11 @@ export default class ColumnService {
+         // rows
+         let rowIndex = start.y;
+         let maxCol = 0;
+-        for (let i = 0; rowIndex < rowLength && i < copyRowLength; rowIndex++, i++) {
++        for (let i = 0; rowIndex < rowLength && i < copyRowLength; rowIndex++) {
++            // Group headers occupy row indexes but are not destination records.
++            if (isGrouping(getSourceItem(this.dataStore, rowIndex))) {
++                continue;
++            }
+             // copy original data link
+             const copyRow = data[i % copyRowLength];
+             const copyColLength = (copyRow === null || copyRow === void 0 ? void 0 : copyRow.length) || 0;
+@@ -171,6 +175,7 @@ export default class ColumnService {
+                 }
+             }
+             maxCol = Math.max(maxCol, colIndex - 1);
++            i++;
+         }
+         const range = getRange(start, {
+             y: rowIndex - 1,
+diff --git a/node_modules/@revolist/revogrid/dist/esm/column.service-8pPNyrKn.js b/node_modules/@revolist/revogrid/dist/esm/column.service-8pPNyrKn.js
+index 659d9f4..56e6d1b 100644
+--- a/node_modules/@revolist/revogrid/dist/esm/column.service-8pPNyrKn.js
++++ b/node_modules/@revolist/revogrid/dist/esm/column.service-8pPNyrKn.js
+@@ -816,7 +816,11 @@ class ColumnService {
+         // rows
+         let rowIndex = start.y;
+         let maxCol = 0;
+-        for (let i = 0; rowIndex < rowLength && i < copyRowLength; rowIndex++, i++) {
++        for (let i = 0; rowIndex < rowLength && i < copyRowLength; rowIndex++) {
++            // Group headers occupy row indexes but are not destination records.
++            if (isGrouping(getSourceItem(this.dataStore, rowIndex))) {
++                continue;
++            }
+             // copy original data link
+             const copyRow = data[i % copyRowLength];
+             const copyColLength = (copyRow === null || copyRow === void 0 ? void 0 : copyRow.length) || 0;
+@@ -835,6 +839,7 @@ class ColumnService {
+                 }
+             }
+             maxCol = Math.max(maxCol, colIndex - 1);
++            i++;
+         }
+         const range = getRange(start, {
+             y: rowIndex - 1,

@@ -1,0 +1,24 @@
+{
+  "type": "session.closed",
+  "event_id": "closed_1",
+  "reason": "connection_lost",
+  "session": {
+    "id": "live_fixture_1",
+    "model": "gpt-live-1",
+    "expires_at": 1789232400,
+    "status": "active",
+    "audio": {
+      "format": {
+        "type": "audio/pcm",
+        "rate": 24000
+      },
+      "output": {
+        "voice": "marin"
+      }
+    },
+    "store": false
+  },
+  "usage": {
+    "seconds": 27
+  }
+}

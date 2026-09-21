@@ -1,0 +1,136 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Count 5 /Kids [4 0 R 6 0 R 8 0 R 10 0 R 12 0 R] >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+4 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 792 612]  /Resources << /Font << /F1 3 0 R >> >> /Contents 5 0 R >>
+endobj
+5 0 obj
+<< /Length 151 >>
+stream
+q
+0.93 0.96 1 rg
+80 80 450 400 re f
+0.1 0.2 0.5 RG
+2 w
+80 80 450 400 re S
+BT
+/F1 22 Tf
+0.1 0.2 0.5 rg
+100 430 Td
+(Landscape Letter - page one) Tj
+ET
+Q
+endstream
+endobj
+6 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 792 612]  /Resources << /Font << /F1 3 0 R >> >> /Contents 7 0 R >>
+endobj
+7 0 obj
+<< /Length 151 >>
+stream
+q
+0.93 0.96 1 rg
+80 80 450 400 re f
+0.1 0.2 0.5 RG
+2 w
+80 80 450 400 re S
+BT
+/F1 22 Tf
+0.1 0.2 0.5 rg
+100 430 Td
+(Landscape Letter - page two) Tj
+ET
+Q
+endstream
+endobj
+8 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792]  /Resources << /Font << /F1 3 0 R >> >> /Contents 9 0 R >>
+endobj
+9 0 obj
+<< /Length 139 >>
+stream
+q
+0.93 0.96 1 rg
+80 80 450 400 re f
+0.1 0.2 0.5 RG
+2 w
+80 80 450 400 re S
+BT
+/F1 22 Tf
+0.1 0.2 0.5 rg
+100 430 Td
+(Portrait Letter) Tj
+ET
+Q
+endstream
+endobj
+10 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Rotate 90 /Resources << /Font << /F1 3 0 R >> >> /Contents 11 0 R >>
+endobj
+11 0 obj
+<< /Length 149 >>
+stream
+q
+0.93 0.96 1 rg
+80 80 450 400 re f
+0.1 0.2 0.5 RG
+2 w
+80 80 450 400 re S
+BT
+/F1 22 Tf
+0.1 0.2 0.5 rg
+100 430 Td
+(Letter rotated 90 degrees) Tj
+ET
+Q
+endstream
+endobj
+12 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 792 612] /CropBox [72 72 720 540] /Resources << /Font << /F1 3 0 R >> >> /Contents 13 0 R >>
+endobj
+13 0 obj
+<< /Length 141 >>
+stream
+q
+0.93 0.96 1 rg
+80 80 450 400 re f
+0.1 0.2 0.5 RG
+2 w
+80 80 450 400 re S
+BT
+/F1 22 Tf
+0.1 0.2 0.5 rg
+100 430 Td
+(Cropped landscape) Tj
+ET
+Q
+endstream
+endobj
+xref
+0 14
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000141 00000 n 
+0000000211 00000 n 
+0000000338 00000 n 
+0000000539 00000 n 
+0000000666 00000 n 
+0000000867 00000 n 
+0000000994 00000 n 
+0000001183 00000 n 
+0000001322 00000 n 
+0000001522 00000 n 
+0000001675 00000 n 
+trailer
+<< /Size 14 /Root 1 0 R >>
+startxref
+1867
+%%EOF

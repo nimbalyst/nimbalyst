@@ -58,7 +58,7 @@ import { getCredentials, resetCredentials, generateQRPairingPayload, isUsingSecu
 import {
     isSyncProviderReady,
     onSyncStatusChange,
-    triggerIncrementalSync,
+    triggerIncrementalSync, projectConfigSync,
     updateSleepPrevention,
 } from '../services/SyncManager';
 import { getDocSyncStatusForWorkspace } from '../file/WorkspaceWatcher';
@@ -74,7 +74,7 @@ import {
     switchPersonalSyncProfile,
 } from '../services/PersonalSyncProfiles';
 import { purgeOfflineCollabAccounts } from '../services/CollabOfflineAccountLifecycle';
-import { listPersonalSyncDevices } from '../services/PersonalSyncDevicesService';
+import { listPersonalSyncDevices, updatePersonalSyncDevices } from '../services/PersonalSyncDevicesService';
 import { recordProjectWalkOriginator } from '../services/ProjectWalkClaim';
 
 // Track if we've subscribed to sync status changes
@@ -1043,6 +1043,7 @@ export function registerSettingsHandlers() {
     // URL and personal-org JWT. The stored config intentionally omits serverUrl
     // when production is selected, and a team JWT targets a different member.
     safeHandle('sync:get-devices', listPersonalSyncDevices);
+    safeHandle('sync:update-devices', (_event, update) => updatePersonalSyncDevices(update));
 
     // Get sync status for the navigation gutter button
     safeHandle('sync:get-status', async (_event, workspacePath?: string) => {
@@ -1123,6 +1124,7 @@ export function registerSettingsHandlers() {
             connected,
             syncing: false, // We don't have real-time syncing status yet
             error: null,
+            skippedRowCount: provider?.getPersonalSyncWriteGate?.().skippedRowCount ?? 0,
             stats: {
                 sessionCount,
                 lastSyncedAt,
@@ -1172,6 +1174,7 @@ export function registerSettingsHandlers() {
             docSyncEnabledProjects,
             enabled: enabledProjects.length > 0,
         }));
+        void projectConfigSync.refresh().catch(err => logger.main.warn('[sync:set-project-selection] Failed to refresh project config', err));
         logger.store.info(
             `[sync:set-project-selection] ${enabledProjects.length} project(s) enabled, `
             + `${docSyncEnabledProjects.length} with document sync`,
@@ -1229,6 +1232,7 @@ export function registerSettingsHandlers() {
         });
 
         logger.store.info(`[sync:toggle-project] Project sync ${enabled ? 'enabled' : 'disabled'} for: ${workspacePath}`);
+        void projectConfigSync.refresh(workspacePath).catch(err => logger.main.warn(`[sync:toggle-project] Failed to refresh config for ${workspacePath}`, err));
 
         // If a project was enabled, trigger sync to push its sessions immediately
         if (enabled) {

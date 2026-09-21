@@ -1,0 +1,14 @@
+{
+  "currentContext": {
+    "tokens": 12000,
+    "contextWindow": 200000
+  },
+  "hasPendingPrompt": true,
+  "phase": "implementing",
+  "tags": [
+    "sync"
+  ],
+  "draftInput": "Review the queued changes",
+  "draftUpdatedAt": 1789232406000,
+  "hasBeenNamed": true
+}

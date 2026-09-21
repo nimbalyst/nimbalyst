@@ -24,6 +24,7 @@ let page: Page;
 let workspacePath: string;
 
 const MARKER = 'PREVIEW-PROTOCOL-E2E-612';
+const UTF8_MARKER = '“Preview café — UTF-8”';
 
 interface IpcResult {
   success: boolean;
@@ -56,7 +57,7 @@ test.beforeAll(async () => {
     `<!doctype html><html><head><title>${MARKER}</title>` +
       `<script src="page-rel.js"></script>` +
       `<script src="/root-rel.js"></script>` +
-      `</head><body><h1 id="probe">${MARKER}</h1></body></html>`,
+      `</head><body><h1 id="probe">${MARKER}</h1><p id="utf8-probe">${UTF8_MARKER}</p></body></html>`,
     'utf8',
   );
   await fs.writeFile(
@@ -145,15 +146,18 @@ test('renders workspace HTML through nim-preview:// in a partitioned browser ses
   const text = await invoke('browser-session:evaluate', {
     sessionId,
     script:
-      'JSON.stringify({ body: document.body.innerText, pageRel: window.__pageRelLoaded === true, rootRel: window.__rootRelLoaded === true })',
+      'JSON.stringify({ body: document.body.innerText, charset: document.characterSet, pageRel: window.__pageRelLoaded === true, rootRel: window.__rootRelLoaded === true })',
   });
   expect(text.success, text.error).toBe(true);
   const page = JSON.parse(String(text.result)) as {
     body: string;
+    charset: string;
     pageRel: boolean;
     rootRel: boolean;
   };
   expect(page.body).toContain(MARKER);
+  expect(page.body).toContain(UTF8_MARKER);
+  expect(page.charset.toUpperCase()).toBe('UTF-8');
   expect(page.pageRel, 'page-relative script should load').toBe(true);
   expect(page.rootRel, 'root-relative script should load via Referer fallback').toBe(true);
 

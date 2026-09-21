@@ -124,3 +124,140 @@ describe('CsvBinding local sync ordering', () => {
     yDoc.destroy();
   });
 });
+
+
+describe('CsvBinding hydration and remote ordering', () => {
+  it('does not publish a partial grid while hydration is pending, but permits intentional deletion afterward', async () => {
+    const doc = new Y.Doc();
+    const text = getYCsv(doc);
+    const initial = 'Name,Count\n' + Array.from({ length: 38 }, (_, i) => `Row${i},${i}`).join('\n');
+    text.insert(0, initial);
+    let finishHydration!: () => void;
+    const ready = new Promise<void>(resolve => { finishHydration = resolve; });
+    let current = 'Name,Count\nRow37,37';
+    const options = { getCurrentCsv: () => current, onRemoteContent: () => {}, waitUntilReady: () => ready };
+    const binding = new CsvBinding(doc, initial, options);
+    const syncing = binding.syncNow();
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(text.toString()).toBe(initial);
+    current = initial;
+    finishHydration();
+    await syncing;
+    expect(text.toString()).toBe(initial);
+    current = 'Name,Count\nRow37,37';
+    await binding.syncNow();
+    expect(text.toString()).toBe(current);
+    binding.destroy();
+    doc.destroy();
+  });
+
+  it.each([false, true])('preserves a remote insertion during serialization (local edit: %s)', async (hasLocalEdit) => {
+    const doc = new Y.Doc();
+    const text = getYCsv(doc);
+    const initial = 'Name,Count\nAlpha,1';
+    text.insert(0, initial);
+    let finish!: (value: string) => void;
+    const pending = new Promise<string>(resolve => { finish = resolve; });
+    const painted: string[] = [];
+    const binding = new CsvBinding(doc, initial, {
+      getCurrentCsv: () => pending,
+      onRemoteContent: value => painted.push(value),
+    });
+    const syncing = binding.syncNow();
+    text.insert(text.length, '\nBravo,2');
+    finish(hasLocalEdit ? 'Name,Count\nAlpha,3' : initial);
+    await syncing;
+    const expected = `Name,Count\nAlpha,${hasLocalEdit ? 3 : 1}\nBravo,2`;
+    expect(text.toString()).toBe(expected);
+    expect(painted.at(-1)).toBe(expected);
+    binding.destroy();
+    doc.destroy();
+  });
+});
+
+it('retains the original read baseline after failure and merges a retry without losing either edit', async () => {
+  const doc = new Y.Doc();
+  const text = getYCsv(doc);
+  text.insert(0, 'A,1\nB,2');
+  let reject!: (error: Error) => void;
+  let read = () => new Promise<string>((_, fail) => { reject = fail; });
+  const painted: string[] = [];
+  const binding = new CsvBinding(doc, text.toString(), {
+    getCurrentCsv: () => read(), onRemoteContent: value => painted.push(value),
+  });
+  const first = binding.syncNow();
+  text.insert(text.length, '\nC,3');
+  reject(new Error('grid read failed'));
+  await expect(first).rejects.toThrow('grid read failed');
+  expect(painted).toEqual([]);
+  read = async () => 'A,9\nB,2';
+  await binding.syncNow();
+  expect(text.toString()).toBe('A,9\nB,2\nC,3');
+  expect(painted).toEqual([text.toString()]);
+  binding.destroy(); doc.destroy();
+});
+
+it('holds repaint and publication until a whole local operation completes', async () => {
+  const doc = new Y.Doc();
+  const text = getYCsv(doc);
+  const initial = 'A,1\nB,2';
+  text.insert(0, initial);
+  let current = initial;
+  let finish!: () => void;
+  const pending = new Promise<void>(resolve => { finish = resolve; });
+  const painted: string[] = [];
+  const binding = new CsvBinding(doc, initial, {
+    getCurrentCsv: () => current, onRemoteContent: value => painted.push(value),
+  });
+  const mutation = binding.mutate(async () => {
+    current = 'A,9';
+    await pending;
+    current = 'A,9\nB,8';
+  });
+  const flush = binding.syncNow();
+  text.insert(text.length, '\nC,3');
+  await Promise.resolve();
+  expect(text.toString()).toBe(initial + '\nC,3');
+  expect(painted).toEqual([]);
+  finish();
+  await Promise.all([mutation, flush]);
+  expect(text.toString()).toBe('A,9\nB,8\nC,3');
+  expect(painted).toEqual([text.toString()]);
+  binding.destroy(); doc.destroy();
+});
+
+it('keeps a remote row in place between two disjoint local cell changes', async () => {
+  const doc = new Y.Doc();
+  const text = getYCsv(doc);
+  const initial = 'A,1\nB,2\nC,3';
+  text.insert(0, initial);
+  let finish!: (value: string) => void;
+  const pending = new Promise<string>(resolve => { finish = resolve; });
+  const binding = new CsvBinding(doc, initial, { getCurrentCsv: () => pending, onRemoteContent: () => {} });
+  const syncing = binding.syncNow();
+  text.insert(initial.indexOf('B,2'), 'Remote,7\n');
+  finish('A,9\nB,2\nC,8');
+  await syncing;
+  expect(text.toString()).toBe('A,9\nRemote,7\nB,2\nC,8');
+  binding.destroy(); doc.destroy();
+});
+
+it('permits an intentional clear after hydration and reuses one CRDT writer across drains', async () => {
+  const doc = new Y.Doc();
+  const text = getYCsv(doc);
+  text.insert(0, 'A,1');
+  let current = 'A,2';
+  const binding = new CsvBinding(doc, text.toString(), {
+    isReady: () => true, getCurrentCsv: () => current, onRemoteContent: () => {},
+  });
+  await binding.syncNow();
+  const writers = Y.decodeStateVector(Y.encodeStateVector(doc)).size;
+  current = 'A,3';
+  await binding.syncNow();
+  expect(Y.decodeStateVector(Y.encodeStateVector(doc)).size).toBe(writers);
+  current = '';
+  await binding.syncNow();
+  expect(text.toString()).toBe('');
+  binding.destroy(); doc.destroy();
+});

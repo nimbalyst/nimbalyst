@@ -247,6 +247,12 @@ export const SETTINGS_REGISTRY = {
     { store: 'ai-settings', path: 'showGeminiUsageIndicator' },
     true,
   ),
+  // Explicit opt-in, independent of developer mode and feature enable-all.
+  'app.externalSessionFollowEnabled': setting(
+    z.boolean(),
+    { store: 'app-settings', path: 'externalSessionFollowEnabled' },
+    false,
+  ),
   /** Width (px) of the gutter's agent sessions attention popover. */
   'agent.sessionsPopoverWidth': setting(
     z.number(),

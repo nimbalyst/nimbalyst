@@ -91,3 +91,83 @@ final class FleetActivityTests: XCTestCase {
         XCTAssertEqual(FleetActivityFormatting.elapsedLabel(seconds: -5), "0:00")
     }
 }
+
+@MainActor
+private final class TestFleetObserver: FleetActivityObserving {
+    var areActivitiesEnabled = false
+    var startCount = 0
+    var stopped = false
+    var pushToken: ((String) -> Void)?
+    var updateToken: ((String, String) -> Void)?
+    var ended: ((String) -> Void)?
+    var reconcileAction: (() -> Void)?
+    func start(pushToken: @escaping (String) -> Void, updateToken: @escaping (String, String) -> Void, ended: @escaping (String) -> Void) {
+        startCount += 1
+        stopped = false
+        self.pushToken = pushToken
+        self.updateToken = updateToken
+        self.ended = ended
+    }
+    func reconcile() { reconcileAction?() }
+    func stop() { stopped = true }
+    func endAll() async {}
+}
+
+extension FleetActivityTests {
+    @MainActor
+    func testPermissionRecoveryRestartsObservationBeforeReassertingTokens() {
+        let observer = TestFleetObserver()
+        let suite = "FleetActivityTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let controller = FleetActivityController(observer: observer, defaults: defaults)
+        var registered: [(String, LiveActivityTokenKind)] = []
+        var invalidatedAll = 0
+        controller.onTokenReceived = { registered.append(($0, $1)) }
+        controller.onTokenInvalidated = { kind, _ in if kind == nil { invalidatedAll += 1 } }
+        controller.start()
+        XCTAssertEqual(observer.startCount, 0)
+        observer.areActivitiesEnabled = true
+        observer.reconcileAction = { observer.pushToken?("start-token") }
+        controller.resendTokens()
+        XCTAssertEqual(observer.startCount, 1)
+        XCTAssertTrue(registered.contains { $0.0 == "start-token" && $0.1 == .pushToStart })
+        controller.resendTokens()
+        XCTAssertEqual(observer.startCount, 1, "Reconnecting must not duplicate observers")
+        observer.areActivitiesEnabled = false
+        controller.resendTokens()
+        XCTAssertTrue(observer.stopped)
+        XCTAssertNil(controller.pushToStartToken)
+        XCTAssertEqual(invalidatedAll, 2)
+        observer.pushToken?("late-token")
+        XCTAssertNil(controller.pushToStartToken, "Cancelled observers cannot republish registration")
+    }
+
+    @MainActor
+    func testOlderActivityEndingCannotInvalidateTheCurrentTokenAndReconnectDropsEndedState() throws {
+        let observer = TestFleetObserver()
+        observer.areActivitiesEnabled = true
+        let suite = "FleetActivityTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let controller = FleetActivityController(observer: observer, defaults: defaults)
+        var retired: [String] = []
+        controller.onTokenInvalidated = { _, token in if let token { retired.append(token) } }
+        controller.start()
+        observer.updateToken?("older", "old-token")
+        observer.updateToken?("newer", "new-token")
+        observer.ended?("older")
+        XCTAssertEqual(controller.updateToken, "new-token")
+        XCTAssertTrue(retired.isEmpty)
+        observer.reconcileAction = { observer.ended?("newer") }
+        controller.resendTokens()
+        XCTAssertNil(controller.updateToken)
+        XCTAssertEqual(retired, ["new-token"])
+        let message = UnregisterLiveActivityTokenMessage(deviceId: "phone", kind: "update", token: retired[0])
+        let encoded = try JSONSerialization.jsonObject(with: JSONEncoder().encode(message)) as! [String: String]
+        XCTAssertEqual(encoded["token"], "new-token")
+        let legacy = UnregisterLiveActivityTokenMessage(deviceId: "phone", kind: nil)
+        let legacyEncoded = try JSONSerialization.jsonObject(with: JSONEncoder().encode(legacy)) as! [String: String]
+        XCTAssertNil(legacyEncoded["token"])
+    }
+}

@@ -21,6 +21,7 @@ import {
   setEnsureEditorCallback,
   collectVoiceSessionContext,
 } from '@nimbalyst/runtime';
+import { captureNativeElement } from '../services/nativeScreenshot';
 import { ExtensionPlatformServiceImpl } from '../services/ExtensionPlatformServiceImpl';
 import { initializeExtensionEditorBridge } from '../extensions/ExtensionEditorBridge';
 import { initializeExtensionPluginBridge } from '../extensions/ExtensionPluginBridge';
@@ -63,6 +64,17 @@ let extensionTestListenersSetup = false;
  * Uses the generic screenshotService to route requests to the appropriate capability.
  */
 function setupScreenshotIPCListener(): void {
+  screenshotService.setCaptureProvider({
+    captureElement: captureNativeElement,
+    captureFile: async (filePath) => {
+      if (!currentWorkspacePath) throw new Error('Open a workspace before capturing an editor.');
+      const result = await window.electronAPI.invoke('offscreen-editor:capture-screenshot', {
+        filePath, workspacePath: currentWorkspacePath,
+      });
+      if (!result?.success || !result.imageBase64) throw new Error(result?.error || 'Editor screenshot failed.');
+      return result.imageBase64;
+    },
+  });
   if (screenshotListenerSetup) return;
   screenshotListenerSetup = true;
 
@@ -174,18 +186,19 @@ function setupEditorScreenshotListener(): void {
     try {
       // Find the editor element to capture
       let targetElement: HTMLElement | null = null;
-      let selectorUsed = '';
 
       if (data.selector) {
         // Capture specific element if selector provided
-        targetElement = document.querySelector(data.selector);
-        selectorUsed = data.selector;
+        const root = data.filePath
+          ? document.querySelector(`[data-file-path="${CSS.escape(data.filePath)}"]`)
+          : document;
+        targetElement = root?.querySelector<HTMLElement>(data.selector) ?? null;
         if (!targetElement) {
           throw new Error(`Element not found for selector: ${data.selector}`);
         }
       } else if (data.filePath) {
         // Find the editor by file path - TabEditor has data-file-path attribute
-        const editorWrapper = document.querySelector(`[data-file-path="${data.filePath}"]`) as HTMLElement | null;
+        const editorWrapper = document.querySelector(`[data-file-path="${CSS.escape(data.filePath)}"]`) as HTMLElement | null;
         if (editorWrapper) {
           // Try to find the best element to capture within this editor
           const contentSelectors = [
@@ -200,7 +213,6 @@ function setupEditorScreenshotListener(): void {
               const rect = content.getBoundingClientRect();
               if (rect.width > 0 && rect.height > 0) {
                 targetElement = content;
-                selectorUsed = `[data-file-path] ${selector}`;
                 break;
               }
             }
@@ -210,14 +222,13 @@ function setupEditorScreenshotListener(): void {
             const rect = editorWrapper.getBoundingClientRect();
             if (rect.width > 0 && rect.height > 0) {
               targetElement = editorWrapper;
-              selectorUsed = `[data-file-path="${data.filePath}"]`;
             }
           }
         }
       }
 
       // Fallback: try generic selectors if file path didn't work
-      if (!targetElement) {
+      if (!targetElement && !data.filePath && !data.selector) {
         const fallbackSelectors = [
           '.multi-editor-instance .editor-content',
           '.multi-editor-instance .spreadsheet-editor',
@@ -235,7 +246,6 @@ function setupEditorScreenshotListener(): void {
             const rect = el.getBoundingClientRect();
             if (rect.width > 0 && rect.height > 0) {
               targetElement = el;
-              selectorUsed = selector;
               break outerLoop;
             }
           }
@@ -248,7 +258,7 @@ function setupEditorScreenshotListener(): void {
 
         // Check file path selector first
         if (data.filePath) {
-          const filePathSelector = `[data-file-path="${data.filePath}"]`;
+          const filePathSelector = `[data-file-path="${CSS.escape(data.filePath)}"]`;
           const editorByPath = document.querySelector(filePathSelector) as HTMLElement | null;
           if (editorByPath) {
             const rect = editorByPath.getBoundingClientRect();
@@ -282,53 +292,7 @@ function setupEditorScreenshotListener(): void {
         throw new Error(`No editor element found to capture. Diagnostics:\n${diagnostics.join('\n')}`);
       }
 
-      // Log element info for debugging
-      const rect = targetElement.getBoundingClientRect();
-      console.log(`[ExtensionSystem] Capturing element:`, {
-        selector: selectorUsed,
-        tagName: targetElement.tagName,
-        className: targetElement.className,
-        boundingRect: { width: rect.width, height: rect.height },
-        scrollDimensions: { width: targetElement.scrollWidth, height: targetElement.scrollHeight },
-      });
-
-      // Dynamically import html2canvas
-      const html2canvas = (await import('html2canvas')).default;
-
-      // Use bounding rect dimensions if scroll dimensions are 0
-      const captureWidth = targetElement.scrollWidth || rect.width;
-      const captureHeight = targetElement.scrollHeight || rect.height;
-
-      if (captureWidth === 0 || captureHeight === 0) {
-        throw new Error(`Element has zero dimensions (${captureWidth}x${captureHeight}). The editor may not be visible.`);
-      }
-
-      // Capture the element
-      const canvas = await html2canvas(targetElement, {
-        backgroundColor: null,
-        scale: 2, // Higher resolution
-        useCORS: true,
-        allowTaint: true,
-        logging: false,
-        windowWidth: captureWidth,
-        windowHeight: captureHeight,
-      });
-
-      // Validate canvas dimensions
-      if (canvas.width === 0 || canvas.height === 0) {
-        throw new Error(`Canvas has zero dimensions (${canvas.width}x${canvas.height}). The editor element may not be visible or rendered.`);
-      }
-
-      // Convert to base64
-      const dataUrl = canvas.toDataURL('image/png');
-      const base64Data = dataUrl.split(',')[1];
-
-      // Validate that we got actual image data
-      if (!base64Data || base64Data.length === 0) {
-        throw new Error('Canvas produced empty image data. This may indicate a rendering issue with the editor element.');
-      }
-
-      console.log(`[ExtensionSystem] Editor screenshot captured successfully (${canvas.width}x${canvas.height}, ${base64Data.length} bytes)`);
+      const base64Data = await screenshotService.captureElement(targetElement);
 
       // Send result back to main process - use send since main uses ipcMain.once
       electronAPI.send(data.requestId, {

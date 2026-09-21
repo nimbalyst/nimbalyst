@@ -1,0 +1,14 @@
+{
+  "type": "fileIndexUpdate",
+  "file": {
+    "docId": "ac07f5bc-038b-42e0-8bbe-3bf9cde1ea47",
+    "encryptedProjectId": "c3ludGhldGljLWVuY3J5cHRlZFByb2plY3RJZA==",
+    "projectIdIv": "UKPDttEfvR3aw6oJ",
+    "encryptedRelativePath": "c3ludGhldGljLWVuY3J5cHRlZFJlbGF0aXZlUGF0aA==",
+    "relativePathIv": "oQddFuRJcZzJq1Wx",
+    "encryptedTitle": "c3ludGhldGljLWVuY3J5cHRlZFRpdGxl",
+    "titleIv": "BmxECWGE7EzeQAjY",
+    "lastModifiedAt": 1789232414000,
+    "syncedAt": 1789232409000
+  }
+}

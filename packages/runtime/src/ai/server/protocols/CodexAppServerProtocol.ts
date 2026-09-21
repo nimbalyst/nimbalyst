@@ -1,10 +1,11 @@
+import { buildCodexThreadStartParams } from './codexAppServer/threadConfiguration';
+import { validateCodexSandbox } from './codexAppServer/validateCodexSandbox';
 import { previewForLog, summarizeNotificationParams, extractNotificationRouting } from './codexAppServer/notificationDiagnostics';
 /**
  * OpenAI Codex app-server Protocol Adapter
  *
- * Drives `codex app-server --listen stdio://` directly via JSON-RPC v2, in
- * contrast to the SDK transport which spawns `codex exec --experimental-json`
- * for every turn.
+ * Drives `codex app-server --listen stdio://` directly via JSON-RPC v2;
+ * the SDK transport instead spawns `codex exec --experimental-json` per turn.
  *
  * Why it exists: the app-server protocol's `item/started` and `item/completed`
  * notifications for `fileChange` items carry the full unified-diff text per
@@ -41,14 +42,12 @@ import {
   ToolResult,
 } from './ProtocolInterface';
 import { JsonRpcClient } from './codexAppServer/jsonRpcClient';
-import { prepareCodexShellTracking, type CodexShellTrackingRegistration } from './codexAppServer/shellTracking';
+import { observeCodexShellTracking, prepareCodexShellTracking, type CodexShellTrackingRegistration } from './codexAppServer/shellTracking';
 import {
   getCodexVendorPathEntries,
   resolveCodexBinaryPath,
 } from './codexAppServer/codexAppServerBinary';
 import { terminateOwnedProcessTree } from './processTreeTermination';
-import { resolveCodexPermissionProfile } from './codexPermissionProfile';
-import { clampEffortLevel, parseEffortLevel } from '../effortLevels';
 import type {
   AnyItem,
   ApprovalResponse,
@@ -167,8 +166,11 @@ export class CodexAppServerProtocol implements AgentProtocol {
    */
   async createSession(options: SessionOptions): Promise<ProtocolSession> {
     const raw = await this.spawnAndInit(options);
-    const startParams = this.buildThreadStartParams(raw.options);
-    const startResponse = await raw.client.request<ThreadStartResponse>('thread/start', startParams).catch(error => {
+    const startParams = buildCodexThreadStartParams(raw.options);
+    const startResponse = await raw.client.request<ThreadStartResponse>('thread/start', startParams).then(async response => {
+      await validateCodexSandbox(response.sandbox, startParams.sandbox, raw.client);
+      return response;
+    }).catch(error => {
       this.killChild(raw);
       throw error;
     });
@@ -201,7 +203,7 @@ export class CodexAppServerProtocol implements AgentProtocol {
    */
   async resumeSession(sessionId: string, options: SessionOptions): Promise<ProtocolSession> {
     const raw = await this.spawnAndInit(options);
-    const startParams = this.buildThreadStartParams(raw.options);
+    const startParams = buildCodexThreadStartParams(raw.options);
     // ThreadResumeParams accepts the same surface as ThreadStartParams minus
     // `ephemeral`. Drop it and replace `model: null` with omission so codex
     // can fall back to the persisted thread's model when we have no override.
@@ -215,6 +217,7 @@ export class CodexAppServerProtocol implements AgentProtocol {
     }
     try {
       const resumeResponse = await raw.client.request<ThreadResumeResponse>('thread/resume', resumeParams);
+      await validateCodexSandbox(resumeResponse.sandbox, startParams.sandbox, raw.client);
       raw.threadId = resumeResponse?.thread?.id ?? sessionId;
       // console.log('[CODEX][APPSERVER] thread resumed:', raw.threadId);
       return { id: raw.threadId, platform: this.platform, raw: raw as unknown as ProtocolSession['raw'] };
@@ -228,7 +231,7 @@ export class CodexAppServerProtocol implements AgentProtocol {
       const detail = err instanceof Error ? err.message : String(err);
       throw new Error(
         `[CodexAppServer] thread/resume failed for thread ${sessionId}: ${detail}. `
-        + 'The previous conversation history was not restored; start a new session to continue.',
+        + 'The saved conversation is unchanged; resolve the error and retry this session.',
       );
     }
   }
@@ -522,6 +525,7 @@ export class CodexAppServerProtocol implements AgentProtocol {
             ...(options.raw?.codexConfigOverrides as Record<string, unknown> ?? {}), ...trust,
           } } };
         } catch (error) {
+          tracking.registration.unavailable?.();
           tracking.registration.dispose();
           console.warn('[CodexShellTracking] Hooks unavailable; shell attribution disabled:', error);
         }
@@ -548,15 +552,9 @@ export class CodexAppServerProtocol implements AgentProtocol {
       cleanupStarted: false,
       shellTracking: tracking?.registration,
     };
-    client.onNotification((method, params) => {
-      if ((method === 'turn/completed' || method === 'turn/failed') &&
-          extractNotificationRouting(params).threadId === raw.threadId) {
-        tracking?.registration.endTurn();
-      }
-    });
+    observeCodexShellTracking(client, raw.shellTracking, () => raw.threadId, () => raw.activeTurnId);
     return raw;
   }
-
   /**
    * Point codex at Nimbalyst's exported skills (#1253).
    *
@@ -630,59 +628,6 @@ export class CodexAppServerProtocol implements AgentProtocol {
     }
     if (this.apiKey) baseEnv.CODEX_API_KEY = this.apiKey;
     return baseEnv;
-  }
-
-  /**
-   * Map our SessionOptions onto ThreadStartParams. Mirrors the SDK adapter's
-   * `buildThreadOptions` so behavior is preserved across transports.
-   */
-  private buildThreadStartParams(options: SessionOptions): ThreadStartParams {
-    const permissionProfile = resolveCodexPermissionProfile(
-      options.permissionMode,
-      options.raw?.agentVerified === true,
-    );
-
-    const effortLevel = options.raw?.effortLevel as string | undefined;
-    // Clamp to what this model's catalog entry accepts: gpt-5.4/5.5 stop at
-    // xhigh, gpt-5.6-luna at max, and only Astra/Sol/Terra reach ultra.
-    const reasoningEffortRaw = clampEffortLevel(
-      parseEffortLevel(effortLevel ?? 'high'),
-      options.model ?? undefined,
-    );
-
-    const systemPrompt = (options.raw?.systemPrompt as string | undefined) ?? options.systemPrompt;
-    const additionalDirectories = Array.isArray(options.raw?.additionalDirectories)
-      ? (options.raw?.additionalDirectories as unknown[]).filter(
-          (entry): entry is string => typeof entry === 'string' && entry.length > 0,
-        )
-      : [];
-
-    // The free-form `config` object accepts the same dotted-path TOML overrides
-    // the SDK transport sends as `--config` flags. We pass through the
-    // existing host-computed overrides (which include `mcp_servers`,
-    // `model_reasoning_effort`, network access, web_search, etc.) unchanged.
-    const config: Record<string, unknown> = {
-      ...(options.raw?.codexConfigOverrides as Record<string, unknown> | undefined ?? {}),
-      // Reasoning effort always sets; the host's override map may also set it
-      // but a literal here is fine since codex resolves these later.
-      model_reasoning_effort: reasoningEffortRaw,
-    };
-
-    return {
-      model: options.model ?? null,
-      sandbox: permissionProfile.sandboxMode,
-      cwd: options.workspacePath,
-      approvalPolicy: permissionProfile.approvalPolicy,
-      ...(permissionProfile.approvalsReviewer
-        ? { approvalsReviewer: permissionProfile.approvalsReviewer }
-        : {}),
-      ephemeral: false,
-      developerInstructions: systemPrompt,
-      config,
-      ...(additionalDirectories.length > 0
-        ? { config: { ...config, additional_writable_roots: additionalDirectories } }
-        : {}),
-    };
   }
 
   private async buildInput(message: ProtocolMessage): Promise<UserInputElement[]> {
@@ -931,6 +876,11 @@ export class CodexAppServerProtocol implements AgentProtocol {
       case 'turn/failed':
       case 'error': {
         const n = params as unknown as ErrorNotification;
+        // Codex emits the same notification while it retries a transient
+        // transport failure. `willRetry: true` explicitly means the turn is
+        // still active, so keep the iterator subscribed for the eventual
+        // recovery, terminal error, or turn completion (#1523).
+        if (method === 'error' && n.willRetry === true) return;
         const msg = n?.error?.message ?? 'codex app-server error';
         this.sweepOrphanedMcpCalls(push, undefined, undefined);
         push({ kind: 'fail', error: new Error(msg) });

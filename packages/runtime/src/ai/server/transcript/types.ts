@@ -232,6 +232,8 @@ export interface TranscriptPayloadMap {
 
 export interface TranscriptEvent {
   id: number;
+  /** Ephemeral runtime store identity; never persisted or synced. */
+  transcriptGeneration?: number;
   sessionId: string;
   sequence: number;
   createdAt: Date;

@@ -74,13 +74,55 @@ export interface VoiceTranscriptEntry {
 }
 
 /**
- * Token usage for the current voice session.
+ * Which speech transport produced a usage report. Realtime is billed per
+ * token; Live is billed per second.
+ */
+export type VoiceEngineId = 'realtime' | 'live';
+
+/**
+ * Usage reported by the delegated controller for one response. Kept as its own
+ * list and never folded into voice duration -- the controller's cost is a
+ * separate line item. `usage` is the backend model's own usage block and stays
+ * opaque here.
+ */
+export interface VoiceBackendUsageEntry {
+  responseId: string;
+  /** null when the response was not part of a delegation -- an observation, not an unreported field. */
+  delegationId: string | null;
+  usage: Readonly<Record<string, unknown>>;
+}
+
+/**
+ * Usage for the current voice session, engine-normalized. Mirrors
+ * `VoiceEngineUsage` in main (services/voice/engine/voiceEngine.ts); the
+ * listeners pass it through untouched.
+ *
+ * Every field is optional and `undefined` means "this engine does not report
+ * this", which is NOT the same as zero. Zero is a real measurement. Anything
+ * consuming this must render absence as absence -- a confident 0 or 0% for
+ * something we never measured is the failure this shape exists to end.
+ *
+ * The name is historical: it carried only token counters when Realtime was the
+ * only engine.
  */
 export interface VoiceTokenUsage {
-  inputAudio: number;
-  outputAudio: number;
-  text: number;
-  total: number;
+  /** Realtime token counters. Live leaves all four undefined. */
+  inputAudio?: number;
+  outputAudio?: number;
+  text?: number;
+  total?: number;
+  /** Cumulative paid seconds. Live only; a running total, never a sum of snapshots. */
+  durationSeconds?: number;
+  /** Model context occupancy, 0..1, as reported by the engine. Live only. */
+  contextUsageRatio?: number;
+  /** Per-response controller usage. Live only. */
+  backend?: readonly VoiceBackendUsageEntry[];
+  /** True once the engine delivered authoritative end-of-session usage. Live only. */
+  finalized?: boolean;
+  /** True when the transport died before final usage arrived, so figures are a floor. Live only. */
+  finalizationMissing?: boolean;
+  /** Engine that produced this report. Absent on reports written before engine selection existed. */
+  engine?: VoiceEngineId;
 }
 
 /**
@@ -102,8 +144,8 @@ export const voiceTranscriptEntriesAtom = atom<VoiceTranscriptEntry[]>([]);
 export const voiceCurrentUserTextAtom = atom<string>('');
 
 /**
- * Live token usage for the active voice session.
- * Null when no voice session is active.
+ * Live usage for the active voice session (tokens on Realtime, duration and
+ * context occupancy on Live). Null when no voice session is active.
  */
 export const voiceTokenUsageAtom = atom<VoiceTokenUsage | null>(null);
 
@@ -181,16 +223,29 @@ export const voiceModePreviewAudioAtom = atom<VoiceModePreviewAudio | null>(null
 // to IPC directly.
 
 /** Callback for playing received audio. Set by VoiceModeButton on mount. */
-let _onAudioReceived: ((audioBase64: string) => void) | null = null;
+let _onAudioReceived: ((audioBase64: string) => boolean) | null = null;
 /** Callback for stopping audio playback (interruption). Set by VoiceModeButton. */
 let _onInterruptAudio: (() => void) | null = null;
-/** Callback for handling submit-prompt events. Set by VoiceModeButton. */
-let _onSubmitPrompt: ((payload: {
+/**
+ * Callback for handling submit-prompt events. Set by VoiceModeButton.
+ *
+ * It answers whether the prompt was actually queued, because main waits on that
+ * before the voice agent is told the task was accepted -- a fire-and-forget
+ * send reported "accepted" for prompts that were deduplicated or failed.
+ */
+export interface VoiceSubmitPromptPayload {
   sessionId: string;
   workspacePath: string | null;
   prompt: string;
   codingAgentPrompt?: { prepend?: string; append?: string };
-}) => void) | null = null;
+}
+export interface VoiceSubmitPromptAck {
+  queued: boolean;
+  error?: string;
+}
+let _onSubmitPrompt:
+  | ((payload: VoiceSubmitPromptPayload) => Promise<VoiceSubmitPromptAck>)
+  | null = null;
 /** Callback for handling agent task completion. Set by VoiceModeButton. */
 let _onAgentTaskComplete: ((data: { sessionId: string; isComplete: boolean; content?: string }) => void) | null = null;
 /** Callback when voice session is programmatically stopped. Set by VoiceModeButton. */
@@ -204,18 +259,21 @@ let _onResponseDone: ((wokeFromSleep: boolean) => void) | null = null;
  * not server end-of-turn (long responses can stream into a queue that plays for many more seconds). */
 let _voiceAudioActiveQuery: (() => boolean) | null = null;
 
-export function registerVoiceAudioCallback(cb: ((audioBase64: string) => void) | null): void {
+/**
+ * Hand assistant audio to playback. Returns whether it was actually queued for
+ * the speakers: a registered callback is not the same thing as an audible
+ * pipeline, and bytes that reached nothing are not evidence that anything was
+ * heard. See noteAnnouncementAudio in voiceModeListeners.ts.
+ */
+export function registerVoiceAudioCallback(cb: ((audioBase64: string) => boolean) | null): void {
   _onAudioReceived = cb;
 }
 export function registerVoiceInterruptCallback(cb: (() => void) | null): void {
   _onInterruptAudio = cb;
 }
-export function registerVoiceSubmitPromptCallback(cb: ((payload: {
-  sessionId: string;
-  workspacePath: string | null;
-  prompt: string;
-  codingAgentPrompt?: { prepend?: string; append?: string };
-}) => void) | null): void {
+export function registerVoiceSubmitPromptCallback(
+  cb: ((payload: VoiceSubmitPromptPayload) => Promise<VoiceSubmitPromptAck>) | null,
+): void {
   _onSubmitPrompt = cb;
 }
 export function registerVoiceAgentTaskCompleteCallback(cb: ((data: { sessionId: string; isComplete: boolean; content?: string; lastTextSection?: string; error?: string }) => void) | null): void {

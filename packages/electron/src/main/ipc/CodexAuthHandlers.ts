@@ -7,6 +7,7 @@
  */
 
 import { shell } from 'electron';
+import path from 'node:path';
 import { safeHandle } from '../utils/ipcRegistry';
 import { logger } from '../utils/logger';
 import { codexAuthService, type CodexAuthStatus } from '../services/CodexAuthService';
@@ -49,6 +50,13 @@ function toCheckLoginResult(status: CodexAuthStatus): CheckLoginResult {
 }
 
 export function registerCodexAuthHandlers(): void {
+  safeHandle('openai-codex:sandbox-status', async () => codexAuthService.getWindowsSandboxStatus());
+  safeHandle('openai-codex:sandbox-setup', async (_event, mode: unknown, workspacePath: unknown) => {
+    if (mode !== 'elevated' && mode !== 'unelevated') throw new Error('Invalid Windows sandbox mode.');
+    if (typeof workspacePath !== 'string' || !path.isAbsolute(workspacePath)) throw new Error('An absolute workspace path is required.');
+    return codexAuthService.setupWindowsSandbox(mode, workspacePath);
+  });
+
   safeHandle('openai-codex:check-login', async (): Promise<CheckLoginResult> => {
     try {
       const status = await codexAuthService.getStatus();

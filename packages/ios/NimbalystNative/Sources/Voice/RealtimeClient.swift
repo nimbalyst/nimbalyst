@@ -250,6 +250,11 @@ final class RealtimeClient {
 
     /// Insert a system-level text message into the conversation (for internal notifications).
     func sendUserMessage(text: String) {
+        updateContext(text)
+        createResponse()
+    }
+
+    func updateContext(_ text: String) {
         sendEvent([
             "type": "conversation.item.create",
             "item": [
@@ -263,7 +268,6 @@ final class RealtimeClient {
                 ],
             ],
         ])
-        createResponse()
     }
 
     /// Maximum instructions length. The cap is model-aware: gpt-realtime

@@ -1,3 +1,5 @@
+import type { VoiceStartupTiming } from '../../shared/voiceStartupTiming';
+
 /**
  * Audio capture utility for Voice Mode
  *
@@ -16,7 +18,7 @@ export class AudioCapture {
   /**
    * Start capturing audio from microphone
    */
-  async start(onAudioData: (pcm16Base64: string) => void): Promise<void> {
+  async start(onAudioData: (pcm16Base64: string) => void, timing?: VoiceStartupTiming): Promise<void> {
     if (this.isCapturing) {
       throw new Error('Audio capture already started');
     }
@@ -35,8 +37,13 @@ export class AudioCapture {
         },
       });
 
+      timing?.mark('microphone-access');
+
       // Create audio context with 24kHz sample rate
       this.audioContext = new AudioContext({ sampleRate: 24000 });
+
+      await this.audioContext.resume();
+      timing?.mark('audio-context-running');
 
       // Create source node from microphone stream
       this.sourceNode = this.audioContext.createMediaStreamSource(this.mediaStream);
@@ -74,6 +81,7 @@ export class AudioCapture {
       this.processorNode.connect(this.audioContext.destination);
 
       this.isCapturing = true;
+      timing?.mark('microphone-ready');
 
       console.log('[AudioCapture] Started capturing at 24kHz');
     } catch (error) {

@@ -1,0 +1,6 @@
+{
+  "type": "error",
+  "code": "index_page_invalid",
+  "message": "Synthetic invalid page",
+  "requestId": "failed-page-request"
+}

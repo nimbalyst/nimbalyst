@@ -12,7 +12,7 @@
  * would only prove the parser agrees with my own assumptions.
  */
 import { describe, expect, it, beforeAll, afterAll, afterEach, vi } from 'vitest';
-import { execFileSync } from 'child_process';
+import { execFileSync, type ChildProcessWithoutNullStreams } from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
@@ -148,5 +148,19 @@ describe('GitCatFileBatch', () => {
     } finally {
       fs.rmSync(notARepo, { recursive: true, force: true });
     }
+  });
+
+  it('settles broken-pipe reads and ignores late errors from a replaced child', async () => {
+    const batch = make();
+    const pending = [batch.read(sha, 'a.txt'), batch.read(sha, 'b.txt')];
+    const child = (batch as unknown as { child: ChildProcessWithoutNullStreams }).child;
+    const brokenPipe = Object.assign(new Error('write EPIPE'), { code: 'EPIPE' });
+    // Emit the stream event directly: a real non-repo exit races the stdin write.
+    expect(() => child.stdin.emit('error', brokenPipe)).not.toThrow();
+    expect(await Promise.all(pending)).toEqual([null, null]);
+    expect(batch.isRunning).toBe(false);
+    const replacementRead = batch.read(sha, 'a.txt');
+    expect(() => child.stdin.emit('error', brokenPipe)).not.toThrow();
+    expect(await replacementRead).toBe('alpha\n');
   });
 });

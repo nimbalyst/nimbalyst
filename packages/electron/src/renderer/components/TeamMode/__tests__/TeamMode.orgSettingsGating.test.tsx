@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import React from 'react';
-import { Provider, createStore } from 'jotai';
+import { createHydratedOrgStore } from './organizationTestStore';
+import { Provider } from 'jotai';
 import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -78,8 +79,8 @@ function installApi(callerRole = 'owner') {
   });
 }
 
-function renderWindow(settings: Partial<OrgSettings['messaging']> = {}) {
-  const store = createStore();
+async function renderWindow(settings: Partial<OrgSettings['messaging']> = {}) {
+  const store = await createHydratedOrgStore();
   store.set(conversationDirectoryAtomFamily('org-1'), conversations);
   store.set(orgSettingsAtomFamily('org-1'), {
     version: 1,
@@ -107,7 +108,7 @@ describe('TeamMode organization settings gating', () => {
   // admin either.
   it('hosts no administration panel, even for an admin', async () => {
     installApi('admin');
-    renderWindow();
+    await renderWindow();
 
     await waitFor(() => screen.getByTestId('org-sidebar'));
     expect(screen.queryByTestId('org-settings-panel')).toBeNull();
@@ -118,7 +119,7 @@ describe('TeamMode organization settings gating', () => {
 
   it('hides rooms, the directory entry and the create control when rooms are off', async () => {
     installApi();
-    renderWindow({ roomsEnabled: false });
+    await renderWindow({ roomsEnabled: false });
 
     await waitFor(() => screen.getByTestId('org-dm-item-dm-1'));
     expect(screen.queryByTestId('org-room-item-general')).toBeNull();
@@ -130,7 +131,7 @@ describe('TeamMode organization settings gating', () => {
 
   it('hides direct messages when DMs are off, leaving rooms alone', async () => {
     installApi();
-    renderWindow({ dmsEnabled: false });
+    await renderWindow({ dmsEnabled: false });
 
     await waitFor(() => screen.getByTestId('org-room-item-general'));
     expect(screen.queryByTestId('org-dm-item-dm-1')).toBeNull();
@@ -139,7 +140,7 @@ describe('TeamMode organization settings gating', () => {
 
   it('disables the room [+] for a member when creation is admins-only', async () => {
     installApi('member');
-    renderWindow({ roomCreation: 'admins' });
+    await renderWindow({ roomCreation: 'admins' });
 
     await waitFor(() => screen.getByTestId('org-room-item-general'));
     // The rooms [+] now opens a menu, so the restriction lands on the create
@@ -158,7 +159,7 @@ describe('TeamMode organization settings gating', () => {
     'bounces an administration route out of the window for a %s',
     async (callerRole) => {
       installApi(callerRole);
-      const store = renderWindow();
+      const store = await renderWindow();
 
       await waitFor(() => screen.getByTestId('org-sidebar'));
       // A deep link or a hand-off left over from before NIM-2322.
@@ -169,7 +170,7 @@ describe('TeamMode organization settings gating', () => {
 
   it('moves an open room back to the inbox when rooms are turned off', async () => {
     installApi();
-    const store = renderWindow();
+    const store = await renderWindow();
 
     await waitFor(() => screen.getByTestId('org-room-item-general'));
     store.set(orgWindowRouteAtom, { view: 'conversation', conversationId: 'general' });

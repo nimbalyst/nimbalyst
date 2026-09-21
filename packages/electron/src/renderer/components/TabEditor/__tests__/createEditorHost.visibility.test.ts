@@ -41,6 +41,17 @@ function baseOptions(overrides: Partial<EditorHostOptions> = {}): EditorHostOpti
 }
 
 describe('createEditorHost visibility', () => {
+  it('reports reload APIs to the owning host without crossing same-file editor instances', () => {
+    const first = vi.fn(), second = vi.fn();
+    const a = createEditorHost(baseOptions({ onEditorAPIChange: first }));
+    const b = createEditorHost(baseOptions({ onEditorAPIChange: second }));
+    const apiA = { getContent: () => 'a' }, apiB = { getContent: () => 'b' };
+    a.registerEditorAPI(apiA);
+    b.registerEditorAPI(apiB);
+    a.registerEditorAPI(null);
+    expect(first.mock.calls).toEqual([[apiA], [null]]);
+    expect(second.mock.calls).toEqual([[apiB]]);
+  });
   it('exposes live visibility from getVisible', () => {
     let visible = true;
     const host = createEditorHost(baseOptions({ getVisible: () => visible }));

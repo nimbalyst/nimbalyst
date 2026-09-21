@@ -1,3 +1,6 @@
+import { claimExternalSessionForLocalExecution } from '../externalSessions/ExternalSessionService';
+import { warnIfUnpublished } from '@nimbalyst/runtime/sync/pushOutcome';
+import type { SessionChange } from '@nimbalyst/runtime/sync/types';
 import { sessionInbox } from './sessionInboxService';
 import { codexQuestionTurns } from './codexQuestionTurns';
 /**
@@ -120,8 +123,11 @@ import { historyManager } from '../../HistoryManager';
 import { addGitignoreBypass } from '../../file/WorkspaceEventBus';
 import { getSyncProvider, isDesktopTrulyAway } from '../SyncManager';
 import { requestMobilePush } from './mobilePushRequest';
-import { setSessionPendingPrompt } from './pendingPromptPersistence';
-import type { PromptKind } from '../../tray/fleetSnapshot';
+import { createAskUserQuestionListeners } from './askUserQuestionListeners';
+// The per-session pending-prompt bit is derived from the set of prompts still
+// open, so one prompt settling cannot clear the indicator for another that is
+// still waiting on the user. Refs #1549.
+import { openPrompt, resolvePrompt, hasOpenPrompts } from './openPromptRegistry';
 import { getAgentWorkflowService } from '../AgentWorkflowService';
 import { repairOrphanedSessionMetaCall } from './repairOrphanedSessionMetaCall';
 import { getMetaAgentOpenAITools } from '../../mcp/metaAgentServer';
@@ -467,6 +473,10 @@ export class MessageStreamingHandler {
       console.error(`[AIService] CRITICAL ERROR: Requested session ${sessionId} but got session ${session.id}!`);
       trackSendBlocked('session_mismatch', session.provider);
       throw new Error(`Session mismatch: requested ${sessionId} but got ${session.id}`);
+    }
+
+    if (session.providerConfig && 'imported' in session.providerConfig && session.providerConfig.imported === true) {
+      await claimExternalSessionForLocalExecution(session.id);
     }
 
     const inputType = (documentContext as any)?.inputType as string | undefined;
@@ -911,7 +921,7 @@ export class MessageStreamingHandler {
     // renderers AND mobile sync. Mirrors what SessionNamingService does for
     // the MCP-tool path so direct repo writes from the provider do not bypass
     // the kanban refresh and iOS push.
-    const onSessionMetadataUpdated = (data: { sessionId: string; metadata: Record<string, unknown> }) => {
+    const onSessionMetadataUpdated = async (data: { sessionId: string; metadata: Record<string, unknown> }) => {
       for (const window of BrowserWindow.getAllWindows()) {
         if (!window.isDestroyed()) {
           window.webContents.send('sessions:session-updated', data.sessionId, data.metadata);
@@ -919,36 +929,35 @@ export class MessageStreamingHandler {
       }
       const sp = getSyncProvider();
       if (sp && (data.metadata.phase !== undefined || data.metadata.tags !== undefined)) {
-        const syncMeta: Record<string, unknown> = {};
+        const syncMeta: Extract<SessionChange, { type: 'metadata_updated' }>['metadata'] = {};
         if (data.metadata.phase !== undefined) syncMeta.phase = data.metadata.phase as string;
         if (data.metadata.tags !== undefined) syncMeta.tags = data.metadata.tags as string[];
-        sp.pushChange(data.sessionId, {
-          type: 'metadata_updated',
-          metadata: syncMeta as any,
-        });
+        try {
+          const outcome = await sp.pushChange(data.sessionId, {
+            type: 'metadata_updated',
+            metadata: syncMeta,
+          });
+          warnIfUnpublished(message => logger.main.warn(message), data.sessionId, '[AIService] Failed to publish sync change', outcome);
+        } catch (error) {
+          logger.main.warn(`[AIService] Failed to publish sync change for session ${data.sessionId}:`, error);
+        }
       }
     };
     this.installListener(provider, 'session:metadata-updated', onSessionMetadataUpdated);
 
-    // Helper to persist pending-prompt state to ai_sessions.metadata AND
-    // push the change to mobile in one call. See pendingPromptPersistence.ts
-    // for why we persist locally: the in-memory atom can desync from reality
-    // if a resolve event is missed (renderer reload, HMR, late delivery),
-    // and the only recovery is rehydrating from the DB on next list refresh.
+    // Pending-prompt state is now opened/resolved per prompt id through
+    // openPromptRegistry, which persists to ai_sessions.metadata and pushes to
+    // mobile via pendingPromptPersistence. We persist locally because the
+    // in-memory atom can desync from reality if a resolve event is missed
+    // (renderer reload, HMR, late delivery), and the only recovery is
+    // rehydrating from the DB on the next session list refresh. The prompt
     // `kind` colours the menu bar strip's dot: a tap versus thinking required.
-    const syncPendingPrompt = (
-      sessionId: string,
-      hasPendingPrompt: boolean,
-      kind: PromptKind = 'approval',
-    ) => {
-      void setSessionPendingPrompt(sessionId, hasPendingPrompt, kind);
-    };
 
     // Listen for ExitPlanMode confirmation requests and forward to renderer
     const onExitPlanModeConfirm = async (data: { requestId: string; sessionId: string; planSummary: string; timestamp: number }) => {
       logger.main.info('[AIService] ExitPlanMode confirmation requested:', data.requestId);
       safeSend(event, 'ai:exitPlanModeConfirm', { ...data, workspacePath: effectiveWorkspacePath });
-      syncPendingPrompt(data.sessionId, true, 'decision');
+      openPrompt(data.sessionId, data.requestId, 'decision');
 
       // Update session status so all windows show the pending indicator
       getSessionStateManager().updateActivity({
@@ -984,7 +993,8 @@ export class MessageStreamingHandler {
       timestamp: number;
     }) => {
       logger.main.info('[AIService] ExitPlanMode resolved:', data.requestId, 'approved=', data.approved);
-      syncPendingPrompt(data.sessionId, false);
+      resolvePrompt(data.sessionId, data.requestId);
+      if (hasOpenPrompts(data.sessionId)) return;
 
       getSessionStateManager().updateActivity({
         sessionId: data.sessionId,
@@ -996,51 +1006,36 @@ export class MessageStreamingHandler {
     };
     this.installListener(provider, 'exitPlanMode:resolved', onExitPlanModeResolved);
 
-    // Listen for AskUserQuestion requests and forward to renderer
-    const onAskUserQuestion = async (data: { questionId: string; sessionId: string; questions: any[]; timestamp: number }) => {
-      // logger.main.info('[AIService] AskUserQuestion requested:', data.questionId);
-      safeSend(event, 'ai:askUserQuestion', { ...data, workspacePath: effectiveWorkspacePath });
-      syncPendingPrompt(data.sessionId, true, 'decision');
-
-      // Update session status to waiting_for_input so all windows show the pending indicator
-      getSessionStateManager().updateActivity({
-        sessionId: data.sessionId,
-        status: 'waiting_for_input',
-      }).catch((err) => {
-        logger.main.error('[AIService] Failed to update session status to waiting_for_input:', err);
-      });
-
-      // Show OS notification if app is backgrounded
-      const sessionTitle = await getCurrentSessionTitle(data.sessionId);
-      notificationService.showBlockedNotification(
-        data.sessionId,
-        sessionTitle,
-        'question',
-        effectiveWorkspacePath
-      );
-    };
-    this.installListener(provider, 'askUserQuestion:pending', onAskUserQuestion);
-
-    // Listen for AskUserQuestion answers and forward to renderer to update tool call display
-    const onAskUserQuestionAnswered = (data: { questionId: string; sessionId: string; questions: any[]; answers: Record<string, string>; timestamp: number }) => {
-      // logger.main.info('[AIService] AskUserQuestion answered:', data.questionId);
-      safeSend(event, 'ai:askUserQuestionAnswered', { ...data, workspacePath: effectiveWorkspacePath });
-      syncPendingPrompt(data.sessionId, false);
-
-      // Update session status back to running so all windows clear the pending indicator
-      getSessionStateManager().updateActivity({
-        sessionId: data.sessionId,
-        status: 'running',
-        isStreaming: true,
-      }).catch(() => {});
-    };
-    this.installListener(provider, 'askUserQuestion:answered', onAskUserQuestionAnswered);
+    // AskUserQuestion pending/answered/cancelled lifecycle. Extracted so the
+    // state transitions -- in particular the cancelled path, which must NOT
+    // resurrect a stopped session -- are testable on their own. See #1549.
+    const askUserQuestionListeners = createAskUserQuestionListeners({
+      sendToRenderer: (channel, payload) => { safeSend(event, channel, payload); },
+      openPrompt,
+      resolvePrompt,
+      hasOpenPrompts,
+      updateSessionActivity: (update) => getSessionStateManager().updateActivity(update),
+      getSessionTitle: (sessionId) => getCurrentSessionTitle(sessionId),
+      showBlockedNotification: (sessionId, sessionTitle) => {
+        void notificationService.showBlockedNotification(
+          sessionId,
+          sessionTitle,
+          'question',
+          effectiveWorkspacePath,
+        );
+      },
+      workspacePath: effectiveWorkspacePath,
+      logError: (message, err) => { logger.main.error(`[AIService] ${message}:`, err); },
+    });
+    this.installListener(provider, 'askUserQuestion:pending', askUserQuestionListeners.onPending);
+    this.installListener(provider, 'askUserQuestion:answered', askUserQuestionListeners.onAnswered);
+    this.installListener(provider, 'askUserQuestion:cancelled', askUserQuestionListeners.onCancelled);
 
     // Listen for tool permission requests and forward to renderer
     const onToolPermissionPending = async (data: { requestId: string; sessionId: string; workspacePath: string; request: any; timestamp: number }) => {
       logger.main.info('[AIService] Tool permission requested:', data.requestId);
       safeSend(event, 'ai:toolPermission', data);
-      syncPendingPrompt(data.sessionId, true);
+      openPrompt(data.sessionId, data.requestId, 'approval');
 
       // Update session status so all windows show the pending indicator
       getSessionStateManager().updateActivity({
@@ -1069,7 +1064,8 @@ export class MessageStreamingHandler {
     const onToolPermissionResolved = (data: { requestId: string; sessionId: string; response: any; timestamp: number }) => {
       logger.main.info('[AIService] Tool permission resolved:', data.requestId);
       safeSend(event, 'ai:toolPermissionResolved', { ...data, workspacePath: effectiveWorkspacePath });
-      syncPendingPrompt(data.sessionId, false);
+      resolvePrompt(data.sessionId, data.requestId);
+      if (hasOpenPrompts(data.sessionId)) return;
 
       // Update session status back to running so all windows clear the pending indicator
       getSessionStateManager().updateActivity({
@@ -1279,10 +1275,18 @@ export class MessageStreamingHandler {
     // Mark session as executing for mobile sync (shows "Running" indicator)
     const syncProvider = getSyncProvider();
     if (syncProvider) {
-      syncProvider.pushChange(session.id, {
-        type: 'metadata_updated',
-        metadata: { isExecuting: true } as any,
-      });
+      // First-token latency must not wait for index publication. This task catches failures internally.
+      void (async () => {
+        try {
+          const outcome = await syncProvider.pushChange(session.id, {
+            type: 'metadata_updated',
+            metadata: { isExecuting: true },
+          });
+          warnIfUnpublished(message => logger.main.warn(message), session.id, '[AIService] Failed to publish sync change', outcome);
+        } catch (error) {
+          logger.main.warn(`[AIService] Failed to publish sync change for session ${session.id}:`, error);
+        }
+      })();
     }
 
     // Mirrors this turn's direct Git commands into the workspace Git journal so
@@ -1652,15 +1656,23 @@ export class MessageStreamingHandler {
               // Push live context usage to mobile sync
               const syncProvider = getSyncProvider();
               if (syncProvider) {
-                syncProvider.pushChange(session.id, {
-                  type: 'metadata_updated',
-                  metadata: {
-                    currentContext: {
-                      tokens: partialContextFill,
-                      contextWindow: partialContextWindow,
-                    },
-                  } as any,
-                });
+                // Streaming chunks must not wait for index publication. This task catches failures internally.
+                void (async () => {
+                  try {
+                    const outcome = await syncProvider.pushChange(session.id, {
+                      type: 'metadata_updated',
+                      metadata: {
+                        currentContext: {
+                          tokens: partialContextFill,
+                          contextWindow: partialContextWindow,
+                        },
+                      },
+                    });
+                    warnIfUnpublished(message => logger.main.warn(message), session.id, '[AIService] Failed to publish sync change', outcome);
+                  } catch (error) {
+                    logger.main.warn(`[AIService] Failed to publish sync change for session ${session.id}:`, error);
+                  }
+                })();
               }
 
               session.tokenUsage = updatedUsage;
@@ -2516,15 +2528,20 @@ export class MessageStreamingHandler {
               if (contextFillTokens !== undefined && contextWindowForDisplay) {
                 const syncProvider = getSyncProvider();
                 if (syncProvider) {
-                  syncProvider.pushChange(session.id, {
-                    type: 'metadata_updated',
-                    metadata: {
-                      currentContext: {
-                        tokens: contextFillTokens,
-                        contextWindow: contextWindowForDisplay,
+                  try {
+                    const outcome = await syncProvider.pushChange(session.id, {
+                      type: 'metadata_updated',
+                      metadata: {
+                        currentContext: {
+                          tokens: contextFillTokens,
+                          contextWindow: contextWindowForDisplay,
+                        },
                       },
-                    } as any,
-                  });
+                    });
+                    warnIfUnpublished(message => logger.main.warn(message), session.id, '[AIService] Failed to publish sync change', outcome);
+                  } catch (error) {
+                    logger.main.warn(`[AIService] Failed to publish sync change for session ${session.id}:`, error);
+                  }
                 }
               }
 
@@ -2640,15 +2657,20 @@ export class MessageStreamingHandler {
               if (reportsCurrentContext && contextFillTokens !== undefined && reportedContextWindow) {
                 const syncProvider = getSyncProvider();
                 if (syncProvider) {
-                  syncProvider.pushChange(session.id, {
-                    type: 'metadata_updated',
-                    metadata: {
-                      currentContext: {
-                        tokens: contextFillTokens,
-                        contextWindow: reportedContextWindow,
+                  try {
+                    const outcome = await syncProvider.pushChange(session.id, {
+                      type: 'metadata_updated',
+                      metadata: {
+                        currentContext: {
+                          tokens: contextFillTokens,
+                          contextWindow: reportedContextWindow,
+                        },
                       },
-                    } as any,
-                  });
+                    });
+                    warnIfUnpublished(message => logger.main.warn(message), session.id, '[AIService] Failed to publish sync change', outcome);
+                  } catch (error) {
+                    logger.main.warn(`[AIService] Failed to publish sync change for session ${session.id}:`, error);
+                  }
                 }
               }
 
@@ -3024,10 +3046,15 @@ export class MessageStreamingHandler {
 
       // Clear executing and pending prompt flags for mobile sync
       if (syncProvider && !this.svc.sessionsProcessingQueue.has(session.id)) {
-        syncProvider.pushChange(session.id, {
-          type: 'metadata_updated',
-          metadata: { isExecuting: false, hasPendingPrompt: false, updatedAt: Date.now() },
-        });
+        try {
+          const outcome = await syncProvider.pushChange(session.id, {
+            type: 'metadata_updated',
+            metadata: { isExecuting: false, hasPendingPrompt: false, updatedAt: Date.now() },
+          });
+          warnIfUnpublished(message => logger.main.warn(message), session.id, '[AIService] Failed to publish sync change', outcome);
+        } catch (error) {
+          logger.main.warn(`[AIService] Failed to publish sync change for session ${session.id}:`, error);
+        }
       }
 
       // Clean up queued prompt tracking
@@ -3121,10 +3148,15 @@ export class MessageStreamingHandler {
 
         // Clear executing and pending prompt flags for mobile sync on error
         if (syncProvider && !this.svc.sessionsProcessingQueue.has(session.id)) {
-          syncProvider.pushChange(session.id, {
-            type: 'metadata_updated',
-            metadata: { isExecuting: false, hasPendingPrompt: false, updatedAt: Date.now() },
-          });
+          try {
+            const outcome = await syncProvider.pushChange(session.id, {
+              type: 'metadata_updated',
+              metadata: { isExecuting: false, hasPendingPrompt: false, updatedAt: Date.now() },
+            });
+            warnIfUnpublished(message => logger.main.warn(message), session.id, '[AIService] Failed to publish sync change', outcome);
+          } catch (error) {
+            logger.main.warn(`[AIService] Failed to publish sync change for session ${session.id}:`, error);
+          }
 
           // Forced (#1268): a session that died unattended is exactly when the
           // user needs to hear about it, so the server -- not this process --

@@ -1,0 +1,52 @@
+[
+  {
+    "type": "session.usage.updated",
+    "event_id": "usage_0",
+    "usage": {
+      "seconds": 12
+    },
+    "context_window": {
+      "usage_ratio": 0.42
+    }
+  },
+  {
+    "type": "session.usage.updated",
+    "event_id": "usage_1",
+    "usage": {
+      "seconds": 20
+    },
+    "context_window": {
+      "usage_ratio": 0.8
+    }
+  },
+  {
+    "type": "session.usage.updated",
+    "event_id": "usage_2",
+    "usage": {
+      "seconds": 20
+    },
+    "context_window": {
+      "usage_ratio": 0.8
+    }
+  },
+  {
+    "type": "session.usage.updated",
+    "event_id": "usage_3",
+    "usage": {
+      "seconds": 12
+    },
+    "context_window": {
+      "usage_ratio": 0.42
+    }
+  },
+  {
+    "type": "session.usage.updated",
+    "event_id": "usage_4",
+    "usage": {
+      "seconds": 24
+    },
+    "context_window": {
+      "usage_ratio": 0.2
+    }
+  }
+]

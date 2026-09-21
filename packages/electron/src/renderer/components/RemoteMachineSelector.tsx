@@ -63,8 +63,9 @@ export function RemoteMachineSelector({
     >
       <option value="">This Mac</option>
       {hosts.map((device) => (
-        <option key={device.deviceId} value={device.deviceId}>
+        <option key={device.deviceId} value={device.deviceId} title={device.lastSeenAt ? `Last seen ${new Date(device.lastSeenAt).toLocaleString()}` : undefined}>
           {device.name}
+          {hosts.filter(other => other.name === device.name).length > 1 ? ` · ${device.deviceId.slice(-6)}` : ""}
           {device.isOnline === false ? " · Offline" : ""}
         </option>
       ))}

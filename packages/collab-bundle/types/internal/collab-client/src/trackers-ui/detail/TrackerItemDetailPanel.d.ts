@@ -63,5 +63,12 @@ export interface TrackerItemDetailPanelProps {
     overflowActions?: readonly TrackerItemAction[];
     onClose?: () => void;
     mutationRejection?: TrackerMutationRejection | null;
+    /** Phone presentation keeps the same body slot and document binding. */
+    compact?: boolean;
+    editing?: boolean;
+    onEditingChange?: (editing: boolean) => void;
+    backLabel?: string;
+    commentDraft?: string;
+    onCommentDraftChange?: (text: string) => void;
 }
-export declare function TrackerItemDetailPanel({ item, identity, onFieldChange, commentMutate, formatTimestamp, teamMembers, bodySlot, headerStatus, copyLinkHref, overflowActions, onClose, mutationRejection, }: TrackerItemDetailPanelProps): React.JSX.Element;
+export declare function TrackerItemDetailPanel({ item, identity, onFieldChange, commentMutate, formatTimestamp, teamMembers, bodySlot, headerStatus, copyLinkHref, overflowActions, onClose, mutationRejection, compact, editing, onEditingChange, backLabel, commentDraft, onCommentDraftChange, }: TrackerItemDetailPanelProps): React.JSX.Element;

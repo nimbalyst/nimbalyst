@@ -1475,6 +1475,7 @@ export const CollaborativeTabEditor: React.FC<CollaborativeTabEditorProps> = ({
         sharedDocumentLinkTarget={{
           documentId: activeConfig.documentId,
           orgId: activeConfig.orgId,
+          teamProjectId: activeConfig.scope.indexConfig.teamProjectId,
         }}
         extraActionItems={collabActionItems}
         documentSessionActions={documentSessionActions}

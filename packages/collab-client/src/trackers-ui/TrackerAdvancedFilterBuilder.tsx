@@ -128,6 +128,7 @@ export function TrackerAdvancedFilterBuilder({
                 aria-label={`Filter ${index + 1} field`}
                 data-testid={`tracker-filter-builder-field-${index}`}
               >
+                {!field ? <option value={clause.field}>{clause.field} (unavailable field)</option> : null}
                 {filterFields.map(candidate => (
                   <option key={candidate.id} value={candidate.id}>{candidate.label}</option>
                 ))}

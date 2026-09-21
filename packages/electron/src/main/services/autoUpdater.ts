@@ -83,17 +83,13 @@ export class AutoUpdaterService {
   private configureFeedURL() {
     const channel = getReleaseChannel();
 
-    if (channel === 'alpha') {
-      log.info('Configuring alpha channel updates from GitHub prereleases');
-      autoUpdater.allowPrerelease = true;
-      autoUpdater.channel = 'alpha';
-      autoUpdater.setFeedURL(GITHUB_UPDATE_PROVIDER);
-    } else {
-      log.info('Configuring stable channel updates from GitHub releases');
-      autoUpdater.allowPrerelease = false;
-      autoUpdater.channel = 'latest';
-      autoUpdater.setFeedURL(GITHUB_UPDATE_PROVIDER);
-    }
+    log.info(`Configuring ${channel} channel updates from GitHub`);
+    autoUpdater.allowPrerelease = channel === 'alpha';
+    autoUpdater.channel = channel === 'alpha' ? 'alpha' : 'latest';
+    // electron-updater's channel setter enables downgrades. Reset AFTER the
+    // assignment on every launch and channel change (the policy from PR #811).
+    autoUpdater.allowDowngrade = false;
+    autoUpdater.setFeedURL(GITHUB_UPDATE_PROVIDER);
   }
 
   private setupEventHandlers() {

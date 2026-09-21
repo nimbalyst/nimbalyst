@@ -1,45 +1,18 @@
-/**
- * CSV <-> Y.Doc binding.
- *
- * RevoGrid is the source of truth for the CSV data; useEditorLifecycle's
- * `applyContent` path is the only place that pushes data into the grid.
- * The binding bridges between the grid and a `Y.Text` carrying the
- * canonical CSV string.
- *
- * Local edits -> Y.Text:
- *   The binding exposes `scheduleSync()`. The editor calls it after every
- *   edit (or, more pragmatically, on a low-cost interval). The binding
- *   debounces ~150ms, asks the host for the current CSV via the supplied
- *   `getCurrentCsv` callback, diffs against the last-pushed snapshot, and
- *   applies a minimal `delete(...)/insert(...)` pair on Y.Text. Common-
- *   prefix and common-suffix shortcuts keep single-cell edits to a single
- *   contiguous range.
- *
- * Y.Text -> grid:
- *   A change observer reads the Y.Text content. If the resulting string
- *   differs from our last pushed snapshot, we invoke `onRemoteContent` so
- *   the editor reloads the grid via the existing applyContent flow.
- *
- * Awareness:
- *   The host pre-populates `user`. The editor calls `setLocalAwareness`
- *   with the currently-selected cell ({ row, col }) and the currently-
- *   editing cell so other clients can render presence indicators.
- *
- * Bootstrap-race safety:
- *   Two clients calling `seedCsvYDoc` concurrently produce identical
- *   Y.Text inserts; Y.Text merges character-level inserts deterministically
- *   so the merged shape equals either client's individual shape. No node
- *   identity to worry about (unlike Mindmap/Excalidraw).
- */
+/** Bridges grid snapshots to Y.Text while retaining their original CRDT baseline. */
 
 import * as Y from 'yjs';
 import type * as awarenessProtocol from 'y-protocols/awareness';
 import { getYCsv } from './seed';
+import { CsvPublication } from './csvPublication';
 import { extractRemotePresences, type RemotePresence } from './presence';
 
 const SYNC_DEBOUNCE_MS = 150;
 
 export interface CsvBindingOptions {
+  /** Resolves only after the full current grid application is readable. */
+  isReady?: () => boolean;
+  getGeneration?: () => number;
+  waitUntilReady?: () => Promise<void>;
   /** Current CSV serialization from the grid. Called inside the debounce. */
   getCurrentCsv: () => Promise<string> | string;
   /** Called with the full Y.Text content when a remote change is observed. */
@@ -69,6 +42,12 @@ export class CsvBinding {
   /** Set by a caller that arrived while the current grid serialization was running. */
   private syncRequested = false;
   private destroyed = false;
+  private publication: CsvPublication | null = null;
+  private readonly publicationWriterId: number;
+  private remotePending = false;
+  private mutationDepth = 0;
+  private mutationsDone: Promise<void> | null = null;
+  private finishMutations: (() => void) | null = null;
 
   constructor(
     yDoc: Y.Doc,
@@ -76,6 +55,9 @@ export class CsvBinding {
     opts: CsvBindingOptions,
     awareness?: awarenessProtocol.Awareness,
   ) {
+    const writer = new Y.Doc();
+    this.publicationWriterId = writer.clientID;
+    writer.destroy();
     this.yDoc = yDoc;
     this.yText = getYCsv(yDoc);
     this.opts = opts;
@@ -92,8 +74,7 @@ export class CsvBinding {
       if (txn.origin === this.localTxnOrigin) return;
       const content = this.yText.toString();
       if (content === this.lastSyncedContent) return;
-      this.lastSyncedContent = content;
-      this.opts.onRemoteContent(content);
+      this.refreshFromShared();
     };
     this.yText.observe(onTextChange);
     this.subscriptions.push(() => this.yText.unobserve(onTextChange));
@@ -103,6 +84,19 @@ export class CsvBinding {
       this.awareness.on('change', onAwareness);
       this.subscriptions.push(() => this.awareness?.off('change', onAwareness));
     }
+  }
+
+  /** Text and metadata share the same repaint barrier. */
+  refreshFromShared(): void {
+    if (this.destroyed) return;
+    // The Y.Doc receives remote updates immediately; only repaint waits so
+    // a pending grid read or mutation cannot mix two application generations.
+    if (this.publication) {
+      this.remotePending = true;
+      return;
+    }
+    this.lastSyncedContent = this.yText.toString();
+    this.opts.onRemoteContent(this.lastSyncedContent);
   }
 
   destroy(): void {
@@ -119,6 +113,32 @@ export class CsvBinding {
       }
     }
     this.subscriptions = [];
+    if (!this.syncInFlight) {
+      this.publication?.destroy();
+      this.publication = null;
+    }
+  }
+
+  /** Keep remote repaint outside asynchronous multi-cell/row operations. */
+  async mutate<T>(operation: () => Promise<T>): Promise<T> {
+    if (this.destroyed) throw new Error('CSV binding was destroyed');
+    if (this.opts.waitUntilReady && !this.opts.isReady?.()) await this.opts.waitUntilReady();
+    this.publication ??= new CsvPublication(this.yDoc, this.publicationWriterId);
+    if (this.mutationDepth++ === 0) {
+      this.mutationsDone = new Promise(resolve => { this.finishMutations = resolve; });
+    }
+    let result: T;
+    try {
+      result = await operation();
+    } finally {
+      if (--this.mutationDepth === 0) {
+        this.finishMutations?.();
+        this.mutationsDone = null;
+        this.finishMutations = null;
+      }
+    }
+    await this.syncNow();
+    return result;
   }
 
   /**
@@ -153,9 +173,30 @@ export class CsvBinding {
     // callers behind the active pass, then serialize the current grid again so
     // every edit that arrived during that pass is represented by the last pass.
     this.syncInFlight = (async () => {
-      while (this.syncRequested) {
-        this.syncRequested = false;
-        await this.syncOnce();
+      if (this.opts.waitUntilReady && !this.opts.isReady?.()) await this.opts.waitUntilReady();
+      if (this.yDoc.isDestroyed) return;
+      this.publication ??= new CsvPublication(this.yDoc, this.publicationWriterId);
+      let completed = false;
+      try {
+        while (this.syncRequested) {
+          if (this.mutationsDone) await this.mutationsDone;
+          if (this.opts.waitUntilReady && !this.opts.isReady?.()) await this.opts.waitUntilReady();
+          this.syncRequested = false;
+          await this.syncOnce();
+        }
+        if (this.remotePending && !this.destroyed && !this.yDoc.isDestroyed) {
+          this.lastSyncedContent = this.yText.toString();
+          this.opts.onRemoteContent(this.lastSyncedContent);
+        }
+        this.remotePending = false;
+        completed = true;
+      } finally {
+        // A failed read must retain its old baseline and the still-local grid.
+        // Retrying against the newer live doc would turn remote edits into deletes.
+        if (completed || this.destroyed || this.yDoc.isDestroyed) {
+          this.publication.destroy();
+          this.publication = null;
+        }
       }
     })().finally(() => {
       this.syncInFlight = null;
@@ -165,6 +206,7 @@ export class CsvBinding {
 
   private async syncOnce(): Promise<void> {
     let current: string;
+    const generation = this.opts.getGeneration?.();
     try {
       current = await this.opts.getCurrentCsv();
     } catch (err) {
@@ -186,55 +228,19 @@ export class CsvBinding {
     // The provider owns the Y.Doc, though, and may destroy it while the
     // serialization is pending. In that case there is nowhere left to flush.
     if (this.yDoc.isDestroyed) return;
-    if (current === this.lastSyncedContent) return;
-
-    // Wipe guard (NIM-1529): an empty serialization against a non-empty
-    // baseline is the bootstrap race (grid polled before its data loaded),
-    // not a user edit -- a real select-all-delete still serializes rows of
-    // delimiters. Pushing it would delete the whole shared document for
-    // every client.
-    if (current.trim() === '' && this.lastSyncedContent.trim() !== '') {
-      console.warn('[CsvBinding] Skipping push of empty grid state over non-empty shared doc (bootstrap race guard).');
+    if (generation !== this.opts.getGeneration?.() || this.mutationDepth > 0) {
+      this.syncRequested = true;
       return;
     }
+    const publication = this.publication!;
+    if (current === publication.content) return;
 
-    const prev = this.lastSyncedContent;
-    // Common-prefix / common-suffix shortcut: most CSV edits are local
-    // (one cell, one column resize, one row insert). Sending the whole
-    // string would still merge correctly but bloats the wire and
-    // worsens concurrent-edit conflicts.
-    let prefix = 0;
-    const maxPrefix = Math.min(prev.length, current.length);
-    while (prefix < maxPrefix && prev.charCodeAt(prefix) === current.charCodeAt(prefix)) {
-      prefix++;
+    // Hydration is gated by the host. Retain the empty-state backstop for
+    // hosts without that contract; a partial non-empty snapshot needs the gate.
+    if (current.trim() === '' && publication.content.trim() !== '' && !this.opts.isReady?.()) {
+      throw new Error('[CsvBinding] Refusing an empty grid snapshot over a non-empty shared document');
     }
-    let suffix = 0;
-    const maxSuffix = Math.min(prev.length - prefix, current.length - prefix);
-    while (
-      suffix < maxSuffix &&
-      prev.charCodeAt(prev.length - 1 - suffix) ===
-        current.charCodeAt(current.length - 1 - suffix)
-    ) {
-      suffix++;
-    }
-    const removeLen = prev.length - prefix - suffix;
-    const insertText = current.slice(prefix, current.length - suffix);
-
-    try {
-      this.yDoc.transact(() => {
-        if (removeLen > 0) this.yText.delete(prefix, removeLen);
-        if (insertText.length > 0) this.yText.insert(prefix, insertText);
-      }, this.localTxnOrigin);
-    } catch (err) {
-      // Provider teardown can win the race between the lifecycle check and
-      // the transaction. That late flush is no longer actionable; other
-      // failures stay visible without escaping as unhandled rejections.
-      if (!this.yDoc.isDestroyed) {
-        console.error('[CsvBinding] Failed to sync CSV to Y.Text:', err);
-      }
-      return;
-    }
-
+    publication.publish(current, this.yDoc, this.localTxnOrigin);
     this.lastSyncedContent = current;
   }
 

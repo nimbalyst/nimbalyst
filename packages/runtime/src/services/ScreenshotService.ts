@@ -2,8 +2,8 @@
  * Screenshot Service
  *
  * A generic service for capturing screenshots of rendered content.
- * Extensions register their screenshot capture capabilities here,
- * and the service routes capture requests to the appropriate handler.
+ * The platform supplies native element/file capture for all editors.
+ * Legacy extension capture registrations remain available on other hosts.
  *
  * This is platform-agnostic - the actual capture implementation
  * is provided by the extension or platform service.
@@ -27,7 +27,39 @@ export interface ScreenshotCapability {
   capture: (filePath: string) => Promise<string>;
 }
 
-class ScreenshotServiceImpl {
+/** Platform-owned pixel capture. Never reconstruct the workspace DOM. */
+export interface ScreenshotCaptureProvider {
+  captureElement(element: HTMLElement): Promise<string>;
+  captureFile(filePath: string): Promise<string>;
+}
+
+export class ScreenshotServiceImpl {
+  private provider?: ScreenshotCaptureProvider;
+  private elementCaptures = new WeakMap<HTMLElement, Promise<string>>();
+  private fileCaptures = new Map<string, Promise<string>>();
+
+  setCaptureProvider(provider: ScreenshotCaptureProvider): void {
+    this.provider = provider;
+  }
+
+  /** Capture the visible region of an element, including iframe/canvas pixels.
+   * Hidden files must use capture(filePath), so the host can mount them safely.
+   * Concurrent requests for the same element share one capture.
+   */
+  captureElement(element: HTMLElement): Promise<string> {
+    const pending = this.elementCaptures.get(element);
+    if (pending) return pending;
+    const capture = Promise.resolve()
+      .then(() => {
+        if (!this.provider)
+          throw new Error('Screenshots are not supported by this host.');
+        return this.provider.captureElement(element);
+      })
+      .finally(() => this.elementCaptures.delete(element));
+    this.elementCaptures.set(element, capture);
+    return capture;
+  }
+
   private capabilities = new Map<string, ScreenshotCapability>();
   private extensionsByFileType = new Map<string, string>(); // extension -> capability id
 
@@ -44,7 +76,9 @@ class ScreenshotServiceImpl {
     }
 
     console.log(
-      `[ScreenshotService] Registered capability '${capability.id}' for extensions: ${capability.fileExtensions.join(', ')}`
+      `[ScreenshotService] Registered capability '${
+        capability.id
+      }' for extensions: ${capability.fileExtensions.join(', ')}`
     );
   }
 
@@ -62,7 +96,9 @@ class ScreenshotServiceImpl {
         }
       }
       this.capabilities.delete(capabilityId);
-      console.log(`[ScreenshotService] Unregistered capability '${capabilityId}'`);
+      console.log(
+        `[ScreenshotService] Unregistered capability '${capabilityId}'`
+      );
     }
   }
 
@@ -71,21 +107,31 @@ class ScreenshotServiceImpl {
    */
   canCapture(filePath: string): boolean {
     const capability = this.findCapability(filePath);
-    return capability !== null;
+    return Boolean(this.provider) || capability !== null;
   }
 
   /**
    * Capture a screenshot of a file.
    * Routes to the appropriate capability based on file extension.
    */
-  async capture(filePath: string): Promise<string> {
-    const capability = this.findCapability(filePath);
-    if (!capability) {
-      throw new Error(`No screenshot capability registered for file: ${filePath}`);
-    }
-
-    console.log(`[ScreenshotService] Capturing ${filePath} using '${capability.id}'`);
-    return capability.capture(filePath);
+  capture(filePath: string): Promise<string> {
+    const pending = this.fileCaptures.get(filePath);
+    if (pending) return pending;
+    const capture = Promise.resolve()
+      .then(() => {
+        // The host supports every registered editor, including unopened files.
+        // Legacy capability registrations remain compatible on other hosts.
+        if (this.provider) return this.provider.captureFile(filePath);
+        const capability = this.findCapability(filePath);
+        if (!capability)
+          throw new Error(
+            `No screenshot capability registered for file: ${filePath}`
+          );
+        return capability.capture(filePath);
+      })
+      .finally(() => this.fileCaptures.delete(filePath));
+    this.fileCaptures.set(filePath, capture);
+    return capture;
   }
 
   /**

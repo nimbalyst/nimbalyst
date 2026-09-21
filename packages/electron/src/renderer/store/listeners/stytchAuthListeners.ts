@@ -14,16 +14,20 @@
 import { store } from '@nimbalyst/runtime/store';
 import { stytchAuthAtom, type StytchAuthSnapshot } from '../atoms/stytchAuth';
 import {
-  organizationDirectoryAtom,
+  organizationDirectoryStateAtom,
   personalAccountsAtom,
-  type OrganizationDirectoryEntry,
   type PersonalAccountSummary,
 } from '../atoms/settingsDomains';
-import { createPerKeyDebouncer } from '../listeners/perKeyDebounce';
+import { createOrganizationDirectoryLoader } from './organizationDirectoryLoader';
 import { bucketOrganizationCount } from '../../../shared/analytics/teamAnalytics';
 import { trackTeamAnalyticsEvent } from '../../utils/teamAnalytics';
 
 let initialized = false;
+let directoryLoader: ReturnType<typeof createOrganizationDirectoryLoader> | undefined;
+
+export function refreshOrganizationDirectory(): void {
+  directoryLoader?.refresh();
+}
 
 async function trackMembershipSignInCompleted(userId: string | null): Promise<void> {
   // The auth broadcast reaches every project window, so the sign-in has to be
@@ -55,14 +59,12 @@ export async function refreshPersonalAccountsDirectory(): Promise<PersonalAccoun
     store.set(personalAccountsAtom, []);
     return [];
   }
-  try {
-    const accounts = (await stytch.getAccounts() ?? []) as PersonalAccountSummary[];
-    store.set(personalAccountsAtom, accounts);
-    return accounts;
-  } catch {
-    store.set(personalAccountsAtom, []);
-    return [];
-  }
+  const accounts = await stytch.getAccounts();
+  if (!Array.isArray(accounts)) throw new Error('Accounts could not be loaded.');
+  store.set(personalAccountsAtom, accounts as PersonalAccountSummary[]);
+  // Explicit account changes also invalidate any directory request in flight.
+  directoryLoader?.refresh();
+  return accounts as PersonalAccountSummary[];
 }
 
 export function initStytchAuthListeners(): () => void {
@@ -78,46 +80,23 @@ export function initStytchAuthListeners(): () => void {
     };
   }
 
-  const loadIdentityDirectory = async () => {
-    await refreshPersonalAccountsDirectory();
-    try {
-      const result = await window.electronAPI?.team?.list?.();
-      store.set(
-        organizationDirectoryAtom,
-        result?.success && Array.isArray(result.teams)
-          ? result.teams as OrganizationDirectoryEntry[]
-          : [],
-      );
-    } catch {
-      store.set(organizationDirectoryAtom, []);
-    }
-  };
-
-  // Coalesce event-driven refreshes. Auth-state-change and organizations-changed
-  // can arrive in tight bursts (multi-window token churn); without debouncing,
-  // each one fires its own team:list. See NIM-1828 -- this was a symptom-side
-  // amplifier of the auth-state-change storm.
-  const identityDirectoryDebouncer = createPerKeyDebouncer(400);
-  const scheduleIdentityDirectoryReload = () => {
-    identityDirectoryDebouncer.schedule('reload', () => { void loadIdentityDirectory(); });
-  };
-
-  // Initial fetch -- atom stays null until this resolves so the UI can
-  // distinguish "still loading" from "loaded and signed out". Run it directly
-  // (not debounced) so first paint isn't delayed.
-  stytch.getAuthState()
-    .then((state) => {
-      store.set(stytchAuthAtom, {
-        isAuthenticated: !!state?.isAuthenticated,
-        user: state?.user ?? null,
-      } satisfies StytchAuthSnapshot);
-      void loadIdentityDirectory();
-    })
-    .catch(() => {
-      // Treat fetch failure as signed-out rather than leaving the atom null
-      // forever -- otherwise the UI never resolves out of its loading state.
-      store.set(stytchAuthAtom, { isAuthenticated: false, user: null });
-    });
+  const loader = createOrganizationDirectoryLoader({
+    getAuth: async () => {
+      const state = await stytch.getAuthState();
+      if (!state) throw new Error('Account status could not be loaded.');
+      return { isAuthenticated: !!state.isAuthenticated, user: state.user ?? null };
+    },
+    getAccounts: async () => {
+      const accounts = await stytch.getAccounts();
+      if (!Array.isArray(accounts)) throw new Error('Accounts could not be loaded.');
+      return accounts as PersonalAccountSummary[];
+    },
+    list: (options) => window.electronAPI.team.list(options),
+    setAuth: (auth) => store.set(stytchAuthAtom, auth),
+    setAccounts: (accounts) => store.set(personalAccountsAtom, accounts),
+    publish: (snapshot) => store.set(organizationDirectoryStateAtom, snapshot),
+  });
+  directoryLoader = loader;
 
   const unsubscribe = stytch.onAuthStateChange?.((state: { isAuthenticated?: boolean; user?: StytchAuthSnapshot['user'] }) => {
     const wasAuthenticated = store.get(stytchAuthAtom)?.isAuthenticated ?? false;
@@ -129,16 +108,17 @@ export function initStytchAuthListeners(): () => void {
     if (isAuthenticated && !wasAuthenticated) {
       void trackMembershipSignInCompleted(state?.user?.user_id ?? null).catch(() => {});
     }
-    scheduleIdentityDirectoryReload();
+    loader.authChanged({ isAuthenticated, user: state.user ?? null });
   });
 
   void stytch.subscribeAuthState?.();
-  const handleOrganizationsChanged = () => { scheduleIdentityDirectoryReload(); };
+  const handleOrganizationsChanged = () => { loader.organizationsChanged(); };
   window.addEventListener('nimbalyst:organizations-changed', handleOrganizationsChanged);
 
   return () => {
     initialized = false;
-    identityDirectoryDebouncer.cancelAll();
+    loader.dispose();
+    if (directoryLoader === loader) directoryLoader = undefined;
     unsubscribe?.();
     window.removeEventListener('nimbalyst:organizations-changed', handleOrganizationsChanged);
   };

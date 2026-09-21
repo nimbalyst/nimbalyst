@@ -1,3 +1,4 @@
+import { ShellTrackingNotice } from './ShellTrackingNotice';
 /**
  * FilesEditedSidebar - Shows files edited by AI in the current workstream.
  *
@@ -151,9 +152,6 @@ export const FilesEditedSidebar: React.FC<FilesEditedSidebarProps> = React.memo(
 
   // Lazy load file state for all child sessions in the workstream
   useEffect(() => {
-    // Debug logging - uncomment if needed
-    // console.log('[FilesEditedSidebar] Loading file state for workstream', workstreamId, 'with', workstreamSessions.length, 'child sessions');
-
     // Load file state for the workstream itself (parent)
     loadInitialSessionFileState(workstreamId, effectiveWorkspacePath);
 
@@ -551,7 +549,7 @@ export const FilesEditedSidebar: React.FC<FilesEditedSidebarProps> = React.memo(
 
   return (
     <div className="files-edited-sidebar shrink-0 flex flex-col h-full bg-[var(--nim-bg-secondary)]" style={{ width }}>
-      {/* Header with scope dropdown and controls */}
+      <ShellTrackingNotice sessionIds={filterToCurrentSession && activeSessionId ? [activeSessionId] : [workstreamId, ...workstreamSessions]} />
       <div className="files-edited-sidebar__header flex items-center gap-2 px-3 py-2 border-b border-[var(--nim-border)] bg-[var(--nim-bg-secondary)] shrink-0">
         <FilesScopeDropdown
           fileScopeMode={fileScopeMode}

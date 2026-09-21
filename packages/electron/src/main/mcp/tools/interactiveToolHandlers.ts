@@ -1,10 +1,8 @@
 import Store from '../../utils/privateSettingsStore';
 export { handleAskUserQuestion } from './askUserQuestionHandler';
 import { BrowserWindow, ipcMain } from "electron";
-import {
-  AgentMessagesRepository,
-  AISessionsRepository,
-} from "@nimbalyst/runtime";
+import { AgentMessagesRepository } from "@nimbalyst/runtime/storage/repositories/AgentMessagesRepository";
+import { AISessionsRepository } from "@nimbalyst/runtime/storage/repositories/AISessionsRepository";
 import { STRUCTURED_INPUT_FIELD_TYPES } from "@nimbalyst/collab-protocol";
 import { getSessionStateManager } from "@nimbalyst/runtime/ai/server/SessionStateManager";
 import { notificationService } from "../../services/NotificationService";
@@ -36,7 +34,7 @@ import { broadcastMessageLogged } from "../../services/ai/claudeCliUserPromptLog
 import { ClaudeSettingsManager } from "../../services/ClaudeSettingsManager";
 import { getPermissionService } from "../../services/PermissionService";
 import { SessionCommitService } from "../../services/SessionCommitService";
-import { scopeProposalToRepo } from "../../services/workspaceRepos";
+import { resolveGitCommitProposalTarget } from "../../services/gitCommitProposalTarget";
 import { findFreshInteractiveResponse } from "./interactiveResponsePolling";
 import {
   clearPendingInteractiveWaiter,
@@ -57,6 +55,19 @@ import {
   type InteractivePromptSettleReason,
 } from "./interactivePromptAbandonment";
 
+/**
+ * A tool that only asks the user something and returns their answer changes no
+ * state, so it is read-only in the MCP sense. Declaring that is not cosmetic:
+ * Codex CLI gates MCP tool calls on `readOnlyHint` by default, and a tool
+ * without it is treated as a write that needs approval. Nimbalyst runs Codex
+ * with `approval_policy: 'never'` in every mode except Agent-verified bypass
+ * (see codexPermissionProfile.ts), so such a call fails outright with
+ * "MCP tool call requires approval, but approval policy is never" -- the user
+ * sees the question card render but the call never reaches this process, so
+ * nothing can answer it. See #1553.
+ */
+const ASKS_USER_ONLY = { readOnlyHint: true } as const;
+
 export function getInteractiveToolSchemas(sessionId: string | undefined) {
   if (!sessionId) return [];
 
@@ -64,6 +75,7 @@ export function getInteractiveToolSchemas(sessionId: string | undefined) {
     requestUserInputSchema(),
     {
       name: "AskUserQuestion",
+      annotations: ASKS_USER_ONLY,
       description:
         "Prompt the user with one or more multiple-choice questions and wait for their response. Use for explicit confirmation or disambiguation.",
       inputSchema: {
@@ -123,6 +135,8 @@ export function getInteractiveToolSchemas(sessionId: string | undefined) {
 
 IMPORTANT: First call get_session_edited_files, cross-reference with git status, and include ALL session-edited files that have uncommitted changes — do not cherry-pick a subset.
 
+Relative paths target the session's checkout (its worktree when linked). workingDirectory is unsupported; use a session in the intended checkout. Absolute paths may also target attached repositories. Files outside these roots are rejected.
+
 ONE REPOSITORY PER CALL. A commit cannot span repositories. If the files you are committing live in more than one repository (a workspace can have attached folders that are their own checkouts), call this tool once per repository — each call with only that repository's files and a commit message describing that repository's change. A call whose files span repositories is rejected.
 
 Commit message: type prefix (feat:/fix:/refactor:/docs:/test:/chore:), title states the user-visible outcome, focus on impact and why (not technique), lines under 72 chars, no emojis, dash bullets only for multiple distinct changes. If the commit resolves an issue or tracker item, include its canonical closing reference (e.g. Fixes #123, Closes ABC-123), or a neutral reference line if the closing syntax is unclear.`,
@@ -140,7 +154,7 @@ Commit message: type prefix (feat:/fix:/refactor:/docs:/test:/chore:), title sta
                     path: {
                       type: "string",
                       description:
-                        "File path, either relative to the workspace root or absolute. Files in an attached folder are supplied to you as absolute paths; pass them back unchanged.",
+                        "File path, either relative to the session checkout (its worktree when linked) or absolute. Files in an attached folder are supplied to you as absolute paths; pass them back unchanged.",
                     },
                     status: {
                       type: "string",
@@ -443,6 +457,7 @@ export async function handleGitCommitProposal(
         filesToStage?: FileToStage[] | string;
         commitMessage?: string;
         reasoning?: string;
+        workingDirectory?: unknown;
       }
     | undefined;
 
@@ -492,33 +507,26 @@ export async function handleGitCommitProposal(
     };
   }
 
-  // One proposal is one commit in one repo. Accepting a list that spans repos
-  // would put N commits behind a single approval, sharing one message, with
-  // only the first hash ever surfaced. Refuse and name the groups so the agent
-  // makes one call per repo -- it corrects within the same turn.
-  const proposalPaths = proposalArgs.filesToStage.map((file) =>
-    typeof file === "string" ? file : file.path
-  );
-  const scope = scopeProposalToRepo(workspacePath, proposalPaths);
-  if (!scope.ok) {
-    const groupList = scope.groups
-      .map((group) => `${group.repoPath}\n${group.files.map((f) => `  - ${f}`).join("\n")}`)
-      .join("\n\n");
+  let target: Awaited<ReturnType<typeof resolveGitCommitProposalTarget>>;
+  try {
+    target = await resolveGitCommitProposalTarget(
+      sessionId,
+      workspacePath,
+      proposalArgs.filesToStage.map(file => typeof file === "string" ? file : file.path),
+      proposalArgs.workingDirectory,
+    );
+    // Persist absolute paths so consumers of the durable proposal do not
+    // reinterpret relative files against the parent MCP configuration root.
+    proposalArgs.filesToStage = proposalArgs.filesToStage.map((file, index) =>
+      typeof file === "string" ? target.files[index] : { ...file, path: target.files[index] }
+    );
+  } catch (error) {
     return {
-      content: [
-        {
-          type: "text",
-          text:
-            `Error: this proposal spans ${scope.groups.length} git repositories. ` +
-            `A commit cannot cross repositories, so call developer_git_commit_proposal ` +
-            `once per repository, each with only that repository's files and a commit ` +
-            `message describing that repository's change.\n\n${groupList}`,
-        },
-      ],
+      content: [{ type: "text", text: `Error: ${error instanceof Error ? error.message : String(error)}` }],
       isError: true,
     };
   }
-  const proposalRepoPath = scope.repoPath ?? undefined;
+  const proposalRepoPath = target.repoPath;
 
   // Find the target window (resolves worktree paths to parent project)
   const commitWindowId = await findWindowIdForWorkspacePath(workspacePath);
@@ -550,6 +558,15 @@ export async function handleGitCommitProposal(
       .substring(7)}`;
 
   const targetSessionId = sessionId || "unknown";
+
+  // Decide before publishing: voice must never request approval for an automatic commit.
+  let isAutoCommit = false;
+  try {
+    const aiSettingsStore = new Store({ name: "ai-settings" });
+    isAutoCommit = aiSettingsStore.get("autoCommitEnabled", false) as boolean;
+  } catch {
+    // If we can't read settings, fall through to manual mode
+  }
 
   // Persist the proposal to database for durability
   try {
@@ -603,12 +620,13 @@ export async function handleGitCommitProposal(
       direction: "output",
       content: JSON.stringify({
         type: "git_commit_proposal",
+        autoApproved: isAutoCommit,
         proposalId,
         toolUseId,
         filesToStage: proposalArgs.filesToStage,
         commitMessage: proposalArgs.commitMessage,
         reasoning: proposalArgs.reasoning,
-        workspacePath,
+        workspacePath: target.workspacePath,
         // The repo this proposal commits into, resolved from the files. The
         // widget names it and renders paths relative to it -- an attached
         // folder's absolute path would otherwise render as a tree from `/`.
@@ -619,39 +637,25 @@ export async function handleGitCommitProposal(
       hidden: false,
       createdAt: now,
     });
-    // console.log(
-    //   `[MCP Server] Persisted git commit proposal: ${proposalId}, notifying renderer for session: ${targetSessionId}`
-    // );
     if (commitWindow) {
-      // Include proposal data in the IPC so renderer-side consumers (the
-      // GitCommit widget AND the voice forwarding path) can display the
-      // commit message and act on the file list without needing a separate
-      // round-trip to load the persisted proposal from the database.
+      // Include the approval decision and proposal data so voice needs no settings/DB round-trip.
       commitWindow.webContents.send("ai:gitCommitProposal", {
+        autoApproved: isAutoCommit,
         sessionId: targetSessionId,
         proposalId,
         commitMessage: proposalArgs.commitMessage,
         filesToStage: proposalArgs.filesToStage,
-        workspacePath,
+        workspacePath: target.workspacePath,
       });
     } else {
       console.warn("[MCP Server] No commitWindow found to send IPC event");
     }
 
-    // Persist pending-prompt bit + push to mobile (this also notifies the tray)
-    void setSessionPendingPrompt(targetSessionId, true);
+    // An automatic commit is running work, not a request for user input.
+    if (!isAutoCommit) void setSessionPendingPrompt(targetSessionId, true);
   } catch (error) {
     console.error("[MCP Server] Failed to persist git commit proposal:", error);
     // Continue anyway - worst case is no durability
-  }
-
-  // Check if auto-commit is enabled
-  let isAutoCommit = false;
-  try {
-    const aiSettingsStore = new Store({ name: "ai-settings" });
-    isAutoCommit = aiSettingsStore.get("autoCommitEnabled", false) as boolean;
-  } catch {
-    // If we can't read settings, fall through to manual mode
   }
 
   if (isAutoCommit) {
@@ -677,10 +681,10 @@ export async function handleGitCommitProposal(
     };
     try {
       commitResult = await executeGitCommitAcrossRepos(
-        workspacePath,
+        target.workspacePath,
         commitMessage,
         filePaths,
-        { logContext: "[git:auto-commit]", env: getGitSubprocessEnv() }
+        { logContext: "[git:auto-commit]", env: getGitSubprocessEnv(), repoPath: target.repoPath }
       );
     } catch (error) {
       console.error("[MCP Server] Auto-commit failed:", error);
@@ -730,7 +734,7 @@ export async function handleGitCommitProposal(
       });
       commitWindow.webContents.send("mcp:gitCommitProposal", {
         proposalId,
-        workspacePath,
+        workspacePath: target.workspacePath,
         sessionId: targetSessionId,
         filesToStage: proposalArgs.filesToStage,
         commitMessage: proposalArgs.commitMessage,
@@ -988,7 +992,7 @@ export async function handleGitCommitProposal(
     // Send the proposal to the renderer
     commitWindow.webContents.send("mcp:gitCommitProposal", {
       proposalId,
-      workspacePath,
+      workspacePath: target.workspacePath,
       sessionId: sessionId || "unknown",
       filesToStage: proposalArgs.filesToStage,
       commitMessage: proposalArgs.commitMessage,
@@ -1110,6 +1114,7 @@ function requestUserInputSchema() {
     // that collides with a Codex CLI built-in tool gated to Plan mode and the
     // agent gets refused with "request_user_input is unavailable in Default mode".
     name: "PromptForUserInput",
+    annotations: ASKS_USER_ONLY,
     description: `Ask the user for structured input via a composable widget with typed fields; the answer payload is keyed by field id. The "fields" argument is an ARRAY OF OBJECTS ({ type, id, label, ... }), never an array of strings — per-type required properties are documented on the field schema.
 
 Field types: multiSelect (pick a subset), singleSelect (branching choice), reorder (drag-to-reorder with optional delete), editText (edit a seeded draft), confirm (yes/no).

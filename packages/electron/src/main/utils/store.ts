@@ -90,6 +90,7 @@ export const DEFAULT_DATABASE_MAINTENANCE: DatabaseMaintenanceSettings = {
 export type TrayStripStyle = FleetStatusStyle;
 
 interface AppStoreSchema {
+  mobileSettingsVersion?: number;
   theme: AppTheme;
   themeIsDark?: boolean; // Whether the current theme is dark (used for extension themes)
   // The active theme's resolved --nim-bg, reported by the renderer once it has

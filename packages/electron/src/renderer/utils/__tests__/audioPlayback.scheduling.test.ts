@@ -85,6 +85,23 @@ afterEach(() => {
 });
 
 describe('AudioPlayback scheduling (8x speed-up regression)', () => {
+  it('drains audible activity even when silent packets keep streaming', async () => {
+    const playback = new AudioPlayback();
+    const drained = vi.fn();
+    playback.setOnDrained(drained);
+    await playback.play(CHUNK_B64);
+    expect(playback.isPlaybackActive()).toBe(false);
+    await playback.play(Buffer.alloc(CHUNK_SAMPLES * 2, 1).toString('base64'));
+    expect(playback.isPlaybackActive()).toBe(true);
+    await playback.play(CHUNK_B64);
+    FakeAudioContext.current!.startedSources[1].onended?.();
+    expect(playback.isPlaybackActive()).toBe(false);
+    expect(drained).toHaveBeenCalledTimes(1);
+    // Preserve the silence's scheduled duration, without another activity edge.
+    FakeAudioContext.current!.startedSources[2].onended?.();
+    expect(drained).toHaveBeenCalledTimes(1);
+  });
+
   it('never schedules a chunk in the past even when delivery lags realtime', async () => {
     const playback = new AudioPlayback();
     const ctx = FakeAudioContext.current!;

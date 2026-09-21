@@ -15,7 +15,8 @@
 import { measureRenders } from '../../../devtools/renderBudget';
 
 import React from 'react';
-import { Provider, createStore } from 'jotai';
+import { createHydratedOrgStore } from './organizationTestStore';
+import { Provider } from 'jotai';
 import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -90,14 +91,14 @@ function installApi() {
   });
 }
 
-function seedStore() {
-  const store = createStore();
+async function seedStore() {
+  const store = await createHydratedOrgStore();
   store.set(conversationDirectoryAtomFamily('org-1'), CONVERSATIONS);
   store.set(conversationDirectoryLoadStateAtomFamily('org-1'), { status: 'ready' });
   return store;
 }
 
-function renderHost(store: ReturnType<typeof seedStore>) {
+function renderHost(store: Awaited<ReturnType<typeof seedStore>>) {
   render(
     <Provider store={store}>
       <OrgModeHost orgId="org-1" surfaceId={ORG_WINDOW_SURFACE_ID} chrome="window" />
@@ -110,7 +111,7 @@ describe('org window navigation repaint cost', () => {
 
   it('keeps an inbox-to-room navigation to one sidebar-row render', async () => {
     installApi();
-    renderHost(seedStore());
+    renderHost(await seedStore());
 
     await waitFor(() => screen.getByTestId('org-room-item-general'));
     await waitFor(() => screen.getByTestId('inbox-stub'));
@@ -131,7 +132,7 @@ describe('org window navigation repaint cost', () => {
 
   it('does not repaint the sidebar for an inbox snapshot that changed elsewhere', async () => {
     installApi();
-    const store = seedStore();
+    const store = await seedStore();
     renderHost(store);
 
     await waitFor(() => screen.getByTestId('org-room-item-general'));
@@ -160,7 +161,7 @@ describe('org window navigation repaint cost', () => {
 
   it('keeps a room-to-room navigation to the two rows that changed', async () => {
     installApi();
-    renderHost(seedStore());
+    renderHost(await seedStore());
 
     await waitFor(() => screen.getByTestId('org-room-item-general'));
     await act(async () => { screen.getByTestId('org-room-item-general').click(); });
@@ -180,7 +181,7 @@ describe('org window navigation repaint cost', () => {
   // the search and selection on the way.
   it('keeps the Inbox mounted while visiting a room', async () => {
     installApi();
-    renderHost(seedStore());
+    renderHost(await seedStore());
 
     const inbox = await waitFor(() => screen.getByTestId('inbox-stub'));
 

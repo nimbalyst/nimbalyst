@@ -172,3 +172,14 @@ describe('parseCommitRequest', () => {
     });
   });
 });
+
+
+it('carries actual tracking gaps into an empty commit list without claiming ownership', () => {
+  const prompt = buildCommitPrompt({ isInWorktree: false, commitContext: {
+    success: true, files: [], scenario: 'single', coverage: [{ sessionId: 'a', state: 'degraded', reasons: { persistence: 2 }, turns: [] }],
+  } });
+  expect(prompt).toContain('File tracking incomplete');
+  expect(prompt).toContain('File links could not be saved');
+  expect(prompt).toContain('Reconcile your actual work');
+  expect(prompt).toContain('do not include unrelated changes');
+});

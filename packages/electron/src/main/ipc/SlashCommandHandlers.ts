@@ -2,9 +2,8 @@
  * IPC handlers for slash command discovery and management
  */
 
-import { getAgentWorkflowService, type AgentWorkflowEntry } from '../services/AgentWorkflowService';
+import { getAgentWorkflowService } from '../services/AgentWorkflowService';
 import { safeHandle } from '../utils/ipcRegistry';
-import { syncProjectCommandsToMobile } from '../services/SyncManager';
 
 /**
  * Register all slash command IPC handlers
@@ -32,11 +31,6 @@ export function registerSlashCommandHandlers() {
       });
 
       // console.log(`[SlashCommandHandlers] Returning ${deduplicatedCommands.length} slash commands (deduped from ${allCommands.length}) for workspace: ${workspacePath}`);
-
-      // Fire-and-forget: sync commands to mobile via index room
-      syncProjectCommandsToMobile(workspacePath, commands as AgentWorkflowEntry[]).catch(() => {
-        // Silently ignore - sync is best-effort
-      });
 
       return commands;
     } catch (error) {

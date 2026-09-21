@@ -1,3 +1,4 @@
+import { readDeployment } from '../cloudflareSandbox/deploymentStore';
 import { getAgentWorkflowService } from '../AgentWorkflowService';
 import { AISessionsRepository } from '@nimbalyst/runtime/storage/repositories/AISessionsRepository';
 import { findWindowByWorkspace } from '../../window/WindowManager';
@@ -5,6 +6,8 @@ import { encryptRemoteAttachments } from './remoteAttachments';
 import { RemoteSessionMirror } from './RemoteSessionMirror';
 
 export const remoteSessions = new RemoteSessionMirror({
+  localSessionIds: async workspace => new Set((await AISessionsRepository.list(workspace, {includeArchived: true})).map(s => s.id)),
+  configuredHostIds: () => { const id = readDeployment()?.node?.deviceId; return new Set(id ? [id] : []); },
   encryptAttachments: encryptRemoteAttachments,
   preparePrompt: async (prompt, workspace) => {
     const invocation = /^\/([\w:.-]+)(?:\s+([\s\S]*))?$/.exec(prompt.trim());

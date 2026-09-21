@@ -728,22 +728,40 @@ async function getClaudeCliPluginPaths(workspacePath?: string): Promise<Array<{ 
   return plugins;
 }
 
+/** Deduplicate plugin roots by resolved path, keeping the first occurrence. */
+function dedupeClaudePluginPaths(
+  plugins: Array<{ type: 'local'; path: string }>
+): Array<{ type: 'local'; path: string }> {
+  const seenPaths = new Set<string>();
+  const deduplicatedPlugins: Array<{ type: 'local'; path: string }> = [];
+  for (const plugin of plugins) {
+    const resolvedPath = path.resolve(plugin.path);
+    if (seenPaths.has(resolvedPath)) {
+      logger.main.debug(`[ExtensionHandlers] Skipping duplicate plugin: ${plugin.path}`);
+      continue;
+    }
+    seenPaths.add(resolvedPath);
+    deduplicatedPlugins.push(plugin);
+  }
+  return deduplicatedPlugins;
+}
+
 /**
- * Get Claude Agent SDK plugin paths from enabled extensions and CLI-installed plugins.
- * This is a main-process-native implementation that directly reads extension manifests
- * without requiring the renderer-process ExtensionLoader.
+ * Claude plugin roots contributed by ENABLED Nimbalyst extensions, read straight
+ * from extension manifests in the main process (no renderer ExtensionLoader).
  *
- * Scans:
- * 1. User extensions directory
- * 2. Built-in extensions directory
- * 3. Claude CLI plugins (~/.claude/plugins/)
+ * Scans the user extensions directory first, then the built-in one; a user
+ * extension wins over a built-in with the same id.
  *
- * User extensions take priority over built-in extensions with the same ID.
+ * This is the INJECTION set -- the only plugins Nimbalyst may hand to a Claude
+ * session as SDK `plugins` or CLI `--plugin-dir`. They ship inside extension
+ * bundles, so nothing else would load them. Plugins the user installed through
+ * Claude's own `/plugin` command are deliberately excluded; see
+ * `getDiscoverableClaudePluginPaths`.
  *
- * @param workspacePath - If provided, includes project-scoped CLI plugins for this workspace
  * @returns Paths in the format expected by the Claude Agent SDK: { type: 'local', path: string }
  */
-export async function getNativeClaudePluginPaths(workspacePath?: string): Promise<Array<{ type: 'local'; path: string }>> {
+export async function getExtensionClaudePluginPaths(): Promise<Array<{ type: 'local'; path: string }>> {
   try {
     const plugins: Array<{ type: 'local'; path: string }> = [];
     const seenExtensionIds = new Set<string>();
@@ -755,32 +773,42 @@ export async function getNativeClaudePluginPaths(workspacePath?: string): Promis
       await scanDirectoryForClaudePlugins(extensionsDir, plugins, seenExtensionIds, currentChannel);
     }
 
-    // Also scan CLI-installed plugins
-    const cliPlugins = await getClaudeCliPluginPaths(workspacePath);
-    plugins.push(...cliPlugins);
-
-    // Deduplicate by resolved path (in case same plugin is both an extension and CLI-installed)
-    const seenPaths = new Set<string>();
-    const deduplicatedPlugins: Array<{ type: 'local'; path: string }> = [];
-    for (const plugin of plugins) {
-      const resolvedPath = path.resolve(plugin.path);
-      if (!seenPaths.has(resolvedPath)) {
-        seenPaths.add(resolvedPath);
-        deduplicatedPlugins.push(plugin);
-      } else {
-        logger.main.debug(`[ExtensionHandlers] Skipping duplicate plugin: ${plugin.path}`);
-      }
-    }
-
-    return deduplicatedPlugins;
+    return dedupeClaudePluginPaths(plugins);
   } catch (error) {
-    logger.main.error('[ExtensionHandlers] Failed to get Claude plugin paths:', error);
+    logger.main.error('[ExtensionHandlers] Failed to get extension Claude plugin paths:', error);
     return [];
   }
 }
 
-export async function getClaudePluginPaths(workspacePath?: string): Promise<Array<{ type: 'local'; path: string }>> {
-  return getNativeClaudePluginPaths(workspacePath);
+/**
+ * Every Claude plugin root Nimbalyst can SEE: enabled extension plugins plus the
+ * plugins the user installed through Claude's own `/plugin` command
+ * (~/.claude/plugins/installed_plugins.json, user-scoped always, project-scoped
+ * when `workspacePath` falls under the registered project).
+ *
+ * DISCOVERY ONLY -- the slash-command picker uses this to mirror what the
+ * launched Claude will actually have loaded. #1465: never feed this set back in
+ * as a launch input. Claude loads the user's own plugins natively, with their
+ * marketplace identity and settings; injecting them again produces a second,
+ * unconfigured `@inline` copy of every one of them.
+ *
+ * @param workspacePath - If provided, includes project-scoped CLI plugins for this workspace
+ */
+export async function getDiscoverableClaudePluginPaths(workspacePath?: string): Promise<Array<{ type: 'local'; path: string }>> {
+  const extensionPlugins = await getExtensionClaudePluginPaths();
+  const cliPlugins = await getClaudeCliPluginPaths(workspacePath);
+  // Dedupe in case the same directory is both an extension plugin and CLI-installed.
+  return dedupeClaudePluginPaths([...extensionPlugins, ...cliPlugins]);
+}
+
+/**
+ * Plugin paths for a Claude session with no workspace (the SDK fallback wired up
+ * in index.ts). This is a launch input, so it carries the injection set only.
+ * The parameter is kept for call-site symmetry; project-scoped CLI plugins are
+ * not injectable, and without a workspace there would be none to match anyway.
+ */
+export async function getClaudePluginPaths(_workspacePath?: string): Promise<Array<{ type: 'local'; path: string }>> {
+  return getExtensionClaudePluginPaths();
 }
 
 /**

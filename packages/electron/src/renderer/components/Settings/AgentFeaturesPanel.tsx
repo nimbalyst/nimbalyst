@@ -36,6 +36,7 @@ type AttachmentStagingMode = 'temp' | 'workspace' | 'custom';
 
 export function AgentFeaturesPanel() {
   const posthog = usePostHog();
+  const [externalSessionFollowEnabled, setExternalSessionFollowEnabled] = useAtom(settingAtom('app.externalSessionFollowEnabled'));
   const [settings] = useAtom(advancedSettingsAtom);
   const [, updateSettings] = useAtom(setAdvancedSettingsAtom);
   const { alphaFeatures } = settings;
@@ -248,6 +249,14 @@ export function AgentFeaturesPanel() {
           }}
           name="Auto-approve Commits"
           description="Automatically approve when Claude proposes git commits."
+        />
+
+        <SettingsToggle
+          checked={externalSessionFollowEnabled}
+          onChange={setExternalSessionFollowEnabled}
+          name="Follow external agent sessions"
+          description="Automatically follow Claude Code and Codex CLI sessions in open workspaces and their worktrees only. Off by default."
+          testId="external-session-follow-setting"
         />
 
         <SettingsToggle

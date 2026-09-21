@@ -55,8 +55,12 @@ import {
   resolveCanvasCardRevision,
 } from './canvasRevisions';
 import type { CanvasCardLod } from './canvasCardLod';
-import type { CanvasSide } from './CanvasDocument';
+import { NIMBALYST_CANVAS_NAMESPACE, type CanvasSide } from './CanvasDocument';
 import type { CanvasCardClaimant } from './canvasPresence';
+// The lock glyph's chrome lives beside the selection bar that turns lock on
+// and off, so the card does not depend on the surface's stylesheet for it.
+import './CanvasSelectionBar.css';
+import { CanvasScreenTitle } from './CanvasScreenTitle';
 
 /**
  * Callbacks the surface hands its cards.
@@ -75,8 +79,6 @@ export interface CanvasCardCallbacks {
   /** Use a file reference's `sharedAs` target inside a shared parent canvas. */
   preferSharedReferences: boolean;
   onPatchNode(id: string, patch: Record<string, unknown>): void;
-  onReorderNode(id: string, placement: 'front' | 'back'): void;
-  onDeleteNode(id: string): void;
 }
 
 export const CanvasCardCallbacksContext =
@@ -152,7 +154,7 @@ const HANDLE_SIDES: ReadonlyArray<{ side: CanvasSide; position: Position }> = [
  * JSON Canvas colors are either a preset index "1".."6" or a hex string. The
  * presets are named in the spec but their values are left to the app.
  */
-const PRESET_COLORS: Record<string, string> = {
+export const CANVAS_PRESET_COLORS: Record<string, string> = {
   '1': '#e06c75',
   '2': '#d19a66',
   '3': '#e5c07b',
@@ -163,7 +165,22 @@ const PRESET_COLORS: Record<string, string> = {
 
 export function canvasColorValue(color: unknown): string | null {
   if (typeof color !== 'string' || color.length === 0) return null;
-  return PRESET_COLORS[color] ?? (color.startsWith('#') ? color : null);
+  return CANVAS_PRESET_COLORS[color] ?? (color.startsWith('#') ? color : null);
+}
+
+/**
+ * Locked is an editing convenience, not an access control -- it stops a card
+ * being dragged, resized, or swept up by align and tidy, and nothing more. It
+ * is a document field so it travels with the board and lands on the Yjs undo
+ * stack like any other edit.
+ */
+export function isCanvasNodeLocked(node: CanvasCardData['node']): boolean {
+  const extension = node[NIMBALYST_CANVAS_NAMESPACE];
+  return (
+    typeof extension === 'object' &&
+    extension !== null &&
+    (extension as { locked?: unknown }).locked === true
+  );
 }
 
 export const CanvasCardNode = memo(function CanvasCardNode({
@@ -178,8 +195,8 @@ export const CanvasCardNode = memo(function CanvasCardNode({
   const claimants = useContext(CanvasCardClaimsContext).get(id);
   const comments = useContext(CanvasCardCommentsContext);
   const commentCounts = comments?.counts.get(id);
-  const revisions = useContext(CanvasCardRevisionsContext);
   const pinnedRevision = resolveCanvasCardRevision(canvasCardReference(node));
+  const locked = isCanvasNodeLocked(node);
 
   const patch = useCallback(
     (fields: Record<string, unknown>) => callbacks?.onPatchNode(id, fields),
@@ -217,6 +234,7 @@ export const CanvasCardNode = memo(function CanvasCardNode({
         accent ? 'canvas-card--accented' : '',
         claimants && claimants.length > 0 ? 'canvas-card--claimed' : '',
         pinnedRevision.pinned ? 'canvas-card--pinned-revision' : '',
+        locked ? 'canvas-card--locked' : '',
       ]
         .filter(Boolean)
         .join(' ')}
@@ -227,61 +245,21 @@ export const CanvasCardNode = memo(function CanvasCardNode({
       data-canvas-card-revision={pinnedRevision.revisionId ?? undefined}
     >
       <NodeResizer
-        isVisible={selected === true && !readOnly && !active}
+        isVisible={selected === true && !readOnly && !active && !locked}
         minWidth={80}
         minHeight={60}
         lineClassName="canvas-card__resize-line"
         handleClassName="canvas-card__resize-handle"
       />
 
-      <NodeToolbar
-        isVisible={selected === true && !active && !readOnly}
-        position={Position.Top}
-        className="canvas-card-toolbar"
-      >
-        <button
-          type="button"
-          className="canvas-card-toolbar__button"
-          onClick={() => callbacks?.onReorderNode(id, 'front')}
-        >
-          Front
-        </button>
-        <button
-          type="button"
-          className="canvas-card-toolbar__button"
-          onClick={() => callbacks?.onReorderNode(id, 'back')}
-        >
-          Back
-        </button>
-        {comments?.canComment === true && (
-          <button
-            type="button"
-            className="canvas-card-toolbar__button"
-            onClick={() => comments.onCommentOnCard(id)}
-          >
-            Comment
-          </button>
-        )}
-        {revisions !== null && kind === 'reference' && (
-          <button
-            type="button"
-            className="canvas-card-toolbar__button"
-            onClick={() => revisions.onOpenRevisions(id)}
-          >
-            History
-          </button>
-        )}
-        <button
-          type="button"
-          className="canvas-card-toolbar__button canvas-card-toolbar__button--danger"
-          onClick={() => callbacks?.onDeleteNode(id)}
-        >
-          Delete
-        </button>
-      </NodeToolbar>
+      {locked && (
+        <span className="canvas-card__lock" aria-label="Locked" title="Locked">
+          &#128274;
+        </span>
+      )}
 
-      {/* Right, so it never collides with the action toolbar above the card or
-          the presence chips below it -- all three can be on screen at once. */}
+      {/* Right, so it never collides with the selection bar at the top of the
+          board or the presence chips below the card. */}
       {commentCounts !== undefined && (
         <NodeToolbar isVisible position={Position.Right} offset={6}>
           <CanvasCardCommentBadges
@@ -355,6 +333,7 @@ export const CanvasCardNode = memo(function CanvasCardNode({
           node={node}
           lod={lod}
           editable={editable}
+          canEditTitle={!readOnly && !locked}
           preferSharedReferences={callbacks?.preferSharedReferences === true}
           onPatch={patch}
         />
@@ -369,6 +348,7 @@ function CardBody({
   node,
   lod,
   editable,
+  canEditTitle,
   preferSharedReferences,
   onPatch,
 }: {
@@ -377,6 +357,7 @@ function CardBody({
   node: CanvasCardData['node'];
   lod: CanvasCardLod;
   editable: boolean;
+  canEditTitle: boolean;
   preferSharedReferences: boolean;
   onPatch: (patch: Record<string, unknown>) => void;
 }) {
@@ -385,7 +366,7 @@ function CardBody({
     case 'text':
       return <TextBody node={node} editable={editable} onPatch={onPatch} />;
     case 'image':
-      return <ImageBody node={node} editable={editable} onPatch={onPatch} />;
+      return <ImageBody node={node} editable={editable} canEditTitle={canEditTitle} onPatch={onPatch} />;
     case 'group':
       return <FrameBody node={node} editable={editable} onPatch={onPatch} />;
     case 'link':
@@ -447,14 +428,39 @@ function TextBody({
 function ImageBody({
   node,
   editable,
+  canEditTitle,
   onPatch,
 }: {
   node: CanvasCardData['node'];
   editable: boolean;
+  canEditTitle: boolean;
   onPatch: (patch: Record<string, unknown>) => void;
 }) {
   const url = canvasCardUrl(node);
   if (url) {
+    const screen = node['x-nimbalyst']?.screen;
+    if (screen && typeof screen === 'object') {
+      const historical =
+        (screen as Record<string, unknown>).evidence === 'historical-staged';
+      return (
+        <div className="canvas-card__screen-image">
+          <div className="canvas-card__screen-caption">
+            <CanvasScreenTitle label={canvasCardLabel(node)} readOnly={!canEditTitle} onRename={label => onPatch({ label })} />
+            {historical && (
+              <span title="Historical staged capture; needs refreshing">
+                Historical
+              </span>
+            )}
+          </div>
+          <img
+            className="canvas-card__image"
+            src={url}
+            alt={canvasCardLabel(node) || 'Canvas image'}
+            draggable={false}
+          />
+        </div>
+      );
+    }
     return (
       <img
         className="canvas-card__image"
@@ -547,9 +553,10 @@ function ReferenceBody({
   const pinned = resolveCanvasCardRevision(reference).pinned;
   const label = canvasCardLabel(node) || canvasCardTarget(node);
   const RenderCard = getCanvasCallbacks().renderCard;
+  const Preview = getCanvasCallbacks().renderCardPreview;
 
-  if (lod === 'cold' || !reference || !RenderCard) {
-    return (
+  const fallback =
+    lod === 'cold' || !reference || !RenderCard ? (
       <ColdCard
         title={label}
         detail={canvasCardTarget(node)}
@@ -561,38 +568,40 @@ function ReferenceBody({
             : 'No card renderer is registered in this host.'
         }
       />
+    ) : (
+      <RenderCard
+        nodeId={nodeId}
+        reference={reference}
+        label={label}
+        detail={pinned ? 'warm' : lod}
+      />
     );
-  }
 
   // A pinned card is history and never mounts hot, whatever the viewport says.
   // The editor a host mounts for `hot` writes to the live document, so a
   // revision card that could go hot would let an edit aimed at "v3" land on
   // head -- the one way this feature could destroy something.
-  const detail = pinned ? 'warm' : lod;
-
   return (
     <CanvasCardBoundary label={label}>
-      <RenderCard
-        nodeId={nodeId}
-        reference={reference}
-        label={label}
-        detail={detail}
-      />
+      {Preview && reference ? (
+        <Preview
+          nodeId={nodeId}
+          reference={reference}
+          label={label}
+          detail={pinned ? 'cold' : lod}
+          width={node.width}
+          height={node.height}
+        >
+          {fallback}
+        </Preview>
+      ) : (
+        fallback
+      )}
     </CanvasCardBoundary>
   );
 }
 
-/**
- * The cold state: a cheap DOM summary, not a raster.
- *
- * The plan allows either. A raster would mean capturing the live mount with
- * html2canvas on the way down to cold -- a full synchronous clone-and-paint of
- * third-party DOM, on the exact frame the board is already busy unmounting
- * editors, to produce an image of something the user just zoomed away from. The
- * summary costs one div, always renders, and is legible at zooms where a
- * screenshot of 13px text would not be. Revisit if a card type ever has content
- * that a title cannot stand in for.
- */
+/** A cheap fallback for references without a host-provided visual preview. */
 function ColdCard({
   title,
   detail,

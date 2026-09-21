@@ -174,24 +174,22 @@ struct WorkstreamSection: View {
         Group {
             if item.group.childCount == 0 {
                 // Single-session worktree: navigable row for the session
-                NavigationLink(value: WorkspaceSelection.session(item.parent.id)) {
-                    WorkstreamHeader(
-                        title: title,
-                        childCount: 0,
-                        status: item.group.status,
-                        isWorktree: isWorktree
-                    )
-                }
+                WorkstreamHeader(
+                    title: title,
+                    childCount: 0,
+                    status: item.group.status,
+                    isWorktree: isWorktree
+                )
+                .tag(WorkspaceSelection.session(item.parent.id))
             } else {
                 DisclosureGroup(isExpanded: $isExpanded) {
                     ForEach(children) { child in
-                        NavigationLink(value: WorkspaceSelection.session(child.id)) {
-                            SessionRow(
-                                session: child,
-                                isChild: true,
-                                voiceFocusedSessionId: voiceFocusedSessionId
-                            )
-                        }
+                        SessionRow(
+                            session: child,
+                            isChild: true,
+                            voiceFocusedSessionId: voiceFocusedSessionId
+                        )
+                        .tag(WorkspaceSelection.session(child.id))
                     }
                     if hasMoreChildren {
                         ChildPageLoader(onAppear: onLoadMoreChildren)

@@ -35,6 +35,8 @@ function representativeBoard(): CanvasDocument {
         file: 'design/login.mockup.html',
         [NIMBALYST_CANVAS_NAMESPACE]: {
           label: 'Login',
+          locked: true,
+          group: 'auth-flow',
           reference: {
             kind: 'file',
             path: 'design/login.mockup.html',
@@ -210,6 +212,9 @@ describe('Project Canvas format and codec', () => {
   it('serializes canonically and idempotently without dropping foreign fields', () => {
     const source = serializeCanvasDocument(representativeBoard());
     const parsed = parseCanvasDocument(source);
+    expect(Object.keys(parsed.nodes![0][NIMBALYST_CANVAS_NAMESPACE]!)).toEqual([
+      'reference', 'label', 'locked', 'group', 'futureNodeField',
+    ]);
 
     // Canonical: a fixed point, and independent of the author's key order.
     expect(serializeCanvasDocument(parsed)).toBe(source);
@@ -329,6 +334,59 @@ describe('Project Canvas format and codec', () => {
 
     expect(canvasCollabCodec.isEmpty(yDoc)).toBe(false);
     expect(canvasCollabCodec.exportToFile(yDoc)).toBe(source);
+  });
+
+  it('preserves foreign internal-looking keys and recovers version-skew lock/group fields', () => {
+    const document = representativeBoard();
+    const node = document.nodes![0];
+    node.__canvas_locked = { foreign: 'keep' };
+    node.__canvas_group = ['foreign'];
+    node['__canvas_file:__canvas_locked'] = 'also keep';
+    const source = serializeCanvasDocument(document);
+    const yDoc = new Y.Doc();
+    canvasCollabCodec.seedFromFile(yDoc, source);
+    expect(canvasCollabCodec.exportToFile(yDoc)).toBe(source);
+    canvasCollabCodec.applyFromFile(yDoc, source);
+    expect(canvasCollabCodec.exportToFile(yDoc)).toBe(source);
+
+    delete node[NIMBALYST_CANVAS_NAMESPACE]!.locked;
+    delete node[NIMBALYST_CANVAS_NAMESPACE]!.group;
+    node.__canvas_locked = true;
+    node.__canvas_group = 'older-peer-group';
+    canvasCollabCodec.applyFromFile(yDoc, serializeCanvasDocument(document));
+    const recovered = parseCanvasDocument(canvasCollabCodec.exportToFile(yDoc) as string).nodes![0];
+    expect(recovered.__canvas_locked).toBe(true);
+    expect(recovered.__canvas_group).toBe('older-peer-group');
+    expect(recovered[NIMBALYST_CANVAS_NAMESPACE]).toMatchObject({ locked: true, group: 'older-peer-group' });
+    yDoc.destroy();
+  });
+
+  it('updates and removes lock/group as individual fields and reads legacy namespace blobs', () => {
+    const document = representativeBoard();
+    const yDoc = new Y.Doc();
+    canvasCollabCodec.seedFromFile(yDoc, serializeCanvasDocument(document));
+    const fields = yDoc.getMap<Y.Map<unknown>>('nodes').get('local-file')!;
+    const namespace = fields.get(NIMBALYST_CANVAS_NAMESPACE);
+    const keys = new Set<string>();
+    fields.observe(event => event.keysChanged.forEach(key => keys.add(key)));
+    document.nodes![0][NIMBALYST_CANVAS_NAMESPACE]!.locked = false;
+    document.nodes![0][NIMBALYST_CANVAS_NAMESPACE]!.group = 'new-group';
+    canvasCollabCodec.applyFromFile(yDoc, serializeCanvasDocument(document));
+    expect(keys).toEqual(new Set(['__canvas_locked', '__canvas_group']));
+    expect(fields.get(NIMBALYST_CANVAS_NAMESPACE)).toBe(namespace);
+    expect(canvasCollabCodec.exportToFile(yDoc)).toBe(serializeCanvasDocument(document));
+    delete document.nodes![0][NIMBALYST_CANVAS_NAMESPACE]!.locked;
+    delete document.nodes![0][NIMBALYST_CANVAS_NAMESPACE]!.group;
+    canvasCollabCodec.applyFromFile(yDoc, serializeCanvasDocument(document));
+    expect(canvasCollabCodec.exportToFile(yDoc)).toBe(serializeCanvasDocument(document));
+    fields.delete('__canvas_locked');
+    fields.delete('__canvas_group');
+    fields.set(NIMBALYST_CANVAS_NAMESPACE, { ...document.nodes![0][NIMBALYST_CANVAS_NAMESPACE], locked: true, group: 'legacy' });
+    const legacy = parseCanvasDocument(canvasCollabCodec.exportToFile(yDoc) as string);
+    expect(legacy.nodes![0][NIMBALYST_CANVAS_NAMESPACE]).toMatchObject({ locked: true, group: 'legacy', futureNodeField: { retained: true } });
+    canvasCollabCodec.applyFromFile(yDoc, serializeCanvasDocument(document));
+    expect(canvasCollabCodec.exportToFile(yDoc)).toBe(serializeCanvasDocument(document));
+    yDoc.destroy();
   });
 
   it('diff-patches a populated Y.Doc without replacing entity maps or churning z ranks', () => {

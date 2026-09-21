@@ -1,5 +1,6 @@
 import XCTest
 import GRDB
+import Combine
 @testable import NimbalystNative
 
 /// The persisted group projection is a second representation of the same grouping
@@ -190,6 +191,79 @@ final class SessionListProjectionTests: XCTestCase {
     }
 
     // MARK: - Maintenance
+
+    @MainActor
+    func testLiveFilterPublishesWhileProjectionIsDirty() async throws {
+        let db = try makeDatabase()
+        try write(db) { database in
+            try Session(id: "match", projectId: "/p", titleDecrypted: "Find me", createdAt: 1, updatedAt: 1).save(database)
+        }
+        // Leave the dirty marker in place: search and archive queries must not
+        // depend on a projection refresh to publish their live results.
+        for filter in [SessionListFilter(projectId: projectId, searchText: "Find"),
+                       SessionListFilter(projectId: projectId, includeArchived: true)] {
+            let model = SessionListWindowModel { _, _, _ in }
+            let loaded = expectation(description: "Live filter publishes")
+            let subscription = model.$state.filter { $0 == .loaded }.prefix(1).sink { _ in loaded.fulfill() }
+            model.start(database: db, filter: filter)
+            await fulfillment(of: [loaded], timeout: 2)
+            XCTAssertEqual(model.sections.flatMap(\.items).map(\.id), ["match"])
+            model.stop()
+            subscription.cancel()
+        }
+    }
+
+    @MainActor
+    func testDirtyProjectionDoesNotPublishAListWithItsGroupTemporarilyMissing() async throws {
+        let db = try makeDatabase()
+        try write(db) { database in
+            try Session(id: "parent", projectId: "/p", worktreeId: "tree", createdAt: 1, updatedAt: 100).save(database)
+            try Session(id: "child", projectId: "/p", worktreeId: "tree", createdAt: 2, updatedAt: 300).save(database)
+            try Session(id: "solo", projectId: "/p", createdAt: 1, updatedAt: 200).save(database)
+        }
+        try db.refreshSessionListProjection(projectId: projectId, metaAgentEnabled: true)
+        let barrier = ProjectionCompletionBarrier()
+        let model = SessionListWindowModel { database, project, metaEnabled in
+            try database.refreshSessionListProjection(projectId: project, metaAgentEnabled: metaEnabled)
+            await barrier.afterRefresh()
+        }
+        model.start(database: db, filter: filter)
+        defer { model.stop() }
+        for _ in 0..<100 {
+            if await barrier.calls > 0 { break }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        let initialOrder = model.sections.flatMap(\.items).map(\.id)
+        XCTAssertEqual(initialOrder.count, 2)
+        let restored = expectation(description: "Group remains visible with its new representative")
+        var orders: [[String]] = []
+        let subscription = model.$sections.dropFirst().sink { sections in
+            let items = sections.flatMap(\.items)
+            orders.append(items.map(\.id))
+            if items.contains(where: {
+                if case .group(let item) = $0 { return item.parent.id == "child" }
+                return false
+            }) { restored.fulfill() }
+        }
+        defer { subscription.cancel() }
+        let dirty = expectation(description: "Observation sees the stale projection")
+        let observation = db.sessionListWindowObservation(SessionListWindowRequest(filter: filter)).start(
+            in: db.writer,
+            onError: { XCTFail("Observation failed: \($0)") },
+            onChange: { snapshot in
+                if snapshot.pendingProjectionUpdates > 0 { dirty.fulfill() }
+            }
+        )
+        defer { observation.cancel() }
+        // The live JOIN loses the old representative immediately, while the
+        // group's replacement is not selected until the delayed refresh.
+        try write(db) { database in _ = try Session.deleteOne(database, id: "parent") }
+        await fulfillment(of: [dirty], timeout: 2)
+        await barrier.release()
+        await fulfillment(of: [restored], timeout: 2)
+        XCTAssertFalse(orders.isEmpty)
+        XCTAssertTrue(orders.allSatisfy { $0 == initialOrder }, "Published transient list orders: \(orders)")
+    }
 
     @MainActor
     func testWriteDuringRefreshCompletionIsEventuallyProjected() async throws {

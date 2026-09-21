@@ -1,0 +1,17 @@
+{
+  "type": "deviceJoined",
+  "device": {
+    "deviceId": "de51fbb1-d809-42a4-8b1e-a25699843002",
+    "name": "Synthetic iPhone",
+    "type": "mobile",
+    "platform": "ios",
+    "appVersion": "0.77.5",
+    "connectedAt": 1789232411000,
+    "lastActiveAt": 1789232412000,
+    "isFocused": true,
+    "status": "active",
+    "isOnline": true,
+    "lastSeenAt": 1789232413000,
+    "inventoryHidden": false
+  }
+}

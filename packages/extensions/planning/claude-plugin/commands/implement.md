@@ -52,6 +52,7 @@ Execute a plan document while maintaining progress tracking.
 7. **Final updates**
    - Set `status` to `in-review` when complete
    - Set `progress` to 100
+   - Follow the project's documentation requirements for added, significantly expanded, or removed notable capabilities. If the project maintains a feature inventory, apply its inclusion criteria: document meaningful capabilities, group supporting details, and omit routine polish such as elapsed-time counters or button placement. Report the affected section, or report "No inventory impact" with a short reason. In a parallel batch, slices send capability changes and evidence to the integrating session; that session owns the shared inventory update and applies it before the final handoff. Keep any separate commit-time changelog rule intact.
 
 ## Task List Format
 

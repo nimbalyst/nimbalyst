@@ -1,0 +1,76 @@
+[
+  {
+    "type": "session.output_audio.delta",
+    "delta": "AAABAP//AAA="
+  },
+  {
+    "type": "session.input_transcript.delta",
+    "event_id": "u1",
+    "delta": "Open",
+    "start_ms": 1000,
+    "end_ms": 1200
+  },
+  {
+    "type": "session.output_transcript.delta",
+    "event_id": "a1",
+    "delta": "I can",
+    "start_ms": 1100,
+    "end_ms": 1300
+  },
+  {
+    "type": "session.input_transcript.delta",
+    "event_id": "u2",
+    "delta": " that file.",
+    "start_ms": 1200,
+    "end_ms": 1800
+  },
+  {
+    "type": "session.output_transcript.delta",
+    "event_id": "a2",
+    "delta": " help.",
+    "start_ms": 1300,
+    "end_ms": 1900
+  },
+  {
+    "type": "session.input_transcript.delta",
+    "event_id": "u3",
+    "delta": " Again.",
+    "start_ms": 20000,
+    "end_ms": 21000
+  },
+  {
+    "type": "session.output_transcript.delta",
+    "event_id": "a3",
+    "delta": "Resuming.",
+    "start_ms": 22000,
+    "end_ms": 22500
+  },
+  {
+    "type": "session.output_transcript.delta",
+    "event_id": "a4",
+    "delta": " Yes.",
+    "start_ms": 1850,
+    "end_ms": 2000
+  },
+  {
+    "type": "session.output_transcript.delta",
+    "event_id": "a4",
+    "delta": " Yes.",
+    "start_ms": 1850,
+    "end_ms": 2000
+  },
+  {
+    "type": "session.input_transcript.delta",
+    "event_id": "u4",
+    "delta": " no no",
+    "start_ms": 21000,
+    "end_ms": 22000
+  },
+  {
+    "type": "session.input_transcript.delta",
+    "event_id": "u5",
+    "delta": " no no",
+    "start_ms": 21000,
+    "end_ms": 22000
+  }
+]

@@ -12,7 +12,8 @@ import { DataModelCanvas, type DataModelCanvasRef } from './DataModelCanvas';
 import { DataModelToolbar } from './DataModelToolbar';
 import { createDataModelStore, type DataModelStoreApi } from '../store';
 import { createEmptyDataModel, type DataModelFile } from '../types';
-import { parsePrismaSchema, serializeToPrismaSchema } from '../prismaParser';
+import { parsePrismaSchema } from '../prismaParser';
+import { createLayoutSerializer } from '../layout/serialization';
 import { captureDataModelCanvas, copyScreenshotToClipboard } from '../utils/screenshotUtils';
 import {
   useEditorLifecycle,
@@ -26,6 +27,7 @@ import { buildEntitySelectionContextItem, buildRelationshipSelectionContextItem 
 
 export function DatamodelLMEditor({ host }: EditorHostProps) {
   const { filePath } = host;
+  const layoutSerializer = useMemo(() => createLayoutSerializer(), [filePath]);
 
   // Reactive read-only state. In read-only mode (inline embeds, share
   // viewer) we hide the toolbar so the schema graph reads cleanly.
@@ -60,7 +62,9 @@ export function DatamodelLMEditor({ host }: EditorHostProps) {
     parse: (raw: string): DataModelFile => {
       if (!raw) return createEmptyDataModel();
       try {
-        return parsePrismaSchema(raw);
+        const parsed = parsePrismaSchema(raw);
+        layoutSerializer.capture(raw, parsed);
+        return parsed;
       } catch (err) {
         // console.error('[DatamodelLM] Failed to parse Prisma schema:', err);
         return createEmptyDataModel();
@@ -68,7 +72,7 @@ export function DatamodelLMEditor({ host }: EditorHostProps) {
     },
 
     serialize: (data: DataModelFile): string => {
-      return serializeToPrismaSchema(data);
+      return layoutSerializer.serialize(data);
     },
 
     // Push: load data into the Zustand store
@@ -171,17 +175,27 @@ export function DatamodelLMEditor({ host }: EditorHostProps) {
     },
   });
 
+  const screenshotPending = useRef(false);
+  const [isCapturing, setIsCapturing] = useState(false);
+  const [screenshotError, setScreenshotError] = useState<string | null>(null);
+
   // Handle screenshot capture
   const handleScreenshot = useCallback(async () => {
     const canvasElement = canvasRef.current?.getCanvasElement();
-    if (!canvasElement) return;
+    if (!canvasElement || screenshotPending.current) return;
+    screenshotPending.current = true;
+    setIsCapturing(true);
+    setScreenshotError(null);
 
     try {
       const base64Data = await captureDataModelCanvas(canvasElement);
       await copyScreenshotToClipboard(base64Data);
       // console.log('[DatamodelLM] Screenshot copied to clipboard');
     } catch (err) {
-      // console.error('[DatamodelLM] Failed to capture screenshot:', err);
+      setScreenshotError(err instanceof Error ? err.message : 'Screenshot failed.');
+    } finally {
+      screenshotPending.current = false;
+      setIsCapturing(false);
     }
   }, []);
 
@@ -212,9 +226,10 @@ export function DatamodelLMEditor({ host }: EditorHostProps) {
       ref={rootElRef}
     >
       {!readOnly && (
-        <DataModelToolbar store={store} onScreenshot={handleScreenshot} host={host} />
+        <DataModelToolbar store={store} onScreenshot={handleScreenshot} isCapturing={isCapturing} host={host} />
       )}
       <ReactFlowProvider>
+        {screenshotError && <div role="alert" className="datamodel-screenshot-error">{screenshotError}</div>}
         <DataModelCanvas
           ref={canvasRef}
           store={store}

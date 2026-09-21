@@ -1,3 +1,4 @@
+type OrganizationDirectoryResult = import('../shared/organizationDirectory').OrganizationDirectoryResult;
 /** Mirrors the main-process `git:status-changed` payload. */
 interface GitStatusChangedPayload {
   workspacePath: string;
@@ -180,6 +181,7 @@ interface SemanticSearchResult {
 
 interface ElectronAPI {
   team: {
+    list: (options?: { forceRefresh?: boolean }) => Promise<OrganizationDirectoryResult>;
     getKeyCustodyStatus: (orgId: string) => Promise<{ success: boolean; mode?: 'server-managed' | 'unmigrated'; error?: string }>;
     openManagementWindow: (target?: TeamManagementWindowTarget) => Promise<{ success: boolean }>;
     resolveOrgProjectsLocalState: (orgId: string) => Promise<{
@@ -205,7 +207,7 @@ interface ElectronAPI {
     [method: string]: any;
   };
   organization: {
-    list: () => Promise<any>;
+    list: () => Promise<OrganizationDirectoryResult>;
     get: (orgId: string) => Promise<any>;
     rename: (
       orgId: string,

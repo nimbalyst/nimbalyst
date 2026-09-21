@@ -461,10 +461,11 @@ enum SessionListProjection {
 
     // MARK: - Reads
 
-    /// Whether this filter is one the projection covers. Search, archives, and a
-    /// meta-agent gate the projection was not built for fall back to the live query.
+    /// The projection groups an entire project. Machine-scoped membership, search,
+    /// archives, and a changed meta-agent gate require the live query.
     static func covers(_ filter: SessionListFilter, builtForMetaAgentEnabled: Bool?) -> Bool {
         filter.likePattern == nil
+            && filter.hostDeviceId == nil
             && !filter.includeArchived
             && builtForMetaAgentEnabled == filter.metaAgentEnabled
     }

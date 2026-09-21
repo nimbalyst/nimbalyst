@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import React from 'react';
-import { Provider, createStore } from 'jotai';
+import { createHydratedOrgStore } from './organizationTestStore';
+import { Provider } from 'jotai';
 import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, it, vi } from 'vitest';
 
@@ -44,7 +45,7 @@ describe('TeamMode org window navigation', () => {
   it('opens the rooms directory from the sidebar', async () => {
     installApi();
     render(
-      <Provider store={createStore()}>
+      <Provider store={await createHydratedOrgStore()}>
         <OrgModeHost orgId="org-1" surfaceId={ORG_WINDOW_SURFACE_ID} chrome="window" />
       </Provider>,
     );

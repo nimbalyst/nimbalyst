@@ -13,7 +13,8 @@
  * organization, and the old behaviour differed precisely across that threshold.
  */
 import React from 'react';
-import { Provider, createStore } from 'jotai';
+import { createHydratedOrgStore } from './organizationTestStore';
+import { Provider } from 'jotai';
 import { cleanup, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -55,8 +56,8 @@ function installApi(teams: unknown[]) {
   });
 }
 
-function renderWindow() {
-  const store = createStore();
+async function renderWindow() {
+  const store = await createHydratedOrgStore();
   return render(
     <Provider store={store}>
       <OrgModeHost orgId="org-1" surfaceId={ORG_WINDOW_SURFACE_ID} chrome="window" />
@@ -74,7 +75,7 @@ describe('org user indicator placement', () => {
 
   it('sits in the sidebar footer, not the rail, when the rail is visible (two orgs)', async () => {
     installApi([ORG_ONE, ORG_TWO]);
-    renderWindow();
+    await renderWindow();
 
     // The rail is the layout that used to swallow the indicator.
     await waitFor(() => screen.getByTestId('org-rail'));
@@ -87,7 +88,7 @@ describe('org user indicator placement', () => {
 
   it('sits in the sidebar footer when the rail is hidden (single org)', async () => {
     installApi([ORG_ONE]);
-    renderWindow();
+    await renderWindow();
 
     const el = await indicator();
     expect(screen.queryByTestId('org-rail')).toBeNull();
@@ -98,7 +99,7 @@ describe('org user indicator placement', () => {
     // Rendering it in both places would double the account popover and the
     // presence toggle that writes through it.
     installApi([ORG_ONE, ORG_TWO]);
-    renderWindow();
+    await renderWindow();
 
     await indicator();
     expect(screen.getAllByTestId('org-user-indicator')).toHaveLength(1);
@@ -107,7 +108,7 @@ describe('org user indicator placement', () => {
 
   it('shows the identity line (initials, presence dot, name) in both layouts', async () => {
     installApi([ORG_ONE, ORG_TWO]);
-    renderWindow();
+    await renderWindow();
 
     const el = await indicator();
     // The rail variant was avatar-only; the sidebar variant carries the name
@@ -122,7 +123,7 @@ describe('org user indicator placement', () => {
     // The sidebar is `-webkit-app-region: drag`; a control inside it that does
     // not opt out is a button the OS swallows.
     installApi([ORG_ONE, ORG_TWO]);
-    renderWindow();
+    await renderWindow();
 
     await indicator();
     expect(screen.getByTestId('org-user-indicator-button').classList).toContain('org-window-no-drag');

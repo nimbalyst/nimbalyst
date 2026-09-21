@@ -566,3 +566,23 @@ Adapters are client-only code (main process, renderer, extension SDK). They are 
 - Add [ai-tools.md](./ai-tools.md) so Claude can interact with your editor
 - See [manifest-reference.md](./manifest-reference.md) for all configuration options
 - Check [examples/custom-editor](./examples/custom-editor/) for a complete working example
+
+## Screenshots
+
+Use the host-owned screenshot service for editor screenshots, including toolbar actions. Do not use `html2canvas`, clone the workspace DOM, or mount a private screenshot renderer inside the working window.
+
+```tsx
+import { screenshotService } from '@nimbalyst/extension-sdk';
+
+// Captures the visible, clipped region in this window (base64 PNG).
+// Includes browser-composited iframe content, WebGL, canvas, and overlays.
+const png = await screenshotService.captureElement(previewElement);
+
+// Captures a file through the standard editor pipeline. The desktop host
+// mounts unopened/hidden editors in its dedicated capture window as needed.
+const filePng = await screenshotService.capture(filePath);
+```
+
+Element capture uses the current viewport and display scale; it is not a full-document export. Pass the iframe element in the host document to capture a preview, rather than an element inside its document. Hidden or detached targets are rejected. Concurrent requests for the same element or file share one capture. Await the entire capture and clipboard operation, disable the action while it is pending, and show failures to the user. Hosts without a screenshot provider reject the request explicitly; there is no DOM-cloning fallback.
+
+Editors with a dedicated scene/image exporter can continue registering `exportToPngBlob` through `host.registerEditorAPI`. The standard file pipeline prefers that exporter and falls back to native capture. A pixel screenshot of an existing preview should use the shared service rather than implementing a scene exporter solely for screenshots.

@@ -64,23 +64,26 @@ xcodebuild -project NimbalystApp.xcodeproj -scheme NimbalystApp \
 
 For the full Files UI test, start `node packages/ios/scripts/document-sync-fixture.cjs --interrupt` from the repository root. It prints an ephemeral port. Pass that port to the test runner using `TEST_RUNNER_NIMBALYST_DOCUMENT_FIXTURE_URL=http://127.0.0.1:<port>` when running `xcodebuild test -only-testing:NimbalystNavigationUITests/NavigationContinuityTests/testFilesDownloadsLargeProjectAndRetriesInterruptedSync` with the scheme and simulator destination below. Stop that fixture process afterward. This one test is skipped when its local server URL is absent; the ordinary navigation tests have no server dependency. The app accepts the fixture only in a debug screenshot launch and uses an in-memory database.
 
-The test opens Files, sees cached rows after an interrupted download, taps Retry, waits for 2,293 files, and opens a downloaded document in the real editor. Simulator acceptance does not establish physical-device peak memory or production rollout acceptance.
+The test opens Files, interrupts a download, allows automatic recovery or taps Retry when offered, waits for 2,293 files, and opens a downloaded document in the real editor. Simulator acceptance does not establish physical-device peak memory or production rollout acceptance.
 
 ## Navigation Continuity
 
-`NimbalystNavigationUITests` exercises the production `MainNavigationView` with an in-memory demo account. It opens a project and session, types an unsent draft, rotates through portrait and both landscape orientations, and verifies the selected session, draft, Back navigation, and that wide screens keep the session list visible beside the transcript. Run it on an iPhone Pro Max (whose horizontal size class changes in landscape) and an iPad:
+`NimbalystNavigationUITests` exercises the production `MainNavigationView` with an in-memory demo account. It opens a project and session, types an unsent draft, rotates through portrait and both landscape orientations, and verifies the selected session, draft, Back navigation, and that wide screens keep the session list visible beside the transcript. The split view uses both columns with at least 700 points of available width, including iPhones whose native horizontal size class stays compact in landscape. Run the rotation test on a regular iPhone Pro, a Pro Max, and an iPad:
 
 ```bash
 cd packages/ios/NimbalystApp
 xcodegen generate
 xcodebuild -project NimbalystApp.xcodeproj -scheme NimbalystApp \
+  -destination 'platform=iOS Simulator,name=iPhone 18 Pro' \
   -destination 'platform=iOS Simulator,name=iPhone 17 Pro Max' \
   -destination 'platform=iOS Simulator,name=iPad Pro 11-inch (M5)' \
-  -only-testing:NimbalystNavigationUITests \
+  -only-testing:NimbalystNavigationUITests/NavigationContinuityTests/testSessionDraftAndBackHistorySurviveRotation \
   -parallel-testing-enabled NO -collect-test-diagnostics never test
 ```
 
 The debug launch arguments `--screenshot-mode --screenshot-screen=navigation` use the real navigation shell instead of an isolated screenshot screen. This bypasses pairing and does not connect to sync. The test suppresses the notification prompt through a launch-time UserDefaults override.
+
+`testNewSessionOpensTranscriptWithoutReopening` uses `--session-creation-fixture` with the sessions screen to create three sessions through the real toolbar and creation callbacks. An in-memory account substitutes only the desktop response; it uses the bundled transcript and pooled WKWebView. Creating again after Back and reopening each session from its row must finish loading. The fixture covers standalone sessions, a single-session worktree, a meta-agent header, and its child. This catches premature disappearance of the visible detail, which cancels its observers, timeout, and session connection. The detail uses an explicit navigation stack; sidebar rows use List selection tags so they do not also push an implicit destination. The Files transport UI test exercises the same selection path for documents. It does not verify desktop/server transport or a physical phone.
 
 `testEmptyListsWaitForIndexSync` uses `--loading-fixture` with the projects and sessions screens to hold an empty local database in loading for ten seconds, then complete the index. It verifies that loading appears before the definitive empty state. `SyncIntegrationTests.testIndexLoadCompletesOnlyAfterImportAndRejectsFailedImports` separately feeds encrypted wire responses through the real index handler and verifies that completion follows database writes, failed imports remain failures, and an empty retry completes. These fixtures do not connect to the live sync server.
 
@@ -93,8 +96,8 @@ This is the one path in the app that unit tests cannot finish. Know which half y
 | Layer | Tests |
 |-------|-------|
 | Desktop snapshot + row ranking + coalescing | `packages/electron/src/main/tray/__tests__/fleetActivity.test.ts` |
-| Server start/update/end decision, APNs body, topic, priority | `collabv3/test/liveActivity.test.ts` (nimbalyst-collab) |
-| Card text and attributes decoding | `NimbalystNative/Tests/FleetActivityTests.swift` |
+| Server decision, APNs payload, per-device recovery, token rotation and retries | `collabv3/test/liveActivity.test.ts`, `liveActivityRecovery.test.ts` (nimbalyst-collab) |
+| Card text, attributes decoding, permission recovery and activity-token ownership | `NimbalystNative/Tests/FleetActivityTests.swift` |
 
 Everything up to the APNs request is pure and tested. The APNs round trip and the rendered card are not.
 
@@ -106,27 +109,24 @@ Layout work therefore needs either a SwiftUI preview in `NimbalystWidgets` or a 
 
 ### Verifying on a device
 
-1. **Delete the app from the phone**, then install a **TestFlight or Release-signed** build. Both halves matter:
-   - A Debug build is signed with a Development profile, so iOS issues it a sandbox APNs token and `api.push.apple.com` answers `400 {"reason":"BadDeviceToken"}`. The entitlements file saying `production` does not change this — check what you actually shipped with `codesign -d --entitlements :- YourApp.app` and look for `get-task-allow`, which is `true` only on a development signature.
-   - Installing over the old app is **not** enough. ActivityKit keeps handing back the push-to-start token from the previous provisioning, so the server gets the same dead token forever. If the token prefix in the tail does not change after reinstalling, this is why.
+1. Install a **TestFlight or Release-signed** build over the existing installation. Recovery acceptance must preserve existing registrations; do not delete the app to make the test pass. If testing a switch from a development-signed build, diagnose its token environment separately: the source entitlements alone do not prove the installed signature uses production APNs. Check the shipped app with `codesign -d --entitlements :- YourApp.app`.
 2. Confirm Settings > **Session Fleet Live Activity** is on, and that Live Activities are enabled for the app in iOS Settings.
-3. Watch the token reach the server. The app logs `Registered Live Activity <kind> token with server` (subsystem `com.nimbalyst.app`, category `FleetActivity`); the server side is visible in `wrangler tail`.
+3. Watch the token reach the server. The app logs `Sent Live Activity <kind> token registration` (subsystem `com.nimbalyst.app`, category `SyncManager`); the server side is visible in `wrangler tail`.
 4. On the Mac, start a session and let it ask for approval. The desktop publishes on transitions plus a 5-minute heartbeat, so a quiet fleet will not produce a card.
 5. Check all four: the Lock Screen card, the Dynamic Island compact and expanded presentations, that tapping a row opens the right session, and that the card **ends** when the fleet goes quiet rather than lingering.
 6. Leave it running past the 12-minute stale window with the Mac asleep — the card should dim, not keep asserting a stale count.
 
-If nothing arrives, `wrangler tail` against the production worker names the failure directly — the room logs the decision (`Fleet activity update: action=…`), the token count, and any APNs rejection. The ones seen so far:
+If nothing arrives, inspect `wrangler tail` against the production worker. Token registration logs report the device and token kind; `Live Activity push: action=…` reports the APNs outcome, and `Live Activity decision: action=…` reports whether that outcome changed the stored state. These logs omit full tokens. Expected interpretations:
 
 | Symptom in the tail | Cause |
 |---|---|
-| `Live Activity push failed: 400 {"reason":"BadDeviceToken"}` | Sandbox token on the production host. Either a Debug build, or a TestFlight build installed *over* one without deleting first — check whether the token prefix changed |
-| `delivered=1/1` and still no card | The `start` payload is missing its `alert`. APNs answers 200 and iOS discards it on device. Guarded by a test in `liveActivity.test.ts` |
-| A `kind=update` token registers | **The card really is live.** The phone only gets an update token from an activity that actually started, so this is the machine-side confirmation |
-| `action=skip reason=no-tokens` | The phone's registration never landed; its own success log does not wait for an ack |
-| `action=skip reason=already-quiet` | The desktop is publishing but `isFleetActive` is false — nothing is waiting |
-| No `Fleet activity update` line at all | The desktop is not sending. Note a quiet fleet sends **once** and then goes silent: the heartbeat is only scheduled while the fleet is active |
-| `APNs not configured` | `APNS_*` secrets missing on the deployed environment |
-| `action=skip reason=shown-on-desktop` | Working as intended — you are at a Mac that is showing the fleet strip. The decision line prints `desktop=showing/present`; walk away for two minutes, or switch off Show Fleet Status, to get the card back |
+| `result=invalid status=400 reason=BadDeviceToken` | Check signing and token environment; the rejected token is retired. A production entitlement in source does not prove the installed signature is production |
+| `result=invalid status=410 reason=ExpiredToken` | The activity token expired; it is retired and the next eligible publication can start a replacement |
+| `result=accepted` on start but no card | APNs acceptance does not prove rendering. Check ActivityKit on the physical phone and confirm update-token registration |
+| `result=retry` | Credential, transport, rate-limit or server failure; registration is preserved and retry is backed off |
+| `applied=false` | A newer registration or invalidation superseded this APNs response; it must not mutate that newer state |
+| No new start while one is pending | Accepted starts without a returned update token become eligible for retry after 15 minutes, capped at three attempts per eight-hour window. A later publication or registration drives retry; there is no retry alarm. This cadence still needs physical TestFlight acceptance |
+| Card disappears while using the Mac | This is no longer intended behavior. Mac presence must not suppress the phone card |
 
 ## CI/CD Testing
 

@@ -1,0 +1,64 @@
+[
+  {
+    "type": "session.start",
+    "event_id": "start_1",
+    "session": {
+      "model": "gpt-live-1",
+      "audio": {
+        "format": {
+          "type": "audio/pcm",
+          "rate": 24000
+        },
+        "output": {
+          "voice": "marin"
+        }
+      },
+      "delegation": {
+        "type": "responses",
+        "responses": {
+          "model": "gpt-5.6-luna",
+          "tools": [
+            {
+              "type": "function",
+              "name": "open_file",
+              "parameters": {
+                "type": "object",
+                "properties": {
+                  "path": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "path"
+                ],
+                "additionalProperties": false
+              },
+              "strict": true
+            }
+          ],
+          "parallel_tool_calls": false
+        }
+      }
+    }
+  },
+  {
+    "type": "session.started",
+    "event_id": "started_1",
+    "session": {
+      "id": "live_fixture_1",
+      "model": "gpt-live-1",
+      "expires_at": 1789232400,
+      "status": "active",
+      "audio": {
+        "format": {
+          "type": "audio/pcm",
+          "rate": 24000
+        },
+        "output": {
+          "voice": "marin"
+        }
+      },
+      "store": false
+    }
+  }
+]

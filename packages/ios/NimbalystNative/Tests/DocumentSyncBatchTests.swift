@@ -5,6 +5,33 @@ import XCTest
 final class DocumentSyncBatchTests: XCTestCase {
     private let project = "/test/documents"
 
+    /// The offline queue used to be cleared before any send outcome was known,
+    /// so a replay that raced the socket going down again dropped every queued
+    /// edit -- the one thing the queue exists to prevent.
+    func testFailedOfflineReplayKeepsTheQueueInOrder() throws {
+        let (_, _, manager) = try fixture()
+        manager.pushYjsUpdate(syncId: "doc-1", encryptedUpdate: "one", iv: "iv1", projectId: project)
+        manager.pushYjsUpdate(syncId: "doc-2", encryptedUpdate: "two", iv: "iv2", projectId: project)
+        manager.pushYjsUpdate(syncId: "doc-3", encryptedUpdate: "three", iv: "iv3", projectId: project)
+        XCTAssertEqual(manager.queuedMessageCount(for: project), 3)
+
+        var attempted: [String] = []
+        manager.replayOfflineQueue(projectId: project) { json, completion in
+            attempted.append(json)
+            completion(NSError(domain: "test", code: 1, userInfo: [NSLocalizedDescriptionKey: "socket gone"]))
+        }
+        XCTAssertEqual(attempted.count, 3)
+        XCTAssertEqual(manager.queuedMessageCount(for: project), 3, "A refused replay must not empty the queue")
+
+        var sent: [String] = []
+        manager.replayOfflineQueue(projectId: project) { json, completion in
+            sent.append(json)
+            completion(nil)
+        }
+        XCTAssertEqual(sent, attempted, "The requeued messages replay in their original order")
+        XCTAssertEqual(manager.queuedMessageCount(for: project), 0, "An accepted replay drains the queue")
+    }
+
     func testPartialBatchMetadataCannotImportOrComplete() throws {
         let db = try DatabaseManager()
         try db.upsertProject(Project(id: project, name: "Documents"))

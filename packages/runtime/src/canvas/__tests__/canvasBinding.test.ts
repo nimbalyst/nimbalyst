@@ -71,6 +71,32 @@ function withoutRanks(document: CanvasDocument): CanvasDocument {
 }
 
 describe('CanvasBinding', () => {
+  it('merges lock, group, and namespace edits independently and undoes only local fields', () => {
+    const leftDoc = new Y.Doc();
+    const rightDoc = new Y.Doc();
+    const original = { nodes: [node('a', { 'x-nimbalyst': { label: 'Original', future: { keep: true } } })], edges: [] };
+    canvasCollabCodec.seedFromFile(leftDoc, serializeCanvasDocument(original));
+    Y.applyUpdate(rightDoc, Y.encodeStateAsUpdate(leftDoc));
+    const left = new CanvasBinding(leftDoc, { enableUndoManager: true });
+    const right = new CanvasBinding(rightDoc);
+    const before = left.getDocument();
+    const change = (base: CanvasDocument, extension: Record<string, unknown>) => ({ ...base, nodes: base.nodes!.map(n => ({ ...n, 'x-nimbalyst': { ...n['x-nimbalyst'], ...extension } })) });
+    left.applyLocalDocument(before, change(before, { locked: true }));
+    const remote = right.getDocument();
+    right.applyLocalDocument(remote, change(remote, { group: 'group-a', label: 'Remote' }));
+    exchange(leftDoc, rightDoc);
+    expect(left.getDocument()).toEqual(right.getDocument());
+    expect(left.getDocument().nodes![0]['x-nimbalyst']).toEqual({ label: 'Remote', future: { keep: true }, locked: true, group: 'group-a' });
+    expect(left.undo()).toBe(true);
+    exchange(leftDoc, rightDoc);
+    expect(left.getDocument().nodes![0]['x-nimbalyst']).toEqual({ label: 'Remote', future: { keep: true }, group: 'group-a' });
+    const exported = canvasCollabCodec.exportToFile(leftDoc);
+    const reloaded = new Y.Doc();
+    canvasCollabCodec.seedFromFile(reloaded, exported as string);
+    expect(canvasCollabCodec.exportToFile(reloaded)).toEqual(exported);
+    left.destroy(); right.destroy(); leftDoc.destroy(); rightDoc.destroy(); reloaded.destroy();
+  });
+
   it('converges simultaneous content-derived seeds and per-field edits from two bindings', () => {
     const source = serializeCanvasDocument(board());
     const leftDoc = new Y.Doc();

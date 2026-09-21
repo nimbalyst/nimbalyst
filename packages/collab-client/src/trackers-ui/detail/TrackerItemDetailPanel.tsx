@@ -30,7 +30,7 @@
  * is therefore CSS (`trackerItemDetail.css`), never a branch.
  */
 
-import React from 'react';
+import React, { useState } from 'react';
 import { MaterialSymbol } from '@nimbalyst/runtime/ui/icons/MaterialSymbol';
 import type { TrackerIdentity } from '@nimbalyst/runtime/core/DocumentService';
 import type { TrackerRecord } from '@nimbalyst/runtime/core/TrackerRecord';
@@ -44,6 +44,8 @@ import {
 } from '@nimbalyst/runtime/plugins/TrackerPlugin/components/TrackerFieldEditor';
 import {
   getRecordTitle,
+  getRecordStatus,
+  getFieldByRole,
   resolveRoleFieldName,
 } from '@nimbalyst/runtime/plugins/TrackerPlugin/trackerRecordAccessors';
 import { TrackerSwatchBadge } from '../primitives/TrackerSwatchBadge';
@@ -55,6 +57,7 @@ import {
 import { CopyLinkButton } from './CopyLinkButton';
 import { TrackerItemActionsMenu, type TrackerItemAction } from './TrackerItemActionsMenu';
 import './trackerItemDetail.css';
+import { TrackerPhoneProperties } from './TrackerPhoneProperties';
 
 export interface TrackerItemDetailPanelProps {
   item: TrackerRecord;
@@ -82,6 +85,13 @@ export interface TrackerItemDetailPanelProps {
   overflowActions?: readonly TrackerItemAction[];
   onClose?: () => void;
   mutationRejection?: TrackerMutationRejection | null;
+  /** Phone presentation keeps the same body slot and document binding. */
+  compact?: boolean;
+  editing?: boolean;
+  onEditingChange?: (editing: boolean) => void;
+  backLabel?: string;
+  commentDraft?: string;
+  onCommentDraftChange?: (text: string) => void;
 }
 
 /**
@@ -107,16 +117,31 @@ export function TrackerItemDetailPanel({
   overflowActions,
   onClose,
   mutationRejection,
+  compact = false,
+  editing = false,
+  onEditingChange,
+  backLabel = 'Back to trackers',
+  commentDraft,
+  onCommentDraftChange,
 }: TrackerItemDetailPanelProps) {
   const fields = detailFields(item.primaryType);
   const readOnly = !onFieldChange;
+  const [propertiesOpen, setPropertiesOpen] = useState(false);
+  const model = globalRegistry.get(item.primaryType);
+  const progress = getFieldByRole(item, 'progress');
 
   return (
     <div
       className="tracker-item-detail flex h-full min-h-0 flex-col bg-nim"
       data-testid="tracker-item-detail"
       data-item-id={item.id}
+      data-compact={compact}
+      data-editing={editing}
     >
+      {compact || (onEditingChange && !editing) ? <div className="tracker-phone-reader-bar">
+        <button type="button" onClick={onClose}>{backLabel}</button>
+        {!readOnly && onEditingChange ? <button type="button" onClick={() => onEditingChange(!editing)}>{editing ? 'Done' : 'Edit'}</button> : null}
+      </div> : null}
       <div className="tracker-item-detail-header border-b border-nim px-4 py-3">
         <div className="flex min-w-0 items-center gap-2">
           <TrackerSwatchBadge label={item.primaryType} color={getTypeColor(item.primaryType)} />
@@ -134,7 +159,7 @@ export function TrackerItemDetailPanel({
             <CopyLinkButton value={copyLinkHref} testId="tracker-copy-link" />
           ) : null}
           <TrackerItemActionsMenu actions={overflowActions ?? []} />
-          {onClose ? (
+          {onClose && !compact ? (
             <button
               type="button"
               className="flex size-6 items-center justify-center rounded text-nim-faint hover:bg-nim-hover hover:text-nim"
@@ -145,13 +170,20 @@ export function TrackerItemDetailPanel({
             </button>
           ) : null}
         </div>
-        <h2 className="mt-1 truncate text-base font-semibold text-nim select-text">
+        <h2 className={`mt-1 text-base font-semibold text-nim select-text${compact ? ' tracker-phone-title' : ' truncate'}`}>
           {getRecordTitle(item)}
         </h2>
+        {compact ? <div className="tracker-phone-summary"><span>{getRecordStatus(item)}</span>{typeof progress === 'number' ? <span>{progress}%</span> : null}{editing ? <span>Live edits</span> : null}</div> : null}
       </div>
 
       <div className="tracker-item-detail-scroll min-h-0 flex-1 overflow-y-auto">
         <div className="tracker-item-detail-fields grid gap-3 border-b border-nim px-4 py-3">
+          {compact ? <>
+            <button type="button" className="tracker-phone-properties-toggle" aria-expanded={propertiesOpen || editing} onClick={() => setPropertiesOpen(!propertiesOpen)} disabled={editing}>Properties{editing ? ' · Editing' : propertiesOpen ? ' −' : ' +'}</button>
+            {propertiesOpen || editing ? <TrackerPhoneProperties fields={editing ? model?.fields ?? fields : fields} values={item.fields} editing={editing && !readOnly} onChange={onFieldChange} teamMembers={teamMembers} /> : null}
+          </> : null}
+          {!compact && onEditingChange && !editing ? <TrackerPhoneProperties fields={fields} values={item.fields} editing={false} teamMembers={teamMembers} /> : null}
+          {!compact && (!onEditingChange || editing) ? <>
           {fields.map((field) => (
             <TrackerFieldEditor
               key={field.name}
@@ -162,6 +194,7 @@ export function TrackerItemDetailPanel({
               teamMembers={teamMembers}
             />
           ))}
+          </> : null}
         </div>
 
         {bodySlot ? <div className="tracker-item-detail-body border-b border-nim">{bodySlot}</div> : null}
@@ -176,6 +209,9 @@ export function TrackerItemDetailPanel({
             mutate={commentMutate}
             formatTimestamp={formatTimestamp}
             readOnly={readOnly}
+            collapsedComposer={compact}
+            draft={commentDraft}
+            onDraftChange={onCommentDraftChange}
             mutationRejection={mutationRejection}
           />
         </div>

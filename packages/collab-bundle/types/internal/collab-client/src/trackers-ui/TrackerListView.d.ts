@@ -16,6 +16,9 @@ export interface TrackerListViewProps {
     selectedItemId?: string | null;
     onOpenItem: (itemId: string) => void;
     loaded: boolean;
+    /** Host opts into a touch-first row without changing desktop consumers. */
+    stacked?: boolean;
+    showType?: boolean;
     /**
      * Per-row unread dot. Personal lane, so a host with team auth only omits it
      * and the dot's module never enters that host's bundle graph.
@@ -27,4 +30,4 @@ export interface TrackerListViewProps {
      */
     onRowContextMenu?: (itemId: string, event: React.MouseEvent) => void;
 }
-export declare function TrackerListView({ rows, groupBy, selectedItemId, onOpenItem, loaded, renderUnreadSlot, onRowContextMenu, }: TrackerListViewProps): React.JSX.Element;
+export declare function TrackerListView({ rows, groupBy, selectedItemId, onOpenItem, loaded, renderUnreadSlot, onRowContextMenu, stacked, showType, }: TrackerListViewProps): React.JSX.Element;

@@ -31,9 +31,11 @@ import {
   readClipboard,
   type DiffConfig,
 } from '@nimbalyst/extension-sdk';
-import { CsvBinding } from '../collab/csvBinding';
-import { CsvMetaBinding, isMetaEmpty, type CsvMetaSnapshot } from '../collab/metaBinding';
-import { isCsvYDocEmpty, seedCsvYDoc, getYCsv } from '../collab/seed';
+import type { CsvBinding } from '../collab/csvBinding';
+import { createCsvEditorBinding } from '../collab/createCsvEditorBinding';
+import { GridHydration } from '../collab/gridHydration';
+import { type CsvMetaBinding, type CsvMetaSnapshot } from '../collab/metaBinding';
+import { isCsvYDocEmpty, seedCsvYDoc } from '../collab/seed';
 import type { RemotePresence } from '../collab/presence';
 import { LocalPresenceTracker } from '../collab/localPresence';
 import { CollabPresenceOverlay } from './CollabPresenceOverlay';
@@ -127,15 +129,20 @@ const MUTATING_GRID_OPERATIONS = [
 /** Wrap the mutating operations so each one refreshes the filtered view. */
 function withRowViewInvalidation(
   operations: GridOperations,
-  invalidate: () => Promise<void>
+  invalidate: () => Promise<void>,
+  getBinding: () => CsvBinding | null,
 ): GridOperations {
   const wrapped: GridOperations = { ...operations };
   for (const name of MUTATING_GRID_OPERATIONS) {
     const original = operations[name] as (...args: unknown[]) => Promise<unknown>;
     (wrapped as unknown as Record<string, unknown>)[name] = async (...args: unknown[]) => {
-      const result = await original(...args);
-      await invalidate();
-      return result;
+      const operation = async () => {
+        const result = await original(...args);
+        await invalidate();
+        return result;
+      };
+      const binding = getBinding();
+      return binding ? binding.mutate(operation) : operation();
     };
   }
   return wrapped;
@@ -426,6 +433,14 @@ export function SpreadsheetEditor({ host }: EditorHostProps) {
   const pendingDataRef = useRef<GridSourceData | null>(null);
   const dataLoadedRef = useRef(false);
   const loadedCsvContentRef = useRef('');
+  const [gridReady, setGridReady] = useState(false);
+  const hydrationRef = useRef<GridHydration | null>(null);
+  hydrationRef.current ??= new GridHydration(setGridReady);
+  const hydration = hydrationRef.current;
+  useEffect(() => {
+    hydration.check();
+  }, [hydration, spreadsheetMeta.metadata]);
+
 
   /* ----------------------------------------------------------------------- */
   /* Filtered-view invalidation                                               */
@@ -505,6 +520,28 @@ export function SpreadsheetEditor({ host }: EditorHostProps) {
     void invalidateRowView();
   }, [invalidateRowView]);
 
+  const attachGrid = useCallback((grid: RevoGridElement | null) => {
+    revoGridRef.current = grid;
+    if (!grid) {
+      // RevoGrid's React wrapper creates a new merged ref on every render,
+      // calling null then the SAME element. That is not a new hydration: a
+      // readiness state update would otherwise reset itself forever and
+      // reapply old content over edits. Confirm detach after the commit.
+      queueMicrotask(() => {
+        if (!revoGridRef.current) {
+          hydration.attach(null);
+          dataLoadedRef.current = false;
+        }
+      });
+      return;
+    }
+    hydration.attach(grid);
+    if (!dataLoadedRef.current && pendingDataRef.current) {
+      applyGridSource(grid, pendingDataRef.current);
+      dataLoadedRef.current = true;
+    }
+  }, [hydration, applyGridSource]);
+
   // Context menu state
   const [contextMenu, setContextMenu] = useState<{
     x: number;
@@ -551,7 +588,7 @@ export function SpreadsheetEditor({ host }: EditorHostProps) {
    */
   const isDiffActive = diffState?.isActive ?? false;
   const editingLockedRef = useRef(false);
-  editingLockedRef.current = readOnly || isDiffActive;
+  editingLockedRef.current = readOnly || isDiffActive || (!!host.collaboration && !gridReady);
 
   // ---- EditorHost lifecycle (loading, echo detection, file changes, save, theme) ----
   const { isLoading, error: loadError, theme, markDirty: _markDirty } = useEditorLifecycle(host, {
@@ -570,6 +607,8 @@ export function SpreadsheetEditor({ host }: EditorHostProps) {
       const gridData = prepareGridData(data);
 
       // Store data to be loaded imperatively once grid is mounted
+      hydration.stage(gridData, () => spreadsheetMetaRef.current.metadata.headerRowCount === data.headerRowCount &&
+        spreadsheetMetaRef.current.metadata.columnCount === data.columnCount);
       pendingDataRef.current = gridData;
 
       // If grid already mounted, load immediately
@@ -768,131 +807,11 @@ export function SpreadsheetEditor({ host }: EditorHostProps) {
   const { isCollaborative: isCollabActive } = useCollaborativeEditor(host, {
     isEmpty: isCsvYDocEmpty,
     initializeFromContent: seedCsvYDoc,
-    createBinding: ({ yDoc, awareness }) => {
-      const applyCsvContent = (content: string) => {
-        loadedCsvContentRef.current = content;
-        const { data } = parseCSV(content);
-        const gridData = prepareGridData(data);
-        // Stash for the deferred ref-callback path. The collab createBinding
-        // can fire applyCsvContent before the grid is mounted -- if so, the
-        // ref callback's pendingDataRef branch is what populates the grid on
-        // mount. Without this, an earlier lifecycle applyContent('') wins by
-        // leaving an empty pendingDataRef in place and the reopened tab
-        // comes back blank.
-        pendingDataRef.current = gridData;
-        const grid = revoGridRef.current;
-        if (grid) {
-          applyGridSource(grid, gridData);
-          dataLoadedRef.current = true;
-        }
-        spreadsheetMetaRef.current.loadFromCSV(content);
-        spreadsheetMetaRef.current.markClean();
-        // `loadFromCSV` re-reads metadata from the comment line, which in a
-        // shared sheet is stale derived output. The map is the authority, so
-        // put it back on top of whatever the text happened to carry.
-        const metaBinding = metaBindingRef.current;
-        if (metaBinding && !isMetaEmpty(yDoc)) {
-          const snapshot = metaBinding.snapshot();
-          spreadsheetMetaRef.current.applyRemoteMetadata(snapshot);
-          lastPublishedMetaRef.current = snapshot;
-        }
-      };
-
-      // Metadata syncs through its own map rather than the comment line inside
-      // the CSV text, so two people formatting two different columns merge.
-      const metaBinding = new CsvMetaBinding(yDoc, {
-        onRemoteMeta: (snapshot) => {
-          spreadsheetMetaRef.current.applyRemoteMetadata(snapshot);
-          lastPublishedMetaRef.current = snapshot;
-        },
-      });
-      metaBindingRef.current = metaBinding;
-
-      // Initial baseline = whatever Y.Text already has (the seed we just
-      // wrote OR the content sync'd from another client).
-      const initial = getYCsv(yDoc).toString();
-      const binding = new CsvBinding(
-        yDoc,
-        initial,
-        {
-          getCurrentCsv: async () => {
-            const gridOps = gridOpsRef.current;
-            if (!gridOps) return loadedCsvContentRef.current || initial;
-            return await gridOps.toCSV();
-          },
-          onRemoteContent: (content: string) => {
-            // Route through the same applyContent path the host uses for
-            // external file changes. The grid is reloaded; metadata gets
-            // re-parsed; selection survives if the cell still exists.
-            applyCsvContent(content);
-            collabBindingRef.current?.noteAppliedRemote(content);
-          },
-          onRemoteAwareness: () => {
-            // A collaborator's selection/edit changed -- refresh the presence
-            // list. The overlay re-measures cell rects off this state change.
-            setRemotePresences(collabBindingRef.current?.getRemotePresences() ?? []);
-          },
-        },
-        awareness,
-      );
-      collabBindingRef.current = binding;
-      // Seed presence from whoever is already in the room (onRemoteAwareness
-      // only fires on subsequent changes).
-      setRemotePresences(binding.getRemotePresences());
-      // Recipient opens commonly mount with `host.loadContent() === ''` and
-      // rely on the already-synced Y.Text as the first real payload. Consume
-      // that snapshot immediately; otherwise there may be no subsequent remote
-      // change event to wake the grid up from its blank local fallback.
-      if (initial.length > 0) {
-        applyCsvContent(initial);
-        binding.noteAppliedRemote(initial);
-      }
-
-      // Migration: a sheet shared before metadata had its own key carries it
-      // only in the comment line. Whoever opens it first seeds the map from
-      // what was just parsed; after that the map is the authority. Two clients
-      // racing here write identical values, so the result converges either way.
-      if (isMetaEmpty(yDoc)) {
-        metaBinding.publish(metaSnapshotOf(spreadsheetMetaRef.current.metadata));
-      } else {
-        const snapshot = metaBinding.snapshot();
-        spreadsheetMetaRef.current.applyRemoteMetadata(snapshot);
-        lastPublishedMetaRef.current = snapshot;
-      }
-
-      if (initial.length === 0 && loadedCsvContentRef.current.length > 0) {
-        // First-share opens can render from host.loadContent() before the Y.Text
-        // has been populated. Push that already-loaded local CSV immediately so a
-        // close/reopen does not depend on the poll interval or unmount flush.
-        void binding.syncNow().catch((error) => {
-          console.error('[SpreadsheetEditor] Failed to push initial local CSV to collab doc:', error);
-        });
-      }
-      collabActiveRef.current = true;
-      return {
-        // Drained by the host before it reports a write complete. This matters
-        // more here than anywhere else: local edits reach the Y.Text on a 1s
-        // poll, so without it an AI tool returns a full second before its cells
-        // are in the document.
-        syncNow: () => binding.syncNow(),
-        destroy: () => {
-          // No flush here. `destroy` runs from a passive effect cleanup, which
-          // React schedules after it has already detached the grid's ref, so
-          // this could only ever call `toCSV()` against a grid that is gone --
-          // it threw "Grid not available" on every close and, until `syncNow`
-          // started reporting failure, hid that behind a resolved promise.
-          // The drain that can still read the grid is the one the host runs
-          // through `registerContentFlush` before it destroys the mount.
-          binding.destroy();
-          metaBindingRef.current?.destroy();
-          metaBindingRef.current = null;
-          lastPublishedMetaRef.current = null;
-          collabBindingRef.current = null;
-          collabActiveRef.current = false;
-          setRemotePresences([]);
-        },
-      };
-    },
+    createBinding: (context) => createCsvEditorBinding(context, {
+      loadedCsvContentRef, pendingDataRef, revoGridRef, dataLoadedRef, spreadsheetMetaRef,
+      metaBindingRef, lastPublishedMetaRef, collabBindingRef, collabActiveRef, gridOpsRef,
+      hydration, prepareGridData, applyGridSource, setRemotePresences,
+    }),
   });
 
   // Forward local edits into the Y.Text. RevoGrid has no single "data
@@ -905,11 +824,11 @@ export function SpreadsheetEditor({ host }: EditorHostProps) {
       // Same reason the save path bails: the grid is showing phantom rows, and
       // syncing them would broadcast the AI's deleted rows to collaborators as
       // live content.
-      if (diffStateRef.current?.isActive) return;
+      if (diffStateRef.current?.isActive || !hydration.isReady) return;
       collabBindingRef.current?.scheduleSync();
     }, 1000);
     return () => clearInterval(id);
-  }, [isCollabActive]);
+  }, [isCollabActive, hydration]);
 
   // Coalesced repaint of the presence overlay. Cell rects are read from the
   // live DOM, so any scroll/resize needs a re-measure even when the presence
@@ -1056,6 +975,9 @@ export function SpreadsheetEditor({ host }: EditorHostProps) {
             // Could update UI here if needed
           },
           onDataChange: () => {
+            void collabBindingRef.current?.syncNow().catch(error => {
+              console.error('[CSV] Failed to publish undo/redo:', error);
+            });
             void gridOpsRef.current?.recalculateFormulas().catch((error) => {
               console.error('[CSV] Failed to recalculate formulas after undo/redo:', error);
             });
@@ -1085,7 +1007,9 @@ export function SpreadsheetEditor({ host }: EditorHostProps) {
         // that knows an edit happened. Without it the only push is the 1s
         // poll, which leaves up to a second of edits sitting outside the Y.Doc
         // -- and the teardown flush cannot read the grid to recover them.
-        collabBindingRef.current?.scheduleSync();
+        void collabBindingRef.current?.syncNow().catch(error => {
+          console.error('[CSV] Failed to publish grid mutation:', error);
+        });
       },
       getUndoPlugin: () => undoPluginRef.current,
       getTrimmedRows: () => getAppliedTrimmedRows(grid),
@@ -1093,7 +1017,7 @@ export function SpreadsheetEditor({ host }: EditorHostProps) {
     });
     // Nothing downstream sees the unwrapped operations, so no mutation path can
     // skip the filtered-view refresh.
-    const gridOps = withRowViewInvalidation(rawGridOps, invalidateRowView);
+    const gridOps = withRowViewInvalidation(rawGridOps, invalidateRowView, () => collabBindingRef.current);
     gridOpsRef.current = gridOps;
     const ownEditor = editorRef.current;
 
@@ -2494,7 +2418,7 @@ export function SpreadsheetEditor({ host }: EditorHostProps) {
           <FormulaBar
             ref={formulaBarRef}
             onChange={handleFormulaChange}
-            readOnly={isDiffActive}
+            readOnly={isDiffActive || (!!host.collaboration && !gridReady)}
           />
           {host.supportsSourceMode && (
             <button
@@ -2507,7 +2431,7 @@ export function SpreadsheetEditor({ host }: EditorHostProps) {
           )}
         </div>
       )}
-      {!readOnly && find.isOpen && <FindBar find={find} readOnly={isDiffActive} />}
+      {!readOnly && find.isOpen && <FindBar find={find} readOnly={isDiffActive || (!!host.collaboration && !gridReady)} />}
       <TrackerCellResolvers keys={trackerKeys} store={trackerStore} />
       <div
         ref={gridContainerRef}
@@ -2519,14 +2443,7 @@ export function SpreadsheetEditor({ host }: EditorHostProps) {
         onMouseDown={handleHeaderMouseDown}
       >
         <RevoGrid
-          ref={(el) => {
-            (revoGridRef as React.MutableRefObject<RevoGridElement | null>).current = el;
-            // Load pending data imperatively when grid mounts
-            if (el && !dataLoadedRef.current && pendingDataRef.current) {
-              applyGridSource(el, pendingDataRef.current);
-              dataLoadedRef.current = true;
-            }
-          }}
+          ref={attachGrid}
           columns={columns}
           rowHeaders={true}
           // Denser than RevoGrid's 27px default. Its theme hardcodes the
@@ -2538,7 +2455,7 @@ export function SpreadsheetEditor({ host }: EditorHostProps) {
           applyOnClose={true}
           editors={editors}
           rowClass="_rowClass"
-          readonly={readOnly || diffState?.isActive}
+          readonly={readOnly || diffState?.isActive || (isCollabActive && !gridReady)}
           onAfteredit={handleAfterEdit}
           onAfterfocus={handleFocusCell}
           // @ts-expect-error onSetrange exists but not in React type defs

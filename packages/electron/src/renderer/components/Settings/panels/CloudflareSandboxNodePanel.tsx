@@ -117,10 +117,30 @@ export function CloudflareSandboxNodePanel({
       const response = await invokeSandbox<SandboxDeployment>(channel, payload);
       if (!mounted.current || requestedKey !== currentTargetKey.current) return;
 
+      if (!response.success) {
+        // Even a failed connect can wake the container or revoke a node, changing
+        // the saved revision. Read it back before enabling another operation.
+        const refreshed = await invokeSandbox<SandboxDeployment | null>(CLOUDFLARE_SANDBOX_CHANNELS.getDeployment);
+        if (!mounted.current || requestedKey !== currentTargetKey.current) return;
+        if (refreshed.success) {
+          const next = refreshed.data;
+          if (next && next.deploymentId === payload.deploymentId
+            && next.profileName === payload.profileName && next.account.id === payload.accountId) {
+            // This refresh belongs to our failure: retain its message across the
+            // revision update. A different target still clears the old error.
+            setSeenTargetKey(targetKeyOf(targetOf(next)));
+          }
+          onDeploymentChange(next);
+        }
+        setError(refreshed.success ? response.error : {
+          ...response.error,
+          message: `${response.error.message} The sandbox status could not be refreshed. Refresh the sandbox before retrying.`,
+        });
+      } else {
+        onDeploymentChange(response.data);
+      }
       setOperation('none');
       setConfirmingDisconnect(false);
-      if (response.success) onDeploymentChange(response.data);
-      else setError(response.error);
     },
     [operation, onDeploymentChange],
   );

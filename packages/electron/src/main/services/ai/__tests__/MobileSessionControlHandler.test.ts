@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => {
@@ -21,6 +22,8 @@ const mocks = vi.hoisted(() => {
     createWorktreeStore: vi.fn(),
   };
 });
+
+vi.mock('../PromptAnswerReservation', () => ({ reservePromptAnswer: () => true }));
 
 vi.mock('../codexQuestionDelivery', () => ({ deliverCodexQuestionAnswer: mocks.deliverCodex }));
 
@@ -103,9 +106,17 @@ vi.mock('../../WorktreeStore', () => ({
   createWorktreeStore: mocks.createWorktreeStore,
 }));
 
-import { resolveGitCommitWorkspacePath, resolveVoicePromptResponse } from '../MobileSessionControlHandler';
+import { resolveExactVoicePromptResponse, resolveGitCommitWorkspacePath, resolveVoicePromptResponse } from '../MobileSessionControlHandler';
 
 describe('MobileSessionControlHandler', () => {
+  it('does not claim acceptance when neither persistence nor a provider or waiter accepts it', async () => {
+    mocks.getSession.mockResolvedValue({ provider: 'claude-code' });
+    mocks.getProvider.mockReturnValue(null);
+    mocks.createMessage.mockRejectedValue(new Error('disk unavailable'));
+    const result = await resolveExactVoicePromptResponse('session-1', { promptType: 'ask_user_question', promptId: 'missing', response: { answers: { Scope: 'A' } } });
+    expect(result.success).toBe(false);
+    expect(mocks.onPromptResolved).not.toHaveBeenCalled();
+  });
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.provider.resolveAskUserQuestion.mockReturnValue(true);

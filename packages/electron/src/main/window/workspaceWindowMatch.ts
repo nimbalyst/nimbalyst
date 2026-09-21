@@ -47,16 +47,42 @@ export interface WorkspaceWindowMatch {
 export interface WorktreeResolvers {
     isWorktreePath(path: string): boolean;
     resolveProjectPath(path: string): string;
+    /**
+     * Every verified spelling of the project a path belongs to. A project
+     * reached through a symlink (or spelled with different case) is registered
+     * in the rail under the name it was opened by, while a worktree resolves to
+     * the realpath'd parent — so comparing those strings misses the window that
+     * is right there (https://github.com/nimbalyst/nimbalyst/issues/1551).
+     * Optional: without it, matching is exact, as it was before.
+     */
+    resolveProjectPathCandidates?(path: string): string[];
 }
 
 function visiblePath(candidate: WorkspaceWindowCandidate): string | null {
     return candidate.activeWorkspacePath ?? candidate.workspacePath ?? null;
 }
 
+/**
+ * The window's projects, the one on screen first. Order matters once two rail
+ * entries are aliases of one directory: answering with the inactive spelling
+ * would report the window as merely referencing a project it is showing, and
+ * send it a switch message it does not need.
+ */
 function railPaths(candidate: WorkspaceWindowCandidate): string[] {
     const paths: string[] = [];
     if (candidate.workspacePath) paths.push(candidate.workspacePath);
     if (candidate.additionalWorkspacePaths) paths.push(...candidate.additionalWorkspacePaths);
+
+    // Same set, visible entry first. Only the order changes, and it only
+    // matters when two entries are aliases of one directory: taking the
+    // inactive spelling would report a window as merely referencing the project
+    // it is showing, and send it a switch message it does not need.
+    const visible = visiblePath(candidate);
+    const visibleIndex = visible ? paths.indexOf(visible) : -1;
+    if (visibleIndex > 0) {
+        paths.splice(visibleIndex, 1);
+        paths.unshift(visible as string);
+    }
     return paths;
 }
 
@@ -93,28 +119,67 @@ export function matchWorkspaceWindow(
 ): WorkspaceWindowMatch | null {
     if (!workspacePath) return null;
 
-    const exact = pickPreferringActive(candidates, (candidate) =>
-        railPaths(candidate).includes(workspacePath) ? workspacePath : null
+    /**
+     * Spellings of one project. The matched path is always the RAIL's own
+     * string, never the requested one, so focus and activate messages address
+     * the window by the key it registered under.
+     */
+    const aliases = (path: string): string[] =>
+        resolvers.resolveProjectPathCandidates?.(path) ?? [path];
+    const namesSameProject = (a: string, b: string): boolean => {
+        if (a === b) return true;
+        const bAliases = aliases(b);
+        return aliases(a).some((alias) => bAliases.includes(alias));
+    };
+
+    // Alias-matching a worktree would compare its PARENT's spellings, which is
+    // the worktree tier's job below -- here it would claim the window is
+    // showing the worktree when it is showing the parent project.
+    const requestIsWorktree = resolvers.isWorktreePath(workspacePath);
+    const exact = pickPreferringActive(
+        candidates,
+        (candidate) =>
+            railPaths(candidate).find(
+                (path) =>
+                    path === workspacePath ||
+                    (!requestIsWorktree && !resolvers.isWorktreePath(path) && namesSameProject(path, workspacePath))
+            ) ?? null
     );
     if (exact) {
         return { ...exact, kind: exact.isActive ? 'active' : 'referenced' };
     }
 
-    if (resolvers.isWorktreePath(workspacePath)) {
+    if (requestIsWorktree) {
         const projectPath = resolvers.resolveProjectPath(workspacePath);
-        const parent = pickPreferringActive(candidates, (candidate) =>
-            railPaths(candidate).includes(projectPath) ? projectPath : null
+        // Only the parent PROJECT counts. A sibling worktree resolves to the
+        // same parent and so has the same candidate list, but it is a different
+        // working directory -- matching it would hand a prompt for branch-one to
+        // the window holding branch-two.
+        const parent = pickPreferringActive(
+            candidates,
+            (candidate) =>
+                railPaths(candidate).find(
+                    (path) =>
+                        path === projectPath ||
+                        (!resolvers.isWorktreePath(path) && namesSameProject(path, projectPath))
+                ) ?? null
         );
         if (parent) return { ...parent, kind: 'worktree-parent' };
     }
 
-    const child = pickPreferringActive(
-        candidates,
-        (candidate) =>
-            railPaths(candidate).find(
-                (path) => resolvers.isWorktreePath(path) && resolvers.resolveProjectPath(path) === workspacePath
-            ) ?? null
-    );
+    // A worktree request never falls through to a rail worktree: its aliases are
+    // its parent's, so every sibling checkout would look like a match.
+    const child = requestIsWorktree
+        ? null
+        : pickPreferringActive(
+              candidates,
+              (candidate) =>
+                  railPaths(candidate).find(
+                      (path) =>
+                          resolvers.isWorktreePath(path) &&
+                          namesSameProject(resolvers.resolveProjectPath(path), workspacePath)
+                  ) ?? null
+          );
     if (child) return { ...child, kind: 'worktree-child' };
 
     return null;

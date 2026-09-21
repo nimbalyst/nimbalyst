@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, expect, it, vi } from 'vitest';
 import {
   createPGLiteSessionStore,
@@ -520,5 +521,44 @@ describe('PGLiteSessionStore.updateMetadata nullable column clears', () => {
     );
     expect(updateCall).toBeDefined();
     expect(updateCall![0]).not.toContain('provider_session_id =');
+  });
+});
+
+
+describe('PGLiteSessionStore provider identity lookup', () => {
+  it('loads the local session behind a scoped provider resume handle', async () => {
+    const db = {
+      query: vi.fn()
+        .mockResolvedValueOnce({ rows: [{ id: 'local-id' }] })
+        .mockResolvedValueOnce({ rows: [{ id: 'local-id', provider: 'claude-code', provider_session_id: 'external-id', workspace_id: '/workspace', created_at: new Date(0), updated_at: new Date(0), metadata: '{"external":true}' }] }),
+    };
+    const store = createPGLiteSessionStore(db);
+    const session = await store.findByProviderSessionId!('claude-code', 'external-id', '/workspace');
+    expect(session).toMatchObject({ id: 'local-id', providerSessionId: 'external-id', workspacePath: '/workspace', metadata: { external: true } });
+    expect(db.query.mock.calls[0][1]).toEqual(['claude-code', 'external-id', '/workspace', 'claude-code-cli', '/workspace']);
+    expect(db.query.mock.calls[1][1]).toEqual(['local-id']);
+  });
+
+  it('returns no session when the scoped identity does not exist', async () => {
+    const db = { query: vi.fn().mockResolvedValue({ rows: [] }) };
+    const store = createPGLiteSessionStore(db);
+    expect(await store.findByProviderSessionId!('openai-codex', 'missing', '/workspace')).toBeNull();
+    expect(db.query).toHaveBeenCalledTimes(1);
+  });
+});
+
+
+describe('external session list provenance', () => {
+  it.each([false, true])('reads validated provenance from metadata (JSON text: %s)', async (asText) => {
+    const metadata = { externalSource: 'openai-codex', externalLastActivityAt: 1234 };
+    const rows = [
+      { id: 'external', metadata: asText ? JSON.stringify(metadata) : metadata },
+      { id: 'invalid', metadata: asText ? '{"externalSource":"unknown","externalLastActivityAt":"1234"}' : { externalSource: 'unknown', externalLastActivityAt: '1234' } },
+    ];
+    const store = createPGLiteSessionStore({ query: vi.fn().mockResolvedValue({ rows }) });
+    const sessions = await store.list('/workspace');
+    expect(sessions[0]).toMatchObject(metadata);
+    expect(sessions[1].externalSource).toBeUndefined();
+    expect(sessions[1].externalLastActivityAt).toBeUndefined();
   });
 });

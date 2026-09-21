@@ -8,6 +8,8 @@
  * the part a user reacts to: is it on, is it working, when did it last run.
  */
 
+import { describeSkippedSyncRows } from '@nimbalyst/runtime/sync/personalSyncWriteGate';
+
 export interface SyncStatusSnapshot {
   /** Sync is configured at the app level (i.e. the user is signed in). */
   appConfigured: boolean;
@@ -15,6 +17,7 @@ export interface SyncStatusSnapshot {
   connected: boolean;
   syncing: boolean;
   error: string | null;
+  skippedRowCount?: number;
   lastSyncedAt: number | null;
 }
 
@@ -24,6 +27,7 @@ export interface SyncSummary {
   tone: SyncTone;
   /** Right-hand text on the row: "Synced 5m ago", "Off for this project", … */
   detail: string;
+  notice?: string | null;
   /**
    * True when the user should notice without opening the popover. Drives the
    * avatar warning, which is also what an expired sign-in uses — one
@@ -51,25 +55,28 @@ export function summarizeSyncStatus(
   // Not signed in: there is nothing to report and no row to draw.
   if (!status.appConfigured) return null;
 
+  const notice = describeSkippedSyncRows(status.skippedRowCount ?? 0);
+  const advisory = notice ? { notice } : {};
+
   // A project the user deliberately opted out of is not a problem to flag.
   if (!status.projectEnabled) {
-    return { tone: 'idle', detail: 'Off for this project', needsAttention: false };
+    return { ...advisory, tone: 'idle', detail: 'Off for this project', needsAttention: false };
   }
 
   if (status.error) {
-    return { tone: 'error', detail: status.error, needsAttention: true };
+    return { ...advisory, tone: 'error', detail: status.error, needsAttention: true };
   }
 
   if (status.syncing) {
-    return { tone: 'ok', detail: 'Syncing…', needsAttention: false };
+    return { ...advisory, tone: 'ok', detail: 'Syncing…', needsAttention: false };
   }
 
   if (status.connected) {
     const age = formatLastSync(status.lastSyncedAt, now);
-    return { tone: 'ok', detail: age ? `Synced ${age}` : 'Connected', needsAttention: false };
+    return { ...advisory, tone: 'ok', detail: age ? `Synced ${age}` : 'Connected', needsAttention: false };
   }
 
   // Enabled for this project but not connected — the case the old cloud icon
   // existed to make visible, so it has to keep reaching the user somehow.
-  return { tone: 'warning', detail: 'Disconnected', needsAttention: true };
+  return { ...advisory, tone: 'warning', detail: 'Disconnected', needsAttention: true };
 }

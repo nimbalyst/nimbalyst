@@ -17,6 +17,7 @@ import type { Options as ClaudeAgentSdkOptions, SettingSource } from '@anthropic
 import path from 'path';
 import { getHostEnvironment } from '../../../../host/hostEnvironment';
 import { ClaudeCodeDeps } from './dependencyInjection';
+import { CLAUDE_TASK_TOOLS, createClaudeSystemPrompt } from './sdkCompatibility';
 import { resolveClaudeAgentCliPath } from './cliPathResolver';
 import { hasEnterpriseManagedMcpConfig } from './enterpriseMcpConfig';
 import { type ThinkingMode } from '../../effortLevels';
@@ -253,16 +254,12 @@ export async function buildSdkOptions(
     // session's turns — any per-turn variation (e.g. a naming section that flips
     // once the agent names the session) forces a system_changed cache miss on
     // the whole prefix. See ClaudeCodeProvider.buildSystemPrompt / NIM-1988.
-    systemPrompt: isMetaAgent
-      ? systemPrompt  // Plain string — fully replaces CC system prompt
-      : {
-          type: 'preset',
-          preset: 'claude_code',
-          append: systemPrompt
-        },
+    systemPrompt: createClaudeSystemPrompt(systemPrompt, isMetaAgent),
+    // Meta-agent tool availability is restricted by its profile in turnPrologue.
+    ...(!isMetaAgent && { allowedTools: [...CLAUDE_TASK_TOOLS] }),
     settingSources: explicitOnly ? [] : settingSources,
     // Headless provisioned servers must not be merged with repository or user discovery.
-    ...(explicitOnly ? { strictMcpConfig: true } : {}),
+    ...(explicitOnly && !mcpLockdown ? { strictMcpConfig: true } : {}),
     // NIM-1988: this is the provider-owned, first-build snapshot, not a live
     // config read. The SDK rebuilds the API tool prefix on resumed turns, so a
     // server appearing/disappearing here would force a tools_changed miss over
@@ -304,6 +301,13 @@ export async function buildSdkOptions(
     // (relative to cwd). This applies whenever the agent enters plan mode, even mid-session.
     settings: {
       ...(ClaudeCodeDeps.planTrackingEnabled && { plansDirectory: 'nimbalyst-local/plans' }),
+      // Nimbalyst renders its own AskUserQuestion widget and waits for a real
+      // human answer, so the CLI's idle auto-continue -- which fills in
+      // whatever options are selected so far and hands them back as if a
+      // person had chosen them -- must never run. The SDK's own default is
+      // already 'never'; pinning it stops an inherited user or enterprise
+      // settings file from turning it on underneath us. See #1549.
+      askUserQuestionTimeout: 'never' as const,
     },
     canUseTool: createCanUseToolHandler(sessionId, workspacePath, permissionsPath),
     hooks: {

@@ -23,17 +23,9 @@ import {
   getToolPermissionResponseChannel,
 } from '../../mcp/tools/interactiveToolHandlers';
 import { deliverMobilePromptResponse, resolveSessionProvider } from './MobilePromptDelivery';
-import {
-  getGitCommitProposalResponseChannel,
-  resolveGitCommitProposalPromptId,
-} from './gitCommitProposalPromptUtils';
+import { handleGitCommitResponse } from './MobileGitCommitResponse';
 import { buildToolPermissionResponseRecord } from './claudeCliToolPermission';
-import { getGitSubprocessEnv } from '../gitEnv';
-import { SessionCommitService } from '../SessionCommitService';
 import { findWindowByWorkspace } from '../../window/WindowManager';
-import { getDatabase } from '../../database/initialize';
-import { createWorktreeStore } from '../WorktreeStore';
-import { resolve as resolvePath } from 'path';
 
 const log = logger.ai;
 
@@ -105,22 +97,7 @@ interface GitCommitResponse {
   message?: string;
 }
 
-/**
- * Worktree sessions retain the parent project as `workspacePath` for session
- * listing and permissions. Commit execution must use the session's actual
- * worktree path, and fail closed if that native binding is incomplete.
- */
-export function resolveGitCommitWorkspacePath(session: {
-  workspacePath?: string | null;
-  worktreeId?: string | null;
-  worktreePath?: string | null;
-}): string | null {
-  if (session.worktreeId || session.worktreePath) {
-    return session.worktreeId && session.worktreePath ? session.worktreePath : null;
-  }
-  return session.workspacePath || null;
-}
-
+export { resolveGitCommitWorkspacePath } from './MobileGitCommitResponse';
 /**
  * Callbacks the mobile control handler needs from AIService. Passed in so
  * this module stays free of a circular dependency on AIService.
@@ -256,6 +233,27 @@ export function resolveVoicePromptResponse(
   payload: PromptResponsePayload,
 ): void {
   handlePromptResponse(sessionId, payload, findWindowByWorkspace);
+}
+
+/** Await the canonical delivery path; accepting an answer is not task completion. */
+export async function resolveExactVoicePromptResponse(sessionId: string, payload: PromptResponsePayload): Promise<{ success: boolean; result?: string; error?: string }> {
+  let accepted: boolean;
+  switch (payload.promptType) {
+    case 'ask_user_question': {
+      const response = payload.response as AskUserQuestionResponse;
+      accepted = await handleAskUserQuestionResponse(sessionId, payload.promptId, response.answers, response.cancelled ?? false, findWindowByWorkspace);
+      break;
+    }
+    case 'tool_permission':
+      accepted = await handleToolPermissionResponse(sessionId, payload.promptId, payload.response as ToolPermissionResponse, findWindowByWorkspace);
+      break;
+    case 'git_commit': {
+      const outcome = await handleGitCommitResponse(sessionId, payload.promptId, payload.response as GitCommitResponse, findWindowByWorkspace);
+      return { success: outcome.action !== 'error', result: JSON.stringify({ status: outcome.action, ...outcome }), error: outcome.error };
+    }
+    default: return { success: false, error: 'Use the existing prompt card for this form.' };
+  }
+  return accepted ? { success: true, result: JSON.stringify({ status: 'accepted_answer', promptId: payload.promptId }) } : { success: false, error: 'No consumer accepted or persisted this answer.' };
 }
 
 /**
@@ -462,7 +460,7 @@ async function handleAskUserQuestionResponse(
   answers: Record<string, string>,
   cancelled: boolean,
   _findWindowByWorkspace: (workspacePath: string) => BrowserWindow | null | undefined
-): Promise<void> {
+): Promise<boolean> {
   log.info(`[Mobile] AskUserQuestion response: questionId=${questionId}, sessionId=${sessionId}, cancelled=${cancelled}`);
 
   const { rawId, waiterIds } = resolvePromptTargets(questionId);
@@ -475,7 +473,7 @@ async function handleAskUserQuestionResponse(
     sessionId,
   };
 
-  await deliverMobilePromptResponse({
+  return await deliverMobilePromptResponse({
     promptType: 'ask_user_question',
     sessionId,
     waiterIds,
@@ -579,15 +577,15 @@ function handleExitPlanModeResponse(
 /**
  * Handle ToolPermission response from mobile
  */
-function handleToolPermissionResponse(
+async function handleToolPermissionResponse(
   sessionId: string,
   promptId: string,
   response: ToolPermissionResponse,
   _findWindowByWorkspace: (workspacePath: string) => BrowserWindow | null | undefined
-): void {
+): Promise<boolean> {
   log.info('Handling ToolPermission response:', promptId, 'decision:', response.decision, 'scope:', response.scope);
 
-  void deliverMobilePromptResponse({
+  return await deliverMobilePromptResponse({
     promptType: 'tool_permission',
     sessionId,
     // The MCP waiter (claude-code-cli PreToolUse path) keys on the canonical
@@ -625,144 +623,6 @@ function handleToolPermissionResponse(
       notifyAllWindows('ai:toolPermissionResolved', { sessionId, requestId: promptId });
     },
   });
-}
-
-/**
- * Handle GitCommit response from mobile
- * Mobile can approve the commit, but desktop must execute it
- */
-async function handleGitCommitResponse(
-  sessionId: string,
-  promptId: string,
-  response: GitCommitResponse,
-  findWindowByWorkspace: (workspacePath: string) => BrowserWindow | null | undefined
-): Promise<void> {
-  log.info('Handling GitCommit response:', promptId, 'action:', response.action);
-  const canonicalPromptId = await resolveGitCommitProposalPromptId(sessionId, promptId);
-
-  // Helper to emit the proposal response to unblock the MCP tool
-  const emitProposalResponse = async (result: {
-    action: 'committed' | 'cancelled' | 'error';
-    commitHash?: string;
-    commitDate?: string;
-    error?: string;
-    filesCommitted?: string[];
-    commitMessage?: string;
-  }) => {
-    const { ipcMain } = await import('electron');
-    const responseChannel = getGitCommitProposalResponseChannel(sessionId, canonicalPromptId);
-    ipcMain.emit(responseChannel, null, result);
-
-    import('@nimbalyst/runtime/storage/repositories/AgentMessagesRepository').then(({ AgentMessagesRepository }) => {
-      AgentMessagesRepository.create({
-        sessionId,
-        source: 'nimbalyst',
-        direction: 'output' as const,
-        createdAt: new Date(),
-        content: JSON.stringify({
-          type: 'git_commit_proposal_response',
-          proposalId: canonicalPromptId,
-          action: result.action,
-          commitHash: result.commitHash,
-          commitDate: result.commitDate,
-          error: result.error,
-          filesCommitted: result.filesCommitted,
-          commitMessage: result.commitMessage,
-          respondedBy: 'mobile',
-          respondedAt: Date.now(),
-        }),
-      }).catch((err) => {
-        log.warn(`[Mobile] Failed to persist GitCommit response: ${err}`);
-      });
-    });
-
-    // Record the sha -> session link for the Git Log panel (idempotent; the
-    // MCP settle path records the same row when the tool is still waiting)
-    if (result.action === 'committed' && result.commitHash) {
-      void SessionCommitService.getInstance().recordCommit({
-        commitSha: result.commitHash,
-        sessionId,
-      });
-    }
-
-    // Notify renderer to clear the pending interactive prompt indicator
-    notifyAllWindows('ai:gitCommitProposalResolved', { sessionId, proposalId: canonicalPromptId });
-    TrayManager.getInstance().onPromptResolved(sessionId);
-  };
-
-  if (response.action === 'cancelled') {
-    await emitProposalResponse({ action: 'cancelled' });
-    return;
-  }
-
-  // For 'committed' action, we need to execute the git commit on desktop
-  if (!response.files || !response.message) {
-    log.error('GitCommit response missing files or message');
-    await emitProposalResponse({ action: 'error', error: 'Missing files or message' });
-    return;
-  }
-
-  // Look up the session's workspace path
-  try {
-    const { AISessionsRepository } = await import('@nimbalyst/runtime/storage/repositories/AISessionsRepository');
-    const session = await AISessionsRepository.get(sessionId);
-    if (!session) {
-      log.error('GitCommit: session not found:', sessionId);
-      await emitProposalResponse({ action: 'error', error: 'Session not found' });
-      return;
-    }
-
-    const workspacePath = resolveGitCommitWorkspacePath(session);
-    if (!workspacePath) {
-      const error = session.worktreeId
-        ? 'Worktree session has no valid worktree path; refusing to commit'
-        : 'No workspace path';
-      log.error('GitCommit:', error, sessionId);
-      await emitProposalResponse({ action: 'error', error });
-      return;
-    }
-
-    // A worktree ID is the native authority record. Do not trust a stale or
-    // agent-influenced session path when that record no longer matches it.
-    if (session.worktreeId) {
-      const db = getDatabase();
-      const nativeWorktree = db ? await createWorktreeStore(db).get(session.worktreeId) : null;
-      const recordedPath = session.worktreePath;
-      if (!nativeWorktree || !recordedPath || resolvePath(nativeWorktree.path) !== resolvePath(recordedPath)) {
-        log.error('GitCommit: native worktree binding mismatch for session:', sessionId);
-        await emitProposalResponse({ action: 'error', error: 'Worktree binding changed or is unavailable; refusing to commit' });
-        return;
-      }
-    }
-
-    const {
-      createGitCommitProposalResponse,
-      executeGitCommitAcrossRepos,
-    } = await import('../../services/GitCommitService');
-    const { resolveExtraCommitRoots } = await import('../../services/workspaceRepos');
-    // Across-repos, not `executeGitCommit`: the single-repo path makes any file
-    // outside `workspacePath` throw 'File is outside the repository', which
-    // failed the WHOLE commit -- including the files that were committable.
-    const commitResult = await executeGitCommitAcrossRepos(
-      workspacePath,
-      response.message,
-      response.files,
-      {
-        logContext: '[GitCommit mobile]',
-        env: getGitSubprocessEnv(),
-        extraRoots: resolveExtraCommitRoots(workspacePath, session.workspacePath),
-      }
-    );
-    await emitProposalResponse(
-      createGitCommitProposalResponse(commitResult, response.files, response.message)
-    );
-  } catch (error) {
-    log.error('[GitCommit mobile] Failed to execute commit:', error);
-    await emitProposalResponse({
-      action: 'error',
-      error: error instanceof Error ? error.message : String(error),
-    });
-  }
 }
 
 /**

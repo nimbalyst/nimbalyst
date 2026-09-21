@@ -112,24 +112,34 @@ export class SandboxManagement {
       // Deliberately accept concrete DNS hosts only, never URLs or catch-all patterns.
       if (request.allowedHosts.some(host => typeof host !== 'string' || host.length > 253
         || !/^(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)*[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/i.test(host))) throw new Error('invalid-request');
+      let stage = 'path-check';
       try {
         // Complete preflight before changing any files or the outbound policy.
         for (const file of files) await this.checkPath(file.path);
+        stage = 'egress';
         await this.sandbox.node.setAllowedHosts([...new Set([...BASELINE_ALLOWED_HOSTS, ...request.allowedHosts.map(host => host.toLowerCase())])]);
         for (const file of files) {
+          stage = 'directory';
           await this.sandbox.node.mkdir(file.path.slice(0, file.path.lastIndexOf('/')));
-          if (!await this.commandSucceeded(['/usr/bin/install', '-m', '600', '--', '/dev/null', file.path])) throw new Error('invalid-path');
+          stage = 'create';
+          if (!await this.commandSucceeded(['/usr/bin/install', '-m', '600', '--', '/dev/null', file.path])) throw new Error('file-create-failed');
           try {
+            stage = 'write';
             await this.sandbox.node.writeFile(file.path, file.content);
-            if (!await this.commandSucceeded(['/usr/bin/chmod', file.mode.toString(8), '--', file.path])) throw new Error('invalid-path');
+            stage = 'permissions';
+            if (!await this.commandSucceeded(['/usr/bin/chmod', file.mode.toString(8), '--', file.path])) throw new Error('file-permissions-failed');
           } catch (error) {
-            await this.commandSucceeded(['/usr/bin/rm', '-f', '--', file.path]);
+            const failedStage = stage;
+            stage = 'cleanup';
+            if (!await this.commandSucceeded(['/usr/bin/rm', '-f', '--', file.path])) throw new Error('file-cleanup-failed');
+            stage = failedStage;
             throw error;
           }
         }
       } catch (error) {
-        if (error instanceof Error && error.message === 'invalid-path') throw error;
-        throw new Error('node-not-provisioned');
+        if (stage === 'path-check' && error instanceof Error && error.message === 'invalid-path') throw error;
+        // Fixed stages survive RPC; SDK diagnostics and provisioned secrets do not.
+        throw new Error(`node-provision-${stage}-failed`);
       }
       return this.observeNode();
     });

@@ -1,3 +1,4 @@
+import type { VoiceStartupTiming } from '../../../shared/voiceStartupTiming';
 /**
  * OpenAI Realtime API WebSocket Client
  *
@@ -7,113 +8,47 @@
 
 import WebSocket from 'ws';
 import { ipcMain } from 'electron';
+import { redactVoiceDiagnostic } from './voiceDiagnostics';
 import { AnalyticsService } from '../analytics/AnalyticsService';
 import type { RealtimeFunctionTool } from './voiceToolBridge';
 import { VoiceBargeInPolicy, buildTurnDetection, type NoiseReductionType, type VadDetectionType } from './voiceBargeInPolicy';
+import {
+  VoiceToolRegistry,
+  type ExtensionVoiceToolResult,
+  type VoiceToolCallEvent,
+  type VoiceToolHandlers,
+  type VoiceToolSchema,
+  type VoiceUiContextToolResult,
+  type VoiceUiScreenshotToolResult,
+} from './engine/voiceToolRegistry';
+import { VoiceEngineEventBus } from './engine/voiceEngineEvents';
+import { formatVoiceHostMessage } from './engine/voiceHostMessage';
+import { buildVoiceAgentInstructions } from './engine/voiceAgentInstructions';
+import type {
+  VoiceEngineDisconnectReason,
+  VoiceEngineEventMap,
+  VoiceEngineEventName,
+  VoiceEngineRegistrar,
+  VoiceEngineTokenUsage,
+  VoiceEngineUsage,
+} from './engine/voiceEngine';
+
+// The tool layer is engine-independent and lives in engine/voiceToolRegistry.
+// Re-exported here because VoiceModeService and mobileVoiceToolHandler have
+// always imported these from this module.
+export {
+  BUILTIN_VOICE_TOOL_NAMES,
+  type ExtensionVoiceToolResult,
+  type VoiceUiContextToolResult,
+  type VoiceUiScreenshotToolResult,
+  type VoiceToolCallEvent,
+} from './engine/voiceToolRegistry';
 
 interface RealtimeEvent {
   type: string;
   event_id?: string;
   [key: string]: unknown;
 }
-
-/**
- * Names of the built-in voice tools handled by the fixed switch in
- * handleFunctionCall(). Extension-contributed voice tools whose sanitized name
- * collides with one of these are skipped so a built-in is never shadowed.
- */
-export const BUILTIN_VOICE_TOOL_NAMES: ReadonlySet<string> = new Set([
-  'submit_agent_prompt',
-  'stop_voice_session',
-  'get_session_summary',
-  'ask_coding_agent',
-  'pause_listening',
-  'respond_to_interactive_prompt',
-  'list_sessions',
-  'navigate_to_session',
-  'create_session',
-  'propose_commit',
-  'get_ui_context',
-  'capture_ui_screenshot',
-]);
-
-/**
- * Result shape returned by the generic extension-voice-tool dispatch callback.
- */
-export interface ExtensionVoiceToolResult {
-  success: boolean;
-  message?: string;
-  data?: unknown;
-  error?: string;
-}
-
-export interface VoiceUiContextToolResult {
-  success: boolean;
-  context?: {
-    activeView: string;
-    selectedFile?: {
-      name: string;
-      relativePath?: string;
-    };
-    activeSession?: {
-      id: string;
-      title: string;
-      status: string;
-    };
-  };
-  error?: string;
-}
-
-export interface VoiceUiScreenshotToolResult {
-  success: boolean;
-  imageDataUrl?: string;
-  source?: 'active_nimbalyst_window';
-  format?: 'jpeg';
-  width?: number;
-  height?: number;
-  bytes?: number;
-  capturedAt?: string;
-  context?: VoiceUiContextToolResult['context'];
-  error?: string;
-}
-
-/**
- * A function/tool call the voice agent made. Emitted so the renderer can write
- * it to the voice session transcript (otherwise tool calls are invisible).
- * Sent twice per call: once when started, once when the result is returned.
- */
-export type VoiceToolCallEvent =
-  | {
-      phase: 'started';
-      callId: string;
-      name: string;
-      displayName: string;
-      args: Record<string, unknown>;
-    }
-  | {
-      phase: 'completed';
-      callId: string;
-      name: string;
-      displayName: string;
-      success: boolean;
-      summary?: string;
-    };
-
-/** Human-friendly labels for the built-in voice tools (for transcript display). */
-const BUILTIN_VOICE_TOOL_DISPLAY_NAMES: Record<string, string> = {
-  submit_agent_prompt: 'Send task to coding agent',
-  ask_coding_agent: 'Ask coding agent',
-  get_session_summary: 'Get session summary',
-  list_sessions: 'List sessions',
-  navigate_to_session: 'Switch session',
-  create_session: 'Create session',
-  propose_commit: 'Propose commit',
-  get_ui_context: 'Get UI context',
-  capture_ui_screenshot: 'Capture UI screenshot',
-  respond_to_interactive_prompt: 'Answer prompt',
-  pause_listening: 'Pause listening',
-  stop_voice_session: 'Stop voice session',
-};
 
 /** GA Realtime API audio format object (replaces the beta flat "pcm16" string). */
 interface AudioFormat {
@@ -149,12 +84,7 @@ interface SessionConfig {
       format: AudioFormat;
     };
   };
-  tools?: Array<{
-    type: string;
-    name: string;
-    description: string;
-    parameters: Record<string, unknown>;
-  }>;
+  tools?: VoiceToolSchema[];
 }
 
 interface CustomPromptConfig {
@@ -200,7 +130,7 @@ const RECONNECT_BASE_DELAY_MS = 500;
 const RECONNECT_MAX_DELAY_MS = 8000;
 const MAX_RECONNECT_ATTEMPTS = 5;
 
-export class RealtimeAPIClient {
+export class RealtimeAPIClient implements VoiceEngineRegistrar {
   private ws: WebSocket | null = null;
   private apiKey: string;
   private model: RealtimeModel = PRIMARY_MODEL;
@@ -210,30 +140,12 @@ export class RealtimeAPIClient {
   private usedModelFallback: boolean = false;
   private sessionId: string | null = null;
   private connected: boolean = false;
-  private onAudioCallback: ((audioBase64: string) => void) | null = null;
-  private onTextCallback: ((text: string) => void) | null = null;
-  private onUserTranscriptCallback: ((transcript: string) => void) | null = null;
-  private onUserTranscriptDeltaCallback: ((delta: string, itemId: string) => void) | null = null;
-  private onTokenUsageCallback: ((usage: { inputAudio: number; outputAudio: number; text: number; total: number }) => void) | null = null;
-  private onSubmitPromptCallback: ((prompt: string) => Promise<void>) | null = null;
-  private onInterruptionCallback: (() => void) | null = null;
-  private onDisconnectCallback: ((reason: 'timeout' | 'error' | 'user_stopped') => void) | null = null;
-  private onErrorCallback: ((error: { type: string; message: string }) => void) | null = null;
-  private onStopSessionCallback: (() => boolean) | null = null;
-  private onGetSessionSummaryCallback: (() => Promise<{ success: boolean; summary?: string; error?: string }>) | null = null;
-  private onAskCodingAgentCallback: ((question: string) => Promise<{ success: boolean; answer?: string; error?: string }>) | null = null;
-  private onPauseListeningCallback: (() => void) | null = null;
-  private onSpeechStoppedCallback: (() => void) | null = null;
-  private onSpeechStartedCallback: (() => void) | null = null;
-  private onRespondToPromptCallback: ((params: { sessionId: string; promptId: string; promptType: string; answer: string }) => Promise<{ success: boolean; error?: string }>) | null = null;
-  private onListSessionsCallback: ((query?: string) => Promise<{ success: boolean; sessions?: Array<{ id: string; title: string; status: string }>; error?: string }>) | null = null;
-  private onNavigateToSessionCallback: ((sessionId: string) => Promise<{ success: boolean; title?: string; error?: string }>) | null = null;
-  private onCreateSessionCallback: ((title?: string) => Promise<{ success: boolean; sessionId?: string; title?: string; error?: string }>) | null = null;
-  private onProposeCommitCallback: (() => Promise<{ success: boolean; error?: string }>) | null = null;
-  private onGetUiContextCallback: (() => Promise<VoiceUiContextToolResult>) | null = null;
-  private onCaptureUiScreenshotCallback:
-    | ((reason: string) => Promise<VoiceUiScreenshotToolResult>)
-    | null = null;
+  // Engine-neutral event dispatch. The setOnX() methods below are thin
+  // single-slot registrations on this bus, so the Live engine can emit the same
+  // events without reproducing a wall of callback fields.
+  private events = new VoiceEngineEventBus();
+  // Tool schemas + execution, shared with any other engine.
+  private tools = new VoiceToolRegistry();
   private claudeCodeSessionId: string;
   private workspacePath: string | null;
   private window: Electron.BrowserWindow;
@@ -299,30 +211,23 @@ export class RealtimeAPIClient {
   private intentionalDisconnect: boolean = false;
   private reconnectAttempts: number = 0;
   private reconnectTimer: NodeJS.Timeout | null = null;
-  private onReconnectingCallback: ((attempt: number) => void) | null = null;
-  private onReconnectedCallback: (() => void) | null = null;
 
   // Deferred (async) function calls: on gpt-realtime-2 a long-running tool call
   // (submit_agent_prompt) stays open until the coding agent finishes, then is
-  // resolved with the real summary via sendFunctionCallResult(). FIFO of open
-  // call IDs awaiting an agent-task-complete. On the gpt-realtime fallback this
-  // stays empty and the legacy queue + "[INTERNAL: Task complete]" wake is used.
-  private deferredCallIds: string[] = [];
-
-  // Extension-contributed voice tools (Core hook 1). Schemas are appended to the
-  // session tool list; nameMap maps the realtime-safe name back to the original
-  // namespaced (dotted) name for dispatch through the extension execution path.
-  private extensionVoiceTools: RealtimeFunctionTool[] = [];
-  private extensionVoiceToolNameMap: Map<string, string> = new Map();
-  private onExtensionVoiceToolCallback:
-    | ((namespacedName: string, args: Record<string, unknown>) => Promise<ExtensionVoiceToolResult>)
-    | null = null;
+  // resolved with the real summary via sendFunctionCallResult(). On the
+  // gpt-realtime fallback this stays empty and the legacy queue + "[INTERNAL:
+  // Task complete]" wake is used.
+  //
+  // Each entry records the agent session the prompt was queued on, because the
+  // completion that resolves it must be THAT session's. This used to be a plain
+  // FIFO of call ids, which handed a second session's completion back as the
+  // first call's return value once voice could observe more than one session.
+  private deferredCalls: Array<{ callId: string; sessionId: string }> = [];
 
   // Tool-call transcript visibility (Issue: voice tool calls were invisible).
-  // Fired on call start and completion; the renderer persists each to the voice
-  // session transcript. callId -> display label, so the completed event can be
-  // labeled without re-deriving it.
-  private onToolCallCallback: ((event: VoiceToolCallEvent) => void) | null = null;
+  // The 'toolCall' event fires on call start and completion; the renderer
+  // persists each to the voice session transcript. callId -> display label, so
+  // the completed event can be labeled without re-deriving it.
   private pendingToolCalls: Map<string, { name: string; displayName: string }> = new Map();
 
   constructor(
@@ -336,7 +241,8 @@ export class RealtimeAPIClient {
     voice?: VoiceId,
     model?: RealtimeModel,
     reasoningEffort?: RealtimeReasoningEffort,
-    language?: string
+    language?: string,
+    private readonly startupTiming?: VoiceStartupTiming,
   ) {
     this.apiKey = apiKey;
     this.claudeCodeSessionId = claudeCodeSessionId;
@@ -371,60 +277,62 @@ export class RealtimeAPIClient {
     return this.model;
   }
 
+  /** Subscribe to an engine event (VoiceEngine). Returns an unsubscribe function. */
+  on<K extends VoiceEngineEventName>(event: K, listener: VoiceEngineEventMap[K]): () => void {
+    return this.events.on(event, listener);
+  }
+
   /**
-   * Set callback for received audio
+   * VoiceEngineRegistrar: replace the single listener for an event. The
+   * setOnX() methods below are named wrappers around this; the application
+   * registers through registerVoiceEngine() and never calls them directly.
    */
+  setSingle<K extends VoiceEngineEventName>(event: K, listener: VoiceEngineEventMap[K]): void {
+    this.events.setSingle(event, listener);
+  }
+
+  /** VoiceEngineRegistrar: the shared tool implementations. */
+  get toolHandlers(): VoiceToolHandlers {
+    return this.tools.handlers;
+  }
+
+  // --- Single-slot event registrations -------------------------------------
+  // Each replaces the previous listener for that event, which is what the
+  // callback fields these used to assign did.
+
+  /** Set callback for received audio */
   setOnAudio(callback: (audioBase64: string) => void): void {
-    this.onAudioCallback = callback;
+    this.events.setSingle('audio', callback);
   }
 
-  /**
-   * Set callback for received text (assistant responses)
-   */
+  /** Set callback for received text (assistant responses) */
   setOnText(callback: (text: string) => void): void {
-    this.onTextCallback = callback;
+    this.events.setSingle('assistantText', callback);
   }
 
-  /**
-   * Set callback for user speech transcription (final/complete)
-   */
+  /** Set callback for user speech transcription (final/complete) */
   setOnUserTranscript(callback: (transcript: string) => void): void {
-    this.onUserTranscriptCallback = callback;
+    this.events.setSingle('userTranscript', callback);
   }
 
-  /**
-   * Set callback for user speech transcription delta (streaming/partial)
-   */
+  /** Set callback for user speech transcription delta (streaming/partial) */
   setOnUserTranscriptDelta(callback: (delta: string, itemId: string) => void): void {
-    this.onUserTranscriptDeltaCallback = callback;
+    this.events.setSingle('userTranscriptDelta', callback);
   }
 
-  /**
-   * Set callback for token usage updates (for live context indicator)
-   */
-  setOnTokenUsage(callback: (usage: { inputAudio: number; outputAudio: number; text: number; total: number }) => void): void {
-    this.onTokenUsageCallback = callback;
+  /** Set callback for token usage updates (for live context indicator) */
+  setOnTokenUsage(callback: (usage: VoiceEngineUsage) => void): void {
+    this.events.setSingle('usage', callback);
   }
 
-  /**
-   * Set callback for submitting prompts to Claude Code
-   */
-  setOnSubmitPrompt(callback: (prompt: string) => Promise<void>): void {
-    this.onSubmitPromptCallback = callback;
-  }
-
-  /**
-   * Set callback for when user interrupts the assistant
-   */
+  /** Set callback for when user interrupts the assistant */
   setOnInterruption(callback: () => void): void {
-    this.onInterruptionCallback = callback;
+    this.events.setSingle('interrupted', callback);
   }
 
-  /**
-   * Set callback for when user stops speaking (VAD detected silence)
-   */
+  /** Set callback for when user stops speaking (VAD detected silence) */
   setOnSpeechStopped(callback: () => void): void {
-    this.onSpeechStoppedCallback = callback;
+    this.events.setSingle('userSpeechStopped', callback);
   }
 
   /**
@@ -435,21 +343,17 @@ export class RealtimeAPIClient {
    * the whole utterance (NIM-1594).
    */
   setOnSpeechStarted(callback: () => void): void {
-    this.onSpeechStartedCallback = callback;
+    this.events.setSingle('userSpeechStarted', callback);
   }
 
-  /**
-   * Set callback for when the connection is closed
-   */
-  setOnDisconnect(callback: (reason: 'timeout' | 'error' | 'user_stopped') => void): void {
-    this.onDisconnectCallback = callback;
+  /** Set callback for when the connection is closed */
+  setOnDisconnect(callback: (reason: VoiceEngineDisconnectReason) => void): void {
+    this.events.setSingle('disconnected', callback);
   }
 
-  /**
-   * Set callback for errors (quota exceeded, rate limits, etc.)
-   */
+  /** Set callback for errors (quota exceeded, rate limits, etc.) */
   setOnError(callback: (error: { type: string; message: string }) => void): void {
-    this.onErrorCallback = callback;
+    this.events.setSingle('error', callback);
   }
 
   /**
@@ -457,7 +361,7 @@ export class RealtimeAPIClient {
    * Lets the renderer show a transient "reconnecting…" state instead of dying.
    */
   setOnReconnecting(callback: (attempt: number) => void): void {
-    this.onReconnectingCallback = callback;
+    this.events.setSingle('reconnecting', callback);
   }
 
   /**
@@ -465,63 +369,65 @@ export class RealtimeAPIClient {
    * been re-applied, so the renderer can clear the "reconnecting…" state.
    */
   setOnReconnected(callback: () => void): void {
-    this.onReconnectedCallback = callback;
+    this.events.setSingle('reconnected', callback);
   }
 
   /**
-   * Set callback for stopping the voice session
+   * Set callback fired when the voice agent calls a tool (started + completed),
+   * so the renderer can record it in the voice session transcript.
    */
+  setOnToolCall(callback: (event: VoiceToolCallEvent) => void): void {
+    this.events.setSingle('toolCall', callback);
+  }
+
+  // --- Tool handler registrations ------------------------------------------
+  // These are not events: each is the single implementation of one voice tool,
+  // and the registry executes it. Kept as individual setters so the existing
+  // VoiceModeService wiring is unchanged.
+
+  /** Set callback for submitting prompts to Claude Code */
+  setOnSubmitPrompt(callback: NonNullable<VoiceToolHandlers['onSubmitPrompt']>): void {
+    this.tools.handlers.onSubmitPrompt = callback;
+  }
+
+  /** Set callback for stopping the voice session */
   setOnStopSession(callback: () => boolean): void {
-    this.onStopSessionCallback = callback;
+    this.tools.handlers.onStopSession = callback;
   }
 
-  /**
-   * Set callback for getting session summary
-   */
+  /** Set callback for getting session summary */
   setOnGetSessionSummary(callback: () => Promise<{ success: boolean; summary?: string; error?: string }>): void {
-    this.onGetSessionSummaryCallback = callback;
+    this.tools.handlers.onGetSessionSummary = callback;
   }
 
-  /**
-   * Set callback for asking the coding agent questions
-   */
+  /** Set callback for asking the coding agent questions */
   setOnAskCodingAgent(callback: (question: string) => Promise<{ success: boolean; answer?: string; error?: string }>): void {
-    this.onAskCodingAgentCallback = callback;
+    this.tools.handlers.onAskCodingAgent = callback;
   }
 
-  /**
-   * Set callback for when the voice agent wants to pause listening
-   */
+  /** Set callback for when the voice agent wants to pause listening */
   setOnPauseListening(callback: () => void): void {
-    this.onPauseListeningCallback = callback;
+    this.tools.handlers.onPauseListening = callback;
   }
 
-  /**
-   * Set callback for responding to an interactive prompt (AskUserQuestion, etc.)
-   */
+  /** Set callback for responding to an interactive prompt (AskUserQuestion, etc.) */
   setOnRespondToPrompt(callback: (params: { sessionId: string; promptId: string; promptType: string; answer: string }) => Promise<{ success: boolean; error?: string }>): void {
-    this.onRespondToPromptCallback = callback;
+    this.tools.handlers.onRespondToPrompt = callback;
   }
 
-  /**
-   * Set callback for listing AI sessions
-   */
+  /** Set callback for listing AI sessions */
   setOnListSessions(callback: (query?: string) => Promise<{ success: boolean; sessions?: Array<{ id: string; title: string; status: string }>; error?: string }>): void {
-    this.onListSessionsCallback = callback;
+    this.tools.handlers.onListSessions = callback;
   }
 
-  /**
-   * Set callback for navigating to a specific AI session
-   */
+  /** Set callback for navigating to a specific AI session */
   setOnNavigateToSession(callback: (sessionId: string) => Promise<{ success: boolean; title?: string; error?: string }>): void {
-    this.onNavigateToSessionCallback = callback;
+    this.tools.handlers.onNavigateToSession = callback;
   }
 
-  /**
-   * Set callback for creating a new AI session
-   */
+  /** Set callback for creating a new AI session */
   setOnCreateSession(callback: (title?: string) => Promise<{ success: boolean; sessionId?: string; title?: string; error?: string }>): void {
-    this.onCreateSessionCallback = callback;
+    this.tools.handlers.onCreateSession = callback;
   }
 
   /**
@@ -531,19 +437,19 @@ export class RealtimeAPIClient {
    * to the coding agent so it can generate a commit proposal widget.
    */
   setOnProposeCommit(callback: () => Promise<{ success: boolean; error?: string }>): void {
-    this.onProposeCommitCallback = callback;
+    this.tools.handlers.onProposeCommit = callback;
   }
 
   /** Set callback for retrieving a bounded snapshot of renderer-owned UI state. */
   setOnGetUiContext(callback: () => Promise<VoiceUiContextToolResult>): void {
-    this.onGetUiContextCallback = callback;
+    this.tools.handlers.onGetUiContext = callback;
   }
 
   /** Set callback for capturing the active Nimbalyst window after user consent. */
   setOnCaptureUiScreenshot(
     callback: (reason: string) => Promise<VoiceUiScreenshotToolResult>,
   ): void {
-    this.onCaptureUiScreenshotCallback = callback;
+    this.tools.handlers.onCaptureUiScreenshot = callback;
   }
 
   /**
@@ -553,36 +459,18 @@ export class RealtimeAPIClient {
    * @param nameMap Realtime-safe name -> namespaced (dotted) name for dispatch.
    */
   setExtensionVoiceTools(schemas: RealtimeFunctionTool[], nameMap: Map<string, string>): void {
-    this.extensionVoiceTools = schemas;
-    this.extensionVoiceToolNameMap = nameMap;
+    this.tools.setExtensionTools(schemas, nameMap);
   }
 
   /**
    * Set the generic dispatch callback invoked when the voice agent calls an
-   * extension-contributed tool (any tool name not handled by the built-in
-   * switch in handleFunctionCall()).
+   * extension-contributed tool (any tool name the registry does not recognize
+   * as built-in).
    */
   setOnExtensionVoiceTool(
     callback: (namespacedName: string, args: Record<string, unknown>) => Promise<ExtensionVoiceToolResult>
   ): void {
-    this.onExtensionVoiceToolCallback = callback;
-  }
-
-  /**
-   * Set callback fired when the voice agent calls a tool (started + completed),
-   * so the renderer can record it in the voice session transcript.
-   */
-  setOnToolCall(callback: (event: VoiceToolCallEvent) => void): void {
-    this.onToolCallCallback = callback;
-  }
-
-  /** Resolve a display label for a tool call (built-in label or namespaced name). */
-  private toolDisplayName(name: string): string {
-    if (BUILTIN_VOICE_TOOL_DISPLAY_NAMES[name]) {
-      return BUILTIN_VOICE_TOOL_DISPLAY_NAMES[name];
-    }
-    // Extension tool: prefer the original namespaced (dotted) name if known.
-    return this.extensionVoiceToolNameMap.get(name) ?? name;
+    this.tools.handlers.onExtensionVoiceTool = callback;
   }
 
   /**
@@ -591,8 +479,8 @@ export class RealtimeAPIClient {
    * tools. Exposed (not private) so the tool list can be asserted in tests
    * without opening a WebSocket.
    */
-  buildSessionTools(): NonNullable<SessionConfig['tools']> {
-    return [...this.buildBuiltinTools(), ...this.extensionVoiceTools];
+  buildSessionTools(): VoiceToolSchema[] {
+    return this.tools.buildToolSchemas();
   }
 
   /**
@@ -611,7 +499,7 @@ export class RealtimeAPIClient {
       if (this.model === PRIMARY_MODEL && !this.usedModelFallback) {
         this.usedModelFallback = true;
         this.model = FALLBACK_MODEL;
-        console.warn(`[RealtimeAPIClient] ${PRIMARY_MODEL} unavailable, falling back to ${FALLBACK_MODEL}`, { error });
+        console.warn(`[RealtimeAPIClient] ${PRIMARY_MODEL} unavailable, falling back to ${FALLBACK_MODEL}`, { error: redactVoiceDiagnostic(error, this.apiKey) });
         try {
           AnalyticsService.getInstance().sendEvent('voice_model_fallback', {
             from: PRIMARY_MODEL,
@@ -621,7 +509,7 @@ export class RealtimeAPIClient {
         await this.openSocket();
         return;
       }
-      throw error;
+      throw new Error(redactVoiceDiagnostic(error, this.apiKey));
     }
   }
 
@@ -649,6 +537,7 @@ export class RealtimeAPIClient {
       let settled = false;
 
       ws.on('open', () => {
+        this.startupTiming?.mark('realtime-socket-open');
         opened = true;
         settled = true;
         this.connected = true;
@@ -662,16 +551,16 @@ export class RealtimeAPIClient {
           const event = JSON.parse(data.toString()) as RealtimeEvent;
           this.handleServerEvent(event);
         } catch (error) {
-          console.error('[RealtimeAPIClient] Failed to parse server event', { error });
+          console.error('[RealtimeAPIClient] Failed to parse server event', { error: redactVoiceDiagnostic(error, this.apiKey) });
         }
       });
 
       ws.on('error', (error) => {
-        console.error('[RealtimeAPIClient] WebSocket error', { error });
+        console.error('[RealtimeAPIClient] WebSocket error', { error: redactVoiceDiagnostic(error, this.apiKey) });
         this.connected = false;
         if (!opened && !settled) {
           settled = true;
-          reject(error);
+          reject(new Error(redactVoiceDiagnostic(error, this.apiKey)));
         }
         // A post-open error is followed by 'close', which drives reconnect.
       });
@@ -682,11 +571,11 @@ export class RealtimeAPIClient {
         if (!opened) {
           if (!settled) {
             settled = true;
-            reject(new Error(`Socket closed before open: ${code} ${String(reason)}`));
+            reject(new Error(`Socket closed before open: ${code} ${redactVoiceDiagnostic(String(reason), this.apiKey)}`));
           }
           return;
         }
-        this.handleUnexpectedClose(code, String(reason));
+        this.handleUnexpectedClose(code, redactVoiceDiagnostic(String(reason), this.apiKey));
       });
     });
   }
@@ -715,15 +604,11 @@ export class RealtimeAPIClient {
 
     if (this.reconnectAttempts >= MAX_RECONNECT_ATTEMPTS) {
       console.error('[RealtimeAPIClient] Reconnect attempts exhausted; ending voice session');
-      if (this.onErrorCallback) {
-        this.onErrorCallback({
-          type: 'connection_lost',
-          message: 'Voice connection was lost and could not be restored.',
-        });
-      }
-      if (this.onDisconnectCallback) {
-        this.onDisconnectCallback('error');
-      }
+      this.events.emit('error', {
+        type: 'connection_lost',
+        message: 'Voice connection was lost and could not be restored.',
+      });
+      this.events.emit('disconnected', 'error');
       return;
     }
 
@@ -731,9 +616,7 @@ export class RealtimeAPIClient {
     const attempt = this.reconnectAttempts;
     const delay = Math.min(RECONNECT_BASE_DELAY_MS * 2 ** (attempt - 1), RECONNECT_MAX_DELAY_MS);
     console.log(`[RealtimeAPIClient] Reconnect attempt ${attempt}/${MAX_RECONNECT_ATTEMPTS} in ${delay}ms`);
-    if (this.onReconnectingCallback) {
-      this.onReconnectingCallback(attempt);
-    }
+    this.events.emit('reconnecting', attempt);
 
     if (this.reconnectTimer) clearTimeout(this.reconnectTimer);
     this.reconnectTimer = setTimeout(async () => {
@@ -743,11 +626,9 @@ export class RealtimeAPIClient {
         await this.openSocket();
         // session.created -> updateSession() re-applies the identical config.
         console.log('[RealtimeAPIClient] Reconnected');
-        if (this.onReconnectedCallback) {
-          this.onReconnectedCallback();
-        }
+        this.events.emit('reconnected');
       } catch (error) {
-        console.error('[RealtimeAPIClient] Reconnect attempt failed', { error });
+        console.error('[RealtimeAPIClient] Reconnect attempt failed', { error: redactVoiceDiagnostic(error, this.apiKey) });
         this.scheduleReconnect();
       }
     }, delay);
@@ -766,6 +647,7 @@ export class RealtimeAPIClient {
       case 'session.created':
         this.sessionId = (event as any).session?.id || null;
         this.updateSession();
+        this.injectContext(this.sessionContext);
         break;
 
       case 'session.updated': {
@@ -802,13 +684,11 @@ export class RealtimeAPIClient {
         // Check for failed response with error
         if (response?.status === 'failed' && response?.status_details?.error) {
           const error = response.status_details.error;
-          console.error('[RealtimeAPIClient] Response failed:', error.type, error.message);
-          if (this.onErrorCallback) {
-            this.onErrorCallback({
-              type: error.type || 'unknown_error',
-              message: error.message || 'Voice mode encountered an error',
-            });
-          }
+          console.error('[RealtimeAPIClient] Response failed:', redactVoiceDiagnostic(error.message, this.apiKey));
+          this.events.emit('error', {
+            type: redactVoiceDiagnostic(error.type || 'unknown_error', this.apiKey),
+            message: redactVoiceDiagnostic(error.message || 'Voice mode encountered an error', this.apiKey),
+          });
         }
         // Terminal for this response: no further audio deltas can arrive for
         // it, so stop suppressing its id.
@@ -841,10 +721,7 @@ export class RealtimeAPIClient {
           this.currentAssistantItemId = (event as any).item_id as string;
         }
         const audioDelta = (event as any).delta as string; // base64-encoded PCM16
-        this.handleAudioDelta(audioDelta);
-        if (this.onAudioCallback) {
-          this.onAudioCallback(audioDelta);
-        }
+        this.events.emit('audio', audioDelta);
         break;
       }
 
@@ -860,8 +737,8 @@ export class RealtimeAPIClient {
       case 'response.output_text.delta':
       case 'response.text.delta':
         const textDelta = (event as any).delta as string;
-        if (textDelta && this.onTextCallback) {
-          this.onTextCallback(textDelta);
+        if (textDelta) {
+          this.events.emit('assistantText', textDelta);
         }
         break;
 
@@ -882,9 +759,7 @@ export class RealtimeAPIClient {
         // Always tell the renderer speech began, BEFORE the barge-in
         // decision -- interrupt may be deferred or suppressed, but the
         // listen window must hold for the whole utterance either way.
-        if (this.onSpeechStartedCallback) {
-          this.onSpeechStartedCallback();
-        }
+        this.events.emit('userSpeechStarted');
         // Route the barge-in decision through the policy seam: it classifies
         // echo-suspect (agent audio still audibly playing in the renderer --
         // residual echo can trip VAD on open speakers, NIM-1314 desktop
@@ -906,9 +781,7 @@ export class RealtimeAPIClient {
         this.updateActivity();
         const durationMs = this.bargeInPolicy.onSpeechStopped();
         console.log(`[RealtimeAPIClient] [barge-in] speech_stopped durationMs=${durationMs ?? 'n/a'}`);
-        if (this.onSpeechStoppedCallback) {
-          this.onSpeechStoppedCallback();
-        }
+        this.events.emit('userSpeechStopped');
         break;
       }
 
@@ -916,8 +789,8 @@ export class RealtimeAPIClient {
         // Streaming transcription delta - shows partial text while user is speaking
         const delta = (event as any).delta as string;
         const deltaItemId = (event as any).item_id as string;
-        if (delta && this.onUserTranscriptDeltaCallback) {
-          this.onUserTranscriptDeltaCallback(delta, deltaItemId);
+        if (delta) {
+          this.events.emit('userTranscriptDelta', delta, deltaItemId);
         }
         break;
 
@@ -925,8 +798,8 @@ export class RealtimeAPIClient {
         // User's speech has been transcribed (final result)
         const transcript = (event as any).transcript as string;
         console.log('[RealtimeAPIClient] User transcript received:', transcript);
-        if (transcript && this.onUserTranscriptCallback) {
-          this.onUserTranscriptCallback(transcript);
+        if (transcript) {
+          this.events.emit('userTranscript', transcript);
         }
         break;
 
@@ -940,8 +813,7 @@ export class RealtimeAPIClient {
           console.debug('[RealtimeAPIClient] Ignoring stale response.cancel (no active response)');
           break;
         }
-        console.error('[RealtimeAPIClient] Server error:', JSON.stringify(errorEvent.error, null, 2));
-        console.error('[RealtimeAPIClient] Full error event:', JSON.stringify(errorEvent, null, 2));
+        console.error('[RealtimeAPIClient] Server error:', redactVoiceDiagnostic(JSON.stringify(errorEvent.error), this.apiKey));
         // Safety valve: an error can mean a response.create we optimistically
         // marked active was actually rejected (no response.created/response.done
         // will follow). Leaving hasActiveResponse stuck true would silently
@@ -979,9 +851,7 @@ export class RealtimeAPIClient {
       this.abandonedResponseIds.add(this.currentResponseId);
     }
     this.cancelCurrentResponse();
-    if (this.onInterruptionCallback) {
-      this.onInterruptionCallback();
-    }
+    this.events.emit('interrupted');
   }
 
   /**
@@ -1022,80 +892,11 @@ export class RealtimeAPIClient {
       return;
     }
 
-    // Build instructions with optional custom prepend/append
-    const baseInstructions = `You are a voice assistant that serves as the conversational interface between the user and a coding agent (Claude).
-
-Architecture:
-- You handle voice interaction with the user
-- A separate coding agent (Claude) handles all coding tasks, file searches, and technical work
-- You relay requests to the coding agent and summarize its responses for voice
-
-Session: ${this.sessionContext}
-
-RESPONSE STYLE (critical): This is a spoken conversation. Be extremely brief -- one short sentence by default, often just a few words. Never use more than one sentence unless the user explicitly asks for detail ("explain", "tell me more", "why"). Answer or act, then STOP. No preamble, no recap, no previewing what you're about to do, no caveats, no filler ("Sure!", "Got it", "Great question"). Never read code or file paths aloud.
-
-IMPORTANT: Your knowledge of this codebase is limited to the session context above. You do NOT have current knowledge of this project's code, files, implementation details, or recent changes. Do not assume you know how features work -- look it up. If project-knowledge or memory tools are listed below, prefer them for that lookup; otherwise ask the coding agent.
-
-Tools:
-- submit_agent_prompt: Send a coding task to the coding agent.
-- ask_coding_agent: Ask the coding agent a question about the project.
-- create_session: Start a brand new coding session. Future commands will target it.
-- list_sessions: List recent coding sessions in this workspace.
-- navigate_to_session: Switch to a specific existing coding session.
-- propose_commit: Trigger the AI commit feature when the user says "propose a commit", "commit with AI", or "smart commit". The proposal arrives as an [INTERACTIVE PROMPT].
-- respond_to_interactive_prompt: Answer a pending interactive prompt from the coding agent.
-- pause_listening: Put the microphone to sleep.
-- stop_voice_session: End the voice session entirely.
-- get_session_summary: Get a summary of what's been discussed.
-- get_ui_context: Read the active Nimbalyst view, selected file, and active coding session.
-- capture_ui_screenshot: Capture the visible Nimbalyst window only after explicit user consent.
-
-Guidelines:
-- Be terse (see RESPONSE STYLE above). One short sentence per response by default; no filler, no acknowledgments, no explanations unless the user asks.
-- When the user says "shut up", "stop talking", "be quiet", "stop listening", "shh", or anything similar: IMMEDIATELY call pause_listening. Say ABSOLUTELY NOTHING before or after calling the tool -- not "ok", not "pausing", not any acknowledgment at all. Do not describe what will happen with the mic. Just call the tool silently.
-- For coding tasks: use submit_agent_prompt, say what you did in ~5 words (e.g. "Submitted."), then STOP. Do NOT say anything about waiting, timing out, or checking back. The microphone will go dormant automatically. You will be woken up with an "[INTERNAL: Task complete...]" message when the coding agent finishes. There is NO timeout -- tasks can take minutes. You do NOT need to monitor, wait, or follow up.
-- submit_agent_prompt is not an approval gate: it queues on screen and auto-sends after a short countdown the user controls. Never ask the user to approve or confirm first ("if you approve", "should I send it?"). Only "[INTERACTIVE PROMPT: ...]" messages wait for a spoken yes/no.
-- For questions about this project (how it works, what was decided, what is in flight): if project-knowledge or memory tools (e.g. search_project_knowledge, recall) are listed in your tools, call them FIRST -- they answer in under a second. Only fall back to ask_coding_agent when memory returns nothing or the question needs live code inspection (reading current files, running something). When you do use ask_coding_agent, summarize the result conversationally for the user.
-- Only answer directly for truly general knowledge questions unrelated to this project.
-- Brainstorming and planning: you can be a design partner, not just a relay. Talk an idea through, push back, and when it is fleshed out kick off a written plan with submit_agent_prompt phrased as "/design <the idea>". To start implementation against an approved plan, use submit_agent_prompt phrased as "/implement <plan>". If extra grounding or plan-reading tools are listed in your context above, prefer them for pulling design docs and reading plans back; otherwise fall back to ask_coding_agent.
-- For "[INTERNAL: Task complete. Result: ...]" messages: briefly relay the result to the user. Do NOT say "I finished that task" -- just state the result.
-- For "[INTERNAL: User is now viewing ...]" messages: do NOT announce this. Silently note it for context.
-- UI context is read-only and intentionally bounded. Use get_ui_context when the user asks what is open, selected, or active; do not claim it exposes hidden renderer state.
-- capture_ui_screenshot sends pixels from the visible Nimbalyst window to the OpenAI Realtime session. Call it ONLY when the user explicitly asks you to inspect/capture the current UI, or after you explain the capture and the user explicitly confirms. Never infer consent from an unrelated request, never set userConfirmed=true without that consent, and never describe the capture as the whole desktop or another application.
-- For "[INTERACTIVE PROMPT: ... promptType=\"git_commit_proposal_request\"]" messages, say exactly: "Commit proposal: <commit title>. Say approve to commit or reject to cancel." Replace <commit title> with only the first line of the commit message. Never read file paths, the file list, code, the commit body, or descriptions aloud. Do not shorten this to "Approve, or reject?" Then WAIT for the user to clearly say approve or reject.
-- For all other "[INTERACTIVE PROMPT: ...]" messages: the coding agent needs user input. Read the question and option labels aloud BRIEFLY -- just the question and option labels, not descriptions. Then WAIT for the user to clearly state their choice. Do NOT call respond_to_interactive_prompt until you hear a clear, deliberate answer from the user. If you hear garbled audio, silence, or unclear speech, ask "Which option?" -- do NOT guess or pick the first option. The user's microphone may pick up echo from your own speech -- ignore any "response" that arrives while you are still speaking or immediately after.
-- When summarizing coding agent responses: be concise, paraphrase for speech. Never read code or file paths verbatim.
-- NEVER say the coding agent "didn't respond", "timed out", or "isn't responding". Tasks take as long as they take.
-
-CRITICAL - Passing through user requests:
-When the user says "ask the coding agent..." or "tell the coding agent..." or similar, you MUST pass their request VERBATIM to the coding agent. Do NOT rephrase, interpret, or add your own context. Examples:
-- User: "Ask the coding agent for a random number" -> Pass exactly: "Give me a random number"
-- User: "Tell the coding agent HMR is not the problem" -> Pass exactly: "HMR is not the problem"
-- User: "Ask Claude what file handles voice mode" -> Pass exactly: "What file handles voice mode?"
-Your job is to be a voice relay, not to interpret or improve the user's requests.`;
-
-    // On gpt-realtime-2, submit_agent_prompt is an async (deferred) call: the
-    // tool result IS the completion summary and arrives only when the coding
-    // agent finishes. Tell the agent so it doesn't expect a separate
-    // "[INTERNAL: Task complete]" message on this model.
-    const asyncToolNote = this.supportsAsyncFunctionCalls()
-      ? `\n\nNOTE on submit_agent_prompt: this is an asynchronous tool. The call stays open and returns its result ONLY when the coding agent finishes (which can take minutes). You will receive the summary as the tool's result, not as a separate "[INTERNAL: Task complete]" message. After calling it, acknowledge in ~5 words (e.g. "On it.") then STOP and wait silently -- the mic sleeps automatically. When the tool result arrives, briefly relay it to the user.`
-      : '';
-
-    // Apply custom prepend/append if configured
-    let instructions = baseInstructions + asyncToolNote;
-    if (this.customPrompt.prepend) {
-      instructions = this.customPrompt.prepend + '\n\n' + instructions;
-    }
-    if (this.customPrompt.append) {
-      instructions = instructions + '\n\n' + this.customPrompt.append;
-    }
-
-    // Pin the spoken language to the desktop's configured default so the voice
-    // agent never auto-detects/drifts into a different language at startup.
-    // Appended last so it takes precedence over any custom prompt text.
-    const effectiveLanguage = this.language?.trim() || 'English';
-    instructions = instructions + `\n\nLANGUAGE: Always speak to the user in ${effectiveLanguage}, regardless of the language the user speaks in. Begin and conduct the entire conversation in ${effectiveLanguage}.`;
+    const instructions = buildVoiceAgentInstructions({
+      customPrompt: this.customPrompt,
+      language: this.language,
+      supportsAsyncFunctionCalls: this.supportsAsyncFunctionCalls(),
+    });
 
     // Build turn detection config based on settings
     // 'push_to_talk' mode uses type: 'none' which disables automatic turn detection
@@ -1154,183 +955,6 @@ Your job is to be a voice relay, not to interpret or improve the user's requests
   }
 
   /**
-   * Built-in voice tool schemas advertised on every session. Extension-
-   * contributed voice tools are appended in buildSessionTools().
-   */
-  private buildBuiltinTools(): NonNullable<SessionConfig['tools']> {
-    return [
-        {
-          type: 'function',
-          name: 'submit_agent_prompt',
-          description: 'Queue a coding task for yourself to process. Use this when the user asks you to write code, fix bugs, refactor, or perform any coding task. The task is queued and sends automatically after a brief on-screen countdown the user controls -- do NOT ask the user to approve or confirm before calling this. You will be notified when it completes.',
-          parameters: {
-            type: 'object',
-            properties: {
-              prompt: {
-                type: 'string',
-                description: 'The coding task to queue for yourself. Be specific and include all relevant context from the conversation. IMPORTANT: End your prompt with "When done, provide a clear 1-sentence summary of what was changed or fixed." This ensures you get a useful summary to relay to the user.',
-              },
-            },
-            required: ['prompt'],
-          },
-        },
-        {
-          type: 'function',
-          name: 'stop_voice_session',
-          description: 'End the current voice mode session. Use this when the user says goodbye, wants to stop talking, or the conversation is complete. This will disconnect from voice mode.',
-          parameters: {
-            type: 'object',
-            properties: {},
-            required: [],
-          },
-        },
-        {
-          type: 'function',
-          name: 'get_session_summary',
-          description: 'Get a summary of the current AI session. Returns the session name, message counts, duration, recent topics, and any pending user question as the final section. Use this when the user asks what has been discussed or wants a recap.',
-          parameters: {
-            type: 'object',
-            properties: {},
-            required: [],
-          },
-        },
-        {
-          type: 'function',
-          name: 'ask_coding_agent',
-          description: 'Send a message to the coding agent. IMPORTANT: When the user says "ask the coding agent X" or "tell the coding agent Y", pass their message VERBATIM - do not rephrase or interpret it. The coding agent can search files, read code, look up documentation, run web searches, or answer questions. You are a voice relay - pass through what the user says exactly.',
-          parameters: {
-            type: 'object',
-            properties: {
-              question: {
-                type: 'string',
-                description: 'The message to send to the coding agent. PASS VERBATIM what the user said - do not rephrase, interpret, or add context. If user says "ask coding agent for a random number", send "give me a random number". If user says "tell coding agent HMR is not the problem", send "HMR is not the problem".',
-              },
-            },
-            required: ['question'],
-          },
-        },
-        {
-          type: 'function',
-          name: 'pause_listening',
-          description: 'Pause listening for voice input. The voice session stays active but the microphone goes to sleep. Use when the user says to stop listening, go to sleep, be quiet, or pause. The mic will reactivate automatically when a coding task completes or another event requires your attention. Do NOT tell the user the mic will reactivate when they speak -- they cannot trigger it by speaking while paused.',
-          parameters: {
-            type: 'object',
-            properties: {},
-            required: [],
-          },
-        },
-        {
-          type: 'function',
-          name: 'respond_to_interactive_prompt',
-          description: 'Respond to an interactive prompt from the coding agent (e.g. AskUserQuestion, ExitPlanMode, GitCommitProposal). When you receive an "[INTERACTIVE PROMPT: ...]" message, read the question and options to the user, listen for their answer, then call this tool with their response. For AskUserQuestion: set answer to the option label the user chose (or their free-text answer). For ExitPlanMode: set answer to "approve" or "reject". For GitCommitProposal: set answer to "approve" or "reject".',
-          parameters: {
-            type: 'object',
-            properties: {
-              promptId: {
-                type: 'string',
-                description: 'The promptId from the interactive prompt message.',
-              },
-              promptType: {
-                type: 'string',
-                description: 'The type of prompt: "ask_user_question_request", "exit_plan_mode_request", or "git_commit_proposal_request".',
-              },
-              answer: {
-                type: 'string',
-                description: 'The user\'s answer. For AskUserQuestion: the selected option label or free-text. For ExitPlanMode/GitCommitProposal: "approve" or "reject".',
-              },
-            },
-            required: ['promptId', 'promptType', 'answer'],
-          },
-        },
-        {
-          type: 'function',
-          name: 'list_sessions',
-          description: 'List or find AI sessions in this workspace. Returns session IDs, titles, running status, and a "lastActive" time (e.g. "2 hours ago"). With no query it returns the most recent sessions. With a query it finds sessions by TOPIC, semantically matching what each session was actually working on (its prompts and the work done) -- not just the title -- so "the session working on the collaborative document system" resolves even when those words are not in the title. Use this before navigating to a session. When the user asks for "the most recent session working on X", pass X as the query and pick the result with the most recent "lastActive".',
-          parameters: {
-            type: 'object',
-            properties: {
-              query: {
-                type: 'string',
-                description: 'Optional topic to find sessions by. Describe what the session was about (e.g. "collaborative document system", "voice mode bugs"); content is matched semantically, not just titles.',
-              },
-            },
-            required: [],
-          },
-        },
-        {
-          type: 'function',
-          name: 'navigate_to_session',
-          description: 'Switch the Nimbalyst UI to a specific AI session, bringing it into focus. Use this when the user asks to switch to, open, or go to a particular session. Call list_sessions first to find the session ID.',
-          parameters: {
-            type: 'object',
-            properties: {
-              sessionId: {
-                type: 'string',
-                description: 'The session ID to navigate to.',
-              },
-            },
-            required: ['sessionId'],
-          },
-        },
-        {
-          type: 'function',
-          name: 'create_session',
-          description: 'Create a new coding session in the current workspace and switch to it. Use this when the user asks to start a new session, open a fresh chat, begin a new task, or anything that implies starting from scratch. After this returns, future submit_agent_prompt and ask_coding_agent calls will target the new session.',
-          parameters: {
-            type: 'object',
-            properties: {
-              title: {
-                type: 'string',
-                description: 'Optional short title for the new session (e.g. "Refactor auth flow"). If the user gave a topic, derive a brief title from it. Omit if the user did not specify what the session is for.',
-              },
-            },
-            required: [],
-          },
-        },
-        {
-          type: 'function',
-          name: 'propose_commit',
-          description: 'Trigger the "Commit with AI" feature. Use this when the user says "propose a commit", "commit with AI", "smart commit", or asks you to summarize and commit their changes. The coding agent will draft a commit message and file list. The proposal arrives shortly as an [INTERACTIVE PROMPT: ... promptType="git_commit_proposal_request"] message -- read only its commit title using the required system-instruction phrasing, then wait for the user to say "approve" or "reject" and call respond_to_interactive_prompt with their answer.',
-          parameters: {
-            type: 'object',
-            properties: {},
-            required: [],
-          },
-        },
-        {
-          type: 'function',
-          name: 'get_ui_context',
-          description: 'Read a concise snapshot of the current Nimbalyst UI: active view, selected workspace file, and active coding session. This is read-only and omits absolute paths and hidden renderer state. Use it when the user asks what is currently open, selected, or active.',
-          parameters: {
-            type: 'object',
-            properties: {},
-            required: [],
-          },
-        },
-        {
-          type: 'function',
-          name: 'capture_ui_screenshot',
-          description: 'Capture and inspect the visible Nimbalyst application window. The screenshot pixels are sent to this OpenAI Realtime session and are not written to disk. Call ONLY after the user explicitly asks for a UI screenshot/inspection or explicitly confirms after you explain the capture.',
-          parameters: {
-            type: 'object',
-            properties: {
-              userConfirmed: {
-                type: 'boolean',
-                description: 'Must be true only when the user explicitly requested or confirmed this screenshot capture.',
-              },
-              reason: {
-                type: 'string',
-                description: 'A short reason for the capture, for example "inspect the active settings panel". Do not include secrets or file contents.',
-                maxLength: 160,
-              },
-            },
-            required: ['userConfirmed', 'reason'],
-          },
-        },
-    ];
-  }
-
-  /**
    * Send audio chunk to OpenAI
    * @param audioBase64 Base64-encoded PCM16 audio data
    */
@@ -1351,6 +975,19 @@ Your job is to be a voice relay, not to interpret or improve the user's requests
     };
 
     this.ws.send(JSON.stringify(event));
+  }
+
+  /** VoiceEngine: append captured microphone audio. */
+  appendAudio(audioBase64: string): void {
+    this.sendAudio(audioBase64);
+  }
+
+  /**
+   * VoiceEngine: the user finished their turn. On Realtime this commits the
+   * input audio buffer, which is what makes push-to-talk produce an answer.
+   */
+  endUserTurn(): void {
+    this.commitAudio();
   }
 
   /**
@@ -1387,7 +1024,7 @@ Your job is to be a voice relay, not to interpret or improve the user's requests
           content: [
             {
               type: 'input_text',
-              text,
+              text: formatVoiceHostMessage('observation', text),
             },
           ],
         },
@@ -1397,7 +1034,7 @@ Your job is to be a voice relay, not to interpret or improve the user's requests
       // No createResponse() -- this is silent context injection
       return true;
     } catch (error) {
-      console.error('[RealtimeAPIClient] Failed to inject context:', error);
+      console.error('[RealtimeAPIClient] Failed to inject context:', redactVoiceDiagnostic(error, this.apiKey));
       return false;
     }
   }
@@ -1436,7 +1073,7 @@ Your job is to be a voice relay, not to interpret or improve the user's requests
       }));
       return true;
     } catch (error) {
-      console.error('[RealtimeAPIClient] Failed to inject UI screenshot:', error);
+      console.error('[RealtimeAPIClient] Failed to inject UI screenshot:', redactVoiceDiagnostic(error, this.apiKey));
       return false;
     }
   }
@@ -1446,11 +1083,13 @@ Your job is to be a voice relay, not to interpret or improve the user's requests
    * This is used to notify the voice assistant when the coding agent completes
    * Returns true if message was sent successfully, false otherwise
    */
-  sendUserMessage(text: string): boolean {
+  sendHostAnnouncement(text: string): boolean {
     if (!this.ws || !this.connected) {
       console.error('[RealtimeAPIClient] Cannot send user message - WebSocket not connected');
       return false;
     }
+
+    this.events.emit('hostAnnouncement');
 
     // Resume from paused state -- activity is happening again
     this.listeningPaused = false;
@@ -1465,7 +1104,7 @@ Your job is to be a voice relay, not to interpret or improve the user's requests
           content: [
             {
               type: 'input_text',
-              text: text,
+              text: formatVoiceHostMessage('announcement', text),
             },
           ],
         },
@@ -1478,434 +1117,86 @@ Your job is to be a voice relay, not to interpret or improve the user's requests
 
       return true;
     } catch (error) {
-      console.error('[RealtimeAPIClient] Failed to send user message:', error);
+      console.error('[RealtimeAPIClient] Failed to send user message:', redactVoiceDiagnostic(error, this.apiKey));
       return false;
     }
   }
 
   /**
-   * Whether there is an open async (deferred) function call awaiting a result.
-   * VoiceModeService checks this on agent-task-complete to decide between
-   * resolving the open call (gpt-realtime-2) and injecting a wake message.
+   * Whether there is an open async (deferred) function call awaiting work
+   * submitted to this agent session. VoiceModeService checks this on
+   * agent-task-complete to decide between resolving the open call
+   * (gpt-realtime-2) and injecting a wake message.
    */
-  hasDeferredCall(): boolean {
-    return this.deferredCallIds.length > 0;
+  hasDeferredCallFor(sessionId: string): boolean {
+    return this.deferredCalls.some((call) => call.sessionId === sessionId);
   }
 
   /**
-   * Resolve the oldest open async function call with the coding agent's result.
-   * Delivers the summary as the function_call_output (which triggers the agent
-   * to speak it) instead of a synthetic success + injected wake message.
-   * Returns true if a deferred call was resolved, false if none was pending.
+   * Resolve the open async function call for THIS agent session with the coding
+   * agent's result. Delivers the summary as the function_call_output (which
+   * triggers the agent to speak it) instead of a synthetic success + injected
+   * wake message. Returns false when that session has no open call -- the
+   * completion then goes down the announcement path rather than being handed to
+   * whichever call happens to be open.
    */
-  resolveDeferredCall(result: { success: boolean; summary?: string; error?: string }): boolean {
-    const callId = this.deferredCallIds.shift();
-    if (!callId) return false;
-    console.log(`[RealtimeAPIClient] Resolving deferred call ${callId}`);
-    this.sendFunctionCallResult(callId, result);
+  resolveDeferredCallFor(
+    sessionId: string,
+    result: { success: boolean; summary?: string; error?: string },
+  ): boolean {
+    const index = this.deferredCalls.findIndex((call) => call.sessionId === sessionId);
+    if (index === -1) return false;
+    const [call] = this.deferredCalls.splice(index, 1);
+    console.log(`[RealtimeAPIClient] Resolving deferred call ${call.callId} for session ${sessionId}`);
+    this.sendFunctionCallResult(call.callId, result);
     return true;
   }
 
   /**
-   * Handle incoming audio delta from OpenAI
-   * In a full implementation, this would decode and play the audio
-   */
-  private handleAudioDelta(audioBase64: string): void {
-    // Audio is handled via callback
-  }
-
-  /**
-   * Handle function call from OpenAI
+   * Handle a function call from the model: announce it, run it through the
+   * shared registry, and deliver whatever the registry returns. A deferred
+   * outcome means the call stays open until resolveDeferredCallFor() supplies the
+   * coding agent's real result.
    */
   private async handleFunctionCall(callId: string, name: string, argsJson: string): Promise<void> {
     // Record the call so it shows up in the voice session transcript. The
     // matching 'completed' event is emitted from sendFunctionCallResult().
-    const displayName = this.toolDisplayName(name);
+    const displayName = this.tools.displayNameFor(name);
     this.pendingToolCalls.set(callId, { name, displayName });
-    if (this.onToolCallCallback) {
-      let parsedArgs: Record<string, unknown> = {};
-      try {
-        parsedArgs = argsJson ? JSON.parse(argsJson) : {};
-      } catch {
-        parsedArgs = {};
-      }
-      this.onToolCallCallback({ phase: 'started', callId, name, displayName, args: parsedArgs });
+    let parsedArgs: Record<string, unknown> = {};
+    try {
+      parsedArgs = argsJson ? JSON.parse(argsJson) : {};
+    } catch {
+      parsedArgs = {};
     }
+    this.events.emit('toolCall', { phase: 'started', callId, name, displayName, args: parsedArgs });
 
-    switch (name) {
-      case 'submit_agent_prompt': {
-        try {
-          const args = JSON.parse(argsJson);
-          const prompt = args.prompt;
+    const outcome = await this.tools.dispatch(callId, name, argsJson, {
+      sessionId: this.sessionId || '',
+      supportsDeferredCalls: this.supportsAsyncFunctionCalls(),
+      injectImage: (imageDataUrl, description) => this.injectImage(imageDataUrl, description),
+      setListeningPaused: (paused) => {
+        this.listeningPaused = paused;
+      },
+    });
 
-          // Track prompt submission (no content for privacy)
-          AnalyticsService.getInstance().sendEvent('voice_prompt_submitted');
-
-          if (!this.onSubmitPromptCallback) {
-            throw new Error('No submit prompt callback registered');
-          }
-          await this.onSubmitPromptCallback(prompt);
-
-          if (this.supportsAsyncFunctionCalls()) {
-            // Async (deferred) function calling: keep the call open. The real
-            // summary is delivered via resolveDeferredCall() when the coding
-            // agent finishes (voice-mode:agent-task-complete), instead of
-            // returning a synthetic "queued" and later injecting a wake message.
-            this.deferredCallIds.push(callId);
-            console.log(`[RealtimeAPIClient] submit_agent_prompt deferred (callId=${callId})`);
-          } else {
-            // Fallback model: synthetic success now; legacy queue + wake later.
-            this.sendFunctionCallResult(callId, {
-              success: true,
-              message: 'Task queued; it auto-sends after a short countdown the user controls. You will be notified when it completes.',
-            });
-          }
-        } catch (error) {
-          console.error('[RealtimeAPIClient] Failed to submit prompt to agent:', error);
-          this.sendFunctionCallResult(callId, {
-            success: false,
-            error: error instanceof Error ? error.message : String(error),
-          });
-        }
-        break;
+    if (outcome.deferred === true) {
+      // Async (deferred) function calling: hold the call id until the coding
+      // agent finishes (voice-mode:agent-task-complete). Without a known target
+      // session there is no completion that can be proven to belong to this
+      // call, so it is answered now instead of left open indefinitely.
+      if (outcome.submission) {
+        this.deferredCalls.push({ callId, sessionId: outcome.submission.sessionId });
+        return;
       }
-
-      case 'stop_voice_session': {
-        try {
-          if (this.onStopSessionCallback) {
-            const stopped = this.onStopSessionCallback();
-            this.sendFunctionCallResult(callId, {
-              success: stopped,
-              message: stopped ? 'Voice session ended.' : 'No active session to stop.',
-            });
-          } else {
-            this.sendFunctionCallResult(callId, {
-              success: false,
-              error: 'Stop session callback not registered',
-            });
-          }
-        } catch (error) {
-          console.error('[RealtimeAPIClient] Failed to stop session:', error);
-          this.sendFunctionCallResult(callId, {
-            success: false,
-            error: error instanceof Error ? error.message : String(error),
-          });
-        }
-        break;
-      }
-
-      case 'get_session_summary': {
-        try {
-          if (this.onGetSessionSummaryCallback) {
-            const result = await this.onGetSessionSummaryCallback();
-            this.sendFunctionCallResult(callId, result);
-          } else {
-            this.sendFunctionCallResult(callId, {
-              success: false,
-              error: 'Session summary callback not registered',
-            });
-          }
-        } catch (error) {
-          console.error('[RealtimeAPIClient] Failed to get session summary:', error);
-          this.sendFunctionCallResult(callId, {
-            success: false,
-            error: error instanceof Error ? error.message : String(error),
-          });
-        }
-        break;
-      }
-
-      case 'ask_coding_agent': {
-        try {
-          const args = JSON.parse(argsJson);
-          const question = args.question;
-
-          if (!question) {
-            this.sendFunctionCallResult(callId, {
-              success: false,
-              error: 'question parameter is required',
-            });
-            break;
-          }
-
-          if (this.onAskCodingAgentCallback) {
-            const result = await this.onAskCodingAgentCallback(question);
-            this.sendFunctionCallResult(callId, result);
-          } else {
-            this.sendFunctionCallResult(callId, {
-              success: false,
-              error: 'Ask coding agent callback not registered',
-            });
-          }
-        } catch (error) {
-          console.error('[RealtimeAPIClient] Failed to ask coding agent:', error);
-          this.sendFunctionCallResult(callId, {
-            success: false,
-            error: error instanceof Error ? error.message : String(error),
-          });
-        }
-        break;
-      }
-
-      case 'pause_listening': {
-        try {
-          this.listeningPaused = true;
-          if (this.onPauseListeningCallback) {
-            this.onPauseListeningCallback();
-          }
-          this.sendFunctionCallResult(callId, {
-            success: true,
-            message: 'Listening paused. The mic will reactivate automatically when a task completes or an event needs attention.',
-          });
-        } catch (error) {
-          console.error('[RealtimeAPIClient] Failed to pause listening:', error);
-          this.sendFunctionCallResult(callId, {
-            success: false,
-            error: error instanceof Error ? error.message : String(error),
-          });
-        }
-        break;
-      }
-
-      case 'respond_to_interactive_prompt': {
-        try {
-          const args = JSON.parse(argsJson);
-          const { promptId, promptType, answer } = args;
-
-          if (!promptId || !promptType || !answer) {
-            this.sendFunctionCallResult(callId, {
-              success: false,
-              error: 'promptId, promptType, and answer are all required',
-            });
-            break;
-          }
-
-          if (this.onRespondToPromptCallback) {
-            const result = await this.onRespondToPromptCallback({
-              sessionId: this.sessionId || '',
-              promptId,
-              promptType,
-              answer,
-            });
-            this.sendFunctionCallResult(callId, result);
-          } else {
-            this.sendFunctionCallResult(callId, {
-              success: false,
-              error: 'Respond to prompt callback not registered',
-            });
-          }
-        } catch (error) {
-          console.error('[RealtimeAPIClient] Failed to respond to prompt:', error);
-          this.sendFunctionCallResult(callId, {
-            success: false,
-            error: error instanceof Error ? error.message : String(error),
-          });
-        }
-        break;
-      }
-
-      case 'list_sessions': {
-        try {
-          const args = argsJson ? JSON.parse(argsJson) : {};
-          if (this.onListSessionsCallback) {
-            const result = await this.onListSessionsCallback(args.query);
-            this.sendFunctionCallResult(callId, result);
-          } else {
-            this.sendFunctionCallResult(callId, {
-              success: false,
-              error: 'List sessions callback not registered',
-            });
-          }
-        } catch (error) {
-          console.error('[RealtimeAPIClient] Failed to list sessions:', error);
-          this.sendFunctionCallResult(callId, {
-            success: false,
-            error: error instanceof Error ? error.message : String(error),
-          });
-        }
-        break;
-      }
-
-      case 'navigate_to_session': {
-        try {
-          const args = JSON.parse(argsJson);
-          const { sessionId } = args;
-
-          if (!sessionId) {
-            this.sendFunctionCallResult(callId, {
-              success: false,
-              error: 'sessionId parameter is required',
-            });
-            break;
-          }
-
-          if (this.onNavigateToSessionCallback) {
-            const result = await this.onNavigateToSessionCallback(sessionId);
-            this.sendFunctionCallResult(callId, result);
-          } else {
-            this.sendFunctionCallResult(callId, {
-              success: false,
-              error: 'Navigate to session callback not registered',
-            });
-          }
-        } catch (error) {
-          console.error('[RealtimeAPIClient] Failed to navigate to session:', error);
-          this.sendFunctionCallResult(callId, {
-            success: false,
-            error: error instanceof Error ? error.message : String(error),
-          });
-        }
-        break;
-      }
-
-      case 'create_session': {
-        try {
-          const args = argsJson ? JSON.parse(argsJson) : {};
-          const title = typeof args.title === 'string' && args.title.trim().length > 0
-            ? args.title.trim()
-            : undefined;
-
-          if (this.onCreateSessionCallback) {
-            const result = await this.onCreateSessionCallback(title);
-            this.sendFunctionCallResult(callId, result);
-          } else {
-            this.sendFunctionCallResult(callId, {
-              success: false,
-              error: 'Create session callback not registered',
-            });
-          }
-        } catch (error) {
-          console.error('[RealtimeAPIClient] Failed to create session:', error);
-          this.sendFunctionCallResult(callId, {
-            success: false,
-            error: error instanceof Error ? error.message : String(error),
-          });
-        }
-        break;
-      }
-
-      case 'propose_commit': {
-        try {
-          if (this.onProposeCommitCallback) {
-            const result = await this.onProposeCommitCallback();
-            this.sendFunctionCallResult(callId, {
-              success: result.success,
-              message: result.success
-                ? 'Commit proposal requested. Wait for the [INTERACTIVE PROMPT] message.'
-                : undefined,
-              error: result.error,
-            });
-          } else {
-            this.sendFunctionCallResult(callId, {
-              success: false,
-              error: 'Propose commit callback not registered',
-            });
-          }
-        } catch (error) {
-          console.error('[RealtimeAPIClient] Failed to propose commit:', error);
-          this.sendFunctionCallResult(callId, {
-            success: false,
-            error: error instanceof Error ? error.message : String(error),
-          });
-        }
-        break;
-      }
-
-      case 'get_ui_context': {
-        try {
-          if (!this.onGetUiContextCallback) {
-            this.sendFunctionCallResult(callId, {
-              success: false,
-              error: 'UI context callback not registered',
-            });
-            break;
-          }
-          this.sendFunctionCallResult(callId, await this.onGetUiContextCallback());
-        } catch (error) {
-          console.error('[RealtimeAPIClient] Failed to get UI context:', error);
-          this.sendFunctionCallResult(callId, {
-            success: false,
-            error: error instanceof Error ? error.message : String(error),
-          });
-        }
-        break;
-      }
-
-      case 'capture_ui_screenshot': {
-        try {
-          const args = argsJson ? JSON.parse(argsJson) : {};
-          const reason = typeof args.reason === 'string'
-            ? args.reason.replace(/\s+/g, ' ').trim().slice(0, 160)
-            : '';
-          if (args.userConfirmed !== true) {
-            this.sendFunctionCallResult(callId, {
-              success: false,
-              error: 'Explicit user confirmation is required before capturing the UI.',
-            });
-            break;
-          }
-          if (!reason) {
-            this.sendFunctionCallResult(callId, {
-              success: false,
-              error: 'A short capture reason is required.',
-            });
-            break;
-          }
-          if (!this.onCaptureUiScreenshotCallback) {
-            this.sendFunctionCallResult(callId, {
-              success: false,
-              error: 'UI screenshot callback not registered',
-            });
-            break;
-          }
-
-          const result = await this.onCaptureUiScreenshotCallback(reason);
-          const { imageDataUrl, ...metadata } = result;
-          if (!result.success || !imageDataUrl) {
-            this.sendFunctionCallResult(callId, metadata);
-            break;
-          }
-          if (!this.injectImage(imageDataUrl, reason)) {
-            this.sendFunctionCallResult(callId, {
-              success: false,
-              error: 'The screenshot was captured but could not be sent to the voice model.',
-            });
-            break;
-          }
-          this.sendFunctionCallResult(callId, metadata);
-        } catch (error) {
-          console.error('[RealtimeAPIClient] Failed to capture UI screenshot:', error);
-          this.sendFunctionCallResult(callId, {
-            success: false,
-            error: error instanceof Error ? error.message : String(error),
-          });
-        }
-        break;
-      }
-
-      default: {
-        // Not a built-in tool -- route to an extension-contributed voice tool
-        // (Core hook 1) if one is registered under this realtime-safe name.
-        const namespacedName = this.extensionVoiceToolNameMap.get(name);
-        if (namespacedName && this.onExtensionVoiceToolCallback) {
-          try {
-            const args = argsJson ? JSON.parse(argsJson) : {};
-            const result = await this.onExtensionVoiceToolCallback(namespacedName, args);
-            this.sendFunctionCallResult(callId, result);
-          } catch (error) {
-            console.error('[RealtimeAPIClient] Extension voice tool failed:', name, error);
-            this.sendFunctionCallResult(callId, {
-              success: false,
-              error: error instanceof Error ? error.message : String(error),
-            });
-          }
-          break;
-        }
-
-        console.error('[RealtimeAPIClient] Unknown function call:', name);
-        this.sendFunctionCallResult(callId, { error: 'Unknown function' });
-      }
+      console.warn('[RealtimeAPIClient] Deferred call has no target session; answering it now');
+      this.sendFunctionCallResult(callId, {
+        success: true,
+        message: 'Task queued. You will be notified when it completes.',
+      });
+      return;
     }
+    this.sendFunctionCallResult(callId, outcome.result);
   }
 
   /**
@@ -1932,24 +1223,22 @@ Your job is to be a voice relay, not to interpret or improve the user's requests
     const pending = this.pendingToolCalls.get(callId);
     if (pending) {
       this.pendingToolCalls.delete(callId);
-      if (this.onToolCallCallback) {
-        const r = (result ?? {}) as Record<string, unknown>;
-        const success = typeof r.success === 'boolean' ? r.success : !r.error;
-        const summary =
-          (typeof r.summary === 'string' && r.summary) ||
-          (typeof r.answer === 'string' && r.answer) ||
-          (typeof r.message === 'string' && r.message) ||
-          (typeof r.error === 'string' && r.error) ||
-          undefined;
-        this.onToolCallCallback({
-          phase: 'completed',
-          callId,
-          name: pending.name,
-          displayName: pending.displayName,
-          success,
-          summary: summary || undefined,
-        });
-      }
+      const r = (result ?? {}) as Record<string, unknown>;
+      const success = typeof r.success === 'boolean' ? r.success : !r.error;
+      const summary =
+        (typeof r.summary === 'string' && r.summary) ||
+        (typeof r.answer === 'string' && r.answer) ||
+        (typeof r.message === 'string' && r.message) ||
+        (typeof r.error === 'string' && r.error) ||
+        undefined;
+      this.events.emit('toolCall', {
+        phase: 'completed',
+        callId,
+        name: pending.name,
+        displayName: pending.displayName,
+        success,
+        summary: summary || undefined,
+      });
     }
 
     // A function-call result ALWAYS warrants a fresh response so the agent can
@@ -2192,20 +1481,18 @@ Your job is to be a voice relay, not to interpret or improve the user's requests
     });
 
     // Notify listener of updated token usage
-    if (this.onTokenUsageCallback) {
-      this.onTokenUsageCallback({
-        inputAudio: this.inputAudioTokens,
-        outputAudio: this.outputAudioTokens,
-        text: this.textTokens,
-        total: totalTokens,
-      });
-    }
+    this.events.emit('usage', {
+      inputAudio: this.inputAudioTokens,
+      outputAudio: this.outputAudioTokens,
+      text: this.textTokens,
+      total: totalTokens,
+    });
   }
 
   /**
    * Get current token usage statistics
    */
-  getTokenUsage(): { inputAudio: number; outputAudio: number; text: number; total: number } {
+  getTokenUsage(): VoiceEngineTokenUsage {
     return {
       inputAudio: this.inputAudioTokens,
       outputAudio: this.outputAudioTokens,
@@ -2215,10 +1502,19 @@ Your job is to be a voice relay, not to interpret or improve the user's requests
   }
 
   /**
+   * VoiceEngine: engine-normalized session usage. Realtime fills only the token
+   * fields -- duration, context occupancy, backend usage, and the finalization
+   * flags stay undefined because this engine genuinely does not report them.
+   */
+  getUsage(): VoiceEngineUsage {
+    return this.getTokenUsage();
+  }
+
+  /**
    * Disconnect from OpenAI Realtime API
    * @param reason Optional reason for disconnect (default: 'user_stopped')
    */
-  disconnect(reason: 'timeout' | 'error' | 'user_stopped' = 'user_stopped'): void {
+  disconnect(reason: VoiceEngineDisconnectReason = 'user_stopped'): void {
     const m = this.bargeInPolicy.metrics;
     if (m.speechStartedCount > 0) {
       console.log(`[RealtimeAPIClient] [barge-in] session summary: speechStarted=${m.speechStartedCount} echoSuspect=${m.echoSuspectCount} genuine=${m.genuineCount} interrupts=${m.interruptCount} suppressedEcho=${m.suppressedEchoCount}`);
@@ -2231,15 +1527,13 @@ Your job is to be a voice relay, not to interpret or improve the user's requests
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
     }
-    this.deferredCallIds = [];
+    this.deferredCalls = [];
 
     if (this.ws) {
       this.stopInactivityMonitor();
 
       // Call disconnect callback before closing
-      if (this.onDisconnectCallback) {
-        this.onDisconnectCallback(reason);
-      }
+      this.events.emit('disconnected', reason);
 
       this.ws.close();
       this.ws = null;

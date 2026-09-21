@@ -14,6 +14,11 @@
  */
 
 import type { CreateQueuedPromptInput } from '../PGLiteQueuedPromptsStore';
+import { createKeyedSerialQueue } from '@nimbalyst/runtime/sync/indexPublication';
+
+// Multiple windows register listeners on the same provider. Serialize their
+// dedupe/insert/publish work so they cannot race to insert the same mobile ID.
+const ingestionQueue = createKeyedSerialQueue();
 
 export interface IncomingQueuedPrompt {
   id: string;
@@ -23,7 +28,7 @@ export interface IncomingQueuedPrompt {
 
 export interface MobileQueuedPromptIngestDeps {
   /** Existing row for this id, whatever its status — used to dedupe sync replays. */
-  getExisting(promptId: string): Promise<unknown | null>;
+  getExisting(promptId: string): Promise<{ status: string } | null>;
   createPrompt(input: CreateQueuedPromptInput): Promise<unknown>;
   /** Mirror the session's still-pending rows back onto the sync index. */
   publishQueueState(sessionId: string): Promise<void>;
@@ -46,6 +51,14 @@ export async function ingestMobileQueuedPrompts(
   sessionId: string,
   prompts: IncomingQueuedPrompt[],
 ): Promise<number> {
+  return ingestionQueue.run(sessionId, () => ingestQueuedPrompts(deps, sessionId, prompts));
+}
+
+async function ingestQueuedPrompts(
+  deps: MobileQueuedPromptIngestDeps,
+  sessionId: string,
+  prompts: IncomingQueuedPrompt[],
+): Promise<number> {
   if (prompts.length === 0) return 0;
 
   deps.logInfo(
@@ -58,12 +71,17 @@ export async function ingestMobileQueuedPrompts(
 
   try {
     let newPromptsCount = 0;
+    let hasConsumedReplay = false;
     for (const prompt of prompts) {
-      // Prompts composed on this desktop and echoed back by sync.
-      if (prompt.id.startsWith('local-')) continue;
       // Rows are status-transitioned, never deleted, so this also stops a late
       // replay from resurrecting a prompt that already ran.
-      if (await deps.getExisting(prompt.id)) continue;
+      const existing = await deps.getExisting(prompt.id);
+      if (existing) {
+        if (existing.status !== 'pending') hasConsumedReplay = true;
+        continue;
+      }
+      // Unknown desktop prompts belong to their originating desktop.
+      if (prompt.id.startsWith('local-')) continue;
 
       await deps.createPrompt({
         id: prompt.id,
@@ -81,7 +99,11 @@ export async function ingestMobileQueuedPrompts(
       newPromptsCount++;
     }
 
-    if (newPromptsCount === 0) return 0;
+    if (newPromptsCount === 0) {
+      // Dedupe prevents execution, but must also repair the queue the phone sees.
+      if (hasConsumedReplay) await deps.publishQueueState(sessionId);
+      return 0;
+    }
 
     deps.logInfo(`[AIService] Inserted ${newPromptsCount} new prompts into queued_prompts table`);
 

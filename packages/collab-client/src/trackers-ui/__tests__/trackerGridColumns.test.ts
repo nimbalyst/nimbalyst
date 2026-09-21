@@ -1,5 +1,10 @@
 // @vitest-environment jsdom
 import { describe, it, expect, afterEach, vi } from 'vitest';
+import { DataStore, gatherGrouping } from '@revolist/revogrid';
+// RevoGrid does not export ColumnService publicly. This test intentionally
+// exercises the pinned runtime bundle that patch-package repairs.
+// @ts-expect-error Internal generated module has no public declaration.
+import { M as ColumnService } from '../../../../../node_modules/@revolist/revogrid/dist/esm/column.service-8pPNyrKn.js';
 import type { TrackerRecord } from '@nimbalyst/runtime/core/TrackerRecord';
 import { globalRegistry, type TrackerDataModel } from '@nimbalyst/runtime/plugins/TrackerPlugin/models';
 import { resolveColumnsForType } from '@nimbalyst/runtime/plugins/TrackerPlugin/components/trackerColumns';
@@ -93,6 +98,79 @@ describe('buildGridColumns', () => {
     expect(readonly({ model: { [ROW_ITEM_ID]: 'locked' } })).toBe(true);
     // A row with no resolvable item id must never be editable.
     expect(readonly({ model: {} })).toBe(true);
+  });
+
+  it('keeps clipboard rows aligned when a group header is inside the paste range', () => {
+    registerType();
+    const titleColumns = columnsFor(['title']);
+    const sourceColumns = columnsFor(['title', 'state']);
+    const source = buildGridSource([
+      record('1', { title: 'Old 1', state: 'open' }),
+      record('2', { title: 'Old 2', state: 'open' }),
+      record('3', { title: 'Old 3', state: 'closed' }),
+      record('4', { title: 'Old 4', state: 'closed' }),
+    ], sourceColumns);
+    const { sourceWithGroups } = gatherGrouping(source, ['state'], { expandedAll: true });
+    const rows = new DataStore('rgRow');
+    rows.updateData(sourceWithGroups);
+    const columns = new DataStore('rgCol');
+    columns.updateData(buildGridColumns(titleColumns, {
+      trackerType: gridType,
+      isRowEditable: () => true,
+    }));
+    const service = new ColumnService(rows.store, columns.store);
+    const firstItemRow = sourceWithGroups.findIndex(row => row[ROW_ITEM_ID] === '1');
+
+    const { changed } = service.getTransformedDataToApply(
+      { x: 0, y: firstItemRow },
+      [['First'], ['Second'], ['Third'], ['Fourth']],
+    );
+    const writes = Object.entries(changed).map(([rowIndex, values]) => [
+      sourceWithGroups[Number(rowIndex)][ROW_ITEM_ID],
+      (values as Record<string, unknown>).title,
+    ]);
+
+    expect(writes).toEqual([
+      ['1', 'First'],
+      ['2', 'Second'],
+      ['3', 'Third'],
+      ['4', 'Fourth'],
+    ]);
+    service.destroy();
+  });
+
+  it('does not shift clipboard rows past a locked tracker record', () => {
+    registerType();
+    const titleColumns = columnsFor(['title']);
+    const source = buildGridSource([
+      record('1', { title: 'Old 1' }),
+      record('2', { title: 'Locked' }),
+      record('3', { title: 'Old 3' }),
+      record('4', { title: 'Old 4' }),
+    ], titleColumns);
+    const rows = new DataStore('rgRow');
+    rows.updateData(source);
+    const columns = new DataStore('rgCol');
+    columns.updateData(buildGridColumns(titleColumns, {
+      trackerType: gridType,
+      isRowEditable: id => id !== '2',
+    }));
+    const service = new ColumnService(rows.store, columns.store);
+
+    const { changed } = service.getTransformedDataToApply(
+      { x: 0, y: 0 },
+      [['First'], ['For locked row'], ['Third']],
+    );
+    const writes = Object.entries(changed).map(([rowIndex, values]) => [
+      source[Number(rowIndex)][ROW_ITEM_ID],
+      (values as Record<string, unknown>).title,
+    ]);
+
+    expect(writes).toEqual([
+      ['1', 'First'],
+      ['3', 'Third'],
+    ]);
+    service.destroy();
   });
 
   it('honors persisted column width overrides', () => {

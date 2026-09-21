@@ -6,6 +6,7 @@ export const isFullSuiteInvocation = (argv) => argv.join(' ') === fullSuiteInvoc
 
 export const scriptTests = [
   "scripts/__tests__/prepush-test-gate.test.mjs",
+  "scripts/__tests__/install-git-hooks.test.mjs",
   "scripts/__tests__/ensure-sandbox-dependencies.test.mjs",
   "scripts/__tests__/check-analytics-allowlist.test.mjs",
   "scripts/__tests__/check-collab-client-boundaries.test.mjs",
@@ -14,6 +15,7 @@ export const scriptTests = [
   "scripts/__tests__/check-main-bundle-graph.test.mjs",
   "scripts/__tests__/check-push-authors.test.mjs",
   "scripts/__tests__/check-renderer-sync-sockets.test.mjs",
+  "scripts/__tests__/check-sync-floating-promises.test.mjs",
   "scripts/__tests__/check-runtime-host-boundary.test.mjs",
   "scripts/__tests__/check-shared-document-nodes.test.mjs",
   "scripts/__tests__/check-text-file-nuls.test.mjs",

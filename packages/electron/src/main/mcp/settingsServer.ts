@@ -28,7 +28,7 @@ const TOOLS = [
   {
     name: "settings_get_overview",
     description:
-      "Return a curated, redacted snapshot of Nimbalyst settings (app-level + current workspace). NEVER includes API keys, auth tokens, or secrets. Includes Stytch auth state booleans so you can tell whether sync prerequisites are met. Use this before changing anything so you can show the user what's currently set.",
+      "Return a curated, redacted snapshot of Nimbalyst settings (app-level + current workspace). NEVER includes API keys, auth tokens, or secrets. Includes Stytch auth state and workspace agentPermissionMode, allowAllUsesClassifier, and agentTrustLabel. These describe workspace policy, not an individual session's active mode. Read all three permission fields: bypass-all alone does not mean automatic review is disabled. Use this before changing anything so you can show the user what's currently set.",
     inputSchema: {
       type: "object",
       properties: {},
@@ -208,7 +208,7 @@ const TOOLS = [
   {
     name: "workspace_set_trust",
     description:
-      "Set the agent trust mode for a workspace. Permission modes: 'ask' (smart per-tool permission prompts), 'allow-all' (auto-approve file edits), 'bypass-all' (auto-approve every tool including shell). Set trusted=false to untrust. Bypass-all is powerful -- ask the user to confirm via AskUserQuestion before using it on unfamiliar projects.",
+      "Set the agent trust mode for a workspace. Permission modes: 'ask' (smart per-tool permission prompts), 'allow-all' (auto-approve file edits), 'bypass-all' (Agent-verified when allowAllUsesClassifier is true; Allow everything otherwise). This tool preserves the classifier flag; selecting bypass-all does not disable automatic review. Read settings_get_overview to inspect it. Users can change it in Settings > Project > Agent Permissions. Set trusted=false to untrust. Bypass-all is powerful -- ask the user to confirm via AskUserQuestion before using it on unfamiliar projects.",
     inputSchema: {
       type: "object",
       properties: {

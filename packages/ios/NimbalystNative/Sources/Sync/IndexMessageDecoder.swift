@@ -17,7 +17,7 @@ enum DecodedIndexMessage: @unchecked Sendable {
     /// Small control traffic (devices, settings, command responses, errors),
     /// decoded by its existing handler on the main actor.
     case control(type: String, data: Data)
-    case undecodable(type: String?)
+    case undecodable(type: String?, detail: String)
 
     var isIndexData: Bool {
         switch self {
@@ -67,42 +67,53 @@ actor IndexMessageDecoder {
     }
 
     private nonisolated static func classify(_ data: Data, decoder: JSONDecoder) -> DecodedIndexMessage {
-        guard let envelope = try? decoder.decode(ServerMessage.self, from: data) else {
-            return .undecodable(type: nil)
+        var type: String?
+        do {
+            let envelope = try decoder.decode(ServerMessage.self, from: data)
+            type = envelope.type
+            switch envelope.type {
+            case "indexSyncResponse":
+                return .syncResponse(try decoder.decode(IndexSyncResponse.self, from: data))
+            case "indexBroadcast":
+                return .session(try decoder.decode(IndexBroadcast.self, from: data).session)
+            case "indexDeleteBroadcast":
+                return .delete(sessionId: try decoder.decode(IndexDeleteBroadcast.self, from: data).sessionId)
+            case "projectBroadcast":
+                return .project(try decoder.decode(ProjectBroadcast.self, from: data).project)
+            case "indexPageResponse":
+                return .page(try decoder.decode(IndexPageResponse.self, from: data))
+            case "indexChangesAvailable":
+                return .changesAvailable(revision: try decoder.decode(IndexChangesAvailable.self, from: data).revision)
+            default:
+                return .control(type: envelope.type, data: data)
+            }
+        } catch {
+            return .undecodable(type: type, detail: decodingFailure(error))
         }
-        switch envelope.type {
-        case "indexSyncResponse":
-            guard let response = try? decoder.decode(IndexSyncResponse.self, from: data) else {
-                return .undecodable(type: envelope.type)
-            }
-            return .syncResponse(response)
-        case "indexBroadcast":
-            guard let broadcast = try? decoder.decode(IndexBroadcast.self, from: data) else {
-                return .undecodable(type: envelope.type)
-            }
-            return .session(broadcast.session)
-        case "indexDeleteBroadcast":
-            guard let broadcast = try? decoder.decode(IndexDeleteBroadcast.self, from: data) else {
-                return .undecodable(type: envelope.type)
-            }
-            return .delete(sessionId: broadcast.sessionId)
-        case "projectBroadcast":
-            guard let broadcast = try? decoder.decode(ProjectBroadcast.self, from: data) else {
-                return .undecodable(type: envelope.type)
-            }
-            return .project(broadcast.project)
-        case "indexPageResponse":
-            guard let response = try? decoder.decode(IndexPageResponse.self, from: data) else {
-                return .undecodable(type: envelope.type)
-            }
-            return .page(response)
-        case "indexChangesAvailable":
-            guard let hint = try? decoder.decode(IndexChangesAvailable.self, from: data) else {
-                return .undecodable(type: envelope.type)
-            }
-            return .changesAvailable(revision: hint.revision)
+    }
+
+    /// Field locations explain contract failures without logging ciphertext,
+    /// identifiers, or decoder descriptions that can contain the rejected value.
+    private nonisolated static func decodingFailure(_ error: Error) -> String {
+        let path: [any CodingKey]
+        let reason: String
+        switch error {
+        case DecodingError.keyNotFound(let key, let context):
+            path = context.codingPath + [key]
+            reason = "missing field"
+        case DecodingError.valueNotFound(_, let context):
+            path = context.codingPath
+            reason = "null value"
+        case DecodingError.typeMismatch(_, let context):
+            path = context.codingPath
+            reason = "wrong type"
+        case DecodingError.dataCorrupted(let context):
+            path = context.codingPath
+            reason = "invalid data"
         default:
-            return .control(type: envelope.type, data: data)
+            return "decoding failed"
         }
+        let location = path.map { $0.intValue.map(String.init) ?? $0.stringValue }.joined(separator: ".")
+        return "\(reason) at \(location.isEmpty ? "root" : location)"
     }
 }

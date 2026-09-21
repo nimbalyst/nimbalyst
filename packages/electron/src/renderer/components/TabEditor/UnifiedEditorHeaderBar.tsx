@@ -34,6 +34,7 @@ import { CommonFileActions } from '../CommonFileActions';
 import { FeedbackBacklinkHeaderButton } from '../FeedbackRequest/FeedbackBacklinks';
 import type { FeedbackRequestSubjectRef } from '../../../shared/feedbackRequestIndex';
 import { DocumentSessionControl, type DocumentSessionActions } from './DocumentSessionControl';
+import { SharedDocumentLinkActions, type SharedDocumentLinkTarget } from './SharedDocumentLinkActions';
 import { FilePathBreadcrumb } from '../common/FilePathBreadcrumb';
 // Deep path, not the `docs-ui` barrel: that barrel drags `CollabSidebar` and the
 // whole shared-docs tree into every editor tab's module graph for one 40-line
@@ -126,10 +127,7 @@ interface UnifiedEditorHeaderBarProps {
    * view) turn it off -- the type lives on the record, not in the body.
    */
   showDocumentTypeAction?: boolean;
-  sharedDocumentLinkTarget?: {
-    documentId: string;
-    orgId: string;
-  };
+  sharedDocumentLinkTarget?: SharedDocumentLinkTarget;
 }
 
 export const UnifiedEditorHeaderBar: React.FC<UnifiedEditorHeaderBarProps> = ({
@@ -252,17 +250,6 @@ export const UnifiedEditorHeaderBar: React.FC<UnifiedEditorHeaderBarProps> = ({
       ?? sharedDocLink.binding?.documentId;
     return documentId ? { kind: 'document', sourceId: documentId } : null;
   }, [sharedDocumentLinkTarget?.documentId, sharedDocLink.binding?.documentId]);
-
-  const handleCopyDeepLink = useCallback(async () => {
-    if (!sharedDocumentDeepLink) return;
-    try {
-      await copyToClipboard(sharedDocumentDeepLink);
-      console.log('[UnifiedHeaderBar] Shared document link copied to clipboard');
-    } catch (err) {
-      console.error('[UnifiedHeaderBar] Failed to copy shared document link:', err);
-    }
-    setShowActionsMenu(false);
-  }, [sharedDocumentDeepLink, setShowActionsMenu]);
 
   // Dev mode check
   const isDevMode = import.meta.env.DEV;
@@ -810,18 +797,13 @@ export const UnifiedEditorHeaderBar: React.FC<UnifiedEditorHeaderBarProps> = ({
                 </button>
               )}
 
-              {/* Copy link (shared docs only) */}
+              {/* Shared document links */}
               {sharedDocumentDeepLink && (
-                <button
-                  className="dropdown-item copy-shared-doc-link w-full py-2 px-3 border-none bg-transparent text-[13px] text-left cursor-pointer flex items-center gap-2.5 transition-colors duration-150 text-[var(--nim-text)] hover:bg-[var(--nim-bg-hover)]"
-                  onClick={handleCopyDeepLink}
-                >
-                  <svg className="w-4 h-4 opacity-70" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                    <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71" />
-                    <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71" />
-                  </svg>
-                  Copy link
-                </button>
+                <SharedDocumentLinkActions
+                  deepLink={sharedDocumentDeepLink}
+                  target={sharedDocumentLinkTarget}
+                  onClose={() => setShowActionsMenu(false)}
+                />
               )}
 
               {/* Markdown-specific actions */}

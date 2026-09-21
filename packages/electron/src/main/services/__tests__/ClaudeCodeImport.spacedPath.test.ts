@@ -1,3 +1,4 @@
+// @vitest-environment node
 /**
  * Regression test for #170: importer was using a different path encoder than
  * the scanner, so workspace paths containing spaces (or any non-alphanumeric)
@@ -10,23 +11,75 @@
  *  3. claude-code:sync-sessions surfaces failure when every sync fails
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import * as fs from 'fs/promises';
-import * as path from 'path';
-import * as os from 'os';
-import { encodeWorkspaceDir, scanAllSessions } from '../ClaudeCodeSessionScanner';
-import { syncSession } from '../ClaudeCodeSessionSync';
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import * as fs from "fs/promises";
+import * as path from "path";
+import * as os from "os";
+import {
+  encodeWorkspaceDir,
+  scanAllSessions,
+} from "../ClaudeCodeSessionScanner";
+import { syncSession } from "../ClaudeCodeSessionSync";
 
-const WORKSPACE_PATH = '/Users/test/Desktop/Nimbalyst Projects/Test Nimbalyst';
+const WORKSPACE_PATH = "/Users/test/Desktop/Nimbalyst Projects/Test Nimbalyst";
 const ENCODED = encodeWorkspaceDir(WORKSPACE_PATH);
-const SESSION_ID = '218341c0-aaaa-4bbb-8ccc-dddddddddddd';
-const TIMESTAMP = '2026-04-01T10:00:00.000Z';
+const SESSION_ID = "218341c0-aaaa-4bbb-8ccc-dddddddddddd";
+const TIMESTAMP = "2026-04-01T10:00:00.000Z";
+
+import { SQLiteDatabase } from "../../database/sqlite/SQLiteDatabase";
+import { createPGLiteSessionStore } from "../PGLiteSessionStore";
+import { ExternalSessionIngestor } from "../externalSessions/ExternalSessionIngestor";
+import { ExternalSessionPersistence } from "../externalSessions/ExternalSessionPersistence";
+import { ClaudeCodeSource } from "../externalSessions/ClaudeCodeSource";
+import { ExternalSessionService } from "../externalSessions/ExternalSessionService";
+const manual = vi.hoisted(() => ({ service: null as any }));
+vi.mock(
+  "../externalSessions/ExternalSessionService",
+  async (importOriginal) => {
+    const actual = await importOriginal<
+      typeof import("../externalSessions/ExternalSessionService")
+    >();
+    return { ...actual, getExternalSessionService: () => manual.service };
+  }
+);
+let db: SQLiteDatabase;
+let realSessions: ReturnType<typeof createPGLiteSessionStore>;
+async function prepareManualService() {
+  db = new SQLiteDatabase({
+    dbDir: path.join(tmpRoot, "test-db"),
+    schemaDir: path.resolve(__dirname, "../../database/sqlite/schemas"),
+    sampleRate: 0,
+  });
+  await db.initialize();
+  realSessions = createPGLiteSessionStore(db);
+  const persistence = new ExternalSessionPersistence(db);
+  const ingestor = new ExternalSessionIngestor({
+    sessions: realSessions,
+    persistence,
+    getSessionState: () => null,
+    processNewMessages: async () => {},
+    refresh: () => {},
+  });
+  manual.service = new ExternalSessionService({
+    settings: { get: () => false, subscribe: () => () => {} },
+    firstUsable: async () => {},
+    createWatcher: () => {
+      throw new Error("manual import must not watch");
+    },
+    ingestor,
+    createSources: () => [new ClaudeCodeSource({ rootDir: tmpRoot })],
+    persistence,
+    sessions: realSessions,
+    getRoutes: async () => [],
+  });
+}
 
 let tmpRoot: string;
 
 beforeEach(async () => {
-  tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'nimbalyst-cc-spaced-'));
+  tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "nimbalyst-cc-spaced-"));
   process.env.NIMBALYST_CLAUDE_PROJECTS_DIR = tmpRoot;
+  await prepareManualService();
 
   // Mirror what Claude Code writes: a workspace dir under
   // ~/.claude/projects/ named with the encoded path, containing a JSONL.
@@ -34,77 +87,80 @@ beforeEach(async () => {
   await fs.mkdir(workspaceDir, { recursive: true });
   const jsonl = [
     {
-      uuid: 'u1',
+      uuid: "u1",
       sessionId: SESSION_ID,
       timestamp: TIMESTAMP,
       cwd: WORKSPACE_PATH,
-      type: 'user',
-      message: { role: 'user', content: 'Hi' },
+      type: "user",
+      message: { role: "user", content: "Hi" },
     },
     {
-      uuid: 'u2',
+      uuid: "u2",
       sessionId: SESSION_ID,
       timestamp: TIMESTAMP,
       cwd: WORKSPACE_PATH,
-      type: 'assistant',
+      type: "assistant",
       message: {
-        role: 'assistant',
-        content: [{ type: 'text', text: 'Hello' }],
+        role: "assistant",
+        content: [{ type: "text", text: "Hello" }],
         usage: { input_tokens: 1, output_tokens: 1 },
       },
     },
   ]
-    .map(e => JSON.stringify(e))
-    .join('\n');
-  await fs.writeFile(path.join(workspaceDir, `${SESSION_ID}.jsonl`), jsonl, 'utf-8');
+    .map((e) => JSON.stringify(e))
+    .join("\n");
+  await fs.writeFile(
+    path.join(workspaceDir, `${SESSION_ID}.jsonl`),
+    jsonl,
+    "utf-8"
+  );
 });
 
 afterEach(async () => {
+  await manual.service?.stop();
+  await db?.close();
   delete process.env.NIMBALYST_CLAUDE_PROJECTS_DIR;
   await fs.rm(tmpRoot, { recursive: true, force: true });
 });
 
-describe('Claude Code import for workspace paths with spaces', () => {
-  it('encodes the workspace path the same way Claude Code does', () => {
-    expect(ENCODED).toBe('-Users-test-Desktop-Nimbalyst-Projects-Test-Nimbalyst');
+describe("Claude Code import for workspace paths with spaces", () => {
+  it("encodes the workspace path the same way Claude Code does", () => {
+    expect(ENCODED).toBe(
+      "-Users-test-Desktop-Nimbalyst-Projects-Test-Nimbalyst"
+    );
   });
 
-  it('scanner finds the session under the spaced workspace path', async () => {
+  it("scanner finds the session under the spaced workspace path", async () => {
     const sessions = await scanAllSessions(WORKSPACE_PATH);
     expect(sessions).toHaveLength(1);
     expect(sessions[0].sessionId).toBe(SESSION_ID);
     expect(sessions[0].workspacePath).toBe(WORKSPACE_PATH);
   });
 
-  it('importer reads the same file the scanner found (no ENOENT)', async () => {
+  it("importer reads the same file the scanner found (no ENOENT)", async () => {
     const [metadata] = await scanAllSessions(WORKSPACE_PATH);
     expect(metadata).toBeDefined();
 
-    // Minimal in-memory stand-ins for the SessionStore / AgentMessagesStore
-    // contracts that syncSession actually exercises. Anything else throws if
-    // touched, so the test stays focused on path resolution.
-    const created: any[] = [];
-    const messages: any[] = [];
-    const sessionStore: any = {
-      get: async () => null,
-      create: async (s: any) => {
-        created.push(s);
-      },
-      updateMetadata: async () => {},
-    };
-    const messagesStore: any = {
-      list: async () => [],
-      create: async (m: any) => {
-        messages.push(m);
-      },
-    };
-
-    const result = await syncSession(sessionStore, messagesStore, metadata);
+    const result = await syncSession(realSessions, {} as any, metadata);
 
     expect(result.success).toBe(true);
     expect(result.error).toBeUndefined();
     expect(result.messagesAdded).toBeGreaterThan(0);
+    const created = (
+      await db.query<{ provider_session_id: string }>(
+        "SELECT provider_session_id FROM ai_sessions"
+      )
+    ).rows;
     expect(created).toHaveLength(1);
-    expect(created[0].id).toBe(SESSION_ID);
+    expect(created[0].provider_session_id).toBe(SESSION_ID);
+    await syncSession(realSessions, {} as any, metadata);
+    await fs.appendFile(
+      path.join(tmpRoot, ENCODED, `${SESSION_ID}.jsonl`),
+      "\n"
+    );
+    await syncSession(realSessions, {} as any, metadata);
+    expect(
+      (await db.query("SELECT id FROM ai_agent_messages")).rows
+    ).toHaveLength(2);
   });
 });

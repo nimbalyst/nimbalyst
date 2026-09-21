@@ -59,6 +59,36 @@ export const CANVAS_EXTRAS_NAMESPACE = 'namespace';
 
 type Entity = CanvasAnyNode | CanvasEdge;
 
+// CRDT-only node fields. Null is a tombstone overriding legacy namespace blobs.
+const NODE_EXTENSION_FIELDS = {
+  locked: '__canvas_locked',
+  group: '__canvas_group',
+} as const;
+const NODE_EXTENSION_KEYS: ReadonlySet<string> = new Set(Object.values(NODE_EXTENSION_FIELDS));
+// Escape colliding file keys, including this prefix itself, for a reversible mapping.
+const NODE_FILE_KEY_PREFIX = '__canvas_file:';
+
+/** Keep lock/group writes independent from each other and other namespace data. */
+export function canvasNodeFields(node: CanvasAnyNode): Map<string, unknown> {
+  const fields = new Map(Array.from(entityFields(node), ([key, value]): [string, unknown] => [
+    NODE_EXTENSION_KEYS.has(key) || key.startsWith(NODE_FILE_KEY_PREFIX)
+      ? NODE_FILE_KEY_PREFIX + key : key,
+    value,
+  ]));
+  const namespace = node[NIMBALYST_CANVAS_NAMESPACE];
+  const rest = { ...namespace };
+  for (const [name, key] of Object.entries(NODE_EXTENSION_FIELDS)) {
+    // Older peers may have exported the CRDT field as a top-level file key.
+    const legacy = node[key];
+    const compatible = name === 'locked' ? typeof legacy === 'boolean' : typeof legacy === 'string';
+    fields.set(key, namespace?.[name] ?? (compatible ? legacy : null));
+    delete rest[name];
+  }
+  if (Object.keys(rest).length > 0) fields.set(NIMBALYST_CANVAS_NAMESPACE, rest);
+  else fields.delete(NIMBALYST_CANVAS_NAMESPACE);
+  return fields;
+}
+
 /** Node-map keys `applyFromFile` must not delete: they have no file counterpart. */
 const NODE_RESERVED_KEYS: readonly string[] = [CANVAS_NODE_RANK_FIELD];
 
@@ -92,7 +122,7 @@ export const canvasCollabCodec: CollabCodec = {
     const nodes = document.nodes ?? [];
     yDoc.transact(() => {
       const yNodes = getCanvasYNodes(yDoc);
-      patchEntities(yNodes, nodes, NODE_RESERVED_KEYS);
+      patchEntities(yNodes, nodes, NODE_RESERVED_KEYS, true);
       reconcileNodeRanks(
         yNodes,
         nodes.map((node) => node.id)
@@ -194,7 +224,7 @@ function seedNodes(
   nodes.forEach((node, index) => {
     if (target.has(node.id)) return;
     const fields = new Y.Map<unknown>();
-    writeAllEntityFields(fields, node);
+    for (const [key, value] of canvasNodeFields(node)) fields.set(key, value);
     fields.set(CANVAS_NODE_RANK_FIELD, ranks[index]);
     target.set(node.id, fields);
   });
@@ -215,7 +245,8 @@ function seedEntities(
 function patchEntities(
   target: Y.Map<Y.Map<unknown>>,
   entities: readonly Entity[],
-  reservedKeys: readonly string[]
+  reservedKeys: readonly string[],
+  nodes = false
 ): void {
   const incoming = new Set(entities.map((entity) => entity.id));
 
@@ -225,11 +256,14 @@ function patchEntities(
 
   for (const entity of entities) {
     const current = target.get(entity.id);
+    const incomingFields = nodes
+      ? canvasNodeFields(entity as CanvasAnyNode)
+      : entityFields(entity);
     if (current) {
-      patchFields(current, entityFields(entity), reservedKeys);
+      patchFields(current, incomingFields, reservedKeys);
     } else {
       const fields = new Y.Map<unknown>();
-      writeAllEntityFields(fields, entity);
+      for (const [key, value] of incomingFields) fields.set(key, value);
       target.set(entity.id, fields);
     }
   }
@@ -371,10 +405,22 @@ function readNodes(
       if (key === CANVAS_NODE_RANK_FIELD) {
         rank = normalizeCanvasRank(value);
         if (includeRanks && rank !== null) node[key] = rank;
-      } else if (key !== 'id') {
+      } else if (key.startsWith(NODE_FILE_KEY_PREFIX)) {
+        node[key.slice(NODE_FILE_KEY_PREFIX.length)] = value;
+      } else if (key !== 'id' && !NODE_EXTENSION_KEYS.has(key)) {
         node[key] = value;
       }
     });
+    const namespace = { ...asRecord(node[NIMBALYST_CANVAS_NAMESPACE]) };
+    for (const [name, key] of Object.entries(NODE_EXTENSION_FIELDS)) {
+      if (!fields.has(key)) continue; // Older rooms still store these in the blob.
+      const value = fields.get(key);
+      if (value === null) delete namespace[name];
+      else namespace[name] = value;
+    }
+    if (Object.keys(namespace).length > 0) {
+      node[NIMBALYST_CANVAS_NAMESPACE] = namespace;
+    } else delete node[NIMBALYST_CANVAS_NAMESPACE];
     entries.push({ node: node as CanvasAnyNode, rank });
   });
 

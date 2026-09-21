@@ -10,12 +10,16 @@
  */
 
 import { store } from '@nimbalyst/runtime/store';
-import { openAICodexAuthVersionAtom } from '../atoms/openAICodexAuth';
+import { openAICodexAuthVersionAtom, openAICodexSandboxStateAtom } from '../atoms/openAICodexAuth';
 
 export function initOpenAICodexAuthListeners(): () => void {
   if (!window.electronAPI) return () => {};
 
-  return window.electronAPI.on('openai-codex:auth-updated', () => {
+  const auth = window.electronAPI.on('openai-codex:auth-updated', () => {
     store.set(openAICodexAuthVersionAtom, (version) => version + 1);
   });
+  const sandbox = window.electronAPI.on('openai-codex:sandbox-updated', state => {
+    store.set(openAICodexSandboxStateAtom, state);
+  });
+  return () => { auth(); sandbox(); };
 }

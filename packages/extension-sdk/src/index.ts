@@ -150,3 +150,6 @@ export type {
   PermissionMode,
   McpToolDefinition,
 } from './agents/index.js';
+
+// Host-owned native screenshots for every built-in and extension editor.
+export { screenshotService } from '@nimbalyst/runtime';

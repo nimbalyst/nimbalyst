@@ -1,3 +1,4 @@
+import { codexSandboxSetupCompleted } from '../../protocols/codexAppServer/windowsSandbox';
 import fs from 'fs/promises';
 import os from 'os';
 import path from 'path';
@@ -1509,8 +1510,10 @@ describe('OpenAICodexProvider', () => {
     expect(cleanupSession).toHaveBeenCalledWith(turn1Session);
   });
 
-  it('reattaches a live Codex thread when Agent-verified is enabled', async () => {
+  it.each(['reviewer', 'roots', 'sandbox'])('reattaches a live Codex thread when %s changes', async change => {
     let classifierEnabled = false;
+    let roots = ['/parent'];
+    OpenAICodexProvider.setAdditionalDirectoriesLoader(() => roots);
     OpenAICodexProvider.setTrustChecker(() => ({
       trusted: true,
       mode: 'bypass-all',
@@ -1565,7 +1568,9 @@ describe('OpenAICodexProvider', () => {
       raw: expect.objectContaining({ agentVerified: false }),
     }));
 
-    classifierEnabled = true;
+    if (change === 'reviewer') classifierEnabled = true;
+    else if (change === 'roots') roots = ['/parent', '/new-worktree'];
+    else codexSandboxSetupCompleted();
     for await (const _chunk of provider.sendMessage(
       'verified turn',
       undefined,
@@ -1580,10 +1585,11 @@ describe('OpenAICodexProvider', () => {
     expect(resumeSession).toHaveBeenCalledWith(
       'thread-permission-change',
       expect.objectContaining({
-        raw: expect.objectContaining({ agentVerified: true }),
+        raw: expect.objectContaining({ agentVerified: classifierEnabled, additionalDirectories: roots }),
       }),
     );
     expect(sendMessage.mock.calls[1]![0]).toBe(secondSession);
+    OpenAICodexProvider.setAdditionalDirectoriesLoader(() => []);
     provider.cleanupSession('session-permission-change');
   });
 

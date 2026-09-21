@@ -1,0 +1,135 @@
+{
+  "events": [
+    {
+      "type": "session.delegation.created",
+      "event_id": "delegation_created_1",
+      "offset_ms": 1800,
+      "delegation": {
+        "type": "delegation",
+        "id": "delegation_1",
+        "target": "responses",
+        "response_id": "resp_1"
+      }
+    },
+    {
+      "type": "response.event",
+      "event_id": "response_created_1",
+      "delegation_id": "delegation_1",
+      "event": {
+        "type": "response.created",
+        "sequence_number": 0,
+        "response": {
+          "id": "resp_1",
+          "object": "response",
+          "status": "in_progress",
+          "output": [],
+          "tools": [],
+          "instructions": null,
+          "usage": null
+        }
+      }
+    },
+    {
+      "type": "response.event",
+      "event_id": "item_added_1",
+      "delegation_id": "delegation_1",
+      "event": {
+        "type": "response.output_item.added",
+        "sequence_number": 1,
+        "output_index": 0,
+        "item": {
+          "type": "function_call",
+          "id": "fc_call_1",
+          "call_id": "call_1",
+          "name": "open_file",
+          "arguments": "",
+          "status": "in_progress"
+        }
+      }
+    },
+    {
+      "type": "response.event",
+      "event_id": "arguments_done_1",
+      "delegation_id": "delegation_1",
+      "event": {
+        "type": "response.function_call_arguments.done",
+        "sequence_number": 4,
+        "item_id": "fc_call_1",
+        "output_index": 0,
+        "arguments": "{\"path\":\"README.md\"}"
+      }
+    },
+    {
+      "type": "response.event",
+      "event_id": "item_done_1",
+      "delegation_id": "delegation_1",
+      "event": {
+        "type": "response.output_item.done",
+        "sequence_number": 5,
+        "output_index": 0,
+        "item": {
+          "type": "function_call",
+          "id": "fc_call_1",
+          "call_id": "call_1",
+          "name": "open_file",
+          "arguments": "{\"path\":\"README.md\"}",
+          "status": "completed"
+        }
+      }
+    },
+    {
+      "type": "response.event",
+      "event_id": "response_completed_1",
+      "delegation_id": "delegation_1",
+      "event": {
+        "type": "response.completed",
+        "sequence_number": 6,
+        "response": {
+          "id": "resp_1",
+          "object": "response",
+          "status": "completed",
+          "output": [],
+          "tools": [],
+          "instructions": null,
+          "usage": {
+            "input_tokens": 120,
+            "output_tokens": 30,
+            "total_tokens": 150
+          }
+        }
+      }
+    },
+    {
+      "type": "session.closed",
+      "event_id": "closed_1",
+      "reason": "connection_lost",
+      "session": {
+        "id": "live_fixture_1",
+        "model": "gpt-live-1",
+        "expires_at": 1789232400,
+        "status": "active",
+        "audio": {
+          "format": {
+            "type": "audio/pcm",
+            "rate": 24000
+          },
+          "output": {
+            "voice": "marin"
+          }
+        },
+        "store": false
+      },
+      "usage": {
+        "seconds": 27
+      }
+    }
+  ],
+  "result": {
+    "identity": {
+      "delegationId": "delegation_1",
+      "responseId": "resp_1",
+      "callId": "call_1"
+    },
+    "output": "{\"opened\":\"README.md\"}"
+  }
+}

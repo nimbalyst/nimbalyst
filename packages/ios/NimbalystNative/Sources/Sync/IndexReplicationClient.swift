@@ -19,6 +19,14 @@ public struct IndexCoverage: Equatable, Sendable {
     /// history" spinner forever with nothing behind it -- the UI can say sync
     /// failed while continuing to show what it has.
     public var hasError: Bool = false
+    public var skippedRowCount: Int = 0
+
+    public var skippedRowsNotice: String? {
+        guard skippedRowCount > 0 else { return nil }
+        let subject = skippedRowCount == 1 ? "session was" : "sessions were"
+        let verb = skippedRowCount == 1 ? "is" : "are"
+        return "\(skippedRowCount) synced \(subject) written with a different sync key and \(verb) not shown here. Re-pair this phone from your computer."
+    }
 
     public enum Compatibility: Sendable, Equatable {
         case unknown
@@ -55,6 +63,8 @@ final class IndexReplicationClient {
     /// How many ancestor hops one navigation may trigger. A cycle or a very deep
     /// chain must not turn a single tap into unbounded fetching.
     static let maxAncestorHops = 5
+
+    var onRequestTimeout: (() -> Void)?
 
     private let logger = Logger(subsystem: "com.nimbalyst.app", category: "IndexReplication")
     private let generation: Int
@@ -155,6 +165,16 @@ final class IndexReplicationClient {
     }
 
     // MARK: - Lifecycle
+
+    var pendingNavigationIds: [String] {
+        var seen = Set<String>()
+        let ids = (lookupContinuation?.requestedIds ?? []) + (inFlight?.lookupSessionIds ?? []) + pendingLookupIds
+        return ids.filter { seen.insert($0).inserted }
+    }
+
+    func restoreNavigation(_ ids: [String]) {
+        pendingLookupIds = Array(ids.suffix(Self.maxPendingLookupIds))
+    }
 
     /// Begin replication for a fresh connection.
     ///
@@ -269,6 +289,7 @@ final class IndexReplicationClient {
             if coverage.compatibility != .v2 { coverage.compatibility = .v2 }
             // A page that applied clears the previous failure.
             coverage.hasError = false
+            coverage.skippedRowCount = min(999_999, max(0, outcome.skippedRowCount))
             if let committedCursor { coverage.lastCommittedRevision = committedCursor }
             if historyComplete { coverage.historyComplete = true }
 
@@ -458,6 +479,7 @@ final class IndexReplicationClient {
         switch outcome.request {
         case .loadCoverage:
             coverageLoaded = true
+            coverage.skippedRowCount = min(999_999, max(0, outcome.skippedRowCount))
             if outcome.failure != nil { coverage.hasError = true }
             coverage.historyComplete = outcome.cursorState.historyComplete
             coverage.lastCommittedRevision = outcome.cursorState.cursor > 0 ? outcome.cursorState.cursor : nil
@@ -479,6 +501,7 @@ final class IndexReplicationClient {
                 coverage.hasError = true
             }
             if outcome.failure == nil {
+                coverage.skippedRowCount = min(999_999, max(0, outcome.skippedRowCount))
                 coverage.historyComplete = outcome.cursorState.historyComplete
                 coverage.lastCommittedRevision = outcome.cursorState.cursor > 0 ? outcome.cursorState.cursor : nil
                 bootstrapRunId = nil
@@ -498,6 +521,7 @@ final class IndexReplicationClient {
 
         case .resetCursor:
             if outcome.failure != nil { coverage.hasError = true }
+            coverage.skippedRowCount = 0
             coverage.historyComplete = false
             coverage.lastCommittedRevision = nil
             startBootstrap()
@@ -549,6 +573,7 @@ final class IndexReplicationClient {
                 if self.coverage.compatibility == .unknown {
                     self.coverage.compatibility = .unsupported
                 }
+                self.onRequestTimeout?()
             }
         }
     }

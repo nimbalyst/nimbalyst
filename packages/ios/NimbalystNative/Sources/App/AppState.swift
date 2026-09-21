@@ -60,9 +60,8 @@ public final class AppState: ObservableObject {
     #if os(iOS)
     @Published public private(set) var voiceAgent: VoiceAgent?
 
-    /// Session the UI should navigate to because the voice agent just created it
-    /// on this device. Observed by the navigation views (iPhone stack / iPad
-    /// split) to open the new session. Set back to nil by the view once handled.
+    /// Session to open after creation on this device, through voice or the UI.
+    /// Cleared by the navigation view once handled.
     @Published public var voiceNavigationRequest: String?
     #endif
 
@@ -72,6 +71,11 @@ public final class AppState: ObservableObject {
     private var cancellables = Set<AnyCancellable>()
     private var managerCancellables = Set<AnyCancellable>()
     private var jwtRefreshTimer: Timer?
+    private var networkObserver: SyncNetworkObserver?
+    private var lastCountedRefreshFailure: Date?
+    private lazy var recovery = SyncRecoveryCoordinator { [weak self] in
+        await self?.performSyncRecovery() ?? false
+    }
 
     // MARK: - Sync auth-degraded tracking
 
@@ -126,11 +130,15 @@ public final class AppState: ObservableObject {
     }
 
     /// Initialize with pre-built managers (for testing and previews).
-    public init(databaseManager: DatabaseManager, documentSyncManager: DocumentSyncManager? = nil) {
+    public init(databaseManager: DatabaseManager, documentSyncManager: DocumentSyncManager? = nil, syncManager: SyncManager? = nil) {
         self.documentSyncManager = documentSyncManager
         self.databaseManager = databaseManager
+        self.syncManager = syncManager
         self.indexLoadState = .loaded
         self.isPaired = true
+        #if os(iOS)
+        if let syncManager { observeSessionCreation(syncManager) }
+        #endif
         observeAuth()
     }
 
@@ -228,6 +236,7 @@ public final class AppState: ObservableObject {
     /// what the Settings "Sign Out" button does inline.
     public func signOutForAuthRecovery() {
         logger.info("signOutForAuthRecovery invoked")
+        recovery.cancel()
         syncManager?.disconnect()
         authManager.logout()
         // clearSyncAuthDegradedState() runs via the $isAuthenticated observer
@@ -236,7 +245,15 @@ public final class AppState: ObservableObject {
 
     /// Request a full index sync from the server.
     public func requestSync() {
-        syncManager?.requestFullSync()
+        recovery.request(reason: "manual")
+    }
+
+    /// Only real background transitions require a fresh connection. Inactive
+    /// system overlays do not tear down a healthy session.
+    public func setAppInForeground(_ foreground: Bool) {
+        syncManager?.setAppInForeground(foreground, recover: false)
+        documentSyncManager?.setAppInForeground(foreground)
+        recovery.setForeground(foreground)
     }
 
     // MARK: - Auth Observation
@@ -301,37 +318,20 @@ public final class AppState: ObservableObject {
     /// Connect to the sync server if both paired and authenticated.
     /// If the JWT is near expiration, refreshes it first before connecting.
     private func connectIfReady() {
-        guard isPaired else {
-            logger.debug("connectIfReady: not paired")
-            return
-        }
-        guard authManager.isAuthenticated else {
-            logger.debug("connectIfReady: not authenticated")
-            return
-        }
-        guard let jwt = authManager.sessionJwt else {
-            logger.warning("connectIfReady: no JWT")
-            return
-        }
-        guard let authUserId = authManager.authUserId else {
-            logger.warning("connectIfReady: no authUserId")
-            return
-        }
-        guard let sync = syncManager else {
-            logger.warning("connectIfReady: no syncManager")
-            return
-        }
+        recovery.configure(identity: KeychainManager.getActiveAccount()?.id)
+        recovery.request(reason: "credentials")
+    }
 
-        // Check if the JWT is expired or about to expire (within 60s).
-        // Stytch JWTs have a 5-minute lifetime, and the auth callback JWT
-        // may already be stale by the time pairing + auth completes.
-        if isJWTExpiringSoon(jwt) {
-            logger.info("connectIfReady: JWT expiring soon, refreshing first")
-            Task {
-                await refreshJWT()
-            }
-            return
-        }
+    private func performSyncRecovery() async -> Bool {
+        guard isPaired, authManager.isAuthenticated,
+              let accountId = KeychainManager.getActiveAccount()?.id,
+              let sync = syncManager else { return false }
+        sync.prepareForRecovery()
+        guard let jwt = await SyncCredentials.freshToken(
+            read: { self.authManager.sessionJwt },
+            isCurrent: { accountId == KeychainManager.getActiveAccount()?.id && self.syncManager === sync && self.authManager.isAuthenticated },
+            refresh: { await self.refreshJWT() }
+        ), let authUserId = authManager.authUserId else { return false }
 
         // Get orgId for room routing. Prefer pairing's personalOrgId (from desktop QR v5+)
         // over the auth callback's orgId, because the desktop uses personalOrgId for its
@@ -346,7 +346,7 @@ public final class AppState: ObservableObject {
         } else if let stored = authManager.orgId {
             orgId = stored
             effectiveAuthUserId = authUserId
-        } else if let extracted = extractOrgIdFromJWT(jwt) {
+        } else if let extracted = SyncCredentials.orgId(from: jwt) {
             orgId = extracted
             effectiveAuthUserId = authUserId
             // Backfill keychain so we don't need to extract again
@@ -361,57 +361,17 @@ public final class AppState: ObservableObject {
             logger.info("Backfilled orgId from JWT: \(extracted)")
         } else {
             logger.warning("connectIfReady: no orgId in keychain or JWT, re-login required")
-            return
+            return false
         }
 
         logger.info("Connecting to sync server")
         sync.connect(authToken: jwt, authUserId: effectiveAuthUserId, orgId: orgId)
 
         // Pass auth credentials to DocumentSyncManager for project room connections
-        documentSyncManager?.setAuth(authToken: jwt, authUserId: effectiveAuthUserId, orgId: orgId)
+        documentSyncManager?.setAuth(authToken: jwt, authUserId: effectiveAuthUserId, orgId: orgId, reconnect: true)
 
         startJWTRefreshTimer()
-    }
-
-    /// Check if a JWT's exp claim is within `margin` seconds of now.
-    private func isJWTExpiringSoon(_ jwt: String, margin: TimeInterval = 60) -> Bool {
-        let parts = jwt.split(separator: ".")
-        guard parts.count == 3 else { return true }
-
-        // Decode the payload (base64url -> base64 -> Data -> JSON)
-        var base64 = String(parts[1])
-            .replacingOccurrences(of: "-", with: "+")
-            .replacingOccurrences(of: "_", with: "/")
-        let pad = base64.count % 4
-        if pad > 0 { base64 += String(repeating: "=", count: 4 - pad) }
-
-        guard let data = Data(base64Encoded: base64),
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let exp = json["exp"] as? Double else {
-            return true // Can't parse, treat as expired
-        }
-
-        return Date(timeIntervalSince1970: exp).timeIntervalSinceNow < margin
-    }
-
-    /// Extract the organization_id from a B2B JWT's `https://stytch.com/organization` claim.
-    private func extractOrgIdFromJWT(_ jwt: String) -> String? {
-        let parts = jwt.split(separator: ".")
-        guard parts.count == 3 else { return nil }
-
-        var base64 = String(parts[1])
-            .replacingOccurrences(of: "-", with: "+")
-            .replacingOccurrences(of: "_", with: "/")
-        let pad = base64.count % 4
-        if pad > 0 { base64 += String(repeating: "=", count: 4 - pad) }
-
-        guard let data = Data(base64Encoded: base64),
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let orgClaim = json["https://stytch.com/organization"] as? [String: Any],
-              let orgId = orgClaim["organization_id"] as? String else {
-            return nil
-        }
-        return orgId
+        return await sync.waitForConnection()
     }
 
     // MARK: - JWT Refresh
@@ -420,24 +380,23 @@ public final class AppState: ObservableObject {
     private func startJWTRefreshTimer() {
         jwtRefreshTimer?.invalidate()
         jwtRefreshTimer = Timer.scheduledTimer(withTimeInterval: 4 * 60, repeats: true) { [weak self] _ in
-            Task { @MainActor in
-                await self?.refreshJWT()
-            }
+            Task { @MainActor in self?.recovery.request(reason: "credential timer") }
         }
     }
 
-    private func refreshJWT() async {
-        guard let serverUrl = KeychainManager.getServerUrl() else { return }
+    private func refreshJWT() async -> Bool {
+        guard let serverUrl = KeychainManager.getServerUrl() else { return false }
         let result = await authManager.refreshSession(serverUrl: serverUrl)
+        guard !Task.isCancelled else { return false }
         switch result {
         case .success:
             consecutiveRefreshFailures = 0
-            // Reconnect with fresh JWT
-            connectIfReady()
+            lastCountedRefreshFailure = nil
+            return true
         case .accountChanged:
             // A switch already rebuilt (or will rebuild) the selected account.
             // The old in-flight refresh must not affect its failure counters.
-            return
+            return false
         case .sessionExpired:
             // Session is dead -- log the user out so they see the login screen
             // with an explanation of what happened.
@@ -449,6 +408,10 @@ public final class AppState: ObservableObject {
             // Track consecutive failures so a sustained outage (like Stytch's
             // 2026-05-20 JWKS rotation, which returned 403) escalates to a
             // logout + login prompt instead of retrying forever in silence.
+            // Lifecycle/network retries must not turn the four-minute auth
+            // escalation cadence into a rapid logout during a transient outage.
+            if let last = lastCountedRefreshFailure, Date().timeIntervalSince(last) < 4 * 60 { return false }
+            lastCountedRefreshFailure = Date()
             consecutiveRefreshFailures += 1
             let count = consecutiveRefreshFailures
             logger.warning("JWT refresh failed (transient, \(count) consecutive)")
@@ -456,13 +419,14 @@ public final class AppState: ObservableObject {
             if count >= AppState.refreshFailureEscalationThreshold {
                 logger.error("JWT refresh has failed \(count) consecutive times; escalating to sessionExpired")
                 handleSessionExpired(reason: "Your session could not be refreshed. Please sign in again.")
-                return
+                return false
             }
             if count >= AppState.refreshFailureBannerThreshold && !syncAuthDegraded {
                 logger.warning("Surfacing degraded banner after \(count) consecutive refresh failures")
                 syncAuthDegraded = true
             }
         }
+        return false
     }
 
     /// Tear down the JWT refresh timer, disconnect sync, log the user out,
@@ -472,6 +436,7 @@ public final class AppState: ObservableObject {
     private func handleSessionExpired(reason: String) {
         jwtRefreshTimer?.invalidate()
         jwtRefreshTimer = nil
+        recovery.cancel()
         syncManager?.disconnect()
         authManager.logout()
         authManager.authError = reason
@@ -585,6 +550,12 @@ public final class AppState: ObservableObject {
 
         let sync = SyncManager(crypto: crypto, database: database, serverUrl: serverUrl, userId: keyUserId)
         syncManager = sync
+        sync.setAppInForeground(recovery.isForeground, recover: false)
+        sync.onReconnectNeeded = { [weak self] in self?.recovery.connectionFailed() }
+        recovery.configure(identity: account.id)
+        if networkObserver == nil {
+            networkObserver = SyncNetworkObserver { [weak self] in self?.recovery.request(reason: "network") }
+        }
         sync.$indexLoadState
             .sink { [weak self] state in self?.indexLoadState = state }
             .store(in: &managerCancellables)
@@ -592,6 +563,7 @@ public final class AppState: ObservableObject {
         // Initialize DocumentSyncManager for project file sync
         let docSync = DocumentSyncManager(crypto: crypto, database: database, serverUrl: serverUrl, userId: keyUserId)
         documentSyncManager = docSync
+        docSync.setAppInForeground(recovery.isForeground)
 
         // Observe sync connection state
         sync.$isConnected
@@ -634,17 +606,9 @@ public final class AppState: ObservableObject {
             }
         }
 
-        // When the voice agent creates a session, switch this device's UI to it.
-        // Only the device that issued the request navigates (matched by requestId);
-        // other paired devices just see the session appear in their list.
-        sync.onSessionCreated = { [weak self, weak voice] requestId, sessionId in
-            Task { @MainActor in
-                guard let self, let voice,
-                      voice.consumePendingCreateSession(requestId: requestId) else { return }
-                voice.activeSessionId = sessionId
-                await self.navigateWhenSessionAvailable(sessionId)
-            }
-        }
+        // SyncManager only delivers successes for this device's pending requests.
+        // Open sessions created by the toolbar as well as those created by voice.
+        observeSessionCreation(sync)
 
         // Wire settings sync to update VoiceAgent and model list when settings arrive from desktop
         sync.onSettingsSynced = { [weak self, weak voice] settings in
@@ -673,6 +637,8 @@ public final class AppState: ObservableObject {
     /// another account. Removing the manager subscriptions is important: an old
     /// SyncManager publishing after a switch must not mutate the new UI scope.
     private func tearDownManagers() {
+        recovery.cancel()
+        lastCountedRefreshFailure = nil
         jwtRefreshTimer?.invalidate()
         jwtRefreshTimer = nil
         degradedBannerCheckTimer?.invalidate()
@@ -706,31 +672,6 @@ public final class AppState: ObservableObject {
         voice.configure(database: database, syncManager: sync, projectId: projectId)
         #endif
     }
-
-    #if os(iOS)
-    /// Publish a navigation request to the just-created session once its row has
-    /// synced into the local database. The `createSessionResponseBroadcast` can
-    /// arrive before the session's `indexBroadcast`, so we briefly wait for the
-    /// row rather than navigate to a session the views can't yet resolve.
-    @MainActor
-    private func navigateWhenSessionAvailable(_ sessionId: String) async {
-        guard let requestedDatabase = databaseManager else {
-            voiceNavigationRequest = sessionId
-            return
-        }
-        syncManager?.requestSessionIndexLookup(sessionId: sessionId)
-        for _ in 0..<25 { // ~5s max (25 * 200ms)
-            guard !Task.isCancelled, databaseManager === requestedDatabase else { return }
-            if let db = databaseManager, (try? db.session(byId: sessionId)) != nil {
-                voiceNavigationRequest = sessionId
-                return
-            }
-            try? await Task.sleep(nanoseconds: 200_000_000)
-        }
-        // Fall back: navigate anyway; the view retries the row lookup itself.
-        voiceNavigationRequest = sessionId
-    }
-    #endif
 
     // MARK: - Screenshot Mode
 

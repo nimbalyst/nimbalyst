@@ -1,5 +1,5 @@
-import {workspaceFileLinksRevisionAtom} from '../../../store/atoms/sessionFiles';
 // @vitest-environment jsdom
+import { fileSessionLinkKey, fileSessionLinksRevisionAtom } from '../../../store/atoms/fileSessionLinks';
 /**
  * The header-bar session control: a chip for the last session that touched the
  * file (caret opens the menu, the chip itself opens the session), degrading to
@@ -49,16 +49,48 @@ function renderControl(options: { actions?: DocumentSessionActions; registryTitl
 }
 
 beforeEach(() => {
+  vi.stubGlobal('IntersectionObserver', undefined);
   (window as unknown as { electronAPI: unknown }).electronAPI = { invoke };
 });
 
 afterEach(() => {
   cleanup();
+  vi.unstubAllGlobals();
   invoke.mockReset();
   invoke.mockResolvedValue([]);
 });
 
 describe('DocumentSessionControl', () => {
+  it('shares concurrent lookups for the same file', async () => {
+    let finish!: (rows: FileSession[]) => void;
+    invoke.mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+    renderControl();
+    renderControl();
+    await waitFor(() => expect(invoke).toHaveBeenCalledTimes(1));
+    await act(async () => finish([]));
+  });
+
+  it('defers a hidden header until it becomes visible', async () => {
+    let visibility!: IntersectionObserverCallback;
+    const disconnect = vi.fn();
+    vi.stubGlobal('IntersectionObserver', class {
+      constructor(callback: IntersectionObserverCallback) { visibility = callback; }
+      observe() {}
+      disconnect = disconnect;
+    });
+    try {
+      renderControl();
+      await act(async () => {});
+      expect(invoke).not.toHaveBeenCalled();
+      act(() => visibility([{ isIntersecting: true } as IntersectionObserverEntry], {} as IntersectionObserver));
+      await waitFor(() => expect(invoke).toHaveBeenCalledTimes(1));
+    } finally {
+      cleanup();
+      vi.unstubAllGlobals();
+    }
+    expect(disconnect).toHaveBeenCalledOnce();
+  });
+
   it('shows the sparkle icon, not a chip, when no session has touched the file', async () => {
     renderControl();
 
@@ -122,8 +154,10 @@ describe('DocumentSessionControl', () => {
 it('refreshes an already-open file after link notifications and orders by file edit time',async()=>{
   const store=createStore();renderControl({store});
   await waitFor(()=>expect(invoke).toHaveBeenCalledTimes(1));
+  await act(async()=>store.set(fileSessionLinksRevisionAtom(fileSessionLinkKey(WORKSPACE,`${WORKSPACE}/unrelated.md`)),1));
+  expect(invoke).toHaveBeenCalledTimes(1);
   invoke.mockResolvedValue([fileSession({id:'older-edit',updatedAt:999,lastFileEditAt:20}),fileSession({id:'new-edit',updatedAt:1,lastFileEditAt:30,fileAttribution:'inferred'})]);
-  act(()=>store.set(workspaceFileLinksRevisionAtom(WORKSPACE),1));
+  act(()=>store.set(fileSessionLinksRevisionAtom(fileSessionLinkKey(WORKSPACE,DOC)),1));
   expect((await screen.findByTestId('document-session-chip')).getAttribute('data-session-id')).toBe('new-edit');
   fireEvent.click(screen.getByTestId('document-session-caret'));
   expect(await screen.findByText('Inferred edit')).toBeTruthy();

@@ -43,7 +43,6 @@ enum IndexReplicationPageError: Error, Equatable, Sendable {
     case invalidCursor(Int)
     case missingPayload(entity: String, id: String)
     case unexpectedPayload(entity: String, id: String)
-    case decryptionFailed(entity: String, id: String)
 }
 
 /// A page that passed validation and decryption, ready to apply.
@@ -137,6 +136,10 @@ enum IndexReplicationPageValidator {
             let payloadCount = [change.session != nil, change.project != nil, change.file != nil]
                 .filter { $0 }.count
 
+            // Even unreadable rows prove coverage and carry ordering, never deletion evidence.
+            seen.append(IndexReplicationSeenKey(entity: entity, id: change.id))
+            highestRevision = max(highestRevision ?? 0, change.revision)
+            let unreadable = IndexWriteOperation.unreadable(entity: entity, id: change.id, revision: change.revision)
             if change.deleted {
                 guard payloadCount == 0 else {
                     return .failure(.unexpectedPayload(entity: change.entity, id: change.id))
@@ -150,7 +153,8 @@ enum IndexReplicationPageValidator {
                         encryptedBase64: change.id,
                         ivBase64: CryptoManager.projectIdIvBase64
                     ) else {
-                        return .failure(.decryptionFailed(entity: change.entity, id: change.id))
+                        operations.append(unreadable)
+                        continue
                     }
                     localId = decrypted
                 }
@@ -170,7 +174,8 @@ enum IndexReplicationPageValidator {
                         return .failure(.missingPayload(entity: change.entity, id: change.id))
                     }
                     guard let decrypted = IndexEntryDecryptor.decrypt(session: entry, crypto: crypto, policy: .strict) else {
-                        return .failure(.decryptionFailed(entity: change.entity, id: change.id))
+                        operations.append(unreadable)
+                        continue
                     }
                     operations.append(.session(decrypted, revision: change.revision))
                 case .project:
@@ -181,7 +186,8 @@ enum IndexReplicationPageValidator {
                         return .failure(.missingPayload(entity: change.entity, id: change.id))
                     }
                     guard let decrypted = IndexEntryDecryptor.decrypt(project: entry, crypto: crypto, policy: .strict) else {
-                        return .failure(.decryptionFailed(entity: change.entity, id: change.id))
+                        operations.append(unreadable)
+                        continue
                     }
                     operations.append(.project(decrypted, revision: change.revision))
                 case .file:
@@ -189,14 +195,12 @@ enum IndexReplicationPageValidator {
                         return .failure(.missingPayload(entity: change.entity, id: change.id))
                     }
                     guard let decrypted = decryptFile(entry, crypto: crypto) else {
-                        return .failure(.decryptionFailed(entity: change.entity, id: change.id))
+                        operations.append(unreadable)
+                        continue
                     }
                     operations.append(.file(decrypted, revision: change.revision))
                 }
             }
-            // Coverage is keyed the way the server keys it.
-            seen.append(IndexReplicationSeenKey(entity: entity, id: change.id))
-            highestRevision = max(highestRevision ?? 0, change.revision)
         }
 
         // Checked after the entries so a page with a bad entry reports the

@@ -1,3 +1,5 @@
+import { reservePromptAnswer } from './PromptAnswerReservation';
+import { warnIfUnpublished } from '@nimbalyst/runtime/sync/pushOutcome';
 import { sessionInbox } from './sessionInboxService';
 import { resolveProviderApiKey } from './resolveProviderApiKey';
 import { SAVED_CREDENTIAL, withoutProviderConfigCredentials } from '../../../shared/providerCredentials';
@@ -541,6 +543,11 @@ export class AIService {
     const session = await AISessionsRepository.get(sessionId);
     if (!session) {
       return { success: false, error: 'Session not found' };
+    }
+
+    if (promptType === 'permission_request' || promptType === 'ask_user_question_request') {
+      const answer = promptType === 'permission_request' ? response : { answers: response.answers ?? response, cancelled: response.cancelled === true };
+      if (!reservePromptAnswer(sessionId, promptType === 'permission_request' ? 'permission' : 'question', promptId, answer)) return { success: false, error: 'This prompt was already answered or delivery is unknown.' };
     }
 
     let responseContent: Record<string, unknown>;
@@ -1187,15 +1194,20 @@ export class AIService {
             // Push context usage to mobile sync
             const syncProvider = getSyncProvider();
             if (syncProvider) {
-              syncProvider.pushChange(session.id, {
-                type: 'metadata_updated',
-                metadata: {
-                  currentContext: {
-                    tokens: parsedUsage.totalTokens,
-                    contextWindow: parsedUsage.contextWindow,
+              try {
+                const outcome = await syncProvider.pushChange(session.id, {
+                  type: 'metadata_updated',
+                  metadata: {
+                    currentContext: {
+                      tokens: parsedUsage.totalTokens,
+                      contextWindow: parsedUsage.contextWindow,
+                    },
                   },
-                } as any,
-              });
+                });
+                warnIfUnpublished(message => logger.main.warn(message), session.id, '[AIService] Failed to publish sync change', outcome);
+              } catch (error) {
+                logger.main.warn(`[AIService] Failed to publish sync change for session ${session.id}:`, error);
+              }
             }
 
             // Also send IPC event to update UI immediately

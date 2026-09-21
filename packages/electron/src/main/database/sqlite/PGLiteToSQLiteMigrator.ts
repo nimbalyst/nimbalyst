@@ -133,10 +133,7 @@ export interface MigrateOptions {
 }
 
 /**
- * Table copy order. Foreign keys are OFF during copy so this only matters for
- * humans reading progress and for deterministic verification ordering. The
- * order roughly follows dependency depth (parents before children) so the
- * progress UI tells a coherent story.
+ * Copy parents before children for readable progress; foreign keys are OFF during copy.
  *
  * `ai_transcript_events` is absent because it no longer exists on either
  * side (Phase 4 of canonical-transcript-deprecation). Canonical events live
@@ -146,8 +143,10 @@ export interface MigrateOptions {
 const COPY_TABLES: readonly string[] = [
   'worktrees',
   'ai_sessions',
+  'external_session_cursors',
   'document_history',
   'session_files',
+  'shell_tracking_coverage',
   'ai_agent_messages',
   'ai_tool_call_file_edits',
   'tool_usage_counters',
@@ -203,7 +202,8 @@ const CURSOR_COLUMNS: Record<string, string> = {
   // Text-ID and composite-PK tables intentionally fall back to safe re-copy:
   // worktrees, ai_sessions, session_files, tracker_items, queued_prompts,
   // ai_session_wakeups, super_loops, super_iterations, tracker_body_cache,
-  // tracker_transactions, collab_local_origins.
+  // tracker_transactions, collab_local_origins, external_session_cursors.
+  // External per-file positions mutate/reset in place, so catch-up must re-copy them.
 };
 
 // Full copies can page TEXT keys; adoption must still re-copy those tables.
@@ -211,6 +211,7 @@ const FULL_COPY_COLUMNS: Record<string, string> = {
   ...CURSOR_COLUMNS,
   ai_sessions: 'id',
   session_files: 'id',
+  shell_tracking_coverage: 'session_id',
 };
 
 const DEFAULT_BATCH_SIZE = 5000;

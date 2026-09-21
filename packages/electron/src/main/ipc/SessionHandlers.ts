@@ -20,7 +20,7 @@ import type { SessionCreateResult } from '../../shared/ipc/types';
 import { AnalyticsService } from '../services/analytics/AnalyticsService';
 import { trackCreateAiSession } from '../services/analytics/sessionLaunchAnalytics';
 import { SessionCommitService } from '../services/SessionCommitService';
-import { findSessionAttributionForFile } from '../services/sessionFilesByPath';
+import { getSessionsForFile } from '../services/fileSessionLookup';
 import { normalizeSessionPhaseMetadataUpdate } from '../services/session/sessionPhaseTransition';
 import { destroyProviderForArchivedSession } from '../services/ai/archiveSessionProviderLifecycle';
 import { resolveSessionModelSelection } from '../services/ai/sessionModelSelection';
@@ -879,70 +879,7 @@ export async function registerSessionHandlers() {
     // Get sessions by file path (cross-worktree aware)
     safeHandle('sessions:get-by-file', async (event, workspaceId: string, filePath: string) => {
         try {
-            const { database } = await import('../database/PGLiteDatabaseWorker');
-            const { resolveProjectPath, isWorktreePath } = await import('../utils/workspaceDetection');
-
-            // Compute relative path for cross-workspace matching
-            const relativePath = filePath.startsWith(workspaceId)
-                ? filePath.slice(workspaceId.length) // includes leading /
-                : null;
-
-            const projectPath = resolveProjectPath(workspaceId);
-
-            const fileSessions = await findSessionAttributionForFile(database, {
-                workspaceId,
-                projectPath,
-                relativePath,
-                filePath,
-            });
-
-            const sessionIds = fileSessions.map(s => s.id);
-            const fileAttribution = new Map(fileSessions.map(s => [s.id, s]));
-            if (sessionIds.length === 0) {
-                return [];
-            }
-
-            // Get list entries with messageCount (only available for current workspace sessions)
-            const listEntries = await AISessionsRepository.list(workspaceId);
-            const entriesMap = new Map(listEntries.map(entry => [entry.id, entry]));
-
-            // Use batch query instead of N individual get() calls
-            const sessionsData = await AISessionsRepository.getMany(sessionIds);
-
-            // Map and enrich with entry data
-            // Sort: current workspace sessions first, then others by updatedAt desc
-            const sessions = sessionsData
-                .map(session => {
-                    const entry = entriesMap.get(session.id);
-                    const sessionWorkspaceId = session.workspacePath || '';
-                    // Worktree-aware matching: when viewing from a worktree, match
-                    // sessions whose worktreePath equals this worktree. When viewing
-                    // from the main project, match sessions with no worktree association.
-                    const isCurrentWs = isWorktreePath(workspaceId)
-                        ? session.worktreePath === workspaceId
-                        : !session.worktreePath && sessionWorkspaceId === workspaceId;
-                    return {
-                        id: session.id,
-                        title: session.title || 'Untitled Session',
-                        provider: session.provider,
-                        model: session.model,
-                        createdAt: session.createdAt,
-                        updatedAt: session.updatedAt,
-                        messageCount: entry?.messageCount || 0,
-                        worktreeId: (session as any).worktreeId || null,
-                        isCurrentWorkspace: isCurrentWs,
-                        ...fileAttribution.get(session.id),
-                    };
-                })
-                .sort((a, b) => {
-                    // Current workspace sessions first
-                    if (a.isCurrentWorkspace !== b.isCurrentWorkspace) {
-                        return a.isCurrentWorkspace ? -1 : 1;
-                    }
-                    return (b.updatedAt || 0) - (a.updatedAt || 0);
-                });
-
-            return sessions;
+            return await getSessionsForFile(database, AISessionsRepository, workspaceId, filePath);
         } catch (error) {
             console.error('[SessionHandlers] Error getting sessions by file:', error);
             return [];

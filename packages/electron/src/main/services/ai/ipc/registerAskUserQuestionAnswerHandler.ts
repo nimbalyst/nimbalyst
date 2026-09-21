@@ -1,3 +1,4 @@
+import { reservePromptAnswer } from "../PromptAnswerReservation";
 import { ipcMain } from "electron";
 import { AISessionsRepository } from "@nimbalyst/runtime/storage/repositories/AISessionsRepository";
 import {
@@ -69,6 +70,8 @@ export function registerAskUserQuestionAnswerHandler(
           respondedBy: "desktop",
         });
       }
+
+      if (!reservePromptAnswer(resolvedSessionId, "question", questionId, { answers })) return { success: false, error: "Question already answered or delivery is unknown." };
 
       // External/agentless providers (e.g. claude-code-cli) have NO in-process
       // provider instance holding the pending question — the MCP server handler is

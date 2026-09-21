@@ -1,3 +1,4 @@
+// @vitest-environment node
 import {setCodexShellTrackingHost} from '../codexAppServer/shellTracking';
 // Unit tests for CodexAppServerProtocol against a mock JSON-RPC peer.
 //
@@ -66,6 +67,12 @@ class FakeChildProcess extends EventEmitter {
 
   /** Push a server -> client line. */
   emitLine(msg: unknown): void {
+    // Model the real server's effective-policy response for ordinary fixtures.
+    const frame = msg as any;
+    if (frame.result?.thread && !('sandbox' in frame.result)) {
+      const request = this.writtenLines.find((line: any) => line.id === frame.id) as any;
+      frame.result.sandbox = { type: request?.params?.sandbox === 'danger-full-access' ? 'dangerFullAccess' : 'workspaceWrite' };
+    }
     this.stdout.write(JSON.stringify(msg) + '\n');
   }
 }
@@ -141,8 +148,8 @@ describe('CodexAppServerProtocol', () => {
   });
 
   it.each(['start','resume'])('binds host hooks to %s and trusts only the exact session hook hashes',async(kind)=>{
-    const dispose=vi.fn(),endTurn=vi.fn();
-    const host=vi.fn(async()=>({command:'owned-hook',env:{NIMBALYST_SHELL_HOOK_URL:'http://fixture'},dispose,endTurn}));setCodexShellTrackingHost(host);
+    const dispose=vi.fn(),endTurn=vi.fn(),toolCompleted=vi.fn();
+    const host=vi.fn(async()=>({command:'owned-hook',env:{NIMBALYST_SHELL_HOOK_URL:'http://fixture'},dispose,endTurn,toolCompleted}));setCodexShellTrackingHost(host);
     const protocol=new CodexAppServerProtocol();const options={workspacePath:'/tmp/ws',raw:{nimbalystSessionId:'owner'}};
     const promise=kind==='start'?protocol.createSession(options):protocol.resumeSession('thread-hook',options);
     const init=await nextWrittenMatching(child,'initialize');child.emitLine({id:init.id,result:{}});
@@ -155,8 +162,48 @@ describe('CodexAppServerProtocol', () => {
     expect(host).toHaveBeenCalledWith('owner','/tmp/ws');
     expect(spawnMock.mock.calls[0][2].env.NIMBALYST_SHELL_HOOK_URL).toBe('http://fixture');
     child.emitLine({id:request.id,result:{thread:{id:'thread-hook'}}});const session=await promise;
+    // Failed MCP tools omit PostToolUse. Terminal notifications must retire the
+    // window even without an active sendMessage iterator; yielded shells stay open.
+    const completed = (threadId: string, item: Record<string, unknown>) =>
+      child.emitLine({method:'item/completed',params:{threadId,turnId:'t',item}});
+    completed('another-thread',{type:'mcpToolCall',id:'foreign',status:'failed'});
+    completed('thread-hook',{type:'commandExecution',id:'running',status:'completed',exitCode:null});
+    completed('thread-hook',{type:'mcpToolCall',id:'pending',status:'inProgress'});
+    expect(toolCompleted).not.toHaveBeenCalled();
+    completed('thread-hook',{type:'mcpToolCall',id:'failed-lookup',status:'failed'});
+    completed('thread-hook',{type:'fileChange',id:'failed-patch',status:'failed'});
+    completed('thread-hook',{type:'commandExecution',id:'exited-shell',status:'completed',exitCode:0});
+    expect(toolCompleted.mock.calls).toEqual([['failed-lookup'],['failed-patch'],['exited-shell']]);
     child.emitLine({method:'turn/completed',params:{threadId:'thread-hook',turn:{id:'t',status:'completed'}}});expect(endTurn).toHaveBeenCalled();
     protocol.cleanupSession(session);expect(dispose).toHaveBeenCalled();
+  });
+
+  it.each(['start', 'resume'])('preserves authorized roots on %s', async (kind) => {
+    const protocol = new CodexAppServerProtocol();
+    const options = { workspacePath: '/workspace', raw: { additionalDirectories: ['/parent', '/parent'], codexConfigOverrides: { 'sandbox_workspace_write.network_access': true } } };
+    const pending = kind === 'start' ? protocol.createSession(options) : protocol.resumeSession('existing', options);
+    const init = await nextWrittenMatching(child, 'initialize');
+    child.emitLine({ id: init.id, result: {} });
+    const request = await nextWrittenMatching(child, 'thread/' + kind);
+    child.emitLine({ id: request.id, result: { thread: { id: 'existing' }, sandbox: { type: 'workspaceWrite', writableRoots: ['/parent'] } } });
+    const session = await pending;
+    protocol.cleanupSession(session);
+    expect((request.params as any).config).toMatchObject({ 'sandbox_workspace_write.writable_roots': ['/parent'], 'sandbox_workspace_write.network_access': true });
+    expect((request.params as any).config).not.toHaveProperty('additional_writable_roots');
+  });
+
+  it.each(['start', 'resume'])('rejects a read-only downgrade on %s before any turn', async (kind) => {
+    const protocol = new CodexAppServerProtocol();
+    const options = { workspacePath: '/workspace' };
+    const pending = kind === 'start' ? protocol.createSession(options) : protocol.resumeSession('existing', options);
+    const rejected = expect(pending).rejects.toThrow(/read.only/i);
+    const init = await nextWrittenMatching(child, 'initialize');
+    child.emitLine({ id: init.id, result: {} });
+    const request = await nextWrittenMatching(child, 'thread/' + kind);
+    child.emitLine({ id: request.id, result: { thread: { id: 'existing' }, sandbox: { type: 'readOnly' } } });
+    await rejected;
+    expect(child.killed).toBe(true);
+    expect(child.writtenLines.some((line: any) => line.method === 'turn/start')).toBe(false);
   });
 
   it('spawns the codex binary, completes the initialize handshake, and starts a thread', async () => {
@@ -614,6 +661,48 @@ describe('CodexAppServerProtocol', () => {
 
     const errorEvent = events.find((e) => e.type === 'error');
     expect(errorEvent?.error).toContain('model unavailable');
+
+    protocol.cleanupSession(session);
+  });
+
+  it('keeps streaming after a retryable error until the turn completes (#1523)', async () => {
+    const protocol = new CodexAppServerProtocol();
+    const sessionPromise = protocol.createSession({ workspacePath: '/tmp/ws' });
+    const initReq = await nextWrittenMatching(child, 'initialize');
+    child.emitLine({ id: initReq.id, result: { codexHome: '/fake', platformFamily: 'unix', platformOs: 'macos', userAgent: 'fake/0' } });
+    const startReq = await nextWrittenMatching(child, 'thread/start');
+    child.emitLine({ id: startReq.id, result: { thread: { id: 't-1' } } });
+    const session = await sessionPromise;
+
+    const events: ProtocolEvent[] = [];
+    const collector = (async () => {
+      for await (const ev of protocol.sendMessage(session, { content: 'recover please' })) {
+        events.push(ev);
+      }
+    })();
+
+    const turnReq = await nextWrittenMatching(child, 'turn/start');
+    child.emitLine({ id: turnReq.id, result: { turn: { id: 'turn-1', items: [], status: 'inProgress' } } });
+    child.emitLine({
+      method: 'error',
+      params: {
+        threadId: 't-1',
+        turnId: 'turn-1',
+        error: { message: 'Reconnecting... 2/5' },
+        willRetry: true,
+      },
+    });
+    child.emitLine({
+      method: 'item/agentMessage/delta',
+      params: { threadId: 't-1', turnId: 'turn-1', itemId: 'msg-1', delta: 'Recovered' },
+    });
+    child.emitLine({ method: 'turn/completed', params: { threadId: 't-1', turn: { id: 'turn-1', status: 'completed' } } });
+
+    await collector;
+
+    expect(events.some((event) => event.type === 'error')).toBe(false);
+    expect(events).toContainEqual(expect.objectContaining({ type: 'text', content: 'Recovered' }));
+    expect(events).toContainEqual(expect.objectContaining({ type: 'complete', content: 'Recovered' }));
 
     protocol.cleanupSession(session);
   });

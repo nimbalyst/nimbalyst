@@ -29,6 +29,7 @@ import {
 import {
   CANVAS_EXTRAS_NAMESPACE,
   CANVAS_EXTRAS_TOP_LEVEL,
+  canvasNodeFields,
   getCanvasYEdges,
   getCanvasYExtras,
   getCanvasYMeta,
@@ -363,6 +364,10 @@ function patchEntityCollection<T extends CanvasEntity>(
 ): void {
   const beforeById = new Map(before.map((entry) => [entry.id, entry]));
   const afterById = new Map(after.map((entry) => [entry.id, entry]));
+  const fieldsFor = (entry: T) =>
+    rankForInsert
+      ? canvasNodeFields(entry as CanvasAnyNode)
+      : entityFields(entry);
 
   for (const id of beforeById.keys()) {
     if (!afterById.has(id)) target.delete(id);
@@ -373,7 +378,7 @@ function patchEntityCollection<T extends CanvasEntity>(
     let fields = target.get(entry.id);
     if (!fields) {
       fields = new Y.Map<unknown>();
-      const incoming = entityFields(entry);
+      const incoming = fieldsFor(entry);
       for (const [key, value] of incoming) fields.set(key, value);
       if (rankForInsert && !incoming.has(CANVAS_NODE_RANK_FIELD)) {
         fields.set(CANVAS_NODE_RANK_FIELD, rankForInsert(entry, index));
@@ -384,13 +389,13 @@ function patchEntityCollection<T extends CanvasEntity>(
     if (!previous) {
       // Simultaneous creation with the same content-derived id keeps the
       // existing entity map and converges through per-field writes.
-      patchMapByIntent(fields, new Map(), entityFields(entry));
+      patchMapByIntent(fields, new Map(), fieldsFor(entry));
       if (rankForInsert && !fields.has(CANVAS_NODE_RANK_FIELD)) {
         fields.set(CANVAS_NODE_RANK_FIELD, rankForInsert(entry, index));
       }
       return;
     }
-    patchMapByIntent(fields, entityFields(previous), entityFields(entry));
+    patchMapByIntent(fields, fieldsFor(previous), fieldsFor(entry));
   });
 }
 

@@ -8,6 +8,12 @@ import {
 } from '../gitCommitProposalPromptUtils';
 
 describe('gitCommitProposalPromptUtils', () => {
+  it('never substitutes a nearby pending proposal when exact identity is required', () => {
+    const rows = [{ content: JSON.stringify({ type: 'git_commit_proposal', proposalId: 'canonical', toolUseId: 'item_42' }), created_at: new Date(21000) }];
+    expect(resolveGitCommitProposalPromptIdFromRows(buildCodexToolLookupId('item_42', 20500, 7), rows, [], false)).toBe('canonical');
+    expect(resolveGitCommitProposalPromptIdFromRows(buildCodexToolLookupId('item_99', 21000, 8), rows, [], false)).toBeNull();
+    expect(resolveGitCommitProposalPromptIdFromRows('missing', rows, [], false)).toBeNull();
+  });
   it('builds the session-scoped response channel', () => {
     expect(getGitCommitProposalResponseChannel('session-1', 'proposal-1')).toBe(
       'git-commit-proposal-response:session-1:proposal-1',

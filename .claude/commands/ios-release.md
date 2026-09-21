@@ -6,6 +6,8 @@ description: Prepare and execute an iOS release (patch/minor/major)
 
 Prepare an iOS release following this workflow:
 
+Before running the release script, reconcile the iOS release's notable Added/Changed/Removed capabilities against `docs/FEATURE_INVENTORY.md`, including the Mobile (iOS) and shared feature sections. Follow the root `CLAUDE.md` feature-inventory rule: preserve platform limitations, verify unclear scope against current code, and report the updated sections or a short "No inventory impact" reason. Keep desktop-only and unfinished mobile features out of iOS capability claims.
+
 ## iOS RELEASE WORKFLOW
 
 1. **Get commits since last iOS release**:

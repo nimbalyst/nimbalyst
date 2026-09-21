@@ -1,0 +1,15 @@
+.canvas-command-tooltip {
+  z-index: 10000;
+  max-width: 280px;
+  padding: 10px 12px;
+  border: 1px solid var(--nim-border);
+  border-radius: 8px;
+  background: var(--nim-bg-secondary);
+  color: var(--nim-text);
+  box-shadow: 0 4px 16px #0003;
+  font-size: 12px;
+  line-height: 1.5;
+  pointer-events: none;
+}
+.canvas-command-tooltip kbd { float: right; margin-left: 16px; color: var(--nim-text-muted); }
+.canvas-command-tooltip > div { margin-top: 4px; color: var(--nim-text-secondary); }

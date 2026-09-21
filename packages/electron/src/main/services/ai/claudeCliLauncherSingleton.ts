@@ -1,3 +1,4 @@
+import { claimExternalSessionForLocalExecution } from '../externalSessions/ExternalSessionService';
 /**
  * Production wiring for `ClaudeCliSessionLauncher` (NIM-806, Phase 1).
  *
@@ -195,12 +196,15 @@ function buildLauncher(): ClaudeCliSessionLauncher {
       getPermissionService().getPermissionMode(workspacePath),
     // NIM-845: load extension Claude-plugins so namespaced slash commands
     // (`/feedback:bug-report`, …) resolve in CLI sessions. Mirror the SDK path's
-    // loader EXACTLY (`getClaudeProviderPluginPaths`, the same aggregator wired at
-    // index.ts → setExtensionPluginsLoader): native + legacy + CLI-installed AND
-    // GENERATED extension-workflow plugins. The raw `getClaudePluginPaths` omits
-    // the generated ones, so a supported-CLI user would see generated namespaced
-    // commands in the picker that the launched CLI couldn't resolve. We map to the
-    // bare directory paths the CLI's `--plugin-dir` expects. Gated by the
+    // loader EXACTLY (`getClaudeProviderPluginPaths`, the same loader wired at
+    // index.ts → setExtensionPluginsLoader): plugins contributed by enabled
+    // extensions AND the GENERATED extension-workflow plugins. The raw
+    // `getClaudePluginPaths` omits the generated ones, so a supported-CLI user
+    // would see generated namespaced commands in the picker that the launched CLI
+    // couldn't resolve. #1465: it deliberately omits the user's own
+    // `/plugin`-installed plugins — the CLI loads those itself, and passing them
+    // as `--plugin-dir` added an unconfigured `@inline` duplicate of each. We map
+    // to the bare directory paths the CLI's `--plugin-dir` expects. Gated by the
     // `--version` probe below so old CLIs that reject the flag silently skip it.
     loadPluginDirs: async (workspacePath: string) =>
       (await getAgentWorkflowService(workspacePath).getClaudeProviderPluginPaths()).map(
@@ -256,6 +260,7 @@ const cliFileWatcher = new HooklessAgentFileWatcher();
 export async function ensureClaudeCliSession(
   input: EnsureClaudeCliSessionInput
 ): Promise<EnsureClaudeCliSessionResult> {
+  await claimExternalSessionForLocalExecution(input.sessionId);
   const manager = getTerminalSessionManager();
   if (manager.isTerminalActive(input.sessionId)) {
     return { success: true, alreadyActive: true };

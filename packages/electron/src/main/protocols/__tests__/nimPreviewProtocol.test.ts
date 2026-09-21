@@ -5,6 +5,7 @@ import {
   validateNimPreviewPath,
   previewPathsEqual,
   previewPathInsideRoot,
+  ensureUtf8HtmlResponse,
   NIM_PREVIEW_SCHEME,
   NIM_PREVIEW_HOST,
 } from '../nimPreviewProtocol';
@@ -127,6 +128,33 @@ describe('nimPreviewProtocol', () => {
       // /tmp/preview-root-evil must NOT match the /tmp/preview-root allowlist.
       const result = validateNimPreviewPath(`${ROOT}-evil`, 'index.html', roots);
       expect(result).toBeNull();
+    });
+  });
+
+  describe('ensureUtf8HtmlResponse', () => {
+    it('adds an explicit UTF-8 charset to HTML while preserving response metadata and bytes', async () => {
+      const original = new Response('“Preview café”', {
+        status: 200,
+        headers: {
+          'Content-Type': 'text/html',
+          'Last-Modified': 'Tue, 15 Sep 2026 12:00:00 GMT',
+        },
+      });
+
+      const response = ensureUtf8HtmlResponse(`${ROOT}${sep}index.html`, original);
+
+      expect(response.headers.get('Content-Type')).toBe('text/html; charset=utf-8');
+      expect(response.headers.get('Last-Modified')).toBe('Tue, 15 Sep 2026 12:00:00 GMT');
+      expect(response.status).toBe(200);
+      await expect(response.text()).resolves.toBe('“Preview café”');
+    });
+
+    it('returns non-HTML responses unchanged', () => {
+      const response = new Response('body { color: red; }', {
+        headers: { 'Content-Type': 'text/css' },
+      });
+
+      expect(ensureUtf8HtmlResponse(`${ROOT}${sep}styles.css`, response)).toBe(response);
     });
   });
 

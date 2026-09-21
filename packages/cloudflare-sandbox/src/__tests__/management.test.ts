@@ -96,10 +96,25 @@ describe('node management', () => {
     expect(await port.node.readRecord()).toMatchObject({ processId: null });
   });
 
-  it.each(['setAllowedHosts', 'mkdir', 'writeFile'] as const)('normalizes %s provisioning failures without exposing diagnostics', async operation => {
+  it.each([
+    ['setAllowedHosts', 'egress'], ['mkdir', 'directory'], ['writeFile', 'write'], ['exec', 'path-check'],
+  ] as const)('identifies %s provisioning failures without exposing diagnostics', async (operation, stage) => {
     const { manager, port } = fixture();
     port.node[operation].mockRejectedValueOnce(Object.assign(new Error('secret provisioning diagnostic'), { code: 'RPC_TRANSPORT_ERROR' }));
-    await expect(manager.provision({ files: [{ path: '/home/nimbalyst/config', content: 'secret' }], allowedHosts: [] })).rejects.toThrow('node-not-provisioned');
+    await expect(manager.provision({ files: [{ path: '/home/nimbalyst/config', content: 'secret' }], allowedHosts: [] })).rejects.toEqual(new Error(`node-provision-${stage}-failed`));
+  });
+
+  it.each([['/usr/bin/install', 'create'], ['/usr/bin/chmod', 'permissions']] as const)('distinguishes failed %s from an unsafe path', async (command, stage) => {
+    const { manager, commandOutput } = fixture();
+    commandOutput.mockImplementation(async argv => ({ exitCode: argv[0] === command ? 1 : 0, timedOut: false }));
+    await expect(manager.provision({ files: [{ path: '/home/nimbalyst/config', content: 'secret' }], allowedHosts: [] })).rejects.toEqual(new Error(`node-provision-${stage}-failed`));
+  });
+
+  it('reports unsuccessful cleanup rather than implying an incomplete private file was removed', async () => {
+    const { manager, port, commandOutput } = fixture();
+    port.node.writeFile.mockRejectedValueOnce(new Error('secret write diagnostic'));
+    commandOutput.mockImplementation(async argv => ({ exitCode: argv[0] === '/usr/bin/rm' ? 1 : 0, timedOut: false }));
+    await expect(manager.provision({ files: [{ path: '/home/nimbalyst/config', content: 'secret' }], allowedHosts: [] })).rejects.toEqual(new Error('node-provision-cleanup-failed'));
   });
 
   it.each(['lookup', 'kill', 'wait'])('reconciles a stale handle during stop %s and releases keep-alive', async stage => {
@@ -146,7 +161,7 @@ describe('node management', () => {
     const events: Array<string | readonly string[]> = [];
     commandOutput.mockImplementation(async argv => { if (argv[0] !== '/usr/bin/test') events.push(argv); return { exitCode: argv[0] === '/usr/bin/chmod' ? 1 : 0, timedOut: false }; });
     port.node.writeFile.mockImplementation(async () => { events.push('write-secret'); });
-    await expect(manager.provision({ files: [{ path: '/home/nimbalyst/config', content: 'secret', mode: 0o640 }], allowedHosts: [] })).rejects.toThrow('invalid-path');
+    await expect(manager.provision({ files: [{ path: '/home/nimbalyst/config', content: 'secret', mode: 0o640 }], allowedHosts: [] })).rejects.toThrow('node-provision-permissions-failed');
     expect(events).toEqual([
       ['/usr/bin/install', '-m', '600', '--', '/dev/null', '/home/nimbalyst/config'],
       'write-secret',

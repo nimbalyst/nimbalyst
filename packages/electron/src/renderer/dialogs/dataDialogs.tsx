@@ -6,6 +6,7 @@
  */
 
 import React from 'react';
+import type { ExternalSessionSelection, ExternalSessionSyncResponse } from '../../shared/externalSessions';
 import { registerDialog } from '../contexts/DialogContext';
 import type { DialogConfig } from '../contexts/DialogContext.types';
 import { ProjectSelectionDialog } from '../components/ProjectSelectionDialog/ProjectSelectionDialog';
@@ -99,12 +100,12 @@ function SessionImportWrapper({
   onClose: () => void;
   data: SessionImportData;
 }) {
-  const handleImport = async (sessionIds: string[]) => {
-    const result = await window.electronAPI?.invoke('claude-code:sync-sessions', {
-      sessionIds,
+  const handleImport = async (sessions: ExternalSessionSelection[]) => {
+    const result: ExternalSessionSyncResponse = await window.electronAPI?.invoke('external-sessions:sync', {
+      sessions,
       workspacePath: data.workspacePath,
     });
-    if (!result?.success) {
+    if (!result?.success || result.failureCount > 0) {
       console.error('[SessionImportDialog] Import failed:', result?.error);
       throw new Error(result?.error || 'Import failed');
     }

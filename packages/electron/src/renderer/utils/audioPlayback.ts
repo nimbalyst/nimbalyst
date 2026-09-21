@@ -16,7 +16,8 @@ export class AudioPlayback {
   private audioContext: AudioContext | null = null;
   private streamDestination: MediaStreamAudioDestinationNode | null = null;
   private audioElement: HTMLAudioElement | null = null;
-  private audioQueue: AudioBuffer[] = [];
+  private audioQueue: Array<{ buffer: AudioBuffer; audible: boolean }> = [];
+  private audibleSources = new Set<AudioBufferSourceNode>();
   private isPlaying: boolean = false;
   private scheduledSources: AudioBufferSourceNode[] = [];
   private nextStartTime: number = 0;
@@ -82,7 +83,7 @@ export class AudioPlayback {
       audioBuffer.copyToChannel(new Float32Array(float32Array), 0);
 
       // Add to queue and play
-      this.audioQueue.push(audioBuffer);
+      this.audioQueue.push({ buffer: audioBuffer, audible: int16Array.some(sample => sample !== 0) });
       this.playQueue();
     } catch (error) {
       console.error('[AudioPlayback] Failed to play audio:', error);
@@ -98,7 +99,6 @@ export class AudioPlayback {
     }
 
     if (!this.isPlaying) {
-      this.setPlayingState(true);
       // Only reset nextStartTime if it's in the past (or hasn't been set)
       if (this.nextStartTime < this.audioContext.currentTime) {
         this.nextStartTime = this.audioContext.currentTime;
@@ -106,7 +106,7 @@ export class AudioPlayback {
     }
 
     while (this.audioQueue.length > 0) {
-      const audioBuffer = this.audioQueue.shift()!;
+      const { buffer: audioBuffer, audible } = this.audioQueue.shift()!;
 
       // Create source node
       const source = this.audioContext.createBufferSource();
@@ -132,6 +132,10 @@ export class AudioPlayback {
 
       // Track this scheduled source
       this.scheduledSources.push(source);
+      if (audible) {
+        this.audibleSources.add(source);
+        this.setPlayingState(true);
+      }
 
       // Update next start time
       this.nextStartTime += audioBuffer.duration;
@@ -144,7 +148,10 @@ export class AudioPlayback {
           this.scheduledSources.splice(index, 1);
         }
 
-        if (this.audioQueue.length === 0 && this.scheduledSources.length === 0) {
+        // Silent Live packets can continue forever. Keep their timing in the
+        // playback queue, but end speech activity when the last sound ends.
+        const wasAudible = this.audibleSources.delete(source);
+        if (wasAudible && this.audibleSources.size === 0) {
           this.setPlayingState(false);
           if (this.onDrainedCallback && !this.suppressDrainedCallback) {
             this.onDrainedCallback();
@@ -173,6 +180,7 @@ export class AudioPlayback {
     }
 
     this.scheduledSources = [];
+    this.audibleSources.clear();
     this.audioQueue = [];
     this.setPlayingState(false);
     this.nextStartTime = 0;

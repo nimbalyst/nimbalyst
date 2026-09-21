@@ -1,0 +1,518 @@
+{
+  "contractRevision": 2,
+  "fixtures": [
+    {
+      "file": "indexUpdate.json",
+      "tsType": "Omit<Extract<ClientMessage, { type: 'indexUpdate' }>, 'session'> & { session: Omit<SessionIndexEntry, 'title'> }",
+      "tsSource": "packages/runtime/src/sync/collabV3WireTypes.ts",
+      "direction": "desktopToServer",
+      "swiftType": "IndexUpdateMessage",
+      "notes": "title is a local pre-encryption cache field, never published. Ciphertext is synthetic base64, not a decryptable cryptographic vector. ClientMetadata has its own plaintext fixture.",
+      "swiftSource": "packages/ios/NimbalystNative/Sources/Sync/SyncProtocol.swift"
+    },
+    {
+      "file": "indexUpdate.json",
+      "tsType": "Omit<Extract<ClientMessage, { type: 'indexUpdate' }>, 'session'> & { session: Omit<SessionIndexEntry, 'title'> }",
+      "tsSource": "packages/runtime/src/sync/collabV3WireTypes.ts",
+      "direction": "iosToServer",
+      "swiftType": "IndexUpdateMessage",
+      "notes": "title is a local pre-encryption cache field, never published. Ciphertext is synthetic base64, not a decryptable cryptographic vector. ClientMetadata has its own plaintext fixture.",
+      "swiftSource": "packages/ios/NimbalystNative/Sources/Sync/SyncProtocol.swift"
+    },
+    {
+      "file": "clientMetadata.desktop.json",
+      "tsType": "ClientMetadata",
+      "tsSource": "packages/runtime/src/sync/collabV3WireTypes.ts",
+      "direction": "desktopToIos",
+      "swiftType": "ClientMetadata",
+      "swiftSource": "packages/ios/NimbalystNative/Sources/Sync/SyncProtocol.swift"
+    },
+    {
+      "file": "indexClientMetadataPatch.desktop.json",
+      "tsType": "Extract<ClientMessage, { type: 'indexClientMetadataPatch' }>",
+      "tsSource": "packages/runtime/src/sync/collabV3WireTypes.ts",
+      "direction": "desktopToServer",
+      "swiftType": "IndexClientMetadataPatchMessage",
+      "swiftSource": "packages/ios/NimbalystNative/Sources/Sync/SyncProtocol.swift"
+    },
+    {
+      "file": "indexPageRequest.json",
+      "tsType": "IndexPageRequestMessage",
+      "tsSource": "packages/collab-protocol/src/indexReplication.ts",
+      "direction": "iosToServer",
+      "swiftType": "IndexPageRequest",
+      "swiftSource": "packages/ios/NimbalystNative/Sources/Sync/IndexReplicationProtocol.swift"
+    },
+    {
+      "file": "settingsPayload.desktop.json",
+      "tsType": "SyncedSettings",
+      "tsSource": "packages/runtime/src/sync/types.ts",
+      "direction": "desktopToIos",
+      "swiftType": "SyncedSettings",
+      "swiftSource": "packages/ios/NimbalystNative/Sources/Sync/SyncProtocol.swift"
+    },
+    {
+      "file": "settingsSync.desktop.json",
+      "tsType": "Extract<ClientMessage, { type: 'settingsSync' }>",
+      "tsSource": "packages/runtime/src/sync/collabV3WireTypes.ts",
+      "direction": "desktopToServer",
+      "swiftType": "SettingsSyncMessage",
+      "swiftSource": "packages/ios/NimbalystNative/Sources/Sync/SyncProtocol.swift"
+    },
+    {
+      "file": "settingsSyncBroadcast.desktop.json",
+      "tsType": "Extract<ServerMessage, { type: 'settingsSyncBroadcast' }>",
+      "tsSource": "packages/runtime/src/sync/collabV3WireTypes.ts",
+      "direction": "serverToIos",
+      "swiftType": "SettingsSyncBroadcast",
+      "swiftSource": "packages/ios/NimbalystNative/Sources/Sync/SyncProtocol.swift"
+    },
+    {
+      "file": "metadataBroadcast.server.json",
+      "tsType": "Omit<Extract<ServerMessage, { type: 'metadataBroadcast' }>, 'metadata'> & { metadata: Omit<SessionMetadata, 'title'> }",
+      "tsSource": "packages/runtime/src/sync/collabV3WireTypes.ts",
+      "direction": "serverToIos",
+      "swiftType": "MetadataBroadcast",
+      "notes": "Excludes local-only plaintext title.",
+      "swiftSource": "packages/ios/NimbalystNative/Sources/Sync/SyncProtocol.swift"
+    },
+    {
+      "file": "createSessionRequest.json",
+      "tsType": "Extract<ClientMessage, { type: 'createSessionRequest' }>",
+      "tsSource": "packages/runtime/src/sync/collabV3WireTypes.ts",
+      "direction": "iosToServer",
+      "swiftType": "CreateSessionRequestMessage",
+      "swiftSource": "packages/ios/NimbalystNative/Sources/Sync/SyncProtocol.swift"
+    },
+    {
+      "file": "createSessionRequestBroadcast.json",
+      "tsType": "Extract<ServerMessage, { type: 'createSessionRequestBroadcast' }>",
+      "tsSource": "packages/runtime/src/sync/collabV3WireTypes.ts",
+      "direction": "serverToDesktop",
+      "swiftType": "CreateSessionRequestBroadcast",
+      "swiftSource": "packages/ios/NimbalystNative/Sources/Sync/SyncProtocol.swift"
+    },
+    {
+      "file": "createSessionResponse.json",
+      "tsType": "Extract<ClientMessage, { type: 'createSessionResponse' }>",
+      "tsSource": "packages/runtime/src/sync/collabV3WireTypes.ts",
+      "direction": "desktopToServer",
+      "swiftType": "CreateSessionResponseMessage",
+      "swiftSource": "packages/ios/NimbalystNative/Sources/Sync/SyncProtocol.swift"
+    },
+    {
+      "file": "createSessionResponseBroadcast.json",
+      "tsType": "Extract<ServerMessage, { type: 'createSessionResponseBroadcast' }>",
+      "tsSource": "packages/runtime/src/sync/collabV3WireTypes.ts",
+      "direction": "serverToIos",
+      "swiftType": "CreateSessionResponseBroadcast",
+      "swiftSource": "packages/ios/NimbalystNative/Sources/Sync/SyncProtocol.swift"
+    },
+    {
+      "file": "createWorktreeRequest.json",
+      "tsType": "Extract<ClientMessage, { type: 'createWorktreeRequest' }>",
+      "tsSource": "packages/runtime/src/sync/collabV3WireTypes.ts",
+      "direction": "iosToServer",
+      "swiftType": "CreateWorktreeRequestMessage",
+      "swiftSource": "packages/ios/NimbalystNative/Sources/Sync/SyncProtocol.swift"
+    },
+    {
+      "file": "createWorktreeRequestBroadcast.json",
+      "tsType": "Extract<ServerMessage, { type: 'createWorktreeRequestBroadcast' }>",
+      "tsSource": "packages/runtime/src/sync/collabV3WireTypes.ts",
+      "direction": "serverToDesktop",
+      "swiftType": "CreateWorktreeRequestBroadcast",
+      "swiftSource": "packages/ios/NimbalystNative/Sources/Sync/SyncProtocol.swift"
+    },
+    {
+      "file": "createWorktreeResponse.json",
+      "tsType": "Extract<ClientMessage, { type: 'createWorktreeResponse' }>",
+      "tsSource": "packages/runtime/src/sync/collabV3WireTypes.ts",
+      "direction": "desktopToServer",
+      "swiftType": "CreateWorktreeResponseMessage",
+      "swiftSource": "packages/ios/NimbalystNative/Sources/Sync/SyncProtocol.swift"
+    },
+    {
+      "file": "createWorktreeResponseBroadcast.json",
+      "tsType": "Extract<ServerMessage, { type: 'createWorktreeResponseBroadcast' }>",
+      "tsSource": "packages/runtime/src/sync/collabV3WireTypes.ts",
+      "direction": "serverToIos",
+      "swiftType": "CreateWorktreeResponseBroadcast",
+      "swiftSource": "packages/ios/NimbalystNative/Sources/Sync/SyncProtocol.swift"
+    },
+    {
+      "file": "sessionControl.desktop.json",
+      "tsType": "Extract<ClientMessage, { type: 'sessionControl' }>",
+      "tsSource": "packages/runtime/src/sync/collabV3WireTypes.ts",
+      "direction": "desktopToServer",
+      "swiftType": "SessionControlMessage",
+      "swiftSource": "packages/ios/NimbalystNative/Sources/Sync/SyncProtocol.swift"
+    },
+    {
+      "file": "sessionControlBroadcast.desktop.json",
+      "tsType": "Extract<ServerMessage, { type: 'sessionControlBroadcast' }>",
+      "tsSource": "packages/runtime/src/sync/collabV3WireTypes.ts",
+      "direction": "serverToIos",
+      "swiftType": "SessionControlBroadcast",
+      "swiftSource": "packages/ios/NimbalystNative/Sources/Sync/SyncProtocol.swift"
+    },
+    {
+      "file": "sessionControl.mobile.json",
+      "tsType": "Extract<ClientMessage, { type: 'sessionControl' }>",
+      "tsSource": "packages/runtime/src/sync/collabV3WireTypes.ts",
+      "direction": "iosToServer",
+      "swiftType": "SessionControlMessage",
+      "swiftSource": "packages/ios/NimbalystNative/Sources/Sync/SyncProtocol.swift"
+    },
+    {
+      "file": "sessionControlBroadcast.mobile.json",
+      "tsType": "Extract<ServerMessage, { type: 'sessionControlBroadcast' }>",
+      "tsSource": "packages/runtime/src/sync/collabV3WireTypes.ts",
+      "direction": "serverToDesktop",
+      "swiftType": "SessionControlBroadcast",
+      "swiftSource": "packages/ios/NimbalystNative/Sources/Sync/SyncProtocol.swift"
+    },
+    {
+      "file": "indexBroadcast.server.json",
+      "tsType": "Omit<Extract<ServerMessage, { type: 'indexBroadcast' }>, 'session'> & { session: Omit<SessionIndexEntry, 'title'> }",
+      "tsSource": "packages/runtime/src/sync/collabV3WireTypes.ts",
+      "direction": "serverToIos",
+      "swiftType": "IndexBroadcast",
+      "swiftSource": "packages/ios/NimbalystNative/Sources/Sync/SyncProtocol.swift"
+    },
+    {
+      "file": "indexPageRequest.json",
+      "tsType": "IndexPageRequestMessage",
+      "tsSource": "packages/collab-protocol/src/indexReplication.ts",
+      "direction": "desktopToServer",
+      "swiftType": "IndexPageRequest",
+      "swiftSource": "packages/ios/NimbalystNative/Sources/Sync/IndexReplicationProtocol.swift"
+    },
+    {
+      "file": "indexChange.runtime.session.json",
+      "tsType": "IndexChangeWire",
+      "tsSource": "packages/runtime/src/sync/collabV3WireTypes.ts",
+      "direction": "serverToIos",
+      "swiftType": "IndexChange",
+      "swiftSource": "packages/ios/NimbalystNative/Sources/Sync/IndexReplicationProtocol.swift"
+    },
+    {
+      "file": "indexChange.runtime.project.json",
+      "tsType": "IndexChangeWire",
+      "tsSource": "packages/runtime/src/sync/collabV3WireTypes.ts",
+      "direction": "serverToIos",
+      "swiftType": "IndexChange",
+      "swiftSource": "packages/ios/NimbalystNative/Sources/Sync/IndexReplicationProtocol.swift"
+    },
+    {
+      "file": "indexChange.runtime.file.json",
+      "tsType": "IndexChangeWire",
+      "tsSource": "packages/runtime/src/sync/collabV3WireTypes.ts",
+      "direction": "serverToIos",
+      "swiftType": "IndexChange",
+      "swiftSource": "packages/ios/NimbalystNative/Sources/Sync/IndexReplicationProtocol.swift"
+    },
+    {
+      "file": "indexChange.runtime.deleted.json",
+      "tsType": "IndexChangeWire",
+      "tsSource": "packages/runtime/src/sync/collabV3WireTypes.ts",
+      "direction": "serverToIos",
+      "swiftType": "IndexChange",
+      "swiftSource": "packages/ios/NimbalystNative/Sources/Sync/IndexReplicationProtocol.swift"
+    },
+    {
+      "file": "indexChange.protocol.session.json",
+      "tsType": "IndexChange",
+      "tsSource": "packages/collab-protocol/src/indexReplication.ts",
+      "direction": "serverToIos",
+      "swiftType": "IndexChange",
+      "swiftSource": "packages/ios/NimbalystNative/Sources/Sync/IndexReplicationProtocol.swift"
+    },
+    {
+      "file": "indexChange.protocol.project.json",
+      "tsType": "IndexChange",
+      "tsSource": "packages/collab-protocol/src/indexReplication.ts",
+      "direction": "serverToIos",
+      "swiftType": "IndexChange",
+      "swiftSource": "packages/ios/NimbalystNative/Sources/Sync/IndexReplicationProtocol.swift"
+    },
+    {
+      "file": "indexChange.protocol.file.json",
+      "tsType": "IndexChange",
+      "tsSource": "packages/collab-protocol/src/indexReplication.ts",
+      "direction": "serverToIos",
+      "swiftType": "IndexChange",
+      "swiftSource": "packages/ios/NimbalystNative/Sources/Sync/IndexReplicationProtocol.swift"
+    },
+    {
+      "file": "indexChange.protocol.deleted.json",
+      "tsType": "IndexChange",
+      "tsSource": "packages/collab-protocol/src/indexReplication.ts",
+      "direction": "serverToIos",
+      "swiftType": "IndexChange",
+      "swiftSource": "packages/ios/NimbalystNative/Sources/Sync/IndexReplicationProtocol.swift"
+    },
+    {
+      "file": "indexPageResponse.runtime.json",
+      "tsType": "IndexPageResponseWire",
+      "tsSource": "packages/runtime/src/sync/collabV3WireTypes.ts",
+      "direction": "serverToIos",
+      "swiftType": "IndexPageResponse",
+      "swiftSource": "packages/ios/NimbalystNative/Sources/Sync/IndexReplicationProtocol.swift"
+    },
+    {
+      "file": "indexPageResponse.protocol.json",
+      "tsType": "IndexPageResponseMessage",
+      "tsSource": "packages/collab-protocol/src/indexReplication.ts",
+      "direction": "serverToIos",
+      "swiftType": "IndexPageResponse",
+      "swiftSource": "packages/ios/NimbalystNative/Sources/Sync/IndexReplicationProtocol.swift"
+    },
+    {
+      "file": "voiceToolRequest.json",
+      "tsType": "Extract<ClientMessage, { type: 'voiceToolRequest' }>",
+      "tsSource": "packages/runtime/src/sync/collabV3WireTypes.ts",
+      "direction": "iosToServer",
+      "swiftType": "VoiceToolRequestMessage",
+      "swiftSource": "packages/ios/NimbalystNative/Sources/Sync/SyncProtocol.swift"
+    },
+    {
+      "file": "voiceToolResponse.json",
+      "tsType": "Extract<ClientMessage, { type: 'voiceToolResponse' }>",
+      "tsSource": "packages/runtime/src/sync/collabV3WireTypes.ts",
+      "direction": "desktopToServer",
+      "swiftType": "VoiceToolResponseMessage",
+      "swiftSource": "packages/ios/NimbalystNative/Sources/Sync/SyncProtocol.swift",
+      "notes": "No reusable Swift envelope type exists in SyncProtocol.swift or IndexReplicationProtocol.swift; T2 to add."
+    },
+    {
+      "file": "voiceToolRequestBroadcast.json",
+      "tsType": "Extract<ServerMessage, { type: 'voiceToolRequestBroadcast' }>",
+      "tsSource": "packages/runtime/src/sync/collabV3WireTypes.ts",
+      "direction": "serverToDesktop",
+      "swiftType": "VoiceToolRequestBroadcast",
+      "swiftSource": "packages/ios/NimbalystNative/Sources/Sync/SyncProtocol.swift",
+      "notes": "No reusable Swift envelope type exists in SyncProtocol.swift or IndexReplicationProtocol.swift; T2 to add."
+    },
+    {
+      "file": "voiceToolResponseBroadcast.json",
+      "tsType": "Extract<ServerMessage, { type: 'voiceToolResponseBroadcast' }>",
+      "tsSource": "packages/runtime/src/sync/collabV3WireTypes.ts",
+      "direction": "serverToIos",
+      "swiftType": "VoiceToolResponseBroadcast",
+      "swiftSource": "packages/ios/NimbalystNative/Sources/Sync/SyncProtocol.swift"
+    },
+    {
+      "file": "readReceipt.json",
+      "tsType": "Extract<ClientMessage, { type: 'readReceipt' }>",
+      "tsSource": "packages/runtime/src/sync/collabV3WireTypes.ts",
+      "direction": "desktopToServer",
+      "swiftType": "ReadReceiptMessage",
+      "swiftSource": "packages/ios/NimbalystNative/Sources/Sync/IndexReplicationProtocol.swift",
+      "notes": "No reusable Swift envelope type exists in SyncProtocol.swift or IndexReplicationProtocol.swift; T2 to add."
+    },
+    {
+      "file": "trackerPersonalState.json",
+      "tsType": "Extract<ClientMessage, { type: 'trackerPersonalState' }>",
+      "tsSource": "packages/runtime/src/sync/collabV3WireTypes.ts",
+      "direction": "desktopToServer",
+      "swiftType": "TrackerPersonalStateMessage",
+      "swiftSource": "packages/ios/NimbalystNative/Sources/Sync/IndexReplicationProtocol.swift",
+      "notes": "No reusable Swift envelope type exists in SyncProtocol.swift or IndexReplicationProtocol.swift; T2 to add."
+    },
+    {
+      "file": "readReceiptBroadcast.json",
+      "tsType": "Extract<ServerMessage, { type: 'readReceiptBroadcast' }>",
+      "tsSource": "packages/runtime/src/sync/collabV3WireTypes.ts",
+      "direction": "serverToIos",
+      "swiftType": "ReadReceiptBroadcast",
+      "swiftSource": "packages/ios/NimbalystNative/Sources/Sync/IndexReplicationProtocol.swift",
+      "notes": "No reusable Swift envelope type exists in SyncProtocol.swift or IndexReplicationProtocol.swift; T2 to add."
+    },
+    {
+      "file": "trackerPersonalStateBroadcast.json",
+      "tsType": "Extract<ServerMessage, { type: 'trackerPersonalStateBroadcast' }>",
+      "tsSource": "packages/runtime/src/sync/collabV3WireTypes.ts",
+      "direction": "serverToIos",
+      "swiftType": "TrackerPersonalStateBroadcast",
+      "swiftSource": "packages/ios/NimbalystNative/Sources/Sync/IndexReplicationProtocol.swift",
+      "notes": "No reusable Swift envelope type exists in SyncProtocol.swift or IndexReplicationProtocol.swift; T2 to add."
+    },
+    {
+      "file": "personalStatePageRequest.json",
+      "tsType": "Extract<ClientMessage, { type: 'personalStatePageRequest' }>",
+      "tsSource": "packages/runtime/src/sync/collabV3WireTypes.ts",
+      "direction": "desktopToServer",
+      "swiftType": "PersonalStatePageRequest",
+      "swiftSource": "packages/ios/NimbalystNative/Sources/Sync/IndexReplicationProtocol.swift",
+      "notes": "No reusable Swift envelope type exists in SyncProtocol.swift or IndexReplicationProtocol.swift; T2 to add."
+    },
+    {
+      "file": "personalStatePageResponse.json",
+      "tsType": "PersonalStatePageResponseWire",
+      "tsSource": "packages/runtime/src/sync/collabV3WireTypes.ts",
+      "direction": "serverToIos",
+      "swiftType": "PersonalStatePageResponse",
+      "swiftSource": "packages/ios/NimbalystNative/Sources/Sync/IndexReplicationProtocol.swift",
+      "notes": "No reusable Swift envelope type exists in SyncProtocol.swift or IndexReplicationProtocol.swift; T2 to add."
+    },
+    {
+      "file": "fileIndexUpdate.json",
+      "tsType": "Extract<ClientMessage, { type: 'fileIndexUpdate' }>",
+      "tsSource": "packages/runtime/src/sync/collabV3WireTypes.ts",
+      "direction": "desktopToServer",
+      "swiftType": "FileIndexUpdateMessage",
+      "swiftSource": "packages/ios/NimbalystNative/Sources/Sync/IndexReplicationProtocol.swift",
+      "notes": "No reusable Swift envelope type exists in SyncProtocol.swift or IndexReplicationProtocol.swift; T2 to add."
+    },
+    {
+      "file": "fileIndexDelete.json",
+      "tsType": "Extract<ClientMessage, { type: 'fileIndexDelete' }>",
+      "tsSource": "packages/runtime/src/sync/collabV3WireTypes.ts",
+      "direction": "desktopToServer",
+      "swiftType": "FileIndexDeleteMessage",
+      "swiftSource": "packages/ios/NimbalystNative/Sources/Sync/IndexReplicationProtocol.swift",
+      "notes": "No reusable Swift envelope type exists in SyncProtocol.swift or IndexReplicationProtocol.swift; T2 to add."
+    },
+    {
+      "file": "projectBroadcast.json",
+      "tsType": "Extract<ServerMessage, { type: 'projectBroadcast' }>",
+      "tsSource": "packages/runtime/src/sync/collabV3WireTypes.ts",
+      "direction": "serverToIos",
+      "swiftType": "ProjectBroadcast",
+      "swiftSource": "packages/ios/NimbalystNative/Sources/Sync/SyncProtocol.swift"
+    },
+    {
+      "file": "indexSyncResponse.json",
+      "tsType": "WireFixtureShape<Extract<ServerMessage, { type: 'indexSyncResponse' }>>",
+      "tsSource": "packages/runtime/src/sync/collabV3WireTypes.ts",
+      "direction": "serverToIos",
+      "swiftType": "IndexSyncResponse",
+      "swiftSource": "packages/ios/NimbalystNative/Sources/Sync/SyncProtocol.swift"
+    },
+    {
+      "file": "appendMessage.json",
+      "tsType": "Extract<ClientMessage, { type: 'appendMessage' }>",
+      "tsSource": "packages/runtime/src/sync/collabV3WireTypes.ts",
+      "direction": "iosToServer",
+      "swiftType": "AppendMessageRequest",
+      "swiftSource": "packages/ios/NimbalystNative/Sources/Sync/SyncProtocol.swift"
+    },
+    {
+      "file": "messageBroadcast.json",
+      "tsType": "Extract<ServerMessage, { type: 'messageBroadcast' }>",
+      "tsSource": "packages/runtime/src/sync/collabV3WireTypes.ts",
+      "direction": "serverToIos",
+      "swiftType": "MessageBroadcast",
+      "swiftSource": "packages/ios/NimbalystNative/Sources/Sync/SyncProtocol.swift"
+    },
+    {
+      "file": "syncRequest.json",
+      "tsType": "Extract<ClientMessage, { type: 'syncRequest' }>",
+      "tsSource": "packages/runtime/src/sync/collabV3WireTypes.ts",
+      "direction": "iosToServer",
+      "swiftType": "SessionSyncRequest",
+      "swiftSource": "packages/ios/NimbalystNative/Sources/Sync/SyncProtocol.swift"
+    },
+    {
+      "file": "syncResponse.json",
+      "tsType": "WireFixtureShape<Extract<ServerMessage, { type: 'syncResponse' }>>",
+      "tsSource": "packages/runtime/src/sync/collabV3WireTypes.ts",
+      "direction": "serverToIos",
+      "swiftType": "SessionSyncResponse",
+      "swiftSource": "packages/ios/NimbalystNative/Sources/Sync/SyncProtocol.swift"
+    },
+    {
+      "file": "deviceAnnounce.json",
+      "tsType": "Extract<ClientMessage, { type: 'deviceAnnounce' }>",
+      "tsSource": "packages/runtime/src/sync/collabV3WireTypes.ts",
+      "direction": "iosToServer",
+      "swiftType": "DeviceAnnounceMessage",
+      "swiftSource": "packages/ios/NimbalystNative/Sources/Sync/SyncProtocol.swift"
+    },
+    {
+      "file": "devicesList.json",
+      "tsType": "Extract<ServerMessage, { type: 'devicesList' }>",
+      "tsSource": "packages/runtime/src/sync/collabV3WireTypes.ts",
+      "direction": "serverToIos",
+      "swiftType": "DevicesListMessage",
+      "swiftSource": "packages/ios/NimbalystNative/Sources/Sync/SyncProtocol.swift",
+      "notes": "No reusable Swift envelope type exists in SyncProtocol.swift or IndexReplicationProtocol.swift; T2 to add."
+    },
+    {
+      "file": "deviceJoined.json",
+      "tsType": "Extract<ServerMessage, { type: 'deviceJoined' }>",
+      "tsSource": "packages/runtime/src/sync/collabV3WireTypes.ts",
+      "direction": "serverToIos",
+      "swiftType": "DeviceJoinedMessage",
+      "swiftSource": "packages/ios/NimbalystNative/Sources/Sync/SyncProtocol.swift",
+      "notes": "No reusable Swift envelope type exists in SyncProtocol.swift or IndexReplicationProtocol.swift; T2 to add."
+    },
+    {
+      "file": "deviceLeft.json",
+      "tsType": "Extract<ServerMessage, { type: 'deviceLeft' }>",
+      "tsSource": "packages/runtime/src/sync/collabV3WireTypes.ts",
+      "direction": "serverToIos",
+      "swiftType": "DeviceLeftMessage",
+      "swiftSource": "packages/ios/NimbalystNative/Sources/Sync/SyncProtocol.swift",
+      "notes": "No reusable Swift envelope type exists in SyncProtocol.swift or IndexReplicationProtocol.swift; T2 to add."
+    },
+    {
+      "file": "indexSyncRequest.json",
+      "tsType": "Extract<ClientMessage, { type: 'indexSyncRequest' }>",
+      "tsSource": "packages/runtime/src/sync/collabV3WireTypes.ts",
+      "direction": "iosToServer",
+      "swiftType": "IndexSyncRequest",
+      "swiftSource": "packages/ios/NimbalystNative/Sources/Sync/SyncProtocol.swift"
+    },
+    {
+      "file": "indexChangesAvailable.json",
+      "tsType": "Extract<ServerMessage, { type: 'indexChangesAvailable' }>",
+      "tsSource": "packages/runtime/src/sync/collabV3WireTypes.ts",
+      "direction": "serverToIos",
+      "swiftType": "IndexChangesAvailable",
+      "swiftSource": "packages/ios/NimbalystNative/Sources/Sync/IndexReplicationProtocol.swift"
+    },
+    {
+      "file": "error.json",
+      "tsType": "Extract<ServerMessage, { type: 'error' }>",
+      "tsSource": "packages/runtime/src/sync/collabV3WireTypes.ts",
+      "direction": "serverToIos",
+      "swiftType": "ServerError",
+      "swiftSource": "packages/ios/NimbalystNative/Sources/Sync/SyncProtocol.swift"
+    },
+    {
+      "file": "indexDeleteBroadcast.json",
+      "tsType": "Extract<ServerMessage, { type: 'indexDeleteBroadcast' }>",
+      "tsSource": "packages/runtime/src/sync/collabV3WireTypes.ts",
+      "direction": "serverToIos",
+      "swiftType": "IndexDeleteBroadcast",
+      "swiftSource": "packages/ios/NimbalystNative/Sources/Sync/SyncProtocol.swift"
+    },
+    {
+      "file": "fileIndexBroadcast.json",
+      "tsType": "Extract<ServerMessage, { type: 'fileIndexBroadcast' }>",
+      "tsSource": "packages/runtime/src/sync/collabV3WireTypes.ts",
+      "direction": "serverToIos",
+      "swiftType": "FileIndexBroadcast",
+      "swiftSource": "packages/ios/NimbalystNative/Sources/Sync/IndexReplicationProtocol.swift",
+      "notes": "Swift file-index broadcast envelope is declared in IndexReplicationProtocol.swift."
+    },
+    {
+      "file": "fileIndexDeleteBroadcast.json",
+      "tsType": "Extract<ServerMessage, { type: 'fileIndexDeleteBroadcast' }>",
+      "tsSource": "packages/runtime/src/sync/collabV3WireTypes.ts",
+      "direction": "serverToIos",
+      "swiftType": "FileIndexDeleteBroadcast",
+      "swiftSource": "packages/ios/NimbalystNative/Sources/Sync/IndexReplicationProtocol.swift",
+      "notes": "Swift file-index broadcast envelope is declared in IndexReplicationProtocol.swift."
+    }
+  ],
+  "findings": [
+    "Runtime SessionIndexEntry adds local-only title, pendingExecution and hasPendingPrompt versus personal.ts; title is excluded only from wire projections.",
+    "Shared queued prompts add source; runtime constrains options.effortLevel. Runtime and protocol index fixtures stay separate to expose this divergence.",
+    "Shared ProjectIndexEntry adds encryptedConfig and configIv absent from runtime ServerProjectEntry.",
+    "Runtime SessionMetadata adds local-only title, pendingExecution, encryptedQueuedPrompts, encryptedClientMetadata and clientMetadataIv.",
+    "Runtime EncryptedMessage.metadata is opaque Record<string, unknown> | null; the desktop producer writes {}. Shared personal.ts still declares an empty object."
+  ]
+}

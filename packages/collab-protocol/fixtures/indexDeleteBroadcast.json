@@ -1,0 +1,5 @@
+{
+  "type": "indexDeleteBroadcast",
+  "sessionId": "a9724085-1664-4183-8554-bacab2816579",
+  "fromConnectionId": "ttl-cleanup"
+}

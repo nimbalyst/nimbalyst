@@ -4,11 +4,10 @@
  *
  * The personal sync seed is generated per install and only ever leaves a
  * machine through device pairing, so a row this key cannot read is most often
- * a healthy row written by another of the user's devices. It is a key problem
- * on THIS device and never evidence about the server. Callers fail the read,
- * keep the last good local state, and stop publishing (see
- * `personalSyncWriteGate.ts`). Nothing is deleted or rewritten server-side
- * because of one of these -- that is what GitHub #1117 was.
+ * a healthy row written by another of the user's devices. Callers skip its
+ * payload, keep the last good local cache, and retain its revision for coverage.
+ * Unreadable rows never authorize deletion (GitHub #1117). Reconciliation may
+ * republish a matching session from the authoritative local database.
  */
 export class IndexEntryDecryptionError extends Error {
   constructor(message: string) {

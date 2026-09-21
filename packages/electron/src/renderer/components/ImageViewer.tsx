@@ -8,6 +8,7 @@
 import React, { useEffect, useState } from 'react';
 import { ZoomableImageSurface } from '@nimbalyst/runtime/ui/AgentTranscript/components/ZoomableImageSurface';
 import { nimAssetUrl } from '../utils/assetUrl';
+import { DiskChangeSubscription } from '../services/document-model/DiskChangeSubscription';
 
 interface ImageViewerProps {
   filePath: string;
@@ -20,22 +21,25 @@ export const ImageViewer: React.FC<ImageViewerProps> = ({ filePath, fileName }) 
   const [dimensions, setDimensions] = useState<{ width: number; height: number } | null>(null);
 
   useEffect(() => {
-    const loadImage = async () => {
-      try {
-        // Issue #146: route through `nim-asset://` so the renderer stays
-        // same-origin (lets `webSecurity: true` stay on the main window).
-        // The main-process handler validates the path against allowlisted
-        // workspace + userData roots.
-        const absolute = filePath.startsWith('file://') ? filePath.replace(/^file:\/\//, '') : filePath;
-        setImageSrc(nimAssetUrl(absolute));
-        setError(null);
-      } catch (err) {
-        setError('Failed to load image');
-        console.error('Error loading image:', err);
-      }
+    const absolute = filePath.startsWith('file://') ? filePath.replace(/^file:\/\//, '') : filePath;
+    // #1543: the path stays the same after an overwrite. A new URL forces a
+    // fresh image request, including after remounts and renderer reloads.
+    const freshUrl = () => `${nimAssetUrl(absolute)}?revision=${crypto.randomUUID()}`;
+    const showImage = (url: string) => {
+      setImageSrc(url);
+      setError(null);
+      setDimensions(null);
     };
-
-    loadImage();
+    showImage(freshUrl());
+    const subscription = new DiskChangeSubscription(
+      absolute,
+      // The asset protocol streams the bytes; don't decode binary images as
+      // text through DocumentModel just to invalidate their preview.
+      async () => freshUrl(),
+      ({ content }) => showImage(content as string),
+      () => setError('Image file no longer exists'),
+    );
+    return () => subscription.dispose();
   }, [filePath]);
 
   const handleImageError = () => {

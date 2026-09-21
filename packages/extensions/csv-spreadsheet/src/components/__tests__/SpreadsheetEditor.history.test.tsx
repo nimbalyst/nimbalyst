@@ -10,6 +10,7 @@ const { getProviders, lifecycleOptions, lifecycleState, navigateToTrackerReferen
   // capturing them is how a test gets to drive it.
   lifecycleOptions: {
     current: null as null | {
+      applyContent: (content: string) => void;
       onDiffRequested: (config: DiffConfig) => void;
       onSave: () => Promise<void>;
     },
@@ -29,7 +30,10 @@ vi.mock('@revolist/react-datagrid', async () => {
           if (element) {
             Object.assign(element, {
               getProviders,
-              getSource: vi.fn(async () => []),
+              getSource: vi.fn(async (section: string) => {
+                const grid = element as HTMLElement & { source?: object[]; pinnedTopSource?: object[] };
+                return (section === 'rowPinStart' ? grid.pinnedTopSource : grid.source) ?? [];
+              }),
               getSelectedRange: vi.fn(async () => null),
               setDataAt: vi.fn(),
               setCellsFocus: vi.fn(),
@@ -89,6 +93,18 @@ const DIFF: DiffConfig = {
 describe('SpreadsheetEditor history lifecycle', () => {
   beforeEach(() => {
     getProviders.mockClear();
+  });
+
+  it('does not reapply the loaded snapshot when the grid wrapper cycles its ref on a render', async () => {
+    const host = createHost();
+    const { container, rerender } = render(<SpreadsheetEditor host={host} />);
+    await act(async () => { lifecycleOptions.current!.applyContent('Name,Value\nAlpha,1'); });
+    const grid = container.querySelector('revo-grid') as HTMLElement & { source: Record<string, unknown>[] };
+    await waitFor(() => expect(grid.source[0].A).toBe('Alpha'));
+    grid.source[0].B = '9';
+    rerender(<SpreadsheetEditor host={{ ...host }} />);
+    await act(async () => { await Promise.resolve(); });
+    expect(grid.source[0].B).toBe('9');
   });
 
   it('preserves one undo plugin when the host prop is recreated', async () => {

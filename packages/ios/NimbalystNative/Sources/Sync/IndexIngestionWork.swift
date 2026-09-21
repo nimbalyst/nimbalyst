@@ -127,6 +127,7 @@ struct IndexMaintenanceOutcome: Sendable {
     let pendingFinalizationRunId: String?
     /// Ancestor ids the local cache is missing, from `missingAncestors`.
     var missingAncestorIds: [String] = []
+    var skippedRowCount: Int = 0
     /// False would mean recovery ran on the main actor, which is the bug this
     /// whole path exists to avoid.
     let ranOffMainActor: Bool
@@ -148,6 +149,7 @@ struct IndexPageOutcome: Sendable {
     let requestId: String
     let mode: IndexReplicationMode
     let result: Result
+    var skippedRowCount: Int = 0
 
     enum Result: Sendable {
         /// Applied. `complete` means this was the last page of the range.

@@ -19,6 +19,8 @@
  * and `git:file-diff` (resolves the owning repo of the file it is given).
  */
 
+import { runCommitProposalOnce, commitProposalIdentity } from '../services/ai/CommitProposalExecution';
+import { resolveGitCommitProposalPromptId } from '../services/ai/gitCommitProposalPromptUtils';
 import { ipcMain } from 'electron';
 import simpleGit, { SimpleGit } from 'simple-git';
 import log from 'electron-log/main';
@@ -1176,7 +1178,8 @@ export function registerGitHandlers(): void {
       // Optional: commit into this repository instead of resolving one per
       // file. Set when the caller already knows the repo (the widget's repo
       // header, an extension passing an explicit target).
-      repoPath?: string
+      repoPath?: string,
+      proposalId?: string
     ): Promise<{
       success: boolean;
       commitHash?: string;
@@ -1194,7 +1197,7 @@ export function registerGitHandlers(): void {
         ? await resolveSessionExtraCommitRoots(sessionId, workspacePath)
         : [];
 
-      const result = await withGitOperationLog(
+      const execute = () => withGitOperationLog(
         operationLog,
         workspacePath,
         ['commit', '-m', message],
@@ -1211,6 +1214,10 @@ export function registerGitHandlers(): void {
         }),
         result => result.commitHash ? `[${result.commitHash}] commit created` : undefined,
       );
+
+      const result = sessionId && proposalId
+        ? await runCommitProposalOnce(sessionId, await resolveGitCommitProposalPromptId(sessionId, proposalId, false), commitProposalIdentity(workspacePath, message, filesToStage, hunkSelections, repoPath), execute)
+        : await execute();
 
       if (sessionId) {
         // Record every commit the operation produced. A selection spanning two

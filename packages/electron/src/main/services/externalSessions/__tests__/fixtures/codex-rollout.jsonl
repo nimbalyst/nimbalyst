@@ -1,0 +1,12 @@
+{"timestamp": "2026-09-14T10:00:00.000Z", "type": "session_meta", "payload": {"id": "thread-test", "cwd": "/workspace/project", "originator": "codex_cli_rs", "source": "cli"}, "ordinal": 0}
+{"timestamp":"2026-09-14T10:00:00.000Z","type":"response_item","payload":{"type":"message","role":"developer","content":[{"type":"input_text","text":"Internal instructions"}]},"ordinal":1}
+{"timestamp":"2026-09-14T10:00:00.000Z","type":"event_msg","payload":{"type":"user_message","message":"Read the file"},"ordinal":2}
+{"timestamp":"2026-09-14T10:00:00.000Z","type":"response_item","payload":{"type":"message","id":null,"role":"user","content":[{"type":"input_text","text":"Read the file"}]},"ordinal":3}
+{"timestamp":"2026-09-14T10:00:00.000Z","type":"turn_context","payload":{"turn_id":"turn-test","cwd":"/workspace/project","model":"gpt-test"},"ordinal":4}
+{"timestamp":"2026-09-14T10:00:00.000Z","type":"response_item","payload":{"type":"reasoning","id":null,"summary":[{"type":"summary_text","text":"Inspect the file"}],"encrypted_content":"opaque"},"ordinal":5}
+{"timestamp":"2026-09-14T10:00:00.000Z","type":"event_msg","payload":{"type":"item_completed","thread_id":"thread-test","turn_id":"turn-test","item":{"type":"AgentMessage","content":"Done"}},"ordinal":6}
+{"timestamp":"2026-09-14T10:00:00.000Z","type":"response_item","payload":{"type":"function_call","id":null,"call_id":"call-test","name":"read_file","arguments":"{\"path\":\"hello.txt\"}"},"ordinal":7}
+{"timestamp":"2026-09-14T10:00:00.000Z","type":"response_item","payload":{"type":"function_call_output","call_id":"call-test","output":"hello world"},"ordinal":8}
+{"timestamp":"2026-09-14T10:00:00.000Z","type":"event_msg","payload":{"type":"agent_message","message":"Done"},"ordinal":9}
+{"timestamp":"2026-09-14T10:00:00.000Z","type":"response_item","payload":{"type":"message","id":null,"role":"assistant","phase":"final_answer","content":[{"type":"output_text","text":"Done"}]},"ordinal":10}
+{"timestamp":"2026-09-14T10:00:00.000Z","type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-test","last_agent_message":"Done"},"ordinal":11}

@@ -24,6 +24,11 @@ vi.mock('electron', async () => ({
 
 import { SQLiteDatabase } from '../../database/sqlite/SQLiteDatabase';
 import { findSessionAttributionForFile, findSessionIdsForFile, worktreeRootRange } from '../sessionFilesByPath';
+import { getSessionsForFile } from '../fileSessionLookup';
+import { createPGLiteSessionStore } from '../PGLiteSessionStore';
+import { createSyncedSessionStore } from '@nimbalyst/runtime/sync/SyncedSessionStore';
+import { AISessionsRepository } from '@nimbalyst/runtime/storage/repositories/AISessionsRepository';
+import type { SyncProvider } from '@nimbalyst/runtime/sync/types';
 
 const PROJECT = '/Users/dev/sources/app';
 const WORKTREE = '/Users/dev/sources/app_worktrees/feature-a';
@@ -52,8 +57,44 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  AISessionsRepository.clearStore();
   await sqlite.close();
   fs.rmSync(tmpDir, { recursive: true, force: true });
+});
+
+it('hydrates 916 linked sessions through the synced repository in three database queries', async () => {
+  const ids = Array.from({ length: 916 }, (_, i) => `session-${i}`);
+  await sqlite.query(
+    `INSERT INTO ai_sessions (id, provider, workspace_id) VALUES ${ids.map((_, i) => `($${i + 1}, 'openai-codex', '${PROJECT}')`).join(',')}`,
+    ids,
+  );
+  const filePath = `${PROJECT}/CHANGELOG.md`;
+  await sqlite.query(
+    `INSERT INTO session_files (id, session_id, workspace_id, file_path, link_type, timestamp, metadata)
+     SELECT id, id, workspace_id, $1, 'edited', $2, '{}' FROM ai_sessions`,
+    [filePath, new Date(1000)],
+  );
+  const query = vi.fn(sqlite.query.bind(sqlite));
+  const db = { query: query as typeof sqlite.query };
+  AISessionsRepository.setStore(createSyncedSessionStore(
+    createPGLiteSessionStore(db), {} as SyncProvider,
+  ));
+  const result = await getSessionsForFile(db, AISessionsRepository, PROJECT, filePath);
+  expect(result).toHaveLength(916);
+  expect(query).toHaveBeenCalledTimes(3);
+  expect(result.every(session => session.lastFileEditAt === 1000 && session.isCurrentWorkspace && session.messageCount === 0)).toBe(true);
+});
+
+it('shares concurrent root discovery but discovers newly linked worktrees on the next lookup', async () => {
+  await link('main', PROJECT, `${PROJECT}/a.md`);
+  const query = vi.fn(sqlite.query.bind(sqlite));
+  const db = { query: query as typeof sqlite.query };
+  const lookup = { workspaceId: PROJECT, projectPath: PROJECT, relativePath: '/a.md', filePath: `${PROJECT}/a.md` };
+  await Promise.all([findSessionIdsForFile(db, lookup), findSessionIdsForFile(db, lookup)]);
+  expect(query).toHaveBeenCalledTimes(3);
+  await link('new-worktree', WORKTREE, `${WORKTREE}/a.md`);
+  expect(await findSessionIdsForFile(db, lookup)).toEqual(expect.arrayContaining(['main', 'new-worktree']));
+  expect(query).toHaveBeenCalledTimes(5);
 });
 
 describe('findSessionIdsForFile', () => {

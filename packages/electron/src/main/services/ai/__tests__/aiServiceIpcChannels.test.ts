@@ -17,15 +17,24 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // vi.mock factories are hoisted above module-level consts, so the collector
 // array has to be hoisted with them.
-const { registered } = vi.hoisted(() => ({ registered: [] as string[] }));
+const { registered, handlers, pushChange, getProvider } = vi.hoisted(() => ({
+  registered: [] as string[], handlers: new Map<string, (...args: any[]) => any>(),
+  pushChange: vi.fn(), getProvider: vi.fn(),
+}));
+vi.mock('electron', async () => ({
+  app: (await import('../../../../../test-stubs/privateUserData')).testApp,
+  BrowserWindow: { getAllWindows: () => [] },
+  ipcMain: { on: vi.fn(), handle: vi.fn() },
+}));
 
 // Only `safeHandle` is recorded — all 52 AI channels are invoke-style. `safeOn`
 // and friends are stubbed because unrelated services (NavigationHistoryService
 // via WindowManager) construct singletons at module load and register through
 // this module; recording those would pollute the list.
 vi.mock('../../../utils/ipcRegistry', () => ({
-  safeHandle: (channel: string) => {
+  safeHandle: (channel: string, handler: (...args: any[]) => any) => {
     registered.push(channel);
+    handlers.set(channel, handler);
   },
   safeOn: () => {},
   safeOnce: () => {},
@@ -42,7 +51,7 @@ vi.mock('@nimbalyst/runtime/ai/server', () => ({
   GeminiAntigravityProvider: class {},
   OpenAICodexProvider: class {},
   ModelRegistry: {},
-  ProviderFactory: {},
+  ProviderFactory: { getProvider },
   SessionManager: class {},
   isAskUserQuestionProvider: () => false,
 }));
@@ -58,6 +67,11 @@ vi.mock('../../../utils/privateSettingsStore', () => ({ default: class {
 vi.mock('../../../window/WindowManager', () => ({ getWindowId: () => undefined }));
 vi.mock('../../TerminalSessionManager', () => ({ getTerminalSessionManager: () => undefined }));
 vi.mock('../../../mcp/tools/backendToolHandler', () => ({ handleBackendTool: () => undefined }));
+vi.mock('../../SyncManager', () => ({ getSyncProvider: () => ({ pushChange }) }));
+vi.mock('@nimbalyst/runtime/storage/repositories/AISessionsRepository', () => ({
+  AISessionsRepository: { get: vi.fn(async () => ({ provider: 'claude-code' })), updateMetadata: vi.fn() },
+}));
+vi.mock('../../../tray/TrayManager', () => ({ TrayManager: { getInstance: () => ({ onPromptResolved: vi.fn() }) } }));
 
 import { registerInitHandlers } from '../ipc/registerInitHandlers';
 import { registerSessionHandlers } from '../ipc/registerSessionHandlers';
@@ -69,6 +83,9 @@ import { registerModelHandlers } from '../ipc/registerModelHandlers';
 import { registerProjectSettingsHandlers } from '../ipc/registerProjectSettingsHandlers';
 import { registerExtensionChatHandlers } from '../ipc/registerExtensionChatHandlers';
 import type { AIServiceContext } from '../ipc/AIServiceContext';
+import { AIService } from '../AIService';
+import { logger } from '../../../utils/logger';
+import { resetPushOutcomeWarnings } from '@nimbalyst/runtime/sync/pushOutcome';
 
 /**
  * A context whose every member throws when called. Registration must only
@@ -194,5 +211,36 @@ describe('AIService IPC registrars', () => {
     }
     expect(registered).toHaveLength(61);
     expect(new Set(registered).size).toBe(61);
+  });
+});
+
+describe('AIService metadata publication outcomes', () => {
+  beforeEach(() => {
+    resetPushOutcomeWarnings();
+    vi.clearAllMocks();
+    pushChange.mockResolvedValue({ published: false, reason: 'index disconnected' });
+  });
+
+  it.each(['read state', 'plan response'])('warns for unpublished %s without failing the local action', async (action) => {
+    if (action === 'read state') {
+      registerSessionHandlers(stubContext);
+      await expect(handlers.get('ai:updateSessionMetadata')!({}, 's1', { metadata: { lastReadAt: 123 } })).resolves.toEqual({ success: true });
+    } else {
+      getProvider.mockReturnValue({ resolveExitPlanModeConfirmation: vi.fn() });
+      registerInteractivePromptHandlers(stubContext);
+      await expect(handlers.get('ai:exitPlanModeConfirmResponse')!({}, 'r1', 's1', { approved: false })).resolves.toEqual({ success: true });
+    }
+    expect(logger.main.warn).toHaveBeenCalledWith(expect.stringMatching(/s1.*index disconnected/));
+  });
+
+  it('warns when automatic context usage is not published', async () => {
+    getProvider.mockReturnValue({
+      async *sendMessage() { yield { type: 'complete', contextReport: { totalTokens: 100, contextWindow: 200000 } }; },
+    });
+    const service = Object.create(AIService.prototype);
+    service.sessionManager = { loadSession: vi.fn(async () => ({ messages: [] })), updateSessionTokenUsage: vi.fn() };
+    await service.runAutoContextCommand({ id: 's1', provider: 'claude-code' }, '/ws', { sender: { isDestroyed: () => false, send: vi.fn() } });
+    expect(pushChange).toHaveBeenCalledTimes(1);
+    expect(logger.main.warn).toHaveBeenCalledWith(expect.stringMatching(/s1.*index disconnected/));
   });
 });

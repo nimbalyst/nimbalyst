@@ -14,6 +14,7 @@ export interface SyncStatusUpdate {
   connected: boolean;
   syncing: boolean;
   error: string | null;
+  skippedRowCount?: number;
 }
 
 export const syncStatusUpdateAtom = atom<SyncStatusUpdate | null>(null);

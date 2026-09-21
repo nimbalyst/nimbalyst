@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { asPersonalJwt, asPersonalMemberId } from '../../auth/jwtScopes';
 
 import { createCollabV3Sync } from '../CollabV3Sync';
+import { selectSessionsForIndexSync } from '../../../../electron/src/main/services/sync/selectSessionsForIndexSync';
 
 /**
  * Desktop client for the v2 bounded index protocol: bootstrap pages establish
@@ -269,7 +270,7 @@ describe('CollabV3 v2 index replication client', () => {
     provider.disconnectAll();
   });
 
-  it('fails the page on an undecryptable row instead of skipping past it', async () => {
+  it('commits a page with an unreadable row and permits publication without deletion', async () => {
     const encryptionKey = await crypto.subtle.generateKey(
       { name: 'AES-GCM', length: 256 },
       true,
@@ -280,21 +281,83 @@ describe('CollabV3 v2 index replication client', () => {
     const fetching = provider.fetchIndex!();
     const req = await pageRequest(indexSocket, 0);
     indexSocket.receive(pageResponse(req.requestId, {
-      entries: [sessionChange('s1', 1, {
+      entries: [sessionChange('readable', 1), sessionChange('s1', 2, {
         // Written under a different key: ciphertext we cannot read.
         encryptedTitle: 'bm90LXJlYWxseS1lbmNyeXB0ZWQ=',
         titleIv: 'YWJjZGVmZ2hpams=',
+      }), sessionChange('foreign-only', 3, {
+        encryptedTitle: 'bm90LXJlYWxseS1lbmNyeXB0ZWQ=', titleIv: 'YWJjZGVmZ2hpams=',
       })],
       complete: true,
-      cursor: 1,
+      cursor: 3,
     }));
 
-    // Completing this page is what would advance the cursor over the row, so a
-    // row we cannot read has to fail the fetch, not be quietly dropped.
-    await expect(fetching).rejects.toThrow();
-    // And it must not be "cleaned up" server-side the way the legacy path does.
+    const result = await fetching.catch(error => ({ error: error.message }));
+    expect.soft(provider.getPersonalSyncWriteGate?.()).toMatchObject({ state: 'verified', reason: null, skippedRowCount: 2 });
+    expect.soft(result).toMatchObject({
+      complete: true,
+      sessions: [expect.objectContaining({ sessionId: 'readable' })],
+      deletedSessionIds: [],
+    });
     expect(sentOfType(indexSocket, 'indexDelete')).toHaveLength(0);
     expect(sentOfType(indexSocket, 'indexSyncRequest')).toHaveLength(0);
+    if (!('error' in result)) {
+      const local = { id: 's1', title: 'Local', provider: 'claude-code', workspaceId: '/project', messageCount: 0, createdAt: 1000, updatedAt: 1000 };
+      const selected = selectSessionsForIndexSync([local], result, Date.now());
+      expect(selected.sessionsNeedingIndexUpdate).toEqual([local]);
+      expect(selected.sessionsNeedingMessageSync).toEqual(['s1']);
+      const published = await provider.syncSessionsToIndex!(selected.sessionsNeedingIndexUpdate);
+      expect(published).toMatchObject({ published: true });
+      expect(sentOfType(indexSocket, 'indexUpdate').map(update => update.session.sessionId)).toEqual(['s1']);
+      expect(sentOfType(indexSocket, 'indexDelete')).toHaveLength(0);
+      const again = provider.fetchIndex!();
+      const delta = await pageRequest(indexSocket, 1);
+      expect(delta).toMatchObject({ mode: 'delta', sinceRevision: 3 });
+      indexSocket.receive(pageResponse(delta.requestId, { mode: 'delta', complete: true, cursor: 3 }));
+      await again;
+    }
+    provider.disconnectAll();
+  });
+
+  it('keeps the v2 skipped count through unreadable and readable broadcasts', async () => {
+    const key = await crypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, true, ['encrypt', 'decrypt']);
+    const { provider, indexSocket } = await createConnectedProvider(key);
+    const fetching = provider.fetchIndex!();
+    const request = await pageRequest(indexSocket, 0);
+    const bad = { encryptedTitle: 'bad', titleIv: 'bad' };
+    indexSocket.receive(pageResponse(request.requestId, {
+      entries: [sessionChange('s1', 1, bad), sessionChange('s2', 2, bad)], complete: true, cursor: 2,
+    }));
+    await fetching;
+    expect(provider.getPersonalSyncWriteGate!().skippedRowCount).toBe(2);
+    indexSocket.receive({ type: 'indexBroadcast', session: sessionEntry('s1', bad) });
+    await new Promise(resolve => setTimeout(resolve, 60));
+    expect.soft(provider.getPersonalSyncWriteGate!().skippedRowCount).toBe(2);
+    indexSocket.receive({ type: 'indexBroadcast', session: sessionEntry('s1') });
+    await vi.waitFor(() => expect(provider.getCachedIndexEntry!('s1')).toBeDefined());
+    expect.soft(provider.getPersonalSyncWriteGate!().skippedRowCount).toBe(2);
+    provider.disconnectAll();
+  });
+
+  it('preserves the cached row when a newer hinted delta is unreadable', async () => {
+    const key = await crypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, true, ['encrypt', 'decrypt']);
+    const { provider, indexSocket } = await createConnectedProvider(key);
+    const first = provider.fetchIndex!();
+    const boot = await pageRequest(indexSocket, 0);
+    indexSocket.receive(pageResponse(boot.requestId, { entries: [sessionChange('cached', 1)], complete: true, cursor: 1 }));
+    await first;
+    const cached = provider.getCachedIndexEntry!('cached');
+    const listener = vi.fn();
+    provider.onIndexChange!(listener);
+    indexSocket.receive({ type: 'indexChangesAvailable', revision: 2 });
+    const delta = await pageRequest(indexSocket, 1);
+    indexSocket.receive(pageResponse(delta.requestId, { mode: 'delta', complete: true, cursor: 2,
+      entries: [sessionChange('cached', 2, { encryptedTitle: 'bad', titleIv: 'bad' })] }));
+    await vi.waitFor(() => expect(provider.getPersonalSyncWriteGate!().skippedRowCount).toBe(1));
+    expect(provider.getCachedIndexEntry!('cached')).toEqual(cached);
+    expect(listener).not.toHaveBeenCalled();
+    expect(provider.getPersonalSyncWriteGate!().state).toBe('verified');
+    expect(sentOfType(indexSocket, 'indexDelete')).toHaveLength(0);
     provider.disconnectAll();
   });
 
@@ -777,9 +840,8 @@ describe('CollabV3 v2 index replication client', () => {
  * under the failing key. The personal seed is per-install, so "re-sync with the
  * correct key" never happened -- the other devices' index just vanished.
  *
- * The legacy full-index path now fails closed like the v2 page path, and a
- * provider-owned write gate keeps a device that cannot read the index from
- * publishing replacement ciphertext until a complete read succeeds.
+ * Both ingest paths skip unreadable rows without deletion. Local sessions may
+ * be republished after a complete read, even when another key wrote some rows.
  */
 describe('CollabV3 personal index safety on the legacy full-index path', () => {
   beforeEach(() => {
@@ -829,7 +891,7 @@ describe('CollabV3 personal index safety on the legacy full-index path', () => {
   const settle = () => new Promise((resolve) => setTimeout(resolve, 60));
 
   /** Drives one legacy full-index round trip and answers it with `sessions`. */
-  async function legacyFetch(provider: ReturnType<typeof createCollabV3Sync>, indexSocket: FakeWebSocket, sessions: unknown[]) {
+  async function legacyFetch(provider: ReturnType<typeof createCollabV3Sync>, indexSocket: FakeWebSocket, sessions: unknown[], projects: unknown[] = []) {
     // Once the capability is latched to legacy, the request goes out
     // synchronously inside fetchIndex, so count before calling it.
     const before = sentOfType(indexSocket, 'indexSyncRequest').length;
@@ -839,11 +901,20 @@ describe('CollabV3 personal index safety on the legacy full-index path', () => {
       indexSocket.receive({ type: 'error', code: 'unknown_message_type', message: 'indexPageRequest', requestId: req.requestId });
     }
     await vi.waitFor(() => expect(sentOfType(indexSocket, 'indexSyncRequest')).toHaveLength(before + 1));
-    indexSocket.receive({ type: 'indexSyncResponse', sessions, projects: [] });
+    indexSocket.receive({ type: 'indexSyncResponse', sessions, projects });
     return fetching;
   }
 
-  it('fails the fetch on an undecryptable row, sends no indexDelete, and keeps the last good cache', async () => {
+  it('counts only sessions in a legacy snapshot containing unreadable projects', async () => {
+    const { provider, indexSocket } = await createConnectedProvider(await generateKey());
+    await legacyFetch(provider, indexSocket, [], [projectChange('bad', 1).project]);
+    expect.soft(provider.getPersonalSyncWriteGate!().skippedRowCount).toBe(0);
+    await legacyFetch(provider, indexSocket, [sessionEntry('bad', { encryptedTitle: 'bad', titleIv: 'bad' })], [projectChange('bad', 1).project]);
+    expect.soft(provider.getPersonalSyncWriteGate!().skippedRowCount).toBe(1);
+    provider.disconnectAll();
+  });
+
+  it('skips an undecryptable row, sends no indexDelete, and keeps the last good cache', async () => {
     const mine = await generateKey();
     const theirs = await generateKey();
     const { provider, indexSocket } = await createConnectedProvider(mine);
@@ -854,7 +925,9 @@ describe('CollabV3 personal index safety on the legacy full-index path', () => {
 
     // Another device's row, written under a key this install never had.
     const foreign = await readableRow(theirs, 'theirs-1', 'Another device');
-    await expect(legacyFetch(provider, indexSocket, [readable, foreign])).rejects.toThrow(/decrypt/i);
+    const result = await legacyFetch(provider, indexSocket, [readable, foreign]);
+    expect(result.sessions.map(row => row.sessionId)).toEqual(['mine-1']);
+    expect(provider.getPersonalSyncWriteGate!().skippedRowCount).toBe(1);
 
     expect(sentOfType(indexSocket, 'indexDelete')).toHaveLength(0);
     expect(provider.getCachedIndexEntry?.('mine-1')?.title).toBe('Readable');
@@ -862,7 +935,7 @@ describe('CollabV3 personal index safety on the legacy full-index path', () => {
     provider.disconnectAll();
   });
 
-  it('withholds personal-sync writes until a complete read succeeds and after a wrong-key read', async () => {
+  it('withholds writes until a complete read, then publishes despite wrong-key rows', async () => {
     const mine = await generateKey();
     const theirs = await generateKey();
     const { provider, indexSocket } = await createConnectedProvider(mine);
@@ -875,21 +948,20 @@ describe('CollabV3 personal index safety on the legacy full-index path', () => {
     expect(sentOfType(indexSocket, 'indexUpdate')).toHaveLength(0);
 
     const foreign = await readableRow(theirs, 'theirs-1', 'Another device');
-    await expect(legacyFetch(provider, indexSocket, [foreign])).rejects.toThrow();
-    expect(gate()).toMatchObject({ state: 'blocked', reason: 'decryption-failed' });
+    await legacyFetch(provider, indexSocket, [foreign]);
+    expect(gate()).toMatchObject({ state: 'verified', reason: null, skippedRowCount: 1 });
     provider.syncSessionsToIndex?.([localSession()]);
     await settle();
-    expect(sentOfType(indexSocket, 'indexUpdate')).toHaveLength(0);
+    expect(sentOfType(indexSocket, 'indexUpdate')).toHaveLength(1);
 
-    // A clean, complete read under this key is the only thing that opens the gate.
+    // A later clean read clears the advisory count.
     await legacyFetch(provider, indexSocket, [await readableRow(mine, 'mine-1', 'Readable')]);
     expect(gate().state).toBe('verified');
-    provider.syncSessionsToIndex?.([localSession()]);
-    await vi.waitFor(() => expect(sentOfType(indexSocket, 'indexUpdate')).toHaveLength(1));
+    expect(gate().skippedRowCount).toBe(0);
     provider.disconnectAll();
   });
 
-  it('ignores an undecryptable index broadcast, preserves the cached row, and blocks writes', async () => {
+  it('ignores an undecryptable index broadcast, preserves the cached row, and leaves writes enabled', async () => {
     const mine = await generateKey();
     const theirs = await generateKey();
     const { provider, indexSocket } = await createConnectedProvider(mine);
@@ -903,7 +975,12 @@ describe('CollabV3 personal index safety on the legacy full-index path', () => {
 
     expect(provider.getCachedIndexEntry?.('mine-1')?.title).toBe('Readable');
     expect(seen).not.toHaveBeenCalled();
-    expect(provider.getPersonalSyncWriteGate!()).toMatchObject({ state: 'blocked', reason: 'decryption-failed' });
+    expect(provider.getPersonalSyncWriteGate!()).toMatchObject({ state: 'verified', reason: null, skippedRowCount: 1 });
+    indexSocket.receive({ type: 'indexBroadcast', session: overwrite, fromConnectionId: 'other-device' });
+    await settle();
+    expect(provider.getPersonalSyncWriteGate!().skippedRowCount).toBe(1);
+    indexSocket.receive({ type: 'indexBroadcast', session: await readableRow(mine, 'mine-1', 'Readable again'), fromConnectionId: 'other-device' });
+    await vi.waitFor(() => expect(provider.getPersonalSyncWriteGate!().skippedRowCount).toBe(0));
     provider.disconnectAll();
   });
 

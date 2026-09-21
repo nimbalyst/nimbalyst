@@ -12,6 +12,7 @@ import type {
   GitOperationStatus,
 } from "@nimbalyst/extension-sdk/git-operation-log";
 import { getGitSubprocessEnv } from "./gitEnv";
+import { describeGitConnectionFailure, describeSignalExit } from "./gitCommandFailure";
 
 export type {
   GitOperationExecutor,
@@ -705,34 +706,6 @@ export interface RunGitCommandResult {
   error?: string;
 }
 
-/**
- * A `close` with no exit code means git was terminated by a signal, not that
- * it finished. Reporting the captured stderr in that case is misleading: a
- * push whose pre-push hook had fully passed died this way on 2026-09-11, and
- * the panel showed the hook's own noise as if the hook had rejected it. Only
- * the signal name says what happened (SIGHUP from a pty teardown, SIGTERM
- * from a lock cleanup, SIGKILL from the OS), so it leads the message and the
- * last lines of output follow for context.
- */
-export function describeSignalExit(
-  args: string[],
-  signal: string,
-  stderr: string
-): string {
-  const tail = stderr
-    .trim()
-    .split("\n")
-    .filter((line) => !line.startsWith("    at "))
-    .slice(-12)
-    .join("\n");
-  const command = ["git", ...args.slice(0, 1)].join(" ");
-  return (
-    `${command} was terminated by ${signal} before it finished. ` +
-    `Its hooks did not reject it; another process signalled git.` +
-    (tail ? `\n\nLast output:\n${tail}` : "")
-  );
-}
-
 export async function runGitCommandStreaming(
   service: GitOperationLogService,
   workspacePath: string,
@@ -765,9 +738,13 @@ export async function runGitCommandStreaming(
       if (settled) return;
       settled = true;
       const success = exitCode === 0 && !spawnError;
+      const connectionFailure = describeGitConnectionFailure(args, stderr);
       const error = success
         ? undefined
         : spawnError ||
+          (connectionFailure
+            ? `${connectionFailure}\n\n${stderr.trim()}`
+            : undefined) ||
           stderr.trim() ||
           stdout.trim() ||
           `Git exited with code ${exitCode}`;

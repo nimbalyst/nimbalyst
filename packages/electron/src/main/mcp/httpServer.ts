@@ -724,6 +724,28 @@ function createSharedMcpServer(
 
 // ---- HTTP Transport Helpers ----
 
+/**
+ * The MCP Streamable HTTP spec requires an Accept header naming both
+ * `application/json` and `text/event-stream`; the SDK's transport 406s any
+ * request missing either ("Not Acceptable: Client must accept both...").
+ *
+ * Not every MCP client sends one. Antigravity's `call_mcp_tool` bridge does
+ * not, and every tool call it makes is rejected before reaching a handler --
+ * observed live, logged only as `[MCP:nimbalyst] Server error`, which gives a
+ * user nothing to act on. This is a loopback server that can always answer
+ * with either content type, so correcting a noncompliant header costs nothing
+ * and beats failing a client whose request shape we do not control.
+ *
+ * Groundwork for connecting Antigravity to these endpoints, but the leniency
+ * stands on its own for any client with the same gap.
+ */
+export function ensureMcpAcceptHeader(accept: string | undefined): string {
+  if (accept?.includes("application/json") && accept.includes("text/event-stream")) {
+    return accept;
+  }
+  return "application/json, text/event-stream";
+}
+
 function getMcpSessionIdHeader(req: IncomingMessage): string | undefined {
   const headerValue = req.headers["mcp-session-id"];
   if (Array.isArray(headerValue)) {
@@ -883,6 +905,12 @@ async function tryCreateServer(port: number): Promise<any> {
         // Endpoint-path routing: which split server (or legacy full surface)
         // this connection serves. null for non-/mcp paths (handled below).
         const mcpEndpoint = resolveMcpEndpoint(pathname);
+
+        // See ensureMcpAcceptHeader: not every MCP client sends an Accept
+        // header the SDK's transport will take.
+        if (isMcpEndpoint(pathname)) {
+          req.headers.accept = ensureMcpAcceptHeader(req.headers.accept);
+        }
 
         // Handle SSE GET request to establish connection
         if (isMcpEndpoint(pathname) && req.method === "GET") {

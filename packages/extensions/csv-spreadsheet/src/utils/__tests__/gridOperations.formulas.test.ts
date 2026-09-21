@@ -218,3 +218,13 @@ describe('formula grid wiring', () => {
     expect(data.limits.distinctValueSamplePerColumn).toBe(10);
   });
 });
+
+it('serializes all pinned rows when React header metadata still describes the previous grid', async () => {
+  const initial = Array.from({ length: 38 }, (_, i) => `Row${i},${i}`).join('\n');
+  const { operations } = createFormulaGrid(initial);
+  // Source moves first; the caller's React metadata setter runs afterward.
+  await operations.updateHeaderRowCount(37);
+  const serialized = await operations.toCSV();
+  expect(parseCSV(serialized).data.rows.map(row => row.map(cell => cell.raw)))
+    .toEqual(parseCSV(initial).data.rows.map(row => row.map(cell => cell.raw)));
+});

@@ -1,13 +1,14 @@
 // @vitest-environment jsdom
 import React from 'react';
-import { Provider, createStore } from 'jotai';
-import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { createHydratedOrgStore } from './organizationTestStore';
+import { Provider } from 'jotai';
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { selectedOrgIdAtom } from '../../../store/atoms/orgScope';
 import { dialogRef } from '../../../contexts/DialogContext';
 import { DIALOG_IDS } from '../../../dialogs/registry';
-import { organizationDirectoryAtom } from '../../../store/atoms/settingsDomains';
+import { organizationDirectoryAtom, organizationDirectoryStateAtom } from '../../../store/atoms/settingsDomains';
 import { orgTrackerItemsAtom, trackerItemsMapAtom } from '@nimbalyst/runtime/plugins/TrackerPlugin/trackerDataAtoms';
 import { OrgModeHost } from '../OrgModeHost';
 import { ORG_WINDOW_SURFACE_ID } from '../orgWindowState';
@@ -87,7 +88,7 @@ describe('TeamMode organization targeting', () => {
     });
     const open = vi.fn();
     dialogRef.current = { open } as unknown as typeof dialogRef.current;
-    const store = createStore();
+    const store = await createHydratedOrgStore();
     render(
       <Provider store={store}>
         <OrgModeHost
@@ -110,7 +111,7 @@ describe('TeamMode organization targeting', () => {
 
   it('preserves an explicit destination instead of falling back to the first organization', async () => {
     installApi();
-    const store = createStore();
+    const store = await createHydratedOrgStore();
     store.set(selectedOrgIdAtom, 'org-i-left');
     render(
       <Provider store={store}>
@@ -134,8 +135,9 @@ describe('TeamMode organization targeting', () => {
       success: true,
       teams: [],
     });
-    const store = createStore();
+    const store = await createHydratedOrgStore();
     store.set(selectedOrgIdAtom, 'org-other');
+    store.set(organizationDirectoryStateAtom, { entries: [], status: 'loading', complete: false });
     render(
       <Provider store={store}>
         <OrgModeHost
@@ -147,17 +149,18 @@ describe('TeamMode organization targeting', () => {
       </Provider>,
     );
 
-    await waitFor(() => screen.getByTestId('team-mode-organization-recovery'));
+    screen.getByText('Loading organization…');
+    expect(screen.queryByTestId('team-mode-organization-recovery')).toBeNull();
     expect(store.get(selectedOrgIdAtom)).toBe('org-other');
 
-    store.set(organizationDirectoryAtom, [otherTeam]);
+    act(() => { store.set(organizationDirectoryAtom, [otherTeam]); });
 
     await waitFor(() => expect(orgIdentity()).toContain('Other Org'));
   });
 
   it('offers organization choices on the unbound surface when active organizations exist', async () => {
     installApi();
-    const store = createStore();
+    const store = await createHydratedOrgStore();
     // No workspace and no selection: the unbound surface, but the user is in orgs.
     render(
       <Provider store={store}>
@@ -175,7 +178,7 @@ describe('TeamMode organization targeting', () => {
 
   it('targets the explicitly selected non-workspace organization', async () => {
     installApi();
-    const store = createStore();
+    const store = await createHydratedOrgStore();
     const { container } = render(
       <Provider store={store}>
         <OrgModeHost
@@ -215,7 +218,7 @@ describe('TeamMode organization targeting', () => {
 
   it('uses an explicit host organization without mutating the window selection', async () => {
     installApi();
-    const store = createStore();
+    const store = await createHydratedOrgStore();
     store.set(selectedOrgIdAtom, 'org-workspace');
 
     render(
@@ -249,7 +252,7 @@ describe('TeamMode organization targeting', () => {
       }
       return [];
     });
-    const store = createStore();
+    const store = await createHydratedOrgStore();
     // What initTrackerSyncListeners loads at startup. Org mode shares this
     // store whenever it is a mode rather than a window, and stays mounted while
     // hidden, so seeding the workspace map here emptied every tracker surface
@@ -277,7 +280,7 @@ describe('TeamMode organization targeting', () => {
 
   it('falls back to the workspace-bound organization when no organization is selected', async () => {
     installApi();
-    const store = createStore();
+    const store = await createHydratedOrgStore();
     render(
       <Provider store={store}>
         <OrgModeHost
@@ -299,7 +302,7 @@ describe('TeamMode organization targeting', () => {
   it('renders org-only (no workspace) without a workspace lookup', async () => {
     installApi();
     const findForWorkspace = (window as any).electronAPI.team.findForWorkspace;
-    const store = createStore();
+    const store = await createHydratedOrgStore();
     // No workspacePath: the standalone org-management window targets the org only.
     render(
       <Provider store={store}>

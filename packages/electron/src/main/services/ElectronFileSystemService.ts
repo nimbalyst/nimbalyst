@@ -22,6 +22,7 @@ import type {
 import { logger } from '../utils/logger';
 import { SafePathValidator } from '../security/SafePathValidator';
 import { shouldExcludeFile, shouldExcludeDir, shouldExcludePath, GLOB_EXCLUDE_PATTERNS } from '../utils/fileFilters';
+import { getRipgrepPath } from './ripgrepPath';
 
 const execFileAsync = promisify(execFile);
 
@@ -97,7 +98,7 @@ export class ElectronFileSystemService implements FileSystemService {
         args: rgArgs
       });
 
-      const { stdout } = await execFileAsync('rg', rgArgs, {
+      const { stdout } = await execFileAsync(getRipgrepPath(), rgArgs, {
         maxBuffer: 10 * 1024 * 1024,
         timeout: 30000 // 30 second timeout
       });

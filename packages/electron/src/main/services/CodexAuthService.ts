@@ -1,3 +1,5 @@
+import { CodexSandboxSetup } from './CodexSandboxSetup';
+import { codexSandboxSetupCompleted, type WindowsSandboxMode } from '@nimbalyst/runtime/ai/server/protocols/codexAppServer/windowsSandbox';
 /**
  * CodexAuthService -- drives the codex app-server's `account/*` RPCs from a
  * single lazy long-lived child, so the renderer can show login status and run
@@ -53,6 +55,25 @@ class CodexAuthServiceImpl {
   private currentLoginId: string | null = null;
   private cachedStatus: CodexAuthStatus | null = null;
   private rateLimitsUpdatedListeners = new Set<() => void>();
+
+  private readonly sandboxSetup = new CodexSandboxSetup({
+    connect: async () => {
+      if (process.platform !== 'win32') throw new Error('Windows sandbox setup is only available on Windows.');
+      const client = await this.ensureChild();
+      if (!this.child) throw new Error('Codex management process is unavailable.');
+      return { client, child: this.child };
+    },
+    reset: () => this.shutdown(),
+    ready: codexSandboxSetupCompleted,
+    changed: state => this.broadcast('openai-codex:sandbox-updated', state),
+  });
+
+  getWindowsSandboxStatus() { return this.sandboxSetup.status(); }
+
+  setupWindowsSandbox(mode: WindowsSandboxMode, cwd: string) {
+    if (this.currentLoginId) throw new Error('Finish or cancel Codex sign-in before setting up the sandbox.');
+    return this.sandboxSetup.start(mode, cwd);
+  }
 
   async getStatus(refreshToken = false): Promise<CodexAuthStatus> {
     const client = await this.ensureChild();
@@ -157,6 +178,7 @@ class CodexAuthServiceImpl {
       });
       child.on('exit', (code, signal) => {
         logger.main.warn('[CodexAuth] codex app-server exited', { code, signal });
+        if (this.child !== child) return;
         this.client = null;
         this.child = null;
         this.initializing = null;

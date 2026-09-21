@@ -24,6 +24,7 @@ import { TrackerSurfaceMessage } from './primitives/TrackerSurfaceMessage';
 import { TrackerSwatchBadge } from './primitives/TrackerSwatchBadge';
 import { NEUTRAL_SWATCH, PRIORITY_COLORS } from './board/trackerBoardTokens';
 import './trackerList.css';
+import { TrackerStackedRow } from './TrackerStackedRow';
 
 export interface TrackerListViewProps {
   rows: TrackerRecord[];
@@ -31,6 +32,9 @@ export interface TrackerListViewProps {
   selectedItemId?: string | null;
   onOpenItem: (itemId: string) => void;
   loaded: boolean;
+  /** Host opts into a touch-first row without changing desktop consumers. */
+  stacked?: boolean;
+  showType?: boolean;
   /**
    * Per-row unread dot. Personal lane, so a host with team auth only omits it
    * and the dot's module never enters that host's bundle graph.
@@ -111,6 +115,8 @@ export function TrackerListView({
   loaded,
   renderUnreadSlot,
   onRowContextMenu,
+  stacked = false,
+  showType = true,
 }: TrackerListViewProps) {
   const groups = useMemo(() => groupTrackerItems(rows, groupBy), [rows, groupBy]);
 
@@ -146,7 +152,9 @@ export function TrackerListView({
               <span>{group.items.length}</span>
             </div>
           )}
-          {group.items.map((item) => (
+          {group.items.map((item) => stacked ? (
+            <TrackerStackedRow key={item.id} item={item} selected={selectedItemId === item.id} showType={showType} onOpen={() => onOpenItem(item.id)} />
+          ) : (
             <TrackerListRow
               key={item.id}
               item={item}

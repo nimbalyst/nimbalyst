@@ -7,16 +7,11 @@ import { readClipboard, encodeMarkdownLinkPath, type ChatAttachment } from '@nim
 import type { TokenUsageCategory } from '@nimbalyst/runtime/ai/server/types';
 import type { EffortLevel, ThinkingMode } from '../../utils/modelUtils';
 import { AttachmentPreviewList } from '../AgenticCoding/AttachmentPreviewList';
-import { ModeTag, AIMode } from './ModeTag';
-import { ModelSelector } from './ModelSelector';
-import { EffortLevelSelector } from './EffortLevelSelector';
-import { ThinkingModeSelector } from './ThinkingModeSelector';
-import { OpenCodeRoleSelector } from './OpenCodeRoleSelector';
+import type { AIMode } from './ModeTag';
+import { AIInputControls } from './AIInputControls';
 import { registerPendingVoiceCommandSetter } from './VoiceModeButton.tsx';
 import { PendingVoiceCommand } from './PendingVoiceCommand';
 import { pendingVoiceCommandAtom, voiceActiveSessionIdAtom, type PendingVoiceCommand as PendingVoiceCommandType } from '../../store/atoms/voiceModeState';
-import { ContextUsageDisplay } from './ContextUsageDisplay';
-import { ActionPromptsDropdown } from './ActionPromptsDropdown';
 import type { ActionPrompt } from '../../store/atoms/actionPrompts';
 import { SelectionChips } from './SelectionChips';
 import {
@@ -47,7 +42,7 @@ export interface AIInputRef {
   textarea: HTMLTextAreaElement | null;
 }
 
-interface AIInputProps {
+export interface AIInputProps {
   value: string;
   onChange: (value: string) => void;
   onSend: (message?: string) => void;
@@ -1398,80 +1393,34 @@ export const AIInput = forwardRef<AIInputRef, AIInputProps>(
 
         {/* Inline controls row - hidden in memory mode */}
         {!isMemoryMode && (onModeChange || onModelChange || readOnlyModel || workspacePath || (tokenUsage && provider === 'claude-code')) && (
-          <div style={{
-            display: 'flex',
-            flexWrap: 'wrap',
-            alignItems: 'center',
-            gap: '8px',
-          }}>
-{onModeChange && provider === 'claude-code' && mode && <ModeTag mode={mode} onModeChange={onModeChange} />}
-
-            {(onModelChange || (readOnlyModel && currentModel)) && (
-              <span style={{ display: 'inline-flex' }}>
-                <ModelSelector
-                  currentModel={currentModel || ''}
-                  onModelChange={(modelId) => {
-                    onModelChange?.(modelId);
-                    textareaRef.current?.focus();
-                  }}
-                  sessionHasMessages={sessionHasMessages}
-                  currentProvider={currentProvider}
-                  readOnly={!onModelChange && readOnlyModel}
-                  readOnlyTitle={readOnlyModelTitle}
-                  openRequest={modelPickerOpenRequest}
-                  onKeyboardDismiss={() => textareaRef.current?.focus()}
-                />
-              </span>
-            )}
-            {onOpenCodeRoleChange && workspacePath && (
-              <OpenCodeRoleSelector
-                workspacePath={workspacePath}
-                role={openCodeRole}
-                onRoleChange={onOpenCodeRoleChange}
-                currentModel={currentModel}
-                onModelChange={onModelChange}
-                turnActive={isLoading}
-              />
-            )}
-            {showEffortLevel && onEffortLevelChange && effortLevel && (
-              <EffortLevelSelector
-                level={effortLevel}
-                onLevelChange={onEffortLevelChange}
-                disabled={reasoningControlsDisabled}
-                disabledTitle={reasoningControlsDisabledTitle}
-                modelId={currentModel}
-              />
-            )}
-            {showThinkingToggle && onThinkingModeChange && thinkingMode && (
-              <ThinkingModeSelector
-                mode={thinkingMode}
-                onModeChange={onThinkingModeChange}
-                disabled={reasoningControlsDisabled}
-                disabledTitle={reasoningControlsDisabledTitle}
-              />
-            )}
-            {workspacePath && (
-              <HelpTooltip testId="action-prompts-dropdown">
-                <span style={{ display: 'inline-flex' }}>
-                  <ActionPromptsDropdown
-                    workspacePath={workspacePath}
-                    onInsert={handleActionPromptInsert}
-                    onLaunchNewSession={onLaunchActionInNewSession}
-                  />
-                </span>
-              </HelpTooltip>
-            )}
-            {/* Show token usage for all providers - displays "--" if no data yet */}
-            <ContextUsageDisplay
-              provider={currentProvider ?? provider}
-              inputTokens={tokenUsage?.inputTokens || 0}
-              outputTokens={tokenUsage?.outputTokens || 0}
-              totalTokens={tokenUsage?.totalTokens || 0}
-              contextWindow={tokenUsage?.contextWindow || 0}
-              categories={tokenUsage?.categories}
-              currentContext={tokenUsage?.currentContext}
-            />
-          </div>
+          <AIInputControls
+            onModeChange={onModeChange}
+            provider={provider}
+            mode={mode}
+            onModelChange={onModelChange}
+            readOnlyModel={readOnlyModel}
+            currentModel={currentModel}
+            sessionHasMessages={sessionHasMessages}
+            currentProvider={currentProvider}
+            readOnlyModelTitle={readOnlyModelTitle}
+            onOpenCodeRoleChange={onOpenCodeRoleChange}
+            workspacePath={workspacePath}
+            openCodeRole={openCodeRole}
+            isLoading={isLoading}
+            showEffortLevel={showEffortLevel}
+            onEffortLevelChange={onEffortLevelChange}
+            effortLevel={effortLevel}
+            reasoningControlsDisabled={reasoningControlsDisabled}
+            reasoningControlsDisabledTitle={reasoningControlsDisabledTitle}
+            showThinkingToggle={showThinkingToggle}
+            onThinkingModeChange={onThinkingModeChange}
+            thinkingMode={thinkingMode}
+            onLaunchActionInNewSession={onLaunchActionInNewSession}
+            tokenUsage={tokenUsage}
+            modelPickerOpenRequest={modelPickerOpenRequest}
+            focusInput={() => textareaRef.current?.focus()}
+            onActionInsert={handleActionPromptInsert}
+          />
         )}
 
         {/* Input container with drag/drop support */}

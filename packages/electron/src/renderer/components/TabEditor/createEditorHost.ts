@@ -20,6 +20,8 @@ import { normalizeExternalHttpsUrl } from './externalUrl';
 import { nimAssetUrl } from '../../utils/assetUrl';
 
 export interface EditorHostOptions {
+  /** Instance-local API notifications; never look up another tab's buffer. */
+  onEditorAPIChange?: (api: unknown | null) => void;
   /** Absolute path to the file being edited */
   filePath: string;
 
@@ -265,6 +267,7 @@ export function createEditorHost(options: EditorHostOptions): EditorHost {
 
     // ============ EDITOR API REGISTRATION ============
     registerEditorAPI(api: unknown | null): void {
+      options.onEditorAPIChange?.(api);
       if (api) {
         registerEditorAPI(options.filePath, api, options.triggerSave, {
           ownerToken: editorAPIOwnerToken,

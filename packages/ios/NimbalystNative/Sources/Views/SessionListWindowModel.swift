@@ -336,6 +336,17 @@ final class SessionListWindowModel: ObservableObject {
     /// wrapped in `withAnimation`: a context-meter or read-marker update must not
     /// animate the whole list.
     private func apply(_ snapshot: SessionListWindowSnapshot) {
+        let projectableButUnused = !snapshot.usedProjection
+            && filter.map { $0.likePattern == nil && !$0.includeArchived && $0.hostDeviceId == nil } == true
+        if snapshot.pendingProjectionUpdates > 0 || projectableButUnused {
+            scheduleProjectionRefresh()
+        }
+        // Live rows may already have changed or disappeared while their cached
+        // groups still describe the previous transaction. Keep the last coherent
+        // window until the refresh publishes its replacement, including its paging
+        // cursors and expansion state. Live fallback queries do not use that cache.
+        guard !snapshot.usedProjection || snapshot.pendingProjectionUpdates == 0 else { return }
+
         var merged = snapshot.items
         merged.append(contentsOf: snapshot.exceptions)
         if let focus = snapshot.focus { merged.append(focus) }
@@ -360,18 +371,6 @@ final class SessionListWindowModel: ObservableObject {
         nextExceptionCursor = snapshot.nextExceptionCursor
         isEmpty = snapshot.isEmpty
         state = .loaded
-
-        // The projection is maintained by triggers plus this refresh. A non-zero
-        // pending count means some session writes have not been folded in yet, so the
-        // window is briefly stale; folding them in re-fires the observation.
-        // Also refresh when this filter *could* be served by the projection but was
-        // not -- a first run, or a meta-agent gate flip that invalidated the stored
-        // grouping. Once the rebuild lands, `usedProjection` is true and this stops.
-        let projectableButUnused = !snapshot.usedProjection
-            && filter.map { $0.likePattern == nil && !$0.includeArchived } == true
-        if snapshot.pendingProjectionUpdates > 0 || projectableButUnused {
-            scheduleProjectionRefresh()
-        }
 
         applyPersistedExpansion(to: merged)
     }

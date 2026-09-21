@@ -1,0 +1,10 @@
+{
+  "type": "createSessionResponseBroadcast",
+  "response": {
+    "requestId": "a163759e-8b77-4eec-88b6-15e4b20ab332",
+    "success": false,
+    "error": "Index publication unavailable",
+    "sessionId": "a9724085-1664-4183-8554-bacab2816579"
+  },
+  "fromConnectionId": "synthetic-connection"
+}

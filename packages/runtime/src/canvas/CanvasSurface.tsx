@@ -63,6 +63,7 @@
  * rather than a styling one, and it also trips a development warning as of
  * 12.11.4.
  */
+import { CanvasCommandTooltips } from './CanvasCommandTooltips';
 import {
   lazy,
   Suspense,
@@ -72,19 +73,17 @@ import {
   useMemo,
   useRef,
   useState,
-  type DragEvent as ReactDragEvent,
   type MouseEvent as ReactMouseEvent,
-  type PointerEvent as ReactPointerEvent,
   type ReactElement,
 } from 'react';
 import {
   Background,
   BackgroundVariant,
-  Controls,
   MiniMap,
   Panel,
   ReactFlow,
   ReactFlowProvider,
+  SelectionMode,
   ViewportPortal,
   useNodesInitialized,
   useReactFlow,
@@ -132,6 +131,7 @@ import {
   canvasCommentTargetLabel,
   type CanvasCommentTarget,
 } from './canvasComments';
+import { CanvasAgentRequestPanel } from './CanvasAgentRequestPanel';
 import { getCanvasCallbacks } from './canvasCallbacks';
 import type { CanvasCommentsModel } from './useCanvasComments';
 import {
@@ -145,51 +145,61 @@ import {
   type CanvasCardClaimant,
   type CanvasPresenceParticipant,
 } from './canvasPresence';
-import {
-  CANVAS_EDGE_ARROW_MARKER,
-  CANVAS_EDGE_ARROW_START_MARKER,
-  CanvasEdgeView,
-} from './CanvasEdgeView';
+import { CanvasEdgeView } from './CanvasEdgeView';
+import { CanvasEdgeMarkers } from './CanvasEdgeMarkers';
 import {
   CANVAS_FLOW_EDGE_TYPE,
   CANVAS_FLOW_NODE_TYPE,
   EMPTY_CANVAS_GEOMETRY,
   addCanvasNode,
   applyCanvasEdgeChanges,
-  applyCanvasNodeChanges,
   applyCanvasSelection,
   canvasCardLabel,
   canvasCardReference,
   canvasReferenceNodeIds,
   connectCanvasEdge,
+  canvasClickSelection,
   createNativeCanvasNode,
   createReferenceCanvasNode,
   readCanvasViewport,
-  reorderCanvasNode,
   toFlowEdges,
   stepCanvasGesture,
   toFlowNodes,
   updateCanvasNode,
   withCanvasNodeGeometry,
   withCanvasViewport,
-  zoomViewportAtPoint,
   type CanvasNodeGeometry,
 } from './canvasFlowMapping';
+import { useCanvasPanelState, type CanvasPanelState } from './canvasPanelState';
+import { CanvasToolRail } from './CanvasToolRail';
+import { CanvasZoomWidget } from './CanvasZoomWidget';
+import { CanvasNavigationPanel } from './CanvasNavigationPanel';
+import { useCanvasAwarenessPublisher } from './useCanvasAwarenessPublisher';
+import { useCanvasDropTarget } from './useCanvasDropTarget';
+import { useCanvasWheelZoom } from './useCanvasWheelZoom';
+import { useCanvasCamera } from './useCanvasCamera';
+import {
+  expandCanvasGroupSelection,
+  resolveCanvasCommand,
+  useCanvasCommands,
+} from './useCanvasCommands';
+import { CanvasSelectionBar } from './CanvasSelectionBar';
+import { CanvasContextMenu, useCanvasContextMenu } from './CanvasContextMenu';
 import {
   CANVAS_ACTIVATION_ZOOM,
   canvasZoomBucket,
-  computeCanvasCardLod,
   isCanvasActivationZoom,
-  touchCanvasRecency,
-  type CanvasCardLod,
 } from './canvasCardLod';
+import { useCanvasCardLod } from './useCanvasCardLod';
 import {
   CANVAS_SNAP_GRID,
-  CANVAS_SNAP_THRESHOLD_PX,
-  snapCanvasDrag,
   snapCanvasNodeToGrid,
   type CanvasGuide,
 } from './canvasSnapping';
+import {
+  applyCanvasDragCancellation,
+  snapCanvasDragChanges,
+} from './canvasDragSnapping';
 
 /**
  * The composer is the board's only late-fetched module.
@@ -219,9 +229,6 @@ const ACTIVATION_DURATION_MS = 220;
 const SNAP_GRID: [number, number] = [CANVAS_SNAP_GRID, CANVAS_SNAP_GRID];
 
 const EMPTY_GUIDES: readonly CanvasGuide[] = [];
-
-/** Joins node ids into a set key. A unit separator cannot occur inside one. */
-const NODE_ID_SEPARATOR = '\u001f';
 
 /**
  * Everyone else's in-flight boxes, as one overlay.
@@ -290,17 +297,6 @@ function sameGuides(
   );
 }
 
-/**
- * How far outside the surface a card still counts as visible.
- *
- * Screen pixels against the surface box, so at low zoom this covers more board
- * area -- which is the right way round: a card is cheaper to warm early when it
- * is small, and a pan at low zoom crosses more board per second.
- */
-const VISIBILITY_MARGIN_PX = 240;
-
-const EMPTY_LOD: ReadonlyMap<string, CanvasCardLod> = new Map();
-
 const EMPTY_AWARENESS: ReadonlyMap<number, CanvasAwarenessEntry> = new Map();
 
 const EMPTY_CLAIMS: ReadonlyMap<string, readonly CanvasCardClaimant[]> =
@@ -323,6 +319,14 @@ export interface CanvasSurfaceProps {
   onViewportChange?(viewport: CanvasViewport): void;
   /** This user's last view of this board, if the host remembers one. */
   initialViewport?: CanvasViewport | null;
+  /**
+   * This user's chrome preferences for this board, as the host stored them --
+   * whatever shape that turned out to be. Merged against the current defaults;
+   * see `canvasPanelStateFrom`.
+   */
+  initialPanelState?: unknown;
+  /** Every change to those preferences, for the host to persist per user. */
+  onPanelStateChange?(next: CanvasPanelState): void;
   /** Outbound presence: this user's cursor, viewport, and selection. */
   onAwarenessChange?(patch: CanvasAwarenessPatch): void;
   /** Inbound presence: everyone on the board, including this client's entry. */
@@ -342,7 +346,6 @@ export interface CanvasSurfaceProps {
 
 const NODE_TYPES: NodeTypes = { [CANVAS_FLOW_NODE_TYPE]: CanvasCardNode };
 const EDGE_TYPES: EdgeTypes = { [CANVAS_FLOW_EDGE_TYPE]: CanvasEdgeView };
-const DELETE_KEYS = ['Backspace', 'Delete'];
 
 /**
  * Zoom bounds. Named because `onZoomWheel` has to clamp to exactly the same
@@ -366,6 +369,8 @@ function CanvasSurfaceInner({
   onEditBoundary,
   onViewportChange,
   initialViewport = null,
+  initialPanelState,
+  onPanelStateChange,
   onAwarenessChange,
   awarenessEntries,
   localClientId = null,
@@ -384,13 +389,20 @@ function CanvasSurfaceInner({
     documentRef.current = document;
   }, [document]);
 
+  // Chrome preferences: minimap, grid snap, smart guides, and the armed
+  // pointer tool. Per user and per board, never in the document.
+  const {
+    state: panel,
+    toggle: togglePanelPref,
+    setTool,
+  } = useCanvasPanelState(initialPanelState, onPanelStateChange);
+  const handTool = panel.tool === 'hand';
+
   const [selectedIds, setSelectedIds] = useState<ReadonlySet<string>>(
     () => new Set<string>()
   );
   const [activeNodeId, setActiveNodeId] = useState<string | null>(null);
   const activationToken = useRef(0);
-  const pointerFrameRef = useRef<number | null>(null);
-  const pendingPointerRef = useRef<{ x: number; y: number } | null>(null);
 
   // Alignment guides are transient view state: they are recomputed from every
   // drag frame and thrown away when the drag ends. Nothing here is ever handed
@@ -489,17 +501,34 @@ function CanvasSurfaceInner({
     [document, liveGeometry]
   );
 
+  const committedNodes = useRef<ReturnType<typeof toFlowNodes>>([]);
   const nodes = useMemo(
     () =>
-      toFlowNodes(paintedDocument, {
-        activeNodeId,
-        zoom,
-        lod,
-        selectedIds,
-        readOnly,
-      }),
-    [paintedDocument, activeNodeId, zoom, lod, selectedIds, readOnly]
+      toFlowNodes(
+        paintedDocument,
+        {
+          activeNodeId,
+          zoom,
+          lod,
+          selectedIds,
+          readOnly,
+          tool: panel.tool,
+        },
+        committedNodes.current
+      ),
+    [
+      paintedDocument,
+      activeNodeId,
+      zoom,
+      lod,
+      selectedIds,
+      readOnly,
+      panel.tool,
+    ]
   );
+  useLayoutEffect(() => {
+    committedNodes.current = nodes;
+  }, [nodes]);
   const edges = useMemo(
     () => toFlowEdges(paintedDocument, { selectedIds, readOnly }),
     [paintedDocument, selectedIds, readOnly]
@@ -548,6 +577,36 @@ function CanvasSurfaceInner({
     setActiveNodeId(null);
   }, []);
 
+  const navigationOverview = useRef<Viewport | null>(null);
+  const navigateScreen = useCallback(
+    (nodeId: string) => {
+      if (!(documentRef.current.nodes ?? []).some((node) => node.id === nodeId))
+        return;
+      navigationOverview.current ??= flow.getViewport();
+      deactivate();
+      void flow.fitView({
+        nodes: [{ id: nodeId }],
+        padding: 0.35,
+        maxZoom: 1,
+        duration: ACTIVATION_DURATION_MS,
+      });
+    },
+    [deactivate, flow]
+  );
+  const returnToNavigationOverview = useCallback(() => {
+    deactivate();
+    const previous = navigationOverview.current;
+    navigationOverview.current = null;
+    if (previous)
+      void flow.setViewport(previous, { duration: ACTIVATION_DURATION_MS });
+    else
+      void flow.fitView({
+        padding: 0.2,
+        maxZoom: 1,
+        duration: ACTIVATION_DURATION_MS,
+      });
+  }, [deactivate, flow]);
+
   const activate = useCallback(
     (nodeId: string) => {
       const node = (documentRef.current.nodes ?? []).find(
@@ -572,15 +631,6 @@ function CanvasSurfaceInner({
     },
     [flow]
   );
-
-  useEffect(() => {
-    if (activeNodeId === null) return;
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') deactivate();
-    };
-    window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
-  }, [activeNodeId, deactivate]);
 
   // ---------------------------------------------------------------------
   // Comments: where a thread sits on the board, and how to get to it.
@@ -682,7 +732,6 @@ function CanvasSurfaceInner({
 
   const revisionSource = getCanvasCallbacks().revisions;
   const pickCardReference = getCanvasCallbacks().pickCardReference;
-  const dropSource = getCanvasCallbacks().dropSource;
 
   const cardRevisions = useMemo<CanvasCardRevisionsAccess | null>(
     () =>
@@ -801,28 +850,24 @@ function CanvasSurfaceInner({
   );
 
   /**
-   * The running gesture, as presence.
+   * Outbound presence: cursor, viewport rectangle, and selection.
    *
-   * Ephemeral by construction: awareness carries no history, is dropped when
-   * this client disconnects, and never reaches the outbox. A card left mid-drag
-   * by a lost connection therefore snaps back to its last committed position on
-   * every other board rather than sticking where the pointer died.
+   * Ephemeral by construction -- see useCanvasAwarenessPublisher, which owns
+   * the coalescing and the unmount sweep as well.
    */
-  const publishMovingAwareness = useCallback(
-    (overlay: ReadonlyMap<string, CanvasNodeGeometry>) => {
-      if (!onAwarenessChange) return;
-      onAwarenessChange({
-        moving:
-          overlay.size === 0
-            ? null
-            : [...overlay].map(([nodeId, geometry]) => ({
-                nodeId,
-                ...geometry,
-              })),
-      });
-    },
-    [onAwarenessChange]
-  );
+  const {
+    publishMovingAwareness,
+    publishViewportAwareness,
+    onPointerMove,
+    onPointerLeave,
+  } = useCanvasAwarenessPublisher({
+    flow,
+    surfaceRef: wrapperRef,
+    onAwarenessChange,
+    document,
+    selectedIds,
+    localGeometryRef,
+  });
 
   const guidesRef = useRef(guides);
   guidesRef.current = guides;
@@ -834,80 +879,20 @@ function CanvasSurfaceInner({
     setGuides(next);
   }, []);
 
-  /**
-   * Rewrite a single-card drag to its magnetically snapped position.
-   *
-   * One card at a time on purpose: a multi-card drag has no single rectangle to
-   * align, and React Flow's own grid snap already keeps the group tidy. The
-   * incoming position is grid-snapped by React Flow, so an alignment match here
-   * is a deliberate override of the grid.
-   *
-   * The change that *ends* the drag (`dragging: false`) has to be snapped too.
-   * React Flow re-emits the raw gridded position when the pointer comes up, so
-   * skipping it would silently undo the snap the moment the user let go -- the
-   * card would sit aligned for the whole drag and then jump back to the grid.
-   * Guides are still cleared on that change, because the gesture is over.
-   */
+  /** See canvasDragSnapping: the batch in, the snapped batch and guides out. */
   const withDragSnapping = useCallback(
     (
       changes: readonly NodeChange[],
       base: CanvasDocument
     ): readonly NodeChange[] => {
-      const dragging = changes.filter(
-        (change): change is Extract<NodeChange, { type: 'position' }> =>
-          change.type === 'position' &&
-          change.dragging !== undefined &&
-          change.position !== undefined
-      );
-      // A batch with no position change in it says nothing about the drag.
-      // Every frame of a drag also delivers a second batch carrying no position
-      // at all, once the edited document round-trips back into React Flow, and
-      // reading that as "no drag" wiped the guides before they could ever
-      // paint -- the snap worked and the board stayed blank.
-      if (dragging.length === 0) return changes;
-      if (snapDefeatedRef.current || dragging.length !== 1) {
-        showGuides(EMPTY_GUIDES);
-        return changes;
-      }
-
-      const change = dragging[0];
-      const nodes = base.nodes ?? [];
-      const moving = nodes.find((node) => node.id === change.id);
-      if (!moving || !change.position) {
-        showGuides(EMPTY_GUIDES);
-        return changes;
-      }
-
-      const snapped = snapCanvasDrag(
-        {
-          x: change.position.x,
-          y: change.position.y,
-          width: moving.width,
-          height: moving.height,
-        },
-        nodes
-          .filter((node) => node.id !== moving.id)
-          .map((node) => ({
-            id: node.id,
-            x: node.x,
-            y: node.y,
-            width: node.width,
-            height: node.height,
-          })),
-        // Screen pixels, so the pull feels the same at every zoom.
-        CANVAS_SNAP_THRESHOLD_PX / Math.max(flow.getZoom(), 0.01)
-      );
-      showGuides(change.dragging === true ? snapped.guides : EMPTY_GUIDES);
-      if (snapped.x === change.position.x && snapped.y === change.position.y) {
-        return changes;
-      }
-      return changes.map((entry) =>
-        entry === change
-          ? { ...entry, position: { x: snapped.x, y: snapped.y } }
-          : entry
-      );
+      const result = snapCanvasDragChanges(changes, base, {
+        enabled: panel.smartGuides && !snapDefeatedRef.current,
+        zoom: flow.getZoom(),
+      });
+      if (result.guides !== null) showGuides(result.guides);
+      return result.changes;
     },
-    [flow, showGuides]
+    [flow, panel.smartGuides, showGuides]
   );
 
   /**
@@ -920,9 +905,29 @@ function CanvasSurfaceInner({
    * decision and should stay that way -- read that function before changing the
    * shape of anything here.
    */
+  /** Set by Escape mid-drag; cleared by the frame that ends the gesture. */
+  const dragCancelledRef = useRef(false);
+
   const onNodesChange = useCallback(
-    (changes: NodeChange[]) => {
-      setSelectedIds((current) => applyCanvasSelection(current, changes));
+    (incoming: NodeChange[]) => {
+      // A cancelled drag must not be *written*, not merely un-painted: React
+      // Flow keeps delivering the gesture -- including the `dragging: false`
+      // frame that ends it -- and that last frame is the one the commit path
+      // turns into a document edit. Dropping the position changes leaves the
+      // painted board derived from the document, so the cards snap back.
+      const cancellation = applyCanvasDragCancellation(
+        incoming,
+        dragCancelledRef.current
+      );
+      dragCancelledRef.current = cancellation.stillCancelled;
+      const changes = cancellation.changes;
+
+      setSelectedIds((current) =>
+        expandCanvasGroupSelection(
+          applyCanvasSelection(current, changes),
+          documentRef.current.nodes ?? []
+        )
+      );
       if (readOnly) return;
 
       const step = stepCanvasGesture(
@@ -981,98 +986,6 @@ function CanvasSurfaceInner({
     [commit, readOnly]
   );
 
-  const publishViewportAwareness = useCallback(() => {
-    if (!onAwarenessChange) return;
-    const bounds = wrapperRef.current?.getBoundingClientRect();
-    if (!bounds || bounds.width === 0 || bounds.height === 0) return;
-    const topLeft = flow.screenToFlowPosition({
-      x: bounds.left,
-      y: bounds.top,
-    });
-    const bottomRight = flow.screenToFlowPosition({
-      x: bounds.right,
-      y: bounds.bottom,
-    });
-    onAwarenessChange({
-      viewport: {
-        x: topLeft.x,
-        y: topLeft.y,
-        width: Math.max(0, bottomRight.x - topLeft.x),
-        height: Math.max(0, bottomRight.y - topLeft.y),
-      },
-    });
-  }, [flow, onAwarenessChange]);
-
-  const onPointerMove = useCallback(
-    (event: ReactPointerEvent<HTMLDivElement>) => {
-      if (!onAwarenessChange) return;
-      pendingPointerRef.current = { x: event.clientX, y: event.clientY };
-      if (pointerFrameRef.current !== null) return;
-      pointerFrameRef.current = requestAnimationFrame(() => {
-        pointerFrameRef.current = null;
-        const pointer = pendingPointerRef.current;
-        pendingPointerRef.current = null;
-        if (!pointer) return;
-        onAwarenessChange({ cursor: flow.screenToFlowPosition(pointer) });
-      });
-    },
-    [flow, onAwarenessChange]
-  );
-
-  const onPointerLeave = useCallback(() => {
-    pendingPointerRef.current = null;
-    if (pointerFrameRef.current !== null) {
-      cancelAnimationFrame(pointerFrameRef.current);
-      pointerFrameRef.current = null;
-    }
-    onAwarenessChange?.({ cursor: null });
-  }, [onAwarenessChange]);
-
-  useEffect(
-    () => () => {
-      if (pointerFrameRef.current !== null) {
-        cancelAnimationFrame(pointerFrameRef.current);
-      }
-      // A board closed mid-drag must not leave a card haloed at a position
-      // nobody is holding any more. The binding clears the whole field on its
-      // own teardown; this covers the surface unmounting first.
-      if (localGeometryRef.current.size > 0) {
-        publishMovingAwareness(EMPTY_CANVAS_GEOMETRY);
-      }
-    },
-    [publishMovingAwareness]
-  );
-
-  /**
-   * The one card this user has selected, when it is exactly one.
-   *
-   * Keyed on the board's *id set* rather than on `document.nodes`. The array
-   * identity changes on every edit anyone makes -- a teammate typing into a
-   * card, a rank moving, any frame of any gesture -- and re-running this effect
-   * for those republished a selection that had not changed, so ordinary
-   * document work turned into presence traffic carrying nothing. The set is what
-   * this effect actually depends on: the only thing a node change can do to a
-   * selection is take its card away.
-   */
-  const nodeIdKey = useMemo(
-    () =>
-      (document.nodes ?? [])
-        .map((node) => node.id)
-        .sort()
-        .join(NODE_ID_SEPARATOR),
-    [document.nodes]
-  );
-  useEffect(() => {
-    if (!onAwarenessChange) return;
-    const present = new Set(
-      nodeIdKey === '' ? [] : nodeIdKey.split(NODE_ID_SEPARATOR)
-    );
-    const selectedNodes = [...selectedIds].filter((id) => present.has(id));
-    onAwarenessChange({
-      selectedNodeId: selectedNodes.length === 1 ? selectedNodes[0] : null,
-    });
-  }, [nodeIdKey, onAwarenessChange, selectedIds]);
-
   // Pan and zoom go to the host as this user's view, never into the document.
   const onMoveEnd = useCallback(
     (_event: unknown, viewport: Viewport) => {
@@ -1118,6 +1031,20 @@ function CanvasSurfaceInner({
     commit(withCanvasViewport(documentRef.current, flow.getViewport()));
   }, [commit, flow]);
 
+  // Camera commands, shared by the zoom widget, the keyboard map, and the
+  // context menu. See useCanvasCamera for why each one cancels activation.
+  const { camera, savedHomeView } = useCanvasCamera({
+    flow,
+    surfaceRef: wrapperRef,
+    activationToken,
+    selectedIds,
+    documentRef,
+    document,
+    minZoom: MIN_ZOOM,
+    maxZoom: MAX_ZOOM,
+    durationMs: ACTIVATION_DURATION_MS,
+  });
+
   const cardCallbacks = useMemo<CanvasCardCallbacks>(
     () => ({
       observeCard,
@@ -1128,18 +1055,11 @@ function CanvasSurfaceInner({
         const next = updateCanvasNode(documentRef.current, id, patch);
         if (next !== documentRef.current) onDocumentChange(next);
       },
-      onReorderNode: (id, placement) => {
-        if (readOnly) return;
-        commit(reorderCanvasNode(documentRef.current, id, placement));
-      },
-      onDeleteNode: (id) => {
-        if (readOnly) return;
-        commit(
-          applyCanvasNodeChanges(documentRef.current, [{ id, type: 'remove' }])
-        );
-      },
+      // Front, back, and delete used to live here, for the per-card toolbar.
+      // They are registry commands now -- `bring-front`, `send-back`, `delete`
+      // in useCanvasCommands -- so the card no longer needs a way to ask.
     }),
-    [collaborative, commit, observeCard, onDocumentChange, readOnly]
+    [collaborative, observeCard, onDocumentChange, readOnly]
   );
 
   /** Canvas coordinates of the middle of what the user is currently looking at. */
@@ -1162,11 +1082,12 @@ function CanvasSurfaceInner({
    */
   const place = useCallback(
     (node: CanvasAnyNode) => {
-      const placed = snapDefeated ? node : snapCanvasNodeToGrid(node);
+      const placed =
+        snapDefeated || !panel.gridSnap ? node : snapCanvasNodeToGrid(node);
       commit(addCanvasNode(documentRef.current, placed));
       setSelectedIds(new Set([placed.id]));
     },
-    [commit, snapDefeated]
+    [commit, panel.gridSnap, snapDefeated]
   );
 
   const addCard = useCallback(
@@ -1178,6 +1099,14 @@ function CanvasSurfaceInner({
     [place, viewportCenter]
   );
 
+  // Dropping a card in from the host's tree; see useCanvasDropTarget.
+  const { dropActive, onDragOver, onDragLeave, onDrop } = useCanvasDropTarget({
+    flow,
+    documentRef,
+    readOnly,
+    place,
+  });
+
   /**
    * Put an existing file or shared document on the board.
    *
@@ -1186,50 +1115,6 @@ function CanvasSurfaceInner({
    * restored viewport can move it while the user is choosing -- and a card
    * dropped at where the board used to be is a card the user has to go find.
    */
-  /**
-   * A card dragged in from the host's file or document tree.
-   *
-   * Placed under the pointer rather than at the viewport centre -- a drag *is*
-   * a placement, and dropping three documents in a row only to find them
-   * stacked in the middle of the board is worse than not accepting the drag.
-   */
-  const [dropActive, setDropActive] = useState(false);
-
-  const onDragOver = useCallback(
-    (event: ReactDragEvent) => {
-      if (readOnly || !dropSource?.accepts([...event.dataTransfer.types])) return;
-      event.preventDefault();
-      // The collab tree drags with `effectAllowed: 'copyMove'` so it can also
-      // reorder into folders; a board never moves the source, it references it.
-      event.dataTransfer.dropEffect = 'copy';
-      setDropActive(true);
-    },
-    [dropSource, readOnly]
-  );
-
-  const onDrop = useCallback(
-    (event: ReactDragEvent) => {
-      setDropActive(false);
-      if (readOnly || !dropSource?.accepts([...event.dataTransfer.types])) return;
-      event.preventDefault();
-      const pick = dropSource.read(event.dataTransfer);
-      if (!pick) return;
-      const at = flow.screenToFlowPosition({
-        x: event.clientX,
-        y: event.clientY,
-      });
-      place(
-        createReferenceCanvasNode(
-          documentRef.current,
-          pick.reference,
-          at,
-          pick.label
-        )
-      );
-    },
-    [dropSource, flow, place, readOnly]
-  );
-
   const addReferenceCard = useCallback(async () => {
     const pick = await pickCardReference?.();
     if (!pick) return;
@@ -1244,6 +1129,260 @@ function CanvasSurfaceInner({
       )
     );
   }, [pickCardReference, place, viewportCenter]);
+
+  // ---------------------------------------------------------------------
+  // Commands: one runner behind the keyboard, the selection bar, and the menu.
+  // ---------------------------------------------------------------------
+
+  const escapeActions = useMemo(
+    () => ({
+      deactivateCard: () => {
+        if (activeNodeId === null) return false;
+        deactivate();
+        return true;
+      },
+      /**
+       * Drop the held geometry without writing it.
+       *
+       * Best effort by construction: React Flow owns the pointer capture, so a
+       * drag whose button is still down carries on. What Escape can do is
+       * refuse to *keep* the frames -- nothing has been committed yet, so the
+       * cards snap back to where the document still has them.
+       */
+      cancelDrag: () => {
+        if (localGeometryRef.current.size === 0) return false;
+        // The flag is what makes the cancel durable; see
+        // `applyCanvasDragCancellation` for why clearing the overlay alone
+        // leaves the drag's last frame free to commit.
+        dragCancelledRef.current = true;
+        localGeometryRef.current = EMPTY_CANVAS_GEOMETRY;
+        setLocalGeometry(EMPTY_CANVAS_GEOMETRY);
+        publishMovingAwareness(EMPTY_CANVAS_GEOMETRY);
+        showGuides(EMPTY_GUIDES);
+        return true;
+      },
+      clearSelection: () => {
+        if (selectedIds.size === 0) return false;
+        setSelectedIds(new Set<string>());
+        return true;
+      },
+      returnToSelectTool: () => {
+        if (!handTool && !pinPlacement) return false;
+        setTool('select');
+        setPinPlacement(false);
+        return true;
+      },
+      closePanel: () => {
+        if (pendingComment === null && revisionsNodeId === null) return false;
+        setPendingComment(null);
+        setRevisionsNodeId(null);
+        return true;
+      },
+    }),
+    [
+      activeNodeId,
+      deactivate,
+      handTool,
+      pendingComment,
+      pinPlacement,
+      publishMovingAwareness,
+      revisionsNodeId,
+      selectedIds,
+      setTool,
+      showGuides,
+    ]
+  );
+
+  /**
+   * Edges share the selection set with nodes -- both fold through
+   * `applyCanvasSelection` -- so this is how many of the selected ids are
+   * edges. The delete command needs it, because the registry's `enabled` rule
+   * only counts nodes.
+   */
+  const selectedEdgeCount = useMemo(
+    () =>
+      (document.edges ?? []).filter((edge) => selectedIds.has(edge.id)).length,
+    [document.edges, selectedIds]
+  );
+
+  const { ctx: commandContext, run: runCommand } = useCanvasCommands({
+    documentRef,
+    document,
+    selectedIds,
+    setSelectedIds,
+    readOnly,
+    activeNodeId,
+    tool: panel.tool,
+    setTool,
+    commit,
+    camera,
+    addCard,
+    togglePin:
+      comments?.canComment === true
+        ? () => {
+            setPendingComment(null);
+            setPinPlacement((armed) => !armed);
+          }
+        : undefined,
+    togglePanelPref,
+    escape: escapeActions,
+  });
+
+  /**
+   * The board's keyboard, resolved by `canvasKeymap` rather than by a ladder
+   * of `if (event.key === ...)`.
+   *
+   * The guards that matter -- a hot card owns the keyboard, typing into an
+   * input is not a shortcut -- live in `resolveCanvasKey` and are tested there.
+   * This listener's only judgement is that a resolved command consumes the
+   * event: leaving the default in place would let Cmd+A select the whole
+   * transcript behind the board and Backspace navigate the window back.
+   */
+  useEffect(() => {
+    /**
+     * The board only answers the keyboard when it is the thing being used.
+     *
+     * Two ways it can be mounted and not be: Nimbalyst keeps every mode
+     * component mounted and hides the inactive ones with `display: none`, so a
+     * board sitting behind the Agent transcript still has a live window
+     * listener and a zero-sized box; and a visible board is not the focused
+     * pane just because it is on screen. Without both checks, typing "v" into a
+     * chat box would arm the hand tool on a board nobody is looking at, and
+     * Cmd+A would be swallowed from whatever the user actually meant it for.
+     * The focus test is the same one the undo handler in CanvasEditor makes.
+     */
+    const boardIsInPlay = (event: KeyboardEvent): boolean => {
+      const surface = wrapperRef.current;
+      if (!surface) return false;
+      const box = surface.getBoundingClientRect();
+      if (box.width === 0 || box.height === 0) return false;
+      const root = surface.closest('.canvas-editor') ?? surface;
+      const target = event.target as Node | null;
+      if (target !== null && root.contains(target)) return true;
+      const active = window.document.activeElement;
+      return active !== null && root.contains(active);
+    };
+
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!boardIsInPlay(event)) return;
+      // React Flow's own accessibility keys are off (`disableKeyboardA11y`),
+      // but anything else that has already claimed this press -- a dialog, a
+      // Monaco instance inside a hot card -- gets to keep it.
+      if (event.defaultPrevented) return;
+
+      /*
+       * Escape reaches an active card before the keymap does.
+       *
+       * A hot card's editor owns the focus, and `resolveCanvasKey` refuses
+       * every key typed into an editable element -- correctly, or "v" would
+       * arm the hand tool mid-sentence. Escape is the one key that has to cross
+       * that line anyway: it is how a card is deactivated, and there is no
+       * other way out of a card the user has opened.
+       */
+      if (event.key === 'Escape' && activeNodeId !== null) {
+        event.preventDefault();
+        deactivate();
+        return;
+      }
+
+      const id = resolveCanvasCommand(
+        {
+          key: event.key,
+          code: event.code,
+          metaKey: event.metaKey,
+          ctrlKey: event.ctrlKey,
+          shiftKey: event.shiftKey,
+          altKey: event.altKey,
+          target: event.target,
+        },
+        commandContext,
+        selectedEdgeCount
+      );
+      if (id === null) return;
+      event.preventDefault();
+      runCommand(id);
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [activeNodeId, commandContext, deactivate, runCommand, selectedEdgeCount]);
+
+  /**
+   * Keep React Flow's own `selected` flags in step with the surface's set.
+   *
+   * Two paths now change the selection behind React Flow's back: group
+   * expansion (selecting one member selects the rest) and the commands that
+   * select for you, like select-all and duplicate. React Flow draws the
+   * multi-selection rectangle from its *own* store, so a set the surface widened
+   * would paint a rectangle around the one card the user clicked while the
+   * commands acted on five.
+   */
+  useEffect(() => {
+    flow.setNodes((current) => {
+      let changed = false;
+      const next = current.map((node) => {
+        const selected = selectedIds.has(node.id);
+        if (node.selected === selected) return node;
+        changed = true;
+        return { ...node, selected };
+      });
+      return changed ? next : current;
+    });
+  }, [flow, selectedIds]);
+
+  const contextMenu = useCanvasContextMenu();
+
+  /**
+   * The three actions the selection bar carries that are not registry
+   * commands: colour takes an argument, and comment and history open a host
+   * surface rather than editing the board. They are the two the retired
+   * per-card `NodeToolbar` owned, plus the colour swatches it never had.
+   */
+  const colorSelection = useCallback(
+    (color: string | null) => {
+      if (readOnly) return;
+      commit(
+        [...selectedIds].reduce(
+          (next, id) =>
+            updateCanvasNode(next, id, { color: color ?? undefined }),
+          documentRef.current
+        )
+      );
+    },
+    [commit, readOnly, selectedIds]
+  );
+
+  const selectionBarNode =
+    commandContext.selection.length === 1 ? commandContext.selection[0] : null;
+
+  const dropStickyAt = useCallback(
+    (at: { x: number; y: number }) => {
+      if (readOnly) return;
+      place(
+        createNativeCanvasNode(
+          documentRef.current,
+          'sticky',
+          flow.screenToFlowPosition(at)
+        )
+      );
+    },
+    [flow, place, readOnly]
+  );
+
+  const dropCommentAt = useCallback(
+    (at: { x: number; y: number }) => {
+      if (comments?.canComment !== true) return;
+      const point = flow.screenToFlowPosition(at);
+      setPinPlacement(false);
+      setPendingComment({
+        kind: 'point',
+        point: {
+          x: toCanvasCoordinate(point.x),
+          y: toCanvasCoordinate(point.y),
+        },
+      });
+    },
+    [comments, flow]
+  );
 
   // Restore this user's own last view if the host remembers one, then the
   // board's saved home view, and otherwise frame the cards. Read once: React
@@ -1273,50 +1412,12 @@ function CanvasSurfaceInner({
     return () => cancelAnimationFrame(frame);
   }, [nodesInitialized, onAwarenessChange, publishViewportAwareness]);
 
-  /**
-   * Cmd/Ctrl + wheel zooms about the pointer.
-   *
-   * `panOnScroll` hands every wheel event to React Flow's pan handler, which
-   * only diverts to zoom on `ctrlKey` -- the flag macOS synthesises for a
-   * trackpad pinch. Cmd is the other half of the design-tool convention and
-   * React Flow has no notion of it, so the board claims the event itself.
-   *
-   * Capture phase on the wrapper, so it is stopped before it reaches the
-   * `wheel.zoom` listener d3 installs on the pane below. `preventDefault` is
-   * what keeps Cmd + wheel from zooming the whole Electron window instead.
-   *
-   * The delta curve is deliberately React Flow's own `wheelDelta` *without* its
-   * pinch branch: `2 ^ (-deltaY * 0.002)` is the rate this board zoomed at
-   * before `panOnScroll`, so the gesture moved but the feel did not. The ten-fold
-   * factor that branch applies is calibrated for the near-zero deltas a pinch
-   * emits and would make a scroll unusable.
-   */
-  useEffect(() => {
-    const surface = wrapperRef.current;
-    if (!surface) return;
-
-    const onZoomWheel = (event: WheelEvent) => {
-      if (!event.metaKey && !event.ctrlKey) return;
-      event.preventDefault();
-      event.stopPropagation();
-
-      const bounds = surface.getBoundingClientRect();
-      const next = zoomViewportAtPoint(
-        flow.getViewport(),
-        { x: event.clientX - bounds.left, y: event.clientY - bounds.top },
-        { deltaY: event.deltaY, deltaMode: event.deltaMode },
-        { minZoom: MIN_ZOOM, maxZoom: MAX_ZOOM }
-      );
-      if (next !== null) void flow.setViewport(next);
-    };
-
-    surface.addEventListener('wheel', onZoomWheel, {
-      capture: true,
-      passive: false,
-    });
-    return () =>
-      surface.removeEventListener('wheel', onZoomWheel, { capture: true });
-  }, [flow]);
+  // Cmd/Ctrl + wheel zooms about the pointer; see useCanvasWheelZoom for why
+  // the board claims that gesture rather than leaving it to React Flow.
+  useCanvasWheelZoom(flow, wrapperRef, {
+    minZoom: MIN_ZOOM,
+    maxZoom: MAX_ZOOM,
+  });
 
   // Read `altKey` off the event rather than matching `event.key`: on macOS
   // Option changes the character a key produces, so the keydown that arrives
@@ -1339,48 +1440,16 @@ function CanvasSurfaceInner({
     <div
       className={`canvas-surface${
         dropActive ? ' canvas-surface--drop-target' : ''
-      }`}
+      }${handTool ? ' canvas-surface--hand' : ''}`}
       ref={wrapperRef}
       onPointerMove={onPointerMove}
       onPointerLeave={onPointerLeave}
       onDragOver={onDragOver}
       onDrop={onDrop}
-      // Fires when the pointer leaves for a child too, so it is compared
-      // against the surface itself; otherwise the highlight flickers off every
-      // time the drag crosses a card.
-      onDragLeave={(event) => {
-        if (event.currentTarget.contains(event.relatedTarget as Node | null)) {
-          return;
-        }
-        setDropActive(false);
-      }}
+      onDragLeave={onDragLeave}
     >
-      <svg className="canvas-surface__markers" width={0} height={0} aria-hidden>
-        <defs>
-          <marker
-            id={CANVAS_EDGE_ARROW_MARKER}
-            viewBox="0 0 10 10"
-            refX="8"
-            refY="5"
-            markerWidth="7"
-            markerHeight="7"
-            orient="auto-start-reverse"
-          >
-            <path d="M 0 0 L 10 5 L 0 10 z" fill="var(--nim-text-faint)" />
-          </marker>
-          <marker
-            id={CANVAS_EDGE_ARROW_START_MARKER}
-            viewBox="0 0 10 10"
-            refX="2"
-            refY="5"
-            markerWidth="7"
-            markerHeight="7"
-            orient="auto"
-          >
-            <path d="M 10 0 L 0 5 L 10 10 z" fill="var(--nim-text-faint)" />
-          </marker>
-        </defs>
-      </svg>
+      <CanvasEdgeMarkers />
+      <CanvasCommandTooltips surfaceRef={wrapperRef} />
 
       {/* The provider wraps <ReactFlow>, not its children: card components are
           rendered by React Flow's own node renderer, which is a sibling of the
@@ -1388,250 +1457,297 @@ function CanvasSurfaceInner({
           them. */}
       <CanvasCardCallbacksContext.Provider value={cardCallbacks}>
         <CanvasCardCommentsContext.Provider value={cardComments}>
-        <CanvasCardRevisionsContext.Provider value={cardRevisions}>
-        <CanvasCardClaimsContext.Provider value={claims}>
-          <ReactFlow
-            nodes={nodes}
-            edges={edges}
-            nodeTypes={NODE_TYPES}
-            edgeTypes={EDGE_TYPES}
-            onNodesChange={onNodesChange}
-            onEdgesChange={onEdgesChange}
-            onConnect={onConnect}
-            onMoveStart={() => setGestureActive(true)}
-            onMove={onMove}
-            onMoveEnd={onMoveEnd}
-            onNodeDragStart={() => {
-              // Close whatever step preceded this drag, so "move a card, move
-              // another card" is two undos rather than one.
-              onEditBoundary?.();
-            }}
-            // A single click only selects; React Flow does that itself, and
-            // there is no handler here because there is nothing left to do.
-            // The drag-then-click guard this used to need is gone with it: a
-            // drag ends in one click, and one click no longer activates.
-            onNodeDoubleClick={(_event, node) => activate(node.id)}
-            onPaneClick={onPaneClick}
-            defaultViewport={savedViewport ?? undefined}
-            minZoom={MIN_ZOOM}
-            maxZoom={MAX_ZOOM}
-            panOnScroll
-            zoomOnDoubleClick={false}
-            snapToGrid={!snapDefeated}
-            snapGrid={SNAP_GRID}
-            zIndexMode="manual"
-            elevateNodesOnSelect={false}
-            autoPanOnSelection={false}
-            nodesDraggable={!readOnly}
-            nodesConnectable={!readOnly}
-            elementsSelectable
-            deleteKeyCode={readOnly ? null : DELETE_KEYS}
-            proOptions={{ hideAttribution: false }}
-            className="canvas-surface__flow"
-          >
-            <Background
-              variant={BackgroundVariant.Dots}
-              gap={20}
-              size={1}
-              color="var(--nim-border)"
-            />
-            <ViewportPortal>
-              <svg
-                className="canvas-guides"
-                aria-hidden
-                width={0}
-                height={0}
-                // Inside the transformed viewport, so the endpoints below are
-                // plain canvas coordinates and the guides move with the board.
-                // `overflow: visible` is what lets a line drawn at a negative
-                // coordinate paint at all.
-                style={{ position: 'absolute', overflow: 'visible' }}
+          <CanvasCardRevisionsContext.Provider value={cardRevisions}>
+            <CanvasCardClaimsContext.Provider value={claims}>
+              <ReactFlow
+                nodes={nodes}
+                edges={edges}
+                nodeTypes={NODE_TYPES}
+                edgeTypes={EDGE_TYPES}
+                onNodesChange={onNodesChange}
+                onEdgesChange={onEdgesChange}
+                onConnect={onConnect}
+                onMoveStart={() => setGestureActive(true)}
+                onMove={onMove}
+                onMoveEnd={onMoveEnd}
+                onNodeDragStart={() => {
+                  // Close whatever step preceded this drag, so "move a card, move
+                  // another card" is two undos rather than one.
+                  onEditBoundary?.();
+                }}
+                // A click on an ordinary card selects it and React Flow does that
+                // itself. A frame is never selectable -- that is what keeps a
+                // marquee off it (see `canvasNodeSelectable`) -- so its click is the
+                // surface's to answer, through the same set the selection bar, the
+                // context menu, and group expansion all read.
+                onNodeClick={(event, node) => {
+                  if (node.data.kind !== 'group') return;
+                  // Group-aware on its own, so it is not expanded afterwards: an
+                  // expansion would undo the deselecting half of a Shift+click.
+                  setSelectedIds(
+                    canvasClickSelection(
+                      selectedIds,
+                      node.id,
+                      event.shiftKey || event.metaKey || event.ctrlKey,
+                      documentRef.current.nodes ?? []
+                    )
+                  );
+                }}
+                onNodeDoubleClick={(_event, node) => activate(node.id)}
+                onPaneClick={onPaneClick}
+                onPaneContextMenu={(event) =>
+                  contextMenu.open(event as ReactMouseEvent, 'canvas')
+                }
+                // Right-clicking a card that is not in the selection makes it the
+                // selection first: a menu whose items act on something the user is
+                // not pointing at is the classic right-click bug.
+                onNodeContextMenu={(event, node) => {
+                  // Through the same expansion a click goes through: right-clicking
+                  // one member of a group and getting a menu that acts on that card
+                  // alone would be a different answer to the same question.
+                  if (!selectedIds.has(node.id)) {
+                    // Never a toggle -- it only replaces a selection the user is
+                    // not pointing at -- so this is a plain click, through the one
+                    // helper that knows a group is selected as a unit.
+                    setSelectedIds(
+                      canvasClickSelection(
+                        selectedIds,
+                        node.id,
+                        false,
+                        documentRef.current.nodes ?? []
+                      )
+                    );
+                  }
+                  contextMenu.open(event, 'selection');
+                }}
+                defaultViewport={savedViewport ?? undefined}
+                minZoom={MIN_ZOOM}
+                maxZoom={MAX_ZOOM}
+                panOnScroll
+                // The tool is the pointer's meaning, and it is exactly this pair.
+                // Select leaves the left button to the rubber band and gives pan to
+                // the middle and right buttons; hand gives the left button back to
+                // panning and takes the band away. Space is the held-down escape
+                // hatch out of select without touching the rail.
+                panOnDrag={handTool ? true : [1, 2]}
+                selectionOnDrag={!handTool}
+                // Touch, not enclose: a band that clips a card selects it, which is
+                // what every board tool does and what the reference does.
+                selectionMode={SelectionMode.Partial}
+                panActivationKeyCode="Space"
+                // React Flow moves the selected nodes on an arrow key of its own
+                // accord, one step per press, outside the command runner and
+                // outside the undo boundary the runner opens. With the board's own
+                // nudge commands bound to the same keys, one ArrowRight moved the
+                // selection twice and left two undo steps behind it.
+                disableKeyboardA11y
+                zoomOnDoubleClick={false}
+                snapToGrid={!snapDefeated && panel.gridSnap}
+                snapGrid={SNAP_GRID}
+                // LOD owns editor virtualization. Culling these cheap shells too
+                // remounts them on every viewport crossing and bypasses the LOD
+                // gesture freeze (including the editors it was keeping alive).
+                zIndexMode="manual"
+                elevateNodesOnSelect={false}
+                autoPanOnSelection={false}
+                nodesDraggable={!readOnly}
+                nodesConnectable={!readOnly}
+                elementsSelectable
+                // Delete is a registry command now, not React Flow's own key
+                // handling: the command skips locked cards and lands as one undo
+                // step, and leaving both in place would delete twice.
+                deleteKeyCode={null}
+                proOptions={{ hideAttribution: false }}
+                className="canvas-surface__flow"
               >
-                {guides.map((guide) => (
-                  <line
-                    key={`${guide.kind}:${guide.x1},${guide.y1},${guide.x2},${guide.y2}`}
-                    className={`canvas-guides__line canvas-guides__line--${guide.kind}`}
-                    x1={guide.x1}
-                    y1={guide.y1}
-                    x2={guide.x2}
-                    y2={guide.y2}
-                  />
-                ))}
-              </svg>
-            </ViewportPortal>
-            <CanvasPresenceLayer
-              participants={participants}
-              nodes={paintedDocument.nodes ?? []}
-            />
-            {comments?.enabled === true && (
-              <CanvasCommentPins
-                threads={comments.threads}
-                onOpenThread={comments.openThread}
-              />
-            )}
-            {pendingComment !== null && comments !== undefined && (
-              <Panel position="bottom-left" className="canvas-comment-panel">
-                <Suspense fallback={null}>
-                  <CanvasCommentComposer
-                    target={pendingComment}
-                    targetLabel={canvasCommentTargetLabel(
-                      pendingComment,
-                      nodeLabelOf
-                    )}
-                    getMembers={comments.getMembers}
-                    onSubmit={submitPendingComment}
-                    onCancel={() => setPendingComment(null)}
-                  />
-                </Suspense>
-              </Panel>
-            )}
-            {agentRequest !== undefined && (
-              <Panel
-                position="bottom-center"
-                className="canvas-agent-request"
-                data-canvas-agent-request={agentRequest.commentId}
-              >
-                <div className="canvas-agent-request__title">
-                  Start a session for this comment?
-                </div>
-                <div className="canvas-agent-request__where">
-                  {agentRequest.anchorLabel}
-                </div>
-                <blockquote className="canvas-agent-request__body select-text">
-                  {agentRequest.body.trim()}
-                </blockquote>
-                <p className="canvas-agent-request__warning">
-                  This comment came from the shared board and nothing has
-                  verified who wrote it. A session runs here, in this workspace,
-                  with your permissions. Start it only if you recognise the
-                  request.
-                </p>
-                <div className="canvas-agent-request__actions">
-                  <button
-                    type="button"
-                    className="canvas-agent-request__button canvas-agent-request__button--dismiss"
-                    onClick={() =>
-                      comments?.dismissAgentRequest(agentRequest.commentId)
-                    }
+                <Background
+                  variant={BackgroundVariant.Dots}
+                  gap={20}
+                  size={1}
+                  color="var(--nim-border)"
+                />
+                <ViewportPortal>
+                  <svg
+                    className="canvas-guides"
+                    aria-hidden
+                    width={0}
+                    height={0}
+                    // Inside the transformed viewport, so the endpoints below are
+                    // plain canvas coordinates and the guides move with the board.
+                    // `overflow: visible` is what lets a line drawn at a negative
+                    // coordinate paint at all.
+                    style={{ position: 'absolute', overflow: 'visible' }}
                   >
-                    Not now
-                  </button>
-                  <button
-                    type="button"
-                    className="canvas-agent-request__button canvas-agent-request__button--confirm"
-                    onClick={() =>
-                      comments?.confirmAgentRequest(agentRequest.commentId)
-                    }
-                  >
-                    Start session
-                  </button>
-                </div>
-              </Panel>
-            )}
-            {revisionCard !== null && revisionSource !== undefined && (
-              <Panel position="bottom-right" className="canvas-revision-panel">
-                <Suspense fallback={null}>
-                  <CanvasRevisionRail
-                    nodeId={revisionCard.nodeId}
-                    label={revisionCard.label || revisionCard.nodeId}
-                    reference={revisionCard.reference}
-                    source={revisionSource}
-                    canPin={!readOnly}
-                    onPin={pinRevision}
-                    onClose={() => setRevisionsNodeId(null)}
+                    {guides.map((guide) => (
+                      <line
+                        key={`${guide.kind}:${guide.x1},${guide.y1},${guide.x2},${guide.y2}`}
+                        className={`canvas-guides__line canvas-guides__line--${guide.kind}`}
+                        x1={guide.x1}
+                        y1={guide.y1}
+                        x2={guide.x2}
+                        y2={guide.y2}
+                      />
+                    ))}
+                  </svg>
+                </ViewportPortal>
+                <CanvasPresenceLayer
+                  participants={participants}
+                  nodes={paintedDocument.nodes ?? []}
+                />
+                {comments?.enabled === true && (
+                  <CanvasCommentPins
+                    threads={comments.threads}
+                    onOpenThread={comments.openThread}
                   />
-                </Suspense>
-              </Panel>
-            )}
-            <Panel position="top-right" className="canvas-presence-panel">
-              <CanvasPresenceRoster
-                participants={participants}
-                onJumpTo={jumpToParticipant}
-              />
-            </Panel>
-            <Controls showInteractive={false} />
-            {/* React Flow has no colorMode set, so it paints minimap nodes with
+                )}
+                {pendingComment !== null && comments !== undefined && (
+                  <Panel
+                    position="bottom-left"
+                    className="canvas-comment-panel"
+                  >
+                    <Suspense fallback={null}>
+                      <CanvasCommentComposer
+                        target={pendingComment}
+                        targetLabel={canvasCommentTargetLabel(
+                          pendingComment,
+                          nodeLabelOf
+                        )}
+                        getMembers={comments.getMembers}
+                        onSubmit={submitPendingComment}
+                        onCancel={() => setPendingComment(null)}
+                      />
+                    </Suspense>
+                  </Panel>
+                )}
+                {agentRequest !== undefined && comments !== undefined && (
+                  <CanvasAgentRequestPanel
+                    request={agentRequest}
+                    onConfirm={comments.confirmAgentRequest}
+                    onDismiss={comments.dismissAgentRequest}
+                  />
+                )}
+                {revisionCard !== null && revisionSource !== undefined && (
+                  <Panel
+                    position="bottom-right"
+                    className="canvas-revision-panel"
+                  >
+                    <Suspense fallback={null}>
+                      <CanvasRevisionRail
+                        nodeId={revisionCard.nodeId}
+                        label={revisionCard.label || revisionCard.nodeId}
+                        reference={revisionCard.reference}
+                        source={revisionSource}
+                        canPin={!readOnly}
+                        onPin={pinRevision}
+                        onClose={() => setRevisionsNodeId(null)}
+                      />
+                    </Suspense>
+                  </Panel>
+                )}
+                <CanvasSelectionBar
+                  selection={commandContext.selection}
+                  ctx={commandContext}
+                  run={runCommand}
+                  onColor={colorSelection}
+                  onComment={
+                    comments?.canComment === true && selectionBarNode !== null
+                      ? () => {
+                          setPinPlacement(false);
+                          setPendingComment({
+                            kind: 'node',
+                            nodeId: selectionBarNode.id,
+                          });
+                        }
+                      : undefined
+                  }
+                  onHistory={
+                    revisionSource !== undefined &&
+                    selectionBarNode !== null &&
+                    canvasCardReference(selectionBarNode) !== null
+                      ? () => setRevisionsNodeId(selectionBarNode.id)
+                      : undefined
+                  }
+                />
+                <Panel position="top-right" className="canvas-presence-panel">
+                  <CanvasPresenceRoster
+                    participants={participants}
+                    onJumpTo={jumpToParticipant}
+                  />
+                </Panel>
+                <CanvasZoomWidget
+                  minimap={panel.minimap}
+                  gridSnap={panel.gridSnap}
+                  smartGuides={panel.smartGuides}
+                  onToggle={togglePanelPref}
+                  onZoomTo={camera.zoomTo}
+                  onZoomIn={camera.zoomIn}
+                  onZoomOut={camera.zoomOut}
+                  onFitAll={camera.fitAll}
+                  onFitSelection={camera.fitSelection}
+                  onSavedView={camera.savedView}
+                  hasSavedView={savedHomeView !== null}
+                  navigation={
+                    Array.isArray(document['x-nimbalyst']?.navigation) ? (
+                      <CanvasNavigationPanel
+                        document={document}
+                        onNavigate={navigateScreen}
+                        onOverview={returnToNavigationOverview}
+                      />
+                    ) : undefined
+                  }
+                />
+                {/* React Flow has no colorMode set, so it paints minimap nodes with
                 its light-mode defaults -- white swatches on a dark board. The
                 mask and background beside these are themed for the same reason. */}
-            <MiniMap
-              pannable
-              zoomable
-              maskColor="color-mix(in srgb, var(--nim-bg) 65%, transparent)"
-              nodeColor="var(--nim-bg-tertiary)"
-              nodeStrokeColor="var(--nim-border)"
-              style={{ background: 'var(--nim-bg)' }}
-            />
-            {!readOnly && (
-              <Panel position="top-left" className="canvas-toolbar">
-                <button
-                  type="button"
-                  className="canvas-toolbar__button"
-                  onClick={() => addCard('sticky')}
-                >
-                  Sticky
-                </button>
-                <button
-                  type="button"
-                  className="canvas-toolbar__button"
-                  onClick={() => addCard('text')}
-                >
-                  Text
-                </button>
-                <button
-                  type="button"
-                  className="canvas-toolbar__button"
-                  onClick={() => addCard('image')}
-                >
-                  Image
-                </button>
-                <button
-                  type="button"
-                  className="canvas-toolbar__button"
-                  onClick={() => addCard('group')}
-                >
-                  Frame
-                </button>
-                {pickCardReference !== undefined && (
-                  <button
-                    type="button"
-                    className="canvas-toolbar__button"
-                    onClick={() => void addReferenceCard()}
-                    title="Put an existing file or shared document on the board"
-                  >
-                    Doc
-                  </button>
+                {panel.minimap && (
+                  <MiniMap
+                    pannable
+                    zoomable
+                    maskColor="color-mix(in srgb, var(--nim-bg) 65%, transparent)"
+                    nodeColor="var(--nim-bg-tertiary)"
+                    nodeStrokeColor="var(--nim-border)"
+                    style={{ background: 'var(--nim-bg)' }}
+                  />
                 )}
-                {comments?.canComment === true && (
-                  <button
-                    type="button"
-                    className={`canvas-toolbar__button${
-                      pinPlacement ? ' canvas-toolbar__button--armed' : ''
-                    }`}
-                    aria-pressed={pinPlacement}
-                    onClick={() => {
-                      setPendingComment(null);
-                      setPinPlacement((armed) => !armed);
-                    }}
-                    title="Drop a comment pin anywhere on the board"
-                  >
-                    Pin
-                  </button>
-                )}
-                <button
-                  type="button"
-                  className="canvas-toolbar__button canvas-toolbar__button--view"
-                  onClick={saveHomeView}
-                  title="Store the current position and zoom as this board's starting view"
-                >
-                  Save view
-                </button>
-              </Panel>
-            )}
-          </ReactFlow>
-        </CanvasCardClaimsContext.Provider>
-        </CanvasCardRevisionsContext.Provider>
+                <CanvasToolRail
+                  tool={panel.tool}
+                  onToolChange={setTool}
+                  readOnly={readOnly}
+                  onAddCard={addCard}
+                  onAddReference={
+                    pickCardReference === undefined
+                      ? undefined
+                      : () => void addReferenceCard()
+                  }
+                  onTogglePin={
+                    comments?.canComment === true
+                      ? () => {
+                          setPendingComment(null);
+                          setPinPlacement((armed) => !armed);
+                        }
+                      : undefined
+                  }
+                  pinPlacement={pinPlacement}
+                  onSaveView={saveHomeView}
+                />
+              </ReactFlow>
+            </CanvasCardClaimsContext.Provider>
+          </CanvasCardRevisionsContext.Provider>
         </CanvasCardCommentsContext.Provider>
       </CanvasCardCallbacksContext.Provider>
+
+      {/* Portalled to the document body, so it is mounted outside the flow
+          rather than inside its clipping box. */}
+      <CanvasContextMenu
+        anchor={contextMenu.menu?.anchor ?? null}
+        kind={contextMenu.menu?.kind ?? 'canvas'}
+        ctx={commandContext}
+        run={runCommand}
+        onClose={contextMenu.close}
+        onOpenScreenshot={getCanvasCallbacks().openScreenshotSource}
+        onAddSticky={dropStickyAt}
+        onAddComment={dropCommentAt}
+      />
 
       {(document.nodes ?? []).length === 0 && (
         <div className="canvas-surface__empty">
@@ -1644,139 +1760,4 @@ function CanvasSurfaceInner({
       )}
     </div>
   );
-}
-
-interface CanvasCardLodOptions {
-  referenceIds: readonly string[];
-  hotId: string | null;
-  /** Already bucketed by `canvasZoomBucket`. */
-  zoom: number;
-  /** True between `onMoveStart` and `onMoveEnd`. */
-  gestureActive: boolean;
-  surfaceRef: { current: HTMLElement | null };
-}
-
-/**
- * Drives `computeCanvasCardLod` from the DOM.
- *
- * Everything genuinely decision-shaped is in the pure function; this is the
- * observation layer, and it has exactly two jobs beyond wiring.
- *
- * **It refuses intersection batches observed while the surface has no box.**
- * Nimbalyst keeps every mode component mounted and hides the inactive ones with
- * `display: none`, so in Agent mode this whole subtree measures 0x0 and
- * `IntersectionObserver` delivers a confident `isIntersecting: false` for every
- * card. Folding that in would demote the entire board and unmount thirty
- * editors, and the user gets that for free every time they glance at a
- * transcript. The check is a synchronous read of the surface's own box inside
- * the callback rather than a flag set by the ResizeObserver, because the
- * ordering of the two observers is not specified and a flag can be one frame
- * stale in exactly the direction that hurts.
- *
- * **It reports hiddenness so the pure function can freeze.** See the header of
- * canvasCardLod for why freezing is the right answer rather than either
- * demoting or continuing to promote.
- */
-function useCanvasCardLod({
-  referenceIds,
-  hotId,
-  zoom,
-  gestureActive,
-  surfaceRef,
-}: CanvasCardLodOptions): {
-  lod: ReadonlyMap<string, CanvasCardLod>;
-  observeCard: (id: string, element: HTMLElement | null) => void;
-} {
-  const [lod, setLod] = useState<ReadonlyMap<string, CanvasCardLod>>(EMPTY_LOD);
-  const [visibleIds, setVisibleIds] = useState<ReadonlySet<string>>(
-    () => new Set<string>()
-  );
-  const [surfaceHidden, setSurfaceHidden] = useState(false);
-
-  const recencyRef = useRef<readonly string[]>([]);
-  const observerRef = useRef<IntersectionObserver | null>(null);
-  const elementsRef = useRef(new Map<string, HTMLElement>());
-  const visibleRef = useRef(visibleIds);
-  visibleRef.current = visibleIds;
-
-  const isSurfaceHidden = useCallback(() => {
-    const box = surfaceRef.current?.getBoundingClientRect();
-    return box === undefined || box.width === 0 || box.height === 0;
-  }, [surfaceRef]);
-
-  useEffect(() => {
-    const surface = surfaceRef.current;
-    if (!surface) return;
-
-    const observer = new IntersectionObserver(
-      (entries) => {
-        if (isSurfaceHidden()) return;
-        let next: Set<string> | null = null;
-        for (const entry of entries) {
-          const id = (entry.target as HTMLElement).dataset.canvasNodeId;
-          if (id === undefined) continue;
-          if (entry.isIntersecting === visibleRef.current.has(id)) continue;
-          next ??= new Set(visibleRef.current);
-          if (entry.isIntersecting) next.add(id);
-          else next.delete(id);
-        }
-        if (next) {
-          visibleRef.current = next;
-          setVisibleIds(next);
-        }
-      },
-      { root: surface, rootMargin: `${VISIBILITY_MARGIN_PX}px`, threshold: 0 }
-    );
-    observerRef.current = observer;
-    for (const element of elementsRef.current.values())
-      observer.observe(element);
-
-    // Fires when the pane is hidden or shown (a `display: none` element reports
-    // a zero box), which is the signal an IntersectionObserver cannot give us.
-    const resize = new ResizeObserver(() =>
-      setSurfaceHidden(isSurfaceHidden())
-    );
-    resize.observe(surface);
-    setSurfaceHidden(isSurfaceHidden());
-
-    return () => {
-      observer.disconnect();
-      resize.disconnect();
-      observerRef.current = null;
-    };
-  }, [surfaceRef, isSurfaceHidden]);
-
-  const observeCard = useCallback((id: string, element: HTMLElement | null) => {
-    const previous = elementsRef.current.get(id);
-    if (previous === element) return;
-    if (previous) observerRef.current?.unobserve(previous);
-    if (element) {
-      elementsRef.current.set(id, element);
-      observerRef.current?.observe(element);
-    } else {
-      elementsRef.current.delete(id);
-    }
-  }, []);
-
-  useEffect(() => {
-    const recency = touchCanvasRecency(recencyRef.current, [
-      ...(hotId === null ? [] : [hotId]),
-      ...referenceIds.filter((id) => visibleIds.has(id)),
-    ]);
-    recencyRef.current = recency;
-    setLod((previous) =>
-      computeCanvasCardLod({
-        candidateIds: referenceIds,
-        visibleIds,
-        zoom,
-        hotId,
-        surfaceHidden,
-        gestureActive,
-        previous,
-        recency,
-      })
-    );
-  }, [referenceIds, visibleIds, zoom, hotId, surfaceHidden, gestureActive]);
-
-  return { lod, observeCard };
 }

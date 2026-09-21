@@ -1,0 +1,5 @@
+{
+  "type": "fileIndexDeleteBroadcast",
+  "docId": "synthetic-deleted-document",
+  "fromConnectionId": "synthetic-file-delete-connection"
+}

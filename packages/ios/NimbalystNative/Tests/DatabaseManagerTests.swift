@@ -1,7 +1,69 @@
 import XCTest
+import GRDB
+import Darwin
 @testable import NimbalystNative
 
 final class DatabaseManagerTests: XCTestCase {
+
+    @MainActor
+    func testUtilityReadRunsAtDatabaseQoSAndReleasesReaderAfterErrors() async throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let database = try DatabaseManager(path: directory.appendingPathComponent("test.sqlite").path)
+        let finished = expectation(description: "Utility reads complete")
+        // Do not await task.value: that would promote the utility task to the
+        // test's priority and hide the synchronous-read regression.
+        Task.detached(priority: .utility) {
+            defer { finished.fulfill() }
+            do {
+                let qos = try await database.readOnDatabaseQueue { db in
+                    XCTAssertEqual(try Int.fetchOne(db, sql: "SELECT 42"), 42)
+                    return qos_class_self().rawValue
+                }
+                XCTAssertEqual(qos, QOS_CLASS_USER_INITIATED.rawValue)
+                // Fill all five readers before allowing any of the first wave
+                // to finish, with further reads queued behind them.
+                let readers = DispatchGroup()
+                for _ in 0..<5 { readers.enter() }
+                let values = try await withThrowingTaskGroup(of: Int.self) { group in
+                    for index in 0..<12 {
+                        group.addTask {
+                            try await database.readOnDatabaseQueue { db in
+                                if index < 5 {
+                                    readers.leave()
+                                    XCTAssertEqual(readers.wait(timeout: .now() + 2), .success)
+                                }
+                                return try Int.fetchOne(db, sql: "SELECT ?", arguments: [index])!
+                            }
+                        }
+                    }
+                    var values: [Int] = []
+                    for try await value in group { values.append(value) }
+                    return values.sorted()
+                }
+                XCTAssertEqual(values, Array(0..<12))
+                // More failures than available readers must not exhaust the pool.
+                for _ in 0..<10 {
+                    do {
+                        _ = try await database.readOnDatabaseQueue { db in
+                            try db.execute(sql: "SELECT * FROM nonexistent_table")
+                        }
+                        XCTFail("Query errors must propagate")
+                    } catch let error as DatabaseError {
+                        XCTAssertEqual(error.resultCode, .SQLITE_ERROR)
+                    }
+                }
+                let result = try await database.readOnDatabaseQueue { db in
+                    try Int.fetchOne(db, sql: "SELECT 7")
+                }
+                XCTAssertEqual(result, 7)
+            } catch {
+                XCTFail("Unexpected read failure: \(error)")
+            }
+        }
+        await fulfillment(of: [finished], timeout: 5)
+    }
 
     func testMigrationCreatesAllTables() throws {
         let db = try DatabaseManager()

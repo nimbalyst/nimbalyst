@@ -40,6 +40,10 @@ describe('resolveDefaultOrgId', () => {
 });
 
 describe('resolveOrgWindowTargetId', () => {
+  it('does not switch away from the remembered organization on partial discovery', () => {
+    expect(resolveOrgWindowTargetId(null, 'org-unavailable', orgs, false)).toBe('org-unavailable');
+    expect(resolveOrgWindowTargetId(null, 'org-unavailable', orgs, true)).toBe('org-first');
+  });
   it('opens the queued destination when it is an active membership', () => {
     expect(resolveOrgWindowTargetId('org-second', 'org-first', orgs)).toBe('org-second');
   });

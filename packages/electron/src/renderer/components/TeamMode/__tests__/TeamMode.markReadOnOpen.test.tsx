@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import React from 'react';
-import { Provider, createStore } from 'jotai';
+import { createHydratedOrgStore } from './organizationTestStore';
+import { Provider } from 'jotai';
 import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { asTeamMemberId } from '@nimbalyst/runtime/auth/jwtScopes';
@@ -119,7 +120,7 @@ describe('TeamMode marks a room read while it is open', () => {
 
   it('marks the routed conversation\'s deliveries read, once, and drops the count', async () => {
     installApi();
-    const store = createStore();
+    const store = await createHydratedOrgStore();
     store.set(conversationDirectoryAtomFamily('org-1'), [general]);
     store.set(conversationDirectoryLoadStateAtomFamily('org-1'), { status: 'ready' });
     store.set(teamInboxSnapshotAtom, snapshotWith([

@@ -1,5 +1,6 @@
 import { getPatternDisplayName } from '../../types';
 import { buildToolDescription, generateToolPattern } from '../../permissions/toolPermissionHelpers';
+import { constrainPermissionResponse, permissionPromptHints, type PermissionPromptHints } from '../../permissions/permissionPromptPolicy';
 
 export type ToolAuthorizationDecision = {
   behavior: 'allow' | 'deny';
@@ -7,7 +8,7 @@ export type ToolAuthorizationDecision = {
   message?: string;
 };
 
-interface ToolPermissionOptions {
+export interface ToolPermissionOptions extends PermissionPromptHints {
   signal: AbortSignal;
   suggestions?: any[];
   toolUseID?: string;
@@ -16,7 +17,7 @@ interface ToolPermissionOptions {
 interface ServicePermissionDeps {
   logSecurity: (message: string, data?: Record<string, unknown>) => void;
   logAgentMessage: (sessionId: string, content: string) => Promise<void>;
-  requestToolPermission: (options: {
+  requestToolPermission: (options: PermissionPromptHints & {
     requestId: string;
     sessionId: string;
     workspacePath: string;
@@ -77,6 +78,7 @@ export async function handleToolPermissionWithService(
         id: requestId,
         name: 'ToolPermission',
         input: {
+          ...permissionPromptHints(options),
           requestId,
           toolName,
           rawCommand: toolName === 'Bash' ? input?.command || '' : toolDescription,
@@ -91,6 +93,7 @@ export async function handleToolPermissionWithService(
     );
 
     const response = await deps.requestToolPermission({
+      ...permissionPromptHints(options),
       requestId,
       sessionId,
       workspacePath,
@@ -189,6 +192,7 @@ export async function handleToolPermissionFallback(
         id: requestId,
         name: 'ToolPermission',
         input: {
+          ...permissionPromptHints(options),
           requestId,
           toolName,
           rawCommand,
@@ -203,6 +207,7 @@ export async function handleToolPermissionFallback(
   }
 
   const request = {
+    ...permissionPromptHints(options),
     id: requestId,
     toolName,
     rawCommand,
@@ -255,7 +260,7 @@ export async function handleToolPermissionFallback(
   });
 
   try {
-    const response = await responsePromise;
+    const response = constrainPermissionResponse(await responsePromise, options);
 
     deps.logSecurity('[canUseTool] User response received (fallback):', {
       toolName,

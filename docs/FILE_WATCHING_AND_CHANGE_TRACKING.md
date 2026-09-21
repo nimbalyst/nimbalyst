@@ -1,7 +1,6 @@
 # File Watching and AI Change Tracking
 
-This document covers the file watching infrastructure, AI change tracking pipeline, and red/green diff display system. It spans the full lifecycle from disk-level file events through to rendered diff UI.
-
+This document covers file watching, AI change tracking, and red/green diffs. See [Codex shell tracking](CODEX_SHELL_TRACKING.md) for native hooks, inferred ownership, and coverage diagnostics.
 ## Architecture Overview
 
 ```mermaid
@@ -28,7 +27,7 @@ Native workspace observation and independent open-file reconciliation share the 
 
 [WorkspaceEventBus](../packages/electron/src/main/file/WorkspaceEventBus.ts) owns one logical entry per root. Its listener map survives native errors and event storms. [RecoveringFileWatcher](../packages/electron/src/main/file/RecoveringFileWatcher.ts) replaces the handle after 1, 5, 15, then 60 seconds; permission errors use 60 seconds. A minute of healthy operation resets backoff. Closing a failed native handle is deferred outside its event callback. Generation checks discard retired callbacks, rename checks, and setup completions. The last unsubscribe cancels retries and closes the handle.
 
-[WorkspaceNativeWatcher](../packages/electron/src/main/file/WorkspaceNativeWatcher.ts) uses recursive `fs.watch` on macOS/Windows and chokidar on Linux. The circuit breaker trips above 5,000 delivered raw events in five seconds. Linux uses atomic writes, a 50 ms write-stability threshold, and depth 10; expanded and bypassed paths are restored onto replacement handles.
+[WorkspaceNativeWatcher](../packages/electron/src/main/file/WorkspaceNativeWatcher.ts) uses recursive `fs.watch` on macOS/Windows and chokidar on Linux. Native events use a bounded queue: ordinary notifications deliver immediately, while bursts coalesce duplicate event/path pairs and yield after 128 deliveries or four milliseconds per batch. Native observation timestamps survive batching and rename probes; shell tool boundaries drain accepted native work before changing owners. More than 16,384 pending unique event/path pairs triggers explicit recovery for queue overflow. Total callback count alone no longer closes a healthy watcher. Linux uses atomic writes, a 50 ms write-stability threshold, and depth 10; expanded and bypassed paths are restored onto replacement handles.
 
 Health (`starting`, `watching`, `recovering`, `stopped`) travels through `file:watch-health`. The centralized renderer listener warns after ten seconds of sustained recovery. Successful recovery requests open-file reconciliation and a debounced tree refresh. Diagnostics distinguish healthy handles from registered roots and include reconciliation counts. Recovery cannot reconstruct intermediate AI history events missed during downtime.
 

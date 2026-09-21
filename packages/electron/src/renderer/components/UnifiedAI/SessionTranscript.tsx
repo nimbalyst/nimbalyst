@@ -1936,7 +1936,9 @@ const LocalSessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscrip
             message,
             files,
             sessionId,
-            hunkSelections
+            hunkSelections,
+            undefined,
+            proposalId
           ) as {
             success: boolean;
             commitHash?: string;

@@ -1,0 +1,13 @@
+{
+  "type": "indexPageRequest",
+  "protocolVersion": 2,
+  "requestId": "a163759e-8b77-4eec-88b6-15e4b20ab332",
+  "mode": "delta",
+  "pageToken": "synthetic-page-2",
+  "sinceRevision": 41,
+  "projectId": "c3ludGhldGljLWVuY3J5cHRlZC1maXh0dXJl",
+  "sessionIds": [
+    "a593bcad-fe20-46c2-8e6c-004bbb3330a6"
+  ],
+  "limit": 50
+}

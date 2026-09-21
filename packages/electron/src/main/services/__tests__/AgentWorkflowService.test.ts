@@ -100,6 +100,7 @@ Review the issue, isolate the root cause, and prepare a fix plan.
       userHomePath,
       extensionDirectoriesLoader: async () => [extensionsDir],
       nativeClaudePluginPathsLoader: async () => [],
+      claudePluginInjectionLoader: async () => [],
       releaseChannelLoader: () => 'stable',
     });
 
@@ -414,6 +415,84 @@ Use this when the user needs a helper workflow.
     const codexEntries = await service.listEntries({ provider: 'openai-codex' });
     expect(codexEntries.some(entry => entry.name === 'legacy-tools-inspect')).toBe(true);
     expect(codexEntries.some(entry => entry.name === 'legacy-tools-helper')).toBe(true);
+  });
+
+  // #1465: Claude loads the user's `/plugin`-installed plugins itself. Handing
+  // those same directories back as SDK `plugins` / CLI `--plugin-dir` entries
+  // made a second, unconfigured `@inline` copy of each. Injection carries the
+  // extension plugins (plus generated workflow plugins); discovery — what the
+  // picker lists — still sees everything.
+  it('injects extension and generated plugins only, while the picker still lists CLI-installed ones', async () => {
+    const marketplacePluginRoot = path.join(workspacePath, 'marketplace-plugin');
+    fs.mkdirSync(path.join(marketplacePluginRoot, '.claude-plugin'), { recursive: true });
+    fs.mkdirSync(path.join(marketplacePluginRoot, 'commands'), { recursive: true });
+    fs.writeFileSync(
+      path.join(marketplacePluginRoot, '.claude-plugin', 'plugin.json'),
+      JSON.stringify({ name: 'market-tools', version: '1.0.0', author: { name: 'Someone Else' } }, null, 2),
+      'utf-8',
+    );
+    fs.writeFileSync(
+      path.join(marketplacePluginRoot, 'commands', 'status.md'),
+      `---\ndescription: Report marketplace status\n---\n\nReport the status.\n`,
+      'utf-8',
+    );
+
+    const extensionPluginRoot = path.join(extensionsDir, 'nim-ext', 'claude-plugin');
+    fs.mkdirSync(path.join(extensionPluginRoot, '.claude-plugin'), { recursive: true });
+    fs.writeFileSync(
+      path.join(extensionPluginRoot, '.claude-plugin', 'plugin.json'),
+      JSON.stringify({ name: 'nim-ext', version: '0.1.0', author: { name: 'Nimbalyst' } }, null, 2),
+      'utf-8',
+    );
+
+    // An extension workflow source so the generated plugin is part of the
+    // injected set too — the CLI needs it to resolve generated commands.
+    const workflowsPath = path.join(extensionsDir, 'nim-ext', 'agent-workflows');
+    fs.mkdirSync(path.join(workflowsPath, 'commands'), { recursive: true });
+    fs.writeFileSync(
+      path.join(extensionsDir, 'nim-ext', 'manifest.json'),
+      JSON.stringify({
+        id: 'nim-ext',
+        name: 'Nim Ext',
+        version: '0.1.0',
+        main: 'dist/index.mjs',
+        apiVersion: '1.0.0',
+        contributions: { agentWorkflows: { path: 'agent-workflows', displayName: 'Nim Ext Workflows' } },
+      }, null, 2),
+      'utf-8',
+    );
+    fs.writeFileSync(
+      path.join(workflowsPath, 'commands', 'tidy.md'),
+      `---\ndescription: Tidy the workspace\n---\n\nTidy it.\n`,
+      'utf-8',
+    );
+
+    const service = new AgentWorkflowService(workspacePath, {
+      userHomePath,
+      extensionDirectoriesLoader: async () => [extensionsDir],
+      // Discovery sees both; injection is limited to the extension plugin.
+      nativeClaudePluginPathsLoader: async () => [
+        { type: 'local', path: marketplacePluginRoot },
+        { type: 'local', path: extensionPluginRoot },
+      ],
+      claudePluginInjectionLoader: async () => [{ type: 'local', path: extensionPluginRoot }],
+      releaseChannelLoader: () => 'stable',
+    });
+
+    const injected = (await service.getClaudeProviderPluginPaths()).map(plugin => plugin.path);
+
+    expect(injected).toContain(extensionPluginRoot);
+    expect(injected).not.toContain(marketplacePluginRoot);
+    // The generated workflow plugin still ships, so `/nim-ext:tidy` resolves.
+    const generated = injected.find(pluginPath =>
+      pluginPath.startsWith(path.join(workspacePath, '.claude', 'plugins', '.nimbalyst-generated')),
+    );
+    expect(generated).toBeDefined();
+    expect(fs.existsSync(path.join(generated!, 'commands', 'tidy.md'))).toBe(true);
+
+    // Discovery is untouched: the CLI-installed plugin's command still lists.
+    const entries = await service.listEntries({ provider: 'claude-code' });
+    expect(entries.some(entry => entry.name === 'market-tools:status')).toBe(true);
   });
 
   // NIM-845: a claude-code-cli session whose resolved `claude` is too old to

@@ -43,6 +43,7 @@ export async function handleMobileVoiceToolCall(
   toolName: string,
   argsJson: string,
   workspacePath: string | undefined,
+  scopedSessionId?: string,
 ): Promise<MobileVoiceToolResult> {
   if (!workspacePath) {
     return { success: false, error: 'No workspace available for this project on the desktop.' };
@@ -78,6 +79,9 @@ export async function handleMobileVoiceToolCall(
       return { success: false, error: 'session_id is required' };
     }
     const result = await getSessionSummaryForVoice(workspacePath, sessionId);
+    if (scopedSessionId && result.success && result.details?.sessionId !== scopedSessionId) {
+      return { success: false, error: 'The summary does not match the requested source session.' };
+    }
     if (!result.success) {
       return { success: false, error: result.error || 'Could not summarize session' };
     }

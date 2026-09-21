@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   resolveSaveAttempt,
+  customEditorSaveBaseline,
   type SaveAttemptDeps,
   type SaveAttemptResult,
 } from '../resolveSaveAttempt';
@@ -21,6 +22,18 @@ function makeDeps(
 }
 
 describe('resolveSaveAttempt', () => {
+  it('saves a custom editor after an acknowledged external reload without using the stale tab baseline', async () => {
+    const disk = 'externally updated board';
+    const saveFile = vi.fn(async (_content: string, filePath: string, baseline: string | undefined) =>
+      baseline === disk ? { success: true, filePath } : { success: false, filePath, conflict: true, diskContent: disk });
+    const outcome = await resolveSaveAttempt({ ...PARAMS, snapshotType: 'auto', expectedDiskContent: customEditorSaveBaseline('old tab baseline', disk) }, { saveFile, confirmOverwrite: () => false });
+    expect(outcome.kind).toBe('saved');
+    // A dirty editor was not delivered the newer disk content: its model's
+    // acknowledged baseline stays old, so the real conflict still survives.
+    const conflict = await resolveSaveAttempt({ ...PARAMS, snapshotType: 'auto', expectedDiskContent: customEditorSaveBaseline('old tab baseline', 'old tab baseline') }, { saveFile, confirmOverwrite: () => false });
+    expect(conflict.kind).toBe('autosave-conflict');
+    expect(customEditorSaveBaseline('fallback', null)).toBe('fallback');
+  });
   it('advances the baseline to the saved content on a clean save', async () => {
     const deps = makeDeps([{ success: true, filePath: '/w/doc.md' }]);
 

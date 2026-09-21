@@ -139,7 +139,7 @@ import type { WorkspaceEventListener } from '../WorkspaceEventBus';
 // Mirrors the private constant in WorkspaceEventBus. The breaker trips when the
 // oldest entry in the ring buffer (size THRESHOLD) is still within the window,
 // which happens one event after the buffer first wraps — i.e. event THRESHOLD+1.
-const CIRCUIT_BREAKER_THRESHOLD = 5000;
+const CIRCUIT_BREAKER_THRESHOLD = 16384;
 
 const WORKSPACE = '/Users/test/project';
 
@@ -204,7 +204,7 @@ describe('WorkspaceEventBus circuit breaker teardown (#629)', () => {
     const close = latestCloseMock();
 
     // Enough events to trip the breaker (THRESHOLD + buffer wrap + 1).
-    fireBurst(CIRCUIT_BREAKER_THRESHOLD + 2);
+    fireBurst(CIRCUIT_BREAKER_THRESHOLD + 130);
 
     // The close must be deferred — calling it synchronously from inside the
     // FSEvents delivery callback is what crashes Electron.
@@ -216,7 +216,7 @@ describe('WorkspaceEventBus circuit breaker teardown (#629)', () => {
     const listener = createListener();
     await subscribe(WORKSPACE, 'window', listener);
     const staleCallback = mockWatcherCallbacks[0];
-    fireBurst(CIRCUIT_BREAKER_THRESHOLD + 2);
+    fireBurst(CIRCUIT_BREAKER_THRESHOLD + 130);
     await flushImmediate();
     vi.mocked(listener.onChange).mockClear();
 
@@ -246,7 +246,7 @@ describe('WorkspaceEventBus circuit breaker teardown (#629)', () => {
     await subscribe(WORKSPACE, 'sub', createListener());
     const close = latestCloseMock();
 
-    fireBurst(CIRCUIT_BREAKER_THRESHOLD + 2);
+    fireBurst(CIRCUIT_BREAKER_THRESHOLD + 130);
     expect(close).not.toHaveBeenCalled();
 
     await flushImmediate();
@@ -261,7 +261,7 @@ describe('WorkspaceEventBus circuit breaker teardown (#629)', () => {
     const close = latestCloseMock();
 
     // Trip, then keep hammering events in the same synchronous burst.
-    fireBurst(CIRCUIT_BREAKER_THRESHOLD + 2);
+    fireBurst(CIRCUIT_BREAKER_THRESHOLD + 130);
     fireBurst(2000);
 
     expect(close).not.toHaveBeenCalled();
@@ -282,4 +282,16 @@ describe('WorkspaceEventBus circuit breaker teardown (#629)', () => {
 
     unsubscribe(WORKSPACE, 'sub');
   });
+});
+
+
+it('delivers an ordinary checkout burst without retiring its native watcher', async () => {
+  resetBus();
+  const listener = createListener();
+  await subscribe(WORKSPACE, 'checkout', listener);
+  const close = latestCloseMock();
+  fireBurst(7500);
+  await vi.waitFor(() => expect(listener.onChange).toHaveBeenCalledTimes(7500));
+  expect(close).not.toHaveBeenCalled();
+  unsubscribe(WORKSPACE, 'checkout');
 });

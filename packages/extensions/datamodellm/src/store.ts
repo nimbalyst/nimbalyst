@@ -6,7 +6,7 @@
  * this store is initialized from file content and notifies the host when dirty.
  */
 
-import { create } from 'zustand';
+import { create, type UseBoundStore, type StoreApi } from 'zustand';
 import type {
   Entity,
   Relationship,
@@ -14,7 +14,7 @@ import type {
   DataModelFile,
   Database,
 } from './types';
-import { autoLayoutEntitiesAsync } from './utils/autoLayout';
+import { layoutController } from './layout/controller';
 
 // Simple ID generator
 function nanoid(): string {
@@ -71,6 +71,9 @@ interface DataModelStore {
   setEntityViewMode: (mode: EntityViewMode) => void;
   setDatabase: (database: Database) => void;
 
+  documentGeneration: number;
+  layoutRevision: number;
+  applyLayout: (positions: Map<string, {x:number;y:number}>) => void;
   // Actions - Layout
   autoLayout: () => Promise<void>;
 
@@ -82,9 +85,11 @@ interface DataModelStore {
  * Create a data model store instance.
  * Each editor instance gets its own store.
  */
-export function createDataModelStore() {
-  return create<DataModelStore>()((set, get) => ({
+export function createDataModelStore(): DataModelStoreApi {
+  const store: DataModelStoreApi = create<DataModelStore>()((set, get) => ({
     // Initial state
+    documentGeneration: 0,
+    layoutRevision: 0,
     entities: [],
     relationships: [],
     database: 'postgres',
@@ -100,6 +105,7 @@ export function createDataModelStore() {
     // Load from file content
     loadFromFile: (data: DataModelFile) => {
       set({
+        documentGeneration: get().documentGeneration + 1,
         entities: data.entities || [],
         relationships: data.relationships || [],
         database: data.database || 'postgres',
@@ -309,17 +315,15 @@ export function createDataModelStore() {
       });
     },
 
-    // Auto-layout entities based on relationships
-    autoLayout: async () => {
-      const { entities, relationships, entityViewMode } = get();
-      const positions = await autoLayoutEntitiesAsync(entities, relationships, entityViewMode);
+    autoLayout: async () => layoutController(store).state.getState().run(),
+    applyLayout: (positions) => {
       set((state) => {
-        const updated = state.entities.map((entity) => {
-          const newPos = positions.get(entity.id);
-          return newPos ? { ...entity, position: newPos } : entity;
+        const entities = state.entities.map(entity => {
+          const position = positions.get(entity.id);
+          return position ? {...entity, position} : entity;
         });
         state.onDirtyChange?.(true);
-        return { entities: updated, isDirty: true };
+        return {entities, isDirty: true, layoutRevision: state.layoutRevision + 1};
       });
     },
 
@@ -328,7 +332,8 @@ export function createDataModelStore() {
       set({ isDirty: false });
     },
   }));
+  return store;
 }
 
 // Type for the store
-export type DataModelStoreApi = ReturnType<typeof createDataModelStore>;
+export type DataModelStoreApi = UseBoundStore<StoreApi<DataModelStore>>;

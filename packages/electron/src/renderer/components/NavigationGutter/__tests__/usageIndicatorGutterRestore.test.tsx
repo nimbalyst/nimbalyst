@@ -48,6 +48,28 @@ function noopRef() {
 }
 
 describe('usage popover "Disable" hides via the gutter customization atom', () => {
+  it('shows model percent used including unused limits without duplicating legacy Opus', () => {
+    const store = createStore();
+    store.set(claudeUsageAtom, {
+      fiveHour: { utilization: 55, resetsAt: null },
+      sevenDay: { utilization: 73, resetsAt: null },
+      sevenDayOpus: { utilization: 10, resetsAt: null },
+      weeklyModelLimits: [
+        { model: 'Fable', utilization: 86, resetsAt: null },
+        { model: 'Opus', utilization: 0, resetsAt: null },
+      ],
+      lastUpdated: Date.now(),
+    });
+    const { getByText, getAllByText } = render(
+      <Provider store={store}>
+        <ClaudeUsagePopover anchorRef={noopRef()} onClose={() => {}} onRefresh={async () => {}} />
+      </Provider>,
+    );
+    getByText('86%');
+    getByText('0%');
+    expect(getAllByText('Opus (Weekly)')).toHaveLength(1);
+  });
+
   it('ClaudeUsagePopover Disable adds claude-usage to hiddenGutterItemsAtom', () => {
     const store = createStore();
     store.set(claudeUsageAtom, {

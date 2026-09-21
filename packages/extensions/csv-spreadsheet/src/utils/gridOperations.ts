@@ -1,9 +1,4 @@
-/**
- * Grid operations utility module
- *
- * Provides centralized functions for all RevoGrid data operations.
- * All operations work directly with RevoGrid as the single source of truth.
- */
+/** Centralized operations on RevoGrid, the single source of truth for cells. */
 
 import type { DimensionCols, DimensionRows } from '@revolist/revogrid';
 import type { RevoGridElement } from '../revogrid-types';
@@ -925,7 +920,10 @@ export function createGridOperations(
       grid.getSource('rowPinStart'),
     ]);
 
-    const headerRowCount = getHeaderRowCount();
+    // Source sections are updated before React commits header metadata. Every
+    // pinned row is document content even during that render gap; using the
+    // old count here silently drops the newly pinned rows from shared CSV.
+    const headerRowCount = pinnedTop?.length ?? 0;
     const columnCount = getColumnCount();
     const delimiter = getDelimiter();
     const columnFormats = getColumnFormats();

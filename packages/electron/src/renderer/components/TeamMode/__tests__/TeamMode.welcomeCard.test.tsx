@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import React from 'react';
-import { Provider, createStore } from 'jotai';
+import { createHydratedOrgStore } from './organizationTestStore';
+import { Provider } from 'jotai';
 import { act, cleanup, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -90,9 +91,9 @@ function installApi() {
   });
 }
 
-function renderWindow() {
+async function renderWindow() {
   installApi();
-  const store = createStore();
+  const store = await createHydratedOrgStore();
   store.set(conversationDirectoryAtomFamily('org-1'), [room('general', 'General'), room('design', 'Design')]);
   store.set(conversationDirectoryLoadStateAtomFamily('org-1'), { status: 'ready' });
   render(
@@ -111,7 +112,7 @@ describe('TeamMode welcome card placement', () => {
   afterEach(() => cleanup());
 
   it('mounts the card inside #general and nowhere else', async () => {
-    const store = renderWindow();
+    const store = await renderWindow();
     await waitFor(() => screen.getByTestId('inbox'));
     // Not on the Inbox landing surface.
     expect(screen.queryByTestId('org-welcome-card')).toBeNull();

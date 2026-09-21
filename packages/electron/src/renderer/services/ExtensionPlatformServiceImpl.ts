@@ -13,7 +13,7 @@ import type { ExtensionPlatformService, ExtensionModule } from '@nimbalyst/runti
 
 // Import host dependencies that will be shared with extensions
 // React, Lexical, and RevoGrid need to be shared (singleton requirements)
-// Extensions should bundle their own utility libraries (zustand, html2canvas, etc.)
+// Extensions should bundle their own utility libraries (zustand, lodash, etc.)
 import * as React from 'react';
 import * as ReactDOM from 'react-dom';
 import * as ReactDOMClient from 'react-dom/client';
@@ -418,7 +418,7 @@ CHECK:
    * Expose host dependencies on the window object for extensions to use.
    *
    * IMPORTANT: React, Lexical, and RevoGrid are shared (singleton requirements).
-   * Extensions should bundle their own utility libraries (zustand, html2canvas, etc.)
+   * Extensions should bundle their own utility libraries (zustand, lodash, etc.)
    */
   private exposeHostDependencies(): void {
     const w = window as any;
@@ -475,6 +475,7 @@ CHECK:
       // @nimbalyst/runtime - umbrella re-export of common extension dependencies
       // Extensions can import { MaterialSymbol, useDocumentPath, useEditorLifecycle, ... } from '@nimbalyst/runtime'
       '@nimbalyst/runtime': {
+        screenshotService,
         MaterialSymbol,
         useDocumentPath,
         useEditorLifecycle,

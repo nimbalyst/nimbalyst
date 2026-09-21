@@ -71,6 +71,8 @@ const PREVIEW_EXTENSIONS = new Set<string>([
   '.wav',
 ]);
 
+const HTML_EXTENSIONS = new Set<string>(['.html', '.htm']);
+
 const allowedWorkspaceRoots = new Set<string>();
 
 export function addNimPreviewWorkspaceRoot(rootAbsolutePath: string): void {
@@ -242,6 +244,27 @@ export function validateNimPreviewPath(
   return candidate;
 }
 
+/**
+ * `net.fetch(file://...)` supplies `text/html` without a charset. Chromium's
+ * custom-scheme fallback is Windows-1252, unlike its UTF-8 handling for direct
+ * file navigation, so byte-clean UTF-8 HTML without a meta declaration renders
+ * as mojibake (#1528). Preserve the streamed body and file metadata while making
+ * the preview's UTF-8 contract explicit.
+ */
+export function ensureUtf8HtmlResponse(absolutePath: string, response: Response): Response {
+  if (!HTML_EXTENSIONS.has(extname(absolutePath).toLowerCase())) {
+    return response;
+  }
+
+  const headers = new Headers(response.headers);
+  headers.set('Content-Type', 'text/html; charset=utf-8');
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  });
+}
+
 export function registerNimPreviewSchemeAsPrivileged(): void {
   protocol.registerSchemesAsPrivileged([
     {
@@ -285,7 +308,8 @@ async function handleNimPreviewRequest(request: Request): Promise<Response> {
       return new Response('Forbidden', { status: 403 });
     }
 
-    return net.fetch(pathToFileURL(real).toString());
+    const response = await net.fetch(pathToFileURL(real).toString());
+    return ensureUtf8HtmlResponse(real, response);
   } catch (err) {
     console.error('[nim-preview] handler error:', err);
     return new Response('Internal error', { status: 500 });

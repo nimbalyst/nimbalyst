@@ -1,10 +1,9 @@
 /**
  * Workspace-scoped service for action prompts (ai-actions.md).
  *
- * Reads `<workspacePath>/nimbalyst-local/ai-actions.md`, caches the parsed
- * result, subscribes to the workspace event bus to invalidate the cache when
- * the file changes, and notifies subscribers (the IPC handler layer) so the
- * renderer can be told to refetch.
+ * Reads `<workspacePath>/nimbalyst-local/ai-actions.md` on demand and subscribes
+ * to the workspace event bus for live updates. Reads remain authoritative even
+ * when native events are missed during watcher recovery (#1524).
  *
  * One service instance per workspace path.
  */
@@ -30,17 +29,11 @@ export interface ActionPromptListResult {
   fileExists: boolean;
 }
 
-interface CacheEntry {
-  result: ActionPromptListResult;
-  loadedAt: number;
-}
-
 type ChangeListener = () => void;
 
 export class ActionPromptService {
   private readonly workspacePath: string;
   private readonly absoluteFilePath: string;
-  private cache: CacheEntry | null = null;
   private subscribed = false;
   private readonly subscriberId: string;
   private readonly changeListeners = new Set<ChangeListener>();
@@ -56,16 +49,14 @@ export class ActionPromptService {
   }
 
   async list(): Promise<ActionPromptListResult> {
-    if (this.cache) {
-      return this.cache.result;
-    }
+    await this.ensureSubscribed();
 
     let content: string | null = null;
     try {
       content = await fs.readFile(this.absoluteFilePath, 'utf-8');
     } catch (err: any) {
       if (err?.code !== 'ENOENT') {
-        console.error('[ActionPromptService] Failed to read ai-actions.md:', err);
+        throw err;
       }
       content = null;
     }
@@ -88,8 +79,6 @@ export class ActionPromptService {
       };
     }
 
-    this.cache = { result, loadedAt: Date.now() };
-    await this.ensureSubscribed();
     return result;
   }
 
@@ -104,13 +93,8 @@ export class ActionPromptService {
       const dir = path.dirname(this.absoluteFilePath);
       await fs.mkdir(dir, { recursive: true });
       await fs.writeFile(this.absoluteFilePath, DEFAULT_ACTION_PROMPTS_TEMPLATE, 'utf-8');
-      this.clearCache();
     }
     return this.absoluteFilePath;
-  }
-
-  clearCache(): void {
-    this.cache = null;
   }
 
   onChange(listener: ChangeListener): () => void {
@@ -121,16 +105,14 @@ export class ActionPromptService {
   }
 
   /**
-   * Subscribe lazily on first list() so we don't spin up a chokidar watcher
-   * for workspaces that never open the dropdown. Idempotent.
+   * Reassert the same subscriber ID on each read. The bus deduplicates IDs and
+   * owns native recovery; a service-local flag cannot prove registration exists.
    */
   private async ensureSubscribed(): Promise<void> {
-    if (this.subscribed) return;
     this.subscribed = true;
 
     const handleFsEvent = (filePath: string) => {
       if (path.resolve(filePath) !== path.resolve(this.absoluteFilePath)) return;
-      this.clearCache();
       for (const listener of this.changeListeners) {
         try {
           listener();

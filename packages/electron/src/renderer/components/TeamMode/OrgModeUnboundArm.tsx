@@ -53,7 +53,9 @@ export function OrgModeUnboundArm({
         <p className="m-0 mt-1 text-sm text-[var(--nim-text-muted)]">
           {targetedOrgId
             ? 'This organization is not available yet. Your destination has been preserved.'
-            : organizationCreationEnabled
+            : loadError
+              ? 'Your organizations could not be loaded.'
+              : organizationCreationEnabled
               ? 'Create an organization to collaborate with a team, or accept a pending invitation.'
               : 'Creating an organization is temporarily unavailable. Accept a pending invitation to get started.'}
         </p>
@@ -101,7 +103,7 @@ export function OrgModeUnboundArm({
               </div>
             ))}
           </div>
-          {targetedOrgId && (
+          {(targetedOrgId || loadError) && (
             <div
               className="team-mode-organization-recovery mb-4 rounded-lg border border-[var(--nim-border)] bg-[var(--nim-bg-secondary)] p-4"
               data-testid="team-mode-organization-recovery"
@@ -126,16 +128,6 @@ export function OrgModeUnboundArm({
             // The header above already carries the disclosure.
             showBetaNotice={false}
           />
-          {/* With a preserved destination the recovery card above already
-              states it; without one this is the only place an error shows. */}
-          {!targetedOrgId && loadError && (
-            <p
-              className="team-mode-organization-error m-0 select-text text-sm text-[var(--nim-error)]"
-              data-testid="team-mode-organization-error"
-            >
-              {loadError}
-            </p>
-          )}
         </div>
       </main>
     </section>

@@ -753,13 +753,21 @@ export function initSessionStateListeners(): () => void {
   const handleAskUserQuestionResolved = (data: { sessionId: string; questionId?: string }) => {
     const { sessionId } = data;
     if (!sessionId) return;
-    store.set(sessionHasPendingInteractivePromptAtom(sessionId), false);
-    // Remove the resolved prompt from the array
+    // Remove the resolved prompt, then derive the aggregate flag from what is
+    // left. Hard-clearing it here took the "waiting for your response"
+    // indicator down whenever ANY prompt settled -- answering or cancelling Q1
+    // stopped the sidebar advertising Q2, or a tool permission the user had not
+    // answered yet. The array holds every interactive prompt kind, so it is the
+    // right thing to count. Refs #1549.
     if (data.questionId) {
       const current = store.get(sessionPendingPromptsAtom(sessionId));
-      store.set(sessionPendingPromptsAtom(sessionId), current.filter(p => p.promptId !== data.questionId));
+      const remaining = current.filter(p => p.promptId !== data.questionId);
+      store.set(sessionPendingPromptsAtom(sessionId), remaining);
+      store.set(sessionHasPendingInteractivePromptAtom(sessionId), remaining.length > 0);
     } else {
+      // No id: a session-wide cancel, which settles everything at once.
       store.set(sessionPendingPromptsAtom(sessionId), []);
+      store.set(sessionHasPendingInteractivePromptAtom(sessionId), false);
     }
   };
 
@@ -849,9 +857,10 @@ export function initSessionStateListeners(): () => void {
     commitMessage?: string;
     filesToStage?: Array<string | { path: string; status?: string }>;
     workspacePath?: string;
+    autoApproved?: boolean;
   }) => {
     const { sessionId, proposalId } = data;
-    if (!sessionId) return;
+    if (!sessionId || data.autoApproved) return;
     store.set(sessionHasPendingInteractivePromptAtom(sessionId), true);
     const prompt: PendingPrompt = {
       id: proposalId,
@@ -1089,6 +1098,7 @@ export function initSessionStateListeners(): () => void {
 
   let cleanupAskUserQuestion: (() => void) | undefined;
   let cleanupAskUserQuestionAnswered: (() => void) | undefined;
+  let cleanupAskUserQuestionCancelled: (() => void) | undefined;
   let cleanupSessionCancelled: (() => void) | undefined;
   let cleanupExitPlanModeConfirm: (() => void) | undefined;
   let cleanupExitPlanModeResolved: (() => void) | undefined;
@@ -1113,6 +1123,10 @@ export function initSessionStateListeners(): () => void {
     cleanupTitleUpdated = window.electronAPI.on('session:title-updated', handleTitleUpdated);
     cleanupAskUserQuestion = window.electronAPI.on('ai:askUserQuestion', handleAskUserQuestion);
     cleanupAskUserQuestionAnswered = window.electronAPI.on('ai:askUserQuestionAnswered', handleAskUserQuestionResolved);
+    // A question that is aborted or cancelled clears the same pending flag an
+    // answer does -- without it the session keeps advertising a widget that is
+    // already terminalized in the transcript. See #1549.
+    cleanupAskUserQuestionCancelled = window.electronAPI.on('ai:askUserQuestionCancelled', handleAskUserQuestionResolved);
     cleanupSessionCancelled = window.electronAPI.on('ai:sessionCancelled', handleAskUserQuestionResolved);
     cleanupExitPlanModeConfirm = window.electronAPI.on('ai:exitPlanModeConfirm', handleExitPlanModeConfirm);
     cleanupExitPlanModeResolved = window.electronAPI.on('ai:exitPlanModeResolved', handleExitPlanModeResolved);
@@ -1171,6 +1185,7 @@ export function initSessionStateListeners(): () => void {
     cleanupTitleUpdated?.();
     cleanupAskUserQuestion?.();
     cleanupAskUserQuestionAnswered?.();
+    cleanupAskUserQuestionCancelled?.();
     cleanupSessionCancelled?.();
     cleanupExitPlanModeConfirm?.();
     cleanupExitPlanModeResolved?.();

@@ -26,3 +26,25 @@
     column-gap: 1rem;
   }
 }
+
+.tracker-phone-reader-bar { display: flex; justify-content: space-between; gap: 8px; padding: 4px 12px; border-bottom: 1px solid var(--nim-border); }
+.tracker-phone-reader-bar button, .tracker-phone-properties-toggle, .tracker-add-comment { min-height: 44px; padding: 6px 10px; color: var(--nim-text); background: transparent; border: 0; border-radius: 6px; cursor: pointer; }
+.tracker-phone-reader-bar button:last-child { color: var(--nim-primary); }
+.tracker-phone-title { white-space: normal; overflow-wrap: anywhere; line-height: 1.4; }
+.tracker-phone-summary { display: flex; flex-wrap: wrap; gap: 12px; font-size: 12px; color: var(--nim-text-muted); margin-top: 8px; }
+.tracker-phone-properties { display: grid; gap: 16px; min-width: 0; }
+.tracker-phone-properties > label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--nim-text-muted); }
+.tracker-phone-property-value { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.5fr); gap: 12px; font-size: 13px; overflow-wrap: anywhere; }
+.tracker-phone-property-value > :first-child { color: var(--nim-text-muted); }
+.tracker-phone-properties select { background: var(--nim-bg); color: var(--nim-text); border: 1px solid var(--nim-border); border-radius: 6px; padding: 8px; }
+.tracker-item-detail[data-compact='true'] .tracker-item-detail-fields { padding: 0 16px 8px; grid-template-columns: minmax(0, 1fr); }
+.tracker-item-detail[data-compact='true'] .tracker-item-detail-header { padding: 8px 16px; }
+.tracker-item-detail[data-compact='true'] .tracker-item-detail-header > :first-child { flex-wrap: wrap; }
+.tracker-item-detail[data-compact='true'] .tracker-item-detail-scroll { overflow-x: hidden; }
+.tracker-item-detail[data-compact='true'] :is(input:not([type='range']), select, textarea) { font-size: 16px; min-height: 44px; max-width: 100%; }
+.tracker-item-detail[data-compact='true'] button { min-height: 44px; min-width: 44px; }
+.tracker-item-detail[data-compact='true'] .tracker-comment-composer { flex-direction: column; }
+.tracker-item-detail[data-compact='true'] .tracker-comment .group-hover\:opacity-100 { opacity: 1; }
+.tracker-item-detail[data-compact='true'] .tracker-item-detail-body :is(img, video, iframe) { max-width: 100%; }
+.tracker-item-detail[data-compact='true'] .tracker-item-detail-body :is(pre, .tableScrollableWrapper) { max-width: 100%; overflow-x: auto; }
+.tracker-item-detail[data-compact='true'] .tracker-item-detail-body { min-width: 0; overflow-wrap: anywhere; }

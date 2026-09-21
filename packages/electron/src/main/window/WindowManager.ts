@@ -11,7 +11,7 @@ import { getFolderContents } from '../utils/FileTree';
 import { getBackgroundColor, getTitleBarColors } from '../theme/ThemeManager';
 import { ElectronDocumentService, setupDocumentServiceHandlers } from '../services/ElectronDocumentService';
 import { ElectronFileSystemService } from '../services/ElectronFileSystemService';
-import { isWorktreePath, resolveProjectPath } from '../utils/workspaceDetection';
+import { isWorktreePath, resolveProjectPath, resolveProjectPathCandidates } from '../utils/workspaceDetection';
 import { getPreloadPath } from '../utils/appPaths';
 import { createUnresponsiveHandler } from './unresponsiveHandler';
 import {
@@ -42,6 +42,7 @@ import {
     registerFullScreenChrome,
     titleBarOptionsForWindow,
 } from './windowChrome';
+import { cascadeWindowBounds, restoreVisibleWindowBounds } from './windowBounds';
 
 // Window management
 export { windows, windowStates };
@@ -208,38 +209,27 @@ export function createWindow(
             // console.log('[MAIN] Using icon at:', iconPath);
         }
 
-        // Calculate window position with cascading effect
-        let x: number | undefined;
-        let y: number | undefined;
-        let width = 1024;
-        let height = 768;
-
-        if (savedBounds) {
-            // Use saved bounds from session
-            x = savedBounds.x;
-            y = savedBounds.y;
-            width = savedBounds.width;
-            height = savedBounds.height;
-        } else {
-            // Get the display containing the cursor
+        let resolvedBounds;
+        if (!savedBounds) {
             const cursorPoint = screen.getCursorScreenPoint();
             const display = screen.getDisplayNearestPoint(cursorPoint);
-
-            // Calculate position with cascading offset
-            x = display.bounds.x + 100 + windowPositionOffset;
-            y = display.bounds.y + 100 + windowPositionOffset;
-
-            // Update offset for next window (wrap around after 10 windows)
+            resolvedBounds = cascadeWindowBounds(display.bounds, windowPositionOffset, {
+                width: 1024,
+                height: 768,
+            });
             windowPositionOffset = (windowPositionOffset + WINDOW_CASCADE_OFFSET) % (WINDOW_CASCADE_OFFSET * 10);
-
-            // Make sure window is not off screen
-            if (x + width > display.bounds.x + display.bounds.width) {
-                x = display.bounds.x + 100;
-            }
-            if (y + height > display.bounds.y + display.bounds.height) {
-                y = display.bounds.y + 100;
-            }
+        } else {
+            const savedCenter = {
+                x: Math.round(savedBounds.x + savedBounds.width / 2),
+                y: Math.round(savedBounds.y + savedBounds.height / 2),
+            };
+            resolvedBounds = restoreVisibleWindowBounds(
+                savedBounds,
+                screen.getAllDisplays().map((display) => display.workArea),
+                screen.getDisplayNearestPoint(savedCenter).workArea,
+            );
         }
+        const { x, y, width, height } = resolvedBounds;
 
         // Passed to the renderer as a query param so it can apply the theme on
         // first paint; this is the persisted id, extension themes included.
@@ -810,7 +800,14 @@ export function findWorkspaceWindowMatch(workspacePath: string): WorkspaceWindow
         });
     }
 
-    const match = matchWorkspaceWindow(candidates, workspacePath, { isWorktreePath, resolveProjectPath });
+    // resolveProjectPathCandidates lets the match see through a symlinked or
+    // case-variant spelling, so a window opened as `~/dev/x` is still found when
+    // a worktree resolves the request to `~/Dev/x` (#1551).
+    const match = matchWorkspaceWindow(candidates, workspacePath, {
+        isWorktreePath,
+        resolveProjectPath,
+        resolveProjectPathCandidates,
+    });
     if (!match) return null;
 
     const window = windows.get(match.windowId);

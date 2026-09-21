@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import React from 'react';
-import { Provider, createStore } from 'jotai';
+import { createHydratedOrgStore } from './organizationTestStore';
+import { Provider } from 'jotai';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -81,7 +82,7 @@ describe('TeamMode directory load failure', () => {
   it('surfaces the failure in the sidebar and retries the same directory read', async () => {
     const invoke = vi.fn().mockResolvedValue([]);
     installApi(invoke);
-    const store = createStore();
+    const store = await createHydratedOrgStore();
     store.set(conversationDirectoryAtomFamily('org-1'), []);
     store.set(conversationDirectoryLoadStateAtomFamily('org-1'), {
       status: 'error',
@@ -109,7 +110,7 @@ describe('TeamMode directory load failure', () => {
   it('automatically retries delayed #general hydration without clearing the destination', async () => {
     const invoke = vi.fn().mockResolvedValue([]);
     installApi(invoke);
-    const store = createStore();
+    const store = await createHydratedOrgStore();
     const route = { view: 'conversation' as const, conversationId: 'general' };
     store.set(orgWindowRouteAtom, route);
     store.set(conversationDirectoryAtomFamily('org-1'), []);

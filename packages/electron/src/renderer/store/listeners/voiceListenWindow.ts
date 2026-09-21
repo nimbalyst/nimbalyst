@@ -21,11 +21,14 @@ export interface VoiceListenWindowOptions {
   onExpire: () => void;
   /** Diagnostic hook: an arm request was held because speech is in progress. */
   onHeldDuringSpeech?: (reason: string) => void;
+  /** A transcript-only speech hold expired without a closing event. */
+  onSpeechExpired?: () => void;
 }
 
 export class VoiceListenWindowController {
   private timer: ReturnType<typeof setTimeout> | null = null;
   private userSpeechActive = false;
+  private speechLease: ReturnType<typeof setTimeout> | null = null;
 
   constructor(private readonly opts: VoiceListenWindowOptions) {}
 
@@ -34,13 +37,22 @@ export class VoiceListenWindowController {
   }
 
   /** VAD speech_started: hold all timer arms until speechStopped(). */
-  speechStarted(): void {
+  speechStarted(leaseMs?: number): void {
     this.userSpeechActive = true;
     this.clear();
+    this.clearSpeechLease();
+    if (leaseMs !== undefined) {
+      this.speechLease = setTimeout(() => {
+        this.speechLease = null;
+        this.speechStopped();
+        this.opts.onSpeechExpired?.();
+      }, leaseMs);
+    }
   }
 
   /** VAD speech_stopped: release the hold and start the countdown from now. */
   speechStopped(): void {
+    this.clearSpeechLease();
     this.userSpeechActive = false;
     this.start('speech-stopped');
   }
@@ -76,7 +88,13 @@ export class VoiceListenWindowController {
    * open forever.
    */
   reset(): void {
+    this.clearSpeechLease();
     this.userSpeechActive = false;
     this.clear();
+  }
+
+  private clearSpeechLease(): void {
+    if (this.speechLease !== null) clearTimeout(this.speechLease);
+    this.speechLease = null;
   }
 }

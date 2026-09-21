@@ -14,9 +14,11 @@
 export interface SubagentTaskLike {
   status: string;
   /**
-   * SDK task type. 'local_bash' is a backgrounded shell command; anything else
-   * (or absent) is treated as a sub-agent. Only `resolvePromptEndDelay` reads
-   * it — the other helpers key off status alone.
+   * SDK task type. 'local_bash' is a shell command — foreground ones included,
+   * so it says nothing about backgroundness (#1493); anything else (or absent)
+   * is a sub-agent. Only `resolvePromptEndDelay` reads it, to size the silence
+   * window: a shell streams nothing while it runs, a sub-agent streams
+   * progress. Every other helper keys off status and `isBackgrounded`.
    */
   taskType?: string;
 }
@@ -56,24 +58,39 @@ export function extractToolResultText(content: unknown): string {
 
 /**
  * Decide whether a tool_result whose toolUseId matches a tracked task means
- * that task has finished. True only for the foreground case (the tool call
- * blocked until the sub-agent completed). Backgrounded tasks return an
- * immediate "running in background" acknowledgement while still running —
- * settling on it made hasRunningTasks() false at turn end, so the drain never
- * engaged and teardown killed the task with the subprocess. See NIM-1470.
+ * that task has finished. True for the foreground case (the tool call blocked
+ * until the task completed). Backgrounded tasks return an immediate "running
+ * in background" acknowledgement while still running — settling on it made
+ * hasRunningTasks() false at turn end, so the drain never engaged and teardown
+ * killed the task with the subprocess. See NIM-1470.
+ *
+ * Task TYPE is not evidence of backgroundness. The CLI tracks every Bash call
+ * as a `local_bash` task, foreground ones included, so refusing on type alone
+ * left an ordinary `npm test` permanently "running" and turned it into a bogus
+ * post-turn "background task settled" continuation. See GitHub #1493.
+ *
+ * The two real signals, in order: the `is_backgrounded` flag the CLI reports on
+ * task_started / task_updated, and — for older CLIs that send no flag, or a
+ * flag that predates the command being moved to the background — the launch
+ * acknowledgement text itself.
  */
+export function isBackgroundLaunchAcknowledgement(resultContent: unknown): boolean {
+  return BACKGROUND_LAUNCH_ACK.test(extractToolResultText(resultContent));
+}
+
 export function shouldSettleTaskFromToolResult(
   task: { taskType?: string; isBackgrounded?: boolean; status: string },
   resultContent: unknown,
 ): boolean {
   if (task.status !== 'running') return false;
-  // local_bash tasks only exist when a Bash command was backgrounded; their
-  // matching tool_result is always the launch acknowledgement.
-  if (task.taskType === 'local_bash') return false;
-  // Authoritative signal from a task_updated patch, when the CLI sent one.
-  if (task.isBackgrounded) return false;
-  if (BACKGROUND_LAUNCH_ACK.test(extractToolResultText(resultContent))) return false;
-  return true;
+  // Authoritative signal from task_started or a task_updated patch.
+  if (task.isBackgrounded === true) return false;
+  // Otherwise the result text decides: an acknowledgement means the task is
+  // still running, anything else is the completed output the tool call waited
+  // for. A stale `is_backgrounded: false` loses to the acknowledgement, which
+  // is how a foreground-launched command that was auto-backgrounded still
+  // reaches the drain without ever receiving a task_updated patch.
+  return !isBackgroundLaunchAcknowledgement(resultContent);
 }
 
 /**
@@ -93,16 +110,21 @@ export function shouldSettleTaskFromToolResult(
  * notification is what lets Nimbalyst close the subprocess and deliver the
  * equivalent turn visibly instead.
  *
- * A FOREGROUND Task must not qualify: it settled via its own tool_result, the
+ * A FOREGROUND task must not qualify: it settled via its own tool_result, the
  * model already saw that result inline, and the CLI queues nothing. Treating it
  * as a trigger would bill an extra continuation turn per delegation.
+ *
+ * This requires real background evidence — the `isBackgrounded` flag, set
+ * either from the CLI's own report or from the launch acknowledgement observed
+ * at the tool_result. Admitting a task on its TYPE instead did exactly that to
+ * every foreground Bash call once the CLI began tracking them. See #1493.
  */
 export function shouldRecordTerminalNotification(
   task: { taskType?: string; isBackgrounded?: boolean },
   draining: boolean,
 ): boolean {
   if (draining) return true;
-  return task.taskType === 'local_bash' || task.isBackgrounded === true;
+  return task.isBackgrounded === true;
 }
 
 /**

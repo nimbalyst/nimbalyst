@@ -659,8 +659,6 @@ export function registerWorktreeHandlers(): void {
         throw new Error('workspacePath is required');
       }
 
-      logger.info('Listing worktrees', { workspacePath });
-
       const db = getDatabase();
       if (!db) {
         throw new Error('Database not initialized');
@@ -668,8 +666,6 @@ export function registerWorktreeHandlers(): void {
 
       const worktreeStore = createWorktreeStore(db);
       const worktrees = await worktreeStore.list(workspacePath);
-
-      logger.info('Found worktrees', { count: worktrees.length });
 
       // Start git ref watchers for all non-archived worktrees on first list call.
       // This ensures commit detection works for worktrees loaded on app restart.

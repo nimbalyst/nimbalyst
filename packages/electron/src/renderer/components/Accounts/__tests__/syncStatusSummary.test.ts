@@ -37,6 +37,16 @@ describe('summarizeSyncStatus', () => {
     expect(detail(null)).toBe('Connected');
   });
 
+  it('reports skipped rows as an advisory while sync stays healthy', () => {
+    const result = summarizeSyncStatus(snapshot({ skippedRowCount: 2 }), NOW);
+    expect(result).toMatchObject({ tone: 'ok', needsAttention: false });
+    expect(result?.notice).toContain('2 synced sessions');
+  });
+
+  it.each([{}, { skippedRowCount: 0 }])('omits the notice when no skipped sessions are reported (%j)', overrides => {
+    expect(summarizeSyncStatus(snapshot(overrides), NOW)?.notice).toBeUndefined();
+  });
+
   it('does not flag a project the user deliberately opted out of', () => {
     // Opting out outranks every other state: a disabled project reports its own
     // disconnection, and treating that as a fault would leave the avatar

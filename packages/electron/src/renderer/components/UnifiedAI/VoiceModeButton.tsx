@@ -9,13 +9,16 @@
 import React, { useState, useEffect } from 'react';
 import { useAtomValue } from 'jotai';
 import { MaterialSymbol } from '@nimbalyst/runtime/ui/icons/MaterialSymbol';
+import { VoiceStartupTiming } from '../../../shared/voiceStartupTiming';
+import { prepareVoiceReadyChime } from '../../utils/voiceReadyChime';
 import { AudioCapture } from '../../utils/audioCapture';
 import { AudioPlayback } from '../../utils/audioPlayback';
 import { voiceModeEnabledAtom } from '../../store/atoms/appSettings';
 import { activeSessionIdAtom } from '../../store/atoms/sessions';
-import { voiceTokenUsageAtom, voiceListenStateAtom, voiceErrorAtom, voiceReconnectingAtom, registerVoiceAudioCallback, registerVoiceInterruptCallback, registerVoiceSubmitPromptCallback, registerVoiceAgentTaskCompleteCallback, registerVoiceStoppedCallback, registerVoiceResponseDoneCallback, registerVoiceAudioActiveQuery } from '../../store/atoms/voiceModeState';
-import { setVoiceActiveSession, clearVoiceActiveSession, persistAndClearVoiceSession, onLinkedSessionChanged, wakeVoiceListening, notifyVoiceAudioPlaybackDrained } from '../../store/listeners/voiceModeListeners';
+import { type VoiceTokenUsage, voiceTokenUsageAtom, voiceListenStateAtom, voiceErrorAtom, voiceReconnectingAtom, registerVoiceAudioCallback, registerVoiceInterruptCallback, registerVoiceSubmitPromptCallback, registerVoiceAgentTaskCompleteCallback, registerVoiceStoppedCallback, registerVoiceResponseDoneCallback, registerVoiceAudioActiveQuery } from '../../store/atoms/voiceModeState';
+import { setVoiceActiveSession, clearVoiceActiveSession, persistAndClearVoiceSession, onLinkedSessionChanged, wakeVoiceListening, notifyVoiceAudioPlaybackDrained, sendVoiceMessage } from '../../store/listeners/voiceModeListeners';
 import { openSettingsCommandAtom } from '../../store';
+import { buildVoiceUsageDisplay, voiceUsageToneVar } from './voiceUsageDisplay';
 import { HelpTooltip } from '../../help';
 import { store } from '@nimbalyst/runtime/store';
 
@@ -78,9 +81,9 @@ export function registerPendingVoiceCommandSetter(
 function registerVoiceCallbacks() {
   // Audio playback
   registerVoiceAudioCallback((audioBase64) => {
-    if (activeVoiceSessionId !== null && globalAudioPlayback) {
-      globalAudioPlayback.play(audioBase64);
-    }
+    if (activeVoiceSessionId === null || !globalAudioPlayback) return false;
+    globalAudioPlayback.play(audioBase64);
+    return true;
   });
 
   // Interrupt (stop audio playback when user starts speaking)
@@ -93,14 +96,18 @@ function registerVoiceCallbacks() {
   // Submit prompt (handle pending command UI and queuing)
   registerVoiceSubmitPromptCallback(async (payload) => {
     try {
-      if (activeVoiceSessionId === null) return;
+      if (activeVoiceSessionId === null) {
+        return { queued: false, error: 'Voice mode is not active.' };
+      }
 
       // Deduplication check
       const now = Date.now();
       if (lastProcessedPrompt &&
           lastProcessedPrompt.prompt === payload.prompt &&
           now - lastProcessedPrompt.timestamp < DEDUP_WINDOW_MS) {
-        return;
+        // Already queued a moment ago. Reporting success here would mint a
+        // second task id for one piece of work.
+        return { queued: false, error: 'That task was already queued a moment ago.' };
       }
       lastProcessedPrompt = { prompt: payload.prompt, timestamp: now };
 
@@ -125,6 +132,9 @@ function registerVoiceCallbacks() {
           }
         );
       } else {
+        // The pending-command widget is holding it; it auto-sends after the
+        // countdown unless the user cancels, which is what the voice agent's
+        // "queued" wording already describes.
         setter({
           id: crypto.randomUUID(),
           prompt: payload.prompt,
@@ -135,8 +145,13 @@ function registerVoiceCallbacks() {
           codingAgentPrompt: payload.codingAgentPrompt,
         });
       }
+      return { queued: true };
     } catch (error) {
       console.error('[VoiceModeButton] Failed to queue prompt:', error);
+      return {
+        queued: false,
+        error: error instanceof Error ? error.message : String(error),
+      };
     }
   });
 
@@ -146,7 +161,7 @@ function registerVoiceCallbacks() {
     // Prefer lastTextSection (text after last tool call = agent's summary)
     // over content (full accumulated text which is often empty or huge)
     const summary = data.lastTextSection || data.content || 'Task completed';
-    window.electronAPI.send('voice-mode:agent-task-complete', {
+    sendVoiceMessage('voice-mode:agent-task-complete', {
       sessionId: data.sessionId,
       summary,
       error: data.error,
@@ -186,49 +201,9 @@ registerVoiceCallbacks();
 registerVoiceAudioActiveQuery(() => globalAudioPlayback?.isPlaybackActive() ?? false);
 
 /**
- * Play a soft "bing" activation sound using the Web Audio API.
- * Two layered sine tones with a quick attack and gentle decay.
- */
-function playActivationSound(): void {
-  try {
-    const ctx = new AudioContext();
-    const now = ctx.currentTime;
-
-    // Primary tone (E6 ~1319Hz) - bright and clear
-    const osc1 = ctx.createOscillator();
-    const gain1 = ctx.createGain();
-    osc1.type = 'sine';
-    osc1.frequency.setValueAtTime(1319, now);
-    gain1.gain.setValueAtTime(0, now);
-    gain1.gain.linearRampToValueAtTime(0.15, now + 0.01);
-    gain1.gain.exponentialRampToValueAtTime(0.001, now + 0.4);
-    osc1.connect(gain1).connect(ctx.destination);
-    osc1.start(now);
-    osc1.stop(now + 0.4);
-
-    // Harmonic overtone (octave up ~2637Hz) - adds shimmer
-    const osc2 = ctx.createOscillator();
-    const gain2 = ctx.createGain();
-    osc2.type = 'sine';
-    osc2.frequency.setValueAtTime(2637, now);
-    gain2.gain.setValueAtTime(0, now);
-    gain2.gain.linearRampToValueAtTime(0.06, now + 0.01);
-    gain2.gain.exponentialRampToValueAtTime(0.001, now + 0.25);
-    osc2.connect(gain2).connect(ctx.destination);
-    osc2.start(now);
-    osc2.stop(now + 0.25);
-
-    // Clean up context after sounds finish
-    setTimeout(() => ctx.close(), 500);
-  } catch {
-    // Audio playback is best-effort
-  }
-}
-
-/**
  * Play a soft "ready for input" cue when the mic wakes from sleep at the end
  * of a voice-agent turn that produced no audible response. Two ascending notes
- * so it's distinct from playActivationSound() but still unobtrusive.
+ * using the same ascending shape as the startup chime.
  */
 function playReadyCue(): void {
   try {
@@ -335,7 +310,7 @@ export function VoiceModeButton({ workspacePath }: VoiceModeButtonProps) {
 
         const result = await window.electronAPI.invoke('voice-mode:test-disconnect', workspacePath || null, sessionId || '') as {
           success: boolean;
-          tokenUsage?: { inputAudio: number; outputAudio: number; text: number; total: number };
+          tokenUsage?: VoiceTokenUsage;
         };
 
         if (sessionId) {
@@ -353,6 +328,8 @@ export function VoiceModeButton({ workspacePath }: VoiceModeButtonProps) {
       if (!sessionId) return;
 
       setIsConnecting(true);
+      const timing = new VoiceStartupTiming('renderer');
+      const readyChime = prepareVoiceReadyChime();
       try {
         // If another session is active, stop it first
         if (activeVoiceSessionId !== null && activeVoiceSessionId !== sessionId) {
@@ -370,8 +347,11 @@ export function VoiceModeButton({ workspacePath }: VoiceModeButtonProps) {
           clearVoiceActiveSession();
         }
 
-        const result = await window.electronAPI.invoke('voice-mode:test-connection', workspacePath || null, sessionId);
+        const result = await window.electronAPI.invoke('voice-mode:test-connection', workspacePath || null, sessionId, timing.id);
+        timing.mark('connection-ipc');
         if (!result.success) {
+          readyChime.dispose();
+          timing.finish('failed');
           setError({ type: 'connection_failed', message: result.message || 'Failed to connect to voice service' });
           setIsConnecting(false);
           return;
@@ -389,7 +369,7 @@ export function VoiceModeButton({ workspacePath }: VoiceModeButtonProps) {
         // and main's barge-in policy uses it to classify echo-suspect VAD
         // trips and gate server responses while the agent speaks.
         globalAudioPlayback.setOnActiveChanged((active) => {
-          window.electronAPI.send('voice-mode:playback-active', { active });
+          sendVoiceMessage('voice-mode:playback-active', { active });
         });
         globalAudioCapture = new AudioCapture();
         await globalAudioCapture.start((pcm16Base64) => {
@@ -399,13 +379,19 @@ export function VoiceModeButton({ workspacePath }: VoiceModeButtonProps) {
           if (activeVoiceSessionId && store.get(voiceListenStateAtom) === 'listening') {
             window.electronAPI.invoke('voice-mode:send-audio', workspacePath || null, activeVoiceSessionId, pcm16Base64);
           }
-        });
+        }, timing);
 
         activeVoiceSessionId = sessionId;
         setVoiceActiveSession(sessionId, workspacePath);
-        playActivationSound();
         setIsVoiceActive(true);
+        timing.mark('listening-ready');
+        void readyChime.play().then(played => {
+          timing.mark(played ? 'ready-chime-played' : 'ready-chime-unavailable');
+          timing.finish('ready');
+        });
       } catch (err) {
+        readyChime.dispose();
+        timing.finish('failed');
         console.error('[VoiceModeButton] Failed to start voice mode:', err);
         setError({ type: 'connection_failed', message: err instanceof Error ? err.message : 'Failed to start voice mode' });
         if (globalAudioCapture) {
@@ -433,8 +419,11 @@ export function VoiceModeButton({ workspacePath }: VoiceModeButtonProps) {
     setError(null);
   };
 
-  // Context usage ring (wraps button when voice is active -- both listening and sleeping)
-  const tokenUsage = useAtomValue(voiceTokenUsageAtom);
+  // Usage ring (wraps button when voice is active -- both listening and
+  // sleeping). What it means depends on the engine -- reported context
+  // occupancy on Live, accumulated token consumption on Realtime -- and it is
+  // absent entirely when neither was measured; see voiceUsageDisplay.ts.
+  const voiceUsage = useAtomValue(voiceTokenUsageAtom);
 
   if (!voiceModeEnabled) {
     return null;
@@ -460,33 +449,33 @@ export function VoiceModeButton({ workspacePath }: VoiceModeButtonProps) {
   // Disabled when no session is selected and voice isn't already active
   const isDisabled = isConnecting || (!isVoiceActive && !activeSessionId);
 
-  const CONTEXT_WINDOW_TOKENS = 28000;
   const RING_RADIUS = 16;
   const RING_CIRCUMFERENCE = 2 * Math.PI * RING_RADIUS;
-  const showRing = isVoiceActive && tokenUsage;
-  const contextPercentage = tokenUsage
-    ? Math.min(100, (tokenUsage.total / CONTEXT_WINDOW_TOKENS) * 100)
-    : 0;
-  const ringStrokeDashoffset = RING_CIRCUMFERENCE * (1 - contextPercentage / 100);
+  const usageDisplay = isVoiceActive ? buildVoiceUsageDisplay(voiceUsage) : null;
+  // No reported occupancy means no ring. An empty ring would read as "barely
+  // used", which is a claim we have not measured.
+  const ringOccupancy = usageDisplay?.occupancy ?? null;
+  const ringStrokeDashoffset = RING_CIRCUMFERENCE * (1 - (ringOccupancy ?? 0));
+  const ringStroke = usageDisplay?.occupancyTone
+    ? voiceUsageToneVar(usageDisplay.occupancyTone)
+    : 'var(--nim-text-faint)';
 
-  const getRingStrokeColor = () => {
-    if (contextPercentage > 80) return '#ef4444'; // red
-    if (contextPercentage > 60) return '#eab308'; // yellow
-    return '#22c55e'; // green
-  };
-
-  const contextExtraContent = (isVoiceActive && tokenUsage) ? (
-    <div className="flex items-center gap-2 text-xs">
-      <div
-        className="w-2 h-2 rounded-full shrink-0"
-        style={{ backgroundColor: getRingStrokeColor() }}
-      />
-      <span className="text-[var(--nim-text-muted)]">
-        Context: {Math.round(contextPercentage)}%
-      </span>
-      <span className="text-[var(--nim-text-faint)] ml-auto">
-        {tokenUsage.total.toLocaleString()} / {CONTEXT_WINDOW_TOKENS.toLocaleString()}
-      </span>
+  const contextExtraContent = usageDisplay ? (
+    <div className="voice-usage-summary flex flex-col gap-1 text-xs">
+      {usageDisplay.lines.map((line) => (
+        <div key={line.id} className="flex items-center gap-2">
+          {line.id === 'context' && (
+            <div className="w-2 h-2 rounded-full shrink-0" style={{ backgroundColor: ringStroke }} />
+          )}
+          <span className="text-[var(--nim-text-muted)]">{line.label}</span>
+          <span className="text-[var(--nim-text-faint)] ml-auto">{line.value}</span>
+        </div>
+      ))}
+      {usageDisplay.isFloor && (
+        <span className="text-[var(--nim-text-faint)]">
+          At least this much -- the session ended before final usage arrived.
+        </span>
+      )}
     </div>
   ) : undefined;
 
@@ -516,8 +505,8 @@ export function VoiceModeButton({ workspacePath }: VoiceModeButtonProps) {
             fill={isVoiceActive && !isSleeping}
             className={(isConnecting || isReconnecting) ? 'animate-spin' : ''}
           />
-          {/* Context usage ring overlay */}
-          {showRing && (
+          {/* Usage ring overlay. Only drawn when an engine actually reported occupancy. */}
+          {ringOccupancy !== null && (
             <svg
               width="36"
               height="36"
@@ -540,11 +529,13 @@ export function VoiceModeButton({ workspacePath }: VoiceModeButtonProps) {
                 cy="18"
                 r={RING_RADIUS}
                 fill="none"
-                stroke={getRingStrokeColor()}
+                stroke={ringStroke}
                 strokeWidth="2.5"
                 strokeLinecap="round"
                 strokeDasharray={RING_CIRCUMFERENCE}
                 strokeDashoffset={ringStrokeDashoffset}
+                // Dimmed when the figures are a floor rather than the total.
+                opacity={usageDisplay?.isFloor ? 0.55 : 1}
                 style={{ transition: 'stroke-dashoffset 0.3s ease, stroke 0.3s ease' }}
               />
             </svg>

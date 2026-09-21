@@ -1,19 +1,23 @@
+import { decodeMobileLiveRequest } from "../voice/mobileLiveRelay";
+import { handleMobileLiveTool } from "../voice/mobileLiveTools";
 import { sessionInbox } from './sessionInboxService';
-import type { BrowserWindow } from 'electron';
 import { applyRemoteReadReceipt } from '../../ipc/ReadReceiptHandlers';
 import { applyRemoteTrackerPersonalState } from '../../ipc/TrackerPersonalStateHandlers';
 import { logger } from '../../utils/logger';
-import { getDefaultAIModel } from '../../utils/store';
-import { createWindow, findWindowByWorkspace, windowStates } from '../../window/WindowManager';
+import { findWindowByWorkspace } from '../../window/WindowManager';
 import { getSyncProvider } from '../SyncManager';
 import { AnalyticsService } from '../analytics/AnalyticsService.ts';
 import { handleMobileVoiceToolCall } from '../voice/mobileVoiceToolHandler';
 import { initMobileSessionControlHandler } from './MobileSessionControlHandler';
 import { ingestMobileQueuedPrompts } from './mobileQueuedPromptIngest';
-import * as fs from 'fs';
+import {
+  registerMobileCreateSessionHandler,
+  registerMobileCreateWorktreeHandler,
+  type MobileCreateRequestContext,
+} from './mobileCreateRequestHandlers';
 import type { SessionManager } from '@nimbalyst/runtime/ai/server';
 import type { DriveReason } from './QueueDriveService';
-import { getLocalHostDeviceId, isTargetedAtAnotherDevice, stampSessionHost } from './sessionHostAttribution';
+import { getLocalHostDeviceId } from './sessionHostAttribution';
 
 /** How long a finished mobile request ID stays guarded against redelivery. */
 const MOBILE_REQUEST_DEDUP_GRACE_MS = 60_000;
@@ -62,6 +66,22 @@ export class MobileSyncHandler {
     setTimeout(() => {
       this.processingMobileSessionRequests.delete(requestId);
     }, MOBILE_REQUEST_DEDUP_GRACE_MS);
+  }
+
+  /** The dedup guard the create-session and create-worktree flows share. */
+  private createRequestContext(): MobileCreateRequestContext {
+    return {
+      sessionManager: this.ctx.sessionManager,
+      claimRequest: (requestId) => {
+        if (this.processingMobileSessionRequests.has(requestId)) {
+          logger.main.info('[AIService] Ignoring duplicate mobile creation request:', requestId);
+          return false;
+        }
+        this.processingMobileSessionRequests.add(requestId);
+        return true;
+      },
+      releaseRequest: (requestId) => this.releaseMobileRequestAfterGrace(requestId),
+    };
   }
 
   async initialize() {
@@ -230,247 +250,19 @@ export class MobileSyncHandler {
         });
       }
 
-      // Listen for session creation requests from mobile
-      if (syncProvider.onCreateSessionRequest) {
-        syncProvider.onCreateSessionRequest(async (request) => {
-          const hostDeviceId = getLocalHostDeviceId();
-          if (isTargetedAtAnotherDevice(request, hostDeviceId)) {
-            logger.main.info('[AIService] Ignoring session request targeted at another device:', request.requestId);
-            return;
-          }
-          logger.main.info('[AIService] Received create session request from mobile:', {
-            requestId: request.requestId,
-            projectId: request.projectId,
-            hasInitialPrompt: !!request.initialPrompt
-          });
-
-          // Deduplicate requests - same request can be delivered multiple times
-          if (this.processingMobileSessionRequests.has(request.requestId)) {
-            // logger.main.info('[AIService] Ignoring duplicate session creation request:', request.requestId);
-            return;
-          }
-          this.processingMobileSessionRequests.add(request.requestId);
-
-          try {
-            // Find a window for this project/workspace
-            const { BrowserWindow } = await import('electron');
-            const windows = BrowserWindow.getAllWindows().filter(w => !w.isDestroyed());
-
-            if (windows.length === 0) {
-              logger.main.warn('[AIService] No windows available to create session');
-              if (syncProvider.sendCreateSessionResponse) {
-                syncProvider.sendCreateSessionResponse({
-                  requestId: request.requestId,
-                  success: false,
-                  error: 'No desktop windows available'
-                });
-              }
-              return;
-            }
-
-            // Mobile MUST provide a valid projectId - sessions cannot be created without a workspace
-            if (!request.projectId || request.projectId === 'default') {
-              logger.main.error('[AIService] Mobile session request missing valid projectId:', request.projectId);
-              if (syncProvider.sendCreateSessionResponse) {
-                syncProvider.sendCreateSessionResponse({
-                  requestId: request.requestId,
-                  success: false,
-                  error: 'projectId is required - cannot create session without workspace'
-                });
-              }
-              return;
-            }
-
-            // Find the window that matches this project's workspace path
-            let targetWindow: BrowserWindow | undefined;
-            let workspacePath: string | undefined;
-
-            // Try to find a window with this workspace using findWindowByWorkspace
-            const matchedWindow = findWindowByWorkspace(request.projectId);
-            if (matchedWindow) {
-              targetWindow = matchedWindow;
-              workspacePath = request.projectId;
-            } else {
-              // Try to find by project name (last path component)
-              for (const win of windows) {
-                const state = windowStates.get(win.id);
-                if (state?.workspacePath) {
-                  const pathBasename = state.workspacePath.split(/[\\/]/).pop();
-                  if (pathBasename === request.projectId || state.workspacePath.includes(request.projectId)) {
-                    targetWindow = win;
-                    workspacePath = state.workspacePath;
-                    break;
-                  }
-                }
-              }
-            }
-
-            // If no matching window found, try to open the workspace automatically
-            if (!targetWindow || !workspacePath) {
-              // request.projectId should be a workspace path - check if it exists on disk
-              if (fs.existsSync(request.projectId)) {
-                logger.main.info('[AIService] Opening workspace for mobile session creation:', request.projectId);
-                const newWindow = createWindow(false, true, request.projectId);
-
-                // Wait for the window to finish loading
-                await new Promise<void>((resolve) => {
-                  newWindow.webContents.once('did-finish-load', () => resolve());
-                });
-
-                targetWindow = newWindow;
-                workspacePath = request.projectId;
-              } else {
-                logger.main.error('[AIService] No window found and workspace path does not exist for projectId:', request.projectId);
-                if (syncProvider.sendCreateSessionResponse) {
-                  syncProvider.sendCreateSessionResponse({
-                    requestId: request.requestId,
-                    success: false,
-                    error: `Workspace not found on disk: ${request.projectId}`
-                  });
-                }
-                return;
-              }
-            }
-
-            // Create the session using the SessionManager
-            // Use mobile's provider/model selection if provided, otherwise fall back to desktop defaults
-            const resolvedProvider = (request.provider || 'claude-code') as import('@nimbalyst/runtime/ai/server/types').AIProviderType;
-            const resolvedModel = request.model || getDefaultAIModel() || 'claude-code:opus-1m';
-            const resolvedSessionType = (request.sessionType || 'session') as import('@nimbalyst/runtime/ai/server/types').SessionType;
-            const resolvedAgentRole = (request.agentRole || 'standard') as import('@nimbalyst/runtime/ai/server/types').AgentRole;
-            const session = await this.ctx.sessionManager.createSession(
-              resolvedProvider,        // provider - from mobile or default
-              undefined,               // documentContext
-              workspacePath,           // workspacePath
-              undefined,               // providerConfig
-              resolvedModel,           // model - from mobile or desktop default
-              resolvedSessionType,     // sessionType - from mobile request
-              'agent',                 // mode
-              undefined,               // worktreeId
-              undefined,               // worktreePath
-              undefined,               // worktreeProjectPath
-              resolvedAgentRole        // agentRole - from mobile request or 'standard'
-            );
-            await stampSessionHost(session.id, hostDeviceId);
-
-            // If a parentSessionId was provided, set it on the session
-            if (request.parentSessionId && session) {
-              const { AISessionsRepository } = await import('@nimbalyst/runtime/storage/repositories/AISessionsRepository');
-              await AISessionsRepository.updateMetadata(session.id, { parentSessionId: request.parentSessionId });
-            }
-
-            logger.main.info('[AIService] Created session for mobile request:', {
-              requestId: request.requestId,
-              sessionId: session.id,
-              workspacePath
-            });
-            if (session && syncProvider.syncSessionsToIndex) {
-              // logger.main.info('[AIService] Syncing new session to index:', session.id);
-              // parentSessionId must be present here -- syncSessionsToIndex
-              // builds a fresh index entry from this payload and clobbers any
-              // partial parentSessionId set by the updateMetadata() above. Mobile
-              // clients (iOS) need the parent association on the first sight of
-              // the session or it shows up as a free-floating sibling.
-              syncProvider.syncSessionsToIndex([{
-                id: session.id,
-                title: session.title ?? 'Untitled',
-                provider: session.provider,
-                model: session.model,
-                mode: session.mode,
-                sessionType: session.sessionType,
-                parentSessionId: request.parentSessionId ?? session.parentSessionId ?? undefined,
-                ...(hostDeviceId ? { hostDeviceId } : {}),
-                agentRole: session.agentRole,
-                createdBySessionId: session.createdBySessionId ?? undefined,
-                workspaceId: session.workspacePath,
-                workspacePath: session.workspacePath,
-                messageCount: session.messages.length,
-                updatedAt: session.updatedAt,
-                createdAt: session.createdAt
-              }]);
-            } else {
-              logger.main.warn('[AIService] Cannot sync session - syncSessionsToIndex not available');
-            }
-
-            // Notify renderer to refresh session list
-            if (targetWindow && !targetWindow.isDestroyed()) {
-              // logger.main.info('[AIService] Notifying renderer to refresh session list after mobile session creation');
-              targetWindow.webContents.send('sessions:refresh-list', {
-                workspacePath,
-                sessionId: session.id
-              });
-            }
-
-            // Send success response
-            if (syncProvider.sendCreateSessionResponse) {
-              // logger.main.info('[AIService] Sending success response to mobile for:', request.requestId);
-              syncProvider.sendCreateSessionResponse({
-                requestId: request.requestId,
-                success: true,
-                sessionId: session.id
-              });
-            } else {
-              logger.main.warn('[AIService] Cannot send response - sendCreateSessionResponse not available');
-            }
-
-            // If there's an initial prompt, queue it for execution
-            if (request.initialPrompt && session) {
-              const promptId = `mobile-create-prompt-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
-              const { getQueuedPromptsStore } = await import('../RepositoryManager');
-              const queueStore = getQueuedPromptsStore();
-
-              await queueStore.create({
-                id: promptId,
-                sessionId: session.id,
-                prompt: request.initialPrompt
-              });
-
-              // logger.main.info('[AIService] Queued initial prompt from mobile:', {
-              //   sessionId: session.id,
-              //   promptId
-              // });
-
-              // Notify the window to process the queue
-              if (targetWindow && !targetWindow.isDestroyed()) {
-                targetWindow.webContents.send('ai:queuedPromptsReceived', {
-                  sessionId: session.id,
-                  promptCount: 1,
-                  workspacePath
-                });
-              }
-            }
-
-            // Notify the window to show the new session
-            if (targetWindow && !targetWindow.isDestroyed()) {
-              targetWindow.webContents.send('ai:sessionCreatedFromMobile', {
-                sessionId: session.id,
-                requestId: request.requestId
-              });
-            }
-          } catch (error) {
-            logger.main.error('[AIService] Failed to create session from mobile:', error);
-            if (syncProvider.sendCreateSessionResponse) {
-              syncProvider.sendCreateSessionResponse({
-                requestId: request.requestId,
-                success: false,
-                error: error instanceof Error ? error.message : 'Unknown error'
-              });
-            }
-          } finally {
-            this.releaseMobileRequestAfterGrace(request.requestId);
-          }
-        });
-
-        // logger.main.info('[AIService] Session creation request handler initialized');
-      } else {
-        // logger.main.info('[AIService] onCreateSessionRequest not available on sync provider');
-      }
+      // Session and worktree creation from mobile. Both flows must ack only
+      // after the index publish for the new session settles, so they live
+      // together in a sibling module with that rule in one place.
+      registerMobileCreateSessionHandler(syncProvider, this.createRequestContext());
 
       // Handle voice-tool requests from mobile (e.g. project-memory lookups).
       // The mobile voice agent proxies desktop-hosted voice tools through here;
       // we run the tool (gated to voiceAgent:true tools) and return the result.
       if (syncProvider.onVoiceToolRequest && syncProvider.sendVoiceToolResponse) {
         syncProvider.onVoiceToolRequest(async (request) => {
+          const live = request.toolName === 'nimbalyst_live_v1'
+            ? decodeMobileLiveRequest(request.argsJson, request.projectId, getLocalHostDeviceId()) : null;
+          if (request.toolName === 'nimbalyst_live_v1' && !live) return;
           // Deduplicate - the same request can be delivered more than once.
           if (this.processingMobileSessionRequests.has(request.requestId)) {
             return;
@@ -483,7 +275,7 @@ export class MobileSyncHandler {
             // register a second handler for '__ELECTRON_LOG__'" crash. See the
             // "No Dynamic Imports in Electron Main Process" rule in CLAUDE.md.
             // request.projectId is the desktop workspace path.
-            const outcome = await handleMobileVoiceToolCall(
+            const outcome = live ? await handleMobileLiveTool(live) : await handleMobileVoiceToolCall(
               request.toolName,
               request.argsJson,
               request.projectId,
@@ -491,7 +283,7 @@ export class MobileSyncHandler {
             await syncProvider.sendVoiceToolResponse!({
               requestId: request.requestId,
               success: outcome.success,
-              resultJson: outcome.result ? JSON.stringify({ result: outcome.result }) : undefined,
+              resultJson: live ? JSON.stringify({ scope: live.scope, ...outcome }) : outcome.result ? JSON.stringify({ result: outcome.result }) : undefined,
               error: outcome.error,
             });
           } catch (error) {
@@ -499,7 +291,8 @@ export class MobileSyncHandler {
             await syncProvider.sendVoiceToolResponse!({
               requestId: request.requestId,
               success: false,
-              error: error instanceof Error ? error.message : String(error),
+              error: live ? undefined : error instanceof Error ? error.message : String(error),
+              resultJson: live ? JSON.stringify({ scope: live.scope, success: false, error: 'The selected computer could not execute the voice action.' }) : undefined,
             });
           } finally {
             this.releaseMobileRequestAfterGrace(request.requestId);
@@ -507,135 +300,7 @@ export class MobileSyncHandler {
         });
       }
 
-      // Handle worktree creation requests from mobile
-      // Mirrors the desktop worktree:create IPC handler + AgentMode session creation exactly
-      if (syncProvider.onCreateWorktreeRequest) {
-        syncProvider.onCreateWorktreeRequest(async (request) => {
-          const hostDeviceId = getLocalHostDeviceId();
-          if (isTargetedAtAnotherDevice(request, hostDeviceId)) {
-            logger.main.info('[AIService] Ignoring worktree request targeted at another device:', request.requestId);
-            return;
-          }
-          logger.main.info('[AIService] Received worktree creation request from mobile:', request.requestId, 'projectId:', request.projectId);
-
-          // Same guard as session creation. A redelivered worktree request that
-          // starts a second flow races the first over the filesystem and the
-          // worktree table, and both flows create a branch.
-          if (this.processingMobileSessionRequests.has(request.requestId)) {
-            logger.main.info('[AIService] Ignoring duplicate worktree creation request:', request.requestId);
-            return;
-          }
-          this.processingMobileSessionRequests.add(request.requestId);
-
-          try {
-            // Step 1: Create git worktree with name deduplication (same as worktree:create handler)
-            const { GitWorktreeService } = await import('../GitWorktreeService');
-            const { createWorktreeStore } = await import('../WorktreeStore');
-            const { getDatabase } = await import('../../database/initialize');
-            const { gitRefWatcher } = await import('../../file/GitRefWatcher');
-
-            const gitWorktreeService = new GitWorktreeService();
-            const db = getDatabase();
-            if (!db) throw new Error('Database not initialized');
-            const worktreeStore = createWorktreeStore(db);
-
-            // Deduplicate name across DB, filesystem, and branches (same as worktree:create)
-            const [dbNames, filesystemNames, branchNames] = await Promise.all([
-              worktreeStore.getAllNames(),
-              Promise.resolve(gitWorktreeService.getExistingWorktreeDirectories(request.projectId)),
-              gitWorktreeService.getAllBranchNames(request.projectId),
-            ]);
-            const existingNames = new Set<string>();
-            for (const n of dbNames) existingNames.add(n);
-            for (const n of filesystemNames) existingNames.add(n);
-            for (const n of branchNames) existingNames.add(n);
-            const finalName = gitWorktreeService.generateUniqueWorktreeName(existingNames);
-
-            // Create the git worktree
-            const worktree = await gitWorktreeService.createWorktree(request.projectId, { name: finalName });
-
-            // Store in WorktreeStore (same as worktree:create)
-            await worktreeStore.create(worktree);
-
-            // Start git ref watcher (same as worktree:create)
-            gitRefWatcher.start(worktree.path).catch((err: Error) => {
-              logger.main.error('[AIService] Failed to start GitRefWatcher for worktree:', err);
-            });
-
-            logger.main.info('[AIService] Worktree created from mobile:', worktree.id, 'name:', worktree.name, 'branch:', worktree.branch);
-
-            // Step 2: Create session with worktreeId (same as AgentMode + sessions:create)
-            const { AISessionsRepository } = await import('@nimbalyst/runtime/storage/repositories/AISessionsRepository');
-            const { randomUUID } = await import('crypto');
-            const defaultModel = getDefaultAIModel() || 'claude-code:opus-1m';
-            const sessionId = randomUUID();
-            const sessionTitle = `Worktree: ${worktree.name}`;
-
-            await AISessionsRepository.create({
-              id: sessionId,
-              provider: 'claude-code',
-              model: defaultModel,
-              title: sessionTitle,
-              workspaceId: request.projectId,
-              worktreeId: worktree.id,
-            });
-            await stampSessionHost(sessionId, hostDeviceId);
-            logger.main.info('[AIService] Worktree session created:', sessionId, 'worktreeId:', worktree.id);
-
-            // Step 3: Notify renderer to refresh and set workstream state
-            const targetWindow = findWindowByWorkspace(request.projectId);
-            if (targetWindow && !targetWindow.isDestroyed()) {
-              targetWindow.webContents.send('sessions:refresh-list', {
-                workspacePath: request.projectId,
-                sessionId,
-              });
-              targetWindow.webContents.send('worktree:session-created', {
-                sessionId,
-                worktreeId: worktree.id,
-              });
-            }
-
-            // Step 4: Sync to index so iOS sees it
-            if (syncProvider.syncSessionsToIndex) {
-              const now = Date.now();
-              syncProvider.syncSessionsToIndex([{
-                id: sessionId,
-                title: sessionTitle,
-                provider: 'claude-code',
-                model: defaultModel,
-                mode: 'agent',
-                sessionType: 'session',
-                worktreeId: worktree.id,
-                ...(hostDeviceId ? { hostDeviceId } : {}),
-                workspaceId: request.projectId,
-                workspacePath: request.projectId,
-                messageCount: 0,
-                updatedAt: now,
-                createdAt: now,
-              }]);
-            }
-
-            if (syncProvider.sendCreateWorktreeResponse) {
-              syncProvider.sendCreateWorktreeResponse({
-                requestId: request.requestId,
-                success: true,
-              });
-            }
-          } catch (error) {
-            logger.main.error('[AIService] Failed to create worktree from mobile:', error);
-            if (syncProvider.sendCreateWorktreeResponse) {
-              syncProvider.sendCreateWorktreeResponse({
-                requestId: request.requestId,
-                success: false,
-                error: error instanceof Error ? error.message : 'Unknown error',
-              });
-            }
-          } finally {
-            this.releaseMobileRequestAfterGrace(request.requestId);
-          }
-        });
-        // logger.main.info('[AIService] Worktree creation request handler initialized');
-      }
+      registerMobileCreateWorktreeHandler(syncProvider, this.createRequestContext());
 
       // Initialize mobile session control handler (cancel, question responses, etc.)
       // This is in a separate module to keep AIService focused

@@ -17,6 +17,27 @@ type PGliteLike = {
   query<T = unknown>(sql: string, params?: unknown[]): Promise<{ rows: T[] }>;
 };
 
+// Share concurrent discovery, then release it. No TTL can hide a newly linked worktree.
+const rootsInFlight = new WeakMap<PGliteLike, Map<string, Promise<{ rows: { workspace_id: string }[] }>>>();
+
+function discoverRoots(db: PGliteLike, workspaceId: string, projectPath: string) {
+  let pending = rootsInFlight.get(db);
+  if (!pending) rootsInFlight.set(db, pending = new Map());
+  const key = JSON.stringify([workspaceId, projectPath]);
+  const existing = pending.get(key);
+  if (existing) return existing;
+  const range = worktreeRootRange(projectPath);
+  const request = db.query<{ workspace_id: string }>(
+    `SELECT DISTINCT workspace_id FROM session_files
+     WHERE workspace_id = $1
+        OR workspace_id = $2
+        OR (workspace_id >= $3 AND workspace_id < $4)`,
+    [workspaceId, projectPath, range.from, range.to]
+  ).finally(() => pending.delete(key));
+  pending.set(key, request);
+  return request;
+}
+
 export interface SessionsForFileQuery {
   /** The workspace the caller is viewing from — a project root or a worktree. */
   workspaceId: string;
@@ -99,14 +120,7 @@ async function findFileRows(
   // happen in JS: the PG->SQLite dialect translator reads `a || b` as the jsonb
   // merge operator and rewrites it to `json_patch(a, b)` (NIM-829), so `||` is
   // not available for string building here.
-  const range = worktreeRootRange(projectPath);
-  const { rows: rootRows } = await db.query<{ workspace_id: string }>(
-    `SELECT DISTINCT workspace_id FROM session_files
-     WHERE workspace_id = $1
-        OR workspace_id = $2
-        OR (workspace_id >= $3 AND workspace_id < $4)`,
-    [workspaceId, projectPath, range.from, range.to]
-  );
+  const { rows: rootRows } = await discoverRoots(db, workspaceId, projectPath);
 
   const candidates = new Set<string>([`${workspaceId}${relativePath}`]);
   for (const root of rootRows) candidates.add(`${root.workspace_id}${relativePath}`);

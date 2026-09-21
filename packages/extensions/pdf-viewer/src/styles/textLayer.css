@@ -17,6 +17,19 @@
   z-index: 1;
 }
 
+/* PDF.js positions text in unrotated page coordinates. Match its page rotation. */
+.pdf-page > .textLayer[data-main-rotation="90"] {
+  transform: rotate(90deg) translateY(-100%);
+}
+
+.pdf-page > .textLayer[data-main-rotation="180"] {
+  transform: rotate(180deg) translate(-100%, -100%);
+}
+
+.pdf-page > .textLayer[data-main-rotation="270"] {
+  transform: rotate(270deg) translateX(-100%);
+}
+
 .textLayer :is(span, br) {
   color: transparent;
   position: absolute;

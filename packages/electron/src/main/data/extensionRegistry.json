@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-08-28T04:59:34.163Z",
+  "generatedAt": "2026-09-17T18:54:38.839125+00:00",
   "extensions": [
     {
       "id": "com.nimbalyst.animation",
@@ -804,7 +804,7 @@
       "id": "com.nimbalyst.namenym",
       "name": "Namenym",
       "description": "AI-powered brand naming tool for Nimbalyst",
-      "version": "0.1.0",
+      "version": "0.1.1",
       "author": "Nimbalyst",
       "categories": [
         "ai-tools"
@@ -826,17 +826,17 @@
         "ai",
         "network"
       ],
-      "minimumAppVersion": "1.0.0",
-      "downloadUrl": "https://extensions.nimbalyst.com/dl/com.nimbalyst.namenym/0.1.0",
-      "checksum": "5c74a63a9d2ebdfd22af8625f7b258667e143257b72f8836a2a45c5ad1e5169d",
-      "repositoryUrl": "",
-      "changelog": "",
+      "minimumAppVersion": "0.78.0",
+      "downloadUrl": "https://extensions.nimbalyst.com/dl/com.nimbalyst.namenym/0.1.1",
+      "checksum": "df9359e52c59b812e6983b2fb9069462c111ce43a32f937aabbea669a5c05dc4",
+      "repositoryUrl": "https://github.com/nimbalyst/nimbalyst-namenym",
+      "changelog": "0.1.1: Collaborative sharing with per-member favorites on desktop and the web console.",
       "tagline": "AI-powered brand naming and domain brainstorming",
-      "longDescription": "Generate creative brand names by combining concepts, synonyms, and mashups. Evaluate candidates with scoring, check domain availability across TLDs, and shortlist your favorites.",
+      "longDescription": "Move from a product brief to a shortlist with contextual name generation, word exploration, and direct additions to every list.",
       "highlights": [
-        "AI generates concepts, synonyms, and creative mashup names",
-        "Scoring and evaluation for memorability and pronounceability",
-        "Domain availability checking across multiple TLDs"
+        "Names-first workspace with editable notes and shortlist comparison",
+        "Automatic contextual word preparation and explicit refinement",
+        "Add themes, words, and finished names by hand"
       ],
       "fileTypes": [
         ".namenym"

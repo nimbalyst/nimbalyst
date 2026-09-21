@@ -111,7 +111,7 @@ export interface ThreadStartResponse {
   serviceTier?: string | null;
   cwd?: string;
   approvalPolicy?: AskForApproval;
-  sandbox?: unknown;
+  sandbox?: { type: 'readOnly' | 'workspaceWrite' | 'dangerFullAccess' | 'externalSandbox'; writableRoots?: string[]; networkAccess?: boolean };
   reasoningEffort?: string;
 }
 

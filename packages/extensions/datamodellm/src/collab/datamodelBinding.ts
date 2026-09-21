@@ -26,12 +26,7 @@
  *     `onRemoteAwareness` when a remote state changes so it can repaint
  *     presence chrome (`getRemotePresences()` supplies the render-ready list).
  *
- *   - Undo: a `Y.UndoManager` tracks only writes tagged with `this`. In collab
- *     mode we install a capture-phase Cmd/Ctrl+Z keyboard handler on the
- *     editor root that routes undo/redo through the manager so a local undo
- *     never clobbers a remote teammate's concurrent edit. In local-only mode
- *     the binding is never constructed, so the editor's native (no-op for
- *     this editor today) undo path remains unchanged.
+ *   - Undo tracks only local transactions and isolates each auto-layout action.
  *
  * Bootstrap-race safety lives in `seed.ts`; this file deals with the steady
  * state. See COLLABORATION_GUIDE.md for the full architecture.
@@ -98,6 +93,7 @@ export class DataModelBinding {
   /** True while we're pushing remote changes into the local store. The
    *  store-subscribe handler early-returns so writes don't echo back. */
   private applyingRemote = false;
+  private lastLayoutRevision = 0;
 
   /** Last-known store shape, used to compute local-edit diffs. */
   private snapshot: Snapshot = {
@@ -140,6 +136,7 @@ export class DataModelBinding {
     //    because the editor has just mounted and selections are guaranteed
     //    null -- so the destructive reset is acceptable.
     this.replaceStoreFromYDoc({ initial: true });
+    this.lastLayoutRevision = store.getState().layoutRevision;
 
     // 2. Local store -> Y.Doc.
     const unsubStore = this.store.subscribe(() => this.handleStoreChange());
@@ -270,9 +267,14 @@ export class DataModelBinding {
 
     if (ops.length === 0) return;
 
+    // Layout is one undoable action, separate from edits immediately before/after it.
+    const isLayout = state.layoutRevision !== this.lastLayoutRevision;
+    this.lastLayoutRevision = state.layoutRevision;
+    if (isLayout) this.undoManager.stopCapturing();
     this.yDoc.transact(() => {
       for (const op of ops) op();
     }, this);
+    if (isLayout) this.undoManager.stopCapturing();
 
     // Refresh the snapshot to mirror what we just wrote.
     this.captureSnapshot(state);

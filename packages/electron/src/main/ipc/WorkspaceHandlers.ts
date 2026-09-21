@@ -1,11 +1,9 @@
-import { BrowserWindow, app, shell, clipboard, nativeImage } from 'electron';
+import { BrowserWindow, shell, clipboard, nativeImage } from 'electron';
 import { readFileSync, readdirSync, statSync, existsSync, promises as fsPromises } from 'fs';
-import * as fs from 'fs';
 import { join, basename, dirname, extname } from 'path';
 import * as path from 'path';
 import { exec, execFile, spawn } from 'child_process';
 import { promisify } from 'util';
-import os from 'os';
 import { AnalyticsService } from '../services/analytics/AnalyticsService';
 import { openWorkspaceFile, openFile } from '../file/FileOpener';
 import { fuzzyMatchPath } from '@nimbalyst/runtime';
@@ -40,6 +38,7 @@ import {
 } from '../services/tracker/localKeyAllocator';
 import { workspaceLocalKeyStore } from '../services/tracker/workspaceLocalKeyStore';
 import { database } from '../database/PGLiteDatabaseWorker';
+import { getRipgrepPath } from '../services/ripgrepPath';
 
 /**
  * Deep merge utility for workspace state updates.
@@ -127,66 +126,6 @@ function shouldIncludeQuickOpenCacheItem(
     if (maskPatterns.length === 0) return true;
     if (item.type === 'directory') return false;
     return matchesFileMask(item.path, maskPatterns);
-}
-
-// Get the ripgrep binary path for the current platform.
-// Resolves the rg bundled by the @vscode/ripgrep package at
-// node_modules/@vscode/ripgrep/bin/rg(.exe). Result is cached for
-// the lifetime of the process — search is called frequently and
-// the binary doesn't move.
-let cachedRgPath: string | null = null;
-function getRipgrepPath(): string {
-    if (cachedRgPath !== null) return cachedRgPath;
-
-    const platform = os.platform();
-    const rgBinaryName = platform === 'win32' ? 'rg.exe' : 'rg';
-    const isPackaged = app.isPackaged;
-
-    // Use a variable to avoid Vite trying to resolve 'node_modules' as an identifier
-    const NODE_MODULES_DIR = ['node', '_', 'modules'].join('');
-    const rgRelPath = path.join(NODE_MODULES_DIR, '@vscode', 'ripgrep', 'bin', rgBinaryName);
-
-    const possibleRgPaths: string[] = [];
-
-    if (isPackaged) {
-        const resourcesPath = process.resourcesPath;
-        possibleRgPaths.push(path.join(resourcesPath, 'app.asar.unpacked', rgRelPath));
-    } else {
-        possibleRgPaths.push(
-            path.join(__dirname, '..', '..', rgRelPath),
-            path.join(process.cwd(), rgRelPath),
-        );
-        // In monorepos, node_modules may be hoisted to the repo root.
-        // Walk up from cwd to find it.
-        let searchDir = process.cwd();
-        for (let i = 0; i < 5; i++) {
-            const parent = path.dirname(searchDir);
-            if (parent === searchDir) break; // reached filesystem root
-            possibleRgPaths.push(path.join(parent, rgRelPath));
-            searchDir = parent;
-        }
-    }
-
-    for (const testPath of possibleRgPaths) {
-        if (existsSync(testPath)) {
-            // Make sure the binary is executable in production (non-Windows)
-            if (isPackaged && platform !== 'win32') {
-                try {
-                    fs.chmodSync(testPath, 0o755);
-                } catch (e) {
-                    console.warn('[SEARCH] Could not set executable permission on ripgrep:', e);
-                }
-            }
-            // console.log('[SEARCH] Found ripgrep at:', testPath);
-            cachedRgPath = testPath;
-            return testPath;
-        }
-    }
-
-    // Fall back to system rg
-    console.warn('[SEARCH] Could not find bundled ripgrep, falling back to system rg. Probed:', possibleRgPaths);
-    cachedRgPath = 'rg';
-    return 'rg';
 }
 
 async function runRipgrepFiles(rootPath: string, options?: { noIgnore?: boolean }): Promise<string[]> {

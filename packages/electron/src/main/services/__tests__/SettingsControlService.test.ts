@@ -85,6 +85,31 @@ import {
   DENIED_APP_KEYS,
   SettingsControlService,
 } from '../SettingsControlService';
+import { getWorkspaceState, type WorkspaceState } from '../../utils/store';
+
+describe('SettingsControlService permission diagnostics', () => {
+  it.each([
+    [{ permissionMode: 'bypass-all', allowAllUsesClassifier: true }, 'Agent-verified', true],
+    [{ permissionMode: 'bypass-all', allowAllUsesClassifier: false }, 'Allow everything', false],
+    [{ permissionMode: 'bypass-all' }, 'Allow everything', false],
+    [{ permissionMode: 'allow-all', allowAllUsesClassifier: true }, 'Allow edits only', true],
+    [{ permissionMode: 'ask', allowAllUsesClassifier: true }, 'Ask every time', true],
+    [{ permissionMode: null, allowAllUsesClassifier: true }, 'Untrusted', true],
+    [undefined, 'Untrusted', false],
+  ] as const)('distinguishes the workspace policy for %j', (agentPermissions, agentTrustLabel, allowAllUsesClassifier) => {
+    vi.mocked(getWorkspaceState).mockReturnValueOnce({ agentPermissions } as WorkspaceState);
+
+    expect(SettingsControlService.getInstance().getOverview('/workspace').workspace).toMatchObject({
+      agentPermissionMode: agentPermissions?.permissionMode ?? null,
+      allowAllUsesClassifier,
+      agentTrustLabel,
+    });
+  });
+
+  it('does not invent workspace permissions without a workspace', () => {
+    expect(SettingsControlService.getInstance().getOverview(undefined)).not.toHaveProperty('workspace');
+  });
+});
 
 describe('SettingsControlService allowlist invariants', () => {
   it('does not include any DENIED_APP_KEYS in ALLOWED_APP_KEYS', () => {

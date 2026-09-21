@@ -1,3 +1,4 @@
+import { codexSessionConfigurationKey } from '../protocols/codexAppServer/windowsSandbox';
 import path from 'path';
 import crypto from 'crypto';
 import OpenAI from 'openai';
@@ -1066,7 +1067,12 @@ export class OpenAICodexProvider extends BaseAgentProvider {
       //   2. A persisted thread id (`this.sessions.getSessionId`) from a prior
       //      Nimbalyst process. Call `resumeSession` to attach to it.
       //   3. Otherwise, `createSession`.
-      const permissionKey = `${permissionDecision.permissionMode ?? 'none'}:${permissionDecision.agentVerified === true}`;
+      // Include authorized sibling roots in the cache key so new worktrees take effect next turn.
+      const additionalDirectories = OpenAICodexProvider.additionalDirectoriesLoader
+        ? OpenAICodexProvider.additionalDirectoriesLoader(workspacePath)
+        : [];
+
+      const permissionKey = codexSessionConfigurationKey(permissionDecision.permissionMode, permissionDecision.agentVerified === true, workspacePath, additionalDirectories);
       let cachedLiveSession = sessionId ? this.liveProtocolSessions.get(sessionId) : undefined;
       if (
         sessionId &&
@@ -1127,15 +1133,6 @@ export class OpenAICodexProvider extends BaseAgentProvider {
       }
 
       const resolvedModel = await this.getConfiguredModel();
-
-      // Sibling worktrees and the parent project root the agent is allowed to
-      // write to, in addition to its workingDirectory. Without this, Codex's
-      // workspace-write sandbox blocks orchestrator edits across worktrees and
-      // `git rebase --continue` from inside a worktree (the .git common dir
-      // sits outside the worktree). Issue #37 problem 1.
-      const additionalDirectories = OpenAICodexProvider.additionalDirectoriesLoader
-        ? OpenAICodexProvider.additionalDirectoriesLoader(workspacePath)
-        : [];
 
       const sessionOptions = {
         workspacePath,

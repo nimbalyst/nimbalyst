@@ -234,7 +234,7 @@ function generateCommonExports(externalKey: string): string {
     exports = ['MaterialSymbol'];
   } else if (externalKey === '@nimbalyst/runtime') {
     exports = [
-      'MaterialSymbol', 'useDocumentPath', 'useEditorLifecycle',
+      'MaterialSymbol', 'useDocumentPath', 'useEditorLifecycle', 'screenshotService',
       'useCollaborativeEditor', 'COLLAB_INIT_ORIGIN',
       'setTranscriptMarkdownContributions', 'clearTranscriptMarkdownContributions',
       'MarkdownEditor', 'MonacoEditor', 'MonacoCodeEditor',

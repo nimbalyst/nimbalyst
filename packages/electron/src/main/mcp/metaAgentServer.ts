@@ -13,7 +13,7 @@ import type { OrchestrationMessageKind } from '@nimbalyst/runtime/ai/server/type
  * `setMetaAgentToolFns`.
  */
 
-import { resolveProjectPath } from "../utils/workspaceDetection";
+import { resolveCallerWorkspaceId } from "../utils/workspaceIdentity";
 
 type CreateSessionArgs = {
   title?: string;
@@ -512,8 +512,9 @@ export function getMetaAgentOpenAITools(): MetaAgentOpenAITool[] {
  * (extension-agent providers) so the dispatch logic lives in exactly one place.
  *
  * `name` may carry the `mcp__nimbalyst-host__` prefix; it is stripped.
- * `workspaceId` is normalized to its canonical repo path via resolveProjectPath
- * so worktree-rooted callers still resolve to the parent repo.
+ * `workspaceId` is resolved to the caller's project via
+ * resolveCallerWorkspaceId, so a worktree-rooted caller still lands on the
+ * parent repo while keeping the spelling that repo was opened by (#1551).
  *
  * Throws if the tool fns are not yet registered or the tool name is unknown.
  */
@@ -527,9 +528,12 @@ export async function dispatchMetaAgentTool(
     throw new Error("Meta-agent service not initialized");
   }
   const toolName = name.replace(/^mcp__nimbalyst-[a-z-]+__/, "");
-  // Normalize the workspaceId to its canonical repo path (worktree callers
-  // pass the worktree dir; sessions compare by exact parent-repo path).
-  const effectiveWorkspaceId = resolveProjectPath(workspaceId);
+  // Resolve the caller to its project (worktree callers pass the worktree dir),
+  // preserving the as-opened spelling where the filesystem can confirm it.
+  // Sessions and windows are keyed by that spelling; the service still compares
+  // identities rather than strings, so a caller whose alias cannot be
+  // reconstructed here is matched against the stored path's identity instead.
+  const effectiveWorkspaceId = resolveCallerWorkspaceId(workspaceId);
 
   switch (toolName) {
     case "list_worktrees":

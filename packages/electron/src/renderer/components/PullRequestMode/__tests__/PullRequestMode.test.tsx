@@ -206,10 +206,13 @@ describe('PullRequestMode review session action', () => {
     fireEvent.click(screen.getByTestId('start-review'));
 
     await waitFor(() => {
-      expect(mocks.createSession).toHaveBeenCalledWith({
-        initialDraft: '/review-contribution https://github.com/nimbalyst/nimbalyst/pull/1408',
-        launchSource: 'pull_request_panel',
-      });
+      expect(mocks.createSession).toHaveBeenCalledOnce();
+      const [{ initialDraft, launchSource }] = mocks.createSession.mock.calls[0];
+      expect(launchSource).toBe('pull_request_panel');
+      // #1556: the dispatched draft must be a prompt the agent can act on in a
+      // shipped build, not a slash command that only exists in this repo.
+      expect(initialDraft).toContain('https://github.com/nimbalyst/nimbalyst/pull/1408');
+      expect(initialDraft.trimStart().startsWith('/')).toBe(false);
       expect(invoke).toHaveBeenCalledWith('tracker:link-session', {
         trackerId: 'tracker-1',
         sessionId: 'session-review',

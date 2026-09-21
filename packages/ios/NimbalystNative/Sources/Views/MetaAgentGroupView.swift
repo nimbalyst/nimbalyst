@@ -151,15 +151,14 @@ struct MetaAgentExpansion {
 ///
 /// - Tapping the header ROW opens (navigates to) the meta-agent session's transcript,
 ///   exactly like a normal session row — regardless of whether it has children. This
-///   reuses the same `NavigationLink(value:)` mechanism every other row in
+///   reuses the same tagged List selection every other row in
 ///   `SessionListView` uses on iPhone and iPad. Desktop does
 ///   the same: its header `onClick` calls `onSessionSelect(metaSession.id)`.
 /// - A SEPARATE leading chevron `Button` toggles expand/collapse independently, without
 ///   navigating — mirroring desktop's chevron `<button>` (`stopPropagation` + `onToggle`).
 ///   It uses `.buttonStyle(.plain)` + its own `contentShape` so the List hit-tests it as
 ///   a distinct tap target (the same proven pattern as `FileTreeRow`'s plain-button
-///   toggle), and it sits OUTSIDE the `NavigationLink` so its taps can never
-///   fall through to push navigation.
+///   toggle), independent of the row selection.
 /// - Child sessions render manually as indented sibling rows (NOT via `DisclosureGroup`),
 ///   each navigating to its own transcript — matching desktop, which lays children out as
 ///   flat `pl-5` rows beneath the header.
@@ -212,16 +211,11 @@ struct MetaAgentGroupView<MenuContent: View>: View {
     /// via the same navigation mechanism a normal session row uses.
     @ViewBuilder
     private var metaHeaderRow: some View {
-        // The chevron Button sits OUTSIDE the NavigationLink (a sibling in the
-        // row's HStack), so its tap area never overlaps the link's — eliminating the
-        // tap-target conflict. The link covers only the label, which expands via its
-        // trailing Spacer to fill the rest of the row.
         HStack(spacing: 8) {
             chevronToggle
-            NavigationLink(value: WorkspaceSelection.session(item.parent.id)) {
-                MetaAgentHeader(title: title, childCount: item.group.childCount, status: aggregateStatus)
-            }
+            MetaAgentHeader(title: title, childCount: item.group.childCount, status: aggregateStatus)
         }
+        .tag(WorkspaceSelection.session(item.parent.id))
     }
 
     /// Independent expand/collapse control. Mirrors desktop's chevron `<button>`
@@ -249,10 +243,9 @@ struct MetaAgentGroupView<MenuContent: View>: View {
     /// navigating to its own transcript — exactly like a normal session row.
     @ViewBuilder
     private func childRow(_ child: SessionListRow) -> some View {
-        NavigationLink(value: WorkspaceSelection.session(child.id)) {
-            SessionRow(session: child, isChild: true, voiceFocusedSessionId: voiceFocusedSessionId)
-                .padding(.leading, 20)
-        }
+        SessionRow(session: child, isChild: true, voiceFocusedSessionId: voiceFocusedSessionId)
+            .padding(.leading, 20)
+            .tag(WorkspaceSelection.session(child.id))
     }
 }
 

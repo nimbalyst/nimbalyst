@@ -24,6 +24,7 @@ import { createHash } from 'crypto';
 import { existsSync } from 'fs';
 import { basename } from 'path';
 import { mkdir, stat } from 'fs/promises';
+import { registerOrganizationDirectoryHandler } from '../ipc/OrganizationDirectoryHandler';
 import { safeHandle } from '../utils/ipcRegistry';
 import { logger } from '../utils/logger';
 import { getGitRemoteIdentities, getRawGitRemote, normalizeGitRemote } from '../utils/gitUtils';
@@ -1218,8 +1219,8 @@ export async function listTeamDirectory(options?: ListTeamsOptions): Promise<Tea
   }
 
   const promise = (async (): Promise<TeamDirectory> => {
-    let allAccountLookupsSucceeded = true;
     const allAccounts = getAccounts();
+    let allAccountLookupsSucceeded = allAccounts.length > 0;
     const teamsByOrgId = new Map<string, TeamDetails>();
     const allTeams: TeamDetails[] = [];
 
@@ -2599,18 +2600,7 @@ export function registerTeamHandlers(): void {
     }
   });
 
-  safeHandle('team:list', async (_event, options?: { forceRefresh?: boolean }) => {
-    try {
-      // The directory cache is invalidated by events (join/create/delete/auth
-      // change); `forceRefresh` backs the manual Refresh affordance in Account
-      // settings for the cases those events miss (e.g. invited from elsewhere).
-      if (options?.forceRefresh) invalidateListTeamsCache();
-      const teams = await listTeams(options?.forceRefresh ? { forceFresh: true } : undefined);
-      return { success: true, teams };
-    } catch (error) {
-      return { success: false, error: error instanceof Error ? error.message : String(error) };
-    }
-  });
+  registerOrganizationDirectoryHandler(listTeamDirectory, invalidateListTeamsCache);
 
   safeHandle('team:find-for-workspace', async (_event, workspacePath: string) => {
     try {

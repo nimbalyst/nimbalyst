@@ -61,6 +61,7 @@ When executing this command:
   - When all tasks complete, set `status` to `in-review`
   - Set `progress` to 100
   - Update `updated` timestamp
+  - Apply the root `CLAUDE.md` feature-inventory rule: update `docs/FEATURE_INVENTORY.md` for added, significantly expanded, or removed notable capabilities, and report the updated section or a short "No inventory impact" reason. In a parallel batch, slices send evidence to the integrating session, which owns and applies the inventory update before handoff.
   - Do NOT edit `CHANGELOG.md` — that happens only when the user asks for a commit, via [/commit](./commit.md)
   - Do NOT commit unless explicitly asked
   - If you are one slice of a parallel batch, stay inside the files you were given and do not run the full gate; see [parallel-sessions.md](../rules/parallel-sessions.md)

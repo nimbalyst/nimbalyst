@@ -16,6 +16,16 @@ public enum VadDetection: String, Codable {
 // Defined outside the `#if os(iOS)` voice code (no platform dependencies) so
 // the persistence/migration logic is unit-testable on macOS.
 public struct VoiceModeSettings: Codable {
+    // Raw optional strings preserve unknown newer-client preferences without decoding failure.
+    public var engine: String?
+    public var liveVoice: String?
+    public var liveControllerModel: String?
+    public var effectiveEngine: VoiceEngineKind { VoiceEngineKind(rawValue: engine ?? "") ?? .realtime }
+    public static let liveVoices = ["alloy", "ash", "ballad", "cedar", "coral", "echo", "marin", "sage", "shimmer", "verse"]
+    public var effectiveLiveVoice: String { Self.liveVoices.contains(liveVoice ?? "") ? liveVoice! : "marin" }
+    public var effectiveLiveController: String {
+        ["gpt-5.6-terra", "gpt-5.6-luna"].contains(liveControllerModel ?? "") ? liveControllerModel! : "gpt-5.6-terra"
+    }
     public var voice: String
     public var idleTimeout: TimeInterval
     public var autoAnnounceCompletions: Bool

@@ -1,0 +1,10 @@
+{
+  "type": "indexClientMetadataPatch",
+  "patch": {
+    "sessionId": "a9724085-1664-4183-8554-bacab2816579",
+    "encryptedClientMetadata": "c3ludGhldGljLWVuY3J5cHRlZENsaWVudE1ldGFkYXRh",
+    "clientMetadataIv": "1VG4UK4ftf2lCni7",
+    "isExecuting": true,
+    "lastReadAt": 1789232407000
+  }
+}

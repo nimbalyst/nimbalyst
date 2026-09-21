@@ -3,7 +3,11 @@ import * as fsp from 'fs/promises';
 import { homedir } from 'os';
 import * as path from 'path';
 import { parseCommandFile, parseSkillFile, type SlashCommand, validateCommand } from './CommandFileParser';
-import { getAllExtensionDirectories, getNativeClaudePluginPaths } from '../ipc/ExtensionHandlers';
+import {
+  getAllExtensionDirectories,
+  getDiscoverableClaudePluginPaths,
+  getExtensionClaudePluginPaths,
+} from '../ipc/ExtensionHandlers';
 import {
   getAgentWorkflowExportSettings,
   getAgentWorkflowSourceSettings,
@@ -171,7 +175,17 @@ export interface AgentWorkflowQueryOptions {
 export interface AgentWorkflowServiceOptions {
   userHomePath?: string;
   extensionDirectoriesLoader?: () => Promise<string[]>;
+  /**
+   * Everything the picker can SEE: extension plugins plus the user's own
+   * `/plugin`-installed ones. Discovery only — see `claudePluginInjectionLoader`.
+   */
   nativeClaudePluginPathsLoader?: (workspacePath?: string) => Promise<Array<{ type: 'local'; path: string }>>;
+  /**
+   * Only what Nimbalyst may hand to a launching Claude (#1465): plugins that
+   * ship inside enabled extensions. The user's `/plugin`-installed plugins are
+   * loaded by Claude itself and must never be injected on top of that.
+   */
+  claudePluginInjectionLoader?: () => Promise<Array<{ type: 'local'; path: string }>>;
   releaseChannelLoader?: () => ReleaseChannel;
 }
 
@@ -460,6 +474,7 @@ export class AgentWorkflowService {
   private readonly userClaudeConfigDir: string;
   private readonly extensionDirectoriesLoader: () => Promise<string[]>;
   private readonly nativeClaudePluginPathsLoader: (workspacePath?: string) => Promise<Array<{ type: 'local'; path: string }>>;
+  private readonly claudePluginInjectionLoader: () => Promise<Array<{ type: 'local'; path: string }>>;
   private readonly releaseChannelLoader: () => ReleaseChannel;
   // Single-flight + TTL: listEntries() is fanned out from every mounted AI
   // input on startup (one per open tab/pane), with no shared cache at the
@@ -479,7 +494,8 @@ export class AgentWorkflowService {
       ? path.join(options.userHomePath, '.claude')
       : resolveClaudeConfigDir();
     this.extensionDirectoriesLoader = options.extensionDirectoriesLoader ?? getAllExtensionDirectories;
-    this.nativeClaudePluginPathsLoader = options.nativeClaudePluginPathsLoader ?? getNativeClaudePluginPaths;
+    this.nativeClaudePluginPathsLoader = options.nativeClaudePluginPathsLoader ?? getDiscoverableClaudePluginPaths;
+    this.claudePluginInjectionLoader = options.claudePluginInjectionLoader ?? getExtensionClaudePluginPaths;
     this.releaseChannelLoader = options.releaseChannelLoader ?? getReleaseChannel;
   }
 
@@ -532,18 +548,30 @@ export class AgentWorkflowService {
     return entries.find(entry => entry.name === name) ?? null;
   }
 
+  /**
+   * The plugin roots Nimbalyst hands to a launching Claude session — the SDK's
+   * `options.plugins` and the CLI's `--plugin-dir`.
+   *
+   * #1465: injection carries Nimbalyst's own plugins only — those contributed by
+   * enabled extensions, plus the workflow plugins we generate under
+   * `.claude/plugins/.nimbalyst-generated`. Claude already loads the user's
+   * `/plugin`-installed marketplace plugins itself, so re-injecting them by path
+   * gave every one of them an unconfigured `@inline` twin in the session. Those
+   * plugins stay in the picker's discovery scan (`scanLegacyClaudePluginSources`),
+   * which is what keeps their commands listed.
+   */
   async getClaudeProviderPluginPaths(): Promise<Array<{ type: 'local'; path: string }>> {
-    const nativePlugins = await this.nativeClaudePluginPathsLoader(this.workspacePath);
+    const extensionPlugins = await this.claudePluginInjectionLoader();
     const exportSettings = getAgentWorkflowExportSettings();
 
     if (!exportSettings.claudeGeneratedExtensionWorkflowsEnabled) {
-      return dedupePlugins(nativePlugins);
+      return dedupePlugins(extensionPlugins);
     }
 
     const snapshot = await this.getSnapshot();
     const generatedPlugins = await this.ensureGeneratedClaudePluginsSynced(snapshot);
     return dedupePlugins([
-      ...nativePlugins,
+      ...extensionPlugins,
       ...generatedPlugins.map(pluginPath => ({ type: 'local' as const, path: pluginPath })),
     ]);
   }

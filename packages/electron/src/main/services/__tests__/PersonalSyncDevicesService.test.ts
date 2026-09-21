@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
@@ -5,6 +6,7 @@ const mocks = vi.hoisted(() => ({
   getCollabSyncHttpUrl: vi.fn(() => 'https://sync.nimbalyst.com'),
   getCollabSyncWsUrl: vi.fn(() => 'wss://sync.nimbalyst.com'),
   getPersonalSessionJwt: vi.fn(),
+  getPersonalUserId: vi.fn(() => 'personal-member'),
   refreshPersonalSessionDetailed: vi.fn(),
 }));
 
@@ -19,14 +21,16 @@ vi.mock('../../utils/collabSyncUrl', () => ({
 
 vi.mock('../StytchAuthService', () => ({
   getPersonalSessionJwt: mocks.getPersonalSessionJwt,
+  getPersonalUserId: mocks.getPersonalUserId,
   refreshPersonalSessionDetailed: mocks.refreshPersonalSessionDetailed,
 }));
 
-import { listPersonalSyncDevices } from '../PersonalSyncDevicesService';
+import { listPersonalSyncDevices, updatePersonalSyncDevices } from '../PersonalSyncDevicesService';
 
 describe('listPersonalSyncDevices', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.getPersonalUserId.mockReturnValue('personal-member');
     mocks.getCollabSyncHttpUrl.mockReturnValue('https://sync.nimbalyst.com');
     mocks.getCollabSyncWsUrl.mockReturnValue('wss://sync.nimbalyst.com');
     mocks.refreshPersonalSessionDetailed.mockResolvedValue({ ok: true });
@@ -44,6 +48,7 @@ describe('listPersonalSyncDevices', () => {
     await expect(listPersonalSyncDevices()).resolves.toEqual({
       success: true,
       devices: [{ deviceId: 'phone-1', name: 'Phone' }],
+      accountId: 'personal-member',
       sessionCount: 2,
       projectCount: 1,
     });
@@ -112,4 +117,19 @@ describe('listPersonalSyncDevices', () => {
     await expect(listPersonalSyncDevices()).resolves.toEqual({ success: false, devices: [], error: 'Sync not configured' });
     expect(fetch).not.toHaveBeenCalled();
   });
+});
+
+it('refuses a stale account mutation before refresh or network activity', async () => {
+  const fetchSpy = vi.mocked(fetch); fetchSpy.mockClear();
+  await expect(updatePersonalSyncDevices({accountId: 'old-account', deviceIds: ['same-sandbox'], hidden: true})).resolves.toMatchObject({success: false, error: 'Personal sync account changed'});
+  expect(fetchSpy).not.toHaveBeenCalled();
+});
+it('does not retry an inventory write under an account selected during JWT refresh', async () => {
+  mocks.getSessionSyncConfig.mockReturnValue({enabled: true});
+  mocks.getPersonalUserId.mockReturnValue('personal-member');
+  mocks.getPersonalSessionJwt.mockReturnValue('old-jwt');
+  vi.mocked(fetch).mockReset().mockResolvedValue({status: 401, ok: false} as Response);
+  mocks.refreshPersonalSessionDetailed.mockImplementation(async () => { mocks.getPersonalUserId.mockReturnValue('other-member'); return {ok: true}; });
+  await expect(updatePersonalSyncDevices({accountId: 'personal-member', deviceIds: ['device'], hidden: true})).resolves.toMatchObject({success: false});
+  expect(fetch).toHaveBeenCalledTimes(1);
 });

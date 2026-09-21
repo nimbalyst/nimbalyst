@@ -1,3 +1,4 @@
+import { warnIfUnpublished } from '@nimbalyst/runtime/sync/pushOutcome';
 /**
  * IPC Handlers for Session State Management
  *
@@ -19,6 +20,7 @@ import {
   resetPendingPromptTracking,
   setSessionPendingPrompt,
 } from '../services/ai/pendingPromptPersistence';
+import { clearOpenPrompts } from '../services/ai/openPromptRegistry';
 import {
   clearStalePendingPromptOnTerminal,
   findSessionsWithPendingPrompt,
@@ -117,6 +119,9 @@ async function clearStalePendingPromptsAtStartup(): Promise<void> {
     );
     for (const sessionId of staleIds) {
       await setSessionPendingPrompt(sessionId, false);
+      // Drop the correlated prompt ids too, or the registry keeps claiming
+      // this session is waiting and no later resolve can ever clear the bit.
+      clearOpenPrompts(sessionId);
     }
     // Every row is now clear, so the in-memory mirror the reconcile reads starts
     // from a known-empty state.
@@ -149,6 +154,9 @@ async function reconcileStalePendingPrompts(
     });
     for (const sessionId of staleIds) {
       await setSessionPendingPrompt(sessionId, false);
+      // Drop the correlated prompt ids too, or the registry keeps claiming
+      // this session is waiting and no later resolve can ever clear the bit.
+      clearOpenPrompts(sessionId);
     }
     if (staleIds.length > 0) {
       console.log(`[SessionStateHandlers] Reconcile cleared ${staleIds.length} stale pending prompt(s)`);
@@ -192,7 +200,10 @@ export async function registerSessionStateHandlers() {
   stateManager.subscribe((event: SessionStateEvent) => {
     void clearStalePendingPromptOnTerminal(event, {
       readHasPendingPrompt: readPersistedHasPendingPrompt,
-      clearPendingPrompt: (sessionId) => setSessionPendingPrompt(sessionId, false),
+      clearPendingPrompt: (sessionId) => {
+        clearOpenPrompts(sessionId);
+        return setSessionPendingPrompt(sessionId, false);
+      },
       onError: (err) =>
         console.error('[SessionStateHandlers] Failed to clear stale pending prompt on terminal event:', err),
     });
@@ -457,10 +468,10 @@ export async function registerSessionStateHandlers() {
  * and leave the subscription live — a stale "isExecuting=true" on mobile is
  * otherwise never cleared, pinning the mobile spinner on "Thinking..." forever.
  */
-export function pushExecutionStateToMobile(
+export async function pushExecutionStateToMobile(
   event: SessionStateEvent,
   syncProvider: import('@nimbalyst/runtime/sync').SyncProvider | null,
-): void {
+): Promise<void> {
   if (
     event.type !== 'session:started' &&
     event.type !== 'session:completed' &&
@@ -479,13 +490,15 @@ export function pushExecutionStateToMobile(
 
   console.log(`[SessionStateHandlers] Syncing execution state to mobile: sessionId=${sessionId} isExecuting=${isExecuting}`);
 
-  syncProvider.pushChange(sessionId, {
-    type: 'metadata_updated',
-    metadata: {
-      isExecuting,
-      updatedAt: Date.now(),
-    },
-  });
+  try {
+    const outcome = await syncProvider.pushChange(sessionId, {
+      type: 'metadata_updated',
+      metadata: { isExecuting, updatedAt: Date.now() },
+    });
+    warnIfUnpublished(message => console.warn(message), sessionId, '[SessionStateHandlers] Failed to publish execution state', outcome);
+  } catch (error) {
+    console.warn(`[SessionStateHandlers] Failed to publish execution state for session ${sessionId}:`, error);
+  }
 }
 
 /**
@@ -499,7 +512,7 @@ function setupSyncSubscription(stateManager: ReturnType<typeof getSessionStateMa
     console.log('[SessionStateHandlers] Setting up execution state sync to mobile');
 
     const unsubscribe = stateManager.subscribe((event: SessionStateEvent) => {
-      pushExecutionStateToMobile(event, getSyncProvider());
+      void pushExecutionStateToMobile(event, getSyncProvider());
     });
 
     syncSubscriptionCleanup = unsubscribe;

@@ -1,0 +1,5 @@
+{
+  "type": "syncRequest",
+  "sinceId": "previous-message-id",
+  "sinceSeq": 30
+}

@@ -1,4 +1,6 @@
+import { projectRemoteHosts } from './remoteHostInventory';
 import { randomUUID } from 'node:crypto';
+import { logger } from '../../utils/logger';
 import { TranscriptRuntime } from '@nimbalyst/runtime/ai/server/transcript/TranscriptRuntime';
 import type { RawMessage } from '@nimbalyst/runtime/ai/server/transcript/TranscriptTransformer';
 import type { ChatAttachment, SessionData } from '@nimbalyst/runtime/ai/server/types';
@@ -37,6 +39,8 @@ export class RemoteSessionMirror {
   constructor(private readonly deps: {
     preparePrompt?(prompt: string, workspace: string): Promise<string>;
     encryptAttachments?(attachments: ChatAttachment[], workspace: string, key: CryptoKey): Promise<import("@nimbalyst/runtime/sync/types").EncryptedAttachment[]>;
+    localSessionIds(workspace: string): Promise<Set<string>>;
+    configuredHostIds?(): Set<string>;
     hasLocalSession(id: string): Promise<boolean>;
     listChanged(workspacePath: string, sessionId: string): void;
   }) {}
@@ -85,7 +89,7 @@ export class RemoteSessionMirror {
   private isRemoteHost(host?: string): boolean {
     if (!host || host === this.provider?.getLocalDeviceInfo?.()?.deviceId) return false;
     const device = this.provider?.getConnectedDevices?.().find(device => device.deviceId === host);
-    return host.startsWith('sandbox-') || device?.type === 'headless' || device?.type === 'desktop';
+    return !device || host.startsWith('sandbox-') || device.type === 'unknown' || device.type === 'headless' || device.type === 'desktop';
   }
   isRemote(sessionId: string): boolean {
     return this.isRemoteHost(this.provider?.getCachedIndexEntry?.(sessionId)?.hostDeviceId ?? this.entries.get(sessionId)?.hostDeviceId);
@@ -285,7 +289,10 @@ export class RemoteSessionMirror {
     const outcome = await provider.pushChange(id, { type: 'metadata_updated', metadata: {
       queuedPrompts: [...queue, { id: promptId, prompt: preparedPrompt.trim(), timestamp: Date.now(), ...(encrypted.length ? {attachments: encrypted} : {}), ...(options ? {options} : {}) }],
     } });
-    if (outcome && !outcome.published) throw new Error('The prompt could not be sent. Keep it and retry when connected.');
+    if (outcome && !outcome.published) {
+      logger.main.warn(`[RemoteSessionMirror] Failed to publish prompt for session ${id}: ${outcome.reason ?? 'not published'}`);
+      throw new Error('The prompt could not be sent. Keep it and retry when connected.');
+    }
     return { promptId };
   }
   async workspaceContext(id: string, workspace: string): Promise<unknown> {
@@ -309,14 +316,19 @@ export class RemoteSessionMirror {
     });
   }
 
-  async hosts(workspace: string): Promise<Array<Pick<DeviceInfo, 'deviceId' | 'name' | 'type' | 'isOnline'>>> {
+  async hosts(workspace: string): Promise<DeviceInfo[]> {
+    if (!workspace) throw new Error('workspace is required');
     try { await this.refresh(); } catch { /* Retain offline history. */ }
-    const hosts = new Map((this.provider?.getConnectedDevices?.() ?? []).filter(device => this.isRemoteHost(device.deviceId)).map(device => [device.deviceId, device]));
-    for (const entry of this.entries.values()) {
-      if (entry.projectId !== workspace || !entry.hostDeviceId || hosts.has(entry.hostDeviceId)) continue;
-      hosts.set(entry.hostDeviceId, {deviceId: entry.hostDeviceId, name: 'Remote machine', type: 'headless', isOnline: false, platform: 'unknown', connectedAt: 0, lastActiveAt: 0});
-    }
-    return [...hosts.values()];
+    const provider = this.provider;
+    if (!provider) return [];
+    const localIds = await this.deps.localSessionIds(workspace);
+    if (provider !== this.provider) return [];
+    return projectRemoteHosts({
+      devices: provider.getConnectedDevices?.() ?? [],
+      localDeviceId: provider.getLocalDeviceInfo?.()?.deviceId,
+      historyHostIds: new Set([...this.entries.values()].filter(e => e.projectId === workspace && !localIds.has(e.sessionId)).map(e => e.hostDeviceId).filter((id): id is string => !!id)),
+      configuredHostIds: this.deps.configuredHostIds?.() ?? new Set(),
+    });
   }
 
   async create(workspace: string, host: string, options: {prompt?: string; model?: string; parentSessionId?: string; worktree?: boolean} = {}): Promise<string> {

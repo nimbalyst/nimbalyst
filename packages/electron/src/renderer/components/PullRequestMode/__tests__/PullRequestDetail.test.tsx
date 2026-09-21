@@ -69,9 +69,14 @@ describe('PullRequestDetail review session action', () => {
     expect(onStartReviewSession).toHaveBeenCalledOnce();
   });
 
-  it('builds the review-contribution draft from the PR remote and number', () => {
-    expect(buildReviewContributionDraft('nimbalyst/nimbalyst', 809)).toBe(
-      '/review-contribution https://github.com/nimbalyst/nimbalyst/pull/809',
-    );
+  // #1556: the draft used to be `/review-contribution <url>`, a repo-private
+  // slash command that shipped builds answer with "Unknown command". The draft
+  // must stand on its own and must not lead with a slash command.
+  it('builds a self-contained review draft carrying the PR url', () => {
+    const draft = buildReviewContributionDraft('nimbalyst/nimbalyst', 809);
+
+    expect(draft).toContain('https://github.com/nimbalyst/nimbalyst/pull/809');
+    expect(draft.trimStart().startsWith('/')).toBe(false);
+    expect(draft).not.toContain('review-contribution');
   });
 });

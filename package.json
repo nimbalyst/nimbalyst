@@ -58,6 +58,7 @@
     "postinstall": "patch-package",
     "check:json-accessor-indexes": "node scripts/check-json-accessor-indexes.mjs",
     "check:renderer-sync-sockets": "node scripts/check-renderer-sync-sockets.mjs",
+    "check:sync-floating-promises": "node scripts/check-sync-floating-promises.mjs",
     "check:shared-document-nodes": "node scripts/check-shared-document-nodes.mjs",
     "check:team-lane-crypto-names": "node scripts/check-team-lane-crypto-names.mjs",
     "check:tracker-policy-reads": "node scripts/check-tracker-policy-reads.mjs",
@@ -147,7 +148,7 @@
     "zod-to-json-schema": "^3.25.0"
   },
   "overrides": {
-    "@anthropic-ai/claude-agent-sdk": "0.3.257",
+    "@anthropic-ai/claude-agent-sdk": "0.3.272",
     "prismjs": "^1.30.0",
     "vite": "^7.3.6",
     "zod": "^4.0.0",

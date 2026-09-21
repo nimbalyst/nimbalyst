@@ -5,6 +5,14 @@
 import jsyaml from 'js-yaml';
 import { globalRegistry } from '../models/TrackerDataModel';
 import { parseDate, formatLocalDateOnly } from '../models/dateUtils';
+import { applyFrontmatterOps, type FrontmatterOp } from './frontmatterSource';
+
+/**
+ * Re-exported for callers outside this package: the writers below throw it, and
+ * `documentHeader/frontmatterSource` is not in the runtime package's exports
+ * map, so `frontmatterUtils` is the reachable home for it.
+ */
+export { FrontmatterWriteError } from './frontmatterSource';
 
 export interface TrackerFrontmatter {
   type: string; // Tracker type (plan, decision, bug, etc.)
@@ -190,22 +198,9 @@ export function setShareInFrontmatter(
   content: string,
   share: { status: string; body: string } | null,
 ): string {
-  const frontmatter = extractFrontmatter(content) || {};
-  const next: Record<string, any> = { ...frontmatter };
-  if (share) next.share = share;
-  else delete next.share;
-
-  const yamlContent = jsyaml.dump(next, {
-    indent: 2,
-    lineWidth: -1,
-    noRefs: true,
-  });
-  // `\r?\n` matches both LF and CRLF openers (nimbalyst#68).
-  const frontmatterRegex = /^---\r?\n[\s\S]*?\r?\n---\r?\n?/;
-  if (frontmatterRegex.test(content)) {
-    return content.replace(frontmatterRegex, `---\n${yamlContent}---\n`);
-  }
-  return `---\n${yamlContent}---\n${content}`;
+  return applyFrontmatterOps(content, [
+    share ? { kind: 'set', key: 'share', value: share } : { kind: 'delete', key: 'share' },
+  ]);
 }
 
 /**
@@ -224,51 +219,37 @@ export function setTrackerIdInFrontmatter(
   content: string,
   trackerId: string | null,
 ): string {
-  const frontmatter = extractFrontmatter(content) || {};
-  const next: Record<string, any> = { ...frontmatter };
-  if (trackerId) next.trackerId = trackerId;
-  else delete next.trackerId;
-
-  const yamlContent = jsyaml.dump(next, {
-    indent: 2,
-    lineWidth: -1,
-    noRefs: true,
-  });
-  // `\r?\n` matches both LF and CRLF openers (nimbalyst#68).
-  const frontmatterRegex = /^---\r?\n[\s\S]*?\r?\n---\r?\n?/;
-  if (frontmatterRegex.test(content)) {
-    return content.replace(frontmatterRegex, `---\n${yamlContent}---\n`);
-  }
-  return `---\n${yamlContent}---\n${content}`;
+  return applyFrontmatterOps(content, [
+    trackerId
+      ? { kind: 'set', key: 'trackerId', value: trackerId }
+      : { kind: 'delete', key: 'trackerId' },
+  ]);
 }
 
 /**
- * Update frontmatter in markdown content
+ * Update frontmatter in markdown content.
+ *
+ * Only the named keys are rewritten; every other byte of the header -- comments,
+ * quoting styles, spacing, bare dates -- is passed through untouched (#1552).
+ * An `undefined` value removes the key, matching the old `jsyaml.dump`
+ * behaviour, which omitted undefined-valued keys from the regenerated header.
+ * Throws `FrontmatterWriteError` on a header that cannot be rewritten safely
+ * rather than overwriting it.
  */
 export function updateFrontmatter(
   content: string,
   updates: Record<string, any>
 ): string {
-  const frontmatter = extractFrontmatter(content) || {};
-  const updated = { ...frontmatter, ...updates };
+  return applyFrontmatterOps(content, toFrontmatterOps(updates));
+}
 
-  const yamlContent = jsyaml.dump(updated, {
-    indent: 2,
-    lineWidth: -1, // Don't wrap lines
-    noRefs: true,
-  });
-
-  // `\r?\n` matches both LF and CRLF openers (nimbalyst#68).
-  const frontmatterRegex = /^---\r?\n[\s\S]*?\r?\n---\r?\n?/;
-  const hasFrontmatter = frontmatterRegex.test(content);
-
-  if (hasFrontmatter) {
-    // Replace existing frontmatter
-    return content.replace(frontmatterRegex, `---\n${yamlContent}---\n`);
-  } else {
-    // Add frontmatter at the beginning
-    return `---\n${yamlContent}---\n${content}`;
-  }
+/** `undefined` deletes a key; every other value (including `null`) is written. */
+function toFrontmatterOps(updates: Record<string, any>): FrontmatterOp[] {
+  return Object.entries(updates).map(([key, value]) =>
+    value === undefined
+      ? ({ kind: 'delete', key } as const)
+      : ({ kind: 'set', key, value } as const)
+  );
 }
 
 /**
@@ -294,12 +275,13 @@ export function updateTrackerInFrontmatter(
     const nestedData = frontmatter[extensionOwnedKey] as Record<string, any>;
     const nestedFieldNames = new Set(Object.keys(nestedData));
 
-    const topLevel: Record<string, any> = {};
-    for (const [key, value] of Object.entries(frontmatter)) {
+    const ops: FrontmatterOp[] = [];
+    // Drop stale top-level duplicates of nested fields. The nested block itself
+    // is never named by an op, so its source survives byte-for-byte.
+    for (const key of Object.keys(frontmatter)) {
       if (key === extensionOwnedKey) continue;
       if (key === 'trackerStatus') continue;
-      if (nestedFieldNames.has(key)) continue; // drop stale duplicate
-      topLevel[key] = value;
+      if (nestedFieldNames.has(key)) ops.push({ kind: 'delete', key });
     }
 
     // Apply caller updates targeting top-level tracker fields. Updates aimed at
@@ -308,38 +290,36 @@ export function updateTrackerInFrontmatter(
     for (const [key, value] of Object.entries(updates)) {
       if (key === 'type') continue;
       if (nestedFieldNames.has(key)) continue;
-      topLevel[key] = value;
+      // `undefined` deletes, as it did when the header was regenerated by a
+      // dump that omitted undefined-valued keys.
+      ops.push(value === undefined ? { kind: 'delete', key } : { kind: 'set', key, value });
     }
 
     const now = formatLocalDateOnly(new Date());
-    if (!topLevel.created) topLevel.created = now;
-    topLevel.updated = now;
-
-    const mergedUpdates: Record<string, any> = {
-      ...topLevel,
-      [extensionOwnedKey]: nestedData,
-      trackerStatus: { type: trackerType },
-    };
-
-    const yamlContent = jsyaml.dump(mergedUpdates, {
-      indent: 2,
-      lineWidth: -1,
-      noRefs: true,
-    });
-    // `\r?\n` matches both LF and CRLF openers (nimbalyst#68).
-    const frontmatterRegex = /^---\r?\n[\s\S]*?\r?\n---\r?\n?/;
-    if (frontmatterRegex.test(content)) {
-      return content.replace(frontmatterRegex, `---\n${yamlContent}---\n`);
+    // Backfill on the EFFECTIVE top-level value -- the caller's update if it
+    // has one, otherwise what is in the file -- so an explicit null/'' still
+    // stamps today, exactly as the old merged-object policy did. A `created`
+    // the nested block owns is not a top-level value and does not count.
+    const effectiveCreated = nestedFieldNames.has('created')
+      ? undefined
+      : ('created' in updates ? updates.created : frontmatter.created);
+    if (!effectiveCreated) {
+      ops.push({ kind: 'set', key: 'created', value: now, timestamp: true });
     }
-    return `---\n${yamlContent}---\n${content}`;
+    ops.push({ kind: 'set', key: 'updated', value: now, timestamp: true });
+    ops.push({ kind: 'set', key: 'trackerStatus', value: { type: trackerType } });
+
+    return applyFrontmatterOps(content, ops);
   }
 
   // Migrate: remove any legacy key, promote its fields to top level
+  const migrationOps: FrontmatterOp[] = [];
   let legacyFields: Record<string, any> = {};
   for (const legacyKey of Object.keys(LEGACY_KEY_TO_TYPE)) {
     if (frontmatter[legacyKey] && typeof frontmatter[legacyKey] === 'object') {
       legacyFields = { ...(frontmatter[legacyKey] as Record<string, any>) };
       delete frontmatter[legacyKey];
+      migrationOps.push({ kind: 'delete', key: legacyKey });
     }
   }
 
@@ -368,15 +348,14 @@ export function updateTrackerInFrontmatter(
   }
 
   const now = formatLocalDateOnly(new Date());
+  const ops: FrontmatterOp[] = [...migrationOps, ...toFrontmatterOps(topLevelUpdates)];
   if (!frontmatter.created && !topLevelUpdates.created) {
-    topLevelUpdates.created = now;
+    ops.push({ kind: 'set', key: 'created', value: now, timestamp: true });
   }
-  topLevelUpdates.updated = now;
+  ops.push({ kind: 'set', key: 'updated', value: now, timestamp: true });
+  ops.push({ kind: 'set', key: 'trackerStatus', value: trackerStatusData });
 
-  return updateFrontmatter(content, {
-    ...topLevelUpdates,
-    trackerStatus: trackerStatusData,
-  });
+  return applyFrontmatterOps(content, ops);
 }
 
 /**

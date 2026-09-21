@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import React from 'react';
-import { Provider, createStore } from 'jotai';
+import { createHydratedOrgStore } from './organizationTestStore';
+import { Provider } from 'jotai';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -43,8 +44,8 @@ function installApi() {
   return { settingsSet };
 }
 
-function renderWindow() {
-  const store = createStore();
+async function renderWindow() {
+  const store = await createHydratedOrgStore();
   return render(
     <Provider store={store}>
       <OrgModeHost orgId="org-1" surfaceId={ORG_WINDOW_SURFACE_ID} chrome="window" />
@@ -64,7 +65,7 @@ describe('org window preferences', () => {
 
   it('opens the preferences dialog from the title-bar gear', async () => {
     installApi();
-    renderWindow();
+    await renderWindow();
 
     await waitFor(() => screen.getByTestId('org-window-preferences'));
     expect(screen.queryByTestId('org-preferences-dialog')).toBeNull();
@@ -77,7 +78,7 @@ describe('org window preferences', () => {
 
   it('keeps the gear out of the window drag region', async () => {
     installApi();
-    renderWindow();
+    await renderWindow();
 
     // The title bar is `-webkit-app-region: drag`; a control inside it that
     // does not opt out is a button the OS swallows.
@@ -87,7 +88,7 @@ describe('org window preferences', () => {
 
   it('opens the preferences dialog from the account popover', async () => {
     installApi();
-    renderWindow();
+    await renderWindow();
 
     await waitFor(() => screen.getByTestId('org-user-indicator-button'));
     fireEvent.click(screen.getByTestId('org-user-indicator-button'));
@@ -102,7 +103,7 @@ describe('org window preferences', () => {
 
   it('writes the density preference through the settings registry, not local state', async () => {
     const { settingsSet } = installApi();
-    renderWindow();
+    await renderWindow();
 
     await waitFor(() => screen.getByTestId('org-window-preferences'));
     fireEvent.click(screen.getByTestId('org-window-preferences'));
@@ -119,7 +120,7 @@ describe('org window preferences', () => {
 
   it('closes the dialog from Done', async () => {
     installApi();
-    renderWindow();
+    await renderWindow();
 
     await waitFor(() => screen.getByTestId('org-window-preferences'));
     fireEvent.click(screen.getByTestId('org-window-preferences'));

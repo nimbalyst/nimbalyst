@@ -19,7 +19,7 @@ final class AudioPipeline: @unchecked Sendable {
 
     // MARK: - Constants
 
-    /// Match the iPhone hardware sample rate (48kHz) to avoid internal resampling
+    /// Stable client format; VoiceProcessingIO adapts it to the selected hardware.
     nonisolated private static let kHardwareSampleRate: Double = 48000
 
     /// OpenAI Realtime API expects 24kHz
@@ -68,51 +68,21 @@ final class AudioPipeline: @unchecked Sendable {
 
     /// Set by markEndOfPlayback(), signals no more audio chunks coming
     private var endOfPlaybackMarked = false
+    private var drainCheckScheduled = false
 
     // MARK: - Callbacks
 
-    nonisolated(unsafe) var onAudioCaptured: (@Sendable (String) -> Void)?
+    nonisolated(unsafe) var onAudioCaptured: (@MainActor @Sendable (String) -> Void)?
     var onPlaybackFinished: (() -> Void)?
 
     // MARK: - State
 
     private var isCapturing = false
+    nonisolated(unsafe) private var captureEpoch = UUID()
+    var isRunning: Bool { isCapturing }
     private var isPlaying = false
 
     init() {}
-
-    // MARK: - Audio Session
-
-    func configureAudioSession() throws {
-        let session = AVAudioSession.sharedInstance()
-        try session.setCategory(.playAndRecord, mode: .voiceChat, options: [.defaultToSpeaker, .allowBluetoothA2DP])
-        try session.setPreferredSampleRate(48000)
-        try session.setPreferredIOBufferDuration(0.02) // 20ms buffers
-        try session.setActive(true, options: [])
-
-        if session.isInputGainSettable {
-            try? session.setInputGain(1.0)
-        }
-
-        logger.info("Audio session configured: sampleRate=\(session.sampleRate), route=\(session.currentRoute.inputs.map { $0.portName })")
-
-        NotificationCenter.default.addObserver(
-            forName: AVAudioSession.interruptionNotification, object: session, queue: .main
-        ) { [weak self] notification in
-            let typeValue = notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt
-            Task { @MainActor in
-                guard let typeValue, let type = AVAudioSession.InterruptionType(rawValue: typeValue) else { return }
-                if type == .began {
-                    self?.stopCapture()
-                    self?.stopPlayback()
-                }
-            }
-        }
-    }
-
-    func deactivateAudioSession() {
-        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
-    }
 
     // MARK: - Microphone Permission
 
@@ -128,6 +98,7 @@ final class AudioPipeline: @unchecked Sendable {
 
     func startCapture() throws {
         guard !isCapturing else { return }
+        captureEpoch = UUID()
         captureCallbackCount = 0
         accumulatorBuffer = nil
         captureConverter = AVAudioConverter(from: Self.hardwareFormat, to: Self.apiFormat)
@@ -195,6 +166,21 @@ final class AudioPipeline: @unchecked Sendable {
 
         guard AudioUnitInitialize(au) == noErr else {
             AudioComponentInstanceDispose(au); throw AudioPipelineError.audioUnitSetupFailed
+        }
+        // A headset may negotiate a different hardware rate. Our converters use
+        // the client format, so validate both buses each time the unit is rebuilt.
+        for (scope, bus) in [(kAudioUnitScope_Output, UInt32(1)), (kAudioUnitScope_Input, UInt32(0))] {
+            var negotiated = AudioStreamBasicDescription()
+            var size = UInt32(MemoryLayout<AudioStreamBasicDescription>.size)
+            let status = AudioUnitGetProperty(au, kAudioUnitProperty_StreamFormat, scope, bus, &negotiated, &size)
+            guard status == noErr, negotiated.mSampleRate == Self.kHardwareSampleRate,
+                  negotiated.mFormatID == kAudioFormatLinearPCM, negotiated.mChannelsPerFrame == 1,
+                  negotiated.mBytesPerFrame == 2, negotiated.mBitsPerChannel == 16,
+                  negotiated.mFormatFlags & kAudioFormatFlagIsSignedInteger != 0 else {
+                AudioUnitUninitialize(au)
+                AudioComponentInstanceDispose(au)
+                throw AudioPipelineError.audioUnitSetupFailed
+            }
         }
         guard AudioOutputUnitStart(au) == noErr else {
             AudioUnitUninitialize(au); AudioComponentInstanceDispose(au); throw AudioPipelineError.audioUnitSetupFailed
@@ -300,7 +286,11 @@ final class AudioPipeline: @unchecked Sendable {
             accumulatorBuffer = nil
 
             let callback = onAudioCaptured
-            Task { @MainActor in callback?(base64) }
+            let epoch = captureEpoch
+            Task { @MainActor [weak self] in
+                guard let self, self.captureEpoch == epoch, self.isCapturing else { return }
+                callback?(base64)
+            }
         }
     }
 
@@ -312,6 +302,7 @@ final class AudioPipeline: @unchecked Sendable {
             AudioComponentInstanceDispose(au)
             captureAudioUnit = nil
         }
+        captureEpoch = UUID()
         accumulatorBuffer = nil
         captureConverter = nil
         playbackConverter = nil
@@ -420,7 +411,10 @@ final class AudioPipeline: @unchecked Sendable {
             endOfPlaybackMarked = false
             onPlaybackFinished?()
         } else {
+            guard !drainCheckScheduled else { return }
+            drainCheckScheduled = true
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [weak self] in
+                self?.drainCheckScheduled = false
                 self?.checkPlaybackDrained()
             }
         }
@@ -487,8 +481,6 @@ final class AudioPipeline: @unchecked Sendable {
     func shutdown() {
         stopCapture()
         stopPlayback()
-        deactivateAudioSession()
-        NotificationCenter.default.removeObserver(self)
     }
 
     enum AudioPipelineError: Error, LocalizedError {

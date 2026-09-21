@@ -1,4 +1,10 @@
 declare module '@nimbalyst/runtime' {
+  export const screenshotService: {
+    captureElement(element: HTMLElement): Promise<string>;
+    capture(filePath: string): Promise<string>;
+    canCapture(filePath: string): boolean;
+  };
+
   export function useDocumentPath(): {
     documentPath: string | null;
     documentDir: string | null;

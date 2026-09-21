@@ -1,3 +1,4 @@
+import { reservePromptAnswer } from './PromptAnswerReservation';
 import { hasLiveInteractivePrompt } from '../../mcp/tools/interactivePromptLiveness';
 import { deliverCodexQuestionAnswer } from './codexQuestionDelivery';
 /**
@@ -106,7 +107,7 @@ export interface MobilePromptDeliveryDescriptor {
  */
 export async function deliverMobilePromptResponse(
   descriptor: MobilePromptDeliveryDescriptor,
-): Promise<void> {
+): Promise<boolean> {
   const { sessionId, promptType } = descriptor;
   // Capture arrival time before any asynchronous work. Pollers use createdAt
   // as their stale-response cutoff, so assigning it after an IPC waiter wakes
@@ -126,9 +127,16 @@ export async function deliverMobilePromptResponse(
       descriptor.notify();
       TrayManager.getInstance().onPromptResolved(sessionId);
     }
-    return;
+    return true;
   }
 
+  if (promptType === 'ask_user_question' || promptType === 'tool_permission') {
+    const payload = descriptor.ipcPayload ?? {};
+    const id = promptType === 'ask_user_question' ? payload.questionId : payload.requestId;
+    if (typeof id !== 'string' || !reservePromptAnswer(sessionId, promptType === 'ask_user_question' ? 'question' : 'permission', id, payload)) return false;
+  }
+
+  let persisted = false;
   // Stage 1 — durable DB record. Persist before waking any consumer so a
   // resumed provider/waiter cannot register a later same-id prompt before this
   // response is durable. Failure remains best-effort and does not gate the
@@ -142,6 +150,7 @@ export async function deliverMobilePromptResponse(
         createdAt: receivedAt,
         content: JSON.stringify(descriptor.dbRecord),
       });
+      persisted = true;
     } catch (err) {
       log.warn(`[Mobile] Failed to persist ${promptType} response: ${err}`);
     }
@@ -186,6 +195,8 @@ export async function deliverMobilePromptResponse(
     `[Mobile] ${promptType} resolution: providerConsumed=${providerConsumed}, notifiedWaiter=${notifiedWaiter}`,
   );
 
+  if (!persisted && !providerConsumed && !notifiedWaiter) return false;
+
   // Stage 4 — renderer clear + tray. Keep these independent as well: a stale
   // BrowserWindow must not prevent the tray prompt count from being cleared.
   try {
@@ -198,4 +209,5 @@ export async function deliverMobilePromptResponse(
   } catch (err) {
     log.warn(`[Mobile] ${promptType} tray notification threw: ${err}`);
   }
+  return true;
 }

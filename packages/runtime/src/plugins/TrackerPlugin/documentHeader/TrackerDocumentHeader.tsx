@@ -21,6 +21,7 @@ import { trackerItemsMapAtom } from '../trackerDataAtoms';
 import { getRecordTitle } from '../trackerRecordAccessors';
 import { navigateToTrackerReference } from '../../TrackerLinkPlugin/trackerReferenceData';
 import { detectTrackerFromFrontmatter, updateTrackerInFrontmatter } from './frontmatterUtils';
+import { FrontmatterWriteError } from './frontmatterSource';
 import type { DocumentHeaderComponentProps } from './DocumentHeaderRegistry';
 
 function normalizeDocumentPath(path: string): string {
@@ -65,6 +66,8 @@ export const TrackerDocumentHeader: React.FC<DocumentHeaderComponentProps> = ({
   const [trackerType, setTrackerType] = useState<string | null>(null);
   const trackerItems = useAtomValue(trackerItemsMapAtom);
   const [teamMembers, setTeamMembers] = useState<TeamMemberOption[]>([]);
+  /** Set when the frontmatter writer refused the last edit; cleared by the next one. */
+  const [writeError, setWriteError] = useState<string | null>(null);
   const { chipFields } = useTrackerChipFieldSections(dataModel?.type ?? '');
 
   // Get fresh tracker data when contentVersion changes
@@ -105,7 +108,20 @@ export const TrackerDocumentHeader: React.FC<DocumentHeaderComponentProps> = ({
 
     // Get fresh content and update with new frontmatter
     const currentContent = getContent();
-    const updatedContent = updateTrackerInFrontmatter(currentContent, trackerData.type, updates);
+    let updatedContent: string;
+    try {
+      updatedContent = updateTrackerInFrontmatter(currentContent, trackerData.type, updates);
+    } catch (error) {
+      // The writer refuses a header it cannot rewrite without losing the
+      // author's YAML (#1552). Say so and leave the document alone -- silently
+      // dropping the edit just makes the field snap back with no explanation.
+      if (error instanceof FrontmatterWriteError) {
+        setWriteError(error.message);
+        return;
+      }
+      throw error;
+    }
+    setWriteError(null);
     onContentChange(updatedContent);
   }, [getContent, trackerData, onContentChange]);
 
@@ -178,6 +194,15 @@ export const TrackerDocumentHeader: React.FC<DocumentHeaderComponentProps> = ({
         onOpenItem={handleOpenItem}
         onCreateCollection={trackerFieldCapabilities?.onCreateCollection}
       />
+      {writeError && (
+        <div
+          className="tracker-document-header-write-error px-3 py-1.5 text-xs select-text"
+          style={{ color: 'var(--nim-error)' }}
+          role="alert"
+        >
+          {`Could not update this file's frontmatter: ${writeError}`}
+        </div>
+      )}
     </div>
   );
 };

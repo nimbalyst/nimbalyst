@@ -434,6 +434,11 @@ describe('ClaudeCodeProvider.sendMessage chunk sequence', () => {
         subtype: 'task_started',
         task_id: 'task_1',
         task_type: 'local_bash',
+        // #1493 made this flag load-bearing. The fixture carried no background
+        // evidence at all — no flag and no launch-acknowledgement tool_result —
+        // which is now indistinguishable from an ordinary foreground Bash. The
+        // scenario it models is a backgrounded shell, so it says so.
+        is_backgrounded: true,
         description: 'npm run build',
         tool_use_id: 'toolu_bg',
       },
@@ -531,6 +536,540 @@ describe('ClaudeCodeProvider.sendMessage chunk sequence', () => {
     expect(idleMessages).toEqual([]);
   });
 
+  // Regression: GitHub #1493. The CLI tracks every Bash call as a local_bash
+  // task and flags foregroundness on task_started. The provider dropped
+  // is_backgrounded, refused to settle the task from the inline tool_result,
+  // then stamped isBackgrounded on it — so an ordinary `npm test` produced a
+  // "[System: background task(s) you launched have settled" continuation turn
+  // after the user's turn had already ended.
+  it('neither closes nor wakes when a foreground Bash settles via its own tool_result', async () => {
+    const { provider } = await makeProvider();
+    const { query, close } = scriptQueryWithClose([
+      INIT_CHUNK,
+      {
+        type: 'system',
+        subtype: 'task_started',
+        task_id: 'task_1',
+        task_type: 'local_bash',
+        is_backgrounded: false,
+        description: 'npm test',
+        tool_use_id: 'toolu_fg',
+      },
+      {
+        type: 'assistant',
+        session_id: 'sdk-session-1',
+        message: {
+          id: 'msg_1',
+          content: [{ type: 'tool_use', id: 'toolu_fg', name: 'Bash', input: { command: 'npm test' } }],
+        },
+      },
+      {
+        type: 'user',
+        message: {
+          content: [
+            {
+              type: 'tool_result',
+              tool_use_id: 'toolu_fg',
+              content: 'Tests: 42 passed, 42 total',
+              is_error: false,
+            },
+          ],
+        },
+      },
+      {
+        type: 'system',
+        subtype: 'task_notification',
+        task_id: 'task_1',
+        status: 'completed',
+        summary: 'npm test finished',
+      },
+      {
+        type: 'assistant',
+        session_id: 'sdk-session-1',
+        message: { id: 'msg_2', content: [{ type: 'text', text: 'all tests pass' }] },
+      },
+      { type: 'result', subtype: 'success', is_error: false, num_turns: 3 },
+    ]);
+    queryMock.mockImplementation(() => query);
+
+    const idleMessages: unknown[] = [];
+    provider.on('teammate:messageWhileIdle', (payload) => idleMessages.push(payload));
+
+    await runTurn(provider, 'run the tests');
+
+    expect(close).not.toHaveBeenCalled();
+    expect(idleMessages).toEqual([]);
+  });
+
+  // Older CLIs send no is_backgrounded at all. The absent flag must not be read
+  // as "backgrounded" — the inline output is what settles the task.
+  it('neither closes nor wakes for a foreground Bash whose task carries no is_backgrounded flag', async () => {
+    const { provider } = await makeProvider();
+    const { query, close } = scriptQueryWithClose([
+      INIT_CHUNK,
+      {
+        type: 'system',
+        subtype: 'task_started',
+        task_id: 'task_1',
+        task_type: 'local_bash',
+        description: 'grep -c TODO src',
+        tool_use_id: 'toolu_old',
+      },
+      {
+        type: 'assistant',
+        session_id: 'sdk-session-1',
+        message: {
+          id: 'msg_1',
+          content: [{ type: 'tool_use', id: 'toolu_old', name: 'Bash', input: { command: 'grep -c TODO src' } }],
+        },
+      },
+      {
+        type: 'user',
+        message: {
+          content: [
+            { type: 'tool_result', tool_use_id: 'toolu_old', content: '17', is_error: false },
+          ],
+        },
+      },
+      {
+        type: 'system',
+        subtype: 'task_notification',
+        task_id: 'task_1',
+        status: 'completed',
+      },
+      { type: 'result', subtype: 'success', is_error: false, num_turns: 3 },
+    ]);
+    queryMock.mockImplementation(() => query);
+
+    const idleMessages: unknown[] = [];
+    provider.on('teammate:messageWhileIdle', (payload) => idleMessages.push(payload));
+
+    await runTurn(provider, 'count the TODOs');
+
+    expect(close).not.toHaveBeenCalled();
+    expect(idleMessages).toEqual([]);
+  });
+
+  // The CLI can report a task foreground on task_started and then move it to
+  // the background without ever sending a task_updated patch — the launch
+  // acknowledgement is the only notice. The stale `false` must lose to it, or
+  // the shell is killed at teardown (NIM-1470) and its result never reported.
+  it('wakes when a task_started foreground shell is auto-backgrounded by its acknowledgement', async () => {
+    const { provider } = await makeProvider();
+    const { query } = scriptQueryWithClose([
+      INIT_CHUNK,
+      {
+        type: 'system',
+        subtype: 'task_started',
+        task_id: 'task_1',
+        task_type: 'local_bash',
+        is_backgrounded: false,
+        description: 'npm run e2e',
+        tool_use_id: 'toolu_auto',
+      },
+      {
+        type: 'assistant',
+        session_id: 'sdk-session-1',
+        message: {
+          id: 'msg_1',
+          content: [{ type: 'tool_use', id: 'toolu_auto', name: 'Bash', input: { command: 'npm run e2e' } }],
+        },
+      },
+      {
+        type: 'user',
+        message: {
+          content: [
+            {
+              type: 'tool_result',
+              tool_use_id: 'toolu_auto',
+              content: 'Command running in background with ID: b0hywzbc1.',
+              is_error: false,
+            },
+          ],
+        },
+      },
+      {
+        type: 'system',
+        subtype: 'task_notification',
+        task_id: 'task_1',
+        status: 'completed',
+        summary: 'e2e passed',
+      },
+      { type: 'result', subtype: 'success', is_error: false, num_turns: 3 },
+    ]);
+    queryMock.mockImplementation(() => query);
+
+    const idleMessages: Array<{ message: string }> = [];
+    provider.on('teammate:messageWhileIdle', (payload) => idleMessages.push(payload));
+
+    await runTurn(provider, 'run the e2e suite in the background');
+
+    expect(idleMessages).toHaveLength(1);
+    expect(idleMessages[0].message).toContain('npm run e2e');
+    expect(idleMessages[0].message).toContain('e2e passed');
+  });
+
+  // The notification can beat the inline tool_result. The task is already
+  // terminal by the time the result lands, so nothing may settle it a second
+  // time or retro-stamp it as backgrounded.
+  it('neither closes nor wakes when a foreground Bash notification precedes its tool_result', async () => {
+    const { provider } = await makeProvider();
+    const { query, close } = scriptQueryWithClose([
+      INIT_CHUNK,
+      {
+        type: 'system',
+        subtype: 'task_started',
+        task_id: 'task_1',
+        task_type: 'local_bash',
+        is_backgrounded: false,
+        description: 'npm test',
+        tool_use_id: 'toolu_early',
+      },
+      {
+        type: 'assistant',
+        session_id: 'sdk-session-1',
+        message: {
+          id: 'msg_1',
+          content: [{ type: 'tool_use', id: 'toolu_early', name: 'Bash', input: { command: 'npm test' } }],
+        },
+      },
+      {
+        type: 'system',
+        subtype: 'task_notification',
+        task_id: 'task_1',
+        status: 'completed',
+        summary: 'tests passed',
+      },
+      {
+        type: 'user',
+        message: {
+          content: [
+            { type: 'tool_result', tool_use_id: 'toolu_early', content: '42 passed', is_error: false },
+          ],
+        },
+      },
+      { type: 'result', subtype: 'success', is_error: false, num_turns: 3 },
+    ]);
+    queryMock.mockImplementation(() => query);
+
+    const idleMessages: unknown[] = [];
+    provider.on('teammate:messageWhileIdle', (payload) => idleMessages.push(payload));
+
+    await runTurn(provider, 'run the tests');
+
+    expect(close).not.toHaveBeenCalled();
+    expect(idleMessages).toEqual([]);
+  });
+
+  // Regression: a fast background shell on an older CLI settles BEFORE the
+  // launch acknowledgement reaches us. At notification time there is no
+  // background evidence yet, so nothing is recorded; the acknowledgement then
+  // arrives for an already-terminal task. The result chunk sees no running task
+  // and an empty buffer, and the continuation is lost entirely -- the reporter
+  // never learns the background command finished. The notification has to be
+  // held until the acknowledgement can classify it.
+  it('wakes when an older-CLI background shell settles before its launch acknowledgement', async () => {
+    const { provider } = await makeProvider();
+    const { query, close } = scriptQueryWithClose([
+      INIT_CHUNK,
+      {
+        type: 'system',
+        subtype: 'task_started',
+        task_id: 'task_1',
+        task_type: 'local_bash',
+        description: 'npm run build',
+        tool_use_id: 'toolu_fast',
+      },
+      {
+        type: 'assistant',
+        session_id: 'sdk-session-1',
+        message: {
+          id: 'msg_1',
+          content: [{ type: 'tool_use', id: 'toolu_fast', name: 'Bash', input: { command: 'npm run build' } }],
+        },
+      },
+      {
+        type: 'system',
+        subtype: 'task_notification',
+        task_id: 'task_1',
+        status: 'completed',
+        summary: 'build succeeded',
+      },
+      {
+        type: 'user',
+        message: {
+          content: [
+            {
+              type: 'tool_result',
+              tool_use_id: 'toolu_fast',
+              content: 'Command running in background with ID: b0hywzbc1.',
+              is_error: false,
+            },
+          ],
+        },
+      },
+      { type: 'result', subtype: 'success', is_error: false, num_turns: 3 },
+    ]);
+    queryMock.mockImplementation(() => query);
+
+    const idleMessages: Array<{ message: string }> = [];
+    provider.on('teammate:messageWhileIdle', (payload) => idleMessages.push(payload));
+
+    await runTurn(provider, 'run the build in the background');
+
+    expect(close).toHaveBeenCalledTimes(1);
+    expect(idleMessages).toHaveLength(1);
+    expect(idleMessages[0].message).toContain('npm run build');
+    expect(idleMessages[0].message).toContain('build succeeded');
+  });
+
+  // The held notification must still be released exactly once when the
+  // acknowledgement is followed by a repeat notification.
+  it('wakes once when a held notification is followed by a duplicate after the acknowledgement', async () => {
+    const { provider } = await makeProvider();
+    const { query } = scriptQueryWithClose([
+      INIT_CHUNK,
+      {
+        type: 'system',
+        subtype: 'task_started',
+        task_id: 'task_1',
+        task_type: 'local_bash',
+        description: 'npm run build',
+        tool_use_id: 'toolu_fast',
+      },
+      {
+        type: 'assistant',
+        session_id: 'sdk-session-1',
+        message: {
+          id: 'msg_1',
+          content: [{ type: 'tool_use', id: 'toolu_fast', name: 'Bash', input: { command: 'npm run build' } }],
+        },
+      },
+      {
+        type: 'system',
+        subtype: 'task_notification',
+        task_id: 'task_1',
+        status: 'completed',
+        summary: 'build succeeded',
+      },
+      {
+        type: 'user',
+        message: {
+          content: [
+            {
+              type: 'tool_result',
+              tool_use_id: 'toolu_fast',
+              content: 'Command running in background with ID: b0hywzbc1.',
+              is_error: false,
+            },
+          ],
+        },
+      },
+      {
+        type: 'system',
+        subtype: 'task_notification',
+        task_id: 'task_1',
+        status: 'completed',
+        summary: 'build succeeded',
+      },
+      { type: 'result', subtype: 'success', is_error: false, num_turns: 3 },
+    ]);
+    queryMock.mockImplementation(() => query);
+
+    const idleMessages: Array<{ message: string }> = [];
+    provider.on('teammate:messageWhileIdle', (payload) => idleMessages.push(payload));
+
+    await runTurn(provider, 'run the build in the background');
+
+    expect(idleMessages).toHaveLength(1);
+    expect(idleMessages[0].message.match(/npm run build/g)).toHaveLength(1);
+  });
+
+  // A genuinely backgrounded shell still has to reach the drain path, and the
+  // repeat task_notification the CLI can send for one must not bill a second
+  // continuation turn.
+  it('wakes once when a backgrounded shell reports terminally twice', async () => {
+    const { provider } = await makeProvider();
+    const { query } = scriptQueryWithClose([
+      INIT_CHUNK,
+      {
+        type: 'system',
+        subtype: 'task_started',
+        task_id: 'task_1',
+        task_type: 'local_bash',
+        is_backgrounded: true,
+        description: 'npm run build',
+        tool_use_id: 'toolu_bg',
+      },
+      {
+        type: 'assistant',
+        session_id: 'sdk-session-1',
+        message: { id: 'msg_1', content: [{ type: 'text', text: 'started the build' }] },
+      },
+      {
+        type: 'system',
+        subtype: 'task_notification',
+        task_id: 'task_1',
+        status: 'completed',
+        summary: 'build succeeded',
+      },
+      {
+        type: 'system',
+        subtype: 'task_notification',
+        task_id: 'task_1',
+        status: 'completed',
+        summary: 'build succeeded',
+      },
+      { type: 'result', subtype: 'success', is_error: false, num_turns: 2 },
+    ]);
+    queryMock.mockImplementation(() => query);
+
+    const idleMessages: Array<{ sessionId: string; message: string }> = [];
+    provider.on('teammate:messageWhileIdle', (payload) => idleMessages.push(payload));
+
+    await runTurn(provider, 'run the build in the background');
+
+    expect(idleMessages).toHaveLength(1);
+    expect(idleMessages[0].message.match(/npm run build/g)).toHaveLength(1);
+  });
+
+  // The recording buffer is per-turn, so a repeat notification arriving on a
+  // LATER turn clears it and would wake the session again for work already
+  // reported. The guard has to live on the tracked task, not the buffer.
+  it('does not wake a second time when the notification repeats on a later turn', async () => {
+    const { provider } = await makeProvider();
+    const backgroundedTurn = [
+      INIT_CHUNK,
+      {
+        type: 'system',
+        subtype: 'task_started',
+        task_id: 'task_1',
+        task_type: 'local_bash',
+        is_backgrounded: true,
+        description: 'npm run build',
+        tool_use_id: 'toolu_bg',
+      },
+      {
+        type: 'system',
+        subtype: 'task_notification',
+        task_id: 'task_1',
+        status: 'completed',
+        summary: 'build succeeded',
+      },
+      { type: 'result', subtype: 'success', is_error: false, num_turns: 2 },
+    ];
+    const repeatTurn = [
+      INIT_CHUNK,
+      {
+        type: 'system',
+        subtype: 'task_notification',
+        task_id: 'task_1',
+        status: 'completed',
+        summary: 'build succeeded',
+      },
+      {
+        type: 'assistant',
+        session_id: 'sdk-session-1',
+        message: { id: 'msg_2', content: [{ type: 'text', text: 'acknowledged' }] },
+      },
+      { type: 'result', subtype: 'success', is_error: false, num_turns: 2 },
+    ];
+
+    const idleMessages: unknown[] = [];
+    provider.on('teammate:messageWhileIdle', (payload) => idleMessages.push(payload));
+
+    queryMock.mockImplementation(() => scriptQueryWithClose(backgroundedTurn).query);
+    await runTurn(provider, 'run the build in the background');
+    expect(idleMessages).toHaveLength(1);
+
+    queryMock.mockImplementation(() => scriptQueryWithClose(repeatTurn).query);
+    await runTurn(provider, 'thanks');
+
+    expect(idleMessages).toHaveLength(1);
+  });
+
+  // GitHub #1555 (duplicate of #1493): the reported turn ran SEVERAL shell
+  // commands, "some in the background", and the continuation listed notices
+  // "for commands I already reported on". A single-task fixture cannot catch
+  // that — the wake is legitimate here, so what has to hold is which tasks the
+  // message names. The foreground ones settled inline and must be absent.
+  it('names only the backgrounded command when foreground commands ran in the same turn', async () => {
+    const { provider } = await makeProvider();
+    const foregroundPair = (taskId: string, toolUseId: string, command: string, output: string) => [
+      {
+        type: 'system',
+        subtype: 'task_started',
+        task_id: taskId,
+        task_type: 'local_bash',
+        is_backgrounded: false,
+        description: command,
+        tool_use_id: toolUseId,
+      },
+      {
+        type: 'assistant',
+        session_id: 'sdk-session-1',
+        message: {
+          id: `msg_${taskId}`,
+          content: [{ type: 'tool_use', id: toolUseId, name: 'Bash', input: { command } }],
+        },
+      },
+      {
+        type: 'system',
+        subtype: 'task_notification',
+        task_id: taskId,
+        status: 'completed',
+        summary: output,
+      },
+      {
+        type: 'user',
+        message: {
+          content: [{ type: 'tool_result', tool_use_id: toolUseId, content: output, is_error: false }],
+        },
+      },
+    ];
+
+    const { query } = scriptQueryWithClose([
+      INIT_CHUNK,
+      ...foregroundPair('task_fg1', 'toolu_fg1', 'git status', 'nothing to commit'),
+      ...foregroundPair('task_fg2', 'toolu_fg2', 'npm run typecheck', 'no errors'),
+      {
+        type: 'system',
+        subtype: 'task_started',
+        task_id: 'task_bg',
+        task_type: 'local_bash',
+        is_backgrounded: true,
+        description: 'npm run build',
+        tool_use_id: 'toolu_bg',
+      },
+      {
+        type: 'assistant',
+        session_id: 'sdk-session-1',
+        message: { id: 'msg_lead', content: [{ type: 'text', text: 'build is running in the background' }] },
+      },
+      { type: 'result', subtype: 'success', is_error: false, num_turns: 4 },
+      // Settles after the lead's result — this is the drain, and the only
+      // outcome the session has not already been told about.
+      {
+        type: 'system',
+        subtype: 'task_notification',
+        task_id: 'task_bg',
+        status: 'completed',
+        summary: 'build succeeded',
+      },
+    ]);
+    queryMock.mockImplementation(() => query);
+
+    const idleMessages: Array<{ message: string }> = [];
+    provider.on('teammate:messageWhileIdle', (payload) => idleMessages.push(payload));
+
+    await runTurn(provider, 'check the tree, typecheck, then build in the background');
+
+    expect(idleMessages).toHaveLength(1);
+    expect(idleMessages[0].message).toContain('npm run build');
+    expect(idleMessages[0].message).not.toContain('git status');
+    expect(idleMessages[0].message).not.toContain('npm run typecheck');
+  });
+
   it('passes the resolved turn inputs through to buildSdkOptions', async () => {
     const { provider } = await makeProvider();
     queryMock.mockImplementation(() =>
@@ -545,5 +1084,10 @@ describe('ClaudeCodeProvider.sendMessage chunk sequence', () => {
     expect(options.pathToClaudeCodeExecutable).toBe('/fake/claude');
     expect(typeof options.canUseTool).toBe('function');
     expect(typeof options.stderr).toBe('function');
+    // #1549: Nimbalyst renders its own question widget and waits for a real
+    // human answer, so the CLI's idle auto-continue must never fill one in —
+    // whatever a user's or enterprise's settings file says. The SDK default is
+    // already 'never'; pinning it keeps an inherited setting from changing that.
+    expect((options.settings as Record<string, unknown>).askUserQuestionTimeout).toBe('never');
   });
 });

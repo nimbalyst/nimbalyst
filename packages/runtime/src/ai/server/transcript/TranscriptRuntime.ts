@@ -33,6 +33,8 @@ import type {
 } from './types';
 
 const DEFAULT_CACHE_CAP = 16;
+// Also increase across replacement runtime instances within the same process.
+let nextTranscriptGeneration = 1;
 
 export interface TranscriptRuntimeOptions {
   /** Maximum number of sessions held in the in-memory canonical cache. Default 16. */
@@ -90,6 +92,7 @@ class RoutingStore implements ITranscriptEventStore {
   // collide across sessions and id-keyed updates (mergeEventPayload,
   // updateEventPayload, getEventById) silently land on the wrong session.
   private nextEventId = 1;
+  private generations = new WeakMap<InMemoryTranscriptEventStore, number>();
 
   constructor(
     private cache: Map<string, InMemoryTranscriptEventStore>,
@@ -102,6 +105,7 @@ class RoutingStore implements ITranscriptEventStore {
     const isNew = !s;
     if (!s) {
       s = new InMemoryTranscriptEventStore(() => this.nextEventId++);
+      this.generations.set(s, nextTranscriptGeneration++);
       this.cache.set(sessionId, s);
     }
     this.touchMRU(sessionId);
@@ -122,14 +126,17 @@ class RoutingStore implements ITranscriptEventStore {
   }
 
   insertEvent(event: Omit<TranscriptEvent, 'id'>): Promise<TranscriptEvent> {
-    return this.storeFor(event.sessionId).insertEvent(event);
+    const store = this.storeFor(event.sessionId);
+    return store.insertEvent({ ...event, transcriptGeneration: this.generations.get(store)! });
   }
 
   async insertEvents(events: Array<Omit<TranscriptEvent, 'id'>>): Promise<TranscriptEvent[]> {
     if (events.length === 0) return [];
     // Bulk-insert path used by transformFromBeginning. All events belong to
     // the same session (the transformer batch processes one session at a time).
-    return this.storeFor(events[0].sessionId).insertEvents(events);
+    const store = this.storeFor(events[0].sessionId);
+    const transcriptGeneration = this.generations.get(store)!;
+    return store.insertEvents(events.map(event => ({ ...event, transcriptGeneration })));
   }
 
   async updateEventPayload(id: number, payload: Record<string, unknown>): Promise<void> {

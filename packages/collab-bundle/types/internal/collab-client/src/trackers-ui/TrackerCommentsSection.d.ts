@@ -42,5 +42,8 @@ export interface TrackerCommentsSectionProps {
     readOnly?: boolean;
     /** Lets an asynchronous server refusal retire the matching optimistic row. */
     mutationRejection?: TrackerMutationRejection | null;
+    collapsedComposer?: boolean;
+    draft?: string;
+    onDraftChange?: (text: string) => void;
 }
 export declare const TrackerCommentsSection: React.FC<TrackerCommentsSectionProps>;

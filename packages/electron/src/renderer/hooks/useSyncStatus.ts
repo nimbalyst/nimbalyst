@@ -21,6 +21,7 @@ interface SyncStatusResult {
   connected: boolean;
   syncing: boolean;
   error: string | null;
+  skippedRowCount?: number;
   stats?: { sessionCount: number; lastSyncedAt: number | null };
 }
 
@@ -51,6 +52,7 @@ export function useSyncStatus(workspacePath?: string): SyncStatusSnapshot {
         connected: result.connected,
         syncing: result.syncing,
         error: result.error,
+        skippedRowCount: result.skippedRowCount,
         lastSyncedAt: result.stats?.lastSyncedAt ?? null,
       });
     } catch (error) {
@@ -71,6 +73,7 @@ export function useSyncStatus(workspacePath?: string): SyncStatusSnapshot {
       connected: update.connected,
       syncing: update.syncing,
       error: update.error,
+      skippedRowCount: update.skippedRowCount,
     }));
   }, [update]);
 

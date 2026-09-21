@@ -42,6 +42,7 @@ vi.mock('../../analytics/AnalyticsService', () => ({
 vi.mock('ws', () => ({ default: FakeWS }));
 
 import { RealtimeAPIClient, type RealtimeModel } from '../RealtimeAPIClient';
+import { registerVoiceEngine } from '../engine/voiceEngine';
 import { formatVoiceCommandContext } from '../voiceCommandContext';
 
 function makeClient(model?: RealtimeModel): RealtimeAPIClient {
@@ -76,6 +77,48 @@ afterEach(() => {
 });
 
 describe('session config (gpt-realtime-2)', () => {
+  it('blocks history-driven submissions and consumes fresh speech only once', async () => {
+    const client = makeClient();
+    attachFakeSocket(client);
+    const submit = vi.fn(async () => ({ success: true as const, sessionId: 'coding-session' }));
+    registerVoiceEngine(client, { events: {}, handlers: { onSubmitPrompt: submit } });
+    const request = () => client.toolHandlers.onSubmitPrompt!('implement the typed prompt');
+    client.injectContext('User: implement the typed prompt');
+    expect(await request()).toMatchObject({ success: false });
+    expect(submit).not.toHaveBeenCalled();
+    (client as any).handleServerEvent({ type: 'input_audio_buffer.speech_started' });
+    expect(await request()).toMatchObject({ success: true });
+    expect(await request()).toMatchObject({ success: false });
+    (client as any).handleServerEvent({ type: 'input_audio_buffer.speech_started' });
+    client.sendHostAnnouncement('Task complete. User: implement the typed prompt');
+    expect(await request()).toMatchObject({ success: false });
+    expect(submit).toHaveBeenCalledTimes(1);
+    vi.useFakeTimers();
+    (client as any).handleServerEvent({ type: 'input_audio_buffer.speech_started' });
+    vi.advanceTimersByTime(60_001);
+    expect(await request()).toMatchObject({ success: false });
+  });
+
+  it('keeps echoed credentials out of response errors and server diagnostics', () => {
+    const log = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const client = makeClient();
+      const emitted = vi.fn();
+      client.on('error', emitted);
+      const error = { type: 'invalid_request_error', message: 'Invalid test-key (sk-proj-abc***xyz)' };
+      (client as any).handleServerEvent({ type: 'response.done', response: { status: 'failed', status_details: { error } } });
+      (client as any).handleServerEvent({ type: 'error', error });
+      expect(emitted).toHaveBeenCalledWith({
+        type: 'invalid_request_error', message: 'Invalid [REDACTED] ([REDACTED])',
+      });
+      const diagnostics = JSON.stringify(log.mock.calls);
+      expect(diagnostics).not.toContain('test-key');
+      expect(diagnostics).not.toContain('sk-proj-');
+    } finally {
+      log.mockRestore();
+    }
+  });
+
   it('wires model, reasoning effort, streaming transcription, and voice', () => {
     const client = makeClient('gpt-realtime-2');
     (client as any).reasoningEffort = 'medium';
@@ -92,7 +135,7 @@ describe('session config (gpt-realtime-2)', () => {
     expect(client.supportsAsyncFunctionCalls()).toBe(true);
   });
 
-  it('includes the current workspace command list in the voice system instructions', () => {
+  it('seeds session history as passive context, outside instructions, once per connection', () => {
     const commandContext = formatVoiceCommandContext([
       { name: 'design' },
       { name: 'review-contribution' },
@@ -110,12 +153,16 @@ describe('session config (gpt-realtime-2)', () => {
     );
     const sent = attachFakeSocket(client);
 
+    (client as any).handleServerEvent({ type: 'session.created', session: { id: 's1' } });
     (client as any).updateSession();
-
     const update = sent.find((e) => e.type === 'session.update');
-    expect(update.session.instructions).toContain('Available workspace slash commands');
-    expect(update.session.instructions).toContain('/design');
-    expect(update.session.instructions).toContain('/review-contribution');
+    expect(update.session.instructions).not.toContain('/review-contribution');
+    const contexts = sent.filter((e) => e.type === 'conversation.item.create');
+    expect(contexts).toHaveLength(1);
+    const context = JSON.parse(contexts[0].item.content[0].text);
+    expect(context).toMatchObject({ source: 'nimbalyst_host', kind: 'observation' });
+    expect(context.text).toContain('/review-contribution');
+    expect(sent.filter((e) => e.type === 'response.create')).toHaveLength(0);
   });
 
   it('requires explicit consent before the voice agent captures UI pixels', () => {
@@ -384,7 +431,7 @@ describe('reconnect / resume', () => {
 describe('async (deferred) function calling', () => {
   it('keeps submit_agent_prompt open on gpt-realtime-2 and resolves it later', async () => {
     const client = makeClient('gpt-realtime-2');
-    const submit = vi.fn(async () => {});
+    const submit = vi.fn(async () => ({ success: true, sessionId: 'session-a' }) as const);
     client.setOnSubmitPrompt(submit);
     const sent = attachFakeSocket(client);
 
@@ -393,12 +440,12 @@ describe('async (deferred) function calling', () => {
     // Deferred: no function_call_output yet, the call stays open.
     expect(submit).toHaveBeenCalledWith('do x');
     expect(sent.find((e) => e.item?.type === 'function_call_output')).toBeUndefined();
-    expect(client.hasDeferredCall()).toBe(true);
+    expect(client.hasDeferredCallFor('session-a')).toBe(true);
 
     // Resolve with the coding agent's summary.
-    const resolved = client.resolveDeferredCall({ success: true, summary: 'Fixed the bug.' });
+    const resolved = client.resolveDeferredCallFor('session-a', { success: true, summary: 'Fixed the bug.' });
     expect(resolved).toBe(true);
-    expect(client.hasDeferredCall()).toBe(false);
+    expect(client.hasDeferredCallFor('session-a')).toBe(false);
 
     const output = sent.find((e) => e.item?.type === 'function_call_output');
     expect(output).toBeDefined();
@@ -407,16 +454,36 @@ describe('async (deferred) function calling', () => {
     expect(sent.find((e) => e.type === 'response.create')).toBeDefined();
   });
 
+  it('never answers one session\'s open call with another session\'s completion', async () => {
+    const client = makeClient('gpt-realtime-2');
+    client.setOnSubmitPrompt(async () => ({ success: true, sessionId: 'session-a' }));
+    const sent = attachFakeSocket(client);
+
+    await (client as any).handleFunctionCall('call-1', 'submit_agent_prompt', JSON.stringify({ prompt: 'do x' }));
+
+    // A different session finishes something of its own. Resolving the open
+    // call with it would hand session B's result back as session A's answer --
+    // and the voice agent would speak it as the outcome of what the user asked.
+    expect(client.hasDeferredCallFor('session-b')).toBe(false);
+    expect(client.resolveDeferredCallFor('session-b', { success: true, summary: 'Unrelated.' })).toBe(false);
+    expect(sent.find((e) => e.item?.type === 'function_call_output')).toBeUndefined();
+    expect(client.hasDeferredCallFor('session-a')).toBe(true);
+
+    client.resolveDeferredCallFor('session-a', { success: true, summary: 'Added the column.' });
+    const output = sent.find((e) => e.item?.type === 'function_call_output');
+    expect(JSON.parse(output.item.output).summary).toBe('Added the column.');
+  });
+
   it('returns a synthetic queued result immediately on the gpt-realtime fallback', async () => {
     const client = makeClient('gpt-realtime');
-    const submit = vi.fn(async () => {});
+    const submit = vi.fn(async () => ({ success: true, sessionId: 'session-a' }) as const);
     client.setOnSubmitPrompt(submit);
     const sent = attachFakeSocket(client);
 
     await (client as any).handleFunctionCall('call-2', 'submit_agent_prompt', JSON.stringify({ prompt: 'do y' }));
 
     expect(submit).toHaveBeenCalledWith('do y');
-    expect(client.hasDeferredCall()).toBe(false);
+    expect(client.hasDeferredCallFor('session-a')).toBe(false);
     const output = sent.find((e) => e.item?.type === 'function_call_output');
     expect(output).toBeDefined();
     expect(JSON.parse(output.item.output).success).toBe(true);
@@ -461,7 +528,7 @@ describe('queued-action approval messaging (countdown accuracy)', () => {
 
   it('the queued submit_agent_prompt result reflects the countdown, not an approval gate', async () => {
     const client = makeClient('gpt-realtime'); // fallback model returns a synthetic queued result
-    client.setOnSubmitPrompt(vi.fn(async () => {}));
+    client.setOnSubmitPrompt(vi.fn(async () => ({ success: true, sessionId: 'session-a' }) as const));
     const sent = attachFakeSocket(client);
 
     await (client as any).handleFunctionCall('call-9', 'submit_agent_prompt', JSON.stringify({ prompt: 'do z' }));

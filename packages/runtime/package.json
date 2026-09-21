@@ -302,6 +302,7 @@
       "import": "./dist/sync/SyncedSessionStore.js",
       "types": "./dist/sync/SyncedSessionStore.d.ts"
     },
+    "./sync/pushOutcome": { "node": { "types": "./dist-node/sync/pushOutcome.d.ts", "import": "./dist-node/sync/pushOutcome.js" }, "import": "./dist/sync/pushOutcome.js", "types": "./dist/sync/pushOutcome.d.ts" },
     "./sync/types": {
       "node": {
         "types": "./dist-node/sync/types.d.ts",
@@ -347,7 +348,7 @@
   },
   "dependencies": {
     "@agentclientprotocol/sdk": "^0.20.0",
-    "@anthropic-ai/claude-agent-sdk": "0.3.257",
+    "@anthropic-ai/claude-agent-sdk": "0.3.272",
     "@anthropic-ai/sdk": "^0.115.0",
     "@dnd-kit/core": "^6.3.1",
     "@dnd-kit/sortable": "^10.0.0",

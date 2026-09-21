@@ -25,6 +25,7 @@
  */
 
 import { TranscriptProjector } from '@nimbalyst/runtime/ai/server/transcript/TranscriptProjector';
+import { latestTranscriptGeneration, reconcileTranscriptMessages } from './transcriptReconciliation';
 import type {
   TranscriptViewMessage,
 } from '@nimbalyst/runtime/ai/server/transcript/TranscriptProjector';
@@ -41,9 +42,12 @@ export interface AccumulatorOutput {
 export type Scheduler = (cb: () => void) => void;
 
 interface SessionState {
+  transcriptGeneration?: number;
+  /** Array identity changes on snapshot loads, not per-token in-place patches. */
+  observedSnapshot?: TranscriptViewMessage[];
   /** Live canonical events keyed by id for O(1) lookup. */
   eventsById: Map<number, TranscriptEvent>;
-  /** Last published merged messages array (DB messages + live messages, sorted by id). */
+  /** Last published merged messages array (DB messages + live messages, sorted by sequence). */
   currentMessages: TranscriptViewMessage[];
   /** Index of each event id in `currentMessages`, for O(1) in-place patches. */
   messageIndexById: Map<number, number>;
@@ -83,6 +87,12 @@ export class TranscriptStreamAccumulator {
    */
   apply(event: TranscriptEvent): void {
     const state = this.ensureSession(event.sessionId);
+    // A snapshot can replace the atom while older callbacks are still queued.
+    this.observeSnapshot(event.sessionId, state);
+    const eventGeneration = latestTranscriptGeneration([event]);
+    if (state.transcriptGeneration !== undefined &&
+        (eventGeneration === undefined || eventGeneration < state.transcriptGeneration)) return;
+    this.acceptGeneration(state, eventGeneration);
     const existing = state.eventsById.get(event.id);
 
     if (existing && this.canPatchInPlace(existing, event)) {
@@ -158,6 +168,7 @@ export class TranscriptStreamAccumulator {
     state.flushScheduled = false;
     if (!state.dirty) return;
     state.dirty = false;
+    this.observeSnapshot(sessionId, state);
 
     if (state.needsRebuild || state.currentMessages.length === 0) {
       this.rebuild(sessionId, state);
@@ -165,29 +176,41 @@ export class TranscriptStreamAccumulator {
     }
 
     this.opts.emit({ sessionId, messages: state.currentMessages });
+    // The atom normally holds this exact array after our synchronous emit.
+    // Do not treat our own publication as a new external snapshot next frame.
+    // If an observer replaced it meanwhile, let observeSnapshot inspect that.
+    if (this.opts.readDbMessages(sessionId) === state.currentMessages)
+      state.observedSnapshot = state.currentMessages;
+  }
+
+  private observeSnapshot(sessionId: string, state: SessionState): TranscriptViewMessage[] {
+    const snapshot = this.opts.readDbMessages(sessionId);
+    if (snapshot !== state.observedSnapshot) {
+      state.observedSnapshot = snapshot;
+      this.acceptGeneration(state, latestTranscriptGeneration(snapshot));
+      state.needsRebuild = true;
+    }
+    return snapshot;
+  }
+
+  private acceptGeneration(state: SessionState, generation: number | undefined): void {
+    if (generation === undefined || generation <= (state.transcriptGeneration ?? 0)) return;
+    state.transcriptGeneration = generation;
+    state.eventsById.clear();
+    state.currentMessages = [];
+    state.messageIndexById.clear();
+    state.needsRebuild = true;
   }
 
   private rebuild(sessionId: string, state: SessionState): void {
-    const events = Array.from(state.eventsById.values()).sort((a, b) => a.id - b.id);
-    const liveViewModel = TranscriptProjector.project(events);
-    const liveMessages = liveViewModel.messages;
-    const dbMessages = this.opts.readDbMessages(sessionId);
-
-    const liveIds = new Set(liveMessages.map((m) => m.id));
-    const hasLiveUserMessage = liveMessages.some((m) => m.type === 'user_message');
-
-    const merged: TranscriptViewMessage[] = [];
-    for (const m of dbMessages) {
-      if (liveIds.has(m.id)) continue;
-      // Drop optimistic messages (negative ids) once a real user_message
-      // is in the live set -- the real version replaces the optimistic
-      // copy we'd otherwise duplicate.
-      if (m.id < 0 && hasLiveUserMessage) continue;
-      merged.push(m);
-    }
-    for (const m of liveMessages) merged.push(m);
-    merged.sort((a, b) => a.id - b.id);
-
+    const dbMessages = this.observeSnapshot(sessionId, state);
+    const events = Array.from(state.eventsById.values()).sort((a, b) => a.sequence - b.sequence || a.id - b.id);
+    const liveMessages = TranscriptProjector.project(events).messages;
+    // Filter even when the current generation has no live events yet: a late
+    // snapshot must never resurrect the retired generation in the atom.
+    const current = dbMessages.filter(message => message.id < 0 ||
+      state.transcriptGeneration === undefined || message.transcriptGeneration === state.transcriptGeneration);
+    const merged = reconcileTranscriptMessages(current, liveMessages, { stream: true });
     state.currentMessages = merged;
     state.messageIndexById = new Map();
     for (let i = 0; i < merged.length; i++) {

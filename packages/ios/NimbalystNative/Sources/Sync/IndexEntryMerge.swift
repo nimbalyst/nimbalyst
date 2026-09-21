@@ -36,9 +36,8 @@ enum IndexDecryptionPolicy: Sendable {
     /// Legacy responses and broadcasts: an unreadable optional field degrades to
     /// nil, because the alternative is dropping a row the user can otherwise see.
     case lenient
-    /// Versioned pages: any unreadable field fails the whole entry. Applying it
-    /// would commit a revision covering data we never actually read, and the
-    /// cursor would then skip the only chance to fetch it again.
+    /// Versioned pages: any unreadable field skips the entry's payload. Its
+    /// identity and revision still establish coverage without changing the cache.
     case strict
 }
 
@@ -178,6 +177,7 @@ enum IndexEntryDecryptor {
     static func merge(_ decrypted: DecryptedSessionEntry, existing: Session?) -> Session {
         let entry = decrypted.entry
         let clientMeta = decrypted.clientMeta
+        let draft = mergeDraft(incoming: clientMeta, existing: existing)
         return Session(
             id: entry.sessionId,
             projectId: decrypted.projectId,
@@ -209,9 +209,36 @@ enum IndexEntryDecryptor {
             lastSyncedSeq: entry.messageCount ?? existing?.lastSyncedSeq ?? 0,
             lastReadAt: entry.lastReadAt ?? existing?.lastReadAt,
             lastMessageAt: entry.lastMessageAt ?? existing?.lastMessageAt,
-            // "" from remote means "cleared" -> nil locally; nil means "not sent" -> keep existing
-            draftInput: clientMeta?.draftInput != nil ? (clientMeta!.draftInput!.isEmpty ? nil : clientMeta!.draftInput!) : existing?.draftInput,
-            draftUpdatedAt: clientMeta?.draftUpdatedAt ?? existing?.draftUpdatedAt
+            draftInput: draft.input,
+            draftUpdatedAt: draft.updatedAt
         )
+    }
+
+    /// Decide which side's draft wins.
+    ///
+    /// `draftUpdatedAt` exists to order drafts and was never compared, so an
+    /// index page built before the user's last keystroke -- a reconnect replay,
+    /// or a page that was already in flight -- overwrote what the composer
+    /// holds. The local row wins whenever the incoming stamp is not newer.
+    ///
+    /// "" from remote still means "cleared" rather than "not sent", but only
+    /// when the clear is the newer of the two.
+    static func mergeDraft(
+        incoming: ClientMetadata?,
+        existing: Session?
+    ) -> (input: String?, updatedAt: Int?) {
+        guard let incomingDraft = incoming?.draftInput else {
+            // The entry says nothing about the draft: local-first, untouched.
+            return (existing?.draftInput, existing?.draftUpdatedAt)
+        }
+        let incomingAt = incoming?.draftUpdatedAt
+        if let existingAt = existing?.draftUpdatedAt {
+            // An unstamped remote draft cannot prove it is newer than a stamped
+            // local one, so the local edit stands.
+            guard let incomingAt, incomingAt > existingAt else {
+                return (existing?.draftInput, existingAt)
+            }
+        }
+        return (incomingDraft.isEmpty ? nil : incomingDraft, incomingAt ?? existing?.draftUpdatedAt)
     }
 }

@@ -184,6 +184,8 @@ public struct SessionListFacets: Sendable {
 /// Everything the sidebar filters on, applied in SQL before any row is materialized.
 public struct SessionListFilter: Hashable, Sendable {
     public var hostDeviceId: String?
+    /// Pre-attribution desktop history stays readable without assigning it an owner.
+    public var includeUnattributedSessions: Bool
     public var projectId: String
     public var includeArchived: Bool
     public var searchText: String?
@@ -196,9 +198,11 @@ public struct SessionListFilter: Hashable, Sendable {
         searchText: String? = nil,
         phase: PhaseFilter = .all,
         metaAgentEnabled: Bool = true,
-        hostDeviceId: String? = nil
+        hostDeviceId: String? = nil,
+        includeUnattributedSessions: Bool = false
     ) {
         self.hostDeviceId = hostDeviceId
+        self.includeUnattributedSessions = includeUnattributedSessions
         self.projectId = projectId
         self.includeArchived = includeArchived
         self.searchText = searchText
@@ -235,6 +239,7 @@ public struct SessionListFilter: Hashable, Sendable {
         [
             "projectId": projectId,
             "hostDeviceId": hostDeviceId,
+            "includeUnattributedSessions": includeUnattributedSessions ? 1 : 0,
             "includeArchived": includeArchived ? 1 : 0,
             "search": likePattern,
             "phase": phase.sqlKey,
@@ -257,7 +262,8 @@ enum SessionListSQL {
     private static func visible(_ alias: String) -> String {
         """
         \(alias).projectId = :projectId
-        AND (:hostDeviceId IS NULL OR \(alias).hostDeviceId = :hostDeviceId)
+        AND (:hostDeviceId IS NULL OR \(alias).hostDeviceId = :hostDeviceId
+            OR (:includeUnattributedSessions = 1 AND \(alias).hostDeviceId IS NULL))
         AND (:includeArchived = 1 OR \(alias).isArchived = 0)
         AND (:search IS NULL OR \(alias).titleDecrypted LIKE :search ESCAPE '\\')
         """

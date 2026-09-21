@@ -204,12 +204,8 @@ export const MockupEditor = forwardRef<any, EditorHostProps>(
           if (!iframeRef.current) {
             throw new Error("Mockup iframe is not ready");
           }
-          const paths =
-            drawing.drawingPathsRef.current.length > 0
-              ? drawing.drawingPathsRef.current
-              : undefined;
           return base64ToBlob(
-            await captureMockupComposite(iframeRef.current, null, paths)
+            await captureMockupComposite(iframeRef.current)
           );
         },
       });
@@ -359,7 +355,6 @@ export const MockupEditor = forwardRef<any, EditorHostProps>(
       iframeRef,
       filePath,
       fileName,
-      drawingPathsRef: drawing.drawingPathsRef,
     });
 
     // Clear annotations when filePath changes
