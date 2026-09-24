@@ -105,7 +105,9 @@ import {
   loadInitialQueuedPrompts,
 } from '../../store';
 import { streamCompletionSignalAtom } from '../../store/atoms/sessionTranscript';
-import { convertToWorkstreamAtom, sessionPromptAdditionsAtom, sessionLastSubmitAtAtom, sessionDraftLocalModifiedAtAtom, nextOptimisticId } from '../../store/atoms/sessions';
+import { convertToWorkstreamAtom, sessionPromptAdditionsAtom, sessionLastSubmitAtAtom, sessionDraftLocalModifiedAtAtom, nextOptimisticId, type SessionWakeupView } from '../../store/atoms/sessions';
+import { leadTimeBucket, submitWithDraftCleared, type ScheduleLaterChoice } from './scheduleLater';
+import { settingAtom } from '../../store/atoms/settingAtomFamily';
 import { clearAIInputHistoryAtom } from '../../store/atoms/aiInputUndo';
 import {
   cliTerminalExpandedAtom,
@@ -609,12 +611,15 @@ const LocalSessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscrip
 
   // Error state - centralized in atom, updated by sessionTranscriptListeners
   const sessionError = useAtomValue(sessionErrorAtom(sessionId));
+  const setSessionError = useSetAtom(sessionErrorAtom(sessionId));
 
   // Track mode at last message send to detect mode transitions via toggle button
 
   // Track if we're currently queueing a message (prevents double-submission)
   const [isQueueing, setIsQueueing] = useState(false);
-
+  // Track if we're currently scheduling a "Run later" prompt (prevents double-submission)
+  const [isScheduling, setIsScheduling] = useState(false);
+  const showRunLaterButton = useAtomValue(settingAtom('ai.showRunLaterButton')) as boolean;
   // claude-code-cli (NIM-806, Phase 3): the rich transcript is primary; the
   // genuine TUI lives in a collapsible "raw terminal" drawer. Default EXPANDED so
   // the strip's IntersectionObserver fires and the CLI actually spawns; once
@@ -1066,6 +1071,84 @@ const LocalSessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscrip
       setIsQueueing(false);
     }
   }, [sessionId, getEffectiveDocumentContext, setDraftInput, setDraftAttachments, setLastSubmitAt, isQueueing, clearAIInputHistory]);
+
+  // Editing a scheduled prompt mirrors handleEditQueuedPrompt: drop the
+  // schedule and hand the text (and its attachments) back to the composer,
+  // rather than adding an update API for a row the user is about to rewrite.
+  const handleEditScheduledPrompt = useCallback(async (wakeup: SessionWakeupView) => {
+    try {
+      const cancelled = await window.electronAPI.invoke('wakeup:cancel', wakeup.id);
+      if (!cancelled) {
+        // Already fired (or cancelled elsewhere) between render and click.
+        // Restoring the text now would let the user send it a second time.
+        setSessionError({ message: 'This scheduled prompt has already been sent, so it can no longer be edited.' });
+        return;
+      }
+      setDraftInput(prev => prev.trim().length > 0 ? `${prev}\n\n${wakeup.prompt}` : wakeup.prompt);
+      // Appended like the text, so editing never discards what is already
+      // attached in the composer.
+      const restored = wakeup.attachments ?? [];
+      if (restored.length > 0) {
+        setDraftAttachments(prev => [...prev, ...restored]);
+      }
+      inputRef.current?.focus();
+    } catch (error) {
+      console.error('[SessionTranscript] Failed to edit scheduled prompt:', error);
+      setSessionError({
+        message: `Could not edit this scheduled prompt: ${error instanceof Error ? error.message : String(error)}`,
+      });
+    }
+  }, [setDraftInput, setDraftAttachments, setSessionError]);
+
+  // "Run later": schedules the draft to resume this session at fireAt instead
+  // of sending immediately. Backed by the same wakeup store/scheduler as the
+  // agent-facing schedule_wakeup tool (see WakeupHandlers.ts wakeup:create).
+  const handleScheduleLater = useCallback(async (message: string, fireAt: number, choice: ScheduleLaterChoice) => {
+    if (!message.trim() || isScheduling) return;
+    setIsScheduling(true);
+    try {
+      // Read imperatively, like handleQueue: subscribing here would re-render
+      // the whole transcript on every keystroke.
+      const currentAttachments = store.get(sessionDraftAttachmentsAtom(sessionId)) ?? [];
+      await submitWithDraftCleared(
+        () => {
+          setDraftInput('');
+          setDraftAttachments([]);
+          // Only refill what the user has not started replacing meanwhile.
+          return () => {
+            setDraftInput(prev => (prev.trim().length > 0 ? prev : message));
+            setDraftAttachments(prev => (prev.length > 0 ? prev : currentAttachments));
+          };
+        },
+        () => window.electronAPI.invoke('wakeup:create', {
+          sessionId,
+          workspacePath,
+          prompt: message.trim(),
+          fireAt,
+          // Persisted with the wakeup and re-attached when it fires, so a
+          // scheduled prompt keeps its images like a queued one does (#1497).
+          attachments: currentAttachments,
+        }),
+      );
+      posthog?.capture('ai_prompt_scheduled', {
+        choice,
+        lead_time: leadTimeBucket(fireAt - Date.now()),
+        has_attachments: currentAttachments.length > 0,
+        provider: typeof provider === 'string' ? provider : undefined,
+      });
+      clearAIInputHistory(sessionId);
+    } catch (error) {
+      // Surface it: the draft is restored on failure, so without this the
+      // click looks like it simply did nothing (main rejects a fireAt that has
+      // drifted inside the 30s minimum, or a session it cannot find).
+      console.error('[SessionTranscript] Failed to schedule prompt:', error);
+      setSessionError({
+        message: `Could not schedule this prompt: ${error instanceof Error ? error.message : String(error)}`,
+      });
+    } finally {
+      setIsScheduling(false);
+    }
+  }, [sessionId, workspacePath, setDraftInput, setDraftAttachments, isScheduling, clearAIInputHistory, setSessionError, posthog, provider]);
 
   // What the composer looked like when this session opened. Once per session,
   // not per render: we are trying to explain why people do not act on a screen,
@@ -2554,10 +2637,7 @@ const LocalSessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscrip
             readFile={readFile}
             fileEdits={sessionFileEdits}
             renderFilesHeader={mode === 'agent' ? () => (
-              <>
-                <WakeupBanner sessionId={sessionId} />
-                <PendingReviewBanner workspacePath={workspacePath} sessionId={sessionId} />
-              </>
+              <PendingReviewBanner workspacePath={workspacePath} sessionId={sessionId} />
             ) : undefined}
             pendingReviewFiles={pendingReviewFiles}
             groupByDirectory={groupByDirectory}
@@ -2696,7 +2776,6 @@ const LocalSessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscrip
       {mode === 'chat' && !collapseTranscript && (
         <>
           <McpLockdownBanner provider={typeof provider === 'string' ? provider : undefined} />
-          <WakeupBanner sessionId={sessionId} />
           <PendingReviewBanner workspacePath={workspacePath} sessionId={sessionId} />
         </>
       )}
@@ -2711,6 +2790,12 @@ const LocalSessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscrip
           pendingReviewFiles={pendingReviewFiles}
         />
       )}
+
+      {/* Scheduled "Run later" prompt, directly above the queue it behaves like.
+          Deliberately NOT inside a mode/sidebar branch: in agent mode the banner
+          used to ride along with the Files Edited sidebar, so a collapsed sidebar
+          hid the only feedback that a prompt had been scheduled (#1497). */}
+      <WakeupBanner sessionId={sessionId} onEdit={handleEditScheduledPrompt} />
 
       {/* Queue display */}
       <PromptQueueList
@@ -2774,6 +2859,7 @@ const LocalSessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscrip
         provider={provider}
         onQueue={handleQueue}
         queueCount={queuedPrompts.length}
+        onScheduleLater={showRunLaterButton ? handleScheduleLater : undefined}
         currentFilePath={currentFilePath}
         onLaunchActionInNewSession={handleLaunchActionInNewSession}
       />

@@ -68,6 +68,7 @@ import { ChatSidebar, type ChatSidebarRef } from './components/ChatSidebar';
 import EditorMode, { type EditorModeRef } from './components/EditorMode/EditorMode';
 import { TabsProvider } from './contexts/TabsContext';
 import { DocumentModelRegistry } from './services/document-model/DocumentModelRegistry';
+import { seedScheduleLaterDemo, resetScheduleLaterDemo } from './devtools/seedScheduleLaterDemo';
 import {
   addWorkstreamFileAtom,
   addWorkstreamTrackerAtom,
@@ -896,6 +897,10 @@ export default function App() {
           navigateSettingsInPlace({ category, scope });
           setTimeout(() => setActiveMode('settings'), 0);
         },
+        // Seed a session with queued prompts + a scheduled "Run later" wakeup so
+        // both surfaces can be checked without waiting on a real turn (#1497).
+        seedScheduleLaterDemo,
+        resetScheduleLaterDemo,
         // Expose DocumentModelRegistry for multi-editor coordination tests
         documentModelRegistry: DocumentModelRegistry,
         // Look up an extension editor's imperative API by file path. Replaces

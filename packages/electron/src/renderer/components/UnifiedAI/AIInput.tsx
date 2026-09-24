@@ -31,6 +31,8 @@ import {
 } from '../../store';
 import { useAIInputUndo } from '../../hooks/useAIInputUndo';
 import type { AIInputSnapshot } from '../../store/atoms/aiInputUndo';
+import { ScheduleLaterMenu } from './ScheduleLaterMenu';
+import type { ScheduleLaterChoice } from './scheduleLater';
 import { parseCommandTokens, type CommandToken } from './commandPills/parseCommandTokens';
 import { parseMentionTokens } from './commandPills/parseMentionTokens';
 import { HighlightOverlay, type OverlayToken } from './commandPills/HighlightOverlay';
@@ -119,6 +121,10 @@ export interface AIInputProps {
   onQueue?: (message: string) => void;
   queueCount?: number;
 
+  // "Run later" support — schedules the current draft to send at a future time
+  // instead of immediately. Omit to hide the affordance (e.g. no session yet).
+  onScheduleLater?: (message: string, fireAt: number, choice: ScheduleLaterChoice) => void;
+
   // Mockup annotation indicator support
   currentFilePath?: string;
 
@@ -195,6 +201,7 @@ export const AIInput = forwardRef<AIInputRef, AIInputProps>(
     provider,
     onQueue,
     queueCount = 0,
+    onScheduleLater,
     currentFilePath,
     testId,
     onLaunchActionInNewSession,
@@ -1499,34 +1506,52 @@ export const AIInput = forwardRef<AIInputRef, AIInputProps>(
               disabled={disabled || !getMemoryContent(value).trim()}
               isSaving={isSaving}
             />
-          ) : isLoading ? (
-            onCancel && (
-              <button
-                className="ai-chat-cancel-button w-9 h-9 flex items-center justify-center bg-red-600 border-none rounded-md text-white cursor-pointer transition-all duration-200 animate-pulse hover:bg-red-700 hover:scale-105 hover:animate-none"
-                onClick={() => {
-                  console.log('[AIInput] Cancel button clicked, onCancel:', !!onCancel);
-                  onCancel();
-                }}
-                title="Cancel request (Esc)"
-                aria-label="Cancel request"
-              >
-                <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
-                  <path d="M12 4L4 12M4 4L12 12" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-                </svg>
-              </button>
-            )
           ) : (
-            <button
-              className="ai-chat-send-button w-9 h-9 flex items-center justify-center bg-[var(--nim-primary)] border-none rounded-md text-white cursor-pointer transition-all duration-200 shrink-0 hover:enabled:bg-[var(--nim-primary-hover)] hover:enabled:scale-105 disabled:opacity-40 disabled:cursor-not-allowed"
-              onClick={handleSend}
-              disabled={disabled || !value.trim() || processingAttachments.length > 0}
-              title={processingAttachments.length > 0 ? "Processing attachments..." : "Send message (Enter)"}
-              aria-label="Send message"
-            >
-              <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
-                <path d="M2 8L14 2L11 14L8 9L2 8Z" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
-              </svg>
-            </button>
+            <>
+              {/* Outside the isLoading branch on purpose: scheduling a prompt for
+                  later is most useful precisely while a turn is running or the
+                  usage limit is hit (#1497). Queueing already works mid-turn via
+                  Enter, so hiding this one made the pair inconsistent. */}
+              {onScheduleLater && (
+                <ScheduleLaterMenu
+                  disabled={disabled || !value.trim() || processingAttachments.length > 0}
+                  disabledReason={
+                    processingAttachments.length > 0 ? 'Processing attachments...' : 'Type a prompt to run it later'
+                  }
+                  provider={currentProvider ?? provider}
+                  onSchedule={(fireAt, choice) => onScheduleLater(value, fireAt, choice)}
+                />
+              )}
+              {isLoading ? (
+                onCancel && (
+                  <button
+                    className="ai-chat-cancel-button w-9 h-9 flex items-center justify-center bg-red-600 border-none rounded-md text-white cursor-pointer transition-all duration-200 animate-pulse hover:bg-red-700 hover:scale-105 hover:animate-none"
+                    onClick={() => {
+                      console.log('[AIInput] Cancel button clicked, onCancel:', !!onCancel);
+                      onCancel();
+                    }}
+                    title="Cancel request (Esc)"
+                    aria-label="Cancel request"
+                  >
+                    <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+                      <path d="M12 4L4 12M4 4L12 12" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+                    </svg>
+                  </button>
+                )
+              ) : (
+                <button
+                  className="ai-chat-send-button w-9 h-9 flex items-center justify-center bg-[var(--nim-primary)] border-none rounded-md text-white cursor-pointer transition-all duration-200 shrink-0 hover:enabled:bg-[var(--nim-primary-hover)] hover:enabled:scale-105 disabled:opacity-40 disabled:cursor-not-allowed"
+                  onClick={handleSend}
+                  disabled={disabled || !value.trim() || processingAttachments.length > 0}
+                  title={processingAttachments.length > 0 ? "Processing attachments..." : "Send message (Enter)"}
+                  aria-label="Send message"
+                >
+                  <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <path d="M2 8L14 2L11 14L8 9L2 8Z" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+                  </svg>
+                </button>
+              )}
+            </>
           )}
         </div>
 

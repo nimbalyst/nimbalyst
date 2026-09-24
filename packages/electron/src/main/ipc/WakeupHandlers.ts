@@ -2,6 +2,9 @@
  * WakeupHandlers - IPC handlers for session wakeups (scheduled re-invocations).
  *
  * Channels:
+ * - wakeup:create        ({ sessionId, workspacePath, prompt, fireAt, reason? }) -> created row.
+ *                                            User-facing "Run later" creation path. Creates a
+ *                                            'user' wakeup, which never replaces another one.
  * - wakeup:list-active   (workspacePath?) -> active wakeups (pending/overdue/waiting_for_workspace),
  *                                            scoped to workspace if provided.
  * - wakeup:cancel        (id) -> updated row or null.
@@ -12,14 +15,65 @@
  * - wakeup:focus-session ({ sessionId }) -> sent when user clicks the OS notification.
  */
 
-import { ipcMain, BrowserWindow } from 'electron';
+import { ipcMain } from 'electron';
 import log from 'electron-log/main';
+import type { ChatAttachment } from '@nimbalyst/runtime/ai/server/types';
+import { AISessionsRepository } from '@nimbalyst/runtime/storage/repositories/AISessionsRepository';
+import { MIN_WAKEUP_LEAD_MS } from '../../shared/sessionWakeups';
 import { getSessionWakeupsStore } from '../services/RepositoryManager';
 import { SessionWakeupScheduler } from '../services/SessionWakeupScheduler';
+import { scheduleSessionWakeup } from '../services/sessionWakeupScheduling';
 
 const logger = log.scope('WakeupHandlers');
 
 export function registerWakeupHandlers(): void {
+  ipcMain.handle('wakeup:create', async (_event, args: {
+    sessionId?: string;
+    workspacePath?: string;
+    prompt?: string;
+    fireAt?: number;
+    reason?: string;
+    attachments?: ChatAttachment[];
+  }) => {
+    const { sessionId, workspacePath, prompt, fireAt, reason, attachments } = args ?? {};
+    if (!sessionId || typeof sessionId !== 'string') {
+      throw new Error('sessionId is required');
+    }
+    if (!workspacePath || typeof workspacePath !== 'string') {
+      throw new Error('workspacePath is required');
+    }
+    if (!prompt || typeof prompt !== 'string' || !prompt.trim()) {
+      throw new Error('prompt is required and must be a non-empty string');
+    }
+    if (typeof fireAt !== 'number' || !Number.isFinite(fireAt)) {
+      throw new Error('fireAt is required and must be a number (epoch ms)');
+    }
+    if (fireAt < Date.now() + MIN_WAKEUP_LEAD_MS) {
+      throw new Error(`fireAt must be at least ${MIN_WAKEUP_LEAD_MS / 1000}s in the future`);
+    }
+
+    const session = await AISessionsRepository.get(sessionId);
+    if (!session) {
+      throw new Error(`Session ${sessionId} not found`);
+    }
+
+    try {
+      return await scheduleSessionWakeup({
+        sessionId,
+        workspaceId: workspacePath,
+        prompt: prompt.trim(),
+        reason: reason?.trim() || undefined,
+        fireAt,
+        attachments: Array.isArray(attachments) ? attachments : undefined,
+        origin: 'user',
+      });
+    } catch (error) {
+      logger.error('wakeup:create failed', error);
+      throw error;
+    }
+  });
+
+
   ipcMain.handle('wakeup:list-active', async (_event, workspacePath?: string) => {
     try {
       const store = getSessionWakeupsStore();
@@ -65,17 +119,4 @@ export function registerWakeupHandlers(): void {
   });
 
   logger.info('Wakeup IPC handlers registered');
-}
-
-/** Broadcast a wakeup change to all renderer windows. Used from main-side code paths. */
-export function broadcastWakeupChanged(row: unknown): void {
-  for (const window of BrowserWindow.getAllWindows()) {
-    if (!window.isDestroyed()) {
-      try {
-        window.webContents.send('wakeup:changed', row);
-      } catch {
-        // ignore -- destroyed window
-      }
-    }
-  }
 }

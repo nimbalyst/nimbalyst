@@ -672,30 +672,16 @@ async function handleScheduleWakeup(args: {
     return `Error: Session ${sessionId} not found`;
   }
 
-  const { getSessionWakeupsStore } = await import('../services/RepositoryManager');
-  const { SessionWakeupScheduler } = await import('../services/SessionWakeupScheduler');
+  const { scheduleSessionWakeup } = await import('../services/sessionWakeupScheduling');
 
-  const id = `wakeup-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
-  const fireAt = new Date(Date.now() + delaySeconds * 1000);
-
-  const row = await getSessionWakeupsStore().create({
-    id,
+  const row = await scheduleSessionWakeup({
     sessionId,
     workspaceId,
     prompt,
     reason,
-    fireAt,
+    fireAt: new Date(Date.now() + delaySeconds * 1000),
+    origin: 'agent',
   });
-
-  SessionWakeupScheduler.getInstance().onCreated(row);
-
-  // Broadcast to renderers so the UI updates immediately
-  const { BrowserWindow } = await import('electron');
-  for (const window of BrowserWindow.getAllWindows()) {
-    if (!window.isDestroyed()) {
-      window.webContents.send('wakeup:changed', row);
-    }
-  }
 
   return JSON.stringify({
     wakeupId: row.id,

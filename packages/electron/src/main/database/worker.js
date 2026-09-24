@@ -1867,6 +1867,34 @@ class PGLiteWorker {
           ON ai_session_wakeups(workspace_id)
           WHERE status = 'waiting_for_workspace';
       `);
+      // Attachments for a scheduled prompt (see SQLite 0048). Added separately
+      // so installs that already created the table pick it up.
+      const wakeupAttachmentsCheck = await this.db.query(`
+        SELECT EXISTS (
+          SELECT 1 FROM information_schema.columns
+          WHERE table_name = 'ai_session_wakeups' AND column_name = 'attachments'
+        ) as has_attachments
+      `);
+      if (!wakeupAttachmentsCheck.rows[0]?.has_attachments) {
+        console.log('[PGLite Worker] Adding attachments to ai_session_wakeups...');
+        await this.db.exec(`
+          ALTER TABLE ai_session_wakeups ADD COLUMN attachments TEXT;
+        `);
+      }
+      // Who scheduled the wakeup (see SQLite 0049). Existing rows all came
+      // from the agent's tool, so the default is their true value.
+      const wakeupOriginCheck = await this.db.query(`
+        SELECT EXISTS (
+          SELECT 1 FROM information_schema.columns
+          WHERE table_name = 'ai_session_wakeups' AND column_name = 'origin'
+        ) as has_origin
+      `);
+      if (!wakeupOriginCheck.rows[0]?.has_origin) {
+        console.log('[PGLite Worker] Adding origin to ai_session_wakeups...');
+        await this.db.exec(`
+          ALTER TABLE ai_session_wakeups ADD COLUMN origin TEXT NOT NULL DEFAULT 'agent';
+        `);
+      }
       console.log('[PGLite Worker] ai_session_wakeups table created successfully');
     } catch (error) {
       console.error('[PGLite Worker] Failed to create ai_session_wakeups table:', error);

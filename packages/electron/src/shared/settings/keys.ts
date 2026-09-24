@@ -83,7 +83,7 @@ function setting<S extends z.ZodTypeAny>(
  *   - ai.apiKey.<name>  -- per-provider API key (string, may be empty)
  *   - ai.defaultProvider, ai.showToolCalls, ai.chatShowToolCalls, ai.aiDebugLogging,
  *     ai.showPromptAdditions, ai.customClaudeCodePath, ai.autoCommitEnabled,
- *     ai.showMcpSessionStatus, ai.trackerAutomation, ai.diffPeekSize
+ *     ai.showMcpSessionStatus, ai.showRunLaterButton, ai.trackerAutomation, ai.diffPeekSize
  */
 export const SETTINGS_REGISTRY = {
   // ---- AI providers (per-key) ----
@@ -218,6 +218,13 @@ export const SETTINGS_REGISTRY = {
     z.boolean(),
     { store: 'ai-settings', path: 'showMcpSessionStatus' },
     false,
+  ),
+  // Hides only the composer's "Run later" button; prompts already scheduled
+  // still show in the banner, and the agent's own wakeups are unaffected.
+  'ai.showRunLaterButton': setting(
+    z.boolean(),
+    { store: 'ai-settings', path: 'showRunLaterButton' },
+    true,
   ),
   'ai.trackerAutomation': setting(
     z.object({

@@ -17,6 +17,8 @@
 
 import log from 'electron-log/main';
 import { BrowserWindow, Notification } from 'electron';
+import type { ChatAttachment } from '@nimbalyst/runtime/ai/server/types';
+import type { SessionWakeupOrigin } from '../../shared/sessionWakeups';
 import { findWindowByWorkspace } from '../window/WindowManager';
 import { resolveNotificationIcon } from './notificationIcons';
 import {
@@ -36,6 +38,10 @@ export type WakeupExecutor = (args: {
   sessionId: string;
   workspacePath: string;
   prompt: string;
+  /** Attachments captured when the prompt was scheduled; empty when none. */
+  attachments?: ChatAttachment[];
+  /** Decides whether the prompt lands as the user's message or a resume marker. */
+  origin: SessionWakeupOrigin;
 }) => Promise<{ triggered: boolean }>;
 
 export interface SessionWakeupSchedulerDeps {
@@ -250,6 +256,8 @@ export class SessionWakeupScheduler {
         sessionId: row.sessionId,
         workspacePath: row.workspaceId,
         prompt: row.prompt,
+        attachments: row.attachments,
+        origin: row.origin,
       });
 
       if (!result.triggered) {
@@ -275,10 +283,10 @@ export class SessionWakeupScheduler {
 function notifyWakeupFired(row: SessionWakeup): void {
   if (!Notification.isSupported()) return;
   try {
-    const title = 'Session resumed';
-    const body = row.reason
-      ? `${row.reason}`
-      : 'A scheduled wakeup has fired.';
+    const title = row.origin === 'user' ? 'Scheduled prompt sent' : 'Session resumed';
+    const body = row.origin === 'user'
+      ? row.prompt.slice(0, 120)
+      : row.reason || 'A scheduled wakeup has fired.';
     const icon = resolveNotificationIcon('agent-complete');
     const notification = new Notification({ title, body, silent: false, ...(icon ? { icon } : {}) });
     notification.on('failed', (_event, error) => {

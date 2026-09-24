@@ -90,6 +90,8 @@ describe('SettingsService', () => {
     expect(svc.get('ai.provider.claude-code-cli')).toMatchObject({ enabled: false });
     // Codex (app server) is on by default.
     expect(svc.get('ai.provider.openai-codex')).toMatchObject({ enabled: true });
+    // "Run later" stays discoverable unless the user hides it.
+    expect(svc.get('ai.showRunLaterButton')).toBe(true);
   });
 
   it.each([undefined, null, 'true', 1, {}, []].map(value => [value]))('keeps external following off for absent or malformed saved value %j', async (value) => {

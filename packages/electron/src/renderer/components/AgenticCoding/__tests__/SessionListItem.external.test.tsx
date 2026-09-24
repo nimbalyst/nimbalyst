@@ -6,7 +6,11 @@ import { afterEach, expect, it, vi } from 'vitest';
 vi.mock('../../../store', async () => {
   const { atom } = await import('jotai');
   const empty = atom(undefined);
-  return Object.fromEntries(['sessionOrChildProcessingAtom', 'sessionUnreadAtom', 'sessionPendingPromptAtom', 'sessionHasPendingInteractivePromptAtom', 'reparentSessionAtom', 'refreshSessionListAtom', 'sessionShareAtom', 'sessionWakeupAtom', 'sessionLastActivityAtom'].map(key => [key, () => empty]));
+  const noWakeups = atom([]);
+  return {
+    ...Object.fromEntries(['sessionOrChildProcessingAtom', 'sessionUnreadAtom', 'sessionPendingPromptAtom', 'sessionHasPendingInteractivePromptAtom', 'reparentSessionAtom', 'refreshSessionListAtom', 'sessionShareAtom', 'sessionLastActivityAtom'].map(key => [key, () => empty])),
+    sessionWakeupsAtom: () => noWakeups,
+  };
 });
 vi.mock('../../../store/atoms/sessions', async () => {
   const { atom } = await import('jotai');

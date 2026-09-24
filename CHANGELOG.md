@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 <!-- New features go here -->
+- Schedule prompts to run later from the chat input -- after a delay, at a clock time, or when your Claude usage resets -- with their attachments, and edit or cancel them before they fire (#1497).
 
 ### Changed
 <!-- Changes to existing functionality go here -->

@@ -47,6 +47,9 @@ export function AgentFeaturesPanel() {
   const [showMcpSessionStatus, setShowMcpSessionStatus] = useAtom(
     settingAtom('ai.showMcpSessionStatus'),
   ) as [boolean, (value: boolean) => void];
+  const [showRunLaterButton, setShowRunLaterButton] = useAtom(
+    settingAtom('ai.showRunLaterButton'),
+  ) as [boolean, (value: boolean) => void];
 
   const [aiDebugSettings] = useAtom(aiDebugSettingsAtom);
   const [, updateAIDebugSettings] = useAtom(setAIDebugSettingsAtom);
@@ -265,6 +268,14 @@ export function AgentFeaturesPanel() {
           name="Show MCP Server Status"
           description="Show a chip in the session header listing this session's MCP servers, which are connected, and which never reached it."
           testId="show-mcp-session-status-toggle"
+        />
+
+        <SettingsToggle
+          checked={showRunLaterButton}
+          onChange={(checked) => setShowRunLaterButton(checked)}
+          name="Show Run Later Button"
+          description="Show a button beside Send that schedules the prompt to run at a later time. Prompts already scheduled stay visible when this is off."
+          testId="show-run-later-button-toggle"
         />
 
         <div className="agent-preferred-language flex items-start justify-between gap-4 py-3">

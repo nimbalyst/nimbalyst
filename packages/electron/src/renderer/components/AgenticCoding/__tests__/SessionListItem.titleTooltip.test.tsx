@@ -5,9 +5,12 @@ import { render, cleanup, fireEvent, screen, waitFor } from '@testing-library/re
 
 // Keep the component isolated: jotai atom reads return defaults, and the store
 // atom families are callable stubs so importing them has no side effects.
+// The wakeup list is the one read whose default is not undefined: it is
+// always an array.
+const { NO_WAKEUPS } = vi.hoisted(() => ({ NO_WAKEUPS: { wakeups: true } }));
 vi.mock('jotai', async (importOriginal) => ({
   ...(await importOriginal<typeof import('jotai')>()),
-  useAtomValue: () => undefined,
+  useAtomValue: (a: unknown) => (a === NO_WAKEUPS ? [] : undefined),
   useSetAtom: () => () => {},
 }));
 vi.mock('@nimbalyst/runtime', () => ({ MaterialSymbol: () => null, ProviderIcon: () => null }));
@@ -23,7 +26,7 @@ vi.mock('../../../store', () => ({
   reparentSessionAtom: () => ({}),
   refreshSessionListAtom: () => ({}),
   sessionShareAtom: () => ({}),
-  sessionWakeupAtom: () => ({}),
+  sessionWakeupsAtom: () => NO_WAKEUPS,
   sessionLastActivityAtom: () => ({}),
 }));
 vi.mock('../../../store/atoms/sessions', () => ({ convertToWorkstreamAtom: () => ({}) }));

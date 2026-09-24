@@ -5,7 +5,7 @@ import { MaterialSymbol } from '@nimbalyst/runtime/ui/icons/MaterialSymbol';
 import { WorktreeIcon } from '../common/WorktreeIcon';
 import { ProviderIcon } from '@nimbalyst/runtime/ui/icons/ProviderIcons';
 import { getRelativeTimeString } from '../../utils/dateFormatting';
-import { sessionOrChildProcessingAtom, sessionUnreadAtom, sessionPendingPromptAtom, sessionHasPendingInteractivePromptAtom, reparentSessionAtom, refreshSessionListAtom, sessionShareAtom, sessionWakeupAtom, sessionLastActivityAtom } from '../../store';
+import { sessionOrChildProcessingAtom, sessionUnreadAtom, sessionPendingPromptAtom, sessionHasPendingInteractivePromptAtom, reparentSessionAtom, refreshSessionListAtom, sessionShareAtom, sessionWakeupsAtom, sessionLastActivityAtom } from '../../store';
 import { convertToWorkstreamAtom, sessionRegistryAtom } from '../../store/atoms/sessions';
 import { SessionContextMenu } from './SessionContextMenu';
 import { FullTitleTooltip } from './FullTitleTooltip';
@@ -24,7 +24,7 @@ export const SessionStatusIndicator = memo<{ sessionId: string; messageCount?: n
   const hasPendingPrompt = useAtomValue(sessionPendingPromptAtom(sessionId));
   const hasAgentWakePending = useAtomValue(sessionAgentWakePendingAtom(sessionId));
   const hasUnread = useAtomValue(sessionUnreadAtom(sessionId));
-  const wakeup = useAtomValue(sessionWakeupAtom(sessionId));
+  const wakeups = useAtomValue(sessionWakeupsAtom(sessionId));
 
   // Priority: waiting for input > processing > pending prompt > scheduled wakeup > unread > message count
   // All interactive prompts (AskUserQuestion, ExitPlanMode, ToolPermission, etc.) show same indicator
@@ -60,12 +60,16 @@ export const SessionStatusIndicator = memo<{ sessionId: string; messageCount?: n
     );
   }
 
+  // A session can hold several schedules; the icon reflects the soonest, and
+  // says how many more are behind it rather than hiding them.
+  const wakeup = wakeups[0];
   if (wakeup) {
     const isOverdue = wakeup.status === 'overdue';
     const colorClass = isOverdue ? 'text-[var(--nim-warning)]' : 'text-[var(--nim-primary)]';
+    const more = wakeups.length > 1 ? ` (+${wakeups.length - 1} more)` : '';
     const tooltip = isOverdue
-      ? `Overdue wakeup${wakeup.reason ? ` — ${wakeup.reason}` : ''}`
-      : `Scheduled wakeup at ${new Date(wakeup.fireAt).toLocaleString()}${wakeup.reason ? ` — ${wakeup.reason}` : ''}`;
+      ? `Overdue wakeup${wakeup.reason ? ` — ${wakeup.reason}` : ''}${more}`
+      : `Scheduled wakeup at ${new Date(wakeup.fireAt).toLocaleString()}${wakeup.reason ? ` — ${wakeup.reason}` : ''}${more}`;
     return (
       <div className={`session-list-item-status wakeup flex items-center justify-center w-5 h-5 ${colorClass} opacity-80`} title={tooltip}>
         <MaterialSymbol icon="schedule" size={14} />

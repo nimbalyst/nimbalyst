@@ -207,6 +207,9 @@ export const INTENTIONALLY_DROPPED = [
   'ai_diff_rejected',
   'ai_effort_level_changed',
   'ai_message_queued',
+  // "Run later" (#1497). Not yet in the PostHog transformation, so it is
+  // discarded today; promote it alongside `ai_message_queued` if wanted.
+  'ai_prompt_scheduled',
   // Dropped by accident rather than by choice: these four are emitted through a
   // schema map or a validator wrapper, so the gate could not see them and
   // nobody classified them when the allow-list was written. They have been
