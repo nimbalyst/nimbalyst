@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 <!-- Bug fixes go here -->
+- Keep the Add Project menu on screen and stable as recent folders load and the window resizes.
 
 ### Removed
 <!-- Removed features go here -->
