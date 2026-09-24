@@ -281,6 +281,7 @@ export function OpenCodePanel({
       <SettingsToggle
         variant="enable"
         name="Enable OpenCode"
+        testId="setting-enable-opencode"
         checked={config.enabled || false}
         onChange={onToggle}
       />
@@ -349,6 +350,7 @@ export function OpenCodePanel({
             <SettingsToggle
               variant="enable"
               name="Disable OpenCode auto-update"
+              testId="setting-opencode-disable-auto-update"
               checked={autoUpdateOptedOut}
               onChange={(checked) => handleAutoUpdateToggle(!checked)}
             />

@@ -161,6 +161,7 @@ export function OpenAICodexPanel({
       <SettingsToggle
         variant="enable"
         name="Enable OpenAI Codex"
+        testId="setting-enable-openai-codex"
         checked={config.enabled || false}
         onChange={onToggle}
       />
@@ -168,6 +169,7 @@ export function OpenAICodexPanel({
       <SettingsToggle
         variant="enable"
         name="Show Usage Indicator"
+        testId="setting-codex-usage-indicator"
         description="Display Codex usage limits in the navigation gutter"
         checked={usageIndicatorEnabled}
         onChange={setUsageIndicatorEnabled}
@@ -187,6 +189,7 @@ export function OpenAICodexPanel({
           <SettingsToggle
             variant="enable"
             name="Enable ACP transport"
+            testId="setting-codex-acp-transport"
             description="Keeps the separate 'OpenAI Codex (ACP)' legacy provider available"
             checked={acpEnabled}
             onChange={handleAcpToggle}

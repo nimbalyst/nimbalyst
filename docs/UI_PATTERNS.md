@@ -147,3 +147,12 @@ The app defaults to `user-select: none` on the `#root` container and all descend
 | Forgetting `select-text` on content | Users can't copy text | Add `select-text` to content wrappers |
 | `select-text` on entire component | Headers/buttons become selectable | Only apply to content, not chrome |
 | `select-none` on every element | Redundant, clutters code | Let global default handle it |
+
+## Settings Rows Must Be Searchable
+
+Settings search (#1574) finds individual rows through the hand-maintained list in `packages/electron/src/renderer/components/Settings/settingsSearchIndex.ts`. When you add a `SettingsToggle` or `DropdownRow` to a settings page:
+
+- Give it a literal `testId`.
+- Add it to `SETTINGS_SEARCH_ENTRIES` (category, anchor = the `testId`, the on-screen name, and a description), or to `SETTINGS_SEARCH_EXCLUDED` with the reason it should not be searchable.
+
+`npm run check:settings-search-index` enforces this and runs in the pre-push script checks. It fails on a row that is in neither list, and on an entry whose row was renamed or removed. A row built by hand without those two components is not checked, so add its entry anyway.

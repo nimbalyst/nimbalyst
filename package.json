@@ -64,6 +64,7 @@
     "check:team-lane-crypto-names": "node scripts/check-team-lane-crypto-names.mjs",
     "check:tracker-policy-reads": "node scripts/check-tracker-policy-reads.mjs",
     "check:analytics-allowlist": "node scripts/check-analytics-allowlist.mjs",
+    "check:settings-search-index": "node scripts/check-settings-search-index.mjs",
     "test:cloudflare-sandbox": "node scripts/ensure-sandbox-dependencies.mjs && npm run typecheck --prefix packages/cloudflare-sandbox && npm run test:artifact --prefix packages/cloudflare-sandbox && node --test packages/cloudflare-sandbox/container/checks/image-pins.test.mjs"
   },
   "devDependencies": {

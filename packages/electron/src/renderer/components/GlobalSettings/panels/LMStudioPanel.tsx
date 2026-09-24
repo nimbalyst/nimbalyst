@@ -40,6 +40,7 @@ export function LMStudioPanel({
       <SettingsToggle
         variant="enable"
         name="Enable LM Studio"
+        testId="setting-enable-lmstudio"
         checked={config.enabled}
         onChange={onToggle}
       />

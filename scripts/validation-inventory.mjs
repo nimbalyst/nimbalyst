@@ -17,6 +17,7 @@ export const scriptTests = [
   "scripts/__tests__/check-renderer-sync-sockets.test.mjs",
   "scripts/__tests__/check-sync-floating-promises.test.mjs",
   "scripts/__tests__/check-runtime-host-boundary.test.mjs",
+  "scripts/__tests__/check-settings-search-index.test.mjs",
   "scripts/__tests__/check-shared-document-nodes.test.mjs",
   "scripts/__tests__/check-text-file-nuls.test.mjs",
   "scripts/__tests__/check-toolchain.test.mjs",

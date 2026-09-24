@@ -126,6 +126,7 @@ export function GeminiPanel({ config, onToggle }: GeminiPanelProps) {
       <SettingsToggle
         variant="enable"
         name="Enable Gemini"
+        testId="setting-enable-gemini"
         checked={config.enabled || false}
         onChange={onToggle}
       />
