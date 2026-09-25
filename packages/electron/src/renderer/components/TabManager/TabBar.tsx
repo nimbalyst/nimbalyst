@@ -9,6 +9,7 @@ import {
 } from '../../hooks/useTabState';
 import { CommonFileActions } from '../CommonFileActions';
 import { historyDialogFileAtom } from '../../store';
+import { settingAtom } from '../../store/atoms/settingAtomFamily';
 import { KeyboardShortcuts, getShortcutDisplay } from '../../../shared/KeyboardShortcuts';
 import { MaterialSymbol } from '@nimbalyst/runtime/ui/icons/MaterialSymbol';
 import { trackerItemByIdAtom } from '@nimbalyst/runtime/plugins/TrackerPlugin/trackerDataAtoms';
@@ -99,6 +100,8 @@ interface TabItemProps {
   onRenameKeyDown: (e: React.KeyboardEvent) => void;
   onRenameBlur: () => void;
   onTabRef: (tabId: string, el: HTMLDivElement | null) => void;
+  /** Unpinned tab width in px, or null to size each tab to its name. */
+  fixedWidth: number | null;
 }
 
 // Each tab is a separate component that subscribes to its own dirty state
@@ -124,6 +127,7 @@ const TabItem: React.FC<TabItemProps> = ({
   onRenameKeyDown,
   onRenameBlur,
   onTabRef,
+  fixedWidth,
 }) => {
   const isDirty = useTabDirty(tab.filePath);
   const hasCollabUnsyncedChanges = useTabHasCollabUnsyncedChanges(tab.filePath);
@@ -131,7 +135,8 @@ const TabItem: React.FC<TabItemProps> = ({
   return (
     <div
       ref={(el) => onTabRef(tab.id, el)}
-      className={`tab group flex items-center h-[30px] px-3 mr-px cursor-pointer relative min-w-[120px] max-w-[200px] shrink-0 rounded-t-md border border-[var(--nim-border)] bg-[var(--nim-bg-secondary)] transition-all duration-200 hover:bg-[var(--nim-bg-tertiary)] ${tab.id === activeTabId ? 'active z-[1] border-b-0 bg-[var(--nim-bg)]' : ''} ${isDirty || hasCollabUnsyncedChanges ? 'dirty' : ''} ${tab.isPinned ? 'pinned min-w-[40px] max-w-[150px]' : ''} ${draggedIndex === index ? 'dragging opacity-50 cursor-grabbing' : ''} ${dragOverIndex === index ? 'drag-over border-l-2 border-l-[var(--nim-primary)]' : ''}`}
+      className={`tab group flex items-center h-[30px] px-3 mr-px cursor-pointer relative shrink-0 rounded-t-md border border-[var(--nim-border)] bg-[var(--nim-bg-secondary)] transition-colors duration-200 hover:bg-[var(--nim-bg-tertiary)] ${tab.id === activeTabId ? 'active z-[1] border-b-0 bg-[var(--nim-bg)]' : ''} ${isDirty || hasCollabUnsyncedChanges ? 'dirty' : ''} ${tab.isPinned ? 'pinned min-w-[40px] max-w-[150px]' : fixedWidth === null ? 'min-w-[120px] max-w-[200px]' : ''} ${draggedIndex === index ? 'dragging opacity-50 cursor-grabbing' : ''} ${dragOverIndex === index ? 'drag-over border-l-2 border-l-[var(--nim-primary)]' : ''}`}
+      style={!tab.isPinned && fixedWidth !== null ? { width: fixedWidth } : undefined}
       data-tab-type={tab.kind === 'tracker' ? 'tracker' : tab.isVirtual ? 'session' : 'document'}
       data-tab-id={tab.id}
       data-filename={tab.fileName}
@@ -187,7 +192,7 @@ const TabItem: React.FC<TabItemProps> = ({
           onKeyDown={onRenameKeyDown}
           onBlur={onRenameBlur}
           onClick={(e) => e.stopPropagation()}
-          className="tab-rename-input flex-1 text-[13px] px-1 py-0.5 border border-[var(--nim-primary)] rounded-sm bg-[var(--nim-bg)] text-[var(--nim-text)] outline-none"
+          className="tab-rename-input flex-1 min-w-0 text-[13px] px-1 py-0.5 border border-[var(--nim-primary)] rounded-sm bg-[var(--nim-bg)] text-[var(--nim-text)] outline-none"
         />
       ) : tab.kind === 'tracker' && tab.trackerItemId ? (
         <TrackerTabLabel
@@ -254,6 +259,9 @@ export const TabBar: React.FC<TabBarProps> = ({
   onTabDoubleClick
 }) => {
   const openHistoryDialog = useSetAtom(historyDialogFileAtom);
+  const tabSizing = useAtomValue(settingAtom('editor.tabs.sizing'));
+  const tabFixedWidth = useAtomValue(settingAtom('editor.tabs.fixedWidth'));
+  const fixedWidth = tabSizing === 'fixed' ? tabFixedWidth : null;
   const [contextMenuTab, setContextMenuTab] = useState<string | null>(null);
   const [contextMenuPosition, setContextMenuPosition] = useState({ x: 0, y: 0 });
   const [adjustedContextMenuPosition, setAdjustedContextMenuPosition] = useState<{ x: number; y: number } | null>(null);
@@ -699,6 +707,7 @@ export const TabBar: React.FC<TabBarProps> = ({
               onEditChange={setEditingValue}
               onRenameKeyDown={handleRenameKeyDown}
               onRenameBlur={handleRenameBlur}
+              fixedWidth={fixedWidth}
               onTabRef={(tabId, el) => {
                 if (el) {
                   tabRefs.current.set(tabId, el);

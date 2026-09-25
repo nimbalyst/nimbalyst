@@ -33,6 +33,12 @@ import {
   restorePreviousProjectsAtom,
   allowUnlimitedProjectsAtom,
 } from '../../../store/atoms/openProjects';
+import { settingAtom } from '../../../store/atoms/settingAtomFamily';
+import {
+  TAB_FIXED_WIDTH_MAX,
+  TAB_FIXED_WIDTH_MIN,
+  clampTabFixedWidth,
+} from '../../../../shared/settings/keys';
 
 /** Reusable compact dropdown row */
 function DropdownRow({
@@ -404,6 +410,8 @@ export function AdvancedPanel() {
 
         <RestorePreviousProjectsToggle />
 
+        <EditorTabSizingSetting />
+
         <SettingsToggle
           checked={analyticsEnabled}
           onChange={(checked) => updateSettings({ analyticsEnabled: checked })}
@@ -706,6 +714,73 @@ function UnlimitedProjectsToggle() {
       />
       {error && <p role="alert" className="text-sm text-[var(--nim-error)]">{error}</p>}
     </div>
+  );
+}
+
+/**
+ * Editor tab sizing. Fixed width keeps the close button in the same spot on
+ * every tab, so closing several tabs in a row doesn't need the mouse to move.
+ * The width box commits on blur/Enter so a half-typed number never lands.
+ */
+function EditorTabSizingSetting() {
+  const [sizing, setSizing] = useAtom(settingAtom('editor.tabs.sizing'));
+  const [width, setWidth] = useAtom(settingAtom('editor.tabs.fixedWidth'));
+  const [draft, setDraft] = useState(String(width));
+
+  useEffect(() => {
+    setDraft(String(width));
+  }, [width]);
+
+  const commitWidth = () => {
+    const next = draft.trim() === '' ? null : clampTabFixedWidth(Number(draft));
+    setDraft(String(next ?? width));
+    if (next !== null && next !== width) {
+      void setWidth(next);
+    }
+  };
+
+  return (
+    <>
+      <DropdownRow
+        value={sizing}
+        onChange={(val) => void setSizing(val as 'fixed' | 'fit')}
+        name="Editor Tab Width"
+        description="Fixed keeps every tab the same width so you can close tabs in a row without moving the mouse."
+        options={[
+          { value: 'fixed', label: 'Fixed (Default)' },
+          { value: 'fit', label: 'Fit to name' },
+        ]}
+      />
+      {sizing === 'fixed' && (
+        <div className="editor-tab-width-setting setting-item py-2">
+          <div className="flex items-center justify-between gap-4">
+            <div className="setting-text flex flex-col gap-0 min-w-0">
+              <span className="setting-name text-sm font-medium text-[var(--nim-text)]">Fixed Tab Width</span>
+              <span className="setting-description text-xs leading-snug text-[var(--nim-text-muted)]">
+                {`Width of each tab in pixels (${TAB_FIXED_WIDTH_MIN}-${TAB_FIXED_WIDTH_MAX}).`}
+              </span>
+            </div>
+            <div className="flex items-center gap-1 shrink-0">
+              <input
+                type="number"
+                min={TAB_FIXED_WIDTH_MIN}
+                max={TAB_FIXED_WIDTH_MAX}
+                step={10}
+                value={draft}
+                onChange={(e) => setDraft(e.target.value)}
+                onBlur={commitWidth}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') commitWidth();
+                }}
+                data-testid="editor-tab-width-input"
+                className="w-20 py-1.5 px-2 rounded-md text-sm bg-[var(--nim-bg-secondary)] border border-[var(--nim-border)] text-[var(--nim-text)] outline-none focus:border-[var(--nim-primary)]"
+              />
+              <span className="text-xs text-[var(--nim-text-muted)]">px</span>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
   );
 }
 

@@ -144,6 +144,21 @@ describe('SettingsService', () => {
     expect((await import('../SettingsService')).getSettingsService().get(key)).toBe(false);
   });
 
+  it('keeps editor tab width inside its bounds on disk, on write, and in the settings input', async () => {
+    fs.writeFileSync(path.join(tmpDir, 'app-settings.json'), JSON.stringify({ editorTabs: { fixedWidth: 5000 } }));
+    const { getSettingsService } = await import('../SettingsService');
+    const { clampTabFixedWidth } = await import('../../../shared/settings/keys');
+    const svc = getSettingsService();
+    expect(svc.get('editor.tabs.sizing')).toBe('fixed');
+    expect(svc.get('editor.tabs.fixedWidth')).toBe(160);
+    for (const invalid of [79, 401, 150.5]) {
+      expect(() => svc.set('editor.tabs.fixedWidth', invalid)).toThrow(/schema validation failed/);
+    }
+    svc.set('editor.tabs.fixedWidth', 220);
+    expect(svc.get('editor.tabs.fixedWidth')).toBe(220);
+    expect([clampTabFixedWidth(10), clampTabFixedWidth(999), clampTabFixedWidth(187.6), clampTabFixedWidth(NaN)]).toEqual([80, 400, 188, null]);
+  });
+
   it('persists a claude-code-cli hidden-model denylist round-trip', async () => {
     const { getSettingsService } = await import('../SettingsService');
     const svc = getSettingsService();

@@ -43,6 +43,16 @@ export const ProviderConfigSchema = z.object({
 
 export type ProviderConfig = z.infer<typeof ProviderConfigSchema>;
 
+/** Bounds for `editor.tabs.fixedWidth`; the settings UI clamps to the same range. */
+export const TAB_FIXED_WIDTH_MIN = 80;
+export const TAB_FIXED_WIDTH_MAX = 400;
+
+/** Round and clamp a typed tab width into range; null for non-numeric input. */
+export function clampTabFixedWidth(value: number): number | null {
+  if (!Number.isFinite(value)) return null;
+  return Math.min(TAB_FIXED_WIDTH_MAX, Math.max(TAB_FIXED_WIDTH_MIN, Math.round(value)));
+}
+
 // ---------- The key registry ----------
 
 /**
@@ -279,6 +289,22 @@ export const SETTINGS_REGISTRY = {
     z.enum(['comfortable', 'compact']),
     { store: 'app-settings', path: 'teamMessages.density' },
     'comfortable',
+  ),
+  /**
+   * Editor tab sizing. `fixed` gives every unpinned tab the same width so the
+   * next tab's close button lands under the cursor after a close; `fit` sizes
+   * each tab to its name. Pinned tabs keep their compact sizing either way.
+   */
+  'editor.tabs.sizing': setting(
+    z.enum(['fixed', 'fit']),
+    { store: 'app-settings', path: 'editorTabs.sizing' },
+    'fixed',
+  ),
+  /** Width (px) of an unpinned editor tab when sizing is `fixed`. */
+  'editor.tabs.fixedWidth': setting(
+    z.number().int().min(TAB_FIXED_WIDTH_MIN).max(TAB_FIXED_WIDTH_MAX),
+    { store: 'app-settings', path: 'editorTabs.fixedWidth' },
+    160,
   ),
 } as const;
 

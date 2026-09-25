@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 <!-- Changes to existing functionality go here -->
+- Editor tabs now have a fixed width, so you can close several tabs in a row without moving the mouse; switch back to fit-to-name tabs or change the width in Settings > Advanced.
 
 ### Fixed
 <!-- Bug fixes go here -->
