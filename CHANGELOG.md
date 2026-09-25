@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 <!-- Bug fixes go here -->
+- A question left open when the agent's connection drops no longer leaves the session stuck as waiting for your response (#1557).
 
 ### Removed
 <!-- Removed features go here -->
