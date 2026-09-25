@@ -50,7 +50,25 @@ export interface AntigravityModelInfo {
   /** Human label, e.g. "Gemini 3.5 Flash (High)". */
   displayName: string;
   apiProvider?: string;
-  maxTokens?: number;
+  /**
+   * The model's context window, from the server's `ModelDetails.maxTokens`.
+   *
+   * Named apart from that field on purpose: `maxTokens` means the OUTPUT cap
+   * everywhere else in Nimbalyst (see `ModelDefinition` in modelConstants.ts,
+   * where it sits next to a separate `contextWindow`), so carrying the
+   * server's name through would have quietly handed any future consumer a
+   * 1,048,576-token "output limit". Confirmed live 2026-09-15: every current
+   * Gemini agent model reports 1Mi here, read back from a live
+   * `GetAvailableModels`.
+   */
+  contextWindowTokens?: number;
+  /**
+   * The model's declared output ceiling, from `ModelDetails.maxOutputTokens`.
+   * 65,536 for gemini-3.8-flash-high and 25 of 26 Gemini agent models
+   * (same probe). This is the field that bounds a response, and it was not
+   * being read at all.
+   */
+  maxOutputTokens?: number;
 }
 
 export interface AntigravityServerConfig {
@@ -367,7 +385,8 @@ export class AntigravityServerManager {
         enum: v.model,
         displayName: v.displayName ?? v.label ?? '',
         apiProvider: v.apiProvider,
-        maxTokens: v.maxTokens,
+        contextWindowTokens: v.maxTokens,
+        maxOutputTokens: v.maxOutputTokens,
       });
     }
     return out;
