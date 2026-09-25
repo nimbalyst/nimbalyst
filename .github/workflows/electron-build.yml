@@ -74,6 +74,13 @@ jobs:
           - os: ubuntu-latest
             platform: linux
             arch: x64
+          # Native arm64 rather than a cross-compile, for the same reason as
+          # windows-11-arm below: the Linux build compiles node-pty and
+          # better-sqlite3 from source, and the packaged claude runtime is a
+          # prebuilt binary that has to match the target.
+          - os: ubuntu-24.04-arm
+            platform: linux
+            arch: arm64
           - os: windows-latest
             platform: win
             arch: x64
@@ -566,7 +573,11 @@ jobs:
               npm run build:win -- --publish never
             fi
           else
-            npm run build:linux -- --publish never
+            if [ "${{ matrix.arch }}" == "arm64" ]; then
+              npm run build:linux:arm64 -- --publish never
+            else
+              npm run build:linux -- --publish never
+            fi
           fi
         shell: bash
 
@@ -844,12 +855,23 @@ jobs:
           node build/generate-update-yml.js
           # Every Linux binary staged above must appear in latest-linux.yml.
           # electron-updater routes each install method to its own entry by file
-          # extension, so a package type that is built but missing from the
-          # channel file silently stops updating (#1430). The copies above are
-          # `|| true`, so without this the omission would never surface.
+          # extension and each architecture to its own entry by `arch`, so an
+          # artifact that is built but missing from the channel file silently
+          # stops updating (#1430). The copies above are `|| true`, so without
+          # this the omission would never surface.
           for binary in release/*.AppImage release/*.deb; do
             [ -e "$binary" ] || continue
             name=$(basename "$binary")
+            # Nimbalyst-Linux.AppImage and Nimbalyst-Linux.deb are the
+            # backwards-compatible copies afterAllArtifactBuild.js makes so the
+            # published download links keep resolving. They are deliberately
+            # absent from the channel file -- an entry with no arch would let
+            # electron-updater hand an arm64 machine the x64 binary -- so they
+            # are not omissions and must not fail the release.
+            case "$name" in
+              *-x64.*|*-arm64.*) ;;
+              *) echo "skipping backwards-compatible copy ${name}"; continue ;;
+            esac
             if ! grep -q "url: ${name}$" release/latest-linux.yml; then
               echo "::error::${name} was built but is missing from latest-linux.yml"
               cat release/latest-linux.yml
