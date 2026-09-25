@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "build:transcript": "vite build --config vite.config.transcript.ts",
-    "sync:transcript-assets": "bash ./scripts/sync-transcript-assets.sh",
+    "sync:transcript-assets": "node ./scripts/sync-transcript-assets.mjs",
     "android:assemble:debug": "./gradlew :app:assembleDebug",
     "android:assemble:release": "./gradlew :app:assembleRelease",
     "android:bundle:release": "./gradlew :app:bundleRelease",
