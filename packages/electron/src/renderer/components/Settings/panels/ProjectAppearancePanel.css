@@ -1,0 +1,20 @@
+.project-appearance-panel { max-width: 620px; color: var(--nim-text); }
+.project-appearance-panel h2 { font-size: 18px; font-weight: 600; margin: 0 0 8px; }
+.project-appearance-panel p { font-size: 13px; color: var(--nim-text-muted); margin: 6px 0 20px; }
+.project-appearance-preview-row { display: flex; align-items: center; gap: 16px; padding: 20px; margin: 24px 0; background: var(--nim-bg-secondary); border: 1px solid var(--nim-border); border-radius: 8px; }
+.project-appearance-preview-row > div:last-child { min-width: 0; }
+.project-appearance-preview { width: 56px; height: 56px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; border-radius: 16px; font-size: 18px; font-weight: 600; }
+.project-icon-image { width: 100%; height: 100%; border-radius: inherit; object-fit: contain; }
+.project-appearance-path { font-size: 12px; color: var(--nim-text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; margin-top: 4px; }
+.project-appearance-panel fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
+.project-appearance-panel label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 8px; }
+.project-appearance-panel input[type=text] { width: 100px; padding: 8px 10px; background: var(--nim-bg); color: var(--nim-text); border: 1px solid var(--nim-border); border-radius: 6px; }
+.project-appearance-panel input[type=color] { width: 38px; height: 32px; padding: 2px; border: 1px solid var(--nim-border); border-radius: 6px; background: var(--nim-bg); cursor: pointer; }
+.project-appearance-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; font-size: 13px; margin-bottom: 8px; }
+.project-appearance-controls + label { margin-top: 24px; }
+.project-appearance-panel button { padding: 7px 12px; border: 1px solid var(--nim-border); border-radius: 6px; background: var(--nim-bg-secondary); color: var(--nim-text); font-size: 13px; cursor: pointer; }
+.project-appearance-panel button:hover { background: var(--nim-bg-hover); }
+.project-appearance-panel button:disabled { opacity: .5; cursor: default; }
+.project-appearance-panel button.project-appearance-save { background: var(--nim-primary); color: var(--nim-on-primary); }
+.project-appearance-actions { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; padding-top: 20px; border-top: 1px solid var(--nim-border); font-size: 13px; }
+.project-appearance-panel p.project-appearance-error { color: var(--nim-error); margin-top: 16px; user-select: text; }

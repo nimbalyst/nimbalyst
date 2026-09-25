@@ -1,3 +1,4 @@
+import { ProjectAppearancePanel } from './panels/ProjectAppearancePanel';
 import { SAVED_CREDENTIAL } from '../../../shared/providerCredentials';
 import { ProviderCredentialsPanel } from '../GlobalSettings/panels/ProviderCredentialsPanel';
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
@@ -396,24 +397,20 @@ export function SettingsView({
   // Push navigation entry when settings category/scope changes (unified cross-mode navigation)
   const pushNavigationEntry = useSetAtom(pushNavigationEntryAtom);
   const isRestoringNavigation = useAtomValue(isRestoringNavigationAtom);
-  const lastNavigationRef = useRef<string | null>(null);
 
   useEffect(() => {
     // Don't push while restoring (going back/forward)
     if (isRestoringNavigation) return;
 
-    const navKey = `${selectedCategory}:${scope}`;
-    if (navKey !== lastNavigationRef.current) {
-      lastNavigationRef.current = navKey;
-      pushNavigationEntry({
-        mode: 'settings',
-        settings: {
-          category: selectedCategory,
-          scope: scope as any,
-        },
-      });
-    }
-  }, [selectedCategory, scope, pushNavigationEntry, isRestoringNavigation]);
+    pushNavigationEntry({
+      mode: 'settings',
+      settings: {
+        category: selectedCategory,
+        scope,
+        target: scope === 'project' ? projectTarget : undefined,
+      },
+    });
+  }, [selectedCategory, scope, projectTarget, pushNavigationEntry, isRestoringNavigation]);
 
   // When scope changes, ensure selected category is valid for that scope
   useEffect(() => {
@@ -672,7 +669,16 @@ export function SettingsView({
     ])
   );
 
+  const panelWorkspacePath = scope === 'project'
+    ? (projectTarget?.kind === 'workspace' ? projectTarget.workspacePath : undefined)
+    : workspacePath;
+  const panelWorkspaceName = panelWorkspacePath === workspacePath
+    ? workspaceName : panelWorkspacePath?.split(/[\\/]/).filter(Boolean).pop();
+
   const renderPanel = () => {
+    // An explicit project destination must also govern subsequent sidebar pages.
+    const workspacePath = panelWorkspacePath;
+    const workspaceName = panelWorkspaceName;
     // Project panels
     if ((selectedCategory === 'agent-permissions' || selectedCategory === 'project-agent-permissions') && workspacePath) {
       return (
@@ -1030,6 +1036,10 @@ export function SettingsView({
             workspacePath={workspacePath ?? undefined}
           />
         );
+      case 'project-appearance':
+        return projectTarget?.kind === 'workspace'
+          ? <ProjectAppearancePanel key={projectTarget.workspacePath} workspacePath={projectTarget.workspacePath} />
+          : <p className="text-sm text-[var(--nim-text-muted)]">Open a local project to customize its appearance.</p>;
       case 'project-sharing':
       case 'team':
         return <ProjectSharingPanel target={projectTarget} />;
@@ -1167,7 +1177,7 @@ export function SettingsView({
               ? 'These settings apply to all projects'
               : scope === 'account'
                 ? 'Accounts, personal sync, devices, and shared links'
-                : `Settings for ${workspaceName || 'this project'}`}
+                : `Settings for ${panelWorkspaceName || 'this project'}`}
           </span>
         </div>
 

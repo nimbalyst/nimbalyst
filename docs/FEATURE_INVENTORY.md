@@ -502,6 +502,8 @@ Companion app; pairs with a desktop over encrypted sync. Voice mode is not inclu
 
 ## Window & Application
 
+- Customize each project’s initials, color, or image in Project Settings → Appearance or from the project rail’s context menu. Overrides stay on this computer, survive closing and reopening projects, and can be reset to the automatic defaults.
+
 - Multi-window support with per-project state persistence
 - Multi-project rail with an optional "Allow unlimited projects" setting. The default is eight projects per window; enabling unlimited projects can use more memory and CPU. Turning it off keeps current and restored projects open.
 - Project Manager (Cmd+P)

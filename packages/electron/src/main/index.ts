@@ -70,6 +70,7 @@ import { registerPermissionHandlers } from './ipc/PermissionHandlers';
 import { registerGitStatusHandlers } from './ipc/GitStatusHandlers';
 import { registerGitHandlers } from './ipc/GitHandlers';
 import { registerProjectSelectionHandlers } from './ipc/ProjectSelectionHandlers';
+import { registerProjectAppearanceHandlers } from './ipc/ProjectAppearanceHandlers';
 import { registerMultiProjectRailHandlers } from './ipc/MultiProjectRailHandlers';
 import { registerUsageAnalyticsHandlers } from './ipc/UsageAnalyticsHandlers';
 import { registerWorktreeHandlers } from './ipc/WorktreeHandlers';
@@ -1970,6 +1971,7 @@ app.whenReady().then(async () => {
     registerAttachmentHandlers();
     registerProjectSelectionHandlers();
     registerMultiProjectRailHandlers();
+    registerProjectAppearanceHandlers();
     registerClaudeCodeHandlers();
     registerCodexAuthHandlers();
     initializeClaudeCodeSessionHandlers();  // Initialize Claude Code session import

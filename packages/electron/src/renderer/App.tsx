@@ -149,6 +149,7 @@ import { initDbMigrationListeners } from './store/listeners/dbMigrationListeners
 import { initOpenAICodexAuthListeners } from './store/listeners/openAICodexAuthListeners';
 import { initThemeListener } from './store/listeners/themeListeners';
 import { initWindowMenuListener } from './store/listeners/windowMenuListeners';
+import { initProjectAppearanceListener } from './store/listeners/projectAppearanceListeners';
 import { initWorkspaceActivationListeners } from './store/listeners/workspaceActivationListeners';
 import { initWindowFullScreenListener } from './store/listeners/windowFullScreenListeners';
 import { initThemeFallbackListener } from './store/listeners/themeFallbackListeners';
@@ -441,8 +442,10 @@ export default function App() {
     const cleanupCollabConversion = initCollabConversionListeners();
     const cleanupWindowMenu = initWindowMenuListener();
     const cleanupWindowFullScreen = initWindowFullScreenListener();
+    const cleanupProjectAppearance = initProjectAppearanceListener();
     const cleanupWorkspaceActivation = initWorkspaceActivationListeners();
     return () => {
+      cleanupProjectAppearance();
       cleanupWorkspaceActivation?.();
       cleanupWindowMenu?.();
       cleanupWindowFullScreen?.();
@@ -844,10 +847,9 @@ export default function App() {
       requestedAt: request.requestedAt || new Date().toISOString(),
       token: Date.now(),
     });
-    setSettingsInitialCategory('marketplace');
-    incrementSettingsKey();
+    navigateSettingsInPlace({ category: 'marketplace', scope: 'application' });
     setTimeout(() => setActiveMode('settings'), 0);
-  }, [incrementSettingsKey, setActiveMode, setSettingsInitialCategory]);
+  }, [navigateSettingsInPlace, setActiveMode]);
 
   const clearMarketplaceInstallRequest = useCallback((token: number) => {
     setMarketplaceInstallRequest((currentRequest) => {
@@ -1746,10 +1748,12 @@ export default function App() {
         }));
       },
       restoreSettings: (state) => {
-        // Switch to settings mode and select the category. In-place nav clears
-        // any stale deep-link destination so restored scope/category holds.
+        // Restore the selected project too; it may differ from the active one.
         navigateSettingsInPlace({
           category: state.category as any,
+          destination: state.scope === 'project' && state.target
+            ? { scope: 'project', category: state.category as any, target: state.target }
+            : undefined,
           scope: state.scope === 'user' || state.scope === 'organization'
             ? 'application'
             : state.scope === 'personal'
@@ -3227,9 +3231,7 @@ export default function App() {
       <ProjectTrustToast
         workspacePath={workspacePath}
         onOpenSettings={() => {
-          setSettingsInitialCategory('project-agent-permissions');
-          setSettingsInitialScope('project');
-          incrementSettingsKey();
+          navigateSettingsInPlace({ category: 'project-agent-permissions', scope: 'project' });
           setTimeout(() => setActiveMode('settings'), 0);
         }}
         forceShow={forceShowTrustToast}

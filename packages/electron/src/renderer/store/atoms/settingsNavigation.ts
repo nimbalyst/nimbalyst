@@ -137,27 +137,23 @@ export const setSettingsDestinationAtom = atom(
 );
 
 /**
- * In-place settings navigation (scope/category) that ALWAYS clears any stale
- * deep-link `destination` and bumps the remount key. Every non-command entry
- * point (menu items, restore, permission deep links) must use this: only the
- * `openSettingsCommand` path carries a `destination`, and a leftover one would
- * otherwise override a newer scope/category and land the user on the wrong
- * scope (settings review finding). Category/scope are only overwritten when
- * provided, so callers can update just one.
+ * In-place navigation clears stale deep-link destinations and bumps the remount
+ * key. History restoration may supply the destination it recorded explicitly.
+ * Category/scope are only overwritten when provided.
  */
 export const navigateSettingsInPlaceAtom = atom(
   null,
   (
     get,
     set,
-    params: { category?: SettingsCategory; scope?: SettingsScope },
+    params: { category?: SettingsCategory; scope?: SettingsScope; destination?: SettingsDestination },
   ) => {
     const current = get(settingsNavigationAtom);
     set(settingsNavigationAtom, {
       ...current,
       initialCategory: params.category ?? current.initialCategory,
       initialScope: params.scope ?? current.initialScope,
-      destination: undefined,
+      destination: params.destination,
       key: current.key + 1,
     });
   }

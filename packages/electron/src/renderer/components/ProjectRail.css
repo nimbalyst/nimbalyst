@@ -66,14 +66,20 @@
 .project-rail-item-main:hover {
   border-radius: 14px;
   background-color: var(--rail-item-accent, var(--nim-primary, #3b82f6));
-  color: #ffffff;
+  color: var(--rail-item-foreground, #ffffff);
 }
 
 .project-rail-item.is-active .project-rail-item-main {
   border-radius: 14px;
   background-color: var(--rail-item-accent, var(--nim-primary, #3b82f6));
-  color: #ffffff;
+  color: var(--rail-item-foreground, #ffffff);
   border-color: transparent;
+}
+
+/* Opaque images hide the fill change. Mark selection outside the image with
+ * a neutral gap and a theme-contrasting ring, independent of its accent color. */
+.project-rail-item.is-active .project-rail-item-main:has(> .project-icon-image) {
+  box-shadow: 0 0 0 2px var(--nim-bg-secondary), 0 0 0 4px var(--nim-text);
 }
 
 .project-rail-item.is-active::before {
@@ -292,3 +298,5 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
+
+.project-icon-image { width: 100%; height: 100%; object-fit: contain; border-radius: inherit; }

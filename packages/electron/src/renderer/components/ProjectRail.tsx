@@ -40,20 +40,13 @@ import {
   globalSessionActivityAtom,
   projectActivitySummaryAtom,
 } from '../store/atoms/sessionActivity';
-import { generateWorkspaceAccentColor } from './WorkspaceSummaryHeader';
+import { generateWorkspaceAccentColor, projectIconForeground } from '../../shared/projectAppearance';
+import { projectAppearanceAtom } from '../store/atoms/projectAppearance';
+import { openSettingsCommandAtom } from '../store/atoms/settingsNavigation';
+import { ProjectIcon } from './ProjectIcon';
 import './ProjectRail.css';
 
 const REVEAL_LABEL = getShowInFileBrowserLabel();
-
-function projectInitials(name: string): string {
-  const trimmed = name.trim();
-  if (!trimmed) return '??';
-  const words = trimmed.split(/[-_\s]+/).filter(Boolean);
-  if (words.length >= 2) {
-    return (words[0][0] + words[1][0]).toUpperCase();
-  }
-  return trimmed.slice(0, 2).toUpperCase();
-}
 
 interface ProjectRailIconProps {
   project: OpenProject;
@@ -110,12 +103,13 @@ function ProjectRailIcon({
     [onContextMenu, project]
   );
 
+  const appearance = useAtomValue(projectAppearanceAtom(project.path)).snapshot?.appearance ?? {};
   const className = isActive ? 'project-rail-item is-active' : 'project-rail-item';
 
   // Per-project accent color, derived deterministically from the workspace
   // path so the rail icon matches the colored bar shown in the workspace
   // summary header (and in SessionHistory entries) for the same project.
-  const accentColor = useMemo(() => generateWorkspaceAccentColor(project.path), [project.path]);
+  const accentColor = appearance.color || generateWorkspaceAccentColor(project.path);
 
   // Inactive projects show a badge when something needs attention. Active
   // projects already have the user's eyes on them so we suppress the
@@ -133,7 +127,7 @@ function ProjectRailIcon({
       onContextMenu={handleContextMenu}
       data-testid="project-rail-item"
       data-project-path={project.path}
-      style={{ ['--rail-item-accent' as any]: accentColor }}
+      style={{ '--rail-item-accent': accentColor, '--rail-item-foreground': projectIconForeground(appearance.color) } as React.CSSProperties}
       {...getTooltipRefProps()}
     >
       <button
@@ -143,7 +137,7 @@ function ProjectRailIcon({
         aria-label={`Switch to project ${project.name}`}
         aria-current={isActive ? 'true' : undefined}
       >
-        {projectInitials(project.name)}
+        <ProjectIcon name={project.name} appearance={appearance} />
         {showBadge && (
           <span
             className="project-rail-item-badge"
@@ -179,6 +173,7 @@ function ProjectRailIcon({
 }
 
 export function ProjectRail() {
+  const openSettings = useSetAtom(openSettingsCommandAtom);
   const store = useStore();
   const isMultiProjectMode = useAtomValue(multiProjectModeAtom);
   const openProjects = useAtomValue(openProjectsAtom);
@@ -547,6 +542,17 @@ export function ProjectRail() {
             data-testid="project-rail-context-menu"
             {...getFloatingProps()}
           >
+            <button
+              type="button"
+              className="project-rail-context-menu-item"
+              onClick={() => {
+                openSettings({ category: 'project-appearance', scope: 'project', timestamp: Date.now(),
+                  destination: { scope: 'project', category: 'project-appearance', target: { kind: 'workspace', workspacePath: menu.project.path } } });
+                closeMenu();
+              }}
+            >
+              Customize appearance…
+            </button>
             <button
               type="button"
               className="project-rail-context-menu-item"
