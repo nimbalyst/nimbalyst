@@ -146,6 +146,7 @@ const EXPECTED_CHANNELS: Record<string, string[]> = {
   registerTurnControlHandlers: [
     'ai:cancelRequest',
     'ai:interruptCurrentTurn',
+    'ai:steerCurrentTurn',
     'ai:compactSession',
   ],
   registerSettingsHandlers: [
@@ -205,12 +206,48 @@ describe('AIService IPC registrars', () => {
     });
   }
 
-  it('registers all 61 channels across the modules, with no duplicates', () => {
+  it('registers all 62 channels across the modules, with no duplicates', () => {
     for (const register of Object.values(REGISTRARS)) {
       register(stubContext);
     }
-    expect(registered).toHaveLength(61);
-    expect(new Set(registered).size).toBe(61);
+    expect(registered).toHaveLength(62);
+    expect(new Set(registered).size).toBe(62);
+  });
+});
+
+describe('ai:steerCurrentTurn', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    registerTurnControlHandlers(stubContext);
+  });
+
+  const steer = (message = 'also check the tests') => handlers.get('ai:steerCurrentTurn')!({}, 's1', message);
+
+  it('delivers through a provider that declares mid-turn input', async () => {
+    const steerCurrentTurn = vi.fn(async () => ({ delivered: true }));
+    getProvider.mockReturnValue({ getAgentCapabilities: () => ({ midTurnInput: true }), steerCurrentTurn });
+
+    await expect(steer()).resolves.toEqual({ delivered: true });
+    expect(steerCurrentTurn).toHaveBeenCalledWith('s1', 'also check the tests');
+  });
+
+  it('never calls a provider without mid-turn input, and reports not delivered', async () => {
+    const steerCurrentTurn = vi.fn(async () => ({ delivered: true }));
+    getProvider.mockReturnValue({ getAgentCapabilities: () => ({ midTurnInput: false }), steerCurrentTurn });
+
+    await expect(steer()).resolves.toEqual({ delivered: false });
+    expect(steerCurrentTurn).not.toHaveBeenCalled();
+  });
+
+  it('reports not delivered when there is no live provider or the write throws', async () => {
+    getProvider.mockReturnValue(null);
+    await expect(steer()).resolves.toEqual({ delivered: false });
+
+    getProvider.mockReturnValue({
+      getAgentCapabilities: () => ({ midTurnInput: true }),
+      steerCurrentTurn: vi.fn(async () => { throw new Error('transport closed'); }),
+    });
+    await expect(steer()).resolves.toEqual({ delivered: false });
   });
 });
 

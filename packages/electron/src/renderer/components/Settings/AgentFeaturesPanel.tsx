@@ -47,6 +47,7 @@ export function AgentFeaturesPanel() {
   const [showMcpSessionStatus, setShowMcpSessionStatus] = useAtom(
     settingAtom('ai.showMcpSessionStatus'),
   ) as [boolean, (value: boolean) => void];
+  const [busySendBehavior, setBusySendBehavior] = useAtom(settingAtom('ai.busySendBehavior'));
 
   const [aiDebugSettings] = useAtom(aiDebugSettingsAtom);
   const [, updateAIDebugSettings] = useAtom(setAIDebugSettingsAtom);
@@ -266,6 +267,27 @@ export function AgentFeaturesPanel() {
           description="Show a chip in the session header listing this session's MCP servers, which are connected, and which never reached it."
           testId="show-mcp-session-status-toggle"
         />
+
+        <div className="agent-busy-send-behavior flex items-start justify-between gap-4 py-3">
+          <div className="flex-1 min-w-0">
+            <div className="text-sm font-medium text-[var(--nim-text)] leading-tight">
+              Sending While the Agent Is Working
+            </div>
+            <div className="text-xs text-[var(--nim-text-muted)] leading-snug mt-0.5">
+              What Enter does while a turn is running. Sending into the running turn works with Claude Agent sessions; other agents interrupt instead. Cmd/Ctrl+Shift+Enter always queues.
+            </div>
+          </div>
+          <select
+            value={busySendBehavior}
+            onChange={(e) => setBusySendBehavior(e.target.value as typeof busySendBehavior)}
+            className="px-3 py-1.5 rounded border border-[var(--nim-border)] bg-[var(--nim-bg-secondary)] text-[var(--nim-text)]"
+            data-testid="busy-send-behavior-select"
+          >
+            <option value="queue">Queue for after the turn</option>
+            <option value="interrupt">Interrupt and send</option>
+            <option value="steer">Send into the running turn</option>
+          </select>
+        </div>
 
         <div className="agent-preferred-language flex items-start justify-between gap-4 py-3">
           <div className="flex-1 min-w-0">

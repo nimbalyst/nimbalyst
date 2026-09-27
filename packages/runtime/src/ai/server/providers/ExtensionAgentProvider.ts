@@ -218,6 +218,10 @@ export class ExtensionAgentProvider extends EventEmitter implements AIProvider {
     return { method: 'abort' };
   }
 
+  async steerCurrentTurn(_sessionId: string, _message: string): Promise<{ delivered: boolean }> {
+    return { delivered: false };
+  }
+
   getCapabilities(): ProviderCapabilities {
     return requireBridge().getCapabilities({
       extensionId: this.extensionId,

@@ -238,6 +238,15 @@ export const SETTINGS_REGISTRY = {
     { store: 'ai-settings', path: 'diffPeekSize' },
     null,
   ),
+  /**
+   * What Enter does while a turn is running: queue for after it, interrupt
+   * and send now, or send into the running turn where the provider can.
+   */
+  'ai.busySendBehavior': setting(
+    z.enum(['queue', 'interrupt', 'steer']),
+    { store: 'ai-settings', path: 'busySendBehavior' },
+    'queue',
+  ),
   'ai.showUsageIndicator': setting(
     z.boolean(),
     { store: 'ai-settings', path: 'showUsageIndicator' },

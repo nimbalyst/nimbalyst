@@ -68,6 +68,12 @@ export interface AgentCapabilities {
   compaction: CompactionSupport;
 
   contextReporting: ContextReportingSupport;
+
+  /**
+   * The provider can take a user message while a turn is running, via
+   * `steerCurrentTurn()`, without the host queueing it or interrupting first.
+   */
+  midTurnInput: boolean;
 }
 
 /**
@@ -79,6 +85,7 @@ export const NO_AGENT_CAPABILITIES: AgentCapabilities = Object.freeze({
   skills: false,
   compaction: 'unsupported',
   contextReporting: 'none',
+  midTurnInput: false,
 });
 
 const TOKEN_COUNT_ONLY_CAPABILITIES: AgentCapabilities = Object.freeze({
@@ -86,6 +93,7 @@ const TOKEN_COUNT_ONLY_CAPABILITIES: AgentCapabilities = Object.freeze({
   skills: false,
   compaction: 'unsupported',
   contextReporting: 'token-counts',
+  midTurnInput: false,
 });
 
 /**
@@ -104,12 +112,14 @@ export const BUILTIN_AGENT_CAPABILITIES: Readonly<Record<AIProviderType, AgentCa
   lmstudio: TOKEN_COUNT_ONLY_CAPABILITIES,
 
   // The Claude Agent SDK reports its own commands and skills in the init
-  // payload and interprets `/compact` as a real command.
+  // payload and interprets `/compact` as a real command. Its streaming input
+  // accepts user messages mid-turn.
   'claude-code': {
     slashCommands: true,
     skills: true,
     compaction: 'slash-command',
     contextReporting: 'context-window',
+    midTurnInput: true,
   },
 
   // The genuine CLI is driven by its PTY, not by this provider class:
@@ -121,6 +131,7 @@ export const BUILTIN_AGENT_CAPABILITIES: Readonly<Record<AIProviderType, AgentCa
     skills: false,
     compaction: 'unsupported',
     contextReporting: 'context-window',
+    midTurnInput: false,
   },
 
   // Codex: skills are real (skills/list over the app-server), slash commands
@@ -132,6 +143,7 @@ export const BUILTIN_AGENT_CAPABILITIES: Readonly<Record<AIProviderType, AgentCa
     skills: true,
     compaction: 'rpc',
     contextReporting: 'context-window',
+    midTurnInput: false,
   },
 
   // Codex ACP sends usage_update with both used and size. Copilot's ACP parser
@@ -142,18 +154,21 @@ export const BUILTIN_AGENT_CAPABILITIES: Readonly<Record<AIProviderType, AgentCa
     skills: false,
     compaction: 'unsupported',
     contextReporting: 'context-window',
+    midTurnInput: false,
   },
   opencode: {
     slashCommands: true,
     skills: false,
     compaction: 'rpc',
     contextReporting: 'context-window',
+    midTurnInput: false,
   },
   'copilot-cli': {
     slashCommands: false,
     skills: false,
     compaction: 'unsupported',
     contextReporting: 'none',
+    midTurnInput: false,
   },
 
   // Grok headless emits `usage` events and a final `end` with cumulative
@@ -166,6 +181,7 @@ export const BUILTIN_AGENT_CAPABILITIES: Readonly<Record<AIProviderType, AgentCa
     skills: false,
     compaction: 'unsupported',
     contextReporting: 'token-counts',
+    midTurnInput: false,
   },
 
   // Cursor's stream-json `result` carries inputTokens/outputTokens/
@@ -176,6 +192,7 @@ export const BUILTIN_AGENT_CAPABILITIES: Readonly<Record<AIProviderType, AgentCa
     skills: false,
     compaction: 'unsupported',
     contextReporting: 'token-counts',
+    midTurnInput: false,
   },
 
   // Antigravity's `GetModelResponse` returns `{ response }` and nothing else --
@@ -189,6 +206,7 @@ export const BUILTIN_AGENT_CAPABILITIES: Readonly<Record<AIProviderType, AgentCa
     skills: false,
     compaction: 'unsupported',
     contextReporting: 'none',
+    midTurnInput: false,
   },
 });
 

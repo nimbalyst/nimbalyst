@@ -91,4 +91,24 @@ describe('createPersistentPromptStream', () => {
     const second = await iterator.next();
     expect(second.done).toBe(true);
   });
+
+  it('yields pushed messages while open and refuses them after end()', async () => {
+    const { iterable, controller } = createPersistentPromptStream(makeMessage());
+    const iterator = iterable[Symbol.asyncIterator]();
+    await iterator.next();
+
+    // A pending next() is woken by the push rather than by end().
+    const pending = iterator.next();
+    expect(controller.push('also run the linter')).toBe(true);
+    expect((await pending).value).toEqual({
+      type: 'user',
+      message: { role: 'user', content: 'also run the linter' },
+      parent_tool_use_id: null,
+      priority: 'next',
+    });
+
+    controller.end('test');
+    expect(controller.push('too late')).toBe(false);
+    expect((await iterator.next()).done).toBe(true);
+  });
 });

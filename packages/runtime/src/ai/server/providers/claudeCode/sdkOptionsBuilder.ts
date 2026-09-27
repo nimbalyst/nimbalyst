@@ -29,6 +29,7 @@ type SDKUserMessage = {
   type: 'user';
   message: MessageParam;
   parent_tool_use_id: string | null;
+  priority?: 'now' | 'next' | 'later';
 };
 
 export interface BuildSdkOptionsDeps {
@@ -95,6 +96,11 @@ export interface BuildSdkOptionsParams {
 export interface PromptStreamController {
   end(reason: string): void;
   isEnded(): boolean;
+  /**
+   * Write a user message to the open stream; the CLI folds it into the
+   * running turn. Returns false once the stream has ended.
+   */
+  push(text: string): boolean;
 }
 
 export interface BuildSdkOptionsResult {
@@ -108,13 +114,13 @@ export function createPersistentPromptStream(
   initialMessage: SDKUserMessage,
 ): { iterable: AsyncIterable<SDKUserMessage>; controller: PromptStreamController } {
   let ended = false;
-  let endResolve: (() => void) | null = null;
-  const endPromise = new Promise<void>((resolve) => {
-    endResolve = () => {
-      ended = true;
-      resolve();
-    };
-  });
+  const pushed: SDKUserMessage[] = [];
+  let wake: (() => void) | null = null;
+  const signal = () => {
+    const resolve = wake;
+    wake = null;
+    resolve?.();
+  };
 
   async function* generator(): AsyncGenerator<SDKUserMessage> {
     yield initialMessage;
@@ -123,19 +129,37 @@ export function createPersistentPromptStream(
     // ClaudeCodeProvider arms a grace-period timer on the first `result`
     // chunk and calls controller.end() to release us; safety nets in
     // sendMessage's finally block and abort() ensure we always exit.
-    await endPromise;
+    while (true) {
+      while (pushed.length > 0) {
+        yield pushed.shift()!;
+      }
+      if (ended) return;
+      await new Promise<void>((resolve) => { wake = resolve; });
+    }
   }
 
   return {
     iterable: generator(),
     controller: {
       end: (reason: string) => {
-        if (!ended && endResolve) {
+        if (!ended) {
           // console.log(`[CLAUDE-CODE] PromptStreamController.end(reason="${reason}")`);
-          endResolve();
+          ended = true;
+          signal();
         }
       },
       isEnded: () => ended,
+      push: (text: string) => {
+        if (ended) return false;
+        pushed.push({
+          type: 'user',
+          message: { role: 'user', content: text },
+          parent_tool_use_id: null,
+          priority: 'next',
+        });
+        signal();
+        return true;
+      },
     },
   };
 }
