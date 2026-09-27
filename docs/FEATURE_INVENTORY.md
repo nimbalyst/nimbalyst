@@ -126,7 +126,7 @@ Twelve built-in provider lanes, plus any agent an extension contributes. Every l
 - File `@` mention in input
 - Image attachment support
 - Selection chips above the input showing what will be sent as context (selected text, mockup annotations, and extension-provided items from node-like editors such as Excalidraw); each chip has an × to drop it from the prompt, and node-like editors can report multiple selections at once
-- Queued prompts display
+- Queued prompts display; an Agent Features setting makes sending during a turn interrupt it, or reach the running turn directly in Claude Agent sessions, instead of queueing
 - Slash command typeahead
 - Action prompts dropdown in composer (reusable prompt presets defined in `nimbalyst-local/ai-actions.md`; pick to insert verbatim into the draft, with undo support)
 

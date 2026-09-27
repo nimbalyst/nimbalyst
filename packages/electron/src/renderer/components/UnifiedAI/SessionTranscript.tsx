@@ -55,6 +55,8 @@ import type { TextSelection } from './TextSelectionIndicator';
 import { type SerializableDocumentContext } from '../../hooks/useDocumentContext';
 import { serializeEditorContextItemsForIpc } from './editorContextSerialization';
 import { isClaudeCliTerminalSession } from './claudeCliInputRouting';
+import { BUSY_SEND_PLACEHOLDERS, resolveBusySendAction } from './busySendRouting';
+import { settingAtom } from '../../store/atoms/settingAtomFamily';
 import { expandSessionMentions } from './sessionMentions';
 import { diffTreeGroupByDirectoryAtom, setDiffTreeGroupByDirectoryAtom } from '../../store/atoms/projectState';
 import { openSettingsCommandAtom } from '../../store/atoms/settingsNavigation';
@@ -400,6 +402,7 @@ const LocalSessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscrip
   // of offering a button that silently does nothing (#1252).
   const compactionSupport = agentCapabilitiesForProviderType(provider).compaction;
   const tokenUsage = useAtomValue(sessionTokenUsageAtom(sessionId));
+  const busySendBehavior = useAtomValue(settingAtom('ai.busySendBehavior'));
   const isDataLoading = useAtomValue(sessionLoadingAtom(sessionId));
   const chatShowToolCalls = useAtomValue(chatShowToolCallsAtom);
   const [aiMode, setAiMode] = useAtom(sessionModeAtom(sessionId));
@@ -1027,8 +1030,8 @@ const LocalSessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscrip
     setDraftAttachments(prev => prev.filter(a => a.id !== attachmentId));
   }, [setDraftAttachments]);
 
-  const handleQueue = useCallback(async (message: string) => {
-    if (!message.trim() || isQueueing) return;
+  const handleQueue = useCallback(async (message: string): Promise<boolean> => {
+    if (!message.trim() || isQueueing) return false;
     setIsQueueing(true);
 
     try {
@@ -1060,12 +1063,32 @@ const LocalSessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscrip
       setDraftInput('');
       setDraftAttachments([]);
       clearAIInputHistory(sessionId);
+      return true;
     } catch (error) {
       console.error('[SessionTranscript] Failed to queue prompt:', error);
+      return false;
     } finally {
       setIsQueueing(false);
     }
   }, [sessionId, getEffectiveDocumentContext, setDraftInput, setDraftAttachments, setLastSubmitAt, isQueueing, clearAIInputHistory]);
+
+  const interruptAndSendQueued = useCallback(async () => {
+    try {
+      // Two-step send-now: (1) interrupt the current turn (graceful for
+      // Claude Code, hard abort for other providers via the BaseAIProvider
+      // default); (2) explicitly trigger queue processing. The natural
+      // completion-handler path also triggers it, and the server's
+      // sessionsProcessingQueue guard de-dupes, so this is safe to call.
+      // We don't rely on the isLoading auto-effect because session:completed
+      // may race or, in some edge cases, may not fire cleanly after abort.
+      await window.electronAPI.invoke('ai:interruptCurrentTurn', sessionId);
+      if (workspacePath) {
+        await window.electronAPI.invoke('ai:triggerQueueProcessing', sessionId, workspacePath, 'send-now');
+      }
+    } catch (error) {
+      console.error('[SessionTranscript] Failed to interrupt for send-now:', error);
+    }
+  }, [sessionId, workspacePath]);
 
   // What the composer looked like when this session opened. Once per session,
   // not per render: we are trying to explain why people do not act on a screen,
@@ -1185,7 +1208,32 @@ const LocalSessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscrip
     }
 
     if (isLoading) {
-      handleQueue(currentDraftInput.trim());
+      const busyMessage = currentDraftInput.trim();
+      const action = resolveBusySendAction(busySendBehavior, {
+        midTurnInput: agentCapabilitiesForProviderType(provider).midTurnInput,
+        hasAttachments: (store.get(sessionDraftAttachmentsAtom(sessionId)) ?? []).length > 0,
+      });
+      if (action === 'steer') {
+        const steerMessage = expandSessionMentions(busyMessage, store.get(sessionRegistryAtom));
+        const result = await window.electronAPI
+          .invoke('ai:steerCurrentTurn', sessionId, steerMessage)
+          .catch(() => null) as { delivered: boolean } | null;
+        if (result?.delivered) {
+          setLastSubmitAt(Date.now());
+          setDraftInput('');
+          clearAIInputHistory(sessionId);
+          resetHistory(sessionId);
+          blocked('steered_mid_turn');
+          return;
+        }
+        // The turn was already wrapping up; interrupting is the closest match.
+      }
+      const queued = await handleQueue(busyMessage);
+      if (queued && action !== 'queue') {
+        await interruptAndSendQueued();
+        blocked('interrupted_while_loading');
+        return;
+      }
       blocked('queued_while_loading');
       return;
     }
@@ -1327,7 +1375,7 @@ const LocalSessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscrip
       });
       setIsProcessing(false);
     }
-  }, [sessionId, sessionData, isLoading, getEffectiveDocumentContext, aiMode, workspacePath, setDraftInput, setDraftAttachments, setLastSubmitAt, resetHistory, updateSessionStore, handleQueue, setIsProcessing, messages, sessionHasMessages, startedCliSessionId, mode, onClearSession, onClearAgentSession, clearAIInputHistory, provider, recordClaudeActivity]);
+  }, [sessionId, sessionData, isLoading, getEffectiveDocumentContext, aiMode, workspacePath, setDraftInput, setDraftAttachments, setLastSubmitAt, resetHistory, updateSessionStore, handleQueue, interruptAndSendQueued, busySendBehavior, setIsProcessing, messages, sessionHasMessages, startedCliSessionId, mode, onClearSession, onClearAgentSession, clearAIInputHistory, provider, recordClaudeActivity]);
 
   // Launch a sibling session from a `launch: new-session` action prompt.
   // Builds the originating-session mention prefix here (in the renderer) so the
@@ -1509,22 +1557,8 @@ const LocalSessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscrip
   }, [setDraftInput]);
 
   const handleSendNowQueuedPrompt = useCallback(async (_id: string, _prompt: string) => {
-    try {
-      // Two-step send-now: (1) interrupt the current turn (graceful for
-      // Claude Code, hard abort for other providers via the BaseAIProvider
-      // default); (2) explicitly trigger queue processing. The natural
-      // completion-handler path also triggers it, and the server's
-      // sessionsProcessingQueue guard de-dupes, so this is safe to call.
-      // We don't rely on the isLoading auto-effect because session:completed
-      // may race or, in some edge cases, may not fire cleanly after abort.
-      await window.electronAPI.invoke('ai:interruptCurrentTurn', sessionId);
-      if (workspacePath) {
-        await window.electronAPI.invoke('ai:triggerQueueProcessing', sessionId, workspacePath, 'send-now');
-      }
-    } catch (error) {
-      console.error('[SessionTranscript] Failed to interrupt for send-now:', error);
-    }
-  }, [sessionId, workspacePath]);
+    await interruptAndSendQueued();
+  }, [interruptAndSendQueued]);
 
   const handleCloseAndArchive = useCallback(async () => {
     try {
@@ -2740,6 +2774,11 @@ const LocalSessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscrip
         placeholder={
           mode === 'chat'
             ? "Ask a question. @ for files, @@ for sessions, / for commands"
+            : isLoading && !isClaudeCliTerminalSession(provider)
+              ? BUSY_SEND_PLACEHOLDERS[resolveBusySendAction(busySendBehavior, {
+                  midTurnInput: agentCapabilitiesForProviderType(provider).midTurnInput,
+                  hasAttachments: false,
+                })]
             : enableSlashCommands
               ? "Type your message... (Enter to send, Shift+Enter for new line, @ for files, @@ for sessions, / for commands)"
               : "Type your message... (Enter to send, Shift+Enter for new line, @ for files, @@ for sessions, / for commands)"

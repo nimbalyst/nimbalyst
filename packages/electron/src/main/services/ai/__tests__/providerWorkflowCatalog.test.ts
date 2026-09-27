@@ -23,10 +23,10 @@ function fakeProvider(
 describe('resolveProviderWorkflowCatalog', () => {
   it('reports an unsupported capability and an empty one differently', () => {
     const unsupported = resolveProviderWorkflowCatalog('openai-codex', {
-      instance: fakeProvider({ slashCommands: false, skills: true, compaction: 'rpc', contextReporting: 'context-window' }),
+      instance: fakeProvider({ slashCommands: false, skills: true, compaction: 'rpc', contextReporting: 'context-window', midTurnInput: false }),
     });
     const empty = resolveProviderWorkflowCatalog('claude-code', {
-      instance: fakeProvider({ slashCommands: true, skills: true, compaction: 'slash-command', contextReporting: 'context-window' }),
+      instance: fakeProvider({ slashCommands: true, skills: true, compaction: 'slash-command', contextReporting: 'context-window', midTurnInput: false }),
     });
 
     expect(unsupported.commands).toEqual([]);
@@ -39,7 +39,7 @@ describe('resolveProviderWorkflowCatalog', () => {
   it('does not read the catalog of a capability the provider does not declare', () => {
     const getSlashCommands = vi.fn(() => ['leftover-from-a-previous-transport']);
     const provider = {
-      getAgentCapabilities: () => ({ slashCommands: false, skills: true, compaction: 'rpc', contextReporting: 'context-window' }),
+      getAgentCapabilities: () => ({ slashCommands: false, skills: true, compaction: 'rpc', contextReporting: 'context-window', midTurnInput: false }),
       getSlashCommands,
       getSkills: () => ['deep-research'],
     } as unknown as AIProvider;
@@ -74,6 +74,7 @@ describe('resolveProviderWorkflowCatalog', () => {
       skills: false,
       compaction: 'unsupported',
       contextReporting: 'none',
+      midTurnInput: false,
     });
   });
 });

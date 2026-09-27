@@ -50,7 +50,7 @@ import {
   CLAUDE_CODE_SAFE_FALLBACK_MODEL,
   baseContextWindowForVariant,
 } from '../../modelConstants';
-import type { InterruptTurnResult } from '../AIProvider';
+import type { InterruptTurnResult, SteerTurnResult } from '../AIProvider';
 import { isBedrockToolSearchError } from '../utils/errorDetection';
 import { AgentMessagesRepository } from '../../../storage/repositories/AgentMessagesRepository';
 import { TranscriptMigrationRepository } from '../../../storage/repositories/TranscriptMigrationRepository';
@@ -1845,6 +1845,38 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
     }
 
     return { method: 'interrupt' };
+  }
+
+  /**
+   * Write a user message into the running lead query so the agent picks it up
+   * mid-turn. Refuses once the turn is winding down (interrupted, or a
+   * `result` already arrived): the loop would stop reading before the reply.
+   */
+  async steerCurrentTurn(sessionId: string, message: string): Promise<SteerTurnResult> {
+    const text = message.trim();
+    // Not leadQuery.streamInput(): it waits for the turn's result and then
+    // closes stdin, which is the "Stream closed" failure the persistent prompt
+    // stream exists to avoid.
+    if (
+      !text ||
+      !this.leadQuery ||
+      this.wasInterrupted ||
+      this.drainingBackgroundTasks ||
+      this.promptEndTimer !== null ||
+      !this.promptController?.push(text)
+    ) {
+      return { delivered: false };
+    }
+
+    if (sessionId) {
+      await this.logAgentMessage(
+        sessionId, 'claude-code', 'input',
+        JSON.stringify({ prompt: text }),
+        { deliveredMidTurn: true },
+        false, undefined, true /* searchable */
+      ).catch(err => console.warn('[CLAUDE-CODE] steerCurrentTurn: failed to log message:', err));
+    }
+    return { delivered: true };
   }
 
   /**

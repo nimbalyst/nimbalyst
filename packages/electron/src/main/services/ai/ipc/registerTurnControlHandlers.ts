@@ -117,6 +117,29 @@ export function registerTurnControlHandlers(ctx: AIServiceContext): void {
     ctx.interruptCurrentTurn(sessionId)
   );
 
+  // `delivered: false` means nothing was sent; the renderer falls back to
+  // interrupt-and-send.
+  safeHandle('ai:steerCurrentTurn', async (_event, sessionId: string, message: string) => {
+    if (!sessionId || typeof message !== 'string' || !message.trim()) {
+      return { delivered: false };
+    }
+    const { AISessionsRepository } = await import('@nimbalyst/runtime/storage/repositories/AISessionsRepository');
+    const session = await AISessionsRepository.get(sessionId);
+    if (!session?.provider) {
+      return { delivered: false };
+    }
+    const provider = ProviderFactory.getProvider(session.provider as AIProviderType, sessionId);
+    if (!provider || !provider.getAgentCapabilities().midTurnInput) {
+      return { delivered: false };
+    }
+    try {
+      return await provider.steerCurrentTurn(sessionId, message);
+    } catch (error) {
+      logger.main.warn(`[AIService] steerCurrentTurn failed for session ${sessionId}:`, error);
+      return { delivered: false };
+    }
+  });
+
   // #1252: compact via the provider's real RPC. The renderer used to send
   // the literal string "/compact" as a user turn, which only ever worked for
   // providers whose SDK happens to interpret slash commands -- for Codex it

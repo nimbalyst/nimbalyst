@@ -583,6 +583,7 @@ const bridge: ExtensionAgentBridge = {
       compaction: c.compaction ?? 'unsupported',
       // Extension manifests do not declare a measured usage protocol yet.
       contextReporting: 'none',
+      midTurnInput: false,
     };
   },
 };

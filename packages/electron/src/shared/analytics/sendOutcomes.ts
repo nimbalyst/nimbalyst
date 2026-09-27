@@ -57,6 +57,8 @@ export const SEND_BLOCKED_REASONS = [
   'queued_cli_not_ready',
   'cli_submit_failed',
   'queued_while_loading',
+  'interrupted_while_loading',
+  'steered_mid_turn',
   'mode_switch_failed',
   'slash_command_only',
   'slash_command_clear',

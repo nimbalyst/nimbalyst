@@ -132,6 +132,11 @@ export interface InterruptTurnResult {
   hadActiveTurn?: boolean;
 }
 
+export interface SteerTurnResult {
+  /** `false` means nothing was sent; the caller still owns the message. */
+  delivered: boolean;
+}
+
 export interface AIProvider extends EventEmitter {
   /**
    * Initialize the provider with configuration
@@ -178,6 +183,12 @@ export interface AIProvider extends EventEmitter {
    * next queued prompt. The return value lets the caller distinguish the two.
    */
   interruptCurrentTurn(): Promise<InterruptTurnResult>;
+
+  /**
+   * Hand a user message to the running turn. Only providers declaring
+   * `midTurnInput` deliver; the rest return `delivered: false`.
+   */
+  steerCurrentTurn(sessionId: string, message: string): Promise<SteerTurnResult>;
 
   /**
    * Get the transport-shape capabilities of this provider (does it stream, does
@@ -299,6 +310,11 @@ export abstract class BaseAIProvider extends EventEmitter implements AIProvider 
   async interruptCurrentTurn(): Promise<InterruptTurnResult> {
     this.abort();
     return { method: 'abort' };
+  }
+
+  /** Default: no mid-turn input channel. */
+  async steerCurrentTurn(_sessionId: string, _message: string): Promise<SteerTurnResult> {
+    return { delivered: false };
   }
 
   registerToolHandler(handler: ToolHandler): void {
