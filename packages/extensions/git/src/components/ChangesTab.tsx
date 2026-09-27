@@ -21,7 +21,13 @@ const ipc = (window as unknown as {
 }).electronAPI;
 
 interface ChangesTabProps {
+  /** The repo this tab lists and commits. Not necessarily the workspace. */
   workspacePath: string;
+  /**
+   * The workspace the panel belongs to. Sessions are scoped to it, so a commit
+   * session must be addressed with this path even when the repo is nested.
+   */
+  hostWorkspacePath: string;
   /** Callback to wrap operations with logging */
   withLog: <T>(
     command: string,
@@ -212,6 +218,7 @@ function ChangeRows({ rows, opts }: { rows: ChangeRow[]; opts: RowRenderOptions 
 
 export function ChangesTab({
   workspacePath,
+  hostWorkspacePath,
   withLog,
   onWorkspaceEvent,
   onShowOutput,
@@ -499,10 +506,11 @@ export function ChangesTab({
     // Paths go out ABSOLUTE. `workspacePath` here is the repo the picker
     // selected, which in a multi-root workspace need not be the session's
     // primary root -- and a repo-relative path resolved against the primary
-    // root points at the wrong repo, or at nothing.
+    // root points at the wrong repo, or at nothing. The session itself belongs
+    // to the host workspace; addressing it by the repo path gets it rejected.
     window.dispatchEvent(new CustomEvent('nimbalyst:commit-with-ai', {
       detail: {
-        workspacePath,
+        workspacePath: hostWorkspacePath,
         repoPath: workspacePath,
         files: selectedFiles.map(f => ({
           path: f.path.startsWith('/') ? f.path : `${workspacePath}/${f.path}`,
@@ -511,7 +519,7 @@ export function ChangesTab({
         })),
       },
     }));
-  }, [selectedFiles, workspacePath]);
+  }, [selectedFiles, workspacePath, hostWorkspacePath]);
 
   const toggleSelected = useCallback((path: string) => {
     setSelected(prev => {

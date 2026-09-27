@@ -2258,8 +2258,16 @@ export default function App() {
       repoPath?: string;
       files: SelectedCommitFile[];
     }>) => {
-      const { workspacePath: commitWorkspacePath, repoPath: commitRepoPath, files } = event.detail ?? {};
-      if (!commitWorkspacePath || !Array.isArray(files) || files.length === 0) return;
+      const { repoPath: commitRepoPath, files } = event.detail ?? {};
+      if (!Array.isArray(files) || files.length === 0) return;
+
+      // The session is created against the active workspace (see
+      // createNewSessionActionAtom), so it must be addressed by that path too.
+      // The event's `workspacePath` cannot be trusted for this: a git panel
+      // scoped to a nested repo reports the repo, and main rejects a session
+      // addressed by any path other than the one it was created in.
+      const sessionWorkspacePath = store.get(activeWorkspacePathAtom);
+      if (!sessionWorkspacePath) return;
 
       const commitFiles = mapSelectedCommitFiles(files);
       if (commitFiles.length === 0) {
@@ -2271,8 +2279,6 @@ export default function App() {
       }
 
       try {
-        // The git panel's workspacePath is the extension host's, i.e. the active
-        // workspace — the same path createNewSessionActionAtom creates against.
         const model = store.get(defaultAgentModelAtom);
         const provider = resolveProviderFromModel(model);
         const sessionId = await dispatchCreateNewSession({
@@ -2287,7 +2293,7 @@ export default function App() {
 
         // The atom selects the session but does not switch modes or open a tab.
         window.dispatchEvent(new CustomEvent('open-ai-session', {
-          detail: { sessionId, workspacePath: commitWorkspacePath },
+          detail: { sessionId, workspacePath: sessionWorkspacePath },
         }));
 
         const message = buildSelectedCommitPrompt(commitFiles, commitRepoPath);
@@ -2303,7 +2309,7 @@ export default function App() {
         if (isClaudeCliTerminalSession(provider)) {
           await window.electronAPI.invoke('ai:createQueuedPrompt', sessionId, message, [], docContext);
         } else {
-          await window.electronAPI.invoke('ai:sendMessage', message, docContext, sessionId, commitWorkspacePath);
+          await window.electronAPI.invoke('ai:sendMessage', message, docContext, sessionId, sessionWorkspacePath);
         }
       } catch (error) {
         console.error('[App] Commit with AI failed:', error);

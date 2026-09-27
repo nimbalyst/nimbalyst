@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 <!-- Bug fixes go here -->
+- Commit with AI from the Git panel no longer fails with "Session not found" when the selected repository is nested inside the project folder.
 
 ### Removed
 <!-- Removed features go here -->
