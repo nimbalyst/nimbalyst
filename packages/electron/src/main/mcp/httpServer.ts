@@ -2,6 +2,7 @@ import { handleConsumeSessionInbox } from './tools/consumeSessionInbox';
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import { connectMcpTransport } from "./connectMcpTransport";
 import {
   CallToolRequestSchema,
   ListToolsRequestSchema,
@@ -996,20 +997,18 @@ async function tryCreateServer(port: number): Promise<any> {
             serversByWorkspace.get(workspacePath)!.add(server);
           }
 
-          server
-            .connect(transport)
-            .then(() => {
-              transport.onclose = () => {
-                clearInterval(keepaliveInterval);
-                activeTransports.delete(transport.sessionId);
-                if (sessionId) {
-                  serverByNimbalystSession.delete(sessionId);
-                }
-                if (workspacePath) {
-                  serversByWorkspace.get(workspacePath)?.delete(server);
-                }
-              };
-            })
+          // The close handler goes in before connect(), or it replaces the
+          // wrapper that aborts in-flight tool handlers when the stream drops.
+          connectMcpTransport(server, transport, () => {
+            clearInterval(keepaliveInterval);
+            activeTransports.delete(transport.sessionId);
+            if (sessionId) {
+              serverByNimbalystSession.delete(sessionId);
+            }
+            if (workspacePath) {
+              serversByWorkspace.get(workspacePath)?.delete(server);
+            }
+          })
             .catch((error) => {
               console.error("[MCP Server] Connection error:", error);
               clearInterval(keepaliveInterval);
