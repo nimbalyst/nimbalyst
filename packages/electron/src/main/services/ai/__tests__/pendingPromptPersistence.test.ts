@@ -26,6 +26,7 @@ vi.mock('../../../utils/logger', () => ({
 
 import {
   getSessionsWithPendingPrompt,
+  onPendingPromptCleared,
   resetPendingPromptTracking,
   setSessionPendingPrompt,
 } from '../pendingPromptPersistence';
@@ -182,5 +183,31 @@ describe('blocked session pages the phone', () => {
     await setSessionPendingPrompt('s1', false);
 
     expect(requestMobilePush).not.toHaveBeenCalled();
+  });
+});
+
+describe('pending-prompt cleared notification', () => {
+  beforeEach(() => {
+    resetPendingPromptTracking();
+    updateMetadata.mockReset().mockResolvedValue(undefined);
+  });
+
+  it('fires only on the transition out of blocked, never for a redundant clear', async () => {
+    // A drain wake held while the session was blocked is released from this
+    // signal; a spurious fire would release it while the user is still asked.
+    const cleared: string[] = [];
+    const unsubscribe = onPendingPromptCleared((id) => cleared.push(id));
+
+    await setSessionPendingPrompt('s1', false);
+    expect(cleared).toEqual([]);
+
+    await setSessionPendingPrompt('s1', true);
+    await setSessionPendingPrompt('s1', true);
+    expect(cleared).toEqual([]);
+
+    await setSessionPendingPrompt('s1', false);
+    await setSessionPendingPrompt('s1', false);
+    expect(cleared).toEqual(['s1']);
+    unsubscribe();
   });
 });
