@@ -26,6 +26,7 @@ import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -128,6 +129,8 @@ class SyncManager(
     private var pendingSessionJoin: String? = null
     private var lastJwtRefreshAttempt: Long = 0
 
+    private val indexMessageChannel = Channel<String>(Channel.UNLIMITED)
+
     val state: StateFlow<SyncConnectionState> = _state.asStateFlow()
     val connectedDevices: StateFlow<List<DeviceInfo>> = _connectedDevices.asStateFlow()
     val availableModels: StateFlow<List<SyncedAvailableModel>> = _availableModels.asStateFlow()
@@ -155,9 +158,7 @@ class SyncManager(
             }
         }
         indexClient.onTextMessage = { message ->
-            scope.launch {
-                handleIndexMessage(message)
-            }
+            indexMessageChannel.trySend(message)
         }
         indexClient.onFailure = { error ->
             _state.update { it.copy(isConnecting = false, lastError = error) }
@@ -224,6 +225,13 @@ class SyncManager(
         }
         notificationManager.onTokenRemoved = {
             unregisterPushToken()
+        }
+
+        // Sequential index message processor to avoid race conditions (e.g. Session before Project)
+        scope.launch {
+            for (message in indexMessageChannel) {
+                handleIndexMessage(message)
+            }
         }
     }
 
@@ -763,6 +771,10 @@ class SyncManager(
             "deviceJoined" -> handleDeviceJoined(message)
             "deviceLeft" -> handleDeviceLeft(message)
             "error" -> handleServerError(message)
+            "readReceiptBroadcast", "trackerPersonalStateBroadcast" -> {
+                // Known protocol noise from newer server versions
+                Log.v(TAG, "Ignored protocol message: $type")
+            }
             null -> Log.w(TAG, "Index message with no type field")
             else -> Log.d(TAG, "Unhandled index message type: $type")
         }
@@ -793,7 +805,16 @@ class SyncManager(
         val response = parse<IndexSyncResponse>(message) ?: return
         val rawProjectCount = response.projects.size
         val projects = response.projects.mapNotNull(::processProjectEntry)
+
+        // Filter sessions: only keep those referencing a project that exists in this sync
+        // batch or is already present in the local database.
+        val validProjectIds = projects.map { it.id }.toSet()
         val sessions = response.sessions.mapNotNull { processSessionEntry(it) }
+            .filter { processed ->
+                val projectId = processed.session.projectId
+                validProjectIds.contains(projectId) || repository.getProject(projectId) != null
+            }
+
         val syncedAt = System.currentTimeMillis()
         applyIndexSnapshot(
             repository = repository,

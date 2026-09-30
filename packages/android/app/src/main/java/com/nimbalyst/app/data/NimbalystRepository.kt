@@ -1,5 +1,6 @@
 package com.nimbalyst.app.data
 
+import android.util.Log
 import androidx.room.withTransaction
 
 class NimbalystRepository(
@@ -72,8 +73,14 @@ class NimbalystRepository(
         }
     }
 
+    suspend fun getProject(projectId: String): ProjectEntity? = database.projectDao().getById(projectId)
+
     suspend fun upsertSession(session: SessionEntity) {
         database.withTransaction {
+            if (database.projectDao().getById(session.projectId) == null) {
+                Log.w("NimbalystRepository", "Skipping upsert for session ${session.id} - project ${session.projectId} not found")
+                return@withTransaction
+            }
             database.sessionDao().upsertAll(listOf(session))
             database.projectDao().refreshProjectStats(session.projectId)
         }
