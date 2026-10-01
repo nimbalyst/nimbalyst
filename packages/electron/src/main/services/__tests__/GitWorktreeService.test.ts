@@ -1,5 +1,6 @@
 // @vitest-environment node
 import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
+import { execFileSync } from 'child_process';
 import simpleGit from 'simple-git';
 import * as path from 'path';
 import * as fs from 'fs';
@@ -11,6 +12,7 @@ import { assertGitSandbox, gitSandboxEnv } from '../testSupport/gitTestSandbox';
 import {
   isWorktreePathInside,
   parseWorktreePorcelain,
+  planWorktreeCreateRollback,
   planWorktreeRemoval,
   readWorktreeGitLink,
   worktreePathKey,
@@ -342,6 +344,227 @@ describe('GitWorktreeService under an inherited repository-selection env', () =>
     expect(fs.existsSync(worktree.path)).toBe(false);
     expect(await fixtureGit(repo).raw(['branch', '--list', worktree.branch])).toBe('');
     expect(await snapshot(decoy)).toEqual(decoyBefore);
+  });
+});
+
+/**
+ * A name the user typed becomes the branch exactly (`worktree/feat/x`) in a
+ * one-segment folder (`feat-x`); suggested and generated names keep folder and
+ * branch on the final `-N` name. A failed creation leaves nothing it created.
+ */
+describe('GitWorktreeService.createWorktree naming and rollback', () => {
+  const service = new GitWorktreeService();
+  let root: string;
+  let repo: string;
+  let worktreesDir: string;
+
+  const localBranches = async (dir: string) =>
+    (await fixtureGit(dir).raw(['for-each-ref', '--format=%(refname:short)', 'refs/heads'])).split('\n').filter(Boolean);
+  const registeredPaths = async (dir: string) =>
+    parseWorktreePorcelain(await fixtureGit(dir).raw(['worktree', 'list', '--porcelain'])).map((entry) => entry.path);
+
+  beforeEach(async () => {
+    root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'nimbalyst-gws-create-')));
+    repo = path.join(root, 'repo');
+    worktreesDir = path.join(root, 'repo_worktrees');
+    await initRepo(repo);
+  });
+
+  afterEach(() => {
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  /** Installs a hook in the repository; a global core.hooksPath would otherwise hide it */
+  const installHook = (name: string, script: string) => {
+    const hooksDir = path.join(repo, '.git', 'hooks');
+    fs.mkdirSync(hooksDir, { recursive: true });
+    fs.writeFileSync(path.join(hooksDir, name), `#!/bin/sh\n${script}\n`, { mode: 0o755 });
+    // simple-git refuses to set core.hooksPath, so plain git sets it
+    assertGitSandbox(repo);
+    execFileSync('git', ['config', 'core.hooksPath', hooksDir], {
+      cwd: repo,
+      env: gitSandboxEnv(undefined, { pinConfigPaths: false }),
+    });
+  };
+
+  it('creates a typed name as one folder on exactly that branch, numbering only the folder', async () => {
+    const typed = await service.createWorktree(repo, { branchSuffix: 'feat/x' });
+    // `worktree/feat-x` is another branch, but the folder `feat-x` is taken
+    const sibling = await service.createWorktree(repo, { branchSuffix: 'feat-x' });
+
+    expect(typed).toMatchObject({ name: 'feat-x', path: path.join(worktreesDir, 'feat-x'), branch: 'worktree/feat/x' });
+    expect(sibling).toMatchObject({ name: 'feat-x-1', path: path.join(worktreesDir, 'feat-x-1'), branch: 'worktree/feat-x' });
+    expect(fs.readdirSync(worktreesDir).sort()).toEqual(['feat-x', 'feat-x-1']);
+    expect((await fixtureGit(typed.path).raw(['rev-parse', '--abbrev-ref', 'HEAD'])).trim()).toBe('worktree/feat/x');
+  });
+
+  // Git refuses a branch at, above or below an existing one before it creates
+  // anything; the check names the conflict instead of git's raw error, and a
+  // typed name is never renamed around it. Where git reports core.ignorecase,
+  // a branch differing only in case conflicts too, which git itself would
+  // create on a case-sensitive disk.
+  it.each([
+    ['the same branch', 'worktree/feat/x', false],
+    ['a branch at its parent', 'worktree/feat', false],
+    ['a branch below it', 'worktree/feat/x/y', false],
+    ['a bare worktree branch', 'worktree', false],
+    ['a branch differing only in case where git ignores case', 'worktree/Feat/X', true],
+  ])('refuses a typed name whose branch conflicts with %s, creating no folder and no branch', async (_label, existing, ignoreCase) => {
+    assertGitSandbox(repo);
+    if (ignoreCase) await fixtureGit(repo).addConfig('core.ignorecase', 'true', false, 'local');
+    await fixtureGit(repo).raw(['branch', existing]);
+    const branchesBefore = await localBranches(repo);
+
+    const outcome = await service.createWorktree(repo, { branchSuffix: 'feat/x' }).catch((error: Error) => error);
+
+    expect(await localBranches(repo)).toEqual(branchesBefore);
+    expect(await registeredPaths(repo)).toEqual([repo]);
+    expect(fs.existsSync(path.join(worktreesDir, 'feat-x'))).toBe(false);
+    expect(outcome).toBeInstanceOf(Error);
+    expect((outcome as Error).message).toContain(`'${existing}' already exists in ${repo}`);
+  });
+
+  // `worktree add` leaves the registration and the branch when the hook
+  // fails, and used to have only its folder removed.
+  it.each([
+    ['a suggested name', { name: 'hooked' }],
+    ['a typed name', { branchSuffix: 'hooked/x' }],
+  ])('removes the folder, registration and branch a failing post-checkout hook leaves (%s)', async (_label, options) => {
+    installHook('post-checkout', 'exit 3');
+    const branchesBefore = await localBranches(repo);
+
+    const outcome = await service.createWorktree(repo, options).catch((error: Error) => error);
+
+    expect(await localBranches(repo)).toEqual(branchesBefore);
+    expect(await registeredPaths(repo)).toEqual([repo]);
+    expect(fs.readdirSync(worktreesDir)).toEqual([]);
+    expect(outcome).toBeInstanceOf(Error);
+    expect((outcome as Error).message).toMatch(/^Failed to create worktree: /);
+  });
+
+  // `git branch <new> <base>` reads a base starting with '-' as an option:
+  // `-m` renames the repository's checked-out branch to the new name, which
+  // no rollback can undo, since the renamed branch is checked out there.
+  it.each(['-m', '--force'])('refuses the base %s before git can read it as an option', async (baseBranch) => {
+    const outcome = await service.createWorktree(repo, { name: 'opt', baseBranch }).catch((error: Error) => error);
+
+    expect(await localBranches(repo)).toEqual(['main']);
+    expect((await fixtureGit(repo).raw(['rev-parse', '--abbrev-ref', 'HEAD'])).trim()).toBe('main');
+    expect(fs.existsSync(path.join(worktreesDir, 'opt'))).toBe(false);
+    expect((outcome as Error).message).toBe(`Invalid base branch '${baseBranch}': a branch name cannot start with '-'`);
+  });
+
+  // A worktree on an unmounted drive: git still registers its missing folder
+  // and would create the new branch before refusing the path, leaving the
+  // branch behind. The folder counts as taken instead.
+  it.each([
+    ['a suggested name', { name: 'offline' }, 'worktree/offline-1'],
+    ['a typed name', { branchSuffix: 'offline' }, 'worktree/offline'],
+  ])('numbers past a folder git still registers though it is missing (%s)', async (_label, options, branch) => {
+    const target = path.join(worktreesDir, 'offline');
+    assertGitSandbox(repo);
+    await fixtureGit(repo).raw(['worktree', 'add', '-b', 'feature/offline', target]);
+    fs.renameSync(target, path.join(root, 'unmounted'));
+
+    const created = await service.createWorktree(repo, options);
+
+    expect(created).toMatchObject({ name: 'offline-1', path: path.join(worktreesDir, 'offline-1'), branch });
+    expect(await registeredPaths(repo)).toEqual([repo, target, created.path]);
+  });
+
+  // An archived worktree's folder, registration and branch are gone, but its
+  // row keeps the path and the store refuses a second row with it. A name used
+  // again after an archive (typed again, or a tracker item re-launched) moves
+  // on to the next folder.
+  it.each([
+    ['a suggested name', { name: 'shelved' }, 'worktree/shelved-1'],
+    ['a typed name', { branchSuffix: 'shelved' }, 'worktree/shelved'],
+  ])('numbers past a folder an archived worktree still records (%s)', async (_label, options, branch) => {
+    const recorded = path.join(worktreesDir, 'shelved');
+
+    const created = await service.createWorktree(repo, { ...options, takenPaths: [recorded] });
+
+    expect(created).toMatchObject({ name: 'shelved-1', path: path.join(worktreesDir, 'shelved-1'), branch });
+    expect(fs.existsSync(recorded)).toBe(false);
+    expect(await localBranches(repo)).toEqual(['main', branch]);
+  });
+
+  // Another app or a terminal can act between the checks and `worktree add`;
+  // the repository lock holds off only this process. The hook stands in for
+  // it: once the attempt has made its branch, it registers someone else's
+  // worktree at the target, which a rollback must not remove.
+  it('leaves a worktree someone else registers at the target meanwhile, deleting only its own new branch', async () => {
+    const target = path.join(worktreesDir, 'race');
+    const marker = path.join(root, 'raced');
+    installHook('reference-transaction', [
+      '[ "$1" = committed ] || exit 0',
+      "grep -q ' refs/heads/worktree/race$' || exit 0",
+      `[ -e '${marker}' ] && exit 0`,
+      `touch '${marker}'`,
+      'unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE',
+      `git -C '${repo}' worktree add -q -b theirs '${target}' main`,
+      `echo work > '${target}/precious.txt'`,
+    ].join('\n'));
+
+    const outcome = await service.createWorktree(repo, { name: 'race' }).catch((error: Error) => error);
+
+    expect((outcome as Error).message).toContain('already exists');
+    expect(fs.readFileSync(path.join(target, 'precious.txt'), 'utf8')).toBe('work\n');
+    expect(await registeredPaths(repo)).toEqual([repo, target]);
+    expect(await localBranches(repo)).toEqual(['main', 'theirs']);
+  });
+
+  it('leaves a registration a hook locked, with its branch, and names both in the error', async () => {
+    installHook('post-checkout', 'git worktree lock --reason test "$PWD"\nexit 3');
+    const target = path.join(worktreesDir, 'lk');
+
+    const outcome = await service.createWorktree(repo, { name: 'lk' }).catch((error: Error) => error);
+
+    expect(await registeredPaths(repo)).toEqual([repo, target]);
+    expect(await localBranches(repo)).toEqual(['main', 'worktree/lk']);
+    expect(fs.existsSync(path.join(target, 'README.md'))).toBe(true);
+    expect((outcome as Error).message).toContain(`a worktree registered at ${target} and the branch 'worktree/lk'`);
+  });
+
+  it('names what the rollback tried when git cannot be asked what it left', async () => {
+    installHook('post-checkout', 'exit 3');
+    const target = path.join(worktreesDir, 'unread');
+    const internals = service as unknown as {
+      readCreateOutcome: (...args: unknown[]) => Promise<unknown>;
+    };
+    const readOutcome = internals.readCreateOutcome.bind(service);
+    let reads = 0;
+    // The first read plans the rollback and the second follows the
+    // unregister; the last one, after every step, fails
+    const spy = vi.spyOn(internals, 'readCreateOutcome').mockImplementation(async (...args) =>
+      (++reads >= 3 ? null : readOutcome(...args)));
+    let outcome: unknown;
+    try {
+      outcome = await service.createWorktree(repo, { name: 'unread' }).catch((error: Error) => error);
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect(await localBranches(repo)).toEqual(['main']);
+    expect(await registeredPaths(repo)).toEqual([repo]);
+    expect((outcome as Error).message).toContain(
+      `Git could not be asked what the failed attempt left at ${target} after unregistering the worktree there ` +
+      "and deleting the branch 'worktree/unread'; they may not all have taken effect."
+    );
+  });
+
+  it('keeps folder and branch on the final -N name for suggested and generated names', async () => {
+    // A PR review opened twice relies on this
+    await service.createWorktree(repo, { name: 'pr-12' });
+    const again = await service.createWorktree(repo, { name: 'pr-12' });
+    const generated = await service.createWorktree(repo);
+
+    expect(again).toMatchObject({ name: 'pr-12-1', path: path.join(worktreesDir, 'pr-12-1'), branch: 'worktree/pr-12-1' });
+    expect(generated.name).toMatch(/^[a-z]+-[a-z]+$/);
+    expect(generated).toMatchObject({
+      path: path.join(worktreesDir, generated.name),
+      branch: `worktree/${generated.name}`,
+    });
   });
 });
 
@@ -888,5 +1111,41 @@ describe('worktree ownership decisions', () => {
       expectedBranch: 'worktree/x',
       ...facts,
     })).toEqual(plan);
+  });
+
+  // A failed creation removes only what it provably created: the branch its
+  // own `git branch` made, and a registration with that branch checked out.
+  // The real-git cases above cover a failing hook, a locked registration and
+  // another worktree registered at the target meanwhile.
+  const attempt = { branch: 'worktree/x', branchCreated: true };
+  const nothingBefore = { pathExisted: false, registered: false };
+  const created = {
+    pathExists: true, registered: true, registeredBranch: 'worktree/x', locked: false, holdsOtherWorktree: false,
+    branchExists: true,
+  };
+  const rollback = (unregister: boolean, removeFolder: boolean, deleteBranch: boolean) =>
+    ({ unregister, removeFolder, deleteBranch });
+  it.each([
+    ['everything a failing post-checkout hook leaves', {}, rollback(true, true, true)],
+    ['a branch git created before refusing the path',
+      { after: { ...created, pathExists: false, registered: false, registeredBranch: null } }, rollback(false, false, true)],
+    ['a branch someone else created first, so its own `git branch` failed', { branchCreated: false },
+      rollback(false, false, false)],
+    ['a registration at the target on another branch, someone else\'s or one a hook switched',
+      { after: { ...created, registeredBranch: 'theirs' } }, rollback(false, false, true)],
+    ['a folder that appeared without a registration, which may be anyone\'s',
+      { after: { ...created, registered: false, registeredBranch: null, branchExists: false } }, rollback(false, false, false)],
+    ['a registration that existed before the attempt',
+      { before: { ...nothingBefore, registered: true }, after: { ...created, registeredBranch: 'feature/offline' } },
+      rollback(false, false, true)],
+    ['an empty folder that existed before the attempt, which unregistering deletes anyway',
+      { before: { ...nothingBefore, pathExisted: true } },
+      rollback(true, false, true)],
+    ['a registration something locked', { after: { ...created, locked: true } }, rollback(false, false, false)],
+    ['a folder that holds another worktree', { after: { ...created, holdsOtherWorktree: true } },
+      rollback(false, false, false)],
+    ['an attempt git cannot be asked about afterwards', { after: null }, rollback(false, false, false)],
+  ] as const)('rolls back %s', (_label, facts, plan) => {
+    expect(planWorktreeCreateRollback({ ...attempt, before: nothingBefore, after: created, ...facts })).toEqual(plan);
   });
 });

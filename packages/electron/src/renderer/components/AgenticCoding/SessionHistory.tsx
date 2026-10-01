@@ -9,7 +9,7 @@ import {
 } from '../../store/atoms/titleBarCreate';
 import { Virtuoso, VirtuosoHandle } from 'react-virtuoso';
 import { CollapsibleGroup } from './CollapsibleGroup';
-import { WorktreeBaseBranchPicker } from './WorktreeBaseBranchPicker';
+import { WorktreeBaseBranchPicker, type WorktreePickerCreateOptions } from './WorktreeBaseBranchPicker';
 import { SessionListItem } from './SessionListItem';
 import { SessionTreeRow, useVisibleSessionTreeRows, type VisibleSessionTreeRow } from './SessionTree.tsx';
 import { visibleSessionTreeIds, sessionTreeRootId } from './sessionTreeModel';
@@ -300,8 +300,8 @@ const SessionHistoryComponent: React.FC = () => {
   const onNewSession: (() => void) | undefined = useCallback(() => {
     void dispatchCreateNewSession({ launchSource: 'session_history' });
   }, [dispatchCreateNewSession]);
-  const onNewWorktreeSession: ((options?: { baseBranch?: string; name?: string }) => void | Promise<void>) | undefined = isWorktreesFeatureAvailable
-    ? async (options?: { baseBranch?: string; name?: string }) => {
+  const onNewWorktreeSession: ((options?: WorktreePickerCreateOptions) => void | Promise<void>) | undefined = isWorktreesFeatureAvailable
+    ? async (options?: WorktreePickerCreateOptions) => {
         await dispatchCreateNewWorktreeSession(options);
       }
     : undefined;
@@ -1948,7 +1948,7 @@ const SessionHistoryComponent: React.FC = () => {
   };
 
   // Open the worktree picker modal. It drives creation by calling
-  // onNewWorktreeSession({ baseBranch, name }).
+  // onNewWorktreeSession({ baseBranch, name, nameSource }).
   const openWorktreeBaseBranchPicker = () => {
     if (isNotGitRepo || !onNewWorktreeSession) return;
     newDropdownMenu.setIsOpen(false);
@@ -2830,11 +2830,11 @@ const SessionHistoryComponent: React.FC = () => {
     <WorktreeBaseBranchPicker
       isOpen={worktreeBaseBranchPickerOpen}
       repoPath={worktreeSourceRepoPath}
-      onCreate={async ({ baseBranch, name }) => {
+      onCreate={async (options) => {
         // Await the parent's create handler so the picker can keep its
         // submitting state until creation actually resolves (and surface
         // any error inline without losing the user's input).
-        await onNewWorktreeSession({ baseBranch, name });
+        await onNewWorktreeSession(options);
         setWorktreeBaseBranchPickerOpen(false);
       }}
       onCancel={() => setWorktreeBaseBranchPickerOpen(false)}
