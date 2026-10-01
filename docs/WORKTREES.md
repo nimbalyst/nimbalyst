@@ -90,6 +90,11 @@ Manages git worktree operations using the `simple-git` library.
   - Handles name conflicts by appending incrementing numbers
   - Bases the branch on `options.baseBranch` when given, otherwise on the project's default base (see [Default base branch](#default-base-branch))
   - Always passes `--no-track`, so `worktree/<name>` never gets an upstream
+  - `branchSuffix` (a name the user typed) sets the branch exactly; see [Branch names](#branch-names)
+  - Treats a path git still registers as taken even when its folder is missing (as on an unmounted drive), so the folder takes a `-N`; git would otherwise create the branch and then fail on the path. So is a path in `takenPaths`, which `worktree:create` fills with every path a worktree row records: an archived worktree's row keeps its path after its folder is gone, and the store refuses a second row with it
+  - Refuses, before anything is created, a branch that conflicts with an existing one, with a message naming that branch
+  - Runs `git branch --no-track` and then `git worktree add`, the two steps `worktree add -b` runs itself, so a failure shows whether the attempt made the branch
+  - When `git worktree add` fails part way (a failing `post-checkout` hook leaves the folder, its registration and the branch), removes only what that attempt provably created, through `git worktree remove --force` and `git branch -D`: the branch its own `git branch` made, and a registration at the target with that branch checked out. A branch or registration that existed before stays (an empty folder git adopted at the target goes with the attempt's registration), and so does a worktree another app or a terminal registered at the same path meanwhile, or a folder git did not register in the attempt, which may be anyone's. The error names what the attempt provably created and could not remove; a registration a hook switched to another branch counts as someone else's, so it stays and is not named
   - Returns worktree metadata
 - `getWorktreeStatus(worktreePath)`: Fetches git status for a worktree
   - Returns `hasUncommittedChanges` boolean
@@ -145,7 +150,7 @@ Database persistence layer for worktree metadata.
 Exposes worktree operations to the renderer process via IPC.
 
 **IPC Channels:**
-- `worktree:create` - Create new worktree
+- `worktree:create` - Create new worktree. Options: `name`, `baseBranch`, `sourceFolderPath`, and `nameSource` (`'user'` when the user typed or edited `name`, which then becomes the branch exactly and is validated before any git call; absent or `'suggested'` keeps the `-N` renaming)
 - `worktree:get-status` - Get git status for worktree
 - `worktree:delete` - Delete worktree and its database record
 - `worktree:list` - List all worktrees for a workspace
@@ -240,9 +245,9 @@ The setting is `WorkspaceState.worktreeDefaultBase` (`{ mode: 'remote-default' |
 
 Resolution never fails worktree creation because of the setting. It does not fetch: when the resolved default is a remote ref, `createWorktree` runs one `git fetch <remote> <branch>` bounded at 5 seconds BEFORE taking the git operation lock, so other operations on the repo do not queue behind it. On timeout the fetch's git process is killed (abort signal). Creation then resolves again inside the lock and uses whatever ref is cached, logging a failed fetch.
 
-Resolved refs stay fully qualified (`refs/remotes/origin/main`, `refs/heads/main`) through the fetch and `git worktree add`, because a short `origin/main` is ambiguous when a local branch of that name exists and git would pick the local one. The short form (`origin/main`) is what `worktrees.base_branch` stores and the picker shows.
+Resolved refs stay fully qualified (`refs/remotes/origin/main`, `refs/heads/main`) through the fetch and `git branch`, because a short `origin/main` is ambiguous when a local branch of that name exists and git would pick the local one. The short form (`origin/main`) is what `worktrees.base_branch` stores and the picker shows.
 
-An explicit base is validated before `git worktree add`: it must not start with `-` and must resolve to a commit (`rev-parse --verify --quiet <ref>^{commit}`), otherwise creation fails with `Base branch "<ref>" not found`.
+An explicit base is validated before `git branch`: it must not start with `-` and must resolve to a commit (`rev-parse --verify --quiet <ref>^{commit}`), otherwise creation fails with `Base branch "<ref>" not found`.
 
 New branches use `--no-track`. Without it git's default `branch.autoSetupMerge` makes `worktree/<name>` track `origin/main`, and under `push.default=upstream` a bare `git push` from the worktree would push to `main`.
 
@@ -286,7 +291,19 @@ Worktrees are created outside the main workspace:
       └── ... (project files)
 ```
 
-The branch name follows the pattern `worktree/{worktree-name}` (e.g., `worktree/swift-falcon`).
+The branch name follows the pattern `worktree/{worktree-name}` (e.g., `worktree/swift-falcon`), except for a name the user typed (see below).
+
+### Branch names
+
+`packages/electron/src/shared/worktreeBranchNaming.ts` holds the rules, shared by the worktree dialog and the main process.
+
+- **No name typed**: a generated name; folder and branch are `swift-falcon` and `worktree/swift-falcon`.
+- **A name the user typed or edited** (`nameSource: 'user'`), e.g. `feat/x`: the branch is exactly `worktree/feat/x` and never takes a `-N`. The folder and the row's `name` are its one-segment form `feat-x` (`/` becomes `-`, characters Windows cannot hold in a file name are dropped, dashes collapse, leading and trailing dots and dashes go, and a Windows device name such as `con` gets a `_`). The folder still takes a `-N` when it is taken: on disk, registered with git, or recorded by a worktree row, archived ones included. A branch that conflicts with an existing one (the same name, a branch at a parent path such as `worktree/feat` or a bare `worktree`, or branches below it) fails with a message naming that branch; on macOS and Windows, and wherever git reports `core.ignorecase` (such as a Windows drive mounted in WSL), names that differ only in case count as the same.
+- **Suggested names** keep folder and branch on the same final name, with `-N` added to both when the folder is taken: a tracker item's prefilled name the user did not edit, and PR review's `pr-<number>`. A branch conflict on a suggested name fails; only a generated name is retried with a fresh one. PR review (`pr:open-worktree`) creates its worktree outside `worktree:create` and does not yet pass the recorded paths, so a PR reviewed again after its worktree was archived still fails to record the new row.
+- **Validation** of a typed name follows `git check-ref-format --branch` for `worktree/<name>`, plus Nimbalyst policy rules git itself does not have: at most 64 characters, no leading `-`, and nothing Git for Windows cannot store as a branch file, since a branch travels between machines: none of `< > " |`, no part between `/` that ends in `.`, and no part that is a Windows device name (`con`, `aux`, `nul.txt`, `com1`, `conin$`, ...).
+- Only the name crosses IPC; the main process adds the `worktree/` prefix.
+
+Earlier versions created nested folders for a typed name with `/` (`feat/x` became `{project_name}_worktrees/feat/x`), and nested worktree paths stay supported (#708): existing nested worktrees keep working. Only new typed names get one-segment folders.
 
 This keeps worktrees separate from the main workspace while maintaining git connectivity.
 
