@@ -1,6 +1,6 @@
 import { execFile, execSync } from 'child_process';
-import { readdirSync } from 'fs';
-import { relative } from 'path';
+import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from 'fs';
+import { join, relative, resolve } from 'path';
 import { promisify } from 'util';
 
 import { createGitRemoteCache } from './gitRemoteCache';
@@ -217,6 +217,74 @@ export async function getUntrackedFilesInDirectories(
   }
 
   return byDirectory;
+}
+
+/**
+ * Repositories cloned inside `repoRoot` that its ignore rules hide (#1449).
+ *
+ * Keeping a clone out of the enclosing repo's history means ignoring it, and a
+ * ripgrep scan of the enclosing root honors that rule, so file search never
+ * reaches the clone even though the file tree shows it. `--directory` reports
+ * each ignored directory once without descending into it, so this stays one
+ * quick call however large the ignored trees are. Only an ignored directory
+ * that is itself a checkout counts: build output stays hidden, and so do linked
+ * worktrees of `repoRoot`'s own repository, which would only list its files a
+ * second time. Clones nested deeper inside an ignored directory are not found.
+ *
+ * @returns Absolute paths in git's order. Empty when `repoRoot` is not a
+ *          repository, git is unavailable, or git fails.
+ */
+export async function listIgnoredNestedRepositories(repoRoot: string): Promise<string[]> {
+  if (!existsSync(join(repoRoot, '.git')) || !isGitAvailable()) {
+    return [];
+  }
+
+  let stdout: string;
+  try {
+    ({ stdout } = await execFileAsync(
+      'git',
+      ['--no-optional-locks', 'ls-files', '--others', '--ignored', '--exclude-standard', '--directory', '-z'],
+      { cwd: repoRoot, encoding: 'utf8', maxBuffer: LS_FILES_MAX_BUFFER },
+    ));
+  } catch (error) {
+    console.error('[gitUtils] git ls-files failed while listing ignored nested repositories', repoRoot, error);
+    return [];
+  }
+
+  const ownCommonDir = gitCommonDir(repoRoot);
+  const repos: string[] = [];
+  for (const entry of stdout.split('\0')) {
+    // Ignored directories end in a slash; an ignored file cannot be a checkout.
+    if (!entry.endsWith('/')) continue;
+    const candidate = resolve(repoRoot, entry);
+    const commonDir = gitCommonDir(candidate);
+    if (commonDir === null || commonDir === ownCommonDir) continue;
+    repos.push(candidate);
+  }
+  return repos;
+}
+
+/**
+ * The shared git directory behind a checkout: its own `.git` for a clone, the
+ * main repository's `.git` for a linked worktree. Null when `checkoutPath` is
+ * not a checkout.
+ */
+function gitCommonDir(checkoutPath: string): string | null {
+  const dotGit = join(checkoutPath, '.git');
+  try {
+    if (statSync(dotGit).isDirectory()) return realpathSync(dotGit);
+    // A linked worktree's `.git` is a file naming its private git dir, whose
+    // `commondir` file points back at the main repository's `.git`.
+    const match = /^gitdir:\s*(.+)$/m.exec(readFileSync(dotGit, 'utf8'));
+    if (!match) return null;
+    const gitDir = resolve(checkoutPath, match[1].trim());
+    const commonDirFile = join(gitDir, 'commondir');
+    return realpathSync(
+      existsSync(commonDirFile) ? resolve(gitDir, readFileSync(commonDirFile, 'utf8').trim()) : gitDir,
+    );
+  } catch {
+    return null;
+  }
 }
 
 /**

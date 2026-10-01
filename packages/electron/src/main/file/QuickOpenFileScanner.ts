@@ -5,6 +5,7 @@ import { basename, dirname } from 'path';
 import { promisify } from 'util';
 import { getRipgrepPath } from '../services/ripgrepPath';
 import { RIPGREP_EXCLUDE_ARGS_ARRAY } from '../utils/fileFilters';
+import { listIgnoredNestedRepositories } from '../utils/gitUtils';
 
 const execFileAsync = promisify(execFile);
 
@@ -98,19 +99,36 @@ export async function buildQuickOpenCacheForRoot(
 
 // Cross-platform file finder using ripgrep --files.
 // Respects .gitignore for the general workspace scan, but explicitly includes
-// nimbalyst-local/ so local plan files remain mentionable in @ typeahead.
+// nimbalyst-local/ so local plan files remain mentionable in @ typeahead, and
+// clones nested in the root, which the root's ignore rules usually hide (#1449).
+// Each clone is scanned under its own ignore rules.
 export async function findWorkspaceFiles(dir: string): Promise<string[]> {
     const baseFiles = await runRipgrepFiles(dir);
     const nimbalystLocalPath = path.join(dir, NIMBALYST_LOCAL_DIRNAME);
     const extraFiles = existsSync(nimbalystLocalPath)
       ? await runRipgrepFiles(nimbalystLocalPath, { noIgnore: true })
       : [];
+    const nestedRepoFiles: string[] = [];
+    for (const repo of await listIgnoredNestedRepositories(dir)) {
+        nestedRepoFiles.push(...await runRipgrepFiles(repo));
+    }
 
-    return Array.from(new Set([...baseFiles, ...extraFiles]))
+    return Array.from(new Set([...baseFiles, ...extraFiles, ...nestedRepoFiles]))
         .filter(file => {
             // Filter out binary files by extension
             const ext = path.extname(file).toLowerCase();
             return !BINARY_EXTENSIONS.has(ext);
         });
+}
+
+/**
+ * The directories a content search names on the ripgrep command line: the
+ * workspace roots plus the clones their ignore rules hide (#1449), each once.
+ * ripgrep searches a directory named explicitly even when an enclosing repo
+ * ignores it, and a clone the user also attached as a root is not searched twice.
+ */
+export async function listContentSearchRoots(roots: string[]): Promise<string[]> {
+    const nested = await Promise.all(roots.map(root => listIgnoredNestedRepositories(root)));
+    return Array.from(new Set([...roots, ...nested.flat()].map(dir => path.resolve(dir))));
 }
 
