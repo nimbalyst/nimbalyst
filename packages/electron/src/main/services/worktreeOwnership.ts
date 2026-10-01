@@ -11,7 +11,8 @@
  * whose files git cannot check for changes, and a worktree that holds
  * another of the repository's worktrees. The decision is a pure function
  * over facts read from git and the disk, so every outcome is testable
- * without staging it.
+ * without staging it. Undoing a failed creation follows the same rule: it
+ * removes only what the attempt created.
  */
 
 import * as fs from 'fs';
@@ -469,4 +470,72 @@ function branchToDelete(checkedOut: string | null, expectedBranch: string | unde
     return null;
   }
   return checkedOut;
+}
+
+/**
+ * What a failed creation may have left, against what was there before it
+ * ran. The attempt runs `git branch` and then `git worktree add`, the two
+ * steps `worktree add -b` runs itself, so whether the branch is its own is
+ * known rather than inferred. A failing post-checkout hook leaves the folder,
+ * its registration and the new branch; a refused path can still leave the
+ * branch.
+ */
+export interface WorktreeCreateRollbackFacts {
+  /** The branch the attempt was creating */
+  branch: string;
+  /** The attempt's own `git branch` succeeded */
+  branchCreated: boolean;
+  before: { pathExisted: boolean; registered: boolean };
+  /** Null when git could not be asked after the failure */
+  after: {
+    pathExists: boolean;
+    registered: boolean;
+    /** The branch the registration at the target has checked out; null for none or a detached HEAD */
+    registeredBranch: string | null;
+    locked: boolean;
+    /** Another registered worktree lies inside the folder */
+    holdsOtherWorktree: boolean;
+    branchExists: boolean;
+  } | null;
+}
+
+export interface WorktreeCreateRollbackPlan {
+  /** `worktree remove --force` the registration the attempt created, which deletes its folder with it */
+  unregister: boolean;
+  /** Delete what git leaves of that folder once it is unregistered */
+  removeFolder: boolean;
+  /** `branch -D` the branch the attempt created */
+  deleteBranch: boolean;
+}
+
+/**
+ * Undoes only what the failed attempt provably created. A registration is
+ * its own only when it has the attempt's new branch checked out: another
+ * app or a terminal, which the in-process repository lock does not hold
+ * off, may have registered a worktree at the same path meanwhile. A branch
+ * or registration that existed before stays, and so does a folder git did
+ * not register in this attempt, which may be anyone's. A folder that existed
+ * before and that the attempt's own registration took over can only have
+ * been empty, as git adopts no other; unregistering deletes it with the
+ * registration, and `removeFolder` only skips deleting what git leaves of
+ * it. A locked registration, or one whose folder holds another worktree,
+ * stays with its branch, as a removal would refuse it too.
+ */
+export function planWorktreeCreateRollback({
+  branch,
+  branchCreated,
+  before,
+  after,
+}: WorktreeCreateRollbackFacts): WorktreeCreateRollbackPlan {
+  if (!after || !branchCreated) {
+    return { unregister: false, removeFolder: false, deleteBranch: false };
+  }
+  const ownRegistration = after.registered && !before.registered && after.registeredBranch === branch;
+  const unregister = ownRegistration && !after.locked && !after.holdsOtherWorktree;
+  return {
+    unregister,
+    removeFolder: unregister && !before.pathExisted,
+    // Git refuses to delete a branch a registered worktree has checked out
+    deleteBranch: after.branchExists && (!ownRegistration || unregister),
+  };
 }
