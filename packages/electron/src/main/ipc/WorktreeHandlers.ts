@@ -26,7 +26,7 @@ import type { WorktreeCreateResult } from '../../shared/ipc/types';
 import { gitOperationLock } from '../services/GitOperationLock';
 import fs from 'node:fs';
 import { archiveSessionsAndDestroyProviders } from '../services/ai/archiveSessionProviderLifecycle';
-import { createWorktreeArchiveCleanup } from '../services/worktreeArchiveCleanup';
+import { createWorktreeArchiveCleanup, worktreeRepoPath } from '../services/worktreeArchiveCleanup';
 
 const logger = log.scope('WorktreeHandlers');
 
@@ -174,11 +174,32 @@ export async function archiveWorktree(worktreeId: string, workspacePath: string)
       }
       // Directory still exists despite being marked archived - re-run cleanup
       archiveLogger.info('Worktree marked as archived but directory still exists, re-running cleanup', { worktreeId, path: worktree.path });
-      // Reset the archived flag so the cleanup flow can set it properly after disk deletion
-      await worktreeStore.updateArchived(worktreeId, false);
     }
 
     const gitWorktreeService = new GitWorktreeService();
+
+    // Ask whether the removal would go ahead before anything is torn down.
+    // The queued removal refuses only after the terminals are gone and the
+    // ref watcher is stopped, and it reports the refusal only on the
+    // progress task.
+    let refusal: Error | null = null;
+    try {
+      refusal = await gitWorktreeService.checkWorktreeRemovable(worktree.path, worktreeRepoPath(worktree), {
+        expectedBranch: worktree.branch,
+      });
+    } catch (checkError) {
+      // The queued removal checks again and refuses then if it must
+      archiveLogger.warn('Could not check whether the worktree can be removed', { worktreeId, error: checkError });
+    }
+    if (refusal) {
+      archiveLogger.warn('Not archiving a worktree its repository will not remove', { worktreeId, error: refusal.message });
+      return { success: false, error: refusal.message };
+    }
+
+    if (worktree.isArchived) {
+      // Reset the archived flag so the cleanup flow can set it properly after disk deletion
+      await worktreeStore.updateArchived(worktreeId, false);
+    }
 
     // Step 1: Get all sessions for this worktree
     archiveLogger.info('Found sessions for worktree', { worktreeId, sessionCount: sessionIds.length });
@@ -254,7 +275,8 @@ export async function archiveWorktree(worktreeId: string, workspacePath: string)
 
     // Step 4: Queue the slow cleanup work
     const cleanupArchivedWorktree = createWorktreeArchiveCleanup({
-      deleteWorktree: (worktreePath, repoPath) => gitWorktreeService.deleteWorktree(worktreePath, repoPath),
+      deleteWorktree: (worktreePath, repoPath, options) =>
+        gitWorktreeService.deleteWorktree(worktreePath, repoPath, options),
       worktreeStore,
       superLoopStore,
       archiveQueue: archiveProgressManager,
@@ -468,7 +490,9 @@ export function registerWorktreeHandlers(): void {
             worktreePath: createdWorktree.path,
           });
           try {
-            await gitWorktreeService.deleteWorktree(createdWorktree.path, sourceRepo);
+            await gitWorktreeService.deleteWorktree(createdWorktree.path, sourceRepo, {
+              expectedBranch: createdWorktree.branch,
+            });
             logger.info('Successfully cleaned up orphaned worktree', { worktreePath: createdWorktree.path });
           } catch (cleanupError) {
             logger.error('Failed to clean up orphaned worktree - manual cleanup required', {
@@ -605,12 +629,23 @@ export function registerWorktreeHandlers(): void {
         throw new Error(`Worktree not found: ${worktreeId}`);
       }
 
+      // Delete the git worktree from the repo it was branched from, not the
+      // workspace's primary root -- see the note in `worktreeArchiveCleanup`.
+      const repoPath = worktree.sourceFolderPath || workspacePath;
+      const refusal = await gitWorktreeService.checkWorktreeRemovable(worktree.path, repoPath, {
+        expectedBranch: worktree.branch,
+      });
+      if (refusal) {
+        // Before the ref watcher stops, which nothing would restart
+        throw refusal;
+      }
+
       // Stop the git ref watcher for this worktree
       await gitRefWatcher.stop(worktree.path);
 
-      // Delete the git worktree from the repo it was branched from, not the
-      // workspace's primary root -- see the note in `archiveWorktree`.
-      await gitWorktreeService.deleteWorktree(worktree.path, worktree.sourceFolderPath || workspacePath);
+      await gitWorktreeService.deleteWorktree(worktree.path, repoPath, {
+        expectedBranch: worktree.branch,
+      });
 
       // Delete the database record
       await worktreeStore.delete(worktreeId);
