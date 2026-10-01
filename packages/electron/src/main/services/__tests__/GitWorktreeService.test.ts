@@ -9,6 +9,15 @@ import { gitOperationLock } from '../GitOperationLock';
 import * as operationLog from '../GitOperationLogService';
 import { assertGitSandbox, gitSandboxEnv } from '../testSupport/gitTestSandbox';
 
+// createWorktree/deleteWorktree record each command in the persisted git
+// activity log, which is bookkeeping these tests do not exercise.
+vi.mock('../GitOperationLogService', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../GitOperationLogService')>()),
+  getGitOperationLogService: () => ({}),
+  recordGitActivity: (_service: unknown, _workspacePath: string, _args: string[], operation: () => Promise<unknown>) =>
+    operation(),
+}));
+
 describe('gitSandboxEnv', () => {
   it('strips IDE-provided SSH_ASKPASS before simple-git runs a fixture command', async () => {
     const previousAskPass = process.env.SSH_ASKPASS;
@@ -239,5 +248,80 @@ describe('GitWorktreeService.rebaseFromBase input boundary', () => {
     } finally {
       vi.restoreAllMocks();
     }
+  });
+});
+
+/**
+ * A git hook exports GIT_DIR, GIT_WORK_TREE and GIT_INDEX_FILE, and git honors
+ * them over the working directory. Worktree creation and removal must still act
+ * on the repository they were given, not on the one the environment names.
+ */
+describe('GitWorktreeService under an inherited repository-selection env', () => {
+  const service = new GitWorktreeService();
+  const inheritedKeys = ['GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE'] as const;
+  let root: string;
+  let repo: string;
+  let decoy: string;
+  let previousEnv: Map<string, string | undefined>;
+
+  const fixtureGit = (dir: string) => simpleGit(dir).env(gitSandboxEnv(undefined, { pinConfigPaths: false }));
+  const snapshot = async (dir: string) => ({
+    branches: await fixtureGit(dir).raw(['branch', '--list']),
+    worktrees: await fixtureGit(dir).raw(['worktree', 'list', '--porcelain']),
+  });
+
+  async function initRepo(dir: string): Promise<void> {
+    fs.mkdirSync(dir, { recursive: true });
+    const git = fixtureGit(dir);
+    await git.init();
+    await git.addConfig('user.email', 'test@example.com', false, 'local');
+    await git.addConfig('user.name', 'Test', false, 'local');
+    await git.addConfig('commit.gpgsign', 'false', false, 'local');
+    assertGitSandbox(dir);
+    fs.writeFileSync(path.join(dir, 'README.md'), 'hi');
+    await git.add('README.md');
+    await git.commit('initial');
+  }
+
+  beforeEach(async () => {
+    root = fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'nimbalyst-gws-env-')));
+    repo = path.join(root, 'repo');
+    decoy = path.join(root, 'decoy');
+    await initRepo(repo);
+    await initRepo(decoy);
+    previousEnv = new Map(inheritedKeys.map((key) => [key, process.env[key]]));
+  });
+
+  afterEach(() => {
+    for (const key of inheritedKeys) {
+      const value = previousEnv.get(key);
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  // A hook may export GIT_DIR alone, which redirects every command to its
+  // repository, or together with the work tree and index.
+  it.each([
+    ['GIT_DIR only', false],
+    ['GIT_DIR, GIT_WORK_TREE and GIT_INDEX_FILE', true],
+  ])('creates and deletes the worktree in the requested repository only (%s)', async (_label, withWorkTree) => {
+    process.env.GIT_DIR = path.join(decoy, '.git');
+    if (withWorkTree) {
+      process.env.GIT_WORK_TREE = decoy;
+      process.env.GIT_INDEX_FILE = path.join(decoy, '.git', 'index');
+    }
+    const decoyBefore = await snapshot(decoy);
+
+    const worktree = await service.createWorktree(repo, { name: 'env-check' });
+    expect(path.dirname(worktree.path)).toBe(path.join(root, 'repo_worktrees'));
+    expect(await fixtureGit(repo).raw(['branch', '--list', worktree.branch])).toContain(worktree.branch);
+    expect(await snapshot(decoy)).toEqual(decoyBefore);
+
+    await service.deleteWorktree(worktree.path, repo);
+    expect(fs.existsSync(worktree.path)).toBe(false);
+    expect(await fixtureGit(repo).raw(['branch', '--list', worktree.branch])).toBe('');
+    expect(await snapshot(decoy)).toEqual(decoyBefore);
   });
 });

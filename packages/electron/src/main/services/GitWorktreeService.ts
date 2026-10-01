@@ -21,12 +21,26 @@ import { ulid } from 'ulid';
 import log from 'electron-log/main';
 import { getUntrackedFilesInDirectories } from '../utils/gitUtils';
 import { GIT_INHERITED_ENV_UNSAFE } from './gitInheritedEnvUnsafe';
+import { sanitizeGitRepositoryEnv } from './gitRepositoryEnv';
 import { gitOperationLock } from './GitOperationLock';
 import { getGitOperationLogService, recordGitActivity } from './GitOperationLogService';
 import { SessionCommitService } from './SessionCommitService';
 import { historyManager } from '../HistoryManager';
 
 const logger = log.scope('GitWorktreeService');
+
+/**
+ * simple-git rooted at `baseDir`, without the repository-selection variables a
+ * git hook exports (GIT_DIR, GIT_WORK_TREE, GIT_INDEX_FILE, ...). Those override
+ * the working directory, so an inherited GIT_DIR would make `worktree add`,
+ * `worktree remove --force` and `branch -D` act on the hook's repository instead
+ * of `baseDir`'s. Commit, merge and rebase get the same scrub from gitEnv.ts.
+ */
+function gitFor(baseDir: string): SimpleGit {
+  // .env() makes simple-git scan the supplied environment, so the user's own
+  // variables (GIT_EDITOR, GIT_ASKPASS, ...) need the unsafe opt-ins.
+  return simpleGit(baseDir, { unsafe: GIT_INHERITED_ENV_UNSAFE }).env(sanitizeGitRepositoryEnv(process.env));
+}
 
 /**
  * Thrown when a workspace's git repository has no commits yet, so HEAD
@@ -179,7 +193,7 @@ export class GitWorktreeService {
       }
 
       // Check 3: git rev-parse --is-inside-work-tree succeeds
-      const git: SimpleGit = simpleGit(worktreePath);
+      const git: SimpleGit = gitFor(worktreePath);
       try {
         const isWorkTree = await git.revparse(['--is-inside-work-tree']);
         if (isWorkTree.trim() !== 'true') {
@@ -265,7 +279,7 @@ export class GitWorktreeService {
     logger.info('Creating worktree', { workspacePath, options });
 
     // Ensure this is a git repository
-    const git: SimpleGit = simpleGit(workspacePath);
+    const git: SimpleGit = gitFor(workspacePath);
     const isRepo = await git.checkIsRepo();
     if (!isRepo) {
       throw new Error(`Not a git repository: ${workspacePath}`);
@@ -365,7 +379,7 @@ export class GitWorktreeService {
 
     // logger.info('Getting worktree status', { worktreePath, baseBranchOverride });
 
-    const git: SimpleGit = simpleGit(worktreePath);
+    const git: SimpleGit = gitFor(worktreePath);
 
     try {
       // git.status() already provides the current branch via .current,
@@ -473,13 +487,13 @@ export class GitWorktreeService {
   private async deleteWorktreeImpl(worktreePath: string, workspacePath: string): Promise<void> {
     logger.info('Deleting worktree', { worktreePath, workspacePath });
 
-    const git: SimpleGit = simpleGit(workspacePath);
+    const git: SimpleGit = gitFor(workspacePath);
     let branchName: string | null = null;
 
     // Step 1: Get the branch name before removing (best effort)
     if (fs.existsSync(worktreePath)) {
       try {
-        const worktreeGit: SimpleGit = simpleGit(worktreePath);
+        const worktreeGit: SimpleGit = gitFor(worktreePath);
         branchName = await worktreeGit.revparse(['--abbrev-ref', 'HEAD']);
         logger.info('Found branch for worktree', { branchName });
       } catch (error) {
@@ -612,7 +626,7 @@ export class GitWorktreeService {
 
     // logger.info('Listing worktrees', { workspacePath });
 
-    const git: SimpleGit = simpleGit(workspacePath);
+    const git: SimpleGit = gitFor(workspacePath);
 
     try {
       // Get worktree list in porcelain format
@@ -739,7 +753,7 @@ export class GitWorktreeService {
     if (!fs.existsSync(gitMeta)) {
       throw new Error(`Not a git repository: ${workspacePath}`);
     }
-    const git: SimpleGit = simpleGit(workspacePath);
+    const git: SimpleGit = gitFor(workspacePath);
     try {
       await git.raw(['rev-parse', '--verify', 'HEAD']);
     } catch {
@@ -781,7 +795,7 @@ export class GitWorktreeService {
 
     // logger.info('Getting all branch names', { workspacePath });
 
-    const git: SimpleGit = simpleGit(workspacePath);
+    const git: SimpleGit = gitFor(workspacePath);
 
     try {
       // Get all local branches
@@ -873,7 +887,7 @@ export class GitWorktreeService {
       throw new Error('repoPath is required');
     }
 
-    const git: SimpleGit = simpleGit(repoPath);
+    const git: SimpleGit = gitFor(repoPath);
     return this.getCurrentBranch(git);
   }
 
@@ -923,7 +937,7 @@ export class GitWorktreeService {
     // logger.info('Checking git state', { repoPath });
 
     const gitDir = path.join(repoPath, '.git');
-    const git: SimpleGit = simpleGit(repoPath);
+    const git: SimpleGit = gitFor(repoPath);
 
     try {
       const status = await git.status();
@@ -983,7 +997,7 @@ export class GitWorktreeService {
 
     logger.info('Checking for potential stash conflicts', { repoPath });
 
-    const git: SimpleGit = simpleGit(repoPath);
+    const git: SimpleGit = gitFor(repoPath);
 
     try {
       // Get status to check for conflicted files
@@ -1049,7 +1063,7 @@ export class GitWorktreeService {
 
     logger.info('Getting file diff', { worktreePath, filePath, baseBranchOverride });
 
-    const git: SimpleGit = simpleGit(worktreePath);
+    const git: SimpleGit = gitFor(worktreePath);
 
     try {
       // Use provided base branch (from database) or fall back to inferring
@@ -1229,7 +1243,7 @@ ${newLines.map(line => '+' + line).join('\n')}`;
 
     // logger.info('Getting worktree commits', { worktreePath, baseBranchOverride });
 
-    const git: SimpleGit = simpleGit(worktreePath);
+    const git: SimpleGit = gitFor(worktreePath);
 
     try {
       // Get current branch and base branch
@@ -1870,7 +1884,7 @@ ${newLines.map(line => '+' + line).join('\n')}`;
     conflictingFiles?: string[];
     conflictingCommits?: { ours: string[]; theirs: string[] };
   }> {
-    const git: SimpleGit = simpleGit(worktreePath);
+    const git: SimpleGit = gitFor(worktreePath);
 
     try {
       // Get the current branch
@@ -2323,7 +2337,7 @@ ${newLines.map(line => '+' + line).join('\n')}`;
       // `--no-optional-locks` flag simple-git gives no way to pass: it stops
       // this read-only status from refreshing (and so locking) `.git/index`,
       // where it would contend with concurrent git writers (NIM-2285).
-      const gitStatus = await git.env({ ...process.env, GIT_OPTIONAL_LOCKS: '0' }).status();
+      const gitStatus = await git.env({ ...sanitizeGitRepositoryEnv(process.env), GIT_OPTIONAL_LOCKS: '0' }).status();
 
       const changedFiles: Array<{ path: string; status: 'added' | 'modified' | 'deleted'; staged: boolean }> = [];
 
@@ -2407,7 +2421,7 @@ ${newLines.map(line => '+' + line).join('\n')}`;
 
     logger.info('Checking if commits exist on other branches', { worktreePath, commitCount: commitHashes.length });
 
-    const git: SimpleGit = simpleGit(worktreePath);
+    const git: SimpleGit = gitFor(worktreePath);
 
     try {
       // Get current branch
@@ -2587,7 +2601,7 @@ ${newLines.map(line => '+' + line).join('\n')}`;
       throw new Error('worktreePath is required');
     }
 
-    const git: SimpleGit = simpleGit(worktreePath);
+    const git: SimpleGit = gitFor(worktreePath);
     const result = await git.raw(['clean', '-Xdn']);
 
     if (!result.trim()) return [];
@@ -2611,7 +2625,7 @@ ${newLines.map(line => '+' + line).join('\n')}`;
     return gitOperationLock.withLock(worktreePath, 'cleanGitignoredFiles', async () => {
       logger.info('Cleaning gitignored files from worktree', { worktreePath });
 
-      const git: SimpleGit = simpleGit(worktreePath);
+      const git: SimpleGit = gitFor(worktreePath);
 
       // Dry-run to get the full list
       const dryRun = await git.raw(['clean', '-Xdn']);
