@@ -27,6 +27,7 @@ import { gitOperationLock } from '../services/GitOperationLock';
 import fs from 'node:fs';
 import { archiveSessionsAndDestroyProviders } from '../services/ai/archiveSessionProviderLifecycle';
 import { createWorktreeArchiveCleanup, worktreeRepoPath } from '../services/worktreeArchiveCleanup';
+import { validateWorktreeBranchSuffix, type WorktreeNameSource } from '../../shared/worktreeBranchNaming';
 
 const logger = log.scope('WorktreeHandlers');
 
@@ -343,18 +344,37 @@ export function registerWorktreeHandlers(): void {
    * Create a new git worktree and store its metadata
    *
    * @param workspacePath - Path to the main git repository
-   * @param name - Optional custom name for the worktree
+   * @param options.name - Optional custom name for the worktree
+   * @param options.nameSource - `'user'` when the user typed or edited `name`:
+   *   the branch is then exactly `worktree/<name>` and a conflict fails. A
+   *   suggested name (absent or `'suggested'`) takes `-N`, on folder and
+   *   branch, when its folder is taken; a branch conflict fails as before.
    * @returns Worktree data including id, path, branch, etc.
    */
   ipcMain.handle('worktree:create', async (
     _event,
     workspacePath: string,
-    options?: { name?: string; baseBranch?: string; sourceFolderPath?: string }
+    options?: { name?: string; baseBranch?: string; sourceFolderPath?: string; nameSource?: WorktreeNameSource }
   ): Promise<WorktreeCreateResult> => {
     const startTime = Date.now();
     const MAX_RETRIES = 3;
     const name = options?.name;
     const baseBranch = options?.baseBranch;
+    const nameSource = options?.nameSource;
+    if (nameSource !== undefined && nameSource !== 'user' && nameSource !== 'suggested') {
+      return { success: false, error: `Unknown worktree nameSource: ${String(nameSource)}` };
+    }
+    if (name !== undefined && name !== null && typeof name !== 'string') {
+      return { success: false, error: 'Worktree name must be a string' };
+    }
+    // Only the suffix crosses IPC; the service adds the `worktree/` prefix
+    const branchSuffix = nameSource === 'user' && name ? name : undefined;
+    if (branchSuffix !== undefined) {
+      const problem = validateWorktreeBranchSuffix(branchSuffix);
+      if (problem) {
+        return { success: false, error: `Invalid worktree name '${branchSuffix}': ${problem.message}` };
+      }
+    }
     /**
      * Repository the worktree is branched from. A workspace can span several
      * roots, so the caller names which one; unnamed falls back to the primary
@@ -379,7 +399,7 @@ export function registerWorktreeHandlers(): void {
           throw new Error('workspacePath is required');
         }
 
-        logger.info('Creating worktree', { workspacePath, sourceRepo, name, baseBranch, attempt });
+        logger.info('Creating worktree', { workspacePath, sourceRepo, name, nameSource, baseBranch, attempt });
 
         // Get database early for de-duplication
         const db = getDatabase();
@@ -421,9 +441,17 @@ export function registerWorktreeHandlers(): void {
           finalName = gitWorktreeService.generateUniqueWorktreeName(existingNames);
         }
 
-        // Create the git worktree
+        // Create the git worktree. Its folder skips every path a row records,
+        // archived rows included, which a name used again after an archive
+        // would otherwise reuse and then fail to record.
         const gitCreateStartTime = Date.now();
-        const created = await gitWorktreeService.createWorktree(sourceRepo, { name: finalName, baseBranch });
+        const takenPaths = await worktreeStore.getAllPaths();
+        const created = await gitWorktreeService.createWorktree(
+          sourceRepo,
+          branchSuffix !== undefined
+            ? { branchSuffix, baseBranch, takenPaths }
+            : { name: finalName, baseBranch, takenPaths },
+        );
         // The service reports the repo it branched from as `projectPath`;
         // re-anchor to the workspace so identity stays on the primary root and
         // record the source repo separately.

@@ -41,6 +41,7 @@ import { BadGitStateDialog } from './BadGitStateDialog';
 import { HelpTooltip } from '../../help';
 import { refreshWorktreeChangedFiles } from '../../store/listeners/fileStateListeners';
 import { getWorktreeNameFromPath } from '../../utils/pathUtils';
+import { worktreeBranchLabel, type RecordedWorktreeBranch } from '../../../shared/worktreeBranchNaming';
 import { isPathInWorkspace } from '../../../shared/pathUtils';
 import { SuperFilesPanel } from './SuperFilesPanel';
 import { defaultAgentModelAtom } from '../../store/atoms/appSettings';
@@ -207,7 +208,11 @@ export const GitOperationsPanel: React.FC<GitOperationsPanelProps> = React.memo(
     const [untrackedFilesConflict, setUntrackedFilesConflict] = useState<string[] | null>(null);
     const [badGitStateError, setBadGitStateError] = useState<{ message: string; conflictedFiles?: string[] } | null>(null);
     const [worktreeName, setWorktreeName] = useState<string>('');
-    const [worktreeBranchName, setWorktreeBranchName] = useState<string>('');
+    // The branch the worktree's row records; a typed name's branch cannot be
+    // rebuilt from its folder name (`worktree/feat/x` lives in `feat-x`). It
+    // keeps the path it was read for, as the panel is reused for the next
+    // worktree before that one's row has loaded.
+    const [recordedWorktreeBranch, setRecordedWorktreeBranch] = useState<RecordedWorktreeBranch | null>(null);
     const [showArchiveDialog, setShowArchiveDialog] = useState(false);
     const [showArchiveBlitzDialog, setShowArchiveBlitzDialog] = useState(false);
     const [blitzId, setBlitzId] = useState<string | null>(null);
@@ -637,7 +642,7 @@ export const GitOperationsPanel: React.FC<GitOperationsPanelProps> = React.memo(
         const result = await window.electronAPI.worktreeGetByPath(worktreePath);
         if (result?.success && result.worktree) {
           setWorktreeName(result.worktree.displayName || result.worktree.name);
-          setWorktreeBranchName(result.worktree.name);
+          setRecordedWorktreeBranch({ worktreePath, branch: result.worktree.branch });
         }
       } catch (err) {
         console.error('[GitOperationsPanel] Failed to load worktree name:', err);
@@ -925,8 +930,7 @@ Please help me resolve this git issue.`;
       try {
         // Get the base branch from repo root and worktree info
         const baseBranch = worktreeRepoRootBranch || 'main';
-        const wtName = getWorktreeNameFromPath(worktreePath);
-        const worktreeBranch = `worktree/${wtName}`;
+        const worktreeBranch = worktreeBranchLabel(recordedWorktreeBranch, worktreePath, getWorktreeNameFromPath(worktreePath));
 
         // Create a detailed prompt with specific instructions
         const conflictFilesList = rebaseConflictData.files.map(f => `  - ${f}`).join('\n');
@@ -968,7 +972,7 @@ Make sure to preserve the intent of both the worktree changes and the incoming c
       } catch (err) {
         console.error('[GitOperationsPanel] Failed to create agent session for rebase conflict resolution:', err);
       }
-    }, [worktreePath, worktreeRepoRootBranch, rebaseConflictData, createSessionWithDraft]);
+    }, [worktreePath, worktreeRepoRootBranch, recordedWorktreeBranch, rebaseConflictData, createSessionWithDraft]);
 
     // Resolve untracked files conflict with Claude Agent
     const handleResolveUntrackedFilesWithAgent = useCallback(async (modelId: string) => {
@@ -980,8 +984,7 @@ Make sure to preserve the intent of both the worktree changes and the incoming c
       try {
         // Get the base branch from repo root and worktree info
         const baseBranch = worktreeRepoRootBranch || 'main';
-        const wtName = getWorktreeNameFromPath(worktreePath);
-        const worktreeBranch = `worktree/${wtName}`;
+        const worktreeBranch = worktreeBranchLabel(recordedWorktreeBranch, worktreePath, getWorktreeNameFromPath(worktreePath));
 
         // Create a detailed prompt with specific instructions
         const untrackedFilesList = untrackedFilesConflict.map(f => `  - ${f}`).join('\n');
@@ -1012,7 +1015,7 @@ Please analyze these files and recommend the best approach before taking action.
       } catch (err) {
         console.error('[GitOperationsPanel] Failed to create agent session for untracked files resolution:', err);
       }
-    }, [worktreePath, worktreeRepoRootBranch, untrackedFilesConflict, createSessionWithDraft]);
+    }, [worktreePath, worktreeRepoRootBranch, recordedWorktreeBranch, untrackedFilesConflict, createSessionWithDraft]);
 
     // Resolve merge conflicts with Claude Agent
     const handleResolveConflictsWithAgent = useCallback(async (modelId: string) => {
@@ -1022,9 +1025,8 @@ Please analyze these files and recommend the best approach before taking action.
       setMergeConflictFiles(null);
 
       try {
-        // Get the worktree branch name from the path
-        const wtName = getWorktreeNameFromPath(worktreePath);
-        const worktreeBranch = `worktree/${wtName}`;
+        // The worktree's branch, as its row records it
+        const worktreeBranch = worktreeBranchLabel(recordedWorktreeBranch, worktreePath, getWorktreeNameFromPath(worktreePath));
         const mainBranch = worktreeRepoRootBranch || 'main';
 
         // Create a very specific prompt for resolving the merge conflicts
@@ -1092,7 +1094,7 @@ Please proceed with this strategy.`;
       } catch (err) {
         console.error('[GitOperationsPanel] Failed to create agent session for conflict resolution:', err);
       }
-    }, [worktreePath, worktreeRepoRootBranch, mergeConflictFiles, createSessionWithDraft]);
+    }, [worktreePath, worktreeRepoRootBranch, recordedWorktreeBranch, mergeConflictFiles, createSessionWithDraft]);
 
     // Handle archive worktree
     const handleArchiveWorktree = useCallback(async () => {
@@ -1364,7 +1366,9 @@ Please proceed with this strategy.`;
             <MaterialSymbol icon={isExpanded ? 'expand_more' : 'chevron_right'} size={16} />
             <MaterialSymbol icon="account_tree" size={14} />
             <span className="git-operations-panel__branch font-semibold text-[var(--nim-text)]">
-              {worktreeId && worktreeBranchName ? `worktree/${worktreeBranchName}` : gitStatus.branch}
+              {worktreeId && recordedWorktreeBranch && recordedWorktreeBranch.worktreePath === worktreePath
+                ? recordedWorktreeBranch.branch
+                : gitStatus.branch}
             </span>
             {!worktreeId && (gitStatus.ahead > 0 || gitStatus.behind > 0) && (
               <span className="git-operations-panel__sync-status text-[11px] text-[var(--nim-text-faint)] font-[var(--nim-font-mono)]">

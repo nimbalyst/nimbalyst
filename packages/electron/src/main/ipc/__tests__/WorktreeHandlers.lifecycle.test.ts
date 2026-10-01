@@ -14,6 +14,7 @@ const mocks = vi.hoisted(() => ({
     delete: vi.fn().mockResolvedValue(undefined),
     getWorktreeSessions: vi.fn().mockResolvedValue([]),
     updateArchived: vi.fn().mockResolvedValue(undefined),
+    getAllPaths: vi.fn().mockResolvedValue(new Set<string>()),
   },
   start: vi.fn().mockResolvedValue(undefined),
   stop: vi.fn().mockResolvedValue(undefined),
@@ -60,7 +61,7 @@ it.each([false, true])('starts monitoring after creation only while the project 
   let finish!: (value: unknown) => void;
   mocks.createWorktree.mockImplementation(() => new Promise(resolve => { finish = resolve; }));
   const creating = mocks.handlers.get('worktree:create')!({}, '/project', { name: 'branch' });
-  expect(mocks.createWorktree).toHaveBeenCalled();
+  await vi.waitFor(() => expect(mocks.createWorktree).toHaveBeenCalled());
   // The owning window can close while Git is still creating the worktree.
   mocks.inUse = inUse;
   const worktree = { id: 'branch', path: '/project_worktrees/branch', branch: 'branch', projectPath: '/project' };
@@ -68,6 +69,33 @@ it.each([false, true])('starts monitoring after creation only while the project 
   expect((await creating).success).toBe(true);
   expect(mocks.store.create).toHaveBeenCalledWith(expect.objectContaining(worktree));
   expect(mocks.start).toHaveBeenCalledTimes(inUse ? 1 : 0);
+});
+
+// A typed name becomes the branch exactly; a suggested one (a tracker item's,
+// or a PR review's `pr-<n>`) keeps the -N renaming the service applies to `name`.
+// Either way the folder skips every path a row records, archived rows included,
+// since the store refuses a second row with the same path.
+it.each([
+  ['user', { branchSuffix: 'feat/x' }],
+  ['suggested', { name: 'feat/x' }],
+  [undefined, { name: 'feat/x' }],
+] as const)('passes a %s name to the service as the matching option', async (nameSource, nameOption) => {
+  const recorded = new Set(['/project_worktrees/feat-x']);
+  mocks.store.getAllPaths.mockResolvedValueOnce(recorded);
+  mocks.createWorktree.mockResolvedValue({ id: 'b', path: '/project_worktrees/feat-x-1', branch: 'worktree/feat/x', projectPath: '/project' });
+  const result = await mocks.handlers.get('worktree:create')!({}, '/project', { name: 'feat/x', baseBranch: 'main', nameSource });
+  expect(result.success).toBe(true);
+  expect(mocks.createWorktree).toHaveBeenCalledWith('/project', { ...nameOption, baseBranch: 'main', takenPaths: recorded });
+});
+
+it.each([
+  ['an invalid typed name', { name: 'feat..x', nameSource: 'user' }, 'cannot contain ".."'],
+  ['an unknown name source', { name: 'feat', nameSource: 'typed' }, 'nameSource'],
+  ['a name that is not a string', { name: 42, nameSource: 'user' }, 'must be a string'],
+])('rejects %s before any git call', async (_label, options, message) => {
+  const result = await mocks.handlers.get('worktree:create')!({}, '/project', options);
+  expect(result).toEqual({ success: false, error: expect.stringContaining(message) });
+  expect(mocks.createWorktree).not.toHaveBeenCalled();
 });
 
 // The row's branch is the only branch a removal may delete, so every removal

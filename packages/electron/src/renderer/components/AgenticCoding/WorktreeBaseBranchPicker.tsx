@@ -6,7 +6,9 @@
  *   `git:fetch` refreshes the list once new refs arrive), narrowing both
  *   sections at once with the search field.
  * - Optionally set the worktree name (leaves blank for server-side
- *   auto-generation). Branch will be `worktree/<name>`.
+ *   auto-generation). A name the user typed or edited becomes the branch
+ *   `worktree/<name>` exactly, in a one-segment folder (`feat/x` -> `feat-x`);
+ *   a prefilled name left as is keeps the server's `-N` renaming.
  *
  * The modal stays mounted until the create call resolves, so any
  * server-side validation error can be surfaced inline without
@@ -22,6 +24,19 @@
 import type React from 'react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { MaterialSymbol } from '@nimbalyst/runtime/ui/icons/MaterialSymbol';
+import {
+  buildWorktreeBranchName,
+  validateWorktreeBranchSuffix,
+  worktreeDirectoryNameFor,
+  type WorktreeNameSource,
+} from '../../../shared/worktreeBranchNaming';
+
+export interface WorktreePickerCreateOptions {
+  baseBranch: string;
+  name?: string;
+  /** Set with `name`: `'user'` when the user typed it or edited the prefilled one */
+  nameSource?: WorktreeNameSource;
+}
 
 interface WorktreeBaseBranchPickerProps {
   isOpen: boolean;
@@ -31,8 +46,9 @@ interface WorktreeBaseBranchPickerProps {
    * branches would offer bases that do not exist in the repo being branched.
    */
   repoPath: string;
+  /** A suggested name, such as a tracker item's; sent as `'suggested'` unless edited */
   initialName?: string;
-  onCreate: (options: { baseBranch: string; name?: string }) => Promise<void>;
+  onCreate: (options: WorktreePickerCreateOptions) => Promise<void>;
   onCancel: () => void;
 }
 
@@ -67,47 +83,6 @@ async function fetchBranches(repoPath: string): Promise<BranchSections> {
     current: string;
   };
   return partition(result.branches ?? [], result.current ?? '');
-}
-
-/**
- * Validate the user's worktree-name input against git's refname rules
- * (https://git-scm.com/docs/git-check-ref-format).
- *
- * The branch is created as `worktree/<name>`, so `<name>` must be valid
- * as one or more path components under that prefix. Empty is allowed —
- * the server auto-generates a name in that case.
- */
-function validateName(name: string): string | null {
-  if (!name) return null;
-  if (name.length > 64) return 'Name is too long (max 64 chars).';
-
-  if (name.startsWith('/')) return 'Name cannot start with "/".';
-  if (name.endsWith('/')) return 'Name cannot end with "/".';
-  if (name.startsWith('.')) return 'Name cannot start with ".".';
-  if (name.endsWith('.')) return 'Name cannot end with ".".';
-  if (name.startsWith('-')) return 'Name cannot start with "-".';
-
-  if (name.endsWith('.lock')) return 'Name cannot end with ".lock".';
-
-  if (name.includes('..')) return 'Name cannot contain "..".';
-  if (name.includes('//')) return 'Name cannot contain "//".';
-  if (name.includes('@{')) return 'Name cannot contain "@{".';
-
-  // ASCII control chars, space, and git's forbidden refname chars.
-  // eslint-disable-next-line no-control-regex
-  const forbiddenChar = /[\x00-\x1f\x7f \t~^:?*[\\]/;
-  if (forbiddenChar.test(name)) {
-    return 'Name cannot contain spaces or any of: ~ ^ : ? * [ \\';
-  }
-
-  // Each path component must not be empty (covered by // check) and
-  // must not start/end with forbidden boundary chars individually.
-  for (const segment of name.split('/')) {
-    if (segment.startsWith('.')) return 'Path components cannot start with ".".';
-    if (segment.endsWith('.lock')) return 'Path components cannot end with ".lock".';
-  }
-
-  return null;
 }
 
 export function WorktreeBaseBranchPicker({
@@ -228,7 +203,13 @@ export function WorktreeBaseBranchPicker({
     return () => window.removeEventListener('keydown', handler, true);
   }, [isOpen, handleCancel]);
 
-  const nameError = useMemo(() => validateName(name.trim()), [name]);
+  const trimmedName = name.trim();
+  // Empty is allowed: the server generates a name
+  const nameError = useMemo(
+    () => (trimmedName ? validateWorktreeBranchSuffix(trimmedName)?.message ?? null : null),
+    [trimmedName],
+  );
+  const nameSource: WorktreeNameSource = trimmedName !== (initialName ?? '').trim() ? 'user' : 'suggested';
 
   // Narrow local and remote in one pass so a query matches across both
   // sections. Selection is intentionally NOT exempt from the filter -- the
@@ -252,10 +233,11 @@ export function WorktreeBaseBranchPicker({
     setSubmitError(null);
     setIsSubmitting(true);
     try {
-      await onCreate({
-        baseBranch: selectedBranch,
-        name: name.trim() ? name.trim() : undefined,
-      });
+      await onCreate(
+        trimmedName
+          ? { baseBranch: selectedBranch, name: trimmedName, nameSource }
+          : { baseBranch: selectedBranch },
+      );
       // Caller closes the modal on success; stop background work
       // before the unmount so the in-flight fetch is discarded.
       stopBackgroundWork();
@@ -265,7 +247,7 @@ export function WorktreeBaseBranchPicker({
       setSubmitError(error instanceof Error ? error.message : 'Failed to create worktree');
       setIsSubmitting(false);
     }
-  }, [canSubmit, name, onCreate, selectedBranch, stopBackgroundWork]);
+  }, [canSubmit, nameSource, onCreate, selectedBranch, stopBackgroundWork, trimmedName]);
 
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
@@ -281,7 +263,10 @@ export function WorktreeBaseBranchPicker({
 
   const hasAnyBranch = sections.local.length > 0 || sections.remote.length > 0;
   const hasVisibleBranch = visibleSections.local.length > 0 || visibleSections.remote.length > 0;
-  const branchPreview = name.trim() ? `worktree/${name.trim()}` : 'worktree/<auto-generated>';
+  const branchPreview = buildWorktreeBranchName(trimmedName || '<auto-generated>');
+  // A typed name's folder is its one-segment form, which can differ from the branch suffix
+  const folderPreview =
+    trimmedName && nameSource === 'user' && !nameError ? worktreeDirectoryNameFor(trimmedName) : null;
 
   return (
     <div
@@ -333,6 +318,7 @@ export function WorktreeBaseBranchPicker({
             <div className="flex items-center justify-between text-[11px] text-nim-muted gap-2">
               <span className="font-mono truncate" data-testid="worktree-branch-preview">
                 Branch: {branchPreview}
+                {folderPreview && folderPreview !== trimmedName && ` · folder ${folderPreview}`}
                 {selectedBranch && ` · from ${selectedBranch}`}
               </span>
               {nameError && (
