@@ -25,6 +25,20 @@ import { gitOperationLock } from './GitOperationLock';
 import { getGitOperationLogService, recordGitActivity } from './GitOperationLogService';
 import { SessionCommitService } from './SessionCommitService';
 import { historyManager } from '../HistoryManager';
+import {
+  canonicalWorktreePath,
+  isWorktreePathInside,
+  parseWorktreePorcelain,
+  planWorktreeRemoval,
+  readRegisteredWorktreeLock,
+  readWorktreeGitLink,
+  WorktreeRemovalRefusedError,
+  type WorktreeGitLink,
+  type WorktreeRegistration,
+  type WorktreeRemovalPlan,
+  type WorktreeRemovalRefusal,
+} from './worktreeOwnership';
+import { removeDirectoryTree } from './directoryRemoval';
 
 const logger = log.scope('GitWorktreeService');
 
@@ -136,6 +150,18 @@ export interface CreateWorktreeOptions {
 }
 
 /**
+ * Options for deleting a worktree
+ */
+export interface DeleteWorktreeOptions {
+  /**
+   * The branch the worktree was created on (its row's `branch`). It is the
+   * only branch the removal may delete: when the worktree has another branch
+   * checked out, both are kept.
+   */
+  expectedBranch?: string;
+}
+
+/**
  * Result of worktree validation check
  */
 export interface WorktreeValidationResult {
@@ -153,6 +179,68 @@ export interface GitState {
   inCherryPick: boolean;
   inRevert: boolean;
   conflictedFiles: string[];
+}
+
+/** What step 1 of a removal found, and the error a refused plan throws */
+type RemovalAssessment = { existsOnDisk: boolean; registration: WorktreeRegistration | null } & (
+  | { plan: Exclude<WorktreeRemovalPlan, { action: 'refuse' }>; refusal: null }
+  | { plan: Extract<WorktreeRemovalPlan, { action: 'refuse' }>; refusal: WorktreeRemovalRefusedError }
+);
+
+/**
+ * The message for a removal `planWorktreeRemoval` refused. Nothing has been
+ * deleted when it is thrown.
+ */
+function worktreeRemovalRefusal(
+  reason: WorktreeRemovalRefusal,
+  worktreePath: string,
+  workspacePath: string,
+  lockReason: string | undefined,
+  gitLink: WorktreeGitLink | null,
+  nestedWorktreePath: string | null
+): string {
+  switch (reason) {
+    case 'main-worktree':
+      return `Refusing to delete ${worktreePath}: it is the main working tree of ${workspacePath}, not a linked worktree.`;
+    case 'locked':
+      return `Worktree ${worktreePath} is locked${lockReason ? ` (${lockReason})` : ''}. ` +
+        'Unlock it first with `git worktree unlock`; nothing was deleted.';
+    case 'unverifiable':
+      return `Refusing to delete ${worktreePath}: git could not confirm that it is a worktree of ${workspacePath}, ` +
+        'so nothing was deleted.';
+    case 'moved':
+      return `Refusing to delete ${worktreePath}: ${workspacePath} records this worktree at another path, ` +
+        'as after a manual move, so nothing was deleted. `git worktree repair` run inside it reconnects them.';
+    case 'copy':
+      return `Refusing to delete ${worktreePath}: its .git file names the worktree that git tracks at ` +
+        `${gitLink?.kind === 'copy' ? gitLink.livePath : 'another path'}, so it is a copy of that worktree or a ` +
+        'checkout git stopped tracking, and nothing was deleted. Archiving it finishes once nothing is left at ' +
+        `${worktreePath}.`;
+    case 'untracked':
+      return gitLink?.kind === 'missing'
+        ? `Refusing to delete ${worktreePath}: it has no .git file and git does not list it, so it cannot be ` +
+          `confirmed as a worktree of ${workspacePath}, and nothing was deleted. A \`git worktree remove\` that ` +
+          'could not delete every file leaves such a folder behind. Archiving it finishes once nothing is left ' +
+          `at ${worktreePath}.`
+        : `Refusing to delete ${worktreePath}: git no longer tracks it as a worktree of ${workspacePath}, so git ` +
+          'cannot check it for uncommitted changes or for commits that exist nowhere else (as after the repository ' +
+          'was cloned again), and nothing was deleted. Archiving it finishes once nothing is left at ' +
+          `${worktreePath}.`;
+    case 'contains-worktree':
+      return `Refusing to delete ${worktreePath}: it contains the worktree at ${nestedWorktreePath}, which would ` +
+        'be deleted with it, so nothing was deleted. Archiving it finishes once no worktree is left inside it: ' +
+        '`git worktree remove` deletes that one, or `git worktree move` moves it elsewhere.';
+    case 'not-owned':
+      if (gitLink?.kind === 'other-repository') {
+        return gitLink.owner
+          ? `Refusing to delete ${worktreePath}: it is a worktree of ${gitLink.owner}, not of ${workspacePath}, ` +
+            'so nothing was deleted.'
+          : `Refusing to delete ${worktreePath}: its repository no longer exists where the worktree points, ` +
+            'so nothing was deleted. If the repository was moved, `git worktree repair <path of this worktree>` ' +
+            'run in the moved repository reconnects them.';
+      }
+      return `Refusing to delete ${worktreePath}: it is not a worktree of ${workspacePath}, so nothing was deleted.`;
+  }
 }
 
 /**
@@ -457,11 +545,22 @@ export class GitWorktreeService {
   /**
    * Delete a worktree and its branch
    *
+   * Before anything is deleted, refuses a directory that is not a worktree of
+   * `workspacePath`, the repository's own working tree, a locked worktree, a
+   * checkout moved away from its registration or copied from another, a
+   * folder git no longer tracks, and a worktree that holds another of the
+   * repository's worktrees. A worktree whose directory is gone and which
+   * git no longer lists counts as already removed, and its branch is kept;
+   * one git still lists is unregistered, and its branch is deleted only when
+   * it is merged. The directory is deleted before git unregisters it, so a
+   * removal that fails part way can be run again.
+   *
    * @param worktreePath - Path to the worktree to delete
-   * @param workspacePath - Path to the main repository (needed for git operations)
+   * @param workspacePath - Path to the repository the worktree belongs to (needed for git operations)
+   * @throws WorktreeRemovalRefusedError if the removal is refused, with nothing deleted
    * @throws Error if the worktree directory still exists after all cleanup attempts
    */
-  async deleteWorktree(worktreePath: string, workspacePath: string): Promise<void> {
+  async deleteWorktree(worktreePath: string, workspacePath: string, options: DeleteWorktreeOptions = {}): Promise<void> {
     if (!worktreePath) {
       throw new Error('worktreePath is required');
     }
@@ -475,63 +574,170 @@ export class GitWorktreeService {
         getGitOperationLogService(),
         workspacePath,
         ['worktree', 'remove', worktreePath],
-        () => this.deleteWorktreeImpl(worktreePath, workspacePath),
+        () => this.deleteWorktreeImpl(worktreePath, workspacePath, options),
       )
     );
   }
 
   /**
+   * Whether `deleteWorktree` would go ahead, without changing anything.
+   * Returns null when it would, or the error it would throw when it refuses,
+   * so a caller can refuse before tearing anything down. The removal checks
+   * again, since the disk can change in between.
+   */
+  async checkWorktreeRemovable(
+    worktreePath: string,
+    workspacePath: string,
+    { expectedBranch }: DeleteWorktreeOptions = {}
+  ): Promise<WorktreeRemovalRefusedError | null> {
+    return (await this.planRemoval(worktreePath, workspacePath, gitFor(workspacePath), expectedBranch)).refusal;
+  }
+
+  /**
+   * Step 1 of a removal: asks the repository whether it owns the directory,
+   * before anything destructive runs. The directory is deleted even when git
+   * would refuse to, and `branch -D` runs in `workspacePath`, so a directory
+   * this repository does not own must stop here. Git's records also name the
+   * branch the worktree has checked out.
+   */
+  private async planRemoval(
+    worktreePath: string,
+    workspacePath: string,
+    git: SimpleGit,
+    expectedBranch: string | undefined
+  ): Promise<RemovalAssessment> {
+    const worktreeKey = canonicalWorktreePath(worktreePath);
+    const existsOnDisk = fs.existsSync(worktreePath);
+    let registrations: WorktreeRegistration[] | null = null;
+    try {
+      registrations = await this.readWorktreeRegistrations(git);
+    } catch (error) {
+      logger.warn('Failed to read the worktree list', { error, workspacePath });
+    }
+    const commonDir = registrations !== null ? await this.readCommonDir(workspacePath, git) : null;
+    let registration = registrations?.find(entry => canonicalWorktreePath(entry.path) === worktreeKey) ?? null;
+    if (registration && !registration.locked && commonDir) {
+      // Git before 2.31 prints no lock in the list; the admin dir has it
+      const lock = readRegisteredWorktreeLock(registration.path, commonDir);
+      if (lock.locked) {
+        registration = { ...registration, locked: true, lockReason: lock.reason };
+      }
+    }
+    // Another worktree whose checkout lies inside this directory goes with
+    // it when the directory is deleted
+    const nestedWorktreePath = existsOnDisk
+      ? registrations?.find(entry =>
+        isWorktreePathInside(canonicalWorktreePath(entry.path), worktreeKey) && fs.existsSync(entry.path)
+      )?.path ?? null
+      : null;
+    let gitLink: WorktreeGitLink | null = null;
+    if (existsOnDisk && commonDir) {
+      try {
+        gitLink = readWorktreeGitLink(worktreePath, commonDir);
+      } catch (error) {
+        logger.warn('Failed to read the worktree .git link', { error, worktreePath });
+      }
+    }
+    const plan = planWorktreeRemoval({
+      existsOnDisk,
+      registryReadable: registrations !== null,
+      registration,
+      gitLink,
+      nestedWorktreePath,
+      expectedBranch,
+    });
+    if (plan.action !== 'refuse') {
+      return { plan, refusal: null, existsOnDisk, registration };
+    }
+    const refusal = new WorktreeRemovalRefusedError(
+      plan.reason,
+      worktreeRemovalRefusal(
+        plan.reason,
+        worktreePath,
+        workspacePath,
+        registration?.lockReason,
+        gitLink,
+        nestedWorktreePath
+      )
+    );
+    logger.warn(refusal.message, {
+      reason: refusal.reason,
+      existsOnDisk,
+      registered: registration !== null,
+      gitLink: gitLink?.kind ?? null,
+      nestedWorktreePath,
+    });
+    return { plan, refusal, existsOnDisk, registration };
+  }
+
+  /**
    * Internal implementation of deleteWorktree (called within lock)
    */
-  private async deleteWorktreeImpl(worktreePath: string, workspacePath: string): Promise<void> {
-    logger.info('Deleting worktree', { worktreePath, workspacePath });
+  private async deleteWorktreeImpl(
+    worktreePath: string,
+    workspacePath: string,
+    { expectedBranch }: DeleteWorktreeOptions
+  ): Promise<void> {
+    logger.info('Deleting worktree', { worktreePath, workspacePath, expectedBranch });
 
     const git: SimpleGit = gitFor(workspacePath);
-    let branchName: string | null = null;
+    const worktreeKey = canonicalWorktreePath(worktreePath);
+    const isThisWorktree = (entry: WorktreeRegistration) => canonicalWorktreePath(entry.path) === worktreeKey;
 
-    // Step 1: Get the branch name before removing (best effort)
-    if (fs.existsSync(worktreePath)) {
-      try {
-        const worktreeGit: SimpleGit = gitFor(worktreePath);
-        branchName = await worktreeGit.revparse(['--abbrev-ref', 'HEAD']);
-        logger.info('Found branch for worktree', { branchName });
-      } catch (error) {
-        logger.warn('Failed to get branch name, continuing with worktree removal', { error });
-      }
+    // Step 1: Ask the repository whether it owns the directory
+    const assessment = await this.planRemoval(worktreePath, workspacePath, git, expectedBranch);
+    if (assessment.refusal) {
+      throw assessment.refusal;
+    }
+    const { plan, existsOnDisk, registration } = assessment;
+
+    if (plan.action === 'already-removed') {
+      logger.info('Worktree directory is gone and git no longer lists it, keeping its branch', {
+        worktreePath,
+        expectedBranch,
+      });
+      await this.retirePendingReviews(worktreePath);
+      return;
     }
 
-    // Step 2: Try git worktree remove first (the clean way)
-    let gitRemoveSucceeded = false;
-    try {
-      await git.raw(['worktree', 'remove', worktreePath, '--force']);
-      logger.info('Git worktree remove succeeded', { worktreePath });
-      gitRemoveSucceeded = true;
-    } catch (error) {
-      logger.warn('Git worktree remove failed, will try fallback cleanup', { error, worktreePath });
+    const { registeredPath, branch: branchName, forceBranchDelete } = plan;
+    if (branchName) {
+      logger.info('Found branch for worktree', { branchName });
+    } else {
+      logger.info('Worktree has no branch of its own checked out, keeping its branches', {
+        checkedOut: registration?.branch ?? null,
+        expectedBranch,
+      });
     }
 
-    // Step 3: If git worktree remove failed or directory still exists, try fallbacks
-    if (fs.existsSync(worktreePath)) {
-      logger.info('Worktree directory still exists, attempting fallback cleanup', { worktreePath });
-
-      // Fallback 1: Try git worktree prune to clean up stale worktree entries
+    // Step 2: Delete the directory, which step 1 confirmed is this
+    // repository's unlocked worktree, while git still has it registered.
+    // `git worktree remove` drops the registration even when it cannot delete
+    // every file (one held open on Windows, a directory without write
+    // permission), and the folder it leaves would then be refused on the
+    // next attempt. Deleted first, a partial failure keeps the registration,
+    // so the next attempt finds this repository's worktree again.
+    if (existsOnDisk) {
+      // The directory itself, not a symlink to it, which step 1 read through
+      let target = worktreePath;
       try {
-        await git.raw(['worktree', 'prune']);
-        logger.info('Git worktree prune completed', { workspacePath });
-      } catch (pruneError) {
-        logger.warn('Git worktree prune failed', { pruneError });
+        target = fs.realpathSync.native(worktreePath);
+      } catch {
+        // Gone since step 1; the check below decides
       }
-
-      // Fallback 2: Force remove the directory with fs.rm
+      logger.info('Deleting the worktree directory', { worktreePath, target, registeredPath });
       try {
-        fs.rmSync(worktreePath, { recursive: true, force: true });
-        logger.info('Fallback fs.rmSync succeeded', { worktreePath });
+        // Not the plain `fs.promises.rm`: in Electron's main process it never
+        // settles on a tree holding an `.asar` file, as an Electron project's
+        // node_modules does, and the repository lock would be held for good.
+        // removeDirectoryTree uses `original-fs` there.
+        await removeDirectoryTree(target);
       } catch (fsError) {
-        logger.error('Fallback fs.rmSync failed', { fsError, worktreePath });
+        logger.error('Failed to delete the worktree directory', { fsError, worktreePath });
       }
     }
 
-    // Step 4: Final verification - the directory MUST be gone
+    // Step 3: Final verification - the directory MUST be gone
     if (fs.existsSync(worktreePath)) {
       const errorMsg = `Failed to delete worktree directory: ${worktreePath} still exists after all cleanup attempts`;
       logger.error(errorMsg);
@@ -540,10 +746,79 @@ export class GitWorktreeService {
 
     logger.info('Worktree directory confirmed deleted', { worktreePath });
 
-    // Step 4b: Retire pending AI reviews for files that lived in this worktree.
-    // Their paths can never resolve again, so the tags would sit pending
-    // forever, inflating the pending counts (#1403). This marks them reviewed;
-    // the rows and their baselines stay in document_history.
+    // Step 3b: Retire pending AI reviews for files that lived in this worktree.
+    await this.retirePendingReviews(worktreePath);
+
+    // Step 4: Unregister this worktree. With its directory gone,
+    // `worktree remove --force` drops just its entry, under the path git
+    // records. A repository-wide `worktree prune` would also drop other
+    // worktrees whose directories are missing for now, as on an unmounted
+    // drive, and `git worktree repair` cannot bring those back.
+    // Given a directory that still exists, `--force` deletes it, uncommitted
+    // files included, so it only ever gets a path that is gone: anything at
+    // `registeredPath` now is not the directory step 1 checked and step 2
+    // deleted. The branch is kept.
+    if (fs.existsSync(registeredPath)) {
+      const errorMsg = `Refusing to unregister ${registeredPath}: it still exists, and it is not the deleted ` +
+        `${worktreePath}. Its branch was kept.`;
+      logger.error(errorMsg, { worktreePath, registeredPath });
+      throw new Error(errorMsg);
+    }
+    try {
+      await git.raw(['worktree', 'remove', registeredPath, '--force']);
+      logger.info('Unregistered the worktree', { registeredPath });
+    } catch (unregisterError) {
+      logger.warn('Failed to unregister the worktree', { unregisterError, registeredPath });
+    }
+
+    // Step 5: Verify the worktree is no longer in git's list
+    try {
+      const registeredKey = canonicalWorktreePath(registeredPath);
+      const worktrees = await this.readWorktreeRegistrations(git);
+      const stillInList = worktrees.some(
+        entry => isThisWorktree(entry) || canonicalWorktreePath(entry.path) === registeredKey
+      );
+      if (stillInList) {
+        const errorMsg = `Worktree ${worktreePath} still in git worktree list after deletion. Git index may be corrupted.`;
+        logger.error(errorMsg, { worktreePath, remainingWorktrees: worktrees.map(wt => wt.path) });
+        throw new Error(errorMsg);
+      }
+
+      logger.info('Verified worktree is no longer in git list', { worktreePath });
+    } catch (verifyError) {
+      // Only throw if it's our specific verification error
+      if (verifyError instanceof Error && verifyError.message.includes('still in git worktree list')) {
+        throw verifyError;
+      }
+      // For other errors (like a failure to read the worktree list), just log a warning
+      logger.warn('Could not verify worktree removal from git list', { worktreePath, error: verifyError });
+    }
+
+    // Step 6: Delete the branch (best effort). It comes last because git
+    // refuses to delete a branch that a registered worktree has checked out.
+    if (branchName) {
+      try {
+        await git.deleteLocalBranch(branchName, forceBranchDelete);
+        logger.info('Branch deleted', { branchName });
+      } catch (error) {
+        // Continue even if branch deletion fails - the important part (directory removal) succeeded
+        logger.warn(forceBranchDelete ? 'Failed to delete branch' : 'Kept a branch that is not merged', {
+          error,
+          branchName,
+        });
+      }
+    }
+
+    logger.info('Worktree deletion complete', { worktreePath });
+  }
+
+  /**
+   * Retire pending AI reviews for files that lived in a removed worktree.
+   * Their paths can never resolve again, so the tags would sit pending
+   * forever, inflating the pending counts (#1403). This marks them reviewed;
+   * the rows and their baselines stay in document_history.
+   */
+  private async retirePendingReviews(worktreePath: string): Promise<void> {
     try {
       const { count } = await historyManager.clearAllPending(worktreePath);
       if (count > 0) {
@@ -553,63 +828,29 @@ export class GitWorktreeService {
       // Never let history bookkeeping fail a worktree removal that succeeded.
       logger.warn('Failed to retire pending reviews for removed worktree', { error, worktreePath });
     }
+  }
 
-    // Step 5: Delete the branch if we found it (best effort, don't fail if this doesn't work)
-    if (branchName && branchName !== 'HEAD') {
-      try {
-        await git.deleteLocalBranch(branchName, true); // force delete
-        logger.info('Branch deleted', { branchName });
-      } catch (error) {
-        logger.warn('Failed to delete branch', { error, branchName });
-        // Continue even if branch deletion fails - the important part (directory removal) succeeded
-      }
-    }
-
-    // Step 6: Run a final prune to clean up any stale worktree references
-    if (!gitRemoveSucceeded) {
-      try {
-        await git.raw(['worktree', 'prune']);
-        logger.info('Final git worktree prune completed');
-      } catch (pruneError) {
-        logger.warn('Final git worktree prune failed', { pruneError });
-      }
-    }
-
-    // Step 7: Verify the worktree is no longer in git's list
+  /** `git worktree list --porcelain` of the repository `git` runs in */
+  private async readWorktreeRegistrations(git: SimpleGit): Promise<WorktreeRegistration[]> {
+    let output: string;
     try {
-      const worktrees = await this.listWorktrees(workspacePath);
-      const stillInList = worktrees.some(wt => wt.path === worktreePath);
-
-      if (stillInList) {
-        // Try one more prune
-        logger.warn('Worktree still in git list after deletion, attempting final prune', { worktreePath });
-        await git.raw(['worktree', 'prune']);
-
-        // Check again
-        const worktreesAfterPrune = await this.listWorktrees(workspacePath);
-        const stillInListAfterPrune = worktreesAfterPrune.some(wt => wt.path === worktreePath);
-
-        if (stillInListAfterPrune) {
-          const errorMsg = `Worktree ${worktreePath} still in git worktree list after deletion. Git index may be corrupted.`;
-          logger.error(errorMsg, {
-            worktreePath,
-            remainingWorktrees: worktreesAfterPrune.map(wt => wt.path),
-          });
-          throw new Error(errorMsg);
-        }
-      }
-
-      logger.info('Verified worktree is no longer in git list', { worktreePath });
-    } catch (verifyError) {
-      // Only throw if it's our specific verification error
-      if (verifyError instanceof Error && verifyError.message.includes('still in git worktree list')) {
-        throw verifyError;
-      }
-      // For other errors (like listWorktrees failure), just log a warning
-      logger.warn('Could not verify worktree removal from git list', { worktreePath, error: verifyError });
+      // `-z` (git 2.36) keeps a newline in a path or a lock reason inside its field
+      output = await git.raw(['worktree', 'list', '--porcelain', '-z']);
+    } catch {
+      output = await git.raw(['worktree', 'list', '--porcelain']);
     }
+    return parseWorktreePorcelain(output);
+  }
 
-    logger.info('Worktree deletion complete', { worktreePath });
+  /** The common dir (main `.git` directory) of the repository at `workspacePath`; null when git cannot say */
+  private async readCommonDir(workspacePath: string, git: SimpleGit): Promise<string | null> {
+    try {
+      // Relative to the directory git runs in when it is the main `.git`
+      return path.resolve(workspacePath, (await git.revparse(['--git-common-dir'])).trim());
+    } catch (error) {
+      logger.warn('Failed to read the repository common dir', { error, workspacePath });
+      return null;
+    }
   }
 
   /**
