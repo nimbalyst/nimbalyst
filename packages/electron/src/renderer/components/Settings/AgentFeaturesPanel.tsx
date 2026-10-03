@@ -248,6 +248,7 @@ export function AgentFeaturesPanel() {
             posthog?.capture('auto_commit_toggled', { enabled: checked });
           }}
           name="Auto-approve Commits"
+          testId="setting-auto-approve-commits"
           description="Automatically approve when Claude proposes git commits."
         />
 
@@ -267,7 +268,7 @@ export function AgentFeaturesPanel() {
           testId="show-mcp-session-status-toggle"
         />
 
-        <div className="agent-preferred-language flex items-start justify-between gap-4 py-3">
+        <div className="agent-preferred-language flex items-start justify-between gap-4 py-3" data-testid="setting-preferred-agent-language">
           <div className="flex-1 min-w-0">
             <div className="text-sm font-medium text-[var(--nim-text)] leading-tight">
               Preferred Agent Language
@@ -370,7 +371,7 @@ export function AgentFeaturesPanel() {
           </p>
         </div>
 
-        <div className="claude-api-upstream mb-4 rounded border border-[var(--nim-border)] bg-[var(--nim-bg-secondary)] p-3">
+        <div className="claude-api-upstream mb-4 rounded border border-[var(--nim-border)] bg-[var(--nim-bg-secondary)] p-3" data-testid="setting-claude-api-upstream">
           <h5 className="text-sm font-semibold mb-1.5 text-[var(--nim-text)]">
             Custom Claude API upstream
           </h5>
@@ -406,7 +407,7 @@ export function AgentFeaturesPanel() {
           )}
         </div>
 
-        <div className="mb-4 rounded border border-[var(--nim-border)] bg-[var(--nim-bg-secondary)] p-3">
+        <div className="agent-workflow-compatibility mb-4 rounded border border-[var(--nim-border)] bg-[var(--nim-bg-secondary)] p-3" data-testid="setting-agent-workflow-compatibility">
           <h5 className="text-sm font-semibold mb-1.5 text-[var(--nim-text)]">
             Agent skills and commands compatibility
           </h5>
@@ -420,6 +421,7 @@ export function AgentFeaturesPanel() {
               onChange={(checked) => handleWorkflowSourceToggle('workspaceClaudeCompatibilityEnabled', checked)}
               disabled={workflowSettingsLoading}
               name="Workspace Claude compatibility"
+              testId="setting-workspace-claude-compat"
               description="Import project and user .claude commands and skills into the shared workflow registry."
             />
             <SettingsToggle
@@ -427,6 +429,7 @@ export function AgentFeaturesPanel() {
               onChange={(checked) => handleWorkflowSourceToggle('includeProjectClaudeSources', checked)}
               disabled={workflowSettingsLoading || !workflowSourceSettings.workspaceClaudeCompatibilityEnabled}
               name="Project .claude sources"
+              testId="setting-project-claude-sources"
               description="Include .claude/commands and .claude/skills from the current workspace."
             />
             <SettingsToggle
@@ -434,6 +437,7 @@ export function AgentFeaturesPanel() {
               onChange={(checked) => handleWorkflowSourceToggle('includeUserClaudeSources', checked)}
               disabled={workflowSettingsLoading || !workflowSourceSettings.workspaceClaudeCompatibilityEnabled}
               name="User .claude sources"
+              testId="setting-user-claude-sources"
               description="Include ~/.claude commands and skills when you want user-level compatibility in the picker and exports."
             />
             <SettingsToggle
@@ -441,6 +445,7 @@ export function AgentFeaturesPanel() {
               onChange={(checked) => handleWorkflowSourceToggle('extensionWorkflowsEnabled', checked)}
               disabled={workflowSettingsLoading}
               name="Extension workflows"
+              testId="setting-extension-workflows"
               description="Load provider-neutral agentWorkflows contributions and legacy Claude plugin workflows from enabled extensions."
             />
           </div>
@@ -451,6 +456,7 @@ export function AgentFeaturesPanel() {
               onChange={(checked) => handleWorkflowExportToggle('codexEnabled', checked)}
               disabled={workflowSettingsLoading}
               name="Codex generated skills"
+              testId="setting-codex-generated-skills"
               description="Export registry workflows into .agents/skills/.nimbalyst-generated before Codex turns."
             />
             <SettingsToggle
@@ -458,6 +464,7 @@ export function AgentFeaturesPanel() {
               onChange={(checked) => handleWorkflowExportToggle('claudeGeneratedExtensionWorkflowsEnabled', checked)}
               disabled={workflowSettingsLoading}
               name="Claude generated extension workflows"
+              testId="setting-claude-generated-extension-workflows"
               description="Generate Claude plugin shims for extension agentWorkflows under .claude/plugins/.nimbalyst-generated."
             />
           </div>
@@ -470,6 +477,7 @@ export function AgentFeaturesPanel() {
             onChange={(checked) => handleAlphaToggle(feature.tag, checked)}
             name={feature.name}
             description={feature.description}
+            testId={`alpha-feature-${feature.tag}`}
           />
         ))}
 
@@ -477,6 +485,7 @@ export function AgentFeaturesPanel() {
           checked={chatShowToolCalls}
           onChange={(checked) => updateAIDebugSettings({ chatShowToolCalls: checked })}
           name="Show Tool Calls in Chat"
+          testId="setting-show-tool-calls-in-chat"
           description="Display tool call rows in the AI chat view. Turn off to hide tool activity and see only the conversational messages."
         />
       </div>
@@ -492,6 +501,7 @@ export function AgentFeaturesPanel() {
             checked={showToolCalls}
             onChange={(checked) => updateAIDebugSettings({ showToolCalls: checked })}
             name="Show All Tool Calls"
+            testId="setting-dev-show-all-tool-calls"
             description="Display all MCP tool calls in the AI chat sidebar, including Edit/applyDiff calls."
           />
 
@@ -499,6 +509,7 @@ export function AgentFeaturesPanel() {
             checked={aiDebugLogging}
             onChange={(checked) => updateAIDebugSettings({ aiDebugLogging: checked })}
             name="AI Debug Logging"
+            testId="setting-dev-ai-debug-logging"
             description="Capture detailed logs of all AI editing operations including LLM requests/responses."
           />
 
@@ -506,6 +517,7 @@ export function AgentFeaturesPanel() {
             checked={showPromptAdditions}
             onChange={(checked) => updateAIDebugSettings({ showPromptAdditions: checked })}
             name="Show Prompt Additions"
+            testId="setting-dev-show-prompt-additions"
             description="Display system prompt additions and context that Nimbalyst appends to Claude Code requests."
           />
         </div>

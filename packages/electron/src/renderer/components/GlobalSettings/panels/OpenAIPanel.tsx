@@ -40,6 +40,7 @@ export function OpenAIPanel({
       <SettingsToggle
         variant="enable"
         name="Enable OpenAI"
+        testId="setting-enable-openai"
         checked={config.enabled}
         onChange={onToggle}
       />

@@ -40,6 +40,7 @@ export function ClaudePanel({
       <SettingsToggle
         variant="enable"
         name="Enable Claude"
+        testId="setting-enable-claude-chat"
         checked={config.enabled}
         onChange={onToggle}
       />

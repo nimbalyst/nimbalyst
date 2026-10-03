@@ -131,6 +131,7 @@ export function NotificationsPanel() {
           checked={completionSoundEnabled}
           onChange={(checked) => updateSettings({ completionSoundEnabled: checked })}
           name="Enable Completion Sounds"
+          testId="setting-completion-sounds"
           description="Play an audio notification when AI chat or agent completes a response."
         />
 
@@ -236,6 +237,7 @@ export function NotificationsPanel() {
             }
           }}
           name="Enable OS Notifications"
+          testId="setting-os-notifications"
           description="Native system notifications when AI completes a response. Respects Do Not Disturb."
         />
 
@@ -245,6 +247,7 @@ export function NotificationsPanel() {
               checked={notifyWhenFocused}
               onChange={(checked) => updateSettings({ notifyWhenFocused: checked })}
               name="Notify Even When Focused"
+              testId="setting-notify-when-focused"
               description="Show notifications even when the app is focused, unless viewing that session."
             />
 
@@ -281,6 +284,7 @@ export function NotificationsPanel() {
           checked={settings.sessionBlockedNotificationsEnabled}
           onChange={(checked) => updateSettings({ sessionBlockedNotificationsEnabled: checked })}
           name="Notify When Session Needs Attention"
+          testId="setting-notify-needs-attention"
           description="Notify when a session is waiting for input (permissions, questions, plan reviews, commits)."
         />
       </div>
