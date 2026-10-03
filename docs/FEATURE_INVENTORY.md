@@ -513,6 +513,7 @@ Companion app; pairs with a desktop over encrypted sync. Voice mode is not inclu
 
 - Multi-window support with per-project state persistence
 - Multi-project rail with an optional "Allow unlimited projects" setting. The default is eight projects per window; enabling unlimited projects can use more memory and CPU. Turning it off keeps current and restored projects open.
+- Reorder project rail icons by dragging, Move up/down, or Sort by name; order persists without changing the active project.
 - Project Manager (Cmd+P)
 - System tray with session status and click-to-navigate
 - macOS menu bar fleet monitoring -- follow active sessions, see which need attention, and open them from the menu bar

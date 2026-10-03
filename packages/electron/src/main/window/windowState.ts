@@ -8,6 +8,14 @@ import { getAttachedFolders } from '../utils/store';
 export const windows = new Map<number, BrowserWindow>();
 export const windowStates = new Map<number, WindowState>();
 
+/** Keep display order separate from service registration and active selection. */
+export function getWindowProjectPaths(state: WindowState): string[] {
+    const registered = new Set([state.workspacePath, ...(state.additionalWorkspacePaths ?? [])]
+        .filter((path): path is string => typeof path === 'string' && path.length > 0));
+    return [...new Set([...(state.projectRailOrder ?? []), ...registered])]
+        .filter(path => registered.has(path));
+}
+
 /** Workspace/document windows registered by WindowManager, including hidden ones. */
 export function getProjectWindows(): BrowserWindow[] {
     return [...windows.values()].filter(window => !window.isDestroyed());

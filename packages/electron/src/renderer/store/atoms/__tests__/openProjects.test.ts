@@ -8,6 +8,8 @@ import {
   activeOpenProjectAtom,
   addOpenProjectAtom,
   closeOpenProjectAtom,
+  moveOpenProjectAtom,
+  sortOpenProjectsAtom,
   isOpenProjectsAtCapAtom,
   attachWorkspaceSwitchCleanup,
   resolveInitialOpenProjectsState,
@@ -102,6 +104,48 @@ describe('openProjects atoms', () => {
     });
     expect(result).toEqual({ paths, activePath: paths[31] });
     expect(selectProjectsToRegister(result.paths, paths[0])).toHaveLength(31);
+  });
+
+  it('moves projects in either direction without switching or recreating them', () => {
+    const projects = ['/ws/a', '/ws/b', '/ws/c'].map(path => project(path));
+    jotaiStore.set(openProjectsAtom, projects);
+    jotaiStore.set(activeWorkspacePathAtom, '/ws/b');
+    jotaiStore.set(moveOpenProjectAtom, { path: '/ws/c', beforePath: '/ws/a' });
+    expect(jotaiStore.get(openProjectsAtom)).toEqual([projects[2], projects[0], projects[1]]);
+    jotaiStore.set(moveOpenProjectAtom, { path: '/ws/c', beforePath: null });
+    expect(jotaiStore.get(openProjectsAtom)).toEqual(projects);
+    expect(jotaiStore.get(openProjectsAtom)[2]).toBe(projects[2]);
+    expect(jotaiStore.get(activeWorkspacePathAtom)).toBe('/ws/b');
+  });
+
+  it('ignores stale drag paths and drops that do not change the order', () => {
+    const projects = ['/ws/a', '/ws/b'].map(path => project(path));
+    jotaiStore.set(openProjectsAtom, projects);
+    for (const move of [
+      { path: '/ws/missing', beforePath: '/ws/a' },
+      { path: '/ws/a', beforePath: '/ws/missing' },
+      { path: '/ws/a', beforePath: '/ws/a' },
+      { path: '/ws/a', beforePath: '/ws/b' },
+      { path: '/ws/b', beforePath: null },
+    ]) {
+      jotaiStore.set(moveOpenProjectAtom, move);
+      expect(jotaiStore.get(openProjectsAtom)).toBe(projects);
+    }
+  });
+
+  it('sorts names naturally, preserves equal-name order, and keeps the active project', () => {
+    const projects = ['/ws/Zebra', '/ws/Project 10', '/ws/Project 2', '/one/alpha', '/two/Alpha'].map(path => project(path));
+    jotaiStore.set(openProjectsAtom, projects);
+    jotaiStore.set(activeWorkspacePathAtom, '/ws/Project 10');
+    jotaiStore.set(sortOpenProjectsAtom);
+    expect(jotaiStore.get(openProjectsAtom)).toEqual([projects[3], projects[4], projects[2], projects[1], projects[0]]);
+    expect(jotaiStore.get(activeWorkspacePathAtom)).toBe('/ws/Project 10');
+    const sorted = jotaiStore.get(openProjectsAtom);
+    jotaiStore.set(sortOpenProjectsAtom);
+    expect(jotaiStore.get(openProjectsAtom)).toBe(sorted);
+    // Sorting is a one-time action; new projects still append.
+    jotaiStore.set(addOpenProjectAtom, project('/ws/Aardvark'));
+    expect(jotaiStore.get(openProjectsAtom).at(-1)?.path).toBe('/ws/Aardvark');
   });
 
   describe('closeOpenProjectAtom', () => {

@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 <!-- New features go here -->
+- Reorder projects in the rail by dragging or using the context menu, or sort them by name, with the order saved across restarts.
 
 ### Changed
 <!-- Changes to existing functionality go here -->

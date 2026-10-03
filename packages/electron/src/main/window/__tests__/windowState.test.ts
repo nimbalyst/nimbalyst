@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import {
   windowStates,
+  getWindowProjectPaths,
   resolveActiveWorkspacePath,
   resolveActiveWorkspacePathForWindowId,
   resolveDocumentServicePath,
@@ -23,6 +24,17 @@ function makeState(partial: Partial<WindowState> = {}): WindowState {
 describe('windowState helpers', () => {
   beforeEach(() => {
     windowStates.clear();
+  });
+
+  it('restores this window’s rail order without changing its primary or active workspace', () => {
+    const state = makeState({
+      workspacePath: '/ws/a', additionalWorkspacePaths: ['/ws/b', '/ws/c', '/ws/new'],
+      activeWorkspacePath: '/ws/b', projectRailOrder: ['/ws/c', '/ws/closed', '/ws/a', '/ws/c', '/ws/b'],
+    });
+    expect(getWindowProjectPaths(state)).toEqual(['/ws/c', '/ws/a', '/ws/b', '/ws/new']);
+    expect(state.workspacePath).toBe('/ws/a');
+    expect(state.activeWorkspacePath).toBe('/ws/b');
+    expect(getWindowProjectPaths(makeState({ workspacePath: '/other' }))).toEqual(['/other']);
   });
 
   describe('resolveActiveWorkspacePath', () => {

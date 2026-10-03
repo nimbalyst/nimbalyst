@@ -38,6 +38,8 @@ export interface WindowState {
      * and document caches stay alive even when the project is hidden.
      */
     additionalWorkspacePaths?: string[];
+    /** Visible rail order for renderer reloads; independent of primary/active paths. */
+    projectRailOrder?: string[];
     documentEdited: boolean;
 
     // Tab management (optional for backward compatibility)

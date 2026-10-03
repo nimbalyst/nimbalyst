@@ -1,6 +1,7 @@
 import { registerProviderCredentialHandlers } from './ProviderCredentialHandlers';
 import { registerCloudflareSandboxHandlers } from './CloudflareSandboxHandlers';
 import { BrowserWindow, safeStorage, session, dialog } from 'electron';
+import { getWindowIdForWindow, windowStates } from '../window/windowState';
 import { applyAnalyticsEnabled } from '../services/analytics/applyAnalyticsEnabled';
 import { safeHandle, safeOn } from '../utils/ipcRegistry';
 import { deleteSecretFile, readSecretFile, writeSecretFile } from '../utils/fileUtils';
@@ -631,8 +632,12 @@ export function registerSettingsHandlers() {
         return getOpenProjectPaths();
     });
 
-    safeHandle('app:set-open-projects', async (_event, paths: string[]) => {
-        setOpenProjectPaths(Array.isArray(paths) ? paths : []);
+    safeHandle('app:set-open-projects', async (event, paths: string[]) => {
+        const order = Array.isArray(paths) ? paths.filter(path => typeof path === 'string') : [];
+        const windowId = getWindowIdForWindow(BrowserWindow.fromWebContents(event.sender));
+        const state = windowId === null ? undefined : windowStates.get(windowId);
+        if (state) state.projectRailOrder = order;
+        setOpenProjectPaths(order);
     });
 
     safeHandle('app:get-active-project-path', async () => {

@@ -1,7 +1,7 @@
 import { BrowserWindow, shell, nativeImage, app, powerMonitor } from 'electron';
 import { safeHandle, safeOn } from '../utils/ipcRegistry';
 import { windowStates, windows, getWindowId } from '../window/WindowManager';
-import { syncRepresentedFilename } from '../window/windowState';
+import { syncRepresentedFilename, getWindowProjectPaths } from '../window/windowState';
 import { basename, join } from 'path';
 import { writeFileSync, existsSync, mkdirSync } from 'fs';
 import { tmpdir } from 'os';
@@ -41,8 +41,7 @@ export function registerWindowHandlers() {
         if (!state) return null;
 
         if (state.mode === 'workspace' && state.workspacePath) {
-            const openProjectPaths = [state.workspacePath, ...(state.additionalWorkspacePaths ?? [])]
-                .filter((path, index, paths) => typeof path === 'string' && path.length > 0 && paths.indexOf(path) === index);
+            const openProjectPaths = getWindowProjectPaths(state);
             const activeWorkspacePath =
                 state.activeWorkspacePath && openProjectPaths.includes(state.activeWorkspacePath)
                     ? state.activeWorkspacePath
