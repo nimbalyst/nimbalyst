@@ -62,11 +62,13 @@ import { blitzCreatedAtom, blitzDisplayNameUpdateAtom } from '../../store/atoms/
 import { superLoopListAtom, upsertSuperLoopAtom, removeSuperLoopAtom } from '../../store/atoms/superLoop';
 import { useSuperLoopDialog } from '../../hooks/useSuperLoop';
 import { workspaceSessionTurnActivityAtom } from '../../store/atoms/sessionActivity';
-import { sessionKanbanTagsAtom } from '../../store/atoms/sessionKanban';
+import { SESSION_PHASE_COLUMNS, sessionKanbanTagsAtom, type SessionPhase } from '../../store/atoms/sessionKanban';
 import {
   isWorkstreamParentSession,
+  matchesSessionListPhases,
   matchesSessionListTag,
   SESSION_LIST_VIRTUAL_TAGS,
+  sessionListHiddenPhasesAtom,
   sessionListTagFilterAtom,
   VIRTUAL_TAG_WORKSTREAMS,
   VIRTUAL_TAG_WORKTREE,
@@ -509,6 +511,14 @@ const SessionHistoryComponent: React.FC = () => {
     setTagFilter({ tags: tagFilter.tags.filter(t => t !== tag) });
   };
 
+  // Phase visibility toggles (session-only, complete hidden by default)
+  const hiddenPhases = useAtomValue(sessionListHiddenPhasesAtom);
+  const setHiddenPhases = useSetAtom(sessionListHiddenPhasesAtom);
+
+  const togglePhaseFilter = (phase: SessionPhase) => {
+    setHiddenPhases(prev => prev.includes(phase) ? prev.filter(p => p !== phase) : [...prev, phase]);
+  };
+
   // Archive worktree dialog hook
   const {
     dialogState: archiveWorktreeDialogState,
@@ -763,7 +773,7 @@ const SessionHistoryComponent: React.FC = () => {
   // a content search is active, this effect leaves `sessions` (already populated by
   // executeSearch) alone instead of clobbering it.
   useEffect(() => {
-    const filterKey = `${searchQuery}|${tagFilter.tags.join(',')}|${mode}`;
+    const filterKey = `${searchQuery}|${tagFilter.tags.join(',')}|${hiddenPhases.join(',')}|${mode}`;
     const userFilterInputsChanged = prevSessionFilterKeyRef.current !== filterKey;
     prevSessionFilterKeyRef.current = filterKey;
 
@@ -782,15 +792,19 @@ const SessionHistoryComponent: React.FC = () => {
     const hasTagFilter = activeTags.length > 0;
     const titleQuery = searchQuery.trim().toLowerCase();
     const hasTitleQuery = titleQuery.length > 0;
+    const hasPhaseFilter = hiddenPhases.length > 0;
 
-    if (!hasTitleQuery && !hasTagFilter) {
+    if (!hasTitleQuery && !hasTagFilter && !hasPhaseFilter) {
       // No filters - show all sessions (filtered by mode)
       setSessions([...sessionsToFilter].sort(compareSessionOrder));
       return;
     }
 
-    // Filter sessions by title (case-insensitive) AND tags (OR within tags).
+    // Filter sessions by title (case-insensitive) AND tags (OR within tags) AND phase.
     const filtered = sessionsToFilter.filter(session => {
+      if (hasPhaseFilter && !matchesSessionListPhases(session, hiddenPhases, sessionRegistry)) {
+        return false;
+      }
       if (hasTitleQuery && !(session.title ?? '').toLowerCase().includes(titleQuery)) {
         return false;
       }
@@ -801,7 +815,7 @@ const SessionHistoryComponent: React.FC = () => {
       return true;
     });
     setSessions(filtered.sort(compareSessionOrder));
-  }, [searchQuery, tagFilter.tags, allSessions, mode, compareSessionOrder, sessionRegistry, contentSearchTriggered]);
+  }, [searchQuery, tagFilter.tags, hiddenPhases, allSessions, mode, compareSessionOrder, sessionRegistry, contentSearchTriggered]);
 
   useEffect(() => {
     const commitOrderMap = (nextMap: Map<string, number>) => {
@@ -2931,6 +2945,9 @@ const SessionHistoryComponent: React.FC = () => {
   // Check if we have an active search query
   const hasSearchQuery = searchQuery.trim().length > 0;
   const hasTagFilter = tagFilter.tags.length > 0;
+  // Only counts when there are sessions for the toggles to hide, so a workspace
+  // with no sessions still gets the plain empty state.
+  const hasPhaseFilter = hiddenPhases.length > 0 && allSessions.length > 0;
 
   // Pre-render the "new session / worktree / terminal / blitz" dropdown so that
   // both the empty-state early-return AND the main return can mount it. Before
@@ -2955,7 +2972,7 @@ const SessionHistoryComponent: React.FC = () => {
     />
   );
 
-  if (sessions.length === 0 && !hasSearchQuery && !hasTagFilter) {
+  if (sessions.length === 0 && !hasSearchQuery && !hasTagFilter && !hasPhaseFilter) {
     // No sessions at all - show simple empty state without search.
     // When a search or tag filter is active we fall through to the main render so
     // the search input and tag chips stay mounted -- otherwise the user can't
@@ -3315,7 +3332,7 @@ const SessionHistoryComponent: React.FC = () => {
           </svg>
         </button>
         {(() => {
-          const hasFilter = searchQuery.trim().length > 0 || tagFilter.tags.length > 0;
+          const hasFilter = searchQuery.trim().length > 0 || tagFilter.tags.length > 0 || hasPhaseFilter;
           const visibleCount = sessions.length;
           const totalLabel = `${iosMatchCount} non-archived session${iosMatchCount === 1 ? '' : 's'} in this workspace (matches the iOS project list count)`;
           const title = hasFilter
@@ -3372,6 +3389,31 @@ const SessionHistoryComponent: React.FC = () => {
           )}
         </div>
       </div>
+      <div
+        className="session-history-phase-filters flex flex-wrap items-center px-3 py-1.5 border-b border-[var(--nim-border)] gap-1 shrink-0"
+        data-testid="session-list-phase-filters"
+      >
+        {SESSION_PHASE_COLUMNS.map(col => {
+          const visible = !hiddenPhases.includes(col.value);
+          return (
+            <button
+              key={col.value}
+              type="button"
+              className={`session-history-phase-filter flex items-center gap-1 px-1.5 py-0.5 text-[11px] rounded border cursor-pointer transition-colors duration-150 outline-none ${visible ? 'border-[var(--nim-border)] bg-[var(--nim-bg-secondary)] text-[var(--nim-text)] hover:bg-[var(--nim-bg-tertiary)]' : 'border-dashed border-[var(--nim-border)] bg-transparent text-[var(--nim-text-faint)] hover:text-[var(--nim-text-muted)]'}`}
+              onClick={() => togglePhaseFilter(col.value)}
+              aria-pressed={visible}
+              title={visible ? `Hide ${col.label.toLowerCase()} sessions` : `Show ${col.label.toLowerCase()} sessions`}
+              data-testid={`session-list-phase-filter-${col.value}`}
+            >
+              <span
+                className="session-history-phase-filter-dot w-1.5 h-1.5 rounded-full shrink-0 border"
+                style={{ borderColor: col.color, backgroundColor: visible ? col.color : 'transparent' }}
+              />
+              {col.label}
+            </button>
+          );
+        })}
+      </div>
       {(selectedSessionIds.size > 0 || selectedGroupIds.size > 0) && (
         <div className="session-history-bulk-actions flex items-center justify-between px-3 py-2 bg-[var(--nim-bg-selected)] border-b border-[var(--nim-border)] gap-2">
           <span className="session-history-bulk-count text-xs font-medium text-[var(--nim-text)]">{selectedSessionIds.size + selectedGroupIds.size} selected</span>
@@ -3408,21 +3450,22 @@ const SessionHistoryComponent: React.FC = () => {
         </div>
       )}
       <div className="session-history-list nim-scrollbar flex-1 overflow-y-auto overflow-x-hidden py-2 scroll-smooth" ref={scrollContainerCallbackRef}>
-        {groupKeys.length === 0 && (hasSearchQuery || hasTagFilter) ? (
-          // No results for the active search/tag filter - offer a clear affordance
+        {groupKeys.length === 0 && (hasSearchQuery || hasTagFilter || hasPhaseFilter) ? (
+          // No results for the active search/tag/phase filter - offer a clear affordance
           <div className="session-history-empty flex flex-col items-center justify-center px-4 py-8 text-center text-[var(--nim-text-faint)] text-[13px]">
             <p className="my-1">No matching sessions found</p>
             <p className="session-history-empty-hint my-1 text-xs text-[var(--nim-text-faint)]">
-              {hasSearchQuery && hasTagFilter ? 'Adjust your search or ' : hasSearchQuery ? 'Try a different search term or ' : 'Remove the active tag filter or '}
+              {hasSearchQuery && hasTagFilter ? 'Adjust your search or ' : hasSearchQuery ? 'Try a different search term or ' : hasTagFilter ? 'Remove the active tag filter or ' : 'Every session is in a hidden phase -- '}
               <button
                 className="session-history-clear-search-link bg-transparent border-none text-[var(--nim-primary)] cursor-pointer underline p-0 text-inherit font-inherit hover:opacity-80"
                 onClick={() => {
                   setSearchQuery('');
                   if (hasTagFilter) setTagFilter({ tags: [] });
+                  if (!hasSearchQuery && !hasTagFilter) setHiddenPhases([]);
                 }}
                 type="button"
               >
-                {hasSearchQuery && hasTagFilter ? 'clear search and tags' : hasSearchQuery ? 'clear search' : 'clear tag filter'}
+                {hasSearchQuery && hasTagFilter ? 'clear search and tags' : hasSearchQuery ? 'clear search' : hasTagFilter ? 'clear tag filter' : 'show all phases'}
               </button>
             </p>
           </div>
