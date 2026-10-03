@@ -248,6 +248,8 @@ export function getMigrations(schemaDir: string): Migration[] {
     { version: 45, name: 'tracker_item_revisions', sqlFile: path.join(schemaDir, '0045_tracker_item_revisions.sql') },
     { version: 46, name: 'tracker_item_revision_tombstones', sqlFile: path.join(schemaDir, '0046_tracker_item_revision_tombstones.sql') },
     { version: 47, name: 'tracker_item_revision_scope', sqlFile: path.join(schemaDir, '0047_tracker_item_revision_scope.sql') },
+    { version: 48, name: 'session_wakeup_attachments', sqlFile: path.join(schemaDir, '0048_session_wakeup_attachments.sql') },
+    { version: 49, name: 'session_wakeup_origin', sqlFile: path.join(schemaDir, '0049_session_wakeup_origin.sql') },
   ];
 }
 

@@ -20,7 +20,7 @@ interface PromptQueueListProps {
   onSendNow?: (id: string, prompt: string) => void;
 }
 
-function AttachmentIndicator({ attachments }: { attachments: QueuedPromptAttachment[] }) {
+export function AttachmentIndicator({ attachments }: { attachments: QueuedPromptAttachment[] }) {
   const imageCount = attachments.filter(a => a.type === 'image').length;
   const fileCount = attachments.length - imageCount;
 
