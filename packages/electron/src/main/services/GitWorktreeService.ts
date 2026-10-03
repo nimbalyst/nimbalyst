@@ -400,9 +400,16 @@ export class GitWorktreeService {
         commitsBehind = behind || 0;
         commitsAhead = ahead || 0;
 
-        // Check if branch is merged (use -a to include remote tracking branches)
-        const mergedBranches = await git.raw(['branch', '-a', '--merged', baseBranch]);
-        isMerged = mergedBranches.includes(currentBranch);
+        // Exact match on local branches, since archiving skips its warning when
+        // this is true: createWorktree's -N dedupe puts `worktree/x` next to
+        // `worktree/x-1`, a merged remote-tracking ref says nothing about unpushed
+        // commits, and a detached worktree arrives here as `HEAD`. `*` marks the
+        // current branch, `+` one checked out in another worktree; color and
+        // column config would reshape the lines.
+        const mergedBranches = await git.raw(['branch', '--no-color', '--no-column', '--merged', baseBranch]);
+        isMerged = mergedBranches
+          .split('\n')
+          .some(line => line.trim().replace(/^[*+] /, '') === currentBranch);
 
         // Use git cherry to find truly unique commits (by patch content, not hash)
         // This handles cases where commits were rebased and have different hashes

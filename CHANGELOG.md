@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 <!-- Bug fixes go here -->
 - A Mermaid diagram with a syntax error no longer leaves stray error graphics behind that could push a project window's title bar out of view.
+- Archiving a worktree with unmerged commits no longer skips its warning because a similarly named branch, a remote copy of the branch, or `origin/HEAD` was already merged.
 
 ### Removed
 <!-- Removed features go here -->

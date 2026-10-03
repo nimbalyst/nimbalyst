@@ -1,10 +1,12 @@
+// @vitest-environment node
 import { describe, expect, it, beforeEach, afterEach } from 'vitest';
 import simpleGit from 'simple-git';
+import { execFileSync } from 'child_process';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
 import { GitWorktreeService, WorkspaceHasNoCommitsError } from '../GitWorktreeService';
-import { assertGitSandbox, gitSandboxEnv } from '../testSupport/gitTestSandbox';
+import { assertGitSandbox, FIXTURE_IDENTITY_ARGS, gitSandboxEnv } from '../testSupport/gitTestSandbox';
 
 describe('gitSandboxEnv', () => {
   it('strips IDE-provided SSH_ASKPASS before simple-git runs a fixture command', async () => {
@@ -195,5 +197,91 @@ describe('GitWorktreeService.getChangedFiles untracked-directory expansion', () 
     // The embedded repo owns its own untracked file; the outer worktree must
     // not claim it.
     expect(paths).not.toContain('embedded-repo/inner.ts');
+  });
+});
+
+/**
+ * Archiving trusts isMerged: a clean, merged worktree is deleted along with its
+ * branch without asking. A substring match on `git branch -a --merged` output
+ * counted `worktree/feat` as merged whenever `worktree/feat-1` (the `-N` suffix
+ * createWorktree adds on a name collision) or `remotes/origin/worktree/feat`
+ * was, and a detached worktree whenever `remotes/origin/HEAD` was, though each
+ * still held commits the base lacks.
+ */
+describe('GitWorktreeService.getWorktreeStatus isMerged', () => {
+  let tmpDir: string;
+  let repo: string;
+  let featPath: string;
+  const service = new GitWorktreeService();
+
+  function git(cwd: string, args: string[]): string {
+    return execFileSync('git', args, { cwd, encoding: 'utf8', env: gitSandboxEnv(tmpDir) });
+  }
+
+  function commit(cwd: string, message: string): void {
+    assertGitSandbox(cwd, tmpDir);
+    git(cwd, [...FIXTURE_IDENTITY_ARGS, 'commit', '--allow-empty', '-q', '-m', message]);
+  }
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nimbalyst-gws-merged-'));
+    repo = path.join(tmpDir, 'repo');
+    fs.mkdirSync(repo);
+    git(repo, ['init', '-q', '-b', 'main']);
+    commit(repo, 'initial');
+
+    // `worktree/feat` is one commit ahead of main.
+    assertGitSandbox(repo, tmpDir);
+    featPath = path.join(tmpDir, 'feat');
+    git(repo, ['worktree', 'add', '-q', '-b', 'worktree/feat', featPath, 'main']);
+    commit(featPath, 'unmerged work');
+  });
+
+  afterEach(() => {
+    try {
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    } catch {
+      // ignore Windows file-lock noise during teardown
+    }
+  });
+
+  it('does not report a branch merged because a longer-named sibling or its own remote-tracking ref is', async () => {
+    assertGitSandbox(repo, tmpDir);
+    git(repo, ['worktree', 'add', '-q', '-b', 'worktree/feat-1', path.join(tmpDir, 'feat-1'), 'main']);
+    // As if the branch was pushed and merged, then committed to again locally.
+    git(repo, ['update-ref', 'refs/remotes/origin/worktree/feat', 'main']);
+
+    const status = await service.getWorktreeStatus(featPath, 'main');
+
+    expect(status.commitsAhead).toBe(1);
+    expect(status.isMerged).toBe(false);
+  });
+
+  it('does not report a detached worktree merged because origin/HEAD is', async () => {
+    // simple-git names a detached HEAD `HEAD`, and every clone has origin/HEAD.
+    assertGitSandbox(repo, tmpDir);
+    git(repo, ['update-ref', 'refs/remotes/origin/main', 'main']);
+    git(repo, ['symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/main']);
+    assertGitSandbox(featPath, tmpDir);
+    git(featPath, ['checkout', '-q', '--detach']);
+
+    const status = await service.getWorktreeStatus(featPath, 'main');
+
+    expect(status.commitsAhead).toBe(1);
+    expect(status.isMerged).toBe(false);
+  });
+
+  it('reports the branch merged once the base contains it, whatever the color and column config', async () => {
+    assertGitSandbox(repo, tmpDir);
+    git(repo, ['merge', '-q', '--ff-only', 'worktree/feat']);
+    // Both settings apply even when git writes to a pipe, and reshape the
+    // `git branch` lines the merge check reads.
+    git(repo, ['config', 'color.ui', 'always']);
+    git(repo, ['config', 'column.ui', 'always']);
+
+    const status = await service.getWorktreeStatus(featPath, 'main');
+
+    expect(status.commitsAhead).toBe(0);
+    expect(status.isMerged).toBe(true);
   });
 });
