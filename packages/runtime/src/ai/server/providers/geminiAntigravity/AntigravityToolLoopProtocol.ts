@@ -104,6 +104,31 @@ const WRITE_FILE_CLOSE = '<<<END_WRITE_FILE>>>';
 const WRITE_FILE_DIRECTIVE_RE =
   /<<<WRITE_FILE:[ \t]*([^\r\n<>]+?)>>>[ \t]*\r?\n?([\s\S]{0,2000000}?)\r?\n?<<<END_WRITE_FILE>>>/;
 
+/**
+ * Strings that only ever appear in a prompt we render, never in a legitimate
+ * response. `renderPrompt` lays history out as a plain-text transcript, so a
+ * model that keeps generating past its own turn writes our side of it -
+ * reproducing these verbatim, progress ledger and all.
+ */
+const CONTINUATION_MARKERS = [
+  '\nUser:',
+  '\nAssistant:',
+  '\nTool result (',
+  '\nInput to tool:',
+  '\nOutput from ',
+  '\n[Progress:',
+];
+
+/** Offset of the earliest continuation marker, or -1 when there is none. */
+function continuationCut(text: string): number {
+  let cut = -1;
+  for (const marker of CONTINUATION_MARKERS) {
+    const idx = text.indexOf(marker);
+    if (idx >= 0 && (cut < 0 || idx < cut)) cut = idx;
+  }
+  return cut;
+}
+
 export class AntigravityToolLoopProtocol {
   private modelKey: string;
   private readonly maxIterations: number;
@@ -834,7 +859,16 @@ export class AntigravityToolLoopProtocol {
    * now track string state and ignore braces inside string literals, with
    * proper escape handling.
    */
-  parseToolCall(response: string): ToolCallRequest | null {
+  parseToolCall(fullResponse: string): ToolCallRequest | null {
+    // Drop any self-authored continuation BEFORE parsing anything. A model that
+    // carries on past its own turn invents our half of the transcript, and what
+    // it invents there parses: a hallucinated `<<<WRITE_FILE:` outranked the real
+    // envelope and wrote imagined content to disk, and the loop's own
+    // malformed-directive nudge is itself a valid directive, so echoing it wrote
+    // a file named `path`.
+    const continuation = continuationCut(fullResponse);
+    const response = continuation >= 0 ? fullResponse.slice(0, continuation) : fullResponse;
+
     // A sentinel-delimited write directive takes precedence. It carries a whole
     // file body the model cannot reliably JSON-escape, so it is the supported way
     // for a weak model to write a non-trivial file. Scanned on the RAW response so
@@ -972,19 +1006,8 @@ export class AntigravityToolLoopProtocol {
     t = t.replace(/<<<WRITE_FILE:[\s\S]{0,2000000}?<<<END_WRITE_FILE>>>/g, '');
     t = t.replace(/<<<WRITE_FILE:[^\r\n>]*>>>/g, '');
     t = t.replace(/<<<END_WRITE_FILE>>>/g, '');
-    const markers = [
-      '\nUser:',
-      '\nAssistant:',
-      '\nTool result (',
-      '\nInput to tool:',
-      '\nOutput from ',
-    ];
-    let cut = t.length;
-    for (const m of markers) {
-      const idx = t.indexOf(m);
-      if (idx >= 0 && idx < cut) cut = idx;
-    }
-    t = t.slice(0, cut);
+    const cut = continuationCut(t);
+    if (cut >= 0) t = t.slice(0, cut);
     // Drop leading stray braces/brackets a degenerate response sometimes emits.
     t = t.replace(/^[\s}\]]+/, '');
     return t.trim();
