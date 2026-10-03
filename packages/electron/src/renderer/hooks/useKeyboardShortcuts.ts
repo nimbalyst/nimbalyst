@@ -305,6 +305,19 @@ export function useKeyboardShortcuts({
           store.set(toggleCliTerminalDrawerAtom, activeSessionId);
         }
       }
+      // Cmd/Ctrl+Split backslash chords: the panel listens on those events (a
+      // `detail.terminalId` source makes the same event work as the tab
+      // context menu's split actions).
+      if (workspaceMode && isAppModifier && e.code === 'Backslash' && !e.altKey && !e.shiftKey) {
+        e.preventDefault();
+        e.stopPropagation();
+        window.dispatchEvent(new CustomEvent('terminal:split-right'));
+      }
+      if (workspaceMode && isAppModifier && e.code === 'Backslash' && !e.altKey && e.shiftKey) {
+        e.preventDefault();
+        e.stopPropagation();
+        window.dispatchEvent(new CustomEvent('terminal:split-down'));
+      }
       // Cmd+Shift+K for Kanban view (switch to agent mode + kanban, or toggle if already there).
       // With Shift held the browser reports the uppercase letter, so a lowercase
       // `key` match never fires (#1415).

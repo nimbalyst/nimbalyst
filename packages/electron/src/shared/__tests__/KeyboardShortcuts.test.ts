@@ -107,6 +107,32 @@ describe('toggleExpandedTab binding', () => {
   });
 });
 
+describe('terminal split bindings', () => {
+  it('renders the backslash chords on each platform', () => {
+    const [right, down] = [
+      KeyboardShortcuts.view.splitTerminalRight,
+      KeyboardShortcuts.view.splitTerminalDown,
+    ];
+    expect(getShortcutDisplay(right, true)).toBe('⌘\\');
+    expect(getShortcutDisplay(right, false)).toBe('Ctrl+\\');
+    expect(getShortcutDisplay(down, true)).toBe('⌘⇧\\');
+    expect(getShortcutDisplay(down, false)).toBe('Ctrl+Shift+\\');
+  });
+
+  // The backslash chords live only in the splitTerminal* bindings; a later
+  // binding on the same key would shadow them in the Electron menu silently.
+  it('leaves no other declared shortcut on a backslash key', () => {
+    const backslashEntries = Object.entries(KeyboardShortcuts).flatMap(([group, shortcuts]) =>
+      Object.entries(shortcuts)
+        .filter(([name]) => !(group === 'view' && name.startsWith('splitTerminal')))
+        .filter(([, accelerator]) => accelerator.includes('\\'))
+        .map(([name, accelerator]) => `${group}.${name}=${accelerator}`),
+    );
+
+    expect(backslashEntries).toEqual([]);
+  });
+});
+
 describe('getElectronAccelerator', () => {
   it('rewrites Cmd to CmdOrCtrl so Electron handles platform mapping', () => {
     expect(getElectronAccelerator('Cmd+S')).toBe('CmdOrCtrl+S');

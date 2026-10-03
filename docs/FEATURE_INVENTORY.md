@@ -465,6 +465,7 @@ Companion app; pairs with a desktop over encrypted sync. Voice mode is not inclu
 
 - Built-in terminal panel (Ctrl+`)
 - Multiple terminal tabs
+- Split terminal view (Cmd/Ctrl+\, Cmd/Ctrl+Shift+\, or tab context menu): fixed 50/50 panes per workspace, each pane keeps its terminal alive, layout persists across restarts
 - Theme integration
 - Clickable links
 - Worktree-specific terminal sessions

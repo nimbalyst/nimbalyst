@@ -18,6 +18,7 @@ import {
   waitUntilTerminalPainted,
 } from './terminalVisibility';
 import { canPersistTerminalRenderState } from './terminalRenderState';
+import { shouldTerminalInit } from './paneLayout';
 
 // Type for terminal API is defined in electron.d.ts
 
@@ -30,6 +31,12 @@ export interface TerminalPanelProps {
   isActive: boolean;
   /** Whether the parent bottom panel is visible */
   panelVisible?: boolean;
+  /**
+   * Split pane leaves stay alive regardless of which tab is globally active —
+   * the pane is on screen, so its terminal initializes (or keeps running) even
+   * when `isActive` is false. Background tabs leave this unset.
+   */
+  alwaysActive?: boolean;
   /** Optional callback when terminal exits */
   onExit?: (exitCode: number) => void;
   /**
@@ -112,6 +119,7 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
   workspacePath,
   isActive,
   panelVisible,
+  alwaysActive = false,
   onExit,
   launchMode = 'shell',
   claudeCliModel,
@@ -242,13 +250,14 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
   // 2. Keep the terminal alive when switching tabs (no dispose/recreate cycle)
   const [shouldInit, setShouldInit] = useState(false);
 
-  // When the terminal is active and the panel is visible, enable initialization.
-  // Once initialized, it stays alive even when hidden again.
+  // When the terminal is active (or is a split pane leaf) and the panel is
+  // visible, enable initialization. Once initialized, it stays alive even
+  // when hidden again.
   useEffect(() => {
-    if (isActive && panelVisible && !shouldInit) {
+    if (shouldTerminalInit(isActive, panelVisible, alwaysActive, shouldInit)) {
       setShouldInit(true);
     }
-  }, [isActive, panelVisible, shouldInit]);
+  }, [isActive, panelVisible, alwaysActive, shouldInit]);
 
   // Initialize terminal - runs once per terminalId when shouldInit becomes true
   // After initialization, the terminal stays alive in the background when switching tabs

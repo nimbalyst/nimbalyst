@@ -10,6 +10,13 @@
 import { atom } from 'jotai';
 import { atomFamily } from '../debug/atomFamilyRegistry';
 import { store } from '@nimbalyst/runtime/store';
+import {
+  hasTerminalInLayout,
+  normalizePaneLayout,
+  type TerminalPaneLayout,
+} from '../../components/Terminal/paneLayout';
+
+export type { TerminalPaneLayout } from '../../components/Terminal/paneLayout';
 
 /**
  * Terminal instance metadata
@@ -64,6 +71,54 @@ export const terminalPanelHeightAtom = atom<number>(300);
  * Whether terminal panel state has been hydrated from persistent storage
  */
 export const terminalPanelHydratedAtom = atom<boolean>(false);
+
+// --- Pane layout (split terminal view) ---
+
+/**
+ * Pane layout for the current workspace, as loaded from the terminal store.
+ * Undefined (or stale-pruned) means classic single-pane mode; a tree
+ * containing a split renders recursive panes.
+ */
+export const terminalPaneLayoutAtom = atom<TerminalPaneLayout | undefined>(undefined);
+
+/**
+ * Store a pane layout in the atom and persist it for the workspace
+ * (fire-and-forget; loadTerminals re-derives from the store on any list change).
+ * Persisting `undefined` stores "no split" — the workspace renders the classic
+ * tab list again.
+ */
+export function applyTerminalPaneLayout(
+  workspacePath: string,
+  layout: TerminalPaneLayout | undefined,
+): void {
+  store.set(terminalPaneLayoutAtom, layout);
+  window.electronAPI?.terminal?.setLayout?.(workspacePath, layout)?.catch((err: unknown) => {
+    console.error('[terminals] Failed to persist terminal pane layout:', err);
+  });
+}
+
+/**
+ * Drop a closed terminal from the in-memory pane layout and persist the
+ * pruned tree (collapsing splits left with one child; the last leaf collapses
+ * to classic mode). No-op for terminals that were not panes.
+ */
+export function pruneTerminalPaneLayout(workspacePath: string, terminalId: string): void {
+  const layout = store.get(terminalPaneLayoutAtom);
+  if (!layout || !hasTerminalInLayout(layout, terminalId)) return;
+  const remaining = store.get(terminalListAtom).map((t) => t.id);
+  applyTerminalPaneLayout(workspacePath, normalizePaneLayout(layout, remaining));
+}
+
+/**
+ * Per-terminal focus pulse so click-to-focus on a split pane can grab the
+ * keyboard into that terminal (same mechanism as the CLI drawer's focusNonce).
+ */
+export const terminalFocusNonceAtom = atomFamily((_terminalId: string) => atom(0));
+
+export function bumpTerminalFocus(terminalId: string): void {
+  const current = store.get(terminalFocusNonceAtom(terminalId));
+  store.set(terminalFocusNonceAtom(terminalId), current + 1);
+}
 
 /**
  * Toggle terminal panel visibility (write-only atom)
@@ -208,6 +263,10 @@ export async function loadTerminals(workspacePath: string): Promise<void> {
 
     store.set(terminalListAtom, terminalList);
     store.set(activeTerminalIdAtom, state.activeTerminalId);
+    store.set(terminalPaneLayoutAtom, normalizePaneLayout(
+      state.layout,
+      terminalList.map((t) => t.id),
+    ));
   } catch (error) {
     console.error('[terminals] Failed to load terminals:', error);
   }

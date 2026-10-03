@@ -56,6 +56,21 @@ export interface TerminalInstance {
 }
 
 /**
+ * Terminal pane layout node for the split terminal view.
+ * Structural copy of the renderer's paneLayout.ts types; plain JSON in the
+ * store. Malformed or stale trees are pruned by the renderer on load.
+ */
+export type TerminalPaneLayout = {
+  type: 'leaf';
+  terminalId: string;
+} | {
+  type: 'split';
+  dir: 'row' | 'col';
+  first: TerminalPaneLayout;
+  second: TerminalPaneLayout;
+};
+
+/**
  * Per-workspace terminal state
  */
 export interface WorkspaceTerminalState {
@@ -65,6 +80,8 @@ export interface WorkspaceTerminalState {
   activeTerminalId?: string;
   /** Tab order (array of terminal IDs) */
   tabOrder: string[];
+  /** Optional pane layout for the split terminal view */
+  layout?: TerminalPaneLayout;
   /** Panel height in pixels */
   panelHeight?: number;
   /** Whether panel is visible */
@@ -290,6 +307,15 @@ export function getActiveTerminalId(workspacePath: string): string | undefined {
 export function setTabOrder(workspacePath: string, tabOrder: string[]): void {
   updateWorkspaceTerminalState(workspacePath, (state) => {
     state.tabOrder = tabOrder;
+  });
+}
+
+/**
+ * Set the pane layout for the split terminal view (or clear it with undefined)
+ */
+export function setTerminalLayout(workspacePath: string, layout: TerminalPaneLayout | undefined): void {
+  updateWorkspaceTerminalState(workspacePath, (state) => {
+    state.layout = layout;
   });
 }
 

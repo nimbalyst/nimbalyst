@@ -51,6 +51,8 @@ export const KeyboardShortcuts = {
     toggleBottomPanel: 'Cmd+J',
     toggleTerminalPanel: 'Ctrl+`',
     toggleCliTerminalDrawer: 'Ctrl+Shift+`',
+    splitTerminalRight: 'Cmd+\\',
+    splitTerminalDown: 'Cmd+Shift+\\',
     trackerMode: 'Cmd+T',
     collabMode: 'Cmd+D',
     // The project's organization: inbox, rooms and direct messages. Every plain

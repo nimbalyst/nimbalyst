@@ -22,16 +22,30 @@ import {
   terminalPanelVisibleAtom,
   terminalPanelHeightAtom,
   terminalPanelHydratedAtom,
+  terminalPaneLayoutAtom,
+  terminalFocusNonceAtom,
   closeTerminalPanelAtom,
+  openTerminalPanelAtom,
+  applyTerminalPaneLayout,
+  bumpTerminalFocus,
   loadTerminals,
   setActiveTerminal,
   removeTerminalFromList,
+  pruneTerminalPaneLayout,
   initTerminalListeners,
   setTerminalCommandRunning,
   terminalCommandRunningAtom,
   type TerminalInstance,
 } from '../../store/atoms/terminals';
 import { selectedWorkstreamAtom, sessionWorktreeIdAtom } from '../../store/atoms/sessions';
+import {
+  collectLeafIds,
+  hasTerminalInLayout,
+  resolvePaneLeafId,
+  splitPaneLayout,
+  type TerminalPaneDir,
+  type TerminalPaneLayout,
+} from '../Terminal/paneLayout';
 
 interface TerminalBottomPanelProps {
   workspacePath: string;
@@ -87,6 +101,24 @@ export const TerminalBottomPanel: React.FC<TerminalBottomPanelProps> = ({
   // Terminal list state from Jotai atoms
   const terminals = useAtomValue(terminalListAtom);
   const activeTerminalId = useAtomValue(activeTerminalIdAtom);
+  const paneLayout = useAtomValue(terminalPaneLayoutAtom);
+  const openPanel = useSetAtom(openTerminalPanelAtom);
+
+  // The hosting pane for terminals not in the tree is the pane of the last
+  // tree leaf the user had active (render-level bookkeeping; idempotent).
+  const lastActiveLeafRef = useRef<string | undefined>(undefined);
+  let hostLeafId: string | undefined;
+  if (paneLayout) {
+    if (activeTerminalId && hasTerminalInLayout(paneLayout, activeTerminalId)) {
+      lastActiveLeafRef.current = activeTerminalId;
+      hostLeafId = activeTerminalId;
+    } else {
+      hostLeafId = lastActiveLeafRef.current
+        && hasTerminalInLayout(paneLayout, lastActiveLeafRef.current)
+        ? lastActiveLeafRef.current
+        : collectLeafIds(paneLayout)[0];
+    }
+  }
   const [isResizing, setIsResizing] = useState(false);
   const resizeStartY = useRef<number>(0);
   const resizeStartHeight = useRef<number>(0);
@@ -163,6 +195,68 @@ export const TerminalBottomPanel: React.FC<TerminalBottomPanelProps> = ({
     }
   }, [workspacePath, terminals.length]);
 
+  // Select a pane on mousedown (and pull focus into its terminal when it is
+  // already the active tab).
+  const handlePaneMouseDown = useCallback((terminalId: string) => {
+    if (activeTerminalId !== terminalId) {
+      setActiveTerminal(terminalId);
+      window.electronAPI.terminal.setActive(workspacePath, terminalId)
+        .catch((error: unknown) => {
+          console.error('[TerminalBottomPanel] Failed to activate terminal:', error);
+        });
+    }
+    bumpTerminalFocus(terminalId);
+  }, [workspacePath, activeTerminalId]);
+
+  // Split a pane: create a new terminal beside `sourceTerminalId` (the tab the
+  // user right-clicked) or, for the keyboard shortcut (no source), beside the
+  // pane the user is working in. Fixed 50/50 halves; the new terminal starts
+  // focused in its new pane.
+  const handleSplitPane = useCallback(async (dir: TerminalPaneDir, sourceTerminalId?: string) => {
+    const layout = store.get(terminalPaneLayoutAtom);
+    const anchor = sourceTerminalId !== undefined && layout && hasTerminalInLayout(layout, sourceTerminalId)
+      ? sourceTerminalId
+      : layout
+        ? resolvePaneLeafId(layout, sourceTerminalId ?? store.get(activeTerminalIdAtom))
+        : (sourceTerminalId ?? store.get(activeTerminalIdAtom));
+    if (!anchor) return;
+    try {
+      const result = await window.electronAPI.terminal.create(workspacePath, {
+        cwd: workspacePath,
+        title: `Terminal ${terminals.length + 1}`,
+        source: 'panel',
+      });
+      if (!result.success || !result.terminalId) return;
+      await loadTerminals(workspacePath);
+      const tree = splitPaneLayout(layout, anchor, dir, result.terminalId);
+      if (!tree) return;
+      applyTerminalPaneLayout(workspacePath, tree);
+      setActiveTerminal(result.terminalId);
+      await window.electronAPI.terminal.setActive(workspacePath, result.terminalId);
+    } catch (error: unknown) {
+      console.error('[TerminalBottomPanel] Failed to split terminal pane:', error);
+    }
+  }, [workspacePath, terminals.length]);
+
+  // Keyboard/split actions arrive as window events (KeyboardShortcuts dispatches
+  // `terminal:split-right` / `terminal:split-down`; the tab context menu adds a
+  // `detail.terminalId` source). Splitting always opens the panel first.
+  useEffect(() => {
+    const splitWithDir = (dir: TerminalPaneDir) => (event: Event) => {
+      const source = (event as CustomEvent<{ terminalId?: string }>).detail?.terminalId;
+      openPanel();
+      void handleSplitPane(dir, source);
+    };
+    const onSplitRight = splitWithDir('row');
+    const onSplitDown = splitWithDir('col');
+    window.addEventListener('terminal:split-right', onSplitRight);
+    window.addEventListener('terminal:split-down', onSplitDown);
+    return () => {
+      window.removeEventListener('terminal:split-right', onSplitRight);
+      window.removeEventListener('terminal:split-down', onSplitDown);
+    };
+  }, [handleSplitPane, openPanel]);
+
   // Switch to terminal tab
   const handleSelectTerminal = useCallback(async (terminalId: string) => {
     setActiveTerminal(terminalId);
@@ -176,6 +270,9 @@ export const TerminalBottomPanel: React.FC<TerminalBottomPanelProps> = ({
 
       // Optimistically remove from atom
       removeTerminalFromList(terminalId);
+
+      // Collapse the split layout if the closed terminal was a pane
+      pruneTerminalPaneLayout(workspacePath, terminalId);
 
       // If we closed the active terminal, the atom helper updates active too
       const currentActive = store.get(activeTerminalIdAtom);
@@ -306,6 +403,65 @@ export const TerminalBottomPanel: React.FC<TerminalBottomPanelProps> = ({
     console.log(`[TerminalBottomPanel] Terminal ${terminalId} exited with code ${exitCode}`);
   }, []);
 
+  // Render the stored pane tree: splits become fixed 50/50 flex containers,
+  // leaves become panes bound to their terminal. Terminals not in the tree
+  // display-toggle inside the hosting pane (like classic tabs), so selecting
+  // them never remounts them.
+  const renderPaneTree = (root: TerminalPaneLayout, node: TerminalPaneLayout): React.ReactNode => {
+    if (node.type === 'split') {
+      return (
+        <div
+          className={`terminal-pane-split terminal-pane-split-${node.dir} flex flex-1 min-h-0 min-w-0 overflow-hidden`}
+          style={{ flexDirection: node.dir === 'row' ? 'row' : 'column' }}
+        >
+          {renderPaneTree(root, node.first)}
+          {renderPaneTree(root, node.second)}
+        </div>
+      );
+    }
+    const leafTerminal = terminals.find((t) => t.id === node.terminalId);
+    const attachments = node.terminalId === hostLeafId
+      ? terminals.filter(
+          (t) => !hasTerminalInLayout(root, t.id) && t.id !== node.terminalId
+        )
+      : [];
+    return (
+      <div
+        className="terminal-pane flex flex-col flex-1 min-h-0 min-w-0 overflow-hidden"
+        data-terminal-id={node.terminalId}
+        onMouseDown={() => handlePaneMouseDown(node.terminalId)}
+      >
+        {leafTerminal && (
+          <div className="terminal-bottom-panel-terminal flex-1 flex flex-col min-h-0">
+            <TerminalPanel
+              terminalId={leafTerminal.id}
+              workspacePath={workspacePath}
+              isActive={activeTerminalId === leafTerminal.id}
+              alwaysActive
+              panelVisible={visible}
+              onExit={(exitCode) => handleTerminalExit(leafTerminal.id, exitCode)}
+            />
+          </div>
+        )}
+        {attachments.map((terminal) => (
+          <div
+            key={terminal.id}
+            className="terminal-bottom-panel-terminal flex-1 flex flex-col min-h-0"
+            style={{ display: activeTerminalId === terminal.id ? 'flex' : 'none' }}
+          >
+            <TerminalPanel
+              terminalId={terminal.id}
+              workspacePath={workspacePath}
+              isActive={activeTerminalId === terminal.id}
+              panelVisible={visible}
+              onExit={(exitCode) => handleTerminalExit(terminal.id, exitCode)}
+            />
+          </div>
+        ))}
+      </div>
+    );
+  };
+
   return (
     <div
       className="terminal-bottom-panel-container relative shrink-0 flex flex-col border-t-2 border-[var(--nim-border)]"
@@ -350,7 +506,9 @@ export const TerminalBottomPanel: React.FC<TerminalBottomPanelProps> = ({
           </button>
         </div>
         <div className="terminal-bottom-panel-content flex-1 overflow-hidden flex flex-col min-h-0">
-          {terminals.map((terminal) => (
+          {paneLayout
+            ? renderPaneTree(paneLayout, paneLayout)
+            : terminals.map((terminal) => (
             <div
               key={terminal.id}
               className="terminal-bottom-panel-terminal flex-1 flex flex-col min-h-0"
