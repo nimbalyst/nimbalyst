@@ -93,6 +93,28 @@ export class ArchiveProgressManager extends EventEmitter {
   }
 
   /**
+   * Worktree ids in the persisted queue, read without loading the tasks.
+   * The startup consistency check runs before `loadPersistedTasks` and must
+   * leave these worktrees to the replay. An unreadable file yields none, which
+   * keeps the check's behaviour from before it knew about the queue.
+   */
+  getPersistedTaskIds(): string[] {
+    try {
+      const filePath = this.getPersistFilePath();
+      if (!fs.existsSync(filePath)) {
+        return [];
+      }
+      const persistedTasks: PersistedTask[] = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+      return persistedTasks
+        .map((task) => task?.worktreeId)
+        .filter((id): id is string => typeof id === 'string');
+    } catch (error) {
+      logger.error('Failed to read persisted archive queue ids', { error });
+      return [];
+    }
+  }
+
+  /**
    * Load persisted tasks from disk.
    * Call this at app startup to recover incomplete archive operations.
    *

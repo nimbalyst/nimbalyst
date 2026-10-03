@@ -52,6 +52,37 @@ describe('checkWorktreeArchiveConsistency', () => {
     ]);
     expect(fs.existsSync).not.toHaveBeenCalled();
   });
+
+  it('leaves queued archives to the queue replay, with or without their checkout on disk', async () => {
+    vi.mocked(fs.existsSync).mockImplementation((p) => !String(p).endsWith('gone'));
+    const db = {
+      query: vi.fn(async (sql: string, _params?: any[]): Promise<{ rows: any[] }> => {
+        if (sql.includes('HAVING COUNT(s.id) > 0 AND COUNT(s.id) = COUNT(CASE WHEN s.is_archived = true THEN 1 END)')) {
+          return {
+            rows: ['queued', 'queued-gone', 'stale', 'gone'].map((id) => ({
+              worktree_id: id,
+              worktree_path: `/tmp/${id}`,
+              session_count: 1,
+              archived_session_count: 1,
+            })),
+          };
+        }
+        return { rows: [] };
+      }),
+    };
+
+    const results = await checkWorktreeArchiveConsistency(db, { pendingArchiveIds: ['queued', 'queued-gone'] });
+
+    // The replay that runs next deletes the queued checkout; reverting here
+    // would leave its sessions visible on a deleted worktree. Completing an
+    // already-deleted one here would make the replay skip it, leaving its
+    // super loop unarchived and its registration in the source repo.
+    const updated = db.query.mock.calls
+      .filter(([sql]) => sql.includes('UPDATE'))
+      .map(([sql, params]) => [sql.includes('UPDATE worktrees') ? 'worktree archived' : 'sessions reverted', params?.[0]]);
+    expect(updated).toEqual([['sessions reverted', 'stale'], ['worktree archived', 'gone']]);
+    expect(results.map((r) => [r.worktreeId, r.action])).toEqual([['stale', 'reverted'], ['gone', 'completed']]);
+  });
 });
 
 /**

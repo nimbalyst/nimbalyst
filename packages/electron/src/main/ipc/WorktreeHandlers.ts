@@ -26,6 +26,7 @@ import type { WorktreeCreateResult } from '../../shared/ipc/types';
 import { gitOperationLock } from '../services/GitOperationLock';
 import fs from 'node:fs';
 import { archiveSessionsAndDestroyProviders } from '../services/ai/archiveSessionProviderLifecycle';
+import { createWorktreeArchiveCleanup } from '../services/worktreeArchiveCleanup';
 
 const logger = log.scope('WorktreeHandlers');
 
@@ -252,28 +253,17 @@ export async function archiveWorktree(worktreeId: string, workspacePath: string)
     });
 
     // Step 4: Queue the slow cleanup work
+    const cleanupArchivedWorktree = createWorktreeArchiveCleanup({
+      deleteWorktree: (worktreePath, repoPath) => gitWorktreeService.deleteWorktree(worktreePath, repoPath),
+      worktreeStore,
+      superLoopStore,
+      archiveQueue: archiveProgressManager,
+      unarchiveSession: (sessionId) => AISessionsRepository.updateMetadata(sessionId, { isArchived: false }),
+      pathExists: fs.existsSync,
+    });
     const cleanupCallback = async () => {
       try {
-        // Update status to show we're removing the worktree
-        archiveProgressManager.updateTaskStatus(worktreeId, 'removing-worktree');
-
-        // Remove the git worktree from disk (throws if directory still exists
-        // after cleanup). Unregister it from the repo it was branched from --
-        // `workspacePath` is only the workspace's primary root, and running
-        // `worktree remove` there would delete the directory while leaving the
-        // real repo's registration and branch behind.
-        await gitWorktreeService.deleteWorktree(worktree.path, worktree.sourceFolderPath || workspacePath);
-
-        archiveLogger.info('Worktree cleanup completed, now marking as archived in database', { worktreeId });
-
-        // Only mark as archived AFTER disk deletion is confirmed
-        await worktreeStore.updateArchived(worktreeId, true);
-        const existingLoop = await superLoopStore.getLoopByWorktreeId(worktreeId);
-        if (existingLoop && !existingLoop.isArchived) {
-          await superLoopStore.updateLoop(existingLoop.id, { isArchived: true });
-        }
-
-        archiveLogger.info('Worktree marked as archived in database', { worktreeId });
+        await cleanupArchivedWorktree(worktree, sessionIds);
 
         // Track successful completion
         const durationMs = Date.now() - archiveStartTime;
@@ -282,16 +272,6 @@ export async function archiveWorktree(worktreeId: string, workspacePath: string)
           duration_ms: durationMs,
         });
       } catch (error) {
-        // Unarchive the sessions since the cleanup failed
-        archiveLogger.warn('Cleanup failed, unarchiving sessions', { worktreeId, error });
-        for (const sessionId of sessionIds) {
-          try {
-            await AISessionsRepository.updateMetadata(sessionId, { isArchived: false });
-          } catch (unarchiveErr) {
-            archiveLogger.error('Failed to unarchive session after cleanup failure', { sessionId, worktreeId, error: unarchiveErr });
-          }
-        }
-
         // Track failure
         analyticsService.sendEvent('worktree_archive_failed', {
           error_type: error instanceof Error ? error.constructor.name : 'Unknown',
