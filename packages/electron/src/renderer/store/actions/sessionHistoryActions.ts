@@ -48,6 +48,7 @@ import {
   setWorktreeActiveSessionAtom,
 } from '../atoms/workstreamState';
 import type { WorktreeCreateResult, SessionCreateResult } from '../../../shared/ipc/types';
+import type { WorktreeNameSource } from '../../../shared/worktreeBranchNaming';
 
 // ============================================================
 // Signal / state atoms that replace pass-through props
@@ -93,6 +94,8 @@ export const isGitRepoAtom = atomFamily((_workspacePath: string) => atom<boolean
 export interface CreateNewWorktreeSessionOptions {
   baseBranch?: string;
   name?: string;
+  /** `'user'` when the user typed or edited `name`; see `worktree:create` */
+  nameSource?: WorktreeNameSource;
   initialDraft?: string;
 }
 
@@ -532,7 +535,7 @@ export const createNewWorktreeSessionActionAtom = atom(
       // in; a single-folder project resolves to the workspace itself.
       const sourceFolderPath = get(activeFileRepoPathAtom) ?? undefined;
       const ipcOptions = options?.baseBranch || options?.name || sourceFolderPath
-        ? { baseBranch: options?.baseBranch, name: options?.name, sourceFolderPath }
+        ? { baseBranch: options?.baseBranch, name: options?.name, nameSource: options?.nameSource, sourceFolderPath }
         : undefined;
       const worktreeResult: WorktreeCreateResult = await window.electronAPI.invoke(
         'worktree:create',

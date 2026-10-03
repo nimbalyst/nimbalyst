@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 <!-- New features go here -->
+- A worktree name you type in the new-worktree dialog becomes its branch exactly (`feat/x` gives `worktree/feat/x` in a `feat-x` folder), and invalid or clashing names are flagged instead of renamed.
 
 ### Changed
 <!-- Changes to existing functionality go here -->
@@ -17,6 +18,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 <!-- Bug fixes go here -->
 - A Mermaid diagram with a syntax error no longer leaves stray error graphics behind that could push a project window's title bar out of view.
+- Archiving a worktree that was interrupted by quitting the app now finishes cleanly on the next launch, without leaving its sessions visible on a deleted checkout or deleting a same-named branch in the wrong repository.
+- Archiving or deleting a worktree no longer deletes a folder or branch its repository does not own (another repository's worktree, or a moved, copied, locked or nested checkout), and no longer prunes the repository's other worktrees.
 
 ### Removed
 <!-- Removed features go here -->

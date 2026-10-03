@@ -141,7 +141,7 @@ Twelve built-in provider lanes, plus any agent an extension contributes. Every l
 
 ## Git Worktrees
 
-- Create isolated worktrees for AI coding sessions (Cmd+Alt+W)
+- Create isolated worktrees for AI coding sessions (Cmd+Alt+W uses a generated name; the new-worktree dialog also takes a typed name, which becomes the branch `worktree/<name>` exactly)
 - Multiple sessions per worktree
 - Merge worktree into base branch
 - Rebase onto base branch
