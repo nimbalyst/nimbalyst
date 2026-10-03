@@ -1139,7 +1139,14 @@ interface ElectronAPI {
       terminals: Record<string, ElectronAPI['terminal']['TerminalInstance']>;
       activeTerminalId?: string;
       tabOrder: string[];
+      layout?: ElectronAPI['terminal']['PaneLayout'];
     };
+    // Terminal pane layout for the split view (leaf = pane showing a
+    // terminal; split = fixed halves along row (side by side) or col
+    // (stacked)). Structural copy of the renderer's paneLayout types.
+    PaneLayout:
+      | { type: 'leaf'; terminalId: string }
+      | { type: 'split'; dir: 'row' | 'col'; first: ElectronAPI['terminal']['PaneLayout']; second: ElectronAPI['terminal']['PaneLayout'] };
     TerminalPanelState: {
       panelHeight: number;
       panelVisible: boolean;
@@ -1164,6 +1171,7 @@ interface ElectronAPI {
     getActive: (workspacePath: string) => Promise<string | undefined>;
     setTabOrder: (workspacePath: string, tabOrder: string[]) => Promise<{ success: boolean }>;
     getWorkspaceState: (workspacePath: string) => Promise<ElectronAPI['terminal']['WorkspaceTerminalState']>;
+    setLayout: (workspacePath: string, layout: ElectronAPI['terminal']['PaneLayout'] | undefined) => Promise<{ success: boolean }>;
 
     // Panel state (per-workspace)
     getPanelState: (workspacePath: string) => Promise<ElectronAPI['terminal']['TerminalPanelState']>;

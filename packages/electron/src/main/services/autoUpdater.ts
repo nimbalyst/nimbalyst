@@ -31,6 +31,15 @@ export { classifyUpdateError, categorizeDownloadDuration, isWindowsRenameLockErr
 
 // Reminder suppression duration: 24 hours
 const REMINDER_SUPPRESSION_DURATION_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Local fork build: this build carries local features that are absent upstream,
+ * so an upstream release must never replace it. Every update path is disabled
+ * and "Check for Updates" reports the fork as current. Re-enable by setting
+ * this constant to false (and pointing the feed at the intended repo).
+ */
+const FORK_UPDATES_DISABLED = true;
+
 const GITHUB_UPDATE_PROVIDER = {
   provider: 'github' as const,
   owner: 'nimbalyst',
@@ -597,6 +606,10 @@ export class AutoUpdaterService {
   }
 
   public async checkForUpdates() {
+    if (FORK_UPDATES_DISABLED) {
+      log.info('Update checks are disabled in this local fork build.');
+      return;
+    }
     if (this.isCheckingForUpdate) {
       log.info('Already checking for updates, skipping...');
       return;
@@ -611,6 +624,12 @@ export class AutoUpdaterService {
   }
 
   public async checkForUpdatesWithUI() {
+    if (FORK_UPDATES_DISABLED) {
+      this.sendToFrontmostWindow('update-toast:error', {
+        message: 'Updates are disabled in this local fork build'
+      });
+      return;
+    }
     if (this.isCheckingForUpdate) {
       // Already checking, don't show anything - the checking toast is already visible
       return;

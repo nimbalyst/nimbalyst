@@ -2190,6 +2190,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
       ipcRenderer.invoke('terminal:set-tab-order', workspacePath, tabOrder),
     getWorkspaceState: (workspacePath: string) =>
       ipcRenderer.invoke('terminal:get-workspace-state', workspacePath),
+    setLayout: (workspacePath: string, layout: unknown) =>
+      ipcRenderer.invoke('terminal:set-layout', workspacePath, layout),
 
     // Panel state (per-workspace)
     getPanelState: (workspacePath: string) =>

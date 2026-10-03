@@ -1,8 +1,9 @@
 /**
  * TerminalTabContextMenu - Context menu for terminal tabs
  *
- * Provides options to close the tab, close other tabs, close all tabs,
- * and close tabs to the right.
+ * Provides split actions (the panel listens on `terminal:split-right` /
+ * `terminal:split-down`, carrying the source terminal in `detail`), and
+ * closing: the tab, other tabs, all tabs, and tabs to the right.
  */
 
 import React, { useMemo } from 'react';
@@ -51,6 +52,10 @@ export function TerminalTabContextMenu({
     onClose();
   };
 
+  const dispatchSplit = (event: 'terminal:split-right' | 'terminal:split-down') => {
+    window.dispatchEvent(new CustomEvent(event, { detail: { terminalId } }));
+  };
+
   const menuItemClasses =
     'flex items-center gap-2.5 px-3 py-1.5 rounded cursor-pointer transition-colors text-[var(--nim-text)] hover:bg-[var(--nim-bg-hover)]';
   const disabledMenuItemClasses =
@@ -69,6 +74,24 @@ export function TerminalTabContextMenu({
         className="p-1 min-w-[160px] rounded-md z-[10000] text-[13px] backdrop-blur-[10px] shadow-[0_4px_12px_rgba(0,0,0,0.15)] dark:shadow-[0_4px_20px_rgba(0,0,0,0.5)]"
         data-testid="terminal-tab-context-menu"
       >
+        <div
+          className={menuItemClasses}
+          onClick={() => handleAction(() => dispatchSplit('terminal:split-right'))}
+        >
+          <MaterialSymbol icon="vertical_split" size={18} />
+          <span>Split Right</span>
+        </div>
+
+        <div
+          className={menuItemClasses}
+          onClick={() => handleAction(() => dispatchSplit('terminal:split-down'))}
+        >
+          <MaterialSymbol icon="horizontal_split" size={18} />
+          <span>Split Down</span>
+        </div>
+
+        <div className="h-px my-1 bg-[var(--nim-border)]" />
+
         <div
           className={menuItemClasses}
           onClick={() => handleAction(onCloseTab)}

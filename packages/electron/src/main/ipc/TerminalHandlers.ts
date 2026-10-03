@@ -23,6 +23,8 @@ import {
   setActiveTerminal,
   getActiveTerminalId,
   setTabOrder,
+  setTerminalLayout,
+  type TerminalPaneLayout,
   getWorkspaceTerminalState,
   getTerminalPanelState,
   updateTerminalPanelState,
@@ -593,6 +595,18 @@ export function registerTerminalHandlers(): void {
     'terminal:get-workspace-state',
     async (_event, workspacePath: string) => {
       return getWorkspaceTerminalState(workspacePath);
+    }
+  );
+
+  /**
+   * Set the pane layout for the split terminal view. The renderer validates
+   * and prunes the tree on load; the store just persists what it is given.
+   */
+  safeHandle(
+    'terminal:set-layout',
+    async (_event, workspacePath: string, layout: TerminalPaneLayout | undefined) => {
+      setTerminalLayout(workspacePath, layout);
+      return { success: true };
     }
   );
 
