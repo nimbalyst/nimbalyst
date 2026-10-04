@@ -324,6 +324,85 @@ describe('CopilotRawParser', () => {
       });
     });
 
+    // Copilot CLI in --acp mode sends standard ACP tool updates
+    // (toolCallId / title / kind / rawInput, completed via tool_call_update).
+    function acpUpdate(update: Record<string, unknown>): string {
+      return JSON.stringify({
+        jsonrpc: '2.0',
+        method: 'session/update',
+        params: { sessionId: 'acp-session', update },
+      });
+    }
+
+    it('parses ACP tool_call updates keyed by toolCallId', async () => {
+      const parser = new CopilotRawParser();
+      const msg = makeRawMessage({
+        content: acpUpdate({
+          sessionUpdate: 'tool_call',
+          toolCallId: 'call_fetch',
+          title: 'Fetching https://example.com',
+          kind: 'fetch',
+          status: 'pending',
+          rawInput: { url: 'https://example.com', max_length: 5000 },
+        }),
+      });
+
+      const descriptors = await parser.parseMessage(msg, makeContext());
+
+      expect(descriptors).toHaveLength(1);
+      expect(descriptors[0]).toMatchObject({
+        type: 'tool_call_started',
+        toolName: 'WebFetch',
+        providerToolCallId: 'call_fetch',
+        arguments: { url: 'https://example.com', max_length: 5000 },
+      });
+    });
+
+    it('maps ACP execute tool calls to Bash', async () => {
+      const parser = new CopilotRawParser();
+      const msg = makeRawMessage({
+        content: acpUpdate({
+          sessionUpdate: 'tool_call',
+          toolCallId: 'call_shell',
+          title: 'Run the requested echo command',
+          kind: 'execute',
+          rawInput: { command: 'echo hello' },
+        }),
+      });
+
+      const descriptors = await parser.parseMessage(msg, makeContext());
+
+      expect(descriptors[0]).toMatchObject({
+        type: 'tool_call_started',
+        toolName: 'Bash',
+        arguments: { command: 'echo hello' },
+      });
+    });
+
+    it('completes ACP tool calls from tool_call_update', async () => {
+      const parser = new CopilotRawParser();
+      const msg = makeRawMessage({
+        content: acpUpdate({
+          sessionUpdate: 'tool_call_update',
+          toolCallId: 'call_fetch',
+          status: 'completed',
+          content: [
+            { type: 'content', content: { type: 'text', text: 'Contents of https://example.com' } },
+          ],
+        }),
+      });
+
+      const descriptors = await parser.parseMessage(msg, makeContext());
+
+      expect(descriptors).toHaveLength(1);
+      expect(descriptors[0]).toMatchObject({
+        type: 'tool_call_completed',
+        providerToolCallId: 'call_fetch',
+        status: 'completed',
+        result: 'Contents of https://example.com',
+      });
+    });
+
     it('parses error updates', async () => {
       const parser = new CopilotRawParser();
       const msg = makeRawMessage({
