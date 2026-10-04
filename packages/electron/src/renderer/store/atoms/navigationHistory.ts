@@ -27,6 +27,7 @@ import { atomFamily } from '../debug/atomFamilyRegistry';
 import { store } from '@nimbalyst/runtime/store';
 import { activeWorkspacePathAtom } from './openProjects';
 import type { ContentMode } from '../../types/WindowModeTypes';
+import type { SettingsDestination, SettingsScope } from '../../components/Settings/settingsRoutes';
 
 // ============================================================
 // Types
@@ -61,7 +62,8 @@ export interface TrackerNavigationState {
  */
 export interface SettingsHistoryState {
   category: string;
-  scope: 'application' | 'personal' | 'organization' | 'project' | 'user';
+  scope: SettingsScope | 'personal' | 'organization' | 'user';
+  target?: Extract<SettingsDestination, { scope: 'project' }>['target'];
 }
 
 /**
@@ -214,11 +216,19 @@ function entriesEqual(a: NavigationEntry, b: NavigationEntry): boolean {
         a.tracker?.selectedType === b.tracker?.selectedType &&
         a.tracker?.viewMode === b.tracker?.viewMode
       );
-    case 'settings':
+    case 'settings': {
+      const aTarget = a.settings?.target;
+      const bTarget = b.settings?.target;
+      const sameTarget = aTarget?.kind === 'workspace' && bTarget?.kind === 'workspace'
+        ? aTarget.workspacePath === bTarget.workspacePath
+        : aTarget?.kind === 'organizationProject' && bTarget?.kind === 'organizationProject'
+          ? aTarget.orgId === bTarget.orgId && aTarget.projectId === bTarget.projectId
+          : aTarget === bTarget;
       return (
         a.settings?.category === b.settings?.category &&
-        a.settings?.scope === b.settings?.scope
+        a.settings?.scope === b.settings?.scope && sameTarget
       );
+    }
     default:
       return false;
   }

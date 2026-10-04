@@ -20,6 +20,7 @@ import { pruneCollabDocumentsScopeState } from './atoms/collabDocuments';
 import { pruneCollabDiscoveryState } from './atoms/collabDiscovery';
 import { pruneFileMentionWorkspaceState } from './atoms/fileMention';
 import { pruneGitOperationsWorkspaceState } from './atoms/gitOperations';
+import { projectAppearanceAtom } from './atoms/projectAppearance';
 import { pruneTabsSlot } from '../contexts/TabsContext';
 
 let initialized = false;
@@ -40,6 +41,7 @@ function pruneWorkspace(path: string): void {
   pruneFileMentionWorkspaceState(path);
   pruneGitOperationsWorkspaceState(path);
   pruneTabsSlot(path);
+  projectAppearanceAtom.remove(path);
 }
 
 export function initWorkspaceStatePruner(): void {

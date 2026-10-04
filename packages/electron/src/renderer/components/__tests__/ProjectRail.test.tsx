@@ -1,7 +1,9 @@
 import React from 'react';
-import { act, cleanup, render } from '@testing-library/react';
+import { act, cleanup, fireEvent, render } from '@testing-library/react';
 import { Provider, createStore } from 'jotai';
 import { afterEach, expect, it, vi } from 'vitest';
+import { openSettingsCommandAtom } from '../../store/atoms/settingsNavigation';
+import { projectAppearanceAtom } from '../../store/atoms/projectAppearance';
 import { ProjectRail } from '../ProjectRail';
 import { activeWorkspacePathAtom, multiProjectModeAtom, openProjectsAtom } from '../../store/atoms/openProjects';
 
@@ -55,4 +57,18 @@ it('reveals restored and newly selected projects, handles resize, and leaves man
   expect(list.scrollTop).toBe(0);
   view.unmount();
   expect(disconnect).toHaveBeenCalled();
+});
+
+it('customizes an inactive project without switching or editing the active project', () => {
+  const store = createStore();
+  const projects = [{ path: '/p/active', name: 'Active', openedAt: 0 }, { path: '/p/FileRocket', name: 'FileRocket', openedAt: 1 }];
+  store.set(multiProjectModeAtom, true);
+  store.set(openProjectsAtom, projects);
+  store.set(activeWorkspacePathAtom, projects[0].path);
+  for (const project of projects) store.set(projectAppearanceAtom(project.path), { snapshot: { revision: 0, appearance: {} } });
+  const view = render(<Provider store={store}><ProjectRail /></Provider>);
+  fireEvent.contextMenu(view.getByRole('button', { name: 'Switch to project FileRocket' }));
+  fireEvent.click(view.getByText('Customize appearance…'));
+  expect(store.get(openSettingsCommandAtom)?.destination).toEqual({ scope: 'project', category: 'project-appearance', target: { kind: 'workspace', workspacePath: projects[1].path } });
+  expect(store.get(activeWorkspacePathAtom)).toBe(projects[0].path);
 });

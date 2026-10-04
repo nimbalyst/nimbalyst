@@ -69,4 +69,17 @@ describe('navigateSettingsInPlaceAtom', () => {
     } as any);
     expect(store.get(settingsDestinationAtom)).toMatchObject({ orgId: 'org-2' });
   });
+
+  it('restores an explicit project destination and clears it on later untargeted navigation', () => {
+    const store = createStore();
+    const destination = {
+      scope: 'project' as const, category: 'project-appearance' as const,
+      target: { kind: 'workspace' as const, workspacePath: '/projects/FileRocket' },
+    };
+    store.set(navigateSettingsInPlaceAtom, { ...destination, destination });
+    expect(store.get(settingsDestinationAtom)).toEqual(destination);
+    expect(store.get(settingsInitialCategoryAtom)).toBe('project-appearance');
+    store.set(navigateSettingsInPlaceAtom, { scope: 'application', category: 'notifications' });
+    expect(store.get(settingsDestinationAtom)).toBeUndefined();
+  });
 });

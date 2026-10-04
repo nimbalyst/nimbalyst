@@ -54,6 +54,7 @@ export type OrganizationSettingsCategory =
   | 'organization-danger';
 
 export type ProjectSettingsCategory =
+  | 'project-appearance'
   | 'project-sharing'
   | 'project-agent-permissions'
   | 'project-trackers'
@@ -168,6 +169,7 @@ const builtinSettingsRouteDefinitions: readonly Omit<BuiltinSettingsRoute, 'sour
   { id: 'account-devices', scope: 'account', group: 'Account', label: 'Devices', icon: 'devices' },
   { id: 'account-shared-links', scope: 'account', group: 'Account', label: 'Shared Links', icon: 'link' },
 
+  { id: 'project-appearance', scope: 'project', group: 'Project', label: 'Appearance', icon: 'palette' },
   { id: 'project-sharing', scope: 'project', group: 'Project', label: 'Sharing', icon: 'group', isAlpha: true, isAvailable: teamsVisible },
   { id: 'project-agent-permissions', scope: 'project', group: 'Project', label: 'Agent Permissions', icon: 'shield' },
   { id: 'project-trackers', scope: 'project', group: 'Project', label: 'Trackers', icon: 'assignment' },
@@ -300,6 +302,9 @@ export function normalizeSettingsDestination(link: LegacySettingsLink): Settings
     if (!target) return null;
     if (legacyCategory && isExtensionSettingsRouteId(legacyCategory)) {
       return { scope: 'project', category: legacyCategory, target };
+    }
+    if (settingsRoutes.some(route => route.id === legacyCategory && route.scope === 'project')) {
+      return { scope: 'project', category: legacyCategory as ProjectSettingsCategory, target };
     }
     const category: ProjectSettingsCategory = legacyCategory === 'tracker-config'
       ? 'project-trackers'

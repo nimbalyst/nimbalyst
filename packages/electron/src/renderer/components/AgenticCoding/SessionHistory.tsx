@@ -78,6 +78,7 @@ import { HelpTooltip } from '../../help';
 import { AlphaBadge } from '../common/AlphaBadge';
 import { defaultAgentModelAtom } from '../../store/atoms/appSettings';
 import { usePostHog } from 'posthog-js/react';
+import { projectAppearanceAtom } from '../../store/atoms/projectAppearance';
 import { WorkspaceSummaryHeader, generateWorkspaceAccentColor } from '../WorkspaceSummaryHeader';
 import { errorNotificationService } from '../../services/ErrorNotificationService';
 import { FloatingPortal, useFloatingMenu } from '../../hooks/useFloatingMenu';
@@ -557,7 +558,8 @@ const SessionHistoryComponent: React.FC = () => {
 
   // Extract workspace name from path
   const workspaceName = getFileName(workspacePath) || 'Workspace';
-  const workspaceColor = generateWorkspaceAccentColor(workspacePath);
+  const projectAppearance = useAtomValue(projectAppearanceAtom(workspacePath)).snapshot?.appearance;
+  const workspaceColor = projectAppearance?.color || generateWorkspaceAccentColor(workspacePath);
   const useThrottledTurnOrdering = mode === 'agent' && sortBy === 'updated';
   const liveOrderTimestampMap = useMemo(() => {
     const timestamps = new Map<string, number>();
