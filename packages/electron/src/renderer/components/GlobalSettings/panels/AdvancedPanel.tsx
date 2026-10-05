@@ -42,15 +42,17 @@ function DropdownRow({
   name,
   description,
   options,
+  testId,
 }: {
   value: string | number;
   onChange: (value: string) => void;
   name: string;
   description: string;
   options: { value: string | number; label: string }[];
+  testId?: string;
 }) {
   return (
-    <div className="setting-item py-2">
+    <div className="setting-item py-2" data-testid={testId}>
       <div className="flex items-center justify-between gap-4">
         <div className="setting-text flex flex-col gap-0 min-w-0">
           <span className="setting-name text-sm font-medium text-[var(--nim-text)]">{name}</span>
@@ -205,7 +207,7 @@ export function AdvancedPanel() {
       </div>
 
       {/* Application Mode - Always shown at the top */}
-      <div className="provider-panel-section">
+      <div className="provider-panel-section" data-testid="setting-application-mode">
           <h4 className="provider-panel-section-title" onClick={handleModeClick}>Application Mode</h4>
           <p className="provider-panel-hint">
             Choose between a simplified experience or full developer features for this project.
@@ -361,7 +363,7 @@ export function AdvancedPanel() {
           Choose which release stream Nimbalyst pulls auto-updates from. Switching channels keeps your installed version until a newer release is available. Installing an older version requires a manual download and install. Alpha and beta features are configured separately on each feature&apos;s settings page.
         </p>
 
-        <div className="setting-item py-3">
+        <div className="setting-item py-3" data-testid="setting-update-channel">
           <div className="setting-text flex flex-col gap-0.5">
             <span className="setting-name text-sm font-medium text-[var(--nim-text)]">Update Channel</span>
             <span className="setting-description text-xs leading-relaxed text-[var(--nim-text-muted)]">
@@ -409,6 +411,7 @@ export function AdvancedPanel() {
           checked={analyticsEnabled}
           onChange={(checked) => updateSettings({ analyticsEnabled: checked })}
           name="Send Anonymous Usage Data"
+          testId="setting-analytics"
           description="Help improve Nimbalyst by sending anonymous usage data. No prompts or personal info collected."
         />
 
@@ -416,6 +419,7 @@ export function AdvancedPanel() {
           checked={spellcheckEnabled}
           onChange={(checked) => updateSettings({ spellcheckEnabled: checked })}
           name="Spellcheck"
+          testId="setting-spellcheck"
           description="Enable the system spellchecker in editors and text inputs."
         />
 
@@ -423,6 +427,7 @@ export function AdvancedPanel() {
           checked={showDirectChatProviders}
           onChange={(checked) => updateSettings({ showDirectChatProviders: checked })}
           name="Show Chat Providers"
+          testId="setting-show-chat-providers"
           description="Show Claude Chat, OpenAI, and LM Studio in provider settings and new-session model selection."
         />
 
@@ -430,6 +435,7 @@ export function AdvancedPanel() {
           checked={walkthroughsEnabled}
           onChange={(checked) => updateSettings({ walkthroughsEnabled: checked })}
           name="Show Feature Guides"
+          testId="setting-feature-guides"
           description={`Walkthrough guides for new features and tips.${walkthroughsTotalCount > 0 ? ` (${walkthroughsViewedCount}/${walkthroughsTotalCount} viewed)` : ''}`}
         />
 
@@ -452,6 +458,7 @@ export function AdvancedPanel() {
           checked={trackerAutomation.enabled}
           onChange={(checked) => setTrackerAutomation({ enabled: checked })}
           name="Link Commits to Tracker Items"
+          testId="setting-link-commits-to-trackers"
           description="Link git commits to tracker items via session relationships and issue key parsing (e.g. NIM-123 in commit messages)."
         />
 
@@ -460,6 +467,7 @@ export function AdvancedPanel() {
             checked={trackerAutomation.autoCloseOnCommit}
             onChange={(checked) => setTrackerAutomation({ autoCloseOnCommit: checked })}
             name="Close Items on Fixes/Closes/Resolves"
+            testId="setting-close-items-on-commit"
             description="Change tracker item status to done when a commit message uses a closing keyword."
           />
         )}
@@ -473,6 +481,7 @@ export function AdvancedPanel() {
           value={externalEditorType}
           onChange={(val) => updateExternalEditorSettings({ editorType: val as ExternalEditorType })}
           name="External Editor"
+          testId="setting-external-editor"
           description="Editor for the 'Open in...' context menu option."
           options={[
             { value: 'none', label: 'None' },
@@ -502,6 +511,7 @@ export function AdvancedPanel() {
           checked={extensionDevToolsEnabled}
           onChange={(checked) => updateSettings({ extensionDevToolsEnabled: checked })}
           name="Extension Dev Tools"
+          testId="setting-extension-dev-tools"
           description="Enable MCP tools for building, installing, and hot-reloading extensions."
         />
 
@@ -509,6 +519,7 @@ export function AdvancedPanel() {
           value={maxHeapSizeMB}
           onChange={(val) => updateSettings({ maxHeapSizeMB: parseInt(val, 10) })}
           name="Max Heap Size"
+          testId="setting-max-heap-size"
           description="V8 memory limit. Increase if you get out-of-memory crashes. Requires restart."
           options={[
             { value: 2048, label: '2 GB' },
@@ -526,6 +537,7 @@ export function AdvancedPanel() {
               value={preferredTerminalShell}
               onChange={(val) => updateSettings({ preferredTerminalShell: val as PreferredTerminalShell })}
               name="Preferred Terminal Shell"
+              testId="setting-preferred-terminal-shell"
               description="Choose which detected Windows shell new terminals should open with. Auto follows the built-in priority."
               options={terminalShellOptions}
             />
@@ -557,6 +569,7 @@ export function AdvancedPanel() {
           value={historyMaxAgeDays}
           onChange={(val) => updateSettings({ historyMaxAgeDays: parseInt(val, 10) })}
           name="History Retention"
+          testId="setting-history-retention"
           description="Max age of file history snapshots before automatic cleanup."
           options={[
             { value: 7, label: '7 days' },
@@ -573,6 +586,7 @@ export function AdvancedPanel() {
           value={historyMaxSnapshots}
           onChange={(val) => updateSettings({ historyMaxSnapshots: parseInt(val, 10) })}
           name="Max Snapshots Per File"
+          testId="setting-max-snapshots"
           description="Oldest snapshots beyond this limit are deleted."
           options={[
             { value: 50, label: '50' },
@@ -584,7 +598,7 @@ export function AdvancedPanel() {
         />
 
         {/* Custom PATH */}
-        <div className="setting-item py-2">
+        <div className="setting-item py-2" data-testid="setting-custom-path">
           <div className="setting-text flex flex-col gap-0 mb-2">
             <span className="setting-name text-sm font-medium text-[var(--nim-text)]">Custom PATH Directories</span>
             <span className="setting-description text-xs leading-snug text-[var(--nim-text-muted)]">
@@ -681,6 +695,7 @@ function MultiProjectModeToggle() {
       checked={enabled}
       onChange={handleChange}
       name="Multi-project Mode"
+      testId="setting-multi-project-mode"
       description="Open multiple projects in a single window via a project rail. When off, each project opens in its own window."
     />
   );
@@ -727,6 +742,7 @@ function RestorePreviousProjectsToggle() {
       checked={enabled}
       onChange={setEnabled}
       name="Restore last session's projects on launch"
+      testId="setting-restore-previous-projects"
       description={
         isMultiProject
           ? 'When on, the project rail rehydrates with every project that was open at last close. When off, only the project you pick from the launch screen opens.'

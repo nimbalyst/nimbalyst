@@ -7,6 +7,7 @@ import { MaterialSymbol } from '@nimbalyst/runtime';
 import { getExtensionLoader } from '@nimbalyst/runtime';
 import { store } from '@nimbalyst/runtime/store';
 import { SettingsSidebar, type SettingsCategory } from './SettingsSidebar';
+import { useSettingsAnchorJump } from './useSettingsAnchorJump';
 import {
   getDefaultSettingsCategory,
   getSettingsRoutesForScope,
@@ -288,6 +289,14 @@ export function SettingsView({
   const [selectedCategory, setSelectedCategory] = useState<SettingsCategory | string>(
     initialDestination?.category ?? getDefaultSettingsCategory(normalizedInitialScope),
   );
+  // Settings search: the row to scroll to once its page has rendered (#1574).
+  const [pendingAnchor, setPendingAnchor] = useState<string | null>(null);
+  const settingsMainRef = useRef<HTMLElement>(null);
+  useSettingsAnchorJump(settingsMainRef, pendingAnchor, () => setPendingAnchor(null));
+  const handleSelectSetting = useCallback((category: string, anchor: string) => {
+    setSelectedCategory(category);
+    setPendingAnchor(anchor);
+  }, []);
   // Extension-contributed agent providers (id, owning extension, live status,
   // static model list) so the provider settings page can render the extension's
   // own panel component (e.g. Gemini Antigravity) wired like a built-in panel.
@@ -1188,6 +1197,7 @@ export function SettingsView({
         <SettingsSidebar
           selectedCategory={selectedCategory}
           onSelectCategory={setSelectedCategory}
+          onSelectSetting={handleSelectSetting}
           providerStatus={providerStatus}
           scope={scope}
           showDirectChatProviders={showDirectChatProviders}
@@ -1195,7 +1205,7 @@ export function SettingsView({
           // releaseChannel now comes from Jotai atom in SettingsSidebar
         />
 
-        <main className="settings-view-main flex-1 overflow-y-auto p-6 bg-[var(--nim-bg)] relative z-0">
+        <main ref={settingsMainRef} className="settings-view-main flex-1 overflow-y-auto p-6 bg-[var(--nim-bg)] relative z-0">
           <div className="settings-panel-container max-w-[800px]">
             {scope === 'application' && ['claude', 'claude-code', 'openai', 'openai-codex', 'opencode'].includes(selectedCategory) && <ProviderCredentialsPanel compact name={selectedCategory === 'claude' ? 'anthropic' : selectedCategory} />}
             {renderPanel()}

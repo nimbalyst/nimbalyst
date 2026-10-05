@@ -203,6 +203,7 @@ export function HeadlessCliProviderPanel({
       <SettingsToggle
         variant="enable"
         name={`Enable ${title}`}
+        testId={`setting-enable-${toolId}`}
         checked={config.enabled || false}
         onChange={onToggle}
       />

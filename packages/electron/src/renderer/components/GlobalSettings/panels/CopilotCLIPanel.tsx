@@ -134,6 +134,7 @@ export function CopilotCLIPanel({
       <SettingsToggle
         variant="enable"
         name="Enable GitHub Copilot"
+        testId="setting-enable-copilot"
         checked={config.enabled || false}
         onChange={onToggle}
       />

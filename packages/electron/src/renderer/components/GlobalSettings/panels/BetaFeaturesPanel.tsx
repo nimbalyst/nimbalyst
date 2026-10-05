@@ -55,6 +55,7 @@ export function BetaFeaturesPanel() {
                 });
               }}
               name="Enable All Beta Features"
+              testId="setting-enable-all-beta-features"
               description="Automatically enable all current and future beta features."
             />
           </div>

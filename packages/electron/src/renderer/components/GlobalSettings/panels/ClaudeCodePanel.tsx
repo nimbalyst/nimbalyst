@@ -391,6 +391,7 @@ export function ClaudeCodePanel({
       <SettingsToggle
         variant="enable"
         name="Enable Claude Agent"
+        testId="setting-enable-claude-agent"
         checked={config.enabled || false}
         onChange={(checked) => {
           // console.log('[ClaudeCodePanel] Toggle changed to:', checked);
@@ -457,6 +458,7 @@ export function ClaudeCodePanel({
       <SettingsToggle
         variant="enable"
         name="Plan Tracking"
+        testId="setting-claude-plan-tracking"
         description="Save plans to nimbalyst-local/plans/ with tracking frontmatter. When disabled, plans use Claude Code's default behavior."
         checked={planTrackingEnabled}
         onChange={handleSetPlanTrackingEnabled}
@@ -466,6 +468,7 @@ export function ClaudeCodePanel({
       <SettingsToggle
         variant="enable"
         name="Agent Teams (Experimental)"
+        testId="setting-claude-agent-teams"
         description="Allow Claude to coordinate multiple agents working together as a team. Uses more tokens but enables parallel work."
         checked={agentTeamsEnabled}
         onChange={handleToggleAgentTeams}
@@ -779,6 +782,7 @@ export function ClaudeCodePanel({
         <SettingsToggle
           variant="enable"
           name="Enable Claude Code CLI"
+          testId="setting-enable-claude-code-cli"
           checked={cli.config.enabled ?? false}
           onChange={(checked) => cli.onToggle(checked)}
         />
