@@ -252,7 +252,35 @@ export function getMigrations(schemaDir: string): Migration[] {
     { version: 49, name: 'personal_pages', sqlFile: path.join(schemaDir, '0049_personal_pages.sql') },
     { version: 50, name: 'personal_pages_one_tree', sqlFile: path.join(schemaDir, '0050_personal_pages_one_tree.sql') },
     { version: 51, name: 'personal_pages_parents_and_order', sqlFile: path.join(schemaDir, '0051_personal_pages_parents_and_order.sql') },
+    { version: 53, name: 'session_wakeup_attachments', sqlFile: path.join(schemaDir, '0053_session_wakeup_attachments.sql') },
+    { version: 54, name: 'session_wakeup_origin', sqlFile: path.join(schemaDir, '0054_session_wakeup_origin.sql') },
   ];
+}
+
+/**
+ * Applied migrations are skipped by version, so a migration that shipped under
+ * one number and was later renumbered (a fork branch that collided with
+ * upstream) would leave its old record hiding whatever now owns that number.
+ * A migration is identified by its name: when a name is recorded under a
+ * version other than its current one, move the record so the vacated number
+ * runs and the renumbered migration is not applied twice.
+ */
+function relocateRenumberedMigrations(db: SqliteDatabase, migrations: Migration[]): void {
+  const versionByName = new Map(migrations.map((m) => [m.name, m.version]));
+  db.transaction(() => {
+    const rows = db
+      .prepare('SELECT version, name FROM _migrations')
+      .all() as Array<{ version: number; name: string }>;
+    const recorded = new Set(rows.map((r) => r.version));
+    const move = db.prepare('UPDATE _migrations SET version = ? WHERE version = ?');
+    for (const row of rows) {
+      const current = versionByName.get(row.name);
+      if (current === undefined || current === row.version || recorded.has(current)) continue;
+      move.run(current, row.version);
+      recorded.delete(row.version);
+      recorded.add(current);
+    }
+  }).immediate();
 }
 
 export function runMigrations(db: SqliteDatabase, schemaDir: string): MigrationResult {
@@ -263,11 +291,6 @@ export function runMigrations(db: SqliteDatabase, schemaDir: string): MigrationR
       applied_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
     );
   `);
-
-  const appliedRows = db
-    .prepare('SELECT version FROM _migrations ORDER BY version ASC')
-    .all() as Array<{ version: number }>;
-  const applied = new Set(appliedRows.map((r) => r.version));
 
   const result: MigrationResult = { applied: [], skipped: [] };
   const migrations = getMigrations(schemaDir).sort((a, b) => a.version - b.version);
@@ -280,6 +303,13 @@ export function runMigrations(db: SqliteDatabase, schemaDir: string): MigrationR
     }
     seen.add(m.version);
   }
+
+  relocateRenumberedMigrations(db, migrations);
+
+  const appliedRows = db
+    .prepare('SELECT version FROM _migrations ORDER BY version ASC')
+    .all() as Array<{ version: number }>;
+  const applied = new Set(appliedRows.map((r) => r.version));
 
   const findAppliedVersion = db.prepare(
     'SELECT version FROM _migrations WHERE version = ?',

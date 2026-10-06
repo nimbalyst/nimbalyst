@@ -118,7 +118,7 @@ Twelve built-in provider lanes, plus any agent an extension contributes. Every l
   - GitCommitProposal
   - ToolPermission
 - Rate limit warning (amber) and blocked (red) widgets
-- Scheduled wakeups (agent self-paces via `schedule_wakeup` MCP tool; persists across restarts; banner with Fire now / Cancel; clock icon on session list rows; OS notification on fire; overdue prompt on launch)
+- Scheduled wakeups (agent self-paces via `schedule_wakeup` MCP tool, or the user schedules prompts directly from the chat input's "Run later" button -- delay presets, an arbitrary clock time, or "when my usage resets" for Claude sessions; a session can hold several user-scheduled prompts, and the agent's own wakeup never replaces them; attachments are kept; persists across restarts; banner with Fire now / Edit / Cancel; clock icon on session list rows; OS notification on fire; overdue prompt on launch)
 - Transcript with collapsible tool call groups
 - Click-to-copy code blocks
 - Agent file-placement preference -- open file tabs above the transcript or in the right pane

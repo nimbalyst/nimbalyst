@@ -74,7 +74,7 @@ export {
   sessionUnreadAtom,
   sessionLastActivityAtom,
   sessionPendingPromptAtom,
-  sessionWakeupAtom,
+  sessionWakeupsAtom,
   sessionHasPendingInteractivePromptAtom,
   agentSessionAttentionAtom,
   agentBubbleStateAtom,

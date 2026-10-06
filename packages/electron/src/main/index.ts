@@ -197,6 +197,7 @@ import { SessionNamingService } from './services/SessionNamingService';
 import { SessionWakeupScheduler } from './services/SessionWakeupScheduler';
 import { getPendingSubmissionStore, getSessionWakeupsStore, repositoryManager } from './services/RepositoryManager';
 import { recoverPendingSubmissionsOnBoot } from './services/ai/pendingSubmissions';
+import { scheduleSessionWakeup, wakeupPromptDelivery, broadcastWakeupChanged } from './services/sessionWakeupScheduling';
 import { ExtensionDevService } from './services/ExtensionDevService';
 import { MetaAgentService } from './services/MetaAgentService';
 import { notificationService } from './services/NotificationService';
@@ -2348,28 +2349,15 @@ app.whenReady().then(async () => {
     // Lives here in main because runtime is cross-platform (Capacitor/mobile too) and must
     // not import Electron-only services.
     ClaudeCodeProvider.setScheduleWakeupHandler(async ({ sessionId, workspacePath, delaySeconds, prompt, reason }) => {
-        const id = `wakeup-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
         const fireAt = new Date(Date.now() + delaySeconds * 1000);
-
-        const row = await getSessionWakeupsStore().create({
-            id,
+        await scheduleSessionWakeup({
             sessionId,
             workspaceId: workspacePath,
             prompt,
             reason,
             fireAt,
+            origin: 'agent',
         });
-        SessionWakeupScheduler.getInstance().onCreated(row);
-
-        for (const window of BrowserWindow.getAllWindows()) {
-            if (!window.isDestroyed()) {
-                try {
-                    window.webContents.send('wakeup:changed', row);
-                } catch {
-                    // ignore destroyed window
-                }
-            }
-        }
 
         console.log(`[CLAUDE-CODE] ScheduleWakeup -> session=${sessionId} fireAt=${fireAt.toISOString()} delay=${delaySeconds}s`);
     });
@@ -3072,17 +3060,16 @@ app.whenReady().then(async () => {
         const scheduler = SessionWakeupScheduler.getInstance();
         scheduler.configure({
             store: getSessionWakeupsStore(),
-            executor: async ({ sessionId, workspacePath, prompt }) => {
+            executor: async ({ sessionId, workspacePath, prompt, attachments, origin }) => {
                 if (!aiSvcRef) {
                     return { triggered: false };
                 }
-                await aiSvcRef.queuePromptForSession(sessionId, prompt, undefined, {
-                  promptOrigin: 'wakeup_resume',
-                  promptProvenance: {
-                    actor: 'system',
-                    origin: 'automation',
-                  },
-                });
+                await aiSvcRef.queuePromptForSession(
+                    sessionId,
+                    prompt,
+                    attachments?.length ? attachments : undefined,
+                    wakeupPromptDelivery(origin),
+                );
                 const outcome = await aiSvcRef.driveQueuedPrompts(sessionId, workspacePath, 'wakeup');
                 // A deferred outcome still counts as triggered: the queue driver
                 // owns the retry from here. Reporting false would send the row
@@ -3090,17 +3077,7 @@ app.whenReady().then(async () => {
                 // would queue a second copy of the same prompt (#962).
                 return { triggered: outcome.kind !== 'failed' };
             },
-            broadcastChanged: (row) => {
-                for (const window of BrowserWindow.getAllWindows()) {
-                    if (!window.isDestroyed()) {
-                        try {
-                            window.webContents.send('wakeup:changed', row);
-                        } catch {
-                            // ignore -- destroyed window
-                        }
-                    }
-                }
-            },
+            broadcastChanged: broadcastWakeupChanged,
         });
         await scheduler.start();
     } catch (error) {

@@ -14,6 +14,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { Worker } from 'node:worker_threads';
+import BetterSqlite from 'better-sqlite3';
 import { getMigrations, runMigrations, type Migration } from '../MigrationRunner';
 import { SQLiteDatabase } from '../SQLiteDatabase';
 
@@ -50,6 +51,17 @@ class FakeDb {
   }
 
   prepare(sql: string) {
+    if (/SELECT version, name FROM _migrations/i.test(sql)) {
+      return { all: () => this.migrations.map((m) => ({ ...m })) };
+    }
+    if (/UPDATE _migrations SET version/i.test(sql)) {
+      return {
+        run: (to: number, from: number) => {
+          const row = this.migrations.find((m) => m.version === from);
+          if (row) row.version = to;
+        },
+      };
+    }
     if (/SELECT version FROM _migrations/i.test(sql)) {
       return {
         all: () => this.migrations.map((m) => ({ version: m.version })),
@@ -198,6 +210,40 @@ describe('runMigrations', () => {
 
     const outcomes = await Promise.all([runWorker(), runWorker()]);
     expect(outcomes.filter((outcome) => !outcome.ok)).toEqual([]);
+  });
+
+  it('moves a renumbered migration record so the number it vacated still runs', () => {
+    stageMigrationFiles(tmp);
+    const raw = new BetterSqlite(path.join(tmp, 'renumbered.sqlite'));
+    try {
+      // Installs from the fork applied the session_wakeup migrations as 48/49
+      // before upstream took those numbers; they now ship as 53/54.
+      raw.exec(`CREATE TABLE _migrations (version INTEGER PRIMARY KEY, name TEXT NOT NULL, applied_at TEXT NOT NULL DEFAULT '')`);
+      const record = raw.prepare('INSERT INTO _migrations (version, name) VALUES (?, ?)');
+      const notYetRecorded = new Set([
+        'tracker_relationship_index_qualifiers', 'personal_pages', 'personal_pages_one_tree',
+        'personal_pages_parents_and_order', 'session_wakeup_attachments', 'session_wakeup_origin',
+      ]);
+      for (const m of getMigrations(tmp)) {
+        if (!notYetRecorded.has(m.name)) record.run(m.version, m.name);
+      }
+      record.run(48, 'session_wakeup_attachments');
+      record.run(49, 'session_wakeup_origin');
+
+      const result = runMigrations(raw, tmp);
+
+      expect(result.applied).toEqual([48, 49, 50, 51]);
+      expect(raw.prepare('SELECT version, name FROM _migrations WHERE version IN (48, 49, 50, 51, 53, 54) ORDER BY version').all()).toEqual([
+        { version: 48, name: 'tracker_relationship_index_qualifiers' },
+        { version: 49, name: 'personal_pages' },
+        { version: 50, name: 'personal_pages_one_tree' },
+        { version: 51, name: 'personal_pages_parents_and_order' },
+        { version: 53, name: 'session_wakeup_attachments' },
+        { version: 54, name: 'session_wakeup_origin' },
+      ]);
+    } finally {
+      raw.close();
+    }
   });
 });
 
