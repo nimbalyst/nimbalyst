@@ -428,6 +428,13 @@
         "description": "Markdown Document",
         "mimeType": "text/markdown",
         "role": "Editor"
+      },
+      {
+        "ext": "excalidraw",
+        "name": "Excalidraw Drawing",
+        "description": "Excalidraw Drawing",
+        "mimeType": "application/vnd.excalidraw+json",
+        "role": "Editor"
       }
     ],
     "mac": {
@@ -471,6 +478,12 @@
         {
           "ext": "markdown",
           "name": "Markdown Document",
+          "role": "Editor",
+          "rank": "Alternate"
+        },
+        {
+          "ext": "excalidraw",
+          "name": "Excalidraw Drawing",
           "role": "Editor",
           "rank": "Alternate"
         }
