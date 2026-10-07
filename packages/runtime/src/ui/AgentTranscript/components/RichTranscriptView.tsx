@@ -1697,6 +1697,8 @@ export const RichTranscriptView = React.forwardRef<
         return 'OpenAI';
       case 'lmstudio':
         return 'LM Studio';
+      case 'copilot-cli':
+        return 'Copilot Agent';
       default:
         return 'Agent';
     }

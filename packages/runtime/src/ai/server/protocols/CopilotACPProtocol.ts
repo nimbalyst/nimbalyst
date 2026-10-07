@@ -481,9 +481,14 @@ export class CopilotACPProtocol implements AgentProtocol {
           events.push({
             type: 'tool_call',
             toolCall: {
-              id: typeof update.id === 'string' ? update.id : (typeof content?.id === 'string' ? content.id : undefined),
-              name: typeof update.name === 'string' ? update.name : (typeof content?.name === 'string' ? content.name : 'unknown'),
-              arguments: (update.arguments ?? update.input ?? content?.arguments ?? content?.input) as Record<string, unknown> | undefined,
+              // ACP tool_call updates carry toolCallId / title / kind / rawInput.
+              id: typeof update.toolCallId === 'string' ? update.toolCallId :
+                  typeof update.id === 'string' ? update.id : (typeof content?.id === 'string' ? content.id : undefined),
+              name: typeof update.name === 'string' ? update.name :
+                    typeof content?.name === 'string' ? content.name :
+                    typeof update.title === 'string' && update.title.trim() ? update.title.trim() :
+                    typeof update.kind === 'string' ? update.kind : 'unknown',
+              arguments: (update.arguments ?? update.input ?? update.rawInput ?? content?.arguments ?? content?.input) as Record<string, unknown> | undefined,
             },
           });
         } else if (updateType === 'tool_result') {

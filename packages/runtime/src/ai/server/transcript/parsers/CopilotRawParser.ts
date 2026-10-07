@@ -11,6 +11,8 @@
  * - Input messages (user prompts, same format as other providers)
  * - agent_message_chunk updates (text, thinking)
  * - tool_call / tool_result updates
+ * - ACP tool_call / tool_call_update updates (toolCallId, title, kind, rawInput),
+ *   which Copilot CLI sends in --acp mode; delegated to CodexACPRawParser
  * - error updates
  * - Copilot assistant response messages (stored as item.completed)
  */
@@ -21,13 +23,17 @@ import type {
   ParseContext,
   CanonicalEventDescriptor,
 } from './IRawMessageParser';
+import { CodexACPRawParser } from './CodexACPRawParser';
 
 export class CopilotRawParser implements IRawMessageParser {
   private accumulatedText = '';
+  // Standard ACP tool updates have the same shape as Codex ACP's, so its
+  // parser maps them (tool names, arguments, results) instead of duplicating it.
+  private readonly acpToolParser = new CodexACPRawParser();
 
   async parseMessage(
     msg: RawMessage,
-    _context: ParseContext,
+    context: ParseContext,
   ): Promise<CanonicalEventDescriptor[]> {
     if (msg.hidden) return [];
 
@@ -35,7 +41,37 @@ export class CopilotRawParser implements IRawMessageParser {
       return this.parseInputMessage(msg);
     }
 
+    const acpToolUpdate = this.extractAcpToolUpdate(msg);
+    if (acpToolUpdate) {
+      return this.acpToolParser.parseMessage(
+        { ...msg, content: JSON.stringify({ type: 'session/update', update: acpToolUpdate }) },
+        context,
+      );
+    }
+
     return this.parseOutputMessage(msg);
+  }
+
+  /**
+   * Returns the update if `msg` is an ACP `tool_call` / `tool_call_update`
+   * keyed by `toolCallId`, otherwise null (legacy shapes keep the paths below).
+   */
+  private extractAcpToolUpdate(msg: RawMessage): Record<string, unknown> | null {
+    let parsed: Record<string, unknown> | null;
+    try {
+      parsed = JSON.parse(msg.content);
+    } catch {
+      return null;
+    }
+    if (!parsed || typeof parsed !== 'object' || parsed.method !== 'session/update') return null;
+
+    const params = parsed.params as Record<string, unknown> | undefined;
+    const update = params?.update as Record<string, unknown> | undefined;
+    if (!update || typeof update.toolCallId !== 'string') return null;
+
+    return update.sessionUpdate === 'tool_call' || update.sessionUpdate === 'tool_call_update'
+      ? update
+      : null;
   }
 
   private parseInputMessage(msg: RawMessage): CanonicalEventDescriptor[] {
