@@ -33,13 +33,6 @@ import * as path from 'path';
  */
 export const FIXTURE_AUTHOR = { name: 'Test User', email: 'test@example.com' } as const;
 
-/** Args that pin identity + disable signing on a single `git commit`. */
-export const FIXTURE_IDENTITY_ARGS: string[] = [
-  '-c', `user.name=${FIXTURE_AUTHOR.name}`,
-  '-c', `user.email=${FIXTURE_AUTHOR.email}`,
-  '-c', 'commit.gpgsign=false',
-];
-
 /**
  * A process env with every GIT_* variable stripped and repo discovery pinned
  * below the temp dir. Pass this to every spawn of the git binary.
@@ -95,4 +88,64 @@ export function assertGitSandbox(repo: string, ceilingDir?: string): void {
       'refusing to run a mutating git command outside the sandbox.',
     );
   }
+}
+
+export interface ScratchRepoOptions {
+  /** First branch name. Default `main`. */
+  initialBranch?: string;
+  /** Make the repo in this existing folder. The caller's own cleanup removes it. */
+  at?: string;
+}
+
+export interface ScratchRepo {
+  /** Real path (macOS `/var` resolved to `/private/var`). */
+  path: string;
+  /** The sandbox env the fixture's own git calls use. */
+  env: NodeJS.ProcessEnv;
+  /** Run git in `path` and return its output. Throws on a non-zero exit. */
+  git(...args: string[]): string;
+  /** Delete the temp folder. Does nothing when `at` was given. */
+  cleanup(): void;
+}
+
+/**
+ * A fresh `git init` repo with no commits. Its repo-local config pins the
+ * identity, turns signing off, and blanks the hook path and global ignore list.
+ * Repo-local config outranks the developer's global config, so these values
+ * also hold for git calls the code under test makes with the inherited
+ * `process.env`, which this fixture cannot sandbox.
+ */
+export function createScratchRepo(options: ScratchRepoOptions = {}): ScratchRepo {
+  const tempRoot = process.env.NIMBALYST_TEST_TEMP_DIR ?? os.tmpdir();
+  fs.mkdirSync(tempRoot, { recursive: true });
+  const repoPath = fs.realpathSync(
+    options.at ?? fs.mkdtempSync(path.join(tempRoot, 'nimbalyst-scratch-repo-')),
+  );
+  const env = gitSandboxEnv(tempRoot);
+  const run = (args: string[]) =>
+    execFileSync('git', args, { cwd: repoPath, env, encoding: 'utf8' });
+
+  run(['init', '-q', '-b', options.initialBranch ?? 'main']);
+  for (const [key, value] of [
+    ['user.name', FIXTURE_AUTHOR.name],
+    ['user.email', FIXTURE_AUTHOR.email],
+    ['commit.gpgsign', 'false'],
+    ['tag.gpgsign', 'false'],
+    ['core.hooksPath', path.join(repoPath, '.git', 'hooks')],
+    ['core.excludesFile', ''],
+  ]) {
+    run(['config', key, value]);
+  }
+
+  return {
+    path: repoPath,
+    env,
+    git: (...args) => {
+      assertGitSandbox(repoPath, tempRoot);
+      return run(args);
+    },
+    cleanup: () => {
+      if (!options.at) fs.rmSync(repoPath, { recursive: true, force: true });
+    },
+  };
 }
