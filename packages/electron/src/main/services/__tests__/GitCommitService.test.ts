@@ -9,7 +9,7 @@ import {
   createGitCommitProposalResponse,
   executeGitCommit,
 } from '../GitCommitService';
-import { assertGitSandbox, gitSandboxEnv } from '../testSupport/gitTestSandbox';
+import { createScratchRepo, gitSandboxEnv } from '../testSupport/gitTestSandbox';
 
 const execFileAsync = promisify(execFile);
 
@@ -50,21 +50,9 @@ async function gitBytes(args: string[], cwd: string): Promise<Buffer> {
   });
 }
 
-/** `git init` + a sandbox assertion, so no test can commit outside tmpRoot. */
-async function initScratchRepo(cwd: string): Promise<void> {
-  await git(['init', '-q'], cwd);
-  await git(['config', 'user.email', 'test@example.com'], cwd);
-  await git(['config', 'user.name', 'Test User'], cwd);
-  await git(['config', 'commit.gpgsign', 'false'], cwd);
-  // executeGitCommit inherits process.env, so a developer's global core.hooksPath
-  // would replace the hooks these tests write into .git/hooks.
-  await git(['config', 'core.hooksPath', path.join(cwd, '.git', 'hooks')], cwd);
-  assertGitSandbox(cwd, testTempRoot);
-}
-
 describe('GitCommitService', () => {
   it('rejects an empty proposal without committing the current index', async () => {
-    await initScratchRepo(tmpRoot);
+    createScratchRepo({ at: tmpRoot });
     await fs.writeFile(path.join(tmpRoot, 'already-staged.txt'), 'keep\n', 'utf8');
     await git(['add', 'already-staged.txt'], tmpRoot);
 
@@ -75,7 +63,7 @@ describe('GitCommitService', () => {
   });
 
   it('commits a selected absolute file path relative to its repository', async () => {
-    await initScratchRepo(tmpRoot);
+    createScratchRepo({ at: tmpRoot });
 
     const absoluteFilePath = path.join(tmpRoot, 'a.txt');
     await fs.writeFile(absoluteFilePath, 'hello\n', 'utf8');
@@ -87,12 +75,12 @@ describe('GitCommitService', () => {
   });
 
   it('ignores inherited repository-selection env and commits only in the requested workspace', async () => {
-    await initScratchRepo(tmpRoot);
+    createScratchRepo({ at: tmpRoot });
     const selectedPath = path.join(tmpRoot, 'a.txt');
     await fs.writeFile(selectedPath, 'scratch\n', 'utf8');
 
     const decoyRoot = await fs.mkdtemp(path.join(testTempRoot, 'nim-git-commit-decoy-'));
-    await initScratchRepo(decoyRoot);
+    createScratchRepo({ at: decoyRoot });
     await fs.writeFile(path.join(decoyRoot, 'seed.txt'), 'seed\n', 'utf8');
     await git(['add', 'seed.txt'], decoyRoot);
     await git(['commit', '-q', '-m', 'decoy baseline'], decoyRoot);
@@ -125,7 +113,7 @@ describe('GitCommitService', () => {
   });
 
   it('commits only the selected file while preserving unrelated staged and unstaged hunks', async () => {
-    await initScratchRepo(tmpRoot);
+    createScratchRepo({ at: tmpRoot });
 
     const unrelatedPath = path.join(tmpRoot, 'unrelated.txt');
     const selectedPath = path.join(tmpRoot, 'selected.txt');
@@ -159,7 +147,7 @@ describe('GitCommitService', () => {
   });
 
   it('commits an absolute path in the selected linked worktree, not its parent checkout', async () => {
-    await initScratchRepo(tmpRoot);
+    createScratchRepo({ at: tmpRoot });
     await fs.writeFile(path.join(tmpRoot, 'seed.txt'), 'seed\n', 'utf8');
     await git(['add', 'seed.txt'], tmpRoot);
     await git(['commit', '-q', '-m', 'seed'], tmpRoot);
@@ -181,7 +169,7 @@ describe('GitCommitService', () => {
   });
 
   it('rejects a selected path outside the repository', async () => {
-    await initScratchRepo(tmpRoot);
+    createScratchRepo({ at: tmpRoot });
 
     const outsidePath = path.join(path.dirname(tmpRoot), 'outside.txt');
     await fs.writeFile(outsidePath, 'outside\n', 'utf8');
@@ -197,7 +185,7 @@ describe('GitCommitService', () => {
   });
 
   it('preserves existing staging when rejecting an outside path', async () => {
-    await initScratchRepo(tmpRoot);
+    createScratchRepo({ at: tmpRoot });
 
     await fs.writeFile(path.join(tmpRoot, 'already-staged.txt'), 'keep\n', 'utf8');
     await git(['add', 'already-staged.txt'], tmpRoot);
@@ -215,7 +203,7 @@ describe('GitCommitService', () => {
   });
 
   it('rejects Git pathspec magic in a proposal', async () => {
-    await initScratchRepo(tmpRoot);
+    createScratchRepo({ at: tmpRoot });
 
     const result = await executeGitCommit(tmpRoot, 'must not expand a pathspec', [':(glob)**/*']);
 
@@ -224,7 +212,7 @@ describe('GitCommitService', () => {
   });
 
   it('returns a failure result with hook output when pre-commit rejects the commit', async () => {
-    await initScratchRepo(tmpRoot);
+    createScratchRepo({ at: tmpRoot });
 
     const hooksDir = path.join(tmpRoot, '.git', 'hooks');
     await fs.mkdir(hooksDir, { recursive: true });
@@ -253,7 +241,7 @@ describe('GitCommitService', () => {
   });
 
   it('restores the exact existing index when a hook rejects the proposed commit', async () => {
-    await initScratchRepo(tmpRoot);
+    createScratchRepo({ at: tmpRoot });
 
     await fs.writeFile(path.join(tmpRoot, 'already-staged.txt'), 'keep\n', 'utf8');
     await git(['add', 'already-staged.txt'], tmpRoot);
@@ -271,7 +259,7 @@ describe('GitCommitService', () => {
   });
 
   it('runs hooks with the injected subprocess env so PATH-dependent hooks resolve', async () => {
-    await initScratchRepo(tmpRoot);
+    createScratchRepo({ at: tmpRoot });
 
     // A binary that lives ONLY in a directory absent from the test process PATH,
     // standing in for an nvm-managed `yarn` that husky hooks invoke.
@@ -311,7 +299,7 @@ describe('GitCommitService', () => {
   });
 
   it('retries past a briefly-held .git/index.lock and commits successfully', async () => {
-    await initScratchRepo(tmpRoot);
+    createScratchRepo({ at: tmpRoot });
 
     // Seed commit so executeGitCommit's reset-HEAD path (which writes the index) runs.
     await fs.writeFile(path.join(tmpRoot, 'seed.txt'), 'seed\n', 'utf8');
@@ -348,7 +336,7 @@ describe('GitCommitService', () => {
    * commits still serialize on the ref lock rather than the index lock.
    */
   it('still commits when .git/index.lock is held persistently, reporting the unrefreshed index', async () => {
-    await initScratchRepo(tmpRoot);
+    createScratchRepo({ at: tmpRoot });
 
     await fs.writeFile(path.join(tmpRoot, 'seed.txt'), 'seed\n', 'utf8');
     await git(['add', 'seed.txt'], tmpRoot);
@@ -386,7 +374,7 @@ describe('GitCommitService', () => {
    */
   describe('index consistency under concurrent git processes', () => {
     async function seedRepo(): Promise<void> {
-      await initScratchRepo(tmpRoot);
+      createScratchRepo({ at: tmpRoot });
       await fs.writeFile(path.join(tmpRoot, 'tracked.txt'), 'v1\n', 'utf8');
       await git(['add', 'tracked.txt'], tmpRoot);
       await git(['commit', '-q', '-m', 'seed'], tmpRoot);
@@ -554,7 +542,7 @@ describe('GitCommitService', () => {
      * root have both edited one file, far enough apart to be separate hunks.
      */
     async function seedTwoSessionEdits(): Promise<{ file: string; refs: HunkRef[] }> {
-      await initScratchRepo(tmpRoot);
+      createScratchRepo({ at: tmpRoot });
       const file = path.join(tmpRoot, 'shared.txt');
       const base = `${Array.from({ length: 30 }, (_, i) => `line${i + 1}`).join('\n')}\n`;
       await fs.writeFile(file, base, 'utf8');

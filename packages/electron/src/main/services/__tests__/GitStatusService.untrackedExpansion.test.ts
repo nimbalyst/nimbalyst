@@ -18,13 +18,12 @@
  */
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { execFileSync } from 'child_process';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
 import { GitStatusService } from '../GitStatusService';
 import { getUntrackedFilesInDirectories } from '../../utils/gitUtils';
-import { assertGitSandbox, gitSandboxEnv } from '../testSupport/gitTestSandbox';
+import { createScratchRepo } from '../testSupport/gitTestSandbox';
 
 // Records every git subprocess our code launches through `child_process.execFile`,
 // then delegates to the real implementation so git actually runs -- the batching
@@ -64,27 +63,17 @@ function gitCalls(name: string): string[][] {
 
 let repo: string;
 
-function git(args: string[], cwd: string): void {
-  execFileSync('git', args, { cwd, stdio: 'pipe', env: gitSandboxEnv() });
-}
-
 /** Number of collapsed `?? dir/` entries the fixture produces. */
 const UNTRACKED_DIR_COUNT = 12;
 
 beforeEach(async () => {
   repo = await fs.mkdtemp(path.join(os.tmpdir(), 'nim-untracked-expand-'));
-  git(['init'], repo);
-  git(['config', 'user.email', 'test@example.com'], repo);
-  git(['config', 'user.name', 'Test'], repo);
-  git(['config', 'commit.gpgsign', 'false'], repo);
-  // A hook-inherited GIT_DIR would otherwise redirect the commit below onto the
-  // developer's live branch. See testSupport/gitTestSandbox.ts.
-  assertGitSandbox(repo);
+  const scratch = createScratchRepo({ at: repo });
 
   // Ignore node_modules, like every real repo.
   await fs.writeFile(path.join(repo, '.gitignore'), 'node_modules/\ndist/\n');
-  git(['add', '.gitignore'], repo);
-  git(['commit', '-m', 'init'], repo);
+  scratch.git('add', '.gitignore');
+  scratch.git('commit', '-m', 'init');
 
   // Many brand-new untracked directories. `git status --porcelain` reports each
   // as a SINGLE entry (`?? newpkg-000/`), so each one needs re-expanding --
@@ -115,13 +104,10 @@ beforeEach(async () => {
   // untracked file belongs to IT, not to the outer expansion.
   const nested = path.join(repo, 'nested-repo');
   await fs.mkdir(nested);
-  git(['init'], nested);
-  git(['config', 'user.email', 'test@example.com'], nested);
-  git(['config', 'user.name', 'Test'], nested);
-  git(['config', 'commit.gpgsign', 'false'], nested);
+  const nestedScratch = createScratchRepo({ at: nested });
   await fs.writeFile(path.join(nested, 'tracked.ts'), 'export const tracked = true;\n');
-  git(['add', 'tracked.ts'], nested);
-  git(['commit', '-m', 'nested init'], nested);
+  nestedScratch.git('add', 'tracked.ts');
+  nestedScratch.git('commit', '-m', 'nested init');
   await fs.writeFile(path.join(nested, 'nested-change.ts'), 'export const nested = true;\n');
 
   execFileCalls.length = 0;

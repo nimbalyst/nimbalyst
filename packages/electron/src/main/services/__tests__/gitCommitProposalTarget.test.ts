@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, realpathSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { assertGitSandbox, gitSandboxEnv, FIXTURE_AUTHOR } from '../testSupport/gitTestSandbox';
+import { assertGitSandbox, createScratchRepo } from '../testSupport/gitTestSandbox';
 
 const state = vi.hoisted(() => ({ session: null as any, worktree: null as any, attached: [] as string[] }));
 vi.mock('@nimbalyst/runtime/storage/repositories/AISessionsRepository', () => ({ AISessionsRepository: { get: async () => state.session } }));
@@ -81,13 +81,8 @@ it('commits only the worktree version of an overlapping path and preserves the p
   const main = join(scratch, 'real-main');
   const linked = join(scratch, 'real-worktree');
   mkdirSync(main);
-  const env = gitSandboxEnv(scratch);
+  const { env } = createScratchRepo({ at: main });
   const git = (cwd: string, args: string[]) => execFileSync('git', args, { cwd, env, encoding: 'utf8' }).trim();
-  git(main, ['init', '-q']);
-  assertGitSandbox(main, scratch);
-  git(main, ['config', 'user.name', FIXTURE_AUTHOR.name]);
-  git(main, ['config', 'user.email', FIXTURE_AUTHOR.email]);
-  git(main, ['config', 'commit.gpgsign', 'false']);
   writeFileSync(join(main, 'shared.txt'), 'baseline\n');
   git(main, ['add', '--', 'shared.txt']);
   git(main, ['commit', '-qm', 'seed']);
