@@ -1,8 +1,6 @@
 // @vitest-environment node
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
-import { execFileSync } from 'node:child_process';
 import { afterEach, expect, it, vi } from 'vitest';
 
 const observed = vi.hoisted(() => ({ handles: new Set<fs.StatWatcher>() }));
@@ -20,31 +18,25 @@ vi.mock('../../utils/logger', () => ({ logger: { main: { debug: vi.fn(), info: v
 vi.mock('../../ipc/GitStatusHandlers', () => ({ clearGitStatusCache: vi.fn() }));
 vi.mock('../../utils/gitUncommittedFiles', () => ({ clearGitFactsCache: vi.fn() }));
 import { GitRefWatcher } from '../GitRefWatcher';
+import { createScratchRepo, type ScratchRepo } from '../../services/testSupport/gitTestSandbox';
 
 const watcher = new GitRefWatcher();
-let fixture: string | undefined;
+let scratch: ScratchRepo | undefined;
 afterEach(async () => {
   await watcher.stopAll();
   vi.restoreAllMocks();
-  if (fixture) {
-    for (const file of ['index', 'HEAD', 'refs/heads/main']) fs.unwatchFile(path.join(fixture, '.git', file));
-    fs.rmSync(fixture, { recursive: true, force: true });
+  if (scratch) {
+    for (const file of ['index', 'HEAD', 'refs/heads/main']) fs.unwatchFile(path.join(scratch.path, '.git', file));
+    scratch.cleanup();
   }
 });
 
 it('releases native polling listeners after overlapping starts and cancellation', async () => {
-  fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'nimbalyst-native-watcher-'));
-  const gitConfig = path.join(fixture, '.gitconfig');
-  fs.writeFileSync(gitConfig, '');
-  const git = (...args: string[]) => execFileSync('git', args, {
-    cwd: fixture,
-    env: { ...process.env, GIT_CONFIG_GLOBAL: gitConfig, GIT_CONFIG_NOSYSTEM: '1', GIT_TERMINAL_PROMPT: '0' },
-    stdio: 'pipe',
-  });
-  git('init', '-q', '-b', 'main');
+  scratch = createScratchRepo();
+  const fixture = scratch.path;
   fs.writeFileSync(path.join(fixture, 'file.txt'), 'Synthetic lifecycle test\n');
-  git('add', '.');
-  git('-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', '-c', 'commit.gpgsign=false', 'commit', '-qm', 'Create test fixture');
+  scratch.git('add', '.');
+  scratch.git('commit', '-qm', 'Create test fixture');
 
   const handles = observed.handles;
 

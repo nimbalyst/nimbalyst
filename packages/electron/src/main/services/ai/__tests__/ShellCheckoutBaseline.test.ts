@@ -3,12 +3,13 @@ import { it, expect, vi } from 'vitest';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { execFile, execFileSync, type ExecFileOptionsWithStringEncoding } from 'node:child_process';
+import { execFile, type ExecFileOptionsWithStringEncoding } from 'node:child_process';
 import { ShellFileAttribution, type ShellFileEvidence } from '../ShellFileAttribution';
 import { prepareShellCheckoutBaseline } from '../ShellCheckoutBaseline';
 import { SHELL_BASELINE_CAPTURE_MS } from '../ShellContentBaseline';
 import { contentFingerprint } from '../../../file/knownFileWrites';
 import { ShellTrackingCoverage } from '../ShellTrackingCoverage';
+import { createScratchRepo } from '../../testSupport/gitTestSandbox';
 
 type GitExec = (command: string, args: readonly string[], options: ExecFileOptionsWithStringEncoding,
   callback: (error: Error | null, stdout: string, stderr: string) => void) => ReturnType<typeof execFile>;
@@ -66,8 +67,9 @@ it('shares one decreasing deadline across inventory, content and common-director
 });
 
 it.each(['inventory', 'content'])('reports a timed-out %s git call and abstains from identical rebuild links', async site => {
-  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'nim-baseline-timeout-')));
-  const git = (...args: string[]) => execFileSync('git', ['-C', root, ...args], { encoding: 'utf8' });
+  const repo = createScratchRepo();
+  const root = repo.path;
+  const git = repo.git;
   const file = path.join(root, 'generated.d.ts');
   const persist = vi.fn(async (_e: ShellFileEvidence) => 'persisted' as const);
   const coverage = new ShellTrackingCoverage({ load: async () => undefined, save: async () => {}, notify: () => {} });
@@ -83,8 +85,6 @@ it.each(['inventory', 'content'])('reports a timed-out %s git call and abstains 
   const realExec = vi.mocked(execFile).getMockImplementation()!;
   let generation: string | undefined;
   try {
-    git('init', '-q'); git('config', 'user.email', 'fixture@example.invalid'); git('config', 'user.name', 'Fixture');
-    expect(await fs.realpath(git('rev-parse', '--show-toplevel').trim())).toBe(root);
     await fs.writeFile(file, 'baseline\n'); git('add', '.'); git('commit', '-qm', 'baseline');
     vi.mocked(execFile).mockImplementation(((command, args, options, callback) => {
       if (args[2] === (site === 'inventory' ? 'worktree' : 'rev-parse')) {
@@ -121,14 +121,14 @@ it.each(['inventory', 'content'])('reports a timed-out %s git call and abstains 
     vi.mocked(execFile).mockImplementation(realExec);
     if (generation) await service.release(generation);
     await coverage.flush(['writer']);
-    await fs.rm(root, { recursive: true, force: true });
+    repo.cleanup();
   }
 });
 
 it('excludes checkout copies but retains edits committed by the creating tool and subsequent shell edits', async () => {
-  const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'nim-checkout-regression-'));
-  const root = await fs.realpath(temp), nested = path.join(root, 'scratch', 'checkout');
-  const git = (cwd: string, ...args: string[]) => execFileSync('git', ['-C', cwd, ...args], { encoding: 'utf8' });
+  const repo = createScratchRepo();
+  const root = repo.path, nested = path.join(root, 'scratch', 'checkout');
+  const git = (cwd: string, ...args: string[]) => repo.git('-C', cwd, ...args);
   const links: ShellFileEvidence[] = [];
   let emit!: (file: string) => void;
   let now = Date.now();
@@ -147,10 +147,6 @@ it('excludes checkout copies but retains edits committed by the creating tool an
   });
   let generation: string | undefined;
   try {
-    git(root, 'init', '-q');
-    git(root, 'config', 'user.email', 'fixture@example.invalid');
-    git(root, 'config', 'user.name', 'Fixture');
-    expect(await fs.realpath(git(root, 'rev-parse', '--show-toplevel').trim())).toBe(root);
     await fs.mkdir(path.join(root, '.claude'));
     await fs.writeFile(path.join(root, '.claude', 'unchanged.md'), 'checkout\n');
     await fs.writeFile(path.join(root, 'edited.md'), 'baseline\n');
@@ -180,14 +176,14 @@ it('excludes checkout copies but retains edits committed by the creating tool an
     expect(links.map(e => e.toolUseId)).toEqual(['create-and-edit', 'create-and-edit', 'later-edit']);
   } finally {
     if (generation) await service.release(generation);
-    await fs.rm(root, { recursive: true, force: true });
+    repo.cleanup();
   }
 });
 
 it.each(['alone', 'external session', 'overlapping shell'])('ignores cold-cache identical rebuilds with %s while retaining real change evidence', async mode => {
-  const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'nim-rebuild-regression-'));
-  const root = await fs.realpath(temp);
-  const git = (...args: string[]) => execFileSync('git', ['-C', root, ...args], { encoding: 'utf8' });
+  const repo = createScratchRepo();
+  const root = repo.path;
+  const git = repo.git;
   const links: ShellFileEvidence[] = [];
   let emit!: (file: string) => void;
   let now = Date.now();
@@ -207,8 +203,6 @@ it.each(['alone', 'external session', 'overlapping shell'])('ignores cold-cache 
   let generation: string | undefined;
   let other: string | undefined;
   try {
-    git('init', '-q'); git('config', 'user.email', 'fixture@example.invalid'); git('config', 'user.name', 'Fixture');
-    expect(await fs.realpath(git('rev-parse', '--show-toplevel').trim())).toBe(root);
     for (const file of ['generated.d.ts', 'dirty.ts', 'revert.ts', 'committed.ts', 'deleted.ts']) await fs.writeFile(path.join(root, file), 'baseline\n');
     git('add', '.'); git('commit', '-qm', 'baseline');
     await fs.writeFile(path.join(root, 'dirty.ts'), 'existing dirty content\n');
@@ -260,6 +254,6 @@ it.each(['alone', 'external session', 'overlapping shell'])('ignores cold-cache 
   } finally {
     if (generation) await service.release(generation);
     if (other) await service.release(other);
-    await fs.rm(root, { recursive: true, force: true });
+    repo.cleanup();
   }
 });
