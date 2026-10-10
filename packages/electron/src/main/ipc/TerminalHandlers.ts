@@ -33,6 +33,7 @@ import {
 } from '../utils/terminalStore';
 import { getDatabase } from '../database/initialize';
 import { createWorktreeStore } from '../services/WorktreeStore';
+import { stripWorktreeBranchPrefix } from '../../shared/worktreeBranchNaming';
 
 // Track if handlers are registered
 let handlersRegistered = false;
@@ -52,8 +53,7 @@ async function fetchWorktreeName(worktreeId: string): Promise<string | undefined
           return worktree.displayName;
         }
         // Strip 'worktree/' prefix from branch name if present
-        const branch = worktree.branch;
-        return branch.startsWith('worktree/') ? branch.slice('worktree/'.length) : branch;
+        return stripWorktreeBranchPrefix(worktree.branch);
       }
     }
   } catch (err) {
