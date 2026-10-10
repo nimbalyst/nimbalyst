@@ -16,7 +16,7 @@ import { isProjectSyncPath } from '../services/sync/projectSyncWikiRules';
 import { isSyncEnabled } from '../services/SyncManager';
 import { getReleaseChannel, getSessionSyncConfig, getWorkspaceRoots } from '../utils/store';
 import { anyWindowReferencesWorkspace } from '../window/windowState';
-import { listReposForRoot } from '../services/workspaceRepos';
+import { clearWorkspaceRepoCache, listReposForRoot } from '../services/workspaceRepos';
 
 // Helper function to calculate folder depth relative to workspace
 function calculateFolderDepth(folderPath: string, workspacePath: string): number {
@@ -33,8 +33,67 @@ function bucketFileCount(count: number): string {
     return '100+';
 }
 
+/**
+ * The repos each root's git-ref watchers were started for. A detach stops
+ * exactly these instead of rescanning, which would miss a nested clone the
+ * cleared discovery cache no longer answers for synchronously.
+ */
+interface RootRefWatchers {
+    owningWorkspace: string;
+    repos: string[];
+}
+const refWatchersByRoot = new Map<string, RootRefWatchers>();
+
+function startRefWatchers(rootPath: string, owningWorkspace: string): void {
+    const entry: RootRefWatchers = { owningWorkspace, repos: [] };
+    refWatchersByRoot.set(rootPath, entry);
+    void listReposForRoot(rootPath).then((repos) => {
+        if (refWatchersByRoot.get(rootPath) !== entry) return; // stopped or restarted meanwhile
+        entry.repos = repos;
+        for (const repoPath of repos) {
+            gitRefWatcher.start(repoPath, owningWorkspace).catch((error) => {
+                logger.workspaceWatcher.error('Failed to start GitRefWatcher:', error);
+            });
+        }
+    });
+}
+
+/**
+ * A root's ignore rules decide which nested clones count as its repos, so a
+ * `.gitignore` change rescans the root, moves the ref watchers to match, and
+ * tells the repo pickers.
+ */
+function refreshRootRepos(rootPath: string): void {
+    const entry = refWatchersByRoot.get(rootPath);
+    if (!entry) return;
+    clearWorkspaceRepoCache(rootPath);
+    void listReposForRoot(rootPath).then((repos) => {
+        if (refWatchersByRoot.get(rootPath) !== entry) return;
+        const added = repos.filter((repo) => !entry.repos.includes(repo));
+        const removed = entry.repos.filter((repo) => !repos.includes(repo));
+        if (added.length === 0 && removed.length === 0) return;
+        entry.repos = repos;
+        for (const repoPath of added) {
+            gitRefWatcher.start(repoPath, entry.owningWorkspace).catch((error) => {
+                logger.workspaceWatcher.error('Failed to start GitRefWatcher:', error);
+            });
+        }
+        for (const repoPath of removed) {
+            gitRefWatcher.stop(repoPath).catch((error) => {
+                logger.workspaceWatcher.error('Failed to stop GitRefWatcher:', error);
+            });
+        }
+        for (const window of BrowserWindow.getAllWindows()) {
+            if (!window.isDestroyed()) {
+                window.webContents.send('workspace:repos-changed', { workspacePath: rootPath });
+            }
+        }
+    });
+}
+
 workspaceEventBus.setGitignoreChangeHandler((workspacePath: string) => {
     clearGitStatusCache(workspacePath);
+    refreshRootRepos(workspacePath);
 
     for (const window of BrowserWindow.getAllWindows()) {
         if (!window.isDestroyed()) {
@@ -138,11 +197,7 @@ export function startRootWatcher(window: BrowserWindow, rootPath: string, owning
     // The owning workspace goes with it: git status is routed per repo, but
     // pending reviews are workspace-scoped, and a repo under an attached folder
     // has no workspace identity of its own to broadcast under.
-    for (const repoPath of listReposForRoot(rootPath)) {
-        gitRefWatcher.start(repoPath, owningWorkspace ?? rootPath).catch((error) => {
-            logger.workspaceWatcher.error('Failed to start GitRefWatcher:', error);
-        });
-    }
+    startRefWatchers(rootPath, owningWorkspace ?? rootPath);
 }
 
 /**
@@ -156,7 +211,9 @@ export function stopRootWatcher(windowId: number, rootPath: string) {
     optimizedWorkspaceWatcher.stopRoot(windowId, rootPath);
 
     if (!anyWindowReferencesWorkspace(rootPath)) {
-        for (const repoPath of listReposForRoot(rootPath)) {
+        const entry = refWatchersByRoot.get(rootPath);
+        refWatchersByRoot.delete(rootPath);
+        for (const repoPath of entry?.repos ?? []) {
             gitRefWatcher.stop(repoPath).catch((error) => {
                 logger.workspaceWatcher.error('Failed to stop GitRefWatcher:', error);
             });

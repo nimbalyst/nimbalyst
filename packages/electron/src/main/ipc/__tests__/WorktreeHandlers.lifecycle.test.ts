@@ -41,7 +41,8 @@ it.each([false, true])('starts monitoring after creation only while the project 
   let finish!: (value: unknown) => void;
   mocks.createWorktree.mockImplementation(() => new Promise(resolve => { finish = resolve; }));
   const creating = mocks.handlers.get('worktree:create')!({}, '/project', { name: 'branch' });
-  expect(mocks.createWorktree).toHaveBeenCalled();
+  // The handler resolves the source repo (async discovery) before git starts.
+  await vi.waitFor(() => expect(mocks.createWorktree).toHaveBeenCalled());
   // The owning window can close while Git is still creating the worktree.
   mocks.inUse = inUse;
   const worktree = { id: 'branch', path: '/project_worktrees/branch', branch: 'branch', projectPath: '/project' };

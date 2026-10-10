@@ -21,15 +21,16 @@ import { existsSync, readdirSync } from 'fs';
 import { isAbsolute, join, resolve as resolvePath } from 'path';
 import { getAttachedFolders, getWorkspaceRoots } from '../utils/store';
 import { findGitRootForFile } from './GitStatusService';
+import { listIgnoredNestedRepositories } from '../utils/gitUtils';
 import { isPathInWorkspace } from '../../shared/pathUtils';
 import { logger } from '../utils/logger';
 
 /**
- * Discovered repos per root. Repos do not appear or vanish during a session in
- * any way we need to react to, and the scan is a `readdirSync` per root, so a
- * plain memo is enough. Cleared on attach/detach and by tests.
+ * Discovered repos per root, as the promise of the scan so concurrent callers
+ * share one git call. Cleared on attach/detach, when a root's `.gitignore`
+ * changes, and by tests. The scan never rejects.
  */
-const reposByRoot = new Map<string, string[]>();
+const reposByRoot = new Map<string, Promise<string[]>>();
 
 /** Test-only, and called on attach/detach so a new root is scanned once. */
 export function clearWorkspaceRepoCache(rootPath?: string): void {
@@ -49,18 +50,19 @@ function isRepo(dir: string): boolean {
 }
 
 /**
- * Repos directly under a root.
+ * Repos under a root.
  *
- * A root that is itself a repo answers with just itself: its nested repos and
- * submodules are reached per file by `resolveRepoForFile`, and listing them
- * here would put every submodule in the repo picker. A root that is NOT a repo
- * is treated as a container and scanned one level down -- deep enough for the
- * "folder full of checkouts" case, shallow enough that attaching a large
- * directory does not walk it.
+ * A root that is itself a repo answers with itself plus the separate checkouts
+ * its ignore rules hide -- an umbrella repo whose clones sit inside it, each
+ * gitignored so the umbrella's history stays its own. Submodules are tracked,
+ * so they never appear here and are still reached per file by
+ * `resolveRepoForFile`. A root that is NOT a repo is treated as a container and
+ * scanned one level down -- deep enough for the "folder full of checkouts"
+ * case, shallow enough that attaching a large directory does not walk it.
  */
-function scanRootForRepos(rootPath: string): string[] {
+async function scanRootForRepos(rootPath: string): Promise<string[]> {
   if (isRepo(rootPath)) {
-    return [rootPath];
+    return [rootPath, ...(await listIgnoredNestedRepositories(rootPath))];
   }
 
   try {
@@ -75,7 +77,7 @@ function scanRootForRepos(rootPath: string): string[] {
 }
 
 /** Repos under one root, cached. */
-export function listReposForRoot(rootPath: string): string[] {
+export function listReposForRoot(rootPath: string): Promise<string[]> {
   let repos = reposByRoot.get(rootPath);
   if (!repos) {
     repos = scanRootForRepos(rootPath);
@@ -89,11 +91,11 @@ export function listReposForRoot(rootPath: string): string[] {
  * root is or contains a repo -- a perfectly valid workspace, and callers must
  * handle it rather than assuming index 0 exists.
  */
-export function listWorkspaceRepos(workspacePath: string): string[] {
+export async function listWorkspaceRepos(workspacePath: string): Promise<string[]> {
   const seen = new Set<string>();
   const repos: string[] = [];
   for (const rootPath of getWorkspaceRoots(workspacePath)) {
-    for (const repo of listReposForRoot(rootPath)) {
+    for (const repo of await listReposForRoot(rootPath)) {
       if (!seen.has(repo)) {
         seen.add(repo);
         repos.push(repo);
@@ -114,11 +116,11 @@ export function listWorkspaceRepos(workspacePath: string): string[] {
  * list so a repo created after the discovery cache warmed (`git init` mid
  * session) still answers.
  */
-export function listRepoScanPaths(workspacePath: string): string[] {
+export async function listRepoScanPaths(workspacePath: string): Promise<string[]> {
   const seen = new Set<string>();
   const paths: string[] = [];
   for (const rootPath of getWorkspaceRoots(workspacePath)) {
-    for (const candidate of [rootPath, ...listReposForRoot(rootPath)]) {
+    for (const candidate of [rootPath, ...(await listReposForRoot(rootPath))]) {
       if (!seen.has(candidate)) {
         seen.add(candidate);
         paths.push(candidate);
@@ -195,8 +197,8 @@ export function resolveRepoForFile(
  *
  * Returns null for a workspace with no repos at all.
  */
-export function resolveDefaultRepo(workspacePath: string): string | null {
-  return listWorkspaceRepos(workspacePath)[0] ?? null;
+export async function resolveDefaultRepo(workspacePath: string): Promise<string | null> {
+  return (await listWorkspaceRepos(workspacePath))[0] ?? null;
 }
 
 /**

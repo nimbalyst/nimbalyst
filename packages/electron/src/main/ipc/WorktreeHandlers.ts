@@ -362,8 +362,8 @@ export function registerWorktreeHandlers(): void {
      * trackers key off it) -- only the git operations move to this repo.
      */
     const sourceRepo =
-      (options?.sourceFolderPath ? listReposForRoot(options.sourceFolderPath)[0] ?? null : null)
-      ?? resolveDefaultRepo(workspacePath)
+      (options?.sourceFolderPath ? (await listReposForRoot(options.sourceFolderPath))[0] ?? null : null)
+      ?? (await resolveDefaultRepo(workspacePath))
       ?? workspacePath;
 
     // Retry loop for handling race conditions where concurrent requests pick the same name

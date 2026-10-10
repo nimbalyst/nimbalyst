@@ -4,6 +4,7 @@ import { join, relative, resolve } from 'path';
 import { promisify } from 'util';
 
 import { createGitRemoteCache } from './gitRemoteCache';
+import { shouldExcludeDir } from './fileFilters';
 
 const execFileAsync = promisify(execFile);
 
@@ -84,6 +85,7 @@ export function resetGitAvailableCache(): void {
 // per-directory implementation allowed; lowering it would silently erase
 // untracked files from the changed-files UI and the commit-context prompt.
 const LS_FILES_MAX_BUFFER = 64 * 1024 * 1024;
+const NESTED_REPO_SCAN_TIMEOUT_MS = 5_000;
 
 // Pathspecs are passed as argv, which the OS caps (ARG_MAX: 1MB on macOS, less
 // on some platforms). A repo with thousands of untracked directories would blow
@@ -244,7 +246,8 @@ export async function listIgnoredNestedRepositories(repoRoot: string): Promise<s
     ({ stdout } = await execFileAsync(
       'git',
       ['--no-optional-locks', 'ls-files', '--others', '--ignored', '--exclude-standard', '--directory', '-z'],
-      { cwd: repoRoot, encoding: 'utf8', maxBuffer: LS_FILES_MAX_BUFFER },
+      // Repo discovery waits on this, so a wedged git must not hold it up.
+      { cwd: repoRoot, encoding: 'utf8', maxBuffer: LS_FILES_MAX_BUFFER, timeout: NESTED_REPO_SCAN_TIMEOUT_MS },
     ));
   } catch (error) {
     console.error('[gitUtils] git ls-files failed while listing ignored nested repositories', repoRoot, error);
@@ -256,6 +259,8 @@ export async function listIgnoredNestedRepositories(repoRoot: string): Promise<s
   for (const entry of stdout.split('\0')) {
     // Ignored directories end in a slash; an ignored file cannot be a checkout.
     if (!entry.endsWith('/')) continue;
+    // node_modules and friends are never a checkout worth listing.
+    if (entry.split('/').some((segment) => segment && shouldExcludeDir(segment))) continue;
     const candidate = resolve(repoRoot, entry);
     const commonDir = gitCommonDir(candidate);
     if (commonDir === null || commonDir === ownCommonDir) continue;
