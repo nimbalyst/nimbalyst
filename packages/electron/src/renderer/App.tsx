@@ -310,6 +310,12 @@ import {
   resetTerminalPanelHydration,
 } from './store/atoms/terminals';
 
+interface TitleBarGitActionState {
+  busyAction: 'pull' | 'push' | null;
+  feedback: { kind: 'success' | 'error'; message: string } | null;
+}
+const IDLE_TITLE_BAR_GIT_ACTION: TitleBarGitActionState = { busyAction: null, feedback: null };
+
 logger.ui.info('App.tsx loading');
 logger.ui.info('About to import NimbalystEditor');
 logger.ui.info('NimbalystEditor imported');
@@ -693,13 +699,12 @@ export default function App() {
   const toggleExpandedTabVersion = useAtomValue(toggleExpandedTabRequestAtom);
   const gitStatus = useAtomValue(gitStatusAtom);
   const setGitStatus = useSetAtom(gitStatusAtom);
-  // Projection of the main-process Git journal, so the title bar shows commands
-  // this window did not start (Git panel, agent sessions) as well as its own.
-  const gitActivity = useGitActivity(workspacePath);
-  const [gitActionState, setGitActionState] = useState<{
-    busyAction: 'pull' | 'push' | null;
-    feedback: { kind: 'success' | 'error'; message: string } | null;
-  }>({ busyAction: null, feedback: null });
+  // The title bar's own pull/push, per repository: a pull in one repository
+  // must not grey out pull and push for the others.
+  const [gitActionByRepo, setGitActionByRepo] = useState<Record<string, TitleBarGitActionState>>({});
+  const setGitActionForRepo = useCallback((repoPath: string, update: (current: TitleBarGitActionState) => TitleBarGitActionState) => {
+    setGitActionByRepo((current) => ({ ...current, [repoPath]: update(current[repoPath] ?? IDLE_TITLE_BAR_GIT_ACTION) }));
+  }, []);
 
   /**
    * Which repository the title-bar indicator reports on.
@@ -722,6 +727,16 @@ export default function App() {
     (pinnedGitRepoPath && workspaceRepoPaths.includes(pinnedGitRepoPath) ? pinnedGitRepoPath : null)
     ?? activeFileRepoPath
     ?? workspacePath;
+  const gitActionState = (gitRepoPath && gitActionByRepo[gitRepoPath]) || IDLE_TITLE_BAR_GIT_ACTION;
+
+  // Projection of the main-process Git journal, so the title bar shows commands
+  // this window did not start (Git panel, agent sessions) as well as its own --
+  // in every repository of the workspace, since the journal is kept per repository.
+  const gitActivityRepoPaths = useMemo(
+    () => (workspacePath ? [workspacePath, ...workspaceRepoPaths] : workspaceRepoPaths),
+    [workspacePath, workspaceRepoPaths],
+  );
+  const gitActivity = useGitActivity(gitActivityRepoPaths);
 
   // Branch per repo for the git menu's repository rows. Read on menu open
   // rather than kept live: N repos would otherwise mean N `git status` reads
@@ -746,12 +761,14 @@ export default function App() {
   const gitReposForTopBar = useMemo(() => {
     if (workspaceRepoPaths.length < 2) return [];
     const labels = repoLabels(workspaceRepoPaths);
+    const runningIn = new Set(gitActivity.runningEntries.map((entry) => entry.repoPath));
     return workspaceRepoPaths.map((repoPath) => ({
       path: repoPath,
       label: labels[repoPath] ?? repoPath,
       branch: gitBranchByRepo[repoPath],
+      busy: runningIn.has(repoPath) || gitActionByRepo[repoPath]?.busyAction != null,
     }));
-  }, [workspaceRepoPaths, gitBranchByRepo]);
+  }, [workspaceRepoPaths, gitBranchByRepo, gitActivity, gitActionByRepo]);
   const [agentPanelState, setAgentPanelState] = useState<AgentModePanelState>({
     available: false,
     visible: false,
@@ -775,7 +792,7 @@ export default function App() {
     setCollabPanelState({ sidebarCollapsed: false, chatCollapsed: false });
     setPrPanelState({ chatCollapsed: false });
     setAgentPanelState({ available: false, visible: false, mode: 'edited-files' });
-    setGitActionState({ busyAction: null, feedback: null });
+    setGitActionByRepo({});
   }, [workspacePath]);
 
   useEffect(() => {
@@ -1431,42 +1448,47 @@ export default function App() {
    * that broadcast and could put the older answer on screen.
    */
   const runTitleBarGitAction = useCallback(async (action: 'pull' | 'push') => {
-    if (!gitRepoPath || gitActionState.busyAction) return;
-    setGitActionState({ busyAction: action, feedback: null });
+    // The repository is fixed at the click: the result lands on it even when
+    // the user has moved the indicator to another repository meanwhile.
+    const repoPath = gitRepoPath;
+    if (!repoPath || gitActionByRepo[repoPath]?.busyAction) return;
+    setGitActionForRepo(repoPath, () => ({ busyAction: action, feedback: null }));
     try {
-      const result = await window.electronAPI.invoke(`git:${action}`, gitRepoPath);
+      const result = await window.electronAPI.invoke(`git:${action}`, repoPath);
       if (!result?.success) {
         throw new Error(result?.error || `Git ${action} failed`);
       }
-      setGitActionState({
+      setGitActionForRepo(repoPath, () => ({
         busyAction: null,
         feedback: {
           kind: 'success',
           message: action === 'pull' ? 'Pull completed' : 'Push completed',
         },
-      });
+      }));
     } catch (error) {
-      setGitActionState({
+      setGitActionForRepo(repoPath, () => ({
         busyAction: null,
         feedback: {
           kind: 'error',
           message: error instanceof Error ? error.message : String(error),
         },
-      });
+      }));
     }
-  }, [gitActionState.busyAction, gitRepoPath]);
+  }, [gitActionByRepo, gitRepoPath, setGitActionForRepo]);
 
   const handleOpenGitLog = useCallback((options?: { showOutput?: boolean }) => {
     const panelId = 'com.nimbalyst.git.git-log';
     const panel = getPanelById(panelId);
     if (!panel || panel.placement !== 'bottom') {
-      setGitActionState({
-        busyAction: null,
-        feedback: {
-          kind: 'error',
-          message: 'Git Log is not available. Enable the Git extension to open it.',
-        },
-      });
+      if (gitRepoPath) {
+        setGitActionForRepo(gitRepoPath, (current) => ({
+          ...current,
+          feedback: {
+            kind: 'error',
+            message: 'Git Log is not available. Enable the Git extension to open it.',
+          },
+        }));
+      }
       return;
     }
     setActiveExtensionBottomPanel(panelId);
@@ -1480,18 +1502,20 @@ export default function App() {
         }),
       );
     }
-  }, [closeTerminalPanel, workspacePath]);
+  }, [closeTerminalPanel, workspacePath, gitRepoPath, setGitActionForRepo]);
 
   const handleOpenGitActivity = useCallback(() => {
     handleOpenGitLog({ showOutput: true });
   }, [handleOpenGitLog]);
 
   const gitActivityForTopBar = useMemo<WindowTopBarGitActivity>(() => {
+    const labels = workspaceRepoPaths.length > 1 ? repoLabels(workspaceRepoPaths) : null;
     const toIndicatorEntry = (entry: GitActivityEntry): WindowTopBarGitActivityEntry => ({
       id: entry.id,
       command: entry.command,
       source: entry.source ?? 'nimbalyst',
       sessionId: entry.sessionId,
+      repoLabel: labels ? labels[entry.repoPath] : undefined,
     });
     return {
       running: gitActivity.runningEntries.map(toIndicatorEntry),
@@ -1499,17 +1523,17 @@ export default function App() {
         ? toIndicatorEntry(gitActivity.latestRunningEntry)
         : null,
     };
-  }, [gitActivity]);
+  }, [gitActivity, workspaceRepoPaths]);
 
   const handleOpenGitExtensionSettings = useCallback(() => {
-    setGitActionState({ busyAction: null, feedback: null });
+    if (gitRepoPath) setGitActionForRepo(gitRepoPath, (current) => ({ ...current, feedback: null }));
     store.set(openSettingsCommandAtom, {
       category: 'installed-extensions',
       scope: 'application',
       anchor: 'installed-extension-com.nimbalyst.git',
       timestamp: Date.now(),
     });
-  }, []);
+  }, [gitRepoPath, setGitActionForRepo]);
 
   const openHistoryForCurrentDocument = useCallback(() => {
     const mode = activeModeStateRef.current;

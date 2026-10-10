@@ -47,6 +47,8 @@ export interface WindowTopBarGitActivityEntry {
   command: string;
   source: 'nimbalyst' | 'agent';
   sessionId?: string;
+  /** The repository it runs in; set only in a workspace spanning several. */
+  repoLabel?: string;
 }
 
 export interface WindowTopBarGitActivity {
@@ -61,6 +63,8 @@ export interface WindowTopBarGitRepo {
   label: string;
   /** Current branch, filled in when the menu opens. */
   branch?: string;
+  /** A Git command is running in this repository. */
+  busy?: boolean;
 }
 
 export interface WindowTopBarGitActions {
@@ -218,7 +222,8 @@ export function clampGitActivityCommand(
  */
 export function describeGitActivityEntry(entry: WindowTopBarGitActivityEntry): string {
   const prefix = entry.source === 'agent' ? 'Agent session' : 'Nimbalyst';
-  return `${prefix}: ${entry.command.trim().replace(/\s+/g, ' ')}`;
+  const where = entry.repoLabel ? ` in ${entry.repoLabel}` : '';
+  return `${prefix}: ${entry.command.trim().replace(/\s+/g, ' ')}${where}`;
 }
 
 /** The tooltip line for the indicator: the newest command plus how many others. */
@@ -489,16 +494,21 @@ function GitStatusMenu({
                     aria-checked={repo.path === actions.activeRepoPath}
                     className={`window-top-bar__menu-item window-top-bar__git-repo-item ${MENU_ITEM}`}
                     data-testid="window-top-bar-git-repo-item"
+                    data-busy={repo.busy ? 'true' : undefined}
                     title={repo.path}
                     onClick={() => {
                       actions.onSelectRepo?.(repo.path);
                       menu.setIsOpen(false);
                     }}
                   >
-                    <MaterialSymbol
-                      icon={repo.path === actions.activeRepoPath ? 'check' : 'folder'}
-                      size={17}
-                    />
+                    {repo.busy ? (
+                      <MaterialSymbol icon="progress_activity" size={17} className="animate-spin" />
+                    ) : (
+                      <MaterialSymbol
+                        icon={repo.path === actions.activeRepoPath ? 'check' : 'folder'}
+                        size={17}
+                      />
+                    )}
                     <span className="min-w-0 flex-1 overflow-hidden text-ellipsis whitespace-nowrap">
                       {repo.label}
                     </span>
