@@ -131,9 +131,17 @@ describe('bucket unit resolution', () => {
 });
 
 describe('bucketIndexFor', () => {
-  const startMs = new Date(2026, 8, 1, 12, 0, 0, 0).getTime();
-  const endMs = new Date(2026, 8, 4, 23, 59, 59, 999).getTime();
-  const buckets = buildBuckets({ startMs, endMs }, 'day');
+  // Built after the top-level beforeAll switches TZ. A describe-body fixture is
+  // built at collection time in the host zone while the tests run in New York,
+  // so east of UTC a pre-range timestamp landed inside bucket 0.
+  let startMs: number;
+  let endMs: number;
+  let buckets: ReturnType<typeof buildBuckets>;
+  beforeAll(() => {
+    startMs = new Date(2026, 8, 1, 12, 0, 0, 0).getTime();
+    endMs = new Date(2026, 8, 4, 23, 59, 59, 999).getTime();
+    buckets = buildBuckets({ startMs, endMs }, 'day');
+  });
 
   it('locates a timestamp inside the clipped range', () => {
     expect(bucketIndexFor(buckets, new Date(2026, 8, 3, 8, 0, 0, 0).getTime())).toBe(2);
