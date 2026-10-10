@@ -22,9 +22,9 @@ import { database } from '../database/PGLiteDatabaseWorker';
 import { dirtyEditorRegistry } from './DirtyEditorRegistry';
 import { getPersonalSessionJwt } from './StytchAuthService';
 import { hashProjectFiles } from './ProjectManifestHasher';
-import { exceedsProjectSyncLimit, OversizedFileWarnings, storedSyncIds } from './projectFileSyncLimits';
+import { exceedsProjectSyncLimit, OversizedFileWarnings, projectSyncTitle, storedSyncIds } from './projectFileSyncLimits';
 import { keepDivergedRemoteCopy } from './projectFileSyncConflicts';
-import { isInWikiTrash, isProjectSyncPath, ProjectSyncWikiRules } from './sync/projectSyncWikiRules';
+import { isInWikiTrash, isProjectSyncPath, isWikiMarkerPath, ProjectSyncWikiRules, wikiMarkerFirst } from './sync/projectSyncWikiRules';
 
 interface SyncedFileState {
   syncId: string;
@@ -40,6 +40,7 @@ export class ProjectFileSyncService {
   // Remote writes held back because the target is open in a dirty editor; keyed
   // by absolute path, latest update wins. Flushed when the editor becomes clean.
   private deferredRemoteWrites = new Map<string, { projectId: string; workspacePath: string; file: ProjectSyncFileUpdate }>();
+  private sweepListeners = new Set<(projectId: string, filePaths: string[]) => void>();
   // Remote deletes held back because the target is open in a dirty editor; keyed
   // by absolute path. Resolved when the editor becomes clean.
   private deferredRemoteDeletes = new Map<string, { projectId: string; workspacePath: string; syncId: string; filePath: string }>();
@@ -173,7 +174,7 @@ export class ProjectFileSyncService {
     encryptedProjectId: string,
     opts: { seedBaseline: boolean },
   ): Promise<ProjectSyncManifestFile[]> {
-    const mdFiles = await this.scanMarkdownFiles(workspacePath);
+    const mdFiles = await this.scanSyncFiles(workspacePath);
     const manifest: ProjectSyncManifestFile[] = [];
 
     // Ensure the file-map cache exists for this project (syncId -> absolutePath).
@@ -224,7 +225,22 @@ export class ProjectFileSyncService {
       }
     }
 
+    for (const listener of this.sweepListeners) listener(encryptedProjectId, mdFiles);
     return manifest;
+  }
+
+  /** Called with the files every sweep (startup and each reconnect) found. Returns the unsubscribe. */
+  onSwept(listener: (encryptedProjectId: string, filePaths: string[]) => void): () => void {
+    this.sweepListeners.add(listener);
+    return () => this.sweepListeners.delete(listener);
+  }
+
+  /**
+   * The wiki's marker just appeared here, so tables the server offered while it
+   * was missing were refused. Ask again; they return through the normal path.
+   */
+  resync(encryptedProjectId: string): void {
+    void this.provider?.resync(encryptedProjectId);
   }
 
   /**
@@ -247,7 +263,7 @@ export class ProjectFileSyncService {
         return;
       }
       const content = await fs.readFile(filePath, 'utf-8');
-      const title = path.basename(filePath, '.md');
+      const title = projectSyncTitle(filePath);
 
       // Register newly-created files in the file map so remote deletes/updates
       // from mobile can be applied to the right local path. The map is only
@@ -352,7 +368,7 @@ export class ProjectFileSyncService {
 
     // Write updated/new files from server to disk
     const writePhaseStart = Date.now();
-    const filesToWrite = [...response.updatedFiles, ...response.newFiles];
+    const filesToWrite = wikiMarkerFirst([...response.updatedFiles, ...response.newFiles], cache.workspacePath);
     for (const file of filesToWrite) {
       await this.writeRemoteFileToDisk(projectId, cache.workspacePath, file);
     }
@@ -393,7 +409,7 @@ export class ProjectFileSyncService {
           const content = await fs.readFile(filePath, 'utf-8');
           const stat = await fs.stat(filePath);
           const relativePath = path.relative(cache.workspacePath, filePath);
-          const title = path.basename(filePath, '.md');
+          const title = projectSyncTitle(filePath);
 
           filesToPush.push({
             syncId,
@@ -513,8 +529,9 @@ export class ProjectFileSyncService {
    */
   private async writeRemoteFileToDisk(projectId: string, workspacePath: string, file: ProjectSyncFileUpdate): Promise<void> {
     const filePath = path.join(workspacePath, file.relativePath);
-    // An older client may have pushed wiki trash; it is not restored into the trash here.
-    if (isInWikiTrash(filePath, workspacePath)) return;
+    // An older client may have pushed wiki trash; it is not restored into the
+    // trash here. Wiki tables are only written inside this desktop's wiki folder.
+    if (!isProjectSyncPath(filePath, workspacePath)) return;
 
     // Never overwrite an editor's unsaved buffer. Hold the remote write until the
     // editor saves or closes, then retry it through the normal guard below. A
@@ -602,6 +619,7 @@ export class ProjectFileSyncService {
 
       logger.main.info(`[ProjectFileSync] Wrote remote file: ${file.relativePath}`);
       await this.wikiRules.afterRemoteWrite(projectId, workspacePath, filePath, file.content);
+      if (!localExists && isWikiMarkerPath(filePath, workspacePath)) this.resync(projectId);
     } catch (err) {
       logger.main.error(`[ProjectFileSync] Failed to write remote file: ${file.relativePath}`, err);
     }
@@ -695,7 +713,7 @@ export class ProjectFileSyncService {
       const content = await fs.readFile(filePath, 'utf-8');
       const stat = await fs.stat(filePath);
       const relativePath = path.relative(workspacePath, filePath);
-      const title = path.basename(filePath, '.md');
+      const title = projectSyncTitle(filePath);
       const outcome = await this.provider.pushFileContent(
         projectId,
         syncId,
@@ -784,7 +802,7 @@ export class ProjectFileSyncService {
 
   // MARK: - File Scanning
 
-  private async scanMarkdownFiles(dir: string): Promise<string[]> {
+  private async scanSyncFiles(dir: string): Promise<string[]> {
     const results: string[] = [];
     await this.walkDir(dir, results, dir);
     return results;
@@ -815,7 +833,7 @@ export class ProjectFileSyncService {
       const fullPath = path.join(dir, entry.name);
       if (entry.isDirectory()) {
         await this.walkDir(fullPath, results, root);
-      } else if (entry.isFile() && entry.name.endsWith('.md')) {
+      } else if (entry.isFile() && isProjectSyncPath(fullPath, root)) {
         try {
           const stat = await fs.stat(fullPath);
           if (!exceedsProjectSyncLimit(stat.size, path.relative(root, fullPath))) {

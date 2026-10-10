@@ -27,6 +27,7 @@ import {
   type LocalWikiCommandResult,
   type LocalWikiSnapshot,
   type ReadBodyResult,
+  type WikiIssue,
   type WriteBodyResult,
 } from '@nimbalyst/local-wiki';
 import type { PageSearchHit, PageSearchRequest, PageSearchResponse } from '@nimbalyst/collab-protocol';
@@ -37,6 +38,7 @@ import { logLegacyPersonalPagesHeartbeat, registerPersonalPagesExportIpc } from 
 import { forgetLocalWikiItemIds, rememberLocalWikiItemIds } from './localWikiItemIds';
 import { ensureWikiTypeStorage, readTypeStorage } from './localWikiTypeStorage';
 import { isTypePageProse } from './personalPagesExport';
+import { getTrackerSchemaLoadFailures, onTrackerSchemaLoadFailuresChanged } from '../tracker/trackerSchemaLoadFailures';
 
 export const LOCAL_WIKI_CHANGED_CHANNEL = 'local-wiki:changed';
 
@@ -116,6 +118,23 @@ function withoutTypePageProse(snapshot: LocalWikiSnapshot, root: string): LocalW
     items: snapshot.items.filter((item) => !isTypePageProse(item.documentId)),
     pages: snapshot.pages.filter((page) => !isTypePageProse(page.id)),
   };
+}
+
+/**
+ * Type files the app could not load, as `malformed-type` issues carrying the
+ * type id, so the Local section shows the type as broken instead of dropping
+ * its table and typed pages (NIM-7437). The library reports a file that is not
+ * YAML at all, without an id; the app's report of the same file replaces it.
+ */
+function withSchemaLoadFailures<T extends LocalWikiSnapshot>(snapshot: T, workspacePath: string): T {
+  const failures = getTrackerSchemaLoadFailures(workspacePath);
+  if (failures.length === 0) return snapshot;
+  const failedPaths = new Set(failures.map((failure) => failure.filePath));
+  const issues: WikiIssue[] = [
+    ...failures.map((failure): WikiIssue => ({ code: 'malformed-type', path: failure.filePath, message: failure.message, id: failure.typeId })),
+    ...snapshot.issues.filter((issue) => !(issue.code === 'malformed-type' && failedPaths.has(issue.path))),
+  ];
+  return { ...snapshot, issues };
 }
 
 export function emptyLocalWikiSnapshot(location: LocalWikiLocation): LocalWikiSnapshotPayload {
@@ -291,10 +310,13 @@ export class LocalWikiService {
     const ws = requireWorkspace(workspacePath);
     const location = this.resolveLocation(ws);
     const wiki = await this.wikiFor(ws);
-    if (!wiki) return emptyLocalWikiSnapshot(location);
+    if (!wiki) return withSchemaLoadFailures(emptyLocalWikiSnapshot(location), ws);
     const snapshot = await wiki.snapshot();
     await this.rememberItemIds(wiki, snapshot);
-    return { ...withoutTypePageProse(snapshot, wiki.root), root: wiki.root, location: location.location, exists: true };
+    return withSchemaLoadFailures(
+      { ...withoutTypePageProse(snapshot, wiki.root), root: wiki.root, location: location.location, exists: true },
+      ws,
+    );
   }
 
   async command(workspacePath: string, command: LocalWikiCommand): Promise<LocalWikiCommandResult> {
@@ -425,6 +447,7 @@ export function initLocalWikiService(): void {
     instance.search(workspacePath, request ?? { query: '' }));
   safeHandle('local-wiki:set-editor-types', async (_event, table: Record<string, string>) => instance.setEditorTypes(table));
   registerPersonalPagesExportIpc(instance);
+  onTrackerSchemaLoadFailuresChanged((workspacePath) => instance.announceChange(workspacePath));
   void logLegacyPersonalPagesHeartbeat();
 }
 

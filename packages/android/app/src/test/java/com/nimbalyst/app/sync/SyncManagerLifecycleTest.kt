@@ -317,6 +317,41 @@ class SyncManagerLifecycleTest {
     }
 
     @Test
+    fun `a refresh answer for a session replaced during the request writes nothing`() = runBlocking {
+        val accountA = store.credentials!!
+        val accountB = store.credentials!!.copy(authJwt = "jwt-b", authUserId = "user-b", sessionToken = "session-b")
+        var answer: TokenRefresh = TokenRefresh.Rejected
+        var now = 0L
+        val racing = SyncManager(
+            context = ApplicationProvider.getApplicationContext(),
+            repository = repository,
+            credentialStore = store,
+            notificationManager = NotificationManager(ApplicationProvider.getApplicationContext()),
+            scope = scope,
+            socketFactory = factory,
+            // The user re-pairs to B while A's refresh is on the network.
+            tokenRefresher = TokenRefresher { stale ->
+                store.credentials = accountB
+                if (answer is TokenRefresh.Refreshed) TokenRefresh.Refreshed(stale.copy(authJwt = "jwt-a-new")) else answer
+            },
+            authClock = { now }
+        )
+
+        answer = TokenRefresh.Refreshed(store.credentials!!)
+        racing.refreshJwt()
+        assertEquals("A's answer never overwrites B", accountB, store.credentials)
+
+        answer = TokenRefresh.Rejected
+        repeat(AuthHealthTracker.SIGN_OUT_THRESHOLD + 1) {
+            store.credentials = accountA
+            now += 5 * 60_000
+            racing.refreshJwt()
+        }
+        assertEquals("A's rejection never signs B out", accountB, store.credentials)
+        assertEquals(AuthHealth.Ok, racing.authHealth.value)
+    }
+
+    @Test
     fun `five failed refreshes sign the user out, keeping the pairing`() = runBlocking {
         var now = 0L
         val failing = SyncManager(

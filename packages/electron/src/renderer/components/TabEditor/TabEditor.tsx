@@ -32,8 +32,9 @@ import {
 } from '@nimbalyst/runtime';
 import { $getRoot, $getSelection, $isRangeSelection, $setSelection, SKIP_SCROLL_INTO_VIEW_TAG, SKIP_DOM_SELECTION_TAG, COMMAND_PRIORITY_LOW } from 'lexical';
 import { DocumentHeaderContainer } from '@nimbalyst/runtime/plugins/TrackerPlugin/documentHeader';
-// Side-effect import: registers GenericFrontmatterHeader with DocumentHeaderRegistry
-import '@nimbalyst/runtime/plugins/FrontmatterPlugin';
+// Side-effect import: registers the page status chip as a document header
+import '../PageInfo/PageStatusChip';
+import { PageInfoPanel } from '../PageInfo/PageInfoPanel';
 import { setTextSelection, clearTextSelection } from '../UnifiedAI/TextSelectionIndicator';
 import { FixedTabHeaderContainer, FixedTabHeaderRegistry } from '@nimbalyst/runtime/plugins/shared/fixedTabHeader';
 import { UnifiedDiffHeader, LexicalDiffHeaderAdapter } from '../UnifiedDiffHeader';
@@ -150,6 +151,9 @@ interface TabEditorProps {
 
   // Document metadata
   workspaceId?: string;
+
+  /** Accept an agent's edit and show the result, never the red/green review (Local wiki pages in the Wiki). */
+  acceptAgentEdits?: boolean;
 }
 
 export const TabEditor: React.FC<TabEditorProps> = ({
@@ -169,6 +173,7 @@ export const TabEditor: React.FC<TabEditorProps> = ({
                                                       onSwitchToAgentMode,
                                                       onOpenSessionInChat,
                                                       workspaceId,
+                                                      acceptAgentEdits = false,
                                                     }) => {
   // Use theme hook directly so we get live updates when theme changes
   // (TabContent creates each TabEditor in a separate React root, so prop updates don't work)
@@ -1581,6 +1586,25 @@ export const TabEditor: React.FC<TabEditorProps> = ({
       }),
     );
 
+    // Shows content now on disk in the built-in editor; false when the reload
+    // could not be verified.
+    const applyDiskContent = (content: string): boolean => {
+      // Guard: suppress the Lexical onChange -> setDirty(true) that fires
+      // from the programmatic content update below.
+      isApplyingExternalContentRef.current = true;
+
+      // The baseline, the buffer and the dirty flag move together or not at
+      // all -- see reloadFromDisk.ts for why an unverified baseline is a
+      // silent data-loss path (#3684).
+      const outcome = applyVerifiedReload(content);
+      commitReloadOutcome(outcome, content);
+
+      setTimeout(() => {
+        isApplyingExternalContentRef.current = false;
+      }, 0);
+      return outcome.verified;
+    };
+
     // --- File changes: DocumentModel calls onFileChanged for non-diff external edits ---
     // Custom editors receive file changes through EditorHost.subscribeToFileChanges(),
     // which registers its own onFileChanged callback with the handle. This callback
@@ -1631,20 +1655,7 @@ export const TabEditor: React.FC<TabEditorProps> = ({
           t: performance.now(),
         });
 
-        // Guard: suppress the Lexical onChange -> setDirty(true) that fires
-        // from the programmatic content update below.
-        isApplyingExternalContentRef.current = true;
-
-        // The baseline, the buffer and the dirty flag move together or not at
-        // all -- see reloadFromDisk.ts for why an unverified baseline is a
-        // silent data-loss path (#3684).
-        const outcome = applyVerifiedReload(content);
-        commitReloadOutcome(outcome, content);
-
-        setTimeout(() => {
-          isApplyingExternalContentRef.current = false;
-        }, 0);
-        return outcome.verified;
+        return applyDiskContent(content);
       }),
     );
 
@@ -1686,7 +1697,21 @@ export const TabEditor: React.FC<TabEditorProps> = ({
       setPendingAIEditTag(tagInfo);
 
       try {
-        if (diffRequestCallbackRef.current) {
+        if (acceptAgentEdits && !isCustom) {
+          // A Local wiki page in the Wiki shows the page as it is now: the
+          // agent's edit is accepted rather than reviewed. Resolving fires
+          // notifyFileChanged while this tab's diff guards are set, so the
+          // accepted content is applied here.
+          try {
+            await handle.resolveDiff(true);
+            reported = true;
+            setPendingAIEditTag(null);
+            applyDiskContent(newContent);
+          } catch (err) {
+            logger.ui.error('[TabEditor] Accepting an agent edit for a wiki page failed:', err);
+            report('failed');
+          }
+        } else if (diffRequestCallbackRef.current) {
           // Custom editor with declared diff view
           setShowCustomEditorDiffBar(true);
           fetchDiffSessionInfo(sessionId, createdAt);
@@ -2024,6 +2049,7 @@ export const TabEditor: React.FC<TabEditorProps> = ({
     customEditorSupportsDiffMode,
     customDiffPresenterReady,
     clearCustomEditorDiff,
+    acceptAgentEdits,
   ]);
 
 
@@ -2163,7 +2189,8 @@ export const TabEditor: React.FC<TabEditorProps> = ({
               const root = $getRoot();
               root.clear();
               $convertFromEnhancedMarkdownString(newContent, transformers);
-            }, { tag: SKIP_SCROLL_INTO_VIEW_TAG });
+              // Re-read by the status chip and Page info once committed.
+            }, { tag: SKIP_SCROLL_INTO_VIEW_TAG, onUpdate: () => setReloadVersion((v) => v + 1) });
           } else {
             // Update Monaco editor
             if (editorRef.current.setContent) {
@@ -3207,6 +3234,7 @@ export const TabEditor: React.FC<TabEditorProps> = ({
           onToggleSourceMode={() => editorHost.toggleSourceMode?.()}
           supportsSourceMode={isMarkdown || customEditorSupportsSourceMode}
           isSourceModeActive={sourceMode}
+          showPageInfoAction={isMarkdown && !sourceMode && !isCustom}
           onDirtyChange={(isDirty) => {
             if (isDirty && (isApplyingExternalContentRef.current || isApplyingDiffRef.current)) return;
             isDirtyRef.current = isDirty;
@@ -3460,7 +3488,8 @@ export const TabEditor: React.FC<TabEditorProps> = ({
                   editorType="lexical"
                 />
               )}
-              <div className="tab-editor-wrapper flex-1 overflow-hidden relative">
+              <div className="tab-editor-body flex flex-1 min-h-0">
+              <div className="tab-editor-wrapper flex-1 min-w-0 overflow-hidden relative">
               <DocumentPathProvider documentPath={filePath}>
                 <MarkdownEditor
                   key={`${filePath}-lexical`}
@@ -3481,6 +3510,7 @@ export const TabEditor: React.FC<TabEditorProps> = ({
                     onImageDoubleClick: handleImageDoubleClick,
                     onImageDragStart: handleImageDragStart,
                     showTreeView, // Debug tree view (dev mode)
+                    showCitationSourcesLine: false, // listed in Page info
                     documentHeader: (
                       <DocumentHeaderContainer
                         filePath={filePath}
@@ -3516,6 +3546,11 @@ export const TabEditor: React.FC<TabEditorProps> = ({
                   }}
                 />
               </DocumentPathProvider>
+              </div>
+              <PageInfoPanel
+                editor={editorInstance}
+                properties={{ getContent: getDocumentHeaderContent, contentVersion: reloadVersion, onContentChange: handleDocumentHeaderContentChange }}
+              />
               </div>
               </>
           ) : isMarkdown && sourceMode ? (

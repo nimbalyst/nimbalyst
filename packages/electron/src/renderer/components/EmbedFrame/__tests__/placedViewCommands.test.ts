@@ -20,6 +20,19 @@ describe('buildPlacedViewCommandEntries', () => {
     ]);
   });
 
+  it('offers a chart counted by the board grouping, else a person, else a date', () => {
+    const commands = buildPlacedViewCommandEntries([
+      model('work', 'Work', [{ name: 'due', type: 'date' }, { name: 'status', type: 'select' }]),
+      model('note', 'Notes', [{ name: 'due', type: 'date' }, { name: 'owner', type: 'user' }]),
+      model('event', 'Events', [{ name: 'tags', type: 'select', multiValue: true }, { name: 'when', type: 'datetime' }]),
+    ]);
+    expect(commands.filter(command => command.title.startsWith('Chart:')).map(command => [command.title, (command.payload as { attrs: unknown }).attrs])).toEqual([
+      ['Chart: Work', { mode: 'chart', chart: 'bar', by: 'status' }],
+      ['Chart: Notes', { mode: 'chart', chart: 'bar', by: 'owner' }],
+      ['Chart: Events', { mode: 'chart', chart: 'bar', by: 'when' }],
+    ]);
+  });
+
   it('offers a table per type, a 2x2 for types with two number fields, and the marks lists', () => {
     const commands = buildPlacedViewCommandEntries([
       model('competitor', 'Competitors', [

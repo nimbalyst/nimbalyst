@@ -205,6 +205,9 @@ import { registerAIChatPlugin } from './plugins/registerAIChatPlugin';
 import { registerTrackerPlugin } from './plugins/registerTrackerPlugin';
 import { registerSearchReplacePlugin } from './plugins/registerSearchReplacePlugin';
 import { registerEmbedFrame } from './components/EmbedFrame';
+import { registerCodeExcerptHost } from './plugins/registerCodeExcerptHost';
+import { registerTransclusionHost } from './plugins/registerTransclusionHost';
+import { registerActionButtonHost } from './plugins/registerActionButtonHost';
 import { registerPageKnowledgePlugin } from './plugins/registerPageKnowledgePlugin';
 import { registerExtensionSystem, setExtensionWorkspacePath } from './plugins/registerExtensionSystem';
 import { SettingsView } from './components/Settings/SettingsView';
@@ -340,6 +343,9 @@ if (!pluginsRegistered) {
   registerAIChatPlugin();
   registerSearchReplacePlugin(); // Search/replace bar in fixed tab header
   registerEmbedFrame(); // Inline embeds of extension editors in markdown docs
+  registerTransclusionHost(); // Live read-only sections of other pages
+  registerCodeExcerptHost(); // Repo reads and open-at-line for code excerpts
+  registerActionButtonHost(); // Start-session and new-item buttons in pages
   registerPageKnowledgePlugin(); // Marks list source, citation jumps, mark author
   pluginsRegistered = true;
 }

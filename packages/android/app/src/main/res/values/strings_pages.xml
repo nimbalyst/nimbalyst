@@ -1,0 +1,54 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Team Wiki and Team Trackers from the web console (the Pages screen and the Team tab). -->
+<resources>
+    <string name="session_list_tab_team">Team</string>
+    <string name="pages_team_wiki">Team Wiki</string>
+    <string name="pages_team_trackers">Team Trackers</string>
+    <string name="pages_team_choose_again">Use a different team</string>
+    <string name="pages_team_choose_title">Choose a team</string>
+    <string name="pages_team_choose_footer">This project is shared with more than one team.</string>
+    <string name="pages_team_discovery_failed_title">Couldn\'t check for a team project</string>
+    <string name="pages_team_discovery_failed_footer">Your teams could not be loaded. This retries when you\'re back online.</string>
+
+    <string name="pages_back">Back</string>
+    <string name="pages_not_saved">Not saved yet</string>
+    <string name="pages_lost_edits">Your last edits may not have saved.</string>
+    <string name="pages_dismiss">Dismiss</string>
+    <string name="pages_retry">Retry</string>
+    <string name="pages_ok">OK</string>
+    <string name="pages_cancel">Cancel</string>
+
+    <string name="pages_leave_title">Leave without saving?</string>
+    <string name="pages_leave_message">Your last changes have not reached the server.</string>
+    <string name="pages_leave_confirm">Leave</string>
+    <string name="pages_leave_keep_editing">Keep editing</string>
+
+    <string name="pages_personal_title">Personal pages live on your desktop</string>
+    <string name="pages_personal_message">Open this page in Nimbalyst on your computer.</string>
+    <string name="pages_desktop_only_title">Open this on your desktop</string>
+    <string name="pages_desktop_only_message">This link opens in Nimbalyst on your computer.</string>
+    <string name="pages_org_auth_title">This team requires additional sign-in</string>
+    <string name="pages_org_auth_message">Your team\'s security settings need a sign-in this app can\'t do yet. Open the console in your browser to continue.</string>
+    <string name="pages_open_in_browser">Open in browser</string>
+
+    <string name="pages_offline_title">Pages need a connection</string>
+    <string name="pages_offline_message">Connect to the internet to read your team\'s pages.</string>
+    <string name="pages_load_failed_title">Couldn\'t load this page</string>
+    <string name="pages_load_failed_message">The page could not be loaded.</string>
+    <string name="pages_invalid_address">This page address is not valid.</string>
+    <string name="pages_stopped">The page stopped responding.</string>
+    <string name="pages_server_error">The server returned an error (%1$d).</string>
+    <string name="pages_session_failed_title">Couldn\'t sign in to your team</string>
+    <string name="pages_session_not_a_member">You are not a member of this team.</string>
+    <string name="pages_session_unavailable">Team sign-in is not available right now.</string>
+    <string name="pages_session_network">Could not reach Nimbalyst to sign this page in.</string>
+    <string name="pages_session_refresh">Your Nimbalyst sign-in needs to be refreshed.</string>
+    <string name="pages_session_generic">This page could not be signed in.</string>
+
+    <string name="pages_sign_in_title">Sign in to read team pages</string>
+    <string name="pages_sign_in_message">Team pages open here once this device is signed in.</string>
+    <string name="pages_webview_unsupported_title">Team pages need an updated Android System WebView</string>
+    <string name="pages_webview_unsupported_message">This version of Android System WebView can\'t keep each account\'s team sign-in separate. Update it from the Play Store and try again.</string>
+    <string name="pages_webview_update">Open Play Store</string>
+    <string name="pages_link_unsupported">This link can\'t be opened in the app.</string>
+</resources>

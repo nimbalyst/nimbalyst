@@ -37,6 +37,13 @@ export function buildCollabTypeResolver(
   registry: CollabTypeRegistry,
   records: Iterable<CollabTypeResolverRecord>,
   lane: CollabTypeLane = 'team',
+  /**
+   * Types whose file did not load, with the reason. A broken type is not in the
+   * registry, so without this it and its pages would vanish from the tree; with
+   * it they show, named by type id and marked broken. A registered type is never
+   * broken: a bad edit to a loaded type keeps the last good definition.
+   */
+  brokenTypes?: ReadonlyMap<string, string>,
 ): CollabTypeTreeResolver {
   const inLane = (model: TrackerDataModel): boolean =>
     ((model.sharing ?? 'personal') === 'team') === (lane === 'team');
@@ -44,6 +51,9 @@ export function buildCollabTypeResolver(
     const model = registry.get(typeId);
     return model && inLane(model) ? model : undefined;
   };
+  const typeError = (typeId: string): string | null =>
+    (registry.get(typeId) ? null : brokenTypes?.get(typeId) ?? null);
+  const shown = (typeId: string): boolean => !!laneModel(typeId) || typeError(typeId) !== null;
 
   const itemsByType = new Map<string, ResolvedItem[]>();
   const itemById = new Map<string, { itemId: string; title: string; typeId: string }>();
@@ -65,19 +75,22 @@ export function buildCollabTypeResolver(
   return {
     typeName: (typeId) => {
       const model = laneModel(typeId);
-      return model ? (model.displayNamePlural || model.displayName || typeId) : null;
+      if (!model) return typeError(typeId) !== null ? typeId : null;
+      return model.displayNamePlural || model.displayName || typeId;
     },
     typeLabel: (typeId) => {
       const model = laneModel(typeId);
-      return model ? (model.displayName || typeId) : null;
+      if (!model) return typeError(typeId) !== null ? typeId : null;
+      return model.displayName || typeId;
     },
+    typeError,
     typeExtends: (typeId) => registry.get(typeId)?.extends ?? null,
     // A placed typed page from the other lane is unknown here, like its type.
     item: (itemId) => {
       const item = itemById.get(itemId);
-      return item && laneModel(item.typeId) ? item : null;
+      return item && shown(item.typeId) ? item : null;
     },
-    itemsOfType: (typeId) => (laneModel(typeId) ? itemsByType.get(typeId) ?? [] : []),
+    itemsOfType: (typeId) => (shown(typeId) ? itemsByType.get(typeId) ?? [] : []),
     listedTypes: () => registry.getListed()
       .filter(inLane)
       .map((model) => ({

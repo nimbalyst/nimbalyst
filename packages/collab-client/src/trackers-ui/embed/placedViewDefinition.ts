@@ -8,6 +8,9 @@
  *   mode=2x2 x=<field> y=<field>     a 2x2 of two number fields
  *   xl= yl= q=TL|TR|BL|BR            axis and quadrant labels (percent-encoded)
  *   pin=Label@0.85,0.9;Other@0.2,0.3 extra points drawn highlighted
+ *   mode=chart by=<field> [sum=<field>] [chart=bar|line|area|pie]
+ *                                    items grouped by a select, person, yes/no
+ *                                    or date field; counted, or a number summed
  *
  * Unknown presentation keys are ignored. Invalid filters refuse the view:
  * dropping a clause would silently answer a different question.
@@ -16,7 +19,13 @@
 import { decodeViewAttrValue, type PlacedViewScope } from '@nimbalyst/runtime/core/placedViewUrl';
 import type { QuadrantPin } from '@nimbalyst/runtime/core/quadrantModel';
 import type { TrackerFieldFilter } from '@nimbalyst/runtime/plugins/TrackerPlugin/models';
-import { createDefaultViewDefinition, type SavedView } from '@nimbalyst/collab-client/trackers';
+import {
+  createDefaultViewDefinition,
+  STATUS_CHANGED_FROM_FILTER_FIELD,
+  STATUS_CHANGED_TO_FILTER_FIELD,
+  type SavedView,
+} from '@nimbalyst/collab-client/trackers';
+import { READINESS_FILTER_FIELD } from '@nimbalyst/tracker-schema';
 import { getDefaultColumnConfig } from '@nimbalyst/runtime/plugins/TrackerPlugin/components/trackerColumns';
 import type { TrackerFilterField } from '../trackerFilterFields';
 
@@ -29,10 +38,41 @@ export interface PlacedQuadrant {
   pins: QuadrantPin[];
 }
 
+export const PLACED_CHART_TYPES = ['bar', 'line', 'area', 'pie'] as const;
+export type PlacedChartType = (typeof PLACED_CHART_TYPES)[number];
+
+export interface PlacedChart {
+  type: PlacedChartType;
+  /** The field the items are grouped by. */
+  by: string;
+  /** A number field to sum; the chart counts items when absent. */
+  sum?: string;
+}
+
 export interface PlacedViewDefinition {
   view: SavedView;
-  mode: 'table' | 'board' | 'list' | 'timeline' | '2x2';
+  mode: 'table' | 'board' | 'list' | 'timeline' | '2x2' | 'chart';
   quadrant?: PlacedQuadrant;
+  chart?: PlacedChart;
+}
+
+const CHART_GROUP_FIELD_TYPES = ['select', 'user', 'boolean', 'date', 'datetime'];
+/** Catalog fields whose value depends on the viewer or on history, which a chart's rows do not carry. */
+const CHART_CONTEXTUAL_FIELDS = new Set(['favorite', 'viewed', READINESS_FILTER_FIELD, STATUS_CHANGED_TO_FILTER_FIELD, STATUS_CHANGED_FROM_FILTER_FIELD]);
+
+function placedChart(attrs: Readonly<Record<string, string>>, fields?: readonly TrackerFilterField[]): PlacedChart {
+  const type = attrs.chart ?? 'bar';
+  if (!(PLACED_CHART_TYPES as readonly string[]).includes(type)) throw new Error(`Unknown chart type: ${type}. Use ${PLACED_CHART_TYPES.join(', ')}.`);
+  if (!attrs.by) throw new Error('A chart needs by=<field> to group items by.');
+  if (fields) {
+    const by = fields.find(candidate => candidate.id === attrs.by);
+    if (!by || by.multiValue || CHART_CONTEXTUAL_FIELDS.has(by.id) || !CHART_GROUP_FIELD_TYPES.includes(by.type ?? '')) throw new Error(`Cannot chart by "${attrs.by}": pick a single select, person, yes/no or date field.`);
+    if (attrs.sum) {
+      const sum = fields.find(candidate => candidate.id === attrs.sum);
+      if (!sum || sum.type !== 'number') throw new Error(`Cannot sum "${attrs.sum}": pick a number field.`);
+    }
+  }
+  return { type: type as PlacedChartType, by: attrs.by, ...(attrs.sum ? { sum: attrs.sum } : {}) };
 }
 
 function list(value: string | undefined, separator: string): string[] {
@@ -139,7 +179,7 @@ export function placedViewDefinition(
   if (fields && columns.some(id => !fields.some(field => field.id === id))) throw new Error('A selected column no longer exists.');
   const clauses = filterClauses(attrs.filter, fields);
   const mode = attrs.mode ?? 'table';
-  if (!['table', 'board', 'list', 'timeline', '2x2'].includes(mode)) throw new Error(`Unknown view layout: ${mode}`);
+  if (!['table', 'board', 'list', 'timeline', '2x2', 'chart'].includes(mode)) throw new Error(`Unknown view layout: ${mode}`);
   const group = attrs.group ?? (mode === 'board' ? 'status' : 'none');
   const builtInGroup = ['none', 'status', 'priority', 'assignee', 'type', 'tag', 'milestone', 'goal'].includes(group);
   const groupField = fields?.find(field => field.id === group);
@@ -170,6 +210,7 @@ export function placedViewDefinition(
       columnFilters: clauses.length > 0 ? { combinator: 'and', clauses } : null,
     },
   };
+  if (mode === 'chart') return { view, mode: 'chart', chart: placedChart(attrs, fields) };
   if (attrs.mode !== '2x2' || !attrs.x || !attrs.y) return { view, mode: mode === '2x2' ? 'table' : mode as PlacedViewDefinition['mode'] };
   const quadrants = list(attrs.q, '|').map(decodeViewAttrValue);
   return {

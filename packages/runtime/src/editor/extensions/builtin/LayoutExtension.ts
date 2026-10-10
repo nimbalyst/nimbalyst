@@ -4,7 +4,8 @@
  * that prompts the user for a template (`InsertLayoutDialog`) is still a
  * React component, mounted by ComponentPickerPlugin via the modal hook.
  *
- * Replaces the React `LayoutPlugin` (which returned null).
+ * Replaces the React `LayoutPlugin` (which returned null). Also publishes
+ * the `<div data-columns>` markdown transformer so columns survive a save.
  */
 
 import type { ElementNode, LexicalNode } from 'lexical';
@@ -41,6 +42,10 @@ import {
   INSERT_LAYOUT_COMMAND,
   UPDATE_LAYOUT_COMMAND,
 } from '../../plugins/LayoutPlugin/LayoutCommands';
+import { createLayoutTransformer } from '../../plugins/LayoutPlugin/LayoutTransformer';
+import '../../plugins/LayoutPlugin/layoutBlockMenu';
+import { getEditorTransformers } from '../../markdown';
+import { setExtensionContributions } from '../extensionContributionsStore';
 
 function getItemsCountFromTemplate(template: string): number {
   return template.trim().split(/\s+/).length;
@@ -176,4 +181,10 @@ export const LayoutExtension = defineExtension({
       }),
     );
   },
+});
+
+export const LAYOUT_TRANSFORMER = createLayoutTransformer(getEditorTransformers);
+
+setExtensionContributions(NAME, {
+  markdownTransformers: [LAYOUT_TRANSFORMER],
 });

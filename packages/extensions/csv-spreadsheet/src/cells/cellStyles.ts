@@ -12,52 +12,9 @@
  */
 
 import type { CellStyle, CellStyleRanges, NormalizedSelectionRange } from '../types';
-import { columnIndexToLetter, columnLetterToIndex } from '../utils/csvParser';
+import { parseRangeKey, rangeKeyOf, rewriteWithin, type RangeBounds } from './rangeMath';
 
-/** Zero-based, inclusive bounds parsed from an A1 range key. */
-export interface RangeBounds {
-  startRow: number;
-  startCol: number;
-  endRow: number;
-  endCol: number;
-}
-
-const A1_CELL = /^([A-Za-z]+)(\d+)$/;
-
-function parseA1Cell(text: string): { row: number; col: number } | null {
-  const match = A1_CELL.exec(text.trim());
-  if (!match) return null;
-  const row = parseInt(match[2], 10) - 1;
-  if (row < 0) return null;
-  return { row, col: columnLetterToIndex(match[1]) };
-}
-
-/** Parse `B2` or `A1:C10` into zero-based inclusive bounds. */
-export function parseRangeKey(key: string): RangeBounds | null {
-  const [startText, endText] = key.split(':');
-  const start = parseA1Cell(startText ?? '');
-  if (!start) return null;
-  if (endText === undefined) {
-    return { startRow: start.row, startCol: start.col, endRow: start.row, endCol: start.col };
-  }
-  const end = parseA1Cell(endText);
-  if (!end) return null;
-  return {
-    startRow: Math.min(start.row, end.row),
-    startCol: Math.min(start.col, end.col),
-    endRow: Math.max(start.row, end.row),
-    endCol: Math.max(start.col, end.col),
-  };
-}
-
-/** Build the canonical A1 key for a selection. */
-export function rangeKeyOf(selection: NormalizedSelectionRange): string {
-  const start = `${columnIndexToLetter(selection.startCol)}${selection.startRow + 1}`;
-  if (selection.startRow === selection.endRow && selection.startCol === selection.endCol) {
-    return start;
-  }
-  return `${start}:${columnIndexToLetter(selection.endCol)}${selection.endRow + 1}`;
-}
+export { parseRangeKey, rangeKeyOf, type RangeBounds };
 
 function contains(bounds: RangeBounds, row: number, col: number): boolean {
   return row >= bounds.startRow && row <= bounds.endRow
@@ -69,7 +26,12 @@ export function isEmptyStyle(style: CellStyle): boolean {
   return !style.bold && !style.italic && !style.underline && !style.strikethrough
     && (style.textColor === undefined || style.textColor === 'default')
     && (style.fillColor === undefined || style.fillColor === 'default')
-    && style.align === undefined;
+    && style.align === undefined && style.verticalAlign === undefined;
+}
+
+/** True for a raw `#rrggbb` picker color, as opposed to a named swatch. */
+export function isHexColor(color: string | undefined): color is `#${string}` {
+  return typeof color === 'string' && /^#[0-9a-f]{6}$/i.test(color);
 }
 
 /** Layer `next` over `base`, dropping keys reset to their neutral value. */
@@ -122,6 +84,11 @@ export class CellStyleIndex {
   }
 }
 
+/** A style value with its "unset" spellings (`false`, `'default'`) folded to undefined. */
+function neutral(value: CellStyle[keyof CellStyle]): CellStyle[keyof CellStyle] {
+  return value === false || value === 'default' ? undefined : value;
+}
+
 /**
  * Apply a style change across a selection.
  *
@@ -129,6 +96,11 @@ export class CellStyleIndex {
  * that entry instead of stacking another one — otherwise toggling bold on and
  * off repeatedly would grow the metadata without bound. An entry left with
  * nothing set is removed.
+ *
+ * Any other entry that sets a changed property to something else inside the
+ * selection gives that property up there (it is split around the selection),
+ * so the change is what the cells show whichever entry comes later: bold off
+ * on a cell under a later bold range really turns it off.
  */
 export function applyStyleToRange(
   ranges: CellStyleRanges,
@@ -136,7 +108,14 @@ export function applyStyleToRange(
   change: CellStyle,
 ): CellStyleRanges {
   const key = rangeKeyOf(selection);
-  const next: CellStyleRanges = { ...ranges };
+  const changed = Object.keys(change) as (keyof CellStyle)[];
+  const next: CellStyleRanges = rewriteWithin(ranges, selection, (style) => {
+    const kept: CellStyle = { ...style };
+    for (const name of changed) {
+      if (kept[name] !== undefined && neutral(kept[name]) !== neutral(change[name])) delete kept[name];
+    }
+    return isEmptyStyle(kept) ? null : kept;
+  }, true);
   const merged = mergeStyles(next[key] ?? {}, change);
 
   if (isEmptyStyle(merged)) {
@@ -156,12 +135,28 @@ export function styleClassNames(style: CellStyle): string[] {
   if (style.italic) classes.push('csv-cell-italic');
   if (style.underline) classes.push('csv-cell-underline');
   if (style.strikethrough) classes.push('csv-cell-strike');
-  if (style.textColor && style.textColor !== 'default') {
+  if (style.textColor && style.textColor !== 'default' && !isHexColor(style.textColor)) {
     classes.push(`${COLOR_CLASS_PREFIX.text}-${style.textColor}`);
   }
-  if (style.fillColor && style.fillColor !== 'default') {
+  if (style.fillColor && style.fillColor !== 'default' && !isHexColor(style.fillColor)) {
     classes.push(`${COLOR_CLASS_PREFIX.fill}-${style.fillColor}`);
   }
+  if (isHexColor(style.textColor)) classes.push('csv-text-custom');
+  if (isHexColor(style.fillColor)) classes.push('csv-fill-custom');
   if (style.align) classes.push(`cell-align-${style.align}`);
+  if (style.verticalAlign) classes.push(`cell-valign-${style.verticalAlign}`);
   return classes;
+}
+
+/**
+ * Inline CSS for the parts of a style a class cannot carry (picker hex colors).
+ * Set as custom properties that the `csv-text-custom` / `csv-fill-custom`
+ * classes read, because the cell text color is an `!important` theme rule an
+ * inline `color` would lose to.
+ */
+export function styleInlineCss(style: CellStyle): Record<string, string> | null {
+  const css: Record<string, string> = {};
+  if (isHexColor(style.textColor)) css['--csv-text-color'] = style.textColor;
+  if (isHexColor(style.fillColor)) css['--csv-fill-color'] = style.fillColor;
+  return Object.keys(css).length > 0 ? css : null;
 }

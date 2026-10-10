@@ -286,7 +286,7 @@ export default function Editor({ config = DEFAULT_EDITOR_CONFIG }: EditorProps):
                   {config.documentHeader}
                   <div className="editor">
                     <ContentEditable placeholder={placeholder} />
-                    <CitationSourcesLine />
+                    {config.showCitationSourcesLine !== false && <CitationSourcesLine />}
                     {config.collaboration && (
                       <div
                         ref={cursorsContainerRef as React.RefObject<HTMLDivElement>}

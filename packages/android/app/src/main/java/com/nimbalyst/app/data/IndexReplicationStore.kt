@@ -110,7 +110,10 @@ class IndexReplicationStore(private val database: NimbalystDatabase) {
                         database.projectDao().upsertAll(listOf(op.project.copy(
                             commandsJson = op.project.commandsJson ?: existing?.commandsJson,
                             actionsJson = op.project.actionsJson ?: existing?.actionsJson,
-                            gitRemoteHash = op.project.gitRemoteHash ?: existing?.gitRemoteHash
+                            gitRemoteHash = op.project.gitRemoteHash ?: existing?.gitRemoteHash,
+                            // A present config (commandsJson set) says whether there is a wiki; no config keeps it.
+                            localWikiFolder = if (op.project.commandsJson != null) op.project.localWikiFolder else existing?.localWikiFolder,
+                            localWikiTypesJson = if (op.project.commandsJson != null) op.project.localWikiTypesJson else existing?.localWikiTypesJson,
                         )))
                         record(IndexRowRevisionEntity(PROJECT, op.wireId, op.revision))
                     }

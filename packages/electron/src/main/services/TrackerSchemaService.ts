@@ -90,6 +90,7 @@ import {
   writeBackSharedSchema,
 } from './tracker/trackerSchemaProjection';
 import { readWorkspacePredicateRegistry } from './tracker/trackerPredicateRegistryFile';
+import { clearTrackerSchemaLoadFailures, recordTrackerSchemaLoadFailure } from './tracker/trackerSchemaLoadFailures';
 import { applyRemotePredicateRegistry } from './tracker/trackerPredicateRegistrySync';
 import { readWorkspaceLabelRegistry } from './tracker/trackerLabelRegistryFile';
 import { readTrackerWorkspaceVocabulary } from './tracker/trackerWorkspaceVocabulary';
@@ -287,6 +288,7 @@ function loadWorkspaceSchemas(workspacePath: string): void {
   let loaded: TrackerDataModel[] = [];
   const loadedFiles: LoadedWorkspaceSchemaFile[] = [];
   let shouldReconcileYamlMirror = false;
+  clearTrackerSchemaLoadFailures(workspacePath);
   try {
     if (fs.existsSync(trackersDir)) {
       const files = orderSchemaFilesForLoad(fs.readdirSync(trackersDir).filter(
@@ -298,21 +300,24 @@ function loadWorkspaceSchemas(workspacePath: string): void {
       // derived type (`extends`) loads whichever order its base's file sorts in.
       const declaredFiles: Array<Omit<LoadedWorkspaceSchemaFile, 'model'> & { type: string }> = [];
       for (const file of files) {
+        const filePath = path.join(trackersDir, file);
+        let content: string | null = null;
         try {
-          const filePath = path.join(trackersDir, file);
-          const content = fs.readFileSync(filePath, 'utf-8');
+          content = fs.readFileSync(filePath, 'utf-8');
           const declared = parseSchemaDeclarationFromContent(file, content);
           globalRegistry.register(declared); // workspace schemas are not builtin
           declaredFiles.push({ fileName: file, filePath, content, type: declared.type });
           // console.log(`[TrackerSchemaService] Loaded workspace schema: ${declared.type}`);
         } catch (err) {
           console.error(`[TrackerSchemaService] Failed to load ${file}:`, err);
+          recordTrackerSchemaLoadFailure(workspacePath, filePath, err, content);
         }
       }
       for (const { type, ...file } of declaredFiles) {
         const model = globalRegistry.get(type);
         if (!model) {
           console.error(`[TrackerSchemaService] Failed to load ${file.fileName}: '${type}' extends a type that is not defined`);
+          recordTrackerSchemaLoadFailure(workspacePath, file.filePath, new Error(`'${type}' extends a type that is not defined`), file.content);
           continue;
         }
         loaded.push(model);

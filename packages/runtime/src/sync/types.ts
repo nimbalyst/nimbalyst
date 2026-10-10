@@ -837,6 +837,29 @@ export interface ProjectConfig {
   actions?: SyncedActionPrompt[];
   /** Timestamp of last actions update */
   lastActionsUpdate?: number;
+  /**
+   * The project's Local wiki: its folder relative to the project root,
+   * `/`-separated, no trailing slash. Present only when the project has a
+   * Local wiki; absent on desktops that predate wiki sync. `types` carries the
+   * wiki's type definitions (types that declare `storage:`), since their YAML
+   * under `.nimbalyst/trackers` does not sync as files.
+   */
+  localWiki?: SyncedLocalWiki;
+}
+
+export interface SyncedLocalWiki {
+  folder: string;
+  types?: SyncedWikiType[];
+}
+
+export interface SyncedWikiType {
+  typeId: string;
+  displayName: string;
+  displayNamePlural: string;
+  storage: 'pages' | 'table';
+  /** Field holding the item title. */
+  titleField: string;
+  fields: Array<{ name: string; type: string; itemType?: string; multiValue?: boolean }>;
 }
 
 /**

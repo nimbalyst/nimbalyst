@@ -54,7 +54,17 @@
     ],
     "aiTools": [
       "csv-spreadsheet.analyze_data",
-      "csv-spreadsheet.apply_formula"
+      "csv-spreadsheet.apply_formula",
+      "csv-spreadsheet.read_range",
+      "csv-spreadsheet.describe_sheet",
+      "csv-spreadsheet.write_range",
+      "csv-spreadsheet.sort",
+      "csv-spreadsheet.insert_rows",
+      "csv-spreadsheet.delete_rows",
+      "csv-spreadsheet.insert_cols",
+      "csv-spreadsheet.delete_cols",
+      "csv-spreadsheet.set_format",
+      "csv-spreadsheet.set_validation"
     ],
     "fileIcons": {
       "*.csv": "table",
@@ -67,22 +77,6 @@
         "icon": "table",
         "defaultContent": "Column A,Column B,Column C\n,,\n,,\n,,"
       }
-    ],
-    "configuration": {
-      "title": "CSV Spreadsheet Settings",
-      "properties": {
-        "metadataStorage": {
-          "type": "string",
-          "enum": ["inline", "sidecar"],
-          "enumDescriptions": [
-            "Store metadata as a comment in the CSV file (default)",
-            "Store metadata in a separate .csvmeta file"
-          ],
-          "default": "inline",
-          "description": "Where to store spreadsheet metadata (headers, frozen columns, formatting)",
-          "scope": "workspace"
-        }
-      }
-    }
+    ]
   }
 }

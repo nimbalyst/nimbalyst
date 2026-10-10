@@ -2,6 +2,8 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Team pages are online-only; an offline open shows a native empty state. -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
@@ -61,6 +63,41 @@
 
                 <data
                     android:host="pair"
+                    android:scheme="nimbalyst" />
+            </intent-filter>
+            <!-- Team console pages open in the app's Pages screen. Same paths as the
+                 iOS apple-app-site-association; login, /connect, /public and
+                 Personal (/app) pages are not listed, so they stay in the browser.
+                 Verified against console.nimbalyst.com/.well-known/assetlinks.json. -->
+            <intent-filter android:autoVerify="true">
+                <action android:name="android.intent.action.VIEW" />
+
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+
+                <data android:scheme="https" />
+                <data android:host="console.nimbalyst.com" />
+                <data android:pathPattern="/org/.*/project/.*/wiki" />
+                <data android:pathPattern="/org/.*/project/.*/wiki/.*" />
+                <data android:pathPattern="/org/.*/project/.*/pages" />
+                <data android:pathPattern="/org/.*/project/.*/pages/.*" />
+                <data android:pathPattern="/org/.*/project/.*/document/.*" />
+                <data android:pathPattern="/org/.*/project/.*/page/.*" />
+                <data android:pathPattern="/org/.*/project/.*/view/.*" />
+                <data android:pathPattern="/org/.*/project/.*/marks" />
+                <data android:pathPattern="/org/.*/project/.*/trackers" />
+                <data android:pathPattern="/org/.*/project/.*/trackers/.*" />
+            </intent-filter>
+            <!-- nimbalyst://console/<team path> from the desktop app. Carries only a
+                 page path, validated before Pages loads it. -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+
+                <data
+                    android:host="console"
                     android:scheme="nimbalyst" />
             </intent-filter>
             <!-- Note: nimbalyst://session/[id] is delivered only via the push

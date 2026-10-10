@@ -53,6 +53,9 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.nimbalyst.app.NimbalystApplication
 import com.nimbalyst.app.documents.DocumentListScreen
+import com.nimbalyst.app.wiki.WikiTreeScreen
+import com.nimbalyst.app.pages.TeamPagesTab
+import com.nimbalyst.app.pages.rememberTeamPagesModel
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.nimbalyst.app.data.SessionEntity
 import com.nimbalyst.app.ui.navigation.WorkspaceNavigation
@@ -81,6 +84,8 @@ import com.nimbalyst.app.ui.sessionlist.timePeriodLabel
 import com.nimbalyst.app.ui.theme.NimbalystColors
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -120,6 +125,30 @@ fun SessionListScreen(
     val coroutineScope = rememberCoroutineScope()
 
     var selectedTab by rememberSaveable(projectId) { mutableStateOf(ProjectTab.SESSIONS) }
+    // Observed, not read once: the project config that names the wiki can arrive while this screen is open.
+    val wiki by remember(projectId) {
+        app.repository.observeProjects()
+            .map { projects -> projects.firstOrNull { it.id == projectId }.let { ProjectWiki(it?.localWikiFolder, it?.localWikiTypesJson) } }
+            .distinctUntilChanged()
+    }.collectAsState(initial = null)
+    val wikiFolder = wiki?.folder
+    // The Team tab shows only when this project maps to a team project (or the check failed, with Retry).
+    val gitRemoteHash by remember(projectId) {
+        app.repository.observeProjects()
+            .map { projects -> projects.firstOrNull { it.id == projectId }?.gitRemoteHash }
+            .distinctUntilChanged()
+    }.collectAsState(initial = null)
+    val teamPages = rememberTeamPagesModel(projectId, gitRemoteHash)
+    val teamState by teamPages.state.collectAsState()
+    LaunchedEffect(teamState) {
+        if (teamState.checked && !teamState.isLoading && !teamState.showsTeamTab && selectedTab == ProjectTab.TEAM) {
+            selectedTab = ProjectTab.SESSIONS
+        }
+    }
+    // A restored Wiki selection waits for the project row; only a project known to have no wiki resets it.
+    LaunchedEffect(wiki) {
+        if (wiki != null && wikiFolder == null && selectedTab == ProjectTab.WIKI) selectedTab = ProjectTab.SESSIONS
+    }
     var searchText by rememberSaveable(projectId) { mutableStateOf("") }
     // The list filters by the settled query, not every keystroke.
     var appliedSearch by rememberSaveable(projectId) { mutableStateOf(searchText) }
@@ -277,16 +306,32 @@ fun SessionListScreen(
             }
         )
 
-        ProjectTabRow(selected = selectedTab, onSelect = { tab ->
+        ProjectTabRow(selected = selectedTab, tabs = projectTabs(wikiFolder != null, teamState.showsTeamTab), onSelect = { tab ->
             if (tab != selectedTab) {
                 selectedTab = tab
                 onTabChanged()
             }
         })
 
-        if (selectedTab == ProjectTab.FILES) {
+        if (selectedTab == ProjectTab.WIKI && wikiFolder != null) {
             DocumentSurfaceMarker()
-            DocumentListScreen(projectId = projectId, onOpenDocument = onOpenDocument, modifier = Modifier.fillMaxSize())
+            WikiTreeScreen(
+                projectId = projectId,
+                folder = wikiFolder,
+                typesJson = wiki?.typesJson,
+                onOpenDocument = onOpenDocument,
+                modifier = Modifier.fillMaxSize(),
+            )
+        } else if (selectedTab == ProjectTab.TEAM) {
+            TeamPagesTab(model = teamPages, modifier = Modifier.fillMaxSize())
+        } else if (selectedTab == ProjectTab.FILES) {
+            DocumentSurfaceMarker()
+            DocumentListScreen(
+                projectId = projectId,
+                onOpenDocument = onOpenDocument,
+                modifier = Modifier.fillMaxSize(),
+                wikiFolder = wikiFolder,
+            )
         } else {
             SearchField(value = searchText, onValueChange = { searchText = it })
 
@@ -457,13 +502,18 @@ private fun SearchField(value: String, onValueChange: (String) -> Unit) {
     )
 }
 
-/** Sessions | Files, like iOS `ProjectTab`. */
-private enum class ProjectTab { SESSIONS, FILES }
+/** Sessions | Files | Wiki | Team, like iOS `ProjectTab`. */
+internal enum class ProjectTab { SESSIONS, FILES, WIKI, TEAM }
+
+/** Wiki only when the project has a Local wiki; Team only when it maps to a team project. */
+internal fun projectTabs(hasWiki: Boolean, hasTeam: Boolean = false): List<ProjectTab> =
+    ProjectTab.entries.filter { (it != ProjectTab.WIKI || hasWiki) && (it != ProjectTab.TEAM || hasTeam) }
+
+private data class ProjectWiki(val folder: String?, val typesJson: String?)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun ProjectTabRow(selected: ProjectTab, onSelect: (ProjectTab) -> Unit) {
-    val tabs = ProjectTab.entries
+private fun ProjectTabRow(selected: ProjectTab, tabs: List<ProjectTab>, onSelect: (ProjectTab) -> Unit) {
     SingleChoiceSegmentedButtonRow(
         modifier = Modifier
             .fillMaxWidth()
@@ -477,7 +527,14 @@ private fun ProjectTabRow(selected: ProjectTab, onSelect: (ProjectTab) -> Unit) 
                 icon = {}
             ) {
                 Text(
-                    stringResource(if (tab == ProjectTab.SESSIONS) R.string.session_list_tab_sessions else R.string.session_list_tab_files),
+                    stringResource(
+                        when (tab) {
+                            ProjectTab.SESSIONS -> R.string.session_list_tab_sessions
+                            ProjectTab.FILES -> R.string.session_list_tab_files
+                            ProjectTab.WIKI -> R.string.session_list_tab_wiki
+                            ProjectTab.TEAM -> R.string.session_list_tab_team
+                        }
+                    ),
                     style = MaterialTheme.typography.labelMedium
                 )
             }

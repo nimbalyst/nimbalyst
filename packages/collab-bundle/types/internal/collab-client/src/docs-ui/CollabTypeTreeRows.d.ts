@@ -28,6 +28,8 @@ export interface CollabRowDrop {
     /** '', ' drag-over', ' collab-tree-drop-before' or ' collab-tree-drop-after'. */
     className: string;
 }
+/** Tooltip of a row whose type did not load: what is wrong, so the user can ask for a fix. */
+export declare function brokenTypeTitle(typeId: string, error: string): string;
 export declare const CollabTypeNodeRow: React.FC<{
     node: CollabTreeTypeNode;
     indent: number;

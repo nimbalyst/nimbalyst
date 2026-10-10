@@ -1,0 +1,109 @@
+/* Tabs block: a strip of tab buttons over the panels; only the selected
+   panel shows. Colors come from the shared `--nim-*` palette. */
+
+.tabs-block {
+  margin: 8px 0;
+  border: 1px solid var(--nim-border);
+  border-radius: 8px;
+  color: var(--nim-text);
+}
+
+.tabs-strip {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 4px 6px 0;
+  border-bottom: 1px solid var(--nim-border);
+  overflow-x: auto;
+  user-select: none;
+}
+
+.tabs-strip-tab {
+  padding: 4px 10px;
+  border: none;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--nim-text-muted);
+  font-size: 0.9em;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.tabs-strip-tab:hover { color: var(--nim-text); }
+
+.tabs-strip-tab.is-active {
+  color: var(--nim-text);
+  border-bottom-color: var(--nim-primary);
+  font-weight: 600;
+}
+
+.tabs-strip-rename {
+  width: 10em;
+  padding: 2px 6px;
+  border: 1px solid var(--nim-border-focus);
+  border-radius: 4px;
+  background: var(--nim-bg-secondary);
+  color: var(--nim-text);
+  font-size: 0.9em;
+}
+
+.tabs-strip-actions {
+  display: flex;
+  margin-left: auto;
+  opacity: 0.6;
+}
+
+.tabs-block:hover .tabs-strip-actions,
+.tabs-block:focus-within .tabs-strip-actions { opacity: 1; }
+
+.tabs-strip-action {
+  display: inline-flex;
+  padding: 2px;
+  border: none;
+  background: transparent;
+  color: var(--nim-text-faint);
+  cursor: pointer;
+}
+
+.tabs-strip-action:hover { color: var(--nim-text); }
+.tabs-strip-action .material-symbols-outlined { font-size: 16px; }
+
+.tabs-panels { padding: 6px 14px; }
+.tabs-panel { display: none; }
+.tabs-panel.is-active { display: block; }
+.tabs-panel > :first-child { margin-top: 0; }
+.tabs-panel > :last-child { margin-bottom: 0; }
+
+/* The tab menu (strip options button, a tab's context menu). Matches the
+   block menu's dropdown. */
+.tabs-menu {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 1000;
+  min-width: 160px;
+  padding: 4px 0;
+  background: var(--nim-bg);
+  border: 1px solid var(--nim-border);
+  border-radius: 4px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+.tabs-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 12px;
+  border: none;
+  background: none;
+  color: var(--nim-text);
+  font-size: 14px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.tabs-menu-item:hover { background-color: var(--nim-bg-hover); }
+.tabs-menu-item .material-symbols-outlined { font-size: 18px; color: var(--nim-text-muted); }
+.tabs-menu-item.is-danger, .tabs-menu-item.is-danger .material-symbols-outlined { color: var(--nim-error); }
+.tabs-menu-divider { height: 1px; margin: 4px 0; background-color: var(--nim-border); }

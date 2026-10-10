@@ -15,8 +15,14 @@ import com.nimbalyst.app.analytics.AnalyticsManager
 import com.nimbalyst.app.auth.AuthCallbackParseResult
 import com.nimbalyst.app.auth.AuthCallbackParser
 import com.nimbalyst.app.notifications.VisibleSession
+import com.nimbalyst.app.pages.ConsoleEnvironment
+import com.nimbalyst.app.pages.ConsoleLinkInbox
+import com.nimbalyst.app.pages.InboundConsoleLink
+import com.nimbalyst.app.pages.NimbalystAppLink
+import com.nimbalyst.app.pages.PagesHost
 import com.nimbalyst.app.screenshots.ScreenshotHost
 import com.nimbalyst.app.screenshots.ScreenshotMode
+import com.nimbalyst.app.transcript.TranscriptExternalLinks
 import com.nimbalyst.app.transcript.TranscriptWebViewPool
 import com.nimbalyst.app.ui.NimbalystAndroidApp
 import com.nimbalyst.app.ui.navigation.WorkspaceNavigation
@@ -27,13 +33,18 @@ internal enum class DeepLinkRoute {
     SESSION,
     /** Open the in-app scanner. The link's own payload is never read. */
     PAIR,
+    /** `nimbalyst://console/<team path>` or an https console App Link: open it in Pages. */
+    CONSOLE,
     UNSUPPORTED,
 }
 
-internal fun routeDeepLink(host: String?, path: String?): DeepLinkRoute = when {
+internal fun routeDeepLink(host: String?, path: String?, scheme: String? = "nimbalyst"): DeepLinkRoute = when {
+    scheme.equals("https", ignoreCase = true) ->
+        if (host.equals(ConsoleEnvironment.production.host, ignoreCase = true)) DeepLinkRoute.CONSOLE else DeepLinkRoute.UNSUPPORTED
     host == "auth" && path == "/callback" -> DeepLinkRoute.AUTH_CALLBACK
     host == "session" -> DeepLinkRoute.SESSION
     host == "pair" -> DeepLinkRoute.PAIR
+    host == "console" -> DeepLinkRoute.CONSOLE
     else -> DeepLinkRoute.UNSUPPORTED
 }
 
@@ -70,7 +81,9 @@ class MainActivity : ComponentActivity() {
                 if (screenshotScreen != null) {
                     ScreenshotHost(screenshotScreen)
                 } else {
-                    NimbalystAndroidApp(navigation)
+                    PagesHost(onAppLink = ::openAppLink) {
+                        NimbalystAndroidApp(navigation)
+                    }
                 }
             }
         }
@@ -107,11 +120,20 @@ class MainActivity : ComponentActivity() {
         (applicationContext as NimbalystApplication).syncManager.reportUserActivity()
     }
 
+    /** An app route a team console page linked to. */
+    private fun openAppLink(link: NimbalystAppLink) {
+        when (link) {
+            is NimbalystAppLink.Session -> navigation.openSession(link.id)
+            NimbalystAppLink.PairScanner -> navigation.requestScanner()
+            else -> Unit
+        }
+    }
+
     private fun handleIntent(intent: Intent?) {
         val deepLink = intent?.data ?: return
         // Resolved only by the branches that need it: a pairing link reaches no app service.
         val app by lazy { applicationContext as NimbalystApplication }
-        val message = when (routeDeepLink(deepLink.host, deepLink.path)) {
+        val message = when (routeDeepLink(deepLink.host, deepLink.path, deepLink.scheme)) {
             DeepLinkRoute.SESSION -> {
                 // nimbalyst://session/<sessionId> -- opened from a push notification tap.
                 val sessionId = deepLink.pathSegments.firstOrNull()?.takeIf { it.isNotBlank() }
@@ -147,6 +169,19 @@ class MainActivity : ComponentActivity() {
                     // The sign-in screen shows it; a signed-in user only sees the toast.
                     navigation.reportAuthCallbackFailure(result.reason)
                     result.reason.takeIf { app.pairingStore.state.value.isAuthenticated }
+                }
+            }
+
+            DeepLinkRoute.CONSOLE -> {
+                val url = deepLink.toString()
+                when (ConsoleLinkInbox.shared.handleInbound(url, app.pairingStore.state.value.isAuthenticated)) {
+                    InboundConsoleLink.OPENED, InboundConsoleLink.PERSONAL -> null
+                    InboundConsoleLink.OPEN_IN_BROWSER -> {
+                        TranscriptExternalLinks.open(this, url)
+                        null
+                    }
+                    InboundConsoleLink.SIGN_IN_REQUIRED -> getString(R.string.pages_sign_in_title)
+                    InboundConsoleLink.UNSUPPORTED -> getString(R.string.pages_link_unsupported)
                 }
             }
 

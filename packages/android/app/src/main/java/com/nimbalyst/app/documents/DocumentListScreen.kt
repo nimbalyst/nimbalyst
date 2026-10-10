@@ -62,18 +62,22 @@ import com.nimbalyst.app.ui.components.NimbalystSecondaryButton
 import com.nimbalyst.app.ui.theme.NimbalystColors
 import com.nimbalyst.app.ui.theme.NimbalystShapes
 import com.nimbalyst.app.utils.RelativeTimestamp
+import com.nimbalyst.app.wiki.WikiDocuments
 
 /**
  * A project's synced files as a collapsible tree, mirroring iOS
  * `DocumentListView`. Holds the project's document room open while shown;
  * [onOpenDocument] receives the file's relative path, which is what
- * [DocumentEditorScreen] takes.
+ * [DocumentEditorScreen] takes. Inside the Local wiki at [wikiFolder], only
+ * markdown pages are listed; table CSVs, the marker, sidecars and trash belong
+ * to the Wiki tab.
  */
 @Composable
 fun DocumentListScreen(
     projectId: String,
     onOpenDocument: (relativePath: String) -> Unit,
     modifier: Modifier = Modifier,
+    wikiFolder: String? = null,
 ) {
     val context = LocalContext.current
     val manager = remember { Documents.manager(context) }
@@ -91,7 +95,9 @@ fun DocumentListScreen(
         onDispose { lease.release() }
     }
 
-    val all = documents
+    val all = remember(documents, wikiFolder) {
+        documents?.filterNot { WikiDocuments.isWikiDataFile(it.relativePath, wikiFolder) }
+    }
     Column(modifier = modifier.fillMaxSize()) {
         SearchField(query) { query = it }
         // Where the user lands after leaving an editor whose last save failed.

@@ -55,8 +55,9 @@ beforeAll(async () => {
   }));
   ClaudeProvider = (await import('../ClaudeProvider')).ClaudeProvider;
 });
-beforeEach(() => { requests = []; respond = () => response(frames('hello')); });
-afterEach(() => { vi.restoreAllMocks(); });
+// The SDK falls back to ANTHROPIC_BASE_URL, which would send requests past the fetch stub.
+beforeEach(() => { vi.stubEnv('ANTHROPIC_BASE_URL', undefined); requests = []; respond = () => response(frames('hello')); });
+afterEach(() => { vi.restoreAllMocks(); vi.unstubAllEnvs(); });
 
 describe('ClaudeProvider through actual SDK MessageStream', () => {
   it('parses tool JSON, sends its fake result in the next request and completes once with summed usage', async () => {

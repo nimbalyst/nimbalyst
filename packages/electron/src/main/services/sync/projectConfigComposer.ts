@@ -3,8 +3,8 @@
  *
  * The blob is a whole-object replace on the wire: `projectConfigUpdate` writes
  * `encrypted_config` outright, so whoever sends it must send *everything*. It
- * has two independent producers -- slash commands (from `slash-command:list`)
- * and action prompts (from ai-actions.md) -- which update at different times
+ * has independent producers -- slash commands (from `slash-command:list`),
+ * action prompts (from ai-actions.md) and the Local wiki location -- which update at different times
  * and from different triggers. If each producer built its own blob, whichever
  * sent last would silently erase the other's half.
  *
@@ -16,7 +16,7 @@
  * the last value the renderer reported is cached rather than re-derived.
  */
 
-import type { SyncedSlashCommand, SyncedActionPrompt } from '@nimbalyst/runtime/sync/types';
+import type { SyncedSlashCommand, SyncedActionPrompt, SyncedLocalWiki } from '@nimbalyst/runtime/sync/types';
 import { hasPublishableConfig } from '@nimbalyst/runtime/sync/projectConfig';
 import type { ActionPrompt } from '../ActionPromptParser';
 
@@ -48,6 +48,7 @@ export interface ProjectConfigSlices {
   actions: SyncedActionPrompt[];
   lastActionsUpdate: number;
   gitRemoteHash?: string;
+  localWiki?: SyncedLocalWiki;
 }
 
 export interface ComposedProjectConfig {
@@ -56,6 +57,7 @@ export interface ComposedProjectConfig {
   gitRemoteHash?: string;
   actions?: SyncedActionPrompt[];
   lastActionsUpdate?: number;
+  localWiki?: SyncedLocalWiki;
 }
 
 /**
@@ -134,5 +136,7 @@ export function composeProjectConfig(slices: ProjectConfigSlices): ComposedProje
     config.actions = slices.actions;
     config.lastActionsUpdate = slices.lastActionsUpdate;
   }
+  // Omitted, not null, without a wiki: older phones see the payload they always did.
+  if (slices.localWiki) config.localWiki = slices.localWiki;
   return config;
 }

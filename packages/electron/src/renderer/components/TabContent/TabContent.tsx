@@ -67,7 +67,8 @@ interface TabContentProps {
   // workstream-agnostic.
   onOpenTracker?: (trackerItemId: string, options?: CollabOpenOptions) => void;
   // Pages mode: tracker tabs render as typed pages (TrackerPageView), not the
-  // tracker detail pane.
+  // tracker detail pane, and file tabs (Local wiki pages) accept agent edits
+  // instead of showing them for review.
   trackerPageHeader?: boolean;
   // Owning workstream id (when this TabContent hosts a workstream strip) — used
   // to persist per-tracker-tab content-focus state.
@@ -586,6 +587,8 @@ const TabContentComponent: React.FC<TabContentProps> = ({
               onSwitchToAgentMode={propsRef.current.onSwitchToAgentMode}
               onOpenSessionInChat={propsRef.current.onOpenSessionInChat}
               workspaceId={propsRef.current.workspaceId}
+              // A file tab in the Wiki is a Local wiki page, never under review.
+              acceptAgentEdits={propsRef.current.trackerPageHeader}
             />
           )}
         </TabEditorErrorBoundary>

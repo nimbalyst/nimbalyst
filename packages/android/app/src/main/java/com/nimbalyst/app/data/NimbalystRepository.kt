@@ -55,7 +55,10 @@ class NimbalystRepository(
                 project.copy(
                     commandsJson = project.commandsJson ?: existing.commandsJson,
                     actionsJson = project.actionsJson ?: existing.actionsJson,
-                    gitRemoteHash = project.gitRemoteHash ?: existing.gitRemoteHash
+                    gitRemoteHash = project.gitRemoteHash ?: existing.gitRemoteHash,
+                    // A present config (commandsJson set) says whether there is a wiki; no config keeps it.
+                    localWikiFolder = if (project.commandsJson != null) project.localWikiFolder else existing.localWikiFolder,
+                    localWikiTypesJson = if (project.commandsJson != null) project.localWikiTypesJson else existing.localWikiTypesJson,
                 )
             }
         )

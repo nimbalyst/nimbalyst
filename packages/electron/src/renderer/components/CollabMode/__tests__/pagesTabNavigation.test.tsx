@@ -33,6 +33,13 @@ describe('planPagesOpen', () => {
     expect(planPagesOpen(DOC_B, { newTab: false }, tabsOf('f', [['f', 'virtual://feedback-request/r1']]))).toEqual({ action: 'new' });
     expect(planPagesOpen(DOC_B, { newTab: false }, tabsOf('f', [['f', '/repo/a.md']]))).toEqual({ action: 'new' });
   });
+
+  it('navigates in place from a Local wiki page, which is a markdown file tab', () => {
+    const isLocalPage = (path: string) => path.startsWith('/repo/docs/wiki/');
+    const tabs = tabsOf('w', [['w', '/repo/docs/wiki/Home.md']]);
+    expect(planPagesOpen('/repo/docs/wiki/Product.md', { newTab: false }, tabs, isLocalPage)).toEqual({ action: 'replace', tabId: 'w' });
+    expect(planPagesOpen(DOC_B, { newTab: false }, tabsOf('f', [['f', '/repo/a.md']]), isLocalPage)).toEqual({ action: 'new' });
+  });
 });
 
 describe('per-tab Back and Forward', () => {

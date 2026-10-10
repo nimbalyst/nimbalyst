@@ -23,20 +23,28 @@ export interface EmbeddedFilePayload {
     src: string;
     label: string;
     attrs?: EmbedAttrs;
+    /**
+     * The link title exactly as written, for web link previews. When set, it is
+     * the source of truth: `attrs` is parsed from it and export writes it back
+     * verbatim. File embeds leave it null and keep the attribute-map export.
+     */
+    title?: string | null;
     key?: NodeKey;
 }
 export type SerializedEmbeddedFileNode = Spread<{
     src: string;
     label: string;
     attrs: EmbedAttrs;
+    title?: string;
 }, SerializedLexicalNode>;
 export declare const EmbeddedFileNodeDecorator: import("../../nodes/nodeDecoratorSlot").NodeDecoratorSlot<EmbeddedFileNode>;
 export declare class EmbeddedFileNode extends DecoratorNode<JSX.Element | null> {
     __src: string;
     __label: string;
     __attrs: EmbedAttrs;
+    __title: string | null;
     [key: `__view_${string}`]: string | null;
-    constructor(src: string, label: string, attrs: EmbedAttrs, key?: NodeKey);
+    constructor(src: string, label: string, attrs: EmbedAttrs, key?: NodeKey, title?: string | null);
     static getType(): string;
     static clone(node: EmbeddedFileNode): EmbeddedFileNode;
     static importJSON(serializedNode: SerializedEmbeddedFileNode): EmbeddedFileNode;
@@ -52,6 +60,10 @@ export declare class EmbeddedFileNode extends DecoratorNode<JSX.Element | null> 
     getTextContent(): string;
     getSrc(): string;
     getLabel(): string;
+    /** The verbatim link title, or null for embeds whose title is the attribute map. */
+    getTitle(): string | null;
+    /** Replace the verbatim title; the attribute map follows it. */
+    setTitle(title: string): void;
     getAttrs(): EmbedAttrs;
     setSrc(src: string): void;
     setLabel(label: string): void;

@@ -74,8 +74,10 @@ export function PagesSidebarSections({
   registerTeamCreateMenu,
   registerPersonalCreateMenu,
 }: PagesSidebarSectionsProps) {
+  // Database Personal pages from before the Local wiki: exported only when the user asks.
+  const { unexportedPageCount, brokenTypes } = useAtomValue(localWikiStatusAtomFamily(workspacePath));
   const teamTypeResolver = useCollabTypeResolver('team');
-  const personalTypeResolver = useCollabTypeResolver('personal');
+  const personalTypeResolver = useCollabTypeResolver('personal', brokenTypes);
   const setPageType = useSetPageType(workspacePath, teamScope);
   const [typingPage, setTypingPage] = useState<{ lane: PageTypeLane; page: SharedDocument } | null>(null);
   // A page's own header asks for Set type through this atom.
@@ -108,8 +110,6 @@ export function PagesSidebarSections({
   const sectionClass = (isCollapsed: boolean) => (isCollapsed ? 'shrink-0' : 'flex-1 min-h-0');
   const teamHomeId = useSectionHomeId(teamScope, teamScope ? getElectronCollabDocsSession(teamScope) : null);
   const personalHomeId = useSectionHomeId(null, getPersonalCollabDocsSession(workspacePath));
-  // Database Personal pages from before the Local wiki: exported only when the user asks.
-  const { unexportedPageCount } = useAtomValue(localWikiStatusAtomFamily(workspacePath));
   const localMenuItems = unexportedPageCount > 0 ? [{
     id: 'export-database-pages',
     label: `Export ${unexportedPageCount} database page${unexportedPageCount === 1 ? '' : 's'} to files`,

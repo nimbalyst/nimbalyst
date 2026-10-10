@@ -16,6 +16,7 @@ import {
 import { $createQuadrantNode, QuadrantNode } from '../../plugins/QuadrantPlugin/QuadrantNode';
 import { QUADRANT_TRANSFORMER } from '../../plugins/QuadrantPlugin/QuadrantTransformer';
 import { INSERT_QUADRANT_COMMAND } from '../../plugins/QuadrantPlugin/QuadrantCommands';
+import '../../plugins/QuadrantPlugin/quadrantBlockMenu';
 import { setExtensionContributions } from '../extensionContributionsStore';
 
 const NAME = '@nimbalyst/editor/quadrant';

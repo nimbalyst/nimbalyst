@@ -157,20 +157,27 @@ function withPrefix(prefix: string | undefined, path: string | undefined): strin
 /**
  * A local file's `@`: its workspace files, after the Team and Personal pages.
  * Clicking a Team reference opens it like a Team page's would; a Personal
- * one opens through its console link.
+ * one opens through its console link. `wikiPageFor` names the Local wiki page
+ * a file link points at, so a link between wiki pages shown in Pages opens
+ * the page there instead of the file in Files.
  */
 export function localFileReferenceSource(input: {
   listTeam: () => CollabReferenceOption[];
   listPersonal: () => CollabReferenceOption[];
   openTeam: CollabReferenceSource['openReference'];
   openPersonal: CollabReferenceSource['openReference'];
+  wikiPageFor?: (target: string) => string | null;
 }): CollabReferenceSource {
+  const wikiPageFor = (target: string) => input.wikiPageFor?.(target) ?? null;
   return {
     includeLocalFiles: true,
     listOptions: () => [...input.listTeam(), ...input.listPersonal()],
-    ownsTarget: (target) => isCollabReferenceHref(target) || isPersonalPageLink(target),
-    openReference: (target, options) => (isPersonalPageLink(target)
-      ? input.openPersonal(target, options)
-      : input.openTeam(target, options)),
+    ownsTarget: (target) => isCollabReferenceHref(target) || isPersonalPageLink(target) || wikiPageFor(target) !== null,
+    openReference: (target, options) => {
+      if (isPersonalPageLink(target)) return input.openPersonal(target, options);
+      if (isCollabReferenceHref(target)) return input.openTeam(target, options);
+      const wikiPageId = wikiPageFor(target);
+      if (wikiPageId) input.openPersonal(personalPageLink(wikiPageId), options);
+    },
   };
 }

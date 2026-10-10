@@ -22,6 +22,12 @@ public struct SessionListView: View {
     /// Meta-agent groups the user has closed (default expanded, mirroring desktop).
     @State private var collapsedMetaAgents: Set<String> = []
     @State private var selectedTab: ProjectTab = .sessions
+    /// The live project row: the Wiki tab follows config sync after the project was chosen.
+    @StateObject private var liveProject = ProjectRowObserver()
+    #if canImport(UIKit)
+    @StateObject private var teamMapping = ConsoleProjectMappingModel()
+    #endif
+    private var currentProject: Project { liveProject.project ?? project }
 
     public init(project: Project, selection: Binding<WorkspaceSelection?>, hostDeviceId: String? = nil, includeUnattributedSessions: Bool = false) {
         self.project = project
@@ -96,7 +102,7 @@ public struct SessionListView: View {
         VStack(spacing: 0) {
             if isSearchPresented {
                 InlineSearchField(
-                    prompt: selectedTab == .sessions ? "Search sessions" : "Search files",
+                    prompt: selectedTab == .sessions ? "Search sessions" : selectedTab == .wiki ? "Search pages" : "Search files",
                     text: selectedTab == .sessions ? $searchText : $fileSearchText,
                     focused: $searchFieldFocused,
                     onDismiss: dismissSearch
@@ -116,11 +122,38 @@ public struct SessionListView: View {
                     .padding(.vertical, 8)
                 DocumentListView(project: project, selection: $selection, searchText: $fileSearchText)
                     .environmentObject(appState)
+            case .wiki:
+                tabPicker
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 8)
+                if let folder = currentProject.localWikiFolder {
+                    WikiTreeView(project: currentProject, folder: folder, selection: $selection, searchText: $fileSearchText)
+                        .environmentObject(appState)
+                } else {
+                    Spacer()
+                }
+            case .team:
+                tabPicker
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 8)
+                #if canImport(UIKit)
+                TeamPagesList(model: teamMapping, selection: $selection)
+                #endif
             }
         }
         .navigationTitle(project.name)
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
+        #endif
+        .task(id: project.id) { liveProject.observe(project.id, in: appState.databaseManager) }
+        .onChange(of: currentProject.localWikiFolder == nil) { _, noWiki in
+            if noWiki && selectedTab == .wiki { selectedTab = .files }
+        }
+        #if canImport(UIKit)
+        .task(id: currentProject.gitRemoteHash) { await teamMapping.load(project: currentProject, appState: appState) }
+        .onChange(of: teamMapping.showsTeamTab) { _, hasTeam in
+            if !hasTeam && selectedTab == .team { selectedTab = .sessions }
+        }
         #endif
         .onChange(of: selectedTab) { _, _ in
             selection = nil
@@ -209,9 +242,17 @@ public struct SessionListView: View {
         }
     }
 
+    private var hasTeam: Bool {
+        #if canImport(UIKit)
+        teamMapping.showsTeamTab
+        #else
+        false
+        #endif
+    }
+
     private var tabPicker: some View {
         Picker("Tab", selection: $selectedTab) {
-            ForEach(ProjectTab.allCases, id: \.self) { tab in
+            ForEach(ProjectTab.available(for: currentProject, hasTeam: hasTeam), id: \.self) { tab in
                 Text(tab.rawValue).tag(tab)
             }
         }
@@ -397,7 +438,8 @@ public struct SessionListView: View {
                 IndexListPlaceholder(
                     noun: "Sessions", symbol: "bubble.left.and.bubble.right",
                     emptyDescription: emptyDescription,
-                    observationState: model.state == .loaded && !model.isHistoryComplete && !isSearching ? .loading : model.state
+                    observationState: model.state == .loaded && !model.isHistoryComplete && !isSearching ? .loading : model.state,
+                    localFailure: model.failure
                 )
             }
         }

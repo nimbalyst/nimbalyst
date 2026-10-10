@@ -38,6 +38,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -68,45 +69,57 @@ private sealed interface EditorLoad {
 }
 
 /**
- * Which edits a save covers. A save captures the edit revision its content
- * reflects; the editor is clean only once a completed save covers the latest
- * revision, so save A finishing while the user types B leaves B dirty.
+ * Decides the teardown save. The bundle's ack can lag native: native may have
+ * persisted AB while the bundle still reports AB unsaved, and a remote save may
+ * have landed since. Re-saving AB then would overwrite it, so the teardown
+ * save is skipped when it is exactly the last body native persisted or loaded
+ * for this document. Genuinely unsaved text still saves (last write wins).
  */
-internal class EditorSaveTracker {
-    private var editRevision = 0L
-    private var savedRevision = 0L
+internal class TeardownSaveGuard {
+    private var lastPersistedBody: String? = null
 
-    val dirty: Boolean get() = editRevision > savedRevision
-
-    fun onEdit() {
-        editRevision++
+    /** A save of [content] was sent or queued. */
+    fun onPersisted(content: String) {
+        lastPersistedBody = content
     }
 
-    /** Call when the content to save is read; pass the result to [onSaved]. */
-    fun beginSave(): Long = editRevision
-
-    fun onSaved(revision: Long) {
-        if (revision > savedRevision) savedRevision = revision
+    /** [content] was loaded into the editor (initial load, remote apply, read-only reload). */
+    fun onLoaded(content: String) {
+        lastPersistedBody = content
     }
+
+    /** [finalContent] is the bundle's answer (null when it has nothing unsaved). */
+    fun shouldSave(finalContent: String?): Boolean = finalContent != null && finalContent != lastPersistedBody
 }
 
 /**
  * Edits one synced markdown file in the bundled Lexical editor, mirroring iOS
  * `DocumentEditorView`. Each user edit is saved about half a second after
- * typing stops (the bundle debounces), and Save flushes immediately. A save
+ * typing stops (the bundle debounces), and Save flushes immediately. Every
+ * save starts in the bundle with a revision and is answered here with
+ * `saveResult`; the bundle owns what is confirmed and whether it is dirty
+ * (`pendingSave.ts`). A save
  * pushes the whole encrypted file; the server keeps the last write. Offline
  * saves are queued and sent when the project's room reconnects.
  *
  * The editor holds its project's room itself: after process restore it can be
  * the first screen, with no file list to have connected the room.
+ *
+ * [DocumentEditorScreen] decides what wraps it: a wiki page's [title] and
+ * [header], [readOnly] for pages the phone must not rewrite, and [onLink] for
+ * links tapped in the document.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun DocumentEditorScreen(
+internal fun DocumentEditorContent(
     projectId: String,
     relativePath: String,
     modifier: Modifier = Modifier,
     onBack: (() -> Unit)? = null,
+    title: String? = null,
+    readOnly: Boolean = false,
+    header: (@Composable () -> Unit)? = null,
+    onLink: ((href: String, title: String?) -> Unit)? = null,
 ) {
     val context = LocalContext.current
     val manager = remember { Documents.manager(context) }
@@ -118,39 +131,67 @@ fun DocumentEditorScreen(
     var webView by remember { mutableStateOf<WebView?>(null) }
     var editorReady by remember { mutableStateOf(false) }
     var contentPushed by remember { mutableStateOf(false) }
-    val tracker = remember(projectId, relativePath) { EditorSaveTracker() }
+    // The bundle's dirty state: unsaved body, or a save not yet answered.
     var dirty by remember { mutableStateOf(false) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
     var formatMenuOpen by remember { mutableStateOf(false) }
     val queued by remember(projectId) { manager.observeOutboxCount(projectId) }.collectAsStateWithLifecycle(0)
     val states by manager.states.collectAsStateWithLifecycle()
     val failures by manager.saveFailures.collectAsStateWithLifecycle()
+    // Read through State by the bridge handler and lifecycle observer, which are
+    // registered once: the permission and link handler can change while the
+    // editor stays open (wiki config arriving, a page turning malformed).
+    val canWrite by rememberUpdatedState(!readOnly)
+    val currentOnLink by rememberUpdatedState(onLink)
+    val teardown = remember(projectId, relativePath) { TeardownSaveGuard() }
 
-    fun save(markdown: String) {
-        val revision = tracker.beginSave()
+    fun loadIntoEditor(view: WebView, markdown: String) {
+        teardown.onLoaded(markdown)
+        view.evaluateJavascript(EditorCommands.loadMarkdown(markdown), null)
+    }
+
+    /** Persists one bundle save and answers it; only Sent or Queued (in the outbox) count as persisted. */
+    fun save(markdown: String, revision: Long) {
+        if (!canWrite) {
+            webView?.evaluateJavascript(EditorCommands.saveResult(revision, ok = false), null)
+            return
+        }
         scope.launch {
-            when (val outcome = manager.saveDocument(projectId, relativePath, markdown)) {
-                SaveOutcome.Sent, SaveOutcome.Queued -> tracker.onSaved(revision)
-                is SaveOutcome.Failed -> errorMessage = outcome.message
+            val ok = when (val outcome = manager.saveDocument(projectId, relativePath, markdown)) {
+                SaveOutcome.Sent, SaveOutcome.Queued -> {
+                    teardown.onPersisted(markdown)
+                    true
+                }
+                is SaveOutcome.Failed -> {
+                    errorMessage = outcome.message
+                    false
+                }
             }
-            dirty = tracker.dirty
+            webView?.evaluateJavascript(EditorCommands.saveResult(revision, ok), null)
         }
     }
 
     /**
-     * Reads the editor's current markdown and hands it to the manager, which
-     * keeps it until it is on disk and reports a failure in `saveFailures`.
-     * Nothing is marked clean when the editor could not be read.
+     * Asks the bundle to save now; the save comes back as a ContentChanged like
+     * any other. Not gated on `dirty`, which can lag the bundle; it no-ops when clean.
      */
-    fun flush(view: WebView, then: () -> Unit = {}) {
-        if (!tracker.dirty) return then()
-        view.evaluateJavascript(EditorCommands.GET_CONTENT) { result ->
-            EditorCommands.decodeContent(result)?.let { markdown ->
-                val revision = tracker.beginSave()
-                manager.saveInBackground(projectId, relativePath, markdown)
-                tracker.onSaved(revision)
-            }
-            dirty = tracker.dirty
+    fun flush(view: WebView) {
+        EditorCommands.flushFor(canWrite)?.let { view.evaluateJavascript(it, null) }
+    }
+
+    /**
+     * The editor is going away and cannot wait for an answer: hands whatever is
+     * unsaved (including a save still in flight) to the manager, which keeps it
+     * until it is on disk and reports a failure in `saveFailures`.
+     */
+    fun saveFinal(view: WebView, then: () -> Unit) {
+        // Not gated on `dirty`: dirty and save messages arrive asynchronously, so
+        // native's flag can lag the bundle. The bundle's null is the answer.
+        if (!canWrite) return then()
+        view.evaluateJavascript(EditorCommands.FINAL_CONTENT) { result ->
+            EditorCommands.decodeContent(result)
+                ?.takeIf { canWrite && teardown.shouldSave(it) }
+                ?.let { manager.saveInBackground(projectId, relativePath, it) }
             then()
         }
     }
@@ -181,17 +222,37 @@ fun DocumentEditorScreen(
         val view = webView ?: return@LaunchedEffect
         if (editorReady && !contentPushed) {
             contentPushed = true
-            view.evaluateJavascript(EditorCommands.loadMarkdown(loaded.markdown), null)
+            if (!canWrite) view.evaluateJavascript(EditorCommands.setReadOnly(true), null)
+            loadIntoEditor(view, loaded.markdown)
+        }
+    }
+
+    // Editability follows the current permission, not the one at mount. A page
+    // that turns read-only with unsaved typing shows the file again: those
+    // edits can never be saved from the phone.
+    LaunchedEffect(readOnly, editorReady, webView) {
+        val view = webView ?: return@LaunchedEffect
+        if (!editorReady) return@LaunchedEffect
+        view.evaluateJavascript(EditorCommands.setReadOnly(readOnly), null)
+        if (readOnly && dirty && contentPushed) {
+            // Loading resets the bundle's confirmed body, so it reports clean.
+            manager.documentContent(projectId, relativePath)?.let { loadIntoEditor(view, it) }
         }
     }
 
     // Another device's save replaces the content unless there are local edits
-    // in flight; those win on the next save (last write wins).
+    // in flight. Then the bundle defers it: the next save carries the remote
+    // frontmatter (the phone never edits it), a local save still wins for the
+    // body (last write wins), and undoing the edits shows the remote body.
     LaunchedEffect(load) {
         val syncId = (load as? EditorLoad.Loaded)?.syncId ?: return@LaunchedEffect
         manager.remoteUpdates.collect { update ->
-            if (update.projectId == projectId && update.syncId == syncId && !dirty && contentPushed) {
-                webView?.evaluateJavascript(EditorCommands.loadMarkdown(update.markdown), null)
+            if (update.projectId != projectId || update.syncId != syncId || !contentPushed) return@collect
+            val view = webView ?: return@collect
+            if (dirty && canWrite) {
+                view.evaluateJavascript(EditorCommands.remoteUpdate(update.markdown, dirty = true), null)
+            } else {
+                loadIntoEditor(view, update.markdown)
             }
         }
     }
@@ -200,12 +261,11 @@ fun DocumentEditorScreen(
         relay.handler = { message ->
             when (message) {
                 EditorBridgeMessage.EditorReady -> editorReady = true
-                is EditorBridgeMessage.Dirty -> if (message.isDirty) {
-                    tracker.onEdit()
-                    dirty = tracker.dirty
-                }
-                is EditorBridgeMessage.ContentChanged -> save(message.content)
+                is EditorBridgeMessage.Dirty -> dirty = message.isDirty
+                // A read-only page is never written: save() answers it as failed.
+                is EditorBridgeMessage.ContentChanged -> save(message.content, message.revision)
                 is EditorBridgeMessage.Error -> errorMessage = message.message
+                is EditorBridgeMessage.LinkClicked -> currentOnLink?.invoke(message.href, message.title)
             }
         }
         onDispose { relay.handler = null }
@@ -234,7 +294,7 @@ fun DocumentEditorScreen(
                     }
                 },
                 title = {
-                    Text(relativePath.substringAfterLast('/'), maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 17.sp)
+                    Text(title ?: relativePath.substringAfterLast('/'), maxLines = 1, overflow = TextOverflow.Ellipsis, fontSize = 17.sp)
                 },
                 actions = {
                     if (dirty) {
@@ -245,8 +305,8 @@ fun DocumentEditorScreen(
                                 .background(NimbalystColors.primary, CircleShape)
                         )
                     }
-                    val editable = load is EditorLoad.Loaded && editorReady
-                    Box {
+                    val editable = load is EditorLoad.Loaded && editorReady && !readOnly
+                    if (!readOnly) Box {
                         IconButton(onClick = { formatMenuOpen = true }, enabled = editable) {
                             Icon(Icons.Outlined.TextFormat, contentDescription = stringResource(R.string.document_editor_format))
                         }
@@ -267,12 +327,8 @@ fun DocumentEditorScreen(
                             }
                         }
                     }
-                    IconButton(
-                        onClick = {
-                            webView?.evaluateJavascript(EditorCommands.GET_CONTENT) { result ->
-                                EditorCommands.decodeContent(result)?.let(::save)
-                            }
-                        },
+                    if (!readOnly) IconButton(
+                        onClick = { webView?.evaluateJavascript(EditorCommands.FLUSH, null) },
                         enabled = editable,
                     ) {
                         Icon(Icons.Outlined.Save, contentDescription = stringResource(R.string.document_editor_save))
@@ -310,6 +366,7 @@ fun DocumentEditorScreen(
                                 modifier = Modifier.fillMaxWidth().background(NimbalystColors.background).padding(horizontal = 16.dp, vertical = 6.dp),
                             )
                         }
+                        header?.invoke()
                         AndroidView(
                             modifier = Modifier.fillMaxSize(),
                             factory = { viewContext ->
@@ -320,7 +377,7 @@ fun DocumentEditorScreen(
                             onRelease = { view ->
                                 if (view is WebView) {
                                     // Save anything typed in the last half second, then free the renderer.
-                                    flush(view) { view.destroy() }
+                                    saveFinal(view) { view.destroy() }
                                     if (webView === view) webView = null
                                 }
                             },

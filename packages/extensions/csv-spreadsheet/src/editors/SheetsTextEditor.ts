@@ -2,9 +2,13 @@
  * Custom text editor that behaves like a real spreadsheet cell.
  *
  * RevoGrid passes `save()` and `close()` callbacks to the editor constructor.
- * Which keystrokes reach either of them -- and which are left to the input so the
- * caret can move -- is decided by `resolveEditorKeyAction`; see the header of
- * editorKeyActions.ts for why the grid used to navigate on every arrow press.
+ * In the editor the grid key controller (`keyboard/`) sits in front of this and
+ * drives `commit` / `cancel` / `insertText` for Enter, Tab, Escape, arrows in
+ * enter mode and Alt+Enter. The `resolveEditorKeyAction` table below only sees
+ * the keys the controller leaves alone, and still keeps caret keys away from
+ * RevoGrid's document listener; see editorKeyActions.ts.
+ *
+ * The input is a textarea so a cell can hold line breaks (Alt/Option+Enter).
  */
 
 import type { EditCell, EditorBase, ColumnDataSchemaModel, VNode, HyperFunc } from '@revolist/revogrid';
@@ -21,7 +25,7 @@ interface FocusableGrid extends Element {
 }
 
 export class SheetsTextEditor implements EditorBase {
-  editInput: HTMLInputElement | null = null;
+  editInput: HTMLTextAreaElement | null = null;
   element: Element | null = null;
   editCell?: EditCell = undefined;
 
@@ -31,6 +35,20 @@ export class SheetsTextEditor implements EditorBase {
    * it -- without this flag, Escape committed the edit it was supposed to abandon.
    */
   private cancelled = false;
+
+  /**
+   * The keyboard edit session this editor was opened for (see `editSessionRef`
+   * in editorCore), or null when the host does not track sessions. An editor
+   * RevoGrid builds after its edit was already committed belongs to an older
+   * session and must not receive the keys of the current one.
+   */
+  editSession: number | null = null;
+
+  /** Replaces the cell's value when the editor was opened by typing. */
+  initialText: string | null = null;
+
+  /** Set by an explicit commit, so the close that follows does not save again. */
+  private committed = false;
 
   constructor(
     public data: ColumnDataSchemaModel,
@@ -45,7 +63,10 @@ export class SheetsTextEditor implements EditorBase {
     if (this.editInput) {
       // Small delay to ensure DOM is ready
       await new Promise(resolve => setTimeout(resolve, 0));
-      this.editInput?.focus();
+      const input = this.editInput;
+      input?.focus();
+      // Caret at the end, as Sheets does for both typing and F2.
+      input?.setSelectionRange(input.value.length, input.value.length);
     }
   }
 
@@ -64,8 +85,7 @@ export class SheetsTextEditor implements EditorBase {
       case 'cancel':
         e.preventDefault();
         e.stopPropagation();
-        this.cancelled = true;
-        this.close(false);
+        this.cancel();
         return;
 
       case 'commitDown':
@@ -95,10 +115,37 @@ export class SheetsTextEditor implements EditorBase {
     }
   };
 
-  /** Blur first: the built-in editor does the same to avoid a scroll jump. */
-  private commit(preventFocus: boolean): void {
+  /**
+   * Save the value. Blur first: the built-in editor does the same to avoid a
+   * scroll jump. `preventFocus` keeps RevoGrid from moving the selection, for
+   * callers that move it themselves.
+   */
+  commit(preventFocus = true): void {
     this.editInput?.blur();
     this.save(this.getValue(), preventFocus);
+    // RevoGrid leaves the editor open on a `preventFocus` save; close it
+    // without moving focus, or the grid stays in edit mode and ignores typing.
+    if (preventFocus) {
+      this.committed = true;
+      this.close(false);
+    }
+  }
+
+  /** Close without saving. */
+  cancel(): void {
+    if (this.cancelled) return;
+    this.cancelled = true;
+    this.close(false);
+  }
+
+  /** Insert text at the caret (Alt+Enter's line break, Cmd+; date). */
+  insertText(text: string): void {
+    const input = this.editInput;
+    if (!input) return;
+    const start = input.selectionStart ?? input.value.length;
+    const end = input.selectionEnd ?? start;
+    input.setRangeText(text, start, end, 'end');
+    input.dispatchEvent(new Event('input', { bubbles: true }));
   }
 
   /**
@@ -137,25 +184,42 @@ export class SheetsTextEditor implements EditorBase {
    * `applyOnClose` is for.
    */
   beforeAutoSave(): boolean {
-    return !this.cancelled;
+    return !this.cancelled && !this.committed;
   }
 
   /**
-   * Get value from input - RevoGrid calls this when editor closes
+   * Get value from input - RevoGrid calls this when editor closes.
+   *
+   * A fast typed run can commit an editor that is built but not rendered yet;
+   * the typed text already moved from the key controller into `initialText`,
+   * so it is the value then, not ''.
    */
   getValue() {
-    return this.editInput?.value ?? '';
+    return this.editInput?.value ?? this.startingValue();
+  }
+
+  /** What the textarea starts with: the typed text, or the cell's value. */
+  private startingValue(): string {
+    const existing = this.editCell?.val ?? (this.data?.model as Record<string, unknown> | undefined)?.[String(this.data?.prop)];
+    return this.initialText ?? String(existing ?? '');
   }
 
   /**
    * Render the editor input
    */
   render(createElement: HyperFunc<VNode>): VNode | VNode[] {
-    return createElement('input', {
-      type: 'text',
+    // The live text once mounted: Stencil re-applies `value` on every render
+    // whenever it differs from the DOM, so rendering the starting value again
+    // would wipe out what was typed or pointed in since (point mode writes the
+    // DOM directly).
+    const value = this.editInput?.value ?? this.startingValue();
+    return createElement('textarea', {
+      class: 'csv-cell-editor',
       enterKeyHint: 'enter',
-      value: this.editCell?.val ?? '',
-      ref: (el: HTMLInputElement | null) => {
+      rows: Math.max(1, value.split('\n').length),
+      spellcheck: false,
+      value,
+      ref: (el: HTMLTextAreaElement | null) => {
         this.editInput = el;
       },
       onKeyDown: this.handleKeyDown,

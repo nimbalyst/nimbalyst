@@ -259,6 +259,15 @@ export class ProjectSyncProvider {
 
   // MARK: - Sync Request
 
+  /**
+   * Re-announce current disk state so the server re-offers what this client
+   * lacks, through the normal receive path (timestamps, conflicts, deletes).
+   * No-op when the project is not connected; the next connect does the same.
+   */
+  resync(projectId: string): Promise<void> {
+    return this.sendFreshSyncRequest(projectId);
+  }
+
   /** Rebuild the manifest from current disk state and send the sync request. */
   private async sendFreshSyncRequest(projectId: string): Promise<void> {
     const getManifest = this.manifestProviders.get(projectId);

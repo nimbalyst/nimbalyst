@@ -37,6 +37,7 @@ import { FilePathBreadcrumb } from '../common/FilePathBreadcrumb';
 // header row.
 import { EditorHeaderBar, HeaderIconButton } from '@nimbalyst/collab-client/docs-ui/EditorHeaderBar';
 import { HeaderTableOfContents, type TableOfContentsEditor } from './HeaderTableOfContents';
+import { PageInfoToggleButton } from '../PageInfo/PageInfoToggleButton';
 import { copyEditorAsMarkdown, exportEditorToPdf } from './editorExport';
 import type { LexicalEditor } from 'lexical';
 import { dialogRef, DIALOG_IDS } from '../../dialogs';
@@ -123,6 +124,8 @@ interface UnifiedEditorHeaderBarProps {
   showShareLinkButton?: boolean;
   showSharedDocButton?: boolean;
   showHistoryAction?: boolean;
+  /** The host mounts a `PageInfoPanel` beside the document. */
+  showPageInfoAction?: boolean;
   showCommonFileActions?: boolean;
   /**
    * "Set Document Type" writes tracker frontmatter into the document. Shells
@@ -157,6 +160,7 @@ export const UnifiedEditorHeaderBar: React.FC<UnifiedEditorHeaderBarProps> = ({
   showShareLinkButton = isMarkdown,
   showSharedDocButton = true,
   showHistoryAction = true,
+  showPageInfoAction = false,
   showCommonFileActions = true,
   showDocumentTypeAction = true,
   sharedDocumentLinkTarget,
@@ -565,6 +569,7 @@ export const UnifiedEditorHeaderBar: React.FC<UnifiedEditorHeaderBarProps> = ({
             </svg>
           </HeaderIconButton>
         )}
+        {showPageInfoAction && <PageInfoToggleButton />}
 
         {/* Actions Menu Button */}
         <div className="unified-header-dropdown-container relative">

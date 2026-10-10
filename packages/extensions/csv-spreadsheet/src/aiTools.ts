@@ -6,6 +6,11 @@ import type {
   SpreadsheetSheetInfo,
 } from './editorAPI';
 import { columnIndexToLetter } from './utils/csvParser';
+import { formatTools } from './agent/formatTools';
+import { readTools } from './agent/readTools';
+import { structuralTools } from './agent/structuralTools';
+import { validationTools } from './agent/validationTools';
+import { writeTools } from './agent/writeTools';
 
 const DISTINCT_SAMPLE_LIMIT = 10;
 const OUTLIER_SAMPLE_LIMIT = 10;
@@ -457,4 +462,12 @@ const applyFormulaTool: ExtensionAITool = {
   },
 };
 
-export const aiTools: ExtensionAITool[] = [analyzeDataTool, applyFormulaTool];
+export const aiTools: ExtensionAITool[] = [
+  analyzeDataTool,
+  applyFormulaTool,
+  ...readTools,
+  ...writeTools,
+  ...structuralTools,
+  ...formatTools,
+  ...validationTools,
+];

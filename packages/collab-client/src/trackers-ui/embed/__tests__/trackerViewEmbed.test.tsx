@@ -16,7 +16,7 @@ import {
 } from '@nimbalyst/collab-client/trackers';
 import { TrackersUIProvider } from '../../TrackersUIProvider';
 import { useTrackerViewRows } from '../../useTrackerViewRows';
-import { TrackerViewEmbed } from '../TrackerViewEmbed';
+import { TRACKER_EMBEDS_READ_ONLY_ATTRIBUTE, TrackerViewEmbed } from '../TrackerViewEmbed';
 import { createTypePageView } from '../typePageView';
 import { PlacedViewEmbed } from '../PlacedViewEmbed';
 import { MarksListEmbed } from '../MarksListEmbed';
@@ -297,6 +297,43 @@ describe('TrackerViewEmbed editing', () => {
     expect(document.querySelector('revo-grid')!.getAttribute('data-readonly')).toBe('true');
     editCell('0.7');
     await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(source.command).not.toHaveBeenCalled();
+  });
+
+  it('is read-only under an ancestor the host marked read-only, with no create row', async () => {
+    const source = fakeSource();
+    render(
+      <div {...{ [TRACKER_EMBEDS_READ_ONLY_ATTRIBUTE]: 'true' }}>
+        <TrackersUIProvider dataSource={source} identity={null}>
+          <TrackerViewEmbed view={scoreView} />
+        </TrackersUIProvider>
+      </div>,
+    );
+    await screen.findByText('1 item');
+    expect(document.querySelector('revo-grid')!.getAttribute('data-readonly')).toBe('true');
+    expect(screen.queryByText('+ New')).toBeNull();
+    editCell('0.7');
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(source.command).not.toHaveBeenCalled();
+  });
+
+  it('refuses edits and creates through stale callbacks once an ancestor turns read-only', async () => {
+    const source = fakeSource();
+    const { container } = render(
+      <div data-testid="host">
+        <TrackersUIProvider dataSource={source} identity={null}>
+          <TrackerViewEmbed view={scoreView} />
+        </TrackersUIProvider>
+      </div>,
+    );
+    await screen.findByText('1 item');
+    fireEvent.click(screen.getByText('+ New'));
+    container.querySelector('[data-testid="host"]')!.setAttribute(TRACKER_EMBEDS_READ_ONLY_ATTRIBUTE, 'true');
+
+    fireEvent.change(screen.getByLabelText('New item title'), { target: { value: 'Late' } });
+    fireEvent.submit(screen.getByLabelText('New item title').closest('form')!);
+    editCell('0.7');
+    await waitFor(() => expect(document.querySelector('revo-grid')!.getAttribute('data-readonly')).toBe('true'));
     expect(source.command).not.toHaveBeenCalled();
   });
 

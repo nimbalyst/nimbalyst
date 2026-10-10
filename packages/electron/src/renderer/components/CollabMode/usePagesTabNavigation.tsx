@@ -12,7 +12,7 @@ import { trackerItemsMapAtom } from '@nimbalyst/runtime/plugins/TrackerPlugin/tr
 import { MaterialSymbol } from '@nimbalyst/runtime/ui/icons/MaterialSymbol';
 import { useTabs, useTabsActions, type TabData } from '../../contexts/TabsContext';
 import type { TabHistoryEntry } from '../../contexts/tabHistory';
-import { getPersonalCollabDocsSession, linkableSharedDocumentsAtom, teamSyncStatusAtom } from '../../store/atoms/collabDocuments';
+import { getPersonalCollabDocsSession, getPersonalCollabHost, linkableSharedDocumentsAtom, teamSyncStatusAtom } from '../../store/atoms/collabDocuments';
 import {
   documentAvailability,
   isPagesEntryAvailable,
@@ -84,13 +84,14 @@ export function usePagesTabNavigation(isActive: boolean, workspacePath: string):
   const addTabFor = useCallback((options: PagesOpenOptions | undefined): PagesAddTab => (
     (filePath, content = '', switchToTab = true, displayName, initialState) => {
       if (!options) return addTab(filePath, content, switchToTab, displayName, initialState);
-      const plan = planPagesOpen(filePath, options, getSnapshot());
+      const isLocalPage = (path: string) => getPersonalCollabHost(workspacePath).source().documentIdForFile(path) !== null;
+      const plan = planPagesOpen(filePath, options, getSnapshot(), isLocalPage);
       // A new tab focuses one that already shows the page.
       if (plan.action === 'new') return addTab(filePath, '', true, displayName, initialState);
       navigateTab(plan.tabId, filePath, displayName);
       return plan.tabId;
     }
-  ), [addTab, getSnapshot, navigateTab]);
+  ), [addTab, getSnapshot, navigateTab, workspacePath]);
 
   // Back and Forward pass over pages that were trashed or deleted since.
   const step = useCallback((direction: -1 | 1) => {

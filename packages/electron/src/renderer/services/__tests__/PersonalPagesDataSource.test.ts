@@ -62,6 +62,45 @@ afterEach(() => {
 });
 
 describe('PersonalPagesDataSource', () => {
+  it('turns type files the app could not load into broken types, placing at root only the ones nothing shows (NIM-7437)', async () => {
+    const typePath = (typeId: string) => `/ws/personal-pages/.nimbalyst/trackers/${typeId}.yaml`;
+    const tablePlacement = { typeId: 'lesson', projectId: null, parentFolderId: 'w1', sortOrder: 0, createdBy: 'local', createdAt: 1, updatedAt: 1 };
+    invoke.mockImplementation(async (channel: string) => {
+      if (channel === 'local-wiki:snapshot') {
+        return {
+          ...wikiSnapshot(),
+          typePlacements: [tablePlacement],
+          pages: [...wikiSnapshot().pages, { id: 'g1', path: 'Guide.md', type: 'guide', trashedAt: null }],
+          issues: [
+            { code: 'malformed-type', path: typePath('lesson'), message: 'Missing required field: modes', id: 'lesson' },
+            { code: 'malformed-type', path: typePath('guide'), message: 'Missing required field: icon', id: 'guide' },
+            // The library's own report of a file that is not YAML: no id, named by the file.
+            { code: 'malformed-type', path: typePath('orphan'), message: 'bad indentation' },
+            { code: 'broken-link', path: 'Home.md', message: 'gone' },
+          ],
+        };
+      }
+      if (channel === 'local-wiki:tracker-snapshot') return { items: [] };
+      if (channel === 'local-wiki:legacy-snapshot') return null;
+      return { ok: true };
+    });
+    const source = new PersonalPagesDataSource(WORKSPACE);
+    const snapshot = await source.snapshot();
+
+    const { brokenTypes } = store.get(localWikiStatusAtomFamily(WORKSPACE));
+    expect(brokenTypes).toEqual({
+      lesson: 'Missing required field: modes (.nimbalyst/trackers/lesson.yaml)',
+      guide: 'Missing required field: icon (.nimbalyst/trackers/guide.yaml)',
+      orphan: 'bad indentation (.nimbalyst/trackers/orphan.yaml)',
+    });
+    // `lesson` has its table and `guide` its typed page; only `orphan` needs a row of its own.
+    expect(snapshot.typePlacements?.map((placement) => [placement.typeId, placement.parentFolderId ?? null]))
+      .toEqual([['lesson', 'w1'], ['orphan', null]]);
+    // An unchanged read keeps the same map, so the tree's resolver is not rebuilt.
+    await source.snapshot();
+    expect(store.get(localWikiStatusAtomFamily(WORKSPACE)).brokenTypes).toBe(brokenTypes);
+  });
+
   it('shows the wiki with the database pages not exported yet, and routes each write to its own store', async () => {
     const source = new PersonalPagesDataSource(WORKSPACE);
 

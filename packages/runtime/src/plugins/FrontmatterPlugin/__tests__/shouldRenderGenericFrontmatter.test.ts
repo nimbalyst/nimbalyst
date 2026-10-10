@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect } from 'vitest';
-import { shouldRenderGenericFrontmatter } from '../GenericFrontmatterHeader';
+import { frontmatterStatusBadge, shouldRenderGenericFrontmatter } from '../frontmatterPresence';
 import { shouldRenderTrackerHeader } from '../../TrackerPlugin/documentHeader/TrackerDocumentHeader';
 
 const fm = (body: string): string => `---\n${body}\n---\n\n# Doc\n\nSome text.\n`;
@@ -83,5 +83,16 @@ describe('generic frontmatter header stands down only for a real tracker doc (#1
 
   it('still surfaces the error banner for malformed frontmatter', () => {
     expect(shouldRenderGenericFrontmatter('---\ntitle: [unclosed\n---\n\nbody\n', 'doc.md')).toBe(true);
+  });
+});
+
+describe('the status a page shows above its text', () => {
+  it('shows a status other than current, and nothing for current, tracker docs or non-markdown', () => {
+    expect(frontmatterStatusBadge(fm('status: draft'), 'doc.md')).toEqual({ kind: 'status', status: 'draft' });
+    expect(frontmatterStatusBadge(fm('status: Current'), 'doc.md')).toBeNull();
+    expect(frontmatterStatusBadge(fm('title: Doc'), 'doc.md')).toBeNull();
+    expect(frontmatterStatusBadge(fm('planStatus:\n  status: draft'), 'doc.md')).toBeNull();
+    expect(frontmatterStatusBadge(fm('status: draft'), 'page.astro')).toBeNull();
+    expect(frontmatterStatusBadge('---\nstatus: [unclosed\n---\n', 'doc.md')).toEqual({ kind: 'invalid' });
   });
 });

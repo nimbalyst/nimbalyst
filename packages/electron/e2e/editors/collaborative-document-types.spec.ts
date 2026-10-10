@@ -153,7 +153,7 @@ async function editCsvCell(
     : 8;
   const cell = page.locator('revogr-data [role="gridcell"]').nth(cellIndex);
   await cell.dblclick();
-  const input = page.locator('revo-grid input').filter({ visible: true });
+  const input = page.locator('revo-grid textarea').filter({ visible: true });
   await expect(input).toBeVisible({ timeout: 2_000 });
   await input.fill(marker);
   await input.press('Enter');

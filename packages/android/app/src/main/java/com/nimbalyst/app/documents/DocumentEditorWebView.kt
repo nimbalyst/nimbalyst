@@ -22,9 +22,12 @@ import java.net.URI
 /** Messages the editor bundle posts through `window.AndroidEditorBridge.postMessage(json)`. */
 sealed interface EditorBridgeMessage {
     data object EditorReady : EditorBridgeMessage
-    data class ContentChanged(val content: String) : EditorBridgeMessage
+    /** A save the bundle started; answer it with [EditorCommands.saveResult] for [revision]. */
+    data class ContentChanged(val content: String, val revision: Long) : EditorBridgeMessage
     data class Dirty(val isDirty: Boolean) : EditorBridgeMessage
     data class Error(val message: String) : EditorBridgeMessage
+    /** A link tapped in the document; native decides where it goes ([DocumentEditorLinks.classifyHref]). */
+    data class LinkClicked(val href: String, val title: String?) : EditorBridgeMessage
 
     companion object {
         private const val BENIGN_RESIZE_OBSERVER = "ResizeObserver loop completed with undelivered notifications."
@@ -33,12 +36,17 @@ sealed interface EditorBridgeMessage {
             val json = runCatching { parseObject(payload) }.getOrNull() ?: return null
             return when (json.optString("type")) {
                 "editorReady" -> EditorReady
-                "contentChanged" -> json.optString("content")?.let(::ContentChanged)
+                "contentChanged" -> {
+                    val revision = json.get("revision")?.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isNumber }?.asLong
+                    val content = json.optString("content")
+                    if (content != null && revision != null) ContentChanged(content, revision) else null
+                }
                 "dirty" -> runCatching { Dirty(json.requireBoolean("isDirty")) }.getOrNull()
                 "error" -> {
                     val message = json.optString("message") ?: "Unknown editor error"
                     if (BENIGN_RESIZE_OBSERVER in message) null else Error(message)
                 }
+                "linkClicked" -> json.optString("href")?.takeIf { it.isNotEmpty() }?.let { LinkClicked(it, json.optString("title")) }
                 else -> null
             }
         }
@@ -77,9 +85,22 @@ object EditorCommands {
     private val gson = Gson()
 
     fun loadMarkdown(markdown: String) = "window.nimbalystEditor && window.nimbalystEditor.loadMarkdown(${gson.toJson(markdown)})"
+    /**
+     * A remote save: loaded outright when clean. With unsaved edits it is
+     * deferred: its frontmatter is taken now, its body only if the edits are undone.
+     */
+    fun remoteUpdate(markdown: String, dirty: Boolean) = if (dirty) deferRemote(markdown) else loadMarkdown(markdown)
+    fun deferRemote(markdown: String) = "window.nimbalystEditor && window.nimbalystEditor.deferRemote(${gson.toJson(markdown)})"
+    /** The answer for the bundle's save [revision]: ok when sent or queued in the outbox. */
+    fun saveResult(revision: Long, ok: Boolean) = "window.nimbalystEditor && window.nimbalystEditor.saveResult($revision, $ok)"
+    /** Save now (Save button, app going to background); arrives as a ContentChanged. */
+    const val FLUSH = "window.nimbalystEditor && window.nimbalystEditor.flush()"
+    /** The background flush for an editor: always for an editable one, never for a read-only one. */
+    fun flushFor(canWrite: Boolean): String? = if (canWrite) FLUSH else null
+    /** The unsaved file, or null when clean; for an editor about to be destroyed. */
+    const val FINAL_CONTENT = "window.nimbalystEditor ? window.nimbalystEditor.finalContent() : null"
     fun setReadOnly(readOnly: Boolean) = "window.nimbalystEditor && window.nimbalystEditor.setReadOnly($readOnly)"
     fun formatText(format: EditorFormat) = "window.nimbalystEditor && window.nimbalystEditor.formatText(${gson.toJson(format.command)})"
-    const val GET_CONTENT = "window.nimbalystEditor ? window.nimbalystEditor.getContent() : null"
 
     /** `evaluateJavascript` hands back the result JSON-encoded; null when the editor is not mounted. */
     fun decodeContent(result: String?): String? =

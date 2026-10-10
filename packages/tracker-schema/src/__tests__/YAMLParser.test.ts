@@ -64,6 +64,33 @@ fields:
   });
 });
 
+describe('parseTrackerYAML — wiki types written per local-wiki FORMAT.md', () => {
+  const FORMAT_EXAMPLE = `
+type: partner
+displayName: Partner
+displayNamePlural: Partners
+storage: table
+fields:
+  - name: title
+    type: string
+`;
+
+  it('defaults the app-only keys a wiki type may leave out', () => {
+    const model = parseTrackerYAML(FORMAT_EXAMPLE);
+    expect(model.storage).toBe('table');
+    expect(model.idPrefix).toBe('par');
+    expect(model.modes).toEqual({ inline: true, fullDocument: false });
+    expect(model.icon).toBeTruthy();
+    expect(model.color).toBeTruthy();
+  });
+
+  it('still requires them on a type that is not in the wiki', () => {
+    expect(() => parseTrackerYAML(FORMAT_EXAMPLE.replace('storage: table\n', ''))).toThrow(
+      'Missing required field: icon'
+    );
+  });
+});
+
 describe('parseTrackerYAML — tracker sharing migration', () => {
   it.each([
     ['local', 'personal', false],

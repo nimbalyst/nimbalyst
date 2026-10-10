@@ -82,12 +82,14 @@ internal class SessionEntryDecoder(private val gson: Gson) {
      * Null [ProjectEntity.commandsJson]/[ProjectEntity.actionsJson] mean the
      * entry carried no readable config; the repository keeps the stored values
      * rather than blanking them for a stats-only broadcast. A config that is
-     * present always yields both, "[]" when empty.
+     * present always yields both, "[]" when empty, and its
+     * [ProjectEntity.localWikiFolder] is authoritative even when null.
      */
     fun decodeProject(entry: ServerProjectEntry, crypto: CryptoManager): ProjectEntity? {
         val projectId = crypto.decryptOrNull(entry.encryptedProjectId, entry.projectIdIv) ?: return null
-        val config = crypto.decryptOrNull(entry.encryptedConfig, entry.configIv)
-            ?.let { gson.parseOrNull<ProjectConfig>(it, TAG) }
+        val configJson = crypto.decryptOrNull(entry.encryptedConfig, entry.configIv)
+        val config = configJson?.let { gson.parseOrNull<ProjectConfig>(it, TAG) }
+        val localWikiFolder = normalizeLocalWikiFolder(config?.localWiki?.folder)
         return ProjectEntity(
             id = projectId,
             name = File(projectId).name.ifBlank { projectId },
@@ -96,7 +98,9 @@ internal class SessionEntryDecoder(private val gson: Gson) {
             sortOrder = 0,
             commandsJson = config?.let { gson.toJson(it.commands.orEmpty()) },
             actionsJson = config?.let { gson.toJson(it.actions.orEmpty()) },
-            gitRemoteHash = entry.gitRemoteHash
+            gitRemoteHash = entry.gitRemoteHash,
+            localWikiFolder = localWikiFolder,
+            localWikiTypesJson = if (localWikiFolder == null) null else configJson?.let(::rawLocalWikiTypes),
         )
     }
 

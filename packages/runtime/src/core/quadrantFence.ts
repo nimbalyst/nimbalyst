@@ -39,9 +39,10 @@ export const MAX_QUADRANT_HEIGHT = 1200;
 
 /**
  * The body with its `width:` / `height:` lines set (added before the points
- * if missing). A null width removes the line, so the chart fills the column.
+ * if missing). A null removes the line: no width fills the column, no height
+ * uses the default.
  */
-export function setQuadrantFenceSize(body: string, size: { width: number | null; height: number }): string {
+export function setQuadrantFenceSize(body: string, size: { width: number | null; height: number | null }): string {
   let lines = body.split('\n');
   const put = (key: 'width' | 'height', value: number | null) => {
     const re = new RegExp(`^\\s*${key}\\s*:`, 'i');

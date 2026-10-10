@@ -328,6 +328,9 @@ export const INTENTIONALLY_DROPPED = [
   'mobile_pairing_completed',
   'mobile_push_requested',
   'mobile_request_user_input_response',
+  // Not yet on the PostHog transformation; move to INGESTED_ALWAYS together
+  // with adding it there.
+  'mobile_session_load_error',
   'mobile_workstream_created',
   'mobile_worktree_created',
   'permission_setting_changed',

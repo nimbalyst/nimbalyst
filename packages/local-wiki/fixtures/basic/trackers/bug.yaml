@@ -1,0 +1,5 @@
+type: bug
+displayName: Bug
+fields:
+  - name: title
+    type: string

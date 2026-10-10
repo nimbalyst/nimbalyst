@@ -10,6 +10,7 @@
  */
 
 import React, { useMemo } from 'react';
+import { isAbsolute, join } from 'pathe';
 import {
   TypeaheadMenuPlugin,
   registerExtensionEditorComponent,
@@ -39,9 +40,13 @@ import {
   buildSharedDocumentDeepLink,
   pendingCollabDocumentAtom,
   personalPagesDocumentsAtomFamily,
+  getTeamSyncProvider,
+  getPersonalCollabHost,
 } from '../store/atoms/collabDocuments';
+import type { MentionMember } from '@nimbalyst/runtime/editor/plugins/MentionPlugin/mentionTypeahead';
+import { teamMemberDisplayName } from '../utils/teamMemberDisplayName';
 import { activeWorkspacePathAtom } from '../store/atoms/openProjects';
-import { setWindowModeAtom } from '../store/atoms/windowMode';
+import { setWindowModeAtom, windowModeAtom } from '../store/atoms/windowMode';
 import { openConsoleLinkInWindow } from '../utils/openConsoleLink';
 import {
   isPersonalPageLink,
@@ -110,7 +115,7 @@ function listPersonalPages(options: { currentDocumentId?: string | null; pathPre
   return personalPageReferenceOptions({ documents: store.get(personalPagesDocumentsAtomFamily(workspacePath)), ...options });
 }
 
-function openTeamPage(target: string, options?: { newTab: boolean }): void {
+export function openTeamPage(target: string, options?: { newTab: boolean }): void {
   const scope = store.get(activeCollabScopeAtom);
   const targetDocumentId = parseCollabReferenceDocumentId(target);
   if (!scope || !targetDocumentId) return;
@@ -133,6 +138,36 @@ function openTeamPage(target: string, options?: { newTab: boolean }): void {
 
 function openPersonalPage(target: string, options?: { newTab: boolean }): void {
   openConsoleLinkInWindow(target, options);
+}
+
+/**
+ * The active team's members, for `@` person mentions. Mentions are keyed by
+ * email, so any document in a team workspace can mention a teammate; outside
+ * a team there is no roster and `@` offers only pages and dates.
+ */
+function listMentionMembers(): MentionMember[] {
+  const scope = store.get(activeCollabScopeAtom);
+  const members = scope ? getTeamSyncProvider(scope)?.getTeamState()?.members ?? [] : [];
+  return members
+    .filter((member) => !!member.email)
+    .map((member) => ({ name: teamMemberDisplayName(member), email: member.email! }));
+}
+
+/**
+ * The Local wiki page a link in a wiki page points at, while Pages is shown.
+ * The same file open in Files keeps opening its links as files.
+ */
+function localWikiPageFor(target: string, documentPath: string): string | null {
+  const workspacePath = store.get(activeWorkspacePathAtom);
+  if (!workspacePath || store.get(windowModeAtom) !== 'collab') return null;
+  const wiki = getPersonalCollabHost(workspacePath).source();
+  if (!wiki.documentIdForFile(documentPath)) return null;
+  for (const candidate of resolveDocumentLinkLookupPaths(target, documentPath, workspacePath)) {
+    const absolute = isAbsolute(candidate) ? candidate : join(workspacePath, candidate);
+    const pageId = wiki.documentIdForFile(absolute);
+    if (pageId) return pageId;
+  }
+  return null;
 }
 
 function referenceSourceFor(documentPath: string | null): CollabReferenceSource | null {
@@ -160,6 +195,7 @@ function referenceSourceFor(documentPath: string | null): CollabReferenceSource 
         listPersonal: () => listPersonalPages({ pathPrefix: 'Personal' }),
         openTeam: openTeamPage,
         openPersonal: openPersonalPage,
+        wikiPageFor: (target) => localWikiPageFor(target, documentPath!),
       });
     case 'other':
       return null;
@@ -186,6 +222,7 @@ function DocumentLinkPluginWrapper() {
       triggerFn={triggerFn}
       anchorElem={anchorElem || undefined}
       collabReferenceSource={collabReferenceSource}
+      getMentionMembers={listMentionMembers}
     />
   );
 }

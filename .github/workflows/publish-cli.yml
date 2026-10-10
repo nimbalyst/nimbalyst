@@ -369,9 +369,9 @@ jobs:
       # already on the registry is skipped, so re-running after a partial
       # publish (wiki-web out, nim failed) finishes the job instead of failing.
       #
-      # npm runs from the pack directory, never the repo root: the root
-      # package.json requires pnpm in `devEngines`, and npm refuses to run
-      # there (EBADDEVENGINES). Only a 404 means "not published yet"; any other
+      # npm runs from the pack directory, not the repo root, which declares
+      # pnpm in `devEngines` and makes npm warn (EBADDEVENGINES) on every
+      # call. Only a 404 means "not published yet"; any other
       # `npm view` error stops the job instead of being read as one.
       - name: Publish to npm (Trusted Publishing via OIDC)
         run: |

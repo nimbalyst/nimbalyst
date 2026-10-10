@@ -44,6 +44,7 @@ import {
 import { buildCollabUri } from '@nimbalyst/collab-protocol';
 import { FixedTabHeaderContainer, FixedTabHeaderRegistry } from '@nimbalyst/runtime/plugins/shared/fixedTabHeader';
 import { LexicalDiffHeaderAdapter } from '../UnifiedDiffHeader';
+import { PageInfoPanel } from '../PageInfo/PageInfoPanel';
 import { useDocumentDecisionsConfig } from './useDocumentDecisionsConfig';
 import { DecisionOutline } from '@nimbalyst/runtime/editor/plugins/DecisionPlugin/DecisionOutline';
 import { DocumentSyncProvider, CollabHistoryClient, LocalDocumentReplica } from '@nimbalyst/runtime/sync';
@@ -980,6 +981,7 @@ export const CollaborativeTabEditor: React.FC<CollaborativeTabEditorProps> = ({
   const markdownConfig = useMemo(() => ({
     // A page's title and type row scroll with its body, as on a typed page.
     documentHeader: <CollabPlainPageHeader scope={activeConfig.scope} documentId={activeConfig.documentId} />,
+    showCitationSourcesLine: false, // listed in Page info
     onUploadAsset: (file: File) => assetService.uploadFile(file),
     // NIM-1683: intentionally do NOT wire onAssetReferencesRemoved. Deleting an
     // asset the moment it leaves the *current* editor state is data-loss --
@@ -1456,6 +1458,7 @@ export const CollaborativeTabEditor: React.FC<CollaborativeTabEditorProps> = ({
         showShareLinkButton={false}
         showSharedDocButton={false}
         showHistoryAction={true}
+        showPageInfoAction={documentType === 'markdown'}
         showCommonFileActions={false}
         showDocumentTypeAction={false}
         sharedDocumentLinkTarget={{
@@ -1504,16 +1507,20 @@ export const CollaborativeTabEditor: React.FC<CollaborativeTabEditorProps> = ({
               filePath={filePath}
               fileName={fileName}
             />
-            <div style={{ flex: 1, overflow: 'hidden' }}>
-              <MarkdownEditor
-                host={editorHost}
-                config={markdownConfig}
-                onGetContent={handleGetContentReady}
-                onEditorReady={handleLexicalEditorReady}
-                collaborationConfig={collaborationMemoConfig}
-                commentsConfig={commentsMemoConfig}
-                decisionsConfig={decisionsMemoConfig}
-              />
+            <div className="flex min-h-0 flex-1">
+              <div style={{ flex: 1, minWidth: 0, overflow: 'hidden' }}>
+                <MarkdownEditor
+                  host={editorHost}
+                  config={markdownConfig}
+                  onGetContent={handleGetContentReady}
+                  onEditorReady={handleLexicalEditorReady}
+                  collaborationConfig={collaborationMemoConfig}
+                  commentsConfig={commentsMemoConfig}
+                  decisionsConfig={decisionsMemoConfig}
+                />
+              </div>
+              {/* A shared page has no frontmatter: Page info lists its sources. */}
+              <PageInfoPanel editor={lexicalEditor ?? null} />
             </div>
           </DocumentPathProvider>
         ) : documentType === 'code' && syncProviderRef.current ? (

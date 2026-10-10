@@ -2,6 +2,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import * as fsPromises from 'fs/promises';
 import chokidar from 'chokidar';
+import { clearTrackerSchemaLoadFailure, recordTrackerSchemaLoadFailure } from './trackerSchemaLoadFailures';
 import {
   globalRegistry,
   registryTrackerTypeLookup,
@@ -106,10 +107,13 @@ export async function reloadWorkspaceSchemaFile(
   const fileName = path.basename(filePath);
   // What gets registered: a derived type stays declared so base changes reach it.
   let declared: TrackerTypeDeclaration;
+  let content: string | null = null;
   try {
-    declared = parseSchemaDeclarationFromContent(fileName, fs.readFileSync(filePath, 'utf-8'));
+    content = fs.readFileSync(filePath, 'utf-8');
+    declared = parseSchemaDeclarationFromContent(fileName, content);
   } catch (err) {
     console.error(`[TrackerSchemaService] Failed to reload ${filePath}:`, err);
+    recordTrackerSchemaLoadFailure(workspacePath, filePath, err, content);
     return;
   }
   const resolution = resolveTrackerTypeInheritance(declared, registryTrackerTypeLookup);
@@ -123,7 +127,9 @@ export async function reloadWorkspaceSchemaFile(
       logger.main.info(`[TrackerSchemaService] '${declared.type}' is waiting for its base type: ${resolution.errors[0]?.message}`);
       return;
     }
-    console.error(`[TrackerSchemaService] Failed to reload ${filePath}:`, resolution.errors.map((e) => e.message).join('; '));
+    const message = resolution.errors.map((e) => e.message).join('; ');
+    console.error(`[TrackerSchemaService] Failed to reload ${filePath}:`, message);
+    recordTrackerSchemaLoadFailure(workspacePath, filePath, new Error(message), content);
     return;
   }
   const model: TrackerDataModel = resolution.model;
@@ -182,6 +188,7 @@ export async function reloadWorkspaceSchemaFile(
   // work threw.
   const waitingBefore = globalRegistry.getUnresolvedDerivedTypes();
   globalRegistry.register(declared);
+  clearTrackerSchemaLoadFailure(workspacePath, filePath);
   // Subtypes that were waiting on this type resolve now (the registry
   // re-resolves dependents on every register); they still need mirroring.
   const nowResolved = waitingBefore.filter((type) => globalRegistry.get(type));

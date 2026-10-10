@@ -149,6 +149,17 @@ public enum PhaseFilter: String, CaseIterable, Sendable {
 enum ProjectTab: String, CaseIterable {
     case sessions = "Sessions"
     case files = "Files"
+    /// Only for projects with a Local wiki.
+    case wiki = "Wiki"
+    /// Only for projects that map to a team project: the team console's Wiki and Trackers.
+    case team = "Team"
+
+    static func available(for project: Project, hasTeam: Bool = false) -> [ProjectTab] {
+        var tabs: [ProjectTab] = [.sessions, .files]
+        if project.localWikiFolder != nil { tabs.append(.wiki) }
+        if hasTeam { tabs.append(.team) }
+        return tabs
+    }
 }
 
 // MARK: - WorkstreamSection

@@ -48,6 +48,11 @@ export interface CollabRowDrop {
 const dropHandlers = (drop: CollabRowDrop | undefined) =>
   drop ? { onDragOver: drop.onDragOver, onDragLeave: drop.onDragLeave, onDrop: drop.onDrop } : {};
 
+/** Tooltip of a row whose type did not load: what is wrong, so the user can ask for a fix. */
+export function brokenTypeTitle(typeId: string, error: string): string {
+  return `The type '${typeId}' did not load: ${error}`;
+}
+
 const RowChevron: React.FC<{ expanded: boolean; onToggle: () => void }> = ({ expanded, onToggle }) => (
   <span
     className="file-tree-chevron"
@@ -75,21 +80,23 @@ export const CollabTypeNodeRow: React.FC<{
 }> = ({ node, indent, expanded, onToggle, onOpen, onContextMenu, onDragStart, onDragEnd, drop }) => (
   <button
     type="button"
-    className={`collab-tree-type-row w-full flex items-center text-left file-tree-directory${React.useContext(CollabTreeActiveContext).typeId === node.typeId ? ' active' : ''}${drop?.className ?? ''}`}
+    className={`collab-tree-type-row w-full flex items-center text-left file-tree-directory${React.useContext(CollabTreeActiveContext).typeId === node.typeId ? ' active' : ''}${node.error ? ' broken' : ''}${drop?.className ?? ''}`}
     style={{ paddingLeft: indent }}
     data-testid="collab-tree-type-row"
     data-type-id={node.typeId}
-    draggable
+    // A broken type has no page to open and may have no placement to move: it
+    // only expands, to show what is filed under it.
+    draggable={!node.error}
     {...dropHandlers(drop)}
-    onDragStart={onDragStart}
-    onDragEnd={onDragEnd}
-    onClick={(event) => onOpen(collabOpenOptions(event))}
-    onContextMenu={onContextMenu}
-    title={node.path}
+    onDragStart={node.error ? undefined : onDragStart}
+    onDragEnd={node.error ? undefined : onDragEnd}
+    onClick={(event) => (node.error ? onToggle() : onOpen(collabOpenOptions(event)))}
+    onContextMenu={node.error ? undefined : onContextMenu}
+    title={node.error ? brokenTypeTitle(node.typeId, node.error) : node.path}
   >
     <RowChevron expanded={expanded} onToggle={onToggle} />
-    <span className="file-tree-icon text-[var(--nim-purple)]">
-      <MaterialSymbol icon="table" size={16} />
+    <span className={`file-tree-icon ${node.error ? 'text-[var(--nim-error)]' : 'text-[var(--nim-purple)]'}`}>
+      <MaterialSymbol icon={node.error ? 'error' : 'table'} size={16} />
     </span>
     <span className="file-tree-name">{node.name}</span>
     {node.count > 0 && (
@@ -151,12 +158,14 @@ export const CollabTypeItemRow: React.FC<{
       actions.onDragStart(node);
     } : undefined}
     onDragEnd={actions?.onDragEnd}
-    title={node.path}
+    title={node.typeError ? brokenTypeTitle(node.typeId, node.typeError) : node.path}
   >
     {node.typeLabel ? (
       <>
         {hasChildren ? <RowChevron expanded={expanded} onToggle={() => actions?.onToggle?.(node)} /> : <span className="file-tree-spacer" />}
-        <span className="file-tree-icon"><MaterialSymbol icon="description" size={16} /></span>
+        {node.typeError
+          ? <span className="file-tree-icon text-[var(--nim-error)]"><MaterialSymbol icon="error" size={16} /></span>
+          : <span className="file-tree-icon"><MaterialSymbol icon="description" size={16} /></span>}
         <span className="file-tree-name">{node.name}</span>
         <span className="collab-tree-item-type ml-auto mr-1 pl-1.5 shrink-0 text-[11px] text-[var(--nim-text-faint)]">
           {node.typeLabel}

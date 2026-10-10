@@ -100,6 +100,22 @@ class NimbalystMigrationTest {
     }
 
     @Test
+    fun `v5 projects keep their config and start with no Local wiki folder`() = runBlocking {
+        createFromSchema(version = 5) { db ->
+            db.execSQL("INSERT INTO projects (id, name, sessionCount, sortOrder, commandsJson, isProvisional) VALUES ('/p', 'p', 1, 0, '[]', 0)")
+        }
+
+        val database = NimbalystDatabase.getInstance(context)
+        val projects = database.openHelper.readableDatabase.query("SELECT commandsJson, localWikiFolder, localWikiTypesJson FROM projects WHERE id = '/p'")
+        projects.use {
+            assertTrue(it.moveToFirst())
+            assertEquals("[]", it.getString(0))
+            assertTrue(it.isNull(1))
+            assertTrue(it.isNull(2))
+        }
+    }
+
+    @Test
     fun `every schema version up to the current one is committed`() {
         val current = NimbalystDatabase.VERSION
         for (version in 1..current) {

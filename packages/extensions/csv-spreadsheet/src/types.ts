@@ -114,6 +114,16 @@ export type CellColor =
   | 'gray';
 
 /**
+ * A raw `#rrggbb` color from the full palette picker. Unlike the named
+ * swatches it does not adapt to the theme, which is the trade the user makes
+ * by picking an exact color.
+ */
+export type HexColor = `#${string}`;
+
+/** Vertical placement of a cell's content. Default is middle. */
+export type CellVerticalAlignment = 'top' | 'middle' | 'bottom';
+
+/**
  * Presentation applied to a cell range, independent of the column's data type.
  */
 export interface CellStyle {
@@ -121,9 +131,10 @@ export interface CellStyle {
   italic?: boolean;
   underline?: boolean;
   strikethrough?: boolean;
-  textColor?: CellColor;
-  fillColor?: CellColor;
+  textColor?: CellColor | HexColor;
+  fillColor?: CellColor | HexColor;
   align?: CellAlignment;
+  verticalAlign?: CellVerticalAlignment;
 }
 
 /**
@@ -136,9 +147,12 @@ export interface CellStyle {
 export type CellStyleRanges = Record<string, CellStyle>;
 
 /**
- * Metadata stored in CSV comment header
+ * Metadata stored in CSV comment header. The Phase 3 formatting and layout
+ * fields (cell formats, conditional formats, validation, row heights, hidden
+ * rows/columns, frozen rows, wrap, borders) are defined and normalized in
+ * `sheetMeta/formatting.ts`.
  */
-export interface CSVMetadata {
+export interface CSVMetadata extends Partial<import('./sheetMeta/formatting').SheetFormatting> {
   hasHeaders: boolean;
   headerRowCount?: number;
   frozenColumnCount?: number;
@@ -189,10 +203,14 @@ export interface SpreadsheetData {
   headerRowCount: number;
   /** Number of frozen/pinned columns on the left (0 = no frozen columns) */
   frozenColumnCount: number;
+  /** Data rows frozen (pinned) below the header rows. */
+  frozenRowCount?: number;
   /** Column format configurations, keyed by column index */
   columnFormats: Record<number, ColumnFormat>;
   /** Cell styling, keyed by A1 range */
   cellStyles: CellStyleRanges;
+  /** Named ranges (name -> A1 range key), resolved by the formula engine. */
+  namedRanges?: Readonly<Record<string, string>>;
 }
 
 /**
@@ -204,6 +222,8 @@ export interface FormulaEvalData {
   rows: Row[];
   /** Number of columns */
   columnCount: number;
+  /** Named ranges (name -> A1 range key), resolved by the formula engine. */
+  namedRanges?: Readonly<Record<string, string>>;
 }
 
 /**

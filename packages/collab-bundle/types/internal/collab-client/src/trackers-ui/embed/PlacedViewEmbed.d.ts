@@ -1,8 +1,9 @@
 /**
  * A view placed in a page (a placed-view link of a type, see `placedViewUrl.ts`),
  * drawn live from the items. The definition comes from the link title
- * (`placedViewDefinition`): a table whose cells edit the items, or a 2x2 of
- * two number fields with pinned extra points.
+ * (`placedViewDefinition`): a table whose cells edit the items, a 2x2 of
+ * two number fields with pinned extra points, or a chart of the items
+ * grouped by one field.
  *
  * The host mounts it inside a `TrackersUIProvider`. Loaded lazily
  * (`LazyPlacedViewEmbed`) so a page with no view does not pay for the grid.

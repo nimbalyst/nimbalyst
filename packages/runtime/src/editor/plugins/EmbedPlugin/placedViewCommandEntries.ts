@@ -1,6 +1,7 @@
 /**
- * The slash entries for placing a view in a page: a table per type, a 2x2 for
- * a type with two number fields, and the decisions and open questions lists.
+ * The slash entries for placing a view in a page: a table per type, a board
+ * and a chart for a type with something to group by, a 2x2 for a type with
+ * two number fields, and the decisions and open questions lists.
  * The menu itself is the picker; the placed link carries the definition and
  * can be edited in the markdown afterwards.
  *
@@ -36,6 +37,13 @@ export function buildPlacedViewCommandEntries(types: readonly PlacedViewTypeOpti
       ?? model.fields.find(field => field.type === 'select' && !field.multiValue);
     if (grouping) commands.push(entry(`Board: ${name}`, `${name} grouped by ${grouping.name}`, 'view_kanban', ['board', name], {
       target, label: name, attrs: { mode: 'board', group: grouping.name, ordering: 'manual' },
+    }));
+    // Count by the board's grouping, else by a person, else by month of a date.
+    const chartBy = grouping
+      ?? model.fields.find(field => field.type === 'user' && !field.multiValue)
+      ?? model.fields.find(field => (field.type === 'date' || field.type === 'datetime') && !field.multiValue);
+    if (chartBy) commands.push(entry(`Chart: ${name}`, `A chart of ${name} counted by ${chartBy.name}`, 'bar_chart', ['chart', 'graph', name], {
+      target, label: name, attrs: { mode: 'chart', chart: 'bar', by: chartBy.name },
     }));
     const numbers = model.fields.filter((field) => field.type === 'number');
     if (numbers.length >= 2) {

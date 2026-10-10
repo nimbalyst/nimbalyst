@@ -6,10 +6,17 @@
  * ourselves in absolute sheet coordinates and paint the result across every
  * store the range touches.
  *
- * We deliberately do NOT swallow the initial mousedown: RevoGrid still needs it
- * to move focus and to start cell editing. We only take over once the pointer
- * actually moves, and we repaint after RevoGrid has painted its own (clamped)
- * range, so ours wins.
+ * In `select` mode we deliberately do NOT swallow the initial mousedown:
+ * RevoGrid still needs it to move focus and to start cell editing. We only take
+ * over once the pointer actually moves, and we repaint after RevoGrid has
+ * painted its own (clamped) range, so ours wins.
+ *
+ * `point` mode is the inverse, for formula point mode. When `beginPoint`
+ * accepts a press, it is swallowed in the capture phase -- pointerdown,
+ * mousedown (RevoGrid's overlay binds `mousedown`), and the click/dblclick
+ * that follow -- so the open formula editor keeps focus and is not committed.
+ * The gesture then reports picks instead of painting: the real selection
+ * never moves while pointing.
  */
 
 import { useCallback, useEffect, useRef } from 'react';
@@ -48,9 +55,15 @@ interface DragState {
   /** Latest pointer position, so the autoscroll loop can re-probe it. */
   point: Point;
   active: boolean;
+  /**
+   * The button is down on a press this instance saw. Without it a press some
+   * other handler swallowed (a header, a point-mode gesture) would let the
+   * kept-for-shift+click anchor resume as a drag on the next pointermove.
+   */
+  pressed: boolean;
 }
 
-export interface UseCellDragSelectionOptions {
+interface CommonOptions {
   containerRef: RefObject<HTMLElement | null>;
   gridRef: RefObject<SectionAwareGrid | null>;
   /**
@@ -59,7 +72,12 @@ export interface UseCellDragSelectionOptions {
    * retry -- `enabled` flipping is what re-runs the listener effect.
    */
   enabled: boolean;
-  /** Called with the logical selection as the drag progresses. */
+}
+
+/** Moves the real selection. */
+export interface SelectModeOptions extends CommonOptions {
+  mode?: 'select';
+  /** Called with the selection (visible rows) as the drag progresses. */
   onSelectionChange: (
     cell: { row: number; col: number } | null,
     range: NormalizedSelectionRange | null
@@ -69,7 +87,28 @@ export interface UseCellDragSelectionOptions {
    * (which carry the clamped, single-section range) can be ignored.
    */
   suppressGridRangeRef: RefObject<boolean>;
+  /**
+   * The active cell in visible rows. Shift+click extends from it even when the
+   * keyboard (not a click) put it there.
+   */
+  getActiveCell?: () => { row: number; col: number } | null;
 }
+
+/** Formula point mode: reports picks, never touches the selection. See the header. */
+export interface PointModeOptions extends CommonOptions {
+  mode: 'point';
+  /**
+   * Asked synchronously on every press over a data cell; true takes the
+   * gesture (and swallows the press), false leaves it to the grid.
+   */
+  beginPoint: () => boolean;
+  /** The picked range in visible rows, on press and on every cell the drag enters. */
+  onPointPick: (range: NormalizedSelectionRange) => void;
+  /** The gesture ended (button released or cancelled). */
+  onPointEnd?: () => void;
+}
+
+export type UseCellDragSelectionOptions = SelectModeOptions | PointModeOptions;
 
 function normalize(
   a: { row: number; col: number },
@@ -83,24 +122,51 @@ function normalize(
   };
 }
 
-export function useCellDragSelection({
-  containerRef,
-  gridRef,
-  enabled,
-  onSelectionChange,
-  suppressGridRangeRef,
-}: UseCellDragSelectionOptions): void {
+/** A press on a data cell (not a header, the row gutter or the open cell editor). */
+export function isDataCellPress(target: EventTarget | null): boolean {
+  if (!(target instanceof Element)) return false;
+  if (target.closest('revogr-header') || target.closest('.rowHeaders')) return false;
+  if (target.closest('textarea, input')) return false;
+  const cell = target.closest('[data-rgrow][data-rgcol]');
+  return !!cell && !cell.closest('[col-type="rowHeaders"]');
+}
+
+function setSuppress(ref: RefObject<boolean> | undefined, value: boolean): void {
+  if (ref) ref.current = value;
+}
+
+export function useCellDragSelection(options: UseCellDragSelectionOptions): void {
+  const { containerRef, gridRef, enabled } = options;
+  const mode = options.mode ?? 'select';
+  const select = options.mode === 'point' ? null : options;
+  const pointOptions = options.mode === 'point' ? options : null;
+  const onSelectionChange = select?.onSelectionChange;
+  const suppressGridRangeRef = select?.suppressGridRangeRef;
+  const getActiveCell = select?.getActiveCell;
+  const beginPoint = pointOptions?.beginPoint;
+  const onPointPick = pointOptions?.onPointPick;
+  const onPointEnd = pointOptions?.onPointEnd;
   const dragRef = useRef<DragState | null>(null);
   const autoScrollFrameRef = useRef<number | null>(null);
+  /** point: a gesture is swallowing events, from the press until the click after release. */
+  const pointingRef = useRef(false);
+  /** point: the button is still down on the swallowed press. */
+  const pointPressedRef = useRef(false);
 
+  // The reported cell is the anchor (where the gesture started), which is the
+  // active cell typing goes to -- not the range's top-left.
   const applyRange = useCallback(
-    (range: NormalizedSelectionRange, sections: GridSections) => {
+    (anchor: { row: number; col: number }, range: NormalizedSelectionRange, sections: GridSections) => {
+      if (mode === 'point') {
+        onPointPick?.(range);
+        return;
+      }
       const grid = gridRef.current;
       if (!grid) return;
       void paintCrossSectionRange(grid, sections, range);
-      onSelectionChange({ row: range.startRow, col: range.startCol }, range);
+      onSelectionChange?.(anchor, range);
     },
-    [gridRef, onSelectionChange]
+    [mode, gridRef, onSelectionChange, onPointPick]
   );
 
   /**
@@ -113,7 +179,7 @@ export function useCellDragSelection({
       if (!drag) return;
       if (target.row === drag.last.row && target.col === drag.last.col) return;
       drag.last = target;
-      applyRange(normalize(drag.anchor, target), drag.sections);
+      applyRange(drag.anchor, normalize(drag.anchor, target), drag.sections);
     },
     [applyRange]
   );
@@ -176,6 +242,17 @@ export function useCellDragSelection({
       // Header and row-gutter presses belong to the existing header-drag path.
       if (target.closest('revogr-header') || target.closest('.rowHeaders')) return;
 
+      if (mode === 'point') {
+        // Decide synchronously: the press has to be swallowed before RevoGrid
+        // (or the browser's focus change) sees it, so it can't wait on the
+        // section lookup below.
+        if (!isDataCellPress(target) || !beginPoint?.()) return;
+        event.preventDefault();
+        event.stopPropagation();
+        pointingRef.current = true;
+        pointPressedRef.current = true;
+      }
+
       const grid = gridRef.current;
       if (!grid) return;
 
@@ -185,8 +262,10 @@ export function useCellDragSelection({
       const cell = cellFromPoint(sections, event.clientX, event.clientY);
       if (!cell) return;
 
-      const shiftExtend = event.shiftKey && dragRef.current;
-      const anchor = shiftExtend ? dragRef.current!.anchor : cell;
+      const pointing = mode === 'point';
+      const active = !pointing && event.shiftKey ? (getActiveCell?.() ?? dragRef.current?.anchor ?? null) : null;
+      const shiftExtend = !!active;
+      const anchor = active ?? cell;
       const point = { clientX: event.clientX, clientY: event.clientY };
 
       dragRef.current = {
@@ -198,20 +277,26 @@ export function useCellDragSelection({
         point,
         // Shift+click is a completed gesture, not a pending drag.
         active: !!shiftExtend,
+        // A release that beat the section lookup ended the gesture already;
+        // its pick below still lands.
+        pressed: !pointing || pointPressedRef.current,
       };
 
-      if (shiftExtend) {
-        suppressGridRangeRef.current = true;
-        applyRange(normalize(anchor, cell), sections);
+      if (pointing) {
+        // The click itself is a pick; a drag then rewrites it.
+        applyRange(anchor, normalize(anchor, cell), sections);
+      } else if (shiftExtend) {
+        setSuppress(suppressGridRangeRef, true);
+        applyRange(anchor, normalize(anchor, cell), sections);
       }
     },
-    [enabled, gridRef, applyRange, suppressGridRangeRef]
+    [enabled, mode, beginPoint, gridRef, applyRange, suppressGridRangeRef, getActiveCell]
   );
 
   const handlePointerMove = useCallback(
     (event: PointerEvent) => {
       const drag = dragRef.current;
-      if (!drag) return;
+      if (!drag?.pressed) return;
       // No button held: this is a hover, not a drag.
       if (event.buttons === 0) return;
 
@@ -220,7 +305,7 @@ export function useCellDragSelection({
         const dy = Math.abs(event.clientY - drag.anchorPoint.clientY);
         if (dx < DRAG_THRESHOLD_PX && dy < DRAG_THRESHOLD_PX) return;
         drag.active = true;
-        suppressGridRangeRef.current = true;
+        setSuppress(suppressGridRangeRef, true);
       }
 
       drag.point = { clientX: event.clientX, clientY: event.clientY };
@@ -233,27 +318,57 @@ export function useCellDragSelection({
   const handlePointerUp = useCallback(() => {
     stopAutoScroll();
     const drag = dragRef.current;
+    if (mode === 'point' && pointingRef.current) {
+      pointPressedRef.current = false;
+      if (drag) drag.pressed = false;
+      // The click that follows this release is still part of the gesture;
+      // release the swallow after it has been dispatched.
+      setTimeout(() => {
+        pointingRef.current = false;
+      }, 0);
+      onPointEnd?.();
+      return;
+    }
     if (!drag) return;
     // Keep the anchor for a subsequent shift+click, but stop tracking motion.
     drag.active = false;
+    drag.pressed = false;
     // Release on the next tick so the grid's own mouseup-driven setrange (which
     // carries the clamped range) is still ignored.
     setTimeout(() => {
-      suppressGridRangeRef.current = false;
+      setSuppress(suppressGridRangeRef, false);
     }, 0);
-  }, [stopAutoScroll, suppressGridRangeRef]);
+  }, [mode, stopAutoScroll, suppressGridRangeRef, onPointEnd]);
+
+  /** point: everything else the press produces belongs to the gesture, not the grid. */
+  const swallowWhilePointing = useCallback((event: Event) => {
+    if (!pointingRef.current) return;
+    event.preventDefault();
+    event.stopPropagation();
+  }, []);
 
   useEffect(() => {
     const container = containerRef.current;
     if (!enabled || !container) return;
 
-    container.addEventListener('pointerdown', handlePointerDown);
+    const capture = mode === 'point';
+    container.addEventListener('pointerdown', handlePointerDown, capture);
+    if (capture) {
+      for (const type of ['mousedown', 'mouseup', 'click', 'dblclick']) {
+        container.addEventListener(type, swallowWhilePointing, true);
+      }
+    }
     document.addEventListener('pointermove', handlePointerMove);
     document.addEventListener('pointerup', handlePointerUp);
     document.addEventListener('pointercancel', handlePointerUp);
 
     return () => {
-      container.removeEventListener('pointerdown', handlePointerDown);
+      container.removeEventListener('pointerdown', handlePointerDown, capture);
+      if (capture) {
+        for (const type of ['mousedown', 'mouseup', 'click', 'dblclick']) {
+          container.removeEventListener(type, swallowWhilePointing, true);
+        }
+      }
       document.removeEventListener('pointermove', handlePointerMove);
       document.removeEventListener('pointerup', handlePointerUp);
       document.removeEventListener('pointercancel', handlePointerUp);
@@ -263,9 +378,11 @@ export function useCellDragSelection({
   }, [
     containerRef,
     enabled,
+    mode,
     handlePointerDown,
     handlePointerMove,
     handlePointerUp,
+    swallowWhilePointing,
     stopAutoScroll,
   ]);
 }

@@ -25,6 +25,11 @@
  *   user's choice. Tab in any other context is left alone so list
  *   indentation and focus traversal still work.
  *
+ * Web links:
+ *   A web link upgrades only when its title asks for a preview
+ *   (`preview=card` or `preview=embed`, see `linkPreviewLinks.ts`); Tab on a
+ *   lone web link adds that attribute. Transclusion links never upgrade.
+ *
  * Export rule:
  *   `EMBED_TRANSFORMER` writes the node back as `[label](src "k=v k=v")`.
  *   This is published into the extension contributions store so the
@@ -63,14 +68,23 @@ import {
 } from '../../plugins/EmbedPlugin/embedAttrs';
 import {
   getEmbeddableExtensions,
-  isEmbeddableUrl,
   subscribeToEmbeddableExtensionsChanges,
 } from '../../plugins/EmbedPlugin/embeddableExtensions';
 import {
   $rescanForEmbedUpgrade,
   $upgradeParagraphIsolatedLinkToEmbed,
   isEmptyTextNode,
+  isPreviewUpgrade,
+  isUpgradeableLink,
 } from '../../plugins/EmbedPlugin/embedUpgrade';
+import { setTitleAttr } from '../../plugins/EmbedPlugin/embedTitle';
+import { INSERT_LINK_PREVIEW_COMMAND } from '../../plugins/LinkPreviewPlugin/linkPreviewInsert';
+import '../../plugins/LinkPreviewPlugin/linkPreviewBlockMenu';
+import {
+  LINK_PREVIEW_ATTR,
+  defaultLinkPreviewMode,
+  isTranscludeTitle,
+} from '../../plugins/LinkPreviewPlugin/linkPreviewLinks';
 import { setExtensionContributions } from '../extensionContributionsStore';
 
 export { $rescanForEmbedUpgrade };
@@ -101,9 +115,16 @@ function $findEnclosingLinkNode(node: LexicalNode | null): LinkNode | null {
 function $upgradeLinkToEmbed(linkNode: LinkNode): boolean {
   if (!$isLinkNode(linkNode)) return false;
   const url = linkNode.getURL();
-  const title = linkNode.getTitle() ?? '';
+  let title = linkNode.getTitle() ?? '';
+  if (!isUpgradeableLink(url, title)) {
+    // A plain web link becomes a preview: the site's player when allowlisted,
+    // else a card. The mode is written into the title so it survives a save.
+    const mode = isTranscludeTitle(title) ? null : defaultLinkPreviewMode(url);
+    if (!mode) return false;
+    title = setTitleAttr(title, LINK_PREVIEW_ATTR, mode);
+  }
+  const preview = isPreviewUpgrade(url, title);
   const attrs = parseEmbedAttrs(title);
-  if (!isEmbeddableUrl(url, attrs.embedType)) return false;
 
   const parent = linkNode.getParent();
   if (!parent || !$isParagraphNode(parent)) return false;
@@ -113,13 +134,14 @@ function $upgradeLinkToEmbed(linkNode: LinkNode): boolean {
     return false;
   }
 
-  // Clear the opt-out, then upgrade.
+  // Clear the opt-out, then upgrade. A preview keeps the rest of its title as written.
   delete attrs.embed;
 
   const embedNode = $createEmbeddedFileNode({
     src: url,
     label: linkNode.getTextContent(),
     attrs,
+    title: preview ? setTitleAttr(title, 'embed', null) : null,
   });
   parent.replace(embedNode);
   return true;
@@ -130,12 +152,14 @@ function $upgradeLinkToEmbed(linkNode: LinkNode): boolean {
  * in the title so the auto-upgrade rule doesn't immediately reverse the
  * user's Tab. Returns true on success.
  */
-function $downgradeEmbedToLink(embedNode: EmbeddedFileNode): boolean {
+export function $downgradeEmbedToLink(embedNode: EmbeddedFileNode): boolean {
   if (!$isEmbeddedFileNode(embedNode)) return false;
   const src = embedNode.getSrc();
   const label = embedNode.getLabel() || src;
-  const attrs = { ...embedNode.getAttrs(), embed: 'false' };
-  const title = serializeEmbedAttrs(attrs);
+  const verbatim = embedNode.getTitle();
+  const title = verbatim !== null
+    ? setTitleAttr(verbatim, 'embed', 'false')
+    : serializeEmbedAttrs({ ...embedNode.getAttrs(), embed: 'false' });
 
   const linkNode = $createLinkNode(src, title ? { title } : undefined);
   linkNode.append($createTextNode(label));
@@ -274,4 +298,13 @@ export const EmbedExtension = defineExtension({
 
 setExtensionContributions(NAME, {
   markdownTransformers: [NAMED_PAGE_VIEW_TRANSFORMER, EMBED_TRANSFORMER],
+  userCommands: [
+    {
+      title: 'Link preview',
+      description: 'A card for a web link, or the player for a video or design file',
+      icon: 'link',
+      keywords: ['link', 'preview', 'bookmark', 'card', 'embed', 'url', 'video', 'youtube', 'figma', 'loom', 'vimeo'],
+      command: INSERT_LINK_PREVIEW_COMMAND,
+    },
+  ],
 });

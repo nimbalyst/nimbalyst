@@ -58,6 +58,15 @@ export function parseTrackerYAML(yamlString: string): TrackerDataModel {
   if (!data.type) throw new Error('Missing required field: type');
   if (!data.displayName) throw new Error('Missing required field: displayName');
   if (!data.displayNamePlural) throw new Error('Missing required field: displayNamePlural');
+  // A wiki type (one that declares `storage:`) follows local-wiki FORMAT.md,
+  // which does not require the app-only keys. Rejecting it here hid the type's
+  // tables and typed pages from the Local wiki with only a log line (NIM-7437).
+  if (data.storage === 'pages' || data.storage === 'table') {
+    data.icon ??= 'description';
+    data.color ??= '#64748b';
+    data.modes ??= { inline: true, fullDocument: false };
+    data.idPrefix ??= String(data.type).slice(0, 3);
+  }
   if (!data.icon) throw new Error('Missing required field: icon');
   if (!data.color) throw new Error('Missing required field: color');
   if (!data.modes) throw new Error('Missing required field: modes');

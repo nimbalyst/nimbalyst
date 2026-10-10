@@ -47,6 +47,14 @@ import { MarkdownCopyExtension } from './builtin/MarkdownCopyExtension';
 import { MarkdownPasteExtension } from './builtin/MarkdownPasteExtension';
 import { MermaidExtension } from './builtin/MermaidExtension';
 import { QuadrantExtension } from './builtin/QuadrantExtension';
+import { ChartExtension } from './builtin/ChartExtension';
+import { CodeExcerptExtension } from './builtin/CodeExcerptExtension';
+import { CalloutExtension } from './builtin/CalloutExtension';
+import { TocExtension } from './builtin/TocExtension';
+import { TransclusionExtension } from './builtin/TransclusionExtension';
+import { MentionExtension } from './builtin/MentionExtension';
+import { TabsExtension } from './builtin/TabsExtension';
+import { ActionButtonExtension } from './builtin/ActionButtonExtension';
 import { PageBreakExtension } from './builtin/PageBreakExtension';
 import { PageMarkExtension } from './builtin/PageMarkExtension';
 import { CitationExtension } from './builtin/CitationExtension';
@@ -163,6 +171,14 @@ export function buildNimbalystRootExtension(
     KanbanBoardExtension,
     MermaidExtension,
     QuadrantExtension,
+    ChartExtension,
+    CodeExcerptExtension,
+    CalloutExtension,
+    TocExtension,
+    TransclusionExtension,
+    MentionExtension,
+    TabsExtension,
+    ActionButtonExtension,
     DecisionExtension,
     EmbedExtension,
     DiffExtension,

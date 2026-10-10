@@ -21,6 +21,8 @@
  */
 
 import type { TextMatchTransformer } from '@lexical/markdown';
+import { $createTextNode } from 'lexical';
+import { $createLinkNode } from '@lexical/link';
 
 import {
   $createTrackerReferenceNode,
@@ -35,6 +37,7 @@ import {
   TRACKER_REFERENCE_KEY_PATTERN,
   trackerReferenceKeyFromHref,
 } from './trackerReferenceHref';
+import { isTranscludeTitle } from '../../editor/plugins/TransclusionPlugin/transclusionLink';
 
 const TRACKER_REFERENCE_IMPORT_REGEXP = new RegExp(
   String.raw`(?<!!)\[([^\]]+)\]\((nimbalyst:\/\/(${TRACKER_REFERENCE_KEY_PATTERN})|${TRACKER_REFERENCE_CONSOLE_HREF_PATTERN})(?:\s+(?:"([^"]*)"|'([^']*)'|\(([^()]*)\)))?\s*\)`,
@@ -71,14 +74,25 @@ export const TrackerReferenceTransformer: TextMatchTransformer = {
     const [, writtenLabel, href, urnKey, doubleQuotedTitle, singleQuotedTitle, parenthesizedTitle] = match;
     // The console pattern only finds candidates; the parser decides.
     const referenceKey = urnKey ?? trackerReferenceKeyFromHref(href);
-    if (!referenceKey) return;
+    if (!referenceKey) return undefined;
     const title = doubleQuotedTitle ?? singleQuotedTitle ?? parenthesizedTitle;
+    // A typed page's console link asking for a transclusion stays a link, title
+    // and all, for the TransclusionExtension to upgrade.
+    if (!urnKey && isTranscludeTitle(title)) {
+      const link = $createLinkNode(href, { title });
+      const text = $createTextNode(writtenLabel);
+      text.setFormat(textNode.getFormat());
+      link.append(text);
+      textNode.replace(link);
+      return text;
+    }
     const view = normalizeTrackerReferenceView(titleToken(title, 'view'));
     const relation = normalizeTrackerReferenceRelation(titleToken(title, 'rel'));
     // null keeps the `nimbalyst://KEY` form; a console link is kept as written.
     // The label is stored only when it is not the key.
     const label = writtenLabel !== referenceKey ? writtenLabel : null;
     textNode.replace($createTrackerReferenceNode(referenceKey, view, relation, urnKey ? null : href, label));
+    return undefined;
   },
   trigger: ')',
   type: 'text-match',

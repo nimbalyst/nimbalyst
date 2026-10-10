@@ -79,15 +79,15 @@ export default function DraggableBlockPlugin({
     setShowDropdown(prev => !prev);
   }, []);
 
-  // Update menu items when draggable element changes
-  useEffect(() => {
+  // Items depend on the block's current state (a chart's type, a callout's
+  // kind), so they are recomputed when the block changes and when the menu opens.
+  const refreshMenuItems = useCallback(() => {
     if (draggableElement && editor) {
       editor.read(() => {
         const node = $getNearestNodeFromDOMNode(draggableElement);
         if (node) {
           setCurrentNode(node);
-          const items = draggableBlockMenuRegistry.getMenuItemsForNode(node);
-          setMenuItems(items);
+          setMenuItems(draggableBlockMenuRegistry.getMenuItemsForNode(node, editor));
         }
       });
     } else {
@@ -96,16 +96,13 @@ export default function DraggableBlockPlugin({
     }
   }, [draggableElement, editor]);
 
-  // Listen for registry changes
+  useEffect(refreshMenuItems, [refreshMenuItems]);
   useEffect(() => {
-    const unsubscribe = draggableBlockMenuRegistry.addListener(() => {
-      if (currentNode) {
-        const items = draggableBlockMenuRegistry.getMenuItemsForNode(currentNode);
-        setMenuItems(items);
-      }
-    });
-    return unsubscribe;
-  }, [currentNode]);
+    if (showDropdown) refreshMenuItems();
+  }, [showDropdown, refreshMenuItems]);
+
+  // Listen for registry changes
+  useEffect(() => draggableBlockMenuRegistry.addListener(refreshMenuItems), [refreshMenuItems]);
 
   useEffect(() => {
     const handleClickOutside = (event: MouseEvent) => {

@@ -12,7 +12,6 @@ import {
   $applyNodeReplacement,
   DecoratorNode,
   type DOMConversionMap,
-  type DOMConversionOutput,
   type DOMExportOutput,
   type EditorConfig,
   type LexicalEditor,
@@ -23,6 +22,7 @@ import {
 } from 'lexical';
 
 import { createNodeDecoratorSlot } from '../../nodes/nodeDecoratorSlot';
+import { exportFencedBlockDOM, importFencedBlockDOM } from '../fencedBlock/fencedBlockTransformer';
 
 export const QUADRANT_FENCE_LANGUAGE = '2x2';
 
@@ -79,21 +79,11 @@ export class QuadrantNode extends DecoratorNode<JSX.Element | null> {
   }
 
   exportDOM(): DOMExportOutput {
-    const pre = document.createElement('pre');
-    const code = document.createElement('code');
-    code.className = 'language-2x2';
-    code.textContent = this.__source;
-    pre.appendChild(code);
-    return { element: pre };
+    return exportFencedBlockDOM(QUADRANT_FENCE_LANGUAGE, this.__source);
   }
 
-  /** Pasted HTML: the `pre > code.language-2x2` that `exportDOM` writes, ahead of the plain code-block import. */
   static importDOM(): DOMConversionMap | null {
-    return {
-      pre: (domNode: HTMLElement) => (domNode.querySelector(':scope > code.language-2x2')
-        ? { conversion: convertQuadrantPre, priority: 2 }
-        : null),
-    };
+    return importFencedBlockDOM(QUADRANT_FENCE_LANGUAGE, (source) => $createQuadrantNode({ source }));
   }
 
   getSource(): string {
@@ -116,10 +106,6 @@ export class QuadrantNode extends DecoratorNode<JSX.Element | null> {
   decorate(editor: LexicalEditor, config: EditorConfig): JSX.Element | null {
     return QuadrantNodeDecorator.decorate(this, editor, config);
   }
-}
-
-function convertQuadrantPre(domNode: HTMLElement): DOMConversionOutput {
-  return { node: $createQuadrantNode({ source: domNode.textContent ?? '' }) };
 }
 
 export function $createQuadrantNode(payload?: QuadrantPayload): QuadrantNode {

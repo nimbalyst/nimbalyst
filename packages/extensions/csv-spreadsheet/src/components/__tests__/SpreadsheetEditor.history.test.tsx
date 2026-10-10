@@ -107,15 +107,17 @@ describe('SpreadsheetEditor history lifecycle', () => {
     expect(grid.source[0].B).toBe('9');
   });
 
-  it('preserves one undo plugin when the host prop is recreated', async () => {
+  it('keeps one command executor (and its undo history) when the host prop is recreated', async () => {
     const host = createHost();
     const { rerender } = render(<SpreadsheetEditor host={host} />);
-
-    await waitFor(() => expect(getProviders).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(host.registerEditorAPI).toHaveBeenCalledTimes(1));
+    const api = vi.mocked(host.registerEditorAPI).mock.calls[0][0];
 
     rerender(<SpreadsheetEditor host={{ ...host }} />);
+    await act(async () => { await Promise.resolve(); });
 
-    await waitFor(() => expect(getProviders).toHaveBeenCalledTimes(1));
+    expect(host.registerEditorAPI).toHaveBeenCalledTimes(1);
+    expect(api).not.toBeNull();
   });
 });
 
@@ -209,7 +211,7 @@ describe('SpreadsheetEditor diff review', () => {
   it('makes the formula bar read-only while a diff is under review', async () => {
     const { container } = await renderInDiffMode();
 
-    const input = container.querySelector<HTMLInputElement>('.csv-formula-bar input');
+    const input = container.querySelector<HTMLInputElement>('.csv-formula-bar-input');
     expect(input?.readOnly).toBe(true);
   });
 
@@ -222,6 +224,22 @@ describe('SpreadsheetEditor diff review', () => {
 
     // Saving here would write the phantom deleted rows back out as real ones.
     expect(host.saveContent).not.toHaveBeenCalled();
+  });
+});
+
+describe('SpreadsheetEditor delimiter', () => {
+  // The delimiter used to be frozen to whatever parsing '' produced at mount,
+  // so every TSV file was rewritten comma-separated on its first save.
+  it('saves a loaded TSV file tab-separated', async () => {
+    const host = createHost();
+    render(<SpreadsheetEditor host={host} />);
+    await waitFor(() => expect(lifecycleOptions.current).not.toBeNull());
+    await act(async () => { lifecycleOptions.current!.applyContent('Name\tValue\nAlpha\t1'); });
+
+    await act(async () => { await lifecycleOptions.current!.onSave(); });
+
+    const saved = (host.saveContent as ReturnType<typeof vi.fn>).mock.calls[0][0] as string;
+    expect(saved.split('\n').slice(-2)).toEqual(['Name\tValue', 'Alpha\t1']);
   });
 });
 

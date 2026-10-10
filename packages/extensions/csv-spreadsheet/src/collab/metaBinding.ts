@@ -17,6 +17,10 @@
 
 import * as Y from 'yjs';
 import type { CellStyle, CellStyleRanges, ColumnFormat } from '../types';
+import type { ConditionalFormat } from '../conditional/types';
+import type { ValidationRule } from '../validation/types';
+import { EMPTY_FORMATTING, type RangeBorders, type SheetFormatting } from '../sheetMeta/formatting';
+import { maxOrderStamp, readField, writeField, type FieldEntry } from './metaEntries';
 
 export const Y_META_MAP = 'meta';
 
@@ -26,8 +30,32 @@ const KEY_FROZEN_COLUMNS = 'frozenColumnCount';
 const KEY_COLUMN_FORMATS = 'columnFormats';
 const KEY_COLUMN_WIDTHS = 'columnWidths';
 const KEY_CELL_STYLES = 'cellStyles';
+const KEY_FROZEN_ROWS = 'frozenRowCount';
 
-export interface CsvMetaSnapshot {
+/**
+ * The Phase 3 fields are stored one root entry per range / index / format id
+ * with an explicit order stamp (see `metaEntries.ts`), not as nested maps: two
+ * clients lazily creating the same nested map offline lose one map whole, and
+ * a nested map cannot record which overlapping range was applied last.
+ */
+const KEY_CELL_FORMATS = 'cellFormats';
+const KEY_VALIDATION = 'validation';
+const KEY_BORDERS = 'borders';
+const KEY_ROW_HEIGHTS = 'rowHeights';
+const KEY_HIDDEN_ROWS = 'hiddenRows';
+const KEY_HIDDEN_COLS = 'hiddenCols';
+const KEY_WRAP = 'wrap';
+const KEY_CONDITIONAL = 'conditionalFormats';
+/** Keyed by the upper-cased name, so two spellings of one name are one entry; the value keeps the spelling. */
+const KEY_NAMED_RANGES = 'namedRanges';
+
+/** Nested conditional entries from earlier builds were `{ order, format }`. */
+const LEGACY_CONDITIONAL = {
+  order: (value: unknown) => Number((value as { order?: number }).order ?? 0),
+  unwrap: (value: unknown) => (value as { format?: unknown }).format,
+};
+
+export interface CsvMetaSnapshot extends SheetFormatting {
   headerRowCount: number;
   frozenColumnCount: number;
   columnFormats: Record<number, ColumnFormat>;
@@ -113,6 +141,18 @@ export class CsvMetaBinding {
       columnFormats: nestedToRecord<ColumnFormat>(readNested(this.meta, KEY_COLUMN_FORMATS)),
       columnWidths: nestedToRecord<number>(readNested(this.meta, KEY_COLUMN_WIDTHS)),
       cellStyles: nestedToStringRecord<CellStyle>(readNested(this.meta, KEY_CELL_STYLES)),
+      cellFormats: toRecord<ColumnFormat>(readField(this.meta, KEY_CELL_FORMATS)),
+      conditionalFormats: readField(this.meta, KEY_CONDITIONAL, LEGACY_CONDITIONAL)
+        .map((entry) => entry.value as ConditionalFormat)
+        .filter((format) => !!format && typeof format === 'object'),
+      validation: toRecord<ValidationRule>(readField(this.meta, KEY_VALIDATION)),
+      rowHeights: toIndexRecord<number>(readField(this.meta, KEY_ROW_HEIGHTS)),
+      hiddenRows: indexSet(readField(this.meta, KEY_HIDDEN_ROWS)),
+      hiddenCols: indexSet(readField(this.meta, KEY_HIDDEN_COLS)),
+      frozenRowCount: Number(this.meta.get(KEY_FROZEN_ROWS) ?? 0),
+      wrap: readField(this.meta, KEY_WRAP).map((entry) => entry.key),
+      borders: toRecord<RangeBorders>(readField(this.meta, KEY_BORDERS)),
+      namedRanges: namedRangesOf(readField(this.meta, KEY_NAMED_RANGES)),
     };
   }
 
@@ -140,6 +180,21 @@ export class CsvMetaBinding {
       // One entry per styled range, so two people styling two different blocks
       // merge the same way two people formatting two columns do.
       this.publishNested(KEY_CELL_STYLES, snapshot.cellStyles, jsonEquals);
+      const formatting = { ...EMPTY_FORMATTING, ...snapshot };
+      if (Number(this.meta.get(KEY_FROZEN_ROWS) ?? 0) !== formatting.frozenRowCount) {
+        this.meta.set(KEY_FROZEN_ROWS, formatting.frozenRowCount);
+      }
+      const stamps = { max: maxOrderStamp(this.meta) };
+      const before = previous ? fieldEntries({ ...EMPTY_FORMATTING, ...previous }) : null;
+      for (const [key, { entries, ordered }] of Object.entries(fieldEntries(formatting))) {
+        writeField(this.meta, key, entries, {
+          clientId: this.yDoc.clientID,
+          stamps,
+          ordered,
+          previous: before?.[key].entries ?? null,
+          legacy: key === KEY_CONDITIONAL ? LEGACY_CONDITIONAL : undefined,
+        });
+      }
     }, this.localOrigin);
 
     this.lastPublished = snapshot;
@@ -179,9 +234,68 @@ function jsonEquals<T>(a: T, b: T): boolean {
 }
 
 function sameSnapshot(a: CsvMetaSnapshot, b: CsvMetaSnapshot): boolean {
-  return a.headerRowCount === b.headerRowCount
-    && a.frozenColumnCount === b.frozenColumnCount
-    && jsonEquals(a.columnFormats, b.columnFormats)
-    && jsonEquals(a.columnWidths, b.columnWidths)
-    && jsonEquals(a.cellStyles, b.cellStyles);
+  return jsonEquals({ ...EMPTY_FORMATTING, ...a }, { ...EMPTY_FORMATTING, ...b });
+}
+
+/** The per-entry fields of a snapshot, keyed by meta field, with whether order matters. */
+function fieldEntries(formatting: SheetFormatting): Record<string, { entries: FieldEntry[]; ordered: boolean }> {
+  return {
+    [KEY_CELL_FORMATS]: { entries: entriesOf(formatting.cellFormats), ordered: true },
+    [KEY_VALIDATION]: { entries: entriesOf(formatting.validation), ordered: true },
+    [KEY_BORDERS]: { entries: entriesOf(formatting.borders), ordered: true },
+    [KEY_CONDITIONAL]: {
+      entries: formatting.conditionalFormats.map((format) => ({ key: format.id, value: format })),
+      ordered: true,
+    },
+    [KEY_ROW_HEIGHTS]: { entries: entriesOf(formatting.rowHeights), ordered: false },
+    [KEY_HIDDEN_ROWS]: { entries: flags(formatting.hiddenRows), ordered: false },
+    [KEY_HIDDEN_COLS]: { entries: flags(formatting.hiddenCols), ordered: false },
+    [KEY_WRAP]: { entries: flags(formatting.wrap), ordered: false },
+    [KEY_NAMED_RANGES]: {
+      entries: Object.entries(formatting.namedRanges)
+        .map(([name, range]) => ({ key: name.toUpperCase(), value: { name, range } })),
+      ordered: false,
+    },
+  };
+}
+
+function entriesOf(record:Readonly<Record<string | number, unknown>>): FieldEntry[] {
+  return Object.entries(record).map(([key, value]) => ({ key, value }));
+}
+
+function flags(keys: readonly (string | number)[]): FieldEntry[] {
+  return keys.map((key) => ({ key: String(key), value: true }));
+}
+
+function toRecord<T>(entries: readonly FieldEntry[]): Record<string, T> {
+  const record: Record<string, T> = {};
+  for (const { key, value } of entries) {
+    if (value === undefined || value === null) continue;
+    record[key] = value as T;
+  }
+  return record;
+}
+
+function toIndexRecord<T>(entries: readonly FieldEntry[]): Record<number, T> {
+  const record: Record<number, T> = {};
+  for (const { key, value } of entries) {
+    const index = Number(key);
+    if (Number.isInteger(index) && value !== undefined && value !== null) record[index] = value as T;
+  }
+  return record;
+}
+
+function namedRangesOf(entries: readonly FieldEntry[]): Record<string, string> {
+  const record: Record<string, string> = {};
+  for (const { value } of entries) {
+    const entry = value as { name?: unknown; range?: unknown } | null;
+    if (typeof entry?.name === 'string' && typeof entry.range === 'string') record[entry.name] = entry.range;
+  }
+  return record;
+}
+
+function indexSet(entries: readonly FieldEntry[]): number[] {
+  return entries.map((entry) => Number(entry.key))
+    .filter((index) => Number.isInteger(index) && index >= 0)
+    .sort((a, b) => a - b);
 }

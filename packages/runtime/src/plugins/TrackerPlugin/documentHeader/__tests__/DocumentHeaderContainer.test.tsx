@@ -45,4 +45,25 @@ describe('DocumentHeaderContainer provider exclusion', () => {
     screen.getByText('generic header');
     expect(screen.getByTestId('generic-header').getAttribute('data-can-create')).toBe('true');
   });
+
+  it('renders an inline provider in the page flow, outside the bordered header bar', () => {
+    DocumentHeaderRegistry.register({
+      id: 'test-tracker-header',
+      priority: 10,
+      shouldRender: () => true,
+      component: () => <div>tracker header</div>,
+    });
+    DocumentHeaderRegistry.register({
+      id: 'test-generic-header',
+      priority: 1,
+      shouldRender: () => true,
+      inline: true,
+      component: () => <div>status chip</div>,
+    });
+
+    render(<DocumentHeaderContainer filePath="/workspace/plan.md" fileName="plan.md" getContent={() => ''} />);
+
+    expect(screen.getByText('tracker header').closest('.document-header-container')).not.toBeNull();
+    expect(screen.getByText('status chip').closest('.document-header-container')).toBeNull();
+  });
 });

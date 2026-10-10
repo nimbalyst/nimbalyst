@@ -155,16 +155,23 @@ packages/extensions/csv-spreadsheet/
     index.tsx                    # Extension entry point
     types.ts                     # TypeScript type definitions
     components/
-      SpreadsheetEditor.tsx      # Main editor component
-      SpreadsheetToolbar.tsx     # Toolbar buttons
+      SpreadsheetEditor.tsx      # Grid shell: composes the editor/ hooks
       FormulaBar.tsx             # Formula input display
+    editor/
+      editorCore.ts              # Shared refs every feature hook reads
+      gridColumns.ts             # RevoGrid column definitions and cell classes
+      useSpreadsheetLifecycle.ts # Load, save, external change, diff review
+      useCollabWiring.ts         # Y.Text binding, presence, metadata publish
+      useSelection.ts            # Selection, focus/range events, select-all
+      contextMenus.ts            # Cell / row-header / column-header menu items
+      ...                        # Find/filter, keyboard, header mouse, formatting
     hooks/
-      useSpreadsheetStore.ts     # Zustand store for state
+      useSpreadsheetMetadata.ts  # Headers, frozen columns, formats, delimiter
     utils/
       csvParser.ts               # CSV parsing/serialization
+      gridOperations.ts          # Cell operations on RevoGrid, toCSV
       formulaEngine.ts           # Formula evaluation
     aiTools.ts                   # AI tool registration
-    styles.css                   # Themed styles
 ```
 
 ## Development

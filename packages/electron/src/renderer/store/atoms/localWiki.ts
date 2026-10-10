@@ -16,6 +16,8 @@ export interface LocalWikiStatus {
   unexportedPageCount: number;
   /** Problems the last scan reported and did not fix. */
   issueCount: number;
+  /** Types whose file did not load, by type id, with the reason. */
+  brokenTypes: Readonly<Record<string, string>>;
 }
 
 export const EMPTY_LOCAL_WIKI_STATUS: LocalWikiStatus = {
@@ -24,6 +26,7 @@ export const EMPTY_LOCAL_WIKI_STATUS: LocalWikiStatus = {
   exists: false,
   unexportedPageCount: 0,
   issueCount: 0,
+  brokenTypes: {},
 };
 
 export const localWikiStatusAtomFamily = atomFamily((_workspacePath: string) => atom<LocalWikiStatus>(EMPTY_LOCAL_WIKI_STATUS));

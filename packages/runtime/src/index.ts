@@ -133,9 +133,8 @@ export type {
   StalePlanStatus,
 } from './plugins/TrackerPlugin/models/planStatusIntegrity';
 // Generic Frontmatter Plugin
-// Import triggers registration with DocumentHeaderRegistry (priority 50, below tracker's 100)
 export {
-  GenericFrontmatterHeader,
+  FrontmatterProperties,
   shouldRenderGenericFrontmatter,
   extractFrontmatter,
   parseFields,

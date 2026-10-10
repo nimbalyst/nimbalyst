@@ -5,6 +5,8 @@ import Combine
 public enum WorkspaceSelection: Hashable {
     case session(String)
     case document(String)
+    /// A team console page (Team Wiki / Team Trackers), shown in `PagesView`.
+    case pages(ConsoleRoute)
 }
 
 @MainActor
@@ -74,6 +76,12 @@ final class WorkspaceNavigationState: ObservableObject {
         if selection != nil { compactColumn = .detail }
     }
 
+    /// A detail's own Back (Pages hides the system one): clear it and show the sidebar.
+    func leaveDetail() {
+        selection = nil
+        compactColumn = .sidebar
+    }
+
     func composeState(for sessionId: String) -> SessionComposeState {
         if let existing = composeStates[sessionId] { return existing }
         let state = SessionComposeState()
@@ -120,6 +128,7 @@ struct WorkspaceNavigationView: View {
     #endif
     private var hosts: [DeviceInfo] { navigation.hosts }
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
+    @ObservedObject private var consoleLinks = ConsoleLinkInbox.shared
 
     private var selection: Binding<WorkspaceSelection?> {
         Binding(get: { navigation.selection }, set: { navigation.select($0) })
@@ -202,6 +211,17 @@ struct WorkspaceNavigationView: View {
             // Initial database hydration must retain a cold-launch notification intent.
             if previous != nil { navigation.clearAccount() }
         }
+        // Universal links, nimbalyst://console, transcript links: select the page like a row.
+        .onReceive(consoleLinks.routes) { route in
+            // Act on the emitted value: `pending` still holds the previous one here.
+            navigation.select(.pages(route))
+            consoleLinks.acknowledge(route)
+        }
+        .alert("Personal pages live on your desktop", isPresented: $consoleLinks.personalPageRequested) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text("Open this page in Nimbalyst on your computer.")
+        }
     }
 
     private var isDesktopConnected: Bool {
@@ -249,9 +269,15 @@ struct WorkspaceNavigationView: View {
             case .document(let documentId):
                 #if canImport(UIKit)
                 if let document = try? database.document(byId: documentId) {
-                    DocumentEditorView(document: document)
-                        .id(documentId)
+                    // Wiki links select the target like a sidebar row, so the
+                    // detail stack never pushes.
+                    WikiAwareDocumentView(document: document) { navigation.select(.document($0)) }
+                    .id(documentId)
                 }
+                #endif
+            case .pages(let route):
+                #if canImport(UIKit)
+                PagesView(route: route, onLeave: { navigation.leaveDetail() }, onKeepRoute: { navigation.select(.pages($0)) })
                 #endif
             case nil:
                 ContentUnavailableView("Select a session or file", systemImage: "sidebar.left")

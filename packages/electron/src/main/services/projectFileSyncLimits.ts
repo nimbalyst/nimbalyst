@@ -6,6 +6,11 @@ import {
 import type { ProjectFilePushOutcome } from '@nimbalyst/runtime/sync';
 import { logger } from '../utils/logger';
 
+/** The title a synced file carries on the wire: its file name without the extension. */
+export function projectSyncTitle(relativePath: string): string {
+  return path.basename(relativePath, path.extname(relativePath));
+}
+
 /**
  * Whether a file would exceed the server's per-row storage cap once encrypted.
  * The server refuses such a file (NIM-7337), so the client never offers it.
@@ -14,7 +19,7 @@ export function exceedsProjectSyncLimit(contentBytes: number, relativePath: stri
   return projectSyncEstimatedStoredBytes({
     contentBytes,
     pathBytes: Buffer.byteLength(relativePath),
-    titleBytes: Buffer.byteLength(path.basename(relativePath, '.md')),
+    titleBytes: Buffer.byteLength(projectSyncTitle(relativePath)),
     syncIdLength: 64,
   }) > PROJECT_SYNC_MAX_FILE_STORED_BYTES;
 }

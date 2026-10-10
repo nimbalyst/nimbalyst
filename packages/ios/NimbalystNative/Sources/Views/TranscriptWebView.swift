@@ -393,6 +393,9 @@ public struct TranscriptWebView: UIViewRepresentable {
 
             case "open_url":
                 if let urlString = body["url"] as? String, let url = URL(string: urlString) {
+                    // Team console pages open in Pages; a universal link does
+                    // not reliably come back to the app that opened it.
+                    if ConsoleLinkInbox.shared.open(url) { return }
                     UIApplication.shared.open(url)
                 }
 
@@ -432,8 +435,9 @@ public struct TranscriptWebView: UIViewRepresentable {
             // External links (http, https, mailto, etc.) -- open outside the web view.
             // Dispatch async to avoid SOAuthorizationCoordinator warnings from WKWebView.
             if let scheme = url.scheme, ["http", "https", "mailto"].contains(scheme.lowercased()) {
-                logger.info("decidePolicyFor: opening external URL in Safari: \(url.absoluteString)")
                 decisionHandler(.cancel)
+                if ConsoleLinkInbox.shared.open(url) { return }
+                logger.info("decidePolicyFor: opening external URL in Safari: \(url.absoluteString)")
                 DispatchQueue.main.async {
                     UIApplication.shared.open(url)
                 }
@@ -456,6 +460,7 @@ public struct TranscriptWebView: UIViewRepresentable {
             windowFeatures: WKWindowFeatures
         ) -> WKWebView? {
             if let url = navigationAction.request.url {
+                if ConsoleLinkInbox.shared.open(url) { return nil }
                 logger.info("createWebViewWith: opening \(url.absoluteString) externally")
                 DispatchQueue.main.async {
                     UIApplication.shared.open(url)

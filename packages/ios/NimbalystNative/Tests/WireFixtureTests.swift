@@ -105,6 +105,7 @@ final class WireFixtureTests: XCTestCase {
         "PersonalStatePageRequest": roundTrip(PersonalStatePageRequest.self),
         "PersonalStatePageResponse": roundTrip(PersonalStatePageResponse.self),
         "ProjectBroadcast": roundTrip(ProjectBroadcast.self),
+        "ProjectConfig": roundTrip(ProjectConfig.self),
         "ReadReceiptBroadcast": roundTrip(ReadReceiptBroadcast.self),
         "ReadReceiptMessage": roundTrip(ReadReceiptMessage.self),
         "ServerError": roundTrip(ServerError.self),
@@ -240,6 +241,63 @@ final class WireFixtureTests: XCTestCase {
         guard case .readReceipt = try JSONDecoder().decode(PersonalStatePageEntry.self, from: Data(valid.utf8)) else {
             return XCTFail("a well-formed read-receipt entry decoded as the wrong union member")
         }
+    }
+
+    /// Contract C1: the wiki folder in the decrypted project config lands on
+    /// `Project.localWikiFolder` and survives a save through the migrated table.
+    func testProjectConfigLocalWikiFolderReachesTheProjectRow() throws {
+        let json = try String(contentsOf: Self.fixturesDirectory.appendingPathComponent("projectConfig.desktop.json"), encoding: .utf8)
+        let decoded = decodeProjectConfig(fromJson: json)
+        XCTAssertEqual(decoded.localWikiFolder, "nimbalyst-local/wiki")
+        XCTAssertNotNil(decoded.actionsJson)
+
+        let db = try DatabaseManager()
+        try db.upsertProject(Project(id: "/tmp/p", name: "p", localWikiFolder: decoded.localWikiFolder, localWikiTypesJSON: decoded.localWikiTypesJSON))
+        let stored = try XCTUnwrap(try db.allProjects().first)
+        XCTAssertEqual(stored.localWikiFolder, "nimbalyst-local/wiki")
+        XCTAssertEqual(stored.localWikiTypes.map(\.typeId), ["competitor", "partner"])
+        XCTAssertEqual(stored.localWikiTypes.last?.storage, "table")
+        XCTAssertEqual(stored.localWikiTypes.first?.fields.first?.multiValue, true)
+
+        // A desktop without a wiki (or one that predates wiki sync) leaves it nil.
+        let noWiki = decodeProjectConfig(fromJson: #"{"commands":[],"lastCommandsUpdate":1}"#)
+        XCTAssertNil(noWiki.localWikiFolder)
+        XCTAssertNil(noWiki.localWikiTypesJSON)
+        XCTAssertEqual(normalizeLocalWikiFolder("docs/wiki/"), "docs/wiki")
+        for unsafe in ["", "/abs/wiki", "../wiki", "docs/../../x", "docs//wiki"] {
+            XCTAssertNil(normalizeLocalWikiFolder(unsafe), unsafe)
+        }
+    }
+
+    /// A config-less entry (stats-only broadcast) keeps the stored config; a
+    /// readable config, even an empty one, replaces it and clears a removed wiki.
+    func testProjectEntryKeepsConfigWithoutBlobAndClearsWikiOnEmptyConfig() throws {
+        let db = try DatabaseManager()
+        func write(_ project: Project, readable: Bool) throws {
+            let entry = DecryptedProjectEntry(projectId: project.id, wireId: "wire", project: project, hasReadableConfig: readable)
+            _ = try IndexBatchWriter.apply([.project(entry, revision: nil)], context: IndexApplyContext(), database: db)
+        }
+        let json = try String(contentsOf: Self.fixturesDirectory.appendingPathComponent("projectConfig.desktop.json"), encoding: .utf8)
+        let full = decodeProjectConfig(fromJson: json)
+        try write(Project(id: "/tmp/p", name: "p", commandsJson: full.commandsJson, actionsJson: full.actionsJson,
+                          localWikiFolder: full.localWikiFolder, localWikiTypesJSON: full.localWikiTypesJSON), readable: true)
+
+        try write(Project(id: "/tmp/p", name: "p", sessionCount: 4), readable: false)
+        var stored = try XCTUnwrap(try db.allProjects().first)
+        XCTAssertEqual(stored.localWikiFolder, "nimbalyst-local/wiki")
+        XCTAssertNotNil(stored.localWikiTypesJSON)
+        XCTAssertEqual(stored.commandsJson, full.commandsJson)
+        XCTAssertEqual(stored.actionsJson, full.actionsJson)
+
+        // What the desktop now sends after the wiki is removed: an empty, stamped config.
+        let empty = decodeProjectConfig(fromJson: #"{"commands":[],"lastCommandsUpdate":5}"#)
+        try write(Project(id: "/tmp/p", name: "p", commandsJson: empty.commandsJson, actionsJson: empty.actionsJson,
+                          localWikiFolder: empty.localWikiFolder, localWikiTypesJSON: empty.localWikiTypesJSON), readable: true)
+        stored = try XCTUnwrap(try db.allProjects().first)
+        XCTAssertNil(stored.localWikiFolder)
+        XCTAssertNil(stored.localWikiTypesJSON)
+        XCTAssertNil(stored.actionsJson)
+        XCTAssertEqual(stored.commandsJson, "[]")
     }
 
     // MARK: - Helpers

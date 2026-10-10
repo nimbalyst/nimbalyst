@@ -17,6 +17,11 @@ vi.mock('../../../utils/workspaceDetection', () => ({ resolveProjectPath: (p: st
 
 import { LocalWikiService } from '../LocalWikiService';
 import { resolveLocalWikiLocation } from '../localWikiLocation';
+import {
+  clearTrackerSchemaLoadFailures,
+  onTrackerSchemaLoadFailuresChanged,
+  recordTrackerSchemaLoadFailure,
+} from '../../tracker/trackerSchemaLoadFailures';
 
 let project: string;
 let broadcast: ReturnType<typeof vi.fn<(workspacePath: string) => void>>;
@@ -70,6 +75,37 @@ describe('LocalWikiService', () => {
     const search = await service.search(project, { query: 'competitor' });
     expect(search.hits.map((hit) => hit.title)).toEqual(['Pricing']);
     expect(fs.existsSync(stray)).toBe(true);
+  });
+
+  it('reports type files the app could not load as malformed-type issues with the type id, once per file (NIM-7437)', async () => {
+    const typesDir = path.join(project, '.nimbalyst', 'trackers');
+    fs.mkdirSync(typesDir, { recursive: true });
+    const lesson = path.join(typesDir, 'lesson.yaml');
+    const garbled = path.join(typesDir, 'garbled.yaml');
+    const lessonYaml = 'type: lesson\ndisplayName: Lesson\ndisplayNamePlural: Lessons\nstorage: table\nfields: []\n';
+    fs.writeFileSync(lesson, lessonYaml);
+    fs.writeFileSync(garbled, 'type: [unclosed\n');
+    await service.command(project, { type: 'register-document', title: 'Home', parentFolderId: null, body: '' });
+    const changed = vi.fn();
+    const unsubscribe = onTrackerSchemaLoadFailuresChanged(changed);
+    try {
+      // The library reads `lesson` fine; only the app rejects it. `garbled` is not YAML at all.
+      recordTrackerSchemaLoadFailure(project, lesson, new Error('Missing required field: modes'), lessonYaml);
+      recordTrackerSchemaLoadFailure(project, garbled, new Error('bad indentation\n at line 1'), 'type: [unclosed\n');
+      expect(changed).toHaveBeenCalledWith(project);
+
+      const issues = (await service.snapshot(project)).issues.filter((issue) => issue.code === 'malformed-type');
+      expect(issues).toEqual([
+        { code: 'malformed-type', path: lesson, message: 'Missing required field: modes', id: 'lesson' },
+        { code: 'malformed-type', path: garbled, message: 'bad indentation', id: 'garbled' },
+      ]);
+
+      clearTrackerSchemaLoadFailures(project);
+      expect((await service.snapshot(project)).issues.filter((issue) => issue.id === 'lesson')).toEqual([]);
+    } finally {
+      unsubscribe();
+      clearTrackerSchemaLoadFailures(project);
+    }
   });
 
   it('reads the location from local-wiki.json against the main checkout, and opens an existing folder without a page', async () => {

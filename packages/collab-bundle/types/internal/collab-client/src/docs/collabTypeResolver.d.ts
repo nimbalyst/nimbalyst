@@ -27,4 +27,11 @@ export type CollabTypeLane = 'team' | 'personal';
  * tree would skip it as unknown; a team type placed in Personal pages would
  * file shared items under a section that claims to be private.
  */
-export declare function buildCollabTypeResolver(registry: CollabTypeRegistry, records: Iterable<CollabTypeResolverRecord>, lane?: CollabTypeLane): CollabTypeTreeResolver;
+export declare function buildCollabTypeResolver(registry: CollabTypeRegistry, records: Iterable<CollabTypeResolverRecord>, lane?: CollabTypeLane, 
+/**
+ * Types whose file did not load, with the reason. A broken type is not in the
+ * registry, so without this it and its pages would vanish from the tree; with
+ * it they show, named by type id and marked broken. A registered type is never
+ * broken: a bad edit to a loaded type keeps the last good definition.
+ */
+brokenTypes?: ReadonlyMap<string, string>): CollabTypeTreeResolver;

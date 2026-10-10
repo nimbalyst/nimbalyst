@@ -37,15 +37,29 @@ export function getAppliedTrimmedRows(target: object): TrimmedRows {
   return candidate.trimmedRows ?? {};
 }
 
+/**
+ * Rows the user hid are trimmed the same way filtered-out rows are, so the two
+ * compose: one trimmed set, one row mapping, and unhiding a row a filter also
+ * excludes leaves it excluded.
+ */
+export function combineTrimmedRows(filtered: TrimmedRows, hidden: readonly number[]): TrimmedRows {
+  if (hidden.length === 0) return filtered;
+  const combined: Record<number, boolean> = { ...filtered };
+  for (const row of hidden) if (row >= 0) combined[row] = true;
+  return combined;
+}
+
 export function createSpreadsheetFilterEngine(
   target: TrimmedRowsTarget,
   getRows: () => readonly FilterRow[],
+  /** Body (physical) indexes of rows the user hid. */
+  getHiddenRows: () => readonly number[] = () => [],
 ): SpreadsheetFilterEngine {
   let filters = new Map<number, ColumnFilter>();
   let trimmedRows: TrimmedRows = {};
 
   const refresh = async (): Promise<FilterSnapshot> => {
-    trimmedRows = deriveTrimmedRows(getRows(), filters);
+    trimmedRows = combineTrimmedRows(deriveTrimmedRows(getRows(), filters), getHiddenRows());
     await applyTrimmedRows(target, trimmedRows);
     return { filters: new Map(filters), trimmedRows };
   };

@@ -5,6 +5,8 @@ import com.google.gson.JsonElement
 import com.google.gson.JsonObject
 import com.google.gson.JsonParser
 import java.io.File
+import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -29,6 +31,7 @@ class WireFixtureTest {
         "indexClientMetadataPatch.desktop.json" to IndexClientMetadataPatchMessage::class.java,
         "clientMetadata.desktop.json" to ClientMetadata::class.java,
         "settingsPayload.desktop.json" to SyncedSettings::class.java,
+        "projectConfig.desktop.json" to ProjectConfig::class.java,
         "settingsSyncBroadcast.desktop.json" to SettingsSyncBroadcast::class.java,
         "metadataBroadcast.server.json" to MetadataBroadcast::class.java,
         "createSessionRequest.json" to CreateSessionRequestMessage::class.java,
@@ -95,6 +98,22 @@ class WireFixtureTest {
         }
         (NOT_ON_ANDROID.keys + kotlinTypes.keys - mobile).forEach { failures += "$it: listed here but not a mobile fixture" }
         assertTrue(failures.joinToString("\n"), failures.isEmpty())
+    }
+
+    @Test
+    fun `the project config fixture carries the Local wiki folder onto the project row`() {
+        val text = File(fixtures, "projectConfig.desktop.json").readText()
+        val config = gson.fromJson(text, ProjectConfig::class.java)
+        assertEquals("nimbalyst-local/wiki", normalizeLocalWikiFolder(config.localWiki?.folder))
+        val types = gson.fromJson(rawLocalWikiTypes(text), Array<SyncedWikiType>::class.java).toList()
+        assertEquals(listOf("competitor", "partner"), types.map { it.typeId })
+        assertEquals("table", types.last().storage)
+        assertEquals(true, types.first().fields.single().multiValue)
+        assertNull(rawLocalWikiTypes("""{"commands":[]}"""))
+        assertEquals("docs/wiki", normalizeLocalWikiFolder("docs/wiki/"))
+        for (unsafe in listOf("", "/abs/wiki", "../wiki", "docs/../../x", "docs//wiki")) {
+            assertNull(unsafe, normalizeLocalWikiFolder(unsafe))
+        }
     }
 
     /** Every leaf path, with array indices collapsed to `[]`. */

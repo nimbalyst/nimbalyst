@@ -42,6 +42,16 @@ import { ImageNode } from '../plugins/ImagesPlugin/ImageNodeCore';
 import { PageBreakNode } from '../plugins/PageBreakPlugin/PageBreakNodeCore';
 import { MermaidNode } from '../plugins/MermaidPlugin/MermaidNodeCore';
 import { QuadrantNode } from '../plugins/QuadrantPlugin/QuadrantNodeCore';
+import { ChartNode } from '../plugins/ChartPlugin/ChartNodeCore';
+import { CodeExcerptNode } from '../plugins/CodeExcerptPlugin/CodeExcerptNodeCore';
+import { CalloutNode } from '../plugins/CalloutPlugin/CalloutNode';
+import { LayoutContainerNode } from '../plugins/LayoutPlugin/LayoutContainerNode';
+import { LayoutItemNode } from '../plugins/LayoutPlugin/LayoutItemNode';
+import { TocNode } from '../plugins/TocPlugin/TocNodeCore';
+import { TransclusionNode } from '../plugins/TransclusionPlugin/TransclusionNodeCore';
+import { MentionNode } from '../plugins/MentionPlugin/MentionNodeCore';
+import { TabPanelNode, TabsNode } from '../plugins/TabsPlugin/TabsNodes';
+import { ActionButtonNode } from '../plugins/ActionButtonPlugin/ActionButtonNodeCore';
 import { DecisionNode } from '../plugins/DecisionPlugin/DecisionNodeCore';
 import { EmbeddedFileNode } from '../plugins/EmbedPlugin/EmbeddedFileNodeCore';
 import { DocumentReferenceNode } from '../../plugins/DocumentLinkPlugin/DocumentLinkNode';
@@ -60,6 +70,17 @@ const HeadlessBodyNodes: Array<Klass<LexicalNode>> = [
   ImageNode,
   MermaidNode,
   QuadrantNode,
+  ChartNode,
+  CodeExcerptNode,
+  CalloutNode,
+  LayoutContainerNode,
+  LayoutItemNode,
+  TocNode,
+  TransclusionNode,
+  MentionNode,
+  TabsNode,
+  TabPanelNode,
+  ActionButtonNode,
   DecisionNode,
   EmbeddedFileNode,
   DocumentReferenceNode,

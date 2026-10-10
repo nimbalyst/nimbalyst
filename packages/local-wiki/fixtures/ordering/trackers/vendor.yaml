@@ -1,0 +1,12 @@
+type: vendor
+displayName: Vendor
+storage: table
+roles:
+  title: name
+fields:
+  - name: name
+    type: string
+  - name: score
+    type: number
+  - name: active
+    type: boolean

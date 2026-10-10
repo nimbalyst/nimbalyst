@@ -3,7 +3,7 @@
  *
  * A page holding a human citation and a source citation draws a blue initials
  * chip and a numbered source chip; hovering the human chip shows who said it
- * and the snapshotted quote; the bottom of the page shows the Sources line.
+ * and the snapshotted quote; Page info lists every citation in the page.
  * Human citations are console links (Decision 23); a page written with the
  * older `nimbalyst://cite/` link still reads. An edit elsewhere in the page
  * saves every citation back byte for byte.
@@ -56,7 +56,7 @@ test.afterAll(async () => {
   if (workspace) await fs.rm(workspace, { recursive: true, force: true });
 });
 
-test('citation chips, the quote popover and the Sources line', async () => {
+test('citation chips, the quote popover and Page info\'s Sources', async () => {
   await openFileFromTree(page, 'table.md');
   const editor = page.locator(ACTIVE_EDITOR_SELECTOR);
   await expect(editor).toBeVisible({ timeout: TEST_TIMEOUTS.EDITOR_LOAD });
@@ -73,7 +73,13 @@ test('citation chips, the quote popover and the Sources line', async () => {
   await expect(popover).toContainText('answering round 3, TD-8');
   await expect(popover).toContainText('keyboard shortcuts, ARIA, etc.');
 
-  await expect(page.getByTestId('citation-sources-line')).toHaveText('Sources · 2 from Greg Hinkle · 1 link');
+  // The page carries no Sources line; Page info lists the citations.
+  await expect(page.getByTestId('citation-sources-line')).toHaveCount(0);
+  await page.getByTestId('editor-header-page-info').click();
+  const sources = page.getByTestId('citation-sources-list').locator('li');
+  await expect(sources).toHaveCount(3);
+  await expect(sources.nth(0)).toContainText('Greg Hinkle');
+  await expect(sources.nth(2)).toContainText('TanStack Table docs');
 });
 
 test('an edit elsewhere saves every citation back unchanged, the legacy link included', async () => {

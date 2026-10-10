@@ -147,6 +147,7 @@ fields:
 - `storage: pages`: one markdown page per item, with a body and children.
 - `storage: table`: one CSV for the whole type. No bodies, no children.
 - **A type is a wiki type only when it declares `storage:`.** Its items live in the wiki. A type without the key (bugs, tasks, any app-database type) keeps its items in the app; the wiki still reads its definition so a page can link to such items, but tools must not create its items as files. Placing a type in the wiki writes `storage: pages` (or `table`) into its YAML. A typed page whose type lacks the key is still read, with `pages` storage.
+- The app's other type keys (`icon`, `color`, `modes`, `idPrefix`) are optional on a wiki type. The app fills them in when they are missing, and a type may set them.
 - `*.patch.yaml` files and backups are not type definitions. `extends` is resolved one level deep: the parent's fields, then the child's.
 
 ## Table types

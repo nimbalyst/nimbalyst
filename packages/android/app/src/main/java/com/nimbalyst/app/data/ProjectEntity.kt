@@ -18,6 +18,13 @@ data class ProjectEntity(
     /** SHA-256 of the git remote URL; routes project document sync. */
     val gitRemoteHash: String? = null,
     /**
+     * The Local wiki folder relative to the project root, from the encrypted
+     * config; null when the project has no Local wiki.
+     */
+    val localWikiFolder: String? = null,
+    /** JSON array of the wiki's type definitions ([com.nimbalyst.app.sync.SyncedWikiType]); null without any. */
+    val localWikiTypesJson: String? = null,
+    /**
      * A stand-in for a project the index has not sent yet, created so a
      * session naming it can be stored. Never listed; replaced by the real
      * entry, or pruned once no session references it.

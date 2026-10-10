@@ -2036,14 +2036,21 @@ const PRODUCTION_SYNC_URL = 'https://sync.nimbalyst.com';
 const DEVELOPMENT_SYNC_URL = 'http://localhost:8790';
 
 /**
- * Get the sync server URL. Always returns a valid URL - defaults to production.
+ * Get the sync server URL from the environment, like the sync connection and
+ * sign-in do. The persisted `serverUrl` is not trusted: a saved
+ * `was://sync.nimbalyst.com` failed every refresh with ERR_UNKNOWN_URL_SCHEME
+ * while sync itself kept working on the derived URL.
  */
-function getSyncServerUrl(): string {
-  const config = getSessionSyncConfig();
-  if (config?.serverUrl) return config.serverUrl;
-  const isDev = process.env.NODE_ENV !== 'production';
+export function resolveSyncServerUrl(
+  config: { environment?: string } | null | undefined,
+  isDev: boolean,
+): string {
   const env = isDev ? config?.environment : undefined;
   return env === 'development' ? DEVELOPMENT_SYNC_URL : PRODUCTION_SYNC_URL;
+}
+
+function getSyncServerUrl(): string {
+  return resolveSyncServerUrl(getSessionSyncConfig(), process.env.NODE_ENV !== 'production');
 }
 
 /**

@@ -214,8 +214,16 @@ describe('ProjectFileSyncService push acks over a live provider', () => {
     send(data: string) { this.sent.push(JSON.parse(data)); }
     close() { this.readyState = 3; }
   }
+  // Bounded by time, not loop turns: the encryption behind each send runs on the
+  // threadpool, and under a loaded full-suite run 200 turns could pass before the
+  // request was sent, leaving `request` undefined.
   const settle = async (done: () => boolean) => {
-    for (let i = 0; i < 200 && !done(); i++) await new Promise((r) => setImmediate(r));
+    const deadline = Date.now() + 4_000;
+    while (!done() && Date.now() < deadline) await new Promise((r) => setImmediate(r));
+  };
+  /** Let already-queued async work run for a fixed number of turns. */
+  const drain = async () => {
+    for (let i = 0; i < 200; i++) await new Promise((r) => setImmediate(r));
   };
   const rel = 'note.md';
   const syncId = syncIdFromPath(rel);
@@ -343,7 +351,7 @@ describe('ProjectFileSyncService push acks over a live provider', () => {
     ws.onmessage!(response({
       pushConfirmations: (request.confirm ?? []).map((id: string) => ({ syncId: id, contentHash: sha256('B') })),
     }));
-    await settle(() => false);
+    await drain();
 
     ws.onmessage!({ data: JSON.stringify({ type: 'fileContentBroadcast', ...(await remoteEntry('C')), fromConnectionId: 'mobile' }) });
     await vi.waitFor(async () => expect(await fsp.readFile(filePath, 'utf-8')).toBe('C'));

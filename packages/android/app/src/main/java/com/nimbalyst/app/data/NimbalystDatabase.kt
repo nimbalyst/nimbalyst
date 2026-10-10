@@ -34,7 +34,7 @@ abstract class NimbalystDatabase : RoomDatabase() {
     abstract fun indexReplicationDao(): IndexReplicationDao
 
     companion object {
-        const val VERSION = 5
+        const val VERSION = 6
         const val DATABASE_NAME = "nimbalyst-android.db"
 
         @Volatile

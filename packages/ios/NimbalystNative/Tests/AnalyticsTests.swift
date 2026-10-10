@@ -1,4 +1,5 @@
 import XCTest
+import GRDB
 @testable import NimbalystNative
 
 /// Tests for PostHog analytics integration.
@@ -83,5 +84,36 @@ final class AnalyticsTests: XCTestCase {
         XCTAssertEqual(a, b)
         XCTAssertNotEqual(a, c)
         XCTAssertNotEqual(a, d)
+    }
+
+    // MARK: - Session load error properties
+
+    func testSessionLoadErrorPropertiesCarryCountsButNoDetailText() {
+        let decrypt = SessionLoadError.decryptionFailed(decryptedCount: 0, totalCount: 12)
+            .analyticsProperties(localMessageCount: 3)
+        XCTAssertEqual(decrypt["errorType"] as? String, "decryptionFailed")
+        XCTAssertEqual(decrypt["decryptedCount"] as? Int, 0)
+        XCTAssertEqual(decrypt["serverMessageCount"] as? Int, 12)
+        XCTAssertEqual(decrypt["localMessageCount"] as? Int, 3)
+
+        // Detail strings can contain session ids and server error text.
+        let sync = SessionLoadError.syncFailed("room abc-123 rejected")
+            .analyticsProperties(localMessageCount: 0)
+        XCTAssertEqual(sync["errorType"] as? String, "syncFailed")
+        XCTAssertFalse(sync.values.contains { ($0 as? String)?.contains("abc-123") == true })
+    }
+
+    func testSessionListFailureReportsSQLiteMessageWithoutStatement() throws {
+        let queue = try DatabaseQueue()
+        var thrown: Error?
+        do { _ = try queue.read { try Row.fetchAll($0, sql: "SELECT missingColumn FROM sqlite_master WHERE name = ?", arguments: ["secret-session-id"]) } }
+        catch { thrown = error }
+
+        let failure = SessionListLoadFailure(stage: .projection, error: try XCTUnwrap(thrown))
+        XCTAssertTrue(failure.detail.contains("no such column: missingColumn"), failure.detail)
+        XCTAssertFalse(failure.detail.contains("secret-session-id"))
+        XCTAssertFalse(failure.detail.contains("SELECT"))
+        XCTAssertEqual(failure.analyticsProperties["stage"] as? String, "projection")
+        XCTAssertEqual(failure.analyticsProperties["sqliteResultCode"] as? Int, 1)
     }
 }

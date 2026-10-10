@@ -9,7 +9,7 @@ import React from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { render } from '@testing-library/react';
 import { store } from '@nimbalyst/runtime/store';
-import { useKeyboardShortcuts } from '../useKeyboardShortcuts';
+import { isShortcutClaimedByTarget, useKeyboardShortcuts } from '../useKeyboardShortcuts';
 import { viewModeAtom } from '../../store/atoms/agentMode';
 import { activeWorkspacePathAtom } from '../../store/atoms/openProjects';
 import type { ContentMode } from '../../types/WindowModeTypes';
@@ -137,6 +137,46 @@ describe('Cmd+B', () => {
     render(<Harness activeMode="files" />);
     pressAppModifier('b');
 
+    expect(toggleActiveLeftPane).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('shortcuts an editor claims', () => {
+  // A focused surface can opt out of an app chord with
+  // `data-claims-shortcuts="mod+k mod+b"` (the CSV grid: link and bold).
+  function pressInside(key: string): KeyboardEvent {
+    const isMac = navigator.platform.startsWith('Mac');
+    const event = new KeyboardEvent('keydown', { key, metaKey: isMac, ctrlKey: !isMac, bubbles: true, cancelable: true });
+    document.querySelector('[data-testid="claimed-cell"]')!.dispatchEvent(event);
+    return event;
+  }
+
+  it('matches the nearest claiming ancestor, one chord at a time', () => {
+    const { container } = render(<div data-claims-shortcuts="mod+k"><span>cell</span></div>);
+    const span = container.querySelector('span');
+    expect(isShortcutClaimedByTarget(span, 'mod+k')).toBe(true);
+    expect(isShortcutClaimedByTarget(span, 'mod+b')).toBe(false);
+    expect(isShortcutClaimedByTarget(null, 'mod+k')).toBe(false);
+  });
+
+  it('leaves Cmd+K and Cmd+B to a claiming target', () => {
+    render(
+      <>
+        <Harness activeMode="files" />
+        <div data-claims-shortcuts="mod+k mod+b"><span data-testid="claimed-cell" /></div>
+      </>,
+    );
+    expect(pressInside('k').defaultPrevented).toBe(false);
+    expect(pressInside('b').defaultPrevented).toBe(false);
+    expect(setActiveMode).not.toHaveBeenCalled();
+    expect(toggleActiveLeftPane).not.toHaveBeenCalled();
+  });
+
+  it('still switches to Agent mode and toggles the pane everywhere else', () => {
+    render(<Harness activeMode="files" />);
+    pressAppModifier('k');
+    pressAppModifier('b');
+    expect(setActiveMode).toHaveBeenCalledWith('agent');
     expect(toggleActiveLeftPane).toHaveBeenCalledTimes(1);
   });
 });

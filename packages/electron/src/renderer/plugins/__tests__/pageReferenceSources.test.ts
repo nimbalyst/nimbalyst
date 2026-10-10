@@ -63,4 +63,21 @@ describe('page reference sources', () => {
     expect(openPersonal).toHaveBeenCalledWith(personal, undefined);
     expect(openTeam).toHaveBeenCalledWith('nimbalyst://doc/d1?orgId=o', undefined);
   });
+
+  it('opens a link to another Local wiki page as that page, not as a file', () => {
+    const openPersonal = vi.fn();
+    const source = localFileReferenceSource({
+      listTeam: () => [],
+      listPersonal: () => [],
+      openTeam: vi.fn(),
+      openPersonal,
+      wikiPageFor: (target) => (target === 'Product.md' ? 'product-id' : null),
+    });
+
+    expect(source.ownsTarget!('Product.md')).toBe(true);
+    // A file outside the wiki still opens as a file.
+    expect(source.ownsTarget!('../spec/tech.md')).toBe(false);
+    source.openReference('Product.md', { newTab: false });
+    expect(openPersonal).toHaveBeenCalledWith(personalPageReferenceOptions({ documents: [page('product-id', 'Product')] })[0]!.target, { newTab: false });
+  });
 });

@@ -13,6 +13,7 @@ import path from "path";
 import { createHash } from 'crypto';
 import { getProjectFileSyncService } from '../services/ProjectFileSyncService';
 import { isProjectSyncPath } from '../services/sync/projectSyncWikiRules';
+import { createProjectSyncWatch } from '../services/sync/projectSyncWatch';
 import { isSyncEnabled } from '../services/SyncManager';
 import { getReleaseChannel, getSessionSyncConfig, getWorkspaceRoots } from '../utils/store';
 import { anyWindowReferencesWorkspace } from '../window/windowState';
@@ -246,6 +247,7 @@ export async function stopAllWorkspaceWatchers() {
 
 // Track active project sync subscriptions (workspacePath -> subscriberId)
 const projectSyncSubscriptions = new Map<string, string>();
+const projectSyncWatches = new Map<string, { dispose(): void }>();
 
 /**
  * Derive a deterministic project ID from a workspace path.
@@ -257,7 +259,7 @@ function hashProjectId(input: string): string {
 
 /**
  * Start project file sync for a workspace.
- * Subscribes to WorkspaceEventBus for .md file changes and starts initial sync sweep.
+ * Subscribes to WorkspaceEventBus for synced file changes and starts initial sync sweep.
  *
  * Called from startWorkspaceWatcher() when sync is enabled.
  */
@@ -279,30 +281,22 @@ export async function startProjectFileSync(workspacePath: string): Promise<void>
 
   const service = getProjectFileSyncService();
 
-  // Subscribe to file change events for .md files
-  await workspaceEventBus.subscribe(workspacePath, subscriberId, {
-    onChange: (filePath) => {
-      if (!isProjectSyncPath(filePath, workspacePath)) return;
-      // Skip files that were just written by the sync service (echo suppression)
-      if (service.isRecentlyWrittenFromRemote(filePath)) return;
+  const watch = createProjectSyncWatch(workspacePath, subscriberId, workspaceEventBus, {
+    isOwnWrite: filePath => service.isRecentlyWrittenFromRemote(filePath),
+    saved: (filePath, kind) => {
       service.handleFileSaved(filePath, workspacePath, projectId).catch(err => {
-        logger.main.error('[ProjectFileSync] handleFileSaved failed:', err);
+        logger.main.error(`[ProjectFileSync] handleFileSaved (${kind}) failed:`, err);
       });
     },
-    onAdd: (filePath) => {
-      if (!isProjectSyncPath(filePath, workspacePath)) return;
-      if (service.isRecentlyWrittenFromRemote(filePath)) return;
-      service.handleFileSaved(filePath, workspacePath, projectId).catch(err => {
-        logger.main.error('[ProjectFileSync] handleFileSaved (add) failed:', err);
-      });
-    },
-    onUnlink: (filePath) => {
-      if (!isProjectSyncPath(filePath, workspacePath)) return;
-      // Skip deletes the sync service itself just performed (remote delete echo)
-      if (service.isRecentlyWrittenFromRemote(filePath)) return;
-      service.handleFileDeletedByPath(filePath, workspacePath, projectId);
-    },
+    deleted: filePath => service.handleFileDeletedByPath(filePath, workspacePath, projectId),
+    wikiCreated: () => service.resync(projectId),
   });
+  // Every sweep (startup and each reconnect) registers what it found, which produced no add event.
+  const offSwept = service.onSwept((sweptProjectId, filePaths) => {
+    if (sweptProjectId === projectId) for (const filePath of filePaths) watch.track(filePath);
+  });
+  projectSyncWatches.set(workspacePath, { dispose: () => { offSwept(); watch.dispose(); } });
+  await workspaceEventBus.subscribe(workspacePath, subscriberId, watch.listener);
 
   // Start initial sync sweep (non-blocking)
   service.syncProject(workspacePath, projectId).catch(err => {
@@ -343,6 +337,8 @@ function stopProjectFileSync(workspacePath: string): void {
 
   workspaceEventBus.unsubscribe(workspacePath, subscriberId);
   projectSyncSubscriptions.delete(workspacePath);
+  projectSyncWatches.get(workspacePath)?.dispose();
+  projectSyncWatches.delete(workspacePath);
 
   getProjectFileSyncService().disconnectProject(hashProjectId(workspacePath));
 }

@@ -29,6 +29,10 @@ struct DecryptedProjectEntry: Sendable {
     /// tombstone carries nothing else.
     let wireId: String
     let project: Project
+    /// False when the entry carried no config blob or one this device could not
+    /// read. Such an entry (a stats-only broadcast, an older server row) says
+    /// nothing about the config, so the stored config fields stand.
+    var hasReadableConfig: Bool = false
 }
 
 /// How to treat a field we cannot read.
@@ -131,6 +135,7 @@ enum IndexEntryDecryptor {
         }
 
         var decodedConfig = DecodedProjectConfig.empty
+        var hasReadableConfig = false
         if let encryptedConfig = entry.encryptedConfig, let configIv = entry.configIv {
             let configJson = crypto.decryptOrNil(encryptedBase64: encryptedConfig, ivBase64: configIv)
             // decodeProjectConfig returns .empty for unparseable JSON, which is
@@ -143,8 +148,11 @@ enum IndexEntryDecryptor {
                     return nil
                 }
             }
-            if let configJson {
+            if let configJson,
+               let data = configJson.data(using: .utf8),
+               (try? JSONDecoder().decode(ProjectConfig.self, from: data)) != nil {
                 decodedConfig = decodeProjectConfig(fromJson: configJson)
+                hasReadableConfig = true
             }
         }
 
@@ -161,9 +169,25 @@ enum IndexEntryDecryptor {
                 lastUpdatedAt: entry.lastActivityAt,
                 commandsJson: decodedConfig.commandsJson,
                 actionsJson: decodedConfig.actionsJson,
-                gitRemoteHash: entry.gitRemoteHash
-            )
+                gitRemoteHash: entry.gitRemoteHash,
+                localWikiFolder: decodedConfig.localWikiFolder,
+                localWikiTypesJSON: decodedConfig.localWikiTypesJSON
+            ),
+            hasReadableConfig: hasReadableConfig
         )
+    }
+
+    /// The row to store for a project entry. A readable config is the
+    /// desktop's whole config, so it replaces the config fields, clearing a
+    /// wiki it no longer names. Without one, the stored config fields stand.
+    static func merge(_ decrypted: DecryptedProjectEntry, existing: Project?) -> Project {
+        var project = decrypted.project
+        guard !decrypted.hasReadableConfig, let existing else { return project }
+        project.commandsJson = existing.commandsJson
+        project.actionsJson = existing.actionsJson
+        project.localWikiFolder = existing.localWikiFolder
+        project.localWikiTypesJSON = existing.localWikiTypesJSON
+        return project
     }
 
     /// Merge a decrypted entry onto the row currently in the database.

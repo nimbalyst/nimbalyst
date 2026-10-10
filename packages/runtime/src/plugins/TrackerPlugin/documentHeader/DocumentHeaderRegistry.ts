@@ -31,6 +31,8 @@ export interface DocumentHeaderProvider {
   priority: number; // Higher priority renders first
   shouldRender: (content: string, filePath: string) => boolean;
   component: React.ComponentType<DocumentHeaderComponentProps>;
+  /** True renders in the page's flow, below any bordered header bar, rather than inside it. */
+  inline?: boolean;
 }
 
 class DocumentHeaderRegistryImpl {

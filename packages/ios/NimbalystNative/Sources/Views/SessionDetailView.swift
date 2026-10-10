@@ -38,6 +38,29 @@ enum SessionLoadError {
             return "Transcript did not load within 15s. Local messages: \(msgCount), WebView ready: \(wvReady), Transcript ready: \(trReady)"
         }
     }
+
+    /// Properties for `mobile_session_load_error`. Counts and flags only: the
+    /// detail strings can carry session ids and server error text.
+    func analyticsProperties(localMessageCount: Int) -> [String: Any] {
+        var props: [String: Any] = ["localMessageCount": localMessageCount]
+        switch self {
+        case .decryptionFailed(let decrypted, let total):
+            props["errorType"] = "decryptionFailed"
+            props["decryptedCount"] = decrypted
+            props["serverMessageCount"] = total
+        case .syncFailed:
+            props["errorType"] = "syncFailed"
+        case .webViewFailed:
+            props["errorType"] = "webViewFailed"
+        case .noMessages:
+            props["errorType"] = "noMessages"
+        case .timeout(_, let wvReady, let trReady):
+            props["errorType"] = "timeout"
+            props["webViewReady"] = wvReady
+            props["transcriptReady"] = trReady
+        }
+        return props
+    }
 }
 
 /// Session detail view with an embedded web transcript and native compose bar.
@@ -160,9 +183,7 @@ public struct SessionDetailView: View {
                     },
                     onError: { errorMessage in
                         if loadError == nil {
-                            withAnimation {
-                                loadError = .webViewFailed(errorMessage)
-                            }
+                            showLoadError(.webViewFailed(errorMessage))
                         }
                     },
                     onOpenFile: { filePath in
@@ -676,13 +697,11 @@ public struct SessionDetailView: View {
             // which is exactly the failure case we want to surface. If we've
             // been stuck 15s waiting on the sync response, the user needs to
             // see an error and a retry option, not an infinite spinner.
-            withAnimation {
-                loadError = .timeout(
-                    messageCount: messages.count,
-                    webViewReady: isWebViewReady,
-                    isTranscriptReady: isTranscriptReady
-                )
-            }
+            showLoadError(.timeout(
+                messageCount: messages.count,
+                webViewReady: isWebViewReady,
+                isTranscriptReady: isTranscriptReady
+            ))
         }
         timeoutWorkItem = item
         DispatchQueue.main.asyncAfter(deadline: .now() + 15, execute: item)
@@ -708,19 +727,25 @@ public struct SessionDetailView: View {
 
             if let error = diagnostic.error {
                 if diagnostic.decryptedCount == 0 && diagnostic.totalServerMessages > 0 {
-                    withAnimation {
-                        loadError = .decryptionFailed(
-                            decryptedCount: diagnostic.decryptedCount,
-                            totalCount: diagnostic.totalServerMessages
-                        )
-                    }
+                    showLoadError(.decryptionFailed(
+                        decryptedCount: diagnostic.decryptedCount,
+                        totalCount: diagnostic.totalServerMessages
+                    ))
                 } else {
-                    withAnimation {
-                        loadError = .syncFailed(error)
-                    }
+                    showLoadError(.syncFailed(error))
                 }
             }
         }
+    }
+
+    private func showLoadError(_ error: SessionLoadError) {
+        withAnimation {
+            loadError = error
+        }
+        AnalyticsManager.shared.capture(
+            "mobile_session_load_error",
+            properties: error.analyticsProperties(localMessageCount: messages.count)
+        )
     }
 
     // MARK: - Retry

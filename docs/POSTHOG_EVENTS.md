@@ -484,6 +484,7 @@ Because the dedup key is the user's *local* date, a user far from the project ti
 | --- | --- | --- | --- | --- | --- |
 | `mobile_app_opened` | `main.tsx:15, 24` | App launches or returns to foreground | `platform` (ios)<br/>`$set: nimbalyst_mobile_version` | (pending release) |  |
 | `mobile_session_viewed` | `SessionDetailScreen.tsx:252` | User opens a session | None (privacy - no session details) | (pending release) |  |
+| `mobile_session_load_error` | `SessionDetailView.swift`, `SessionListWindowModel.swift` | Session load error banner appears (decryption, sync, display, or 15s timeout), or the session list's local query fails | `errorType` (decryptionFailed/syncFailed/webViewFailed/noMessages/timeout/sessionList)<br/>`stage` (query/projection), `sqliteResultCode`, `detail` (SQLite message, no statement) for sessionList<br/>`localMessageCount`<br/>`decryptedCount`, `serverMessageCount` (decryptionFailed only)<br/>`webViewReady`, `transcriptReady` (timeout only)<br/>No session ids or error text | (pending release) |  |
 | `mobile_project_selected` | `ProjectListScreen.tsx:74` | User taps on a project | None (privacy - no project names) | (pending release) |  |
 | `mobile_ai_message_sent` | `SessionDetailScreen.tsx:648` | User sends a message to AI from mobile | `hasAttachments` (boolean) | (pending release) |  |
 | `mobile_pairing_completed` | `SettingsScreen.tsx:134` | QR code scan successful | None | (pending release) |  |

@@ -7,6 +7,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { TrackerRecord } from '@nimbalyst/runtime/core/TrackerRecord';
 import { quadrantData } from '../quadrantData';
+import { CHART_CATEGORY, CHART_VALUE, chartData } from '../chartData';
 import { placedViewDefinition } from '../placedViewDefinition';
 import { parsePlacedViewHandoff } from '../../page/placedViewHandoff';
 
@@ -114,5 +115,76 @@ describe('placedViewDefinition', () => {
 
   it('falls back to a table when a 2x2 names no axes', () => {
     expect(placedViewDefinition('competitor', 'C', { mode: '2x2' }).mode).toBe('table');
+  });
+
+  it('reads a chart and refuses a grouping or sum field it cannot chart', () => {
+    const fields = [
+      { id: 'tier', label: 'Tier', type: 'select' as const },
+      { id: 'tags', label: 'Tags', type: 'select' as const, multiValue: true },
+      { id: 'arr', label: 'ARR', type: 'number' as const },
+    ];
+    expect(placedViewDefinition('competitor', 'C', { mode: 'chart', by: 'tier', sum: 'arr', chart: 'pie' }, fields).chart)
+      .toEqual({ type: 'pie', by: 'tier', sum: 'arr' });
+    expect(placedViewDefinition('competitor', 'C', { mode: 'chart', by: 'tier' }, fields).chart).toEqual({ type: 'bar', by: 'tier' });
+    expect(() => placedViewDefinition('competitor', 'C', { mode: 'chart', by: 'tags' }, fields)).toThrow('Cannot chart by "tags"');
+    expect(() => placedViewDefinition('competitor', 'C', { mode: 'chart', by: 'tier', sum: 'tier' }, fields)).toThrow('Cannot sum "tier"');
+    expect(() => placedViewDefinition('competitor', 'C', { mode: 'chart', by: 'tier', chart: 'radar' }, fields)).toThrow('Unknown chart type');
+    // Starred and readiness depend on the viewer, which a chart's rows do not carry.
+    const contextual = [...fields, { id: 'favorite', label: 'Starred', type: 'boolean' as const }];
+    expect(() => placedViewDefinition('competitor', 'C', { mode: 'chart', by: 'favorite' }, contextual)).toThrow('Cannot chart by "favorite"');
+  });
+});
+
+describe('chartData', () => {
+  const tier = { id: 'tier', label: 'Tier', type: 'select', options: [{ value: 'gold', label: 'Gold' }, { value: 'silver', label: 'Silver' }, { value: 'bronze', label: 'Bronze' }] };
+  const rows = (data: ReturnType<typeof chartData>) => data.map((row) => [row[CHART_CATEGORY], row[CHART_VALUE]]);
+
+  it('counts or sums per bucket in option order, with the no-value bucket last', () => {
+    const records = [
+      competitor('a', { tier: 'silver', arr: 5 }),
+      competitor('b', { tier: 'gold', arr: '7' }),
+      competitor('c', { arr: 2 }),
+      competitor('d', { tier: 'silver', arr: 'n/a' }),
+    ];
+    expect(rows(chartData(records, { by: tier }))).toEqual([['Gold', 1], ['Silver', 2], ['(none)', 1]]);
+    expect(rows(chartData(records, { by: tier, sum: 'arr' }))).toEqual([['Gold', 7], ['Silver', 5], ['(none)', 2]]);
+  });
+
+  it('reads system fields through the shared accessor', () => {
+    const record = competitor('a', {});
+    const [[month, count], ...rest] = rows(chartData([record], { by: { id: 'created', type: 'date' } }));
+    expect([rest, count]).toEqual([[], 1]);
+    expect(month).toMatch(/^2026-0[89]$/);
+  });
+
+  it('keeps distinct people and options apart even when their labels match', () => {
+    const records = [
+      competitor('a', { owner: { displayName: 'Alex', email: 'alex@a.com' }, state: 'done' }),
+      competitor('b', { owner: { displayName: 'Alex', email: 'ALEX@a.com' }, state: 'closed' }),
+      competitor('c', { owner: { displayName: 'Alex', email: 'alex@b.com' }, state: 'done' }),
+    ];
+    expect(rows(chartData(records, { by: { id: 'owner', type: 'user' } }))).toEqual([
+      ['Alex (alex@a.com)', 2], ['Alex (alex@b.com)', 1],
+    ]);
+    const state = { id: 'state', type: 'select', options: [{ value: 'done', label: 'Done' }, { value: 'closed', label: 'Done' }] };
+    expect(rows(chartData(records, { by: state }))).toEqual([['Done (done)', 2], ['Done (closed)', 1]]);
+  });
+
+  it('buckets a datetime by the instant it names, a plain date by its calendar month', () => {
+    const records = [
+      competitor('a', { when: '2026-10-01T00:30:00+02:00', day: '2026-10-01' }),
+      competitor('b', { when: '2026-09-30T22:30:00Z', day: '2026-09-30' }),
+      competitor('c', { when: new Date('2026-09-30T22:30:00Z'), day: '2026-10-31' }),
+    ];
+    const byInstant = rows(chartData(records, { by: { id: 'when', type: 'datetime' } }));
+    expect(byInstant).toHaveLength(1);
+    expect(byInstant[0][1]).toBe(3);
+    expect(rows(chartData(records, { by: { id: 'day', type: 'date' } }))).toEqual([['2026-09', 1], ['2026-10', 2]]);
+  });
+
+  it('charts a field named count without losing its categories', () => {
+    const count = { id: 'count', type: 'select', options: [{ value: 'one', label: 'One' }, { value: 'two', label: 'Two' }] };
+    const data = chartData([competitor('a', { count: 'one' }), competitor('b', { count: 'two' })], { by: count });
+    expect(rows(data)).toEqual([['One', 1], ['Two', 1]]);
   });
 });

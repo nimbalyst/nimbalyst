@@ -1,8 +1,9 @@
 /**
  * A view placed in a page (a placed-view link of a type, see `placedViewUrl.ts`),
  * drawn live from the items. The definition comes from the link title
- * (`placedViewDefinition`): a table whose cells edit the items, or a 2x2 of
- * two number fields with pinned extra points.
+ * (`placedViewDefinition`): a table whose cells edit the items, a 2x2 of
+ * two number fields with pinned extra points, or a chart of the items
+ * grouped by one field.
  *
  * The host mounts it inside a `TrackersUIProvider`. Loaded lazily
  * (`LazyPlacedViewEmbed`) so a page with no view does not pay for the grid.
@@ -20,6 +21,7 @@ import { useTrackerViewRows } from '../useTrackerViewRows';
 import { TrackerViewEmbed } from './TrackerViewEmbed';
 import { placedViewDefinition, placedViewInReach, type PlacedQuadrant, type PlacedViewReach } from './placedViewDefinition';
 import { quadrantData } from './quadrantData';
+import { ChartViewEmbed } from './ChartViewEmbed';
 import { PlacedViewNote } from './PlacedViewNote';
 import { MarksListEmbed } from './MarksListEmbed';
 import { getDefaultColumnConfig, resolveColumnsForType } from '@nimbalyst/runtime/plugins/TrackerPlugin/components/trackerColumns';
@@ -144,6 +146,9 @@ function TypeViewEmbed({ typeId, label, attrs: savedAttrs, onAttrsChange, onOpen
   const wrap = (view: JSX.Element) => <div className={variant === 'page' ? "placed-view-configurable flex min-h-0 flex-1 flex-col" : "placed-view-configurable"}>{view}</div>;
   if (parsed.error || !parsed.placed) return wrap(<PlacedViewNote><div className="placed-view-invalid-head flex items-center justify-between gap-2"><span role="alert">{label || typeId}: {parsed.error}</span>{actions}</div>{notice}</PlacedViewNote>);
   const placed = parsed.placed;
+  if (placed.mode === 'chart' && placed.chart) {
+    return wrap(<ChartViewEmbed view={placed.view} chart={placed.chart} fields={fields} height={parseHeight(attrs.height)} headerActions={actions} headerNotice={notice} />);
+  }
   if (placed.mode === '2x2' && placed.quadrant) {
     return wrap(<QuadrantViewEmbed view={placed.view} quadrant={placed.quadrant} height={parseHeight(attrs.height)} onOpenItem={onOpenItem} headerActions={actions} headerNotice={notice} />);
   }

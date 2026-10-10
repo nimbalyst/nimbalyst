@@ -7,7 +7,7 @@
  * surfaces, and a surface that shows no view must not pay for them.
  */
 
-import { useCallback, useMemo, type JSX, type ReactNode } from 'react';
+import { useCallback, useLayoutEffect, useMemo, useRef, useState, type JSX, type ReactNode } from 'react';
 import type { CollabOpenOptions } from '@nimbalyst/collab-client/core';
 import { computeReadiness } from '@nimbalyst/runtime/plugins/TrackerPlugin/models/trackerReadiness';
 import { globalRegistry, groupTrackerRecordsByAxis } from '@nimbalyst/runtime/plugins/TrackerPlugin/models';
@@ -85,6 +85,14 @@ export interface TrackerViewEmbedProps {
   onWidthsChange?: (widths: Record<string, number>) => void;
 }
 
+/**
+ * A host marks a subtree read-only by setting this attribute to "true" on any
+ * ancestor element. It reaches embeds the host does not construct itself (a
+ * type page's table, views placed in a page body, which the editor paints in
+ * its own React root), where no prop can be threaded through.
+ */
+export const TRACKER_EMBEDS_READ_ONLY_ATTRIBUTE = 'data-tracker-embeds-read-only';
+
 /** Draws a view the caller supplies, without looking it up among the saved views. */
 export function TrackerViewEmbed({
   view,
@@ -102,13 +110,38 @@ export function TrackerViewEmbed({
   onWidthsChange,
 }: TrackerViewEmbedProps): JSX.Element {
   const { identity, capabilities, dataSource } = useTrackersUI();
+  const anchor = useRef<HTMLDivElement>(null);
+  const [hostReadOnly, setHostReadOnly] = useState(false);
+  const readHostReadOnly = useCallback(
+    () => Boolean(anchor.current?.closest(`[${TRACKER_EMBEDS_READ_ONLY_ATTRIBUTE}="true"]`)),
+    [],
+  );
+  // Before paint, so a read-only host never shows an editable frame.
+  useLayoutEffect(() => {
+    setHostReadOnly(readHostReadOnly());
+  }, [readHostReadOnly]);
+  /**
+   * Re-read at write time: the mount-time check cannot see an ancestor marked
+   * read-only later, and a callback captured before that (a portal button, an
+   * open editor) must refuse too. Flips the frame read-only as it refuses.
+   */
+  const refuseIfHostReadOnly = useCallback((): void => {
+    if (!readHostReadOnly()) return;
+    setHostReadOnly(true);
+    throw new Error('This view is read-only here.');
+  }, [readHostReadOnly]);
+  const writable = !readOnly && !hostReadOnly && dataSource !== null;
   const records = useTrackerDataSelector((state) => state.records);
   const loaded = useTrackerDataSelector((state) => state.loaded);
   const writeEdits = useCallback(
-    (entries: readonly TrackerGridUpdateEntry[]) => (dataSource ? writeViewEdits(dataSource, entries) : Promise.resolve()),
-    [dataSource],
+    async (entries: readonly TrackerGridUpdateEntry[]) => {
+      refuseIfHostReadOnly();
+      if (dataSource) await writeViewEdits(dataSource, entries);
+    },
+    [dataSource, refuseIfHostReadOnly],
   );
   return (
+    <div ref={anchor} className="tracker-view-embed-host" style={{ display: 'contents' }}>
     <LoadedViewEmbed
       view={view}
       records={records}
@@ -126,9 +159,13 @@ export function TrackerViewEmbed({
       hiddenColumns={hiddenColumns}
       onSortChange={onSortChange}
       onWidthsChange={onWidthsChange}
-      onItemsUpdate={readOnly || !dataSource ? undefined : writeEdits}
-      onCreate={readOnly || !dataSource || view.definition.selectedType === 'all' ? undefined : (title, fields, requestId) => createViewItem(dataSource, view.definition, title, fields, requestId)}
+      onItemsUpdate={writable ? writeEdits : undefined}
+      onCreate={!writable || !dataSource || view.definition.selectedType === 'all' ? undefined : async (title, fields, requestId) => {
+        refuseIfHostReadOnly();
+        await createViewItem(dataSource, view.definition, title, fields, requestId);
+      }}
     />
+    </div>
   );
 }
 

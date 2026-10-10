@@ -18,6 +18,7 @@ import {
   type SpreadsheetFilterEngine,
 } from '../filter/filterEngine';
 import { distinctColumnValues, type FilterRow } from '../filter/predicates';
+import { readGridSources } from '../commands/gridCommandExecutor';
 
 export interface ColumnFilters {
   filters: ColumnFilterState;
@@ -47,7 +48,13 @@ function compareScalars(a: FilterScalar, b: FilterScalar): number {
 export function useColumnFilters(
   gridRef: React.RefObject<RevoGridElement | null>,
   onFiltersChanged: () => void,
+  /** Body (physical) indexes of rows the user hid; trimmed along with the filtered ones. */
+  getHiddenRows: () => readonly number[] = () => [],
 ): ColumnFilters {
+  const getHiddenRowsRef = useRef(getHiddenRows);
+  getHiddenRowsRef.current = getHiddenRows;
+  /** Whether the last apply trimmed hidden rows, so unhiding the last one still re-applies. */
+  const appliedHiddenRef = useRef(false);
   const [filters, setFilters] = useState<ColumnFilterState>(new Map());
   const rowsRef = useRef<readonly FilterRow[]>([]);
   const engineRef = useRef<SpreadsheetFilterEngine | null>(null);
@@ -56,11 +63,16 @@ export function useColumnFilters(
   const readyEngine = useCallback(async (): Promise<SpreadsheetFilterEngine | null> => {
     const grid = gridRef.current;
     if (!grid) return null;
-    rowsRef.current = ((await grid.getSource('rgRow')) ?? []) as readonly FilterRow[];
+    rowsRef.current = (await readGridSources(grid)).source as readonly FilterRow[];
     if (!engineRef.current) {
       engineRef.current = createSpreadsheetFilterEngine(
         grid as unknown as Parameters<typeof createSpreadsheetFilterEngine>[0],
         () => rowsRef.current,
+        () => {
+          const hidden = getHiddenRowsRef.current();
+          appliedHiddenRef.current = hidden.length > 0;
+          return hidden;
+        },
       );
     }
     return engineRef.current;
@@ -70,7 +82,7 @@ export function useColumnFilters(
     async (columnIndex: number): Promise<readonly FilterScalar[]> => {
       const grid = gridRef.current;
       if (!grid) return [];
-      const rows = ((await grid.getSource('rgRow')) ?? []) as readonly FilterRow[];
+      const rows = (await readGridSources(grid)).source as readonly FilterRow[];
       return [...distinctColumnValues(rows, columnIndex)].sort(compareScalars);
     },
     [gridRef],
@@ -100,9 +112,9 @@ export function useColumnFilters(
     ),
     clearAll: useCallback(() => apply((engine) => engine.clear()), [apply]),
     refresh: useCallback(async () => {
-      // Nothing is hidden without an active filter, so an edit on an unfiltered
-      // sheet does no engine work.
-      if (!hasFiltersRef.current) return;
+      // Nothing is trimmed without an active filter or a hidden row, so an edit
+      // on a plain sheet does no engine work.
+      if (!hasFiltersRef.current && getHiddenRowsRef.current().length === 0 && !appliedHiddenRef.current) return;
       const engine = await readyEngine();
       // The filter set itself is unchanged; only the derived hidden rows move,
       // so this deliberately does not touch React state.

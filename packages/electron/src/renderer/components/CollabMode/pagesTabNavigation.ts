@@ -38,16 +38,18 @@ export type PagesOpenPlan =
  * Where a click lands. A plain click replaces the active tab when it is a
  * Pages tab, even if another tab shows the same page. Cmd/Ctrl, no active
  * tab, or one Pages does not navigate (a feedback request) open a new tab,
- * which focuses a tab that already shows the page instead.
+ * which focuses a tab that already shows the page instead. A Local wiki page
+ * is a markdown file tab, so `isLocalPage` says which file tabs are pages.
  */
 export function planPagesOpen(
   _targetPath: string,
   options: PagesOpenOptions,
   tabs: { activeTabId: string | null; tabs: ReadonlyMap<string, { id: string; filePath: string }> },
+  isLocalPage: (filePath: string) => boolean = () => false,
 ): PagesOpenPlan {
   if (options.newTab || !tabs.activeTabId) return { action: 'new' };
   const active = tabs.tabs.get(tabs.activeTabId);
-  if (!active || !isPagesTabPath(active.filePath)) return { action: 'new' };
+  if (!active || !(isPagesTabPath(active.filePath) || isLocalPage(active.filePath))) return { action: 'new' };
   return { action: 'replace', tabId: active.id };
 }
 

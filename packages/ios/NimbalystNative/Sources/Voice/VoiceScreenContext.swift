@@ -76,7 +76,7 @@ extension VoiceAgent {
         switch selection {
         case .session(let id): sessionId = id; documentId = nil
         case .document(let id): sessionId = nil; documentId = id
-        case nil: sessionId = nil; documentId = nil
+        case .pages, nil: sessionId = nil; documentId = nil
         }
         selectHost(host)
         func publish(_ session: Session?) {

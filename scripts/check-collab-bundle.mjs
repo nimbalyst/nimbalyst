@@ -47,7 +47,16 @@ export const COLLAB_BUNDLE_EAGER_GZIP_BUDGET_BYTES = {
   // is read. Raised from 320,000 with ~2% headroom.
   // 2026-10-05: 332,074 after the link hover card (FloatingLinkEditorPlugin
   // rewrite) and Pages navigation; raised from 330,000 with ~2% headroom.
-  editor: 339_000,
+  // 2026-10-09: 342,147 after the chart, callout, columns and inline TOC
+  // blocks registered their node cores and transformers. Vega loads lazily
+  // in its own chunk. Raised from 339,000 with ~2% headroom.
+  // 2026-10-09: 351,752 after transclusion, mentions, link previews and code
+  // excerpts registered their node cores and transformers. Raised from
+  // 349,000 with ~2% headroom.
+  // 2026-10-09: 362,835 after the wiki blocks gained bottom-right resize
+  // grips and block-menu items (type, title, columns, depth, reset size).
+  // Raised from 359,000 with ~2% headroom.
+  editor: 370_000,
   // Measured at 70,625 gzip bytes on 2026-09-08, when the list took over
   // folder browsing from the tree for the browser console (folder rows, the
   // browse scope, the row "more" action). The row context menu itself is

@@ -63,6 +63,7 @@ import {
   signInWithGoogle,
   signOut,
 } from '../StytchAuthService';
+import { getSessionSyncConfig } from '../../utils/store';
 
 function createJwt(payload: Record<string, unknown>): string {
   return [
@@ -951,6 +952,21 @@ describe('StytchAuthService personal refresh outcome classification', () => {
       ok: false,
       reason: 'network',
     });
+  });
+
+  it('refreshes against the derived server, not a malformed saved serverUrl', async () => {
+    await signInPersonal();
+    // A real install had this typo saved; every refresh failed with ERR_UNKNOWN_URL_SCHEME.
+    vi.mocked(getSessionSyncConfig).mockReturnValue({ serverUrl: 'was://sync.nimbalyst.com' } as never);
+    fetchMock.mockRejectedValue(new Error('stop after the request is built'));
+    try {
+      await refreshPersonalSessionForAccountDetailed('org-personal');
+    } finally {
+      vi.mocked(getSessionSyncConfig).mockReturnValue({ serverUrl: 'https://sync.example' } as never);
+    }
+
+    expect(fetchMock).toHaveBeenCalled();
+    expect(String(fetchMock.mock.calls[0][0])).toMatch(/^https:\/\/sync\.nimbalyst\.com\//);
   });
 
   it('carries the transport error detail so the sync log can name it', async () => {

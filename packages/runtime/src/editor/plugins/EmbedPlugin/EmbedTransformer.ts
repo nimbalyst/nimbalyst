@@ -20,6 +20,7 @@ import {
   EmbeddedFileNode,
 } from './EmbeddedFileNodeCore';
 import { serializeEmbedAttrs } from './embedAttrs';
+import { escapeLinkTitle } from './embedTitle';
 
 export const EMBED_TRANSFORMER: ElementTransformer = {
   dependencies: [EmbeddedFileNode],
@@ -37,8 +38,14 @@ export const EMBED_TRANSFORMER: ElementTransformer = {
     if (node.getAttrs().namedPageView) return null;
     const src = node.getSrc();
     const label = node.getLabel();
-    const title = serializeEmbedAttrs(node.getAttrs());
     const displayLabel = label || src;
+    // A web link preview keeps its title exactly as written (escaped for the
+    // quoted form); file embeds keep the attribute-map output.
+    const verbatim = node.getTitle();
+    if (verbatim !== null) {
+      return verbatim ? `[${displayLabel}](${src} "${escapeLinkTitle(verbatim)}")` : `[${displayLabel}](${src})`;
+    }
+    const title = serializeEmbedAttrs(node.getAttrs());
     return title
       ? `[${displayLabel}](${src} "${title}")`
       : `[${displayLabel}](${src})`;

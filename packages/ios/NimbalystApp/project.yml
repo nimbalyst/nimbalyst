@@ -64,6 +64,9 @@ targets:
       path: Sources/NimbalystApp.entitlements
       properties:
         aps-environment: production
+        # Team console pages open in Pages (AASA in web-console/public/.well-known).
+        com.apple.developer.associated-domains:
+          - applinks:console.nimbalyst.com
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.nimbalyst.app

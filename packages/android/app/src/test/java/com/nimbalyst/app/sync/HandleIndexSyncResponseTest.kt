@@ -10,6 +10,7 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.runTest
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -186,7 +187,7 @@ class HandleIndexSyncResponseTest {
 
     @Test
     fun `a project entry without config keeps the stored commands, actions and remote hash`() = runTest {
-        val configured = project("/p").copy(commandsJson = "[{\"name\":\"review\"}]", actionsJson = "[]", gitRemoteHash = "h1")
+        val configured = project("/p").copy(commandsJson = "[{\"name\":\"review\"}]", actionsJson = "[]", gitRemoteHash = "h1", localWikiFolder = "docs/wiki", localWikiTypesJson = "[]")
         repository.replaceIndexSnapshot(projects = listOf(configured), sessions = emptyList(), syncedAt = 1L)
 
         // A stats-only project broadcast carries no config.
@@ -196,6 +197,14 @@ class HandleIndexSyncResponseTest {
         assertEquals(configured.commandsJson, stored.commandsJson)
         assertEquals("[]", stored.actionsJson)
         assertEquals("h1", stored.gitRemoteHash)
+        assertEquals("docs/wiki", stored.localWikiFolder)
+        assertEquals("[]", stored.localWikiTypesJson)
+
+        // A config without a wiki is authoritative: the folder goes away.
+        repository.replaceIndexSnapshot(projects = listOf(project("/p").copy(commandsJson = "[]")), sessions = emptyList(), syncedAt = 3L)
+        val cleared = repository.observeProjects().first().single()
+        assertNull(cleared.localWikiFolder)
+        assertNull(cleared.localWikiTypesJson)
     }
 
     /** R2a-4: a truncated session list proves nothing about the sessions it omits, or their projects. */

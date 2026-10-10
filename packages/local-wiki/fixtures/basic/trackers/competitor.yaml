@@ -1,0 +1,11 @@
+type: competitor
+displayName: Competitor
+displayNamePlural: Competitors
+storage: pages
+fields:
+  - name: title
+    type: string
+  - name: status
+    type: select
+  - name: tags
+    type: multiselect

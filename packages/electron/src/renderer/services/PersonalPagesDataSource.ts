@@ -38,6 +38,7 @@ import { routeLocalCommand, type LegacyIds } from './localWikiCommands';
 import { trackerItemsMapAtom } from '@nimbalyst/runtime/plugins/TrackerPlugin/trackerDataAtoms';
 import { buildLocalWikiRecords, markPlacedLocalWikiType, mergeLocalWikiRecords } from './localWikiTrackerRecords';
 import { localPageTreeTitle } from './personalPageTypes';
+import { brokenTypesFromIssues, placementsForUnshownBrokenTypes, sameBrokenTypes } from './localWikiBrokenTypes';
 
 /** What main answers on `local-wiki:snapshot`. */
 interface LocalWikiSnapshotPayload {
@@ -114,10 +115,15 @@ export class PersonalPagesDataSource implements CollabDocsDataSource {
     const wikiItemIds = new Set((wiki?.itemPlacements ?? []).map((placement) => placement.itemId));
     const legacyTypePlacements = (legacy?.typePlacements ?? []).filter((placement) => !wikiTypeIds.has(placement.typeId));
     const legacyItemPlacements = (legacy?.itemPlacements ?? []).filter((placement) => !wikiItemIds.has(placement.itemId));
+    const statusAtom = localWikiStatusAtomFamily(this.workspacePath);
+    const previousBroken = store.get(statusAtom).brokenTypes;
+    const readBroken = brokenTypesFromIssues(wiki?.issues);
+    const brokenTypes = sameBrokenTypes(previousBroken, readBroken) ? previousBroken : readBroken;
+    const typePlacements = [...(wiki?.typePlacements ?? []), ...legacyTypePlacements];
     const result: CollabDocsSnapshot = {
       items: [...wikiItems, ...legacyItems],
       containers: [],
-      typePlacements: [...(wiki?.typePlacements ?? []), ...legacyTypePlacements],
+      typePlacements: [...typePlacements, ...placementsForUnshownBrokenTypes(brokenTypes, typePlacements, wiki?.pages ?? [])],
       itemPlacements: [...(wiki?.itemPlacements ?? []), ...legacyItemPlacements],
       pageTree: true,
       pageFields: true,
@@ -137,8 +143,9 @@ export class PersonalPagesDataSource implements CollabDocsDataSource {
       exists: wiki?.exists === true,
       unexportedPageCount: legacy?.unexportedPageCount ?? 0,
       issueCount: wiki?.issues?.length ?? 0,
+      brokenTypes,
     };
-    store.set(localWikiStatusAtomFamily(this.workspacePath), status);
+    store.set(statusAtom, status);
     // The file header reads a flat `type:` as a typed page only inside the wiki.
     setLocalWikiRoot(this.workspacePath, root);
     await this.mergeTrackerRecords(wiki, root);

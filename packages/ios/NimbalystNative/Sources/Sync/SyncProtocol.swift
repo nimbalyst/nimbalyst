@@ -116,6 +116,38 @@ struct ProjectConfig: Codable {
     /// Absent on desktops that predate action sync.
     let actions: [SyncedActionPrompt]?
     let lastActionsUpdate: Int?
+    /// Carried in the blob by the desktop; the phone reads it from the plaintext entry field instead.
+    let gitRemoteHash: String?
+    /// Absent when the project has no Local wiki or the desktop predates wiki sync.
+    let localWiki: LocalWikiConfig?
+}
+
+/// Where the project's Local wiki lives, relative to the project root, and
+/// the wiki's type definitions (their YAML does not sync as files).
+struct LocalWikiConfig: Codable {
+    let folder: String
+    let types: [SyncedWikiType]?
+}
+
+/// A wiki type definition from the desktop (`.nimbalyst/trackers/<type>.yaml`
+/// with `storage:`), as `loadTypeDefs` in `packages/local-wiki` reads it.
+public struct SyncedWikiType: Codable, Hashable, Sendable {
+    public let typeId: String
+    public let displayName: String
+    public let displayNamePlural: String
+    /// "pages" or "table".
+    public let storage: String
+    /// Field holding the item title.
+    public let titleField: String
+    public let fields: [SyncedWikiField]
+}
+
+public struct SyncedWikiField: Codable, Hashable, Sendable {
+    public let name: String
+    /// Tracker field type: string, text, number, select, multiselect, relationship, ...
+    public let type: String
+    public let itemType: String?
+    public let multiValue: Bool?
 }
 
 /// The parts of the project config blob that get stored on `Project`.
@@ -125,8 +157,37 @@ struct ProjectConfig: Codable {
 struct DecodedProjectConfig {
     let commandsJson: String?
     let actionsJson: String?
+    let localWikiFolder: String?
+    /// Raw JSON text of `localWiki.types`; nil without a wiki or without types.
+    let localWikiTypesJSON: String?
 
-    static let empty = DecodedProjectConfig(commandsJson: nil, actionsJson: nil)
+    static let empty = DecodedProjectConfig(commandsJson: nil, actionsJson: nil, localWikiFolder: nil, localWikiTypesJSON: nil)
+}
+
+/// `localWiki.types` re-serialized from the raw blob rather than from
+/// `SyncedWikiType`, so a field a newer desktop adds survives to the reader.
+private func rawLocalWikiTypes(_ configData: Data) -> String? {
+    guard let root = try? JSONSerialization.jsonObject(with: configData) as? [String: Any],
+          let wiki = root["localWiki"] as? [String: Any],
+          let types = wiki["types"] as? [Any],
+          let data = try? JSONSerialization.data(withJSONObject: types, options: [.sortedKeys]) else {
+        return nil
+    }
+    return String(data: data, encoding: .utf8)
+}
+
+/// Accept a wiki folder only if it is a relative path inside the project.
+///
+/// The desktop sends `/`-separated paths with no trailing slash; anything
+/// absolute or climbing out with `..` is dropped rather than trusted, since
+/// views join it onto synced document paths.
+func normalizeLocalWikiFolder(_ raw: String?) -> String? {
+    guard var folder = raw?.trimmingCharacters(in: .whitespaces) else { return nil }
+    while folder.hasSuffix("/") { folder.removeLast() }
+    guard !folder.isEmpty, !folder.hasPrefix("/") else { return nil }
+    let segments = folder.split(separator: "/", omittingEmptySubsequences: false)
+    guard !segments.contains(where: { $0.isEmpty || $0 == "." || $0 == ".." }) else { return nil }
+    return folder
 }
 
 /// Project a decrypted project-config JSON string onto the columns `Project`
@@ -155,7 +216,13 @@ func decodeProjectConfig(fromJson configJson: String) -> DecodedProjectConfig {
         actionsJson = jsonStr
     }
 
-    return DecodedProjectConfig(commandsJson: commandsJson, actionsJson: actionsJson)
+    let localWikiFolder = normalizeLocalWikiFolder(config.localWiki?.folder)
+    return DecodedProjectConfig(
+        commandsJson: commandsJson,
+        actionsJson: actionsJson,
+        localWikiFolder: localWikiFolder,
+        localWikiTypesJSON: localWikiFolder == nil ? nil : rawLocalWikiTypes(configData)
+    )
 }
 
 /// Lightweight slash command manifest synced from desktop.

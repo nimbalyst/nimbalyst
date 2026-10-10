@@ -63,7 +63,7 @@
 		28AAB412B7B79412AFC2D34D /* NimbalystNavigationUITests.xctest */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.cfbundle; path = NimbalystNavigationUITests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 		3654DBF9031AF3A4E820E5E3 /* NimbalystApp.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = NimbalystApp.entitlements; sourceTree = "<group>"; };
 		378E1BCDAB725D5AA7AE106F /* FleetActivityWidget.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FleetActivityWidget.swift; sourceTree = "<group>"; };
-		410140D418FDDE3F17C78BB9 /* NimbalystApp.app */ = {isa = PBXFileReference; includeInIndex = 0; lastKnownFileType = wrapper.application; path = NimbalystApp.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		410140D418FDDE3F17C78BB9 /* NimbalystApp.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = NimbalystApp.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		4AD3D7B50527B2E106E5D1EA /* ScreenshotHostView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ScreenshotHostView.swift; sourceTree = "<group>"; };
 		61EF9877A6E8685EEDBAC2DB /* NimbalystAppMain.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NimbalystAppMain.swift; sourceTree = "<group>"; };
 		6CE2999E23EB447A00B4FB82 /* NimbalystWidgetsBundle.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NimbalystWidgetsBundle.swift; sourceTree = "<group>"; };
@@ -284,7 +284,6 @@
 						ProvisioningStyle = Automatic;
 					};
 					B3CF4230C889EC2EB2A2E42C = {
-						DevelopmentTeam = X8S24QHAT9;
 						ProvisioningStyle = Automatic;
 					};
 					E7E9D9256618682D2A59780C = {
@@ -426,6 +425,7 @@
 				CODE_SIGN_ENTITLEMENTS = Sources/NimbalystApp.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = X8S24QHAT9;
 				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				INFOPLIST_FILE = Sources/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (
@@ -445,6 +445,7 @@
 				CODE_SIGN_ENTITLEMENTS = Sources/NimbalystApp.entitlements;
 				CODE_SIGN_IDENTITY = "iPhone Developer";
 				CODE_SIGN_STYLE = Automatic;
+				DEVELOPMENT_TEAM = X8S24QHAT9;
 				ENABLE_USER_SCRIPT_SANDBOXING = NO;
 				INFOPLIST_FILE = Sources/Info.plist;
 				LD_RUNPATH_SEARCH_PATHS = (

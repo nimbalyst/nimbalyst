@@ -238,6 +238,7 @@ export function buildCollabPageTree(
   if (resolver) {
     const itemNode = (itemId: string, typeId: string, title: string, placement?: SharedItemPlacement): CollabTreeItemNode => {
       const typeLabel = resolver.typeLabel?.(typeId) ?? resolver.typeName(typeId) ?? undefined;
+      const typeError = resolver.typeError?.(typeId);
       return {
         id: `item:${itemId}`,
         type: 'item',
@@ -247,6 +248,7 @@ export function buildCollabPageTree(
         name: title || itemId,
         children: [],
         ...(typeLabel ? { typeLabel } : {}),
+        ...(typeError ? { typeError } : {}),
         ...(placement ? { placed: true, sortOrder: placement.sortOrder } : {}),
       };
     };

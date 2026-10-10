@@ -77,6 +77,25 @@ public final class AppState: ObservableObject {
         await self?.performSyncRecovery() ?? false
     }
 
+    /// Mints console sessions for Pages and owns the per-account web data store.
+    /// Owned here, not by `PagesView`, so a view remount never drops a request.
+    public private(set) var consoleBroker: ConsoleSessionBroker?
+    var consoleEnvironment: ConsoleEnvironment = .production
+    /// Bumped on every pairing, account switch, sign-in and sign-out. Pages work
+    /// and session answers captured under one generation never act under another.
+    var consoleGeneration: UInt64 = 0
+    #if canImport(UIKit)
+    /// The one long-lived Pages web view, bound to one account generation (see AppState+Pages).
+    var pagesWebController: PagesWebController?
+    var consoleReachability: ConsoleReachability?
+    /// The store from a previous sign-out could not be removed yet, so Pages cannot open.
+    var pagesStoreBlocked = false
+    #endif
+    #if DEBUG
+    /// `--console-pages-fixture`: every project maps to this team (screenshots and UI tests).
+    public var consolePagesFixtureMatch: ConsoleTeamProjectMatch?
+    #endif
+
     // MARK: - Sync auth-degraded tracking
 
     /// Number of consecutive `.failed` results from `authManager.refreshSession`.
@@ -108,6 +127,9 @@ public final class AppState: ObservableObject {
 
         // Loading account state also performs the one-time legacy Keychain migration.
         refreshAccountsFromKeychain()
+        consoleBroker = makeConsoleBroker()
+        // Finish console data store removals a previous run could not complete.
+        Task { [weak self] in await self?.consoleBroker?.retryPendingRemovals() }
 
         // If both paired and authenticated from a previous session, set up and connect immediately
         if isPaired && authManager.isAuthenticated {
@@ -132,6 +154,7 @@ public final class AppState: ObservableObject {
         self.syncManager = syncManager
         self.indexLoadState = .loaded
         self.isPaired = true
+        self.consoleBroker = makeConsoleBroker()
         #if os(iOS)
         if let syncManager { observeSessionCreation(syncManager) }
         #endif
@@ -156,6 +179,7 @@ public final class AppState: ObservableObject {
         // Pairing selects the scanned account. Tear down every room belonging
         // to the prior selection before rebuilding the selected account scope.
         tearDownManagers()
+        consoleSelectionChanged()
         DatabaseManager.deleteDatabase(at: DatabaseManager.path(for: account))
         refreshAccountsFromKeychain()
         authManager.reloadSelectedAccount()
@@ -184,6 +208,7 @@ public final class AppState: ObservableObject {
         // not immediately dealloc the DatabasePool, leaving the file locked.
         try? databaseManager?.eraseAllData()
         tearDownManagers()
+        removeConsoleData(forAccounts: accounts.map(\.id))
         KeychainManager.deleteAll()
         authManager.logout()
         // Also attempt file deletion for a clean slate on re-pair.
@@ -204,6 +229,7 @@ public final class AppState: ObservableObject {
         }
 
         tearDownManagers()
+        consoleSelectionChanged()
         _ = try KeychainManager.setActiveAccount(id: accountId)
         refreshAccountsFromKeychain()
         let wasAuthenticated = authManager.isAuthenticated
@@ -247,6 +273,9 @@ public final class AppState: ObservableObject {
     /// Only real background transitions require a fresh connection. Inactive
     /// system overlays do not tear down a healthy session.
     public func setAppInForeground(_ foreground: Bool) {
+        #if canImport(UIKit)
+        if !foreground { pagesWebController?.sceneDidEnterBackground() }
+        #endif
         syncManager?.setAppInForeground(foreground, recover: false)
         documentSyncManager?.setAppInForeground(foreground)
         recovery.setForeground(foreground)
@@ -275,6 +304,17 @@ public final class AppState: ObservableObject {
             }
             .store(in: &cancellables)
 
+        // Sign-out journals the account's console store in the same call stack
+        // as `logout()`, not a run-loop turn later.
+        authManager.$isAuthenticated
+            .dropFirst()
+            .filter { !$0 }
+            .sink { [weak self] _ in
+                guard let accountId = KeychainManager.getActiveAccount()?.id else { return }
+                self?.consoleBroker?.journalRemovals([accountId])
+            }
+            .store(in: &cancellables)
+
         authManager.$isAuthenticated
             .dropFirst()
             // @Published fires in willSet (before the property updates).
@@ -285,6 +325,8 @@ public final class AppState: ObservableObject {
                 guard let self else { return }
                 self.logger.info("isAuthenticated changed to \(authenticated)")
                 if authenticated {
+                    // A new session: nothing from the previous one may answer under it.
+                    self.consoleSelectionChanged()
                     AnalyticsManager.shared.capture("mobile_login_completed")
                     self.setupManagersIfNeeded()
                     self.connectIfReady()
@@ -293,6 +335,8 @@ public final class AppState: ObservableObject {
                     // Auth lost for the selected account: no rooms or database
                     // observations from that account may remain live.
                     self.tearDownManagers()
+                    // Nor its console session: drop the web view and its data store.
+                    self.removeConsoleData(forAccounts: KeychainManager.getActiveAccount().map { [$0.id] } ?? [])
                 }
             }
             .store(in: &cancellables)
@@ -379,6 +423,68 @@ public final class AppState: ObservableObject {
 
         startJWTRefreshTimer()
         return await sync.waitForConnection()
+    }
+
+    // MARK: - Console sessions
+
+    private func makeConsoleBroker() -> ConsoleSessionBroker {
+        ConsoleSessionBroker(
+            credentials: ConsoleCredentials(
+                account: { [weak self] in self?.currentConsoleAccount() },
+                // The personal JWT of exactly `context`, refreshed through the
+                // same path sync uses. Nil once the selection moved on, before or
+                // after the refresh. The broker can read it; nothing writes the account.
+                personalJwt: { [weak self] context in
+                    guard let self, self.currentConsoleAccount() == context else { return nil }
+                    return await SyncCredentials.freshToken(
+                        read: { self.authManager.sessionJwt },
+                        isCurrent: { self.currentConsoleAccount() == context },
+                        refresh: { await self.refreshJWT() }
+                    )
+                }
+            ),
+            dataStores: WebKitConsoleDataStores()
+        )
+    }
+
+    func currentConsoleAccount() -> ConsoleAccountContext? {
+        guard authManager.isAuthenticated,
+              let account = KeychainManager.getActiveAccount(),
+              let apiBase = ConsoleAccountContext.apiBase(fromServerUrl: account.serverUrl) else { return nil }
+        return ConsoleAccountContext(accountId: account.id, apiBase: apiBase, generation: consoleGeneration)
+    }
+
+    /// Every pairing, switch, sign-in and sign-out: drop the web view, move to a
+    /// new generation, and cancel directory work captured under the old one.
+    func consoleSelectionChanged() {
+        tearDownPages()
+        consoleGeneration &+= 1
+        consoleBroker?.selectionChanged()
+    }
+
+    /// Sign-out or unpair. The web view is torn down and released first, its
+    /// bridge work cancelled (WebKit will not remove a store in use); the
+    /// removal is recorded before it runs and retried until it succeeds.
+    func removeConsoleData(forAccounts accountIds: [String]) {
+        // Journal every affected store first, in one synchronous write: a
+        // process death after this point still removes them at next launch.
+        consoleBroker?.journalRemovals(accountIds)
+        consoleSelectionChanged()
+        guard let broker = consoleBroker, !accountIds.isEmpty else { return }
+        Task { @MainActor in
+            // Let SwiftUI drop the detail that still holds the old controller.
+            await Task.yield()
+            for accountId in accountIds { await broker.accountSignedOut(accountId) }
+        }
+    }
+
+    func tearDownPages() {
+        #if canImport(UIKit)
+        guard let controller = pagesWebController else { return }
+        controller.tearDown()
+        pagesWebController = nil
+        objectWillChange.send()
+        #endif
     }
 
     // MARK: - JWT Refresh
@@ -688,6 +794,9 @@ public final class AppState: ObservableObject {
         let state = AppState(databaseManager: db)
         state.isConnected = true
         state.screenshotMode = true
+        #if canImport(UIKit)
+        state.applyConsolePagesFixture()
+        #endif
         return state
     }
     #endif

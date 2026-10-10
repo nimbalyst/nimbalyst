@@ -151,6 +151,9 @@ export interface EditorConfig {
   // Document header - renders at the top of the editor scroll pane
   documentHeader?: ReactNode;
 
+  /** False when the host lists the page's citations itself (desktop's Page info panel). Default true. */
+  showCitationSourcesLine?: boolean;
+
   // Collaboration mode
   /**
    * When set, the editor operates in collaborative mode:

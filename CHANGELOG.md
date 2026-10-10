@@ -10,13 +10,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 <!-- New features go here -->
+- New editor blocks for wiki pages: charts, callouts, columns, tabs, a table of contents, transclusions, `@` mentions of people and dates, link previews and video players, code excerpts, and buttons that start an agent session or create a new item. Most can be resized from a bottom-right grip and edited from the block menu.
+- Local wikis on iPhone, iPad and Android: a Wiki tab shows the project's page tree, follows links between pages in the app, and saves page edits back to the desktop
+- On iPhone, iPad and Android, a Team tab opens a team project's Wiki and Trackers (alpha)
+- The CSV spreadsheet editor gains a formatting toolbar, conditional formatting, data validation, wrap text, freezing, a status bar, formula autocomplete with click-to-insert references, named ranges, spreadsheet-style keyboard shortcuts and paste from other spreadsheet apps, and undo for every edit; agents can edit sheets with A1-range tools, including files that aren't open
 
 ### Changed
 <!-- Changes to existing functionality go here -->
+- A document's frontmatter properties and the sources it cites now sit in a resizable Page info panel opened from the header, instead of a metadata bar above the page and a Sources line below it; a page whose status is not current shows it as a small tag at the top
 
 ### Fixed
 <!-- Bug fixes go here -->
 - Archiving a session now shows an error when it fails, and no longer hangs when a worktree's git remote stops responding
+- A question left open when the agent connection drops no longer leaves the session waiting for your response (#1557).
+- Windows updates no longer fail with "Command failed ... Get-AuthenticodeSignature" when checking the downloaded installer's signature takes longer than 20 seconds
+- Clicking a link to another Local wiki page in the Wiki now opens that page in the same tab instead of switching to Files
+- Local wiki pages an agent edited now open in the Wiki with the edit applied instead of in red/green review
+- Removing a project's last slash command or action prompt on the desktop now removes it on the phone too
+- The iOS session list now shows an error when the device's database can't be read, instead of an empty list
+- The desktop no longer fails to refresh its sign-in every 30 seconds when its saved sync server address is malformed
+- A Local wiki type file written as the wiki format describes, without `icon`, `color`, `modes` or `idPrefix`, now loads; a type file that still fails to load shows in the Local section with the reason instead of its tables and typed pages silently disappearing
 
 ### Removed
 <!-- Removed features go here -->

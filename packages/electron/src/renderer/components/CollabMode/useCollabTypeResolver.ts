@@ -11,16 +11,22 @@ import { globalRegistry } from '@nimbalyst/runtime/plugins/TrackerPlugin/models'
 import { trackerItemsMapAtom } from '@nimbalyst/runtime/plugins/TrackerPlugin/trackerDataAtoms';
 import { buildCollabTypeResolver, type CollabTypeLane } from './collabTypeResolver';
 
-/** Both sections read the same local tracker atoms; the lane picks the types. */
-export function useCollabTypeResolver(lane: CollabTypeLane): CollabTypeTreeResolver {
+/**
+ * Both sections read the same local tracker atoms; the lane picks the types.
+ * `brokenTypes` (Local only) keeps types whose file did not load in the tree.
+ */
+export function useCollabTypeResolver(
+  lane: CollabTypeLane,
+  brokenTypes?: Readonly<Record<string, string>>,
+): CollabTypeTreeResolver {
   const [registryRevision, setRegistryRevision] = useState(0);
   useEffect(() => globalRegistry.onChange(() => setRegistryRevision((value) => value + 1)), []);
   const records = useAtomValue(trackerItemsMapAtom);
 
   return useMemo(
-    () => buildCollabTypeResolver(globalRegistry, records, lane),
+    () => buildCollabTypeResolver(globalRegistry, records, lane, brokenTypes ? new Map(Object.entries(brokenTypes)) : undefined),
     // registryRevision invalidates the memo when types change.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [records, registryRevision, lane],
+    [records, registryRevision, lane, brokenTypes],
   );
 }

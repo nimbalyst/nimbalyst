@@ -17,6 +17,7 @@ export function buildCollabTypeResolver(
   registry: CollabTypeRegistry,
   records: ReadonlyMap<string, TrackerRecord>,
   lane: CollabTypeLane = 'team',
+  brokenTypes?: ReadonlyMap<string, string>,
 ): CollabTypeTreeResolver {
   const items = Array.from(records.values(), (record) => ({
     id: record.id,
@@ -28,5 +29,5 @@ export function buildCollabTypeResolver(
     // this machine (unshared items and frontmatter projections of local files).
     localOnly: record.syncStatus === 'local',
   }));
-  return buildSharedCollabTypeResolver(registry, items, lane);
+  return buildSharedCollabTypeResolver(registry, items, lane, brokenTypes);
 }

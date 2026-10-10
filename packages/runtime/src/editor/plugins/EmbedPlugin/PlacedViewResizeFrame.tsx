@@ -1,6 +1,7 @@
 /**
- * Sizes a placed view in a page with the shared block resizer's bottom-right
- * grip. `width` is the block's width in px (unset fills the column); `height`
+ * Sizes a block in a page with the shared block resizer's bottom-right grip:
+ * placed views, and also code excerpts, transclusions and link cards, which
+ * map these attrs to their own markdown. `width` is the block's width in px (unset fills the column); `height`
  * is the view body's height, the element marked `data-placed-view-body` (unset
  * lets the view pick, e.g. fitting a table to its rows). A drag writes both
  * through `onAttrsChange`; double-clicking the grip clears them. With no

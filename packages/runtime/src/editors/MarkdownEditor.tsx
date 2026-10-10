@@ -45,6 +45,9 @@ export interface MarkdownEditorConfig {
   /** Document header element to render at top of scroll area */
   documentHeader?: React.ReactNode;
 
+  /** False when the host lists the page's citations itself. Default true. */
+  showCitationSourcesLine?: boolean;
+
   /** Callback when user double-clicks an image */
   onImageDoubleClick?: (src: string, nodeKey: string) => void;
 
@@ -355,6 +358,7 @@ export function MarkdownEditor({
       showToolbar: config.showToolbar,
       showTreeView: config.showTreeView,
       documentHeader: config.documentHeader,
+      showCitationSourcesLine: config.showCitationSourcesLine,
       onImageDoubleClick: config.onImageDoubleClick,
       onImageDragStart: config.onImageDragStart,
       onUploadAsset: config.onUploadAsset,
@@ -415,6 +419,7 @@ export function MarkdownEditor({
       config.showToolbar,
       config.showTreeView,
       config.documentHeader,
+      config.showCitationSourcesLine,
       config.onImageDoubleClick,
       config.onImageDragStart,
       config.onUploadAsset,

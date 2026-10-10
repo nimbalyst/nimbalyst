@@ -38,6 +38,8 @@ export interface CollabTreeTypeNode {
     /** Number of items of this type (in a page tree, and of every type that extends it). */
     count: number;
     placement: SharedTypePlacement;
+    /** Why the type's file did not load; the type is shown so the user can fix it. */
+    error?: string;
     children: Array<CollabTreeTypeNode | CollabTreeItemNode>;
 }
 export interface CollabTreeItemNode {
@@ -49,6 +51,8 @@ export interface CollabTreeItemNode {
     name: string;
     /** Singular type name shown faintly beside the row (page tree only). */
     typeLabel?: string;
+    /** Why the item's type did not load (see `CollabTreeTypeNode.error`). */
+    typeError?: string;
     /** True when the item has a tree placement of its own. */
     placed?: boolean;
     /** A placed item's placement order among its siblings. */
@@ -68,6 +72,8 @@ export interface CollabTypeTreeResolver {
     typeLabel?(typeId: string): string | null;
     /** The type this one `extends`, if any. */
     typeExtends?(typeId: string): string | null;
+    /** Why a type's file did not load; null for a type that loaded. */
+    typeError?(typeId: string): string | null;
     /** Items of a type, in display order. */
     itemsOfType(typeId: string): Array<{
         itemId: string;

@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { describe, it, expect } from 'vitest';
-import { createCell, parseCSV, serializeToCSV } from '../csvParser';
+import { buildMetadataLine, createCell, parseCSV, resolveFileDelimiter, serializeToCSV } from '../csvParser';
 import { spreadsheetDataToGridSource } from '../gridOperations';
 
 /**
@@ -78,7 +78,7 @@ describe('createCell', () => {
 describe('file -> grid -> file round trip', () => {
   const roundTrip = (csv: string): string => {
     const { data } = parseCSV(csv);
-    const { source } = spreadsheetDataToGridSource(data, 0, 0);
+    const { source } = spreadsheetDataToGridSource(data, 0);
     // What the grid would serialize back after a reload.
     const reparsed = parseCSV(
       source.map((row) => Object.values(row).join(',')).join('\n'),
@@ -99,7 +99,41 @@ describe('file -> grid -> file round trip', () => {
 
   it('keeps a genuine number a number through the round trip', () => {
     const { data } = parseCSV('Count\n42');
-    const { source } = spreadsheetDataToGridSource(data, 0, 0);
+    const { source } = spreadsheetDataToGridSource(data, 0);
     expect(source[0].A).toBe(42);
+  });
+});
+
+/**
+ * Both serializers build the metadata line through `buildMetadataLine`. Before
+ * they shared it, `serializeToCSV` silently dropped column widths that `toCSV`
+ * kept -- the shape of bug a new metadata field would repeat on one path.
+ */
+describe('metadata line', () => {
+  it('round-trips every metadata field through serializeToCSV', () => {
+    const csv = [
+      '# nimbalyst: {"hasHeaders":true,"headerRowCount":1,"frozenColumnCount":1,'
+        + '"columnFormats":{"1":{"type":"number"}},"columnWidths":{"0":180},"cellStyles":{"A1":{"bold":true}}}',
+      'Name\tValue',
+      'Alpha\t1',
+    ].join('\n');
+    const { data, delimiter, metadata } = parseCSV(csv);
+
+    const saved = serializeToCSV(data, delimiter, true, metadata?.columnWidths);
+
+    expect(saved).toBe(csv);
+  });
+
+  it('omits the line when every field is at its default', () => {
+    expect(buildMetadataLine({ headerRowCount: 0, frozenColumnCount: 0, columnWidths: {} })).toBeNull();
+  });
+});
+
+describe('resolveFileDelimiter', () => {
+  it('follows the content, and the extension only when the content has no separator', () => {
+    expect(resolveFileDelimiter('a\tb', '/x.csv')).toBe('\t');
+    expect(resolveFileDelimiter('a,b', '/x.tsv')).toBe(',');
+    expect(resolveFileDelimiter('only', '/x.tsv')).toBe('\t');
+    expect(resolveFileDelimiter('', '/x.csv')).toBe(',');
   });
 });

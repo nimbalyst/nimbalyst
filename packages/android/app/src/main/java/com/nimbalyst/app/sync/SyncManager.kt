@@ -633,7 +633,17 @@ class SyncManager internal constructor(
 
     internal suspend fun refreshJwt() {
         val credentials = credentialStore.credentials ?: return
-        val refreshed = when (val result = tokenRefresher.refresh(credentials)) {
+        val result = tokenRefresher.refresh(credentials)
+        // A sign-out, sign-in or re-pair during the await: the answer is the previous
+        // session's, and must neither overwrite nor sign out the one stored now.
+        val current = credentialStore.credentials
+        if (current == null || current.serverUrl != credentials.serverUrl || current.encryptionSeed != credentials.encryptionSeed ||
+            current.authUserId != credentials.authUserId || current.sessionToken != credentials.sessionToken
+        ) {
+            Log.w(TAG, "Dropping a JWT refresh answer for a session that is no longer stored")
+            return
+        }
+        val refreshed = when (result) {
             is TokenRefresh.Refreshed -> result.credentials
             // Offline or a server error: no verdict on the session, so it never counts toward sign-out.
             TokenRefresh.Unavailable -> return

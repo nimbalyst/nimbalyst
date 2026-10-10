@@ -188,7 +188,7 @@ test.describe('CSV Spreadsheet Extension', () => {
     await page.mouse.dblclick(cellInfo!.x, cellInfo!.y);
     await page.waitForTimeout(300);
 
-    const editInput = extLocator(page, 'revo-grid input[type="text"]');
+    const editInput = extLocator(page, 'revo-grid textarea');
     await expect(editInput).toBeVisible({ timeout: 2000 });
 
     const currentVal = await editInput.inputValue();
@@ -206,7 +206,7 @@ test.describe('CSV Spreadsheet Extension', () => {
     // Restore original value
     await page.mouse.dblclick(updatedCell!.x, updatedCell!.y);
     await page.waitForTimeout(300);
-    const restoreInput = extLocator(page, 'revo-grid input[type="text"]');
+    const restoreInput = extLocator(page, 'revo-grid textarea');
     await restoreInput.fill(originalText);
     await restoreInput.press('Enter');
     await page.waitForTimeout(200);
@@ -222,7 +222,7 @@ test.describe('CSV Spreadsheet Extension', () => {
     await page.mouse.dblclick(cellInfo!.x, cellInfo!.y);
     await page.waitForTimeout(300);
 
-    const editInput = extLocator(page, 'revo-grid input[type="text"]');
+    const editInput = extLocator(page, 'revo-grid textarea');
     await expect(editInput).toBeVisible({ timeout: 2000 });
 
     await editInput.fill('SHOULD_NOT_SAVE');

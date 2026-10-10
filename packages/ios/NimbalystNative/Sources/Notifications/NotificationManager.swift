@@ -21,6 +21,10 @@ public final class NotificationManager: NSObject, ObservableObject {
     @Published public var deviceToken: String?
     /// Set when the user taps a push notification. Views observe this to deep-link.
     @Published public var pendingSessionId: String?
+    /// Reserved push key for a team console page (`/org/<org>/project/<p>/...`).
+    /// Nothing sends it yet; when TeamInboxRoom pushes do, the key and its
+    /// fixture land on desktop, iOS and Android together.
+    public static let consolePathKey = "consolePath"
 
     /// Callback to send the push token to the server. Set by SyncManager.
     public var onTokenReceived: ((String) -> Void)?
@@ -228,6 +232,8 @@ extension NotificationManager: @preconcurrency UNUserNotificationCenterDelegate 
         logger.info("Notification tapped: \(userInfo)")
         if let sessionId = userInfo["sessionId"] as? String {
             pendingSessionId = sessionId
+        } else if let consolePath = userInfo[Self.consolePathKey] as? String {
+            ConsoleLinkInbox.shared.open(path: consolePath)
         }
         completionHandler()
     }

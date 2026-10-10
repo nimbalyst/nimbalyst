@@ -269,7 +269,7 @@ enum IndexBatchWriter {
                         outcome.staleRejected += 1
                         continue
                     }
-                    try decrypted.project.save(db)
+                    try IndexEntryDecryptor.merge(decrypted, existing: try Project.fetchOne(db, key: decrypted.projectId)).save(db)
                     try record(.project, decrypted.wireId, revision, deleted: false)
                     knownProjects.insert(decrypted.projectId)
                     affectedProjects.insert(decrypted.projectId)
