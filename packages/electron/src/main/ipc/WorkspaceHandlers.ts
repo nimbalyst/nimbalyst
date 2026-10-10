@@ -39,7 +39,7 @@ import {
 import { workspaceLocalKeyStore } from '../services/tracker/workspaceLocalKeyStore';
 import { database } from '../database/PGLiteDatabaseWorker';
 import { getRipgrepPath } from '../services/ripgrepPath';
-import { findWorkspaceFiles } from '../file/QuickOpenFileScanner';
+import { findWorkspaceFiles, listContentSearchRoots } from '../file/QuickOpenFileScanner';
 import { quickOpenFileNameCache } from '../file/QuickOpenFileNameCache';
 
 /**
@@ -275,9 +275,18 @@ export function registerWorkspaceHandlers() {
             const maskPatterns = parseFileMask(options?.fileMask);
 
             // Union the per-root caches: quick open spans every root the
-            // workspace shows, in root order.
+            // workspace shows, in root order. A clone nested in a root is
+            // scanned from that root (#1449) and again when it is also attached
+            // as a root of its own, so keep each path once.
             const roots = getWorkspaceRoots(workspacePath);
-            const cache = (await Promise.all(roots.map(rootPath => quickOpenFileNameCache.get(rootPath)))).flat();
+            const seenPaths = new Set<string>();
+            const cache = (await Promise.all(roots.map(rootPath => quickOpenFileNameCache.get(rootPath))))
+                .flat()
+                .filter(item => {
+                    if (seenPaths.has(item.path)) return false;
+                    seenPaths.add(item.path);
+                    return true;
+                });
             if (cache.length === 0) {
                 return [];
             }
@@ -347,7 +356,7 @@ export function registerWorkspaceHandlers() {
                 trimmedQuery,
                 // ripgrep takes N search roots directly, so a multi-root
                 // workspace is one invocation, not one per root.
-                ...getWorkspaceRoots(workspacePath)
+                ...await listContentSearchRoots(getWorkspaceRoots(workspacePath))
             ];
 
             let stdout = '';
@@ -412,7 +421,7 @@ export function registerWorkspaceHandlers() {
                 const perRoot = await Promise.all(
                     getWorkspaceRoots(workspacePath).map(rootPath => findWorkspaceFiles(rootPath)),
                 );
-                const allFiles = perRoot.flat();
+                const allFiles = Array.from(new Set(perRoot.flat()));
                 const queryLower = trimmedQuery.toLowerCase();
                 const matchingFiles = allFiles
                     .filter(file => basename(file).toLowerCase().includes(queryLower))
@@ -438,7 +447,7 @@ export function registerWorkspaceHandlers() {
                     '--json',
                     ...RIPGREP_EXCLUDE_ARGS_ARRAY,
                     trimmedQuery,
-                    ...getWorkspaceRoots(workspacePath)
+                    ...await listContentSearchRoots(getWorkspaceRoots(workspacePath))
                 ];
 
                 let stdout = '';

@@ -125,9 +125,10 @@ export function GitLogPanel({ host }: PanelHostProps) {
   /** Repos the Changes tab renders, in root order. */
   const changesRepos = showAllRepos ? repos : [repoPath];
 
-  // The repo set only changes when a folder is attached or detached, and the
-  // host republishes its folder list at the same time -- so that is the signal
-  // to re-enumerate rather than a poll.
+  // The repo set changes when a folder is attached or detached (the host
+  // republishes its folder list) or when a root's `.gitignore` changes which
+  // nested clones it holds (main sends `workspace:repos-changed`) -- so those
+  // are the signals to re-enumerate rather than a poll.
   useEffect(() => {
     let cancelled = false;
     const loadRepos = async () => {
@@ -140,7 +141,13 @@ export function GitLogPanel({ host }: PanelHostProps) {
       }
     };
     void loadRepos();
-    return host.onWorkspaceEvent('workspace:folders-changed', () => { void loadRepos(); });
+    const unsubscribeFolders = host.onWorkspaceEvent('workspace:folders-changed', () => { void loadRepos(); });
+    const unsubscribeRepos = host.onWorkspaceEvent('workspace:repos-changed', () => { void loadRepos(); });
+    return () => {
+      cancelled = true;
+      unsubscribeFolders();
+      unsubscribeRepos();
+    };
   }, [host, workspacePath]);
 
   // Extension storage can hydrate after mount, so the constructor read above
