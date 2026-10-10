@@ -27,6 +27,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The daily cleanup of old tool output could skip past recent rows and never return to them once they aged; it now stops at the first row still inside the retention window and resumes there the next day
 - An agent edit to a shared document next to a comment on part of a bold run or inline code no longer writes broken markdown (such as an extra pair of `**` or backticks), and exporting such a document to a file keeps its formatting intact
 - Archiving or deleting a worktree no longer deletes a folder or branch its repository does not own (another repository's worktree, or a moved, copied, locked or nested checkout), and no longer prunes the repository's other worktrees.
+- A worktree of a repository cloned inside the project is created next to the project instead of inside it, and the new-worktree dialog names the repository it branches from.
 
 ### Removed
 <!-- Removed features go here -->

@@ -290,6 +290,10 @@ export function WorktreeBaseBranchPicker({
           <p className="m-0 mt-1 text-[13px] text-nim-muted">
             Pick a base branch and (optionally) a name for the new worktree.
           </p>
+          {/* A workspace can hold several repos; say which one this branches. */}
+          <p className="worktree-base-branch-picker-repo m-0 mt-1 text-[12px] text-nim-faint font-mono truncate" title={repoPath}>
+            Repository: {repoPath.split(/[\\/]/).filter(Boolean).pop() ?? repoPath}
+          </p>
         </div>
 
         <div className="worktree-base-branch-picker-body flex-1 overflow-y-auto px-6 py-4 flex flex-col gap-5">
