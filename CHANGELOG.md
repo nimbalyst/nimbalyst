@@ -21,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 <!-- Bug fixes go here -->
+- A question left open when the agent connection drops no longer leaves the session waiting for your response (#1557).
 - Windows updates no longer fail with "Command failed ... Get-AuthenticodeSignature" when checking the downloaded installer's signature takes longer than 20 seconds
 - Clicking a link to another Local wiki page in the Wiki now opens that page in the same tab instead of switching to Files
 - Local wiki pages an agent edited now open in the Wiki with the edit applied instead of in red/green review
