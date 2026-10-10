@@ -43,7 +43,11 @@ vi.mock('../../services/TerminalSessionManager', () => ({ getTerminalSessionMana
 vi.mock('../../utils/terminalStore', () => ({ getTerminalsByWorktreeId: vi.fn(), deleteTerminalInstance: vi.fn() }));
 vi.mock('../../file/GitRefWatcher', () => ({ gitRefWatcher: { start: mocks.start, stop: mocks.stop } }));
 vi.mock('../../file/GitWatcherLifecycle', () => ({ isGitRepositoryInUse: () => mocks.inUse }));
-vi.mock('../../services/workspaceRepos', () => ({ listReposForRoot: () => [], resolveDefaultRepo: () => null }));
+vi.mock('../../services/workspaceRepos', () => ({
+  listReposForRoot: () => [],
+  listWorkspaceRepos: () => ['/project', '/collab'],
+  resolveDefaultRepo: () => null,
+}));
 vi.mock('../../services/GitOperationLock', () => ({ gitOperationLock: {} }));
 vi.mock('../../services/ai/archiveSessionProviderLifecycle', () => ({ archiveSessionsAndDestroyProviders: mocks.archiveSessions }));
 import { registerWorktreeHandlers } from '../WorktreeHandlers';
@@ -82,7 +86,10 @@ it('removes a worktree whose record failed to save, naming its branch', async ()
 it('deletes a worktree through the repo it was branched from, naming its branch', async () => {
   mocks.store.get.mockResolvedValue({ id: 'b', path: '/project_worktrees/b', branch: 'worktree/b', sourceFolderPath: '/collab' });
   expect((await mocks.handlers.get('worktree:delete')!({}, 'b', '/project')).success).toBe(true);
-  expect(mocks.deleteWorktree).toHaveBeenCalledWith('/project_worktrees/b', '/collab', { expectedBranch: 'worktree/b' });
+  expect(mocks.deleteWorktree).toHaveBeenCalledWith('/project_worktrees/b', '/collab', {
+    expectedBranch: 'worktree/b',
+    knownRepos: ['/project', '/collab'],
+  });
   expect(mocks.store.delete).toHaveBeenCalledWith('b');
 });
 
@@ -101,7 +108,10 @@ it('refuses to archive a worktree its repository will not remove, before tearing
     error: 'Worktree /project_worktrees/b is locked. Unlock it first',
   });
 
-  expect(mocks.checkWorktreeRemovable).toHaveBeenCalledWith('/project_worktrees/b', '/collab', { expectedBranch: 'worktree/b' });
+  expect(mocks.checkWorktreeRemovable).toHaveBeenCalledWith('/project_worktrees/b', '/collab', {
+    expectedBranch: 'worktree/b',
+    knownRepos: ['/project', '/collab'],
+  });
   expect(mocks.getTerminalSessionManager).not.toHaveBeenCalled();
   expect(mocks.stop).not.toHaveBeenCalled();
   expect(mocks.archiveSessions).not.toHaveBeenCalled();

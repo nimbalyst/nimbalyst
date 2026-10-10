@@ -604,6 +604,37 @@ describe('GitWorktreeService.deleteWorktree ownership', () => {
     expect(await hasBranch(repo, worktree.branch)).toBe(true);
   });
 
+  // A task folder can hold a member repository's checkout at that
+  // repository's own path inside it. The member belongs to another
+  // repository, so this one's list does not show it; only the repositories
+  // the caller names reveal it.
+  it.each([
+    ['another repository\'s linked worktree', async (member: string, clone: string) => {
+      await initRepo(clone);
+      assertGitSandbox(clone);
+      await fixtureGit(clone).raw(['worktree', 'add', '-b', 'task', member]);
+      return clone;
+    }],
+    ['a clone of its own', async (member: string) => {
+      await initRepo(member);
+      return member;
+    }],
+  ])('refuses a worktree that holds %s, and leaves both', async (_label, occupy) => {
+    const outer = await service.createWorktree(repo, { name: 'task' });
+    const member = path.join(outer.path, 'service-a');
+    const memberRepo = await occupy(member, path.join(root, 'service-a'));
+    fs.writeFileSync(path.join(member, 'work.txt'), 'uncommitted member work');
+    const options = { expectedBranch: outer.branch, knownRepos: [repo, memberRepo] };
+
+    await expect(service.checkWorktreeRemovable(outer.path, repo, options))
+      .resolves.toMatchObject({ reason: 'contains-foreign-worktree' });
+    await expect(service.deleteWorktree(outer.path, repo, options))
+      .rejects.toThrow(`it contains ${member}, a checkout of ${memberRepo}`);
+
+    expect(fs.readFileSync(path.join(member, 'work.txt'), 'utf8')).toBe('uncommitted member work');
+    expect(await registrations(repo)).toContain(outer.path);
+  });
+
   it('refuses a worktree that holds another worktree, and leaves both', async () => {
     // An agent working in a worktree can add its own linked worktree inside
     // the checkout (often under a gitignored folder, so the archive dialog
@@ -878,6 +909,9 @@ describe('worktree ownership decisions', () => {
     ['a registered checkout without its .git file that holds another registered worktree',
       { registration: registered, gitLink: { kind: 'missing' }, nestedWorktreePath: '/w/x/sub' },
       { action: 'refuse', reason: 'contains-worktree' }],
+    ['a worktree that holds a checkout of another repository',
+      { registration: registered, gitLink: linked, foreignCheckout: { path: '/w/x/service-a', repository: '/service-a' } },
+      { action: 'refuse', reason: 'contains-foreign-worktree' }],
   ] as const)('plans %s', (_label, facts, plan) => {
     expect(planWorktreeRemoval({
       existsOnDisk: true,

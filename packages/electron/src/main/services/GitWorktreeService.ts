@@ -160,6 +160,12 @@ export interface DeleteWorktreeOptions {
    * checked out, both are kept.
    */
   expectedBranch?: string;
+  /**
+   * Other repositories the workspace holds. A checkout of one of them inside
+   * the worktree -- a nested clone or its linked worktree -- makes the removal
+   * refuse, since deleting the directory would delete that checkout too.
+   */
+  knownRepos?: readonly string[];
 }
 
 /**
@@ -198,7 +204,8 @@ function worktreeRemovalRefusal(
   workspacePath: string,
   lockReason: string | undefined,
   gitLink: WorktreeGitLink | null,
-  nestedWorktreePath: string | null
+  nestedWorktreePath: string | null,
+  foreignCheckout: { path: string; repository: string } | null = null
 ): string {
   switch (reason) {
     case 'main-worktree':
@@ -231,6 +238,10 @@ function worktreeRemovalRefusal(
       return `Refusing to delete ${worktreePath}: it contains the worktree at ${nestedWorktreePath}, which would ` +
         'be deleted with it, so nothing was deleted. Archiving it finishes once no worktree is left inside it: ' +
         '`git worktree remove` deletes that one, or `git worktree move` moves it elsewhere.';
+    case 'contains-foreign-worktree':
+      return `Refusing to delete ${worktreePath}: it contains ${foreignCheckout?.path ?? 'a checkout'}, a checkout ` +
+        `of ${foreignCheckout?.repository ?? 'another repository'}, which would be deleted with it, so nothing was ` +
+        'deleted. Remove or move that checkout first.';
     case 'not-owned':
       if (gitLink?.kind === 'other-repository') {
         return gitLink.owner
@@ -589,9 +600,10 @@ export class GitWorktreeService {
   async checkWorktreeRemovable(
     worktreePath: string,
     workspacePath: string,
-    { expectedBranch }: DeleteWorktreeOptions = {}
+    { expectedBranch, knownRepos }: DeleteWorktreeOptions = {}
   ): Promise<WorktreeRemovalRefusedError | null> {
-    return (await this.planRemoval(worktreePath, workspacePath, gitFor(workspacePath), expectedBranch)).refusal;
+    return (await this.planRemoval(worktreePath, workspacePath, gitFor(workspacePath), expectedBranch, knownRepos))
+      .refusal;
   }
 
   /**
@@ -605,7 +617,8 @@ export class GitWorktreeService {
     worktreePath: string,
     workspacePath: string,
     git: SimpleGit,
-    expectedBranch: string | undefined
+    expectedBranch: string | undefined,
+    knownRepos: readonly string[] = []
   ): Promise<RemovalAssessment> {
     const worktreeKey = canonicalWorktreePath(worktreePath);
     const existsOnDisk = fs.existsSync(worktreePath);
@@ -631,6 +644,9 @@ export class GitWorktreeService {
         isWorktreePathInside(canonicalWorktreePath(entry.path), worktreeKey) && fs.existsSync(entry.path)
       )?.path ?? null
       : null;
+    const foreignCheckout = existsOnDisk && nestedWorktreePath === null && commonDir
+      ? await this.findForeignCheckout(worktreeKey, commonDir, knownRepos)
+      : null;
     let gitLink: WorktreeGitLink | null = null;
     if (existsOnDisk && commonDir) {
       try {
@@ -645,6 +661,7 @@ export class GitWorktreeService {
       registration,
       gitLink,
       nestedWorktreePath,
+      foreignCheckout,
       expectedBranch,
     });
     if (plan.action !== 'refuse') {
@@ -658,7 +675,8 @@ export class GitWorktreeService {
         workspacePath,
         registration?.lockReason,
         gitLink,
-        nestedWorktreePath
+        nestedWorktreePath,
+        foreignCheckout
       )
     );
     logger.warn(refusal.message, {
@@ -667,6 +685,7 @@ export class GitWorktreeService {
       registered: registration !== null,
       gitLink: gitLink?.kind ?? null,
       nestedWorktreePath,
+      foreignCheckout,
     });
     return { plan, refusal, existsOnDisk, registration };
   }
@@ -677,7 +696,7 @@ export class GitWorktreeService {
   private async deleteWorktreeImpl(
     worktreePath: string,
     workspacePath: string,
-    { expectedBranch }: DeleteWorktreeOptions
+    { expectedBranch, knownRepos }: DeleteWorktreeOptions
   ): Promise<void> {
     logger.info('Deleting worktree', { worktreePath, workspacePath, expectedBranch });
 
@@ -686,7 +705,7 @@ export class GitWorktreeService {
     const isThisWorktree = (entry: WorktreeRegistration) => canonicalWorktreePath(entry.path) === worktreeKey;
 
     // Step 1: Ask the repository whether it owns the directory
-    const assessment = await this.planRemoval(worktreePath, workspacePath, git, expectedBranch);
+    const assessment = await this.planRemoval(worktreePath, workspacePath, git, expectedBranch, knownRepos);
     if (assessment.refusal) {
       throw assessment.refusal;
     }
@@ -841,6 +860,40 @@ export class GitWorktreeService {
       output = await git.raw(['worktree', 'list', '--porcelain']);
     }
     return parseWorktreePorcelain(output);
+  }
+
+  /**
+   * A checkout of another known repository inside the directory `worktreeKey`
+   * names: the repository's own working tree or one of its linked worktrees.
+   * A repository git cannot read is still caught when its own folder lies
+   * inside, since that is the checkout the deletion would take.
+   */
+  private async findForeignCheckout(
+    worktreeKey: string,
+    commonDir: string,
+    knownRepos: readonly string[]
+  ): Promise<{ path: string; repository: string } | null> {
+    for (const repository of knownRepos) {
+      const git = gitFor(repository);
+      const repoCommonDir = await this.readCommonDir(repository, git);
+      if (repoCommonDir !== null && canonicalWorktreePath(repoCommonDir) === canonicalWorktreePath(commonDir)) {
+        continue; // This repository; its worktrees were checked already
+      }
+      let checkouts: string[];
+      try {
+        checkouts = (await this.readWorktreeRegistrations(git)).map(entry => entry.path);
+      } catch (error) {
+        logger.warn('Failed to read the worktree list of a known repository', { error, repository });
+        checkouts = [repository];
+      }
+      const inside = checkouts.find(checkout =>
+        isWorktreePathInside(canonicalWorktreePath(checkout), worktreeKey) && fs.existsSync(checkout)
+      );
+      if (inside) {
+        return { path: inside, repository };
+      }
+    }
+    return null;
   }
 
   /** The common dir (main `.git` directory) of the repository at `workspacePath`; null when git cannot say */

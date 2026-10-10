@@ -27,7 +27,7 @@ describe('createWorktreeArchiveCleanup', () => {
   };
 
   const makeDeps = () => ({
-    deleteWorktree: vi.fn(async (_worktreePath: string, _repoPath: string, _options: { expectedBranch?: string }) => {}),
+    deleteWorktree: vi.fn(async (_worktreePath: string, _repoPath: string, _options: { expectedBranch?: string; knownRepos?: readonly string[] }) => {}),
     worktreeStore: { updateArchived: vi.fn(async (_id: string, _isArchived: boolean) => {}) },
     superLoopStore: {
       getLoopByWorktreeId: vi.fn(async () => ({ id: 'loop-1', isArchived: false }) as any),
@@ -39,15 +39,17 @@ describe('createWorktreeArchiveCleanup', () => {
   });
 
   it('removes an attached-folder worktree through the repo it was branched from, then archives it and its super loop', async () => {
-    const deps = makeDeps();
+    const deps = { ...makeDeps(), listKnownRepos: vi.fn((_projectPath: string) => ['/proj', '/other/collab']) };
 
     await createWorktreeArchiveCleanup(deps)(worktree, ['s-1']);
 
     // `projectPath` is only the primary root, which does not own an attached
     // folder's worktree. The row's branch is the only one the removal may
-    // delete.
+    // delete, and the project's repos let it refuse a folder holding theirs.
+    expect(deps.listKnownRepos).toHaveBeenCalledWith('/proj');
     expect(deps.deleteWorktree).toHaveBeenCalledWith('/proj_worktrees/feature', '/other/collab', {
       expectedBranch: 'worktree/feature',
+      knownRepos: ['/proj', '/other/collab'],
     });
     expect(deps.worktreeStore.updateArchived).toHaveBeenCalledWith('wt-1', true);
     expect(deps.superLoopStore.updateLoop).toHaveBeenCalledWith('loop-1', { isArchived: true });

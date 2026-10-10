@@ -21,7 +21,7 @@ import { getTerminalSessionManager } from '../services/TerminalSessionManager';
 import { getTerminalsByWorktreeId, deleteTerminalInstance } from '../utils/terminalStore';
 import { gitRefWatcher } from '../file/GitRefWatcher';
 import { isGitRepositoryInUse } from '../file/GitWatcherLifecycle';
-import { listReposForRoot, resolveDefaultRepo } from '../services/workspaceRepos';
+import { listReposForRoot, listWorkspaceRepos, resolveDefaultRepo } from '../services/workspaceRepos';
 import type { WorktreeCreateResult } from '../../shared/ipc/types';
 import { gitOperationLock } from '../services/GitOperationLock';
 import fs from 'node:fs';
@@ -186,6 +186,7 @@ export async function archiveWorktree(worktreeId: string, workspacePath: string)
     try {
       refusal = await gitWorktreeService.checkWorktreeRemovable(worktree.path, worktreeRepoPath(worktree), {
         expectedBranch: worktree.branch,
+        knownRepos: await listWorkspaceRepos(workspacePath),
       });
     } catch (checkError) {
       // The queued removal checks again and refuses then if it must
@@ -277,6 +278,7 @@ export async function archiveWorktree(worktreeId: string, workspacePath: string)
     const cleanupArchivedWorktree = createWorktreeArchiveCleanup({
       deleteWorktree: (worktreePath, repoPath, options) =>
         gitWorktreeService.deleteWorktree(worktreePath, repoPath, options),
+      listKnownRepos: listWorkspaceRepos,
       worktreeStore,
       superLoopStore,
       archiveQueue: archiveProgressManager,
@@ -632,8 +634,10 @@ export function registerWorktreeHandlers(): void {
       // Delete the git worktree from the repo it was branched from, not the
       // workspace's primary root -- see the note in `worktreeArchiveCleanup`.
       const repoPath = worktree.sourceFolderPath || workspacePath;
+      const knownRepos = await listWorkspaceRepos(workspacePath);
       const refusal = await gitWorktreeService.checkWorktreeRemovable(worktree.path, repoPath, {
         expectedBranch: worktree.branch,
+        knownRepos,
       });
       if (refusal) {
         // Before the ref watcher stops, which nothing would restart
@@ -645,6 +649,7 @@ export function registerWorktreeHandlers(): void {
 
       await gitWorktreeService.deleteWorktree(worktree.path, repoPath, {
         expectedBranch: worktree.branch,
+        knownRepos,
       });
 
       // Delete the database record
