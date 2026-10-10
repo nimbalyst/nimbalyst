@@ -1,5 +1,6 @@
 import { handleConsumeSessionInbox } from './tools/consumeSessionInbox';
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
+import { MCP_HOST } from '@nimbalyst/runtime/ai/server/services/mcpTopology';
 import { SSEServerTransport } from "@modelcontextprotocol/sdk/server/sse.js";
 import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
 import { connectMcpTransport } from "./connectMcpTransport";
@@ -123,6 +124,7 @@ import {
   buildSessionMetaToolSchemas,
   dispatchSessionMetaTool,
 } from "./sessionNamingServer";
+import { USAGE_POLLING_TOOL_SCHEMAS, dispatchUsagePollingTool } from "./usagePollingServer";
 import {
   McpEndpointSelection,
   resolveMcpEndpoint,
@@ -388,7 +390,9 @@ const SETTINGS_TOOL_NAMES = new Set(settingsToolSchemas.map((t) => t.name));
 const SESSION_CONTEXT_TOOL_NAMES = new Set(
   SESSION_CONTEXT_TOOL_SCHEMAS.map((t) => t.name)
 );
+const USAGE_POLLING_TOOL_NAMES = new Set(USAGE_POLLING_TOOL_SCHEMAS.map(t => t.name));
 const META_AGENT_TOOL_NAMES = new Set(META_AGENT_TOOL_DEFS.map((t) => t.name));
+
 
 // ---- MCP Server Factory ----
 
@@ -477,6 +481,7 @@ function createSharedMcpServer(
       ...settingsToolSchemas,
       ...SESSION_CONTEXT_TOOL_SCHEMAS,
       ...META_AGENT_TOOL_DEFS,
+      ...USAGE_POLLING_TOOL_SCHEMAS,
       ...sessionMetaSchemas,
     ];
 
@@ -709,6 +714,12 @@ function createSharedMcpServer(
           }
           if (SESSION_CONTEXT_TOOL_NAMES.has(toolName)) {
             return dispatchSessionContextTool(name, args, sessionId ?? "", workspacePath ?? "");
+          }
+          if (USAGE_POLLING_TOOL_NAMES.has(toolName)) {
+            if (endpoint.kind !== 'firstParty' || endpoint.configKey !== MCP_HOST) {
+              throw new Error(`Tool "${toolName}" is not available on this endpoint`);
+            }
+            return dispatchUsagePollingTool(name, args, workspacePath);
           }
           if (META_AGENT_TOOL_NAMES.has(toolName)) {
             const text = await dispatchMetaAgentTool(

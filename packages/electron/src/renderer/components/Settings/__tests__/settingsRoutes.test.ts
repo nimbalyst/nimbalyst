@@ -36,6 +36,12 @@ const extensionRoutes: ExtensionSettingsRoute[] = [
 ];
 
 describe('settings route registry', () => {
+  it('exposes Ollama account usage without requiring a model provider or developer mode', () => {
+    expect(getSettingsRoutesForScope('application', {
+      developerMode: false, showDirectChatProviders: false, teamsConfigured: false,
+    })).toEqual(expect.arrayContaining([expect.objectContaining({ id: 'ollama', label: 'Ollama usage', group: 'Application' })]));
+    expect(normalizeSettingsDestination({ category: 'ollama', scope: 'application' })).toEqual({ category: 'ollama', scope: 'application' });
+  });
   it('declares every route in exactly one scope', () => {
     const seen = new Map<string, string>();
     for (const scope of ['application', 'account', 'project'] as const) {

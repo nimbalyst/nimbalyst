@@ -12,6 +12,7 @@ import { ExtensionDevIndicator } from '../ExtensionDevIndicator';
 import { ClaudeUsageIndicator } from '../ClaudeUsageIndicator';
 import { CodexUsageIndicator } from '../CodexUsageIndicator';
 import { GeminiUsageIndicator } from '../GeminiUsageIndicator';
+import { OllamaUsageIndicator } from '../OllamaUsageIndicator';
 import { VoiceModeButton } from '../UnifiedAI/VoiceModeButton';
 import { useExtensionGutterButtons, useExtensionBottomPanelButtons } from '../../extensions/panels/usePanels';
 import { PanelGutterBadgeBubble } from '../../extensions/panels/PanelGutterBadgeBubble';
@@ -483,6 +484,10 @@ export const NavigationGutter: React.FC<NavigationGutterProps> = ({
     {
       id: 'codex-usage', section: 'indicators', icon: 'speed', label: 'Codex Usage', hideable: true,
       render: () => <CodexUsageIndicator />,
+    },
+    {
+      id: 'ollama-usage', section: 'indicators', icon: 'speed', label: 'Ollama Usage', hideable: true,
+      render: () => <OllamaUsageIndicator />,
     },
     {
       id: 'gemini-usage', section: 'indicators', icon: 'gemini', label: 'Gemini Usage', hideable: true,

@@ -214,6 +214,8 @@ import { claudeUsageService } from './services/ClaudeUsageService';
 import { registerCodexUsageHandlers } from './ipc/CodexUsageHandlers';
 import { codexUsageService } from './services/CodexUsageService';
 import { registerGeminiUsageHandlers } from './ipc/GeminiUsageHandlers';
+import { registerOllamaUsageHandlers } from './ipc/OllamaUsageHandlers';
+import { ollamaUsageService } from './services/OllamaUsageService';
 import { geminiUsageService } from './services/GeminiUsageService';
 import { codexAuthService } from './services/CodexAuthService';
 import { registerExtensionHandlers, getClaudePluginPaths, initializeExtensionFileTypes } from './ipc/ExtensionHandlers';
@@ -1994,6 +1996,8 @@ app.whenReady().then(async () => {
     claudeUsageService.initialize();
     registerCodexUsageHandlers();
     codexUsageService.initialize();
+    registerOllamaUsageHandlers();
+    ollamaUsageService.initialize();
     registerGeminiUsageHandlers();
     geminiUsageService.initialize();
     registerPermissionHandlers();
@@ -3524,6 +3528,8 @@ const shutdownForRestart = createRestartShutdown({
         app.quit();
     },
 });
+// Dispose usage windows and timers only after quit has been accepted.
+app.on('will-quit', () => ollamaUsageService.stop());
 app.on('before-quit', async (event) => {
     if (migrationQuitDraining || migrationNeedsQuitDrain()) {
         event.preventDefault();
