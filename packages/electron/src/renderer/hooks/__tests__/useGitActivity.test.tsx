@@ -49,6 +49,23 @@ afterEach(() => {
 });
 
 describe('useGitActivity', () => {
+  it('follows every repository of a multi-repo workspace, and clears one without the others', async () => {
+    // The journal is kept per repository; a pull in a repository cloned inside
+    // the project is recorded under that repository, not the root.
+    invoke.mockImplementation(async (_channel: string, repoPath: string) =>
+      repoPath === '/repo/api' ? [entry({ id: 'fetch', cwd: '/repo/api', command: 'git fetch' })] : []);
+    const { result } = renderHook(() => useGitActivity(['/repo', '/repo/api', '/repo']));
+    await waitFor(() => expect(result.current.runningEntries.map((e) => e.id)).toEqual(['fetch']));
+    expect(invoke.mock.calls.map(([, repoPath]) => repoPath)).toEqual(['/repo', '/repo/api']);
+
+    emit({ workspacePath: '/repo/api', type: 'upsert', entry: entry({ id: 'pull', cwd: '/repo/api', command: 'git pull', timestamp: 3000, updatedAt: 3000 }) });
+    emit({ workspacePath: '/repo', type: 'upsert', entry: entry({ id: 'push', timestamp: 2000, updatedAt: 2000 }) });
+    expect(result.current.latestRunningEntry).toMatchObject({ id: 'pull', repoPath: '/repo/api' });
+
+    emit({ workspacePath: '/repo', type: 'clear' });
+    expect(result.current.runningEntries.map((e) => e.id).sort()).toEqual(['fetch', 'pull']);
+  });
+
   it('ignores journal events belonging to another workspace', async () => {
     const { result } = renderHook(() => useGitActivity('/repo'));
     await waitFor(() => expect(invoke).toHaveBeenCalled());
