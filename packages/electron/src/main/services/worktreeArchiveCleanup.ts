@@ -20,6 +20,11 @@ const logger = log.scope('worktreeArchiveCleanup');
 export interface WorktreeArchiveCleanupDeps {
   /** `GitWorktreeService.deleteWorktree` */
   deleteWorktree(worktreePath: string, repoPath: string, options: DeleteWorktreeOptions): Promise<void>;
+  /**
+   * The repositories of a project (`listWorkspaceRepos`), so the removal can
+   * refuse a worktree that holds a checkout of one of them
+   */
+  listKnownRepos?(projectPath: string): readonly string[] | Promise<readonly string[]>;
   worktreeStore: Pick<WorktreeStore, 'updateArchived'>;
   superLoopStore: Pick<SuperLoopStore, 'getLoopByWorktreeId' | 'updateLoop'>;
   archiveQueue: Pick<ArchiveProgressManager, 'updateTaskStatus'>;
@@ -61,7 +66,8 @@ export function createWorktreeArchiveCleanup(deps: WorktreeArchiveCleanupDeps): 
       // branch is the only branch the removal may delete.
       const repoPath = worktreeRepoPath(worktree);
       logger.info('Removing archived worktree from disk', { worktreeId, path: worktree.path, repoPath });
-      await deps.deleteWorktree(worktree.path, repoPath, { expectedBranch: worktree.branch });
+      const knownRepos = await deps.listKnownRepos?.(worktree.projectPath);
+      await deps.deleteWorktree(worktree.path, repoPath, { expectedBranch: worktree.branch, knownRepos });
 
       logger.info('Worktree cleanup completed, now marking as archived in database', { worktreeId });
 
