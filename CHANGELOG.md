@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 <!-- Changes to existing functionality go here -->
 - A document's frontmatter properties and the sources it cites now sit in a resizable Page info panel opened from the header, instead of a metadata bar above the page and a Sources line below it; a page whose status is not current shows it as a small tag at the top
+- Claude usage shows session and weekly limits as nested progress rings.
 
 ### Fixed
 <!-- Bug fixes go here -->
