@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 <!-- Changes to existing functionality go here -->
+- Claude usage shows session and weekly limits as nested progress rings.
 
 ### Fixed
 <!-- Bug fixes go here -->
