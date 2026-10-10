@@ -328,9 +328,9 @@ export async function archiveWorktree(worktreeId: string, workspacePath: string)
  * so the caller names which one; unnamed falls back to the primary root's
  * repo, which is the only repo a single-folder workspace has.
  */
-function resolveSourceRepo(workspacePath: string, sourceFolderPath?: string): string {
-  return (sourceFolderPath ? listReposForRoot(sourceFolderPath)[0] : undefined)
-    ?? resolveDefaultRepo(workspacePath)
+async function resolveSourceRepo(workspacePath: string, sourceFolderPath?: string): Promise<string> {
+  return (sourceFolderPath ? (await listReposForRoot(sourceFolderPath))[0] : undefined)
+    ?? (await resolveDefaultRepo(workspacePath))
     ?? workspacePath;
 }
 
@@ -366,7 +366,7 @@ export function registerWorktreeHandlers(): void {
     const baseBranch = options?.baseBranch;
     // The worktree's IDENTITY stays `workspacePath` (sessions, kanban and
     // trackers key off it) -- only the git operations move to this repo.
-    const sourceRepo = resolveSourceRepo(workspacePath, options?.sourceFolderPath);
+    const sourceRepo = await resolveSourceRepo(workspacePath, options?.sourceFolderPath);
 
     // Retry loop for handling race conditions where concurrent requests pick the same name
     for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
@@ -552,7 +552,7 @@ export function registerWorktreeHandlers(): void {
     sourceFolderPath?: string,
   ) => {
     if (!workspacePath) throw new Error('workspacePath is required');
-    const sourceRepo = resolveSourceRepo(workspacePath, sourceFolderPath);
+    const sourceRepo = await resolveSourceRepo(workspacePath, sourceFolderPath);
     const setting = getWorktreeDefaultBase(workspacePath);
     try {
       const git = createGit(sourceRepo, {}, sanitizeGitRepositoryEnv(process.env));
