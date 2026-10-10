@@ -176,6 +176,11 @@ export interface CreateWorktreeOptions {
    * row with it. Set by the main process only.
    */
   takenPaths?: Iterable<string>;
+  /**
+   * The folder to create the worktree in, from `resolveWorktreesDir`. Defaults
+   * to `<repo>_worktrees` next to the repo. Set by the main process only.
+   */
+  worktreesDir?: string;
 }
 
 /**
@@ -462,7 +467,7 @@ export class GitWorktreeService {
 
     // Create worktrees directory if it doesn't exist
     const projectName = path.basename(workspacePath);
-    const worktreesDir = path.resolve(workspacePath, '..', `${projectName}_worktrees`);
+    const worktreesDir = options.worktreesDir ?? path.resolve(workspacePath, '..', `${projectName}_worktrees`);
 
     if (!fs.existsSync(worktreesDir)) {
       logger.info('Creating worktrees directory', { worktreesDir });
@@ -1310,9 +1315,9 @@ export class GitWorktreeService {
    * @param workspacePath - Path to the main git repository
    * @returns Set of existing worktree directory names
    */
-  getExistingWorktreeDirectories(workspacePath: string): Set<string> {
+  getExistingWorktreeDirectories(workspacePath: string, worktreesDirOverride?: string): Set<string> {
     const projectName = path.basename(workspacePath);
-    const worktreesDir = path.resolve(workspacePath, '..', `${projectName}_worktrees`);
+    const worktreesDir = worktreesDirOverride ?? path.resolve(workspacePath, '..', `${projectName}_worktrees`);
 
     const names = new Set<string>();
 

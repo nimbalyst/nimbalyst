@@ -19,6 +19,7 @@ import {
   WorktreeRemovalRefusedError,
 } from '../worktreeOwnership';
 import { removeDirectoryTree } from '../directoryRemoval';
+import { resolveWorktreesDir } from '../worktreeLocation';
 
 // createWorktree/deleteWorktree record each command in the persisted git
 // activity log, which is bookkeeping these tests do not exercise.
@@ -396,6 +397,31 @@ describe('GitWorktreeService.createWorktree naming and rollback', () => {
     expect(sibling).toMatchObject({ name: 'feat-x-1', path: path.join(worktreesDir, 'feat-x-1'), branch: 'worktree/feat-x' });
     expect(fs.readdirSync(worktreesDir).sort()).toEqual(['feat-x', 'feat-x-1']);
     expect((await fixtureGit(typed.path).raw(['rev-parse', '--abbrev-ref', 'HEAD'])).trim()).toBe('worktree/feat/x');
+  });
+
+  it("puts a nested clone's worktrees beside the repo root that holds it, never inside", async () => {
+    // An umbrella repo that ignores the separate clone inside it.
+    const clone = path.join(repo, 'service-a');
+    fs.writeFileSync(path.join(repo, '.gitignore'), '/service-a/\n');
+    await fixtureGit(repo).add('.gitignore');
+    await fixtureGit(repo).commit('ignore the clone');
+    await initRepo(clone);
+
+    expect(resolveWorktreesDir(clone, [repo])).toBe(worktreesDir);
+    expect(resolveWorktreesDir(repo, [repo])).toBe(worktreesDir);
+    // A clone that is its own root keeps the sibling folder.
+    expect(resolveWorktreesDir(clone, [clone])).toBe(path.join(repo, 'service-a_worktrees'));
+
+    const options = { worktreesDir: resolveWorktreesDir(clone, [repo]) };
+    const first = await service.createWorktree(clone, { ...options, branchSuffix: 'feat/x' });
+    const second = await service.createWorktree(clone, { ...options, branchSuffix: 'feat-x' });
+
+    expect(first.path).toBe(path.join(worktreesDir, 'feat-x'));
+    expect(second.path).toBe(path.join(worktreesDir, 'feat-x-1'));
+    expect((await fixtureGit(repo).raw(['status', '--porcelain'])).trim()).toBe('');
+
+    await service.deleteWorktree(first.path, clone, { expectedBranch: first.branch });
+    expect(fs.existsSync(first.path)).toBe(false);
   });
 
   // Git refuses a branch at, above or below an existing one before it creates

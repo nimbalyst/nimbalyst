@@ -45,6 +45,7 @@ vi.mock('../../utils/terminalStore', () => ({ getTerminalsByWorktreeId: vi.fn(),
 vi.mock('../../file/GitRefWatcher', () => ({ gitRefWatcher: { start: mocks.start, stop: mocks.stop } }));
 vi.mock('../../file/GitWatcherLifecycle', () => ({ isGitRepositoryInUse: () => mocks.inUse }));
 vi.mock('../../services/workspaceRepos', () => ({ listReposForRoot: () => [], resolveDefaultRepo: () => null }));
+vi.mock('../../utils/store', () => ({ getWorkspaceRoots: (workspacePath: string) => [workspacePath] }));
 vi.mock('../../services/GitOperationLock', () => ({ gitOperationLock: {} }));
 vi.mock('../../services/ai/archiveSessionProviderLifecycle', () => ({ archiveSessionsAndDestroyProviders: mocks.archiveSessions }));
 import { registerWorktreeHandlers } from '../WorktreeHandlers';
@@ -85,7 +86,9 @@ it.each([
   mocks.createWorktree.mockResolvedValue({ id: 'b', path: '/project_worktrees/feat-x-1', branch: 'worktree/feat/x', projectPath: '/project' });
   const result = await mocks.handlers.get('worktree:create')!({}, '/project', { name: 'feat/x', baseBranch: 'main', nameSource });
   expect(result.success).toBe(true);
-  expect(mocks.createWorktree).toHaveBeenCalledWith('/project', { ...nameOption, baseBranch: 'main', takenPaths: recorded });
+  expect(mocks.createWorktree).toHaveBeenCalledWith('/project', {
+    ...nameOption, baseBranch: 'main', takenPaths: recorded, worktreesDir: '/project_worktrees',
+  });
 });
 
 it.each([
