@@ -133,6 +133,7 @@ import { supportsEffortLevel, supportsThinkingToggle, parseEffortLevel, resolveT
 import { buildPlanImplementationPrompt, resolvePlanFilePath } from '../../utils/pathUtils';
 import { resolveTranscriptClickPath } from '../../utils/resolveTranscriptClickPath';
 import { openAgentEditedPage } from '../../utils/agentEditedPage';
+import { saveSessionArchived } from '../../utils/saveSessionArchived';
 import { autoCommitEnabledAtom, setAutoCommitEnabledAtom } from '../../store/atoms/autoCommitAtoms';
 import { diffPeekSizeAtom, setDiffPeekSizeAtom } from '../../store/atoms/diffPeekSizeAtoms';
 import { registerSessionWorkspace, loadInitialSessionFileState } from '../../store/listeners/fileStateListeners';
@@ -1576,22 +1577,16 @@ const LocalSessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscrip
   }, [sessionId, workspacePath]);
 
   const handleCloseAndArchive = useCallback(async () => {
-    try {
-      await window.electronAPI.invoke('sessions:update-metadata', sessionId, { isArchived: true });
-      setIsArchived(true);
-      onCloseAndArchive?.(sessionId);
-    } catch (error) {
-      console.error('[SessionTranscript] Failed to archive session:', error);
-    }
+    // The helper shows an error message itself if the save fails. Stop here so the screen never says "archived" when it was not saved.
+    if (!(await saveSessionArchived(sessionId, true))) return;
+    setIsArchived(true);
+    onCloseAndArchive?.(sessionId);
   }, [sessionId, setIsArchived, onCloseAndArchive]);
 
   const handleUnarchive = useCallback(async () => {
-    try {
-      await window.electronAPI.invoke('sessions:update-metadata', sessionId, { isArchived: false });
-      setIsArchived(false);
-    } catch (error) {
-      console.error('[SessionTranscript] Failed to unarchive session:', error);
-    }
+    // Same rule as above: if the save fails, the helper shows the error and we change nothing on screen.
+    if (!(await saveSessionArchived(sessionId, false))) return;
+    setIsArchived(false);
   }, [sessionId, setIsArchived]);
 
   const handleAIModeChange = useCallback(async (newMode: AIMode) => {

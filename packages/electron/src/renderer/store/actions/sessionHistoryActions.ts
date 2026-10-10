@@ -27,6 +27,7 @@ import { atomFamily } from '../debug/atomFamilyRegistry';
 import { resolveProviderFromModel } from '../../utils/modelUtils';
 import type { SessionLaunchSource } from '../../../shared/analytics/sessionLaunch';
 import { errorNotificationService } from '../../services/ErrorNotificationService';
+import { saveSessionArchived } from '../../utils/saveSessionArchived';
 import {
   store,
   addSessionFullAtom,
@@ -260,25 +261,33 @@ export const deleteSessionActionAtom = atom(null, async (get, set, sessionId: st
 
 /**
  * Archive a session via IPC and clear selection if it was selected.
+ * Shows an error when the archive is not saved. Returns the ids that were
+ * archived (the session and everything under it), or an empty list on failure.
  */
-export const archiveSessionActionAtom = atom(null, async (get, set, sessionId: string) => {
+export const archiveSessionActionAtom = atom(null, async (get, set, sessionId: string): Promise<string[]> => {
   const workspacePath = getWorkspacePath(get);
-  if (!workspacePath || typeof window === 'undefined' || !window.electronAPI) return;
+  if (!workspacePath || typeof window === 'undefined' || !window.electronAPI) return [];
 
-  try {
-    const result = await window.electronAPI.invoke('sessions:update-metadata', sessionId, { isArchived: true });
-    if (result.success) {
-      const archivedIds = sessionArchiveSubtreeIds(get(sessionRegistryAtom), [sessionId]);
-      archivedIds.forEach(id => set(updateSessionStoreAtom, { sessionId: id, updates: { isArchived: true } }));
-      const selected = get(selectedWorkstreamAtom(workspacePath));
-      if (selected && archivedIds.includes(selected.id)) {
-        set(setSelectedWorkstreamAtom, { workspacePath, selection: null });
-      }
-    } else {
-      console.error('[sessionHistoryActions] Failed to archive session:', result.error);
-    }
-  } catch (err) {
-    console.error('[sessionHistoryActions] Error archiving session:', err);
+  if (!(await saveSessionArchived(sessionId, true))) return [];
+
+  const archivedIds = sessionArchiveSubtreeIds(get(sessionRegistryAtom), [sessionId]);
+  archivedIds.forEach(id => set(updateSessionStoreAtom, { sessionId: id, updates: { isArchived: true } }));
+  const selected = get(selectedWorkstreamAtom(workspacePath));
+  if (selected && archivedIds.includes(selected.id)) {
+    set(setSelectedWorkstreamAtom, { workspacePath, selection: null });
+  }
+  return archivedIds;
+});
+
+/**
+ * Clear the workstream selection when it points at a session that was just
+ * archived. The caller has already saved the archive; this only tidies the UI.
+ */
+export const deselectArchivedSessionActionAtom = atom(null, (get, set, sessionId: string) => {
+  const workspacePath = getWorkspacePath(get);
+  if (!workspacePath) return;
+  if (get(selectedWorkstreamAtom(workspacePath))?.id === sessionId) {
+    set(setSelectedWorkstreamAtom, { workspacePath, selection: null });
   }
 });
 

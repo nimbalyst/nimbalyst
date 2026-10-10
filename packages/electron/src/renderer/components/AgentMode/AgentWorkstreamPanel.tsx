@@ -44,6 +44,7 @@ import { fileViewerWidthAtom, revealWorkstreamEditorAtom } from '../../store/ato
 import { WorkstreamEditorTabs, type WorkstreamEditorTabsRef } from './WorkstreamEditorTabs';
 import { usePushRepresentedFile } from '../../hooks/useRepresentedFileSync';
 import { resolveRepresentedFile } from '../../utils/representedFile';
+import { saveSessionArchived } from '../../utils/saveSessionArchived';
 import { WorkstreamSessionTabs } from './WorkstreamSessionTabs';
 import { FilesEditedSidebar } from './FilesEditedSidebar';
 import { AgentReviewPanel } from './AgentReviewPanel';
@@ -657,27 +658,19 @@ const WorkstreamHeader: React.FC<{
       return;
     }
 
-    try {
-      await window.electronAPI.invoke('sessions:update-metadata', workstreamId, { isArchived: true });
-      setIsArchived(true);
-      // Update atom state for immediate UI feedback across all components
-      updateSessionStore({ sessionId: workstreamId, updates: { isArchived: true } });
-      onArchiveStatusChange?.();
-    } catch (error) {
-      console.error('[WorkstreamHeader] Failed to archive:', error);
-    }
+    if (!(await saveSessionArchived(workstreamId, true))) return;
+    setIsArchived(true);
+    // Update atom state for immediate UI feedback across all components
+    updateSessionStore({ sessionId: workstreamId, updates: { isArchived: true } });
+    onArchiveStatusChange?.();
   }, [workstreamId, worktreeId, onArchiveStatusChange, onShowArchiveDialog, updateSessionStore]);
 
   const handleUnarchive = useCallback(async () => {
-    try {
-      await window.electronAPI.invoke('sessions:update-metadata', workstreamId, { isArchived: false });
-      setIsArchived(false);
-      // Update atom state for immediate UI feedback across all components
-      updateSessionStore({ sessionId: workstreamId, updates: { isArchived: false } });
-      onArchiveStatusChange?.();
-    } catch (error) {
-      console.error('[WorkstreamHeader] Failed to unarchive:', error);
-    }
+    if (!(await saveSessionArchived(workstreamId, false))) return;
+    setIsArchived(false);
+    // Update atom state for immediate UI feedback across all components
+    updateSessionStore({ sessionId: workstreamId, updates: { isArchived: false } });
+    onArchiveStatusChange?.();
   }, [workstreamId, onArchiveStatusChange, updateSessionStore]);
 
   return (
@@ -1151,22 +1144,14 @@ export const AgentWorkstreamPanel = React.memo(React.forwardRef<AgentWorkstreamP
 
   // Archive a child session
   const handleSessionArchive = useCallback(async (sessionId: string) => {
-    try {
-      await window.electronAPI.invoke('sessions:update-metadata', sessionId, { isArchived: true });
-      updateSessionStore({ sessionId, updates: { isArchived: true } });
-    } catch (error) {
-      console.error('[AgentWorkstreamPanel] Failed to archive session:', error);
-    }
+    if (!(await saveSessionArchived(sessionId, true))) return;
+    updateSessionStore({ sessionId, updates: { isArchived: true } });
   }, [updateSessionStore]);
 
   // Unarchive a child session
   const handleSessionUnarchive = useCallback(async (sessionId: string) => {
-    try {
-      await window.electronAPI.invoke('sessions:update-metadata', sessionId, { isArchived: false });
-      updateSessionStore({ sessionId, updates: { isArchived: false } });
-    } catch (error) {
-      console.error('[AgentWorkstreamPanel] Failed to unarchive session:', error);
-    }
+    if (!(await saveSessionArchived(sessionId, false))) return;
+    updateSessionStore({ sessionId, updates: { isArchived: false } });
   }, [updateSessionStore]);
 
   // Rename a session

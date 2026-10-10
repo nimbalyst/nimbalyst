@@ -25,6 +25,7 @@ import { useArchiveWorktreeDialog } from '../../hooks/useArchiveWorktreeDialog';
 import { requestConfirmation } from '../../dialogs/requestConfirmation';
 import { getTimeGroupKey, TimeGroupKey } from '../../utils/dateFormatting';
 import { getFileName } from '../../utils/pathUtils';
+import { saveSessionArchived } from '../../utils/saveSessionArchived';
 import { KeyboardShortcuts, getShortcutDisplay } from '../../../shared/KeyboardShortcuts';
 import { MaterialSymbol } from '@nimbalyst/runtime/ui/icons/MaterialSymbol';
 import {
@@ -53,6 +54,7 @@ import {
   selectChildSessionActionAtom,
   deleteSessionActionAtom,
   archiveSessionActionAtom,
+  deselectArchivedSessionActionAtom,
   renameSessionActionAtom,
   branchSessionActionAtom,
   createNewSessionActionAtom,
@@ -260,6 +262,7 @@ const SessionHistoryComponent: React.FC = () => {
   const dispatchSelectChildSession = useSetAtom(selectChildSessionActionAtom);
   const dispatchDeleteSession = useSetAtom(deleteSessionActionAtom);
   const dispatchArchiveSession = useSetAtom(archiveSessionActionAtom);
+  const dispatchDeselectArchivedSession = useSetAtom(deselectArchivedSessionActionAtom);
   const dispatchRenameSession = useSetAtom(renameSessionActionAtom);
   const dispatchBranchSession = useSetAtom(branchSessionActionAtom);
   const dispatchCreateNewSession = useSetAtom(createNewSessionActionAtom);
@@ -288,9 +291,10 @@ const SessionHistoryComponent: React.FC = () => {
   const onSessionDelete: ((sessionId: string) => void) | undefined = useCallback((sessionId: string) => {
     void dispatchDeleteSession(sessionId);
   }, [dispatchDeleteSession]);
+  // This runs after an archive is already saved, so it must not send a second archive request.
   const onSessionArchive: ((sessionId: string) => void) | undefined = useCallback((sessionId: string) => {
-    void dispatchArchiveSession(sessionId);
-  }, [dispatchArchiveSession]);
+    dispatchDeselectArchivedSession(sessionId);
+  }, [dispatchDeselectArchivedSession]);
   const onSessionRename: ((sessionId: string, newName: string) => void) | undefined = useCallback((sessionId: string, newName: string) => {
     void dispatchRenameSession({ sessionId, newName });
   }, [dispatchRenameSession]);
@@ -1172,35 +1176,10 @@ const SessionHistoryComponent: React.FC = () => {
   };
 
   const handleArchiveSession = async (sessionId: string) => {
-    // The IPC handler at packages/electron/src/main/ipc/SessionHandlers.ts:472
-    // returns `{success: true}` on the happy path and `{success: false, error}`
-    // on validation/DB failures (e.g. session-provider-switch guard, session
-    // not found, store write failure). We previously only caught throws,
-    // which meant a returned `{success: false}` envelope still produced the
-    // optimistic UI removal even though the DB write didn't happen — the
-    // session reappeared on next refresh and the user saw "Archive does
-    // nothing" with no clue why. See #282.
-    try {
-      const result = await window.electronAPI.invoke('sessions:update-metadata', sessionId, { isArchived: true });
-      if (result && typeof result === 'object' && result.success === false) {
-        const message = (result.error && String(result.error)) || 'The backend rejected the archive request.';
-        errorNotificationService.showError('Failed to archive session', message);
-        console.error('[SessionHistory] Archive rejected by backend:', message);
-        return;
-      }
-      // Update atom state immediately for instant feedback (optimistic update)
-      // If not showing archived, this effectively removes it from view
-      // The backend archives the whole subtree, so mirror that here.
-      const archivedIds = sessionArchiveSubtreeIds(sessionRegistry, [sessionId]);
-      archivedIds.forEach(id => updateSessionStore({ sessionId: id, updates: { isArchived: true } }));
-      // Also remove from filtered list for immediate feedback
+    // The action saves the archive, shows any error, updates the store and clears the selection.
+    const archivedIds = await dispatchArchiveSession(sessionId);
+    if (archivedIds.length > 0) {
       setSessions(prev => prev.filter(s => !archivedIds.includes(s.id)));
-      // Notify parent to close the tab if open
-      archivedIds.forEach(id => onSessionArchive?.(id));
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      errorNotificationService.showError('Failed to archive session', message);
-      console.error('[SessionHistory] Failed to archive session:', err);
     }
   };
 
@@ -1288,16 +1267,12 @@ const SessionHistoryComponent: React.FC = () => {
   };
 
   const handleUnarchiveSession = async (sessionId: string) => {
-    try {
-      await window.electronAPI.invoke('sessions:update-metadata', sessionId, { isArchived: false });
-      // Update atom state immediately for instant feedback (optimistic update)
-      const restoredIds = new Set(sessionArchiveSubtreeIds(sessionRegistry, [sessionId]));
-      restoredIds.forEach(id => updateSessionStore({ sessionId: id, updates: { isArchived: false } }));
-      // Also update filtered list for immediate feedback
-      setSessions(prev => prev.map(s => restoredIds.has(s.id) ? { ...s, isArchived: false } : s));
-    } catch (err) {
-      console.error('[SessionHistory] Failed to unarchive session:', err);
-    }
+    if (!(await saveSessionArchived(sessionId, false))) return;
+    // Update atom state immediately for instant feedback (optimistic update)
+    const restoredIds = new Set(sessionArchiveSubtreeIds(sessionRegistry, [sessionId]));
+    restoredIds.forEach(id => updateSessionStore({ sessionId: id, updates: { isArchived: false } }));
+    // Also update filtered list for immediate feedback
+    setSessions(prev => prev.map(s => restoredIds.has(s.id) ? { ...s, isArchived: false } : s));
   };
 
   const toggleShowArchived = async () => {
@@ -1526,16 +1501,8 @@ const SessionHistoryComponent: React.FC = () => {
     // after success, so nested tabs close and rejected requests stay visible.
     const archivedIds: string[] = [];
     for (const id of [...regularSessionIds, ...workstreamIds]) {
-      try {
-        const result = await window.electronAPI.invoke('sessions:update-metadata', id, { isArchived: true });
-        if (result?.success === false) {
-          errorNotificationService.showError('Failed to archive session', result.error || 'The backend rejected the archive request.');
-          continue;
-        }
-        archivedIds.push(...sessionArchiveSubtreeIds(sessionRegistry, [id]));
-      } catch (error) {
-        errorNotificationService.showError('Failed to archive session', String(error));
-      }
+      if (!(await saveSessionArchived(id, true))) continue;
+      archivedIds.push(...sessionArchiveSubtreeIds(sessionRegistry, [id]));
     }
     if (archivedIds.length > 0) {
       archivedIds.forEach(id => updateSessionStore({ sessionId: id, updates: { isArchived: true } }));
@@ -1661,12 +1628,12 @@ const SessionHistoryComponent: React.FC = () => {
 
   // Bulk unarchive selected sessions
   const handleBulkUnarchive = async () => {
-    const promises = Array.from(selectedSessionIds).map(sessionId =>
-      window.electronAPI.invoke('sessions:update-metadata', sessionId, { isArchived: false })
-    );
-    await Promise.all(promises);
+    const selectedIds = Array.from(selectedSessionIds);
+    const saved = await Promise.all(selectedIds.map(sessionId => saveSessionArchived(sessionId, false)));
+    // Only restore the sessions the backend actually saved (failures already showed an error)
+    const savedIds = selectedIds.filter((_, index) => saved[index]);
     // Update atom state for each unarchived session
-    const restoredIds = new Set(sessionArchiveSubtreeIds(sessionRegistry, Array.from(selectedSessionIds)));
+    const restoredIds = new Set(sessionArchiveSubtreeIds(sessionRegistry, savedIds));
     restoredIds.forEach(sessionId => {
       updateSessionStore({ sessionId, updates: { isArchived: false } });
     });

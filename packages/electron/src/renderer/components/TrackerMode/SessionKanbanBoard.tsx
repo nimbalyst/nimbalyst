@@ -60,6 +60,7 @@ import { WorktreeIcon } from '../common/WorktreeIcon';
 import { SessionTranscriptPeek } from '../AgenticCoding/SessionTranscriptPeek';
 import { ArchiveWorktreeDialog } from '../AgentMode/ArchiveWorktreeDialog';
 import { useArchiveWorktreeDialog } from '../../hooks/useArchiveWorktreeDialog';
+import { saveSessionArchived } from '../../utils/saveSessionArchived';
 import { useFloatingMenu, FloatingPortal, virtualElement } from '../../hooks/useFloatingMenu';
 
 // ============================================================
@@ -1462,31 +1463,21 @@ export const SessionKanbanBoard: React.FC<SessionKanbanBoardProps> = ({ onSessio
           return;
         } else {
           // Still other sessions in this worktree - just archive this session
-          try {
-            const result = await window.electronAPI.invoke('sessions:update-metadata', sessionId, { isArchived: true });
-            if (result.success) {
-              sessionArchiveSubtreeIds(registry, [sessionId]).forEach(id => {
-                updateSessionStore({ sessionId: id, updates: { isArchived: true } });
-                setPhase({ sessionId: id, phase: null });
-              });
-            }
-          } catch (err) {
-            console.error('[SessionKanbanBoard] Failed to archive session:', err);
+          if (await saveSessionArchived(sessionId, true)) {
+            sessionArchiveSubtreeIds(registry, [sessionId]).forEach(id => {
+              updateSessionStore({ sessionId: id, updates: { isArchived: true } });
+              setPhase({ sessionId: id, phase: null });
+            });
           }
         }
         continue;
       }
-      try {
-        // Archive AND clear phase so the session leaves the board entirely
-        const result = await window.electronAPI.invoke('sessions:update-metadata', sessionId, { isArchived: true });
-        if (result.success) {
-          sessionArchiveSubtreeIds(registry, [sessionId]).forEach(id => {
-            updateSessionStore({ sessionId: id, updates: { isArchived: true } });
-            setPhase({ sessionId: id, phase: null });
-          });
-        }
-      } catch (err) {
-        console.error('[SessionKanbanBoard] Failed to archive session:', err);
+      // Archive AND clear phase so the session leaves the board entirely
+      if (await saveSessionArchived(sessionId, true)) {
+        sessionArchiveSubtreeIds(registry, [sessionId]).forEach(id => {
+          updateSessionStore({ sessionId: id, updates: { isArchived: true } });
+          setPhase({ sessionId: id, phase: null });
+        });
       }
     }
 

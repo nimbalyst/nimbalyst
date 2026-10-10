@@ -8,6 +8,7 @@ import { sessionRegistryAtom } from '../../store';
 import { sessionTokenUsageAtom } from '../../store/atoms/sessions';
 import { getRelativeTimeString } from '../../utils/dateFormatting';
 import { createMetaAgentSession } from '../../utils/metaAgentUtils';
+import { saveSessionArchived } from '../../utils/saveSessionArchived';
 import { SessionTranscript } from '../UnifiedAI/SessionTranscript';
 
 interface MetaAgentModeProps {
@@ -241,9 +242,8 @@ export function MetaAgentMode({
 
       setMetaSessionId(nextSessionId);
 
-      await window.electronAPI.invoke('sessions:update-metadata', previousSessionId, {
-        isArchived: true,
-      });
+      // The new session is already open; if the old one fails to archive, the helper shows the error.
+      await saveSessionArchived(previousSessionId, true);
     } catch (error) {
       console.error('[MetaAgentMode] Failed to clear meta-agent session:', error);
     } finally {

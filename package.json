@@ -68,6 +68,7 @@
     "check:json-accessor-indexes": "node scripts/check-json-accessor-indexes.mjs",
     "check:renderer-sync-sockets": "node scripts/check-renderer-sync-sockets.mjs",
     "check:native-dialogs": "node scripts/check-native-dialogs.mjs",
+    "check:session-archive-writes": "node scripts/check-session-archive-writes.mjs",
     "check:sync-floating-promises": "node scripts/check-sync-floating-promises.mjs",
     "check:shared-document-nodes": "node scripts/check-shared-document-nodes.mjs",
     "check:team-lane-crypto-names": "node scripts/check-team-lane-crypto-names.mjs",

@@ -4,7 +4,9 @@ import { beforeEach, expect, it, vi } from 'vitest';
 const mocks = vi.hoisted(() => ({
   handlers: new Map<string, (...args: any[]) => Promise<any>>(),
   createWorktree: vi.fn(),
-  store: { create: vi.fn().mockResolvedValue(undefined) },
+  getWorktreeStatus: vi.fn(),
+  fetch: vi.fn(),
+  store: { create: vi.fn().mockResolvedValue(undefined), getByPath: vi.fn() },
   start: vi.fn().mockResolvedValue(undefined),
   inUse: true,
 }));
@@ -13,7 +15,8 @@ vi.mock('electron', () => ({
   BrowserWindow: { getAllWindows: () => [] },
 }));
 vi.mock('electron-log/main', () => ({ default: { scope: () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn() }) } }));
-vi.mock('../../services/GitWorktreeService', () => ({ GitWorktreeService: class { createWorktree = mocks.createWorktree; } }));
+vi.mock('../../services/GitWorktreeService', () => ({ GitWorktreeService: class { createWorktree = mocks.createWorktree; getWorktreeStatus = mocks.getWorktreeStatus; } }));
+vi.mock('simple-git', () => ({ default: () => ({ fetch: mocks.fetch }) }));
 vi.mock('../../services/WorktreeStore', () => ({ createWorktreeStore: () => mocks.store }));
 vi.mock('../../services/SuperLoopStore', () => ({ createSuperLoopStore: vi.fn() }));
 vi.mock('../../database/initialize', () => ({ getDatabase: () => ({}) }));
@@ -49,4 +52,20 @@ it.each([false, true])('starts monitoring after creation only while the project 
   expect((await creating).success).toBe(true);
   expect(mocks.store.create).toHaveBeenCalledWith(expect.objectContaining(worktree));
   expect(mocks.start).toHaveBeenCalledTimes(inUse ? 1 : 0);
+});
+
+// #282: Archive on a worktree session waits for this status check. A fetch
+// that never returns (no network, a stalled remote) left the click doing nothing.
+it('returns local status when the pre-archive fetch hangs', async () => {
+  vi.useFakeTimers();
+  try {
+    mocks.store.getByPath.mockResolvedValue({ baseBranch: 'main' });
+    mocks.fetch.mockReturnValue(new Promise(() => {}));
+    mocks.getWorktreeStatus.mockResolvedValue({ hasUncommittedChanges: false, isMerged: true });
+    const status = mocks.handlers.get('worktree:get-status')!({}, '/project_worktrees/branch', { fetchFirst: true });
+    await vi.advanceTimersByTimeAsync(60_000);
+    await expect(status).resolves.toMatchObject({ success: true, status: { isMerged: true } });
+  } finally {
+    vi.useRealTimers();
+  }
 });
