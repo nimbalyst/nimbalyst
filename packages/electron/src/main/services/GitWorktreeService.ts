@@ -21,12 +21,50 @@ import { ulid } from 'ulid';
 import log from 'electron-log/main';
 import { getUntrackedFilesInDirectories } from '../utils/gitUtils';
 import { GIT_INHERITED_ENV_UNSAFE } from './gitInheritedEnvUnsafe';
+import { sanitizeGitRepositoryEnv } from './gitRepositoryEnv';
 import { gitOperationLock } from './GitOperationLock';
 import { getGitOperationLogService, recordGitActivity } from './GitOperationLogService';
 import { SessionCommitService } from './SessionCommitService';
 import { historyManager } from '../HistoryManager';
+import {
+  canonicalWorktreePath,
+  isWorktreePathInside,
+  parseWorktreePorcelain,
+  planWorktreeCreateRollback,
+  planWorktreeRemoval,
+  readRegisteredWorktreeLock,
+  readWorktreeGitLink,
+  WorktreeRemovalRefusedError,
+  type WorktreeCreateRollbackFacts,
+  type WorktreeGitLink,
+  type WorktreeRegistration,
+  type WorktreeRemovalPlan,
+  type WorktreeRemovalRefusal,
+} from './worktreeOwnership';
+import { removeDirectoryTree } from './directoryRemoval';
+import {
+  buildWorktreeBranchName,
+  findBranchConflict,
+  stripWorktreeBranchPrefix,
+  validateWorktreeBranchSuffix,
+  worktreeDirectoryNameFor,
+  type WorktreeBranchConflict,
+} from '../../shared/worktreeBranchNaming';
 
 const logger = log.scope('GitWorktreeService');
+
+/**
+ * simple-git rooted at `baseDir`, without the repository-selection variables a
+ * git hook exports (GIT_DIR, GIT_WORK_TREE, GIT_INDEX_FILE, ...). Those override
+ * the working directory, so an inherited GIT_DIR would make `worktree add`,
+ * `worktree remove --force` and `branch -D` act on the hook's repository instead
+ * of `baseDir`'s. Commit, merge and rebase get the same scrub from gitEnv.ts.
+ */
+function gitFor(baseDir: string): SimpleGit {
+  // .env() makes simple-git scan the supplied environment, so the user's own
+  // variables (GIT_EDITOR, GIT_ASKPASS, ...) need the unsafe opt-ins.
+  return simpleGit(baseDir, { unsafe: GIT_INHERITED_ENV_UNSAFE }).env(sanitizeGitRepositoryEnv(process.env));
+}
 
 /**
  * Thrown when a workspace's git repository has no commits yet, so HEAD
@@ -118,8 +156,43 @@ export interface MergeResult {
  * Options for creating a worktree
  */
 export interface CreateWorktreeOptions {
-  name?: string; // Optional custom name (defaults to random adjective-noun)
+  /**
+   * Folder name, which the branch follows (`worktree/<name>`); both get a
+   * `-N` when the folder is taken. Defaults to a random adjective-noun.
+   */
+  name?: string;
+  /**
+   * A name the user typed. The branch is exactly `worktree/<branchSuffix>`
+   * and is never renamed, so a conflict with an existing branch fails; the
+   * folder is its one-segment form (`feat/x` -> `feat-x`), with a `-N` when
+   * taken. Exclusive with `name`.
+   */
+  branchSuffix?: string;
   baseBranch?: string; // Branch to base the worktree on (defaults to repo root's current branch)
+  /**
+   * Paths the folder must not reuse although nothing is there: those the
+   * app's worktree rows record, archived ones included, since a row keeps its
+   * path after the archive removed the folder and the store refuses a second
+   * row with it. Set by the main process only.
+   */
+  takenPaths?: Iterable<string>;
+  /**
+   * The folder to create the worktree in, from `resolveWorktreesDir`. Defaults
+   * to `<repo>_worktrees` next to the repo. Set by the main process only.
+   */
+  worktreesDir?: string;
+}
+
+/**
+ * Options for deleting a worktree
+ */
+export interface DeleteWorktreeOptions {
+  /**
+   * The branch the worktree was created on (its row's `branch`). It is the
+   * only branch the removal may delete: when the worktree has another branch
+   * checked out, both are kept.
+   */
+  expectedBranch?: string;
 }
 
 /**
@@ -140,6 +213,92 @@ export interface GitState {
   inCherryPick: boolean;
   inRevert: boolean;
   conflictedFiles: string[];
+}
+
+/**
+ * Git's loose refs are files, so where the file system ignores case (the
+ * macOS and Windows defaults) branch names that differ only in case collide.
+ */
+const BRANCH_NAMES_IGNORE_CASE = process.platform === 'darwin' || process.platform === 'win32';
+
+/** Why git cannot create `branch` next to an existing branch */
+function branchConflictMessage(branch: string, conflict: WorktreeBranchConflict, workspacePath: string): string {
+  const exists = `'${conflict.ref}' already exists in ${workspacePath}`;
+  switch (conflict.kind) {
+    case 'exact':
+      return conflict.ref === branch
+        ? `Branch ${exists}. Choose another name.`
+        : `Cannot create branch '${branch}': branch ${exists}, and branch names that differ only in case ` +
+          'collide on this system. Choose another name.';
+    case 'ancestor':
+      return `Cannot create branch '${branch}': branch ${exists}, and git cannot create a branch inside ` +
+        'another branch\'s name. Choose another name.';
+    case 'descendant':
+      return `Cannot create branch '${branch}': branch ${exists}, and git cannot create a branch whose name ` +
+        'holds other branches. Choose another name.';
+  }
+}
+
+/** What step 1 of a removal found, and the error a refused plan throws */
+type RemovalAssessment = { existsOnDisk: boolean; registration: WorktreeRegistration | null } & (
+  | { plan: Exclude<WorktreeRemovalPlan, { action: 'refuse' }>; refusal: null }
+  | { plan: Extract<WorktreeRemovalPlan, { action: 'refuse' }>; refusal: WorktreeRemovalRefusedError }
+);
+
+/**
+ * The message for a removal `planWorktreeRemoval` refused. Nothing has been
+ * deleted when it is thrown.
+ */
+function worktreeRemovalRefusal(
+  reason: WorktreeRemovalRefusal,
+  worktreePath: string,
+  workspacePath: string,
+  lockReason: string | undefined,
+  gitLink: WorktreeGitLink | null,
+  nestedWorktreePath: string | null
+): string {
+  switch (reason) {
+    case 'main-worktree':
+      return `Refusing to delete ${worktreePath}: it is the main working tree of ${workspacePath}, not a linked worktree.`;
+    case 'locked':
+      return `Worktree ${worktreePath} is locked${lockReason ? ` (${lockReason})` : ''}. ` +
+        'Unlock it first with `git worktree unlock`; nothing was deleted.';
+    case 'unverifiable':
+      return `Refusing to delete ${worktreePath}: git could not confirm that it is a worktree of ${workspacePath}, ` +
+        'so nothing was deleted.';
+    case 'moved':
+      return `Refusing to delete ${worktreePath}: ${workspacePath} records this worktree at another path, ` +
+        'as after a manual move, so nothing was deleted. `git worktree repair` run inside it reconnects them.';
+    case 'copy':
+      return `Refusing to delete ${worktreePath}: its .git file names the worktree that git tracks at ` +
+        `${gitLink?.kind === 'copy' ? gitLink.livePath : 'another path'}, so it is a copy of that worktree or a ` +
+        'checkout git stopped tracking, and nothing was deleted. Archiving it finishes once nothing is left at ' +
+        `${worktreePath}.`;
+    case 'untracked':
+      return gitLink?.kind === 'missing'
+        ? `Refusing to delete ${worktreePath}: it has no .git file and git does not list it, so it cannot be ` +
+          `confirmed as a worktree of ${workspacePath}, and nothing was deleted. A \`git worktree remove\` that ` +
+          'could not delete every file leaves such a folder behind. Archiving it finishes once nothing is left ' +
+          `at ${worktreePath}.`
+        : `Refusing to delete ${worktreePath}: git no longer tracks it as a worktree of ${workspacePath}, so git ` +
+          'cannot check it for uncommitted changes or for commits that exist nowhere else (as after the repository ' +
+          'was cloned again), and nothing was deleted. Archiving it finishes once nothing is left at ' +
+          `${worktreePath}.`;
+    case 'contains-worktree':
+      return `Refusing to delete ${worktreePath}: it contains the worktree at ${nestedWorktreePath}, which would ` +
+        'be deleted with it, so nothing was deleted. Archiving it finishes once no worktree is left inside it: ' +
+        '`git worktree remove` deletes that one, or `git worktree move` moves it elsewhere.';
+    case 'not-owned':
+      if (gitLink?.kind === 'other-repository') {
+        return gitLink.owner
+          ? `Refusing to delete ${worktreePath}: it is a worktree of ${gitLink.owner}, not of ${workspacePath}, ` +
+            'so nothing was deleted.'
+          : `Refusing to delete ${worktreePath}: its repository no longer exists where the worktree points, ` +
+            'so nothing was deleted. If the repository was moved, `git worktree repair <path of this worktree>` ' +
+            'run in the moved repository reconnects them.';
+      }
+      return `Refusing to delete ${worktreePath}: it is not a worktree of ${workspacePath}, so nothing was deleted.`;
+  }
 }
 
 /**
@@ -179,7 +338,7 @@ export class GitWorktreeService {
       }
 
       // Check 3: git rev-parse --is-inside-work-tree succeeds
-      const git: SimpleGit = simpleGit(worktreePath);
+      const git: SimpleGit = gitFor(worktreePath);
       try {
         const isWorkTree = await git.revparse(['--is-inside-work-tree']);
         if (isWorkTree.trim() !== 'true') {
@@ -251,7 +410,7 @@ export class GitWorktreeService {
         workspacePath,
         // The final name is generated inside the impl when not supplied; the
         // entry's output line below names the worktree that was actually made.
-        ['worktree', 'add', options.name ?? '(generated name)'],
+        ['worktree', 'add', options.branchSuffix ?? options.name ?? '(generated name)'],
         () => this.createWorktreeImpl(workspacePath, options),
         (worktree) => `Created worktree ${worktree.path} on ${worktree.branch}`,
       )
@@ -262,18 +421,33 @@ export class GitWorktreeService {
    * Internal implementation of createWorktree (called within lock)
    */
   private async createWorktreeImpl(workspacePath: string, options: CreateWorktreeOptions): Promise<Worktree> {
-    logger.info('Creating worktree', { workspacePath, options });
+    const { takenPaths: _takenPaths, ...loggedOptions } = options;
+    logger.info('Creating worktree', { workspacePath, options: loggedOptions });
+
+    // A typed name is checked before any git call
+    const { branchSuffix } = options;
+    if (branchSuffix !== undefined) {
+      if (options.name !== undefined) {
+        throw new Error('A worktree takes a name or a branch suffix, not both');
+      }
+      const problem = validateWorktreeBranchSuffix(branchSuffix);
+      if (problem) {
+        throw new Error(`Invalid worktree name '${branchSuffix}': ${problem.message}`);
+      }
+    }
 
     // Ensure this is a git repository
-    const git: SimpleGit = simpleGit(workspacePath);
+    const git: SimpleGit = gitFor(workspacePath);
     const isRepo = await git.checkIsRepo();
     if (!isRepo) {
       throw new Error(`Not a git repository: ${workspacePath}`);
     }
 
-    // Generate unique worktree name if not provided
-    const worktreeName = options.name || this.generateWorktreeName();
-    logger.info('Generated worktree name', { worktreeName });
+    // A typed name gets a one-segment folder; any other name is the folder
+    const worktreeName = branchSuffix !== undefined
+      ? worktreeDirectoryNameFor(branchSuffix)
+      : options.name || this.generateWorktreeName();
+    logger.info('Using worktree name', { worktreeName });
 
     // Determine base branch - use the repo root's current branch (not hardcoded)
     let baseBranch: string;
@@ -283,24 +457,41 @@ export class GitWorktreeService {
       // Get the current branch of the repo root
       baseBranch = await this.getCurrentBranch(git);
     }
+    // `git branch <new> <base>` below would read such a base as an option, and
+    // `-m` renames the checked-out branch. `--end-of-options` would need git
+    // 2.24, above the 2.17 these worktrees need.
+    if (baseBranch.startsWith('-')) {
+      throw new Error(`Invalid base branch '${baseBranch}': a branch name cannot start with '-'`);
+    }
     logger.info('Using base branch', { baseBranch });
 
     // Create worktrees directory if it doesn't exist
     const projectName = path.basename(workspacePath);
-    const worktreesDir = path.resolve(workspacePath, '..', `${projectName}_worktrees`);
+    const worktreesDir = options.worktreesDir ?? path.resolve(workspacePath, '..', `${projectName}_worktrees`);
 
     if (!fs.existsSync(worktreesDir)) {
       logger.info('Creating worktrees directory', { worktreesDir });
       fs.mkdirSync(worktreesDir, { recursive: true });
     }
 
-    // Full path to new worktree (handle duplicates with incrementing numbers)
+    // Full path to new worktree (handle duplicates with incrementing numbers).
+    // A path git still registers is taken even when its folder is missing (a
+    // worktree on an unmounted drive): git would refuse it, and only after
+    // creating the branch. So is a path a worktree row records.
+    const takenKeys = new Set(
+      (await this.readWorktreeRegistrations(git)).map(entry => canonicalWorktreePath(entry.path))
+    );
+    for (const recorded of options.takenPaths ?? []) {
+      takenKeys.add(canonicalWorktreePath(recorded));
+    }
+    const isTaken = (candidate: string) =>
+      fs.existsSync(candidate) || takenKeys.has(canonicalWorktreePath(candidate));
     let worktreePath = path.join(worktreesDir, worktreeName);
     let finalWorktreeName = worktreeName;
     let counter = 1;
 
-    // If path exists, append incrementing number until we find an available path
-    while (fs.existsSync(worktreePath)) {
+    // If path is taken, append incrementing number until we find an available path
+    while (isTaken(worktreePath)) {
       finalWorktreeName = `${worktreeName}-${counter}`;
       worktreePath = path.join(worktreesDir, finalWorktreeName);
       counter++;
@@ -313,13 +504,18 @@ export class GitWorktreeService {
       });
     }
 
-    // Create a new branch name for this worktree (ensure uniqueness)
-    const branchName = `worktree/${finalWorktreeName}`;
+    // A typed name is the branch exactly; otherwise the branch follows the final folder name
+    const branchName = buildWorktreeBranchName(branchSuffix ?? finalWorktreeName);
+    const before = await this.checkCreateTarget(git, workspacePath, worktreePath, branchName);
 
+    let branchCreated = false;
     try {
-      // Create the worktree with a new branch
+      // The two steps `worktree add -b` runs itself, apart, so a failure shows
+      // whether this attempt made the branch
       logger.info('Creating git worktree', { worktreePath, branchName, baseBranch });
-      await git.raw(['worktree', 'add', '-b', branchName, worktreePath, baseBranch]);
+      await git.raw(['branch', branchName, baseBranch]);
+      branchCreated = true;
+      await git.raw(['worktree', 'add', worktreePath, branchName]);
 
       logger.info('Worktree created successfully', { worktreePath });
 
@@ -337,18 +533,170 @@ export class GitWorktreeService {
       return worktree;
     } catch (error) {
       logger.error('Failed to create worktree', { error, worktreePath, branchName });
+      const message = `Failed to create worktree: ${error instanceof Error ? error.message : String(error)}`;
+      const leftoverNote = branchCreated
+        ? await this.rollBackFailedCreate(git, worktreePath, branchName, before)
+        // A failed `git branch` creates nothing
+        : null;
+      throw new Error(leftoverNote ? `${message}\n${leftoverNote}` : message);
+    }
+  }
 
-      // Clean up if worktree directory was created but git command failed
-      if (fs.existsSync(worktreePath)) {
+  /**
+   * Runs inside the repository lock before the branch is created: refuses a
+   * branch git cannot create next to the existing ones, with a message naming
+   * the conflict, and records what exists at the target, so a failure removes
+   * only what it created. The folder loop already skips a path git still
+   * registers; the refusal here covers one registered since.
+   */
+  private async checkCreateTarget(
+    git: SimpleGit,
+    workspacePath: string,
+    worktreePath: string,
+    branchName: string
+  ): Promise<WorktreeCreateRollbackFacts['before']> {
+    const targetKey = canonicalWorktreePath(worktreePath);
+    const registered = (await this.readWorktreeRegistrations(git))
+      .some(entry => canonicalWorktreePath(entry.path) === targetKey);
+    if (registered) {
+      throw new Error(
+        `Cannot create the worktree: git still has a worktree registered at ${worktreePath}, though its folder ` +
+        'is missing, as on a drive that is not mounted. If that folder was deleted, `git worktree prune` in ' +
+        `${workspacePath} clears the registration.`
+      );
+    }
+    const caseInsensitive = BRANCH_NAMES_IGNORE_CASE || await this.readIgnoresCase(git);
+    const conflict = findBranchConflict(branchName, await this.readLocalBranches(git), { caseInsensitive });
+    if (conflict) {
+      throw new Error(branchConflictMessage(branchName, conflict, workspacePath));
+    }
+    return { pathExisted: fs.existsSync(worktreePath), registered };
+  }
+
+  /**
+   * Whether git reports that the repository's file system ignores case. Git
+   * probes this at `git init`, so it also covers a case-insensitive disk under
+   * Linux, such as a Windows drive mounted in WSL.
+   */
+  private async readIgnoresCase(git: SimpleGit): Promise<boolean> {
+    try {
+      return (await git.raw(['config', '--type=bool', '--get', 'core.ignorecase'])).trim() === 'true';
+    } catch {
+      // Unset
+      return false;
+    }
+  }
+
+  /**
+   * Undoes a failed `worktree add` after this attempt created `branchName`,
+   * as planWorktreeCreateRollback decides: only what the attempt created
+   * goes. A failing post-checkout hook leaves the folder, its registration
+   * and the new branch. Returns a note naming what the attempt provably
+   * created that is still there, or null when nothing is.
+   */
+  private async rollBackFailedCreate(
+    git: SimpleGit,
+    worktreePath: string,
+    branchName: string,
+    before: WorktreeCreateRollbackFacts['before']
+  ): Promise<string | null> {
+    const outcome = await this.readCreateOutcome(git, worktreePath, branchName);
+    const plan = planWorktreeCreateRollback({
+      branch: branchName,
+      branchCreated: true,
+      before,
+      after: outcome?.after ?? null,
+    });
+    /** A registration at the target on the new branch, which only this attempt can have made */
+    const ownRegistration = (after: NonNullable<WorktreeCreateRollbackFacts['after']>) =>
+      !before.registered && after.registered && after.registeredBranch === branchName;
+    logger.warn('Undoing a failed worktree creation', { worktreePath, branchName, before, after: outcome?.after, plan });
+
+    /** The steps run, for a note when git cannot be asked what they left */
+    const attempted: string[] = [];
+    let current = outcome;
+    if (plan.unregister && current?.registeredPath) {
+      attempted.push('unregistering the worktree there');
+      // Deletes the checkout with it. Tried twice, as a file the checkout just
+      // wrote can still be held open on Windows; the second try follows at
+      // once and has not been exercised there. A registration still left is
+      // named in the error.
+      for (let attempt = 1; attempt <= 2; attempt++) {
         try {
-          fs.rmSync(worktreePath, { recursive: true, force: true });
-          logger.info('Cleaned up failed worktree directory', { worktreePath });
-        } catch (cleanupError) {
-          logger.warn('Failed to clean up worktree directory', { cleanupError, worktreePath });
+          await git.raw(['worktree', 'remove', '--force', current.registeredPath]);
+          break;
+        } catch (error) {
+          logger.warn('Failed to unregister the worktree of a failed creation', { error, worktreePath, attempt });
         }
       }
+      current = await this.readCreateOutcome(git, worktreePath, branchName);
+    }
+    // Only once git no longer registers it: `worktree remove` can drop the
+    // registration without deleting every file
+    if (plan.removeFolder && current && !current.after.registered && current.after.pathExists) {
+      attempted.push('deleting its folder');
+      try {
+        await removeDirectoryTree(fs.realpathSync.native(worktreePath));
+      } catch (error) {
+        logger.warn('Failed to delete the folder of a failed creation', { error, worktreePath });
+      }
+    }
+    if (plan.deleteBranch && current && current.after.registeredBranch !== branchName) {
+      attempted.push(`deleting the branch '${branchName}'`);
+      try {
+        await git.raw(['branch', '-D', branchName]);
+      } catch (error) {
+        logger.warn('Failed to delete the branch of a failed creation', { error, branchName });
+      }
+    }
 
-      throw new Error(`Failed to create worktree: ${error instanceof Error ? error.message : String(error)}`);
+    const final = await this.readCreateOutcome(git, worktreePath, branchName);
+    if (!final) {
+      return attempted.length === 0
+        ? `Git could not be asked what the failed attempt left at ${worktreePath}, so nothing was removed.`
+        : `Git could not be asked what the failed attempt left at ${worktreePath} after ${attempted.join(' and ')}; ` +
+          'they may not all have taken effect.';
+    }
+    const leftovers: string[] = [];
+    if (ownRegistration(final.after)) {
+      leftovers.push(`a worktree registered at ${worktreePath}`);
+    } else if (outcome && ownRegistration(outcome.after) && final.after.pathExists && !before.pathExisted) {
+      leftovers.push(`the folder ${worktreePath}`);
+    }
+    if (final.after.branchExists) leftovers.push(`the branch '${branchName}'`);
+    if (leftovers.length === 0) {
+      return null;
+    }
+    logger.error('A failed worktree creation left part of itself behind', { worktreePath, branchName, leftovers });
+    return `The failed attempt left ${leftovers.join(' and ')} behind.`;
+  }
+
+  /** What exists at a creation's target, read from git and the disk; null when git cannot be asked */
+  private async readCreateOutcome(
+    git: SimpleGit,
+    worktreePath: string,
+    branchName: string
+  ): Promise<{ after: NonNullable<WorktreeCreateRollbackFacts['after']>; registeredPath: string | null } | null> {
+    try {
+      const targetKey = canonicalWorktreePath(worktreePath);
+      const registrations = await this.readWorktreeRegistrations(git);
+      const registration = registrations.find(entry => canonicalWorktreePath(entry.path) === targetKey) ?? null;
+      const branches = await this.readLocalBranches(git);
+      return {
+        after: {
+          pathExists: fs.existsSync(worktreePath),
+          registered: registration !== null,
+          registeredBranch: registration?.branch ?? null,
+          locked: registration?.locked ?? false,
+          holdsOtherWorktree: registrations.some(entry =>
+            isWorktreePathInside(canonicalWorktreePath(entry.path), targetKey)),
+          branchExists: branches.includes(branchName),
+        },
+        registeredPath: registration?.path ?? null,
+      };
+    } catch (error) {
+      logger.warn('Failed to read what a worktree creation left', { error, worktreePath });
+      return null;
     }
   }
 
@@ -365,7 +713,7 @@ export class GitWorktreeService {
 
     // logger.info('Getting worktree status', { worktreePath, baseBranchOverride });
 
-    const git: SimpleGit = simpleGit(worktreePath);
+    const git: SimpleGit = gitFor(worktreePath);
 
     try {
       // git.status() already provides the current branch via .current,
@@ -444,11 +792,22 @@ export class GitWorktreeService {
   /**
    * Delete a worktree and its branch
    *
+   * Before anything is deleted, refuses a directory that is not a worktree of
+   * `workspacePath`, the repository's own working tree, a locked worktree, a
+   * checkout moved away from its registration or copied from another, a
+   * folder git no longer tracks, and a worktree that holds another of the
+   * repository's worktrees. A worktree whose directory is gone and which
+   * git no longer lists counts as already removed, and its branch is kept;
+   * one git still lists is unregistered, and its branch is deleted only when
+   * it is merged. The directory is deleted before git unregisters it, so a
+   * removal that fails part way can be run again.
+   *
    * @param worktreePath - Path to the worktree to delete
-   * @param workspacePath - Path to the main repository (needed for git operations)
+   * @param workspacePath - Path to the repository the worktree belongs to (needed for git operations)
+   * @throws WorktreeRemovalRefusedError if the removal is refused, with nothing deleted
    * @throws Error if the worktree directory still exists after all cleanup attempts
    */
-  async deleteWorktree(worktreePath: string, workspacePath: string): Promise<void> {
+  async deleteWorktree(worktreePath: string, workspacePath: string, options: DeleteWorktreeOptions = {}): Promise<void> {
     if (!worktreePath) {
       throw new Error('worktreePath is required');
     }
@@ -462,63 +821,170 @@ export class GitWorktreeService {
         getGitOperationLogService(),
         workspacePath,
         ['worktree', 'remove', worktreePath],
-        () => this.deleteWorktreeImpl(worktreePath, workspacePath),
+        () => this.deleteWorktreeImpl(worktreePath, workspacePath, options),
       )
     );
   }
 
   /**
+   * Whether `deleteWorktree` would go ahead, without changing anything.
+   * Returns null when it would, or the error it would throw when it refuses,
+   * so a caller can refuse before tearing anything down. The removal checks
+   * again, since the disk can change in between.
+   */
+  async checkWorktreeRemovable(
+    worktreePath: string,
+    workspacePath: string,
+    { expectedBranch }: DeleteWorktreeOptions = {}
+  ): Promise<WorktreeRemovalRefusedError | null> {
+    return (await this.planRemoval(worktreePath, workspacePath, gitFor(workspacePath), expectedBranch)).refusal;
+  }
+
+  /**
+   * Step 1 of a removal: asks the repository whether it owns the directory,
+   * before anything destructive runs. The directory is deleted even when git
+   * would refuse to, and `branch -D` runs in `workspacePath`, so a directory
+   * this repository does not own must stop here. Git's records also name the
+   * branch the worktree has checked out.
+   */
+  private async planRemoval(
+    worktreePath: string,
+    workspacePath: string,
+    git: SimpleGit,
+    expectedBranch: string | undefined
+  ): Promise<RemovalAssessment> {
+    const worktreeKey = canonicalWorktreePath(worktreePath);
+    const existsOnDisk = fs.existsSync(worktreePath);
+    let registrations: WorktreeRegistration[] | null = null;
+    try {
+      registrations = await this.readWorktreeRegistrations(git);
+    } catch (error) {
+      logger.warn('Failed to read the worktree list', { error, workspacePath });
+    }
+    const commonDir = registrations !== null ? await this.readCommonDir(workspacePath, git) : null;
+    let registration = registrations?.find(entry => canonicalWorktreePath(entry.path) === worktreeKey) ?? null;
+    if (registration && !registration.locked && commonDir) {
+      // Git before 2.31 prints no lock in the list; the admin dir has it
+      const lock = readRegisteredWorktreeLock(registration.path, commonDir);
+      if (lock.locked) {
+        registration = { ...registration, locked: true, lockReason: lock.reason };
+      }
+    }
+    // Another worktree whose checkout lies inside this directory goes with
+    // it when the directory is deleted
+    const nestedWorktreePath = existsOnDisk
+      ? registrations?.find(entry =>
+        isWorktreePathInside(canonicalWorktreePath(entry.path), worktreeKey) && fs.existsSync(entry.path)
+      )?.path ?? null
+      : null;
+    let gitLink: WorktreeGitLink | null = null;
+    if (existsOnDisk && commonDir) {
+      try {
+        gitLink = readWorktreeGitLink(worktreePath, commonDir);
+      } catch (error) {
+        logger.warn('Failed to read the worktree .git link', { error, worktreePath });
+      }
+    }
+    const plan = planWorktreeRemoval({
+      existsOnDisk,
+      registryReadable: registrations !== null,
+      registration,
+      gitLink,
+      nestedWorktreePath,
+      expectedBranch,
+    });
+    if (plan.action !== 'refuse') {
+      return { plan, refusal: null, existsOnDisk, registration };
+    }
+    const refusal = new WorktreeRemovalRefusedError(
+      plan.reason,
+      worktreeRemovalRefusal(
+        plan.reason,
+        worktreePath,
+        workspacePath,
+        registration?.lockReason,
+        gitLink,
+        nestedWorktreePath
+      )
+    );
+    logger.warn(refusal.message, {
+      reason: refusal.reason,
+      existsOnDisk,
+      registered: registration !== null,
+      gitLink: gitLink?.kind ?? null,
+      nestedWorktreePath,
+    });
+    return { plan, refusal, existsOnDisk, registration };
+  }
+
+  /**
    * Internal implementation of deleteWorktree (called within lock)
    */
-  private async deleteWorktreeImpl(worktreePath: string, workspacePath: string): Promise<void> {
-    logger.info('Deleting worktree', { worktreePath, workspacePath });
+  private async deleteWorktreeImpl(
+    worktreePath: string,
+    workspacePath: string,
+    { expectedBranch }: DeleteWorktreeOptions
+  ): Promise<void> {
+    logger.info('Deleting worktree', { worktreePath, workspacePath, expectedBranch });
 
-    const git: SimpleGit = simpleGit(workspacePath);
-    let branchName: string | null = null;
+    const git: SimpleGit = gitFor(workspacePath);
+    const worktreeKey = canonicalWorktreePath(worktreePath);
+    const isThisWorktree = (entry: WorktreeRegistration) => canonicalWorktreePath(entry.path) === worktreeKey;
 
-    // Step 1: Get the branch name before removing (best effort)
-    if (fs.existsSync(worktreePath)) {
-      try {
-        const worktreeGit: SimpleGit = simpleGit(worktreePath);
-        branchName = await worktreeGit.revparse(['--abbrev-ref', 'HEAD']);
-        logger.info('Found branch for worktree', { branchName });
-      } catch (error) {
-        logger.warn('Failed to get branch name, continuing with worktree removal', { error });
-      }
+    // Step 1: Ask the repository whether it owns the directory
+    const assessment = await this.planRemoval(worktreePath, workspacePath, git, expectedBranch);
+    if (assessment.refusal) {
+      throw assessment.refusal;
+    }
+    const { plan, existsOnDisk, registration } = assessment;
+
+    if (plan.action === 'already-removed') {
+      logger.info('Worktree directory is gone and git no longer lists it, keeping its branch', {
+        worktreePath,
+        expectedBranch,
+      });
+      await this.retirePendingReviews(worktreePath);
+      return;
     }
 
-    // Step 2: Try git worktree remove first (the clean way)
-    let gitRemoveSucceeded = false;
-    try {
-      await git.raw(['worktree', 'remove', worktreePath, '--force']);
-      logger.info('Git worktree remove succeeded', { worktreePath });
-      gitRemoveSucceeded = true;
-    } catch (error) {
-      logger.warn('Git worktree remove failed, will try fallback cleanup', { error, worktreePath });
+    const { registeredPath, branch: branchName, forceBranchDelete } = plan;
+    if (branchName) {
+      logger.info('Found branch for worktree', { branchName });
+    } else {
+      logger.info('Worktree has no branch of its own checked out, keeping its branches', {
+        checkedOut: registration?.branch ?? null,
+        expectedBranch,
+      });
     }
 
-    // Step 3: If git worktree remove failed or directory still exists, try fallbacks
-    if (fs.existsSync(worktreePath)) {
-      logger.info('Worktree directory still exists, attempting fallback cleanup', { worktreePath });
-
-      // Fallback 1: Try git worktree prune to clean up stale worktree entries
+    // Step 2: Delete the directory, which step 1 confirmed is this
+    // repository's unlocked worktree, while git still has it registered.
+    // `git worktree remove` drops the registration even when it cannot delete
+    // every file (one held open on Windows, a directory without write
+    // permission), and the folder it leaves would then be refused on the
+    // next attempt. Deleted first, a partial failure keeps the registration,
+    // so the next attempt finds this repository's worktree again.
+    if (existsOnDisk) {
+      // The directory itself, not a symlink to it, which step 1 read through
+      let target = worktreePath;
       try {
-        await git.raw(['worktree', 'prune']);
-        logger.info('Git worktree prune completed', { workspacePath });
-      } catch (pruneError) {
-        logger.warn('Git worktree prune failed', { pruneError });
+        target = fs.realpathSync.native(worktreePath);
+      } catch {
+        // Gone since step 1; the check below decides
       }
-
-      // Fallback 2: Force remove the directory with fs.rm
+      logger.info('Deleting the worktree directory', { worktreePath, target, registeredPath });
       try {
-        fs.rmSync(worktreePath, { recursive: true, force: true });
-        logger.info('Fallback fs.rmSync succeeded', { worktreePath });
+        // Not the plain `fs.promises.rm`: in Electron's main process it never
+        // settles on a tree holding an `.asar` file, as an Electron project's
+        // node_modules does, and the repository lock would be held for good.
+        // removeDirectoryTree uses `original-fs` there.
+        await removeDirectoryTree(target);
       } catch (fsError) {
-        logger.error('Fallback fs.rmSync failed', { fsError, worktreePath });
+        logger.error('Failed to delete the worktree directory', { fsError, worktreePath });
       }
     }
 
-    // Step 4: Final verification - the directory MUST be gone
+    // Step 3: Final verification - the directory MUST be gone
     if (fs.existsSync(worktreePath)) {
       const errorMsg = `Failed to delete worktree directory: ${worktreePath} still exists after all cleanup attempts`;
       logger.error(errorMsg);
@@ -527,10 +993,79 @@ export class GitWorktreeService {
 
     logger.info('Worktree directory confirmed deleted', { worktreePath });
 
-    // Step 4b: Retire pending AI reviews for files that lived in this worktree.
-    // Their paths can never resolve again, so the tags would sit pending
-    // forever, inflating the pending counts (#1403). This marks them reviewed;
-    // the rows and their baselines stay in document_history.
+    // Step 3b: Retire pending AI reviews for files that lived in this worktree.
+    await this.retirePendingReviews(worktreePath);
+
+    // Step 4: Unregister this worktree. With its directory gone,
+    // `worktree remove --force` drops just its entry, under the path git
+    // records. A repository-wide `worktree prune` would also drop other
+    // worktrees whose directories are missing for now, as on an unmounted
+    // drive, and `git worktree repair` cannot bring those back.
+    // Given a directory that still exists, `--force` deletes it, uncommitted
+    // files included, so it only ever gets a path that is gone: anything at
+    // `registeredPath` now is not the directory step 1 checked and step 2
+    // deleted. The branch is kept.
+    if (fs.existsSync(registeredPath)) {
+      const errorMsg = `Refusing to unregister ${registeredPath}: it still exists, and it is not the deleted ` +
+        `${worktreePath}. Its branch was kept.`;
+      logger.error(errorMsg, { worktreePath, registeredPath });
+      throw new Error(errorMsg);
+    }
+    try {
+      await git.raw(['worktree', 'remove', registeredPath, '--force']);
+      logger.info('Unregistered the worktree', { registeredPath });
+    } catch (unregisterError) {
+      logger.warn('Failed to unregister the worktree', { unregisterError, registeredPath });
+    }
+
+    // Step 5: Verify the worktree is no longer in git's list
+    try {
+      const registeredKey = canonicalWorktreePath(registeredPath);
+      const worktrees = await this.readWorktreeRegistrations(git);
+      const stillInList = worktrees.some(
+        entry => isThisWorktree(entry) || canonicalWorktreePath(entry.path) === registeredKey
+      );
+      if (stillInList) {
+        const errorMsg = `Worktree ${worktreePath} still in git worktree list after deletion. Git index may be corrupted.`;
+        logger.error(errorMsg, { worktreePath, remainingWorktrees: worktrees.map(wt => wt.path) });
+        throw new Error(errorMsg);
+      }
+
+      logger.info('Verified worktree is no longer in git list', { worktreePath });
+    } catch (verifyError) {
+      // Only throw if it's our specific verification error
+      if (verifyError instanceof Error && verifyError.message.includes('still in git worktree list')) {
+        throw verifyError;
+      }
+      // For other errors (like a failure to read the worktree list), just log a warning
+      logger.warn('Could not verify worktree removal from git list', { worktreePath, error: verifyError });
+    }
+
+    // Step 6: Delete the branch (best effort). It comes last because git
+    // refuses to delete a branch that a registered worktree has checked out.
+    if (branchName) {
+      try {
+        await git.deleteLocalBranch(branchName, forceBranchDelete);
+        logger.info('Branch deleted', { branchName });
+      } catch (error) {
+        // Continue even if branch deletion fails - the important part (directory removal) succeeded
+        logger.warn(forceBranchDelete ? 'Failed to delete branch' : 'Kept a branch that is not merged', {
+          error,
+          branchName,
+        });
+      }
+    }
+
+    logger.info('Worktree deletion complete', { worktreePath });
+  }
+
+  /**
+   * Retire pending AI reviews for files that lived in a removed worktree.
+   * Their paths can never resolve again, so the tags would sit pending
+   * forever, inflating the pending counts (#1403). This marks them reviewed;
+   * the rows and their baselines stay in document_history.
+   */
+  private async retirePendingReviews(worktreePath: string): Promise<void> {
     try {
       const { count } = await historyManager.clearAllPending(worktreePath);
       if (count > 0) {
@@ -540,63 +1075,35 @@ export class GitWorktreeService {
       // Never let history bookkeeping fail a worktree removal that succeeded.
       logger.warn('Failed to retire pending reviews for removed worktree', { error, worktreePath });
     }
+  }
 
-    // Step 5: Delete the branch if we found it (best effort, don't fail if this doesn't work)
-    if (branchName && branchName !== 'HEAD') {
-      try {
-        await git.deleteLocalBranch(branchName, true); // force delete
-        logger.info('Branch deleted', { branchName });
-      } catch (error) {
-        logger.warn('Failed to delete branch', { error, branchName });
-        // Continue even if branch deletion fails - the important part (directory removal) succeeded
-      }
-    }
-
-    // Step 6: Run a final prune to clean up any stale worktree references
-    if (!gitRemoveSucceeded) {
-      try {
-        await git.raw(['worktree', 'prune']);
-        logger.info('Final git worktree prune completed');
-      } catch (pruneError) {
-        logger.warn('Final git worktree prune failed', { pruneError });
-      }
-    }
-
-    // Step 7: Verify the worktree is no longer in git's list
+  /** `git worktree list --porcelain` of the repository `git` runs in */
+  private async readWorktreeRegistrations(git: SimpleGit): Promise<WorktreeRegistration[]> {
+    let output: string;
     try {
-      const worktrees = await this.listWorktrees(workspacePath);
-      const stillInList = worktrees.some(wt => wt.path === worktreePath);
-
-      if (stillInList) {
-        // Try one more prune
-        logger.warn('Worktree still in git list after deletion, attempting final prune', { worktreePath });
-        await git.raw(['worktree', 'prune']);
-
-        // Check again
-        const worktreesAfterPrune = await this.listWorktrees(workspacePath);
-        const stillInListAfterPrune = worktreesAfterPrune.some(wt => wt.path === worktreePath);
-
-        if (stillInListAfterPrune) {
-          const errorMsg = `Worktree ${worktreePath} still in git worktree list after deletion. Git index may be corrupted.`;
-          logger.error(errorMsg, {
-            worktreePath,
-            remainingWorktrees: worktreesAfterPrune.map(wt => wt.path),
-          });
-          throw new Error(errorMsg);
-        }
-      }
-
-      logger.info('Verified worktree is no longer in git list', { worktreePath });
-    } catch (verifyError) {
-      // Only throw if it's our specific verification error
-      if (verifyError instanceof Error && verifyError.message.includes('still in git worktree list')) {
-        throw verifyError;
-      }
-      // For other errors (like listWorktrees failure), just log a warning
-      logger.warn('Could not verify worktree removal from git list', { worktreePath, error: verifyError });
+      // `-z` (git 2.36) keeps a newline in a path or a lock reason inside its field
+      output = await git.raw(['worktree', 'list', '--porcelain', '-z']);
+    } catch {
+      output = await git.raw(['worktree', 'list', '--porcelain']);
     }
+    return parseWorktreePorcelain(output);
+  }
 
-    logger.info('Worktree deletion complete', { worktreePath });
+  /** The local branches of the repository `git` runs in, as full names without `refs/heads/` */
+  private async readLocalBranches(git: SimpleGit): Promise<string[]> {
+    const output = await git.raw(['for-each-ref', '--format=%(refname)', 'refs/heads']);
+    return output.split('\n').filter(Boolean).map(ref => ref.replace(/^refs\/heads\//, ''));
+  }
+
+  /** The common dir (main `.git` directory) of the repository at `workspacePath`; null when git cannot say */
+  private async readCommonDir(workspacePath: string, git: SimpleGit): Promise<string | null> {
+    try {
+      // Relative to the directory git runs in when it is the main `.git`
+      return path.resolve(workspacePath, (await git.revparse(['--git-common-dir'])).trim());
+    } catch (error) {
+      logger.warn('Failed to read the repository common dir', { error, workspacePath });
+      return null;
+    }
   }
 
   /**
@@ -612,7 +1119,7 @@ export class GitWorktreeService {
 
     // logger.info('Listing worktrees', { workspacePath });
 
-    const git: SimpleGit = simpleGit(workspacePath);
+    const git: SimpleGit = gitFor(workspacePath);
 
     try {
       // Get worktree list in porcelain format
@@ -739,7 +1246,7 @@ export class GitWorktreeService {
     if (!fs.existsSync(gitMeta)) {
       throw new Error(`Not a git repository: ${workspacePath}`);
     }
-    const git: SimpleGit = simpleGit(workspacePath);
+    const git: SimpleGit = gitFor(workspacePath);
     try {
       await git.raw(['rev-parse', '--verify', 'HEAD']);
     } catch {
@@ -772,7 +1279,8 @@ export class GitWorktreeService {
    * Get all local branch names (for de-duplication when creating worktrees)
    *
    * @param workspacePath - Path to the git repository
-   * @returns Set of branch names (without refs/heads/ prefix)
+   * @returns Set of branch names (without refs/heads/ prefix), plus the
+   *   worktree name of each `worktree/` branch
    */
   async getAllBranchNames(workspacePath: string): Promise<Set<string>> {
     if (!workspacePath) {
@@ -781,20 +1289,16 @@ export class GitWorktreeService {
 
     // logger.info('Getting all branch names', { workspacePath });
 
-    const git: SimpleGit = simpleGit(workspacePath);
+    const git: SimpleGit = gitFor(workspacePath);
 
     try {
-      // Get all local branches
-      const branchSummary = await git.branchLocal();
       const branchNames = new Set<string>();
 
-      for (const branchName of branchSummary.all) {
+      for (const branchName of await this.readLocalBranches(git)) {
         branchNames.add(branchName);
 
-        // Also extract worktree name from worktree branches (worktree/name -> name)
-        if (branchName.startsWith('worktree/')) {
-          branchNames.add(branchName.substring('worktree/'.length));
-        }
+        // Also the worktree name of a worktree branch (worktree/name -> name)
+        branchNames.add(stripWorktreeBranchPrefix(branchName));
       }
 
       // logger.info('Found branch names', { count: branchNames.size });
@@ -811,9 +1315,9 @@ export class GitWorktreeService {
    * @param workspacePath - Path to the main git repository
    * @returns Set of existing worktree directory names
    */
-  getExistingWorktreeDirectories(workspacePath: string): Set<string> {
+  getExistingWorktreeDirectories(workspacePath: string, worktreesDirOverride?: string): Set<string> {
     const projectName = path.basename(workspacePath);
-    const worktreesDir = path.resolve(workspacePath, '..', `${projectName}_worktrees`);
+    const worktreesDir = worktreesDirOverride ?? path.resolve(workspacePath, '..', `${projectName}_worktrees`);
 
     const names = new Set<string>();
 
@@ -873,7 +1377,7 @@ export class GitWorktreeService {
       throw new Error('repoPath is required');
     }
 
-    const git: SimpleGit = simpleGit(repoPath);
+    const git: SimpleGit = gitFor(repoPath);
     return this.getCurrentBranch(git);
   }
 
@@ -923,7 +1427,7 @@ export class GitWorktreeService {
     // logger.info('Checking git state', { repoPath });
 
     const gitDir = path.join(repoPath, '.git');
-    const git: SimpleGit = simpleGit(repoPath);
+    const git: SimpleGit = gitFor(repoPath);
 
     try {
       const status = await git.status();
@@ -983,7 +1487,7 @@ export class GitWorktreeService {
 
     logger.info('Checking for potential stash conflicts', { repoPath });
 
-    const git: SimpleGit = simpleGit(repoPath);
+    const git: SimpleGit = gitFor(repoPath);
 
     try {
       // Get status to check for conflicted files
@@ -1049,7 +1553,7 @@ export class GitWorktreeService {
 
     logger.info('Getting file diff', { worktreePath, filePath, baseBranchOverride });
 
-    const git: SimpleGit = simpleGit(worktreePath);
+    const git: SimpleGit = gitFor(worktreePath);
 
     try {
       // Use provided base branch (from database) or fall back to inferring
@@ -1229,7 +1733,7 @@ ${newLines.map(line => '+' + line).join('\n')}`;
 
     // logger.info('Getting worktree commits', { worktreePath, baseBranchOverride });
 
-    const git: SimpleGit = simpleGit(worktreePath);
+    const git: SimpleGit = gitFor(worktreePath);
 
     try {
       // Get current branch and base branch
@@ -1870,7 +2374,7 @@ ${newLines.map(line => '+' + line).join('\n')}`;
     conflictingFiles?: string[];
     conflictingCommits?: { ours: string[]; theirs: string[] };
   }> {
-    const git: SimpleGit = simpleGit(worktreePath);
+    const git: SimpleGit = gitFor(worktreePath);
 
     try {
       // Get the current branch
@@ -2323,7 +2827,7 @@ ${newLines.map(line => '+' + line).join('\n')}`;
       // `--no-optional-locks` flag simple-git gives no way to pass: it stops
       // this read-only status from refreshing (and so locking) `.git/index`,
       // where it would contend with concurrent git writers (NIM-2285).
-      const gitStatus = await git.env({ ...process.env, GIT_OPTIONAL_LOCKS: '0' }).status();
+      const gitStatus = await git.env({ ...sanitizeGitRepositoryEnv(process.env), GIT_OPTIONAL_LOCKS: '0' }).status();
 
       const changedFiles: Array<{ path: string; status: 'added' | 'modified' | 'deleted'; staged: boolean }> = [];
 
@@ -2407,7 +2911,7 @@ ${newLines.map(line => '+' + line).join('\n')}`;
 
     logger.info('Checking if commits exist on other branches', { worktreePath, commitCount: commitHashes.length });
 
-    const git: SimpleGit = simpleGit(worktreePath);
+    const git: SimpleGit = gitFor(worktreePath);
 
     try {
       // Get current branch
@@ -2587,7 +3091,7 @@ ${newLines.map(line => '+' + line).join('\n')}`;
       throw new Error('worktreePath is required');
     }
 
-    const git: SimpleGit = simpleGit(worktreePath);
+    const git: SimpleGit = gitFor(worktreePath);
     const result = await git.raw(['clean', '-Xdn']);
 
     if (!result.trim()) return [];
@@ -2611,7 +3115,7 @@ ${newLines.map(line => '+' + line).join('\n')}`;
     return gitOperationLock.withLock(worktreePath, 'cleanGitignoredFiles', async () => {
       logger.info('Cleaning gitignored files from worktree', { worktreePath });
 
-      const git: SimpleGit = simpleGit(worktreePath);
+      const git: SimpleGit = gitFor(worktreePath);
 
       // Dry-run to get the full list
       const dryRun = await git.raw(['clean', '-Xdn']);
