@@ -14,6 +14,20 @@ export interface GhCliStatus {
 
 const CACHE_DURATION_MS = 30_000;
 const SPAWN_TIMEOUT_MS = 10_000;
+/**
+ * How long a status whose `gh auth status` timed out is cached. The timeout
+ * says nothing about the login (on WSL the network check alone can take 10s),
+ * so it is re-probed soon instead of reporting "not signed in" for 30s.
+ */
+const TIMED_OUT_CACHE_MS = 5_000;
+
+interface AuthCheck {
+  authed: boolean;
+  host?: string;
+  user?: string;
+  /** `gh auth status` was killed by the spawn timeout before answering. */
+  timedOut?: boolean;
+}
 
 /**
  * The `gh` executable to spawn. Honors `NIMBALYST_GH_PATH` so E2E tests can
@@ -32,31 +46,49 @@ function ghCommand(): string {
  */
 export class GhCliDetector {
   private cachedStatus: GhCliStatus | null = null;
-  private cacheTimestamp: number = 0;
+  private cacheExpiresAt: number = 0;
+  private inFlight: Promise<GhCliStatus> | null = null;
+  private readonly cacheMs: number;
+  private readonly timedOutCacheMs: number;
+  private readonly spawnTimeoutMs: number;
+
+  constructor(options: { cacheMs?: number; timedOutCacheMs?: number; spawnTimeoutMs?: number } = {}) {
+    this.cacheMs = options.cacheMs ?? CACHE_DURATION_MS;
+    this.timedOutCacheMs = options.timedOutCacheMs ?? TIMED_OUT_CACHE_MS;
+    this.spawnTimeoutMs = options.spawnTimeoutMs ?? SPAWN_TIMEOUT_MS;
+  }
 
   async getStatus(): Promise<GhCliStatus> {
-    const now = Date.now();
-    if (this.cachedStatus && now - this.cacheTimestamp < CACHE_DURATION_MS) {
+    if (this.cachedStatus && Date.now() < this.cacheExpiresAt) {
       return this.cachedStatus;
     }
+    // Callers arriving while a probe runs share it instead of each spawning gh.
+    this.inFlight ??= this.probe().finally(() => {
+      this.inFlight = null;
+    });
+    return this.inFlight;
+  }
 
+  private async probe(): Promise<GhCliStatus> {
     const installCheck = await this.checkInstallation();
-    let authCheck: { authed: boolean; host?: string; user?: string } = { authed: false };
+    let authCheck: AuthCheck = { authed: false };
     if (installCheck.installed) {
       authCheck = await this.checkAuth();
     }
 
+    const prev = this.cachedStatus;
+    // A timed-out auth check is not an answer; keep the last one we had.
+    const keepPrevAuth = authCheck.timedOut === true && prev !== null && prev.installed;
     const next: GhCliStatus = {
       installed: installCheck.installed,
       version: installCheck.version,
-      authed: authCheck.authed,
-      host: authCheck.host,
-      user: authCheck.user,
+      authed: keepPrevAuth ? prev.authed : authCheck.authed,
+      host: keepPrevAuth ? prev.host : authCheck.host,
+      user: keepPrevAuth ? prev.user : authCheck.user,
     };
 
-    const prev = this.cachedStatus;
     this.cachedStatus = next;
-    this.cacheTimestamp = now;
+    this.cacheExpiresAt = Date.now() + (authCheck.timedOut ? this.timedOutCacheMs : this.cacheMs);
 
     if (!prev || prev.installed !== next.installed || prev.authed !== next.authed) {
       this.broadcastStatusChanged(next);
@@ -71,7 +103,7 @@ export class GhCliDetector {
    */
   clearCache(): void {
     this.cachedStatus = null;
-    this.cacheTimestamp = 0;
+    this.cacheExpiresAt = 0;
   }
 
   /**
@@ -83,7 +115,7 @@ export class GhCliDetector {
       try {
         const env = { ...process.env, PATH: this.getEnhancedPath(), NO_COLOR: '1' };
         const child = spawn(ghCommand(), ['auth', 'status'], {
-          timeout: SPAWN_TIMEOUT_MS,
+          timeout: this.spawnTimeoutMs,
           shell: true,
           env,
           stdio: ['ignore', 'pipe', 'pipe'],
@@ -138,7 +170,7 @@ export class GhCliDetector {
         };
 
         const child = spawn(ghCommand(), ['--version'], {
-          timeout: SPAWN_TIMEOUT_MS,
+          timeout: this.spawnTimeoutMs,
           shell: true,
           env,
           stdio: ['ignore', 'pipe', 'pipe'],
@@ -180,7 +212,7 @@ export class GhCliDetector {
     });
   }
 
-  private async checkAuth(): Promise<{ authed: boolean; host?: string; user?: string }> {
+  private async checkAuth(): Promise<AuthCheck> {
     return new Promise((resolve) => {
       try {
         // logger.main.info('[GhCliDetector] Checking gh auth status...');
@@ -192,7 +224,7 @@ export class GhCliDetector {
         };
 
         const child = spawn(ghCommand(), ['auth', 'status'], {
-          timeout: SPAWN_TIMEOUT_MS,
+          timeout: this.spawnTimeoutMs,
           shell: true,
           env,
           stdio: ['ignore', 'pipe', 'pipe'],
@@ -208,7 +240,17 @@ export class GhCliDetector {
           errorOutput += data.toString();
         });
 
-        child.on('close', (code) => {
+        child.on('exit', (code, signal) => {
+          // The spawn timeout kills the shell, but gh under it keeps the pipes
+          // open, so 'close' would still wait for gh to finish on its own.
+          if (code === null && signal) {
+            logger.main.warn(`[GhCliDetector] gh auth status timed out after ${this.spawnTimeoutMs}ms`);
+            resolve({ authed: false, timedOut: true });
+          }
+        });
+
+        child.on('close', (code, signal) => {
+          if (code === null && signal) return; // answered on 'exit'
           // `gh auth status` writes to stderr historically, stdout on newer versions.
           const combined = `${output}\n${errorOutput}`;
 
