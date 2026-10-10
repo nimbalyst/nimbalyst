@@ -1670,10 +1670,11 @@ function parseCommandLineArgs() {
         } else if (!arg.startsWith('--') && !arg.startsWith('-')) {
             // Handle plain file path argument (e.g., "preditor file.md")
             const argExists = existsSync(arg);
-            const argIsMarkdown = arg.endsWith('.md');
-            logger.main.info(`  Potential file: exists=${argExists}, isMarkdown=${argIsMarkdown}`);
+            // Same file types the OS associates with the app (package.json fileAssociations)
+            const argIsSupported = /\.(md|markdown|excalidraw)$/i.test(arg);
+            logger.main.info(`  Potential file: exists=${argExists}, isSupported=${argIsSupported}`);
 
-            if (argExists && argIsMarkdown) {
+            if (argExists && argIsSupported) {
                 pendingFilePath = arg;
                 logger.main.info(`✓ File path from CLI: ${pendingFilePath}`);
             }
