@@ -534,6 +534,8 @@ export type { OnboardingConfig } from '../../shared/types/workspace';
 export type AgentFileScopeMode = 'current-changes' | 'session-files' | 'all-changes';
 
 export interface WorkspaceState {
+  /** The repository the GitHub panel points at, when not the workspace root */
+  prRepoPath?: string;
   remoteSessionDrafts?: Record<string, { text: string; options?: import("@nimbalyst/runtime/sync/types").RemoteTurnOptions; attachments: import("@nimbalyst/runtime/ai/server/types").ChatAttachment[] }>;
   /** Explicit Cloudflare choices for this project; authentication stays in Wrangler. */
   cloudflareSandboxSelection?: { profileName: string; accountId: string | null };

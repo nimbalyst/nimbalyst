@@ -182,6 +182,7 @@ Twelve built-in provider lanes, plus any agent an extension contributes. Every l
 ### Pull Request Review Mode
 
 - Integrated GitHub PR view (Cmd+U, developer mode + GitHub remote): list, conversation, files-changed diffs, commits, checks
+- In a project holding several repositories (nested clones or attached folders), a repository picker chooses which one the PR and issue lists, and PR worktrees, use; remembered per project
 - Approve and merge (squash/merge/rebase) from inside the app; `gh` CLI auth, no stored tokens
 - Open a PR in a git worktree with an agent session on its head branch
 - Tracker integration (reference-based, works with any tracker type): status badge + priority marker on list rows, editable status pill and tracker chips in the detail header, dynamic review-status filter chips

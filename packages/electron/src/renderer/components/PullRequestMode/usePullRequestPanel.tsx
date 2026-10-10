@@ -18,6 +18,7 @@ import {
   setPrModeLayoutAtom,
   prListAtom,
   prNavigateRequestAtom,
+  prRemoteAtom,
   type PrFilterChip,
 } from '../../store/atoms/pullRequests';
 import { getPullRequestService } from '../../services/RendererPullRequestService';
@@ -57,6 +58,7 @@ export function usePullRequestPanel({
   const setLayout = useSetAtom(setPrModeLayoutAtom);
   const prList = useAtomValue(prListAtom);
   const setWindowMode = useSetAtom(setWindowModeAtom);
+  const remoteInfo = useAtomValue(prRemoteAtom);
   const navigateRequest = useAtomValue(prNavigateRequestAtom);
   const setNavigateRequest = useSetAtom(prNavigateRequestAtom);
   const trackerReferences = usePrTrackerReferences(remote);
@@ -179,10 +181,13 @@ export function usePullRequestPanel({
   const handleOpenInWorktree = useCallback(async () => {
     if (!selectedPr || !remote) return;
     try {
+      // Branch from the repository the panel points at
+      const repoPath = remoteInfo?.workspacePath === workspacePath ? remoteInfo.repoPath : undefined;
       const worktree = await getPullRequestService().openWorktree(
         workspacePath,
         remote,
         selectedPr.number,
+        repoPath,
       );
       // Reuse the worktree's existing session or spawn one, then select it —
       // selecting by worktree id alone leaves the agent view empty because the
@@ -198,7 +203,7 @@ export function usePullRequestPanel({
     } catch (err) {
       console.error('[usePullRequestPanel] Failed to open PR worktree', err);
     }
-  }, [selectedPr, remote, workspacePath, setWindowMode, linkSessionToPrTrackers]);
+  }, [selectedPr, remote, remoteInfo, workspacePath, setWindowMode, linkSessionToPrTrackers]);
 
   return {
     sidebar: (

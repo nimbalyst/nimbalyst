@@ -1628,8 +1628,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
 
   // PR review panel — GitHub API via `gh api` (Phase C of issue #307)
-  prDetectRemote: (workspacePath: string) =>
-    ipcRenderer.invoke('pr:detect-remote', workspacePath),
+  prDetectRemote: (workspacePath: string, repoPath?: string) =>
+    ipcRenderer.invoke('pr:detect-remote', workspacePath, repoPath),
   prList: (workspaceId: string, remote: string, filters?: unknown) =>
     ipcRenderer.invoke('pr:list', workspaceId, remote, filters),
   prGet: (workspaceId: string, remote: string, number: number) =>
@@ -1676,8 +1676,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('pr:poll-now', workspacePath),
   prFocus: (workspacePath: string, focused: boolean) =>
     ipcRenderer.send('pr:focus', { workspacePath, focused }),
-  prOpenWorktree: (workspacePath: string, remote: string, number: number) =>
-    ipcRenderer.invoke('pr:open-worktree', workspacePath, remote, number),
+  prOpenWorktree: (workspacePath: string, remote: string, number: number, repoPath?: string) =>
+    ipcRenderer.invoke('pr:open-worktree', workspacePath, remote, number, repoPath),
 
   // PR review panel — per-project gh account selection (issue #307)
   prGhAccounts: () => ipcRenderer.invoke('pr:gh-accounts'),

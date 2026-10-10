@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 <!-- New features go here -->
+- The GitHub panel can point at any repository in a multi-repo project, chosen from a picker in its header and remembered per project; a PR opened as a worktree branches from that repository
 
 ### Changed
 <!-- Changes to existing functionality go here -->
