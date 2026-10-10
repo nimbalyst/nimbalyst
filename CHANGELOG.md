@@ -26,6 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The daily cleanup of old tool output could skip past recent rows and never return to them once they aged; it now stops at the first row still inside the retention window and resumes there the next day
 - An agent edit to a shared document next to a comment on part of a bold run or inline code no longer writes broken markdown (such as an extra pair of `**` or backticks), and exporting such a document to a file keeps its formatting intact
 - Git repositories cloned inside a project and ignored by its `.gitignore` now get status badges and appear in the Git panel's repo picker and the title-bar branch menu.
+- Edits inside a repository cloned in the project and ignored by its `.gitignore` now reach the file tree and open editors, following that clone's own ignore rules.
 
 ### Removed
 <!-- Removed features go here -->
