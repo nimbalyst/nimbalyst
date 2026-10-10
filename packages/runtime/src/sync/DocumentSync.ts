@@ -826,6 +826,17 @@ export class DocumentSyncProvider {
           break;
         case 'error':
           console.error('[DocumentSync] Server error:', msg.code, msg.message);
+          try {
+            this.config.onServerError?.({
+              type: 'error',
+              code: msg.code,
+              message: msg.message,
+            });
+          } catch (err) {
+            // A host diagnostic must not prevent the provider from rejecting
+            // the affected local write and preserving its retry semantics.
+            console.error('[DocumentSync] Server-error listener failed:', err);
+          }
           await this.handleWriteRejection(msg.code, msg.clientUpdateId);
           break;
       }
