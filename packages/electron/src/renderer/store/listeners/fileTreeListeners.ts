@@ -153,6 +153,18 @@ export function initFileTreeListeners(workspacePath: string): () => void {
       }
     );
     cleanups.push(cleanup);
+
+    // A root's `.gitignore` decides which nested clones count as repos; main
+    // rescans on a change and names the root.
+    const reposCleanup = window.electronAPI.on(
+      'workspace:repos-changed',
+      async (data: { workspacePath: string }) => {
+        if (disposed || !data?.workspacePath) return;
+        if (data.workspacePath !== workspacePath && !treesByRoot[data.workspacePath]) return;
+        await refreshWorkspaceRepos(workspacePath, () => disposed);
+      }
+    );
+    cleanups.push(reposCleanup);
   }
 
   // "Attach Folder to Workspace..." from the File menu. The main process only
