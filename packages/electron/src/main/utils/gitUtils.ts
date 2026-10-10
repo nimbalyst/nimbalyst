@@ -274,7 +274,7 @@ export async function listIgnoredNestedRepositories(repoRoot: string): Promise<s
  * main repository's `.git` for a linked worktree. Null when `checkoutPath` is
  * not a checkout.
  */
-function gitCommonDir(checkoutPath: string): string | null {
+export function gitCommonDir(checkoutPath: string): string | null {
   const dotGit = join(checkoutPath, '.git');
   try {
     if (statSync(dotGit).isDirectory()) return realpathSync(dotGit);
