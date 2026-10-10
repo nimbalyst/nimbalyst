@@ -313,6 +313,12 @@ export interface WorktreeRemovalFacts {
    * listed here.
    */
   nestedWorktreePath: string | null;
+  /**
+   * A checkout of another repository the caller knows about -- a clone, or
+   * one of its linked worktrees -- that lies inside the directory. Deleting
+   * the directory would take its uncommitted work and history with it.
+   */
+  foreignCheckout?: { path: string; repository: string } | null;
   /** The branch the worktree was created on, from its row */
   expectedBranch?: string;
 }
@@ -344,7 +350,8 @@ export type WorktreeRemovalPlan =
         | 'moved'
         | 'copy'
         | 'untracked'
-        | 'contains-worktree';
+        | 'contains-worktree'
+        | 'contains-foreign-worktree';
     }
   /** The directory is gone and git no longer lists it; its branch stays */
   | { action: 'already-removed' }
@@ -447,12 +454,16 @@ export function planWorktreeRemoval(facts: WorktreeRemovalFacts): WorktreeRemova
 }
 
 /**
- * `plan`, unless the directory it deletes holds another worktree. The
- * ownership and lock checks cover the directory itself, and deleting it
- * would take the inner checkout, its uncommitted work and any lock with it.
+ * `plan`, unless the directory it deletes holds another checkout: a worktree
+ * of this repository, or a checkout of another one. The ownership and lock
+ * checks cover the directory itself, and deleting it would take the inner
+ * checkout, its uncommitted work and any lock with it.
  */
 function unlessNested(facts: WorktreeRemovalFacts, plan: WorktreeRemovalPlan): WorktreeRemovalPlan {
-  return facts.nestedWorktreePath ? { action: 'refuse', reason: 'contains-worktree' } : plan;
+  if (facts.nestedWorktreePath) {
+    return { action: 'refuse', reason: 'contains-worktree' };
+  }
+  return facts.foreignCheckout ? { action: 'refuse', reason: 'contains-foreign-worktree' } : plan;
 }
 
 /**
