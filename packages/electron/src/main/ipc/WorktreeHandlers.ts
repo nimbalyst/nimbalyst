@@ -23,6 +23,8 @@ import { gitRefWatcher } from '../file/GitRefWatcher';
 import { isGitRepositoryInUse } from '../file/GitWatcherLifecycle';
 import { listReposForRoot, resolveDefaultRepo } from '../services/workspaceRepos';
 import { withTimeout } from '../utils/gitUncommittedFiles';
+import { resolveWorktreesDir } from '../services/worktreeLocation';
+import { getWorkspaceRoots } from '../utils/store';
 import type { WorktreeCreateResult } from '../../shared/ipc/types';
 import { gitOperationLock } from '../services/GitOperationLock';
 import fs from 'node:fs';
@@ -412,6 +414,9 @@ export function registerWorktreeHandlers(): void {
         }
 
         const worktreeStore = createWorktreeStore(db);
+        // A clone nested in the workspace's repo root gets its worktrees beside
+        // that root, not inside it (where they would be untracked and watched).
+        const worktreesDir = resolveWorktreesDir(sourceRepo, getWorkspaceRoots(workspacePath));
 
         // If no custom name provided, generate a unique name using all three sources
         let finalName = name;
@@ -421,7 +426,7 @@ export function registerWorktreeHandlers(): void {
 
           const [dbNames, filesystemNames, branchNames] = await Promise.all([
             worktreeStore.getAllNames(),
-            Promise.resolve(gitWorktreeService.getExistingWorktreeDirectories(sourceRepo)),
+            Promise.resolve(gitWorktreeService.getExistingWorktreeDirectories(sourceRepo, worktreesDir)),
             gitWorktreeService.getAllBranchNames(sourceRepo),
           ]);
 
@@ -453,8 +458,8 @@ export function registerWorktreeHandlers(): void {
         const created = await gitWorktreeService.createWorktree(
           sourceRepo,
           branchSuffix !== undefined
-            ? { branchSuffix, baseBranch, takenPaths }
-            : { name: finalName, baseBranch, takenPaths },
+            ? { branchSuffix, baseBranch, takenPaths, worktreesDir }
+            : { name: finalName, baseBranch, takenPaths, worktreesDir },
         );
         // The service reports the repo it branched from as `projectPath`;
         // re-anchor to the workspace so identity stays on the primary root and
