@@ -39,7 +39,11 @@ vi.mock('../../services/GitWorktreeService', () => ({
 }));
 vi.mock('simple-git', () => ({ simpleGit: () => ({ fetch: mocks.fetch, raw: mocks.raw }) }));
 vi.mock('../../utils/ipcRegistry', () => ({ safeHandle: (name: string, fn: (...args: any[]) => Promise<any>) => mocks.handlers.set(name, fn) }));
-vi.mock('../../utils/store', () => ({ getWorktreeDefaultBase: vi.fn(), setWorktreeDefaultBase: vi.fn() }));
+vi.mock('../../utils/store', () => ({
+  getWorktreeDefaultBase: vi.fn(),
+  setWorktreeDefaultBase: vi.fn(),
+  getWorkspaceRoots: (workspacePath: string) => [workspacePath],
+}));
 vi.mock('../../services/WorktreeStore', () => ({ createWorktreeStore: () => mocks.store }));
 vi.mock('../../services/SuperLoopStore', () => ({ createSuperLoopStore: vi.fn() }));
 vi.mock('../../database/initialize', () => ({ getDatabase: () => ({}) }));
@@ -127,7 +131,8 @@ it.each([
   const result = await mocks.handlers.get('worktree:create')!({}, '/project', { name: 'feat/x', baseBranch: 'main', nameSource });
   expect(result.success).toBe(true);
   expect(mocks.createWorktree).toHaveBeenCalledWith('/project', {
-    ...nameOption, baseBranch: 'main', takenPaths: recorded, settingsWorkspacePath: '/project',
+    ...nameOption, baseBranch: 'main', takenPaths: recorded, worktreesDir: '/project_worktrees',
+    settingsWorkspacePath: '/project',
   });
 });
 

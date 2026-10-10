@@ -23,6 +23,7 @@ import { gitRefWatcher } from '../file/GitRefWatcher';
 import { isGitRepositoryInUse } from '../file/GitWatcherLifecycle';
 import { listReposForRoot, resolveDefaultRepo } from '../services/workspaceRepos';
 import { withTimeout } from '../utils/gitUncommittedFiles';
+import { resolveWorktreesDir } from '../services/worktreeLocation';
 import type { WorktreeCreateResult } from '../../shared/ipc/types';
 import { gitOperationLock } from '../services/GitOperationLock';
 import fs from 'node:fs';
@@ -30,7 +31,7 @@ import { archiveSessionsAndDestroyProviders } from '../services/ai/archiveSessio
 import { createWorktreeArchiveCleanup, worktreeRepoPath } from '../services/worktreeArchiveCleanup';
 import { safeHandle } from '../utils/ipcRegistry';
 import { sanitizeGitRepositoryEnv } from '../services/gitRepositoryEnv';
-import { getWorktreeDefaultBase, setWorktreeDefaultBase } from '../utils/store';
+import { getWorkspaceRoots, getWorktreeDefaultBase, setWorktreeDefaultBase } from '../utils/store';
 import {
   resolveWorktreeBase,
   setWorktreeDefaultBaseProvider,
@@ -430,6 +431,9 @@ export function registerWorktreeHandlers(): void {
         }
 
         const worktreeStore = createWorktreeStore(db);
+        // A clone nested in the workspace's repo root gets its worktrees beside
+        // that root, not inside it (where they would be untracked and watched).
+        const worktreesDir = resolveWorktreesDir(sourceRepo, getWorkspaceRoots(workspacePath));
 
         // If no custom name provided, generate a unique name using all three sources
         let finalName = name;
@@ -439,7 +443,7 @@ export function registerWorktreeHandlers(): void {
 
           const [dbNames, filesystemNames, branchNames] = await Promise.all([
             worktreeStore.getAllNames(),
-            Promise.resolve(gitWorktreeService.getExistingWorktreeDirectories(sourceRepo)),
+            Promise.resolve(gitWorktreeService.getExistingWorktreeDirectories(sourceRepo, worktreesDir)),
             gitWorktreeService.getAllBranchNames(sourceRepo),
           ]);
 
@@ -472,6 +476,7 @@ export function registerWorktreeHandlers(): void {
           ...(branchSuffix !== undefined ? { branchSuffix } : { name: finalName }),
           baseBranch,
           takenPaths,
+          worktreesDir,
           // The project setting is keyed by the workspace, not the attached repo.
           settingsWorkspacePath: workspacePath,
         });
