@@ -75,6 +75,10 @@ Twelve built-in provider lanes, plus any agent an extension contributes. Every l
 - Per-provider file-change fidelity (`providerFileTracking.ts`) — each lane declares how well it can report the files it changed (`structured` / `tool-args` / `none`), and the filesystem watcher is switched off only for lanes that report authoritatively. Lanes with no delete or move tool (Grok Build, Gemini) deliberately keep the watcher on so `rm` inside a shell command still shows up in the files-edited sidebar
 - Per-project AI provider overrides (Project settings) on top of application-level provider config
 
+## Account usage
+
+- Ollama usage meter and application settings: explicit sign-in in an isolated browser session; plan allowance, extra-credit balance, provider reset timestamps and this-week model calls when supplied. Missing values stay unavailable. `get_provider_usage(provider="ollama")` and `scrape_ollama_usage` share the same workspace-scoped cache and never open sign-in UI. This surface does not add a model provider.
+
 ## AI Sessions
 
 - Session creation, naming, archiving, deletion

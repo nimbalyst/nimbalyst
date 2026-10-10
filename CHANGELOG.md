@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 <!-- New features go here -->
+- Ollama account usage in the gutter and Settings, with explicit sign-in, plan allowance, credit balance, provider reset times and this-week model calls. Read-only host tools share the same workspace-scoped usage reader.
 - New editor blocks for wiki pages: charts, callouts, columns, tabs, a table of contents, transclusions, `@` mentions of people and dates, link previews and video players, code excerpts, and buttons that start an agent session or create a new item. Most can be resized from a bottom-right grip and edited from the block menu.
 - Local wikis on iPhone, iPad and Android: a Wiki tab shows the project's page tree, follows links between pages in the app, and saves page edits back to the desktop
 - On iPhone, iPad and Android, a Team tab opens a team project's Wiki and Trackers (alpha)
