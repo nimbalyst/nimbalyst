@@ -1,7 +1,6 @@
 import { useEffect, useRef } from 'react';
 import { useAtomValue, useSetAtom } from 'jotai';
 import type { ContentMode } from '../types/WindowModeTypes';
-import type { AgentModeRef } from '../components/AgentMode';
 import {
   toggleTerminalPanelAtom,
   closeTerminalPanelAtom,
@@ -19,6 +18,7 @@ import {
 import { prRemoteAtom } from '../store/atoms/pullRequests';
 import { developerModeAtom } from '../store/atoms/appSettings';
 import { sessionLaunchPopupRequestAtom, trackerQuickCreateRequestAtom } from '../store/atoms/appCommands';
+import { titleBarCreateMenusAtom, type TitleBarCreateMenuItem } from '../store/atoms/titleBarCreate';
 import posthog from 'posthog-js';
 
 interface KeyboardShortcutsOptions {
@@ -38,8 +38,6 @@ interface KeyboardShortcutsOptions {
     openHistoryDialog: () => void;
   } | null>;
 
-  // AgentMode ref for worktree operations
-  agentModeRef: React.RefObject<AgentModeRef | null>;
 
   // Agent mode toggle
   toggleAgentCollapsed: () => void;
@@ -72,10 +70,20 @@ interface KeyboardShortcutsOptions {
  * - Cmd+Y: Open history dialog (Files mode only)
  * - Cmd+T: Switch to Tracker mode (or toggle its sidebar if already in Tracker mode)
  * - Cmd+Alt+M: Switch to Org mode (or toggle its sidebar if already in Org mode)
- * - Cmd+Alt+W: Create new worktree session
+ * - Cmd+Alt+W: Open the new-worktree dialog
  * - Ctrl+`: Toggle Terminal panel
  */
 const isMac = navigator.platform.startsWith('Mac');
+
+/**
+ * The agent mode's "New Worktree" item, as the title bar's create menu shows
+ * it. Cmd+Alt+W runs this item so the shortcut opens the same dialog (base
+ * branch, name, repositories) and is disabled in the same cases. It is absent
+ * until agent mode's session list has mounted.
+ */
+function findNewWorktreeMenuItem(): TitleBarCreateMenuItem | undefined {
+  return store.get(titleBarCreateMenusAtom).agent?.items.find(item => item.id === 'worktree');
+}
 
 export function isSessionLaunchPopupShortcut(
   event: Pick<KeyboardEvent, 'key' | 'metaKey' | 'ctrlKey' | 'shiftKey' | 'altKey'>,
@@ -139,7 +147,6 @@ export function useKeyboardShortcuts({
   setActiveMode,
   activeModeStateRef,
   editorModeRef,
-  agentModeRef,
   toggleAgentCollapsed,
   toggleActiveLeftPane,
   openHistoryForCurrentDocument,
@@ -152,19 +159,22 @@ export function useKeyboardShortcuts({
   const closeTerminalPanel = useSetAtom(closeTerminalPanelAtom);
   const developerMode = useAtomValue(developerModeAtom);
 
-  // Track if worktree creation is pending after mode switch
-  const pendingWorktreeCreationRef = useRef(false);
+  // Cmd+Alt+W pressed outside agent mode: open the new-worktree dialog once
+  // agent mode has published its create menu.
+  const pendingWorktreeDialogRef = useRef(false);
 
-  // When agentModeRef becomes available and worktree creation is pending, execute it
   useEffect(() => {
-    if (pendingWorktreeCreationRef.current && agentModeRef.current && activeMode === 'agent') {
-      pendingWorktreeCreationRef.current = false;
-      void agentModeRef.current.createNewWorktreeSession().catch(() => {
-        // Swallowed: AgentMode already logs the error; keyboard shortcut
-        // has no UI to display it.
-      });
-    }
-  }, [agentModeRef, activeMode]);
+    if (activeMode !== 'agent') return;
+    const openPendingDialog = () => {
+      if (!pendingWorktreeDialogRef.current) return;
+      const item = findNewWorktreeMenuItem();
+      if (!item) return;
+      pendingWorktreeDialogRef.current = false;
+      if (!item.disabled) item.onSelect();
+    };
+    openPendingDialog();
+    return store.sub(titleBarCreateMenusAtom, openPendingDialog);
+  }, [activeMode]);
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent): void => {
@@ -352,7 +362,8 @@ export function useKeyboardShortcuts({
         }
       }
 
-      // Cmd+Alt+W (Mac) or Ctrl+Alt+W (Windows) to create new worktree session.
+      // Cmd+Alt+W (Mac) or Ctrl+Alt+W (Windows/Linux) opens the new-worktree
+      // dialog, like the "New Worktree" item it is shown next to.
       // `code` as well as `key`: with Option held, macOS rewrites the character
       // (Option+W is "∑"), so the letter alone is not enough to match on.
       if (workspaceMode && isAppModifier && e.altKey
@@ -362,15 +373,11 @@ export function useKeyboardShortcuts({
 
         if (isFullscreenPanelActive) exitFullscreenPanel();
 
-        // If in agent mode and ref is available, create worktree directly
-        if (activeMode === 'agent' && agentModeRef.current) {
-          void agentModeRef.current.createNewWorktreeSession().catch(() => {
-            // Swallowed: AgentMode already logs the error; keyboard
-            // shortcut has no UI to display it.
-          });
+        const worktreeItem = activeMode === 'agent' ? findNewWorktreeMenuItem() : undefined;
+        if (worktreeItem) {
+          if (!worktreeItem.disabled) worktreeItem.onSelect();
         } else {
-          // Switch to agent mode first, then create worktree when ref becomes available
-          pendingWorktreeCreationRef.current = true;
+          pendingWorktreeDialogRef.current = true;
           setActiveMode('agent');
         }
       }
@@ -423,7 +430,6 @@ export function useKeyboardShortcuts({
     setActiveMode,
     activeModeStateRef,
     editorModeRef,
-    agentModeRef,
     toggleAgentCollapsed,
     toggleActiveLeftPane,
     openHistoryForCurrentDocument,
