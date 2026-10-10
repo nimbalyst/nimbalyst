@@ -24,6 +24,7 @@ import { pushNavigationEntryAtom, isRestoringNavigationAtom } from '../../store'
 
 // Import provider panels from GlobalSettings
 import { ClaudePanel } from '../GlobalSettings/panels/ClaudePanel';
+import { OllamaPanel } from '../GlobalSettings/panels/OllamaPanel';
 import { ClaudeCodePanel } from '../GlobalSettings/panels/ClaudeCodePanel';
 import { OpenAIPanel } from '../GlobalSettings/panels/OpenAIPanel';
 import { OpenAICodexPanel } from '../GlobalSettings/panels/OpenAICodexPanel';
@@ -882,6 +883,8 @@ export function SettingsView({
     }
 
     switch (selectedCategory) {
+      case 'ollama':
+        return <OllamaPanel />;
       case 'provider-credentials':
         return <ProviderCredentialsPanel />;
       case 'claude':

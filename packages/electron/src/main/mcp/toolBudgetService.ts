@@ -38,6 +38,7 @@ import { feedbackToolSchemas } from './tools/feedbackToolHandlers';
 import { settingsToolSchemas } from './settingsServer';
 import { SESSION_CONTEXT_TOOL_SCHEMAS } from './sessionContextServer';
 import { META_AGENT_TOOL_DEFS } from './metaAgentServer';
+import { USAGE_POLLING_TOOL_SCHEMAS } from './usagePollingServer';
 import { buildSessionMetaToolSchemas } from './sessionNamingServer';
 import { isSettingsAgentToolsDisabled, isTrackersAgentToolsEnabled } from '../utils/store';
 import { MCPConfigService } from '../services/MCPConfigService';
@@ -104,6 +105,7 @@ function collectFirstPartySchemas(sessionMetaSchemas: MeasurableToolSchema[]): M
     ...settingsToolSchemas,
     ...SESSION_CONTEXT_TOOL_SCHEMAS,
     ...META_AGENT_TOOL_DEFS,
+    ...USAGE_POLLING_TOOL_SCHEMAS,
     ...sessionMetaSchemas,
   ] as MeasurableToolSchema[];
 }

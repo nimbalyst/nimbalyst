@@ -2,6 +2,7 @@ export type SettingsScope = 'application' | 'account' | 'project';
 
 export type ApplicationSettingsCategory =
   | 'provider-credentials'
+  | 'ollama'
   | 'notifications'
   | 'themes'
   | 'voice-mode'
@@ -137,6 +138,7 @@ const directChatProvidersVisible = ({ showDirectChatProviders }: SettingsAvailab
 const teamsVisible = ({ teamsConfigured }: SettingsAvailabilityContext) => teamsConfigured;
 
 const builtinSettingsRouteDefinitions: readonly Omit<BuiltinSettingsRoute, 'source'>[] = [
+  { id: 'ollama', scope: 'application', group: 'Application', label: 'Ollama usage', icon: 'speed' },
   { id: 'notifications', scope: 'application', group: 'Application', label: 'Notifications', icon: 'notifications' },
   { id: 'themes', scope: 'application', group: 'Application', label: 'Themes', icon: 'palette' },
   { id: 'voice-mode', scope: 'application', group: 'Application', label: 'Voice Mode', icon: 'mic', isAlpha: true },

@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 <!-- New features go here -->
+- Ollama account usage in the gutter and Settings, with explicit sign-in, plan allowance, credit balance, provider reset times and this-week model calls. Read-only host tools share the same workspace-scoped usage reader.
 
 ### Changed
 <!-- Changes to existing functionality go here -->
