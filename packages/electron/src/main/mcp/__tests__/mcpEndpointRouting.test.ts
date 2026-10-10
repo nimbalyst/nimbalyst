@@ -9,12 +9,14 @@ import {
 } from '../mcpEndpointRouting';
 import {
   MCP_CORE,
+  MCP_HOST,
   MCP_TRACKERS,
   MCP_SITUATIONAL,
   FIRST_PARTY_TOOL_TO_SERVER,
 } from '@nimbalyst/runtime/ai/server';
 import { SESSION_CONTEXT_TOOL_SCHEMAS } from '../sessionContextServer';
 import { settingsToolSchemas } from '../settingsServer';
+import { USAGE_POLLING_TOOL_SCHEMAS } from '../usagePollingServer';
 
 describe('mcpEndpointRouting', () => {
   describe('isMcpEndpoint', () => {
@@ -103,6 +105,16 @@ describe('mcpEndpointRouting', () => {
         .filter((name) => !FIRST_PARTY_TOOL_TO_SERVER.has(name));
 
       expect(unmapped).toEqual([]);
+    });
+
+    it('exposes every declared usage tool on the host endpoint only', () => {
+      const names = USAGE_POLLING_TOOL_SCHEMAS.map(tool => tool.name);
+      expect(selectFirstPartyToolsForEndpoint(USAGE_POLLING_TOOL_SCHEMAS, MCP_HOST)
+        .map(tool => tool.name)).toEqual(names);
+      for (const key of [MCP_CORE, MCP_TRACKERS, MCP_SITUATIONAL]) {
+        expect(selectFirstPartyToolsForEndpoint(USAGE_POLLING_TOOL_SCHEMAS, key)).toEqual([]);
+      }
+      for (const name of names) expect(FIRST_PARTY_TOOL_TO_SERVER.get(name)).toBe(MCP_HOST);
     });
 
     it('excludes retired tools (open_workspace) from every first-party endpoint', () => {

@@ -9,6 +9,8 @@ const SETTINGS_URL = 'https://ollama.com/settings';
 const READ_TIMEOUT_MS = 10_000;
 const LOGIN_TIMEOUT_MS = 10 * 60_000;
 const FAILURE_RETRY_MS = 30_000;
+// Public Ollama AuthKit application, pinned from its anonymous /signin redirect.
+const OLLAMA_AUTHKIT_CLIENT_SHA256 = 'a3d61c078ac261b3f6853748823e3d4ce3f9374ae7cf727d586cff339cc58025';
 
 export function getOllamaDashboardBinding(workspacePath: string): string {
   if (!workspacePath?.trim()) throw new Error('Ollama usage requires an active workspace');
@@ -45,6 +47,22 @@ export function isOllamaLoginNavigation(url: string): boolean {
 
 const readError = (): OllamaDashboardResult => ({ status: 'error', error: 'Ollama dashboard usage could not be read.' });
 
+function isOllamaAuthorizationNavigation(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    if (parsed.origin !== 'https://api.workos.com' || parsed.pathname !== '/user_management/authorize'
+      || parsed.username || parsed.password || parsed.hash) return false;
+    const params = parsed.searchParams;
+    const keys = [...params.keys()];
+    if (new Set(keys).size !== keys.length
+      || keys.some(key => !['client_id', 'provider', 'redirect_uri', 'response_type', 'state'].includes(key))) return false;
+    if (params.has('state') && !params.get('state')) return false;
+    return params.get('provider') === 'authkit' && params.get('response_type') === 'code'
+      && params.get('redirect_uri') === 'https://ollama.com/auth/callback'
+      && createHash('sha256').update(params.get('client_id') || '').digest('hex') === OLLAMA_AUTHKIT_CLIENT_SHA256;
+  } catch { return false; }
+}
+
 class OllamaDashboardScraperImpl {
   private readonly windows = new Set<BrowserWindow>();
   private readonly reads = new Map<string, Promise<OllamaDashboardResult>>();
@@ -55,7 +73,9 @@ class OllamaDashboardScraperImpl {
 
   private createWindow(binding: string, visible: boolean, parent?: BrowserWindow): BrowserWindow {
     const partition = ollamaUsagePartition(binding);
-    session.fromPartition(partition).setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
+    const browserSession = session.fromPartition(partition);
+    browserSession.setPermissionCheckHandler(() => false);
+    browserSession.setPermissionRequestHandler((_contents, _permission, callback) => callback(false));
     const window = new BrowserWindow({
       show: visible, width: 1050, height: 800, title: 'Ollama usage sign-in',
       ...(parent && !parent.isDestroyed() ? { parent } : {}),
@@ -64,11 +84,26 @@ class OllamaDashboardScraperImpl {
     this.windows.add(window);
     window.on('closed', () => this.windows.delete(window));
     window.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
-    const restrict = (event: { preventDefault(): void }, url: string) => {
-      if (!isOllamaLoginNavigation(url)) event.preventDefault();
+    let nextRedirect: 'signin' | 'workos' | 'done' = visible ? 'signin' : 'done';
+    const restrict = (event: { preventDefault(): void }, url: string, httpRedirect: boolean, mainFrame?: boolean) => {
+      if (mainFrame === false) {
+        if (!isOllamaLoginNavigation(url)) event.preventDefault();
+        return;
+      }
+      const expected = nextRedirect;
+      nextRedirect = 'done';
+      if (visible && httpRedirect && mainFrame === true && expected === 'workos'
+        && isOllamaAuthorizationNavigation(url)) return;
+      if (!isOllamaLoginNavigation(url)) { event.preventDefault(); return; }
+      if (visible && httpRedirect && mainFrame === true && expected === 'signin'
+        && url === 'https://ollama.com/signin') nextRedirect = 'workos';
     };
-    window.webContents.on('will-navigate', restrict);
-    window.webContents.on('will-redirect', restrict);
+    window.webContents.on('will-frame-navigate', event => {
+      // Subframes cannot authorize or alter the foreground main-frame redirect.
+      if (!event.isMainFrame && !isOllamaLoginNavigation(event.url)) event.preventDefault();
+    });
+    window.webContents.on('will-navigate', (event, url, _inPlace, mainFrame) => restrict(event, url, false, mainFrame));
+    window.webContents.on('will-redirect', (event, url, _inPlace, mainFrame) => restrict(event, url, true, mainFrame));
     return window;
   }
 
@@ -108,15 +143,28 @@ class OllamaDashboardScraperImpl {
     try {
       window = this.createWindow(binding, false);
       const view = window;
+      let redirectedToLogin = false;
+      const signInRequired = new Promise<OllamaDashboardResult>(resolve => {
+        const stopAtLogin = (event: { preventDefault(): void }, url: string, _inPlace?: boolean, mainFrame?: boolean) => {
+          if (mainFrame === false || !isOllamaLoginNavigation(url) || isOllamaUsagePage(url)) return;
+          // A hidden reader never needs to load an authentication page.
+          redirectedToLogin = true;
+          event.preventDefault();
+          resolve({ status: 'sign-in-required' });
+        };
+        view.webContents.on('will-redirect', stopAtLogin);
+        view.webContents.on('will-navigate', stopAtLogin);
+      });
       const timeout = new Promise<OllamaDashboardResult>(resolve => {
         timer = setTimeout(() => { if (!view.isDestroyed()) view.destroy(); resolve(readError()); }, READ_TIMEOUT_MS);
       });
       const operation = (async () => {
-        await view.loadURL(SETTINGS_URL);
+        try { await view.loadURL(SETTINGS_URL); }
+        catch { return redirectedToLogin ? { status: 'sign-in-required' } as const : readError(); }
         const result = await this.extract(view);
         return getOllamaDashboardBinding(workspacePath) === binding ? result : { status: 'sign-in-required' } as const;
       })();
-      return await Promise.race([operation, timeout]);
+      return await Promise.race([operation, signInRequired, timeout]);
     } catch { return readError(); }
     finally { clearTimeout(timer); if (window && !window.isDestroyed()) window.destroy(); }
   }
