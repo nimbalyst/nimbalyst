@@ -46,6 +46,8 @@ interface OpenAITool {
 export interface ToolCallRequest {
   name: string;
   arguments: Record<string, unknown>;
+  /** Model-supplied title for this specific call, shown instead of the raw name. */
+  description?: string;
 }
 
 export interface ProtocolMessage {
@@ -206,7 +208,12 @@ export class AntigravityToolLoopProtocol {
     abortSignal?: AbortSignal
   ): AsyncGenerator<
     | { type: 'text'; content: string }
-    | { type: 'tool_call'; name: string; args: Record<string, unknown> }
+    | {
+        type: 'tool_call';
+        name: string;
+        args: Record<string, unknown>;
+        description?: string;
+      }
     | { type: 'tool_result'; name: string; result: string }
     | { type: 'complete' }
   > {
@@ -389,7 +396,12 @@ export class AntigravityToolLoopProtocol {
           content: sanitizedErr,
           toolName: toolCall.name,
         });
-        yield { type: 'tool_call', name: toolCall.name, args: toolCall.arguments };
+        yield {
+          type: 'tool_call',
+          name: toolCall.name,
+          args: toolCall.arguments,
+          description: toolCall.description,
+        };
         yield { type: 'tool_result', name: toolCall.name, result: errPayload };
         continue;
       }
@@ -409,7 +421,12 @@ export class AntigravityToolLoopProtocol {
       }
       this.history.push({ role: 'assistant', content: assistantEntry });
 
-      yield { type: 'tool_call', name: toolCall.name, args: toolCall.arguments };
+      yield {
+        type: 'tool_call',
+        name: toolCall.name,
+        args: toolCall.arguments,
+        description: toolCall.description,
+      };
 
       const ledgerArg = (() => {
         const a = (toolCall.arguments ?? {}) as Record<string, unknown>;
@@ -634,7 +651,7 @@ export class AntigravityToolLoopProtocol {
       'respond with ONLY the following JSON block (no markdown fences, no extra text',
       'before or after it):',
       '',
-      '{"tool_call":{"name":"<tool_name>","arguments":{...}}}',
+      '{"tool_call":{"name":"<tool_name>","description":"<what this call does>","arguments":{...}}}',
       '',
       'IMPORTANT: To actually TAKE an action that a tool provides (for example to',
       'spawn a session, create a session, or run any tool), you MUST output the',
@@ -642,6 +659,11 @@ export class AntigravityToolLoopProtocol {
       'action in prose. Saying what you would do, instead of emitting the JSON,',
       'means the tool will NOT run and nothing will happen. If an action is needed,',
       'your entire response must be the single JSON block and nothing else.',
+      '',
+      'Always include "description": a short, present-tense summary of what this',
+      'particular call does -- "List project subdirectories", not a restatement of',
+      'the tool name like "Run command". It is shown to the user as the title of',
+      'this call.',
       '',
       '### Example',
       '',
@@ -655,6 +677,14 @@ export class AntigravityToolLoopProtocol {
       'instruction from the user. When you are done with tool calls and ready to',
       'give your final answer, and no tool is needed, respond with plain text only',
       '(no JSON tool_call block).',
+      '',
+      '## Final Answer Formatting',
+      '',
+      'Write the final answer for someone skimming: short paragraphs, a **bold',
+      'label** starting a paragraph when covering more than one topic, and bullets',
+      'rather than one dense block when listing more than two things. Lead with the',
+      'concrete point, not a restatement of the question. If there is a natural next',
+      'step or open question, end with one short sentence naming it.',
       '',
       ...(hasWriteFile
         ? [
@@ -713,7 +743,7 @@ export class AntigravityToolLoopProtocol {
    */
   private buildExampleEnvelope(schema?: { name: string; parameters: Record<string, unknown> }): string {
     if (!schema) {
-      return '{"tool_call":{"name":"<tool_name>","arguments":{}}}';
+      return '{"tool_call":{"name":"<tool_name>","description":"<what this call does>","arguments":{}}}';
     }
 
     const args: Record<string, unknown> = {};
@@ -729,7 +759,9 @@ export class AntigravityToolLoopProtocol {
       }
     }
 
-    return JSON.stringify({ tool_call: { name: schema.name, arguments: args } });
+    return JSON.stringify({
+      tool_call: { name: schema.name, description: `Example: ${schema.name}`, arguments: args },
+    });
   }
 
   /** Pick a plausible placeholder value for a single JSON-Schema property. */
@@ -878,7 +910,7 @@ export class AntigravityToolLoopProtocol {
     // so the boundary is deterministic instead of silently dropping the final \n.
     let content = m[2];
     if (content.length > 0 && !content.endsWith('\n')) content += '\n';
-    return { name: 'write_file', arguments: { path, content } };
+    return { name: 'write_file', arguments: { path, content }, description: `Write ${path}` };
   }
 
   /**
@@ -930,7 +962,9 @@ export class AntigravityToolLoopProtocol {
 
     const candidate = stripped.slice(openBrace, closeIdx + 1);
     try {
-      const parsed = JSON.parse(candidate) as { tool_call?: { name?: unknown; arguments?: unknown } };
+      const parsed = JSON.parse(candidate) as {
+        tool_call?: { name?: unknown; arguments?: unknown; description?: unknown };
+      };
       const tc = parsed.tool_call;
       if (!tc || typeof tc.name !== 'string') return null;
 
@@ -939,7 +973,12 @@ export class AntigravityToolLoopProtocol {
           ? (tc.arguments as Record<string, unknown>)
           : {};
 
-      return { name: tc.name, arguments: args };
+      const description =
+        typeof tc.description === 'string' && tc.description.trim()
+          ? tc.description.trim()
+          : undefined;
+
+      return { name: tc.name, arguments: args, description };
     } catch {
       return null;
     }
