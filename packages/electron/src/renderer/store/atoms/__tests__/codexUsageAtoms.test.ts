@@ -54,6 +54,55 @@ describe('Codex usage window display', () => {
     expect(formatCodexWindowLabel(selected!.window)).toBe('Weekly');
   });
 
+  it('prefers the account-wide Codex bucket over a more constrained Spark bucket', () => {
+    const usage: CodexUsageData = {
+      limits: [
+        {
+          id: 'codex',
+          name: null,
+          planType: 'pro',
+          windows: [window('primary', 12, 300), window('secondary', 62, 10_080)],
+          credits: null,
+          individualLimit: null,
+          rateLimitReachedType: null,
+        },
+        {
+          id: 'codex_bengalfox',
+          name: 'GPT-5.3-Codex-Spark',
+          planType: 'pro',
+          windows: [window('primary', 95, 10_080)],
+          credits: null,
+          individualLimit: null,
+          rateLimitReachedType: null,
+        },
+      ],
+      lastUpdated: 0,
+    };
+
+    const selected = getMostConstrainedCodexWindow(usage);
+    expect(selected?.limit.id).toBe('codex');
+    expect(selected?.window.usedPercent).toBe(62);
+  });
+
+  it('falls back to a scoped bucket when the account-wide bucket is unavailable', () => {
+    const usage: CodexUsageData = {
+      limits: [{
+        id: 'codex_bengalfox',
+        name: 'GPT-5.3-Codex-Spark',
+        planType: 'pro',
+        windows: [window('primary', 95, 10_080)],
+        credits: null,
+        individualLimit: null,
+        rateLimitReachedType: null,
+      }],
+      lastUpdated: 0,
+    };
+
+    const selected = getMostConstrainedCodexWindow(usage);
+    expect(selected?.limit.id).toBe('codex_bengalfox');
+    expect(selected?.window.usedPercent).toBe(95);
+  });
+
   it('tolerates payloads without limits (older main process or cached pre-limits snapshot)', () => {
     const legacy = { lastUpdated: 1 } as CodexUsageData;
     expect(getCodexUsageWindows(legacy)).toEqual([]);
