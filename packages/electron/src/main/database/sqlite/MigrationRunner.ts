@@ -248,6 +248,11 @@ export function getMigrations(schemaDir: string): Migration[] {
     { version: 45, name: 'tracker_item_revisions', sqlFile: path.join(schemaDir, '0045_tracker_item_revisions.sql') },
     { version: 46, name: 'tracker_item_revision_tombstones', sqlFile: path.join(schemaDir, '0046_tracker_item_revision_tombstones.sql') },
     { version: 47, name: 'tracker_item_revision_scope', sqlFile: path.join(schemaDir, '0047_tracker_item_revision_scope.sql') },
+    { version: 48, name: 'tracker_relationship_index_qualifiers', sqlFile: path.join(schemaDir, '0048_tracker_relationship_index_qualifiers.sql') },
+    { version: 49, name: 'personal_pages', sqlFile: path.join(schemaDir, '0049_personal_pages.sql') },
+    { version: 50, name: 'personal_pages_one_tree', sqlFile: path.join(schemaDir, '0050_personal_pages_one_tree.sql') },
+    { version: 51, name: 'personal_pages_parents_and_order', sqlFile: path.join(schemaDir, '0051_personal_pages_parents_and_order.sql') },
+    { version: 52, name: 'personal_pages_fields', sqlFile: path.join(schemaDir, '0052_personal_pages_fields.sql') },
   ];
 }
 

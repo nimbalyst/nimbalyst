@@ -16,6 +16,8 @@
 
 import type { TrackerRecord } from '@nimbalyst/runtime/core/TrackerRecord';
 import { globalRegistry } from '@nimbalyst/runtime/plugins/TrackerPlugin/models';
+import { isLocalWikiRecord } from '../../services/localWikiTrackerRecords';
+import { saveLocalWikiItemFields } from '../../services/localWikiTrackerWrites';
 
 const FILE_BACKED_SOURCES = new Set(['frontmatter', 'import', 'inline']);
 
@@ -70,6 +72,11 @@ export async function saveTrackerFields(
   item: TrackerRecord,
   updates: Record<string, unknown>,
 ): Promise<void> {
+  if (isLocalWikiRecord(item)) {
+    // A Local wiki item is a file: the wiki library writes it.
+    await saveLocalWikiItemFields(item, updates);
+    return;
+  }
   const routed = routeTrackerWrite(item, updates);
 
   try {
@@ -119,10 +126,18 @@ export interface TrackerBatchSaveResult {
 export async function saveTrackerFieldsBatch(
   entries: readonly TrackerBatchSaveEntry[],
 ): Promise<TrackerBatchSaveResult> {
+  let wikiWritten = 0;
+  let wikiFailed = 0;
+  for (const entry of entries) {
+    if (!isLocalWikiRecord(entry.item)) continue;
+    if (await saveLocalWikiItemFields(entry.item, entry.updates)) wikiWritten += 1;
+    else wikiFailed += 1;
+  }
   const routed = entries
+    .filter(entry => !isLocalWikiRecord(entry.item))
     .map(entry => routeTrackerWrite(entry.item, entry.updates))
     .filter(entry => entry.fileUpdates || entry.storeUpdates);
-  if (routed.length === 0) return { written: 0, failed: 0 };
+  if (routed.length === 0) return { written: wikiWritten, failed: wikiFailed };
 
   try {
     const result = await window.electronAPI.documentService.updateTrackerItems({
@@ -143,9 +158,9 @@ export async function saveTrackerFieldsBatch(
       })
       .catch(() => {});
 
-    return { written: routed.length - failed, failed };
+    return { written: wikiWritten + routed.length - failed, failed: wikiFailed + failed };
   } catch (error) {
     console.error('[trackerFieldSave] Failed to save a batch of fields:', error);
-    return { written: 0, failed: routed.length };
+    return { written: wikiWritten, failed: wikiFailed + routed.length };
   }
 }

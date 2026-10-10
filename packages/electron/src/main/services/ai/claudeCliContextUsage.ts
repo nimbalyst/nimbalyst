@@ -122,8 +122,8 @@ export function computeContextFillTokens(usage: AssembledUsage): number {
  * Merge one assembled turn's usage into the session's token usage:
  *   - cumulative `inputTokens`/`outputTokens`/`totalTokens` accumulate the new
  *     (uncached) input + generated output each turn, matching the SDK's cumulative
- *     display semantics. Cache reads are a per-round context detail surfaced via
- *     `currentContext`, not added to cumulative input.
+ *     display semantics. Cache reads/writes are not added to cumulative input;
+ *     they accumulate in `cacheReadInputTokens` / `cacheCreationInputTokens`.
  *   - `currentContext` is latest-wins (input + cache_read + cache_creation).
  *   - `costUSD` is NOT computed: the Anthropic SSE stream the proxy tees carries no
  *     cost; the SDK gets it from `result.modelUsage`, which we don't have. Left as-is.
@@ -142,6 +142,9 @@ export function buildClaudeCliTokenUsage(
     inputTokens,
     outputTokens,
     totalTokens: inputTokens + outputTokens,
+    // Anthropic's input excludes cache; the cache counters accumulate separately.
+    cacheReadInputTokens: (base.cacheReadInputTokens || 0) + (usage.cacheReadInputTokens || 0),
+    cacheCreationInputTokens: (base.cacheCreationInputTokens || 0) + (usage.cacheCreationInputTokens || 0),
     // Legacy mirror (kept for backward compatibility; UI reads currentContext).
     contextWindow,
     currentContext: {

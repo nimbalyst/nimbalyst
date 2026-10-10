@@ -100,8 +100,10 @@ describe('AgentToolHooks', () => {
       expect(options.logAgentMessage).not.toHaveBeenCalled();
       expect(getPendingToolPermissions).not.toHaveBeenCalled();
     });
+  });
 
-    it('still runs compound-bash checks in agent mode', async () => {
+  describe('Bash pre-tool hook: compound commands defer to the SDK', () => {
+    it('does not prompt for a compound command in agent mode', async () => {
       const pending = new Map();
       const options = createMockOptions({
         getCurrentMode: () => 'agent',
@@ -111,21 +113,19 @@ describe('AgentToolHooks', () => {
       const hooks = new AgentToolHooks(options);
       const preToolHook = hooks.createPreToolUseHook();
 
-      // Kick off the hook -- handleCompoundBashCommand emits a pending
-      // permission for the `cd` sub-command and then blocks on a response.
-      // We only care that the emit happened (proves the splitter ran in agent
-      // mode), so detach the promise instead of awaiting it.
-      const resultPromise = preToolHook(
-        { tool_name: 'Bash', tool_input: { command: 'cd packages/runtime && echo ok' } },
+      // User PreToolUse hooks run in parallel with this one, so a prompt
+      // raised here would ignore their `allow`. No decision lets the SDK
+      // combine hook results and call canUseTool only if still needed.
+      const result = await preToolHook(
+        { tool_name: 'Bash', tool_input: { command: "grep -l '^x:' src/*.md | sed 's|a||;s|b||' > /tmp/out.txt; wc -l < /tmp/out.txt" } },
         'tool-use-agent-compound-1',
         { signal: new AbortController().signal }
       );
-      void resultPromise.catch(() => {});
 
-      await Promise.resolve();
-      await Promise.resolve();
-
-      expect(options.emit).toHaveBeenCalledWith('toolPermission:pending', expect.any(Object));
+      expect(result).toEqual({});
+      expect(options.emit).not.toHaveBeenCalled();
+      expect(options.logAgentMessage).not.toHaveBeenCalled();
+      expect(pending.size).toBe(0);
     });
   });
 

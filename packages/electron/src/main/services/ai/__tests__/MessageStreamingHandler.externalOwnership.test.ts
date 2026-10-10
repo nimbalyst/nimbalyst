@@ -152,6 +152,9 @@ vi.mock("../mobilePushRequest", () => ({
   requestMobilePush: vi.fn(),
 }));
 
+vi.mock("../supersedeOpenQuestions", () => ({
+  supersedeOpenQuestions: vi.fn(async () => ({ superseded: [], skipped: [] })),
+}));
 vi.mock("../pendingPromptPersistence", () => ({
   setSessionPendingPrompt: vi.fn(),
 }));
@@ -183,6 +186,8 @@ vi.mock("../../../mcp/devAgentTools", () => ({
 vi.mock("../../MetaAgentService", () => ({
   MetaAgentService: { getInstance: vi.fn() },
 }));
+
+vi.mock("../wikiSkillAvailability", () => ({ isWikiSkillAvailable: () => false }));
 
 vi.mock("../../../utils/store", () => ({
   getDefaultEffortLevel: vi.fn(() => undefined),

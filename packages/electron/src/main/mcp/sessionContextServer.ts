@@ -9,6 +9,8 @@
  */
 
 import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
+import { database } from '../database/PGLiteDatabaseWorker';
+import { findSessionTreeRoot, readSessionSubtree } from '../services/sessionHierarchy';
 import {
   AISessionsRepository,
   SessionFilesRepository,
@@ -23,6 +25,11 @@ import {
   deriveCoachingSignals,
   type CoachingMessageRow,
 } from "./sessionCoachingSignals";
+import {
+  LIST_CITABLE_INPUTS_TOOL_NAME,
+  LIST_CITABLE_INPUTS_TOOL_SCHEMA,
+} from "../services/pageCitations/listCitableInputs";
+import { handleListCitableInputs } from "../services/pageCitations/listCitableInputsHandler";
 
 // ─── Utilities ──────────────────────────────────────────────────────
 
@@ -147,6 +154,8 @@ async function handleGetSessionSummary(
   // Keep actionable interactive prompts at the end of every summary. Raw
   // prompt rows are filtered in SQL so large sessions do not need to load their
   // complete transcript just to find an unmatched question.
+  // Synthetic terminal rows (e.g. a question superseded by a new user turn)
+  // carry only the tool_use_id, so they are matched by their row type.
   const { rows: promptRows } = await db.query<{ content: string }>(
     `SELECT content FROM ai_agent_messages
      WHERE session_id = $1
@@ -163,6 +172,7 @@ async function handleGetSessionSummary(
          OR content LIKE '%permission_response%'
          OR content LIKE '%git_commit_proposal%'
          OR content LIKE '%exit_plan_mode_%'
+         OR content LIKE '%nimbalyst_tool_result%'
        )
      ORDER BY id ASC`,
     [sessionId]
@@ -331,32 +341,14 @@ async function handleGetWorkstreamOverview(
   currentSessionId: string,
   workspaceId: string
 ): Promise<string> {
-  let parentId = workstreamId;
-
-  if (!parentId) {
-    const currentSession = await AISessionsRepository.get(currentSessionId);
-    if (!currentSession) {
-      return "Error: Current session not found";
-    }
-    parentId = currentSession.parentSessionId ?? undefined;
-    if (!parentId) {
-      return "This session is not part of a workstream (no parent session). Use get_session_summary to view the current session.";
-    }
-  }
+  const parentId = await findSessionTreeRoot(database, workstreamId || currentSessionId, workspaceId);
 
   const parent = await AISessionsRepository.get(parentId);
   if (!parent) {
     return `Error: Workstream session ${parentId} not found`;
   }
 
-  const { database } = await import("../database/PGLiteDatabaseWorker");
-  const { rows } = await database.query<any>(
-    `SELECT s.id, s.title, s.provider, s.model, s.session_type, s.created_at, s.updated_at
-     FROM ai_sessions s
-     WHERE s.parent_session_id = $1 AND s.workspace_id = $2
-     ORDER BY s.created_at ASC`,
-    [parentId, workspaceId]
-  );
+  const rows = await readSessionSubtree(database, parentId, workspaceId);
 
   if (rows.length === 0) {
     return `Workstream: "${parent.title || "Untitled"}" (${parentId})\nNo child sessions found.`;
@@ -581,23 +573,8 @@ async function handleGetWorkstreamEditedFiles(
     return "Error: Current session not found";
   }
 
-  const parentId = currentSession.parentSessionId;
-  if (!parentId) {
-    const files = await SessionFilesRepository.getFilesBySession(
-      currentSessionId,
-      "edited"
-    );
-    if (files.length === 0) {
-      return "No files have been edited in this session. This session is not part of a workstream.";
-    }
-    return `This session is not part of a workstream. Files edited in current session (${files.length}):\n${files.map((f) => `- ${stripWorkspacePath(f.filePath, workspaceId)}`).join("\n")}`;
-  }
-
-  const { database } = await import("../database/PGLiteDatabaseWorker");
-  const { rows } = await database.query<any>(
-    `SELECT id, title FROM ai_sessions WHERE parent_session_id = $1 AND workspace_id = $2 ORDER BY created_at ASC`,
-    [parentId, workspaceId]
-  );
+  const parentId = await findSessionTreeRoot(database, currentSessionId, workspaceId);
+  const rows = await readSessionSubtree(database, parentId, workspaceId);
 
   if (rows.length === 0) {
     return "No child sessions found in this workstream.";
@@ -881,6 +858,7 @@ export const SESSION_CONTEXT_TOOL_SCHEMAS = [
       required: ["sessionId"],
     },
   },
+  LIST_CITABLE_INPUTS_TOOL_SCHEMA,
 ];
 
 /**
@@ -1015,6 +993,11 @@ export async function dispatchSessionContextTool(
           content: [{ type: "text", text: result }],
           isError: result.startsWith("Error:"),
         };
+      }
+
+      case LIST_CITABLE_INPUTS_TOOL_NAME: {
+        const result = await handleListCitableInputs(args, aiSessionId, workspaceId);
+        return { content: [{ type: "text", text: result }], isError: false };
       }
 
       case "update_session_board": {

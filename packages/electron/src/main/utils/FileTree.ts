@@ -125,11 +125,11 @@ export async function listFolderFilesRecursive(
     return { files, truncated };
 }
 
-export async function getFolderContents(dirPath: string, depth: number = 0): Promise<FileTreeItem[]> {
+export async function getFolderContents(dirPath: string, depth: number = 0, signal?: AbortSignal): Promise<FileTreeItem[]> {
     const result: FileTreeItem[] = [];
     const directoriesToPopulate: FileTreeItem[] = [];
 
-    if (depth > MAX_DEPTH) {
+    if (signal?.aborted || depth > MAX_DEPTH) {
         return result;
     }
 
@@ -138,6 +138,7 @@ export async function getFolderContents(dirPath: string, depth: number = 0): Pro
         let visibleCount = 0;
 
         for (const entry of entries) {
+            if (signal?.aborted) return [];
             if (entry.name === '.DS_Store') continue;
             if (visibleCount >= MAX_ITEMS_PER_DIR) break;
 
@@ -173,7 +174,8 @@ export async function getFolderContents(dirPath: string, depth: number = 0): Pro
         // Recurse sequentially to avoid unbounded file-descriptor fan-out.
         // Each call is still async (non-blocking), so the main thread stays responsive.
         for (const directory of directoriesToPopulate) {
-            directory.children = await getFolderContents(directory.path, depth + 1);
+            if (signal?.aborted) return [];
+            directory.children = await getFolderContents(directory.path, depth + 1, signal);
         }
     } catch (error: any) {
         if (error.code !== 'ENOENT') {

@@ -6,8 +6,8 @@ The initial Android package scaffold supports these checks:
 
 ```bash
 cd packages/android
-npm run build:transcript
-npm run sync:transcript-assets
+pnpm run build:transcript
+pnpm run sync:transcript-assets
 ./gradlew :app:assembleDebug
 ./gradlew :app:testDebugUnitTest
 ```
@@ -56,7 +56,7 @@ and CI stays green. A test runs only when BOTH:
 
    ```bash
    git clone <nimbalyst-collab-url> ../nimbalyst-collab
-   cd ../nimbalyst-collab && npm install
+   cd ../nimbalyst-collab && pnpm install
    ```
 
    (Use `COLLAB_SERVER_PATH` to point at a checkout elsewhere; an absolute path

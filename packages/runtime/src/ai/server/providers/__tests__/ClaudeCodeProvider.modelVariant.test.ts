@@ -4,27 +4,29 @@ import { resolveClaudeCodeModelVariant } from '../../types';
 const DEFAULT_MODEL = 'claude-code:opus-1m';
 
 describe('resolveClaudeCodeModelVariant', () => {
-  it.each(['claude-code', 'claude-code-cli'])('resolves explicit 5.5 and preserves Opus 5 for %s', (provider) => {
+  it.each(['claude-code', 'claude-code-cli'])('resolves explicit 5.5 and preserves the 5 generation for %s', (provider) => {
     expect(resolveClaudeCodeModelVariant(`${provider}:opus-5-5`, DEFAULT_MODEL)).toBe('claude-opus-5-5');
     expect(resolveClaudeCodeModelVariant(`${provider}:opus-5-5-1m`, DEFAULT_MODEL)).toBe('claude-opus-5-5[1m]');
     expect(resolveClaudeCodeModelVariant(`${provider}:opus-5`, DEFAULT_MODEL)).toBe('claude-opus-5');
+    expect(resolveClaudeCodeModelVariant(`${provider}:sonnet-5-5`, DEFAULT_MODEL)).toBe('claude-sonnet-5-5');
+    expect(resolveClaudeCodeModelVariant(`${provider}:sonnet-5-5-1m`, DEFAULT_MODEL)).toBe('claude-sonnet-5-5[1m]');
+    // Saved sonnet-5 defaults stay on Sonnet 5 after the canonical row moved to 5.5.
+    expect(resolveClaudeCodeModelVariant(`${provider}:sonnet-5`, DEFAULT_MODEL)).toBe('claude-sonnet-5');
   });
 
   describe('standard variants (no extended context)', () => {
-    it('resolves sonnet variant', () => {
-      expect(resolveClaudeCodeModelVariant('claude-code:sonnet', DEFAULT_MODEL)).toBe('sonnet');
-    });
-
-    it('accepts the current Sonnet generation alias used by saved defaults', () => {
-      expect(resolveClaudeCodeModelVariant('claude-code:sonnet-5', DEFAULT_MODEL)).toBe('sonnet');
+    it('resolves sonnet to the pinned Sonnet 5.5 model id', () => {
+      expect(resolveClaudeCodeModelVariant('claude-code:sonnet', DEFAULT_MODEL)).toBe('claude-sonnet-5-5');
     });
 
     it('resolves opus variant', () => {
       expect(resolveClaudeCodeModelVariant('claude-code:opus', DEFAULT_MODEL)).toBe('claude-opus-5-5');
     });
 
-    it('resolves haiku variant', () => {
-      expect(resolveClaudeCodeModelVariant('claude-code:haiku', DEFAULT_MODEL)).toBe('haiku');
+    it('resolves haiku to Haiku 5.5 and keeps haiku-4-5 pinned', () => {
+      expect(resolveClaudeCodeModelVariant('claude-code:haiku', DEFAULT_MODEL)).toBe('claude-haiku-5-5');
+      expect(resolveClaudeCodeModelVariant('claude-code:haiku-5-5', DEFAULT_MODEL)).toBe('claude-haiku-5-5');
+      expect(resolveClaudeCodeModelVariant('claude-code:haiku-4-5', DEFAULT_MODEL)).toBe('claude-haiku-4-5-20251001');
     });
 
     it('resolves fable to the pinned Fable 5.1 model id', () => {
@@ -49,14 +51,15 @@ describe('resolveClaudeCodeModelVariant', () => {
   });
 
   describe('extended context (1M) variants', () => {
-    it('sonnet-1m resolves to sonnet[1m] (Sonnet 4.6)', () => {
+    it('sonnet-1m resolves to the pinned Sonnet 5.5 id with [1m]', () => {
+      // CLI 2.1.284 accepts claude-sonnet-5-5[1m] (native 1M either way).
       const result = resolveClaudeCodeModelVariant('claude-code:sonnet-1m', DEFAULT_MODEL);
-      expect(result).toBe('sonnet[1m]');
+      expect(result).toBe('claude-sonnet-5-5[1m]');
     });
 
-    it('sonnet-5-1m alias resolves to sonnet[1m]', () => {
+    it('sonnet-5-1m preserves the previous generation with [1m]', () => {
       const result = resolveClaudeCodeModelVariant('claude-code:sonnet-5-1m', DEFAULT_MODEL);
-      expect(result).toBe('sonnet[1m]');
+      expect(result).toBe('claude-sonnet-5[1m]');
     });
 
     it('opus-1m resolves to pinned 5.5 with [1m]', () => {
@@ -64,9 +67,9 @@ describe('resolveClaudeCodeModelVariant', () => {
       expect(result).toBe('claude-opus-5-5[1m]');
     });
 
-    it('haiku-1m resolves to haiku[1m]', () => {
+    it('haiku-1m resolves to claude-haiku-5-5[1m]', () => {
       const result = resolveClaudeCodeModelVariant('claude-code:haiku-1m', DEFAULT_MODEL);
-      expect(result).toBe('haiku[1m]');
+      expect(result).toBe('claude-haiku-5-5[1m]');
     });
 
     it('opus-5-1m preserves the previous generation with [1m]', () => {
@@ -82,7 +85,7 @@ describe('resolveClaudeCodeModelVariant', () => {
 
   describe('SDK compatibility', () => {
     it('standard variants are valid SDK model values', () => {
-      const validSdkValues = ['sonnet', 'claude-opus-5-5', 'haiku'];
+      const validSdkValues = ['claude-sonnet-5-5', 'claude-opus-5-5', 'claude-haiku-5-5'];
       for (const variant of ['sonnet', 'opus', 'haiku']) {
         const result = resolveClaudeCodeModelVariant(`claude-code:${variant}`, DEFAULT_MODEL);
         expect(validSdkValues).toContain(result);
@@ -158,7 +161,7 @@ describe('resolveClaudeCodeModelVariant', () => {
     });
 
     it('handles raw variant names without provider prefix', () => {
-      expect(resolveClaudeCodeModelVariant('sonnet', DEFAULT_MODEL)).toBe('sonnet');
+      expect(resolveClaudeCodeModelVariant('sonnet', DEFAULT_MODEL)).toBe('claude-sonnet-5-5');
     });
 
     it('handles raw variant names with -1m suffix', () => {

@@ -33,7 +33,7 @@ import { resolveTeamForRemoteHash } from './teamProjectResolver';
 import { getCollabSyncHttpUrl } from '../utils/collabSyncUrl';
 import { assertJwtMatchesOrg, getJwtExp, getSubFromJwt, AuthContextMismatchError } from './jwtOrg';
 import { createSingleFlight } from '../utils/asyncCache';
-import { getWorkspaceState, updateWorkspaceState } from '../utils/store';
+import { getWorkspaceStateField, updateWorkspaceState } from '../utils/store';
 import { setHasOrganizationsForMenu } from '../menu/organizationMenuState';
 import {
   getAccounts,
@@ -668,6 +668,27 @@ async function fetchTeamApi(
     : accountOrgId
       ? getPersonalSessionJwtForAccount(accountOrgId)
       : getPersonalSessionJwt();
+  // A signed-in account whose primary session is team-scoped has no personal
+  // JWT until the first personal-org exchange runs. At launch that is several
+  // seconds after isAuthenticated() goes true, and every team lookup in the gap
+  // used to fail as "not signed in" -- one burst of 60+ failed directory reads
+  // per startup. Mint it now; the refresh is single-flight, so a burst of
+  // callers shares one exchange. A session token is required, so a genuinely
+  // signed-out account still fails fast without a network call.
+  if (!jwt && !orgId) {
+    const hasSessionToken = accountOrgId ? !!getSessionTokenForAccount(accountOrgId) : !!getSessionToken();
+    if (hasSessionToken) {
+      try {
+        if (accountOrgId) {
+          jwt = await refreshPersonalSessionForAccount(accountOrgId);
+        } else if (await refreshPersonalSession(getCollabServerUrl())) {
+          jwt = getPersonalSessionJwt();
+        }
+      } catch {
+        // Fall through to the not-authenticated error below.
+      }
+    }
+  }
   if (!jwt) {
     // Debug logging - uncomment if needed. Being signed out is an expected
     // steady state, and every caller already logs its own failure, so this
@@ -1368,7 +1389,7 @@ export async function getTeamByOrgId(orgId: string): Promise<TeamDetails | null>
  */
 function getLocalOrgBinding(workspacePath: string): { orgId: string; teamProjectId?: string } | null {
   try {
-    return getWorkspaceState(workspacePath).localOrgBinding ?? null;
+    return getWorkspaceStateField(workspacePath, 'localOrgBinding') ?? null;
   } catch (err) {
     logger.main.warn('[TeamService] Could not read the local org binding:', err);
     return null;
@@ -1517,7 +1538,11 @@ export async function findPendingInviteForWorkspace(workspacePath: string): Prom
   const remoteHashes = remoteHashCandidates(remote);
 
   try {
-    const teams = await listTeams();
+    // An incomplete directory means "could not tell", which listTeamDirectory's
+    // own per-account logging already reports. Throwing it again here wrote an
+    // error with a stack trace for every workspace lookup in a startup burst.
+    const { teams, complete } = await listTeamDirectory();
+    if (!complete) return null;
     const pendingTeams = teams.filter(t => t.membershipType && t.membershipType !== 'active_member');
     const match = pendingTeams.find(t => !!t.gitRemoteHash && remoteHashes.includes(t.gitRemoteHash)) || null;
     if (match) {
@@ -1582,6 +1607,11 @@ async function findTeamOrPendingInviteForWorkspace(workspacePath: string): Promi
   const { team, complete } = await resolveTeamForWorkspace(workspacePath);
   if (team) {
     return { success: true, team, complete: true };
+  }
+  // The pending-invite lookup reads the same directory; when that could not be
+  // read it can only fail the same way.
+  if (!complete) {
+    return { success: true, team: null, complete: false };
   }
   // Also check for pending invites matching this workspace
   const pendingInvite = await findPendingInviteForWorkspace(workspacePath);
@@ -2329,6 +2359,11 @@ async function attemptAutoMatchTeam(workspacePath: string, attempt: number): Pro
   }
 }
 
+/** The project-access list is admin-only; asking as a member only produces a 403. */
+export function canListProjectAccess(team: Pick<TeamDetails, 'teamProjectId' | 'role'>): boolean {
+  return !!team.teamProjectId && (team.role === 'owner' || team.role === 'admin');
+}
+
 export async function syncOrgProjectionFromServer(knownTeams?: TeamDetails[]): Promise<{
   success: boolean;
   counts?: { orgs: number; projects: number; members: number; grants: number };
@@ -2386,7 +2421,7 @@ export async function syncOrgProjectionFromServer(knownTeams?: TeamDetails[]): P
     // document_read_only. Admin-only endpoint, so a non-admin member simply
     // keeps the role-derived projection.
     for (const team of teams) {
-      if (!team.teamProjectId) continue;
+      if (!canListProjectAccess(team) || !team.teamProjectId) continue;
       try {
         const grants = await listProjectAccess(team.orgId, team.teamProjectId);
         await reconcileProjectAccessFromServer(db, team.teamProjectId, grants);

@@ -309,7 +309,7 @@ addTagDescription += ` Existing tags in this workspace: ${tagList}. Use existing
 
 | Tool | Description |
 | --- | --- |
-| `extension_build` | Build a Nimbalyst extension project. Runs `npm run build`. |
+| `extension_build` | Build a Nimbalyst extension project. Runs `pnpm run build` in pnpm projects, `npm run build` otherwise. |
 | `extension_install` | Install a built extension into the running Nimbalyst instance. |
 | `extension_reload` | Hot reload an installed extension without restarting. |
 | `extension_uninstall` | Remove an installed extension. |

@@ -5,11 +5,12 @@
  * what order. A surface that replaces a full form with chips still has to
  * account for the rest of the schema: fields the layout drops (opaque objects,
  * multiselects, read-only values) and arrays of objects, which have no one-line
- * form at all. This puts that split in one place so every chip surface makes the
+ * form at all. A page header also passes `singleValuedOnly`, which sends every
+ * list to the overflow (`isSingleValuedField`). This puts that split in one place so every chip surface makes the
  * same call, and so a surface can exclude a field it renders itself (Tracker
  * Mode's detail pane keeps tags as an always-open row).
  */
-import type { FieldDefinition } from '@nimbalyst/tracker-schema';
+import type { FieldDefinition } from '../../../../../tracker-schema/src/browser';
 /**
  * True when one chip can carry this field's value. An array of objects (a
  * plan's `agentSessions`, say) has no readable one-line form -- it stringifies
@@ -31,7 +32,11 @@ export interface TrackerChipFieldSections {
 /**
  * @param trackerType Registered tracker type name.
  * @param exclude Field names the surface renders on its own, in neither section.
+ * @param labelFields Fields the item's labels bring (`useTrackerLabelFields`).
+ * @param options.singleValuedOnly Page headers only: keep every list out of the chips.
  */
-export declare function getTrackerChipFieldSections(trackerType: string, exclude?: readonly string[]): TrackerChipFieldSections;
+export declare function getTrackerChipFieldSections(trackerType: string, exclude?: readonly string[], labelFields?: readonly FieldDefinition[], options?: {
+    singleValuedOnly?: boolean;
+}): TrackerChipFieldSections;
 /** Memoized `getTrackerChipFieldSections` for component use. */
-export declare function useTrackerChipFieldSections(trackerType: string, exclude?: readonly string[]): TrackerChipFieldSections;
+export declare function useTrackerChipFieldSections(trackerType: string, exclude?: readonly string[], labelFields?: readonly FieldDefinition[], singleValuedOnly?: boolean): TrackerChipFieldSections;

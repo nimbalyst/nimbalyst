@@ -7,7 +7,7 @@
  * No hardcoded business field vocabulary -- the schema is the contract.
  */
 import type { TrackerRecord } from '../../../core/TrackerRecord';
-import { type FieldDefinition, type TrackerSchemaRole } from '@nimbalyst/tracker-schema';
+import { type FieldDefinition, type TrackerSchemaRole } from '../../../../../tracker-schema/src/browser';
 import { type CellEditorKind } from './trackerCellEditors';
 export type ColumnRenderType = 'badge' | 'text' | 'date' | 'avatar' | 'progress' | 'tags' | 'type-icon' | 'module' | 'url' | 'relationship';
 /**

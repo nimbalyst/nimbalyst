@@ -16,8 +16,15 @@ public struct Project: Codable, Identifiable, Hashable, Sendable {
     public var actionsJson: String?
     /// SHA-256 hash of the git remote URL, used for ProjectSyncRoom document sync routing
     public var gitRemoteHash: String?
+    /// The Local wiki folder relative to the project root (`/`-separated, no
+    /// trailing slash), or nil when the project has no Local wiki or the desktop
+    /// predates wiki sync.
+    public var localWikiFolder: String?
+    /// JSON array of the wiki's type definitions (`SyncedWikiType`), or nil
+    /// when there is no wiki or it defines no types.
+    public var localWikiTypesJSON: String?
 
-    public init(id: String, name: String, sessionCount: Int = 0, lastUpdatedAt: Int? = nil, sortOrder: Int = 0, commandsJson: String? = nil, actionsJson: String? = nil, gitRemoteHash: String? = nil) {
+    public init(id: String, name: String, sessionCount: Int = 0, lastUpdatedAt: Int? = nil, sortOrder: Int = 0, commandsJson: String? = nil, actionsJson: String? = nil, gitRemoteHash: String? = nil, localWikiFolder: String? = nil, localWikiTypesJSON: String? = nil) {
         self.id = id
         self.name = name
         self.sessionCount = sessionCount
@@ -26,6 +33,8 @@ public struct Project: Codable, Identifiable, Hashable, Sendable {
         self.commandsJson = commandsJson
         self.actionsJson = actionsJson
         self.gitRemoteHash = gitRemoteHash
+        self.localWikiFolder = localWikiFolder
+        self.localWikiTypesJSON = localWikiTypesJSON
     }
 
     /// Decoded slash commands from the commandsJson blob.
@@ -51,6 +60,16 @@ public struct Project: Codable, Identifiable, Hashable, Sendable {
         return actions
     }
 
+    /// Decoded wiki type definitions; empty when absent or unreadable.
+    public var localWikiTypes: [SyncedWikiType] {
+        guard let json = localWikiTypesJSON,
+              let data = json.data(using: .utf8),
+              let types = try? JSONDecoder().decode([SyncedWikiType].self, from: data) else {
+            return []
+        }
+        return types
+    }
+
     /// Create a Project from a workspace path, deriving the name from the last path component.
     public static func from(workspacePath: String) -> Project {
         let name = (workspacePath as NSString).lastPathComponent
@@ -64,6 +83,6 @@ extension Project: FetchableRecord, PersistableRecord {
     public static let databaseTableName = "projects"
 
     public enum Columns: String, ColumnExpression {
-        case id, name, sessionCount, lastUpdatedAt, sortOrder, commandsJson, actionsJson, gitRemoteHash
+        case id, name, sessionCount, lastUpdatedAt, sortOrder, commandsJson, actionsJson, gitRemoteHash, localWikiFolder, localWikiTypesJSON
     }
 }

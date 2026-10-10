@@ -32,7 +32,22 @@ export type InteractivePromptKind =
 
 export type InteractivePromptSettleReason =
   | 'user-responded'
-  | 'client-abandoned';
+  | 'client-abandoned'
+  /**
+   * The user started a new turn instead of answering. The question is closed
+   * for good: no later answer can resume the session with it.
+   */
+  | 'superseded';
+
+/**
+ * Settle reason carried by a response payload. The supersede path emits
+ * `reason: 'superseded'` on the same waiter channels a real answer uses.
+ */
+export function settleReasonFromResponse(
+  response: { reason?: unknown } | null | undefined,
+): InteractivePromptSettleReason {
+  return response?.reason === 'superseded' ? 'superseded' : 'user-responded';
+}
 
 /**
  * Whether this settle should write the prompt's terminal tool_result — i.e.
@@ -42,6 +57,6 @@ export function shouldTerminalizePrompt(params: {
   kind: InteractivePromptKind;
   reason: InteractivePromptSettleReason;
 }): boolean {
-  if (params.reason === 'user-responded') return true;
+  if (params.reason === 'user-responded' || params.reason === 'superseded') return true;
   return params.kind === 'tool_permission';
 }

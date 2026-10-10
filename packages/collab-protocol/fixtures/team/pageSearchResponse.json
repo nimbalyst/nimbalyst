@@ -1,0 +1,39 @@
+{
+  "type": "pageSearchResponse",
+  "requestId": "search-1",
+  "hits": [
+    {
+      "kind": "page",
+      "id": "page-1",
+      "documentId": "page-1",
+      "title": "Specs",
+      "issueKey": null,
+      "snippet": "…the team chose Yjs over Automerge…",
+      "highlights": [
+        {
+          "start": 20,
+          "end": 23
+        }
+      ],
+      "updatedAt": 1790000000000,
+      "score": 4.2
+    },
+    {
+      "kind": "typed",
+      "id": "item-42",
+      "documentId": "tracker-content/item-42",
+      "title": null,
+      "issueKey": "NIM-42",
+      "snippet": "Yjs sync for pages.",
+      "highlights": [
+        {
+          "start": 0,
+          "end": 3
+        }
+      ],
+      "updatedAt": null,
+      "score": 1.5
+    }
+  ],
+  "status": "partial"
+}

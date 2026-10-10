@@ -1,8 +1,8 @@
 /**
- * Runs one npm script across every workspace that defines it, with a bounded
- * job pool.
+ * Runs one package script across every workspace that defines it, with a
+ * bounded job pool.
  *
- * `npm run <script> -ws` is strictly serial. For typecheck that means 24 cold
+ * A serial run across workspaces is slow. For typecheck that means 24 cold
  * `tsc --noEmit` processes queued end to end on a 12-core machine, where two
  * packages own most of the wall clock and the other 22 wait behind them
  * (measured 2026-08-05: 66s serial, 29s at 8-way, floor set by the slowest
@@ -18,17 +18,11 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { availableParallelism } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-
-/** npm's Windows shim is a .cmd file, which Node must launch through cmd.exe. */
-export function npmSpawnConfig(platform = process.platform, env = process.env) {
-  return platform === 'win32'
-    ? { command: env.ComSpec || 'cmd.exe', argsPrefix: ['/d', '/s', '/c', 'npm.cmd'] }
-    : { command: 'npm', argsPrefix: [] };
-}
+import { packageManagerSpawnConfig, readWorkspaceConfig } from './package-manager.mjs';
 
 /**
- * Expand the `workspaces` patterns from a root package.json into directories.
- * Only the trailing `/*` form npm uses here is supported; anything fancier
+ * Expand the `packages` patterns from pnpm-workspace.yaml into directories.
+ * Only the trailing `/*` form used here is supported; anything fancier
  * should fail loudly rather than silently match nothing.
  */
 export function expandWorkspacePatterns(patterns, readDir) {
@@ -50,6 +44,32 @@ export function selectWorkspaces(dirs, script, readManifest) {
   });
 }
 
+/**
+ * Workspaces whose script rewrites files other workspaces read. collab-bundle's
+ * typecheck rebuilds `types/` (deleting it first), so a consumer such as
+ * wiki-web type-checked in parallel reads a half-written tree and fails.
+ */
+export const OUTPUT_PRODUCERS = new Set(['packages/collab-bundle']);
+
+/**
+ * For each target, the producer targets it must wait for: producers it lists
+ * in dependencies or devDependencies. Also returns the targets reordered so
+ * producers start first, which keeps a full pool of waiters from deadlocking.
+ */
+export function orderForProducers(targets, readManifest, producers = OUTPUT_PRODUCERS) {
+  const nameOf = new Map();
+  for (const dir of targets) if (producers.has(dir)) nameOf.set(readManifest(dir)?.name, dir);
+  const waitsFor = new Map();
+  for (const dir of targets) {
+    const manifest = readManifest(dir) ?? {};
+    const deps = { ...manifest.dependencies, ...manifest.devDependencies };
+    const wait = Object.keys(deps).map(name => nameOf.get(name)).filter(p => p && p !== dir);
+    if (wait.length > 0) waitsFor.set(dir, wait);
+  }
+  const ordered = [...targets.filter(dir => producers.has(dir)), ...targets.filter(dir => !producers.has(dir))];
+  return { ordered, waitsFor };
+}
+
 /** Bounded worker pool. Resolves to every task's result, in input order. */
 export async function runPool(items, limit, run) {
   const results = new Array(items.length);
@@ -66,7 +86,7 @@ export async function runPool(items, limit, run) {
 
 export function runScriptIn(dir, script, rootDir) {
   return new Promise(resolve => {
-    const { command, argsPrefix } = npmSpawnConfig();
+    const { command, argsPrefix } = packageManagerSpawnConfig();
     const child = spawn(command, [...argsPrefix, 'run', script], {
       cwd: path.join(rootDir, dir),
       env: process.env,
@@ -98,8 +118,7 @@ async function main() {
       return null;
     }
   };
-  const root = JSON.parse(readFileSync(path.join(rootDir, 'package.json'), 'utf8'));
-  const dirs = expandWorkspacePatterns(root.workspaces ?? [], parent =>
+  const dirs = expandWorkspacePatterns(readWorkspaceConfig(rootDir).packages ?? [], parent =>
     readdirSync(path.join(rootDir, parent), { withFileTypes: true })
       .filter(entry => entry.isDirectory())
       .map(entry => entry.name),
@@ -118,8 +137,16 @@ async function main() {
   console.log(`Running "${script}" in ${targets.length} workspaces, ${jobs} at a time`);
 
   const started = Date.now();
-  const results = await runPool(targets, jobs, async dir => {
+  const { ordered, waitsFor } = orderForProducers(targets, readManifest);
+  const finished = new Map(ordered.map(dir => {
+    let done;
+    const promise = new Promise(resolve => { done = resolve; });
+    return [dir, { promise, done }];
+  }));
+  const results = await runPool(ordered, jobs, async dir => {
+    await Promise.all((waitsFor.get(dir) ?? []).map(producer => finished.get(producer).promise));
     const result = await runScriptIn(dir, script, rootDir);
+    finished.get(dir).done();
     console.log(`${result.code === 0 ? 'ok  ' : 'FAIL'} ${dir}`);
     return result;
   });

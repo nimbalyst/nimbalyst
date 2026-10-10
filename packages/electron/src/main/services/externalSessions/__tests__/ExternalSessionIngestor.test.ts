@@ -872,20 +872,39 @@ describe("ExternalSessionIngestor", () => {
     async (status) => {
       const h = harness();
       h.state.mockReturnValue({ status } as any);
-      await h.ingestor.ingest(h.source as any, ref, {
+      const result = await h.ingestor.ingest(h.source as any, ref, {
         workspacePath: "/workspace",
       });
       expect(h.source.readSince).not.toHaveBeenCalled();
+      // A live turn is transient; the file must be revisited once it ends.
+      expect(result.settled).toBeFalsy();
     }
   );
   it("skips idle Nimbalyst-owned rows on replay, but idle imported rows remain eligible", async () => {
     const h = harness();
     h.session.providerConfig = {} as any;
     h.state.mockReturnValue({ status: "idle" } as any);
-    await h.ingestor.ingest(h.source as any, ref, {
+    const result = await h.ingestor.ingest(h.source as any, ref, {
       workspacePath: "/workspace",
     });
     expect(h.source.readSince).not.toHaveBeenCalled();
+    expect(result.settled).toBe(true);
+  });
+  it("settles a file only after a complete read that is not withholding its title", async () => {
+    const h = harness();
+    const route = { workspacePath: "/workspace" };
+    const batch = await h.source.readSince();
+    h.source.readSince.mockResolvedValueOnce({ ...batch, title: "Named" });
+    expect((await h.ingestor.ingest(h.source, ref, route)).settled).toBe(true);
+    // Claude withholds a title while restart reconstruction is still behind the cursor.
+    h.source.readSince.mockResolvedValueOnce({ ...batch, title: undefined });
+    expect((await h.ingestor.ingest(h.source, ref, route)).settled).toBe(false);
+    h.source.readSince.mockResolvedValueOnce({
+      ...batch,
+      title: "Named",
+      hasMore: true,
+    });
+    expect((await h.ingestor.ingest(h.source, ref, route)).settled).toBe(false);
   });
 });
 

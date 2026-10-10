@@ -39,6 +39,8 @@ export interface SessionHistoryLayout {
   collapsedGroups: string[];
   sortOrder: 'updated' | 'created';
   viewMode: 'list' | 'kanban';
+  /** One line per session row instead of title plus a metadata line. */
+  compactRows: boolean;
 }
 
 /**
@@ -82,6 +84,7 @@ const DEFAULT_SESSION_HISTORY_LAYOUT: SessionHistoryLayout = {
   collapsedGroups: [],
   sortOrder: 'updated',
   viewMode: 'list',
+  compactRows: false,
 };
 
 const DEFAULT_LAYOUT: AgentModeLayout = {
@@ -108,6 +111,7 @@ export function mergeWithDefaults(persisted: Partial<AgentModeLayout> | undefine
     // otherwise brick the workspace on every launch with no in-app recovery.
     // Coerce any value other than the two known ones back to 'updated'.
     sortOrder: persisted?.sessionHistoryLayout?.sortOrder === 'created' ? 'created' : 'updated',
+    compactRows: persisted?.sessionHistoryLayout?.compactRows === true,
   };
   // Only pick known layout fields from persisted data.
   // agenticCodingWindowState stores both layout AND selectedWorkstream at the same level.
@@ -184,6 +188,11 @@ export const collapsedGroupsAtom = atom(
 /** Sort order for sessions */
 export const sortOrderAtom = atom(
   (get) => get(agentModeLayoutAtom).sessionHistoryLayout.sortOrder
+);
+
+/** Whether session rows render on a single line */
+export const compactRowsAtom = atom(
+  (get) => get(agentModeLayoutAtom).sessionHistoryLayout.compactRows
 );
 
 /** View mode for session history (list or kanban) */
@@ -414,6 +423,16 @@ export const setSortOrderAtom = atom(
   null,
   (get, set, sortOrder: 'updated' | 'created') => {
     set(setSessionHistoryLayoutAtom, { sortOrder });
+  }
+);
+
+/**
+ * Toggle single-line session rows.
+ */
+export const setCompactRowsAtom = atom(
+  null,
+  (_get, set, compactRows: boolean) => {
+    set(setSessionHistoryLayoutAtom, { compactRows });
   }
 );
 

@@ -118,6 +118,8 @@ function parseArgs(args: any): RequestUserInputArgs | null {
 
 interface ParsedResult {
   cancelled: boolean;
+  /** Why the prompt closed, e.g. `superseded` when the user sent a new message instead. */
+  reason?: string;
   answers: Record<string, RequestUserInputAnswer>;
 }
 
@@ -158,6 +160,7 @@ function parseFromUnknown(value: unknown): ParsedResult | null {
   if (record.cancelled === true || record.canceled === true) {
     return {
       cancelled: true,
+      reason: typeof record.reason === 'string' ? record.reason : undefined,
       answers: typeof record.answers === 'object' && record.answers !== null
         ? (record.answers as Record<string, RequestUserInputAnswer>)
         : {},
@@ -809,7 +812,7 @@ function FieldCard({
 // Main widget component
 // ============================================================
 
-export const RequestUserInputWidget: React.FC<CustomToolWidgetProps> = ({ message, sessionId }) => {
+export const RequestUserInputWidget: React.FC<CustomToolWidgetProps> = ({ message, sessionId, superseded }) => {
   const toolCall = message.toolCall;
   const promptId = toolCall?.providerToolCallId || '';
 
@@ -825,8 +828,10 @@ export const RequestUserInputWidget: React.FC<CustomToolWidgetProps> = ({ messag
 
   const rawResult = toolCall.result;
   const parsedResult = useMemo(() => parseResult(rawResult), [rawResult]);
-  const isCompleted = parsedResult !== null;
-  const isCancelled = parsedResult?.cancelled === true;
+  // The user sent a new message instead of answering. Older transcripts have
+  // no durable result for this, so the transcript also passes `superseded`.
+  const isSkipped = parsedResult?.reason === 'superseded' || (parsedResult === null && superseded === true);
+  const isCompleted = parsedResult !== null || isSkipped;
   const isPending = !isCompleted;
 
   const [draft, setDraft] = useAtom(requestUserInputDraftAtom(promptId));
@@ -899,19 +904,23 @@ export const RequestUserInputWidget: React.FC<CustomToolWidgetProps> = ({ messag
 
   if (!args) return null;
 
-  const displayResult = localResult || (isCompleted && parsedResult ? parsedResult : null);
+  const displayResult = localResult
+    || (isSkipped ? { cancelled: true, answers: {} } : isCompleted && parsedResult ? parsedResult : null);
   const displayCancelled = displayResult?.cancelled === true;
+  const displaySkipped = !localResult && isSkipped;
 
   const voiceHint = computeVoiceHint(args);
 
   // ---- Completed state ----
   if (displayResult || hasResponded) {
-    const statusText = displayCancelled ? 'Input Cancelled' : 'Input Submitted';
+    const statusText = displaySkipped
+      ? 'Input Skipped'
+      : displayCancelled ? 'Input Cancelled' : 'Input Submitted';
 
     return (
       <div
         data-testid="request-user-input-widget"
-        data-state={displayCancelled ? 'cancelled' : 'completed'}
+        data-state={displaySkipped ? 'skipped' : displayCancelled ? 'cancelled' : 'completed'}
         className="request-user-input-widget rounded-lg bg-nim-secondary border border-nim overflow-hidden opacity-85"
       >
         <div className="flex items-center gap-2 py-3 px-4 border-b border-nim bg-nim-tertiary">
@@ -928,7 +937,15 @@ export const RequestUserInputWidget: React.FC<CustomToolWidgetProps> = ({ messag
               Submitted
             </span>
           )}
-          {displayCancelled && (
+          {displaySkipped && (
+            <span
+              data-testid="request-user-input-skipped"
+              className="flex items-center gap-1 text-xs font-medium text-nim-muted py-1 px-2 bg-nim-tertiary rounded-full"
+            >
+              Skipped
+            </span>
+          )}
+          {displayCancelled && !displaySkipped && (
             <span
               data-testid="request-user-input-cancelled"
               className="flex items-center gap-1 text-xs font-medium text-nim-muted py-1 px-2 bg-nim-tertiary rounded-full"
@@ -942,7 +959,20 @@ export const RequestUserInputWidget: React.FC<CustomToolWidgetProps> = ({ messag
         </div>
         <div className="p-3 flex flex-col gap-2">
           {args.intro && <div className="text-sm text-nim-muted">{args.intro}</div>}
-          <CompletedSummary fields={args.fields} answers={displayResult?.answers ?? {}} cancelled={displayCancelled} />
+          {displaySkipped && (
+            <div
+              data-testid="request-user-input-skipped-note"
+              className="request-user-input-skipped-note text-xs text-nim-muted italic select-text"
+            >
+              You sent a new message instead of answering.
+            </div>
+          )}
+          <CompletedSummary
+            fields={args.fields}
+            answers={displayResult?.answers ?? {}}
+            cancelled={displayCancelled && !displaySkipped}
+            skipped={displaySkipped}
+          />
         </div>
       </div>
     );
@@ -1050,10 +1080,13 @@ function CompletedSummary({
   fields,
   answers,
   cancelled,
+  skipped,
 }: {
   fields: RequestUserInputField[];
   answers: Record<string, RequestUserInputAnswer>;
   cancelled: boolean;
+  /** Show what was asked, with no answer line. */
+  skipped: boolean;
 }) {
   if (cancelled) {
     return <div className="text-xs text-nim-muted italic">User cancelled the request.</div>;
@@ -1067,7 +1100,7 @@ function CompletedSummary({
             <div className="text-[0.6875rem] font-semibold uppercase tracking-wide text-nim-primary mb-1">
               {field.label}
             </div>
-            <SummaryAnswer field={field} answer={ans} />
+            {!skipped && <SummaryAnswer field={field} answer={ans} />}
           </div>
         );
       })}

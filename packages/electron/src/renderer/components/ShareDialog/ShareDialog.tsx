@@ -10,6 +10,7 @@ import {
 import { ShareAccountPicker, type ShareAccountOption } from './ShareAccountPicker';
 import { AccountLoginForm } from '../Accounts/AccountLoginForm';
 import { stytchAuthAtom } from '../../store/atoms/stytchAuth';
+import { prerenderMermaidForShare } from './prerenderShareDiagrams';
 
 export interface ShareDialogProps {
   isOpen: boolean;
@@ -131,6 +132,7 @@ export const ShareDialog: React.FC<ShareDialogProps> = ({
           filePath,
           expirationDays,
           personalOrgId: selectedPersonalOrgId || undefined,
+          mermaidSvgs: await prerenderMermaidForShare(filePath),
         });
       }
 

@@ -8,7 +8,10 @@ vi.mock('@nimbalyst/runtime/ui/icons/MaterialSymbol', () => ({
   MaterialSymbol: ({ icon }: { icon: string }) => <span data-icon={icon} />,
 }));
 
+vi.mock('../../../../dialogs/requestConfirmation', () => ({ requestConfirmation: vi.fn() }));
+
 import { store } from '@nimbalyst/runtime/store';
+import { requestConfirmation } from '../../../../dialogs/requestConfirmation';
 import { DatabasePanel } from '../DatabasePanel';
 import type { MigrationOperationSnapshot } from '../../../../../shared/migrationOperation';
 import { hydrateMigrationOperation, refreshDbRecoveryState } from '../../../../store/listeners/dbMigrationListeners';
@@ -91,6 +94,9 @@ function installMigrationApi(activeBackend: Backend, recovery: RecoveryFixtures 
     }
     if (channel === 'db:migration:clear-block' || channel === 'db:recovery:delete-migrated') {
       return { success: true };
+    }
+    if (channel === 'db:migration:rollback') {
+      return { success: true, restoredFrom: '/u/pglite-db.migrated' };
     }
     if (channel === 'db:migration:dry-run') {
       return { success: false, error: 'not expected in this test' };
@@ -297,6 +303,28 @@ describe('preserved PGLite copies', () => {
         acknowledgedRollbackLoss: true,
       });
     });
+  });
+
+  it('restores the preserved PGLite only after the confirmation is accepted', async () => {
+    const copy: MigratedCopyView = {
+      name: 'pglite-db.migrated-2026-08-19T09-00-00-000Z',
+      path: '/u/pglite-db.migrated-2026-08-19T09-00-00-000Z',
+      sizeBytes: 900 * 1024 * 1024,
+      createdAt: '2026-08-19T09:00:00.000Z',
+      isRollbackSource: true,
+    };
+    const invoke = installMigrationApi('sqlite', { migratedCopies: [copy] });
+    renderPanel();
+    const restore = await screen.findByRole('button', { name: /Restore from preserved PGLite/i });
+
+    vi.mocked(requestConfirmation).mockResolvedValueOnce(false);
+    fireEvent.click(restore);
+    await waitFor(() => expect(requestConfirmation).toHaveBeenCalledTimes(1));
+    expect(invoke).not.toHaveBeenCalledWith('db:migration:rollback');
+
+    vi.mocked(requestConfirmation).mockResolvedValueOnce(true);
+    fireEvent.click(restore);
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('db:migration:rollback'));
   });
 });
 

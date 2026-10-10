@@ -21,7 +21,7 @@ $ARGUMENTS
 3. **Separate the victim from the blocker.** Both database backends are single-lane. A query reported at 30s is usually 1s of work behind 29s of queue-wait. Fixing the victim fixes nothing.
 4. **Baseline, then delta.** Capture a number before the fix and the same number after. A before/after table is the deliverable. "Looks memoized now" is not evidence.
 5. **One change at a time.** Re-measure between changes or you will not know which one worked.
-6. **Never run `npm run dev`. Never restart Nimbalyst without explicit permission.**
+6. **Never run `pnpm run dev`. Never restart Nimbalyst without explicit permission.**
 
 ---
 

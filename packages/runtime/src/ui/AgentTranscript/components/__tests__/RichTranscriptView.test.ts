@@ -4,6 +4,7 @@ import type { TranscriptViewMessage } from '../../../../ai/server/transcript/Tra
 import {
   extractCodexFileChanges,
   extractEditsFromToolMessage,
+  isAtFalseTranscriptTop,
   isInteractiveWidgetTool,
   isTranscriptAtBottom,
   parseUnifiedDiffToReplacements,
@@ -489,6 +490,20 @@ describe('transcript auto-scroll thresholds', () => {
 
   it('resumes auto-scroll once the selection is released', () => {
     expect(shouldAutoScrollTranscript(true, 0, false)).toBe(true);
+  });
+});
+
+describe('false transcript top on iOS', () => {
+  it('detects a bounce at the native top while a deferred jump holds row 0 above it', () => {
+    // virtua reports the pending iOS jump as a negative first-row offset.
+    expect(isAtFalseTranscriptTop(0, -1200)).toBe(true);
+    // Rubber-band overscroll reports a negative scroll offset.
+    expect(isAtFalseTranscriptTop(-40, -1200)).toBe(true);
+  });
+
+  it('ignores the real top and scrolls that have not reached the native top', () => {
+    expect(isAtFalseTranscriptTop(0, 0)).toBe(false);
+    expect(isAtFalseTranscriptTop(300, -1200)).toBe(false);
   });
 });
 

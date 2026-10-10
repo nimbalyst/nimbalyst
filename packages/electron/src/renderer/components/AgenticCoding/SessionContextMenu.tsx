@@ -35,6 +35,7 @@ export interface SessionContextMenuProps {
   onRename?: () => void;
   onPinToggle?: (isPinned: boolean) => void;
   onBranch?: () => void;
+  onMoveUnder?: () => void;
   onRemoveFromWorkstream?: () => void;
   onArchive?: () => void;
   onUnarchive?: () => void;
@@ -58,6 +59,7 @@ export const SessionContextMenu: React.FC<SessionContextMenuProps> = ({
   onPinToggle,
   onBranch,
   onRemoveFromWorkstream,
+  onMoveUnder,
   onArchive,
   onUnarchive,
   onDelete,
@@ -260,7 +262,7 @@ export const SessionContextMenu: React.FC<SessionContextMenuProps> = ({
         </div>
 
         {/* Group 2: Branch / workstream actions */}
-        {(onBranch || (onRemoveFromWorkstream && parentSessionId && !isWorktreeSession)) && (
+        {(onBranch || (onRemoveFromWorkstream && parentSessionId)) && (
           <div className="h-px bg-[var(--nim-border)] my-1" />
         )}
         {onBranch && (
@@ -269,12 +271,14 @@ export const SessionContextMenu: React.FC<SessionContextMenuProps> = ({
             Branch conversation
           </button>
         )}
-        {onRemoveFromWorkstream && parentSessionId && !isWorktreeSession && (
+        {onRemoveFromWorkstream && parentSessionId && (
           <button className={menuItemClass} onClick={(e) => handleAction(e, onRemoveFromWorkstream)}>
             <MaterialSymbol icon="drive_file_move_rtl" size={14} />
-            Remove from workstream
+            Move to top level
           </button>
         )}
+
+        {onMoveUnder && <button className={menuItemClass} onClick={(e) => handleAction(e, onMoveUnder)}><MaterialSymbol icon="drive_file_move" size={14} />Move under...</button>}
 
         {/* Group 3: Copy to clipboard */}
         <div className="h-px bg-[var(--nim-border)] my-1" />

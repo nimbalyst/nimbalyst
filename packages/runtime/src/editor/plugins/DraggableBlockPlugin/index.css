@@ -73,6 +73,9 @@
   border-radius: 4px;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
   min-width: 150px;
+  /* Anchored in the narrow handle column, so size to the longest label rather than wrap. */
+  width: max-content;
+  max-width: 320px;
   z-index: 1000;
   overflow: hidden;
 }
@@ -89,12 +92,14 @@
   cursor: pointer;
   font-size: 14px;
   color: var(--nim-text);
+  white-space: nowrap;
   transition: background-color 0.15s ease;
 }
 
 .draggable-dropdown .dropdown-item .material-symbols-outlined {
   font-size: 18px;
   color: var(--nim-text-muted);
+  flex-shrink: 0;
 }
 
 .draggable-dropdown .dropdown-item:hover {

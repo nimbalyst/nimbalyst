@@ -3,7 +3,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { SharedDocumentLink } from '../SharedDocumentLink';
 
 afterEach(cleanup);
-it('opens through the host on a plain click and leaves modified clicks and context menus to the browser', () => {
+it('opens through the host on a plain click, leaves modified clicks to the browser, and opens its own menu on right-click', () => {
   const open = vi.fn();
   const menu = vi.fn();
   render(<SharedDocumentLink href="/org/acme/project/a/document/b?blockId=q" onClick={open} onContextMenu={menu}>Question</SharedDocumentLink>);
@@ -18,6 +18,7 @@ it('opens through the host on a plain click and leaves modified clicks and conte
   // A plain click is the host's: default prevented, open action run once.
   expect(fireEvent.click(link)).toBe(false);
   expect(open).toHaveBeenCalledTimes(1);
-  expect(fireEvent.contextMenu(link)).toBe(true);
-  expect(menu).not.toHaveBeenCalled();
+  // The right-click lands on the link, not on the actions button beside it.
+  fireEvent.contextMenu(link);
+  expect(menu).toHaveBeenCalledTimes(1);
 });

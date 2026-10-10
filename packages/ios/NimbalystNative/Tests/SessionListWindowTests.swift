@@ -231,32 +231,17 @@ final class SessionListWindowTests: XCTestCase {
         XCTAssertEqual(page.items[0].group.orderTimestamp, 900)
     }
 
-    func testGroupingMatchesReferenceGrouper() throws {
+    func testMetaAgentChildrenFollowParentLinksAndManagerOnlySessionsStayStandalone() throws {
         let db = try makeDatabase()
-        var sessions: [Session] = [
-            Session(id: "meta", projectId: projectId, agentRole: "meta-agent", createdAt: 1, updatedAt: 10),
-            Session(id: "sub-a", projectId: projectId, createdBySessionId: "meta", createdAt: 2, updatedAt: 30),
-            Session(id: "sub-b", projectId: projectId, createdBySessionId: "meta", createdAt: 3, updatedAt: 20),
-            Session(id: "orphan", projectId: projectId, createdBySessionId: "gone", createdAt: 4, updatedAt: 40),
-            Session(id: "plain", projectId: projectId, createdAt: 5, updatedAt: 50)
-        ]
-        sessions.sort { $0.id < $1.id }
         try db.writer.write { database in
-            for session in sessions { try session.save(database) }
+            try Session(id: "meta", projectId: projectId, agentRole: "meta-agent", createdAt: 1, updatedAt: 10).save(database)
+            try Session(id: "sub-a", projectId: projectId, parentSessionId: "meta", createdBySessionId: "meta",
+                        createdAt: 2, updatedAt: 30).save(database)
+            try Session(id: "isolated", projectId: projectId, createdBySessionId: "meta", createdAt: 3, updatedAt: 40).save(database)
         }
-
-        let reference = MetaAgentGrouper.group(sessions: sessions, enabled: true)
         let page = try db.sessionListPage(filter: filter(), after: nil, limit: 100)
-        let metaItems = page.items.filter { $0.group.kind == .metaAgent }
-
-        XCTAssertEqual(metaItems.map(\.parent.id), reference.groups.map(\.metaSession.id))
-        XCTAssertEqual(metaItems.map(\.group.childCount), reference.groups.map { $0.children.count })
-        XCTAssertEqual(metaItems[0].group.orderTimestamp, reference.groups[0].latestUpdate)
-
-        // Sessions the reference grouper leaves ungrouped still render as ordinary rows.
-        let standalone = Set(page.items.filter { $0.group.kind == .standalone }.map(\.parent.id))
-        XCTAssertEqual(standalone, ["orphan", "plain"])
-        XCTAssertTrue(reference.groupedSessionIds.isDisjoint(with: standalone))
+        XCTAssertEqual(page.items.map(\.group.key), ["s:isolated", "ws:meta"])
+        XCTAssertEqual(page.items.last?.group.childCount, 1)
     }
 
     func testMetaAgentGroupingDisabledFallsBackToFlatRows() throws {
@@ -438,11 +423,11 @@ final class SessionListWindowTests: XCTestCase {
             try Session(id: "meta", projectId: projectId, agentRole: "meta-agent",
                         createdAt: 1, updatedAt: 1).save(database)
             for index in 0..<120 {
-                try Session(id: "sub\(index)", projectId: projectId, createdBySessionId: "meta",
+                try Session(id: "sub\(index)", projectId: projectId, parentSessionId: "meta", createdBySessionId: "meta",
                             createdAt: 2, updatedAt: 2).save(database)
             }
         }
-        let ids = try db.sessionListGroupMemberIds(filter: filter(), groupKey: "meta:meta")
+        let ids = try db.sessionListGroupMemberIds(filter: filter(), groupKey: "ws:meta")
         XCTAssertEqual(ids.count, 121, "archive/delete of a group covers every member, not a page")
         XCTAssertTrue(ids.contains("meta"))
     }
@@ -635,7 +620,11 @@ final class SessionListWindowTests: XCTestCase {
         let subscription = model.$children.sink { _ in publications += 1 }
         model.start(database: db, filter: filter())
         defer { model.stop(); subscription.cancel() }
-        try await Task.sleep(for: .milliseconds(400))
+        let loaded = expectation(description: "Default tree expansions loaded")
+        let ready = model.$children.filter { $0.count == SessionListWindowModel.maxExpandedGroups }
+            .prefix(1).sink { _ in loaded.fulfill() }
+        defer { ready.cancel() }
+        await fulfillment(of: [loaded], timeout: 3)
         XCTAssertEqual(model.children.count, SessionListWindowModel.maxExpandedGroups)
         let settledCount = publications
         try await Task.sleep(for: .milliseconds(200))
@@ -654,7 +643,7 @@ final class SessionListWindowTests: XCTestCase {
             for index in 0..<20 {
                 let id = "meta\(index)"
                 try Session(id: id, projectId: "/p", agentRole: "meta-agent", createdAt: 1, updatedAt: index).save(database)
-                try Session(id: "child\(index)", projectId: "/p", createdBySessionId: id, createdAt: 1, updatedAt: index).save(database)
+                try Session(id: "child\(index)", projectId: "/p", parentSessionId: id, createdBySessionId: id, isExecuting: true, createdAt: 1, updatedAt: index).save(database)
             }
         }
     }
@@ -760,5 +749,18 @@ final class SessionListWindowTests: XCTestCase {
             plan.contains("SCAN sessions") && !plan.contains("idx_sessions_project"),
             "the window query must reach sessions through a project index, not a full table scan:\n\(plan)"
         )
+    }
+
+    /// The group key walks each row's ancestors. A step that searches the project
+    /// index instead of the parent's primary key makes every group key O(project),
+    /// and the live list O(n^2): 2.5s at 2,000 sessions on a host Mac.
+    func testAncestorWalkLooksUpParentsByPrimaryKey() throws {
+        let db = try makeDatabase()
+        try seed(db, count: 200)
+        let lines = try db.sessionListQueryPlan(filter: filter(), limit: 100).components(separatedBy: "\n")
+        for (index, line) in lines.enumerated() where line == "RECURSIVE STEP" && index + 1 < lines.count {
+            XCTAssertFalse(lines[index + 1].contains("USING INDEX idx_sessions_project"),
+                           "a recursive step scans the project:\n\(lines.joined(separator: "\n"))")
+        }
     }
 }

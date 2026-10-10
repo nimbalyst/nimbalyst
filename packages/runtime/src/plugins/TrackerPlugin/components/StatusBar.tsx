@@ -8,13 +8,14 @@
  * receives one field at a time exactly as it did when this was a form.
  */
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import type { TrackerDataModel } from '@nimbalyst/tracker-schema';
 import type { TeamMemberOption } from './TrackerFieldEditor';
 import type { RelationshipCandidate } from './RelationshipFieldEditor';
 import { MaterialSymbol } from '../../../ui/icons/MaterialSymbol';
 import { TrackerFieldPills } from './TrackerFieldPills';
 import { useTrackerChipFieldSections } from './trackerChipFields';
+import { unwrapLabelFieldValues, useTrackerLabelFields, wrapLabelFieldValue } from './trackerLabelFields';
 import './StatusBarSlider.css';
 import './StatusBar.css';
 
@@ -50,16 +51,25 @@ export const StatusBar: React.FC<StatusBarProps> = ({
 }) => {
   const [isCollapsed, setIsCollapsed] = useState(false);
   const [localData, setLocalData] = useState<Record<string, any>>(data);
-  const { chipFields } = useTrackerChipFieldSections(model.type);
+  // Label properties follow the type's fields; qualified values are edited bare.
+  const labelLayout = useTrackerLabelFields(model.type, localData);
+  const { chipFields } = useTrackerChipFieldSections(model.type, undefined, labelLayout.fields);
+  const chipValues = useMemo(() => unwrapLabelFieldValues(labelLayout.fields, localData), [labelLayout.fields, localData]);
 
   useEffect(() => {
     setLocalData(data);
   }, [data]);
 
+  // Read through a ref: a save callback that changed identity on every edit
+  // would make each chip flush its pending text save early.
+  const localDataRef = useRef(localData);
+  localDataRef.current = localData;
   const handleFieldChange = useCallback((fieldName: string, value: any) => {
-    setLocalData((current) => ({ ...current, [fieldName]: value }));
-    onChange({ [fieldName]: value });
-  }, [onChange]);
+    const field = labelLayout.fields.find((candidate) => candidate.name === fieldName);
+    const stored = field ? wrapLabelFieldValue(field, value, localDataRef.current[fieldName]) : value;
+    setLocalData((current) => ({ ...current, [fieldName]: stored }));
+    onChange({ [fieldName]: stored });
+  }, [labelLayout.fields, onChange]);
 
   const toggle = useCallback(() => setIsCollapsed((collapsed) => !collapsed), []);
 
@@ -124,7 +134,7 @@ export const StatusBar: React.FC<StatusBarProps> = ({
           <TrackerFieldPills
             labelFields={labelFields}
             fields={chipFields}
-            values={localData}
+            values={chipValues}
             teamMembers={teamMembers}
             relationshipCandidates={relationshipCandidates}
             onSave={handleFieldChange}

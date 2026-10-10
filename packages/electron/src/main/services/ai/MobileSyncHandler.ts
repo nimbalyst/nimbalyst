@@ -18,6 +18,7 @@ import {
 import type { SessionManager } from '@nimbalyst/runtime/ai/server';
 import type { DriveReason } from './QueueDriveService';
 import { getLocalHostDeviceId } from './sessionHostAttribution';
+import { registerMobileHierarchyAuthority } from './mobileHierarchySync';
 
 /** How long a finished mobile request ID stays guarded against redelivery. */
 const MOBILE_REQUEST_DEDUP_GRACE_MS = 60_000;
@@ -43,6 +44,7 @@ export interface MobileSyncContext {
 }
 
 export class MobileSyncHandler {
+  private hierarchyUnsubscribe: (() => void) | null = null;
   private mobileSyncHandlerInitialized = false;
   private lastSyncProvider: import('@nimbalyst/runtime/sync').SyncProvider | null = null;
   private syncStatusUnsubscribe: (() => void) | null = null;
@@ -129,6 +131,8 @@ export class MobileSyncHandler {
         return;
       }
       this.lastSyncProvider = syncProvider;
+      this.hierarchyUnsubscribe?.();
+      this.hierarchyUnsubscribe = registerMobileHierarchyAuthority(syncProvider);
 
       // Listen for index changes and insert queued prompts into the queued_prompts table
       if (syncProvider.onIndexChange) {
@@ -280,6 +284,8 @@ export class MobileSyncHandler {
               request.argsJson,
               request.projectId,
             );
+            // Outcome only, never content: without this a phone voice failure left no trace on the desktop.
+            logger.main.info(`[AIService] Mobile voice tool ${live ? `${live.tool} session=${live.scope.sessionId ?? 'none'}` : request.toolName}: ${outcome.success ? 'ok' : `failed (${outcome.error ?? 'no error'})`}`);
             await syncProvider.sendVoiceToolResponse!({
               requestId: request.requestId,
               success: outcome.success,

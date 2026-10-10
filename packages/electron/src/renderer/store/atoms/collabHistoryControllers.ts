@@ -12,31 +12,10 @@
  * the user to open it before restoring.
  */
 import { atom } from 'jotai';
-import type {
-  CollabHistoryClient,
-  DocumentSyncStatus,
-} from '@nimbalyst/runtime/sync';
+import type { CollabHistoryController } from '@nimbalyst/collab-client/docs-ui/history';
 
-export interface CollabHistoryController {
-  /** Stable per-document REST client. */
-  client: CollabHistoryClient;
-  /** Logical editor type, e.g. `markdown`, `excalidraw`. */
-  editorType: string;
-  /** Snapshot content format string returned by `exportSnapshot`. */
-  contentFormat: string;
-  /** How much the dialog can do for this editor right now. */
-  previewKind?: 'text' | 'metadata-only';
-  /** Capture the current document content for a new revision. */
-  exportSnapshot?: () => Promise<Uint8Array> | Uint8Array;
-  /** Apply a restored snapshot into the live document. */
-  applySnapshot?: (plaintext: Uint8Array) => Promise<void> | void;
-  /** Largest server sequence known to this client. */
-  getBasisSequence: () => number;
-  /** Current sync status -- restore is blocked while this is unsafe. */
-  getStatus: () => DocumentSyncStatus;
-  /** Wait for local collab writes to settle before restore-sensitive actions. */
-  waitForPendingWrites?: (timeoutMs?: number) => Promise<boolean>;
-}
+// The contract is shared with the web console's page history.
+export type { CollabHistoryController };
 
 const controllers = new Map<string, CollabHistoryController>();
 const versionAtom = atom(0);
@@ -48,6 +27,11 @@ export const collabHistoryControllerAtom = atom(
     return (uri: string): CollabHistoryController | null => controllers.get(uri) ?? null;
   }
 );
+
+/** Non-reactive read for services outside React (e.g. the agent edit path). */
+export function getCollabHistoryController(uri: string): CollabHistoryController | null {
+  return controllers.get(uri) ?? null;
+}
 
 export function registerCollabHistoryController(
   uri: string,

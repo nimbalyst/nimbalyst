@@ -3,8 +3,9 @@
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { documentModelRegistry, errorNotificationService } = vi.hoisted(() => ({
+const { documentModelRegistry, errorNotificationService, requestConfirmation } = vi.hoisted(() => ({
   documentModelRegistry: { get: vi.fn() },
+  requestConfirmation: vi.fn(),
   errorNotificationService: {
     showError: vi.fn(),
     showInfo: vi.fn(),
@@ -17,6 +18,10 @@ vi.mock('../../services/document-model/DocumentModelRegistry', () => ({
 
 vi.mock('../../services/ErrorNotificationService', () => ({
   errorNotificationService,
+}));
+
+vi.mock('../../dialogs/requestConfirmation', () => ({
+  requestConfirmation,
 }));
 
 vi.mock('../../store/atoms/collabDocuments', () => ({
@@ -116,5 +121,38 @@ describe('useLocalFileSharedDocLink pull', () => {
       'Pull failed',
       'Save the local file before pulling from the shared document.',
     );
+  });
+
+  it('overwrites the local file on a pull conflict only after the user confirms', async () => {
+    documentModelRegistry.get.mockReturnValue(null);
+    const conflict = { success: false, status: 'conflict', conflictKind: 'diverged', conflictToken: 'tok-1' };
+
+    const { result } = renderHook(() => (
+      useLocalFileSharedDocLink('/workspace', '/workspace/local.md')
+    ));
+    await waitFor(() => expect(result.current.binding?.documentId).toBe('doc-1'));
+
+    pullLocalOrigin.mockResolvedValueOnce(conflict);
+    requestConfirmation.mockResolvedValueOnce(false);
+    let pulled = true;
+    await act(async () => {
+      pulled = await result.current.pullFromSharedDoc();
+    });
+    expect(pulled).toBe(false);
+    expect(pullLocalOrigin).toHaveBeenCalledTimes(1);
+
+    pullLocalOrigin.mockClear();
+    pullLocalOrigin.mockResolvedValueOnce(conflict);
+    requestConfirmation.mockResolvedValueOnce(true);
+    await act(async () => {
+      pulled = await result.current.pullFromSharedDoc();
+    });
+    expect(pulled).toBe(true);
+    expect(pullLocalOrigin).toHaveBeenLastCalledWith({
+      workspacePath: '/workspace',
+      documentId: 'doc-1',
+      forceOverwriteLocal: true,
+      conflictToken: 'tok-1',
+    });
   });
 });

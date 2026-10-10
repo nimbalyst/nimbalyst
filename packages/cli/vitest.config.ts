@@ -1,10 +1,16 @@
 import { defineConfig } from 'vitest/config';
+import { readFileSync } from 'node:fs';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 
+const packageDir = path.dirname(fileURLToPath(import.meta.url));
+const { version } = JSON.parse(readFileSync(path.join(packageDir, 'package.json'), 'utf8'));
+
 export default defineConfig({
+  // Same as scripts/build.mjs: VERSION in src/index.ts comes from package.json.
+  define: { __NIM_VERSION__: JSON.stringify(version) },
   resolve: {
     alias: [
       // Match the root config: test tracker-core's SOURCE, not its build. The
@@ -14,6 +20,16 @@ export default defineConfig({
       {
         find: '@nimbalyst/tracker-core',
         replacement: path.join(repoRoot, 'packages/tracker-core/src'),
+      },
+      // Same for the local wiki library: its `exports` point at a gitignored `dist/`.
+      {
+        find: '@nimbalyst/local-wiki',
+        replacement: path.join(repoRoot, 'packages/local-wiki/src/index.ts'),
+      },
+      // The Pages tool contract: tool names and schemas for `nim mcp`.
+      {
+        find: '@nimbalyst/collab-protocol',
+        replacement: path.join(repoRoot, 'packages/collab-protocol/src/index.ts'),
       },
     ],
   },

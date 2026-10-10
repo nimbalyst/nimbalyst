@@ -19,10 +19,19 @@
  * client-side AAD left to construct or verify.
  */
 import type { TrackerItemEnvelope, TrackerSchemaEnvelope, TrackerNavigationEnvelope, TrackerSavedViewEnvelope, TrackerItemPayload } from './trackerProtocol.js';
+/** An item that cannot fit the room's per-item limit even with its activity trimmed. */
+export declare class TrackerPayloadTooLargeError extends Error {
+    readonly itemId: string;
+    readonly bytes: number;
+    readonly limitBytes: number;
+    readonly code = "payloadTooLarge";
+    constructor(itemId: string, bytes: number, limitBytes?: number);
+}
 /**
  * Serialize a `TrackerItemPayload` to the plaintext wire form for
  * server-managed mode. Strips device-local fields exactly like the encrypted
- * path so they never cross the wire.
+ * path so they never cross the wire. Throws `TrackerPayloadTooLargeError` when
+ * the item cannot fit the room's limit.
  */
 export declare function encodeTrackerPayloadPlaintext(payload: TrackerItemPayload): string;
 /**

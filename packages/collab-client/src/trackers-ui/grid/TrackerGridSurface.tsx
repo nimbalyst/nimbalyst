@@ -31,8 +31,8 @@ import { RevoGrid, type RevoGridCustomEvent } from '@revolist/react-datagrid';
 import type {
   AfterEditEvent,
   BeforeSaveDataDetails,
+  ColumnRegular,
   FocusAfterRenderEvent,
-  SortingConfig,
 } from '@revolist/revogrid';
 import type { TrackerRecord } from '@nimbalyst/runtime/core/TrackerRecord';
 import {
@@ -58,12 +58,14 @@ import {
   type SortDirection,
 } from '@nimbalyst/collab-client/trackers';
 import { TrackerSurfaceMessage } from '../primitives/TrackerSurfaceMessage';
-import { buildGridActionsColumn, buildGridColumns } from './trackerGridColumns';
+import { useTrackersUITeamMembers } from '../TrackersUIProvider';
+import { buildDerivedGridColumn, buildGridActionsColumn, buildGridColumns } from './trackerGridColumns';
 import { LazyTrackerColumnFilterPopover } from './LazyTrackerColumnFilterPopover';
 import { useGridKeyOriginGuard } from './gridKeyOrigin';
 import './trackerGrid.css';
+import { useGridViewSettings, type GridViewSettings } from './useGridViewSettings';
 
-export interface TrackerGridSurfaceProps {
+export interface TrackerGridSurfaceProps extends GridViewSettings {
   rows: TrackerRecord[];
   /** `'all'` for a mixed-type grid; a tracker type resolves one schema. */
   trackerType: string;
@@ -104,6 +106,32 @@ export interface TrackerGridSurfaceProps {
   }) => void;
   /** False until the first snapshot resolves. */
   loaded: boolean;
+  /** Read-only columns the host computes per row (a type page's Where), after the field columns unless placed with `after`. */
+  derivedColumns?: readonly TrackerGridDerivedColumn[];
+}
+
+export interface TrackerGridDerivedColumn {
+  /** Row key; must not collide with a field column id. */
+  id: string;
+  label: string;
+  width?: number;
+  /** Field column id to sit right after; appended when that column is not shown. */
+  after?: string;
+  value: (row: TrackerRecord) => string;
+}
+
+function placeDerivedColumns(
+  fieldColumns: ColumnRegular[],
+  derived: readonly TrackerGridDerivedColumn[],
+): ColumnRegular[] {
+  const placed = [...fieldColumns];
+  const trailing: ColumnRegular[] = [];
+  for (const column of derived) {
+    const anchor = column.after ? placed.findIndex((candidate) => candidate.prop === column.after) : -1;
+    if (anchor >= 0) placed.splice(anchor + 1, 0, buildDerivedGridColumn(column));
+    else trailing.push(buildDerivedGridColumn(column));
+  }
+  return [...placed, ...trailing];
 }
 
 export interface TrackerGridUpdateEntry {
@@ -130,6 +158,9 @@ export function TrackerGridSurface({
   columnConfig,
   sortBy,
   sortDirection = 'desc',
+  sortColumns,
+  onSortChange,
+  onWidthsChange,
   columnFilters,
   onColumnFiltersChange,
   resolveRelationshipLabel,
@@ -139,6 +170,7 @@ export function TrackerGridSurface({
   onOpenItem,
   onRowContextMenu,
   loaded,
+  derivedColumns,
 }: TrackerGridSurfaceProps) {
   const [filterTarget, setFilterTarget] = useState<{
     columnId: string;
@@ -189,12 +221,20 @@ export function TrackerGridSurface({
     [columnFilters]
   );
 
+  // Read when a cell opens, so the directory arriving late does not rebuild the columns.
+  const teamMembers = useTrackersUITeamMembers();
+  const teamMembersRef = useRef(teamMembers);
+  teamMembersRef.current = teamMembers;
+  const editorContext = useMemo(() => ({ teamMembers: () => teamMembersRef.current }), []);
+
   const gridColumns = useMemo(
     () => [
-      ...buildGridColumns(visibleColumnDefs, {
+      ...placeDerivedColumns(buildGridColumns(visibleColumnDefs, {
         trackerType: schemaType,
+        sortingEnabled: !!onSortChange,
         columnWidths: effectiveConfig.columnWidths,
         isRowEditable,
+        editorContext,
         filteredColumnIds,
         onOpenFilter: onColumnFiltersChange
           ? (columnId, rect) => setFilterTarget({ columnId, rect })
@@ -202,30 +242,37 @@ export function TrackerGridSurface({
         // The favorite star is a personal-lane affordance; a host that has one
         // renders it through its own grid. Not reconstructed here.
         rowActions: false,
-        // No document surface in the browser yet, so the key opens the detail
-        // only -- the expand icon is omitted rather than rendered inert.
         keyLink: onOpenItem ? { onOpenDetail: onOpenItem } : undefined,
         resolveRelationshipLabel,
-      }),
+      }), derivedColumns ?? []),
       ...(onRowContextMenu ? [buildGridActionsColumn()] : []),
     ],
     [
       visibleColumnDefs,
+      onSortChange,
       schemaType,
       effectiveConfig.columnWidths,
       isRowEditable,
+      editorContext,
       filteredColumnIds,
       onColumnFiltersChange,
       onOpenItem,
       resolveRelationshipLabel,
+      derivedColumns,
       onRowContextMenu,
     ]
   );
 
-  const gridSource = useMemo(
-    () => buildGridSource(rows, visibleColumnDefs),
-    [rows, visibleColumnDefs]
-  );
+  const gridSource = useMemo(() => {
+    const source = buildGridSource(rows, visibleColumnDefs);
+    if (!derivedColumns?.length) return source;
+    // `buildGridSource` keeps one entry per row, in order.
+    return source.map((entry, index) => {
+      const next = { ...entry };
+      for (const column of derivedColumns) next[column.id] = column.value(rows[index]!);
+      return next;
+    });
+  }, [rows, visibleColumnDefs, derivedColumns]);
 
   const markedGridSource = useMemo(
     () =>
@@ -239,11 +286,7 @@ export function TrackerGridSurface({
     [gridSource, selectedItemId]
   );
 
-  const gridSorting = useMemo<SortingConfig | undefined>(() => {
-    if (!sortBy || !visibleColumnDefs.some((column) => column.id === sortBy))
-      return undefined;
-    return { columns: [{ prop: sortBy, order: sortDirection }] };
-  }, [sortBy, sortDirection, visibleColumnDefs]);
+  const gridSorting = useGridViewSettings(gridCanvasRef, { sortBy, sortDirection, sortColumns, onSortChange, onWidthsChange }, visibleColumnDefs);
 
   const rowsById = useMemo(
     () => new Map(rows.map((row) => [row.id, row])),
@@ -443,7 +486,7 @@ export function TrackerGridSurface({
           (target) =>
             target instanceof HTMLElement &&
             (target.classList.contains('tracker-grid-editor-input') ||
-              target.classList.contains('tracker-grid-editor-select') ||
+              target.classList.contains('tracker-grid-choice-anchor') ||
               target.classList.contains('tracker-grid-editor-checkbox'))
         );
 
@@ -550,12 +593,13 @@ export function TrackerGridSurface({
           />
         ) : (
           <RevoGrid
-            key={`${schemaType}:${sortBy ?? ''}:${sortDirection}`}
+            key={`${schemaType}:${sortBy ?? ''}:${sortDirection}:${JSON.stringify(sortColumns)}`}
             columns={gridColumns}
             source={markedGridSource}
             rowClass={ROW_CLASS_KEY}
             sorting={gridSorting}
             theme="compact"
+            hideAttribution
             resize
             range
             readonly={!onItemsUpdate}

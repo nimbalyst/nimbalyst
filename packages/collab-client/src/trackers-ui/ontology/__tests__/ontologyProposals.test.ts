@@ -1,7 +1,8 @@
 // @vitest-environment node
 import { expect, test } from 'vitest';
 import type { TrackerDataCommand } from '../../../trackers/dataSource';
-import { buildKnowledgeGraph, computeContentHealth } from '../ontologyKnowledge';
+import { buildKnowledgeGraph } from '../ontologyKnowledge';
+import { computeContentHealth } from '../ontologyContentHealth';
 import {
   decideChange,
   deriveProposalStatus,
@@ -147,4 +148,91 @@ test('a write that fails part-way records undo for the writes that ran', async (
   await undoAppliedChanges(store.byId.get('P1')!, context(store.command));
   expect(store.byId.get('Blog strategy')!.fields.kind).toBe('concept');
   expect(store.byId.get('Pricing')!.fields.kind).toBe('concept');
+});
+
+test('label changes: add-label waits on an agent until the registry has it; apply-label writes labels and undoes them', async () => {
+  const labels = { labels: [{ id: 'topic', label: 'Topic' }, { id: 'product', label: 'Product', properties: ['in-market'] }], properties: [], claimProperties: {} };
+  const records = [...knowledgeFixture(), rec('Tagged', 'entity', { kind: 'concept', labels: ['product'] })];
+  const graph = buildKnowledgeGraph(records);
+  const labelEnv = { ...env(), labels };
+
+  const add = planOntologyChange({ id: 'l', type: 'add-label', label: { id: 'feature', label: 'Feature', broader: ['topic'] } }, graph, labelEnv);
+  expect(add).toMatchObject({ summary: 'Add the label "Feature" (feature), under Topic', ops: [], satisfied: false });
+  expect(add.blocked).toMatch(/agent/);
+  expect(planOntologyChange({ id: 'l', type: 'add-label', label: { id: 'topic', label: 'Topic' } }, graph, labelEnv)).toMatchObject({ satisfied: true, blocked: null });
+  expect(planOntologyChange({ id: 'p', type: 'add-label-property', labelId: 'product', propertyId: 'in-market' }, graph, labelEnv).satisfied).toBe(true);
+  // An unknown label blocks the data change, as a missing kind blocks reclassify.
+  expect(planOntologyChange({ id: 'a', type: 'apply-label', labelId: 'feature', pageIds: ['Pricing'] }, graph, labelEnv).blocked).toMatch(/feature/);
+  expect(parseProposalChanges('[{"id":"x","type":"apply-label","labelId":"topic"}]').errors).toEqual(['change 1: needs labelId and pageIds']);
+
+  const store = room([...records, proposal([{ id: 'apply', type: 'apply-label', labelId: 'topic', pageIds: ['Pricing', 'Tagged', 'missing'], decision: 'accepted' }])]);
+  const plan = planOntologyChange({ id: 'apply', type: 'apply-label', labelId: 'topic', pageIds: ['Pricing', 'Tagged'] }, graph, labelEnv);
+  expect(plan.ops).toEqual([
+    { op: 'update', itemId: 'Pricing', updates: { labels: ['topic'] } },
+    { op: 'update', itemId: 'Tagged', updates: { labels: ['product', 'topic'] } },
+  ]);
+  const applied = await applyAcceptedChanges(store.byId.get('P1')!, buildKnowledgeGraph(store.records()), labelEnv, context(store.command));
+  expect(applied).toMatchObject({ applied: ['apply'], status: 'applied' });
+  expect(store.byId.get('Tagged')!.fields.labels).toEqual(['product', 'topic']);
+  await undoAppliedChanges(store.byId.get('P1')!, context(store.command));
+  expect(store.byId.get('Tagged')!.fields.labels).toEqual(['product']);
+  expect(store.byId.get('Pricing')!.fields.labels).toBeUndefined();
+});
+
+test('a type page lists the open proposals that touch its label', async () => {
+  const { proposalsTouchingLabel } = await import('../ontologyLabelProposals');
+  const proposals = [
+    rec('a', 'ontology-proposal', { status: 'proposed', changes: JSON.stringify([{ type: 'add-broader', labelId: 'feature', broaderId: 'capability' }]) }),
+    rec('b', 'ontology-proposal', { status: 'proposed', healthCheck: 'unmet-expects:product:in-market', changes: '[]' }),
+    rec('c', 'ontology-proposal', { status: 'applied', changes: JSON.stringify([{ type: 'apply-label', labelId: 'capability', pageIds: [] }]) }),
+  ];
+  expect(proposalsTouchingLabel(proposals, 'capability').map((proposal) => proposal.id)).toEqual(['a']);
+  expect(proposalsTouchingLabel(proposals, 'product').map((proposal) => proposal.id)).toEqual(['b']);
+});
+
+test('the skill\'s change shapes parse and plan: add-property by storage, extend-range labelIds, split-label pageIds, expects on add-label-property', () => {
+  const labels = {
+    labels: [
+      { id: 'capability', label: 'Capability', properties: ['owner'], expects: [{ property: 'owner', min: 1 }] },
+      { id: 'feature', label: 'Feature', broader: ['capability'] },
+      { id: 'surface', label: 'Surface' },
+    ],
+    properties: [{ id: 'owner', label: 'Owner', type: 'string' as const }],
+    claimProperties: { 'part-of': { range: ['capability'] } },
+  };
+  const records = [rec('Search', 'entity', { labels: ['capability'] }), rec('Undo', 'entity', { labels: ['capability', 'surface'] })];
+  const graph = buildKnowledgeGraph(records);
+  const labelEnv = { ...env(), labels, isPredicate: (id: string) => id === 'part-of' };
+  const { changes, errors } = parseProposalChanges(JSON.stringify([
+    { id: 'p', type: 'add-property', storage: 'claim', property: { id: 'part-of', label: 'part of', valueShape: 'entity', direction: 'directed' }, claimProperty: { range: ['capability'] }, labelIds: ['feature'] },
+    { id: 'r', type: 'extend-range', propertyId: 'part-of', labelIds: ['surface'] },
+    { id: 'e', type: 'add-label-property', labelId: 'capability', propertyId: 'owner', expects: { min: 1 } },
+    { id: 's', type: 'split-label', labelId: 'capability', into: [{ id: 'feature', label: 'Feature', broader: ['capability'] }], pageIds: { feature: ['Search'] } },
+    { id: 'bad', type: 'add-property', property: { id: 'x', label: 'X' } },
+  ]));
+  expect(errors).toEqual(['change 5: needs storage (field or claim) and property.id and label']);
+  const plans = new Map(changes.map((change) => [change.id, planOntologyChange(change, graph, labelEnv)]));
+  // The predicate exists but feature does not list it yet, so the change is still an agent's to apply.
+  expect(plans.get('p')).toMatchObject({ satisfied: false, example: { after: [{ value: '+ part-of: claim, entity, range capability' }] } });
+  expect(plans.get('r')!.example!.after[0]!.value).toBe('capability | surface');
+  expect(plans.get('e')).toMatchObject({ satisfied: true, blocked: null });
+  // Feature exists, so the split relabels Search and drops the label feature now implies.
+  expect(plans.get('s')!.ops).toEqual([{ op: 'update', itemId: 'Search', updates: { labels: ['feature'] } }]);
+  // A page moving to both new labels gets one write carrying both, and one undo entry.
+  const both = planOntologyChange({
+    id: 'both', type: 'split-label', labelId: 'capability',
+    into: [{ id: 'feature', label: 'Feature' }, { id: 'surface', label: 'Surface' }],
+    pageIds: { feature: ['Search', 'Undo'], surface: ['Undo'] },
+  }, graph, labelEnv);
+  expect(both.ops).toEqual([
+    { op: 'update', itemId: 'Search', updates: { labels: ['feature'] } },
+    { op: 'update', itemId: 'Undo', updates: { labels: ['surface', 'feature'] } },
+  ]);
+  expect(both.undo).toEqual([
+    { op: 'restore-fields', itemId: 'Undo', fields: { labels: ['capability', 'surface'] } },
+    { op: 'restore-fields', itemId: 'Search', fields: { labels: ['capability'] } },
+  ]);
+  expect(both.pages.map((page) => page.id)).toEqual(['Search', 'Undo']);
+  // reclassify-pages is retired but an old proposal still plans.
+  expect(planOntologyChange({ id: 'old', type: 'reclassify-pages', toKind: 'topic', pageIds: ['Pricing'] }, buildKnowledgeGraph(knowledgeFixture()), env()).ops).toHaveLength(1);
 });

@@ -1,14 +1,21 @@
 <resources xmlns:tools="http://schemas.android.com/tools">
-    <style name="Theme.NimbalystAndroid" parent="Theme.AppCompat.DayNight.NoActionBar">
+    <!-- Dark only, like iOS. A DayNight parent painted a white window on
+         light-mode devices before the first Compose frame. -->
+    <style name="Theme.NimbalystAndroid" parent="Theme.AppCompat.NoActionBar">
+        <item name="android:windowBackground">@color/nim_background_secondary</item>
         <item name="android:statusBarColor">@android:color/transparent</item>
-        <item name="android:navigationBarColor">@android:color/black</item>
+        <item name="android:navigationBarColor">@color/nim_background_secondary</item>
         <item name="android:windowLightStatusBar" tools:targetApi="23">false</item>
+        <item name="android:windowLightNavigationBar" tools:targetApi="27">false</item>
     </style>
 
     <!-- Launch theme: shows the system splash (backported to all versions via
-         androidx.core:core-splashscreen), then hands off to the main theme. -->
-    <style name="Theme.NimbalystAndroid.Splash" parent="Theme.SplashScreen">
-        <item name="windowSplashScreenBackground">@color/ic_launcher_background</item>
+         androidx.core:core-splashscreen), then hands off to the main theme.
+         Dark background so launch doesn't flash white; the icon keeps its white
+         card through the icon background. -->
+    <style name="Theme.NimbalystAndroid.Splash" parent="Theme.SplashScreen.IconBackground">
+        <item name="windowSplashScreenBackground">@color/nim_background_secondary</item>
+        <item name="windowSplashScreenIconBackgroundColor">@color/ic_launcher_background</item>
         <item name="windowSplashScreenAnimatedIcon">@mipmap/ic_launcher_foreground</item>
         <item name="postSplashScreenTheme">@style/Theme.NimbalystAndroid</item>
     </style>

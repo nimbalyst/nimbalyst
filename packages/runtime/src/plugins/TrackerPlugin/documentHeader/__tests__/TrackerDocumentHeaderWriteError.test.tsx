@@ -21,9 +21,9 @@ const model: TrackerDataModel = {
   fields: [],
 } as unknown as TrackerDataModel;
 
-vi.mock('../../components/StatusBar', () => ({
-  StatusBar: ({ onChange }: { onChange: (updates: Record<string, unknown>) => void }) => (
-    <button type="button" onClick={() => onChange({ status: 'completed' })}>
+vi.mock('../../components/TrackerTypeRow', () => ({
+  TrackerTypeRow: ({ onSaveField }: { onSaveField: (field: { name: string }, value: unknown) => void }) => (
+    <button type="button" onClick={() => onSaveField({ name: 'status' }, 'completed')}>
       change status
     </button>
   ),

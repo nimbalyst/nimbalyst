@@ -19,6 +19,7 @@ const mocks = vi.hoisted(() => ({
   createSession: vi.fn(),
   queuePrompt: vi.fn(),
   sessionRepoCreate: vi.fn(async () => {}),
+  sessionRepoGet: vi.fn(),
 }));
 
 vi.mock('../../../utils/logger', () => ({ logger: { main: mocks.logger } }));
@@ -37,7 +38,7 @@ vi.mock('electron', () => ({
   BrowserWindow: { getAllWindows: () => [{ isDestroyed: () => false }] },
 }));
 vi.mock('@nimbalyst/runtime/storage/repositories/AISessionsRepository', () => ({
-  AISessionsRepository: { create: mocks.sessionRepoCreate, updateMetadata: vi.fn(async () => {}) },
+  AISessionsRepository: { get: mocks.sessionRepoGet, create: mocks.sessionRepoCreate, updateMetadata: vi.fn(async () => {}) },
 }));
 vi.mock('../../GitWorktreeService', () => ({
   GitWorktreeService: class {
@@ -101,6 +102,23 @@ describe('mobile create-session request handling', () => {
       isDestroyed: () => false,
       webContents: { send: vi.fn(), once: vi.fn() },
     });
+  });
+
+  it('creates a worktree child with inherited parent and manager in the initial insert', async () => {
+    mocks.sessionRepoGet.mockResolvedValue({ id: 'parent', workspacePath: '/workspace', worktreeId: 'wt', worktreePath: '/workspace/wt' });
+    const { provider, captured } = fakeProvider(vi.fn(async () => ({ published: true, publishedSessionIds: ['session-1'] })));
+    registerMobileCreateSessionHandler(provider as never, requestContext());
+    await captured.session!({ requestId: 'child-in-worktree', projectId: '/workspace', parentSessionId: 'parent' });
+    expect(mocks.createSession).toHaveBeenCalledWith('claude-code', undefined, '/workspace', undefined, 'claude-code:opus-1m', 'session', 'agent', 'wt', '/workspace/wt', '/workspace', 'standard', 'parent', undefined, 'parent');
+  });
+
+  it('rejects a foreign parent before creating an orphan session', async () => {
+    mocks.sessionRepoGet.mockResolvedValue({ id: 'foreign', workspacePath: '/elsewhere' });
+    const { provider, captured } = fakeProvider(vi.fn());
+    registerMobileCreateSessionHandler(provider as never, requestContext());
+    await captured.session!({ requestId: 'bad-parent', projectId: '/workspace', parentSessionId: 'foreign' });
+    expect(mocks.createSession).not.toHaveBeenCalled();
+    expect(provider.sendCreateSessionResponse).toHaveBeenCalledWith(expect.objectContaining({ success: false }));
   });
 
   it('sends no response until the index publish for the new session resolves', async () => {

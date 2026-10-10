@@ -62,6 +62,19 @@ function serializeEditorContextData(data: unknown): string | undefined {
   }
 }
 
+/** One line for an agent on a wiki page, when the wiki skills are installed. */
+export const WIKI_SKILL_NOTE =
+  'This is a wiki page. Before adding or restructuring wiki content (typed pages, types, views, links between pages), load the /wiki:update skill and follow it.';
+
+/**
+ * Whether `filePath` is a wiki page: a Team page (`collab://org:...:doc:...`),
+ * a typed page's body (`collab://tracker-content/...`), or a Personal page or
+ * typed page body (`personal://...`).
+ */
+export function isWikiPageUri(filePath: string): boolean {
+  return filePath.startsWith('collab://') || filePath.startsWith('personal://');
+}
+
 export class DocumentContextService implements IDocumentContextService {
   /** Per-session document state for transition detection */
   private lastDocumentStateBySession: Map<string, DocumentState> = new Map();
@@ -89,7 +102,7 @@ export class DocumentContextService implements IDocumentContextService {
     sessionId: string,
     providerType: AIProviderType,
     modeTransition?: ModeTransition,
-    options?: { truncateContent?: boolean; truncateLength?: number }
+    options?: { truncateContent?: boolean; truncateLength?: number; wikiSkillAvailable?: boolean }
   ): ContextPreparationResult {
     this.debug('prepareContext INPUT', {
       sessionId,
@@ -127,7 +140,7 @@ export class DocumentContextService implements IDocumentContextService {
     );
 
     // 4. Build user message additions (includes document context prompt and one-time editing instructions)
-    const userMessageAdditions = this.buildUserMessageAdditions(modeTransition, documentContext, sessionId, providerType);
+    const userMessageAdditions = this.buildUserMessageAdditions(modeTransition, documentContext, sessionId, providerType, options?.wikiSkillAvailable === true);
 
     this.debug('prepareContext OUTPUT', {
       sessionId,
@@ -363,7 +376,8 @@ export class DocumentContextService implements IDocumentContextService {
     modeTransition: ModeTransition | undefined,
     documentContext: PreparedDocumentContext,
     sessionId: string,
-    providerType: AIProviderType
+    providerType: AIProviderType,
+    wikiSkillAvailable = false
   ): UserMessageAdditions {
     const additions: UserMessageAdditions = {};
 
@@ -371,7 +385,7 @@ export class DocumentContextService implements IDocumentContextService {
     // The SDK handles planning behavior natively via `permissionMode: 'plan'`.
 
     // Build document context prompt (file path, cursor, selection, content/diff, transitions)
-    const documentContextPrompt = this.buildDocumentContextPrompt(documentContext, providerType);
+    const documentContextPrompt = this.buildDocumentContextPrompt(documentContext, providerType, wikiSkillAvailable);
     if (documentContextPrompt) {
       additions.documentContextPrompt = documentContextPrompt;
     }
@@ -404,7 +418,7 @@ export class DocumentContextService implements IDocumentContextService {
    * Build the document context prompt that gets appended to the user message.
    * This includes file path, cursor position, selected text, content/diff, and transition info.
    */
-  private buildDocumentContextPrompt(context: PreparedDocumentContext, providerType: AIProviderType): string | undefined {
+  private buildDocumentContextPrompt(context: PreparedDocumentContext, providerType: AIProviderType, wikiSkillAvailable = false): string | undefined {
     const hasDocument = !!context.filePath;
     const transition = context.documentTransition;
 
@@ -439,6 +453,11 @@ export class DocumentContextService implements IDocumentContextService {
       } else {
         prompt += `The user is currently looking at this document. They are not necessarily asking you about this document, but they may be. Use your best judgement to decide if they are making a general request or asking specifically about this document.\n`;
         prompt += `<ACTIVE_DOCUMENT>${context.filePath}</ACTIVE_DOCUMENT>\n`;
+        // Without this an agent restructures a wiki page by hand and
+        // skips the guide, types and relations the skill knows about.
+        if (wikiSkillAvailable && context.filePath && isWikiPageUri(context.filePath)) {
+          prompt += `${WIKI_SKILL_NOTE}\n`;
+        }
       }
 
       // Collaborative documents (collab:// URIs) live in Yjs/Cloudflare Workers,

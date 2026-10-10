@@ -19,6 +19,12 @@ import type {
   VNode,
 } from '@revolist/revogrid';
 import type { CellEditorDescriptor } from '@nimbalyst/runtime/plugins/TrackerPlugin/components/trackerCellEditors';
+import type { TeamMemberOption } from '@nimbalyst/runtime/plugins/TrackerPlugin/components/TrackerFieldEditor';
+import {
+  teamMemberChoices,
+  type TrackerFieldChoice,
+} from '@nimbalyst/runtime/plugins/TrackerPlugin/components/TrackerFieldChoiceList';
+import { mountTrackerGridChoicePopover } from './TrackerGridChoicePopover';
 
 /** A tracker item the relationship editor can target. */
 export interface RelationshipCandidate {
@@ -31,6 +37,8 @@ export interface RelationshipCandidate {
 export interface TrackerEditorContext {
   /** Candidates for relationship cells, narrowed by the field's target types. */
   relationshipCandidates?: () => RelationshipCandidate[];
+  /** Who a `user` cell can name; without any, the cell is free text. */
+  teamMembers?: () => readonly TeamMemberOption[];
 }
 
 /**
@@ -61,7 +69,7 @@ export function commitOnNavigationKeys(
   }
 }
 
-/** Text-like editor covering string, multiline, number, user, and url cells. */
+/** Text-like editor covering string, multiline, number, and url cells, and user cells without a team. */
 function createInputEditor(
   descriptor: CellEditorDescriptor,
 ): EditorCtr {
@@ -99,43 +107,67 @@ function createInputEditor(
   };
 }
 
-/** Dropdown editor for `select` fields; commits immediately on choice. */
-function createSelectEditor(descriptor: CellEditorDescriptor): EditorCtr {
+/**
+ * Choice editor for `select` and `user` cells: the list a field chip opens, in
+ * a popover under the cell. Picking commits (and "None" clears); Escape or a
+ * click away leaves the cell as it was.
+ */
+function createChoiceEditor(known: readonly TrackerFieldChoice[]): EditorCtr {
   return (_column, save, close): EditorBase => {
-    let select: HTMLSelectElement | null = null;
-    const options = descriptor.options ?? [];
+    let unmount: (() => void) | null = null;
+    // `val` is the key typed to start the edit when there was one; `value` is
+    // what is stored -- present even when nothing is, so never fall back to `val`.
+    const current = (): string => {
+      const cell = editor.editCell as (EditCell & { value?: unknown }) | undefined;
+      const stored = cell && 'value' in cell ? cell.value : cell?.val;
+      return String(stored ?? '');
+    };
     const editor: EditorBase = {
       editCell: undefined as EditCell | undefined,
-      getValue: () => select?.value ?? '',
-      async componentDidRender() {
-        await new Promise(resolve => setTimeout(resolve, 0));
-        select?.focus();
+      // RevoGrid may autosave on close; a cell nothing was picked in keeps its value.
+      getValue: current,
+      componentDidRender() {
+        if (unmount || !editor.element) return;
+        const value = current();
+        const typed = String(editor.editCell?.val ?? '');
+        unmount = mountTrackerGridChoicePopover({
+          anchor: editor.element,
+          // A stored value that is no longer a choice stays one, so opening the cell does not lose it.
+          choices: value && !known.some(choice => choice.value === value)
+            ? [{ value, label: value }, ...known]
+            : known,
+          value,
+          initialQuery: typed !== value ? typed : '',
+          onPick: picked => save(picked, false),
+          onCancel: () => close(false),
+        });
+      },
+      disconnectedCallback() {
+        unmount?.();
+        unmount = null;
       },
       render(createElement: HyperFunc<VNode>) {
-        const current = String(editor.editCell?.val ?? '');
+        const value = current();
         return createElement(
-          'select',
-          {
-            class: 'tracker-grid-editor-select',
-            ref: (el: HTMLSelectElement | null) => {
-              if (!el) return;
-              select = el;
-              el.value = current;
-            },
-            // A dropdown has no separate "commit" gesture -- picking is committing.
-            onChange: () => save(select?.value ?? '', false),
-            onKeyDown: (e: KeyboardEvent) =>
-              commitOnNavigationKeys(e, () => select?.value ?? '', save, close),
-          },
-          [
-            // A blank choice is how a select cell gets cleared.
-            createElement('option', { value: '' }, ''),
-            ...options.map(opt => createElement('option', { value: opt.value }, opt.label)),
-          ],
+          'div',
+          { class: 'tracker-grid-choice-anchor' },
+          known.find(choice => choice.value === value)?.label ?? value,
         );
       },
     };
     return editor;
+  };
+}
+
+/**
+ * People picker for `user` fields, storing the member's email like a field
+ * chip does. Without a team there is no one to offer, so the cell is free text.
+ */
+function createUserEditor(descriptor: CellEditorDescriptor, context: TrackerEditorContext): EditorCtr {
+  return (column, save, close): EditorBase => {
+    const members = context.teamMembers?.() ?? [];
+    const editor = members.length === 0 ? createInputEditor(descriptor) : createChoiceEditor(teamMemberChoices(members));
+    return (editor as EditorCtrCallable)(column, save, close);
   };
 }
 
@@ -342,7 +374,12 @@ export function createTrackerCellEditor(
     case 'readonly':
       return undefined;
     case 'select':
-      return createSelectEditor(descriptor);
+      return createChoiceEditor((descriptor.options ?? []).map(option => ({
+        value: option.value,
+        label: option.label,
+        icon: option.icon,
+        color: option.color,
+      })));
     case 'multiselect':
       return createMultiselectEditor(descriptor);
     case 'date':
@@ -352,10 +389,11 @@ export function createTrackerCellEditor(
       return createBooleanEditor();
     case 'relationship':
       return createRelationshipEditor(descriptor, context);
+    case 'user':
+      return createUserEditor(descriptor, context);
     case 'text':
     case 'multiline':
     case 'number':
-    case 'user':
     case 'url':
     default:
       return createInputEditor(descriptor);

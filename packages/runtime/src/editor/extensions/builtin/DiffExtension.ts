@@ -115,6 +115,7 @@ export const DiffExtension = defineExtension({
         const replacements = Array.isArray(payload) ? payload : payload?.replacements;
         const requestId = Array.isArray(payload) ? undefined : payload?.requestId;
         const onResult = Array.isArray(payload) ? undefined : payload?.onResult;
+        const acceptChanges = Array.isArray(payload) ? false : payload?.acceptChanges === true;
         if (!replacements || replacements.length === 0) return false;
 
         try {
@@ -148,7 +149,9 @@ export const DiffExtension = defineExtension({
           }
 
           try {
-            applyMarkdownReplace(editor, originalMarkdown, normalizedReplacements, transformers);
+            applyMarkdownReplace(editor, originalMarkdown, normalizedReplacements, transformers, {
+              acceptChanges,
+            });
             onResult?.({ ok: true });
             if (typeof window !== 'undefined') {
               setTimeout(() => {

@@ -5,16 +5,9 @@ import UIKit
 @MainActor
 extension VoiceAgent {
     func invalidatePromptPresentation() {
-        if readingPrompt && state == .speaking { state = .listening }
-        if let callId = promptReadoutCallId {
-            promptReadoutCallId = nil
-            sendToolResult(callId: callId, output: Self.encodeArgs(["success": false, "error": "The readout was interrupted. Read the pending prompt again."]))
-        }
-        promptSpeaker.stop()
         promptPresentation = nil
         promptRenewal?.cancel()
         promptRenewal = nil
-        readingPrompt = false
         announcedSessionId = nil
     }
 
@@ -36,8 +29,6 @@ extension VoiceAgent {
             return
         }
         invalidatePromptPresentation()
-        promptReadoutCallId = callId
-        readingPrompt = true
         let epoch = connectionGeneration.value
         Task { [weak self] in
             guard let self else { return }
@@ -59,43 +50,25 @@ extension VoiceAgent {
                                                       deadline: Date().addingTimeInterval(Double(prompt.ttlMs) / 1000 - 1))
             self.promptPresentation = presentation
             self.announcedSessionId = prompt.sessionId
-            self.readingPrompt = true
-            self.audioPipeline.stopPlayback()
-            self.voiceClient?.interruptPlayback(audioEndMs: nil)
-            self.cancelIdleTimer()
-            self.state = .speaking
             self.startPromptRenewal()
-            self.promptSpeaker.speak(prompt.readout, language: self.settings.language) { [weak self] played in
-                Task { @MainActor in await self?.promptReadoutFinished(played, presentation: presentation, callId: callId) }
+            // The voice agent itself reads the question, in its own voice, and can be
+            // interrupted like anything else it says. The answer is still taken only from
+            // the user's own speech after this point, never from text the model supplies.
+            let receipt = await self.promptRequest("voice_prompt_presented", presentation: presentation)
+            guard self.toolResults.contains(callId), self.promptPresentation?.prompt.token == prompt.token else { return }
+            guard receipt.success, let live = self.voiceClient as? LiveClient else {
+                self.invalidatePromptPresentation()
+                self.sendToolResult(callId: callId, output: Self.encodeArgs(["success": false, "error": receipt.error ?? "Presentation could not be verified."]))
+                return
             }
-            self.announcementStatus = "Reading the question. Tap the microphone to interrupt."
+            self.promptPresentation?.presented = true
+            self.promptPresentation?.inputBoundaryMs = live.inputAudioMilliseconds
+            self.announcementStatus = "Waiting for your answer."
+            self.sendToolResult(callId: callId, output: Self.encodeArgs([
+                "success": true, "status": "presented", "session_id": prompt.sessionId, "question_data": prompt.readout,
+                "message": "Read question_data to the user now, in full and without adding options. Then wait for their spoken answer and call answer_prompt.",
+            ]))
         }
-    }
-
-    private func promptReadoutFinished(_ played: Bool, presentation: VoicePromptPresentation, callId: String) async {
-        guard promptPresentation?.prompt.token == presentation.prompt.token, connectionGeneration.accepts(presentation.generation) else { return }
-        guard played, !audioRoutes.blocksAudio, UIApplication.shared.applicationState == .active else {
-            invalidatePromptPresentation()
-            sendToolResult(callId: callId, output: Self.encodeArgs(["success": false, "error": "The question was interrupted. Read it again before answering."]))
-            return
-        }
-        let receipt = await promptRequest("voice_prompt_presented", presentation: presentation)
-        // Keep capture gated briefly after native playback, including while awaiting
-        // the receipt, so its last words cannot become the user's answer.
-        try? await Task.sleep(for: .milliseconds(300))
-        guard promptPresentation?.prompt.token == presentation.prompt.token, connectionGeneration.accepts(presentation.generation) else { return }
-        readingPrompt = false
-        state = .listening
-        resetIdleTimer()
-        guard receipt.success, let live = voiceClient as? LiveClient else {
-            invalidatePromptPresentation()
-            sendToolResult(callId: callId, output: Self.encodeArgs(["success": false, "error": receipt.error ?? "Presentation could not be verified."]))
-            return
-        }
-        promptPresentation?.presented = true
-        promptPresentation?.inputBoundaryMs = live.inputAudioMilliseconds
-        announcementStatus = "Waiting for your answer."
-        sendToolResult(callId: callId, output: Self.encodeArgs(["success": true, "status": "presented", "session_id": presentation.prompt.sessionId, "question_data": presentation.prompt.readout, "message": "The app has read the exact question aloud. Wait for the user's fresh spoken answer before calling answer_prompt."]))
     }
 
     func handleLiveAnswerPrompt(callId: String) {

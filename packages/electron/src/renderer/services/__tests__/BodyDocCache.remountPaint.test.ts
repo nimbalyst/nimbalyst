@@ -57,6 +57,11 @@ vi.mock('@nimbalyst/runtime/sync', async () => {
   return { CollabLexicalProvider: real.CollabLexicalProvider, DocumentSyncProvider };
 });
 
+// Imported once at load, not per test: BodyDocCache reaches the whole Lexical editor
+// graph through MarkdownCollabContentAdapter, and loading it inside the first test
+// spent most of that test's timeout under full-suite load.
+import { BodyDocCache } from '../BodyDocCache';
+
 const bindingProvider = {
   awareness: {
     getLocalState: () => null,
@@ -156,11 +161,9 @@ describe('tracker body remount paint (BodyDocCache warm re-acquire)', () => {
     sharedDocs.clear();
     stubStatus = 'connected';
     stubAcknowledgesWrites = true;
-    vi.resetModules();
   });
 
   it('paints the body on the SECOND open after switching away and back', async () => {
-    const { BodyDocCache } = await import('../BodyDocCache');
     const cache = new BodyDocCache();
 
     const itemId = 'bug_remount_paint';
@@ -209,7 +212,6 @@ describe('tracker body remount paint (BodyDocCache warm re-acquire)', () => {
    * can't be quietly dropped from that factory.
    */
   it('renders blank when a reused adapter is NOT prepared for the new binding', async () => {
-    const { BodyDocCache } = await import('../BodyDocCache');
     const cache = new BodyDocCache();
     const itemId = 'bug_adapter_reuse_unprepared';
     const factory = async () => ({ documentId: itemId, documentType: 'markdown' as const, title: 'Body' }) as any;
@@ -227,7 +229,6 @@ describe('tracker body remount paint (BodyDocCache warm re-acquire)', () => {
   });
 
   it('paints when the same adapter is reused for a second binding', async () => {
-    const { BodyDocCache } = await import('../BodyDocCache');
     const cache = new BodyDocCache();
 
     const itemId = 'bug_adapter_reuse';
@@ -249,7 +250,6 @@ describe('tracker body remount paint (BodyDocCache warm re-acquire)', () => {
   });
 
   it('applies an agent body write through the warm provider while the editor is bound', async () => {
-    const { BodyDocCache } = await import('../BodyDocCache');
     const cache = new BodyDocCache();
     const itemId = 'bug_agent_write_open_editor';
     const factory = async () => ({
@@ -292,7 +292,6 @@ describe('tracker body remount paint (BodyDocCache warm re-acquire)', () => {
    * `clear + insert` would merge into a second copy of the body.
    */
   it('reports an agent write the server never acknowledged as unacknowledged, not applied', async () => {
-    const { BodyDocCache } = await import('../BodyDocCache');
     const cache = new BodyDocCache();
     const itemId = 'bug_agent_write_never_acked';
     const factory = async () => ({
@@ -322,7 +321,6 @@ describe('tracker body remount paint (BodyDocCache warm re-acquire)', () => {
    * the other project's document.
    */
   it('refuses an agent body write whose workspace does not match the warm entry', async () => {
-    const { BodyDocCache } = await import('../BodyDocCache');
     const cache = new BodyDocCache();
     const itemId = 'fm:plan:docs/plan.md';
     const factory = async () => ({

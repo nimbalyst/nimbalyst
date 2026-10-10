@@ -1,14 +1,15 @@
 // @vitest-environment node
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import type { FileTreeItem } from '../../types';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => {
   return {
-    subscribe: vi.fn(async () => {}),
+    subscribe: vi.fn(async (_root: string, _subscriber: string, _callbacks: any) => {}),
     unsubscribe: vi.fn(),
     addWatchedPath: vi.fn(),
     removeWatchedPath: vi.fn(),
     getStats: vi.fn(() => ({ type: 'chokidar', activeWorkspaces: 1, workspaces: [] })),
-    getFolderContents: vi.fn(async () => []),
+    getFolderContents: vi.fn<(_root: string, _depth?: number, signal?: AbortSignal) => Promise<FileTreeItem[]>>(async () => []),
     getWindowId: vi.fn((window: any) => window?.id ?? null),
     markRecentlyDeleted: vi.fn(),
     scan: vi.fn(async () => [] as Array<{ path: string; name: string; type: 'file' }>),
@@ -93,6 +94,77 @@ describe('OptimizedWorkspaceWatcher', () => {
     } finally {
       watcher.stop(1);
     }
+  });
+
+  afterEach(() => {
+    watcher.stopAll();
+    vi.useRealTimers();
+    mocks.getFolderContents.mockReset().mockResolvedValue([]);
+  });
+
+  describe('slow file-tree scans', () => {
+    it('coalesces changes during a scan into one follow-up without overlapping scans', async () => {
+      vi.useFakeTimers();
+      const pending: Array<(tree: any[]) => void> = [];
+      mocks.getFolderContents.mockImplementation(() => new Promise(resolve => pending.push(resolve)));
+      const window = fakeWindow(1);
+      await watcher.start(window, '/ws/large');
+      const events = mocks.subscribe.mock.calls[0][2] as any;
+      events.onAdd('/ws/large/first.md');
+      await vi.advanceTimersByTimeAsync(500);
+      expect(mocks.getFolderContents).toHaveBeenCalledTimes(1);
+
+      for (let i = 0; i < 5; i++) {
+        events.onAdd(`/ws/large/${i}.md`);
+        await vi.advanceTimersByTimeAsync(600);
+      }
+      expect(mocks.getFolderContents).toHaveBeenCalledTimes(1);
+      pending.shift()!([]);
+      await vi.advanceTimersByTimeAsync(500);
+      expect(mocks.getFolderContents).toHaveBeenCalledTimes(2);
+      pending.shift()!([]);
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(mocks.getFolderContents).toHaveBeenCalledTimes(2);
+    });
+
+    it('runs the pending refresh after a failed scan and keeps roots independent', async () => {
+      vi.useFakeTimers();
+      let fail!: (error: Error) => void;
+      mocks.getFolderContents.mockImplementationOnce(() => new Promise((_resolve, reject) => { fail = reject; }));
+      const window = fakeWindow(1);
+      await watcher.start(window, '/ws/a');
+      await watcher.start(window, '/ws/b');
+      const a = mocks.subscribe.mock.calls[0][2];
+      const b = mocks.subscribe.mock.calls[1][2];
+      a.onAdd('/ws/a/one.md');
+      await vi.advanceTimersByTimeAsync(500);
+      a.onUnlink('/ws/a/one.md');
+      b.onAdd('/ws/b/two.md');
+      await vi.advanceTimersByTimeAsync(500);
+      expect(mocks.getFolderContents.mock.calls.map(call => call[0])).toEqual(['/ws/a', '/ws/b']);
+      fail(new Error('filesystem read failed'));
+      await vi.advanceTimersByTimeAsync(500);
+      expect(mocks.getFolderContents.mock.calls.map(call => call[0])).toEqual(['/ws/a', '/ws/b', '/ws/a']);
+    });
+
+    it('discards a stopped root scan even if that root is immediately watched again', async () => {
+      vi.useFakeTimers();
+      let finish!: (tree: any[]) => void;
+      mocks.getFolderContents.mockImplementationOnce(() => new Promise(resolve => { finish = resolve; }));
+      const window = fakeWindow(1);
+      await watcher.start(window, '/ws/large');
+      const events = mocks.subscribe.mock.calls[0][2] as any;
+      events.onAdd('/ws/large/first.md');
+      await vi.advanceTimersByTimeAsync(500);
+      events.onAdd('/ws/large/second.md');
+      watcher.stopRoot(1, '/ws/large');
+      expect(mocks.getFolderContents.mock.calls[0][2]?.aborted).toBe(true);
+      await watcher.start(window, '/ws/large');
+      finish([{ name: 'stale.md', type: 'file', path: '/ws/large/stale.md' }]);
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(window.webContents.send).not.toHaveBeenCalledWith('workspace-file-tree-updated', expect.anything());
+      expect(mocks.getFolderContents).toHaveBeenCalledTimes(1);
+    });
   });
 
   describe('lifecycle', () => {

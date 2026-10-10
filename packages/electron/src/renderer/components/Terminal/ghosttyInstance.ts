@@ -21,3 +21,33 @@ import { Ghostty } from 'ghostty-web';
 export function loadTerminalGhostty(wasmPath?: string): Promise<Ghostty> {
   return Ghostty.load(wasmPath);
 }
+
+/**
+ * True when `error` is a trap raised inside ghostty-vt.wasm (out-of-bounds
+ * access, unreachable, ...). After a trap the instance's heap is in an
+ * unknown state and every later call into it tends to trap again, so the
+ * owning terminal must be rebuilt on a fresh instance rather than written to.
+ */
+export function isGhosttyWasmTrap(error: unknown): boolean {
+  return error instanceof WebAssembly.RuntimeError;
+}
+
+/**
+ * Write to a ghostty terminal, reporting a WASM trap instead of throwing it.
+ * Returns false (after calling `onTrap`) when the instance trapped; any other
+ * error is rethrown unchanged.
+ */
+export function writeGuardingWasmTrap(
+  terminal: { write(data: string): void },
+  data: string,
+  onTrap: (error: unknown) => void,
+): boolean {
+  try {
+    terminal.write(data);
+    return true;
+  } catch (error) {
+    if (!isGhosttyWasmTrap(error)) throw error;
+    onTrap(error);
+    return false;
+  }
+}

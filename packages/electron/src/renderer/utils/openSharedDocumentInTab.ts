@@ -24,6 +24,8 @@ import { setWindowModeAtom } from '../store/atoms/windowMode';
 export function openSharedDocumentInTab(
   document: string | ResourceRef,
   analyticsSource: CollabDocumentOpenSource,
+  /** A click inside Pages: the current tab, or a new one on Cmd/Ctrl. */
+  openOptions?: { newTab: boolean },
 ): boolean {
   const scope = store.get(activeCollabScopeAtom);
   if (!scope) return false;
@@ -39,6 +41,7 @@ export function openSharedDocumentInTab(
     scopeKey: scope.scopeKey,
     orgId: scope.orgId,
     analyticsSource,
+    ...(openOptions ? { openOptions } : {}),
   });
   return true;
 }

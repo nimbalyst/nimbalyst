@@ -38,9 +38,9 @@ describe('buildSyncedSessionIndexFields', () => {
     expect(fields.agentRole).toBe('standard');
   });
 
-  it('normalizes a null createdBySessionId (PGLite) to undefined (wire)', () => {
+  it('preserves an explicit null manager on the wire', () => {
     const fields = buildSyncedSessionIndexFields(makeSession({ createdBySessionId: null }));
-    expect(fields.createdBySessionId).toBeUndefined();
+    expect(fields.createdBySessionId).toBeNull();
   });
 
   it('does not fabricate meta-agent fields for a plain session', () => {

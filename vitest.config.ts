@@ -38,6 +38,10 @@ const alias = [
     replacement: path.resolve(__dirname, './packages/tracker-core/src'),
   },
   {
+    find: /^@nimbalyst\/local-wiki$/,
+    replacement: path.resolve(__dirname, './packages/local-wiki/src/index.ts'),
+  },
+  {
     find: '@nimbalyst/collab-protocol',
     replacement: path.resolve(__dirname, './packages/collab-protocol/src'),
   },
@@ -116,7 +120,7 @@ const include = [
 // its files never reach CI. Collecting them locally means a scratch probe --
 // often written to fail on purpose so it prints a value -- blocks the pre-push
 // gate for unrelated work.
-const baseExclude = ['node_modules', 'dist', 'build', '.idea', '.git', '.cache', '**/temptests/**'];
+const baseExclude = ['**/node_modules/**', 'dist', 'build', '.idea', '.git', '.cache', '**/temptests/**'];
 
 // Paths that must run under the node environment (vitest 4 removed
 // `environmentMatchGlobs`; expressed with `test.projects` instead).

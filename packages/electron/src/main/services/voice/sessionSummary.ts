@@ -17,6 +17,7 @@ import {
   appendPendingPromptSection,
   collectPendingPromptDescriptionsFromTranscript,
 } from '../sessionSummaryPrompt';
+import { sessionHasLivePrompt } from './voicePromptLiveness';
 
 export interface VoiceSessionSummary {
   success: boolean;
@@ -60,7 +61,11 @@ function buildSummary(sessionId: string, session: any): VoiceSessionSummary {
   // Prompts the session is blocked on, awaiting the user. These are the most
   // actionable thing in a summary -- the user may have started the voice agent
   // specifically to deal with an existing session that's stuck on a question.
-  const pendingPrompts = collectPendingPromptDescriptionsFromTranscript(messages);
+  // Same liveness rule as reading and answering: a question whose waiter died
+  // with an earlier process stays in the transcript but can no longer be answered.
+  const pendingPrompts = sessionHasLivePrompt(sessionId, session.metadata?.hasPendingPrompt)
+    ? collectPendingPromptDescriptionsFromTranscript(messages)
+    : [];
 
   const conversationEvents = messages.filter(
     (m) => m.type === 'user_message' || m.type === 'assistant_message',

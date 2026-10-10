@@ -31,8 +31,8 @@ This separation ensures that Electron-specific events (window management, file o
 ### Dev User Tracking
 
 Users are automatically marked with the `is_dev_user` person property if they have ever used a non-official build. This includes:
-- Development builds (`npm run dev`)
-- Local builds (`npm run build:mac:local`)
+- Development builds (`pnpm run dev`)
+- Local builds (`pnpm run build:mac:local`)
 - Any build not created by the official GitHub release workflow
 
 **Key characteristics:**

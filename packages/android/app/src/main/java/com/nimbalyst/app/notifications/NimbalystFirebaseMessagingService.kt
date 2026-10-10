@@ -32,9 +32,9 @@ import com.nimbalyst.app.R
  * | `body`     | String | Notification body text (optional)                   |
  *
  * Tapping the notification opens [MainActivity] via `nimbalyst://session/<sessionId>`.
- * [MainActivity.handleIntent] routes that `session` host to in-app navigation by
- * calling [NimbalystApplication.requestSessionNavigation], which the Compose nav host
- * observes to open the session.
+ * [MainActivity.handleIntent] routes that `session` host to the workspace navigation
+ * state, which opens it through the pending-session screen. A push for the session
+ * already on screen is dropped (see [VisibleSession]).
  */
 class NimbalystFirebaseMessagingService : FirebaseMessagingService() {
 
@@ -66,7 +66,13 @@ class NimbalystFirebaseMessagingService : FirebaseMessagingService() {
             ?: message.notification?.body
             ?: "You have a new notification."
 
-        Log.d(TAG, "FCM message received: sessionId=$sessionId title=$title")
+        // The title carries session content; never log it.
+        Log.d(TAG, "FCM message received: sessionId=$sessionId")
+
+        if (VisibleSession.shouldSuppress(sessionId)) {
+            Log.d(TAG, "Session $sessionId is on screen; skipping notification.")
+            return
+        }
 
         val notificationManager = NotificationManagerCompat.from(this)
 

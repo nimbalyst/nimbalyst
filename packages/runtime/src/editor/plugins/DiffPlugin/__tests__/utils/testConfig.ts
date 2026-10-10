@@ -18,6 +18,7 @@ import { ImageNode } from '../../../ImagesPlugin/ImageNode';
 import { PageBreakNode } from '../../../PageBreakPlugin/PageBreakNode';
 import { MermaidNode } from '../../../MermaidPlugin/MermaidNode';
 import { DecisionNode } from '../../../DecisionPlugin/DecisionNode';
+import { QuadrantNode } from '../../../QuadrantPlugin/QuadrantNodeCore';
 import {
   CollapsibleContainerNode,
   CollapsibleContentNode,
@@ -43,6 +44,7 @@ export const TEST_NODES: Array<Klass<LexicalNode>> = [
   PageBreakNode,
   MermaidNode,
   DecisionNode,
+  QuadrantNode,
   CollapsibleContainerNode,
   CollapsibleContentNode,
   CollapsibleTitleNode,

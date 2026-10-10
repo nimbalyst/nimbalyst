@@ -1,7 +1,7 @@
 # Dev Container for Nimbalyst E2E Testing
-# Based on Node.js 20 with Electron and Playwright dependencies
+# Based on Node.js 24 with Electron and Playwright dependencies
 
-FROM mcr.microsoft.com/devcontainers/javascript-node:20
+FROM mcr.microsoft.com/devcontainers/javascript-node:24
 
 # Avoid prompts during package installation
 ENV DEBIAN_FRONTEND=noninteractive
@@ -44,8 +44,12 @@ ENV DISPLAY=:99
 RUN echo '#!/bin/bash\nXvfb :99 -screen 0 1920x1080x24 &\nsleep 1\nexec "$@"' > /usr/local/bin/with-xvfb \
     && chmod +x /usr/local/bin/with-xvfb
 
-# Upgrade npm to version 10.x (matches CI workflow)
-RUN npm install -g npm@10
+# pnpm via corepack; the version is pinned by packageManager in package.json
+RUN corepack enable
+
+# Keep pnpm's store on a path the container volume covers, never inside the
+# bind-mounted checkout (create-container.sh mounts a volume here)
+ENV pnpm_config_store_dir=/root/.local/share/pnpm/store
 
 # Set working directory
 WORKDIR /workspaces/nimbalyst

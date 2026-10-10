@@ -6,6 +6,8 @@ import { MonacoDiffViewer } from '../HistoryDialog/MonacoDiffViewer';
 import { getFileType, type EditorType } from '../../utils/fileTypeDetector';
 import { getFileName } from '../../utils/pathUtils';
 import { WorkspaceHistoryFileTree } from './WorkspaceHistoryFileTree';
+import { requestConfirmation } from '../../dialogs/requestConfirmation';
+import { errorNotificationService } from '../../services/ErrorNotificationService';
 
 interface WorkspaceFile {
   path: string;
@@ -217,9 +219,11 @@ export function WorkspaceHistoryDialog({
     const isDeleted = selectedFile && !selectedFile.exists;
 
     if (isDeleted) {
-      const confirmed = window.confirm(
-        'This file has been deleted. Restoring will recreate the file on disk. Continue?'
-      );
+      const confirmed = await requestConfirmation({
+        title: 'Restore deleted file?',
+        message: 'This file has been deleted. Restoring will recreate the file on disk. Continue?',
+        confirmLabel: 'Restore',
+      });
       if (!confirmed) return;
     }
 
@@ -236,11 +240,11 @@ export function WorkspaceHistoryDialog({
         await loadWorkspaceFiles();
         onFileRestored?.();
       } else {
-        alert(`Failed to restore file: ${result.error}`);
+        errorNotificationService.showError('Restore failed', `Failed to restore file: ${result.error}`);
       }
     } catch (error: any) {
       console.error('Failed to restore file:', error);
-      alert(`Failed to restore file: ${error.message}`);
+      errorNotificationService.showError('Restore failed', `Failed to restore file: ${error.message}`);
     } finally {
       setIsRestoring(false);
     }
@@ -250,9 +254,11 @@ export function WorkspaceHistoryDialog({
     if (selectedDeletedFiles.size === 0) return;
 
     const count = selectedDeletedFiles.size;
-    const confirmed = window.confirm(
-      `Restore ${count} deleted file${count > 1 ? 's' : ''} to their most recent versions?`
-    );
+    const confirmed = await requestConfirmation({
+      title: count > 1 ? 'Restore deleted files?' : 'Restore deleted file?',
+      message: `Restore ${count} deleted file${count > 1 ? 's' : ''} to their most recent versions?`,
+      confirmLabel: 'Restore',
+    });
     if (!confirmed) return;
 
     setIsRestoring(true);
@@ -265,7 +271,10 @@ export function WorkspaceHistoryDialog({
 
       if (failed.length > 0) {
         const failedNames = failed.map((r: any) => getFileName(r.path)).join(', ');
-        alert(`Restored ${successful} file${successful !== 1 ? 's' : ''}. Failed: ${failedNames}`);
+        errorNotificationService.showWarning(
+          'Some files were not restored',
+          `Restored ${successful} file${successful !== 1 ? 's' : ''}. Failed: ${failedNames}`,
+        );
       }
 
       // Clear selection and refresh
@@ -274,7 +283,7 @@ export function WorkspaceHistoryDialog({
       onFileRestored?.();
     } catch (error: any) {
       console.error('Failed to batch restore:', error);
-      alert(`Failed to restore files: ${error.message}`);
+      errorNotificationService.showError('Restore failed', `Failed to restore files: ${error.message}`);
     } finally {
       setIsRestoring(false);
     }

@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, expect, it } from 'vitest';
 import { resolveHistoryDocumentPath } from '../historyDocumentResolver';
 
@@ -8,6 +9,14 @@ describe('resolveHistoryDocumentPath', () => {
       localDocumentPath: '/workspace/previous-local.md',
       collabDocumentPath: 'collab://org-a/doc-a',
     })).toBe('collab://org-a/doc-a');
+  });
+
+  // A Personal page tab is `personal://<id>`; its history is keyed by document.
+  it('opens a Personal page tab under its local history key', () => {
+    expect(resolveHistoryDocumentPath({
+      activeMode: 'collab',
+      collabDocumentPath: 'personal://pdoc-1',
+    })).toBe('personal-doc://pdoc-1');
   });
 
   it('does not fall back to a local document when collab mode has no active tab', () => {

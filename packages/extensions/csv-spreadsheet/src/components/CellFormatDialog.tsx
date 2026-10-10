@@ -8,7 +8,7 @@
  */
 
 import { useCallback, useEffect, useState } from 'react';
-import type { CellAlignment, CellColor, CellStyle } from '../types';
+import type { CellAlignment, CellColor, CellStyle, HexColor } from '../types';
 
 interface CellFormatDialogProps {
   isOpen: boolean;
@@ -27,8 +27,14 @@ const SELECT_CLASS =
   'px-3 py-2 text-sm bg-nim-secondary border border-nim rounded text-nim outline-none focus:border-[var(--nim-primary)]';
 
 /** Swatch preview so a color name is not the only cue. */
-function swatchClass(color: CellColor): string {
+function swatchClass(color: CellColor | HexColor): string {
+  if (color.startsWith('#')) return '';
   return color === 'default' ? 'csv-swatch-default' : `csv-fill-${color}`;
+}
+
+/** A picker hex color shows as itself and as an extra option the select can hold. */
+function swatchStyle(color: CellColor | HexColor) {
+  return color.startsWith('#') ? { backgroundColor: color } : undefined;
 }
 
 export function CellFormatDialog({
@@ -42,8 +48,8 @@ export function CellFormatDialog({
   const [italic, setItalic] = useState(false);
   const [underline, setUnderline] = useState(false);
   const [strikethrough, setStrikethrough] = useState(false);
-  const [textColor, setTextColor] = useState<CellColor>('default');
-  const [fillColor, setFillColor] = useState<CellColor>('default');
+  const [textColor, setTextColor] = useState<CellColor | HexColor>('default');
+  const [fillColor, setFillColor] = useState<CellColor | HexColor>('default');
   const [align, setAlign] = useState<CellAlignment | 'auto'>('auto');
 
   useEffect(() => {
@@ -118,15 +124,16 @@ export function CellFormatDialog({
           <div className="flex flex-col gap-1.5">
             <label className={LABEL_CLASS}>Text color</label>
             <div className="flex items-center gap-2">
-              <span className={`csv-swatch ${swatchClass(textColor)}`} />
+              <span className={`csv-swatch ${swatchClass(textColor)}`} style={swatchStyle(textColor)} />
               <select
                 value={textColor}
-                onChange={(event) => setTextColor(event.target.value as CellColor)}
+                onChange={(event) => setTextColor(event.target.value as CellColor | HexColor)}
                 className={`${SELECT_CLASS} flex-1`}
               >
                 {COLORS.map((color) => (
                   <option key={color} value={color}>{color === 'default' ? 'Default' : color}</option>
                 ))}
+                {textColor.startsWith('#') && <option value={textColor}>{textColor}</option>}
               </select>
             </div>
           </div>
@@ -134,15 +141,16 @@ export function CellFormatDialog({
           <div className="flex flex-col gap-1.5">
             <label className={LABEL_CLASS}>Fill</label>
             <div className="flex items-center gap-2">
-              <span className={`csv-swatch ${swatchClass(fillColor)}`} />
+              <span className={`csv-swatch ${swatchClass(fillColor)}`} style={swatchStyle(fillColor)} />
               <select
                 value={fillColor}
-                onChange={(event) => setFillColor(event.target.value as CellColor)}
+                onChange={(event) => setFillColor(event.target.value as CellColor | HexColor)}
                 className={`${SELECT_CLASS} flex-1`}
               >
                 {COLORS.map((color) => (
                   <option key={color} value={color}>{color === 'default' ? 'None' : color}</option>
                 ))}
+                {fillColor.startsWith('#') && <option value={fillColor}>{fillColor}</option>}
               </select>
             </div>
           </div>

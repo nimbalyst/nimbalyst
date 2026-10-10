@@ -15,6 +15,7 @@ import { ElectronFileSystemService } from '../services/ElectronFileSystemService
 import { isWorktreePath, resolveProjectPath, resolveProjectPathCandidates } from '../utils/workspaceDetection';
 import { getPreloadPath } from '../utils/appPaths';
 import { createUnresponsiveHandler } from './unresponsiveHandler';
+import { recoverAfterProjectWindowClosed } from './ApplicationWindowRecovery';
 import {
   setFileSystemService,
   clearFileSystemServiceFor,
@@ -291,6 +292,7 @@ export function createWindow(
 
         // Generate a unique window ID
         const windowId = ++windowIdCounter;
+        const electronWindowId = window.id;
         // console.log('[MAIN] Created window with ID:', windowId, 'Electron ID:', window.id);
 
         // Store window and initial state
@@ -406,6 +408,11 @@ export function createWindow(
             // Save workspace-specific window state before closing
             const state = windowStates.get(windowId);
             savedState = state; // Preserve for 'closed' handler
+            console.info('[WindowLifecycle] Project close requested', {
+                windowId: electronWindowId, managedWindowId: windowId, isQuitting,
+                prevented: event.defaultPrevented, focused: window.isFocused(),
+                visible: window.isVisible(), minimized: window.isMinimized(),
+            });
 
             if (state?.mode === 'workspace' && state.workspacePath) {
                 const bounds = window.getBounds();
@@ -454,6 +461,12 @@ export function createWindow(
 
         window.on('closed', () => {
             windows.delete(windowId);
+            console.info('[WindowLifecycle] Project closed', {
+                windowId: electronWindowId, managedWindowId: windowId, isQuitting,
+                remainingProjectWindows: windows.size,
+                remainingBrowserWindows: BrowserWindow.getAllWindows().length,
+            });
+            recoverAfterProjectWindowClosed();
             // Use saved state from 'close' handler
             const state = savedState;
             savingWindows.delete(windowId);

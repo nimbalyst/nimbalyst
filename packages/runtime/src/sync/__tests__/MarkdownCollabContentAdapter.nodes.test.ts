@@ -238,7 +238,8 @@ describe('MarkdownCollabContentAdapter node set', () => {
     const restored = new Y.Doc();
     const title = view === 'chip' ? '' : ` "view=${view}"`;
     const expectedTitle = view === 'unknown' ? '' : title;
-    const expected = `[NIM-123](nimbalyst://NIM-123${expectedTitle})`;
+    // The written label survives the round trip; only the key-equal label is implicit.
+    const expected = `[label](nimbalyst://NIM-123${expectedTitle})`;
     MarkdownCollabContentAdapter.seedFromFile(doc, `[label](nimbalyst://NIM-123${title})`);
     const markdown = MarkdownCollabContentAdapter.exportToFile(doc) as string;
     expect(markdown).toBe(expected);

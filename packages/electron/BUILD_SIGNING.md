@@ -13,7 +13,7 @@ This guide explains how to build, sign, and notarize the Nimbalyst for macOS dis
 ### 1. Install Dependencies
 
 ```bash
-npm install
+pnpm install
 ```
 
 ### 2. Configure Environment Variables
@@ -48,19 +48,19 @@ You should see something like:
 ### Local Development Build (No Notarization)
 Use this for testing signed builds locally:
 ```bash
-npm run build:mac:local
+pnpm run build:mac:local
 ```
 
 ### Production Build (With Notarization)
 Use this for distribution:
 ```bash
-npm run build:mac:notarized
+pnpm run build:mac:notarized
 ```
 
 ### Standard Signed Build
 Signs but doesn't require notarization to succeed:
 ```bash
-npm run build:mac
+pnpm run build:mac
 ```
 
 ## What Gets Signed

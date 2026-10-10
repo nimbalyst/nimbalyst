@@ -1,0 +1,42 @@
+/*
+ * A decision or open-question mark: a small chip before the sentence and a
+ * faint who/when/not-chosen line after it, both drawn from the mark's data
+ * attributes so neither is part of the text or the markdown.
+ */
+.page-mark::before {
+  content: attr(data-page-mark);
+  display: inline-block;
+  margin-right: 7px;
+  padding: 0 5px;
+  border: 1px solid;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.4px;
+  line-height: 1.5;
+  text-transform: uppercase;
+  vertical-align: 1px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.page-mark--decided::before {
+  color: var(--nim-purple, var(--nim-primary));
+  border-color: color-mix(in srgb, var(--nim-purple, var(--nim-primary)) 40%, transparent);
+}
+
+.page-mark--open::before {
+  color: var(--nim-warning);
+  border-color: color-mix(in srgb, var(--nim-warning) 40%, transparent);
+}
+
+.page-mark[data-page-mark-who]::after {
+  content: attr(data-page-mark-who);
+  margin-left: 6px;
+  color: var(--nim-text-faint);
+  font-size: 12px;
+  font-weight: 400;
+  font-style: normal;
+  cursor: pointer;
+  user-select: none;
+}

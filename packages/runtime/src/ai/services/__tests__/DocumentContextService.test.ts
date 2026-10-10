@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { DocumentContextService } from '../DocumentContextService';
+import { DocumentContextService, WIKI_SKILL_NOTE } from '../DocumentContextService';
 import type { RawDocumentContext } from '../types';
 
 describe('DocumentContextService', () => {
@@ -572,6 +572,22 @@ function test6() {
         expect(result.userMessageAdditions.editingInstructions).toContain(
           '<COLLAB_DOC_INSTRUCTIONS>',
         );
+      });
+
+      it('points an agent on a wiki page at /wiki:update only when the wiki skills are on', () => {
+        const prompt = (filePath: string, fileType: string, wikiSkillAvailable: boolean) =>
+          service.prepareContext({ filePath, fileType, content: '' }, `wiki-${filePath}-${wikiSkillAvailable}`, 'claude-code', undefined, { wikiSkillAvailable })
+            .userMessageAdditions.documentContextPrompt ?? '';
+        for (const [uri, fileType] of [
+          ['collab://org:o:doc:d', 'collab-markdown'],
+          ['collab://tracker-content/item-1', 'collab-markdown'],
+          ['personal://page-1', 'unknown'],
+          ['personal://tracker-content/item-2', 'unknown'],
+        ]) {
+          expect(prompt(uri, fileType, true), uri).toContain(WIKI_SKILL_NOTE);
+          expect(prompt(uri, fileType, false), uri).not.toContain('/wiki:update');
+        }
+        expect(prompt('/repo/notes.md', 'markdown', true)).not.toContain('/wiki:update');
       });
 
       it('includes cursor position in document context prompt when provided', () => {

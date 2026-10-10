@@ -627,10 +627,10 @@ async function shareFromDesktop(
     timeout: 20_000,
   });
   await page.locator('.file-tree-name', { hasText: sourceName }).click({ button: 'right' });
-  await page.getByText('Share to Team', { exact: true }).last().click();
-  const shareDialog = page.getByRole('dialog', { name: 'Share to Team' });
+  await page.getByText('Copy to Wiki...', { exact: true }).last().click();
+  const shareDialog = page.getByRole('dialog', { name: 'Copy to Wiki' });
   await expect(shareDialog).toBeVisible({ timeout: 10_000 });
-  await shareDialog.getByRole('button', { name: /Share to Team$/ }).click();
+  await shareDialog.getByRole('button', { name: /Copy to Team$/ }).click();
   await expect(shareDialog).toBeHidden({ timeout: 30_000 });
 
   await harness.openSharedMode('A');

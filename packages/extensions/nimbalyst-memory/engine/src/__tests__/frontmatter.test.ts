@@ -10,6 +10,13 @@ describe('parseFrontmatter', () => {
     expect(body.trim()).toBe('body text');
   });
 
+  it('rejects an excessive sequence of empty merge sources and preserves the body', () => {
+    // 101 tiny mappings exercise the upstream work limit without a CPU-heavy fixture.
+    const sources = Array.from({ length: 101 }, () => '{}').join(', ');
+    const raw = `---\nsources: &sources [${sources}]\nmerged: { <<: *sources }\n---\nbody text`;
+    expect(parseFrontmatter(raw)).toEqual({ data: {}, body: 'body text' });
+  });
+
   it('returns empty data when there is no frontmatter', () => {
     const { data, body } = parseFrontmatter('just a body');
     expect(data).toEqual({});

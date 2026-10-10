@@ -12,22 +12,15 @@
  * nobody co-edits; a shared document is the opposite, so it gets the same
  * minimal-delta path a human's edit would take.
  *
- * This mirrors `DiffExtension`'s APPLY_MARKDOWN_REPLACE_COMMAND handler --
- * deliberately, and including its failure behaviour. A failed text match must
- * behave here exactly as it does on screen; a headless path that "helpfully"
- * diverged would be a second, untested set of edit semantics reachable only
- * when nobody is looking (see NIM-2615, where the guess-on-failure path
- * duplicated content).
+ * The reconciliation itself, and its failure behaviour, is shared with the
+ * collab worker: `@nimbalyst/runtime/sync/headlessMarkdownReplace`.
  */
 import type { Doc } from 'yjs';
 import type { TextReplacement } from '@nimbalyst/runtime';
-import {
-  $convertToEnhancedMarkdownString,
-  applyMarkdownReplace,
-  HeadlessBodyNodes,
-} from '@nimbalyst/runtime/editor';
+import { HeadlessBodyNodes } from '@nimbalyst/runtime/editor';
 import { getAllExtensionTransformers } from '@nimbalyst/runtime/editor/extensions/extensionContributionsStore';
 import { CORE_TRANSFORMERS } from '@nimbalyst/runtime/editor/markdown/core-transformers';
+import { applyMarkdownReplacementsToHeadlessEditor } from '@nimbalyst/runtime/sync/headlessMarkdownReplace';
 import { withHeadlessLexicalBridge } from '@nimbalyst/runtime/sync/withHeadlessLexicalBridge';
 
 /**
@@ -51,32 +44,10 @@ export function applyMarkdownReplacementsToYDoc(
   withHeadlessLexicalBridge(
     yDoc,
     { nodes: HeadlessBodyNodes, namespace: 'nimbalyst-headless-collab-edit' },
-    (headless) => {
-      const transformers = [
-        ...getAllExtensionTransformers(),
-        ...CORE_TRANSFORMERS,
-      ];
-      const originalMarkdown = headless.editor
-        .getEditorState()
-        .read(() => $convertToEnhancedMarkdownString(transformers));
-      // An absent `oldText` means "replace the whole document", the same
-      // normalization the mounted command handler applies.
-      const normalized: TextReplacement[] = replacements.map((replacement) =>
-        replacement.oldText
-          ? replacement
-          : { ...replacement, oldText: originalMarkdown },
-      );
-      applyMarkdownReplace(
-        headless.editor,
-        originalMarkdown,
-        normalized,
-        transformers,
-        // A failed match must fail. The mounted editor falls back to a
-        // structural guess that rewrites the FIRST list in the document when a
-        // list-shaped `oldText` misses -- survivable on screen, silent
-        // deletion here.
-        { exactTextMatchRequired: true },
-      );
-    },
+    (headless) => applyMarkdownReplacementsToHeadlessEditor(
+      headless.editor,
+      replacements,
+      [...getAllExtensionTransformers(), ...CORE_TRANSFORMERS],
+    ),
   );
 }

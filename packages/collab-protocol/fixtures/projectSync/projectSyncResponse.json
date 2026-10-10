@@ -1,0 +1,46 @@
+{
+  "type": "projectSyncResponse",
+  "transferId": "transfer-1",
+  "batchIndex": 0,
+  "isLastBatch": true,
+  "pushAck": true,
+  "pushConfirmations": [
+    {
+      "syncId": "sync-unanswered",
+      "contentHash": "hash-unanswered"
+    },
+    {
+      "syncId": "sync-missing",
+      "contentHash": null
+    }
+  ],
+  "updatedFiles": [
+    {
+      "syncId": "sync-updated",
+      "encryptedContent": "Y2lwaGVydGV4dA==",
+      "contentIv": "aXYtY29udGVudA==",
+      "contentHash": "hash-updated",
+      "encryptedPath": "cGF0aA==",
+      "pathIv": "aXYtcGF0aA==",
+      "encryptedTitle": "dGl0bGU=",
+      "titleIv": "aXYtdGl0bGU=",
+      "lastModifiedAt": 1790000001000,
+      "hasYjs": false
+    }
+  ],
+  "yjsUpdates": [
+    {
+      "syncId": "sync-yjs",
+      "encryptedUpdate": "dXBkYXRl",
+      "iv": "aXYteWpz",
+      "sequence": 3
+    }
+  ],
+  "newFiles": [],
+  "needFromClient": [
+    "sync-needed"
+  ],
+  "deletedSyncIds": [
+    "sync-deleted"
+  ]
+}

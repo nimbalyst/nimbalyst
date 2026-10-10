@@ -471,7 +471,8 @@ export type DrainExitCause =
   | 'aborted' // abort() / supersede — the AbortController fired
   | 'interrupted' // interruptWithMessage() — teammate/user interrupt
   | 'iterator-done' // the SDK iterator ended on its own
-  | 'iterator-error'; // the SDK iterator threw
+  | 'iterator-error' // the SDK iterator threw
+  | 'handoff'; // a follow-up turn adopted the live query (drainHandoff.ts)
 
 export interface DrainOutcome {
   /** Mark still-running tasks as stopped (they will never report completion). */

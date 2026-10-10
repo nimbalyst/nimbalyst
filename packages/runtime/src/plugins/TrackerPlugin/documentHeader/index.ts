@@ -37,3 +37,4 @@ export {
   updateTrackerInFrontmatter,
 } from './frontmatterUtils';
 export type { TrackerFrontmatter } from './frontmatterUtils';
+export { setLocalWikiRoot, detectFlatTypedPage, updateFlatTypedPageFields } from './flatTypedPage';

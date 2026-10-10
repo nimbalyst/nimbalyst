@@ -9,14 +9,16 @@
  * and the records, so desktop settings and the web console's Tracker setup
  * screen render the same numbers.
  */
-import type { FieldDefinition, PredicateDefinition, TrackerDataModel } from '@nimbalyst/tracker-schema';
+import type { FieldDefinition, LabelRegistry, PredicateDefinition, TrackerDataModel } from '@nimbalyst/tracker-schema';
+import { computeContentHealth, factBoxPredicates, healthLabelRegistry } from './ontologyContentHealth';
+import { computeLabelSchemaHealth } from './ontologyLabelSchemaHealth';
+import { isFallbackRegistry, recordRole } from './ontologyLabels';
 import {
   buildKnowledgeGraph,
   buildMarketTree,
   CATCH_ALL_KINDS,
   claimPredicate,
   CLAIM_TYPE,
-  computeContentHealth,
   currentFacts,
   DEPRECATED_ENTITY_FIELDS,
   ENTITY_TYPE,
@@ -52,13 +54,14 @@ const EXAMPLE_COUNT = 3;
 export interface OntologyInput<T extends OntologyRecordLike = OntologyRecordLike> {
   types: readonly TrackerDataModel[];
   /**
-   * The predicate registry, or null/absent when the host cannot read one. The
-   * web console cannot: the room does not publish the registry today, so it
-   * passes null and predicates are keyed off the ids claims use. Desktop reads
-   * `.nimbalyst/predicates.yaml`. An empty array means a registry that declares
-   * nothing, which is a different answer from "unknown".
+   * The predicate registry, or null/absent when the host has not received one
+   * yet; predicates are then keyed off the ids claims use. An empty array means
+   * a registry that declares nothing, which is a different answer from
+   * "unknown".
    */
   predicates?: readonly PredicateDefinition[] | null;
+  /** The room's label registry; empty or absent reads through the kind stand-in. */
+  labels?: LabelRegistry | null;
   records: readonly T[];
   now: number;
 }
@@ -450,6 +453,11 @@ export function schemaHealth<T extends OntologyRecordLike>(
   return items.map(withHealthIds);
 }
 
+function uniqueById<T extends { id: string }>(items: readonly T[]): T[] {
+  const seen = new Set<string>();
+  return items.filter((item) => !seen.has(item.id) && Boolean(seen.add(item.id)));
+}
+
 export function analyzeOntology<T extends OntologyRecordLike>(input: OntologyInput<T>): OntologyViewModel<T> {
   const types = summarizeTypes(input.types, input.records);
   const relationships = buildRelationshipGraph(input.types, input.records);
@@ -458,12 +466,14 @@ export function analyzeOntology<T extends OntologyRecordLike>(input: OntologyInp
   const knowledgeTypes = hasKnowledgeTypes(typeNames);
   const hasClaims = typeNames.includes(CLAIM_TYPE);
   let knowledge: KnowledgeSection<T> | null = null;
+  const kindOptions = input.types.find((model) => model.type === ENTITY_TYPE)?.fields.find((field) => field.name === 'kind')?.options;
+  const registry = healthLabelRegistry(graph, input.labels, kindOptions);
   if (knowledgeTypes) {
-    const facts = currentFacts(graph, input.now, STALE_FACT_DAYS);
+    const facts = currentFacts(graph, input.now, STALE_FACT_DAYS, factBoxPredicates(registry));
     const byPredicate = new Map<string, number>();
     for (const fact of facts) byPredicate.set(fact.predicate, (byPredicate.get(fact.predicate) ?? 0) + 1);
     knowledge = {
-      markets: buildMarketTree(graph),
+      markets: buildMarketTree(graph, (record) => recordRole(registry, record) === 'market-node'),
       facts: {
         total: facts.length,
         current: facts.filter((fact) => fact.state === 'current').length,
@@ -478,9 +488,11 @@ export function analyzeOntology<T extends OntologyRecordLike>(input: OntologyInp
     relationships,
     predicates: hasClaims || input.predicates?.length ? summarizePredicates(graph, input.predicates) : null,
     knowledge,
-    health: [
+    // A label named like a kind can report the same sparse field twice; the kind's report wins.
+    health: uniqueById([
       ...schemaHealth(types, input, graph, relationships),
-      ...(knowledgeTypes ? computeContentHealth(graph, { now: input.now, includeCompetesWith: true }) : []),
-    ],
+      ...(knowledgeTypes ? computeContentHealth(graph, { now: input.now, labels: input.labels, kindOptions, predicates: input.predicates }) : []),
+      ...(knowledgeTypes ? computeLabelSchemaHealth({ registry, fallback: isFallbackRegistry(input.labels), graph, predicates: input.predicates }) : []),
+    ]),
   };
 }

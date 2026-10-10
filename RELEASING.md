@@ -57,7 +57,7 @@ This command will:
 
 After approving the release notes, the command will run `./scripts/release.sh` which:
 1. Bumps version in `package.json`
-2. Updates `package-lock.json`
+2. Updates `pnpm-lock.yaml`
 3. Moves [Unreleased] notes to new version section in CHANGELOG.md
 4. Creates a commit with release notes
 5. Creates an annotated git tag with release notes
@@ -193,6 +193,18 @@ If you need to create a release without the `/release` command:
 2. Run: `./scripts/release.sh [patch|minor|major]`
 3. Follow prompts and push when ready
 
+## nim CLI and wiki-web
+
+`@nimbalyst/cli` (`nim`) and `@nimbalyst/wiki-web` (the browser app for `nim wiki serve`) are published to npm together, at the same version, by the manual `.github/workflows/publish-cli.yml` workflow. They are released independently of the desktop app.
+
+`/publish-npm` runs the steps below for these two and for `@nimbalyst/extension-sdk`: it reports what changed since each package's last publish (`node scripts/npm-publish-status.mjs`), bumps, commits, and dispatches the dry run and the publish.
+
+1. Bump `version` in both `packages/cli/package.json` and `packages/wiki-web/package.json` to the same value. `nim --version` is set from `packages/cli/package.json` at build time, so there is nothing else to bump. The workflow fails if the two versions differ.
+2. Run the workflow with `dry_run` checked (optionally with `version` set to the expected value). It builds, tests, packs both packages, checks the wiki-web size budget, and smoke-tests the packed tarballs, including an install with optional dependencies omitted (no better-sqlite3).
+3. Run it again without `dry_run` to publish. wiki-web is published first; a version already on npm is skipped, so a run that failed halfway can be re-run.
+
+Publishing uses npm Trusted Publishing (OIDC) from the `npm-publish` environment; there is no npm token. The trusted-publisher config on npmjs.com must list this workflow and the `npm-publish` environment for both `@nimbalyst/cli` and `@nimbalyst/wiki-web`, or the publish step fails to authenticate. A package's very first version may have to be published by hand before its trusted-publisher config can be set.
+
 ## Troubleshooting
 
 ### Release Notes Not Appearing in GitHub Release
@@ -241,20 +253,14 @@ Before tagging, reconcile the iOS release's capabilities against the Mobile (iOS
 
 ### Using /ios-release
 
-Run the `/ios-release` slash command in Claude Code:
-
-```
-/ios-release patch    # For bug fixes (1.0.1 -> 1.0.2)
-/ios-release minor    # For new features (1.0.1 -> 1.1.0)
-/ios-release major    # For breaking changes (1.0.1 -> 2.0.0)
-```
+Run the `/ios-release` slash command in Claude Code. It releases the version already in `Info.plist` and takes no patch/minor/major argument: after a release is accepted in the App Store, move `Info.plist` (app and widget) to the next expected version by hand, and that is the version TestFlight builds carry until it ships.
 
 This command will:
 1. Find commits since last `ios/*` tag touching `packages/ios/` and `packages/runtime/`
 2. Generate developer changelog (for `IOS_CHANGELOG.md`) and App Store "What's New" text
 3. Update `IOS_CHANGELOG.md` [Unreleased] section
 4. Wait for your approval
-5. Run `./scripts/ios-release.sh` which bumps Info.plist version + build number, commits, and creates an annotated `ios/v*` tag
+5. Run `./scripts/ios-release.sh` which increments the Info.plist build number (the version is left as is), commits, and creates an annotated `ios/v*` tag
 
 ### After Tagging
 

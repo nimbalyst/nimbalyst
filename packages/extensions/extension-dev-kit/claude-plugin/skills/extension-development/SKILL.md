@@ -15,7 +15,7 @@ The recommended in-app scaffold flow uses `File > New Extension Project`, `Devel
 ```
 mcp__nimbalyst-extension-dev__extension_build
 ```
-Runs `npm run build` (vite build) on an extension project.
+Runs the project's `build` script (usually vite build) with pnpm if the project uses pnpm, npm otherwise.
 
 **Parameters:**
 - `path`: Absolute path to the extension project root (directory containing package.json and manifest.json)
@@ -163,7 +163,7 @@ extension_test_run({ testFile: "/path/to/extension/tests/basics.spec.ts" })
 - Verify the build output exists in `dist/index.js`
 
 ### Build fails
-- Check that `npm install` was run in the extension directory
+- Check that dependencies were installed in the extension directory (`pnpm install` or `npm install`, matching its lockfile)
 - Verify vite.config.ts is properly configured
 - Check for TypeScript errors in the output
 

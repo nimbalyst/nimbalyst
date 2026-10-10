@@ -1,0 +1,42 @@
+/* Callout block (GitHub alert syntax). One accent per type; everything else
+   comes from the shared `--nim-*` palette. */
+
+.callout {
+  --callout-accent: var(--nim-info);
+  margin: 8px 0;
+  padding: 8px 14px;
+  border-left: 3px solid var(--callout-accent);
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--callout-accent) 8%, transparent);
+  color: var(--nim-text);
+}
+
+.callout-tip { --callout-accent: var(--nim-success); }
+.callout-important { --callout-accent: var(--nim-purple); }
+.callout-warning { --callout-accent: var(--nim-warning); }
+.callout-caution { --callout-accent: var(--nim-error); }
+
+.callout-header {
+  cursor: text;
+  user-select: none;
+  font-weight: 600;
+  font-size: 0.9em;
+  color: var(--callout-accent);
+  margin-bottom: 2px;
+}
+
+.callout-body > :first-child { margin-top: 0; }
+.callout-body > :last-child { margin-bottom: 0; }
+
+.callout-title-input {
+  width: 100%;
+  font: inherit;
+  color: inherit;
+  background: var(--nim-bg);
+  border: 1px solid var(--nim-border-focus);
+  border-radius: 4px;
+  padding: 1px 6px;
+  outline: none;
+  cursor: text;
+  user-select: text;
+}

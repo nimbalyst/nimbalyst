@@ -63,15 +63,18 @@ export function useResolvedTrackerReference(
 
 /**
  * Ask the host to open/navigate to a tracker item. The Electron renderer
- * listens for this event in `App.tsx` (`handleNavigateTrackerItem`).
+ * listens for this event in `App.tsx` (`handleNavigateTrackerItem`). A
+ * reference chip in a page passes `fromPage`, so a host that navigates pages
+ * in place (Pages) can open the item there, in a new tab when `newTab`.
  */
 export function navigateToTrackerReference(
-  reference: ResolvedTrackerReference,
+  reference: Pick<ResolvedTrackerReference, 'id'> & Partial<ResolvedTrackerReference>,
+  origin?: { fromPage: true; newTab: boolean },
 ): void {
   if (typeof window === 'undefined') return;
   window.dispatchEvent(
     new CustomEvent('nimbalyst:navigate-tracker-item', {
-      detail: { itemId: reference.id },
+      detail: { itemId: reference.id, ...origin },
     }),
   );
 }

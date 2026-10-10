@@ -51,4 +51,18 @@ describe('registerDocumentInIndex (NIM-1565)', () => {
       editorId: 'builtin.lexical',
     });
   });
+
+  it('queues a page under a typed page with its parent kind and order, and flushes them to the provider', async () => {
+    store.set(activeCollabScopeAtom, SCOPE);
+    await registerDocumentInIndex(SCOPE, 'doc-2', 'Notes', 'markdown', 'mod_1', undefined, { parentKind: 'item', sortOrder: 2048 });
+
+    expect(pendingDocRegistrations.list(WS)).toEqual([expect.objectContaining({
+      documentId: 'doc-2', parentFolderId: 'mod_1', parentKind: 'item', sortOrder: 2048,
+    })]);
+    expect(store.get(sharedDocumentsAtom).find((d) => d.documentId === 'doc-2')).toMatchObject({ parentKind: 'item' });
+
+    const calls: unknown[][] = [];
+    await pendingDocRegistrations.flush(WS, { registerDocument: async (...args: unknown[]) => { calls.push(args); } });
+    expect(calls).toEqual([['doc-2', 'Notes', 'markdown', 'mod_1', undefined, undefined, { parentKind: 'item', sortOrder: 2048 }]]);
+  });
 });

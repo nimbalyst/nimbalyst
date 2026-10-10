@@ -1,5 +1,10 @@
 import React from 'react';
 import { useAtomValue } from 'jotai';
+import type { CollabScope } from '@nimbalyst/collab-client/core';
+import { EditorBreadcrumb } from '@nimbalyst/collab-client/docs-ui/EditorHeaderBar';
+import { pageHeaderCrumbs } from '@nimbalyst/collab-client/trackers-ui/page';
+import { useSharedPagePath } from '../CollabMode/useSharedPagePath';
+import { openPageAncestor } from '../CollabMode/pageHeaderNavigation';
 import {
   collabAwarenessAtom,
   collabProductStatusAtom,
@@ -56,45 +61,28 @@ const CollabAvatars: React.FC<{ filePath: string }> = ({ filePath }) => {
 export const CollabDocumentHeaderMeta: React.FC<{
   filePath: string;
   displayPath: string;
-}> = ({ filePath, displayPath }) => {
+  /** With both, the crumb reads the page's place in the tree and each page above it opens. */
+  scope?: CollabScope;
+  documentId?: string;
+}> = ({ filePath, displayPath, scope, documentId }) => {
   const status = useCollabStatus(filePath);
-  const segments = displayPath.split('/').filter(Boolean);
+  const page = useSharedPagePath(scope ?? null, documentId ?? '');
   const statusDescription = status.detail
     ? `${status.label}: ${status.detail}`
     : status.label;
+  // Until the session lists the page, the stored display path stands in.
+  const segments = displayPath.split('/').filter(Boolean);
+  const crumbs = page.title !== null && scope
+    ? pageHeaderCrumbs(null, page.path, page.title, (ancestor) => openPageAncestor(ancestor, { personal: false, scope }))
+    : segments.map((segment, index) => ({
+      id: `${index}:${segment}`,
+      label: segment,
+      current: index === segments.length - 1,
+    }));
 
   return (
-    <div className="collab-header-meta flex min-w-0 items-center gap-2">
-      <div
-        className="shared-document-breadcrumb flex min-w-0 items-center gap-1.5 overflow-hidden text-[13px]"
-        data-testid="shared-document-breadcrumb"
-        title={displayPath}
-      >
-        {segments.map((segment, index) => {
-          const isLast = index === segments.length - 1;
-          return (
-            <React.Fragment key={`${segment}-${index}`}>
-              <span className={`breadcrumb-segment flex items-center gap-1 whitespace-nowrap ${
-                isLast
-                  ? 'breadcrumb-filename text-[var(--nim-text)] font-medium'
-                  : 'text-[var(--nim-text-muted)]'
-              }`}>
-                <span
-                  className="material-symbols-outlined breadcrumb-icon shrink-0 opacity-75"
-                  style={{ fontSize: '14px' }}
-                  aria-hidden="true"
-                >
-                  {isLast ? 'description' : 'folder'}
-                </span>
-                {segment}
-              </span>
-              {!isLast && (
-                <span className="breadcrumb-separator text-[var(--nim-text-faint)] text-[11px]">/</span>
-              )}
-            </React.Fragment>
-          );
-        })}
-      </div>
+    <div className="collab-header-meta flex min-w-0 flex-1 items-center gap-2" data-testid="shared-document-breadcrumb">
+      <EditorBreadcrumb crumbs={crumbs} className="shared-document-breadcrumb flex-initial" />
       <span
         className={`collab-sync-dot h-2 w-2 shrink-0 rounded-full ${statusDotClass(status.severity)}`}
         data-testid="collab-sync-dot"

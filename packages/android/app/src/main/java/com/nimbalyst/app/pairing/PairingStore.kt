@@ -1,6 +1,8 @@
 package com.nimbalyst.app.pairing
 
 import android.content.Context
+import android.content.SharedPreferences
+import android.util.Log
 import androidx.core.content.edit
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
@@ -8,25 +10,42 @@ import com.nimbalyst.app.auth.AuthCallbackData
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import java.io.IOException
+import java.security.GeneralSecurityException
+import java.security.ProviderException
 
-class PairingStore(context: Context) {
-    private val masterKey = MasterKey.Builder(context)
-        .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
-        .build()
+/**
+ * Persists pairing credentials in EncryptedSharedPreferences.
+ *
+ * The prefs file can become undecryptable: the Keystore master key is
+ * device-bound, so a copy restored by device transfer, a Keystore reset, or a
+ * corrupted keyset makes opening or reading it throw (AEADBadTagException,
+ * KeyStoreException, ...). Rather than crash on every launch, the store retries
+ * once, then deletes only the pairing prefs file and starts unpaired. That is the
+ * only data it destroys, and it is re-establishable: the user re-scans the
+ * desktop QR code. Synced data in Room is untouched.
+ */
+class PairingStore internal constructor(
+    private val context: Context,
+    private val openPreferences: (Context) -> SharedPreferences,
+) {
+    constructor(context: Context) : this(context, { openEncryptedPreferences(it) })
 
-    private val preferences = EncryptedSharedPreferences.create(
-        context,
-        "nimbalyst_pairing",
-        masterKey,
-        EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
-        EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
-    )
+    // Null only when the prefs cannot be opened even after a reset (a broken
+    // Keystore). Pairing then lives in memory for this process only.
+    private var preferences: SharedPreferences? = openWithRecovery()
 
-    private val _state = MutableStateFlow(loadState())
+    private val _state = MutableStateFlow(loadStateWithRecovery())
     val state: StateFlow<PairingState> = _state.asStateFlow()
 
     fun savePairing(credentials: PairingCredentials) {
         val sanitizedCredentials = credentials.sanitizedForServerChange(_state.value.credentials)
+        val preferences = preferences
+        if (preferences == null) {
+            Log.w(TAG, "Pairing storage is unavailable; this pairing will not survive an app restart.")
+            _state.value = PairingState(sanitizedCredentials)
+            return
+        }
         preferences.edit {
             putString(KEY_SERVER_URL, sanitizedCredentials.serverUrl)
             putString(KEY_ENCRYPTION_SEED, sanitizedCredentials.encryptionSeed)
@@ -58,11 +77,53 @@ class PairingStore(context: Context) {
     }
 
     fun clearPairing() {
-        preferences.edit { clear() }
+        preferences?.edit { clear() }
         _state.value = PairingState()
     }
 
-    private fun loadState(): PairingState {
+    private fun openWithRecovery(): SharedPreferences? {
+        var failure: Throwable? = null
+        repeat(OPEN_ATTEMPTS) {
+            try {
+                return openPreferences(context)
+            } catch (error: Throwable) {
+                if (!isUnreadablePrefsError(error)) throw error
+                failure = error
+            }
+        }
+        return resetAndReopen(failure!!)
+    }
+
+    private fun loadStateWithRecovery(): PairingState {
+        val preferences = preferences ?: return PairingState()
+        return try {
+            loadState(preferences)
+        } catch (error: Throwable) {
+            if (!isUnreadablePrefsError(error)) throw error
+            this.preferences = resetAndReopen(error)
+            PairingState()
+        }
+    }
+
+    private fun resetAndReopen(cause: Throwable): SharedPreferences? {
+        // Logged before deleting so the reset is visible even if the process dies.
+        Log.w(
+            TAG,
+            "Pairing storage '$PREFS_NAME' cannot be decrypted; deleting it and starting unpaired. " +
+                "Re-scan the desktop QR code to pair again.",
+            cause
+        )
+        context.deleteSharedPreferences(PREFS_NAME)
+        return try {
+            openPreferences(context)
+        } catch (error: Throwable) {
+            if (!isUnreadablePrefsError(error)) throw error
+            Log.e(TAG, "Pairing storage still unusable after reset; pairing will not persist.", error)
+            null
+        }
+    }
+
+    private fun loadState(preferences: SharedPreferences): PairingState {
         val serverUrl = preferences.getString(KEY_SERVER_URL, null)
         val encryptionSeed = preferences.getString(KEY_ENCRYPTION_SEED, null)
         val pairedUserId = preferences.getString(KEY_PAIRED_USER_ID, null)
@@ -96,7 +157,35 @@ class PairingStore(context: Context) {
         }
     }
 
-    private companion object {
+    internal companion object {
+        private const val TAG = "PairingStore"
+        internal const val PREFS_NAME = "nimbalyst_pairing"
+        private const val OPEN_ATTEMPTS = 2
+
+        private fun openEncryptedPreferences(context: Context): SharedPreferences {
+            val masterKey = MasterKey.Builder(context)
+                .setKeyScheme(MasterKey.KeyScheme.AES256_GCM)
+                .build()
+            return EncryptedSharedPreferences.create(
+                context,
+                PREFS_NAME,
+                masterKey,
+                EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+                EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
+            )
+        }
+
+        // Keystore and Tink failures: GeneralSecurityException covers
+        // AEADBadTagException and KeyStoreException; a corrupt keyset surfaces as
+        // an IOException (InvalidProtocolBufferException); Keystore can also throw
+        // ProviderException; a value that fails to decrypt on read is a
+        // SecurityException from EncryptedSharedPreferences.
+        internal fun isUnreadablePrefsError(error: Throwable): Boolean =
+            error is GeneralSecurityException ||
+                error is IOException ||
+                error is ProviderException ||
+                error is SecurityException
+
         const val KEY_SERVER_URL = "server_url"
         const val KEY_ENCRYPTION_SEED = "encryption_seed"
         const val KEY_PAIRED_USER_ID = "paired_user_id"

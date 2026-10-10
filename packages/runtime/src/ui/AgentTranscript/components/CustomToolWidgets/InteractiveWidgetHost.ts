@@ -385,6 +385,14 @@ export interface InteractiveWidgetHost {
   openFile(filePath: string): Promise<void>;
 
   /**
+   * Open a page an agent edited: a shared page (`collab://`), a typed page
+   * (`tracker://<itemId>` or `collab://tracker-content/<itemId>`) or a Personal
+   * page (`personal://...`). Optional: a host without a page tree (mobile) leaves
+   * the "Updated <page>" line as plain text.
+   */
+  openPage?(uri: string): Promise<void>;
+
+  /**
    * Track an analytics event
    */
   trackEvent(eventName: string, properties?: Record<string, unknown>): void;

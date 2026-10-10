@@ -237,7 +237,12 @@ export function ensureLocalKeyPrefix(
 }
 
 /**
- * Give every unnumbered item in this workspace a local number.
+ * Give every unnumbered item of an opted-in type in this workspace a local
+ * number.
+ *
+ * `isNumberedType` is required rather than defaulted: numbers are opt-in per
+ * type (`localNumbers` in the type YAML), and a caller that forgot to ask would
+ * number everything again.
  *
  * Returns how many were assigned. Safe to run repeatedly: a second pass finds
  * nothing to do, so this can be called after a create without becoming a
@@ -247,9 +252,10 @@ export async function assignMissingLocalKeys(
   db: QueryableDb,
   store: LocalKeyStateStore,
   workspacePath: string,
+  isNumberedType: (type: string) => boolean,
 ): Promise<number> {
-  const unnumbered = await db.query<{ id: string }>(
-    `SELECT id FROM tracker_items
+  const unnumbered = await db.query<{ id: string; type: string }>(
+    `SELECT id, type FROM tracker_items
       WHERE workspace = $1 AND local_key IS NULL AND deleted_at IS NULL
       ORDER BY created ASC, id ASC`,
     [workspacePath],
@@ -258,7 +264,7 @@ export async function assignMissingLocalKeys(
     db,
     store,
     workspacePath,
-    unnumbered.rows.map((r) => r.id),
+    unnumbered.rows.filter((r) => isNumberedType(r.type)).map((r) => r.id),
   );
   return assigned.size;
 }

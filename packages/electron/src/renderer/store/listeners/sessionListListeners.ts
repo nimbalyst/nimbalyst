@@ -86,6 +86,8 @@ export function initSessionListListeners(): () => void {
         ...(updates.createdBySessionId !== undefined && { createdBySessionId: updates.createdBySessionId as string | null }),
         ...(updates.parentSessionId !== undefined && { parentSessionId: updates.parentSessionId as string | null }),
         ...(updates.worktreeId !== undefined && { worktreeId: updates.worktreeId as string | null }),
+        ...(updates.childCount !== undefined && { childCount: updates.childCount as number }),
+        ...(updates.descendantCount !== undefined && { descendantCount: updates.descendantCount as number }),
         ...(updates.updatedAt !== undefined && { updatedAt: updates.updatedAt as number }),
         ...(updates.isArchived !== undefined && { isArchived: updates.isArchived as boolean }),
         ...(updates.isPinned !== undefined && { isPinned: updates.isPinned as boolean }),
@@ -179,8 +181,19 @@ export function initSessionListListeners(): () => void {
       registry.set(parentSessionId, {
         ...parentMeta,
         childCount: (parentMeta.childCount ?? 0) + 1,
-        sessionType: parentMeta.sessionType === 'session' ? 'workstream' : parentMeta.sessionType,
+        descendantCount: (parentMeta.descendantCount ?? parentMeta.childCount ?? 0) + 1,
       });
+      const seen = new Set([parentSessionId]);
+      let ancestorId = parentMeta.parentSessionId;
+      while (ancestorId && !seen.has(ancestorId)) {
+        seen.add(ancestorId);
+        const ancestor = registry.get(ancestorId);
+        if (!ancestor) break;
+        registry.set(ancestorId, { ...ancestor, descendantCount: (ancestor.descendantCount ?? ancestor.childCount ?? 0) + 1 });
+        const state = store.get(workstreamStateAtom(ancestorId));
+        store.set(workstreamStateAtom(ancestorId), { childSessionIds: [...new Set([...state.childSessionIds, childSessionId])] });
+        ancestorId = ancestor.parentSessionId;
+      }
       store.set(sessionRegistryAtom, registry);
     }
   };

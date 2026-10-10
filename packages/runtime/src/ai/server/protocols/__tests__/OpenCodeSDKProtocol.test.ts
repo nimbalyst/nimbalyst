@@ -436,6 +436,8 @@ describe('OpenCodeSDKProtocol', () => {
         input_tokens: 320,
         output_tokens: 55,
         total_tokens: 375,
+        cache_read_input_tokens: 3_100,
+        cache_creation_input_tokens: 130,
       },
       contextFillTokens: 2_275,
       metadata: {

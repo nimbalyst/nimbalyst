@@ -36,7 +36,7 @@ This follows from how the build works, not from a judgment about any maintainer.
 
 The practical cost is that dependency upgrades and new patches need a second, specific reviewer. We would rather not have that friction, and it goes away once release builds no longer install unpinned dependency code — that is [issue #1334](https://github.com/nimbalyst/nimbalyst/issues/1334), tracked work rather than a permanent position.
 
-The exact paths are listed in [`.github/CODEOWNERS`](./.github/CODEOWNERS), and you can check the claim yourself against the root `package.json` `postinstall` script and `.github/workflows/electron-build.yml`.
+The exact paths are listed in [`.github/CODEOWNERS`](./.github/CODEOWNERS), and you can check the claim yourself against `pnpm-workspace.yaml` (`patchedDependencies` and the `allowBuilds` install-script allowlist) and `.github/workflows/electron-build.yml`.
 
 ## Release authority
 

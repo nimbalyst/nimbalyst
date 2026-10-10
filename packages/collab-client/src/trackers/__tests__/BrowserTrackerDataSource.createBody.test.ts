@@ -11,7 +11,7 @@ import { asTeamJwt, asTeamMemberId } from '@nimbalyst/runtime/auth/jwtScopes';
 import { lexicalYDocToMarkdown, markdownToLexicalYUpdate } from '@nimbalyst/runtime/sync/markdownYDoc';
 import { createFakeServer } from '../../../../tracker-engine/src/__tests__/fakeTrackerServer';
 import { BrowserTrackerDataSource } from '../browser/BrowserTrackerDataSource';
-import { seedTrackerBody } from '../body';
+import { readDocumentRoomMarkdown, seedTrackerBody } from '../body';
 import type { TrackerBodyRoom } from '../body';
 
 class FakeBodyRoom implements TrackerBodyRoom {
@@ -144,5 +144,23 @@ describe('BrowserTrackerDataSource create-item body', () => {
     ).rejects.toThrow(/cannot write item bodies/);
     expect(openRoom).not.toHaveBeenCalled();
     expect(await storedPayload(source, 'item-4')).toBeUndefined();
+  });
+});
+
+describe('readDocumentRoomMarkdown', () => {
+  it('reads a room back as the markdown that was written, and closes it', async () => {
+    const written = new FakeBodyRoom();
+    await seedTrackerBody(written, '# Plan\n\nShip it.');
+    const room = new FakeBodyRoom(written.acknowledged!);
+    expect((await readDocumentRoomMarkdown(room)).trim()).toBe('# Plan\n\nShip it.');
+    expect(room.destroyed).toBe(true);
+    expect(await readDocumentRoomMarkdown(new FakeBodyRoom())).toBe('');
+  });
+
+  it('refuses a room it cannot decode rather than reading it as empty', async () => {
+    const room = new FakeBodyRoom();
+    room.hasUndecodedContent = () => true;
+    await expect(readDocumentRoomMarkdown(room)).rejects.toThrow(/cannot read/);
+    expect(room.destroyed).toBe(true);
   });
 });

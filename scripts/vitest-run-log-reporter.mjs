@@ -112,7 +112,7 @@ export default class RunLogReporter {
       `result:   ${ok ? 'PASS' : 'FAIL'} (${passed} passed, ${failed} failed, ${skipped} skipped)`,
     );
     lines.push(
-      `tree:     ${this.fingerprint ? `${this.fingerprint.digest} (run "npm run test:last" to check this still matches)` : 'unknown (no git repository)'}`,
+      `tree:     ${this.fingerprint ? `${this.fingerprint.digest} (run "pnpm run test:last" to check this still matches)` : 'unknown (no git repository)'}`,
     );
     lines.push('');
 
@@ -143,7 +143,7 @@ export default class RunLogReporter {
         }
       }
       lines.push('--- rerun only these ---');
-      lines.push(`npx vitest --run ${failuresByModule.map((f) => rel(f.moduleId)).join(' ')}`);
+      lines.push(`pnpm exec vitest --run ${failuresByModule.map((f) => rel(f.moduleId)).join(' ')}`);
     }
 
     lines.push('');
@@ -175,7 +175,7 @@ export default class RunLogReporter {
       }
       if (!ok) {
         console.error(`\n[run-log] ${failed} failure(s) recorded in ${LOG_DIR}/${LOG_FILE}`);
-        console.error('[run-log] review with: npm run test:last');
+        console.error('[run-log] review with: pnpm run test:last');
       }
     } catch (err) {
       // Never let logging fail a run.

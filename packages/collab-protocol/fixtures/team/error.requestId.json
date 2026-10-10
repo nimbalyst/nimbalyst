@@ -1,0 +1,6 @@
+{
+  "type": "error",
+  "code": "folder_cycle",
+  "message": "A page cannot move under itself",
+  "requestId": "move-1"
+}

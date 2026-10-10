@@ -8,6 +8,7 @@
 
 import { describe, expect, it } from 'vitest';
 import { isValidClaudeCodeApiUpstreamUrl } from '../store';
+import { resolveClaudeCliProxyUpstream } from '../../services/ai/claudeCliObservation/proxyUpstream';
 
 describe('isValidClaudeCodeApiUpstreamUrl', () => {
   it('accepts loopback http(s) URLs, with or without a base path/port', () => {
@@ -32,5 +33,17 @@ describe('isValidClaudeCodeApiUpstreamUrl', () => {
     expect(isValidClaudeCodeApiUpstreamUrl('file:///etc/passwd')).toBe(false);
     expect(isValidClaudeCodeApiUpstreamUrl('not a url')).toBe(false);
     expect(isValidClaudeCodeApiUpstreamUrl('')).toBe(false);
+  });
+});
+
+describe('resolveClaudeCliProxyUpstream', () => {
+  it('prefers the explicit upstream, follows a loopback Claude settings base URL, refuses a remote one', () => {
+    expect(resolveClaudeCliProxyUpstream('http://127.0.0.1:1', 'http://localhost:20128/v1')).toEqual({ upstreamUrl: 'http://127.0.0.1:1' });
+    expect(resolveClaudeCliProxyUpstream(undefined, 'http://localhost:20128/v1')).toEqual({ upstreamUrl: 'http://localhost:20128/v1' });
+    expect(resolveClaudeCliProxyUpstream(undefined, 'https://gateway.example.com')).toEqual({
+      upstreamUrl: undefined,
+      ignoredClaudeSettingsBaseUrl: 'https://gateway.example.com',
+    });
+    expect(resolveClaudeCliProxyUpstream(undefined, undefined)).toEqual({ upstreamUrl: undefined });
   });
 });

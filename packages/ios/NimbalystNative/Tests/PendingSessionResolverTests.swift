@@ -35,6 +35,33 @@ final class PendingSessionResolverTests: XCTestCase {
         XCTAssertEqual(invalidations, 3, "Removing the sync manager must cancel its subscription")
     }
 
+    /// Foregrounding empties the roster until the socket reconnects. Desktop history
+    /// carries no host, so dropping it in that gap flashed a list of only the
+    /// phone- and automation-created sessions before the full list returned.
+    func testDesktopHistoryStaysListedWhileTheRosterIsEmpty() {
+        let navigation = WorkspaceNavigationState()
+        let roster = CurrentValueSubject<[DeviceInfo], Never>([
+            DeviceInfo(deviceId: "mac", name: "mac", type: "desktop", platform: "test", appVersion: nil,
+                       connectedAt: 0, lastActiveAt: 0, isFocused: nil, status: nil),
+            DeviceInfo(deviceId: "vm", name: "vm", type: "headless", platform: "test", appVersion: nil,
+                       connectedAt: 0, lastActiveAt: 0, isFocused: nil, status: nil)
+        ])
+        navigation.observeHosts(source: roster, publisher: roster.eraseToAnyPublisher())
+        XCTAssertEqual(navigation.hostDeviceId, "mac")
+        XCTAssertTrue(navigation.includesUnattributedSessions)
+
+        roster.send([])
+        XCTAssertTrue(navigation.includesUnattributedSessions, "a reconnecting roster is not evidence the host changed")
+        navigation.stopObservingHosts()
+        XCTAssertTrue(navigation.includesUnattributedSessions, "backgrounding must not narrow the list")
+
+        navigation.hostDeviceId = "vm"
+        XCTAssertFalse(navigation.includesUnattributedSessions, "headless hosts own only their own sessions")
+        navigation.clearAccount()
+        navigation.hostDeviceId = "mac"
+        XCTAssertFalse(navigation.includesUnattributedSessions, "another account's roster does not carry over")
+    }
+
     func testDefaultHostDoesNotInvalidateNavigationWhileDisconnected() {
         let navigation = WorkspaceNavigationState()
         var invalidations = 0
@@ -122,6 +149,29 @@ final class PendingSessionResolverTests: XCTestCase {
         navigation.openSession("late", database: db)
         XCTAssertEqual(navigation.project?.id, "p1")
         XCTAssertEqual(navigation.selection, .session("late"))
+    }
+
+    func testOpeningDesktopCreatedSessionKeepsADesktopSelected() throws {
+        let db = try makeDatabase()
+        let navigation = WorkspaceNavigationState()
+        let device = { (id: String, type: String) in
+            DeviceInfo(deviceId: id, name: id, type: type, platform: "test", appVersion: nil, connectedAt: 0, lastActiveAt: 0, isFocused: nil, status: nil)
+        }
+        let roster = CurrentValueSubject<[DeviceInfo], Never>([device("mac", "desktop"), device("studio", "desktop"), device("vm", "headless")])
+        navigation.observeHosts(source: roster, publisher: roster.eraseToAnyPublisher())
+        try db.upsertSession(makeSession(id: "unattributed"))
+        var owned = makeSession(id: "owned")
+        owned.hostDeviceId = "vm"
+        try db.upsertSession(owned)
+
+        navigation.hostDeviceId = "studio"
+        navigation.openSession("unattributed", database: db)
+        XCTAssertEqual(navigation.hostDeviceId, "studio")
+
+        navigation.openSession("owned", database: db)
+        XCTAssertEqual(navigation.hostDeviceId, "vm")
+        navigation.openSession("unattributed", database: db)
+        XCTAssertEqual(navigation.hostDeviceId, "mac", "A headless host never lists unattributed sessions")
     }
 
     func testComposeStateSurvivesColumnRemountAndRejectsOldRemoteDrafts() {

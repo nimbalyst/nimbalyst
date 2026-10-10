@@ -7,6 +7,8 @@ import type { TrackerDataModel, FieldDefinition, FieldOption, TrackerSharing, Tr
 import { isStatusCategory } from './trackerStatusCategory.js';
 import type { DerivedTrackerTypeDeclaration } from './trackerTypeInheritance.js';
 import { validatePredicateRegistry, type PredicateDefinition, type PredicateRegistryValidation } from './predicateRegistry.js';
+import type { LabelRegistry } from './labelRegistry.js';
+import { validateLabelRegistry, type LabelRegistryValidation } from './labelRegistryAuthoring.js';
 
 type LegacyTrackerSharing = 'local' | 'shared' | 'hybrid';
 
@@ -56,6 +58,15 @@ export function parseTrackerYAML(yamlString: string): TrackerDataModel {
   if (!data.type) throw new Error('Missing required field: type');
   if (!data.displayName) throw new Error('Missing required field: displayName');
   if (!data.displayNamePlural) throw new Error('Missing required field: displayNamePlural');
+  // A wiki type (one that declares `storage:`) follows local-wiki FORMAT.md,
+  // which does not require the app-only keys. Rejecting it here hid the type's
+  // tables and typed pages from the Local wiki with only a log line (NIM-7437).
+  if (data.storage === 'pages' || data.storage === 'table') {
+    data.icon ??= 'description';
+    data.color ??= '#64748b';
+    data.modes ??= { inline: true, fullDocument: false };
+    data.idPrefix ??= String(data.type).slice(0, 3);
+  }
   if (!data.icon) throw new Error('Missing required field: icon');
   if (!data.color) throw new Error('Missing required field: color');
   if (!data.modes) throw new Error('Missing required field: modes');
@@ -243,6 +254,10 @@ function applyOptionalModelProperties<T extends { type: string }>(target: T, dat
   // Only written when true: an unarchived tracker is the overwhelming majority
   // and `archived: false` on every file would be noise.
   if (data.archived === true) model.archived = true;
+  // Same rule: only an opt-in is written, so absent means off.
+  if (data.localNumbers === true) model.localNumbers = true;
+  // A wiki type's storage; absent means the type is not in the wiki.
+  if (data.storage === 'pages' || data.storage === 'table') model.storage = data.storage;
 
   return target;
 }
@@ -295,8 +310,11 @@ export function parseTrackerTypeYAML(yamlString: string): TrackerDataModel | Der
 /**
  * Serialize a TrackerDataModel to YAML string
  */
-export function serializeTrackerYAML(model: TrackerDataModel): string {
-  return yaml.dump(normalizeTrackerSharingModel(model), {
+export function serializeTrackerYAML(model: TrackerDataModel | DerivedTrackerTypeDeclaration): string {
+  // A derived type that says nothing about sharing inherits its base's; the
+  // normalizer would stamp it `personal`.
+  const inheritsSharing = typeof model.extends === 'string' && model.extends.length > 0 && model.sharing === undefined;
+  return yaml.dump(inheritsSharing ? model : normalizeTrackerSharingModel(model as TrackerDataModel), {
     indent: 2,
     lineWidth: 120,
     noRefs: true,
@@ -308,7 +326,7 @@ export function serializeTrackerYAML(model: TrackerDataModel): string {
  */
 export function validateTrackerYAML(yamlString: string): { valid: boolean; error?: string } {
   try {
-    parseTrackerYAML(yamlString);
+    parseTrackerTypeYAML(yamlString);
     return { valid: true };
   } catch (error) {
     return {
@@ -331,8 +349,9 @@ export function validateTrackerYAML(yamlString: string): { valid: boolean; error
  * that has no room yet.
  *
  * Returns issues rather than throwing, and returns every issue: a registry is
- * authored by hand and a reader who is told about one bad qualifier at a time
- * edits the file once per mistake.
+ * authored by hand and a reader who is told about one bad field at a time
+ * edits the file once per mistake. A `qualifiers` key left from an earlier
+ * registry is an unknown-field warning, not a failure.
  */
 export function parsePredicateRegistryYAML(yamlString: string): PredicateRegistryValidation {
   let data: unknown;
@@ -358,7 +377,55 @@ export function parsePredicateRegistryYAML(yamlString: string): PredicateRegistr
   return validatePredicateRegistry(predicates === undefined ? data : predicates);
 }
 
-/** Serialize a registry to the `.nimbalyst/predicates.yaml` shape. */
+/**
+ * Serialize a registry to the `.nimbalyst/predicates.yaml` shape. Relations
+ * carry no qualifiers, so a retired `qualifiers` block an older registry still
+ * holds is dropped here rather than written back.
+ */
 export function serializePredicateRegistryYAML(predicates: readonly PredicateDefinition[]): string {
-  return yaml.dump({ predicates }, { indent: 2, lineWidth: 120, noRefs: true });
+  const cleaned = predicates.map(predicate => {
+    if (!('qualifiers' in predicate)) return predicate;
+    const { qualifiers: _retired, ...rest } = predicate as PredicateDefinition & { qualifiers?: unknown };
+    return rest;
+  });
+  return yaml.dump({ predicates: cleaned }, { indent: 2, lineWidth: 120, noRefs: true });
+}
+
+// ---------------------------------------------------------------------------
+// Label registry (labelRegistry.ts)
+// ---------------------------------------------------------------------------
+
+/**
+ * Parse the local copy of the label registry (`.nimbalyst/labels.yaml`). An
+ * empty file is an empty registry. Cross-registry checks are left to callers
+ * that hold the predicate registry.
+ */
+export function parseLabelRegistryYAML(yamlString: string): LabelRegistryValidation {
+  let data: unknown;
+  try {
+    data = yaml.load(yamlString);
+  } catch (error) {
+    return {
+      valid: false,
+      registry: null,
+      issues: [{
+        code: 'LABEL_REGISTRY_NOT_AN_OBJECT',
+        path: '',
+        message: error instanceof Error ? error.message : 'Unparseable YAML',
+      }],
+      warnings: [],
+    };
+  }
+  if (data === null || data === undefined || data === '') {
+    return { valid: true, registry: { labels: [], properties: [], claimProperties: {} }, issues: [], warnings: [] };
+  }
+  return validateLabelRegistry(data);
+}
+
+/** Serialize a registry to the `.nimbalyst/labels.yaml` shape. */
+export function serializeLabelRegistryYAML(registry: LabelRegistry): string {
+  return yaml.dump(
+    { labels: registry.labels, properties: registry.properties, claimProperties: registry.claimProperties },
+    { indent: 2, lineWidth: 120, noRefs: true },
+  );
 }

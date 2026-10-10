@@ -41,7 +41,8 @@
 }
 
 .collab-sidebar .file-tree-file.active,
-.collab-sidebar .file-tree-directory.selected {
+.collab-sidebar .file-tree-directory.selected,
+.collab-sidebar .collab-tree-type-row.active {
   background-color: var(--nim-bg-selected);
 }
 
@@ -71,6 +72,7 @@
 
 .collab-sidebar .file-tree-file.active .file-tree-icon,
 .collab-sidebar .file-tree-directory.selected .file-tree-icon,
+.collab-sidebar .collab-tree-type-row.active .file-tree-icon,
 .collab-sidebar .file-tree-directory.selected .file-tree-chevron {
   color: var(--nim-text);
 }
@@ -80,4 +82,13 @@
   font-size: 13px;
   line-height: 1.2;
   text-overflow: ellipsis;
+}
+
+/* Page tree: a drag on a row's upper or lower edge inserts beside it. */
+.collab-sidebar .collab-tree-drop-before {
+  box-shadow: inset 0 2px 0 0 var(--nim-primary);
+}
+
+.collab-sidebar .collab-tree-drop-after {
+  box-shadow: inset 0 -2px 0 0 var(--nim-primary);
 }

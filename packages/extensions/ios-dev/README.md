@@ -69,8 +69,8 @@ Quick creation of Swift files with basic template.
 1. Build the extension:
 ```bash
 cd packages/extensions/ios-dev
-npm install
-npm run build
+pnpm install
+pnpm run build
 ```
 
 2. The extension will be automatically loaded by Nimbalyst.
@@ -79,7 +79,7 @@ npm run build
 
 Watch mode for development:
 ```bash
-npm run dev
+pnpm run dev
 ```
 
 ## Usage Examples

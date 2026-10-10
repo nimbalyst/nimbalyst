@@ -118,14 +118,15 @@
 /* eslint-disable @typescript-eslint/no-unused-vars, no-shadow */
 
 import type {Transformer} from '@lexical/markdown';
-import {
-  $convertFromEnhancedMarkdownString,
-  $convertToEnhancedMarkdownString,
-} from '../../../markdown';
+// Deep paths, not the `markdown` barrel: this engine also runs headless in the
+// collab worker (`@nimbalyst/markdown-ydoc`), which must not load React.
+import {$convertFromEnhancedMarkdownString} from '../../../markdown/EnhancedMarkdownImport';
+import {$convertToEnhancedMarkdownString} from '../../../markdown/EnhancedMarkdownExport';
 import type {LexicalEditor, SerializedLexicalNode, TextNode} from 'lexical';
 import {
   type ElementNode,
   type LexicalNode,
+  $createParagraphNode,
   $createTextNode,
   $getNodeByKey,
   $getRoot,
@@ -139,8 +140,8 @@ import {
   SKIP_DOM_SELECTION_TAG,
 } from 'lexical';
 import {$createAutoLinkNode, $isAutoLinkNode, $isLinkNode} from '@lexical/link';
-import {$isEmbeddedFileNode} from '../../EmbedPlugin/EmbeddedFileNode';
-import {$rescanForEmbedUpgrade} from '../../../extensions/builtin/EmbedExtension';
+import {$isEmbeddedFileNode} from '../../EmbedPlugin/EmbeddedFileNodeCore';
+import {$rescanForEmbedUpgrade} from '../../EmbedPlugin/embedUpgrade';
 
 import {createHeadlessEditor} from '@lexical/headless';
 import {createNodeFromSerialized} from './createNodeFromSerialized';
@@ -171,6 +172,10 @@ import {
 } from './ThresholdedOrderPreservingTree';
 import type {CanonicalTreeNode} from './canonicalTree';
 import { applyFrontmatterUpdateIfNeeded } from './diffFrontmatter';
+// Circular with diffPluginUtils (which imports `initializeHandlers` from here);
+// both sides only call the other at run time, never during module evaluation.
+import {$approveDiffs} from './diffPluginUtils';
+import {isDiffDebug} from './diffDebug';
 
 // Initialize a simple registry (in future this could be external)
 let _handlersInitialized = false;
@@ -605,6 +610,15 @@ export interface ApplyMarkdownReplaceOptions {
    * Callers with no human in the loop set this. See `headlessMarkdownEdit`.
    */
   exactTextMatchRequired?: boolean;
+  /**
+   * Land the edit as final text instead of a pending red/green diff.
+   *
+   * The approval runs inside the same Lexical update that applies the change,
+   * so a collaborative binding emits one Y.Doc transaction holding only the
+   * final text. Approving in a later update would broadcast the pending diff
+   * nodes to every collaborator first. See `agentEditsApplyDirectly`.
+   */
+  acceptChanges?: boolean;
 }
 
 export function applyMarkdownReplace(
@@ -774,6 +788,7 @@ export function applyMarkdownReplace(
       originalMarkdown,
       normalizedNewMarkdown,
       transformers,
+      {acceptChanges: options.acceptChanges},
     );
     // console.log('✅ applyMarkdownDiffToDocument completed successfully');
 
@@ -953,6 +968,7 @@ export function applyMarkdownDiffToDocument(
   originalMarkdown: string,
   newMarkdown: string,
   transformers: Array<Transformer>,
+  options: {acceptChanges?: boolean} = {},
 ): void {
   // Debug: Starting diff application
   // console.log('\n🔍 STARTING DIFF APPLICATION...');
@@ -964,12 +980,14 @@ export function applyMarkdownDiffToDocument(
   }
 
   try {
-    // Validate editor state before starting
+    // A brand-new collaborative document has a root with zero children until
+    // someone types. Give it the empty paragraph a fresh local editor starts
+    // with so the tree matcher has a node to diff against.
     editor.update(
       () => {
         const liveRoot = $getRoot();
-        if (liveRoot.getChildren().length === 0) {
-          throw new Error('Live editor root has no children');
+        if (liveRoot.getChildrenSize() === 0) {
+          liveRoot.append($createParagraphNode());
         }
       },
       {discrete: true},
@@ -1267,10 +1285,14 @@ export function applyMarkdownDiffToDocument(
               $applyNodeDiff(editor, diff, transformers, sourceEditor, targetEditor, treeMatcher);
             }
           }
+
+          if (options.acceptChanges) {
+            $approveDiffs();
+          }
         },
         {discrete: true},
       );
-      if (process?.env?.DIFF_DEBUG === '1') {
+      if (isDiffDebug()) {
         editor.getEditorState().read(() => {
           const root = $getRoot();
           const snapshot = root.getChildren().map((child, idx) => ({

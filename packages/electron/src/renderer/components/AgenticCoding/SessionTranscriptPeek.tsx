@@ -19,7 +19,19 @@ import { getCardType } from '../../store/atoms/sessionKanban';
 import { sessionRegistryAtom } from '../../store/atoms/sessions';
 import { transcriptEventSignalAtom } from '../../store/atoms/sessionTranscript';
 
+// Insertion-ordered; the oldest peeks drop off so hovering through a long list
+// does not keep 100 messages (images included) for every session ever peeked.
 const tailMessageCache = new Map<string, TranscriptViewMessage[]>();
+const TAIL_CACHE_LIMIT = 10;
+
+function cacheTailMessages(id: string, messages: TranscriptViewMessage[]): void {
+  tailMessageCache.delete(id);
+  tailMessageCache.set(id, messages);
+  for (const oldest of tailMessageCache.keys()) {
+    if (tailMessageCache.size <= TAIL_CACHE_LIMIT) break;
+    tailMessageCache.delete(oldest);
+  }
+}
 
 const PEEK_SETTINGS = {
   showToolCalls: true,
@@ -109,7 +121,7 @@ export function SessionTranscriptPeek({
     try {
       const nextMessages = await window.electronAPI.ai.getTailMessages(id, 100) as TranscriptViewMessage[];
       if (generation !== fetchGenerationRef.current) return;
-      tailMessageCache.set(id, nextMessages);
+      cacheTailMessages(id, nextMessages);
       setMessages(nextMessages);
       setLoading(false);
     } catch {

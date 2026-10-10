@@ -1303,7 +1303,7 @@ export function initVoiceModeService() {
                   ? await resolveBackendWorkspacePath(targetWorkspace)
                   : undefined;
                 if (resolvedWs && isBackendTool(namespacedName, resolvedWs)) {
-                  result = await handleBackendTool(namespacedName, namespacedName, args, resolvedWs);
+                  result = await handleBackendTool(namespacedName, namespacedName, args, resolvedWs, { sessionId: null, caller: 'voice' });
                 } else {
                   result = await handleExtensionTool(
                     namespacedName, // toolName -- matches the registered (dotted) name

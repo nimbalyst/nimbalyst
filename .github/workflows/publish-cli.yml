@@ -1,5 +1,9 @@
 name: Publish CLI to npm
 
+# Publishes @nimbalyst/cli and @nimbalyst/wiki-web together, at one version.
+# `nim wiki serve` tells users to install @nimbalyst/wiki-web@<nim's version>,
+# so the two packages must always ship in lockstep.
+
 # Triggered manually only, for the same reason as publish-extension-sdk.yml:
 # pushing `cli-v*` tags to nimbalyst/nimbalyst pollutes the repo's
 # `releases.atom` feed, and electron-updater's GitHub provider reads that feed
@@ -9,7 +13,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Expected version (must match packages/cli/package.json). Defaults to whatever is in package.json.'
+        description: 'Expected version (must match packages/cli/package.json and packages/wiki-web/package.json). Defaults to whatever is in package.json.'
         type: string
         required: false
         default: ''
@@ -20,8 +24,13 @@ on:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-  # Make npm resilient to transient registry socket drops (ECONNRESET): retry
-  # individual failed requests instead of aborting the whole `npm ci`.
+  # Retry transient registry socket drops (ECONNRESET) instead of aborting the
+  # whole install. pnpm reads the pnpm_config_* names; the npm_config_* names
+  # cover the npm installs in the tarball smoke tests.
+  pnpm_config_fetch_retries: '5'
+  pnpm_config_fetch_retry_mintimeout: '20000'
+  pnpm_config_fetch_retry_maxtimeout: '120000'
+  pnpm_config_fetch_timeout: '300000'
   npm_config_fetch_retries: '5'
   npm_config_fetch_retry_mintimeout: '20000'
   npm_config_fetch_retry_maxtimeout: '120000'
@@ -39,7 +48,7 @@ jobs:
   # release candidate never runs with publish authority. This job holds none:
   # no environment, no id-token.
   verify:
-    name: Verify @nimbalyst/cli
+    name: Verify @nimbalyst/cli and @nimbalyst/wiki-web
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -48,12 +57,16 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
+      # Reads the version from `packageManager` in the root package.json.
+      - name: Setup pnpm
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+
       - name: Setup Node.js
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: '24'
-          cache: 'npm'
-          cache-dependency-path: '**/package-lock.json'
+          cache: 'pnpm'
+          cache-dependency-path: 'pnpm-lock.yaml'
 
       - name: Install dependencies
         env:
@@ -61,42 +74,86 @@ jobs:
           # api.github.com; unauthenticated runners share a 60 req/hr limit per
           # egress IP and intermittently fail the whole install.
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: npm ci
+        run: pnpm install --frozen-lockfile
 
-      - name: Verify expected version matches package.json
-        if: ${{ inputs.version != '' }}
+      # The two packages ship in lockstep: nim's install hint names
+      # @nimbalyst/wiki-web@<nim's version>, so a mismatch publishes a CLI that
+      # points users at a browser app that does not exist.
+      - name: Verify versions (lockstep, and the expected version if given)
         env:
           EXPECTED_VERSION: ${{ inputs.version }}
         run: |
-          PKG_VERSION=$(node -p "require('./packages/cli/package.json').version")
-          if [ "$PKG_VERSION" != "$EXPECTED_VERSION" ]; then
-            echo "::error::Expected version ($EXPECTED_VERSION) does not match packages/cli/package.json version ($PKG_VERSION)"
+          CLI_VERSION=$(node -p "require('./packages/cli/package.json').version")
+          WEB_VERSION=$(node -p "require('./packages/wiki-web/package.json').version")
+          if [ "$CLI_VERSION" != "$WEB_VERSION" ]; then
+            echo "::error::packages/cli ($CLI_VERSION) and packages/wiki-web ($WEB_VERSION) must have the same version"
             exit 1
           fi
-          echo "Version match: $PKG_VERSION"
+          if [ -n "$EXPECTED_VERSION" ] && [ "$CLI_VERSION" != "$EXPECTED_VERSION" ]; then
+            echo "::error::Expected version ($EXPECTED_VERSION) does not match the package.json version ($CLI_VERSION)"
+            exit 1
+          fi
+          echo "Version match: $CLI_VERSION"
 
       # The CLI bundles @nimbalyst/tracker-core into dist rather than depending
       # on it at install time, and it resolves that package through its built
       # `dist`. Building it here makes the ordering explicit instead of relying
-      # on whether `npm ci` happened to run the workspace's `prepare`.
+      # on whether the install happened to run the root `prepare`.
       - name: Build tracker-core
-        run: npm run build -w @nimbalyst/tracker-core
+        run: pnpm --filter @nimbalyst/tracker-core run build
+
+      # wiki-web is built against the prebuilt collab-bundle, which needs the
+      # workspace deps. Same commands CI uses (scripts/validation-inventory.mjs).
+      - name: Build collab-bundle
+        run: |
+          node scripts/run-validation.mjs workspace-deps
+          node scripts/run-validation.mjs bundle-build
+
+      # The wiki-web build ends with its size check (scripts/check-size.mjs), so
+      # a build over budget fails here.
+      - name: Build wiki-web
+        run: pnpm --filter @nimbalyst/wiki-web run build
+
+      # `files` is ["dist"]: without dist/index.html, `nim wiki serve` finds the
+      # package but reports it unbuilt. Packed with pnpm so workspace:
+      # specifiers are rewritten, and checked from the tarball itself.
+      - name: Verify wiki-web package contents
+        working-directory: packages/wiki-web
+        run: |
+          set -euo pipefail
+          WORK=$(mktemp -d)
+          pnpm pack --pack-destination "$WORK"
+          TARBALL=$(ls "$WORK"/*.tgz)
+          # Listed to files first: under pipefail, `tar | grep -q` fails when
+          # grep exits on its first match and tar gets a write error.
+          tar -tzf "$TARBALL" > "$WORK/files.txt"
+          tar -xzOf "$TARBALL" package/package.json > "$WORK/package.json"
+          if ! grep -qx 'package/dist/index.html' "$WORK/files.txt"; then
+            echo "::error::dist/index.html missing from the wiki-web tarball"
+            exit 1
+          fi
+          if grep -q '"workspace:' "$WORK/package.json"; then
+            echo "::error::packed wiki-web package.json still contains a workspace: specifier"
+            exit 1
+          fi
+          echo "wiki-web tarball has $(wc -l < "$WORK/files.txt") files"
 
       - name: Typecheck
         working-directory: packages/cli
-        run: npm run typecheck
+        run: pnpm run typecheck
 
       - name: Test
         working-directory: packages/cli
-        run: npm test
+        run: pnpm run test
 
       - name: Build
         working-directory: packages/cli
-        run: npm run build
+        run: pnpm run build
 
       # `files` is ["dist", "README.md"], so a missing or partial build packs a
       # tarball whose `bin` target does not exist and installs a broken `nim`.
-      # `npm pack --dry-run` alone reports success on that tarball.
+      # `pnpm pack --dry-run` alone reports success on that tarball. Pack with
+      # pnpm, not npm: only pnpm rewrites `workspace:*` specifiers to versions.
       - name: Verify package contents
         working-directory: packages/cli
         run: |
@@ -104,10 +161,12 @@ jobs:
             echo "::error::dist/bin/cli.js missing -- the bin entry would not resolve after install"
             exit 1
           fi
-          npm pack --dry-run
+          pnpm pack --dry-run
           node -e "
             const { execSync } = require('child_process');
-            const files = JSON.parse(execSync('npm pack --dry-run --json', { encoding: 'utf8' }))[0].files.map(f => f.path);
+            // Lifecycle output, if any, precedes the JSON object.
+            const out = execSync('pnpm pack --dry-run --json', { encoding: 'utf8' });
+            const files = JSON.parse(out.slice(out.search(/^\{/m))).files.map(f => f.path);
             // cli-bundled.js is not in \`bin\` -- it is the copy the desktop app
             // ships -- but it comes out of this same build, so a build that
             // stopped emitting it should fail here rather than in packaging.
@@ -130,11 +189,19 @@ jobs:
         # so it is not enough on its own: it would pass on a build whose tracker
         # semantics failed to resolve. The commands below read a fixture
         # database, which is what actually runs the bundled tracker-core.
+        #
+        # The tarball comes from `pnpm pack`, the same command the publish job
+        # uses, so this installs exactly what would be published.
         run: |
           set -euo pipefail
-          TARBALL=$(npm pack --silent)
           WORK=$(mktemp -d)
-          mv "$TARBALL" "$WORK/"
+          pnpm pack --pack-destination "$WORK"
+          TARBALL=$(basename "$(ls "$WORK"/*.tgz)")
+          tar -xzOf "$WORK/$TARBALL" package/package.json > "$WORK/packed-package.json"
+          if grep -q '"workspace:' "$WORK/packed-package.json"; then
+            echo "::error::packed package.json still contains a workspace: specifier"
+            exit 1
+          fi
           cp scripts/smoke-fixture.mjs "$WORK/"
           cd "$WORK"
           npm init -y >/dev/null
@@ -177,15 +244,77 @@ jobs:
           mv node_modules/* "$RES/node_modules/"
           node "$RES/nim/dist/bin/cli-bundled.js" tracker ready --db smoke.db --workspace /tmp/nim-smoke-workspace
 
+      # The npm channel's other promise: better-sqlite3 is optional, and
+      # everything that does not open the app database works without it. Both
+      # tarballs are installed exactly as published, with optional dependencies
+      # omitted, then the local wiki, `nim mcp` and `nim wiki serve` (which
+      # finds @nimbalyst/wiki-web installed beside it) are exercised.
+      - name: Smoke test nim and wiki-web without better-sqlite3
+        run: |
+          set -euo pipefail
+          WORK=$(mktemp -d)
+          (cd packages/cli && pnpm pack --pack-destination "$WORK")
+          (cd packages/wiki-web && pnpm pack --pack-destination "$WORK")
+          CLI_TGZ=$(ls "$WORK"/nimbalyst-cli-*.tgz)
+          WEB_TGZ=$(ls "$WORK"/nimbalyst-wiki-web-*.tgz)
+          cd "$WORK"
+          npm init -y >/dev/null
+          npm install --omit=optional "$CLI_TGZ" "$WEB_TGZ" >/dev/null
+          if [ -d node_modules/better-sqlite3 ]; then
+            echo "::error::better-sqlite3 was installed despite --omit=optional"
+            exit 1
+          fi
+          NIM="$WORK/node_modules/.bin/nim"
+          PROJECT=$(mktemp -d)
+          git -C "$PROJECT" init -q
+
+          "$NIM" wiki init --workspace "$PROJECT"
+          "$NIM" wiki list --workspace "$PROJECT" > list.out
+          grep -q '^Home' list.out
+
+          printf '%s\n' \
+            '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{}}}' \
+            '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' \
+            | "$NIM" mcp --workspace "$PROJECT" > mcp.out
+          node -e "
+            const lines = require('fs').readFileSync('mcp.out', 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+            const names = lines[1]?.result?.tools?.map((t) => t.name) ?? [];
+            if (lines.length !== 2 || lines[0].result?.serverInfo?.name !== 'nimbalyst-local' || !names.includes('listPages') || !names.includes('tracker_list')) {
+              console.error('::error::nim mcp did not answer initialize and tools/list as expected: ' + JSON.stringify(lines));
+              process.exit(1);
+            }
+            console.log('nim mcp listed ' + names.length + ' tools.');
+          "
+
+          PORT=47391
+          "$NIM" wiki serve --port "$PORT" --workspace "$PROJECT" > serve.log 2>&1 &
+          SERVE_PID=$!
+          trap 'kill "$SERVE_PID" 2>/dev/null || true' EXIT
+          for _ in $(seq 1 50); do grep -q '^Open: ' serve.log && break; sleep 0.2; done
+          TOKEN=$(sed -n 's/^Open: .*[?&]token=\([^&[:space:]]*\).*/\1/p' serve.log | head -n 1)
+          if [ -z "$TOKEN" ]; then
+            echo "::error::nim wiki serve did not print its URL"
+            cat serve.log
+            exit 1
+          fi
+          NO_TOKEN=$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/api/info")
+          WITH_TOKEN=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $TOKEN" "http://127.0.0.1:$PORT/api/info")
+          if [ "$NO_TOKEN" != 401 ] || [ "$WITH_TOKEN" != 200 ]; then
+            echo "::error::/api/info returned $NO_TOKEN without the token (want 401) and $WITH_TOKEN with it (want 200)"
+            cat serve.log
+            exit 1
+          fi
+          echo "nim wiki serve: /api/info 401 without token, 200 with."
+
   publish:
-    name: Publish @nimbalyst/cli
+    name: Publish @nimbalyst/cli and @nimbalyst/wiki-web
     needs: verify
     if: ${{ !inputs.dry_run }}
     runs-on: ubuntu-latest
     # Adding this environment changes npm's OIDC subject claim from a ref-based
     # subject to an environment-based one. The npm trusted-publisher config for
-    # @nimbalyst/cli must name `npm-publish` before this lands, or publishing
-    # fails to authenticate. There is no npm write token here and one must never
+    # BOTH @nimbalyst/cli and @nimbalyst/wiki-web must name this workflow and
+    # `npm-publish`, or publishing fails to authenticate. There is no npm write token here and one must never
     # be added as a workaround -- see MAINTAINERS.md.
     environment: npm-publish
     permissions:
@@ -196,6 +325,10 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
+      # Reads the version from `packageManager` in the root package.json.
+      - name: Setup pnpm
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+
       - name: Setup Node.js
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
@@ -204,8 +337,8 @@ jobs:
           # upgrade step that hits a known self-replace bug on the runner.
           node-version: '24'
           registry-url: 'https://registry.npmjs.org'
-          cache: 'npm'
-          cache-dependency-path: '**/package-lock.json'
+          cache: 'pnpm'
+          cache-dependency-path: 'pnpm-lock.yaml'
 
       - name: Install dependencies
         env:
@@ -213,17 +346,59 @@ jobs:
           # api.github.com; unauthenticated runners share a 60 req/hr limit per
           # egress IP and intermittently fail the whole install.
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: npm ci
+        run: pnpm install --frozen-lockfile
 
+      # `npm publish <tarball>` runs no lifecycle scripts, so the build that
+      # `prepublishOnly` used to trigger happens here.
+      - name: Build
+        run: |
+          pnpm --filter @nimbalyst/tracker-core run build
+          node scripts/run-validation.mjs workspace-deps
+          node scripts/run-validation.mjs bundle-build
+          pnpm --filter @nimbalyst/wiki-web run build
+          pnpm --filter @nimbalyst/cli run build
+
+      # pnpm packs (rewriting `workspace:*` specifiers to real versions); npm
+      # publishes, so Trusted Publishing keeps going through npm's OIDC
+      # exchange. `--provenance` is what triggers that exchange; without it
+      # the CLI publishes anonymously and bails on ENEEDAUTH even when
+      # id-token: write is granted.
+      #
+      # wiki-web goes first: a published nim names wiki-web@<its version> in
+      # its install hint, so that version must exist before nim does. A version
+      # already on the registry is skipped, so re-running after a partial
+      # publish (wiki-web out, nim failed) finishes the job instead of failing.
+      #
+      # npm runs from the pack directory, not the repo root, which declares
+      # pnpm in `devEngines` and makes npm warn (EBADDEVENGINES) on every
+      # call. Only a 404 means "not published yet"; any other
+      # `npm view` error stops the job instead of being read as one.
       - name: Publish to npm (Trusted Publishing via OIDC)
-        working-directory: packages/cli
-        # `prepublishOnly` builds dist. `--provenance` is what triggers npm's
-        # OIDC exchange; without it the CLI publishes anonymously and bails on
-        # ENEEDAUTH even when id-token: write is granted.
-        run: npm publish --access public --provenance
+        run: |
+          set -euo pipefail
+          for DIR in packages/wiki-web packages/cli; do
+            NAME=$(node -p "require('./$DIR/package.json').name")
+            VERSION=$(node -p "require('./$DIR/package.json').version")
+            PACK_DIR="$RUNNER_TEMP/pack-$(basename "$DIR")"
+            mkdir -p "$PACK_DIR"
+            if PUBLISHED=$(cd "$PACK_DIR" && npm view "$NAME@$VERSION" version 2> "$PACK_DIR/view-error.txt"); then
+              if [ -n "$PUBLISHED" ]; then
+                echo "$NAME@$VERSION is already published; skipping"
+                continue
+              fi
+            elif ! grep -q 'E404' "$PACK_DIR/view-error.txt"; then
+              cat "$PACK_DIR/view-error.txt"
+              echo "::error::npm view $NAME@$VERSION failed"
+              exit 1
+            fi
+            (cd "$DIR" && pnpm pack --pack-destination "$PACK_DIR")
+            TARBALL=$(ls "$PACK_DIR"/*.tgz)
+            (cd "$PACK_DIR" && npm publish "$TARBALL" --access public --provenance)
+          done
 
       - name: Summary
         run: |
           VERSION=$(node -p "require('./packages/cli/package.json').version")
-          echo "Published @nimbalyst/cli@$VERSION"
+          echo "Published @nimbalyst/cli@$VERSION and @nimbalyst/wiki-web@$VERSION"
           echo "https://www.npmjs.com/package/@nimbalyst/cli/v/$VERSION"
+          echo "https://www.npmjs.com/package/@nimbalyst/wiki-web/v/$VERSION"

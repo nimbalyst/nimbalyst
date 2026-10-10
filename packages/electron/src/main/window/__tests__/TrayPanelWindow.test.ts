@@ -139,6 +139,18 @@ describe('tray panel activation policy', () => {
     expect(browserWindowCtor.mock.calls[0][0]).not.toHaveProperty('type', 'panel');
   });
 
+  it('never lets the all-workspaces call hide the Dock', () => {
+    // On macOS `visibleOnFullScreen: true` makes Electron call its own
+    // DockHide() unless `skipTransformProcessType` is set. The re-assert below
+    // races that transform and can lose, leaving the app out of the Dock.
+    toggleTrayPanelWindow(trayBounds, emptyTrayPanelFeed);
+
+    expect(browserWindowCtor.instance.setVisibleOnAllWorkspaces).toHaveBeenCalledWith(
+      true,
+      expect.objectContaining({ skipTransformProcessType: true }),
+    );
+  });
+
   it('reasserts the regular activation policy and puts the Dock icon back', () => {
     // Dropping `type: 'panel'` was not enough on its own -- creating this window
     // still demotes the app, and without the re-assert Nimbalyst vanishes from

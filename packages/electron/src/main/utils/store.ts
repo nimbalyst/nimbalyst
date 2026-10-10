@@ -471,6 +471,7 @@ export interface SessionHistoryLayout {
   collapsed: boolean;
   collapsedGroups: string[];
   sortOrder?: 'updated' | 'created';
+  compactRows?: boolean;
 }
 
 /**
@@ -536,6 +537,8 @@ export interface WorkspaceState {
   remoteSessionDrafts?: Record<string, { text: string; options?: import("@nimbalyst/runtime/sync/types").RemoteTurnOptions; attachments: import("@nimbalyst/runtime/ai/server/types").ChatAttachment[] }>;
   /** Explicit Cloudflare choices for this project; authentication stays in Wrangler. */
   cloudflareSandboxSelection?: { profileName: string; accountId: string | null };
+  /** When the Personal Home page was seeded; set once so a removed Home stays removed. */
+  personalPagesHomeSeededAt?: number;
   workspacePath: string;
   /**
    * Additional top-level folders attached to this workspace, as absolute paths.
@@ -591,6 +594,8 @@ export interface WorkspaceState {
     // Stable first-class folder id most recently used. Null means Team root.
     lastSharedFolderId?: string | null;
   };
+  /** Pages-mode sidebar sections the user collapsed or expanded; unset = default. */
+  pagesSidebarCollapsed?: { team?: boolean; personal?: boolean };
   collabPendingUpdates?: Record<string, {
     mergedUpdateBase64: string;
     updatedAt: number;
@@ -979,6 +984,7 @@ function createDefaultWorkspaceState(workspacePath: string): WorkspaceState {
       expandedFolders: [],
       customFolders: [],
     },
+    pagesSidebarCollapsed: undefined,
     collabPendingUpdates: {},
     trackerSharingMigration: undefined,
     trackerSharingMigrationSeenAt: undefined,
@@ -1286,6 +1292,21 @@ export const setThemeSync = setTheme;
 
 export function getWorkspaceState(workspacePath: string): WorkspaceState {
   return cloneWorkspaceState(ensureWorkspaceState(workspacePath));
+}
+
+/**
+ * One top-level field, cloned on its own. getWorkspaceState merges and clones the
+ * whole entry, which holds hundreds of KB of workstream UI state, so team
+ * resolution paid for all of it on every lookup. Only for fields that
+ * normalizeWorkspaceState passes through unchanged; attachedFolders is sanitized.
+ */
+export function getWorkspaceStateField<K extends 'localOrgBinding'>(
+  workspacePath: string,
+  field: K,
+): WorkspaceState[K] {
+  const raw = readWorkspaceStore()[workspaceKey(workspacePath)];
+  const value = raw?.[field] !== undefined ? raw[field] : createDefaultWorkspaceState(workspacePath)[field];
+  return value === undefined ? value : structuredClone(value);
 }
 
 export function setWorkspaceState(workspacePath: string, state: WorkspaceState): WorkspaceState {
@@ -2197,8 +2218,24 @@ export function setExtensionProjectIntroShown(shown: boolean): void {
 }
 
 // Extension Settings Management
+//
+// Extension scans check every extension, and each `conf` get re-parses the whole
+// app-settings file (hundreds of KB, mostly provider model catalogs). Cache the
+// parsed value until conf emits 'change', which every in-process write does.
+let _extensionSettingsCache: Record<string, ExtensionSettings> | undefined;
+let _extensionSettingsCacheStore: Store<AppStoreSchema> | undefined;
+
 export function getExtensionSettings(): Record<string, ExtensionSettings> {
-  return getAppStore().get('extensionSettings', {});
+  const appStore = getAppStore();
+  if (!appStore.events) return appStore.get('extensionSettings', {});
+  if (_extensionSettingsCacheStore !== appStore) {
+    _extensionSettingsCacheStore = appStore;
+    _extensionSettingsCache = undefined;
+    appStore.events.on('change', () => { _extensionSettingsCache = undefined; });
+  }
+  _extensionSettingsCache ??= appStore.get('extensionSettings', {});
+  // Callers mutate the result before writing it back.
+  return structuredClone(_extensionSettingsCache);
 }
 
 export function setExtensionSettings(settings: Record<string, ExtensionSettings>): void {

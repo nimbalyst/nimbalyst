@@ -6,7 +6,9 @@
  * the binding. Markdown has no registration and no hook: it is the app's own
  * Lexical editor, and its collaborative wiring lives in `CollaborativeTabEditor`
  * as a hand-rolled branch. This is that branch, reduced to what a card needs --
- * no tab header, no diff adapter, no revision rail, no history controller.
+ * no tab header, no revision rail, and a history controller only when the host
+ * shows the document as a page (`publishHistory`). It keeps the tab's
+ * Keep/Revert bar for pending diffs left in a room by older builds.
  *
  * What could NOT be reduced away, and why (all four are load-bearing; see the
  * header of `CollabLexicalProvider` for the failure history):
@@ -44,6 +46,7 @@
  */
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import type { LexicalEditor } from 'lexical';
 import type { Doc } from 'yjs';
 import type { Provider } from '@lexical/yjs';
 
@@ -52,16 +55,24 @@ import { MarkdownEditor, DocumentPathProvider } from '@nimbalyst/runtime';
 import { CollabLexicalProvider } from '@nimbalyst/runtime/collab-lexical';
 import { buildCollabUri } from '@nimbalyst/collab-protocol';
 
+import { CollabHistoryClient } from '@nimbalyst/runtime/sync/collabHistoryClient';
 import type { CollaborativeEmbedProviderResource } from '../../services/CollaborativeEmbedProviderCache';
+import { useCollabBodyHistory } from '../HistoryDialog/useCollabBodyHistory';
+import { LexicalDiffHeaderAdapter } from '../UnifiedDiffHeader';
 
 interface CollaborativeMarkdownEmbedProps {
   host: EditorHost;
   resource: CollaborativeEmbedProviderResource;
+  /** The fixed formatting toolbar while editable; a page body uses the floating one. */
+  toolbar?: boolean;
+  /** Publish the document's page history (a body shown as a page, never a card). */
+  publishHistory?: boolean;
+  onEditorReady?: (editor: LexicalEditor | null) => void;
 }
 
 export const CollaborativeMarkdownEmbed: React.FC<
   CollaborativeMarkdownEmbedProps
-> = ({ host, resource }) => {
+> = ({ host, resource, toolbar = true, publishHistory = false, onEditorReady }) => {
   const [readOnly, setReadOnly] = useState(host.readOnly !== false);
   useEffect(() => {
     // `onReadOnlyChanged` invokes the callback immediately with the current
@@ -118,14 +129,38 @@ export const CollaborativeMarkdownEmbed: React.FC<
   );
 
   const editorConfig = useMemo(
-    () => ({ editable: !readOnly, showToolbar: !readOnly }),
-    [readOnly]
+    () => ({ editable: !readOnly, showToolbar: toolbar && !readOnly }),
+    [readOnly, toolbar]
   );
 
   const documentPath = useMemo(
     () => buildCollabUri(config.orgId, config.documentId),
     [config.orgId, config.documentId]
   );
+
+  // Agent edits now land in shared documents as final text, so this bar only
+  // appears for pending diffs written into the room before that change. It
+  // renders nothing otherwise; without it that leftover removed text would stay
+  // on screen with no way to resolve it.
+  const [lexicalEditor, setLexicalEditor] = useState<any | null>(null);
+  useEffect(() => { lexicalEditor?.setEditable(!readOnly); }, [lexicalEditor, readOnly]);
+  const readyRef = useRef(onEditorReady); readyRef.current = onEditorReady;
+  useEffect(() => () => readyRef.current?.(null), [resource, epoch]);
+  const handleEditorReady = useCallback((editor: LexicalEditor) => { setLexicalEditor(editor); readyRef.current?.(editor); }, []);
+
+  const historyClient = useMemo(() => (publishHistory ? new CollabHistoryClient({
+    serverUrl: config.serverUrl,
+    getJwt: config.getJwt,
+    orgId: config.orgId,
+    documentId: config.documentId,
+  }) : null), [publishHistory, config]);
+  useCollabBodyHistory({
+    uri: publishHistory ? documentPath : null,
+    client: historyClient,
+    syncProvider: resource.syncProvider,
+    editor: lexicalEditor,
+    readOnly,
+  });
 
   if (epoch === 0) {
     return (
@@ -137,9 +172,17 @@ export const CollaborativeMarkdownEmbed: React.FC<
 
   return (
     <DocumentPathProvider key={epoch} documentPath={documentPath}>
+      {!readOnly && (
+        <LexicalDiffHeaderAdapter
+          editor={lexicalEditor ?? undefined}
+          filePath={documentPath}
+          fileName={host.fileName}
+        />
+      )}
       <MarkdownEditor
         host={host}
         config={editorConfig}
+        onEditorReady={handleEditorReady}
         collaborationConfig={collaborationConfig}
       />
     </DocumentPathProvider>

@@ -75,6 +75,43 @@ it("discovers log-verified parent and late sidecar files, reuses the manual code
   await fs.appendFile(file, JSON.stringify(entry("u2", "again")) + "\n");
   expect((await source.readSince(ref, main.cursor)).messages).toHaveLength(1);
 });
+it("follows a session whose shell cwd moves after launch, including its sidecars", async () => {
+  // Claude Code records the agent shell's current directory on every entry;
+  // only the launch cwd (and its encoded directory) scopes the session.
+  const file = path.join(dir, encodeWorkspaceDir(cwd), "parent.jsonl");
+  await write(file, [
+    entry("u1"),
+    { ...entry("u2"), cwd: `${cwd}/packages/app` },
+    { ...entry("u3"), cwd: "/workspace/sibling-repo" },
+  ]);
+  const sidecar = path.join(
+    dir,
+    encodeWorkspaceDir(cwd),
+    "parent/subagents/agent-agent1.jsonl"
+  );
+  await write(sidecar, [
+    {
+      ...entry("s1"),
+      cwd: "/workspace/sibling-repo",
+      agentId: "agent1",
+      isSidechain: true,
+    },
+  ]);
+  const refs = await source.discover(cwd);
+  const ref = refs.find((r) => !r.parentToolUseId)!;
+  const subref = refs.find((r) => r.parentToolUseId === "agent1")!;
+  expect(ref).toMatchObject({ workspacePath: cwd, filePath: file });
+  expect(subref).toMatchObject({ workspacePath: cwd, filePath: sidecar });
+  const main = await source.readSince(ref, null);
+  expect(main.messages).toHaveLength(3);
+  await fs.appendFile(
+    file,
+    JSON.stringify({ ...entry("u4"), cwd: "/elsewhere" }) + "\n"
+  );
+  expect((await source.readSince(ref, main.cursor)).messages).toHaveLength(1);
+  expect((await source.readSince(subref, null)).messages).toHaveLength(1);
+});
+
 it("rejects cwd encoding collisions, forged references and symlinks outside the source root", async () => {
   const file = path.join(dir, encodeWorkspaceDir(cwd), "parent.jsonl");
   await write(file, [{ ...entry("u1"), cwd: "/workspace/a-b" }]);
@@ -169,7 +206,7 @@ it("does not overwrite a later AI title with the header prompt fallback on subse
   expect(later.title).toBe("Chosen title");
 });
 
-it("inherits missing sidecar cwd only from a verified parent and rejects explicit scope or identity conflicts", async () => {
+it("inherits sidecar cwd only from a verified parent and rejects malformed cwd or identity conflicts", async () => {
   const parent = path.join(dir, encodeWorkspaceDir(cwd), "parent.jsonl");
   const sidecar = path.join(
     dir,
@@ -207,7 +244,6 @@ it("inherits missing sidecar cwd only from a verified parent and rejects explici
     message: assistant.message,
   });
   for (const conflict of [
-    { cwd: "/workspace/a-b" },
     { cwd: null },
     { sessionId: "other" },
     { agentId: "other" },

@@ -5,21 +5,21 @@ There is not one single Nimbalyst development workflow. Which setup makes sense 
 The two common patterns are:
 
 - Run a dev copy of Nimbalyst and develop from inside Nimbalyst itself.
-- Run one Nimbalyst build from one checkout while coding against a second checkout that is open in Nimbalyst. I often use `npm run dev:user2:loop` for that so the second instance has isolated app state.
+- Run one Nimbalyst build from one checkout while coding against a second checkout that is open in Nimbalyst. I often use `pnpm run dev:user2:loop` for that so the second instance has isolated app state.
 
 ## Basic Setup
 
 From `packages/electron`, start Nimbalyst in dev mode with one of these:
 
 ```bash
-npm run dev
-npm run dev:loop
-npm run dev:user2:loop
+pnpm run dev
+pnpm run dev:loop
+pnpm run dev:user2:loop
 ```
 
-- `npm run dev` is fine for normal renderer work.
-- `npm run dev:loop` is better when you expect to restart a lot.
-- `npm run dev:user2:loop` starts a second isolated dev instance with its own `userData` and separate `out2/` build output, which avoids watcher/HMR cross-talk.
+- `pnpm run dev` is fine for normal renderer work.
+- `pnpm run dev:loop` is better when you expect to restart a lot.
+- `pnpm run dev:user2:loop` starts a second isolated dev instance with its own `userData` and separate `out2/` build output, which avoids watcher/HMR cross-talk.
 
 Then enable `Extension Dev Tools`:
 
@@ -35,7 +35,7 @@ The alpha channel follows published GitHub pre-releases.
 
 For renderer-only work, hot reload is usually enough. For Electron main-process, preload, startup, or MCP server changes, you'll need a main process restart.
 
-That is where `npm run dev:loop` helps. In dev mode, `/restart` or the restart button writes a restart signal file, quits cleanly, and `scripts/dev-loop.sh` starts the app again. That gives you a reliable edit -> restart -> retest loop without having to re-run the dev command yourself each time.
+That is where `pnpm run dev:loop` helps. In dev mode, `/restart` or the restart button writes a restart signal file, quits cleanly, and `scripts/dev-loop.sh` starts the app again. That gives you a reliable edit -> restart -> retest loop without having to re-run the dev command yourself each time.
 
 Two details matter here:
 

@@ -19,7 +19,13 @@ export function registerWindowChromeHandlers(): void {
     // light/dark stand-in.
     const backgroundColor = readCssColor((payload as { backgroundColor?: unknown } | null)?.backgroundColor);
     if (backgroundColor) {
-      setThemeBackgroundColor(backgroundColor);
+      // A listener that throws becomes Electron's native main-process error
+      // dialog; losing one launch-colour write is harmless.
+      try {
+        setThemeBackgroundColor(backgroundColor);
+      } catch (error) {
+        console.warn('[WindowChrome] Could not persist theme background colour:', error);
+      }
     }
   });
 

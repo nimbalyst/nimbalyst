@@ -249,3 +249,54 @@ function stripUndefinedField(field: FieldDefinition): Partial<FieldDefinition> {
   }
   return out as Partial<FieldDefinition>;
 }
+
+/** Keys a declaration never carries as an override of its base. */
+const NON_DECLARED_KEYS = new Set(['type', 'extends', 'fields', 'roles', 'activity', 'declaredForm']);
+
+/**
+ * Recover the declaration a resolved derived model came from: `type`,
+ * `extends`, and only what differs from `base` (the base's resolved model).
+ *
+ * For a copy that lost its declaration -- a mirror row or payload written
+ * before declarations travelled with it. Registering such a copy as if it were
+ * the declaration turns every inherited field into an explicit override, so a
+ * later base change stops reaching it, and narrowing a base select drops the
+ * type outright (the copy now "widens" it).
+ */
+export function deriveTrackerTypeDeclaration(
+  resolved: TrackerDataModel,
+  base: TrackerDataModel,
+): DerivedTrackerTypeDeclaration {
+  const declared: DerivedTrackerTypeDeclaration = { type: resolved.type, extends: resolved.extends ?? base.type };
+  const record = declared as unknown as Record<string, unknown>;
+  for (const [key, value] of Object.entries(resolved)) {
+    if (NON_DECLARED_KEYS.has(key) || value === undefined) continue;
+    if (stableJson(value) !== stableJson((base as unknown as Record<string, unknown>)[key])) record[key] = value;
+  }
+
+  const baseFields = new Map(base.fields.map(field => [field.name, field]));
+  const fields = resolved.fields.filter(field => {
+    const inherited = baseFields.get(field.name);
+    return !inherited || stableJson(fieldUnderDefaults(field)) !== stableJson(fieldUnderDefaults(inherited));
+  });
+  if (fields.length > 0) declared.fields = fields;
+
+  const roles: Partial<Record<TrackerSchemaRole, string>> = {};
+  for (const [role, fieldName] of Object.entries(resolved.roles ?? {})) {
+    if (base.roles?.[role as TrackerSchemaRole] !== fieldName) roles[role as TrackerSchemaRole] = fieldName;
+  }
+  if (Object.keys(roles).length > 0) declared.roles = roles;
+  return declared;
+}
+
+/** A field with the parser's defaults spelled out, so a YAML round trip is not a difference. */
+function fieldUnderDefaults(field: FieldDefinition): Record<string, unknown> {
+  return { ...field, required: field.required === true, displayInline: field.displayInline !== false };
+}
+
+function stableJson(value: unknown): string {
+  return JSON.stringify(value, (_key, inner) =>
+    inner && typeof inner === 'object' && !Array.isArray(inner)
+      ? Object.fromEntries(Object.keys(inner).sort().filter(k => inner[k] !== undefined).map(k => [k, inner[k]]))
+      : inner);
+}

@@ -37,3 +37,11 @@ export type { TrackerColumnDef, TypeColumnConfig, } from './internal/runtime/src
 export type { TrackerFieldFilter, TrackerFilterSet, } from './internal/runtime/src/plugins/TrackerPlugin/models/trackerFilters';
 export type { TeamMemberOption } from './internal/runtime/src/plugins/TrackerPlugin/components/TrackerFieldEditor';
 export type { TrackerNavigationEntry, TrackerNavigationFolder, TrackerTypePlacement, } from './internal/runtime/src/sync/trackerNavigation';
+/**
+ * Typed pages and type pages, loaded when a host opens one so the eager graph
+ * above does not carry them: the typed page layout, its Links section and
+ * crumb helpers, and the type page's table. Placed views are not here: they
+ * render inside a page's editor (see `setBrowserPlacedViewRenderer` in
+ * `./editor`), and their 2x2 chart is part of the editor graph.
+ */
+export declare const loadTrackerPage: () => Promise<typeof import("./internal/collab-client/src/trackers-ui/page/index")>;

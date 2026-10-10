@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-09-25T23:21:17.510Z",
+  "generatedAt": "2026-10-07T20:43:35.913Z",
   "extensions": [
     {
       "id": "com.nimbalyst.animation",
@@ -636,7 +636,7 @@
       "id": "com.nimbalyst.jupyter",
       "name": "Jupyter",
       "description": "Jupyter notebook support for Nimbalyst: custom `.ipynb` editor with real kernel execution through managed local Jupyter kernels.",
-      "version": "0.4.0",
+      "version": "0.4.1",
       "author": "Nimbalyst",
       "categories": [
         "data"
@@ -657,10 +657,10 @@
         "ai"
       ],
       "minimumAppVersion": "1.0.0",
-      "downloadUrl": "https://extensions.nimbalyst.com/dl/com.nimbalyst.jupyter/0.4.0",
-      "checksum": "181bc16609ce470062f7379abca6d98767f04c98768a25eff276e3f40b99b5bd",
+      "downloadUrl": "https://extensions.nimbalyst.com/dl/com.nimbalyst.jupyter/0.4.1",
+      "checksum": "7288ab2dc260926fbb06e12adaedd59345236502513cbfa2f8ff14df6c976c15",
       "repositoryUrl": "https://github.com/nimbalyst/nimbalyst-jupyter",
-      "changelog": "0.4.0: First marketplace release with a managed local Jupyter runtime, guided Python and Jupyter setup, a slim notebook editor, and AI tools for cell CRUD, execution, variable introspection, and DataFrame previews.",
+      "changelog": "0.4.1: Bundled fast-uri, source-map-js, dompurify and katex updated past published advisories. 0.4.0: First marketplace release with a managed local Jupyter runtime, guided Python and Jupyter setup, a slim notebook editor, and AI tools for cell CRUD, execution, variable introspection, and DataFrame previews.",
       "tagline": "Edit Jupyter notebooks in Nimbalyst",
       "longDescription": "Open, edit, and execute .ipynb files in a notebook editor built with JupyterLab notebook components. Cells run against a token-secured local Jupyter server managed by the extension backend module, with an escape hatch for user-started localhost servers. Core Jupyter MIME rendering covers code, markdown, HTML, images, LaTeX, and errors; core ipywidgets controls are supported. nbformat round-trip preserves cell IDs and metadata. AI tools can read, edit, run cells, inspect outputs, and request a compact notebook projection that hides large outputs by default.",
       "highlights": [
@@ -714,7 +714,7 @@
       "id": "com.nimbalyst.mindmap",
       "name": "Nimbalyst Mindmap",
       "description": "A freeform spatial mindmap editor with AI-assisted editing",
-      "version": "1.0.3",
+      "version": "1.0.4",
       "author": "Nimbalyst",
       "categories": [
         "diagrams"
@@ -735,8 +735,8 @@
         "filesystem"
       ],
       "minimumAppVersion": "1.0.0",
-      "downloadUrl": "https://extensions.nimbalyst.com/dl/com.nimbalyst.mindmap/1.0.3",
-      "checksum": "5fdda61a018b059a9d90b469e2fa81cda9694ce4f30da8b31700dee8f4333318",
+      "downloadUrl": "https://extensions.nimbalyst.com/dl/com.nimbalyst.mindmap/1.0.4",
+      "checksum": "c189172540b85e28d65c51a5f143edfefb7fbae94046bdfeffb023b3f1828933",
       "repositoryUrl": "",
       "changelog": "",
       "tagline": "Freeform spatial mindmap editor with AI-assisted editing",
@@ -826,11 +826,11 @@
         "ai",
         "network"
       ],
-      "minimumAppVersion": "0.78.0",
+      "minimumAppVersion": "1.0.0",
       "downloadUrl": "https://extensions.nimbalyst.com/dl/com.nimbalyst.namenym/0.1.2",
       "checksum": "f32fef392b739d21c39a64320f1e64b31609a14675c7dd099a6b386900144b81",
-      "repositoryUrl": "https://github.com/nimbalyst/nimbalyst-namenym",
-      "changelog": "0.1.2: Faster rendering of large name lists.",
+      "repositoryUrl": "",
+      "changelog": "",
       "tagline": "AI-powered brand naming and domain brainstorming",
       "longDescription": "Move from a product brief to a shortlist with contextual name generation, word exploration, and direct additions to every list.",
       "highlights": [

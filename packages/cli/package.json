@@ -1,6 +1,6 @@
 {
   "name": "@nimbalyst/cli",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "nim — companion command-line tool for Nimbalyst trackers and agent interop",
   "license": "MIT",
   "author": "Nimbalyst Team",
@@ -37,24 +37,26 @@
     "node": ">=22"
   },
   "scripts": {
-    "build": "node scripts/build.mjs",
+    "build": "pnpm --filter @nimbalyst/local-wiki run build && node scripts/build.mjs",
     "dev": "tsc --watch",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "pnpm --filter @nimbalyst/local-wiki run build && tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "prepublishOnly": "npm run build"
+    "prepublishOnly": "pnpm run build"
   },
-  "dependencies": {
-    "better-sqlite3": "13.0.1"
+  "optionalDependencies": {
+    "better-sqlite3": "13.0.3"
   },
   "devDependencies": {
-    "@nimbalyst/tracker-core": "0.1.0",
+    "@nimbalyst/collab-protocol": "workspace:*",
+    "@nimbalyst/local-wiki": "workspace:*",
+    "@nimbalyst/tracker-core": "workspace:*",
     "@types/better-sqlite3": "^7.6.12",
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^20.0.0",
     "esbuild": "^0.28.2",
-    "js-yaml": "^4.1.0",
+    "js-yaml": "^4.3.2",
     "typescript": "^5.0.0",
-    "vitest": "4.1.8"
+    "vitest": "4.1.11"
   }
 }

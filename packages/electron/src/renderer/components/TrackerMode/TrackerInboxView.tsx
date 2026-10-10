@@ -44,6 +44,7 @@ import {
   setTrackerSnoozeAtom,
   trackerSnoozedUntilByItemIdAtom,
 } from '../../store/atoms/trackerPersonalState';
+import { confirmTrackerItemDelete } from './confirmTrackerItemDelete';
 
 interface TrackerInboxViewProps {
   filterType?: TrackerItemType | 'all';
@@ -120,6 +121,7 @@ export function TrackerInboxView({
     activeTypeFilter: filterType,
     onItemSelect,
     onDeleteItems,
+    confirmDelete: confirmTrackerItemDelete,
     onArchiveItems,
     onSwitchToFilesMode,
   });

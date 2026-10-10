@@ -11,8 +11,10 @@
 
 import type { ColumnRegular } from '@revolist/react-datagrid';
 
-import { parseTrackerCell, parseUrlCell } from '../utils/formatters';
+import { cellDisplayText, parseTrackerCell, parseUrlCell, shownValue } from '../utils/formatters';
+import type { ColumnFormat } from '../types';
 import { trackerStatusTone, type TrackerResolutionStore } from './trackerResolution';
+import type { ListOption } from '../validation/types';
 
 type CellTemplate = NonNullable<ColumnRegular['cellTemplate']>;
 export type HyperFunc = Parameters<CellTemplate>[0];
@@ -39,6 +41,15 @@ export function renderUrlCell(h: HyperFunc, value: string | number | null): unkn
     },
     link.label,
   );
+}
+
+/**
+ * Render a cell as its formatted text. A HYPERLINK result is a link whatever
+ * the column format, so a Cmd+K link in an ordinary cell clicks like a url cell.
+ */
+export function renderValueCell(h: HyperFunc, value: string | number | null, format: ColumnFormat | undefined): unknown {
+  if (format?.type === 'url' || shownValue(value) !== value) return renderUrlCell(h, value);
+  return h('span', {}, cellDisplayText(value, format));
 }
 
 /**
@@ -73,4 +84,37 @@ export function renderTrackerCell(
       h('span', { class: 'csv-tracker-title' }, resolution.title ?? ''),
     ],
   );
+}
+
+/** Attribute on a dropdown chip; the delegated handler opens the option list. */
+export const LIST_CELL_ATTRIBUTE = 'data-csv-list';
+/** Attribute on a checkbox cell; the delegated handler toggles it. */
+export const CHECKBOX_CELL_ATTRIBUTE = 'data-csv-checkbox';
+
+/**
+ * A dropdown-validated cell: the value as a colored pill with a caret, or an
+ * empty caret target when blank. The pill takes the matching option's color;
+ * a value that is not an option keeps the neutral tone (and the cell gets the
+ * invalid marker from `cellProperties`).
+ */
+export function renderListCell(h: HyperFunc, value: string, options: readonly ListOption[]): unknown {
+  const option = options.find((candidate) => candidate.value === value.trim());
+  const tone = option?.color && option.color !== 'default' ? option.color : 'neutral';
+  const caret = h('span', { class: 'csv-chip-caret' }, '▾');
+  if (value.trim() === '') {
+    return h('span', { class: 'csv-list-cell csv-list-cell-empty', [LIST_CELL_ATTRIBUTE]: '1' }, [caret]);
+  }
+  return h('span', { class: 'csv-list-cell', [LIST_CELL_ATTRIBUTE]: '1' }, [
+    h('span', { class: `csv-chip csv-chip-${tone}` }, [h('span', { class: 'csv-chip-label' }, value), caret]),
+  ]);
+}
+
+/** A checkbox-validated cell. The stored value stays the rule's checked/unchecked text. */
+export function renderCheckboxCell(h: HyperFunc, checked: boolean): unknown {
+  return h('span', {
+    class: checked ? 'csv-checkbox-cell csv-checkbox-checked' : 'csv-checkbox-cell',
+    role: 'checkbox',
+    'aria-checked': checked ? 'true' : 'false',
+    [CHECKBOX_CELL_ATTRIBUTE]: '1',
+  }, checked ? '✓' : '');
 }

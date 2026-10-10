@@ -39,7 +39,7 @@ enum SessionListProjection {
     /// `IF NOT EXISTS`, so an install that ran an earlier shape would otherwise keep
     /// its old triggers forever with nothing to detect it. Release builds have no
     /// erase-on-change rescue.
-    static let schemaVersion = 1
+    static let schemaVersion = 3
 
     /// Registered from `DatabaseManager.migrate` and run again on every open. Creates
     /// the projection objects, or drops and recreates them when the recorded shape
@@ -181,23 +181,16 @@ enum SessionListProjection {
             CREATE TRIGGER IF NOT EXISTS trg_slg_dirty_insert AFTER INSERT ON sessions BEGIN
                 INSERT OR REPLACE INTO sessionListGroupDirty(sessionId, projectId)
                 VALUES (new.id, new.projectId);
-                -- A parent arriving after its children re-homes them.
-                INSERT OR REPLACE INTO sessionListGroupDirty(sessionId, projectId)
-                    SELECT id, projectId FROM sessions
-                    WHERE parentSessionId = new.id;
-                INSERT OR REPLACE INTO sessionListGroupDirty(sessionId, projectId)
-                    SELECT id, projectId FROM sessions WHERE createdBySessionId = new.id;
+                \(SessionTreeSQL.dirtyAncestors("new.parentSessionId"))
+                \(SessionTreeSQL.dirtyDescendants("new.id"))
             END
             """)
         try db.execute(sql: """
             CREATE TRIGGER IF NOT EXISTS trg_slg_dirty_delete AFTER DELETE ON sessions BEGIN
                 INSERT OR REPLACE INTO sessionListGroupDirty(sessionId, projectId)
                 VALUES (old.id, old.projectId);
-                INSERT OR REPLACE INTO sessionListGroupDirty(sessionId, projectId)
-                    SELECT id, projectId FROM sessions
-                    WHERE parentSessionId = old.id;
-                INSERT OR REPLACE INTO sessionListGroupDirty(sessionId, projectId)
-                    SELECT id, projectId FROM sessions WHERE createdBySessionId = old.id;
+                \(SessionTreeSQL.dirtyAncestors("old.parentSessionId"))
+                \(SessionTreeSQL.dirtyDescendants("old.id"))
             END
             """)
         try db.execute(sql: """
@@ -205,6 +198,8 @@ enum SessionListProjection {
             WHEN \(changed) BEGIN
                 INSERT OR REPLACE INTO sessionListGroupDirty(sessionId, projectId)
                 VALUES (new.id, new.projectId);
+                \(SessionTreeSQL.dirtyAncestors("old.parentSessionId"))
+                \(SessionTreeSQL.dirtyAncestors("new.parentSessionId"))
                 INSERT OR REPLACE INTO sessionListGroupDirty(sessionId, projectId)
                     SELECT old.id, old.projectId WHERE old.projectId IS NOT new.projectId;
             END
@@ -213,14 +208,11 @@ enum SessionListProjection {
         // children; ordinary activity updates do not drag a whole group in with them.
         try db.execute(sql: """
             CREATE TRIGGER IF NOT EXISTS trg_slg_dirty_reparent
-            AFTER UPDATE OF isArchived, sessionType, agentRole, projectId ON sessions
+            AFTER UPDATE OF isArchived, sessionType, parentSessionId, worktreeId, projectId ON sessions
             WHEN old.isArchived IS NOT new.isArchived OR old.sessionType IS NOT new.sessionType
-                OR old.agentRole IS NOT new.agentRole OR old.projectId IS NOT new.projectId BEGIN
-                INSERT OR REPLACE INTO sessionListGroupDirty(sessionId, projectId)
-                    SELECT id, projectId FROM sessions
-                    WHERE parentSessionId = new.id;
-                INSERT OR REPLACE INTO sessionListGroupDirty(sessionId, projectId)
-                    SELECT id, projectId FROM sessions WHERE createdBySessionId = new.id;
+                OR old.parentSessionId IS NOT new.parentSessionId OR old.worktreeId IS NOT new.worktreeId
+                OR old.projectId IS NOT new.projectId BEGIN
+                \(SessionTreeSQL.dirtyDescendants("new.id"))
             END
             """)
     }
@@ -232,40 +224,19 @@ enum SessionListProjection {
         "\(alias).projectId = :projectId AND \(alias).isArchived = 0"
     }
 
-    private static func parentExists(_ alias: String, matching column: String, predicate: String) -> String {
-        """
-        EXISTS (
-            SELECT 1 FROM sessions \(alias)
-            WHERE \(alias).id = b.\(column) AND \(predicate) AND \(visible(alias))
-        )
-        """
-    }
-
-    /// Same precedence as `SessionListSQL.groupKeyCase`, specialised to the projected
-    /// scope. `SessionListProjectionParityTests` asserts the two agree.
-    private static var groupKeyCase: String {
-        """
-        CASE
-            WHEN :metaEnabled = 1 AND b.agentRole = 'meta-agent' THEN 'meta:' || b.id
-            WHEN :metaEnabled = 1
-                AND b.createdBySessionId IS NOT NULL
-                AND COALESCE(b.agentRole, '') <> 'meta-agent'
-                AND \(parentExists("mp", matching: "createdBySessionId", predicate: "mp.agentRole = 'meta-agent'"))
-                THEN 'meta:' || b.createdBySessionId
-            WHEN b.sessionType = 'workstream' THEN 'ws:' || b.id
-            WHEN b.parentSessionId IS NOT NULL
-                AND \(parentExists("wp", matching: "parentSessionId", predicate: "wp.sessionType = 'workstream'"))
-                THEN 'ws:' || b.parentSessionId
-            WHEN b.worktreeId IS NOT NULL THEN 'wt:' || b.worktreeId
-            ELSE 's:' || b.id
-        END
-        """
-    }
+    private static var groupKeyCase: String { SessionTreeSQL.groupKey(visible: visible) }
 
     /// Resolve member facts for a set of sessions. `restriction` narrows it to the
     /// dirty batch for an incremental refresh, or to everything for a rebuild.
     private static func memberInsert(restriction: String) -> String {
         """
+        WITH keyed AS MATERIALIZED (
+            SELECT b.id, b.projectId, b.sessionType, b.createdAt, b.updatedAt, b.isExecuting,
+                   b.hasQueuedPrompts, b.isPinned, b.phase, b.lastMessageAt, b.lastReadAt,
+                   \(groupKeyCase) AS groupKey
+            FROM sessions b
+            WHERE \(visible("b")) AND \(restriction)
+        )
         INSERT INTO sessionListGroupMembers (
             sessionId, projectId, groupKey, groupKind, anchorId,
             isDisplayChild, isWorkstreamParent, createdAt, updatedAt,
@@ -284,7 +255,8 @@ enum SessionListProjection {
                 ELSE 0
             END,
             CASE WHEN substr(k.groupKey, 1, instr(k.groupKey, ':') - 1) = 'ws'
-                      AND k.id = substr(k.groupKey, instr(k.groupKey, ':') + 1) THEN 1 ELSE 0 END,
+                      AND k.id = substr(k.groupKey, instr(k.groupKey, ':') + 1)
+                      AND k.sessionType = 'workstream' THEN 1 ELSE 0 END,
             k.createdAt, k.updatedAt,
             k.isExecuting, k.hasQueuedPrompts,
             CASE WHEN k.lastMessageAt IS NOT NULL AND k.lastMessageAt > 0
@@ -294,13 +266,7 @@ enum SessionListProjection {
             CASE WHEN k.phase IN ('implementing', 'validating') THEN 1 ELSE 0 END,
             CASE WHEN k.phase IN ('planning', 'backlog') THEN 1 ELSE 0 END,
             CASE WHEN k.phase = 'complete' THEN 1 ELSE 0 END
-        FROM (
-            SELECT b.id, b.projectId, b.createdAt, b.updatedAt, b.isExecuting,
-                   b.hasQueuedPrompts, b.isPinned, b.phase, b.lastMessageAt, b.lastReadAt,
-                   \(groupKeyCase) AS groupKey
-            FROM sessions b
-            WHERE \(visible("b")) AND \(restriction)
-        ) k
+        FROM keyed k
         """
     }
 
@@ -310,7 +276,7 @@ enum SessionListProjection {
     /// reports across all members. Mirrors `computeAggregatedStatus` at each call site.
     private static func statusExpr(_ column: String) -> String {
         """
-        CASE WHEN groupKind = 'ws' AND SUM(isDisplayChild) > 0
+        CASE WHEN groupKind = 'ws' AND MAX(isWorkstreamParent) = 1 AND SUM(isDisplayChild) > 0
              THEN COALESCE(MAX(CASE WHEN isDisplayChild = 1 THEN \(column) END), 0)
              ELSE COALESCE(MAX(\(column)), 0) END
         """
@@ -327,7 +293,8 @@ enum SessionListProjection {
             WHEN groupKind = 's' THEN COALESCE(MAX(\(column)), 0)
             WHEN groupKind = 'wt' THEN CASE WHEN COUNT(*) > 1
                 THEN COALESCE(MAX(CASE WHEN isDisplayChild = 1 THEN \(column) END), 0) ELSE 0 END
-            ELSE COALESCE(MAX(CASE WHEN isDisplayChild = 1 THEN \(column) END), 0)
+            WHEN MAX(isWorkstreamParent) = 1 THEN COALESCE(MAX(CASE WHEN isDisplayChild = 1 THEN \(column) END), 0)
+            ELSE COALESCE(MAX(\(column)), 0)
         END
         """
     }
@@ -553,34 +520,17 @@ enum SessionListProjection {
         after cursor: SessionListChildCursor?,
         limit: Int
     ) throws -> SessionListChildPage {
-        var predicates = [
-            "m.projectId = :projectId",
-            "m.groupKey = :groupKey",
-            "(m.groupKind = 'wt' OR m.sessionId <> m.anchorId)"
-        ]
-        var arguments: [String: (any DatabaseValueConvertible)?] = [
-            "projectId": filter.projectId, "groupKey": groupKey, "limit": limit + 1
-        ]
-        if let cursor {
-            predicates.append("(m.updatedAt < :cursorUpdatedAt OR (m.updatedAt = :cursorUpdatedAt AND m.sessionId < :cursorId))")
-            arguments["cursorUpdatedAt"] = cursor.updatedAt
-            arguments["cursorId"] = cursor.id
-        }
-        let rows = try Row.fetchAll(db, sql: """
+        let sql = SessionTreeSQL.childrenQuery(prefix: "", members: """
             SELECT \(SessionListRow.selectList(alias: "s"))
-            FROM sessionListGroupMembers m
-            JOIN sessions s ON s.id = m.sessionId
-            WHERE \(predicates.joined(separator: " AND "))
-            ORDER BY m.updatedAt DESC, m.sessionId DESC
-            LIMIT :limit
-            """, arguments: StatementArguments(arguments)).map { SessionListRow(row: $0) }
-        let page = Array(rows.prefix(limit))
-        return SessionListChildPage(
-            rows: page,
-            nextCursor: rows.count > limit
-                ? page.last.map { SessionListChildCursor(updatedAt: $0.updatedAt, id: $0.id) }
-                : nil
-        )
+            FROM sessionListGroupMembers m JOIN sessions s ON s.id = m.sessionId
+            WHERE m.projectId = :projectId AND m.groupKey = :groupKey
+              AND (m.groupKind = 'wt' OR m.sessionId <> m.anchorId)
+            """)
+        let rows = try Row.fetchAll(db, sql: sql, arguments: [
+            "projectId": filter.projectId, "groupKey": groupKey,
+            "limit": limit + 1, "afterTreeOrder": cursor?.treeOrder
+        ]).map { SessionListRow(row: $0) }
+        return SessionTreeSQL.childPage(rows, limit: limit)
     }
 
     static func memberIds(_ db: Database, projectId: String, groupKey: String) throws -> [String] {

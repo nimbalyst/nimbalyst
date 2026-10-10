@@ -33,8 +33,8 @@ When prompting agents in RTL languages (Persian, Arabic, Hebrew, etc.), response
 
 ```bash
 cd packages/extensions/rtl-support
-npm install
-npm run build
+pnpm install
+pnpm run build
 ```
 
 Then copy the folder to the user extensions directory:
@@ -79,8 +79,8 @@ Tested on live Nimbalyst: 93 RTL blocks, 88 table cells, 4 tables processed corr
 ## Development
 
 ```bash
-npm run build      # build
-npm run typecheck  # type-check
+pnpm run build      # build
+pnpm run typecheck  # type-check
 # for fast iteration, use the extension_reload MCP tool:
 # extension_reload(extensionId, path)
 ```

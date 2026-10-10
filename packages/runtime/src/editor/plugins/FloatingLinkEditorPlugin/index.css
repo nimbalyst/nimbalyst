@@ -1,41 +1,138 @@
 .link-editor {
-  display: flex;
-  position: absolute;
-  top: 0;
-  left: 0;
-  z-index: 10;
-  max-width: 400px;
-  width: 100%;
-  opacity: 0;
+  z-index: 50;
+  max-width: min(440px, calc(100vw - 16px));
+  padding: 4px 10px 4px 4px;
   background-color: var(--nim-bg-secondary);
-  box-shadow: 0 5px 10px rgba(0, 0, 0, 0.3);
-  border-radius: 0 0 8px 8px;
-  transition: opacity 0.5s;
-  will-change: transform;
+  border: 1px solid var(--nim-border);
+  border-radius: 10px;
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.25);
+  color: var(--nim-text);
+  font-size: 13px;
+  line-height: 1.4;
 }
 
-.link-editor .button {
-  width: 20px;
-  height: 20px;
-  display: inline-block;
-  padding: 6px;
-  border-radius: 8px;
+.link-editor.link-editor-form {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 340px;
+  padding: 10px;
+}
+
+.link-editor .link-view {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.link-editor .link-view-divider {
+  flex-shrink: 0;
+  width: 1px;
+  height: 16px;
+  margin: 0 4px;
+  background-color: var(--nim-border);
+}
+
+.link-editor .link-view-icon {
+  flex-shrink: 0;
+  color: var(--nim-text-muted);
+}
+
+.link-editor .link-view-url {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  color: var(--nim-text-muted);
+  text-decoration: none;
+}
+
+.link-editor .link-view-url:hover {
+  color: var(--nim-text);
+  text-decoration: underline;
+}
+
+.link-editor .link-editor-icon-button,
+.link-editor .link-editor-text-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  flex-shrink: 0;
+  height: 26px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--nim-text-muted);
   cursor: pointer;
-  margin: 0 2px;
+  font: inherit;
 }
 
-.link-editor .button.hovered {
-  width: 20px;
-  height: 20px;
-  display: inline-block;
+.link-editor .link-editor-icon-button {
+  width: 26px;
+}
+
+.link-editor .link-editor-text-button {
+  padding: 0 8px;
+  color: var(--nim-text);
+}
+
+.link-editor .link-editor-icon-button:hover,
+.link-editor .link-editor-text-button:hover {
   background-color: var(--nim-bg-hover);
+  color: var(--nim-text);
 }
 
-.link-editor .button i,
-.actions i {
-  background-size: contain;
-  display: inline-block;
-  height: 20px;
-  width: 20px;
-  vertical-align: -0.25em;
+.link-editor .link-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.link-editor .link-field-label {
+  flex-shrink: 0;
+  width: 32px;
+  color: var(--nim-text-muted);
+}
+
+.link-editor .link-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 28px;
+  padding: 0 8px;
+  border: 1px solid var(--nim-border);
+  border-radius: 6px;
+  outline: 0;
+  background-color: var(--nim-bg);
+  color: var(--nim-text);
+  font: inherit;
+}
+
+.link-editor .link-input:focus {
+  border-color: var(--nim-border-focus);
+}
+
+.link-editor .link-form-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-top: 2px;
+}
+
+.link-editor .link-remove {
+  margin-left: -8px;
+  color: var(--nim-text-muted);
+}
+
+.link-editor .link-save {
+  margin-left: auto;
+  background-color: var(--nim-primary);
+  color: var(--nim-on-primary);
+}
+
+.link-editor .link-save:hover {
+  background-color: var(--nim-primary-hover);
+  color: var(--nim-on-primary);
 }

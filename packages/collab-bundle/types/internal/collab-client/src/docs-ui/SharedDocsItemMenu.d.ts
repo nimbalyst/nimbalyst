@@ -5,9 +5,10 @@
  * folders existed. A host that shows the list without the tree -- the browser
  * console, where folders are rows -- had no way to rename, move or trash
  * anything, so the actions live here too, against the same session calls and
- * the same name-collision rules the tree applies. The dual-write of a
- * document's path into its title is deliberate and matches the tree: clients
- * that predate first-class folders still build their tree from the title.
+ * the same name-collision rules the tree applies. A document stores its bare
+ * name (no folder path, no ".md" on a page); where it sits is its parent.
+ * Names compare as they show, so an older "Folder/Child.md" and a new "Child"
+ * under the same parent collide.
  */
 import React from 'react';
 import { type SharedDocument, type SharedFolder } from '../docs/index';

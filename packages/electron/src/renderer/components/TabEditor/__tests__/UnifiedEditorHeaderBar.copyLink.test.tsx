@@ -127,8 +127,11 @@ const lexicalEditor = {
 
 describe('UnifiedEditorHeaderBar shared document link', () => {
   it.each([true, false])('opens the document’s own project in the browser (markdown: %s)', async (isMarkdown) => {
+    // openExternal routes console links back into the app (reopening this
+    // doc), so the action must use the browser-only path.
     const openExternal = vi.fn().mockResolvedValue(undefined);
-    vi.stubGlobal('electronAPI', { openExternal });
+    const openInBrowser = vi.fn().mockResolvedValue(undefined);
+    vi.stubGlobal('electronAPI', { openExternal, openInBrowser });
     render(
       <UnifiedEditorHeaderBar
         filePath="collab://org:team%20one:doc:doc/one"
@@ -144,9 +147,10 @@ describe('UnifiedEditorHeaderBar shared document link', () => {
     );
     fireEvent.click(screen.getByTitle('More actions'));
     fireEvent.click(screen.getByRole('button', { name: 'Open in browser' }));
-    await waitFor(() => expect(openExternal).toHaveBeenCalledWith(
+    await waitFor(() => expect(openInBrowser).toHaveBeenCalledWith(
       'https://console.nimbalyst.com/org/team%20one/project/project%2Fone/document/doc%2Fone',
     ));
+    expect(openExternal).not.toHaveBeenCalled();
     expect(screen.queryByRole('button', { name: 'Open in browser' })).toBeNull();
   });
 

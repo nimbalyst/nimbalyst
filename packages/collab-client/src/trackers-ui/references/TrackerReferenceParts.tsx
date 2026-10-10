@@ -94,7 +94,11 @@ export function LiveChip({ resolver, referenceKey }: ResolverProps): JSX.Element
       {...openHandlers(resolver, item.id)}
     >
       <TypeIcon typeInfo={typeInfo} />
-      <span className="tracker-reference-live-chip-key">{displayKey(item, referenceKey)}</span>
+      {/* The name carries the weight. A type without a key prefix would show
+          its raw item id here, so the key is left to the tooltip. */}
+      {item.issueKey || !item.title ? (
+        <span className="tracker-reference-live-chip-key">{displayKey(item, referenceKey)}</span>
+      ) : null}
       {item.title ? <span className="tracker-reference-live-chip-title">{item.title}</span> : null}
       {status ? (
         <span

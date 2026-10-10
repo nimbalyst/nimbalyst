@@ -10,12 +10,8 @@
 import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useAtomValue, useSetAtom } from 'jotai';
 import { NimbalystEditor, MaterialSymbol, ProviderIcon } from '@nimbalyst/runtime';
-import type { EditorConfig } from '@nimbalyst/runtime/editor';
-import { $convertFromEnhancedMarkdownString, getEditorTransformers } from '@nimbalyst/runtime/editor';
-import { $getRoot, $setSelection, type LexicalEditor } from 'lexical';
 import { TrackerSavedDescription } from './TrackerSavedDescription';
 import { TrackerCreationPublication } from '../TrackerQuickCreate/TrackerCreationPublication';
-import * as Y from 'yjs';
 import type { TrackerRecord } from '@nimbalyst/runtime/core/TrackerRecord';
 import {
   copyTextToClipboard,
@@ -25,47 +21,51 @@ import {
   TrackerSwatchBadge,
   TYPE_COLORS,
 } from '@nimbalyst/collab-client/trackers-ui';
-import { isFileBackedRecord, isNativeItem, resolveTrackerContentMode } from './trackerContentMode';
+import { isFileBackedRecord, isNativeItem } from './trackerContentMode';
 import { globalRegistry } from '@nimbalyst/runtime/plugins/TrackerPlugin/models';
+import { TrackerReferenceSourceProvider } from '@nimbalyst/runtime/plugins/TrackerLinkPlugin';
 import type { FieldDefinition } from '@nimbalyst/tracker-schema';
-import { getRecordTitle, getRecordStatus, getRecordPriority, getRecordField, isItemPublished as recordIsPublished, getItemPublicationState, type TrackerItemPublicationState } from '@nimbalyst/runtime/plugins/TrackerPlugin/trackerRecordAccessors';
+import { getRecordTitle, getRecordStatus, getRecordPriority, getRecordField, getItemPublicationState, type TrackerItemPublicationState } from '@nimbalyst/runtime/plugins/TrackerPlugin/trackerRecordAccessors';
 import { TrackerPublicationChip } from '@nimbalyst/runtime/plugins/TrackerPlugin/components/TrackerPublicationChip';
 import { resolveTrackerWriteAccess, TRACKER_LOCAL_ISSUE_KEY_MESSAGE, TRACKER_UNASSIGNED_ISSUE_KEY_MESSAGE } from '@nimbalyst/runtime/plugins/TrackerPlugin/models/trackerLifecycle';
 import { isLocalIssueKey } from '../../../shared/localIssueKey';
-import { TrackerFieldEditor, type TeamMemberOption } from '@nimbalyst/runtime/plugins/TrackerPlugin/components/TrackerFieldEditor';
+import { TrackerFieldEditor } from '@nimbalyst/runtime/plugins/TrackerPlugin/components/TrackerFieldEditor';
 import { TrackerFieldPills } from '@nimbalyst/runtime/plugins/TrackerPlugin/components/TrackerFieldPills';
 import { getTrackerTagsField, useTrackerChipFieldSections } from '@nimbalyst/runtime/plugins/TrackerPlugin/components/trackerChipFields';
 import { isTrackerFieldEmpty } from '@nimbalyst/runtime/plugins/TrackerPlugin/components/trackerFieldLayout';
 import { useTrackerRelationshipCandidates } from '@nimbalyst/runtime/plugins/TrackerPlugin/components/useTrackerRelationshipCandidates';
 import { useTrackerCitationHost } from './useTrackerCitationHost';
 import { UserAvatar } from '@nimbalyst/runtime/plugins/TrackerPlugin/components/UserAvatar';
-import { trackerItemByIdAtom, trackerItemsMapAtom, trackerDataLoadedAtom } from '@nimbalyst/runtime/plugins/TrackerPlugin/trackerDataAtoms';
-import { resolveRelationshipType } from '@nimbalyst/runtime/plugins/TrackerPlugin/models';
+import { trackerItemByIdAtom, trackerDataLoadedAtom } from '@nimbalyst/runtime/plugins/TrackerPlugin/trackerDataAtoms';
 import { refreshSessionListAtom, sessionRegistryAtom, type SessionMeta } from '../../store/atoms/sessions';
 import { resolveLinkedSessions } from '../../utils/resolveLinkedSessions';
 import { prRemoteAtom, navigateToPullRequest } from '../../store/atoms/pullRequests';
 import { getRecordPrReferences } from '@nimbalyst/runtime/plugins/TrackerPlugin/prReferences';
 import { buildTrackerDeepLink } from '../../store/atoms/collabDocuments';
+import { requestConfirmation } from '../../dialogs/requestConfirmation';
 import { errorNotificationService } from '../../services/ErrorNotificationService';
 import { getRelativeTimeString } from '../../utils/dateFormatting';
-import { trackerContentCollabKey, useTrackerContentCollab } from '../../hooks/useTrackerContentCollab';
-import { useColdPaintFallback } from '../../hooks/useColdPaintFallback';
-import { useCollabSyncCurtain } from '../../hooks/useCollabSyncCurtain';
+import { useTrackerItemBody, useTrackerTeam, type TrackerContentMode } from './useTrackerItemBody';
+import { useTrackerItemFields } from './useTrackerItemFields';
 import { useMarkTrackerViewed } from '../../hooks/useTrackerUnread';
 import { useRecordTrackerOpened } from '../../hooks/useRecordTrackerOpened';
-import { reconcileExternalFieldChanges } from './trackerDetailFieldSync';
 import { sanitizeTitleInput, useAutoSizedTitle } from './trackerTitleAutoSize';
 import { TrackerCommentsSection } from './TrackerCommentsSection';
+import { TrackerLinksSection } from './TrackerLinksSection';
 import { resolveTrackerContentFocus } from './trackerContentFocus';
 import { TrackerCollabAvatars, TrackerCollabSyncDot } from './trackerCollabChrome';
 import { formatTrackerActivity } from './trackerActivityPresentation';
 import { createCollectionItem } from './createCollectionItem';
 import { TabEditor } from '../TabEditor/TabEditor';
 import { FeedbackBacklinkSection } from '../FeedbackRequest/FeedbackBacklinks';
+import { TypeTagsEditor } from './TrackerTypeTagsEditor';
+import { TrackerLabelPropertiesSection } from '@nimbalyst/runtime/plugins/TrackerPlugin/components/TrackerLabelPropertiesSection';
+import { unwrapLabelFieldValues, useTrackerLabelFields, wrapLabelFieldValue } from '@nimbalyst/runtime/plugins/TrackerPlugin/components/trackerLabelFields';
 import {
   collabAwarenessAtom,
   collabProductStatusAtom,
 } from '../../store/atoms/collabEditor';
+import { isLocalWikiRecord } from '../../services/localWikiTrackerRecords';
 import './TrackerItemDetail.css';
 
 interface TrackerItemDetailProps {
@@ -114,8 +114,7 @@ interface TrackerItemDetailProps {
   onBodyEditorReady?: (editor: unknown | null) => void;
 }
 
-/** How this item's body is edited -- see the `contentMode` memo below. */
-export type TrackerContentMode = 'file-backed' | 'local-pglite' | 'collaborative';
+export type { TrackerContentMode };
 
 function getTypeIcon(type: string): string {
   const icons: Record<string, string> = {
@@ -144,7 +143,8 @@ function formatTimestamp(value: string | Date | number | undefined): string {
 
 /** Whether this record's metadata fields are editable */
 function isEditable(record: TrackerRecord): boolean {
-  return isNativeItem(record) || record.source === 'frontmatter' || record.source === 'import' || record.source === 'inline';
+  return isNativeItem(record) || record.source === 'frontmatter' || record.source === 'import' || record.source === 'inline'
+    || isLocalWikiRecord(record);
 }
 
 /** Source label for the metadata footer */
@@ -153,73 +153,9 @@ function getSourceLabel(record: TrackerRecord): string | null {
   if (record.source === 'inline') return `Inline marker${record.sourceRef ? ` in ${record.sourceRef}` : ''}`;
   if (record.source === 'frontmatter') return `Frontmatter${record.sourceRef ? ` in ${record.sourceRef}` : ''}`;
   if (record.source === 'import') return `Imported${record.sourceRef ? ` from ${record.sourceRef}` : ''}`;
+  if (isLocalWikiRecord(record)) return record.system.documentPath ? 'Local wiki page' : 'Local wiki table row';
   return null;
 }
-
-/** Inline editor for adding/removing secondary type tags */
-const TypeTagsEditor: React.FC<{
-  typeTags: string[];
-  primaryType: string;
-  onUpdate: (tags: string[]) => void;
-}> = ({ typeTags, primaryType, onUpdate }) => {
-  const [isOpen, setIsOpen] = useState(false);
-  const allModels = globalRegistry.getListed().filter(m => m.primaryCapable !== false && m.creatable !== false);
-  const secondaryTags = typeTags.filter(t => t !== primaryType);
-  const availableTypes = allModels.filter(m => m.type !== primaryType && !typeTags.includes(m.type));
-
-  return (
-    <div className="space-y-1">
-      <div className="flex items-center gap-2">
-        <span className="text-[10px] text-nim-faint font-medium uppercase tracking-wider">Type Tags</span>
-        <button
-          className="text-[10px] text-nim-muted hover:text-nim px-1 py-0.5 rounded hover:bg-nim-tertiary"
-          onClick={() => setIsOpen(!isOpen)}
-        >
-          {isOpen ? 'Done' : '+ Add'}
-        </button>
-      </div>
-      {secondaryTags.length > 0 && (
-        <div className="flex flex-wrap gap-1">
-          {secondaryTags.map(tag => {
-            const tagModel = globalRegistry.get(tag);
-            const tagColor = TYPE_COLORS[tag] || NEUTRAL_SWATCH;
-            return (
-              <span
-                key={tag}
-                className="inline-flex items-center gap-1 text-[10px] font-medium px-1.5 py-0.5 rounded cursor-pointer group"
-                style={{ color: tagColor, backgroundColor: `${tagColor}15`, border: `1px solid ${tagColor}30` }}
-                onClick={() => onUpdate(typeTags.filter(t => t !== tag))}
-                title={`Remove ${tagModel?.displayName || tag} tag`}
-              >
-                {tagModel?.displayName || tag}
-                <span className="opacity-0 group-hover:opacity-100 text-[9px]">&times;</span>
-              </span>
-            );
-          })}
-        </div>
-      )}
-      {isOpen && availableTypes.length > 0 && (
-        <div className="flex flex-wrap gap-1 pt-1">
-          {availableTypes.map(m => {
-            const tagColor = TYPE_COLORS[m.type] || NEUTRAL_SWATCH;
-            return (
-              <button
-                key={m.type}
-                className="text-[10px] font-medium px-1.5 py-0.5 rounded hover:opacity-80"
-                style={{ color: tagColor, backgroundColor: `${tagColor}10`, border: `1px dashed ${tagColor}40` }}
-                onClick={() => {
-                  onUpdate([...typeTags, m.type]);
-                }}
-              >
-                + {m.displayName}
-              </button>
-            );
-          })}
-        </div>
-      )}
-    </div>
-  );
-};
 
 export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
   itemId,
@@ -245,6 +181,7 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
   // NimbalystEditor key), so the Y.Doc/provider is preserved. Controlled by the
   // host (persisted per tab) when props are supplied; otherwise local state.
   const [internalContentFocus, setInternalContentFocus] = useState(false);
+  const [linksRevision, setLinksRevision] = useState(0);
   const contentFocus = controlledContentFocus ?? internalContentFocus;
   const setContentFocus = useCallback(
     (next: boolean) => {
@@ -263,25 +200,18 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
   const refreshSessionList = useSetAtom(refreshSessionListAtom);
 
   const model = useMemo(() => globalRegistry.get(item?.primaryType ?? ''), [item?.primaryType]);
+  const referenceSource = useMemo(
+    () => (item ? { itemId: item.id, type: item.primaryType } : null),
+    [item?.id, item?.primaryType],
+  );
 
   // Mark this item read while it is open (debounced; refires when a newer
   // version arrives). Clears its unread dot in the list/board views.
   useMarkTrackerViewed(item, workspacePath);
   useRecordTrackerOpened(item?.id, workspacePath);
 
-  // Detect whether this workspace has a team. The team check feeds the
-  // content editor mode (collab vs local); the member list feeds the
-  // assignee picker. NIM-638: these are split into two effects so a slow
-  // or hung `team:list-members` doesn't strand `teamOrgId === undefined`
-  // and keep the collab editor stuck on "Connecting..." forever -- the
-  // editor only needs the orgId, not the members.
-  //
-  // Tri-state `teamOrgId`:
-  //   undefined -- team lookup pending
-  //   null      -- confirmed no team for this workspace
-  //   string    -- orgId resolved
-  const [teamOrgId, setTeamOrgId] = useState<string | null | undefined>(undefined);
-  const [teamMembers, setTeamMembers] = useState<TeamMemberOption[]>([]);
+  // Team lookup (orgId for the body mode and the copy link; members for people chips).
+  const { teamOrgId, teamMembers } = useTrackerTeam(workspacePath);
 
   const handleCopyLink = useCallback(async () => {
     if (!item || !teamOrgId) return;
@@ -302,66 +232,6 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
     }
   }, [item, teamOrgId]);
 
-  useEffect(() => {
-    if (!workspacePath) {
-      setTeamOrgId(null);
-      setTeamMembers([]);
-      return;
-    }
-    let cancelled = false;
-    setTeamOrgId(undefined);
-    setTeamMembers([]);
-    (async () => {
-      try {
-        // NIM-638: bound the team lookup with a client-side timeout. Without it,
-        // a hung `team:find-for-workspace` IPC leaves teamOrgId === undefined
-        // (pending) forever, so the content editor stays stuck on "Connecting...".
-        // On timeout, degrade to local mode (null) -- the body still paints from
-        // the cold cache instead of spinning indefinitely.
-        const TEAM_LOOKUP_TIMEOUT_MS = 12_000;
-        const teamResult = await Promise.race([
-          window.electronAPI.invoke('team:find-for-workspace', workspacePath),
-          new Promise<never>((_, reject) =>
-            setTimeout(() => reject(new Error('team:find-for-workspace timed out')), TEAM_LOOKUP_TIMEOUT_MS),
-          ),
-        ]);
-        if (cancelled) return;
-        const orgId: string | null = teamResult?.success && teamResult.team?.orgId
-          ? teamResult.team.orgId
-          : null;
-        setTeamOrgId(orgId);
-      } catch {
-        if (!cancelled) setTeamOrgId(null);
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [workspacePath]);
-  // Members load on a separate effect keyed on the resolved orgId so a
-  // slow members call cannot block the editor. The list-members IPC has
-  // its own server-side timeout (see fetchTeamApi); on failure the
-  // assignee picker degrades to an empty list, which is fine.
-  useEffect(() => {
-    if (typeof teamOrgId !== 'string') {
-      setTeamMembers([]);
-      return;
-    }
-    let cancelled = false;
-    (async () => {
-      try {
-        const membersResult = await window.electronAPI.invoke('team:list-members', teamOrgId);
-        if (cancelled) return;
-        const members: TeamMemberOption[] = membersResult?.success && membersResult.members
-          ? membersResult.members
-              .filter((m: any) => m.email)
-              .map((m: any) => ({ email: m.email, name: m.name || undefined }))
-          : [];
-        setTeamMembers(members);
-      } catch {
-        if (!cancelled) setTeamMembers([]);
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [teamOrgId]);
   const typeColor = TYPE_COLORS[item?.primaryType ?? ''] || NEUTRAL_SWATCH;
   const icon = model?.icon || getTypeIcon(item?.primaryType ?? '');
 
@@ -470,19 +340,6 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
       .slice(0, 8);
   }, [availableSessions, sessionSearchQuery]);
 
-  // Local state for text fields (debounced save)
-  const [localTitle, setLocalTitle] = useState(item ? getRecordTitle(item) : '');
-  // Title is a textarea so long titles wrap; it grows with its content (NIM-1615).
-  const titleRef = useAutoSizedTitle(localTitle);
-  const [localCustomFields, setLocalCustomFields] = useState<Record<string, any>>({});
-  // Per-field debounce timers (not one shared timer) so editing one field never
-  // drops another field's pending save, and so reconciliation can tell which
-  // fields are mid-edit. `pendingFieldsRef` holds fields with an unflushed save;
-  // `externalFieldBaselineRef` is the last-reconciled snapshot of persisted
-  // values used to detect external writes (NIM-790).
-  const fieldSaveTimersRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
-  const pendingFieldsRef = useRef<Set<string>>(new Set());
-  const externalFieldBaselineRef = useRef<Record<string, unknown>>({});
   // An archived tracker's items stay fully readable here -- everything below
   // renders as usual -- but every write affordance is withdrawn.
   const writeAccess = useMemo(
@@ -490,151 +347,55 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
     [item?.primaryType],
   );
   const editable = item ? isEditable(item) && writeAccess.canWrite : false;
-  const hasRichContent = item ? isNativeItem(item) : false; // Only native items have embedded Lexical content
+  // The body: how it is edited, its load/save path and its editor configs.
+  const {
+    sharing,
+    isItemPublished,
+    contentMode,
+    hasRichContent,
+    contentMarkdown,
+    contentLoaded,
+    externalContentEpoch,
+    collabLoading,
+    collabStatus,
+    providerEpoch,
+    hasSyncedOnce,
+    recoveryEditor,
+    localEditorConfig,
+    collabEditorConfig,
+  } = useTrackerItemBody({
+    itemId,
+    item,
+    workspacePath,
+    teamOrgId,
+    forceFloatingToolbar: enableContentFocus && contentFocus,
+    onBodyEditorReady,
+    onContentSaved: () => setLinksRevision((r) => r + 1),
+  });
 
-  // Rich content editor state
-  const [contentMarkdown, setContentMarkdown] = useState<string | null>(null);
-  const [contentLoaded, setContentLoaded] = useState(false);
-  // Bumped when an external writer (MCP, sync) changes the body content
-  // out from under us, so the Lexical editor remounts with the new value.
-  // Lexical only consumes `initialContent` at mount, so a key change is
-  // the only way to surface fresh content without an in-place editor API.
-  const [externalContentEpoch, setExternalContentEpoch] = useState(0);
-  const getContentFnRef = useRef<(() => string) | null>(null);
-  const contentSaveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const contentSaveInFlightRef = useRef(false);
-  // Baseline of what was last persisted to PGLite for THIS item. Used as a
-  // safety rail: if the collab editor mounts empty (e.g., because Lexical's
-  // `main` binding is empty while the server Y.Doc only has legacy bytes
-  // under `root`), onDirtyChange would otherwise save "" and clobber the
-  // real content in PGLite. We refuse any save that would shrink a
-  // known-non-empty baseline to empty.
-  // Also acts as the comparator for detecting external content updates --
-  // if the atom's content diverges from this baseline, the change came
-  // from somewhere other than this panel's own save path.
-  const loadedBaselineRef = useRef<string | null>(null);
+  const {
+    localTitle,
+    storedValues,
+    handleTextFieldChange,
+    handleFieldChange,
+    getFieldValue,
+  } = useTrackerItemFields({
+    itemId,
+    item,
+    editable,
+    sharing,
+    onRelationshipsReindexed: () => setLinksRevision((r) => r + 1),
+  });
+  // Title is a textarea so long titles wrap; it grows with its content (NIM-1615).
+  const titleRef = useAutoSizedTitle(localTitle);
 
-  // Reset local editing state when navigating to a different item.
-  // We don't sync on item data changes (saves) to avoid clobbering in-progress text.
-  // TrackerItemDetail subscribes to trackerItemByIdAtom(itemId) directly, so it only
-  // re-renders when its own item changes -- no prop-drilling churn from parent re-renders.
+  // Reset the session linker when navigating to a different item.
   useEffect(() => {
-    if (!item) return;
-    setLocalTitle(getRecordTitle(item));
-    setLocalCustomFields({});
-    // Clear any stale per-field debounce timers from the previous item and seed
-    // the reconciliation baseline with the new item's persisted fields.
-    for (const timer of fieldSaveTimersRef.current.values()) clearTimeout(timer);
-    fieldSaveTimersRef.current.clear();
-    pendingFieldsRef.current.clear();
-    externalFieldBaselineRef.current = { ...item.fields };
     setIsLinkingExistingSession(false);
     setSessionSearchQuery('');
     setLinkingSessionId(null);
     setLinkSessionError(null);
   }, [itemId]); // itemId only -- not item fields
-
-  // Reconcile in-progress field overrides against external writes (MCP, sync,
-  // another window). When a field the user is NOT actively editing changes
-  // underneath us, drop the stale local override so the panel shows -- and
-  // saves -- the fresh value instead of clobbering it (NIM-790).
-  const itemFields = item?.fields;
-  useEffect(() => {
-    if (!itemFields) return;
-    const baseline = externalFieldBaselineRef.current;
-    externalFieldBaselineRef.current = { ...itemFields };
-    setLocalCustomFields((prev) => {
-      const overriddenFields = Object.keys(prev);
-      if (overriddenFields.length === 0) return prev;
-      const { clearedFields } = reconcileExternalFieldChanges({
-        previousPersisted: baseline,
-        currentPersisted: itemFields,
-        overriddenFields,
-        pendingFields: pendingFieldsRef.current,
-      });
-      if (clearedFields.length === 0) return prev;
-      const next = { ...prev };
-      for (const f of clearedFields) delete next[f];
-      return next;
-    });
-  }, [itemFields]);
-
-  // Load rich content from PGLite once when navigating to a new item.
-  // After initial load, the Lexical editor owns the content and saves via debounced saveContent.
-  // We intentionally do NOT re-fetch on updatedAt changes -- our own saves update updatedAt,
-  // and refetching would destroy/remount the editor, causing text to vanish mid-typing.
-  useEffect(() => {
-    if (!hasRichContent) {
-      setContentLoaded(true);
-      return;
-    }
-
-    let cancelled = false;
-    setContentLoaded(false);
-    setContentMarkdown(null);
-    loadedBaselineRef.current = null;
-    getContentFnRef.current = null;
-
-    window.electronAPI.documentService.getTrackerItemContent({ itemId: item!.id })
-      .then((result) => {
-        if (cancelled) return;
-        if (result.success && result.content != null) {
-          const markdown = typeof result.content === 'string'
-            ? result.content
-            : result.content?.markdown ?? '';
-          setContentMarkdown(markdown);
-          loadedBaselineRef.current = markdown;
-        } else {
-          setContentMarkdown('');
-          loadedBaselineRef.current = '';
-        }
-        setContentLoaded(true);
-      })
-      .catch((err) => {
-        if (cancelled) return;
-        console.error('[TrackerItemDetail] Failed to load content:', err);
-        setContentMarkdown('');
-        setContentLoaded(true);
-      });
-
-    return () => { cancelled = true; };
-  }, [item?.id, hasRichContent]);
-
-  // External content update detection.
-  // The atom's `content` is refreshed by trackerSyncListeners whenever a
-  // tracker-items-changed event arrives -- including MCP writes, sync
-  // pushes, comment additions, and our own field saves. Our own content
-  // saves are recognized because saveContent advances the baseline before
-  // the IPC round-trip, so when the broadcast echo arrives the atom value
-  // already matches. Any other divergence means an external writer changed
-  // the body, and Lexical can only adopt that by remounting -- bump the
-  // epoch in the editor key so it picks up the fresh initialContent.
-  const atomContentString = useMemo<string | null>(() => {
-    if (!hasRichContent) return null;
-    const c = item?.content;
-    if (c == null) return null;
-    return typeof c === 'string' ? c : (c as any)?.markdown ?? null;
-  }, [item?.content, hasRichContent]);
-
-  useEffect(() => {
-    if (!hasRichContent) return;
-    if (atomContentString == null) return;
-    const baseline = loadedBaselineRef.current;
-    // Initial load hasn't completed yet -- the load effect owns this state
-    if (baseline === null) return;
-    if (atomContentString === baseline) return;
-    // Local typing wins over a racing external write. If this panel already
-    // has a pending or in-flight body save, remounting Lexical here would
-    // discard the user's unsaved characters. Let the local save finish and
-    // intentionally keep the editor on the locally-authored content.
-    if (contentSaveTimerRef.current || contentSaveInFlightRef.current) {
-      return;
-    }
-    // External update detected: refresh the editor.
-    loadedBaselineRef.current = atomContentString;
-    setContentMarkdown(atomContentString);
-    setExternalContentEpoch((e) => e + 1);
-  }, [atomContentString, hasRichContent]);
 
   // Escape to close
   useEffect(() => {
@@ -646,22 +407,6 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [onClose]);
-
-  const sharing = useMemo(() => {
-    const tracker = globalRegistry.get(item?.primaryType ?? '');
-    return tracker?.sharing ?? 'personal';
-  }, [item?.primaryType]);
-
-  // Whether THIS team-tracker item is published. The existing `share` flag
-  // carries Draft/Published (surfaced under customFields by rowToTrackerItem),
-  // while draftByDefault handles items without an explicit flag. Legacy items that
-  // were pushed to the room before the explicit flag existed (sync_status
-  // 'synced'/'pending') count as shared so they keep collaborating.
-  const isItemPublished = useMemo(() => {
-    if (!item) return false;
-    // Single source of truth shared with the tracker table's Publication column.
-    return recordIsPublished(item);
-  }, [item]);
 
   // Draft / Published / n-a, in the same words the table and the chip use.
   const publicationState = useMemo<TrackerItemPublicationState>(
@@ -675,11 +420,6 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
   const assignedIssueKey = useMemo(
     () => (item?.issueKey && !isLocalIssueKey(item.issueKey) ? item.issueKey : undefined),
     [item?.issueKey],
-  );
-
-  const contentMode = useMemo(
-    () => resolveTrackerContentMode({ item, sharing, isItemPublished, teamOrgId }),
-    [item, sharing, teamOrgId, isItemPublished],
   );
 
   const fileBackedDocumentPath = useMemo(() => {
@@ -739,6 +479,7 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
   const canToggleShare = Boolean(
     item &&
     editable &&
+    !isLocalWikiRecord(item) &&
     (isNativeItem(item) || item.source === 'frontmatter' || item.source === 'import') &&
     sharing === 'team' &&
     typeof teamOrgId === 'string'
@@ -785,256 +526,6 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
       setSharePending(false);
     }
   }, [item, isItemPublished, sharePending]);
-
-  // Collaborative content editing for team-synced items. Dormant unless the
-  // workspace actually has a team -- see useTrackerContentCollab for the
-  // teamOrgId tri-state contract.
-  const {
-    collaboration: collabConfig,
-    loading: collabLoading,
-    status: collabStatus,
-    syncProvider,
-    commentsConfig,
-    providerEpoch,
-    bodyCacheMarkdown,
-  } = useTrackerContentCollab({
-    itemId,
-    title: item?.issueKey || (item ? getRecordTitle(item) : itemId),
-    workspacePath,
-    sharing,
-    teamOrgId,
-    itemPublished: isItemPublished,
-  });
-
-  // Whether the collab provider has reached 'connected' for the CURRENT
-  // provider generation. We show a static loading indicator over the editor
-  // until then, because the editor may mount with an empty Y.Doc while the
-  // WebSocket sync is still in flight -- without this the user would see a
-  // blank editor and mistake it for "no content".
-  //
-  // NIM-1985: this must be epoch-aware, not two order-dependent effects.
-  // See useCollabSyncCurtain's doc comment for the warm-reopen inversion
-  // that left the curtain permanently covering a fully-painted body.
-  const hasSyncedOnce = useCollabSyncCurtain(collabStatus, providerEpoch);
-
-  // Defensive cold-paint fallback for shared `fullDocument` trackers.
-  //
-  // The happy path: `useTrackerContentCollab` provides `initialEditorState`
-  // built from `tracker_body_cache`, CollaborationPlugin's `_xmlText._length`
-  // check fires bootstrap, the seed runs, content renders.
-  //
-  // The seam this catches: in prod we have seen the WebSocket reach
-  // `connected` for a shared tracker, the `tracker_body_cache` row has
-  // valid body bytes, AND no `initialEditorState fn CALLED` log fires --
-  // the editor stays empty. The most likely cause is that
-  // `@lexical/yjs` considers the shared XmlText non-empty after the
-  // server-sync response is applied (the binding writes a root element
-  // even when the room has never been seeded with real content), so
-  // bootstrap is suppressed and the seed never gets a chance.
-  //
-  // See NIM-1589 and useColdPaintFallback's own doc comment: a single
-  // point-in-time "empty" read races the async Yjs->Lexical reconciliation
-  // on a large/slow-to-render doc, so this fires paint only after two
-  // spaced-apart empty reads, and at most once per provider lifecycle.
-  const collabEditorInstanceRef = useRef<any>(null);
-
-  // The host's document header bar needs the body editor for its TOC and
-  // editor-backed actions. Held in a ref so the editor configs (memos) don't
-  // re-create -- a new config identity remounts the editor and drops the
-  // Y.Doc binding -- and republished on unmount so a stale editor never
-  // outlives the item.
-  const [recoveryEditor, setRecoveryEditor] = useState<LexicalEditor | null>(null);
-  useEffect(() => setRecoveryEditor(null), [itemId]);
-  const bodyEditorReadyRef = useRef(onBodyEditorReady);
-  bodyEditorReadyRef.current = onBodyEditorReady;
-  useEffect(() => () => bodyEditorReadyRef.current?.(null), [itemId]);
-
-  useColdPaintFallback({
-    collabStatus,
-    bodyCacheMarkdown,
-    providerEpoch,
-    itemId,
-    isVisuallyEmpty: useCallback(() => {
-      // Authoritative check first: read the raw synced Y.Doc directly,
-      // bypassing Lexical's (possibly still-in-flight) reconciliation. By
-      // the time `collabStatus` reaches 'connected' the server's sync
-      // response has already been applied to the Y.Doc (see
-      // CollabLexicalProvider.handleStatusChange), so this is accurate
-      // immediately -- no render-lag race, unlike the Lexical text read
-      // below. A non-empty root here means the room genuinely has content,
-      // full stop; never paint over it regardless of what Lexical shows.
-      const ydoc = syncProvider?.getYDoc();
-      if (ydoc && ydoc.get('root', Y.XmlText).length > 0) return false;
-
-      const getContent = getContentFnRef.current;
-      if (!getContent) return false;
-      // The check must be `trim() === ''` -- a fresh Lexical doc renders
-      // as a single empty paragraph that serializes to '' after trim, so
-      // anything content-bearing returns a non-empty trimmed string.
-      return getContent().trim() === '';
-    }, [syncProvider]),
-    paint: useCallback(() => {
-      const editor = collabEditorInstanceRef.current;
-      if (!editor || !bodyCacheMarkdown) return;
-      console.warn(
-        '[TrackerItemDetail] Cold-paint fallback firing: editor is empty after sync(connected) but tracker_body_cache has bytes. Forcing paint.',
-        { itemId, mdLen: bodyCacheMarkdown.length, providerEpoch },
-      );
-      editor.update(() => {
-        // Clearing a selected node without moving selection first makes
-        // Lexical throw "selection has been lost ..." (NIM-2005).
-        $setSelection(null);
-        const root = $getRoot();
-        root.clear();
-        $convertFromEnhancedMarkdownString(bodyCacheMarkdown, getEditorTransformers());
-      });
-      // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [bodyCacheMarkdown, itemId, providerEpoch]),
-  });
-
-  /** Save a field update -- routes to file-based save for file-backed items, DB for native */
-  const saveField = useCallback(async (updates: Record<string, any>) => {
-    if (!editable || !item) return;
-    try {
-      if ((item.source === 'frontmatter' || item.source === 'import' || item.source === 'inline') && item.system.documentPath) {
-        // File-backed items with a real document path: update in source file
-        await window.electronAPI.documentService.updateTrackerItemInFile({
-          itemId: item.id,
-          updates,
-        });
-      } else {
-        // Native DB items, or file-backed items whose document_path is missing/empty
-        await window.electronAPI.documentService.updateTrackerItem({
-          itemId: item.id,
-          updates,
-          sharing,
-        });
-      }
-      // Refresh the derived relationship index for this item (Epic C Phase 2) so
-      // backlinks stay current after a relationship field edit. Fire-and-forget,
-      // idempotent; harmless for non-relationship field saves.
-      window.electronAPI
-        .invoke('document-service:tracker-item-reindex-relationships', { itemId: item.id })
-        .catch(() => {});
-    } catch (err) {
-      console.error('[TrackerItemDetail] Failed to save field:', err);
-    }
-  }, [item?.id, item?.source, editable, sharing]);
-
-  /** Debounced save for a single text field. Per-field timers + pending-field
-   *  tracking let the reconciliation effect distinguish "user is editing this
-   *  field" from "external write landed" (NIM-790). */
-  const debouncedSaveField = useCallback((fieldName: string, value: any) => {
-    pendingFieldsRef.current.add(fieldName);
-    const timers = fieldSaveTimersRef.current;
-    const existing = timers.get(fieldName);
-    if (existing) clearTimeout(existing);
-    timers.set(fieldName, setTimeout(async () => {
-      timers.delete(fieldName);
-      try {
-        await saveField({ [fieldName]: value });
-      } finally {
-        pendingFieldsRef.current.delete(fieldName);
-      }
-    }, 500));
-  }, [saveField]);
-
-  /** Debounced save for rich content.
-   *
-   * `guardEmpty` is a collab-mode safety rail: if the collaborative editor
-   * mounts before the Y.Doc has been populated from the server, its initial
-   * onDirtyChange may fire with an empty markdown and would otherwise
-   * clobber the user's PGLite content. When true, an empty save is only
-   * allowed if the baseline was already empty (i.e., new items or
-   * intentional clears in collab mode require the user to make a real edit
-   * after content has rendered). Local-only editing does not need this
-   * guard -- its initialContent is fed synchronously, so onDirtyChange
-   * only fires on real user edits. */
-  const saveContent = useCallback((markdown: string, guardEmpty = false) => {
-    if (guardEmpty) {
-      const baseline = loadedBaselineRef.current;
-      if (markdown.trim() === '' && baseline != null && baseline.trim() !== '') {
-        console.warn(
-          '[TrackerItemDetail] Skipping save: collab editor reported empty before server sync populated content.',
-          { itemId: item?.id, baselineLen: baseline.length }
-        );
-        return;
-      }
-    }
-    if (contentSaveTimerRef.current) clearTimeout(contentSaveTimerRef.current);
-    contentSaveTimerRef.current = setTimeout(async () => {
-      contentSaveTimerRef.current = null;
-      // Update the baseline before the IPC round-trip. The main-process
-      // updateTrackerItemContent path also broadcasts tracker-items-changed,
-      // which races with the invoke result -- if the broadcast arrives first
-      // and we haven't moved the baseline forward yet, the external-update
-      // detector below would mistake our own echo for a remote change and
-      // remount the editor mid-typing. On save failure the editor still
-      // owns the live value and the next dirty event will retry, so a
-      // briefly-optimistic baseline is safe.
-      loadedBaselineRef.current = markdown;
-      contentSaveInFlightRef.current = true;
-      try {
-        await window.electronAPI.documentService.updateTrackerItemContent({
-          itemId: item!.id,
-          content: markdown,
-        });
-      } catch (err) {
-        console.error('[TrackerItemDetail] Failed to save content:', err);
-      } finally {
-        contentSaveInFlightRef.current = false;
-      }
-    }, 800);
-  }, [item?.id]);
-
-  // Cleanup timers
-  useEffect(() => {
-    const timers = fieldSaveTimersRef.current;
-    return () => {
-      for (const timer of timers.values()) clearTimeout(timer);
-      timers.clear();
-      if (contentSaveTimerRef.current) clearTimeout(contentSaveTimerRef.current);
-    };
-  }, []);
-
-  // Flush pending content save when item changes or component unmounts
-  useEffect(() => {
-    const isCollabMode = contentMode === 'collaborative';
-    return () => {
-      if (contentSaveTimerRef.current && getContentFnRef.current) {
-        clearTimeout(contentSaveTimerRef.current);
-        const markdown = getContentFnRef.current();
-        if (isCollabMode) {
-          const baseline = loadedBaselineRef.current;
-          // Same collab-only data-loss guard as saveContent: don't let a
-          // mount-time empty editor state win the unmount race.
-          if (markdown.trim() === '' && baseline != null && baseline.trim() !== '') {
-            return;
-          }
-        }
-        // Fire-and-forget final save
-        window.electronAPI.documentService.updateTrackerItemContent({
-          itemId: item!.id,
-          content: markdown,
-        }).catch(() => {});
-      }
-    };
-  }, [item?.id, contentMode]);
-
-  /** Handle immediate field change (selects, checkboxes) */
-  const handleImmediateFieldChange = useCallback((fieldName: string, value: any) => {
-    saveField({ [fieldName]: value });
-  }, [saveField]);
-
-  /** Handle debounced text field change */
-  const handleTextFieldChange = useCallback((fieldName: string, value: any) => {
-    if (fieldName === 'title') {
-      setLocalTitle(value);
-    } else {
-      setLocalCustomFields(prev => ({ ...prev, [fieldName]: value }));
-    }
-    debouncedSaveField(fieldName, value);
-  }, [debouncedSaveField]);
 
   /** Open the source document in Files mode */
   const handleOpenDocument = useCallback(() => {
@@ -1087,20 +578,20 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
   );
 
   // The chip row and its leftovers come from the shared layout rules, so this
-  // pane shows the same fields in the same order as every other surface.
+  // pane shows the same fields in the same order as every other surface --
+  // including the properties the item's labels bring.
+  const labelLayout = useTrackerLabelFields(item?.primaryType ?? '', item?.fields);
   const { chipFields, overflowFields } = useTrackerChipFieldSections(
-    item?.primaryType ?? '',
-    tagsField ? [tagsField.name] : [],
+    item?.primaryType ?? '', tagsField ? [tagsField.name] : [], labelLayout.fields,
   );
 
   const relationshipCandidates = useTrackerRelationshipCandidates(item, chipFields);
   const citationHost = useTrackerCitationHost();
 
-  /** Field values with any in-progress local edit applied. */
-  const chipValues = useMemo(
-    () => ({ ...(item?.fields ?? {}), ...localCustomFields }),
-    [item?.fields, localCustomFields],
-  );
+  /** Field values with any in-progress local edit applied; chips edit qualified values bare. */
+  const chipValues = useMemo(() => unwrapLabelFieldValues(labelLayout.fields, storedValues), [labelLayout.fields, storedValues]);
+  const storedValuesRef = useRef(storedValues);
+  storedValuesRef.current = storedValues;
 
   /** Overflow fields that actually hold a value; empty ones add nothing. */
   const overflowValues = useMemo(
@@ -1110,32 +601,11 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
     [overflowFields, chipValues],
   );
 
-  /** Get field value -- use in-progress local state for text fields, atom for select/etc */
-  const getFieldValue = useCallback((fieldName: string): any => {
-    if (!item) return undefined;
-    // For text-like fields being edited, localCustomFields holds the in-progress value.
-    // handleTextFieldChange stores owner (and other string fields) in localCustomFields,
-    // so we must check it first to avoid resetting input on each keystroke.
-    if (fieldName in localCustomFields) return localCustomFields[fieldName];
-    // All fields are now in record.fields (schema-driven)
-    return item.fields[fieldName];
-  }, [item, localCustomFields]);
-
-  /** Determine whether a field change should be immediate or debounced */
-  const handleFieldChange = useCallback((field: FieldDefinition, value: any) => {
-    const isTextLike = field.type === 'string' || field.type === 'text' || field.type === 'user';
-    if (isTextLike) {
-      handleTextFieldChange(field.name, value);
-    } else {
-      handleImmediateFieldChange(field.name, value);
-    }
-  }, [handleTextFieldChange, handleImmediateFieldChange]);
-
   /** Persist one chip edit through the ordinary field save path. */
   const handleChipSave = useCallback((fieldName: string, value: unknown) => {
     const field = chipFields.find((candidate) => candidate.name === fieldName);
     if (!field) return;
-    handleFieldChange(field, value);
+    handleFieldChange(field, wrapLabelFieldValue(field, value, storedValuesRef.current[fieldName]));
   }, [chipFields, handleFieldChange]);
 
   const handleCreateCollection = useCallback((title: string, type: string) => {
@@ -1150,92 +620,6 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
     contentFocus,
     contentMode,
   });
-
-  /** Editor config for local PGLite mode (non-team native items only) */
-  const localEditorConfig = useMemo((): EditorConfig | null => {
-    if (contentMode !== 'local-pglite' || !contentLoaded) return null;
-    return {
-      isRichText: true,
-      editable: true,
-      showToolbar: false,
-      // Focused tracker bodies are full document surfaces. Keep the same
-      // draggable-block and selection toolbar controls as other editor tabs,
-      // even when the three-pane layout makes the center pane narrow.
-      forceFloatingToolbar: focusActive,
-      isCodeHighlighted: true,
-      hasLinkAttributes: true,
-      markdownOnly: true,
-      initialContent: contentMarkdown || '',
-      onGetContent: (getContentFn: () => string) => {
-        getContentFnRef.current = getContentFn;
-      },
-      onDirtyChange: (isDirty: boolean) => {
-        if (isDirty && getContentFnRef.current) {
-          const markdown = getContentFnRef.current();
-          saveContent(markdown);
-        }
-      },
-      onEditorReady: (editor: any) => {
-        setRecoveryEditor(editor);
-        bodyEditorReadyRef.current?.(editor);
-      },
-    };
-  }, [contentMode, contentLoaded, contentMarkdown, focusActive, saveContent]);
-
-  /** Editor config for collaborative mode (team-synced native items) */
-  const collabEditorConfig = useMemo((): EditorConfig | null => {
-    if (contentMode !== 'collaborative' || !collabConfig || collabLoading) return null;
-    if (!contentLoaded) return null;
-    const mdContent = contentMarkdown;
-    // Prefer the body-cache cold paint when the hook supplies it (the
-    // `tracker_body_cache` row matching the current body_version). Fall
-    // back to the per-item PGLite markdown for new items that have never
-    // been saved (no cache row yet).
-    const hookInitial = collabConfig.initialEditorState;
-    return {
-      isRichText: true,
-      editable: true,
-      showToolbar: false,
-      forceFloatingToolbar: focusActive,
-      isCodeHighlighted: true,
-      hasLinkAttributes: true,
-      markdownOnly: true,
-      collaboration: {
-        ...collabConfig,
-        initialEditorState: hookInitial
-          ?? (collabConfig.shouldBootstrap && mdContent
-            ? () => {
-                // Clearing a selected node without moving selection first makes
-                // Lexical throw "selection has been lost ..." (NIM-2005).
-                $setSelection(null);
-                const root = $getRoot();
-                root.clear();
-                $convertFromEnhancedMarkdownString(mdContent, getEditorTransformers());
-              }
-            : undefined),
-      },
-      comments: commentsConfig ?? undefined,
-      onGetContent: (getContentFn: () => string) => {
-        getContentFnRef.current = getContentFn;
-      },
-      onDirtyChange: (isDirty: boolean) => {
-        if (isDirty && getContentFnRef.current) {
-          const markdown = getContentFnRef.current();
-          // guardEmpty=true: protect against the collab editor reporting
-          // empty on mount before the Y.Doc sync has populated content.
-          saveContent(markdown, true);
-        }
-      },
-      onEditorReady: (editor: any) => {
-        // Captured for the cold-paint fallback effect above. Without an
-        // editor reference we cannot recover when CollaborationPlugin's
-        // bootstrap check declines to fire `initialEditorState`.
-        collabEditorInstanceRef.current = editor;
-        setRecoveryEditor(editor);
-        bodyEditorReadyRef.current?.(editor);
-      },
-    };
-  }, [contentMode, collabConfig, collabLoading, commentsConfig, contentLoaded, contentMarkdown, focusActive, saveContent]);
 
   // No item in the atom: distinguish "still loading" (tracker store not yet
   // hydrated — e.g. a restored tab before sync completes) from "unavailable"
@@ -1492,8 +876,14 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
           {onDelete && (
             <button
               className="p-1 rounded hover:bg-nim-tertiary text-nim-muted hover:text-[#ef4444]"
-              onClick={() => {
-                if (window.confirm(`Delete "${getRecordTitle(item)}"? This cannot be undone.`)) {
+              onClick={async () => {
+                const approved = await requestConfirmation({
+                  title: 'Delete item?',
+                  message: `Delete "${getRecordTitle(item)}"? This cannot be undone.`,
+                  confirmLabel: 'Delete',
+                  destructive: true,
+                });
+                if (approved) {
                   onDelete(item.id);
                 }
               }}
@@ -1712,8 +1102,8 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
           </div>
         )}
 
-        {/* Type tags editor (for native/editable items) */}
-        {editable && (
+        {/* Type tags editor (for native/editable items; a Local wiki file has one type) */}
+        {editable && !isLocalWikiRecord(item) && (
           <TypeTagsEditor
             typeTags={item.typeTags}
             primaryType={item.primaryType}
@@ -1728,11 +1118,7 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
           />
         )}
 
-        {/*
-          Fields no chip can carry -- opaque objects, multiselects, arrays of
-          objects, and schema values the item can't edit. They read as plain
-          rows, and only when they hold something.
-        */}
+        {/* Fields no chip can carry (objects, multiselects, uneditable values), shown only when set */}
         {overflowValues.length > 0 && (
           <div className="tracker-detail-overflow-fields space-y-3 pt-1 border-t border-nim">
             {overflowValues.map(({ field, value }) => (
@@ -1740,6 +1126,8 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
             ))}
           </div>
         )}
+
+        <TrackerLabelPropertiesSection layout={labelLayout} />
 
         </>
         )}
@@ -1756,12 +1144,19 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
             key={item.id} description={item.fields.description} currentBody={contentMarkdown} editor={recoveryEditor}
             canInsert={editable && contentLoaded && (contentMode === 'local-pglite' || (contentMode === 'collaborative' && hasSyncedOnce && collabStatus === 'connected'))}
           />}
-          {contentMode === 'local-pglite' && localEditorConfig ? (
+          {isLocalWikiRecord(item) && !item.system.documentPath ? (
+            <p className="text-sm text-nim-faint m-0" data-testid="tracker-local-wiki-row-no-body">
+              A row of a Local wiki table has no page body.
+            </p>
+          ) : contentMode === 'local-pglite' && localEditorConfig ? (
             <div
               className={`tracker-content-editor bg-nim overflow-hidden ${focusActive ? 'flex-1 min-h-0' : 'min-h-[200px] border border-nim rounded'}`}
               data-testid="tracker-detail-content-editor"
             >
-              <NimbalystEditor key={`${item.id}-${externalContentEpoch}`} config={localEditorConfig} />
+              {/* Tells each link chip which page it sits in, so its hover card offers the relations allowed for the pair. */}
+              <TrackerReferenceSourceProvider value={referenceSource}>
+                <NimbalystEditor key={`${item.id}-${externalContentEpoch}`} config={localEditorConfig} />
+              </TrackerReferenceSourceProvider>
             </div>
           ) : contentMode === 'collaborative' && collabEditorConfig ? (
             <div
@@ -1776,7 +1171,9 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
                   <span className="text-sm text-nim-muted">Loading content...</span>
                 </div>
               )}
-              <NimbalystEditor key={`collab-${item.id}-${providerEpoch}`} config={collabEditorConfig} />
+              <TrackerReferenceSourceProvider value={referenceSource}>
+                <NimbalystEditor key={`collab-${item.id}-${providerEpoch}`} config={collabEditorConfig} />
+              </TrackerReferenceSourceProvider>
             </div>
           ) : (contentMode === 'local-pglite' || contentMode === 'collaborative') && !contentLoaded ? (
             <div className="text-sm text-nim-faint py-4 text-center">Loading...</div>
@@ -1878,7 +1275,7 @@ export const TrackerItemDetail: React.FC<TrackerItemDetailProps> = ({
         )}
 
         {/* Linked From (incoming relationships, Epic C Phase 2) */}
-        {!focusActive && <BacklinksSection itemId={item.id} onOpenItem={onOpenItem} />}
+        {!focusActive && <TrackerLinksSection workspacePath={workspacePath} itemId={item.id} itemType={item.primaryType} revision={linksRevision} onOpenItem={onOpenItem} />}
 
         {/* Feedback gathered about this item; renders nothing when there is none */}
         {!focusActive && (
@@ -2036,61 +1433,6 @@ const ReadOnlyField: React.FC<{ field: FieldDefinition; value: any }> = ({ field
     <div className="flex flex-col gap-1">
       <span className="text-[11px] font-medium text-[var(--nim-text-muted)] uppercase tracking-[0.5px]">{label}</span>
       <span className="text-[13px] text-[var(--nim-text)]">{displayValue}</span>
-    </div>
-  );
-};
-
-/**
- * "Linked From" — incoming relationships (Epic C Phase 2). Reads the derived
- * tracker_relationship_index via IPC; resolves each source item's display from
- * the loaded items map. Hidden when there are no backlinks.
- */
-interface Backlink { sourceItemId: string; sourceFieldId: string; relationshipTypeKey?: string | null }
-
-const BacklinksSection: React.FC<{ itemId: string; onOpenItem?: (itemId: string) => void }> = ({ itemId, onOpenItem }) => {
-  const [backlinks, setBacklinks] = useState<Backlink[]>([]);
-  const itemsMap = useAtomValue(trackerItemsMapAtom);
-
-  useEffect(() => {
-    let cancelled = false;
-    window.electronAPI
-      .invoke('document-service:tracker-item-backlinks', { itemId })
-      .then((res: any) => {
-        if (cancelled) return;
-        setBacklinks(res?.success && Array.isArray(res.backlinks) ? res.backlinks : []);
-      })
-      .catch(() => { if (!cancelled) setBacklinks([]); });
-    return () => { cancelled = true; };
-  }, [itemId]);
-
-  if (backlinks.length === 0) return null;
-
-  return (
-    <div className="space-y-2 tracker-backlinks">
-      <h4 className="text-xs font-medium text-nim-muted uppercase tracking-wide">Linked from</h4>
-      <div className="flex flex-wrap gap-1">
-        {backlinks.map((b) => {
-          const src = itemsMap.get(b.sourceItemId);
-          const label = src?.issueKey || (src ? getRecordTitle(src) : undefined) || b.sourceItemId;
-          // Show the inverse direction: if the source links to us via "depends-on",
-          // we are what it "blocks". Falls back to the forward label.
-          const rel = resolveRelationshipType(b.relationshipTypeKey ?? undefined);
-          const relLabel = rel?.inverseDisplayName ?? rel?.displayName ?? b.relationshipTypeKey ?? 'links to';
-          return (
-            <button
-              key={`${b.sourceItemId}:${b.sourceFieldId}`}
-              type="button"
-              className="tracker-backlink-pill inline-flex items-center gap-1 rounded-full bg-nim-tertiary px-2 py-0.5 text-[11px] text-nim hover:bg-nim-hover disabled:cursor-default"
-              title={`${label} — ${relLabel}`}
-              disabled={!onOpenItem}
-              onClick={() => onOpenItem?.(b.sourceItemId)}
-            >
-              <span className="text-nim-faint">{relLabel}:</span>
-              {label}
-            </button>
-          );
-        })}
-      </div>
     </div>
   );
 };

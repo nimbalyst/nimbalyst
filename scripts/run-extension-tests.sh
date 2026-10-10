@@ -3,12 +3,12 @@
 # Run extension live integration tests against a running Nimbalyst instance.
 #
 # Usage:
-#   npm run test:extensions              # Run all extension tests
-#   npm run test:extensions -- csv       # Run tests for a specific extension (substring match)
-#   npm run test:extensions -- --list    # List available test suites
+#   pnpm run test:extensions              # Run all extension tests
+#   pnpm run test:extensions csv          # Run tests for a specific extension (substring match)
+#   pnpm run test:extensions --list      # List available test suites
 #
 # Prerequisites:
-#   - Nimbalyst running in dev mode (npm run dev in packages/electron)
+#   - Nimbalyst running in dev mode (pnpm run dev in packages/electron)
 #   - CDP enabled on port 9222 (automatic in dev mode)
 
 set -euo pipefail
@@ -48,7 +48,7 @@ fi
 # Check CDP is reachable
 if ! curl -s http://localhost:9222/json/version > /dev/null 2>&1; then
   echo "Error: Cannot connect to CDP on port 9222."
-  echo "Make sure Nimbalyst is running in dev mode (npm run dev in packages/electron)."
+  echo "Make sure Nimbalyst is running in dev mode (pnpm run dev in packages/electron)."
   exit 1
 fi
 
@@ -61,7 +61,7 @@ for dir in $DIRS; do
   echo ""
   echo "=== $ext_name ==="
 
-  if NIMBALYST_EXT_TEST_DIR="$dir" npx playwright test --config "$PW_CONFIG" 2>&1; then
+  if NIMBALYST_EXT_TEST_DIR="$dir" pnpm exec playwright test --config "$PW_CONFIG" 2>&1; then
     TOTAL_PASSED=$((TOTAL_PASSED + 1))
   else
     TOTAL_FAILED=$((TOTAL_FAILED + 1))

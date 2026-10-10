@@ -179,5 +179,5 @@ export const aiTools: ExtensionAITool[] = [
 From the monorepo root:
 
 ```bash
-npm run extension-sdk:check-public
+pnpm run extension-sdk:check-public
 ```

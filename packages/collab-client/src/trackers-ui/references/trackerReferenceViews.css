@@ -63,12 +63,17 @@
   font-weight: 700;
 }
 
+.tracker-reference-live-chip-key:has(+ .tracker-reference-live-chip-title) {
+  font-weight: 400;
+  color: var(--nim-text-muted);
+}
+
 .tracker-reference-live-chip-title {
   min-width: 0;
   max-width: 32ch;
   overflow: hidden;
   text-overflow: ellipsis;
-  color: var(--nim-text-muted);
+  font-weight: 600;
 }
 
 .tracker-reference-live-chip[data-completed='true'] .tracker-reference-live-chip-title {

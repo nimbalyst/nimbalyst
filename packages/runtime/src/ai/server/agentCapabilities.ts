@@ -205,3 +205,34 @@ export function agentCapabilitiesForProviderType(providerType?: string | null): 
   return (BUILTIN_AGENT_CAPABILITIES as Record<string, AgentCapabilities>)[providerType]
     ?? NO_AGENT_CAPABILITIES;
 }
+
+/**
+ * Whether the provider's turns read `metadata.sessionDirective` (the frozen
+ * system-prompt addition an extension sets when it creates a session, see
+ * `providers/sessionDirective.ts`). Exhaustive for the same reason as
+ * `BUILTIN_AGENT_CAPABILITIES`: a new provider must say yes or no, because a
+ * directive stored on a session whose provider ignores it is silently lost.
+ *
+ * Chat providers never read it. `claude-code-cli` drives the genuine CLI
+ * through its PTY, so no provider-built system prompt reaches it.
+ */
+const BUILTIN_SESSION_DIRECTIVE_SUPPORT: Readonly<Record<AIProviderType, boolean>> = Object.freeze({
+  claude: false,
+  openai: false,
+  lmstudio: false,
+  'claude-code-cli': false,
+  'claude-code': true,
+  'openai-codex': true,
+  'openai-codex-acp': true,
+  opencode: true,
+  'copilot-cli': true,
+  'grok-build': true,
+  'cursor-agent': true,
+  'antigravity-gemini-agent': true,
+});
+
+/** Unknown ids (extension-contributed agents) fail closed, like `agentCapabilitiesForProviderType`. */
+export function providerAppliesSessionDirective(providerType?: string | null): boolean {
+  if (!providerType) return false;
+  return (BUILTIN_SESSION_DIRECTIVE_SUPPORT as Record<string, boolean>)[providerType] ?? false;
+}

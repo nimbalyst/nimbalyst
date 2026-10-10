@@ -1,0 +1,17 @@
+diff --git a/out/util/appFileCopier.js b/out/util/appFileCopier.js
+index 37ccda8e988525ae4a04013e3dd5cdded75e03e0..6d889d4b1dca92d2ccbb41ab5fbffcf92ad40274 100644
+--- a/out/util/appFileCopier.js
++++ b/out/util/appFileCopier.js
+@@ -176,7 +176,11 @@ async function collectNodeModulesWithLogging(platformPackager) {
+     const { tempDirManager, appDir, projectDir } = packager;
+     let deps = undefined;
+     const searchDirectories = Array.from(new Set([appDir, projectDir, await packager.getWorkspaceRoot()])).filter((it) => (0, builder_util_1.isEmptyOrSpaces)(it) === false);
+-    const pmApproaches = [await packager.getPackageManager(), node_module_collector_1.PM.TRAVERSAL];
++    // Nimbalyst: the repo installs with pnpm's hoisted linker. The pnpm collector
++    // maps nested versions to the wrong directory in that layout (it packaged the
++    // root p-limit@3 for p-locate's p-limit@2 and dropped yocto-queue), so walk the
++    // installed tree with Node resolution instead.
++    const pmApproaches = [node_module_collector_1.PM.TRAVERSAL];
+     for (const pm of pmApproaches) {
+         for (const dir of searchDirectories) {
+             builder_util_1.log.info({ pm, searchDir: dir }, "searching for node modules");

@@ -1,0 +1,349 @@
+{
+  "formatVersion": 1,
+  "types": [
+    {
+      "typeId": "competitor",
+      "displayName": "Competitor",
+      "displayNamePlural": "Competitors",
+      "storage": "pages",
+      "fields": [
+        {
+          "name": "title",
+          "type": "string"
+        },
+        {
+          "name": "status",
+          "type": "select"
+        },
+        {
+          "name": "tags",
+          "type": "multiselect"
+        }
+      ],
+      "titleField": "title"
+    },
+    {
+      "typeId": "partner",
+      "displayName": "Partner",
+      "displayNamePlural": "Partners",
+      "storage": "table",
+      "fields": [
+        {
+          "name": "title",
+          "type": "string"
+        },
+        {
+          "name": "tier",
+          "type": "select"
+        },
+        {
+          "name": "regions",
+          "type": "multiselect"
+        },
+        {
+          "name": "since",
+          "type": "number"
+        }
+      ],
+      "titleField": "title"
+    }
+  ],
+  "tree": [
+    {
+      "kind": "page",
+      "id": "01JHOME0000000000000000000",
+      "title": "Home",
+      "path": "Home.md",
+      "dir": "Home",
+      "type": null,
+      "order": 1000,
+      "documentType": "markdown",
+      "fields": {},
+      "children": []
+    },
+    {
+      "kind": "page",
+      "id": "01JCOMPETITORS0000000000000",
+      "title": "Competitors",
+      "path": "Competitors.md",
+      "dir": "Competitors",
+      "type": null,
+      "order": 2000,
+      "documentType": "markdown",
+      "fields": {
+        "owner": "kim"
+      },
+      "children": [
+        {
+          "kind": "page",
+          "id": "01JACME0000000000000000000",
+          "title": "Acme",
+          "path": "Competitors/Acme.md",
+          "dir": "Competitors/Acme",
+          "type": "competitor",
+          "order": 1000,
+          "documentType": "markdown",
+          "fields": {
+            "status": "active",
+            "tags": [
+              "ai-ide",
+              "cli"
+            ],
+            "founded": "2019-05-01",
+            "headcount": 120,
+            "public": false
+          },
+          "children": [
+            {
+              "kind": "page",
+              "id": "01JPRICING0000000000000000",
+              "title": "Pricing",
+              "path": "Competitors/Acme/Pricing.md",
+              "dir": "Competitors/Acme/Pricing",
+              "type": null,
+              "order": null,
+              "documentType": "markdown",
+              "fields": {},
+              "children": []
+            }
+          ]
+        },
+        {
+          "kind": "page",
+          "id": "dup_FC2TEWA076ZHCG4YZERH",
+          "title": "Acme (conflict 2026-10-01 120000)",
+          "path": "Competitors/Acme (conflict 2026-10-01 120000).md",
+          "dir": "Competitors/Acme (conflict 2026-10-01 120000)",
+          "type": "competitor",
+          "order": 1000,
+          "documentType": "markdown",
+          "fields": {
+            "status": "defunct"
+          },
+          "conflictOf": "01JACME0000000000000000000",
+          "children": []
+        },
+        {
+          "kind": "page",
+          "id": "01JBETA0000000000000000000",
+          "title": "Beta: Corp",
+          "path": "Competitors/Beta- Corp.md",
+          "dir": "Competitors/Beta- Corp",
+          "type": "competitor",
+          "order": null,
+          "documentType": "markdown",
+          "fields": {
+            "status": "watching"
+          },
+          "children": []
+        }
+      ]
+    },
+    {
+      "kind": "table",
+      "typeId": "partner",
+      "title": "Partners",
+      "path": "Partners.csv",
+      "header": [
+        "id",
+        "title",
+        "tier",
+        "regions",
+        "since",
+        "notes"
+      ],
+      "rows": [
+        {
+          "id": "01JPARTNER1000000000000000",
+          "title": "Acme Supply",
+          "fields": {
+            "title": "Acme Supply",
+            "tier": "gold",
+            "regions": [
+              "emea",
+              "na"
+            ],
+            "since": 2021,
+            "notes": "Says \"hi\", often"
+          }
+        },
+        {
+          "id": "01JPARTNER2000000000000000",
+          "title": "Zed Labs",
+          "fields": {
+            "title": "Zed Labs",
+            "tier": "silver",
+            "notes": "multi\nline"
+          }
+        }
+      ]
+    },
+    {
+      "kind": "page",
+      "id": "01JDOCS0000000000000000000",
+      "title": "Docs",
+      "path": "Docs/README.md",
+      "dir": "Docs",
+      "type": null,
+      "order": 4000,
+      "documentType": "markdown",
+      "fields": {},
+      "children": [
+        {
+          "kind": "page",
+          "id": "01JGUIDE000000000000000000",
+          "title": "Guide",
+          "path": "Docs/Guide.md",
+          "dir": "Docs/Guide",
+          "type": null,
+          "order": null,
+          "documentType": "markdown",
+          "fields": {},
+          "children": []
+        }
+      ]
+    },
+    {
+      "kind": "page",
+      "id": "dir_AGN92H1P4TWVTRHRGJ57",
+      "title": "Ops",
+      "path": null,
+      "dir": "Ops",
+      "type": null,
+      "order": null,
+      "documentType": "markdown",
+      "fields": {},
+      "children": [
+        {
+          "kind": "page",
+          "id": "tmp_32R2TPKCJE6VEWY4CBAP",
+          "title": "Runbook",
+          "path": "Ops/Runbook.md",
+          "dir": "Ops/Runbook",
+          "type": null,
+          "order": null,
+          "documentType": "markdown",
+          "fields": {},
+          "children": []
+        }
+      ]
+    }
+  ],
+  "links": [
+    {
+      "from": "01JACME0000000000000000000",
+      "ordinal": 0,
+      "path": "Acme/Pricing.md",
+      "fragment": "",
+      "id": "01JPRICING0000000000000000",
+      "target": "01JPRICING0000000000000000"
+    },
+    {
+      "from": "01JACME0000000000000000000",
+      "ordinal": 1,
+      "path": "../Home.md",
+      "fragment": "",
+      "id": null,
+      "target": "01JHOME0000000000000000000"
+    },
+    {
+      "from": "01JDOCS0000000000000000000",
+      "ordinal": 0,
+      "path": "Guide.md",
+      "fragment": "",
+      "id": "01JGUIDE000000000000000000",
+      "target": "01JGUIDE000000000000000000"
+    },
+    {
+      "from": "01JHOME0000000000000000000",
+      "ordinal": 0,
+      "path": "Competitors.md",
+      "fragment": "",
+      "id": "01JCOMPETITORS0000000000000",
+      "target": "01JCOMPETITORS0000000000000"
+    },
+    {
+      "from": "01JHOME0000000000000000000",
+      "ordinal": 1,
+      "path": "Old/Acme.md",
+      "fragment": "",
+      "id": "01JACME0000000000000000000",
+      "target": "01JACME0000000000000000000"
+    },
+    {
+      "from": "01JHOME0000000000000000000",
+      "ordinal": 2,
+      "path": "Ops/Runbook.md",
+      "fragment": "",
+      "id": null,
+      "target": "tmp_32R2TPKCJE6VEWY4CBAP"
+    },
+    {
+      "from": "01JHOME0000000000000000000",
+      "ordinal": 3,
+      "path": "Ops/",
+      "fragment": "",
+      "id": "dir_x",
+      "target": "dir_AGN92H1P4TWVTRHRGJ57"
+    },
+    {
+      "from": "01JHOME0000000000000000000",
+      "ordinal": 4,
+      "path": "Docs/",
+      "fragment": "",
+      "id": null,
+      "target": "01JDOCS0000000000000000000"
+    },
+    {
+      "from": "01JHOME0000000000000000000",
+      "ordinal": 5,
+      "path": "Gone.md",
+      "fragment": "",
+      "id": "01JGONE0000000000000000000",
+      "target": null
+    },
+    {
+      "from": "01JHOME0000000000000000000",
+      "ordinal": 6,
+      "path": "Old.md",
+      "fragment": "",
+      "id": "01JTRASHED00000000000000AA",
+      "target": null
+    },
+    {
+      "from": "01JPRICING0000000000000000",
+      "ordinal": 0,
+      "path": "../../Competitors/Acme.md",
+      "fragment": "",
+      "id": "01JACME0000000000000000000",
+      "target": "01JACME0000000000000000000"
+    },
+    {
+      "from": "01JPRICING0000000000000000",
+      "ordinal": 1,
+      "path": "../Beta- Corp.md",
+      "fragment": "",
+      "id": null,
+      "target": "01JBETA0000000000000000000"
+    },
+    {
+      "from": "01JPRICING0000000000000000",
+      "ordinal": 2,
+      "path": "../../Home.md",
+      "fragment": "#partners",
+      "id": null,
+      "target": "01JHOME0000000000000000000"
+    },
+    {
+      "from": "tmp_32R2TPKCJE6VEWY4CBAP",
+      "ordinal": 0,
+      "path": "../Home.md",
+      "fragment": "",
+      "id": null,
+      "target": "01JHOME0000000000000000000"
+    }
+  ],
+  "trashedIds": [
+    "01JTRASHED00000000000000AA"
+  ]
+}

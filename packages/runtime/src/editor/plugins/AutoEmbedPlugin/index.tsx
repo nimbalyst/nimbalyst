@@ -17,8 +17,24 @@ import {
   URL_MATCHER,
 } from '@lexical/react/LexicalAutoEmbedPlugin';
 import {useLexicalComposerContext} from '@lexical/react/LexicalComposerContext';
-import {useMemo, useState} from 'react';
+import {COMMAND_PRIORITY_EDITOR} from 'lexical';
+import {useCallback, useEffect, useMemo, useState} from 'react';
 import * as ReactDOM from 'react-dom';
+
+import {
+  EXTERNAL_EMBED_PROVIDERS,
+  parseWebUrl,
+  resolveExternalEmbed,
+} from '../LinkPreviewPlugin/externalEmbeds';
+import {
+  $insertLinkPreview,
+  $isPastedLinkAlone,
+  INSERT_LINK_PREVIEW_COMMAND,
+} from '../LinkPreviewPlugin/linkPreviewInsert';
+import {
+  defaultLinkPreviewMode,
+  type LinkPreviewMode,
+} from '../LinkPreviewPlugin/linkPreviewLinks';
 
 import useModal from '../../hooks/useModal';
 import Button from '../../ui/Button';
@@ -41,121 +57,58 @@ interface PlaygroundEmbedConfig extends EmbedConfig {
   description?: string;
 }
 
-export const YoutubeEmbedConfig: PlaygroundEmbedConfig = {
-  contentName: 'Youtube Video',
-
-  exampleUrl: 'https://www.youtube.com/watch?v=jNQXAC9IVRw',
-
-  // Icon for display.
-  icon: <i className="icon youtube" />,
-
-  insertNode: (editor: LexicalEditor, result: EmbedMatchResult) => {
-    // TODO: Implement YouTube embed node
-    // editor.dispatchCommand(INSERT_YOUTUBE_COMMAND, result.id);
-    console.warn('YouTube embed not yet implemented');
+/**
+ * Any http(s) link: offered as a preview card. Listed first because the
+ * paste listener keeps the LAST config that matches, so an allowlisted
+ * provider below wins and its menu offers both the player and the card.
+ */
+export const LinkPreviewEmbedConfig: PlaygroundEmbedConfig = {
+  contentName: 'Link preview',
+  exampleUrl: 'https://example.com/article',
+  keywords: ['link', 'preview', 'bookmark', 'card', 'embed', 'url'],
+  parseUrl: (url: string) => (parseWebUrl(url) ? { id: url, url } : null),
+  insertNode: (_editor: LexicalEditor, result: EmbedMatchResult) => {
+    $insertLinkPreview(result.url, takeRequestedMode() ?? defaultLinkPreviewMode(result.url) ?? 'card');
   },
-
-  keywords: ['youtube', 'video'],
-
-  // Determine if a given URL is a match and return url data.
-  parseUrl: async (url: string) => {
-    const match =
-      /^.*(youtu\.be\/|v\/|u\/\w\/|embed\/|watch\?v=|&v=)([^#&?]*).*/.exec(url);
-
-    const id = match ? (match?.[2].length === 11 ? match[2] : null) : null;
-
-    if (id != null) {
-      return {
-        id,
-        url,
-      };
-    }
-
-    return null;
-  },
-
-  type: 'youtube-video',
+  type: 'link-preview',
 };
 
-export const TwitterEmbedConfig: PlaygroundEmbedConfig = {
-  // e.g. Tweet or Google Map.
-  contentName: 'X(Tweet)',
+/**
+ * The configs the paste listener matches against. Each one only matches a
+ * link that sits alone in its paragraph: a URL pasted into a sentence stays a
+ * link without a menu.
+ */
+function createPasteEmbedConfigs(editor: LexicalEditor): PlaygroundEmbedConfig[] {
+  const alone = (url: string) => editor.getEditorState().read(() => $isPastedLinkAlone(url));
+  return [
+    {
+      ...LinkPreviewEmbedConfig,
+      parseUrl: (url: string) => (parseWebUrl(url) && alone(url) ? { id: url, url } : null),
+    },
+    // One per allowlisted site (`externalEmbeds.ts`).
+    ...EXTERNAL_EMBED_PROVIDERS.map(({ provider, contentName }) => ({
+      contentName,
+      exampleUrl: '',
+      keywords: [provider, 'embed', 'video'],
+      parseUrl: (url: string) => (resolveExternalEmbed(url)?.provider === provider && alone(url) ? { id: url, url } : null),
+      insertNode: (_editor: LexicalEditor, result: EmbedMatchResult) => {
+        $insertLinkPreview(result.url, takeRequestedMode() ?? 'embed');
+      },
+      type: `embed-${provider}`,
+    })),
+  ];
+}
 
-  exampleUrl: 'https://x.com/jack/status/20',
-
-  // Icon for display.
-  icon: <i className="icon x" />,
-
-  // Create the Lexical embed node from the url data.
-  insertNode: (editor: LexicalEditor, result: EmbedMatchResult) => {
-    // TODO: Implement Tweet embed node
-    // editor.dispatchCommand(INSERT_TWEET_COMMAND, result.id);
-    console.warn('Tweet embed not yet implemented');
-  },
-
-  // For extra searching.
-  keywords: ['tweet', 'twitter', 'x'],
-
-  // Determine if a given URL is a match and return url data.
-  parseUrl: (text: string) => {
-    const match =
-      /^https:\/\/(twitter|x)\.com\/(#!\/)?(\w+)\/status(es)*\/(\d+)/.exec(
-        text,
-      );
-
-    if (match != null) {
-      return {
-        id: match[5],
-        url: match[1],
-      };
-    }
-
-    return null;
-  },
-
-  type: 'tweet',
-};
-
-export const FigmaEmbedConfig: PlaygroundEmbedConfig = {
-  contentName: 'Figma Document',
-
-  exampleUrl: 'https://www.figma.com/file/LKQ4FJ4bTnCSjedbRpk931/Sample-File',
-
-  icon: <i className="icon figma" />,
-
-  insertNode: (editor: LexicalEditor, result: EmbedMatchResult) => {
-    // TODO: Implement Figma embed node
-    // editor.dispatchCommand(INSERT_FIGMA_COMMAND, result.id);
-    console.warn('Figma embed not yet implemented');
-  },
-
-  keywords: ['figma', 'figma.com', 'mock-up'],
-
-  // Determine if a given URL is a match and return url data.
-  parseUrl: (text: string) => {
-    const match =
-      /https:\/\/([\w.-]+\.)?figma.com\/(file|proto)\/([0-9a-zA-Z]{22,128})(?:\/.*)?$/.exec(
-        text,
-      );
-
-    if (match != null) {
-      return {
-        id: match[3],
-        url: match[0],
-      };
-    }
-
-    return null;
-  },
-
-  type: 'figma',
-};
-
-export const EmbedConfigs = [
-  TwitterEmbedConfig,
-  YoutubeEmbedConfig,
-  FigmaEmbedConfig,
-];
+/**
+ * The upstream plugin calls `insertNode` with the match result only, so the
+ * menu option records which presentation was picked here first.
+ */
+let requestedMode: LinkPreviewMode | null = null;
+function takeRequestedMode(): LinkPreviewMode | null {
+  const mode = requestedMode;
+  requestedMode = null;
+  return mode;
+}
 
 function AutoEmbedMenuItem({
   index,
@@ -259,24 +212,40 @@ export function AutoEmbedDialog({
 
   const onClick = () => {
     if (embedResult != null) {
-      embedConfig.insertNode(editor, embedResult);
+      editor.update(() => embedConfig.insertNode(editor, embedResult));
       onClose();
     }
   };
+  // Enter can beat the debounced check, so it parses the text itself.
+  const submit = async () => {
+    const result = embedResult
+      ?? (URL_MATCHER.exec(text) ? await Promise.resolve(embedConfig.parseUrl(text)) : null);
+    if (result == null) return;
+    editor.update(() => embedConfig.insertNode(editor, result));
+    onClose();
+  };
 
   return (
-    <div style={{width: '600px'}}>
-      <div className="Input__wrapper">
+    <div className="auto-embed-dialog w-[min(600px,80vw)]">
+      <div className="Input__wrapper mb-[10px]">
         <input
           type="text"
-          className="Input__input"
+          className="Input__input w-full rounded-[5px] border border-nim bg-nim-secondary px-[10px] py-[7px] text-base text-nim placeholder:text-nim-faint focus:border-[var(--nim-border-focus)] focus:outline-none dark:[color-scheme:dark]"
           placeholder={embedConfig.exampleUrl}
           value={text}
+          autoFocus
+          spellCheck={false}
           data-test-id={`${embedConfig.type}-embed-modal-url`}
           onChange={(e) => {
             const {value} = e.target;
             setText(value);
             validateText(value);
+          }}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              void submit();
+            }
           }}
         />
       </div>
@@ -293,34 +262,54 @@ export function AutoEmbedDialog({
 }
 
 export default function AutoEmbedPlugin(): JSX.Element {
+  const [editor] = useLexicalComposerContext();
   const [modal, showModal] = useModal();
+  const pasteEmbedConfigs = useMemo(() => createPasteEmbedConfigs(editor), [editor]);
 
-  const openEmbedModal = (embedConfig: PlaygroundEmbedConfig) => {
-    showModal(`Embed ${embedConfig.contentName}`, (onClose) => (
+  const openEmbedModal = useCallback((embedConfig: PlaygroundEmbedConfig) => {
+    showModal(embedConfig.contentName, (onClose) => (
       <AutoEmbedDialog embedConfig={embedConfig} onClose={onClose} />
     ));
-  };
+  }, [showModal]);
+
+  useEffect(
+    () => editor.registerCommand(
+      INSERT_LINK_PREVIEW_COMMAND,
+      () => {
+        openEmbedModal(LinkPreviewEmbedConfig);
+        return true;
+      },
+      COMMAND_PRIORITY_EDITOR,
+    ),
+    [editor, openEmbedModal],
+  );
 
   const getMenuOptions = (
     activeEmbedConfig: PlaygroundEmbedConfig,
     embedFn: () => void,
     dismissFn: () => void,
   ) => {
-    return [
-      new AutoEmbedOption('Dismiss', {
+    const pick = (mode: LinkPreviewMode) => () => {
+      requestedMode = mode;
+      embedFn();
+    };
+    const options = [
+      new AutoEmbedOption('Keep as link', {
         onSelect: dismissFn,
       }),
-      new AutoEmbedOption(`Embed ${activeEmbedConfig.contentName}`, {
-        onSelect: embedFn,
-      }),
     ];
+    if (activeEmbedConfig.type !== LinkPreviewEmbedConfig.type) {
+      options.push(new AutoEmbedOption(`Embed ${activeEmbedConfig.contentName}`, { onSelect: pick('embed') }));
+    }
+    options.push(new AutoEmbedOption('Preview card', { onSelect: pick('card') }));
+    return options;
   };
 
   return (
     <>
       {modal}
       <LexicalAutoEmbedPlugin<PlaygroundEmbedConfig>
-        embedConfigs={EmbedConfigs}
+        embedConfigs={pasteEmbedConfigs}
         onOpenEmbedModalForConfig={openEmbedModal}
         getMenuOptions={getMenuOptions}
         menuRenderFn={(

@@ -414,16 +414,16 @@ export const PLAYWRIGHT_TEST_SELECTORS = {
 
 ```bash
 # Run all editor tests
-npx playwright test e2e/editors/
+pnpm exec playwright test e2e/editors/
 
 # Run tests for a specific editor
-npx playwright test e2e/editors/markdown/
-npx playwright test e2e/editors/csv/
+pnpm exec playwright test e2e/editors/markdown/
+pnpm exec playwright test e2e/editors/csv/
 
 # Run a specific behavior across editors
-npx playwright test e2e/editors/**/dirty-close.spec.ts
-npx playwright test e2e/editors/**/autosave.spec.ts
-npx playwright test e2e/editors/**/diff-*.spec.ts
+pnpm exec playwright test e2e/editors/**/dirty-close.spec.ts
+pnpm exec playwright test e2e/editors/**/autosave.spec.ts
+pnpm exec playwright test e2e/editors/**/diff-*.spec.ts
 ```
 
 ## Checklist for New Editor Coverage
@@ -439,4 +439,4 @@ When adding E2E coverage for a new editor type:
   - [ ] Implement `diff-reject.spec.ts`
 - [ ] Add editor-specific selectors to `PLAYWRIGHT_TEST_SELECTORS`
 - [ ] Document any editor-specific test patterns in this guide
-- [ ] Run all tests: `npx playwright test e2e/editors/[editor-name]/`
+- [ ] Run all tests: `pnpm exec playwright test e2e/editors/[editor-name]/`

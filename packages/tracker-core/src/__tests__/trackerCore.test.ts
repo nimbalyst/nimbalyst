@@ -1,6 +1,8 @@
 // @vitest-environment node
 import { describe, expect, it } from "vitest";
 import {
+  appendActivity,
+  MAX_ACTIVITY_VALUE_CHARS,
   computeReadinessForItems,
   createTrackerCoreContext,
   dbRowToRecord,
@@ -106,5 +108,26 @@ describe("tracker-core host parity", () => {
       computeReadinessForItems(openContext, items, accessors).get("dependent")
         ?.state
     ).toBe("blocked");
+  });
+});
+
+describe("appendActivity value cap", () => {
+  const author = { email: "a@example.com", displayName: "A" };
+
+  // NIM-7336: a 40 KB description edited a few times put a shared item over the
+  // 256 KiB wire limit, because every entry carried the whole old and new text.
+  it("bounds long old and new values, including a coalesced edit, and leaves short ones alone", () => {
+    const data: Record<string, any> = {};
+    const longText = "x".repeat(40_000);
+    appendActivity(data, author, "updated", { field: "description", oldValue: longText, newValue: longText });
+    appendActivity(data, author, "updated", { field: "description", oldValue: longText, newValue: `${longText}y` });
+    appendActivity(data, author, "updated", { field: "priority", oldValue: "low", newValue: "high" });
+
+    const [description, priority] = data.activity;
+    expect(data.activity).toHaveLength(2);
+    expect(description.oldValue.length).toBe(MAX_ACTIVITY_VALUE_CHARS);
+    expect(description.newValue.length).toBe(MAX_ACTIVITY_VALUE_CHARS);
+    expect(description.newValue.endsWith("…")).toBe(true);
+    expect(priority).toMatchObject({ oldValue: "low", newValue: "high" });
   });
 });

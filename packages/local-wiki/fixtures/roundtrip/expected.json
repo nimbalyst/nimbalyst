@@ -1,0 +1,155 @@
+{
+  "formatVersion": 1,
+  "types": [
+    {
+      "typeId": "competitor",
+      "displayName": "Competitor",
+      "displayNamePlural": "Competitors",
+      "storage": "pages",
+      "fields": [
+        {
+          "name": "title",
+          "type": "string"
+        },
+        {
+          "name": "tier",
+          "type": "select"
+        },
+        {
+          "name": "website",
+          "type": "url"
+        }
+      ],
+      "titleField": "title"
+    },
+    {
+      "typeId": "partner",
+      "displayName": "Partner",
+      "displayNamePlural": "Partners",
+      "storage": "table",
+      "fields": [
+        {
+          "name": "title",
+          "type": "string"
+        },
+        {
+          "name": "tier",
+          "type": "select"
+        }
+      ],
+      "titleField": "title"
+    }
+  ],
+  "tree": [
+    {
+      "kind": "page",
+      "id": "01JRT0HOME00000000000000AA",
+      "title": "Home",
+      "path": "Home.md",
+      "dir": "Home",
+      "type": null,
+      "order": 1000,
+      "documentType": "markdown",
+      "fields": {},
+      "children": []
+    },
+    {
+      "kind": "page",
+      "id": "01JRT0PROJECTS0000000000AA",
+      "title": "Projects",
+      "path": "Projects.md",
+      "dir": "Projects",
+      "type": null,
+      "order": 2000,
+      "documentType": "markdown",
+      "fields": {},
+      "children": [
+        {
+          "kind": "page",
+          "id": "01JRT0LAUNCH000000000000AA",
+          "title": "Launch",
+          "path": "Projects/Launch.md",
+          "dir": "Projects/Launch",
+          "type": null,
+          "order": 1000,
+          "documentType": "markdown",
+          "fields": {
+            "tags": [
+              "launch",
+              "q4"
+            ]
+          },
+          "children": []
+        },
+        {
+          "kind": "table",
+          "typeId": "partner",
+          "title": "Partners",
+          "path": "Projects/Partners.csv",
+          "header": [
+            "id",
+            "title",
+            "tier"
+          ],
+          "rows": [
+            {
+              "id": "01JRT0ROW1000000000000000A",
+              "title": "Globex",
+              "fields": {
+                "title": "Globex",
+                "tier": "gold"
+              }
+            },
+            {
+              "id": "01JRT0ROW2000000000000000A",
+              "title": "Initech, Inc",
+              "fields": {
+                "title": "Initech, Inc",
+                "tier": "silver"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "kind": "page",
+      "id": "dir_6SGN365ZBE22MZKNKJVE",
+      "title": "Competitors",
+      "path": null,
+      "dir": "Competitors",
+      "type": null,
+      "order": null,
+      "documentType": "markdown",
+      "fields": {},
+      "children": [
+        {
+          "kind": "page",
+          "id": "01JRT0ACME00000000000000AA",
+          "title": "Acme",
+          "path": "Competitors/Acme.md",
+          "dir": "Competitors/Acme",
+          "type": "competitor",
+          "order": null,
+          "documentType": "markdown",
+          "fields": {
+            "tier": "gold",
+            "website": "https://acme.example"
+          },
+          "children": []
+        }
+      ]
+    }
+  ],
+  "links": [
+    {
+      "from": "01JRT0HOME00000000000000AA",
+      "ordinal": 0,
+      "path": "Projects/Launch.md",
+      "fragment": "",
+      "id": "01JRT0LAUNCH000000000000AA",
+      "target": "01JRT0LAUNCH000000000000AA"
+    }
+  ],
+  "trashedIds": []
+}

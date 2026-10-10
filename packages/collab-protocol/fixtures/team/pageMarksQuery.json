@@ -1,0 +1,8 @@
+{
+  "type": "pageMarksQuery",
+  "requestId": "marks-1",
+  "projectId": "project-1",
+  "kind": "decided",
+  "email": "greg@example.com",
+  "documentIds": ["page-1"]
+}

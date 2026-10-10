@@ -9,7 +9,9 @@ import {
   appendCollabUrlQuery,
   createProxiedWebSocket,
   getCollabConfig,
+  openCollabDocument,
   registerCollabConfig,
+  updateCollabConfigDisplayMetadata,
 } from '../collabDocumentOpener';
 
 const scopeA = {
@@ -144,5 +146,31 @@ describe('appendCollabUrlQuery', () => {
   it('re-encodes values rather than trusting the caller to have done it', () => {
     expect(appendCollabUrlQuery(room, `test_user_id=${encodeURIComponent('a b&c=d')}`))
       .toBe(`${room}?test_user_id=a+b%26c%3Dd`);
+  });
+});
+
+describe('collab tab names', () => {
+  it('shows a page by its bare name, whatever path or ".md" its title still carries', () => {
+    const addTab = vi.fn(() => 'tab-1');
+    const config = {
+      scope: scopeA,
+      orgId: 'org-1',
+      documentId: 'doc-tab',
+      title: 'Specs/Architecture.md',
+      documentType: 'markdown',
+      serverUrl: 'wss://sync.example.test',
+      getJwt: async () => asTeamJwt('token'),
+      teamMemberId: asTeamMemberId('user-1'),
+      accountId: 'account-1',
+    };
+    const uri = openCollabDocument({ ...config, addTab }) && registerCollabConfig(config);
+    expect(addTab).toHaveBeenCalledWith(expect.any(String), '', true, 'Architecture');
+
+    updateCollabConfigDisplayMetadata(scopeA, uri, { title: 'Specs/Renamed.md' });
+    expect(getCollabConfig(scopeA, uri)?.title).toBe('Renamed');
+
+    // Other document types keep their suffix.
+    openCollabDocument({ ...config, documentId: 'doc-board', title: 'Board.excalidraw', documentType: 'excalidraw', addTab });
+    expect(addTab).toHaveBeenLastCalledWith(expect.any(String), '', true, 'Board.excalidraw');
   });
 });

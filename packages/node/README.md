@@ -9,10 +9,10 @@ This is the first consumer of `@nimbalyst/runtime`'s `node` export condition. It
 Run these commands from the repository root:
 
 ```sh
-npm ci
-npm run build:workspace-deps
-npm run build:node --workspace=@nimbalyst/runtime
-npm run build --workspace=@nimbalyst/node
+pnpm install --frozen-lockfile
+pnpm run build:workspace-deps
+pnpm --filter @nimbalyst/runtime run build:node
+pnpm --filter @nimbalyst/node run build
 ```
 
 The Node package builds explicitly after runtime's Node exports and declarations exist. It does not compile during installation, when those artifacts are absent in a clean checkout.

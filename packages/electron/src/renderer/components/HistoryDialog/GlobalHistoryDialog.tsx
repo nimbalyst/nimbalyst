@@ -7,7 +7,9 @@
  * prop drilling required.
  *
  * Restore writes the chosen content to disk; the file watcher then reloads
- * any open editor for that file automatically.
+ * any open editor for that file automatically. A personal page
+ * (`personal-doc://<documentId>`) is restored through its own save path instead,
+ * which refuses to overwrite a save it did not see; that refusal is shown.
  */
 
 import React, { useCallback } from 'react';
@@ -15,6 +17,8 @@ import { useAtom } from 'jotai';
 import { historyDialogFileAtom } from '../../store';
 import { HistoryDialog } from './HistoryDialog';
 import { CollabHistoryDialog } from './CollabHistoryDialog';
+import { restoreHistoryToPersonalPage } from '../CollabMode/usePersonalPageBody';
+import { errorNotificationService } from '../../services/ErrorNotificationService';
 
 interface GlobalHistoryDialogProps {
   theme: string;
@@ -31,12 +35,18 @@ export const GlobalHistoryDialog: React.FC<GlobalHistoryDialogProps> = ({ theme,
   const handleRestore = useCallback(async (content: string) => {
     if (!filePath) return;
     try {
-      await window.electronAPI.saveFile(content, filePath);
+      if (!(await restoreHistoryToPersonalPage(filePath, content, workspacePath))) {
+        await window.electronAPI.saveFile(content, filePath);
+      }
     } catch (error) {
       console.error('[GlobalHistoryDialog] Failed to restore content:', error);
+      errorNotificationService.showError(
+        'Version not restored',
+        error instanceof Error ? error.message : String(error),
+      );
     }
     setFilePath(null);
-  }, [filePath, setFilePath]);
+  }, [filePath, setFilePath, workspacePath]);
 
   if (!filePath) return null;
 

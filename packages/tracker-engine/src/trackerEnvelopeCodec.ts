@@ -27,16 +27,66 @@ import type {
   TrackerItemPayload,
 } from './trackerProtocol.js';
 import { stripLocalOnlyFields } from './trackerProtocol.js';
-import { parseTrackerItemPayload } from '@nimbalyst/collab-protocol';
+import { MAX_TRACKER_ITEM_PAYLOAD_BYTES, parseTrackerItemPayload } from '@nimbalyst/collab-protocol';
+import { capActivityValue } from '@nimbalyst/tracker-core';
 
+/** An item that cannot fit the room's per-item limit even with its activity trimmed. */
+export class TrackerPayloadTooLargeError extends Error {
+  readonly code = 'payloadTooLarge';
+
+  constructor(
+    readonly itemId: string,
+    readonly bytes: number,
+    readonly limitBytes: number = MAX_TRACKER_ITEM_PAYLOAD_BYTES,
+  ) {
+    super(`Tracker item ${itemId} is too large to share (${bytes} bytes, limit ${limitBytes}).`);
+    this.name = 'TrackerPayloadTooLargeError';
+  }
+}
+
+const utf8 = new TextEncoder();
+const byteLength = (text: string): number => utf8.encode(text).length;
+
+/**
+ * Fit an over-budget item by trimming its activity trail: bound every value,
+ * then drop the oldest entries. Only the wire copy is trimmed; the caller's
+ * payload, and so the local item, keeps its full history (NIM-7336).
+ */
+function encodeWithTrimmedActivity(payload: TrackerItemPayload): string {
+  const activity = (payload.activity ?? []).map(entry => ({
+    ...entry,
+    oldValue: capActivityValue(entry.oldValue),
+    newValue: capActivityValue(entry.newValue),
+  }));
+  const withActivity = (kept: typeof activity) => JSON.stringify({ ...payload, activity: kept });
+  const base = byteLength(withActivity([]));
+  const entryBytes = activity.map(entry => byteLength(JSON.stringify(entry)));
+  // `[a,b]` costs the entries plus one comma between each pair.
+  let total = base;
+  let first = activity.length;
+  while (first > 0 && total + entryBytes[first - 1] + (first < activity.length ? 1 : 0) <= MAX_TRACKER_ITEM_PAYLOAD_BYTES) {
+    total += entryBytes[first - 1] + (first < activity.length ? 1 : 0);
+    first--;
+  }
+  return withActivity(activity.slice(first));
+}
 
 /**
  * Serialize a `TrackerItemPayload` to the plaintext wire form for
  * server-managed mode. Strips device-local fields exactly like the encrypted
- * path so they never cross the wire.
+ * path so they never cross the wire. Throws `TrackerPayloadTooLargeError` when
+ * the item cannot fit the room's limit.
  */
 export function encodeTrackerPayloadPlaintext(payload: TrackerItemPayload): string {
-  const encoded = JSON.stringify(stripLocalOnlyFields(payload));
+  const stripped = stripLocalOnlyFields(payload);
+  let encoded = JSON.stringify(stripped);
+  if (byteLength(encoded) > MAX_TRACKER_ITEM_PAYLOAD_BYTES) {
+    encoded = encodeWithTrimmedActivity(stripped);
+    const size = byteLength(encoded);
+    if (size > MAX_TRACKER_ITEM_PAYLOAD_BYTES) {
+      throw new TrackerPayloadTooLargeError(payload.itemId, size);
+    }
+  }
   const parsed = parseTrackerItemPayload(encoded, payload.itemId);
   if (!parsed.success) {
     throw new Error(`Invalid tracker item payload: ${parsed.error}`);

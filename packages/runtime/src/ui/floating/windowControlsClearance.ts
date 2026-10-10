@@ -1,30 +1,36 @@
 /**
- * Window-controls clearance for floating elements.
+ * Title-bar clearance for floating elements.
  *
- * On macOS the app windows are `hiddenInset` with `titleBarOverlay: true`, so
- * the traffic lights are painted by the OS in a native view *above* the
- * WebContents. No `z-index` can put a popover in front of them: whatever
- * floating-ui clamps into that band is partly covered, and clicks in the
- * covered area land on the OS zoom button instead of the menu.
+ * App windows with a custom title bar (`hiddenInset` + `titleBarOverlay` on
+ * macOS, `hidden` + overlay on Windows/Linux) have a 38px strip across the top
+ * that no popover can work in:
  *
- * `shift({ padding: 8 })` clamps an upward-growing menu to y=8, which is
- * squarely inside the band — see GitHub #1096, where the project rail's `+`
- * menu (`placement: 'right-end'`) lands at (56, 8) with the green light on
- * top of its corner.
+ * - The OS paints the window controls above the WebContents, so a popover
+ *   clamped into their corner is partly covered and clicks land on the zoom
+ *   button (GitHub #1096).
+ * - Across the rest of the strip, clicks on a popover item are unreliable on
+ *   macOS: the mousedown reaches the renderer but the mouseup never does, so
+ *   the item's click handler never fires (the file tree's folder menu, clamped
+ *   to y=8 in a short window, lost its first item this way).
  *
- * The reserved band is read from the Window Controls Overlay API rather than
- * hardcoded, so it stays correct on macOS (controls on the left) and on
- * Windows/Linux (controls on the right) without the renderer knowing the
- * platform. When the API reports nothing the window has no custom title bar,
+ * `shift({ padding: 8 })` clamps an upward-growing or tall menu to y=8, so this
+ * middleware keeps every floating element below the whole strip plus
+ * `TITLE_BAR_BUFFER`, not just below the controls.
+ *
+ * The strip is read from the Window Controls Overlay API rather than
+ * hardcoded. When the API reports nothing the window has no custom title bar,
  * the viewport already starts below the OS chrome, and there is nothing to
- * reserve — so this middleware is inert and no popover moves.
+ * reserve, so this middleware is inert and no popover moves.
  */
 
 import type { Middleware } from '@floating-ui/react';
 
+/** Gap kept between the bottom of the title-bar strip and any floating element. */
+export const TITLE_BAR_BUFFER = 8;
+
 /**
- * A horizontal span of the viewport, from y=0 down to `bottom`, that the OS
- * paints window controls into.
+ * A horizontal span of the viewport, from y=0 down to `bottom`, that floating
+ * elements must stay out of.
  */
 export interface WindowControlsZone {
   left: number;
@@ -40,38 +46,22 @@ export interface TitlebarAreaRect {
 }
 
 /**
- * Derive the control bands from the *available* titlebar area.
- *
- * The WCO API reports the region left over for app content, so the controls
- * are whatever sits outside it: a left band on macOS (`rect.x > 0`) and a
- * right band on Windows/Linux (`rect.x + rect.width < viewportWidth`).
+ * Derive the reserved zone from the titlebar area: the full viewport width,
+ * down to the bottom of the strip plus `TITLE_BAR_BUFFER`. The controls sit
+ * inside the strip on every platform, so one full-width band covers them too.
  */
 export function resolveWindowControlsZones(
   rect: TitlebarAreaRect | null,
   viewportWidth: number
 ): WindowControlsZone[] {
   if (!rect || rect.height <= 0) return [];
-
-  const zones: WindowControlsZone[] = [];
-  const bottom = rect.y + rect.height;
-
-  if (rect.x > 0) {
-    zones.push({ left: 0, right: rect.x, bottom });
-  }
-
-  const rightEdge = rect.x + rect.width;
-  if (rightEdge < viewportWidth) {
-    zones.push({ left: rightEdge, right: viewportWidth, bottom });
-  }
-
-  return zones;
+  return [{ left: 0, right: viewportWidth, bottom: rect.y + rect.height + TITLE_BAR_BUFFER }];
 }
 
 /**
- * Smallest y that keeps a floating element of `width`/`height` clear of every
- * control band it would otherwise intersect. Returns `y` unchanged when the
- * element does not overlap any band — popovers away from the window corners
- * must not move.
+ * Smallest y that keeps a floating element of `width` clear of every zone it
+ * would otherwise intersect. Returns `y` unchanged when the element does not
+ * overlap any zone, so popovers already below the strip never move.
  */
 export function clearWindowControls(
   x: number,
@@ -109,7 +99,7 @@ function readTitlebarAreaRect(): TitlebarAreaRect | null {
   return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
 }
 
-/** Control bands for the current window, empty when there is no custom title bar. */
+/** Reserved zones for the current window, empty when there is no custom title bar. */
 export function getWindowControlsZones(): WindowControlsZone[] {
   if (typeof window === 'undefined') return [];
   return resolveWindowControlsZones(readTitlebarAreaRect(), window.innerWidth);
@@ -121,12 +111,15 @@ export interface WindowControlsClearanceData {
 }
 
 /**
- * floating-ui middleware that pushes a floating element below the OS window
- * controls when — and only when — it would otherwise overlap them.
+ * floating-ui middleware that pushes a floating element below the title-bar
+ * strip when, and only when, it would otherwise reach into it.
  *
  * Place it *after* `shift()` (it corrects what shift clamps) and *before*
  * `size()`, so a height constraint can subtract the push via
- * `middlewareData.windowControlsClearance.pushed`.
+ * `middlewareData.windowControlsClearance.pushed`. That only works for
+ * top-anchored placements: with a bottom-anchored one (`*-end`, `top`) y
+ * depends on height, so subtracting the last push loops. Reserve a fixed band
+ * instead, as the project rail's add menu does.
  */
 export function windowControlsClearance(
   resolveZones: () => WindowControlsZone[] = getWindowControlsZones

@@ -197,24 +197,16 @@ class NimbalystDaoTest {
     }
 
     @Test
-    fun `deleteNotIn removes only projects whose id is absent from the list`() = runTest {
+    fun `deleteUnreferencedNotIn spares listed projects and any a cached session names`() = runTest {
         projectDao.upsertAll(
-            listOf(project(id = "/p/a"), project(id = "/p/b"), project(id = "/p/c"))
+            listOf(project(id = "/p/a"), project(id = "/p/b"), project(id = "/p/c"), project(id = "/p/d"))
         )
+        sessionDao.upsertAll(listOf(session("s1", projectId = "/p/c")))
 
-        projectDao.deleteNotIn(listOf("/p/a", "/p/b"))
+        projectDao.deleteUnreferencedNotIn(listOf("/p/a", "/p/b"))
 
         val remaining = projectDao.observeAll().first().map { it.id }.toSet()
-        assertEquals(setOf("/p/a", "/p/b"), remaining)
-    }
-
-    @Test
-    fun `deleteAll clears every project`() = runTest {
-        projectDao.upsertAll(listOf(project(id = "/p/a"), project(id = "/p/b")))
-
-        projectDao.deleteAll()
-
-        assertTrue(projectDao.observeAll().first().isEmpty())
+        assertEquals(setOf("/p/a", "/p/b", "/p/c"), remaining)
     }
 
     // ---------------------------------------------------------------------
@@ -549,5 +541,68 @@ class NimbalystDaoTest {
     @Test
     fun `getByRoomId returns null for unknown room`() = runTest {
         assertNull(syncStateDao.getByRoomId("missing"))
+    }
+
+    // ---------------------------------------------------------------------
+    // NimbalystRepository sync writes
+    // ---------------------------------------------------------------------
+
+    @Test
+    fun `persistSessionMessages never moves the room watermark backwards`() = runTest {
+        val repository = NimbalystRepository(db)
+        projectDao.upsertAll(listOf(project()))
+        sessionDao.upsertAll(listOf(session("s1")))
+
+        repository.persistSessionMessages("s1", listOf(message("m10", "s1", 10)), "c", 10, 1L)
+        // A late broadcast for an older message must not rewind the resume point.
+        repository.persistSessionMessages("s1", listOf(message("m7", "s1", 7)), null, 7, 2L)
+
+        assertEquals(10, syncStateDao.getByRoomId("s1")!!.lastSequence)
+        assertEquals(10, sessionDao.getById("s1")!!.lastSyncedSeq)
+    }
+
+    @Test
+    fun `persistSessionMessages for a session not yet indexed is skipped, not a crash`() = runTest {
+        val repository = NimbalystRepository(db)
+
+        val persisted = repository.persistSessionMessages("unknown", listOf(message("m1", "unknown", 1)), null, 1, 1L)
+
+        assertEquals(false, persisted)
+        assertEquals(0, messageDao.countForSession("unknown"))
+        // No watermark either, so the next sync request fetches this message.
+        assertNull(syncStateDao.getByRoomId("unknown"))
+    }
+
+    @Test
+    fun `session writes create a placeholder for a project the index has not sent`() = runTest {
+        val repository = NimbalystRepository(db)
+
+        repository.reconcileIndexSnapshot(
+            projects = emptyList(),
+            sessions = listOf(session("s2", projectId = "/Users/me/code/other")),
+            syncedAt = 1L
+        )
+        repository.upsertSession(session("s1", projectId = "/Users/me/code/app"))
+
+        val placeholder = projectDao.getByIds(listOf("/Users/me/code/app")).single()
+        assertEquals("app", placeholder.name)
+        assertTrue("a stand-in is provisional", placeholder.isProvisional)
+        assertTrue("and never listed as a project", projectDao.observeAll().first().none { it.id == placeholder.id })
+        assertEquals("/Users/me/code/other", sessionDao.getById("s2")!!.projectId)
+    }
+
+    @Test
+    fun `a fresh database has no prototype seed data`() = runTest {
+        val context = ApplicationProvider.getApplicationContext<android.content.Context>()
+        context.deleteDatabase("nimbalyst-android.db")
+        val fresh = NimbalystDatabase.getInstance(context)
+        try {
+            assertTrue(fresh.projectDao().observeAll().first().isEmpty())
+            assertNull(fresh.sessionDao().getById("session-android-scaffold"))
+        } finally {
+            fresh.close()
+            NimbalystDatabase.resetInstanceForTest()
+            context.deleteDatabase("nimbalyst-android.db")
+        }
     }
 }

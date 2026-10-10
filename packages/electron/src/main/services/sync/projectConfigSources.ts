@@ -7,6 +7,9 @@ import { getGitRemoteIdentities } from '../../utils/gitUtils';
 import { getDefaultAIModel } from '../../utils/store';
 import { getAgentWorkflowService } from '../AgentWorkflowService';
 import { parseActionPromptsFile } from '../ActionPromptParser';
+import { MARKER_FILE, loadTypeDefs } from '@nimbalyst/local-wiki';
+import { LOCAL_WIKI_CONFIG_FILE, localWikiFolderWithin, resolveLocalWikiLocation } from '../localWiki/localWikiLocation';
+import type { SyncedWikiType } from '@nimbalyst/runtime/sync/types';
 import { resolveClaudeConfigDir } from '@nimbalyst/runtime/ai/server/providers/claudeCode/claudeConfigDir';
 import type { ProjectConfigSyncDependencies } from './projectConfigSync';
 
@@ -31,8 +34,16 @@ function watchCommandFiles(files: Array<string | undefined>, watch: SourceWatch 
   }
 }
 
+/** Wiki types only (those declaring `storage:`), without the desktop-local source path. */
+async function wikiTypes(typesDir: string): Promise<SyncedWikiType[]> {
+  const { types } = await loadTypeDefs(typesDir);
+  return [...types.values()].filter(type => type.wikiType).map(({ typeId, displayName, displayNamePlural, storage, titleField, fields }) => ({
+    typeId, displayName, displayNamePlural, storage, titleField, fields,
+  }));
+}
+
 /** Main-process discovery and watcher ownership, with no renderer input. */
-export const projectConfigSources: Pick<ProjectConfigSyncDependencies, 'discoverCommands' | 'discoverActions' | 'getGitRemoteHash' | 'subscribeChanges' | 'refreshWatchers'> = {
+export const projectConfigSources: Pick<ProjectConfigSyncDependencies, 'discoverCommands' | 'discoverActions' | 'discoverLocalWiki' | 'getGitRemoteHash' | 'subscribeChanges' | 'refreshWatchers'> = {
   refreshWatchers: workspacePath => watches.get(workspacePath)?.refresh() ?? Promise.resolve(),
   discoverCommands: async workspacePath => {
     const watch = watches.get(workspacePath);
@@ -52,6 +63,18 @@ export const projectConfigSources: Pick<ProjectConfigSyncDependencies, 'discover
       throw error;
     }
   },
+  discoverLocalWiki: async workspacePath => {
+    // A wiki outside this checkout (a worktree's lives in the main checkout) is
+    // not in the files this project syncs, so the phone could not read it.
+    const folder = localWikiFolderWithin(workspacePath);
+    if (!folder) return undefined;
+    const marker = path.join(workspacePath, ...folder.split('/'), MARKER_FILE);
+    // The marker usually sits in a gitignored folder; watch it so a later edit or removal republishes.
+    watchCommandFiles([marker], watches.get(workspacePath));
+    if (!existsSync(marker)) return undefined;
+    const types = await wikiTypes(resolveLocalWikiLocation(workspacePath).typesDir);
+    return types.length > 0 ? { folder, types } : { folder };
+  },
   getGitRemoteHash: async workspacePath => {
     const remote = await getGitRemoteIdentities(workspacePath);
     return remote ? createHash('sha256').update(remote.canonical).digest('hex') : undefined;
@@ -59,12 +82,14 @@ export const projectConfigSources: Pick<ProjectConfigSyncDependencies, 'discover
   subscribeChanges: async (workspacePath, changed) => {
     const subscriberId = `mobile-project-config:${workspacePath}:${++nextWatchId}`;
     const actionFile = path.join(workspacePath, 'nimbalyst-local/ai-actions.md');
+    const wikiConfigFile = path.join(workspacePath, LOCAL_WIKI_CONFIG_FILE);
+    const typesDir = path.join(workspacePath, '.nimbalyst', 'trackers');
     const claudeRoot = resolveClaudeConfigDir();
     // The workspace bus is already shared with the file tree and covers both
     // .claude and ai-actions.md. Global roots are shared across enabled projects.
     const candidates = new Set([workspacePath, ...['commands', 'skills', 'plugins'].map(dir => path.join(claudeRoot, dir))]);
     const roots = new Set<string>();
-    const watch: SourceWatch = { active: true, subscriberId, roots, files: new Map([[actionFile, workspacePath]]), refresh: refreshRoots };
+    const watch: SourceWatch = { active: true, subscriberId, roots, files: new Map([[actionFile, workspacePath], [wikiConfigFile, workspacePath]]), refresh: refreshRoots };
     watches.set(workspacePath, watch);
     const dispose = () => {
       watch.active = false;
@@ -87,7 +112,8 @@ export const projectConfigSources: Pick<ProjectConfigSyncDependencies, 'discover
             // AgentWorkflowService has one cache per workspace, no per-source invalidation API.
             getAgentWorkflowService(workspacePath).clearCache();
             changed();
-          } else if (root === workspacePath && filePath === actionFile) changed();
+          } else if (root === workspacePath && (filePath === actionFile || filePath === wikiConfigFile || path.basename(filePath) === MARKER_FILE
+            || (path.dirname(filePath) === typesDir && filePath.endsWith('.yaml')))) changed();
         };
         try {
           await workspaceEventBus.subscribe(root, subscriberId, {

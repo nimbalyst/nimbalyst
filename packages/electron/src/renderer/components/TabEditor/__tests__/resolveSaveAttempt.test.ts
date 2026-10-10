@@ -18,7 +18,7 @@ function makeDeps(
   confirmOverwrite = true,
 ): SaveAttemptDeps & { saveFile: ReturnType<typeof vi.fn> } {
   const saveFile = vi.fn(async () => results.shift() ?? null);
-  return { saveFile, confirmOverwrite: () => confirmOverwrite };
+  return { saveFile, confirmOverwrite: async () => confirmOverwrite };
 }
 
 describe('resolveSaveAttempt', () => {
@@ -26,11 +26,11 @@ describe('resolveSaveAttempt', () => {
     const disk = 'externally updated board';
     const saveFile = vi.fn(async (_content: string, filePath: string, baseline: string | undefined) =>
       baseline === disk ? { success: true, filePath } : { success: false, filePath, conflict: true, diskContent: disk });
-    const outcome = await resolveSaveAttempt({ ...PARAMS, snapshotType: 'auto', expectedDiskContent: customEditorSaveBaseline('old tab baseline', disk) }, { saveFile, confirmOverwrite: () => false });
+    const outcome = await resolveSaveAttempt({ ...PARAMS, snapshotType: 'auto', expectedDiskContent: customEditorSaveBaseline('old tab baseline', disk) }, { saveFile, confirmOverwrite: async () => false });
     expect(outcome.kind).toBe('saved');
     // A dirty editor was not delivered the newer disk content: its model's
     // acknowledged baseline stays old, so the real conflict still survives.
-    const conflict = await resolveSaveAttempt({ ...PARAMS, snapshotType: 'auto', expectedDiskContent: customEditorSaveBaseline('old tab baseline', 'old tab baseline') }, { saveFile, confirmOverwrite: () => false });
+    const conflict = await resolveSaveAttempt({ ...PARAMS, snapshotType: 'auto', expectedDiskContent: customEditorSaveBaseline('old tab baseline', 'old tab baseline') }, { saveFile, confirmOverwrite: async () => false });
     expect(conflict.kind).toBe('autosave-conflict');
     expect(customEditorSaveBaseline('fallback', null)).toBe('fallback');
   });
@@ -120,7 +120,7 @@ describe('resolveSaveAttempt', () => {
   });
 
   it('never prompts or overwrites on an autosave conflict', async () => {
-    const confirmOverwrite = vi.fn(() => true);
+    const confirmOverwrite = vi.fn(async () => true);
     const saveFile = vi.fn(async () => ({
       success: false,
       filePath: '/w/doc.md',

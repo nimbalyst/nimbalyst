@@ -1,0 +1,10 @@
+/*
+ * A label's review list. Colors come from the host's --nim-* theme only. The
+ * type map's styles are typeMap/typeMap.css.
+ */
+.ontology-label-review { display: flex; flex-direction: column; gap: 6px; font-size: 13px; color: var(--nim-text); }
+.ontology-label-review ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.ontology-label-review-row { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.ontology-label-review-row > span:first-child { min-width: 0; flex: 1; }
+.ontology-label-review-row[data-severity='info'] > span:first-child { color: var(--nim-text-muted); }
+.ontology-label-review-empty { color: var(--nim-text-faint); margin: 0; }

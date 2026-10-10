@@ -174,6 +174,12 @@
   background: var(--nim-bg-hover);
 }
 
+/* The choice Enter picks while typing filters the list. */
+.tracker-field-choice-active {
+  outline: 1px solid var(--nim-primary);
+  outline-offset: -1px;
+}
+
 .tracker-field-choice-label {
   min-width: 0;
   flex: 1;

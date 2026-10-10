@@ -62,3 +62,25 @@ export function openWorkspaceFileLink(
   workspaceFileLinkOpener(rawHref, currentDocumentPath ?? null);
   return true;
 }
+
+/**
+ * A host's chance to open a web link itself before it goes to `window.open`.
+ * The web console uses it so a link to one of its own pages navigates the
+ * current tab, as a page link does on the desktop. `newTab` is true for a
+ * Cmd/Ctrl or middle click. Returns true when the host opened the link.
+ */
+export type HostLinkOpener = (url: string, options: { newTab: boolean }) => boolean;
+
+let hostLinkOpener: HostLinkOpener | null = null;
+
+/** Installs the host's opener; the returned function removes it. */
+export function setHostLinkOpener(opener: HostLinkOpener): () => void {
+  hostLinkOpener = opener;
+  return () => {
+    if (hostLinkOpener === opener) hostLinkOpener = null;
+  };
+}
+
+export function openLinkWithHost(url: string, options: { newTab: boolean }): boolean {
+  return hostLinkOpener?.(url, options) ?? false;
+}

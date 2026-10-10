@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { usePostHog } from 'posthog-js/react';
 import { ErrorBoundary } from '../../ErrorBoundary';
 import { useTheme } from '../../../hooks/useTheme';
+import { requestConfirmation } from '../../../dialogs/requestConfirmation';
 
 // Marketplace plugin from the official registry
 interface MarketplacePlugin {
@@ -299,7 +300,13 @@ function ClaudeCodePluginsPanelInner({ scope = 'user', workspacePath }: ClaudeCo
 
   const handleUninstall = async (target: UninstallTarget) => {
     const label = target.source ? `${target.name}@${target.source}` : target.name;
-    if (!confirm(`Uninstall ${label}?`)) {
+    const ok = await requestConfirmation({
+      title: 'Uninstall plugin',
+      message: `Uninstall ${label}?`,
+      confirmLabel: 'Uninstall',
+      destructive: true,
+    });
+    if (!ok) {
       return;
     }
 

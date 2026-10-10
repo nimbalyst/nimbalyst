@@ -16,8 +16,14 @@ data class PairingCredentials(
     val routingUserId: String?
         get() = personalUserId ?: authUserId ?: pairedUserId
 
+    /**
+     * The id the desktop derives the encryption key from:
+     * PBKDF2(seed, "nimbalyst:<personalUserId>"). Prefer the pairing QR's
+     * personal user id, as iOS does; older QR versions fall back to the auth
+     * user id.
+     */
     val cryptoUserId: String?
-        get() = authUserId
+        get() = personalUserId ?: authUserId
 
     val routingOrgId: String?
         get() = personalOrgId ?: orgId

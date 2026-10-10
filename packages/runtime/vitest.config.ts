@@ -41,7 +41,7 @@ export default defineConfig({
             'src/**/__tests__/**/*.test.{ts,tsx}',
             'src/**/__tests__/**/*.spec.{ts,tsx}',
           ],
-          exclude: ['node_modules', 'dist', 'src/ai/**'],
+          exclude: ['**/node_modules/**', 'dist', 'src/ai/**'],
         },
       },
       {
@@ -56,7 +56,7 @@ export default defineConfig({
             'src/ai/**/__tests__/**/*.test.{ts,tsx}',
             'src/ai/**/__tests__/**/*.spec.{ts,tsx}',
           ],
-          exclude: ['node_modules', 'dist'],
+          exclude: ['**/node_modules/**', 'dist'],
         },
       },
     ],

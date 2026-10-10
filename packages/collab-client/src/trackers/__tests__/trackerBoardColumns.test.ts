@@ -5,6 +5,7 @@ import { beforeAll, describe, expect, it } from 'vitest';
 import type { TrackerRecord } from '@nimbalyst/runtime/core/TrackerRecord';
 import {
   loadBuiltinTrackers,
+  globalRegistry,
   normalizeRelationshipValue,
   type TrackerRelationshipValue,
 } from '@nimbalyst/runtime/plugins/TrackerPlugin/models';
@@ -241,5 +242,25 @@ describe('board drops', () => {
       columnItems: [],
       dropIndex: null,
     })).toBeNull();
+  });
+});
+
+
+describe('boards grouped by a schema field', () => {
+  it('keeps empty schema lanes in option order, groups booleans, and writes the actual selected field', () => {
+    globalRegistry.register({ type: 'board-custom', displayName: 'Custom', displayNamePlural: 'Customs', fields: [
+      { name: 'stage', type: 'select', options: [{ value: 'next', label: 'Next' }, { value: 'now', label: 'Now' }] },
+      { name: 'shipped', type: 'boolean' },
+    ] } as never);
+    const item = { ...bug('custom'), primaryType: 'board-custom', fields: { title: 'Card', stage: 'now', shipped: false } };
+    const axis = { kind: 'field', fieldId: 'stage' } as const;
+    const columns = buildTrackerBoardColumns(axis, 'board-custom', [item]);
+    expect(columns.map(column => column.label)).toEqual(['Next', 'Now']);
+    const grouped = groupItemsIntoBoardColumns([item], columns, axis, 'manual');
+    expect(grouped[columns[1].key]).toEqual([item]);
+    expect(resolveBoardDrop({ item, axis, sourceColumnKey: columns[1].key, targetColumn: columns[0], columnItems: [], dropIndex: null })).toMatchObject({ stage: 'next' });
+    const booleans = buildTrackerBoardColumns({ kind: 'field', fieldId: 'shipped' }, 'board-custom', [item]);
+    expect(booleans.map(column => column.value)).toEqual(['true', 'false']);
+    globalRegistry.unregister('board-custom');
   });
 });

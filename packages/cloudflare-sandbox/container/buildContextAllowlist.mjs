@@ -17,7 +17,8 @@
 
 /** Directories staged whole (minus SKIP_DIR_NAMES / secret-shaped files). */
 export const ALLOWLISTED_DIRS = [
-  // patch-package runs from the root `postinstall`; without these `npm ci` fails.
+  // pnpm-workspace.yaml registers these under patchedDependencies; pnpm refuses
+  // to install when a registered patch file is missing.
   'patches',
   // The headless runner and the four packages its build actually needs.
   'packages/node/src',
@@ -25,6 +26,8 @@ export const ALLOWLISTED_DIRS = [
   'packages/runtime/scripts',
   'packages/extension-sdk/src',
   'packages/tracker-core/src',
+  'packages/tracker-schema/src',
+  'packages/tracker-engine/src',
   // Collaboration protocol build inputs and adapter type dependencies used by
   // the runtime's node closure.
   'packages/collab-protocol/src',
@@ -61,14 +64,17 @@ export const CONTEXT_ONLY_PATHS = ['bin', '.nimbalyst-build-context'];
 /** Individual files staged by name. */
 export const ALLOWLISTED_FILES = [
   'package.json',
-  'package-lock.json',
+  'pnpm-lock.yaml',
+  // Workspace list, hoisted linker, overrides and patches. Without it pnpm
+  // treats the context as a single package and the frozen lockfile mismatches.
+  'pnpm-workspace.yaml',
   // `packages/tracker-core/tsconfig.json` extends this. Omitting it does not
   // fail resolution loudly -- tsc falls back to its ES5 defaults and the build
   // dies much later with a wall of "Property 'find' does not exist" and
   // "Cannot find name 'Set'". Found by the first real image build.
   'tsconfig.json',
-  // The root `prepare` lifecycle script. It no-ops outside a git checkout, but
-  // npm errors if the file the script names is missing.
+  // The root `prepare` lifecycle script. The image install skips scripts, but
+  // a staged tree that names a missing file fails anyone who runs them.
   'scripts/install-git-hooks.mjs',
   'packages/node/tsconfig.json',
   'packages/node/nimbalyst-node.config.example.json',
@@ -76,6 +82,8 @@ export const ALLOWLISTED_FILES = [
   'packages/runtime/tsconfig.node.json',
   'packages/extension-sdk/tsconfig.json',
   'packages/tracker-core/tsconfig.json',
+  'packages/tracker-schema/tsconfig.json',
+  'packages/tracker-engine/tsconfig.json',
   'packages/collab-protocol/tsconfig.json',
   'packages/collab-protocol/tsconfig.build.json',
   'packages/collab-adapters/tsconfig.json',
@@ -85,9 +93,9 @@ export const ALLOWLISTED_FILES = [
  * Every workspace's `package.json` is staged, and nothing else from workspaces
  * not listed above.
  *
- * `npm ci` validates the lockfile against the full workspace set. A workspace
- * whose directory is absent is not "excluded", it is a lockfile mismatch, and
- * the install aborts. A `package.json` is metadata -- names, versions, scripts
+ * `pnpm install --frozen-lockfile` validates the lockfile against the full
+ * workspace set. A workspace whose directory is absent is not "excluded", it is
+ * a lockfile mismatch, and the install aborts. A `package.json` is metadata -- names, versions, scripts
  * -- so staging all of them costs a few kilobytes and no secrets.
  */
 export const STAGE_ALL_WORKSPACE_MANIFESTS = true;
@@ -218,7 +226,30 @@ export function classifyEntry({ name, isDirectory }) {
 }
 
 /**
- * Expand the root `package.json` "workspaces" globs to the directories that
+ * The `packages:` list from `pnpm-workspace.yaml`. Only the block-sequence form
+ * this repo uses is read; a negated glob is an error rather than a guess.
+ */
+export function parseWorkspacePackages(yamlText) {
+  const globs = [];
+  let inPackages = false;
+  for (const line of yamlText.split(/\r?\n/)) {
+    if (/^packages:\s*$/.test(line)) {
+      inPackages = true;
+      continue;
+    }
+    if (!inPackages || /^\s*(#.*)?$/.test(line)) continue;
+    const item = /^\s+-\s+['"]?([^'"#\s]+)['"]?\s*(#.*)?$/.exec(line);
+    if (!item) break;
+    if (item[1].startsWith('!')) {
+      throw new Error(`[stage] unsupported negated workspace glob: ${item[1]}`);
+    }
+    globs.push(item[1]);
+  }
+  return globs;
+}
+
+/**
+ * Expand the `pnpm-workspace.yaml` package globs to the directories that
  * exist, given a directory lister. Only the single-`*` trailing form this repo
  * uses is supported; anything else is an error rather than a guess.
  */

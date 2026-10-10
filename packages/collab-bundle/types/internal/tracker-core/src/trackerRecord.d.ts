@@ -83,7 +83,13 @@ export interface TrackerRecord {
      * owns that field and rejects an item that arrives already carrying a key.
      */
     localKey?: string;
-    source: 'native' | 'inline' | 'frontmatter' | 'import';
+    /**
+     * `local-wiki`: a typed page or table row of a Local wiki folder, read
+     * through `@nimbalyst/local-wiki` in the renderer. It exists only in the
+     * renderer's tracker map and must never be written to a database, synced or
+     * shared; its edits go to the library.
+     */
+    source: 'native' | 'inline' | 'frontmatter' | 'import' | 'local-wiki';
     sourceRef?: string;
     /**
      * Identity of this item's newest entry in the append-only revision history

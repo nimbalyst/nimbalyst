@@ -68,6 +68,9 @@ See [NIM-42](nimbalyst://NIM-42) and [NIM-7](nimbalyst://NIM-7 "view=card").
 
 Plan: [Roadmap](./plans/roadmap.md) and shared [Spec](nimbalyst://doc/abc123?orgId=org1).
 
+- [Storage in [Flagship](https://flagship.dev) is **ours**.[GH](nimbalyst://cite/s1/answer/k1 "by='Greg Hinkle' quote='Say %22no%22 %5Bnow%5D%0Aplease'")]{decided by="Greg" on=2026-09-30 over="our own engine"}
+- [Is it fast enough?]{open by="Spike 6"} See [Docs](https://x.dev "cite").
+
 [Board](./boards/flow.excalidraw "height=400")
 
 \`\`\`ts
@@ -176,6 +179,27 @@ describe('markdownYDoc parity with MarkdownCollabContentAdapter', () => {
     expect(exported).toContain('title: Parity corpus');
     expect(exported).toContain('[NIM-7](nimbalyst://NIM-7 "view=card")');
     expect(exported).toContain('```decision\nid: dec-1');
+  });
+
+  it('carries a marked sentence with a link, bold and legacy and console-link citations through the Y.Doc byte for byte', () => {
+    const markdown = [
+      'Intro.',
+      '',
+      '- [Storage in [Flagship](https://flagship.dev) is **ours**.[GH](nimbalyst://cite/s1/answer/k1 "by=\'Greg Hinkle\' quote=\'Say %22no%22 %5Bnow%5D%0Aplease\'")]{decided by="Greg" on=2026-09-30 over="our \\"own\\" engine"}',
+      '- [Is it fast enough?]{open by="Spike 6"} See [Docs](https://x.dev "cite").[AB](https://console.nimbalyst.com/app/cite/s2/prompt/p%2F1 "by=\'Ana B\' email=ana@example.com")',
+    ].join('\n');
+    const update = markdownToLexicalYUpdate(markdown);
+    expect(JSON.stringify(rootShape(docFromUpdate(update)))).toContain('"__type":"page-mark"');
+    expect(lexicalYDocToMarkdown(update)).toBe(markdown);
+    expect(MarkdownCollabContentAdapter.exportToFile(adapterDoc(markdown))).toBe(markdown);
+  });
+
+  it('keeps the written label of a console item link through the Y.Doc', () => {
+    const markdown = 'Sync runs on [the sync engine](https://console.nimbalyst.com/org/o/project/p/page/item/NIM-12 "rel=built-on") today.';
+    const update = markdownToLexicalYUpdate(markdown);
+    expect(JSON.stringify(rootShape(docFromUpdate(update)))).toContain('"__type":"tracker-reference"');
+    expect(lexicalYDocToMarkdown(update)).toBe(markdown);
+    expect(MarkdownCollabContentAdapter.exportToFile(adapterDoc(markdown))).toBe(markdown);
   });
 
   it('replaces an existing body the way applyFromFile does', () => {

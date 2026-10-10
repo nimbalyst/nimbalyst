@@ -158,7 +158,11 @@ export function registerExtensionChatHandlers(ctx: AIServiceContext): void {
       throw new Error(`Backend tool not available to this extension: ${toolName}`);
     }
 
-    const result = await handleBackendTool(toolName, toolName, options?.args ?? {}, resolved);
+    const result = await handleBackendTool(toolName, toolName, options?.args ?? {}, resolved, {
+      sessionId: null,
+      caller: 'panel',
+      extensionId: callerExtensionId,
+    });
     const text = result.content?.[0]?.text ?? '';
     if (result.isError) {
       throw new Error(text || `Backend tool ${toolName} failed`);

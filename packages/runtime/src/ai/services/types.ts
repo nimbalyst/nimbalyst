@@ -209,7 +209,8 @@ export interface IDocumentContextService {
     rawContext: RawDocumentContext | undefined,
     sessionId: string,
     providerType: AIProviderType,
-    modeTransition?: ModeTransition
+    modeTransition?: ModeTransition,
+    options?: { truncateContent?: boolean; truncateLength?: number; wikiSkillAvailable?: boolean }
   ): ContextPreparationResult;
 
   /**

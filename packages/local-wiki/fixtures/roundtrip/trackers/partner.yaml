@@ -1,0 +1,9 @@
+type: partner
+displayName: Partner
+displayNamePlural: Partners
+storage: table
+fields:
+  - name: title
+    type: string
+  - name: tier
+    type: select

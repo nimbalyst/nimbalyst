@@ -4,20 +4,20 @@ The Nimbalyst desktop app, built with Electron.
 
 ## Development Commands
 
-- **Dev server**: `npm run dev` (user runs this — don't do it yourself)
-- **Dev with restart loop**: `npm run dev:loop` (enables restart button / `/restart` command)
-- **Build for Mac**: `npm run build:mac:local` or `npm run build:mac:notarized`
-- **Auth callbacks in dev**: no URL-handler setup is required, including for `npm run dev:user2`. Every sign-in flow uses a nonce-protected one-shot listener on `127.0.0.1` owned by the instance that started it.
-- **Other deep links in dev (macOS)**: `npm run dev:url-handler` (from the repo root) points non-auth `nimbalyst://` links at this checkout. The applet in `scripts/install-dev-url-handler.sh` is not part of authentication. The dev app deliberately does *not* claim the scheme itself because all development copies share Electron's `com.github.Electron` bundle id. See `src/main/utils/protocolRegistration.ts`.
+- **Dev server**: `pnpm run dev` (user runs this — don't do it yourself)
+- **Dev with restart loop**: `pnpm run dev:loop` (enables restart button / `/restart` command)
+- **Build for Mac**: `pnpm run build:mac:local` or `pnpm run build:mac:notarized`
+- **Auth callbacks in dev**: no URL-handler setup is required, including for `pnpm run dev:user2`. Every sign-in flow uses a nonce-protected one-shot listener on `127.0.0.1` owned by the instance that started it.
+- **Other deep links in dev (macOS)**: `pnpm run dev:url-handler` (from the repo root) points non-auth `nimbalyst://` links at this checkout. The applet in `scripts/install-dev-url-handler.sh` is not part of authentication. The dev app deliberately does *not* claim the scheme itself because all development copies share Electron's `com.github.Electron` bundle id. See `src/main/utils/protocolRegistration.ts`.
 
 ### Testing
 
 From the repository root:
-- Run one spec: `npx playwright test e2e/monaco/file-watcher-updates.spec.ts`
-- Run a directory: `npx playwright test e2e/monaco/`
-- Run all: `npx playwright test`
+- Run one spec: `pnpm exec playwright test e2e/monaco/file-watcher-updates.spec.ts`
+- Run a directory: `pnpm exec playwright test e2e/monaco/`
+- Run all: `pnpm exec playwright test`
 
-**Always use `npx playwright test` directly.** Never use parallel execution — it corrupts PGLite. See [/docs/E2E_TESTING.md](/docs/E2E_TESTING.md).
+**Always use `pnpm exec playwright test` directly.** Never use parallel execution — it corrupts PGLite. See [/docs/E2E_TESTING.md](/docs/E2E_TESTING.md).
 
 ## Architecture
 
@@ -117,7 +117,7 @@ Provider implementations live in `packages/runtime` — see `/packages/runtime/C
 ## macOS Code Signing & Notarization
 
 - **Certificate**: Developer ID Application
-- **Builds**: `npm run build:mac:notarized` (notarized), `build:mac:local` (local testing)
+- **Builds**: `pnpm run build:mac:notarized` (notarized), `build:mac:local` (local testing)
 - **Bundled tools**: ripgrep is signed; JAR files are excluded automatically (can't be notarized)
 - **Entitlements**: hardened runtime with necessary exceptions
 

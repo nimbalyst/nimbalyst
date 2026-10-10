@@ -14,6 +14,7 @@ import type { TrackerRecord } from '../../../core/TrackerRecord';
 import type { TrackerItemType } from '../../../core/DocumentService';
 import { globalRegistry } from '../models';
 import { resolveTrackerWriteAccess } from '../models/trackerLifecycle';
+import { trackerHostWriterFor } from '../trackerHostWriter';
 import { getMembersField, addMembersValue } from '../models/trackerCollections';
 import { getRecordTitle, resolveRoleFieldName } from '../trackerRecordAccessors';
 import {
@@ -37,6 +38,13 @@ export interface EditingCellRef {
   field: EditingField;
 }
 
+/**
+ * Host-supplied confirmation for a destructive delete of `itemCount` items.
+ * Runtime cannot reach the host's dialog system, so the host passes one in;
+ * without it, delete is refused rather than falling back to a native dialog.
+ */
+export type ConfirmTrackerDelete = (itemCount: number) => Promise<boolean>;
+
 export interface UseTrackerRowsOptions {
   /** Sorted items the row UI is rendering (mirrored into an internal ref). */
   items: TrackerRecord[];
@@ -47,6 +55,8 @@ export interface UseTrackerRowsOptions {
   onItemSelect?: (itemId: string) => void;
   /** Bulk delete callback. */
   onDeleteItems?: (itemIds: string[]) => void;
+  /** Confirms a delete before `onDeleteItems` runs. Delete is refused without it. */
+  confirmDelete?: ConfirmTrackerDelete;
   /**
    * Bulk archive callback. `options.record === false` marks a replay, so a
    * recorder wrapped around this callback must not push a fresh undo entry for
@@ -167,6 +177,7 @@ export function useTrackerRows({
   activeTypeFilter,
   onItemSelect,
   onDeleteItems,
+  confirmDelete,
   onArchiveItems,
   onSwitchToFilesMode,
   resolveRecordById,
@@ -184,6 +195,7 @@ export function useTrackerRows({
     // only writing is refused. This is the one chokepoint the table, the kanban
     // board, bulk edits and the row context menu all share.
     if (!resolveTrackerWriteAccess(globalRegistry.get(item.primaryType ?? '')).canWrite) return false;
+    if (trackerHostWriterFor(item)) return true;
     return item.source === 'native'
       || !item.system.documentPath
       || item.source === 'frontmatter'
@@ -309,7 +321,8 @@ export function useTrackerRows({
     options?: { record?: boolean },
   ): Promise<boolean> => {
     const electronAPI = (window as any).electronAPI;
-    if (!electronAPI?.documentService) return false;
+    const hostWriter = trackerHostWriterFor(item);
+    if (!hostWriter && !electronAPI?.documentService) return false;
     const fields = Object.keys(updates);
     if (fields.length === 0) return false;
 
@@ -326,7 +339,9 @@ export function useTrackerRows({
       // Both IPC calls resolve `{success, error}` rather than rejecting, so a
       // main-process failure looks exactly like a success until it is read.
       let result: { success?: boolean; error?: string } | undefined;
-      if ((item.source === 'frontmatter' || item.source === 'import' || item.source === 'inline') && item.system.documentPath) {
+      if (hostWriter) {
+        result = { success: await hostWriter.write(item, updates) };
+      } else if ((item.source === 'frontmatter' || item.source === 'import' || item.source === 'inline') && item.system.documentPath) {
         if (electronAPI.documentService.updateTrackerItemInFile) {
           result = await electronAPI.documentService.updateTrackerItemInFile({
             itemId: item.id,
@@ -376,11 +391,22 @@ export function useTrackerRows({
   }, [updateItem]);
 
   const handleItemsUpdate = useCallback(async (
-    entries: readonly { item: TrackerRecord; updates: Record<string, unknown> }[],
+    allEntries: readonly { item: TrackerRecord; updates: Record<string, unknown> }[],
   ): Promise<{ written: number; failed: number }> => {
+    // Host-owned records (Local wiki files) are written one by one by the host.
+    let hostWritten = 0;
+    let hostFailed = 0;
+    for (const entry of allEntries) {
+      if (!trackerHostWriterFor(entry.item) || Object.keys(entry.updates).length === 0) continue;
+      if (await updateItem(entry.item, entry.updates)) hostWritten += 1;
+      else hostFailed += 1;
+    }
+    const entries = allEntries.filter(entry => !trackerHostWriterFor(entry.item));
+    if (entries.length === 0) return { written: hostWritten, failed: hostFailed };
+
     const electronAPI = (window as any).electronAPI;
     if (!electronAPI?.documentService?.updateTrackerItems) {
-      return { written: 0, failed: entries.length };
+      return { written: hostWritten, failed: hostFailed + entries.length };
     }
 
     const generation = undoGenerationRef.current;
@@ -406,10 +432,10 @@ export function useTrackerRows({
           },
         };
       });
-    if (routed.length === 0) return { written: 0, failed: 0 };
+    if (routed.length === 0) return { written: hostWritten, failed: hostFailed };
 
-    let written = 0;
-    let failed = 0;
+    let written = hostWritten;
+    let failed = hostFailed;
     for (let offset = 0; offset < routed.length; offset += 100) {
       const chunk = routed.slice(offset, offset + 100);
       try {
@@ -449,7 +475,7 @@ export function useTrackerRows({
       }
     }
     return { written, failed };
-  }, [recordUndoEntry]);
+  }, [recordUndoEntry, updateItem]);
 
   const replayEntry = useCallback(async (
     entry: TrackerUndoEntry,
@@ -793,12 +819,13 @@ export function useTrackerRows({
         case 'Backspace': {
           if (e.metaKey || e.ctrlKey) {
             e.preventDefault();
-            if (selectedIds.size > 0 && onDeleteItems) {
+            if (selectedIds.size > 0 && onDeleteItems && confirmDelete) {
               const ids = Array.from(selectedIds);
-              if (window.confirm(`Delete ${ids.length} item${ids.length > 1 ? 's' : ''}? This cannot be undone.`)) {
+              void confirmDelete(ids.length).then((approved) => {
+                if (!approved) return;
                 onDeleteItems(ids);
                 setSelectedIds(new Set());
-              }
+              });
             }
           }
           break;
@@ -821,7 +848,7 @@ export function useTrackerRows({
 
     node.addEventListener('keydown', handleKeyDown);
     return () => node.removeEventListener('keydown', handleKeyDown);
-  }, [focusedIndex, selectedIds, onItemSelect, onDeleteItems, handleSelectAll, closeContextMenu]);
+  }, [focusedIndex, selectedIds, onItemSelect, onDeleteItems, confirmDelete, handleSelectAll, closeContextMenu]);
 
   // Scroll focused row into view. The RevoGrid table does its own
   // virtualized scrolling, so this only matches the list view's rows.

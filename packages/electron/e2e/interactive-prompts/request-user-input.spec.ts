@@ -238,4 +238,29 @@ test.describe('RequestUserInput Widget', () => {
       page.locator(INTERACTIVE_PROMPT_SELECTORS.requestUserInputCompletedState),
     ).toBeVisible();
   });
+
+  test('shows skipped state when the user sent a new message instead of answering', async () => {
+    const sessionId = await createTestSession(page, workspacePath, {
+      title: 'Test RUI skipped',
+    });
+    await insertUserPrompt(page, sessionId, 'Quick yes/no');
+    await insertPendingRequestUserInput(page, sessionId, {
+      title: 'Confirm action',
+      fields: [{ type: 'confirm', id: 'go', label: 'Proceed?' }],
+    });
+    await insertUserPrompt(page, sessionId, 'Never mind, do something else');
+
+    await page.waitForTimeout(1000);
+    const sessionItem = page.locator(`#session-list-item-${sessionId}`);
+    await expect(sessionItem).toBeVisible({ timeout: TEST_TIMEOUTS.MEDIUM });
+    await sessionItem.click();
+    await page.waitForTimeout(1000);
+
+    const widget = page.locator(INTERACTIVE_PROMPT_SELECTORS.requestUserInputWidget);
+    await expect(widget).toBeVisible({ timeout: TEST_TIMEOUTS.VERY_LONG });
+    await expect(widget).toHaveAttribute('data-state', 'skipped');
+    await expect(widget.locator('[data-testid="request-user-input-skipped"]')).toBeVisible();
+    await expect(widget.locator(INTERACTIVE_PROMPT_SELECTORS.requestUserInputSubmitButton)).toHaveCount(0);
+    await expect(page.getByLabel('Jump to question')).toHaveCount(0);
+  });
 });

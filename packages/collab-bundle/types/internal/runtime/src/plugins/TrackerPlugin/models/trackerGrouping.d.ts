@@ -1,10 +1,15 @@
 import type { TrackerRecord } from '../../../core/TrackerRecord';
-import { type FieldDefinition, type TrackerRelationshipValue } from '@nimbalyst/tracker-schema';
+import { type FieldDefinition, type TrackerRelationshipValue } from '../../../../../tracker-schema/src/browser';
 export declare const TRACKER_GROUPING_AXES: readonly ["status", "priority", "assignee", "type", "tag", "milestone", "goal"];
-export type TrackerGroupingAxis = (typeof TRACKER_GROUPING_AXES)[number];
+export type BuiltinTrackerGroupingAxis = (typeof TRACKER_GROUPING_AXES)[number];
+export type TrackerFieldGrouping = {
+    kind: 'field';
+    fieldId: string;
+};
+export type TrackerGroupingAxis = BuiltinTrackerGroupingAxis | TrackerFieldGrouping;
 export type TrackerGroupBy = 'none' | TrackerGroupingAxis;
 export interface TrackerGroupingOption {
-    value: TrackerGroupingAxis;
+    value: BuiltinTrackerGroupingAxis;
     label: string;
 }
 export declare const TRACKER_GROUPING_OPTIONS: readonly TrackerGroupingOption[];

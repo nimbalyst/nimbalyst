@@ -25,6 +25,7 @@ export function sessionListMetadata(
     parentSessionId: s.parentSessionId || null,
     worktreeId: s.worktreeId || null,
     childCount: s.childCount || 0,
+    descendantCount: s.descendantCount || 0,
     uncommittedCount: s.uncommittedCount || 0,
     // Kanban board phase and tags from metadata JSONB
     ...(s.phase && { phase: s.phase }),

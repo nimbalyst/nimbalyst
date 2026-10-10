@@ -201,6 +201,15 @@ const contentFlushRegistry = new WeakMap<
  * A binding that never registers a flush contributes nothing here, so this
  * still closes the provider-to-server half for every collaborative document.
  */
+/**
+ * Whether an editor's binding has registered its pending-content flush yet.
+ * Editors that buffer writes (Excalidraw, CSV, mockup) register it once they
+ * are bound to the Y.Doc, which can be after they register their API.
+ */
+export function hasContentFlush(collaboration: CollaborationContext): boolean {
+  return (contentFlushRegistry.get(collaboration)?.size ?? 0) > 0;
+}
+
 export async function flushCollaborativeContent(
   collaboration: CollaborationContext,
 ): Promise<boolean> {
@@ -299,6 +308,13 @@ export interface CollabExtensionHostArgs {
    * is dropped, which is the same as never registering.
    */
   onViewportRegistered?: (viewport: EditorViewport | null) => void;
+  /**
+   * 'hidden' for an editor mounted with no tab, for an agent's tool call: an
+   * open tab of the same page then keeps the API. Defaults to 'visible'.
+   */
+  editorAPIPriority?: 'visible' | 'hidden';
+  /** The registry owner token, when the caller unregisters the API itself. */
+  editorAPIOwnerToken?: ReturnType<typeof createEditorAPIOwnerToken>;
 }
 
 /**
@@ -328,10 +344,11 @@ export function createCollabExtensionHost(
     embedded = false,
     readOnly = false,
     onViewportRegistered,
+    editorAPIPriority = 'visible',
   } = args;
 
   const editorKey = makeEditorKey(filePath);
-  const editorAPIOwnerToken = createEditorAPIOwnerToken(`collab:${filePath}`);
+  const editorAPIOwnerToken = args.editorAPIOwnerToken ?? createEditorAPIOwnerToken(`collab:${filePath}`);
 
   const storage: ExtensionStorage = {
     get: () => undefined,
@@ -426,7 +443,7 @@ export function createCollabExtensionHost(
           () => flushCollaborativeContent(collaboration).then(() => undefined),
           {
             ownerToken: editorAPIOwnerToken,
-            priority: 'visible',
+            priority: editorAPIPriority,
           },
         );
       } else {

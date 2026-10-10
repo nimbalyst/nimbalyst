@@ -1319,6 +1319,33 @@ describe('DocumentModel diff lifecycle (NIM-5359)', () => {
     });
 
     /**
+     * A synchronous inline diff can block the renderer for longer than the
+     * watchdog bound (#1606). The overdue timer then runs the moment the thread
+     * frees up, ahead of the presenter's acknowledgement queued behind it, and
+     * recovering there throws away the diff that just rendered and replays it.
+     */
+    it('waits for the acknowledgement when the watchdog fires late after a blocked thread', async () => {
+      harness = createLifecycleHarness({ watchdogMs: 1000 });
+      const a = harness.attachPresenter();
+
+      harness.emit('C1');
+      await settle();
+      const generation = lastGeneration(a.diffCb);
+      const loadsBefore = harness.loadCalls();
+
+      // The presenter blocks the thread for 20s building the diff: wall-clock
+      // time passes and no timer runs. Then the overdue watchdog runs first...
+      vi.setSystemTime(Date.now() + 20_000);
+      await vi.advanceTimersByTimeAsync(1000);
+      // ...and the presenter's report lands right behind it.
+      a.handle.completeDiffApply({ generation, outcome: 'applied' });
+      await vi.advanceTimersByTimeAsync(5000);
+
+      expect(harness.loadCalls()).toBe(loadsBefore);
+      expect(contentsOf(a.diffCb)).toEqual(['C1']);
+    });
+
+    /**
      * The recovery budget bounds how many times the model re-reads disk for a
      * presenter that never acknowledges anything. Spending the last one on a
      * generation it then declines to watch is the worst of both: the session sits

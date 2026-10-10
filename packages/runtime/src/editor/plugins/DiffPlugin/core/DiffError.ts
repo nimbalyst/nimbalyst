@@ -27,9 +27,9 @@ export class DiffError extends Error {
     this.originalError = originalError;
 
     // Maintain proper stack trace
-    if (Error.captureStackTrace) {
-      Error.captureStackTrace(this, DiffError);
-    }
+    // V8 only; absent from the ES lib types and some runtimes.
+    (Error as {captureStackTrace?: (target: object, constructor?: Function) => void})
+      .captureStackTrace?.(this, DiffError);
   }
 
   /**

@@ -35,5 +35,10 @@ export interface TrackerBoardSurfaceProps {
     /** Omit for a read-only permission state. */
     onItemUpdate?: (item: TrackerRecord, updates: Record<string, unknown>) => Promise<unknown> | unknown;
     currentIdentity?: TrackerIdentity | null;
+    sortDirection?: 'asc' | 'desc';
+    preserveRowOrder?: boolean;
+    hiddenColumns?: readonly string[];
+    renderCardFields?: (item: TrackerRecord) => React.ReactNode;
+    onCreateItem?: (title: string, fields?: Record<string, unknown>, requestId?: string) => Promise<void>;
 }
-export declare function TrackerBoardSurface({ rows, trackerType, groupBy, ordering, statusScope, resolveRelationshipLabel, selectedItemIds, highlightedItemId, onToggleSelected, onOpenItem, onItemUpdate, currentIdentity, }: TrackerBoardSurfaceProps): React.JSX.Element;
+export declare function TrackerBoardSurface({ rows, trackerType, groupBy, ordering, statusScope, resolveRelationshipLabel, selectedItemIds, highlightedItemId, onToggleSelected, onOpenItem, onItemUpdate, currentIdentity, sortDirection, onCreateItem, hiddenColumns, preserveRowOrder, renderCardFields, }: TrackerBoardSurfaceProps): React.JSX.Element;

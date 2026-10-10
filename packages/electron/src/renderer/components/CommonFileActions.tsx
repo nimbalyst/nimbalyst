@@ -18,6 +18,7 @@ import {
 import { useAtomValue } from 'jotai';
 import { useFileActions } from '../hooks/useFileActions';
 import { workspaceHasTeamAtom } from '../store/atoms/collabDocuments';
+import { personalPageSupportsType } from '../services/personalPageTypes';
 import { isCollabUri } from '@nimbalyst/collab-protocol';
 import { getCollaborativeDocumentTypeCatalog } from '../services/CollaborativeDocumentTypeCatalog';
 import { askShareToTeam, shareFileToTeam } from '../services/shareToTeamFlow';
@@ -65,13 +66,17 @@ export function CommonFileActions({
     documentTypeCatalog.getSnapshot,
   );
   const shareability = useMemo<
-    { state: 'ready' } | { state: 'unsupported'; reason: string }
+    { state: 'ready'; descriptor?: { documentType: string } } | { state: 'unsupported'; reason: string }
   >(
     () => (isDirectory
       ? { state: 'ready' }
       : documentTypeCatalog.resolveShareability(fileName)),
     [catalogRevision, documentTypeCatalog, fileName, isDirectory],
   );
+  // A folder copies to Team only; a file of any type but code can always go to Personal.
+  const canCopyToPersonal = !isDirectory
+    && shareability.state === 'ready'
+    && personalPageSupportsType(shareability.descriptor?.documentType ?? 'markdown');
   /**
    * Ask, then share. Both halves live in `shareToTeamFlow` so the feedback-request
    * compose path drives the same dialog and the same publish rather than a
@@ -146,9 +151,10 @@ export function CommonFileActions({
         </Item>
       )}
 
-      {/* Team workspaces always explain catalog eligibility. Unsupported
-          types stay visible but cannot open the promotion dialog. */}
-      {hasTeam && !isCollabUri(filePath) && (
+      {/* Copy to Wiki: Team when the project has one, Personal for markdown
+          with or without a team. Unsupported types stay visible (with a team)
+          but cannot open the dialog. */}
+      {(hasTeam || canCopyToPersonal) && !isCollabUri(filePath) && (
         <Item
           className={`${menuItemClass} ${shareability.state === 'ready' ? '' : 'opacity-55 cursor-not-allowed'}`}
           aria-disabled={shareability.state !== 'ready'}
@@ -163,7 +169,7 @@ export function CommonFileActions({
             <MaterialSymbol icon={isDirectory ? 'drive_folder_upload' : 'group'} size={iconSize} />
           )}
           <span className="min-w-0 flex-1">
-            <span className="block">{isDirectory ? 'Share Folder to Team' : 'Share to Team'}</span>
+            <span className="block">{isDirectory ? 'Share Folder to Team' : 'Copy to Wiki...'}</span>
             {shareability.state === 'unsupported' && (
               <span className="block text-[11px] leading-snug text-nim-disabled mt-0.5">
                 {shareability.reason}

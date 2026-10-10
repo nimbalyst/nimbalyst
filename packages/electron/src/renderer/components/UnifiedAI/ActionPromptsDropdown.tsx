@@ -3,9 +3,11 @@ import { useAtomValue, useSetAtom } from 'jotai';
 import { usePostHog } from 'posthog-js/react';
 import { MaterialSymbol } from '@nimbalyst/runtime/ui/icons/MaterialSymbol';
 import { FloatingPortal, useFloatingMenu } from '../../hooks/useFloatingMenu';
+import { useMenuTypeahead } from '../../hooks/useMenuTypeahead';
 import {
   actionPromptsAtomFamily,
   type ActionPrompt,
+  type ActionPickerSettings,
 } from '../../store/atoms/actionPrompts';
 
 interface ActionPromptsDropdownProps {
@@ -17,7 +19,7 @@ interface ActionPromptsDropdownProps {
    * `launch: same-session` (or has no config at all). The composer should
    * replace its draft with this string and push an undo snapshot.
    */
-  onInsert: (body: string) => void;
+  onInsert: (body: string, picker?: ActionPickerSettings) => void;
   /**
    * Called when the user picks an action whose config is `launch: new-session`.
    * If omitted, the dropdown falls back to the same-session insert path so
@@ -48,6 +50,7 @@ export function ActionPromptsDropdown({ open, onOpenChange, workspacePath, onIns
     offsetPx: 6,
     constrainHeight: false,
   });
+  const { getTypeaheadMatch, resetTypeahead } = useMenuTypeahead(menu.isOpen);
 
   // Reopening is a recovery boundary for missed native events (#1524).
   // Keep the initial fetch too, so the button count is populated before opening.
@@ -106,7 +109,7 @@ export function ActionPromptsDropdown({ open, onOpenChange, workspacePath, onIns
         return;
       }
 
-      onInsert(action.body);
+      onInsert(action.body, { model: action.config?.model, effort: action.config?.effort });
       menu.setIsOpen(false);
       try {
         posthog?.capture('action_prompt_inserted', {
@@ -157,20 +160,25 @@ export function ActionPromptsDropdown({ open, onOpenChange, workspacePath, onIns
       if (!hasActions) return;
       if (e.key === 'ArrowDown') {
         e.preventDefault();
+        resetTypeahead();
         setHighlightedIndex((i) => (i + 1) % actions.length);
       } else if (e.key === 'ArrowUp') {
         e.preventDefault();
+        resetTypeahead();
         setHighlightedIndex((i) => (i - 1 + actions.length) % actions.length);
       } else if (e.key === 'Enter') {
         e.preventDefault();
         const action = actions[highlightedIndex];
         if (action) handleSelect(action);
+      } else {
+        const match = getTypeaheadMatch(e, actions);
+        if (match >= 0) setHighlightedIndex(match);
       }
     },
-    [hasActions, actions, highlightedIndex, handleSelect]
+    [hasActions, actions, highlightedIndex, handleSelect, getTypeaheadMatch, resetTypeahead]
   );
 
-  // Scroll the highlighted item into view as the user navigates with arrows.
+  // Scroll the highlighted item into view as the user navigates with arrows or typeahead.
   useEffect(() => {
     if (!menu.isOpen) return;
     const el = itemRefs.current[highlightedIndex];

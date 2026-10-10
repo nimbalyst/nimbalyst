@@ -37,6 +37,6 @@ describe('extension-sdk build emit stability', () => {
     const { scripts } = readJsonc('package.json');
 
     expect(scripts['build:clean']).toMatch(/rmSync/);
-    expect(scripts.prepublishOnly).toBe('npm run build:clean');
+    expect(scripts.prepublishOnly).toBe('pnpm run build:clean');
   });
 });

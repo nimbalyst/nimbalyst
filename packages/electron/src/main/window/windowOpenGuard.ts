@@ -20,6 +20,8 @@
 
 import { app, shell } from 'electron';
 
+import { routeConsoleLink } from '../services/consoleLinks/consoleLinkHandlers';
+
 export type WindowOpenDecision = 'allow' | 'open-external' | 'deny';
 
 export function decideWindowOpen(url: string, openerUrl: string | null): WindowOpenDecision {
@@ -65,7 +67,8 @@ export function installWindowOpenGuard(): void {
         return { action: 'allow' };
       }
       if (decision === 'open-external') {
-        void shell.openExternal(url);
+        // A console link opens in the app when this window can resolve it.
+        if (!routeConsoleLink(url, contents)) void shell.openExternal(url);
       } else {
         console.warn('[MAIN] Blocked window.open for URL:', url);
       }

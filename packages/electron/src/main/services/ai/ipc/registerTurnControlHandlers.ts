@@ -13,6 +13,7 @@ import {
 } from '@nimbalyst/runtime/ai/server/types';
 import { agentCapabilitiesForProviderType } from '@nimbalyst/runtime/ai/server/agentCapabilities';
 import { safeSend } from '../aiServiceUtils';
+import { cancelTurnSetup } from '../turnSetupStages';
 import type { AIServiceContext } from './AIServiceContext';
 
 /**
@@ -38,6 +39,12 @@ export function registerTurnControlHandlers(ctx: AIServiceContext): void {
     if (!session) {
       console.warn(`[AIService] Cancel failed - session not found: ${sessionId}`);
       return { success: false, error: 'Session not found' };
+    }
+
+    // A turn still in setup has no provider stream to abort yet. Without this
+    // it went on to call the provider after the user had cancelled.
+    if (cancelTurnSetup(sessionId)) {
+      logger.main.info(`[AIService] cancelRequest: stopping session ${sessionId} before its provider starts`);
     }
 
     if (session.provider === 'claude-code-cli') {

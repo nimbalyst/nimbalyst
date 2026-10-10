@@ -32,8 +32,8 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@nimbalyst/runtime": "*",
-    "better-sqlite3": "13.0.1",
+    "@nimbalyst/runtime": "workspace:*",
+    "better-sqlite3": "13.0.3",
     "uuid": "^14.0.0"
   },
   "devDependencies": {

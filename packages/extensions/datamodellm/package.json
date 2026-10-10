@@ -17,6 +17,7 @@
     "@xyflow/react": "^12.11.5",
     "elkjs": "^0.11.0",
     "html2canvas": "^1.4.1",
+    "nanoid": "^5.1.16",
     "zustand": "^5.0.0"
   },
   "devDependencies": {
@@ -25,7 +26,7 @@
     "@vitejs/plugin-react": "^5.1.2",
     "typescript": "^5.0.0",
     "vite": "^7.1.12",
-    "yjs": ">=13.5.42",
+    "yjs": "13.6.32",
     "y-protocols": "^1.0.5"
   },
   "peerDependencies": {

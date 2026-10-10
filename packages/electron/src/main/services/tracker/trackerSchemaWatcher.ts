@@ -2,9 +2,13 @@ import * as path from 'path';
 import * as fs from 'fs';
 import * as fsPromises from 'fs/promises';
 import chokidar from 'chokidar';
+import { clearTrackerSchemaLoadFailure, recordTrackerSchemaLoadFailure } from './trackerSchemaLoadFailures';
 import {
   globalRegistry,
+  registryTrackerTypeLookup,
+  resolveTrackerTypeInheritance,
   type TrackerDataModel,
+  type TrackerTypeDeclaration,
 } from '@nimbalyst/runtime/plugins/TrackerPlugin/models';
 import {
   materializeYamlTrackerTypeDef,
@@ -21,7 +25,7 @@ import {
   projectedSchemaFormForFile,
   refreshSharedSchemaHeader,
   resolveOwningTeamName,
-  resolveSchemaModelFromContent,
+  parseSchemaDeclarationFromContent,
   writeBackSharedSchema,
 } from './trackerSchemaProjection';
 import {
@@ -101,13 +105,34 @@ export async function reloadWorkspaceSchemaFile(
 ): Promise<void> {
   if (isSelfWrittenSchemaFile(filePath)) return; // our own write-back, not a user edit
   const fileName = path.basename(filePath);
-  let model: TrackerDataModel;
+  // What gets registered: a derived type stays declared so base changes reach it.
+  let declared: TrackerTypeDeclaration;
+  let content: string | null = null;
   try {
-    model = resolveSchemaModelFromContent(fileName, fs.readFileSync(filePath, 'utf-8'));
+    content = fs.readFileSync(filePath, 'utf-8');
+    declared = parseSchemaDeclarationFromContent(fileName, content);
   } catch (err) {
     console.error(`[TrackerSchemaService] Failed to reload ${filePath}:`, err);
+    recordTrackerSchemaLoadFailure(workspacePath, filePath, err, content);
     return;
   }
+  const resolution = resolveTrackerTypeInheritance(declared, registryTrackerTypeLookup);
+  if (!resolution.model) {
+    if (resolution.errors.every((error) => error.code === 'INHERITANCE_UNKNOWN_BASE')) {
+      // A subtype saved before its base. Register the declaration so the
+      // registry resolves it the moment the base loads; there is nothing to
+      // gate or mirror until then.
+      globalRegistry.register(declared);
+      notifySchemaChanged();
+      logger.main.info(`[TrackerSchemaService] '${declared.type}' is waiting for its base type: ${resolution.errors[0]?.message}`);
+      return;
+    }
+    const message = resolution.errors.map((e) => e.message).join('; ');
+    console.error(`[TrackerSchemaService] Failed to reload ${filePath}:`, message);
+    recordTrackerSchemaLoadFailure(workspacePath, filePath, new Error(message), content);
+    return;
+  }
+  const model: TrackerDataModel = resolution.model;
 
   // A hand edit cannot carry a confirmation: the file is already saved by the
   // time we hear about it, and there is no modal to show at watcher time. So the
@@ -161,7 +186,12 @@ export async function reloadWorkspaceSchemaFile(
   // both left the registry stale for anything reading it on the same tick and
   // made a personal tracker's edit fail to load whenever unrelated team-schema
   // work threw.
-  globalRegistry.register(model);
+  const waitingBefore = globalRegistry.getUnresolvedDerivedTypes();
+  globalRegistry.register(declared);
+  clearTrackerSchemaLoadFailure(workspacePath, filePath);
+  // Subtypes that were waiting on this type resolve now (the registry
+  // re-resolves dependents on every register); they still need mirroring.
+  const nowResolved = waitingBefore.filter((type) => globalRegistry.get(type));
   // console.log(`[TrackerSchemaService] Reloaded schema: ${model.type}`);
   notifySchemaChanged();
 
@@ -186,11 +216,16 @@ export async function reloadWorkspaceSchemaFile(
       },
     });
     if (model.sharing === 'team') {
-      globalRegistry.register(model);
+      globalRegistry.register(declared);
       await refreshSharedSchemaHeader(workspacePath, filePath, model);
     }
   } catch (err) {
     console.error(`[TrackerSchemaService] Failed to mirror ${model.type} after reload:`, err);
+  }
+
+  for (const type of nowResolved) {
+    const dependent = globalRegistry.get(type);
+    if (dependent) await materializeYamlTrackerTypeDef(workspacePath, dependent);
   }
 }
 
@@ -199,18 +234,33 @@ export function watchSchemaDirectory(
   reloadWorkspaceSchema: (workspacePath: string, filePath: string) => Promise<void>,
   handleSchemaFileDeleted: (workspacePath: string, filePath: string) => Promise<void>,
   reloadPredicateRegistry: (workspacePath: string) => Promise<void>,
+  reloadLabelRegistry?: (workspacePath: string) => Promise<void>,
 ): void {
   stopSchemaWatcher();
 
   const trackersDir = path.join(workspacePath, '.nimbalyst', 'trackers');
   const predicateRegistryPath = path.join(workspacePath, '.nimbalyst', 'predicates.yaml');
+  const labelRegistryPath = path.join(workspacePath, '.nimbalyst', 'labels.yaml');
+  // Both registries reload the same way on add, change, and unlink.
+  const reloadRegistry = (filePath: string): boolean => {
+    const resolved = path.resolve(filePath);
+    if (resolved === path.resolve(predicateRegistryPath)) {
+      void reloadPredicateRegistry(workspacePath);
+      return true;
+    }
+    if (resolved === path.resolve(labelRegistryPath)) {
+      if (reloadLabelRegistry) void reloadLabelRegistry(workspacePath);
+      return true;
+    }
+    return false;
+  };
 
   // Watch the parent even before either artifact exists so creating the first
   // tracker type or predicate registry is observed without a restart.
   const nimbalystDir = path.dirname(trackersDir);
   if (!fs.existsSync(nimbalystDir)) return;
 
-  watcher = chokidar.watch([trackersDir, predicateRegistryPath], {
+  watcher = chokidar.watch([trackersDir, predicateRegistryPath, labelRegistryPath], {
     // Ignore dotfiles inside the watched directory, but do not ignore the
     // parent `.nimbalyst` segment itself or chokidar drops every event.
     ignored: (candidatePath: string) => shouldIgnoreTrackerWatchPath(trackersDir, candidatePath),
@@ -221,23 +271,20 @@ export function watchSchemaDirectory(
 
   watcher
     .on('change', (filePath: string) => {
-      if (path.resolve(filePath) === path.resolve(predicateRegistryPath)) {
-        void reloadPredicateRegistry(workspacePath);
-      } else if (isTrackerSchemaFile(filePath)) {
+      if (reloadRegistry(filePath)) return;
+      if (isTrackerSchemaFile(filePath)) {
         void reloadWorkspaceSchema(workspacePath, filePath);
       }
     })
     .on('add', (filePath: string) => {
-      if (path.resolve(filePath) === path.resolve(predicateRegistryPath)) {
-        void reloadPredicateRegistry(workspacePath);
-      } else if (isTrackerSchemaFile(filePath)) {
+      if (reloadRegistry(filePath)) return;
+      if (isTrackerSchemaFile(filePath)) {
         void reloadWorkspaceSchema(workspacePath, filePath);
       }
     })
     .on('unlink', (filePath: string) => {
-      if (path.resolve(filePath) === path.resolve(predicateRegistryPath)) {
-        void reloadPredicateRegistry(workspacePath);
-      } else if (isTrackerSchemaFile(filePath)) {
+      if (reloadRegistry(filePath)) return;
+      if (isTrackerSchemaFile(filePath)) {
         // Async since the handler has to ask whether the team owns a copy, so a
         // throw here would surface as an unhandled rejection rather than on the
         // watcher callback the way it did when this was synchronous.

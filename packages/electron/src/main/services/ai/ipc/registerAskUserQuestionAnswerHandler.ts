@@ -10,9 +10,10 @@ import { safeHandle } from "../../../utils/ipcRegistry";
 import { logger } from "../../../utils/logger";
 import {
   hasTerminalizedAskUserQuestion,
-  persistAskUserQuestionTerminalResult,
+  persistInteractivePromptTerminalResult,
 } from "../askUserQuestionFallbackResolution";
 import { deliverCodexQuestionAnswer } from "../codexQuestionDelivery";
+import { hasPersistedTerminalResult } from "../questionTerminalResultLookup";
 import type { AIServiceContext } from "./AIServiceContext";
 
 export function registerAskUserQuestionAnswerHandler(
@@ -180,7 +181,12 @@ export function registerAskUserQuestionAnswerHandler(
         // Issue #773: without a terminal tool_result the widget stayed pending, so
         // every re-click auto-resumed again. Refuse a repeat answer for a question
         // this process already terminalized.
-        if (hasTerminalizedAskUserQuestion(resolvedSessionId, questionId)) {
+        // The in-memory set is empty after a restart; the durable row is not,
+        // so a late answer from an older mobile build or voice is refused too.
+        if (
+          hasTerminalizedAskUserQuestion(resolvedSessionId, questionId) ||
+          (await hasPersistedTerminalResult(resolvedSessionId, questionId))
+        ) {
           logger.main.info(
             `[AIService] AskUserQuestion already answered without a live handler; ignoring repeat: ${questionId}`
           );
@@ -190,7 +196,7 @@ export function registerAskUserQuestionAnswerHandler(
         // Issue #1116: terminalize the tool call BEFORE resuming. The live paths
         // (provider resolve / MCP settle / abort) each write this row; the fallback
         // did not, so the widget never completed and came back on every remount.
-        await persistAskUserQuestionTerminalResult({
+        await persistInteractivePromptTerminalResult({
           sessionId: resolvedSessionId,
           questionId,
           answers,
@@ -229,7 +235,8 @@ export function registerAskUserQuestionAnswerHandler(
             await ctx.sendMessageHandler!(
               event,
               resumeMessage,
-              undefined,
+              // Not a human turn: it must not supersede other open questions.
+              { promptOrigin: "interactive-question" },
               resolvedSessionId,
               workspacePath
             );

@@ -29,6 +29,11 @@ public struct SessionListRow: Identifiable, Hashable, Sendable {
     public var lastReadAt: Int?
     public var lastMessageAt: Int?
 
+    /// Derived display metadata; never persisted or sent over sync.
+    public var treeDepth: Int = 0
+    public var treeOrder: String? = nil
+    public var phoneIndentationLevel: Int { min(max(treeDepth, 0), 2) }
+
     /// Whether a message arrived after the last read (mirrors `Session.hasUnread`).
     public var hasUnread: Bool {
         guard let messageAt = lastMessageAt, messageAt > 0 else { return false }
@@ -93,6 +98,8 @@ public struct SessionListRow: Identifiable, Hashable, Sendable {
     }
 
     init(row: Row, prefix: String = "") {
+        if row.hasColumn("treeDepth") { treeDepth = row["treeDepth"] ?? 0 }
+        if row.hasColumn("treeOrder") { treeOrder = row["treeOrder"] }
         id = row["\(prefix)id"]
         projectId = row["\(prefix)projectId"]
         titleDecrypted = row["\(prefix)titleDecrypted"]
@@ -172,6 +179,7 @@ public struct SessionListChildPage: Sendable {
 public struct SessionListChildCursor: Hashable, Sendable {
     public let updatedAt: Int
     public let id: String
+    public var treeOrder: String? = nil
 }
 
 public struct SessionListFacets: Sendable {
@@ -269,42 +277,8 @@ enum SessionListSQL {
         """
     }
 
-    /// Resolves a parent link (`createdBySessionId` / `parentSessionId`) through the
-    /// sessions primary key, so grouping stays a per-row index lookup instead of a
-    /// self-join against the whole filtered set.
-    private static func parentExists(_ alias: String, matching column: String, predicate: String) -> String {
-        """
-        EXISTS (
-            SELECT 1 FROM sessions \(alias)
-            WHERE \(alias).id = b.\(column)
-              AND \(predicate)
-              AND \(visible(alias))
-        )
-        """
-    }
-
-    /// Assigns a session to exactly one display group. Precedence matches the desktop
-    /// list: meta-agent, then workstream, then worktree, then standalone. A session can
-    /// only ever belong to one group, so it can never render twice.
-    static let groupKeyCase = """
-    CASE
-        WHEN :metaEnabled = 1 AND b.agentRole = 'meta-agent'
-            THEN 'meta:' || b.id
-        WHEN :metaEnabled = 1
-            AND b.createdBySessionId IS NOT NULL
-            AND COALESCE(b.agentRole, '') <> 'meta-agent'
-            AND \(parentExists("mp", matching: "createdBySessionId", predicate: "mp.agentRole = 'meta-agent'"))
-            THEN 'meta:' || b.createdBySessionId
-        WHEN b.sessionType = 'workstream'
-            THEN 'ws:' || b.id
-        WHEN b.parentSessionId IS NOT NULL
-            AND \(parentExists("wp", matching: "parentSessionId", predicate: "wp.sessionType = 'workstream'"))
-            THEN 'ws:' || b.parentSessionId
-        WHEN b.worktreeId IS NOT NULL
-            THEN 'wt:' || b.worktreeId
-        ELSE 's:' || b.id
-    END
-    """
+    /// Resolve the visible tree root through parent links, independently of role.
+    static let groupKeyCase = SessionTreeSQL.groupKey(visible: visible)
 
     private static let memberColumns = """
         b.id, b.projectId, b.sessionType, b.agentRole, b.parentSessionId,
@@ -345,20 +319,20 @@ enum SessionListSQL {
                 : ""
             let keyset = keysetPrefilter ? "AND b.updatedAt <= :cursorTs" : ""
             return """
-            candidate AS (
+            candidate AS MATERIALIZED (
                 SELECT \(groupKeyCase) AS groupKey
                 FROM sessions b
                 WHERE \(visible("b")) \(attention) \(keyset)
                 ORDER BY b.updatedAt DESC, b.id DESC
                 LIMIT :candidateLimit
             ),
-            keys AS (
+            keys AS MATERIALIZED (
                 SELECT DISTINCT \(keyParts("groupKey")) FROM candidate
             )
             """
         case .session:
             return """
-            keys AS (
+            keys AS MATERIALIZED (
                 SELECT \(keyParts("groupKey")) FROM (
                     SELECT \(groupKeyCase) AS groupKey FROM sessions b
                     WHERE b.id = :focusId AND \(visible("b"))
@@ -367,7 +341,7 @@ enum SessionListSQL {
             """
         case .explicit:
             return """
-            keys AS (
+            keys AS MATERIALIZED (
                 SELECT \(keyParts("groupKey")) FROM (SELECT :groupKey AS groupKey)
             )
             """
@@ -378,7 +352,26 @@ enum SessionListSQL {
     /// by classifying every session in the project. Each branch drives from the small
     /// `keys` set into `sessions` on an indexed column.
     private static let memberCTE = """
-    member AS (
+    subtree(id) AS (
+        SELECT anchor FROM keys WHERE groupKind = 'ws'
+        UNION
+        SELECT c.id FROM sessions c INDEXED BY idx_sessions_parent JOIN subtree p ON c.parentSessionId = p.id
+        WHERE \(visible("c"))
+    ),
+    classified AS MATERIALIZED (
+            SELECT \(memberColumns), \(groupKeyCase) AS groupKey FROM sessions b
+            WHERE \(visible("b")) AND b.id IN (SELECT anchor FROM keys WHERE groupKind <> 'wt')
+            UNION
+            SELECT \(memberColumns), \(groupKeyCase) AS groupKey FROM sessions b
+            WHERE \(visible("b")) AND b.id IN (SELECT id FROM subtree)
+            UNION
+            SELECT \(memberColumns), \(groupKeyCase) AS groupKey FROM sessions b
+            WHERE \(visible("b")) AND b.createdBySessionId IN (SELECT anchor FROM keys WHERE groupKind = 'meta')
+            UNION
+            SELECT \(memberColumns), \(groupKeyCase) AS groupKey FROM sessions b
+            WHERE \(visible("b")) AND b.worktreeId IN (SELECT anchor FROM keys WHERE groupKind = 'wt')
+    ),
+    member AS MATERIALIZED (
         SELECT
             x.*,
             substr(x.groupKey, 1, instr(x.groupKey, ':') - 1) AS groupKind,
@@ -386,21 +379,9 @@ enum SessionListSQL {
                 WHEN substr(x.groupKey, 1, instr(x.groupKey, ':') - 1) = 'wt' THEN NULL
                 ELSE substr(x.groupKey, instr(x.groupKey, ':') + 1)
             END AS anchorId
-        FROM (
-            SELECT \(memberColumns), \(groupKeyCase) AS groupKey FROM sessions b
-            WHERE \(visible("b")) AND b.id IN (SELECT anchor FROM keys WHERE groupKind <> 'wt')
-            UNION
-            SELECT \(memberColumns), \(groupKeyCase) AS groupKey FROM sessions b
-            WHERE \(visible("b")) AND b.parentSessionId IN (SELECT anchor FROM keys WHERE groupKind = 'ws')
-            UNION
-            SELECT \(memberColumns), \(groupKeyCase) AS groupKey FROM sessions b
-            WHERE \(visible("b")) AND b.createdBySessionId IN (SELECT anchor FROM keys WHERE groupKind = 'meta')
-            UNION
-            SELECT \(memberColumns), \(groupKeyCase) AS groupKey FROM sessions b
-            WHERE \(visible("b")) AND b.worktreeId IN (SELECT anchor FROM keys WHERE groupKind = 'wt')
-        ) x
+        FROM classified x
         -- A row reached through a link may resolve to a DIFFERENT group (a workstream
-        -- child that is itself a meta-agent sub-agent, say). Only rows that actually
+        -- child whose parent crosses a container boundary, say). Only rows that actually
         -- resolve to one of the requested keys are members of it.
         WHERE x.groupKey IN (SELECT groupKey FROM keys)
     )
@@ -411,7 +392,7 @@ enum SessionListSQL {
         CASE WHEN groupKind IN ('ws', 'meta') AND id <> anchorId THEN 1
              WHEN groupKind = 'wt' THEN 1
              ELSE 0 END AS isDisplayChild,
-        CASE WHEN groupKind = 'ws' AND id = anchorId THEN 1 ELSE 0 END AS isWorkstreamParent,
+        CASE WHEN groupKind = 'ws' AND id = anchorId AND sessionType = 'workstream' THEN 1 ELSE 0 END AS isWorkstreamParent,
         CASE WHEN lastMessageAt IS NOT NULL AND lastMessageAt > 0
                   AND (lastReadAt IS NULL OR lastMessageAt > lastReadAt)
              THEN 1 ELSE 0 END AS isUnread,
@@ -477,7 +458,7 @@ enum SessionListSQL {
     /// (the container row itself is never executing); everything else reports across
     /// all of its members, matching `computeAggregatedStatus` at each call site.
     private static func statusExpr(_ all: String, _ child: String) -> String {
-        "CASE WHEN g.groupKind = 'ws' AND g.displayChildCount > 0 THEN COALESCE(g.\(child), 0) ELSE COALESCE(g.\(all), 0) END"
+        "CASE WHEN g.groupKind = 'ws' AND g.displayChildCount > 0 AND EXISTS (SELECT 1 FROM sessions root WHERE root.id = g.parentId AND root.sessionType = 'workstream') THEN COALESCE(g.\(child), 0) ELSE COALESCE(g.\(all), 0) END"
     }
 
     /// A group passes the phase filter when one of its displayed children matches
@@ -489,7 +470,9 @@ enum SessionListSQL {
         WHEN g.groupKind = 'meta' THEN 1
         WHEN g.groupKind = 's' THEN COALESCE(g.anyPhaseMatch, 0)
         WHEN g.groupKind = 'wt' THEN CASE WHEN g.memberCount > 1 THEN COALESCE(g.childPhaseMatch, 0) ELSE 0 END
-        ELSE COALESCE(g.childPhaseMatch, 0)
+        WHEN EXISTS (SELECT 1 FROM sessions root WHERE root.id = g.parentId AND root.sessionType = 'workstream')
+            THEN COALESCE(g.childPhaseMatch, 0)
+        ELSE COALESCE(g.anyPhaseMatch, 0)
     END
     """
 
@@ -504,7 +487,7 @@ enum SessionListSQL {
             predicates.append("(g.orderTs < :cursorTs OR (g.orderTs = :cursorTs AND g.groupKey < :cursorKey))")
         }
         return """
-        WITH \(keysCTE(source, keysetPrefilter: keyset)),
+        WITH RECURSIVE \(keysCTE(source, keysetPrefilter: keyset)),
         \(memberCTE),
         \(groupedCTE)
         SELECT
@@ -540,27 +523,19 @@ enum SessionListSQL {
 
     /// Children of one group, newest first, keyset-paged. Reuses the same membership
     /// rules so an expanded group can never disagree with the collapsed header.
-    static func childrenQuery(keyset: Bool) -> String {
-        var predicates = [
-            "(m.groupKind = 'wt' OR m.id <> m.anchorId)"
-        ]
-        if keyset {
-            predicates.append("(m.updatedAt < :cursorUpdatedAt OR (m.updatedAt = :cursorUpdatedAt AND m.id < :cursorId))")
-        }
-        return """
-        WITH \(keysCTE(.explicit, keysetPrefilter: false)),
-        \(memberCTE)
-        SELECT \(SessionListRow.selectList(alias: "s"))
-        FROM member m
-        JOIN sessions s ON s.id = m.id
-        WHERE \(predicates.joined(separator: " AND "))
-        ORDER BY m.updatedAt DESC, m.id DESC
-        LIMIT :limit
-        """
+    static func childrenQuery() -> String {
+        SessionTreeSQL.childrenQuery(
+            prefix: "\(keysCTE(.explicit, keysetPrefilter: false)), \(memberCTE),",
+            members: """
+                SELECT \(SessionListRow.selectList(alias: "s"))
+                FROM member m JOIN sessions s ON s.id = m.id
+                WHERE m.groupKind = 'wt' OR m.id <> m.anchorId
+                """
+        )
     }
 
     static let memberIdsQuery = """
-    WITH \(keysCTE(.explicit, keysetPrefilter: false)),
+    WITH RECURSIVE \(keysCTE(.explicit, keysetPrefilter: false)),
     \(memberCTE)
     SELECT m.id FROM member m
     """
@@ -747,23 +722,14 @@ enum SessionListQueryRunner {
             return try SessionListProjection.children(db, filter: filter, groupKey: groupKey,
                                                       after: cursor, limit: limit)
         }
-        let sql = SessionListSQL.childrenQuery(keyset: cursor != nil)
+        let sql = SessionListSQL.childrenQuery()
         var arguments = filter.arguments
         arguments["groupKey"] = groupKey
         arguments["limit"] = limit + 1
-        if let cursor {
-            arguments["cursorUpdatedAt"] = cursor.updatedAt
-            arguments["cursorId"] = cursor.id
-        }
+        arguments.updateValue(cursor?.treeOrder, forKey: "afterTreeOrder")
         let rows = try Row.fetchAll(db, sql: sql, arguments: StatementArguments(arguments))
             .map { SessionListRow(row: $0) }
-        let page = Array(rows.prefix(limit))
-        return SessionListChildPage(
-            rows: page,
-            nextCursor: rows.count > limit
-                ? page.last.map { SessionListChildCursor(updatedAt: $0.updatedAt, id: $0.id) }
-                : nil
-        )
+        return SessionTreeSQL.childPage(rows, limit: limit)
     }
 
     static func memberIds(_ db: Database, filter: SessionListFilter, groupKey: String) throws -> [String] {

@@ -8,10 +8,11 @@
  * from the room on every connect, and nothing in this host originates a change
  * to them. So they live in memory, and a reload replays them.
  *
- * This is deliberately read-only. Creating a folder, renaming a tracker, or
- * editing a type definition is a desktop action -- `listUnsynced` returns
- * nothing, so this host never pushes into either lane and never has a local
- * change the server could refuse.
+ * Mostly read-only. Creating a folder, renaming a tracker, or editing an
+ * existing type definition is a desktop action. The one write is a brand-new
+ * team type from the Pages "New type..." dialog (`defineTeamType`): it waits
+ * in memory until the room answers, so a refusal is reported to the person
+ * who asked and is never re-sent on a later connect.
  *
  * Two things make the schema lane more than "parse the JSON":
  *
@@ -35,7 +36,8 @@
  */
 import type { TrackerNavigationSyncHooks, TrackerSchemaSyncHooks } from '@nimbalyst/tracker-engine';
 import { type TrackerNavigationEntry } from '../../../../runtime/src/sync/trackerNavigation';
-import { type PredicateDefinition, type TrackerDataModel } from '@nimbalyst/tracker-schema';
+import { type LabelRegistry, type PredicateDefinition, type TrackerDataModel } from '../../../../tracker-schema/src/browser';
+import { type TrackerTypeDeclaration } from '../../../../tracker-schema/src/browser';
 export interface BrowserTrackerSchemaStoreOptions {
     /**
      * The builtin tracker types this build ships, the seed a delta resolves
@@ -54,11 +56,13 @@ export interface BrowserTrackerSchemaState {
     /** The team's synced sidebar tree, sorted the way every host sorts it. */
     navigationEntries: TrackerNavigationEntry[];
     /**
-     * The room's predicate registry: labels, inverse labels and qualifier
-     * definitions for knowledge-graph statements. Empty until the room publishes
+     * The room's predicate registry: the labels and inverse labels of the
+     * relations wiki pages use. Empty until the room publishes
      * one; an unreadable publish leaves the previous registry in place.
      */
     predicates: PredicateDefinition[];
+    /** The room's label registry (labels.yaml), same rules as `predicates`. */
+    labels: LabelRegistry;
 }
 /** A type this host has no lane for: personal items never reach a team room. */
 export declare function isPersonalTrackerModel(model: TrackerDataModel): boolean;
@@ -80,9 +84,12 @@ export declare class BrowserTrackerSchemaStore {
     private readonly models;
     private readonly navigation;
     private predicates;
+    private labels;
     private readonly listeners;
     private state;
     private disposed;
+    /** New team types waiting on the room, by type id. */
+    private readonly pendingDefinitions;
     private readonly reportError?;
     constructor(options: BrowserTrackerSchemaStoreOptions);
     /**
@@ -97,6 +104,16 @@ export declare class BrowserTrackerSchemaStore {
      */
     readonly navigationSync: TrackerNavigationSyncHooks;
     getState(): BrowserTrackerSchemaState;
+    /**
+     * Queue a brand-new team type for the room as a create-only mutation.
+     * Resolves on the room's acceptance of this mutation, rejects on its refusal
+     * (including `schemaExists` when another client created the id first, and a
+     * room too old to refuse an existing type). The caller flushes the schema lane.
+     *
+     * Creation never replaces: an id this room already defines (or a builtin)
+     * is refused here, before anything is sent.
+     */
+    defineTeamType(declared: TrackerTypeDeclaration): Promise<void>;
     subscribe(listener: (state: BrowserTrackerSchemaState) => void): () => void;
     dispose(): void;
     private project;

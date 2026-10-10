@@ -16,6 +16,7 @@ import {
   formatTrackerValidationErrors,
 } from '@nimbalyst/runtime/plugins/TrackerPlugin/models';
 import type { RelationshipCandidate } from '@nimbalyst/runtime/plugins/TrackerPlugin/components/RelationshipFieldEditor';
+import { createTrackerItem } from '../../services/localWikiTrackerRecords';
 
 export async function createCollectionItem(params: {
   workspacePath: string;
@@ -29,7 +30,7 @@ export async function createCollectionItem(params: {
     throw new Error(formatTrackerValidationErrors(built.errors));
   }
 
-  const result = await window.electronAPI.documentService.createTrackerItem(built.payload);
+  const result = await createTrackerItem(built.payload);
   if (!result.success) {
     throw new Error(result.error || 'Failed to create collection');
   }

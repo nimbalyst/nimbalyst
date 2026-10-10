@@ -10,16 +10,22 @@
  */
 import type * as Api from '../types/index';
 import {
+  applyMarkdownReplacementsToLexicalYUpdate,
   lexicalYDocToMarkdown,
   markdownToLexicalYUpdate,
 } from '../../runtime/src/sync/markdownYDoc';
+// Decision and open-question marks: the same scanner the editor and the
+// desktop marks list use, so the worker's marks index cannot drift from them.
+import { findPageMarks } from '../../runtime/src/core/pageMarkSyntax';
 
 // The published types are hand-written; fail the typecheck if they drift.
 const _typesMatch: {
+  applyMarkdownReplacementsToLexicalYUpdate: typeof Api.applyMarkdownReplacementsToLexicalYUpdate;
   markdownToLexicalYUpdate: typeof Api.markdownToLexicalYUpdate;
   lexicalYDocToMarkdown: typeof Api.lexicalYDocToMarkdown;
-} = { markdownToLexicalYUpdate, lexicalYDocToMarkdown };
+  findPageMarks: typeof Api.findPageMarks;
+} = { applyMarkdownReplacementsToLexicalYUpdate, markdownToLexicalYUpdate, lexicalYDocToMarkdown, findPageMarks };
 void _typesMatch;
 
-export { lexicalYDocToMarkdown, markdownToLexicalYUpdate };
-export type { MarkdownToLexicalYUpdateOptions } from '../types/index';
+export { applyMarkdownReplacementsToLexicalYUpdate, findPageMarks, lexicalYDocToMarkdown, markdownToLexicalYUpdate };
+export type { MarkdownTextReplacement, MarkdownToLexicalYUpdateOptions, PageMarkKind, PageMarkOccurrence } from '../types/index';

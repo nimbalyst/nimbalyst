@@ -40,4 +40,26 @@ class AuthCallbackParserTest {
 
         assertTrue(result is AuthCallbackParseResult.Failure)
     }
+
+    @Test
+    fun `server error description wins over the missing-parameters message`() {
+        val result = AuthCallbackParser.parse(
+            deepLink = "nimbalyst://auth/callback?error=access_denied&error_description=Your%20account%20is%20not%20a%20member%20of%20this%20organization.",
+            pairedUserId = null
+        )
+
+        assertEquals(
+            AuthCallbackParseResult.Failure("Your account is not a member of this organization."),
+            result
+        )
+    }
+
+    @Test
+    fun `bare error code is wrapped as a sentence`() {
+        val failure = AuthCallbackParser.parse(
+            deepLink = "nimbalyst://auth/callback?error=oauth_invalid_state&error_description=%20",
+            pairedUserId = null
+        )
+        assertEquals(AuthCallbackParseResult.Failure("Sign-in failed (oauth_invalid_state)."), failure)
+    }
 }

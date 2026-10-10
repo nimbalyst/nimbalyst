@@ -1,0 +1,315 @@
+/**
+ * Phase 3 formatting and layout: picker colors, wrap, vertical alignment,
+ * hidden columns, validation chips/checkboxes/markers, the toolbar, status bar
+ * and conditional-format panel. Kept apart from revogrid-theme.css, which maps
+ * RevoGrid itself onto the theme.
+ */
+
+/* Picker colors arrive as custom properties (see `styleInlineCss`). */
+.spreadsheet-editor revo-grid .rgCell.csv-text-custom { color: var(--csv-text-color) !important; }
+.spreadsheet-editor revo-grid .rgCell.csv-fill-custom { background-color: var(--csv-fill-color); }
+
+/* Wrapped text: lines at a reading line-height, starting at the top. */
+.spreadsheet-editor revo-grid revogr-data .rgCell.csv-cell-wrap {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  line-height: 16px;
+  padding-top: 4px;
+  padding-bottom: 4px;
+}
+
+.spreadsheet-editor revo-grid revogr-data .rgCell.cell-valign-top,
+.spreadsheet-editor revo-grid revogr-data .rgCell.cell-valign-middle,
+.spreadsheet-editor revo-grid revogr-data .rgCell.cell-valign-bottom {
+  display: flex;
+  flex-direction: column;
+}
+.spreadsheet-editor revo-grid revogr-data .rgCell.cell-valign-top { justify-content: flex-start; }
+.spreadsheet-editor revo-grid revogr-data .rgCell.cell-valign-middle { justify-content: center; }
+.spreadsheet-editor revo-grid revogr-data .rgCell.cell-valign-bottom { justify-content: flex-end; }
+.spreadsheet-editor revo-grid revogr-data .rgCell.cell-valign-top > *,
+.spreadsheet-editor revo-grid revogr-data .rgCell.cell-valign-middle > *,
+.spreadsheet-editor revo-grid revogr-data .rgCell.cell-valign-bottom > * { width: 100%; }
+
+/* A hidden column is a sliver that marks where it is. */
+.spreadsheet-editor revo-grid .rgCell.csv-cell-hidden,
+.spreadsheet-editor revo-grid .rgHeaderCell.csv-col-hidden {
+  padding: 0 !important;
+  overflow: hidden;
+  background-color: var(--nim-border) !important;
+}
+.spreadsheet-editor revo-grid .csv-header-hidden { display: block; width: 100%; height: 100%; }
+
+/* Row header affordances: resize edge, hidden-row marker. */
+.spreadsheet-editor revo-grid .rowHeaders revogr-data .rgCell.csv-row-resize-edge { cursor: row-resize; }
+.spreadsheet-editor revo-grid .rowHeaders revogr-data .rgCell.csv-row-before-hidden {
+  box-shadow: inset 0 -3px 0 0 var(--nim-primary);
+}
+
+/* Validation: dropdown chips, checkboxes, invalid marker. */
+.spreadsheet-editor revo-grid .csv-list-cell {
+  display: inline-flex;
+  align-items: center;
+  max-width: 100%;
+  cursor: pointer;
+}
+.spreadsheet-editor revo-grid .csv-list-cell-empty {
+  width: 100%;
+  justify-content: flex-end;
+  color: var(--nim-text-faint);
+}
+.spreadsheet-editor revo-grid .csv-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 18px;
+  max-width: 100%;
+  padding: 0 6px 0 8px;
+  border-radius: 9px;
+  font-size: 11px;
+  font-weight: 500;
+  line-height: 18px;
+  overflow: hidden;
+}
+.spreadsheet-editor revo-grid .csv-chip-label { overflow: hidden; text-overflow: ellipsis; }
+.spreadsheet-editor revo-grid .csv-chip-caret { font-size: 9px; opacity: 0.8; }
+.spreadsheet-editor revo-grid .csv-chip-neutral { background: color-mix(in srgb, var(--nim-text-muted) 18%, transparent); color: var(--nim-text); }
+.spreadsheet-editor revo-grid .csv-chip-red { background: color-mix(in srgb, var(--nim-error) 18%, transparent); color: var(--nim-error); }
+.spreadsheet-editor revo-grid .csv-chip-orange { background: color-mix(in srgb, var(--nim-warning, #d98324) 18%, transparent); color: var(--nim-warning, #d98324); }
+.spreadsheet-editor revo-grid .csv-chip-yellow { background: color-mix(in srgb, #b58900 20%, transparent); color: #c9a227; }
+.spreadsheet-editor revo-grid .csv-chip-green { background: color-mix(in srgb, var(--nim-success, #2ea043) 18%, transparent); color: var(--nim-success, #2ea043); }
+.spreadsheet-editor revo-grid .csv-chip-blue { background: color-mix(in srgb, var(--nim-primary) 18%, transparent); color: var(--nim-primary); }
+.spreadsheet-editor revo-grid .csv-chip-purple { background: color-mix(in srgb, #8957e5 20%, transparent); color: #a37cf0; }
+.spreadsheet-editor revo-grid .csv-chip-gray { background: color-mix(in srgb, var(--nim-text-muted) 18%, transparent); color: var(--nim-text-muted); }
+
+.spreadsheet-editor revo-grid .rgCell.csv-cell-checkbox { text-align: center; }
+.spreadsheet-editor revo-grid .csv-checkbox-cell {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  vertical-align: middle;
+  border: 1.5px solid var(--nim-text-muted);
+  border-radius: 3px;
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+}
+.spreadsheet-editor revo-grid .csv-checkbox-checked {
+  background: var(--nim-primary);
+  border-color: var(--nim-primary);
+  color: #fff;
+}
+
+/* Warn-mode (or pre-existing) invalid value: a red corner, as in Sheets. */
+.spreadsheet-editor revo-grid .rgCell.csv-cell-invalid {
+  background-image: linear-gradient(225deg, var(--nim-error) 6px, transparent 6px);
+}
+
+/* ---- Toolbar ------------------------------------------------------------ */
+.sheet-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  height: 36px;
+  padding: 0 8px;
+  flex-shrink: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+  background: var(--nim-bg-secondary);
+  border-bottom: 1px solid var(--nim-border);
+  color: var(--nim-text);
+  font-size: 12px;
+}
+.sheet-toolbar-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  flex-shrink: 0;
+  height: 26px;
+  min-width: 26px;
+  padding: 0 4px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--nim-text);
+  cursor: pointer;
+}
+.sheet-toolbar-button:hover:enabled { background: var(--nim-bg-hover); }
+.sheet-toolbar-button-on { background: var(--nim-bg-tertiary); }
+.sheet-toolbar-button:disabled { opacity: 0.4; cursor: default; }
+.sheet-toolbar-caret { color: var(--nim-text-muted); }
+.sheet-toolbar-separator { width: 1px; height: 18px; margin: 0 5px; flex-shrink: 0; background: var(--nim-border); }
+.sheet-toolbar-spacer { flex: 1; }
+.sheet-toolbar-text { font-size: 13px; font-weight: 600; line-height: 1; }
+.sheet-toolbar-small { font-size: 11px; font-weight: 600; }
+.sheet-toolbar-sigma { font-size: 15px; line-height: 1; }
+.sheet-toolbar-stack { display: flex; flex-direction: column; align-items: center; line-height: 1; }
+.sheet-toolbar-color-bar { display: block; width: 14px; height: 3px; margin-top: 1px; border-radius: 1px; }
+.sheet-toolbar-color-bar-empty { background: var(--nim-text); }
+
+.sheet-toolbar-menu {
+  z-index: 1000;
+  min-width: 180px;
+  max-height: 70vh;
+  overflow-y: auto;
+  padding: 4px;
+  background: var(--nim-bg);
+  border: 1px solid var(--nim-border);
+  border-radius: 6px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+  color: var(--nim-text);
+  font-size: 12px;
+}
+.sheet-toolbar-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 5px 8px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--nim-text);
+  text-align: left;
+  cursor: pointer;
+}
+.sheet-toolbar-menu-item:hover:enabled { background: var(--nim-bg-hover); }
+.sheet-toolbar-menu-item:disabled { opacity: 0.4; cursor: default; }
+.sheet-toolbar-menu-check { width: 12px; color: var(--nim-primary); }
+.sheet-toolbar-menu-label { flex: 1; }
+.sheet-toolbar-menu-hint { color: var(--nim-text-faint); }
+.sheet-toolbar-menu-separator { height: 1px; margin: 4px 0; background: var(--nim-border); }
+.sheet-toolbar-menu-row { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 4px 8px; }
+.sheet-toolbar-select {
+  padding: 2px 4px;
+  border: 1px solid var(--nim-border);
+  border-radius: 4px;
+  background: var(--nim-bg-secondary);
+  color: var(--nim-text);
+  font-size: 12px;
+}
+
+.sheet-color-palette { display: flex; flex-direction: column; gap: 3px; padding: 4px; }
+.sheet-color-row { display: flex; gap: 3px; }
+.sheet-color-swatch {
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 1px solid var(--nim-border);
+  border-radius: 3px;
+  cursor: pointer;
+}
+.sheet-color-swatch-on { outline: 2px solid var(--nim-primary); outline-offset: 1px; }
+.sheet-color-reset, .sheet-color-apply {
+  padding: 3px 8px;
+  border: 1px solid var(--nim-border);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--nim-text);
+  font-size: 12px;
+  cursor: pointer;
+}
+.sheet-color-reset { align-self: flex-start; margin-bottom: 2px; }
+.sheet-color-custom { display: flex; align-items: center; gap: 6px; margin-top: 4px; }
+.sheet-color-input {
+  width: 90px;
+  padding: 2px 6px;
+  border: 1px solid var(--nim-border);
+  border-radius: 4px;
+  background: var(--nim-bg-secondary);
+  color: var(--nim-text);
+  font-family: ui-monospace, 'SF Mono', Monaco, monospace;
+  font-size: 12px;
+}
+.csv-text-swatch-red { background-color: var(--nim-error); }
+.csv-text-swatch-orange { background-color: var(--nim-warning, #d98324); }
+.csv-text-swatch-yellow { background-color: #b58900; }
+.csv-text-swatch-green { background-color: var(--nim-success, #2ea043); }
+.csv-text-swatch-blue { background-color: var(--nim-primary); }
+.csv-text-swatch-purple { background-color: #8957e5; }
+.csv-text-swatch-gray { background-color: var(--nim-text-muted); }
+
+.spreadsheet-editor .csv-row-resize-guide {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 0;
+  border-top: 2px solid var(--nim-primary);
+  pointer-events: none;
+  z-index: 20;
+}
+
+/* ---- Validation popovers --------------------------------------------------- */
+.csv-validation-dropdown {
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 4px;
+  overflow-y: auto;
+  background: var(--nim-bg);
+  border: 1px solid var(--nim-border);
+  border-radius: 6px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+  font-size: 12px;
+}
+.csv-validation-option {
+  display: flex;
+  align-items: center;
+  padding: 4px 6px;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--nim-text);
+  text-align: left;
+  cursor: pointer;
+}
+.csv-validation-option-active { background: var(--nim-bg-hover); }
+.csv-validation-clear { color: var(--nim-text-muted); }
+.csv-validation-dropdown .csv-chip {
+  display: inline-flex; align-items: center; height: 18px; padding: 0 8px; border-radius: 9px; font-size: 11px; font-weight: 500;
+}
+.csv-validation-dropdown .csv-chip-neutral, .csv-validation-dropdown .csv-chip-gray { background: color-mix(in srgb, var(--nim-text-muted) 18%, transparent); color: var(--nim-text); }
+.csv-validation-dropdown .csv-chip-red { background: color-mix(in srgb, var(--nim-error) 18%, transparent); color: var(--nim-error); }
+.csv-validation-dropdown .csv-chip-orange { background: color-mix(in srgb, var(--nim-warning, #d98324) 18%, transparent); color: var(--nim-warning, #d98324); }
+.csv-validation-dropdown .csv-chip-yellow { background: color-mix(in srgb, #b58900 20%, transparent); color: #c9a227; }
+.csv-validation-dropdown .csv-chip-green { background: color-mix(in srgb, var(--nim-success, #2ea043) 18%, transparent); color: var(--nim-success, #2ea043); }
+.csv-validation-dropdown .csv-chip-blue { background: color-mix(in srgb, var(--nim-primary) 18%, transparent); color: var(--nim-primary); }
+.csv-validation-dropdown .csv-chip-purple { background: color-mix(in srgb, #8957e5 20%, transparent); color: #a37cf0; }
+.csv-validation-message {
+  z-index: 1000;
+  max-width: 280px;
+  padding: 6px 10px;
+  background: var(--nim-bg);
+  border: 1px solid var(--nim-error);
+  border-radius: 6px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+  color: var(--nim-text);
+  font-size: 12px;
+}
+
+/* ---- Status bar and zoom ------------------------------------------------- */
+.sheet-status-bar {
+  display: flex;
+  align-items: center;
+  gap: 18px;
+  height: 30px;
+  padding: 0 10px;
+  flex-shrink: 0;
+  background: var(--nim-bg-secondary);
+  border-top: 1px solid var(--nim-border);
+  color: var(--nim-text-muted);
+  font-size: 12px;
+}
+.sheet-status-spacer { flex: 1; }
+.sheet-status-item b { color: var(--nim-text); font-weight: 600; font-variant-numeric: tabular-nums; }
+
+/* Zoom scales what RevoGrid lays out; `--csv-zoom` is set on the editor root. */
+.spreadsheet-editor revo-grid .rgCell { font-size: calc(12px * var(--csv-zoom, 1)); }
+.spreadsheet-editor revo-grid revogr-data .rgRow { line-height: calc(24px * var(--csv-zoom, 1)); }
+.spreadsheet-editor revo-grid revogr-data .rgCell.csv-cell-wrap { line-height: calc(16px * var(--csv-zoom, 1)); }
+.spreadsheet-editor revo-grid .rowHeaders .rgCell { font-size: calc(11px * var(--csv-zoom, 1)); }

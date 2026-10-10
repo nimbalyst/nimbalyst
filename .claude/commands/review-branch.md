@@ -80,7 +80,7 @@ Provide your review in the following format:
 [Note "Fully compatible" or "Not applicable" if clean]
 
 ### Dependencies
-[Check package.json, package-lock.json for changes:]
+[Check package.json, pnpm-lock.yaml for changes:]
 - New packages added: [name@version - purpose]
 - Version updates: [name: old → new]
 - Removed packages: [name]

@@ -1,8 +1,8 @@
 {
   "id": "com.nimbalyst.knowledge",
-  "name": "Knowledge",
+  "name": "Wiki",
   "version": "1.0.0",
-  "description": "Build a shared knowledge graph from tracker items",
+  "description": "Write wiki pages: typed pages, named relations and a team writing guide",
   "author": "Nimbalyst",
   "main": "dist/index.js",
   "apiVersion": "1.0.0",
@@ -13,19 +13,19 @@
     ],
     "tags": [
       "knowledge",
+      "pages",
       "wiki",
-      "tracker",
-      "ontology"
+      "tracker"
     ],
     "icon": "hub",
     "featured": false,
-    "tagline": "A shared vocabulary for team knowledge graphs",
-    "longDescription": "Knowledge teaches the agent how to set up and write a knowledge graph in your project: entities, claims, questions, findings, and investigations as tracker types, with a small set of verbs for statements. Setup also installs an editable \"How we write this wiki\" page that tells people and agents what belongs in the wiki. Graphs built this way stay consistent across projects and show up in the team wiki.",
+    "tagline": "Keep what your team decided in pages agents can read",
+    "longDescription": "Wiki teaches the agent how to write your project's wiki pages: what people said and decided, written into the page it affects, with the context that helps someone see the whole problem. Pages nest, any page can have a type your team defines (modules, technologies, competitors), and links between typed pages can carry a named relation that both pages list. Setup installs an editable \"How we write this wiki\" page that people and agents read before writing.",
     "highlights": [
-      "Standard tracker types for entities, claims, questions, findings, and investigations",
-      "A predicate registry for typed statements between entities",
-      "Guidance for writing claims with a stated basis and conditions",
-      "A wiki guide page your team can edit or replace, which the agent reads before writing"
+      "Guidance for capturing decisions and open questions with who and when",
+      "Types your team defines, with a page and a table for each",
+      "Named relations between typed pages, written as links in the prose",
+      "An editable writing guide the agent reads before it writes"
     ]
   },
   "permissions": {
@@ -35,8 +35,8 @@
   "contributions": {
     "claudePlugin": {
       "path": "claude-plugin",
-      "displayName": "Knowledge",
-      "description": "Set up a team knowledge graph and wiki guide, then write to it with tracker types",
+      "displayName": "Wiki",
+      "description": "Set up a project's wiki and writing guide, then write pages, types and relations",
       "enabledByDefault": true
     },
     "backendModules": [

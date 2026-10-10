@@ -19,11 +19,17 @@ function makeFakeDb(initialMetadata: Record<string, unknown> | null) {
         return { rows: [{ metadata: state.metadata }] as unknown as T[] };
       }
       if (trimmed.startsWith('UPDATE ai_sessions SET')) {
-        // The metadata blob is the JSON-stringified param; find it and apply.
+        // The metadata param is a patch merged in SQL (`metadata || $n`), or the
+        // whole blob when the stored column was not a mergeable object.
         const jsonParam = params.find(
           p => typeof p === 'string' && p.startsWith('{') && p.includes('"phase"'),
         );
-        if (jsonParam) state.metadata = JSON.parse(jsonParam);
+        if (jsonParam) {
+          const value = JSON.parse(jsonParam);
+          state.metadata = /metadata = COALESCE\(metadata/.test(trimmed)
+            ? { ...((state.metadata as Record<string, unknown>) ?? {}), ...value }
+            : value;
+        }
         return { rows: [] };
       }
       return { rows: [] };

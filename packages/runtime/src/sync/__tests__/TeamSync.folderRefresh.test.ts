@@ -118,6 +118,47 @@ describe('TeamSyncProvider folder refresh', () => {
     provider.destroy();
   });
 
+  it('carries parent kind and order on register and move, and reads them with older-server defaults', async () => {
+    const provider = createProvider();
+    const sent: Array<Record<string, unknown>> = [];
+    (provider as any).send = (message: Record<string, unknown>) => {
+      sent.push(message);
+      ackRegistration(provider, message);
+    };
+    const entry = { encryptedTitle: 'Child', titleIv: '', documentType: 'markdown', createdBy: 'u', createdAt: 1, updatedAt: 1 };
+    await (provider as any).handleDocIndexSyncResponse({
+      type: 'docIndexSyncResponse',
+      documents: [
+        { ...entry, documentId: 'old', parentFolderId: 'page-1' },
+        { ...entry, documentId: 'new', parentFolderId: 'NIM-1', parentKind: 'item', sortOrder: 2048 },
+      ],
+    });
+    expect(provider.getDocuments()).toEqual([
+      expect.objectContaining({ documentId: 'old', parentFolderId: 'page-1', parentKind: 'page', sortOrder: null }),
+      expect.objectContaining({ documentId: 'new', parentFolderId: 'NIM-1', parentKind: 'item', sortOrder: 2048 }),
+    ]);
+
+    await provider.registerDocument('doc-1', 'Child', 'markdown', 'NIM-1', undefined, 6000, { parentKind: 'item', sortOrder: 1024 });
+    await provider.registerDocument('doc-2', 'Plain', 'markdown', null);
+    // Same parent with a new order is a reorder; a new parent without one clears it.
+    provider.moveDocument('new', 'NIM-1', { parentKind: 'item', sortOrder: 512 });
+    provider.moveDocument('new', 'NIM-1', { parentKind: 'item' });
+    expect(provider.getDocuments()[1]).toMatchObject({ parentKind: 'item', sortOrder: 512 });
+    provider.moveDocument('new', 'page-2');
+    expect(provider.getDocuments()[1]).toMatchObject({ parentFolderId: 'page-2', parentKind: 'page', sortOrder: null });
+
+    expect(sent[0]).toMatchObject({ type: 'docIndexRegister', parentFolderId: 'NIM-1', parentKind: 'item', sortOrder: 1024 });
+    // Absent options stay off the wire, so an older server sees today's message.
+    expect(sent[1]).not.toHaveProperty('parentKind');
+    expect(sent[1]).not.toHaveProperty('sortOrder');
+    expect(sent.slice(2)).toEqual([
+      { type: 'docMove', documentId: 'new', newParentFolderId: 'NIM-1', parentKind: 'item', sortOrder: 512 },
+      { type: 'docMove', documentId: 'new', newParentFolderId: 'NIM-1', parentKind: 'item' },
+      { type: 'docMove', documentId: 'new', newParentFolderId: 'page-2' },
+    ]);
+    provider.destroy();
+  });
+
   it('writes explicit V2 document type metadata on registration', async () => {
     const provider = createProvider();
     const sent: Array<Record<string, unknown>> = [];

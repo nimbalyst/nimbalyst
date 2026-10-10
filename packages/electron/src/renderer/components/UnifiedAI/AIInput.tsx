@@ -12,7 +12,7 @@ import { AIInputControls } from './AIInputControls';
 import { registerPendingVoiceCommandSetter } from './VoiceModeButton.tsx';
 import { PendingVoiceCommand } from './PendingVoiceCommand';
 import { pendingVoiceCommandAtom, voiceActiveSessionIdAtom, type PendingVoiceCommand as PendingVoiceCommandType } from '../../store/atoms/voiceModeState';
-import type { ActionPrompt } from '../../store/atoms/actionPrompts';
+import type { ActionPrompt, ActionPickerSettings } from '../../store/atoms/actionPrompts';
 import { SelectionChips } from './SelectionChips';
 import {
   MemoryPromptIndicator,
@@ -30,6 +30,7 @@ import {
   sessionRegistryAtom,
 } from '../../store';
 import { useAIInputUndo } from '../../hooks/useAIInputUndo';
+import { errorNotificationService } from '../../services/ErrorNotificationService';
 import type { AIInputSnapshot } from '../../store/atoms/aiInputUndo';
 import { parseCommandTokens, type CommandToken } from './commandPills/parseCommandTokens';
 import { parseMentionTokens } from './commandPills/parseMentionTokens';
@@ -105,6 +106,8 @@ export interface AIInputProps {
     inputTokens: number;
     outputTokens: number;
     totalTokens: number;
+    cacheReadInputTokens?: number;
+    cacheCreationInputTokens?: number;
     contextWindow?: number;
     categories?: TokenUsageCategory[];
     currentContext?: {
@@ -295,7 +298,10 @@ export const AIInput = forwardRef<AIInputRef, AIInputProps>(
     // Replace the draft with an action-prompt body and place the cursor at
     // the end. Pushes a boundary undo snapshot so Cmd+Z restores the prior
     // draft instead of coalescing with the user's next keystroke.
-    const handleActionPromptInsert = useCallback((body: string) => {
+    const handleActionPromptInsert = useCallback((body: string, picker?: ActionPickerSettings) => {
+      // An action that pins a model or effort switches the matching picker.
+      if (picker?.model && onModelChange && picker.model !== currentModel) onModelChange(picker.model);
+      if (picker?.effort && onEffortLevelChange && picker.effort !== effortLevel) onEffortLevelChange(picker.effort);
       pushSnapshot(captureSnapshot(), { boundary: true });
       onChange(body);
       requestAnimationFrame(() => {
@@ -308,7 +314,7 @@ export const AIInput = forwardRef<AIInputRef, AIInputProps>(
           // best-effort cursor placement
         }
       });
-    }, [pushSnapshot, captureSnapshot, onChange]);
+    }, [pushSnapshot, captureSnapshot, onChange, onModelChange, currentModel, onEffortLevelChange, effortLevel]);
 
     // File mention state via Jotai atoms
     // Subscribes directly to atoms instead of receiving props (no prop drilling)
@@ -1050,7 +1056,7 @@ export const AIInput = forwardRef<AIInputRef, AIInputProps>(
         if (!validation.valid) {
           pasteUndoCountRef.current.delete(processingId);
           console.error('[AIInput] File validation failed:', validation.error);
-          alert(validation.error || 'Invalid file');
+          errorNotificationService.showError('Attachment Rejected', validation.error || 'Invalid file');
           return;
         }
 
@@ -1085,14 +1091,14 @@ export const AIInput = forwardRef<AIInputRef, AIInputProps>(
           onChange(value + (value ? ' ' : '') + reference);
         } else {
           console.error('[AIInput] Failed to save attachment:', result.error);
-          alert(result.error || 'Failed to save attachment');
+          errorNotificationService.showError('Attachment Failed', result.error || 'Failed to save attachment');
         }
       } catch (error) {
         // Remove from processing state on error
         setProcessingAttachments(prev => prev.filter(p => p.id !== processingId));
         pasteUndoCountRef.current.delete(processingId);
         console.error('[AIInput] Error handling file attachment:', error);
-        alert('Failed to attach file');
+        errorNotificationService.showError('Attachment Failed', 'Failed to attach file');
       }
     }, [onAttachmentAdd, sessionId, value, onChange, getUndoCount]);
 

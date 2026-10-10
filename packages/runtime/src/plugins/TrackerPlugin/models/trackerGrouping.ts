@@ -15,11 +15,13 @@ export const TRACKER_GROUPING_AXES = [
   'goal',
 ] as const;
 
-export type TrackerGroupingAxis = (typeof TRACKER_GROUPING_AXES)[number];
+export type BuiltinTrackerGroupingAxis = (typeof TRACKER_GROUPING_AXES)[number];
+export type TrackerFieldGrouping = { kind: 'field'; fieldId: string };
+export type TrackerGroupingAxis = BuiltinTrackerGroupingAxis | TrackerFieldGrouping;
 export type TrackerGroupBy = 'none' | TrackerGroupingAxis;
 
 export interface TrackerGroupingOption {
-  value: TrackerGroupingAxis;
+  value: BuiltinTrackerGroupingAxis;
   label: string;
 }
 
@@ -65,7 +67,8 @@ export function getTrackerTypeLabel(type: string, plural = false): string {
 }
 
 function groupKey(axis: TrackerGroupingAxis, value: string | null): string {
-  return value === null ? `${axis}:empty` : `${axis}:value:${encodeURIComponent(value)}`;
+  const key = typeof axis === 'string' ? axis : `field:${axis.fieldId}`;
+  return value === null ? `${key}:empty` : `${key}:value:${encodeURIComponent(value)}`;
 }
 
 function emptyLabel(axis: TrackerGroupingAxis): string {
@@ -207,6 +210,21 @@ export function resolveTrackerGroups(
   axis: TrackerGroupingAxis,
   resolveLabel?: TrackerRelationshipLabelResolver,
 ): ResolvedTrackerGroup[] {
+  if (typeof axis === 'object') {
+    const field = globalRegistry.get(item.primaryType)?.fields.find(candidate => candidate.name === axis.fieldId);
+    const value = item.fields[axis.fieldId];
+    if (!field || field.multiValue || !['select', 'boolean', 'user', 'relationship'].includes(field.type)) return [resolveEmptyTrackerGroup(axis)];
+    if (field.type === 'relationship') {
+      const refs = normalizeRelationshipValue(value);
+      return refs.length ? refs.map(ref => scalarGroup(axis, ref.itemId, resolveRelationshipLabel(ref, resolveLabel))) : [resolveEmptyTrackerGroup(axis)];
+    }
+    if (field.type === 'user') {
+      const person = identityParts(value);
+      return [person ? scalarGroup(axis, person.value, person.label) : resolveEmptyTrackerGroup(axis)];
+    }
+    const option = field.options?.find(option => (typeof option === 'string' ? option : option.value) === String(value));
+    return [scalarGroup(axis, value, typeof option === 'object' ? option.label : undefined)];
+  }
   switch (axis) {
     case 'status':
       return [scalarGroup(axis, getRecordStatus(item))];
@@ -256,6 +274,7 @@ export function groupTrackerRecordsByAxis(
 }
 
 export function normalizeTrackerGroupBy(value: unknown): TrackerGroupBy {
+  if (value && typeof value === 'object' && 'kind' in value && value.kind === 'field' && 'fieldId' in value && typeof value.fieldId === 'string' && value.fieldId.trim()) return { kind: 'field', fieldId: value.fieldId };
   if (value === 'owner') return 'assignee';
   return (TRACKER_GROUPING_AXES as readonly unknown[]).includes(value)
     ? value as TrackerGroupingAxis

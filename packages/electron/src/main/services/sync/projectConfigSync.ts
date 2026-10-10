@@ -1,4 +1,4 @@
-import type { SyncProvider, SyncedSlashCommand } from '@nimbalyst/runtime/sync/types';
+import type { SyncProvider, SyncedLocalWiki, SyncedSlashCommand } from '@nimbalyst/runtime/sync/types';
 import type { ActionPrompt } from '../ActionPromptParser';
 import { composeProjectConfig, toSyncedActionPrompts, type ProjectConfigSlices } from './projectConfigComposer';
 
@@ -9,6 +9,8 @@ export interface ProjectConfigSyncDependencies {
   discoverCommands(workspacePath: string): Promise<SyncedSlashCommand[]>;
   discoverActions(workspacePath: string): Promise<ActionPrompt[]>;
   getGitRemoteHash(workspacePath: string): Promise<string | undefined>;
+  /** The Local wiki folder relative to the project and its types, or undefined when the project has none. */
+  discoverLocalWiki?(workspacePath: string): Promise<SyncedLocalWiki | undefined>;
   subscribeChanges?(workspacePath: string, changed: () => void): Promise<() => void>;
   refreshWatchers?(workspacePath: string): Promise<void>;
   warn(message: string, error?: unknown): void;
@@ -90,9 +92,10 @@ export function createProjectConfigSync(deps: ProjectConfigSyncDependencies) {
       const actions = await deps.discoverActions(path);
       const slices: ProjectConfigSlices = { commands: manifests(commands), lastCommandsUpdate: Date.now(), actions: [], lastActionsUpdate: 0 };
       setActions(path, slices, actions);
+      const localWiki = await deps.discoverLocalWiki?.(path);
       const gitRemoteHash = await deps.getGitRemoteHash(path);
       if (!current()) return;
-      await provider.syncProjectConfig!(path, composeProjectConfig({ ...slices, gitRemoteHash }));
+      await provider.syncProjectConfig!(path, composeProjectConfig({ ...slices, gitRemoteHash, localWiki }));
     };
     // One current publication plus one follow-up, regardless of how many
     // refreshes arrive while discovery, encryption or transport is waiting.

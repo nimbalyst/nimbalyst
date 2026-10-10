@@ -9,8 +9,15 @@ import {
   upsertTrackerItemAtom,
 } from '../../TrackerPlugin/trackerDataAtoms';
 import { TrackerReferenceChip } from '../TrackerReferenceChip';
-import { createEditor } from 'lexical';
-import { $createTrackerReferenceNode, TrackerReferenceNode } from '../TrackerReferenceNode';
+import { $getNodeByKey, $getRoot, $createParagraphNode, createEditor } from 'lexical';
+import { LexicalComposerContext, createLexicalComposerContext } from '@lexical/react/LexicalComposerContext';
+import { globalRegistry, type PredicateDefinition } from '@nimbalyst/tracker-schema';
+import { $createTrackerReferenceNode, TrackerReferenceNode, TrackerReferenceNodeDecorator } from '../TrackerReferenceNode';
+import { setTrackerReferenceNodeRenderer } from '../TrackerReferenceNodeRenderer';
+import { setTrackerReferenceHomeScope } from '../trackerReferenceHref';
+import { trackerReferenceRelationOptions } from '../TrackerReferenceRelationMenu';
+import { TrackerReferenceSourceProvider } from '../trackerReferenceSource';
+import { setTrackerReferenceLinksSource } from '../trackerReferencePreviewData';
 
 const trackerRecord: TrackerRecord = {
   id: 'bug_1',
@@ -37,7 +44,8 @@ describe('TrackerReferenceChip', () => {
   it.each(['chip', 'card', 'statements'] as const)('preserves %s view through DOM copy/paste', (view) => {
     const editor = createEditor({ nodes: [TrackerReferenceNode], onError: error => { throw error; } });
     editor.update(() => {
-      const node = $createTrackerReferenceNode('NIM-1', view);
+      const relation = view === 'card' ? 'built-on' : null;
+      const node = $createTrackerReferenceNode('NIM-1', view, relation);
       const dom = node.createDOM({ namespace: 'test', theme: { trackerReference: 'host-theme' } });
       expect(dom.classList.contains('host-theme')).toBe(true);
       if (view !== 'chip') expect(dom.classList.contains(`tracker-reference--${view}`)).toBe(true);
@@ -45,6 +53,7 @@ describe('TrackerReferenceChip', () => {
       const conversion = TrackerReferenceNode.importDOM()!.span(exported)!;
       const restored = conversion.conversion(exported)!.node as TrackerReferenceNode;
       expect(restored.getView()).toBe(view);
+      expect(restored.getRelation()).toBe(relation);
       expect(restored.getReferenceKey()).toBe('NIM-1');
       expect(node.isInline()).toBe(true);
       expect(node.updateDOM(restored)).toBe(false);
@@ -55,6 +64,62 @@ describe('TrackerReferenceChip', () => {
 
   afterEach(() => {
     vi.useRealTimers();
+  });
+
+  it('offers the relations allowed for the page pair and stores the chosen one on the node', async () => {
+    const predicates: PredicateDefinition[] = [
+      { id: 'fixes', label: 'fixes', inverseLabel: 'fixed by', subjectKinds: ['module'], objectKinds: ['bug'], valueShape: 'entity', direction: 'directed' },
+      { id: 'built-on', label: 'built on', subjectKinds: ['module'], objectKinds: ['technology'], valueShape: 'entity', direction: 'directed' },
+      { id: 'cost', label: 'cost', subjectKinds: ['*'], valueShape: 'quantity', direction: 'directed' },
+    ];
+    // The registry wiring resolves both kinds through `extends`.
+    const fakeRegistry = {
+      getAllPredicates: () => predicates,
+      getPredicate: (id: string) => predicates.find(p => p.id === id),
+      get: (type: string) => (type === 'service' ? { extends: 'module' } : undefined),
+    };
+    expect(trackerReferenceRelationOptions(fakeRegistry, 'service', 'bug').map(o => o.predicateId)).toEqual(['fixes']);
+
+    const previous = globalRegistry.getAllPredicates();
+    globalRegistry.setPredicates(predicates);
+    try {
+      const editor = createEditor({ nodes: [TrackerReferenceNode], onError: error => { throw error; } });
+      let nodeKey = '';
+      editor.update(() => {
+        const node = $createTrackerReferenceNode('NIM-1');
+        $getRoot().append($createParagraphNode().append(node));
+        nodeKey = node.getKey();
+      }, { discrete: true });
+      const store = createStore();
+      store.set(trackerItemsMapAtom, new Map([[trackerRecord.id, trackerRecord]]));
+      const chip = (relation: string | null) => (
+        <Provider store={store}>
+          <LexicalComposerContext.Provider value={[editor, createLexicalComposerContext(null, null)]}>
+            <TrackerReferenceSourceProvider value={{ itemId: 'mod_1', type: 'module' }}>
+              <TrackerReferenceChip referenceKey="NIM-1" nodeKey={nodeKey} relation={relation} />
+            </TrackerReferenceSourceProvider>
+          </LexicalComposerContext.Provider>
+        </Provider>
+      );
+      const { container, rerender } = render(chip(null));
+      fireEvent.click(container.querySelector<HTMLElement>('.tracker-reference-chip')!);
+
+      const radios = screen.getAllByRole('radio');
+      expect(radios.map(r => r.getAttribute('data-relation'))).toEqual(['fixes', '']);
+      expect(radios[1].getAttribute('aria-checked')).toBe('true');
+      await act(async () => {
+        fireEvent.click(radios[0]);
+      });
+      expect(editor.getEditorState().read(() => ($getNodeByKey(nodeKey) as TrackerReferenceNode).getRelation())).toBe('fixes');
+
+      // Read-only: the stored relation shows, with no choice.
+      editor.setEditable(false);
+      rerender(chip('fixes'));
+      expect(screen.queryAllByRole('radio')).toHaveLength(0);
+      expect(document.querySelector('.tracker-reference-relation')?.textContent).toBe('Linked as fixes');
+    } finally {
+      globalRegistry.setPredicates(previous);
+    }
   });
 
   it('uses canonical theme tokens for the shared chip and preview', () => {
@@ -197,6 +262,73 @@ describe('TrackerReferenceChip', () => {
     ).toBe('true');
   });
 
+  it('says what the item is and what it connects to in the preview', async () => {
+    globalRegistry.register({
+      type: 'preview-competitor', displayName: 'Competitor', displayNamePlural: 'Competitors', icon: 'target', color: '#336699',
+      modes: { inline: false, fullDocument: true }, idPrefix: 'c', idFormat: 'ulid',
+      fields: [
+        { name: 'title', type: 'string' },
+        { name: 'status', type: 'select', options: [{ value: 'active', label: 'Active' }] },
+        { name: 'summary', type: 'text' },
+        { name: 'segment', type: 'select', options: [{ value: 'dev-tools', label: 'Developer tools' }] },
+        { name: 'website', type: 'url' },
+        { name: 'notes', type: 'string' },
+        { name: 'rivals', type: 'relationship' },
+      ],
+    } as unknown as Parameters<typeof globalRegistry.register>[0]);
+    const store = createStore();
+    const record: TrackerRecord = {
+      ...trackerRecord,
+      issueKey: undefined,
+      primaryType: 'preview-competitor',
+      typeTags: ['preview-competitor'],
+      fields: {
+        title: 'Omnigent',
+        status: 'active',
+        summary: '## Overview\n\n- Runs **heterogeneous** agent [runtimes](https://example.com) under one policy.\n\nSecond paragraph.',
+        segment: 'dev-tools',
+        website: 'https://www.omnigent.example/pricing',
+        rivals: [{ itemId: 'x' }],
+      },
+    };
+    store.set(trackerItemsMapAtom, new Map([[record.id, record]]));
+    const linkGroupsFor = vi.fn(async () => [
+      { label: 'Mentioned in', items: [{ itemId: 'page_1', title: 'Positioning', typeId: 'entity' }] },
+      { label: 'Blocks', items: [] },
+    ]);
+    setTrackerReferenceLinksSource({ linkGroupsFor });
+    const navigate = vi.fn();
+    window.addEventListener('nimbalyst:navigate-tracker-item', navigate);
+
+    try {
+      render(
+        <Provider store={store}>
+          <TrackerReferenceChip referenceKey="bug_1" />
+        </Provider>,
+      );
+      fireEvent.click(screen.getByText('Omnigent'));
+
+      // The gist skips the heading and drops the markdown.
+      expect(document.querySelector('.tracker-reference-preview-excerpt')?.textContent)
+        .toBe('Runs heterogeneous agent runtimes under one policy.');
+      // Status is already on the card, the summary is the excerpt, links are
+      // Connections, and an empty field says nothing.
+      expect(Array.from(document.querySelectorAll('.tracker-reference-preview-fields > span'), el => el.textContent))
+        .toEqual(['Segment', 'Developer tools', 'Website', 'omnigent.example']);
+      const link = await screen.findByRole('button', { name: 'Positioning' });
+      expect(linkGroupsFor).toHaveBeenCalledWith('bug_1', 'preview-competitor');
+      expect(document.querySelector('.tracker-reference-preview-links')?.textContent).not.toContain('Blocks');
+
+      fireEvent.click(link);
+      expect((navigate.mock.calls[0][0] as CustomEvent).detail).toMatchObject({ itemId: 'page_1', fromPage: true });
+      expect(document.querySelector('.tracker-reference-preview')).toBeNull();
+    } finally {
+      globalRegistry.unregister('preview-competitor');
+      setTrackerReferenceLinksSource(null);
+      window.removeEventListener('nimbalyst:navigate-tracker-item', navigate);
+    }
+  });
+
   it('renders the five-part inline anatomy in the designed order', () => {
     const store = createStore();
     store.set(
@@ -241,9 +373,12 @@ describe('TrackerReferenceChip', () => {
     expect(typeIcon?.textContent).toBe('bug_report');
     expect(typeIcon?.style.color).toBe('rgb(220, 38, 38)');
     expect(key?.textContent).toBe('NIM-1');
-    expect(key?.style.color).toBe('var(--nim-text)');
+    // The name carries the weight; the key is secondary.
+    expect(key?.style.color).toBe('var(--nim-text-muted)');
+    expect(key?.style.fontWeight).toBe('400');
     expect(title?.textContent).toBe('Theme-safe tracker preview');
-    expect(title?.style.color).toBe('var(--nim-text-muted)');
+    expect(title?.style.color).toBe('var(--nim-text)');
+    expect(title?.style.fontWeight).toBe('600');
     expect(title?.style.overflow).toBe('hidden');
     expect(title?.style.textOverflow).toBe('ellipsis');
     expect(status?.textContent).toContain('In Progress');
@@ -279,6 +414,34 @@ describe('TrackerReferenceChip', () => {
         ?.getAttribute('data-resolved'),
     ).toBe('true');
   });
+
+  it.each(['default', 'compact'] as const)(
+    'never shows the raw item id inline for a type without a key prefix (%s)',
+    variant => {
+      const keyless: TrackerRecord = {
+        ...trackerRecord,
+        id: 'competitor_1787921177066_w5a0b2',
+        issueKey: undefined,
+        primaryType: 'competitor',
+        typeTags: ['competitor'],
+        fields: { title: 'Reddit', status: 'active' },
+      };
+      const store = createStore();
+      store.set(trackerItemsMapAtom, new Map([[keyless.id, keyless]]));
+
+      const { container } = render(
+        <Provider store={store}>
+          <TrackerReferenceChip referenceKey={keyless.id} variant={variant} />
+        </Provider>,
+      );
+
+      const chip = container.querySelector<HTMLElement>('.tracker-reference-chip');
+      expect(chip?.textContent).not.toContain(keyless.id);
+      expect(container.querySelector('.tracker-reference-chip-key')).toBeNull();
+      expect(container.querySelector('.tracker-reference-chip-title')?.textContent).toBe('Reddit');
+      expect(chip?.getAttribute('title')).toContain(keyless.id);
+    },
+  );
 
   it.each(['done', 'completed', 'implemented', 'decided'])(
     'makes the %s state unmistakably complete',
@@ -479,5 +642,46 @@ describe('TrackerReferenceChip', () => {
       container.querySelector<HTMLElement>('.tracker-reference-chip-title')
         ?.style.textDecoration,
     ).toBe('line-through');
+  });
+});
+
+describe('a reference to another project', () => {
+  const OTHER = 'https://console.nimbalyst.com/org/org-1/project/elsewhere/trackers/item/NIM-1';
+  const HOME = 'https://console.nimbalyst.com/org/org-1/project/home/trackers/item/NIM-1';
+  afterEach(() => {
+    setTrackerReferenceNodeRenderer(undefined);
+    setTrackerReferenceHomeScope(undefined);
+  });
+
+  function renderReference(href: string | null): void {
+    const editor = createEditor({ nodes: [TrackerReferenceNode], onError: error => { throw error; } });
+    let element: React.ReactNode = null;
+    editor.update(() => {
+      const node = $createTrackerReferenceNode('NIM-1', 'chip', null, href);
+      $getRoot().append($createParagraphNode().append(node));
+      element = TrackerReferenceNodeDecorator.decorate(node, editor, { namespace: 'test', theme: {} });
+    }, { discrete: true });
+    render(<>{element}</>);
+  }
+
+  it('is never resolved against this project; it shows as an external link to its own console page', () => {
+    setTrackerReferenceNodeRenderer(({ referenceKey }) => <span data-testid="local-chip">{referenceKey}</span>);
+    setTrackerReferenceHomeScope({ orgId: 'org-1', projectId: 'home' });
+
+    renderReference(OTHER);
+    expect(screen.queryByTestId('local-chip')).toBeNull();
+    const external = screen.getByTestId('tracker-reference-external');
+    expect(external.getAttribute('href')).toBe(OTHER);
+    expect(external.textContent).toContain('NIM-1');
+  });
+
+  it('resolves this project\'s links, local links and nimbalyst:// links as before', () => {
+    setTrackerReferenceNodeRenderer(({ referenceKey }) => <span data-testid="local-chip">{referenceKey}</span>);
+    setTrackerReferenceHomeScope({ orgId: 'org-1', projectId: 'home' });
+    renderReference(HOME);
+    renderReference('https://console.nimbalyst.com/app/item/NIM-1');
+    renderReference(null);
+    expect(screen.getAllByTestId('local-chip')).toHaveLength(3);
+    expect(screen.queryByTestId('tracker-reference-external')).toBeNull();
   });
 });

@@ -28,7 +28,7 @@ const PROMPT_ID = 'tool-call-edittext-1418';
 const SEED = 'Agent-supplied draft.';
 const TYPED = 'Ten minutes of carefully written user input.';
 
-function makeMessage() {
+function makeMessage(result: string | null = null) {
   return {
     toolCall: {
       providerToolCallId: PROMPT_ID,
@@ -38,7 +38,7 @@ function makeMessage() {
           { type: 'editText', id: 'body', label: 'Body', format: 'plain', initialText: SEED },
         ],
       },
-      result: null,
+      result,
     },
   } as any;
 }
@@ -91,5 +91,30 @@ describe('RequestUserInputWidget editText draft survival', () => {
 
     expect(draftText()).toBe(TYPED);
     expect(screen.getByTestId('request-user-input-edittext-content').textContent).toContain(TYPED);
+  });
+});
+
+describe('RequestUserInputWidget closed states', () => {
+  const renderClosed = (result: string | null, superseded?: boolean) => render(
+    <JotaiProvider store={store}>
+      <RequestUserInputWidget message={makeMessage(result)} sessionId={SESSION_ID} isExpanded onToggle={() => {}} superseded={superseded} />
+    </JotaiProvider>,
+  );
+
+  it.each([
+    ['a durable superseded result', '{"answers":{},"cancelled":true,"reason":"superseded"}', undefined],
+    ['the transcript flag on an older transcript', null, true],
+  ])('renders skipped and unanswerable for %s', (_label, result, superseded) => {
+    renderClosed(result, superseded);
+    screen.getByTestId('request-user-input-skipped');
+    expect(screen.queryByTestId('request-user-input-cancelled')).toBeNull();
+    expect(screen.queryByTestId('request-user-input-submit')).toBeNull();
+    expect(screen.queryByTestId('request-user-input-cancel')).toBeNull();
+  });
+
+  it('keeps a plain cancel distinct from a skip', () => {
+    renderClosed('{"answers":{},"cancelled":true}');
+    screen.getByTestId('request-user-input-cancelled');
+    expect(screen.queryByTestId('request-user-input-skipped')).toBeNull();
   });
 });

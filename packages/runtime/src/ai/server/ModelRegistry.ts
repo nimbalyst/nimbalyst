@@ -8,6 +8,7 @@ import {
   AI_PROVIDER_TYPES,
   ModelIdentifier,
   assertExhaustiveProvider,
+  isClaudeCodeFamily,
 } from './types';
 
 interface ModelCatalogCacheEntry {
@@ -77,7 +78,10 @@ export class ModelRegistry {
   ): Promise<AIModel[]> {
     const cacheScope = this.getCacheScope(provider, workspacePath, baseUrl);
     const cached = this.catalogCache.get(cacheScope);
-    const cacheMatchesRequest = cached?.apiKey === apiKey;
+    // Claude catalogs are a static list plus the user's Claude settings
+    // `modelPicker`; re-reading those small files on every request is what lets
+    // an edit show up without a restart or a file watcher.
+    const cacheMatchesRequest = cached?.apiKey === apiKey && !isClaudeCodeFamily(provider);
 
     if (cached && cacheMatchesRequest) {
       if (Date.now() - cached.refreshedAt >= this.CACHE_DURATION) {
@@ -173,10 +177,10 @@ export class ModelRegistry {
         return this.filterLatestClaudeModels(ClaudeProvider.getModels());
       case 'claude-code':
         const { ClaudeCodeProvider } = await import('./providers/ClaudeCodeProvider');
-        return ClaudeCodeProvider.getModels();
+        return ClaudeCodeProvider.getModels(workspacePath);
       case 'claude-code-cli':
         const { ClaudeCodeCliProvider } = await import('./providers/ClaudeCodeCliProvider');
-        return ClaudeCodeCliProvider.getModels();
+        return ClaudeCodeCliProvider.getModels(workspacePath);
       case 'openai':
         const { OpenAIProvider } = await import('./providers/OpenAIProvider');
         return OpenAIProvider.getModels(apiKey);
@@ -214,7 +218,8 @@ export class ModelRegistry {
     workspacePath: string | undefined,
     baseUrl: string | undefined,
   ): string {
-    if (provider === 'opencode') {
+    // Claude providers read project/local `.claude/settings*.json` for custom models.
+    if (provider === 'opencode' || isClaudeCodeFamily(provider)) {
       return JSON.stringify([provider, workspacePath ?? null]);
     }
     if (provider === 'lmstudio') {

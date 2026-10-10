@@ -17,6 +17,7 @@ import {$createLinkNode} from "@lexical/link";
 import {TextMatchTransformer} from "@lexical/markdown";
 import {isEmbeddableUrl} from "../../editor/plugins/EmbedPlugin/embeddableExtensions";
 import {parseEmbedAttrs} from "../../editor/plugins/EmbedPlugin/embedAttrs";
+import {isTranscludeTitle} from "../../editor/plugins/TransclusionPlugin/transclusionLink";
 import {
     buildImportedDocumentReference,
     exportDocumentLinkHref,
@@ -220,13 +221,14 @@ export const DocumentReferenceTransformer: TextMatchTransformer = {
     // Match markdown links with local file paths only:
     // - Path must end with a file extension (.\w+)
     // - Path must not contain :// (excludes URLs)
-    // - Path must not start with # (excludes anchors)
+    // - Path must not start with # (excludes anchors) or mailto: (an email
+    //   ends in a domain suffix, so it would otherwise read as a file)
     // - Must not match images or linked images (like [![alt](img)](link))
     // The (?<!!) lookbehind ensures [ is not preceded by ! (excludes inner image links)
     // The (?!!\[) lookahead ensures [ is not followed by ![ (excludes outer linked image wrapper)
     // The (?![^)]*://) ensures no :// anywhere in the path
-    importRegExp: /(?<!!)\[(?!!\[)([^\]]+)\]\((?!#)(?![^)]*:\/\/)([^)]+\.\w+)\)/,
-    regExp: /(?<!!)\[(?!!\[)([^\]]+)\]\((?!#)(?![^)]*:\/\/)([^)]+\.\w+)\)$/,
+    importRegExp: /(?<!!)\[(?!!\[)([^\]]+)\]\((?!#)(?!mailto:)(?![^)]*:\/\/)([^)]+\.\w+)\)/,
+    regExp: /(?<!!)\[(?!!\[)([^\]]+)\]\((?!#)(?!mailto:)(?![^)]*:\/\/)([^)]+\.\w+)\)$/,
     replace: (textNode, match) => {
         const [, name, path] = match;
         const normalizedHref = normalizeDocumentLinkHref(path);
@@ -287,7 +289,9 @@ export const CollabDocumentReferenceTransformer: TextMatchTransformer = {
     replace: (textNode, match) => {
         const [, name, target, title] = match;
         const attrs = parseEmbedAttrs(title);
-        if (isEmbeddableUrl(target, attrs.embedType)) {
+        // A transclusion keeps its title, so it stays a link for the
+        // TransclusionExtension to upgrade (and exports unchanged headless).
+        if (isEmbeddableUrl(target, attrs.embedType) || isTranscludeTitle(title)) {
             const linkNode = $createLinkNode(target, title ? {title} : undefined);
             const linkTextNode = $createTextNode(name);
             linkTextNode.setFormat(textNode.getFormat());

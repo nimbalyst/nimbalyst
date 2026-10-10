@@ -47,6 +47,7 @@ import {
   trackerPersonalStateHydratedAtom,
   trackerViewedAtByItemIdAtom,
 } from '../../store/atoms/trackerPersonalState';
+import { requestConfirmation } from '../../dialogs/requestConfirmation';
 
 // Ensure built-in trackers are loaded
 loadBuiltinTrackers();
@@ -260,13 +261,16 @@ export const TrackerMode: React.FC<TrackerModeProps> = ({
     setActiveSavedViewId(view.id);
   }, [setModeLayout, modeLayout]);
 
-  const handleDeleteView = useCallback((view: SavedView) => {
+  const handleDeleteView = useCallback(async (view: SavedView) => {
     if (view.builtIn) return;
     // Deleting a shared view removes it for the whole team and can't be undone,
     // so make the team-wide consequence explicit before acting.
-    if (view.shared && !window.confirm(
-      `Delete “${view.name}” for the whole team? This can't be undone.`,
-    )) {
+    if (view.shared && !(await requestConfirmation({
+      title: 'Delete shared view?',
+      message: `Delete “${view.name}” for the whole team? This can't be undone.`,
+      confirmLabel: 'Delete',
+      destructive: true,
+    }))) {
       return;
     }
     if (activeSavedViewId === view.id) setActiveSavedViewId(null);

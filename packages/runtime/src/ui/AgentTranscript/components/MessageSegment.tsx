@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import type { TranscriptViewMessage, ChatAttachment } from '../../../ai/server/types';
 import { MarkdownRenderer } from './MarkdownRenderer';
 import { JSONViewer } from './JSONViewer';
@@ -40,7 +40,7 @@ interface MessageSegmentProps {
   workspacePath?: string;
 }
 
-export const MessageSegment: React.FC<MessageSegmentProps> = ({
+export const MessageSegment = React.memo(function MessageSegment({
   message,
   isUser,
   isCollapsed = false,
@@ -57,13 +57,18 @@ export const MessageSegment: React.FC<MessageSegmentProps> = ({
   onCompact,
   provider,
   workspacePath
-}) => {
+}: MessageSegmentProps) {
   const [isDiffExpanded, setDiffExpanded] = useState(false);
   const [enlargedImage, setEnlargedImage] = useState<ChatAttachment | null>(null);
   const [enlargedText, setEnlargedText] = useState<ChatAttachment | null>(null);
   const [textContent, setTextContent] = useState<string | null>(null);
   const [textLoadError, setTextLoadError] = useState<string | null>(null);
-
+  const closeImageModal = useCallback(() => setEnlargedImage(null), []);
+  const closeTextModal = useCallback(() => {
+    setEnlargedText(null);
+    setTextContent(null);
+    setTextLoadError(null);
+  }, []);
 
   // Load text content when a text attachment is selected
   useEffect(() => {
@@ -502,13 +507,13 @@ export const MessageSegment: React.FC<MessageSegmentProps> = ({
     return (
       <FullscreenModal
         isOpen={!!enlargedImage}
-        onClose={() => setEnlargedImage(null)}
+        onClose={closeImageModal}
         ariaLabel="Image preview"
         contentClassName="max-w-[90vw] max-h-[90vh] flex flex-col items-center"
       >
         <button
           className="message-attachment-modal-close absolute -top-8 -right-8 w-7 h-7 p-0 border-none bg-[var(--nim-bg-secondary)] rounded-full cursor-pointer flex items-center justify-center text-[var(--nim-text)] transition-colors duration-150 hover:bg-[var(--nim-bg-hover)]"
-          onClick={() => setEnlargedImage(null)}
+          onClick={closeImageModal}
           aria-label="Close"
         >
           <MaterialSymbol icon="close" size={20} />
@@ -531,16 +536,10 @@ export const MessageSegment: React.FC<MessageSegmentProps> = ({
 
   // Render text preview modal
   const renderTextModal = () => {
-    const handleClose = () => {
-      setEnlargedText(null);
-      setTextContent(null);
-      setTextLoadError(null);
-    };
-
     return (
       <FullscreenModal
         isOpen={!!enlargedText}
-        onClose={handleClose}
+        onClose={closeTextModal}
         ariaLabel="Text file preview"
         contentClassName="w-[80vw] max-w-[900px] max-h-[80vh] flex flex-col bg-[var(--nim-bg)] rounded-lg shadow-[0_4px_24px_rgba(0,0,0,0.3)] overflow-hidden"
       >
@@ -556,7 +555,7 @@ export const MessageSegment: React.FC<MessageSegmentProps> = ({
               </span>
               <button
                 className="message-attachment-modal-close static ml-auto w-6 h-6 p-0 border-none bg-[var(--nim-bg-secondary)] rounded-full cursor-pointer flex items-center justify-center text-[var(--nim-text)] transition-colors duration-150 hover:bg-[var(--nim-bg-hover)]"
-                onClick={handleClose}
+                onClick={closeTextModal}
                 aria-label="Close"
               >
                 <MaterialSymbol icon="close" size={18} />
@@ -636,4 +635,4 @@ export const MessageSegment: React.FC<MessageSegmentProps> = ({
       {renderTextModal()}
     </div>
   );
-};
+});

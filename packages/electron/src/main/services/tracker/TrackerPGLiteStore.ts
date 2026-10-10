@@ -21,6 +21,7 @@
  *   projection via `applyRemoteItem` after bootstrap, which is correct.
  */
 
+import { randomUUID } from 'crypto';
 import type { AppDatabase } from '../../database/PGLiteDatabaseWorker';
 import type {
   TrackerItemEnvelope,
@@ -39,6 +40,16 @@ import { trackerRecordToItem, type TrackerRecord } from '@nimbalyst/runtime/core
 import { logger } from '../../utils/logger';
 import { fromDbBoolean, toDbBoolean } from './trackerDbValue';
 import { mergeActivity } from './trackerActivity';
+import {
+  ackAndRetireSuperseded,
+  causalEnqueuedAt,
+  enqueuedAtMillis,
+  itemsWithStackedUpdates,
+  newestUpdatePayload,
+  samePayload,
+  serializeOutboxWrite,
+  SUPERSEDED_UPDATE,
+} from './trackerOutboxCompaction';
 import {
   COLUMN_ONLY_IDENTITY_KEYS,
   extractItemCustomFields,
@@ -685,24 +696,30 @@ export class TrackerPGLiteStore implements TrackerPersistence {
   // --------------------------------------------------------------------------
 
   async enqueueTransaction(row: TrackerTransactionRow): Promise<void> {
-    await this.db.query(
-      `INSERT INTO tracker_transactions (
-        client_mutation_id, item_id, workspace_path, state, kind, payload, enqueued_at
-      ) VALUES ($1, $2, $3, $4, $5, $6::jsonb, to_timestamp($7 / 1000.0))
-      ON CONFLICT (client_mutation_id) DO UPDATE SET
-        state = EXCLUDED.state,
-        kind = EXCLUDED.kind,
-        payload = EXCLUDED.payload`,
-      [
-        row.clientMutationId,
-        row.itemId,
-        row.workspacePath || this.workspacePath,
-        row.state,
-        row.kind,
-        row.payload ? JSON.stringify(row.payload) : null,
-        row.enqueuedAt,
-      ],
-    );
+    // `enqueued_at` orders an item's rows for compaction, so it comes from the
+    // per-item clock rather than straight from the wall clock.
+    const workspacePath = row.workspacePath || this.workspacePath;
+    await serializeOutboxWrite(workspacePath, row.itemId, async () => {
+      const enqueuedAt = await causalEnqueuedAt(this.db, workspacePath, row.itemId, row.enqueuedAt);
+      await this.db.query(
+        `INSERT INTO tracker_transactions (
+          client_mutation_id, item_id, workspace_path, state, kind, payload, enqueued_at
+        ) VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7::timestamptz)
+        ON CONFLICT (client_mutation_id) DO UPDATE SET
+          state = EXCLUDED.state,
+          kind = EXCLUDED.kind,
+          payload = EXCLUDED.payload`,
+        [
+          row.clientMutationId,
+          row.itemId,
+          workspacePath,
+          row.state,
+          row.kind,
+          row.payload ? JSON.stringify(row.payload) : null,
+          enqueuedAt,
+        ],
+      );
+    });
   }
 
   async applyAndEnqueueAtomically(
@@ -766,10 +783,50 @@ export class TrackerPGLiteStore implements TrackerPersistence {
     // via `applyRemoteItem` from the ack's `item` field). We don't keep
     // confirmed rows around -- the local sync_id watermark on `tracker_items`
     // already records the server-assigned version.
-    await this.db.query(
-      `DELETE FROM tracker_transactions WHERE client_mutation_id = $1`,
-      [clientMutationId],
-    );
+    await ackAndRetireSuperseded(this.db, clientMutationId);
+  }
+
+  /**
+   * For each item with stacked update rows, queue one update rebuilt from the
+   * item's local row, which then replays in their place. Only when that row is
+   * `pending`: the last write to it was a local edit, so it is the newest local
+   * state, which the rows' own timestamps cannot be trusted to say. A row the
+   * room has written since (`synced`) is not; its item is left as it is.
+   * Deletes nothing. Returns how many updates were queued.
+   */
+  async consolidatePendingUpdates(): Promise<number> {
+    let queued = 0;
+    for (const { itemId, rows } of await itemsWithStackedUpdates(this.db, this.workspacePath)) {
+      const result = await this.db.query<PGLiteTrackerItemRow>(
+        `SELECT id, type, type_tags, data, workspace,
+                document_path, line_number, issue_number, issue_key,
+                sync_status, sync_id, body_version, deleted_at,
+                archived, source, source_ref,
+                created, updated, last_indexed
+           FROM tracker_items
+          WHERE id = $1 AND workspace = $2`,
+        [itemId, this.workspacePath],
+      );
+      const local = result.rows[0];
+      if (!local || local.deleted_at !== null || local.sync_status !== 'pending') {
+        logger.main.info('[TrackerOutbox]', rows, 'queued updates for item', itemId, 'kept as they are: its local row is not a pending local edit');
+        continue;
+      }
+      const payload = pgliteRowToPayload(local);
+      if (samePayload(await newestUpdatePayload(this.db, this.workspacePath, itemId), payload)) continue;
+      logger.main.info('[TrackerOutbox] queueing one update rebuilt from the local row of item', itemId, 'in place of', rows, 'queued updates');
+      await this.enqueueTransaction({
+        clientMutationId: `cm-${randomUUID()}`,
+        itemId,
+        workspacePath: this.workspacePath,
+        state: 'queued',
+        kind: 'update',
+        payload,
+        enqueuedAt: Date.now(),
+      });
+      queued += 1;
+    }
+    return queued;
   }
 
   async rejectTransaction(
@@ -785,13 +842,16 @@ export class TrackerPGLiteStore implements TrackerPersistence {
   }
 
   async loadPendingTransactions(): Promise<TrackerTransactionRow[]> {
+    // Only the newest update per item: older ones carry stale whole-item
+    // snapshots, and loading them all once needed 257 MB (NIM-7336).
     const result = await this.db.query<PGLiteTrackerTransactionRow>(
       `SELECT client_mutation_id, item_id, workspace_path, state, kind, payload,
               enqueued_at, started_at, confirmed_sync_id, last_rejection
          FROM tracker_transactions
         WHERE workspace_path = $1
           AND confirmed_sync_id IS NULL
-        ORDER BY enqueued_at ASC`,
+          AND NOT ${SUPERSEDED_UPDATE}
+        ORDER BY enqueued_at ASC, client_mutation_id ASC`,
       [this.workspacePath],
     );
     return result.rows.map((row) => {
@@ -801,7 +861,7 @@ export class TrackerPGLiteStore implements TrackerPersistence {
         workspacePath: row.workspace_path,
         state: row.state,
         kind: row.kind,
-        enqueuedAt: row.enqueued_at instanceof Date ? row.enqueued_at.getTime() : Date.now(),
+        enqueuedAt: enqueuedAtMillis(row.enqueued_at),
       };
       if (row.payload) {
         try {

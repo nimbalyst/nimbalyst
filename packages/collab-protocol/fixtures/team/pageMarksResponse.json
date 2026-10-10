@@ -1,0 +1,37 @@
+{
+  "type": "pageMarksResponse",
+  "requestId": "marks-1",
+  "marks": [
+    {
+      "documentId": "page-1",
+      "projectId": "project-1",
+      "title": "Specs",
+      "kind": "decided",
+      "text": "Storage lives in [Flagship](https://console.nimbalyst.com/x).",
+      "plainText": "Storage lives in Flagship.",
+      "by": "Greg Hinkle",
+      "email": "greg@example.com",
+      "on": "2026-09-30",
+      "over": "our own engine",
+      "line": 3,
+      "offset": 41
+    },
+    {
+      "documentId": "tracker-content/NIM-42",
+      "typedPage": { "itemId": "NIM-42", "typeId": "bug", "issueKey": "NIM-42" },
+      "projectId": null,
+      "title": null,
+      "kind": "open",
+      "text": "Pricing is unknown.",
+      "plainText": "Pricing is unknown.",
+      "by": "Spike 6",
+      "email": null,
+      "on": null,
+      "over": null,
+      "line": 1,
+      "offset": 0
+    }
+  ],
+  "status": "ready",
+  "coverage": "all-page-kinds"
+}

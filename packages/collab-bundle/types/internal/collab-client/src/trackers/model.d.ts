@@ -1,7 +1,7 @@
 /** Portable tracker schema, grouping, ordering, and column model. */
 export type { TrackerIdentity } from '../../../runtime/src/core/DocumentService';
 export type { TrackerRecord } from '../../../runtime/src/core/TrackerRecord';
-export * from '@nimbalyst/tracker-schema';
+export * from '../../../tracker-schema/src/browser';
 export * from '../../../runtime/src/plugins/TrackerPlugin/models/trackerGrouping';
 export * from '../../../runtime/src/plugins/TrackerPlugin/models/trackerOrdering';
 export * from '../../../runtime/src/plugins/TrackerPlugin/models/trackerRelationships';

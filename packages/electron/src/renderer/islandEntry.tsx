@@ -13,6 +13,11 @@ import { Provider as JotaiProvider } from 'jotai';
 import { store } from '@nimbalyst/runtime/store/store';
 import { MenuBarIslandApp } from './components/MenuBarIsland/MenuBarIslandApp';
 import './index.css';
+import { installUserTimingTrimmer } from './devtools/userTimingTrimmer';
+
+if (process.env.NODE_ENV?.toLowerCase() === 'development') {
+  installUserTimingTrimmer();
+}
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <JotaiProvider store={store}>

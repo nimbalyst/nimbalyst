@@ -20,10 +20,15 @@ export function withCredentialLock<T>(
         break;
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
-        const stat = fs.lstatSync(lock);
+        // The holder may release the lock between our link and these reads;
+        // a vanished lock means it is free, so try the link again.
+        const stat = statUnlessReleased(lock);
+        if (!stat) continue;
         if (!stat.isFile() || stat.isSymbolicLink())
           throw new Error("Unsafe credential lock");
-        const pid = Number(fs.readFileSync(lock, "utf8"));
+        const pidText = readUnlessReleased(lock);
+        if (pidText === null) continue;
+        const pid = Number(pidText);
         if (!Number.isSafeInteger(pid) || pid <= 0)
           throw new Error("Invalid credential lock");
         let stopped = false;
@@ -36,7 +41,8 @@ export function withCredentialLock<T>(
           throw new Error(
             "Credential storage is busy in another process; retry"
           );
-        const current = fs.lstatSync(lock);
+        const current = statUnlessReleased(lock);
+        if (!current) continue;
         if (current.ino !== stat.ino || current.dev !== stat.dev)
           throw new Error("Credential lock changed; retry");
         fs.unlinkSync(lock);
@@ -47,5 +53,27 @@ export function withCredentialLock<T>(
   } finally {
     if (acquired) fs.unlinkSync(lock);
     fs.unlinkSync(candidate);
+  }
+}
+
+function isReleased(error: unknown): boolean {
+  return (error as NodeJS.ErrnoException).code === "ENOENT";
+}
+
+function statUnlessReleased(lock: string): fs.Stats | null {
+  try {
+    return fs.lstatSync(lock);
+  } catch (error) {
+    if (isReleased(error)) return null;
+    throw error;
+  }
+}
+
+function readUnlessReleased(lock: string): string | null {
+  try {
+    return fs.readFileSync(lock, "utf8");
+  } catch (error) {
+    if (isReleased(error)) return null;
+    throw error;
   }
 }

@@ -3,11 +3,12 @@ import { warnIfUnpublished } from '@nimbalyst/runtime/sync/pushOutcome';
 import { registerAskUserQuestionAnswerHandler } from './registerAskUserQuestionAnswerHandler';
 import { AISessionsRepository } from '@nimbalyst/runtime/storage/repositories/AISessionsRepository';
 import { configureCodexQuestionDelivery, deliverCodexQuestionAnswer } from '../codexQuestionDelivery';
+import { configureRequestUserInputResume } from '../requestUserInputOrphanedAnswer';
 import { TrayManager } from '../../../tray/TrayManager';
 import { safeHandle } from '../../../utils/ipcRegistry';
 import { logger } from '../../../utils/logger';
 import { getSyncProvider } from '../../SyncManager';
-import { persistAskUserQuestionTerminalResult } from '.././askUserQuestionFallbackResolution';
+import { persistInteractivePromptTerminalResult } from '.././askUserQuestionFallbackResolution';
 import { buildToolPermissionResponseRecord } from '.././claudeCliToolPermission';
 import { setSessionPendingPrompt } from '.././pendingPromptPersistence';
 import { type AIServiceContext } from './AIServiceContext';
@@ -27,6 +28,10 @@ export function registerInteractivePromptHandlers(ctx: AIServiceContext): void {
     drive: (sessionId, workspacePath) => ctx.driveQueuedPrompts(sessionId, workspacePath, 'session-idle'),
     publish: sessionId => ctx.publishQueueStateToSync(sessionId),
   });
+  configureRequestUserInputResume(({ event, sessionId, workspacePath, message }) =>
+    // Not a human turn: it must not supersede other open questions.
+    ctx.sendMessageHandler(event, message, { promptOrigin: 'interactive-question' }, sessionId, workspacePath),
+  );
   // Handle ExitPlanMode confirmation response from renderer
   safeHandle('ai:exitPlanModeConfirmResponse', async (event, requestId: string, sessionId: string, response: { approved: boolean; clearContext?: boolean; feedback?: string }) => {
     logger.main.info(`[AIService] ExitPlanMode confirmation response: requestId=${requestId}, approved=${response.approved}, clearContext=${response.clearContext}, hasFeedback=${!!response.feedback}`);
@@ -195,7 +200,7 @@ export function registerInteractivePromptHandlers(ctx: AIServiceContext): void {
       // Issue #1116: clearing the pending-prompt bit dismissed the session-level
       // indicator but left the tool call pending, so the cancelled widget came
       // back on the next session switch. Write the terminal result too.
-      await persistAskUserQuestionTerminalResult({
+      await persistInteractivePromptTerminalResult({
         sessionId: resolvedSessionId,
         questionId,
         answers: {},

@@ -9,7 +9,7 @@
  * and the records, so desktop settings and the web console's Tracker setup
  * screen render the same numbers.
  */
-import type { PredicateDefinition, TrackerDataModel } from '@nimbalyst/tracker-schema';
+import type { LabelRegistry, PredicateDefinition, TrackerDataModel } from '../../../../tracker-schema/src/browser';
 import { type HealthItem, type KnowledgeGraph, type MarketNode } from './ontologyKnowledge';
 import { type OntologyRecordLike } from './ontologyRecords';
 /** A field filled on fewer than this share of its items is sparse. */
@@ -17,13 +17,14 @@ export declare const SPARSE_FILL_RATE: number;
 export interface OntologyInput<T extends OntologyRecordLike = OntologyRecordLike> {
     types: readonly TrackerDataModel[];
     /**
-     * The predicate registry, or null/absent when the host cannot read one. The
-     * web console cannot: the room does not publish the registry today, so it
-     * passes null and predicates are keyed off the ids claims use. Desktop reads
-     * `.nimbalyst/predicates.yaml`. An empty array means a registry that declares
-     * nothing, which is a different answer from "unknown".
+     * The predicate registry, or null/absent when the host has not received one
+     * yet; predicates are then keyed off the ids claims use. An empty array means
+     * a registry that declares nothing, which is a different answer from
+     * "unknown".
      */
     predicates?: readonly PredicateDefinition[] | null;
+    /** The room's label registry; empty or absent reads through the kind stand-in. */
+    labels?: LabelRegistry | null;
     records: readonly T[];
     now: number;
 }

@@ -8,6 +8,7 @@
  * - Inlined CSS (dark + light theme via CSS variables)
  * - Pre-rendered markdown (via `marked`)
  * - Syntax-highlighted code blocks (via `highlight.js`)
+ * - 2x2 charts drawn as SVG, and mermaid diagrams the renderer pre-rendered
  * - Theme toggle button
  * - Nimbalyst brand bar
  */
@@ -15,18 +16,38 @@ import { Marked, type Tokens } from 'marked';
 import hljs from 'highlight.js';
 import * as fs from 'fs';
 import * as path from 'path';
+import { parseQuadrantFence } from '@nimbalyst/runtime/core/quadrantFence';
+import { quadrantSvgMarkup } from '@nimbalyst/runtime/ui/quadrant/quadrantSvg';
 
 // ---------------------------------------------------------------------------
 // Markdown setup - separate Marked instance to avoid conflicting with
-// SessionHtmlExporter's global marked config
+// SessionHtmlExporter's global marked config. One per export, because the
+// pre-rendered diagrams belong to the file being exported.
 // ---------------------------------------------------------------------------
 
-const fileMarked = new Marked({
+export interface FileHtmlExportOptions {
+  /**
+   * Mermaid SVG keyed by the fence's trimmed source. Mermaid needs a DOM, so
+   * the renderer draws the file's diagrams; a fence missing here stays code.
+   */
+  mermaidSvgs?: Record<string, string>;
+}
+
+const createFileMarked = (options: FileHtmlExportOptions) => new Marked({
   gfm: true,
   breaks: false,
   renderer: {
     code(token: Tokens.Code) {
       const { text, lang } = token;
+      if (lang === '2x2') {
+        const parsed = parseQuadrantFence(text);
+        const svg = quadrantSvgMarkup(parsed.points, parsed.labels, { width: parsed.width, height: parsed.height });
+        return `<div class="share-diagram share-quadrant">${svg}</div>`;
+      }
+      const mermaidSvg = lang === 'mermaid' ? options.mermaidSvgs?.[text.trim()] : undefined;
+      if (mermaidSvg) {
+        return `<div class="share-diagram share-mermaid">${mermaidSvg}</div>`;
+      }
       if (lang && hljs.getLanguage(lang)) {
         const highlighted = hljs.highlight(text, { language: lang }).value;
         return `<pre class="hljs"><code class="language-${escapeHtml(lang)}">${highlighted}</code></pre>`;
@@ -299,6 +320,30 @@ pre.hljs .hljs-meta { color: var(--text-muted); }
   border-top: 1px solid var(--border);
 }
 
+.share-diagram {
+  margin: 1rem 0;
+  padding: 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-secondary);
+  overflow-x: auto;
+}
+.share-diagram svg { display: block; max-width: 100%; height: auto; margin: 0 auto; }
+/* Mermaid draws with its light theme, so it sits on a light card in both themes. */
+.share-mermaid { background: #ffffff; }
+.quadrant-svg .q-grid { stroke: var(--border); }
+.quadrant-svg text { font-family: inherit; }
+.quadrant-svg .q-point { fill: var(--text-muted); }
+.quadrant-svg .q-pinned { fill: var(--primary); }
+.quadrant-svg .q-leader { stroke: currentColor; stroke-width: 1; opacity: 0.5; }
+.quadrant-svg .q-point { color: var(--text-muted); }
+.quadrant-svg .q-pinned { color: var(--primary); }
+.quadrant-svg .q-caption { fill: var(--text-faint); }
+.quadrant-svg .q-corner-0 { fill: #a855f7; }
+.quadrant-svg .q-corner-1 { fill: var(--success); }
+.quadrant-svg .q-corner-2 { fill: var(--warning); }
+.quadrant-svg .q-corner-3 { fill: var(--primary); }
+
 @media (max-width: 640px) {
   .container { padding: 1rem 0.5rem; }
   pre.hljs { font-size: 0.75rem; padding: 0.5rem; }
@@ -315,12 +360,13 @@ pre.hljs .hljs-meta { color: var(--text-muted); }
  *
  * @param filePath - Absolute path to the file (used for display name only)
  * @param content - Raw file content (markdown)
+ * @param options - Pre-rendered mermaid diagrams
  */
-export function exportFileToHtml(filePath: string, content: string): string {
+export function exportFileToHtml(filePath: string, content: string, options: FileHtmlExportOptions = {}): string {
   const fileName = path.basename(filePath);
   const fileDir = path.dirname(filePath);
   const { body } = stripFrontmatter(content);
-  const rawHtml = fileMarked.parse(body) as string;
+  const rawHtml = createFileMarked(options).parse(body) as string;
   const contentHtml = inlineLocalImages(rawHtml, fileDir);
   const rawMarkdownB64 = Buffer.from(content).toString('base64');
   return buildFileHtml(fileName, contentHtml, rawMarkdownB64);

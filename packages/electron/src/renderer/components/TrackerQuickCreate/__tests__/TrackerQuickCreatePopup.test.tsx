@@ -203,8 +203,9 @@ describe('TrackerQuickCreatePopup', () => {
     expect(screen.getByTestId('tracker-quick-create-type-chip').textContent).toContain('Bug');
   });
 
-  it('creates and closes into the new item on Cmd+Enter', async () => {
+  it('creates and closes on Cmd+Enter without leaving the current mode', async () => {
     const store = createStore();
+    const modeBefore = store.get(windowModeAtom);
     renderPopup(store);
     const title = await openAndPickType(store, 'qc-bug');
 
@@ -213,8 +214,8 @@ describe('TrackerQuickCreatePopup', () => {
 
     await waitFor(() => expect(screen.queryByTestId('tracker-quick-create-title')).toBeNull());
     expect(createTrackerItem).toHaveBeenCalledTimes(1);
-    expect(store.get(windowModeAtom)).toBe('tracker');
-    expect(store.get(trackerModeLayoutAtom).selectedItemId).toBe(
+    expect(store.get(windowModeAtom)).toBe(modeBefore);
+    expect(store.get(trackerModeLayoutAtom).selectedItemId).not.toBe(
       createTrackerItem.mock.calls[0][0].id,
     );
   });

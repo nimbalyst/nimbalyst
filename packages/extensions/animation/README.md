@@ -45,8 +45,8 @@ The bundled Claude plugin adds an `animation` skill covering the format in full,
 ## Development
 
 ```bash
-npm install
-npm run build
+pnpm install
+pnpm run build
 ```
 
-Use `extension_reload` from the Extension Dev Kit to apply a build to the running app -- a bare `npm run build` does not install anything.
+Use `extension_reload` from the Extension Dev Kit to apply a build to the running app -- a bare `pnpm run build` does not install anything.

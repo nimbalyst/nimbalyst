@@ -74,7 +74,7 @@ fi
 # --- Transcript bundle must exist before a release build --------------------
 if [ ! -f "$ANDROID_DIR/dist-transcript/transcript.html" ]; then
   echo "Transcript bundle missing; building it..."
-  ( cd "$REPO_ROOT" && npm run android:build:transcript )
+  ( cd "$REPO_ROOT" && pnpm run android:build:transcript )
 fi
 
 # --- Build ------------------------------------------------------------------

@@ -49,3 +49,14 @@ export type TrackerTypeLookup = (type: string) => TrackerTypeDeclaration | undef
  * through this without branching.
  */
 export declare function resolveTrackerTypeInheritance(declared: TrackerTypeDeclaration, lookup: TrackerTypeLookup): TrackerTypeInheritanceResult;
+/**
+ * Recover the declaration a resolved derived model came from: `type`,
+ * `extends`, and only what differs from `base` (the base's resolved model).
+ *
+ * For a copy that lost its declaration -- a mirror row or payload written
+ * before declarations travelled with it. Registering such a copy as if it were
+ * the declaration turns every inherited field into an explicit override, so a
+ * later base change stops reaching it, and narrowing a base select drops the
+ * type outright (the copy now "widens" it).
+ */
+export declare function deriveTrackerTypeDeclaration(resolved: TrackerDataModel, base: TrackerDataModel): DerivedTrackerTypeDeclaration;

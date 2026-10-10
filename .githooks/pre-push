@@ -7,11 +7,11 @@ remote_name="${1:-origin}"
 push_refs=$(cat)
 
 # Fail fast, and accurately, when the hook is running under the wrong Node.
-# Every check below shells out to node/npm, and with engine-strict=true the
+# Every check below shells out to node/pnpm, and with engineStrict the
 # lockfile check reports an engine mismatch as lockfile drift.
-echo "[pre-push] Checking the Node/npm toolchain..."
-if ! command -v node >/dev/null 2>&1 || ! command -v npm >/dev/null 2>&1; then
-  echo "[pre-push] ERROR: node and npm are not both on PATH."
+echo "[pre-push] Checking the Node/pnpm toolchain..."
+if ! command -v node >/dev/null 2>&1 || ! command -v pnpm >/dev/null 2>&1; then
+  echo "[pre-push] ERROR: node and pnpm are not both on PATH (run 'corepack enable' once)."
   echo "[pre-push] PATH=$PATH"
   echo "[pre-push] GUI git clients skip your shell config; push from a terminal, or point"
   echo "[pre-push] your version manager's default alias at the version in .nvmrc."
@@ -41,11 +41,11 @@ run_stage() {
   node scripts/record-prepush-stage.mjs "$stage_name" "$stage_elapsed" "$stage_status"
   return "$stage_status"
 }
-run_stage toolchain node scripts/check-toolchain.mjs "$(npm -v)"
+run_stage toolchain node scripts/check-toolchain.mjs "$(pnpm -v)"
 
-# Validate package-lock.json is in sync with every workspace package.json
+# Validate pnpm-lock.yaml is in sync with every workspace package.json
 # when the outgoing commits touch any manifest. This is exactly the check
-# CI's `npm ci` performs; without it, lockfile drift is only discovered
+# CI's `pnpm install --frozen-lockfile` performs; without it, lockfile drift is only discovered
 # after pushing (2026-07-07 incident: npm 10/11 override-shape mismatch).
 base=$(node scripts/resolve-prepush-base.mjs)
 
@@ -64,13 +64,13 @@ unset $git_local_env
 unset GIT_NAMESPACE
 
 check_lockfile() {
-  if ! git diff --quiet "$base" HEAD -- package-lock.json 'package.json' '*/package.json' 2>/dev/null; then
-    echo "[pre-push] Manifest/lockfile changed; validating lockfile sync (npm ci --dry-run)..."
-    if ! npm ci --dry-run >/dev/null 2>&1; then
+  if ! git diff --quiet "$base" HEAD -- pnpm-lock.yaml pnpm-workspace.yaml 'package.json' '*/package.json' 2>/dev/null; then
+    echo "[pre-push] Manifest/lockfile changed; validating lockfile sync (pnpm install --frozen-lockfile --lockfile-only)..."
+    if ! lockfile_output=$(pnpm install --frozen-lockfile --lockfile-only 2>&1); then
       echo ""
-      echo "[pre-push] ERROR: package-lock.json is out of sync with package.json."
-      echo "[pre-push] Run 'npm install' (Node 24 / npm 11 -- see .nvmrc) and commit the lockfile."
-      npm ci --dry-run 2>&1 | grep -E 'Invalid|Missing|EBADENGINE' | head -10
+      echo "[pre-push] ERROR: pnpm-lock.yaml is out of sync with package.json / pnpm-workspace.yaml."
+      echo "[pre-push] Run 'pnpm install' (Node 24 -- see .nvmrc) and commit the lockfile."
+      printf '%s\n' "$lockfile_output" | tail -15
       return 1
     fi
     echo "[pre-push] Lockfile in sync."
@@ -80,16 +80,16 @@ check_lockfile() {
 run_stage lockfile check_lockfile
 
 echo "[pre-push] Checking override/dep sync..."
-run_stage override-sync npm run check:override-sync
+run_stage override-sync pnpm run check:override-sync
 
 echo "[pre-push] Checking tracked text files for raw NUL bytes..."
-run_stage text-nuls npm run check:text-nuls -- --ref HEAD
+run_stage text-nuls pnpm run check:text-nuls --ref HEAD
 
 echo "[pre-push] Building typecheck prerequisites and running the full typecheck..."
-run_stage typecheck:prepush npm run typecheck:prepush
+run_stage typecheck:prepush pnpm run typecheck:prepush
 
 echo "[pre-push] Verifying platform test-gate behavior..."
-run_stage test:prepush-gate npm run test:prepush-gate
+run_stage test:prepush-gate pnpm run test:prepush-gate
 
 # Every line printed here lands in the Git extension's Output panel, so the
 # prepush scripts use dot reporters, --silent=passed-only, and a quiet Vite
@@ -103,7 +103,7 @@ if [ "$(node scripts/prepush-test-gate.mjs)" = "run" ]; then
     run_stage test:prepush-reused true
   else
     echo "[pre-push] Running non-provider unit tests..."
-    run_stage test:prepush npm run test:prepush
+    run_stage test:prepush pnpm run test:prepush
   fi
 else
   echo "[pre-push] Skipping the full Vitest suite on local Windows; CI and non-Windows pushes still require it."

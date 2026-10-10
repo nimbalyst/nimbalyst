@@ -25,8 +25,8 @@ extension VoiceAgent {
             guard connectionGeneration.accepts(epoch) else { return }
             do {
                 if submittingEngine == .live {
-                    guard let session = try database?.session(byId: prompt.sessionId), session.projectId == submittingProject,
-                          let host = prompt.hostDeviceId, session.hostDeviceId == host else {
+                    guard let session = try database?.session(byId: prompt.sessionId),
+                          session.isVoiceAvailable(onHost: prompt.hostDeviceId, projectId: submittingProject) else {
                         submissionStatus = "Submission unavailable: session ownership changed."
                         return
                     }

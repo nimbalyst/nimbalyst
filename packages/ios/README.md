@@ -30,12 +30,12 @@ _Coming soon_
    ```bash
    git clone https://github.com/nimbalyst/nimbalyst.git
    cd nimbalyst
-   npm install
+   pnpm install
    ```
 
 2. Build the transcript web bundle:
    ```bash
-   npm run ios:build:transcript
+   pnpm run ios:build:transcript
    ```
 
 3. Generate and open the Xcode project:
@@ -104,10 +104,10 @@ Desktop TrayManager -> fleetActivityUpdate (WebSocket) -> IndexRoom -> APNs -> p
 
 ```bash
 # Run the Swift test suite
-npm run ios:test:swift
+pnpm run ios:test:swift
 
 # Build transcript bundle
-npm run ios:build:transcript
+pnpm run ios:build:transcript
 
 # Regenerate Xcode project after changing project.yml
 cd NimbalystApp && xcodegen generate

@@ -206,7 +206,7 @@ packages/extensions/csv-spreadsheet/
 ```bash
 # Build the extension
 cd packages/extensions/csv-spreadsheet
-npm run build
+pnpm run build
 
 # Install into Nimbalyst (via Extension Dev Kit MCP)
 # Or copy dist/ to extensions folder

@@ -83,6 +83,8 @@ import { AnalyticsService } from './analytics/AnalyticsService';
 import { sendTeamAnalyticsEvent } from './analytics/TeamAnalytics';
 import { CollaborationHealthAttemptTracker } from '../../shared/analytics/collaborationHealth';
 import { bucketItemCount, categorizeTeamAnalyticsError, toStableAnalyticsCategory } from '../../shared/analytics/teamAnalytics';
+import { setBodyLinkHomeScope } from './tracker/trackerBodyLinks';
+import { refuseLocalWikiItem } from './localWiki/localWikiItemIds';
 
 // ============================================================================
 // Engine registry (per workspace)
@@ -535,6 +537,8 @@ async function doInitializeTrackerSync(workspacePath: string): Promise<void> {
   logger.main.info('[TrackerSyncManager] creating engine for', workspacePath, 'roomId:', `org:${team.orgId}:tracker:${team.teamProjectId}`);
 
   const engine = new TrackerSyncEngine(config);
+  // Body links to another team project are not this workspace's relations.
+  setBodyLinkHomeScope(workspacePath, { orgId: team.orgId, projectId: team.teamProjectId });
   engines.set(workspacePath, {
     workspacePath,
     orgId: team.orgId,
@@ -698,6 +702,8 @@ export async function ensureTrackerSyncForWorkspace(workspacePath: string): Prom
  * caller is expected to consult `isTrackerSyncActive` first).
  */
 export async function syncTrackerItem(item: TrackerItem): Promise<void> {
+  // A Local wiki item is a file, never a room item.
+  refuseLocalWikiItem(item?.id, 'team sync');
   const workspacePath = item.workspace;
   const entry = workspacePath ? engines.get(workspacePath) : undefined;
   if (!entry) return;
@@ -707,6 +713,7 @@ export async function syncTrackerItem(item: TrackerItem): Promise<void> {
 }
 
 export async function unsyncTrackerItem(itemId: string, workspacePath?: string): Promise<void> {
+  refuseLocalWikiItem(itemId, 'team sync');
   if (!workspacePath) {
     // Best-effort: try every engine. v1 callers occasionally omit the
     // workspace path; we want them to keep working without surprises.
@@ -1026,6 +1033,7 @@ export function registerTrackerSyncHandlers(): void {
         };
 
         const engine = new TrackerSyncEngine(config);
+        setBodyLinkHomeScope(workspacePath, { orgId: payload.orgId, projectId: payload.teamProjectId });
         engines.set(workspacePath, {
           workspacePath,
           orgId: payload.orgId,

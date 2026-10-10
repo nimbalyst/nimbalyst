@@ -77,4 +77,21 @@ describe('HeadlessBodyNodes', () => {
     // blank the body rather than degrade it.
     expect(hasDecision).toBe(true);
   });
+
+  it('registers page marks and citations, which an agent or teammate can write into any body', () => {
+    const errors: Error[] = [];
+    const editor = createHeadlessEditor({
+      namespace: 'headless-body-test',
+      nodes: [...HeadlessBodyNodes],
+      onError: (err: Error) => errors.push(err),
+    });
+    const markdown = '[Ship it.[GH](nimbalyst://cite/s/prompt/p "by=Greg")]{decided by="Greg"} and [Docs](https://x.dev "cite")';
+    editor.update(() => {
+      $convertFromEnhancedMarkdownString(markdown, getEditorTransformers(), undefined, true, false);
+    }, { discrete: true });
+    expect(errors.filter((e) => /not registered/i.test(e.message))).toEqual([]);
+    const json = JSON.stringify(editor.getEditorState().toJSON());
+    expect(json).toContain('"type":"page-mark"');
+    expect(json.match(/"type":"citation"/g)).toHaveLength(2);
+  });
 });

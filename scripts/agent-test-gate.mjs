@@ -7,8 +7,9 @@
 // To keep docs-only / config-only commits fast, it first checks whether any
 // source or test file actually changed; if not, it exits 0 without running.
 import { execFileSync } from 'node:child_process';
+import { packageManagerSpawnConfig } from './package-manager.mjs';
 
-const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+const { command, argsPrefix } = packageManagerSpawnConfig();
 
 function changedFiles() {
   try {
@@ -43,8 +44,8 @@ console.error(
 );
 
 try {
-  execFileSync(npm, ['run', 'typecheck'], { stdio: 'inherit' });
-  execFileSync(npm, ['run', 'test:prepush'], { stdio: 'inherit' });
+  execFileSync(command, [...argsPrefix, 'run', 'typecheck'], { stdio: 'inherit' });
+  execFileSync(command, [...argsPrefix, 'run', 'test:prepush'], { stdio: 'inherit' });
 } catch {
   console.error('[test-gate] BLOCKED: typecheck or unit tests failed. Fix them before committing.');
   process.exit(2);

@@ -37,15 +37,15 @@ describe('CollabDocumentHeaderMeta', () => {
 
     expect(Array.from(
       screen.getByTestId('shared-document-breadcrumb').querySelectorAll('.breadcrumb-segment'),
-    ).map(segment => segment.textContent?.replace(/^(folder|description)/, '')))
+    ).map(segment => segment.textContent))
       .toEqual(['Specs', 'Auth', 'Architecture Plan']);
     expect(screen.getByTestId('collab-sync-dot').getAttribute('title')).toBe('Synced');
     expect(screen.queryByText('Synced')).toBeNull();
     expect(screen.getByTestId('collab-header-presence').textContent).toContain('AL');
-    expect(Array.from(screen.getByTestId('shared-document-breadcrumb').parentElement!.children)
-      .map(element => element.getAttribute('data-testid')))
+    expect(Array.from(screen.getByTestId('shared-document-breadcrumb').children)
+      .map(element => element.getAttribute('data-testid') ?? element.getAttribute('aria-label')))
       .toEqual([
-        'shared-document-breadcrumb',
+        'Breadcrumb',
         'collab-sync-dot',
         'collab-header-presence',
       ]);

@@ -229,7 +229,18 @@
   background-color: var(--nim-bg);
 }
 
-.spreadsheet-editor revo-grid revogr-edit input {
+.spreadsheet-editor revo-grid revogr-edit textarea.csv-cell-editor {
+  box-sizing: border-box;
+  width: 100%;
+  height: 100%;
+  min-height: 100%;
+  padding: 3px 6px;
+  resize: none;
+  overflow: auto;
+  font: inherit;
+  font-size: 12px;
+  line-height: 16px;
+  white-space: pre-wrap;
   background-color: var(--nim-bg);
   color: var(--nim-text);
   border: 1px solid var(--nim-primary);
@@ -253,6 +264,9 @@
   font-size: 12px;
   font-variant-numeric: tabular-nums;
   color: var(--nim-text) !important;
+  /* A cell value can hold line breaks (Alt+Enter); show them rather than
+     folding them into spaces. Rows are one line tall, so later lines clip. */
+  white-space: pre;
 }
 
 /**
@@ -314,270 +328,4 @@
 .spreadsheet-editor revo-grid [slot="colPinStart"],
 .spreadsheet-editor revo-grid [slot="colPinStart-header"] {
   border-right: 2px solid var(--nim-primary);
-}
-
-/* Cell alignment classes */
-.spreadsheet-editor revo-grid .cell-align-left {
-  text-align: left;
-}
-
-.spreadsheet-editor revo-grid .cell-align-right {
-  text-align: right;
-}
-
-.spreadsheet-editor revo-grid .cell-align-center {
-  text-align: center;
-}
-
-/*
- * Negative values under a "red" negative style. A class rather than a decorated
- * string, so the cell still copies as a plain number.
- */
-/*
- * `!important` throughout the color rules below, because the base `.rgCell`
- * rule sets `color: var(--nim-text) !important` to beat RevoGrid's own theme.
- * Without matching it, none of these ever paint.
- */
-.spreadsheet-editor revo-grid .csv-cell-negative {
-  color: var(--nim-error) !important;
-}
-
-/*
- * Cell and range styling.
- *
- * The palette is a fixed set of names rather than arbitrary hex so a sheet
- * styled in one theme stays readable in the other: text colors are the theme's
- * own semantic colors where one exists, and fills are mixed against the current
- * surface rather than being opaque.
- */
-.spreadsheet-editor revo-grid .csv-cell-bold { font-weight: 700; }
-.spreadsheet-editor revo-grid .csv-cell-italic { font-style: italic; }
-.spreadsheet-editor revo-grid .csv-cell-underline { text-decoration: underline; }
-.spreadsheet-editor revo-grid .csv-cell-strike { text-decoration: line-through; }
-.spreadsheet-editor revo-grid .csv-cell-underline.csv-cell-strike {
-  text-decoration: underline line-through;
-}
-
-.spreadsheet-editor revo-grid .csv-text-red { color: var(--nim-error) !important; }
-.spreadsheet-editor revo-grid .csv-text-orange { color: var(--nim-warning, #d98324) !important; }
-.spreadsheet-editor revo-grid .csv-text-yellow { color: #b58900 !important; }
-.spreadsheet-editor revo-grid .csv-text-green { color: var(--nim-success, #2ea043) !important; }
-.spreadsheet-editor revo-grid .csv-text-blue { color: var(--nim-primary) !important; }
-.spreadsheet-editor revo-grid .csv-text-purple { color: #8957e5 !important; }
-.spreadsheet-editor revo-grid .csv-text-gray { color: var(--nim-text-muted) !important; }
-
-/*
- * Fills mix into the cell background so the theme's own surface still shows
- * through -- an opaque swatch would fight the dark theme and hide selection.
- */
-.spreadsheet-editor revo-grid .csv-fill-red {
-  background-color: color-mix(in srgb, var(--nim-error) 18%, transparent);
-}
-.spreadsheet-editor revo-grid .csv-fill-orange {
-  background-color: color-mix(in srgb, var(--nim-warning, #d98324) 18%, transparent);
-}
-.spreadsheet-editor revo-grid .csv-fill-yellow {
-  background-color: color-mix(in srgb, #b58900 18%, transparent);
-}
-.spreadsheet-editor revo-grid .csv-fill-green {
-  background-color: color-mix(in srgb, var(--nim-success, #2ea043) 18%, transparent);
-}
-.spreadsheet-editor revo-grid .csv-fill-blue {
-  background-color: color-mix(in srgb, var(--nim-primary) 18%, transparent);
-}
-.spreadsheet-editor revo-grid .csv-fill-purple {
-  background-color: color-mix(in srgb, #8957e5 18%, transparent);
-}
-.spreadsheet-editor revo-grid .csv-fill-gray {
-  background-color: color-mix(in srgb, var(--nim-text-muted) 18%, transparent);
-}
-
-/* Swatch preview in the cell format dialog. */
-.csv-swatch {
-  display: inline-block;
-  width: 18px;
-  height: 18px;
-  flex: none;
-  border: 1px solid var(--nim-border);
-  border-radius: 4px;
-}
-
-.csv-swatch.csv-swatch-default {
-  background-color: var(--nim-bg-tertiary);
-}
-
-.csv-swatch.csv-fill-red { background-color: color-mix(in srgb, var(--nim-error) 40%, transparent); }
-.csv-swatch.csv-fill-orange { background-color: color-mix(in srgb, var(--nim-warning, #d98324) 40%, transparent); }
-.csv-swatch.csv-fill-yellow { background-color: color-mix(in srgb, #b58900 40%, transparent); }
-.csv-swatch.csv-fill-green { background-color: color-mix(in srgb, var(--nim-success, #2ea043) 40%, transparent); }
-.csv-swatch.csv-fill-blue { background-color: color-mix(in srgb, var(--nim-primary) 40%, transparent); }
-.csv-swatch.csv-fill-purple { background-color: color-mix(in srgb, #8957e5 40%, transparent); }
-.csv-swatch.csv-fill-gray { background-color: color-mix(in srgb, var(--nim-text-muted) 40%, transparent); }
-
-/* Link cells (`url` column type, and =HYPERLINK results) */
-.spreadsheet-editor revo-grid .csv-url-cell {
-  color: var(--nim-primary) !important;
-  text-decoration: underline;
-  text-underline-offset: 2px;
-  cursor: pointer;
-}
-
-.spreadsheet-editor revo-grid .csv-url-cell:hover {
-  text-decoration-thickness: 2px;
-}
-
-/* Tracker chips (`tracker` column type) */
-.spreadsheet-editor revo-grid .csv-tracker-cell {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  max-width: 100%;
-  cursor: pointer;
-}
-
-.spreadsheet-editor revo-grid .csv-tracker-cell-unresolved {
-  color: var(--nim-text-muted) !important;
-  cursor: default;
-}
-
-.spreadsheet-editor revo-grid .csv-tracker-status {
-  flex: none;
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background-color: var(--nim-text-muted);
-}
-
-.spreadsheet-editor revo-grid .csv-tracker-status-to-do {
-  background-color: var(--nim-text-muted);
-}
-
-.spreadsheet-editor revo-grid .csv-tracker-status-in-progress {
-  background-color: var(--nim-primary);
-}
-
-.spreadsheet-editor revo-grid .csv-tracker-status-in-review {
-  background-color: var(--nim-warning, #d98324);
-}
-
-.spreadsheet-editor revo-grid .csv-tracker-status-completed {
-  background-color: var(--nim-success, #2ea043);
-}
-
-.spreadsheet-editor revo-grid .csv-tracker-status-blocked {
-  background-color: var(--nim-error);
-}
-
-.spreadsheet-editor revo-grid .csv-tracker-key {
-  flex: none;
-  font-weight: 600;
-  color: var(--nim-primary) !important;
-}
-
-.spreadsheet-editor revo-grid .csv-tracker-title {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--nim-text-muted) !important;
-}
-
-/* Error cells */
-.spreadsheet-editor .cell-error {
-  color: var(--nim-error);
-  font-style: italic;
-}
-
-/* Formula cells (computed values) */
-.spreadsheet-editor .cell-formula {
-  color: var(--nim-text);
-}
-
-/* ========================================
-   Diff Mode Styles (AI Edit Review)
-   ======================================== */
-
-/* Diff colors use the Nimbalyst diff variables */
-.spreadsheet-editor revo-grid .cell-diff-added {
-  background-color: var(--nim-diff-add-bg) !important;
-  color: var(--nim-success);
-}
-
-.spreadsheet-editor revo-grid .cell-diff-modified {
-  background-color: var(--nim-highlight-bg) !important;
-  color: var(--nim-warning);
-}
-
-.spreadsheet-editor revo-grid .cell-diff-deleted {
-  background-color: var(--nim-diff-remove-bg) !important;
-  color: var(--nim-error);
-  text-decoration: line-through;
-}
-
-/* Row-level diff styling for phantom (deleted) rows */
-.spreadsheet-editor revo-grid .row-diff-deleted {
-  background-color: var(--nim-diff-remove-bg) !important;
-  opacity: 0.7;
-  pointer-events: none;
-}
-
-.spreadsheet-editor revo-grid .row-diff-deleted revogr-cell {
-  text-decoration: line-through;
-  color: var(--nim-error);
-}
-
-/* Row-level diff styling for added rows */
-.spreadsheet-editor revo-grid .row-diff-added {
-  background-color: var(--nim-diff-add-bg) !important;
-}
-
-/* Tooltip for previous value - using native title attribute */
-.spreadsheet-editor revo-grid .cell-diff-modified[title],
-.spreadsheet-editor revo-grid .cell-diff-deleted[title] {
-  cursor: help;
-}
-
-/* -------------------------------------------------------------------------
- * Collaboration presence overlay
- *
- * Absolutely-positioned layer inside the grid container (`.relative`). Strictly
- * non-interactive so it never intercepts clicks/edits on the grid beneath.
- * Per-collaborator color is supplied inline via `--csv-presence-color`.
- * ------------------------------------------------------------------------- */
-.csv-presence-overlay {
-  position: absolute;
-  inset: 0;
-  overflow: hidden;
-  pointer-events: none;
-  z-index: 5;
-}
-
-.csv-presence-cell {
-  position: absolute;
-  box-sizing: border-box;
-  border: 2px solid var(--csv-presence-color, #888);
-  border-radius: 2px;
-  pointer-events: none;
-}
-
-/* Actively-editing cell: subtle tint + emphasis to distinguish from a plain
- * selection box. color-mix keeps it in the collaborator's hue. */
-.csv-presence-cell[data-editing] {
-  background-color: color-mix(in srgb, var(--csv-presence-color, #888) 12%, transparent);
-}
-
-.csv-presence-label {
-  position: absolute;
-  top: -1.35em;
-  left: -2px;
-  padding: 0 5px;
-  font-size: 11px;
-  line-height: 1.3;
-  font-weight: 600;
-  color: #fff;
-  white-space: nowrap;
-  border-radius: 3px 3px 3px 0;
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
-  max-width: 160px;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }

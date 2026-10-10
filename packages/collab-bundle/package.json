@@ -48,23 +48,27 @@
       "import": "./dist/trackers-ui.js"
     },
     "./quick-open": {
-   "types": "./types/quick-open.d.ts",
-   "import": "./dist/quick-open.js"
-  },
-  "./inbox": {
+      "types": "./types/quick-open.d.ts",
+      "import": "./dist/quick-open.js"
+    },
+    "./pages": {
+      "types": "./types/pages.d.ts",
+      "import": "./dist/pages.js"
+    },
+    "./inbox": {
       "types": "./types/inbox.d.ts",
       "import": "./dist/inbox.js"
     },
     "./styles.css": "./dist/styles.css"
   },
   "scripts": {
-    "build": "npm run build:types && node scripts/build-dist.mjs && npm run check:production-output",
+    "build": "pnpm run build:types && node scripts/build-dist.mjs && pnpm run check:production-output",
     "build:types": "node scripts/build-types.mjs",
     "check:production-output": "node scripts/check-production-output.mjs",
-    "typecheck": "npm run check:bundle",
+    "typecheck": "pnpm run check:bundle",
     "test": "vitest --run --config vitest.config.ts",
-    "check:bundle": "npm run build && tsc --noEmit && node ../../scripts/check-collab-bundle.mjs",
-    "validate": "npm run typecheck && npm run test"
+    "check:bundle": "pnpm run build && tsc --noEmit && node ../../scripts/check-collab-bundle.mjs",
+    "validate": "pnpm run typecheck && pnpm run test"
   },
   "dependencies": {
     "jotai": "^2.16.1",
@@ -81,8 +85,8 @@
     "yjs": ">=13.5.42"
   },
   "devDependencies": {
-    "@nimbalyst/collab-client": "*",
-    "@nimbalyst/runtime": "*",
+    "@nimbalyst/collab-client": "workspace:*",
+    "@nimbalyst/runtime": "workspace:*",
     "@revolist/react-datagrid": "4.21.4",
     "@revolist/revogrid": "4.21.4",
     "@testing-library/react": "^16.3.2",
@@ -95,7 +99,7 @@
     "react-dom": "^19.2.7",
     "typescript": "^5.5.0",
     "vite": "^7.1.12",
-    "vitest": "4.1.8",
-    "yjs": ">=13.5.42"
+    "vitest": "4.1.11",
+    "yjs": "13.6.32"
   }
 }

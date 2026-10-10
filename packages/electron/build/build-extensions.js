@@ -3,7 +3,7 @@
  *
  * This script first builds the extension-sdk (which extensions depend on),
  * then finds all extensions in packages/extensions/ that have a build script
- * and runs npm run build for each one. This ensures extension dist/ folders exist
+ * and runs pnpm run build for each one. This ensures extension dist/ folders exist
  * before electron-builder packages them.
  *
  * After building each extension, it validates that the manifest.main and
@@ -72,7 +72,7 @@ async function buildExtensions() {
       const pkg = JSON.parse(fs.readFileSync(sdkPackageJson, 'utf-8'));
       if (pkg.scripts?.build) {
         try {
-          execSync('npm run build', {
+          execSync('pnpm run build', {
             cwd: EXTENSION_SDK_DIR,
             stdio: 'inherit',
           });
@@ -120,7 +120,7 @@ async function buildExtensions() {
     console.log(`  Building ${extDir}...`);
 
     try {
-      execSync('npm run build', {
+      execSync('pnpm run build', {
         cwd: extPath,
         stdio: 'inherit',
       });

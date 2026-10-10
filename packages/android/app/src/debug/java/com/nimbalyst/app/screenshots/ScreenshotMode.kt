@@ -2,6 +2,9 @@ package com.nimbalyst.app.screenshots
 
 import android.content.Intent
 import com.nimbalyst.app.NimbalystApplication
+import com.nimbalyst.app.sync.EncryptedSettingsPayload
+import com.nimbalyst.app.sync.SettingsSyncApplier
+import com.nimbalyst.app.sync.SyncedSettings
 import kotlinx.coroutines.launch
 
 enum class ScreenshotScreen {
@@ -11,6 +14,18 @@ enum class ScreenshotScreen {
     COMPOSER,
     SETTINGS,
     PAIRING,
+
+    /** Session list with the new-session model picker open (the script opens it). */
+    NEW_SESSION,
+
+    /** Session list with the computer picker open (the script opens it). */
+    COMPUTERS,
+
+    /** The project's Files tab (the script switches tabs). */
+    FILES,
+
+    /** A document open in the editor (the script opens it from the Files tab). */
+    DOCUMENT,
 
     /** The whole app with real navigation over demo data -- used for video capture. */
     WALKTHROUGH,
@@ -43,6 +58,10 @@ object ScreenshotMode {
             "composer" -> ScreenshotScreen.COMPOSER
             "settings" -> ScreenshotScreen.SETTINGS
             "pairing" -> ScreenshotScreen.PAIRING
+            "newsession" -> ScreenshotScreen.NEW_SESSION
+            "computers" -> ScreenshotScreen.COMPUTERS
+            "files" -> ScreenshotScreen.FILES
+            "document" -> ScreenshotScreen.DOCUMENT
             "walkthrough" -> ScreenshotScreen.WALKTHROUGH
             else -> ScreenshotScreen.PROJECTS
         }
@@ -53,8 +72,13 @@ object ScreenshotMode {
      * and lands through the same Room flows the screens already observe.
      */
     fun apply(app: NimbalystApplication, screen: ScreenshotScreen, now: Long) {
-        app.pairingStore.savePairing(ScreenshotDemoData.pairingCredentials())
+        val credentials = ScreenshotDemoData.pairingCredentials()
+        app.pairingStore.savePairing(credentials)
         app.syncManager.enterScreenshotMode(ScreenshotDemoData.connectedDevices(now), now)
+        // The push opt-in dialog would cover the first capture.
+        app.notificationManager.markOptInOffered()
+        seedDesktopSettings(app, now)
+        ScreenshotDocuments.install(app, credentials, now)
 
         app.applicationScope.launch {
             app.repository.reconcileIndexSnapshot(
@@ -69,5 +93,28 @@ object ScreenshotMode {
                 draftUpdatedAt = now
             )
         }
+    }
+
+    /**
+     * The model list and Meta Agent gate the desktop would publish. They are read from
+     * preferences when SyncManager starts, so they show from the next launch on; the
+     * capture script's warm-up launch takes care of that.
+     */
+    private fun seedDesktopSettings(app: NimbalystApplication, now: Long) {
+        SettingsSyncApplier(app).accept(
+            EncryptedSettingsPayload(
+                encryptedSettings = "",
+                settingsIv = "",
+                deviceId = ScreenshotDemoData.connectedDevices(now).first().deviceId,
+                timestamp = now,
+                version = now
+            ),
+            SyncedSettings(
+                availableModels = ScreenshotDemoData.availableModels(),
+                defaultModel = ScreenshotDemoData.DEFAULT_MODEL_ID,
+                metaAgentEnabled = true,
+                version = now
+            )
+        )
     }
 }

@@ -246,57 +246,18 @@ Detect-Worktree
 
 # Check for a proper node_modules (not just a partial/broken one)
 $nodeModulesPath = Join-Path $SCRIPT_DIR "node_modules"
-$needsNpmInstall = $true
+$needsInstall = $true
 if (Test-Path $nodeModulesPath) {
     # Check if key packages exist to verify node_modules is complete
     $esbuildPath = Join-Path $nodeModulesPath "esbuild"
     $vitePath = Join-Path $nodeModulesPath "vite"
-    $esbuildBinaryPath = Join-Path $nodeModulesPath "@esbuild\win32-arm64"
-    $rollupBinaryPath = Join-Path $nodeModulesPath "@rollup\rollup-win32-arm64-msvc"
     $electronPath = Join-Path $nodeModulesPath "electron"
     $electronDistPath = Join-Path $electronPath "dist"
-    if ((Test-Path $esbuildPath) -and (Test-Path $vitePath) -and (Test-Path $esbuildBinaryPath) -and (Test-Path $rollupBinaryPath) -and (Test-Path $electronDistPath)) {
-        # Check version compatibility for main esbuild
-        $esbuildPkgJson = Join-Path $nodeModulesPath "esbuild\package.json"
-        $esbuildBinaryPkgJson = Join-Path $nodeModulesPath "@esbuild\win32-arm64\package.json"
-        $mainVersionsMatch = $false
-        if ((Test-Path $esbuildPkgJson) -and (Test-Path $esbuildBinaryPkgJson)) {
-            $esbuildVer = (Get-Content $esbuildPkgJson | ConvertFrom-Json).version
-            $esbuildBinaryVer = (Get-Content $esbuildBinaryPkgJson | ConvertFrom-Json).version
-            if ($esbuildVer -eq $esbuildBinaryVer) {
-                $mainVersionsMatch = $true
-            } else {
-                Write-Host "esbuild version mismatch ($esbuildVer vs $esbuildBinaryVer), will fix..."
-            }
-        }
-        # Also check vite's nested esbuild
-        $viteEsbuildPkgJson = Join-Path $nodeModulesPath "vite\node_modules\esbuild\package.json"
-        $viteVersionsMatch = $true  # Assume true if vite doesn't have nested esbuild
-        if (Test-Path $viteEsbuildPkgJson) {
-            $viteEsbuildVer = (Get-Content $viteEsbuildPkgJson | ConvertFrom-Json).version
-            $viteBinaryPath = Join-Path $nodeModulesPath "@esbuild\win32-arm64\package.json"
-            if (Test-Path $viteBinaryPath) {
-                $installedBinaryVer = (Get-Content $viteBinaryPath | ConvertFrom-Json).version
-                # Check if any installed binary matches vite's version
-                # Since we only have one @esbuild/win32-arm64, check if it matches vite's version
-                # If not, we need to install the correct version
-                if ($viteEsbuildVer -ne $esbuildBinaryVer -and $viteEsbuildVer -ne $installedBinaryVer) {
-                    $viteVersionsMatch = $false
-                    Write-Host "vite's esbuild version ($viteEsbuildVer) needs binary..."
-                }
-            }
-        }
-        if ($mainVersionsMatch -and $viteVersionsMatch) {
-            $needsNpmInstall = $false
-        }
+    if ((Test-Path $esbuildPath) -and (Test-Path $vitePath) -and (Test-Path $electronDistPath)) {
+        $needsInstall = $false
     } else {
         Write-Host "Incomplete node_modules detected, will reinstall..."
         Remove-Item $nodeModulesPath -Recurse -Force -ErrorAction SilentlyContinue
-        # Also remove package-lock.json to avoid npm bugs with optional deps
-        $lockFile = Join-Path $SCRIPT_DIR "package-lock.json"
-        if (Test-Path $lockFile) {
-            Remove-Item $lockFile -Force -ErrorAction SilentlyContinue
-        }
     }
 }
 
@@ -397,7 +358,7 @@ Write-Host ""
 # Execute build plan
 Push-Location $SCRIPT_DIR
 try {
-    if ($needsNpmInstall) {
+    if ($needsInstall) {
         # In worktree mode, try to copy node_modules from main repo first (much faster)
         if ($script:WORKTREE_MODE) {
             $mainNodeModules = Join-Path $script:MAIN_REPO_ROOT "node_modules"
@@ -416,39 +377,9 @@ try {
             } else {
                 Write-Host "Installing dependencies..."
                 # First install with --ignore-scripts to skip problematic native modules
-                npm install --ignore-scripts
+                pnpm install --ignore-scripts
                 if ($LASTEXITCODE -ne 0) {
-                    Write-Host "npm install had errors"
-                }
-                # Now install the platform-specific binary packages explicitly
-                Write-Host "Installing platform-specific binaries..."
-                # Get the esbuild version from the installed package
-                $esbuildPkgJson = Join-Path $SCRIPT_DIR "node_modules\esbuild\package.json"
-                $esbuildVersion = "0.25.12"  # Default
-                if (Test-Path $esbuildPkgJson) {
-                    $esbuildPkg = Get-Content $esbuildPkgJson | ConvertFrom-Json
-                    $esbuildVersion = $esbuildPkg.version
-                }
-                # Get the rollup version from the installed package
-                $rollupPkgJson = Join-Path $SCRIPT_DIR "node_modules\rollup\package.json"
-                $rollupVersion = "4.44.0"  # Default
-                if (Test-Path $rollupPkgJson) {
-                    $rollupPkg = Get-Content $rollupPkgJson | ConvertFrom-Json
-                    $rollupVersion = $rollupPkg.version
-                }
-                npm install "@esbuild/win32-arm64@$esbuildVersion" "@rollup/rollup-win32-arm64-msvc@$rollupVersion" --ignore-scripts --no-save
-                # Also install binary for vite's nested esbuild if version differs
-                $viteEsbuildPkgJson = Join-Path $SCRIPT_DIR "node_modules\vite\node_modules\esbuild\package.json"
-                if (Test-Path $viteEsbuildPkgJson) {
-                    $viteEsbuildVersion = (Get-Content $viteEsbuildPkgJson | ConvertFrom-Json).version
-                    if ($viteEsbuildVersion -ne $esbuildVersion) {
-                        Write-Host "Installing esbuild binary for vite ($viteEsbuildVersion) into vite's node_modules..."
-                        # Install into vite's nested node_modules so it doesn't conflict
-                        $viteNodeModules = Join-Path $SCRIPT_DIR "node_modules\vite\node_modules"
-                        Push-Location $viteNodeModules
-                        npm install "@esbuild/win32-arm64@$viteEsbuildVersion" --ignore-scripts --no-save
-                        Pop-Location
-                    }
+                    Write-Host "pnpm install had errors"
                 }
                 # Run electron's install script to download the electron binary
                 Write-Host "Installing Electron binary..."
@@ -462,39 +393,9 @@ try {
         } else {
             Write-Host "Installing dependencies..."
             # First install with --ignore-scripts to skip problematic native modules
-            npm install --ignore-scripts
+            pnpm install --ignore-scripts
             if ($LASTEXITCODE -ne 0) {
-                Write-Host "npm install had errors"
-            }
-            # Now install the platform-specific binary packages explicitly (--no-save to avoid modifying package.json)
-            Write-Host "Installing platform-specific binaries..."
-            # Get the esbuild version from the installed package
-            $esbuildPkgJson = Join-Path $SCRIPT_DIR "node_modules\esbuild\package.json"
-            $esbuildVersion = "0.25.12"  # Default
-            if (Test-Path $esbuildPkgJson) {
-                $esbuildPkg = Get-Content $esbuildPkgJson | ConvertFrom-Json
-                $esbuildVersion = $esbuildPkg.version
-            }
-            # Get the rollup version from the installed package
-            $rollupPkgJson = Join-Path $SCRIPT_DIR "node_modules\rollup\package.json"
-            $rollupVersion = "4.44.0"  # Default
-            if (Test-Path $rollupPkgJson) {
-                $rollupPkg = Get-Content $rollupPkgJson | ConvertFrom-Json
-                $rollupVersion = $rollupPkg.version
-            }
-            npm install "@esbuild/win32-arm64@$esbuildVersion" "@rollup/rollup-win32-arm64-msvc@$rollupVersion" --ignore-scripts --no-save
-            # Also install binary for vite's nested esbuild if version differs
-            $viteEsbuildPkgJson = Join-Path $SCRIPT_DIR "node_modules\vite\node_modules\esbuild\package.json"
-            if (Test-Path $viteEsbuildPkgJson) {
-                $viteEsbuildVersion = (Get-Content $viteEsbuildPkgJson | ConvertFrom-Json).version
-                if ($viteEsbuildVersion -ne $esbuildVersion) {
-                    Write-Host "Installing esbuild binary for vite ($viteEsbuildVersion) into vite's node_modules..."
-                    # Install into vite's nested node_modules so it doesn't conflict
-                    $viteNodeModules = Join-Path $SCRIPT_DIR "node_modules\vite\node_modules"
-                    Push-Location $viteNodeModules
-                    npm install "@esbuild/win32-arm64@$viteEsbuildVersion" --ignore-scripts --no-save
-                    Pop-Location
-                }
+                Write-Host "pnpm install had errors"
             }
             # Run electron's install script to download the electron binary
             Write-Host "Installing Electron binary..."
@@ -511,7 +412,7 @@ try {
     elseif ($buildRuntime) {
         Write-Host "Building runtime package..."
         Push-Location (Join-Path $SCRIPT_DIR "packages/runtime")
-        npx vite build
+        pnpm exec vite build
         Pop-Location
         Save-BuildHash "packages/runtime"
     }
@@ -520,7 +421,7 @@ try {
     elseif ($buildExtensionSdk) {
         Write-Host "Building extension-sdk package..."
         Push-Location (Join-Path $SCRIPT_DIR "packages/extension-sdk")
-        npx tsc
+        pnpm exec tsc
         Pop-Location
         Save-BuildHash "packages/extension-sdk"
     }
@@ -529,7 +430,7 @@ try {
     elseif ($buildExtensions) {
         Write-Host "Building extensions..."
         Push-Location (Join-Path $SCRIPT_DIR "packages/extensions/pdf-viewer")
-        npx vite build
+        pnpm exec vite build
         Pop-Location
         Save-BuildHash "packages/extensions/pdf-viewer"
     }
@@ -546,7 +447,7 @@ try {
     Write-Host "Starting electron-vite dev..."
     # Increase Node memory limit for large codebases
     $env:NODE_OPTIONS = "--max-old-space-size=8192"
-    npx electron-vite dev
+    pnpm exec electron-vite dev
 
     Pop-Location
 

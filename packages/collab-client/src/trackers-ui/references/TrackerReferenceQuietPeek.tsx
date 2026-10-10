@@ -6,6 +6,7 @@
 
 import type { JSX } from 'react';
 import { FloatingPortal, autoUpdate, flip, offset, shift, useFloating } from '@floating-ui/react';
+import { windowControlsClearance } from '@nimbalyst/runtime/ui/floating/windowControlsClearance';
 
 import type { TrackerItem } from '../../trackers/dataSource';
 import { displayKey } from './TrackerReferenceParts';
@@ -36,7 +37,7 @@ export function TrackerReferenceQuietPeek({
     open: true,
     elements: { reference: anchor },
     placement: 'bottom-start',
-    middleware: [offset(6), flip({ padding: 8 }), shift({ padding: 8 })],
+    middleware: [offset(6), flip({ padding: 8 }), shift({ padding: 8 }), windowControlsClearance()],
     whileElementsMounted: autoUpdate,
   });
   return (

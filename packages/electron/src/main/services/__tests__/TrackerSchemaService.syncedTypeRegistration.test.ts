@@ -31,7 +31,7 @@ vi.mock('../../utils/ipcRegistry', () => ({
 vi.mock('chokidar', () => ({ default: { watch: mockWatch } }));
 
 import { SQLiteDatabase } from '../../database/sqlite/SQLiteDatabase';
-import { applyRemoteTrackerSchemaDef, materializeTrackerTypeDef } from '../tracker/trackerTypeDefStore';
+import { applyRemoteTrackerSchemaDef, listMaterializedTrackerTypeDefs, materializeTrackerTypeDef } from '../tracker/trackerTypeDefStore';
 import { registerMaterializedSyncedTypes } from '../TrackerSchemaService';
 import { globalRegistry } from '@nimbalyst/runtime/plugins/TrackerPlugin/models';
 
@@ -146,6 +146,35 @@ describe('registerMaterializedSyncedTypes (NIM-865)', () => {
 
     expect(count).toBe(0);
     expect(globalRegistry.get(TYPE)?.displayName).toBe('Personal');
+  });
+
+  it('registers a mirrored subtype as its declaration and persists that declaration', async () => {
+    const base = {
+      type: 'tech-r1', displayName: 'Tech', displayNamePlural: 'Techs', icon: 'memory', color: '#000',
+      modes: { inline: true, fullDocument: false }, idPrefix: 'tec', idFormat: 'ulid' as const,
+      fields: [
+        { name: 'title', type: 'string' as const, required: true },
+        { name: 'status', type: 'select' as const, options: ['a', 'b', 'c'].map((value) => ({ value, label: value })) },
+      ],
+    };
+    globalRegistry.register(base);
+    const resolved = { ...globalRegistry.get('tech-r1')!, type: 'lib-r1', extends: 'tech-r1', sharing: 'team' as const,
+      fields: [...globalRegistry.get('tech-r1')!.fields, { name: 'npmPackage', type: 'string' as const }] };
+    // The live mirror's shape: a resolved copy with no declaration beside it.
+    await applyRemoteTrackerSchemaDef(WS, { type: 'lib-r1', model: JSON.stringify(resolved), syncId: 3 }, db);
+
+    await registerMaterializedSyncedTypes(WS, db);
+
+    expect(globalRegistry.getDeclaredModel('lib-r1')?.fields?.map((f) => f.name)).toEqual(['npmPackage']);
+    globalRegistry.register({ ...base, fields: [base.fields[0], { ...base.fields[1], options: base.fields[1].options!.slice(0, 2) }] });
+    expect(globalRegistry.get('lib-r1')).toBeDefined();
+
+    await materializeTrackerTypeDef(WS, globalRegistry.get('lib-r1')!, 'yaml', db);
+    const row = (await listMaterializedTrackerTypeDefs(WS, db)).find((def) => def.type === 'lib-r1');
+    const stored = typeof row!.model === 'string' ? JSON.parse(row!.model) : row!.model;
+    expect(stored.declaredForm.fields.map((f: any) => f.name)).toEqual(['npmPackage']);
+    globalRegistry.clearWorkspaceSchema('lib-r1');
+    globalRegistry.clearWorkspaceSchema('tech-r1');
   });
 
   it('does not mutate the registry when the workspace is no longer active', async () => {

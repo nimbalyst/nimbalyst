@@ -30,12 +30,13 @@
  *
  * The tracker renderer is the live one, which reads a resolver from the context
  * `mountCollabEditor` provides (`trackerReferences`) and renders the store-free
- * key-only chip when the host supplied none.
+ * key-only chip when the host supplied none; a link to someone's Personal page
+ * shows as on the author's device instead (`./authorDeviceReference`).
  */
 
 import { registerReferenceNodeContributions } from '@nimbalyst/runtime/plugins/referenceNodeContributions';
 import { setTrackerReferenceNodeRenderer } from '@nimbalyst/runtime/plugins/TrackerLinkPlugin/TrackerReferenceNodeRenderer';
-import { LiveTrackerReferenceRenderer } from '@nimbalyst/collab-client/trackers-ui/references';
+import { BrowserTrackerReferenceRenderer } from './authorDeviceReference';
 // The document reference is a styled TextNode; its styles ship with the
 // interactive plugin, which this host does not load. A `.css` import IS covered
 // by this package's `sideEffects` field, so this one is safe as a bare import.
@@ -51,5 +52,5 @@ export function registerBrowserReferenceNodes(): void {
   if (registered) return;
   registered = true;
   registerReferenceNodeContributions();
-  setTrackerReferenceNodeRenderer(LiveTrackerReferenceRenderer);
+  setTrackerReferenceNodeRenderer(BrowserTrackerReferenceRenderer);
 }

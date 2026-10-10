@@ -5,7 +5,7 @@ argument-hint: "[claude code | mcp | codex | all]  (default: all)"
 ---
 Update the Anthropic Agent SDK, MCP library, and OpenAI Codex SDK to their latest versions.
 
-**This command is always a two-phase execution.** Phase 1 evaluates the available updates and reports impact. Then STOP and wait for explicit user direction before starting Phase 2 (the actual upgrade). Do not perform any package.json edits, `npm install`, or commits in Phase 1.
+**This command is always a two-phase execution.** Phase 1 evaluates the available updates and reports impact. Then STOP and wait for explicit user direction before starting Phase 2 (the actual upgrade). Do not perform any package.json edits, `pnpm install`, or commits in Phase 1.
 
 ## Scope from arguments (`$ARGUMENTS`)
 
@@ -34,10 +34,10 @@ Goal: tell the user what would change and what to consider, without modifying an
 
 1. **Check current versions** by reading the relevant package.json files (root, `packages/electron`, `packages/runtime`). For claude-agent-sdk also note the `overrides` pin in the root `package.json`.
 2. **Fetch latest versions** from npm for each in-scope package:
-  - `npm view @anthropic-ai/claude-agent-sdk version`
-  - `npm view @modelcontextprotocol/sdk version`
-  - `npm view @openai/codex-sdk version`
-  - Use `npm view <pkg> versions --json` to enumerate the intermediate versions between current and latest.
+  - `pnpm view @anthropic-ai/claude-agent-sdk version`
+  - `pnpm view @modelcontextprotocol/sdk version`
+  - `pnpm view @openai/codex-sdk version`
+  - Use `pnpm view <pkg> versions --json` to enumerate the intermediate versions between current and latest.
 3. **Get changelogs** for the full gap between current and latest:
   - **claude-agent-sdk**: fetch the SDK changelog at https://github.com/anthropics/claude-agent-sdk-typescript/blob/main/CHANGELOG.md. If entries say "brought up to CLI version X.Y.Z", also fetch the Claude Code CLI changelog at https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md for those CLI versions.
   - **MCP SDK**: fetch https://github.com/modelcontextprotocol/typescript-sdk/releases.
@@ -53,15 +53,16 @@ Goal: tell the user what would change and what to consider, without modifying an
 5. **Assign a risk level** (Low / Medium / High) per in-scope library based on the above — driven by the breaking/action-required bucket, not by how many versions we're jumping.
 
 6. **Surface upgrade-time considerations** in a "Things to consider" section:
-  - Native binary integrity: both SDKs ship platform binaries via `extraResources`/`optionalDependencies`. Past incidents (`feedback_extraresources_vs_files_globs.md`, `feedback_windows_arm64_install_scripts.md`) show npm silently skips these on stale integrity hashes.
-  - The `overrides` pin for `@anthropic-ai/claude-agent-sdk` in root `package.json` must be bumped in lockstep or the upgrade is silently neutered.
-  - `peer: true` flags in `package-lock.json` for optional native deps can get stripped by `npm install`.
+  - Native binary integrity: both SDKs ship platform binaries via `extraResources`/`optionalDependencies`. Past incidents (`feedback_extraresources_vs_files_globs.md`, `feedback_windows_arm64_install_scripts.md`) show the package manager silently skips these on stale integrity hashes.
+  - The `overrides` pin for `@anthropic-ai/claude-agent-sdk` in root `pnpm-workspace.yaml` must be bumped in lockstep or the upgrade is silently neutered.
+  - `minimumReleaseAge` (72h) in `pnpm-workspace.yaml`: a version published less than 3 days ago will not resolve. If the latest SDK release is that fresh, target the newest older version, or add a scoped `minimumReleaseAgeExclude` entry with a reason if the user approves.
+  - `allowBuilds` in `pnpm-workspace.yaml`: if an SDK bump introduces a package with an install script, `pnpm install` fails until it is listed as `true` or `false`.
   - Per project memory: never bump `TranscriptTransformer.CURRENT_VERSION` as part of an SDK upgrade.
   - Per project memory: don't revert `@anthropic-ai/claude-agent-sdk` past 0.2.113.
   - Hardcoded model defaults that may be affected by model-catalog refreshes (e.g., `model: 'gpt-5'` in `CodexSDKProtocol.ts`).
   - Smoke-test scope to recommend before shipping.
 
-7. **STOP.** End your turn with an explicit prompt (AskUserQuestion) asking whether to proceed with Phase 2. Do not edit files, run `npm install`, or commit. Wait for the user's response.
+7. **STOP.** End your turn with an explicit prompt (AskUserQuestion) asking whether to proceed with Phase 2. Do not edit files, run `pnpm install`, or commit. Wait for the user's response.
 
 If an in-scope package is already at the latest version, say so and drop it from the Phase 2 plan.
 
@@ -96,17 +97,16 @@ Ask (AskUserQuestion) whether to proceed with Phase 2 for the in-scope library/l
 Do not start until the user has explicitly approved. Only touch the packages they confirmed.
 
 1. **Update versions** in the respective package.json files:
-  - `@anthropic-ai/claude-agent-sdk`: update the workspace dependency entries AND the `overrides` pin in root `package.json` (exact version, no caret, for the override).
+  - `@anthropic-ai/claude-agent-sdk`: update the workspace dependency entries AND the `overrides` pin in root `pnpm-workspace.yaml` (exact version, no caret, for the override).
   - `@modelcontextprotocol/sdk`: in `packages/electron/package.json` (caret prefix).
   - `@openai/codex-sdk`: in `packages/runtime/package.json` and `packages/electron/package.json` if present (caret prefix).
-2. **Run `npm install`** at the repository root to update `package-lock.json`.
-3. **Verify** with `npm ls <package-name>` for each updated package. If npm reports `invalid` (lock file still resolves the old version despite the package.json change):
-  - Remove the stale package directories from `node_modules/` (including transitive deps like `@openai/codex` for `@openai/codex-sdk`).
-  - Use `npm view <package>@<version> --json` to get the new `integrity`, `resolved` URL, and `dependencies`.
-  - Edit `package-lock.json` to update `version`, `resolved`, `integrity`, and `dependencies` for the package AND its transitive deps.
-  - Re-run `npm install` and verify again.
-4. **Verify Codex platform binaries** (if codex in scope) — `@openai/codex-sdk` depends on `@openai/codex`, which has optional platform-specific binary packages (e.g., `@openai/codex-darwin-arm64`). Check `ls node_modules/@openai/codex-darwin-arm64/vendor/`. If missing: `npm install @openai/codex-sdk@<version> --workspace=packages/electron --workspace=packages/runtime`, then verify again.
+2. **Run `pnpm install`** at the repository root to update `pnpm-lock.yaml`.
+3. **Verify** with `pnpm why <package-name>` (or `pnpm list -r <package-name>`) for each updated package. If it still resolves the old version despite the package.json change:
+  - Check whether `minimumReleaseAge` blocked the new version, and whether the `overrides` pin in `pnpm-workspace.yaml` was bumped.
+  - Use `pnpm view <package>@<version> --json` to confirm the version exists and read its `dependencies`.
+  - Re-run `pnpm install` and verify again. Do not hand-edit `pnpm-lock.yaml`.
+4. **Verify Codex platform binaries** (if codex in scope) — `@openai/codex-sdk` depends on `@openai/codex`, which has optional platform-specific binary packages (e.g., `@openai/codex-darwin-arm64`). Check `ls node_modules/@openai/codex-darwin-arm64/vendor/`. If missing: `pnpm --filter @nimbalyst/electron --filter @nimbalyst/runtime add @openai/codex-sdk@<version>`, then verify again.
 5. **Verify claude-agent-sdk platform binaries** (if claude in scope) — check `node_modules/@anthropic-ai/claude-agent-sdk-darwin-arm64/` (or host platform) exists.
-6. **Verify `peer: true` preservation** — diff `package-lock.json` for any `peer: true` flags stripped on optional native deps; restore them before committing.
+6. **Verify the lockfile diff** — `git diff --stat pnpm-lock.yaml pnpm-workspace.yaml` should show only the updated packages and their trees; optional native platform packages must still be present.
 7. **Apply any action-required code changes** identified in Phase 1 (option renames, default changes). Behavioral changes ship with a test per the repo rule.
-8. **Commit the changes** — summarize which packages were updated and their version changes (e.g., "deps: update claude-agent-sdk 0.2.117 -> 0.2.121"). Stage only the touched package.json files and `package-lock.json`. Do not skip hooks. Do not add Co-Authored-By lines.
+8. **Commit the changes** — summarize which packages were updated and their version changes (e.g., "deps: update claude-agent-sdk 0.2.117 -> 0.2.121"). Stage only the touched package.json files, `pnpm-lock.yaml`, and `pnpm-workspace.yaml` if the override changed. Do not skip hooks. Do not add Co-Authored-By lines.

@@ -20,12 +20,12 @@ on:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-  # Make npm resilient to transient registry socket drops (ECONNRESET) on the
-  # cache-miss path. On a cache hit npm ci is skipped entirely (see below).
-  npm_config_fetch_retries: '5'
-  npm_config_fetch_retry_mintimeout: '20000'
-  npm_config_fetch_retry_maxtimeout: '120000'
-  npm_config_fetch_timeout: '300000'
+  # Make pnpm resilient to transient registry socket drops (ECONNRESET) on the
+  # cache-miss path. On a cache hit the install is skipped entirely (see below).
+  pnpm_config_fetch_retries: '5'
+  pnpm_config_fetch_retry_mintimeout: '20000'
+  pnpm_config_fetch_retry_maxtimeout: '120000'
+  pnpm_config_fetch_timeout: '300000'
 
 jobs:
   ios-build-and-test:
@@ -44,17 +44,21 @@ jobs:
         with:
           xcode-version: '26.2'
 
+      # Reads the version from `packageManager` in the root package.json.
+      - name: Setup pnpm
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+
       - name: Setup Node.js
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: '24'
-          cache: 'npm'
-          cache-dependency-path: '**/package-lock.json'
+          cache: 'pnpm'
+          cache-dependency-path: 'pnpm-lock.yaml'
 
-      # node_modules cache short-circuits `npm ci` when the lockfile is
+      # node_modules cache short-circuits `pnpm install` when the lockfile is
       # unchanged, so the common case makes ZERO registry calls and can't hit a
       # transient network failure. Exact-key match only (no restore-keys) so we
-      # never run against a partially-stale tree -- on miss we just `npm ci`.
+      # never run against a partially-stale tree -- on miss we just install.
       # Paths are relative to the repo root (github.workspace), NOT the job's
       # packages/ios working-directory, which only applies to `run:` steps.
       - name: Cache node_modules
@@ -65,32 +69,36 @@ jobs:
             node_modules
             packages/*/node_modules
             packages/extensions/*/node_modules
-          key: node-modules-ios-${{ runner.os }}-node22-${{ hashFiles('**/package-lock.json') }}
+            packages/extensions/nimbalyst-memory/engine/node_modules
+            packages/extension-sdk-docs/examples/*/node_modules
+          key: node-modules-pnpm-ios-${{ runner.os }}-node24-${{ hashFiles('pnpm-lock.yaml', 'pnpm-workspace.yaml', 'patches/**') }}
 
+      # --ignore-scripts skips the Electron download and install-app-deps native
+      # rebuild, which this job never uses.
       - name: Install dependencies
         if: steps.cache-node-modules.outputs.cache-hit != 'true'
         run: |
           cd ../..
-          npm ci --ignore-scripts
+          pnpm install --frozen-lockfile --ignore-scripts
 
       # The editor bundle (vite.config.editor.ts) aliases @nimbalyst/runtime to
       # source, and that source imports @nimbalyst/extension-sdk and
-      # @nimbalyst/tracker-core from their built dist. `npm ci --ignore-scripts`
-      # skips those builds, and a cache hit skips the install entirely, so build
-      # them explicitly here (as ci.yml does) or the "Build Editor Web Bundle"
-      # script phase fails with: Failed to resolve entry for package
+      # @nimbalyst/tracker-core from their built dist. `--ignore-scripts` skips
+      # the `prepare` builds, and a cache hit skips the install entirely, so
+      # build them explicitly here (as ci.yml does) or the "Build Editor Web
+      # Bundle" script phase fails with: Failed to resolve entry for package
       # "@nimbalyst/extension-sdk".
       - name: Build workspace deps
         run: |
           cd ../..
-          npm run build:workspace-deps
+          pnpm run build:workspace-deps
 
       # These tests spawn the real Node publisher with Foundation.Process,
       # so they are compiled out of the iOS simulator test target below.
       - name: Build runtime Node publisher
         run: |
           cd ../..
-          npm run build:node --workspace=@nimbalyst/runtime
+          pnpm --filter @nimbalyst/runtime run build:node
 
       - name: Run macOS session index round-trip tests
         run: |
@@ -98,7 +106,7 @@ jobs:
           swift test --filter SessionIndexRoundTripTests
 
       - name: Build transcript bundle
-        run: npx vite build --config vite.config.transcript.ts
+        run: pnpm exec vite build --config vite.config.transcript.ts
 
       - name: Verify transcript bundle exists
         run: |

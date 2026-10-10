@@ -58,6 +58,7 @@ export interface TrackerBoardCardProps {
   onOpenDocument?: (itemId: string) => void;
   /** Milestone chip, when the host has a milestone picker to open. */
   milestoneSlot?: React.ReactNode;
+  fieldsSlot?: React.ReactNode;
   /** Personal lane, desktop only. Omitted by a host with team auth only. */
   unreadSlot?: React.ReactNode;
   /** Personal lane, desktop only. Omitted by a host with team auth only. */
@@ -80,6 +81,7 @@ export const TrackerBoardCard: React.FC<TrackerBoardCardProps> = ({
   onContextMenu,
   onOpenDocument,
   milestoneSlot,
+  fieldsSlot,
   unreadSlot,
   favoriteSlot,
   currentIdentity,
@@ -173,6 +175,7 @@ export const TrackerBoardCard: React.FC<TrackerBoardCardProps> = ({
             <TrackerCardStalenessChip item={item} />
             <TrackerRecentActivityChip item={item} identity={currentIdentity} />
             {milestoneSlot}
+            {fieldsSlot}
             {owner ? (
               <span className="ml-auto">
                 <UserAvatar identity={owner} size={18} />

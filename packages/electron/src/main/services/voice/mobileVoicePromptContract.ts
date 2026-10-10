@@ -81,6 +81,30 @@ export function voicePromptVersion(
     .digest("hex");
 }
 
+/** Live transcripts annotate non-speech as "[clear throat]" (sometimes unclosed). */
+function withoutTranscriptNoise(answer: string): string {
+  // An unclosed "[" drops only itself: its extent is unknown, and the answer may follow it.
+  return answer.replace(/\[[^\]]*\]/g, " ").replace(/\[/g, " ").replace(/\s+/g, " ").trim();
+}
+
+/**
+ * The single option the user named. Everything said since the question was handed
+ * over is captured, so an exact whole-utterance match rejected "um, Blue". Accept
+ * exactly one label spoken as whole words; naming two options or negating one
+ * ("not blue") selects nothing.
+ */
+function spokenOptionMatches<T extends { label: string }>(options: T[], spoken: string): T[] {
+  const text = spoken.toLowerCase();
+  const exact = options.filter((o) => o.label.trim().toLowerCase() === text);
+  if (exact.length) return exact;
+  if (/\b(not|no|don't|dont|never|neither)\b/.test(text)) return [];
+  const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return options.filter((o) => {
+    const label = o.label.trim().toLowerCase();
+    return label.length > 0 && new RegExp(`(^|[^\\p{L}\\p{N}])${escape(label)}($|[^\\p{L}\\p{N}])`, "u").test(text);
+  });
+}
+
 export function exactVoiceResponse(
   prompt: InteractivePromptPayload,
   answer: string
@@ -98,9 +122,8 @@ export function exactVoiceResponse(
     )
       throw new Error("Answer this form using its app card.");
     const options = question.options ?? [];
-    const matches = options.filter(
-      (o) => o.label.trim().toLowerCase() === answer.trim().toLowerCase()
-    );
+    const spoken = withoutTranscriptNoise(answer);
+    const matches = spokenOptionMatches(options, spoken);
     if (options.length && matches.length !== 1)
       throw new Error("Say one complete option label, or use the app card.");
     return {
@@ -108,7 +131,9 @@ export function exactVoiceResponse(
       promptType: "ask_user_question",
       response: {
         answers: {
-          [question.header || "answer"]: matches[0]?.label ?? answer.trim(),
+          // Keyed by question text, exactly as the app card answers; the provider
+          // looks answers up by question, so a header key reads as "did not answer".
+          [question.question]: matches[0]?.label ?? spoken,
         },
       },
     };

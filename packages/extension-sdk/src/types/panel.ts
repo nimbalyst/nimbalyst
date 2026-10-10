@@ -420,6 +420,115 @@ export interface PanelHost {
    * version you tested against.
    */
   readonly data: ExtensionDataAccess;
+
+  // ============ BACKEND MODULE ============
+
+  /**
+   * Call one of this extension's own backend-module MCP tools and return its
+   * parsed JSON result. Pass the namespaced tool name (`<extShort>.<tool>`,
+   * e.g. `example.panel_status`). The host injects this extension's id, so a
+   * panel can only reach tools its own backend module registered. Rejects if
+   * the tool errors or the module is not running.
+   */
+  callBackendTool(toolName: string, args?: Record<string, unknown>): Promise<unknown>;
+
+  // ============ HOST COMPONENTS ============
+
+  /**
+   * Host-rendered components a panel can mount inside its own layout.
+   *
+   * Present only when the extension declares `"ai": true` in
+   * `permissions` in manifest.json, because the session transcript lets the
+   * panel show any session in the workspace and send prompts to it.
+   */
+  readonly components?: PanelHostComponents;
+
+  // ============ GUTTER BADGE ============
+
+  /**
+   * Show a badge on this panel's gutter button. `null` clears it, `0` shows a
+   * dot, a positive number shows the count. `tone: 'warning'` renders it in
+   * the warning color instead of the default.
+   *
+   * The host keeps the last value after the panel unmounts (a fullscreen panel
+   * unmounts when the user leaves it), and clears it when the extension is
+   * disabled or unloaded. A panel can only update it while it is mounted.
+   */
+  setGutterBadge(value: number | null, options?: { tone?: 'default' | 'warning' }): void;
+
+  // ============ PANES ============
+
+  /**
+   * Declare the fullscreen panel's side panes so the host treats them like a
+   * built-in mode's: the title bar shows their toggle buttons, Toggle Sidebar
+   * and the right-pane toggle reach the panel, and re-clicking the gutter
+   * button toggles the left pane instead of closing the panel. Call again
+   * whenever a pane collapses or expands; `null` withdraws the declaration.
+   *
+   * The declaration only takes effect while an {@link onPaneToggle}
+   * subscription is live, and is dropped when the last one unsubscribes.
+   * Optional because older hosts do not implement it.
+   */
+  setPanes?(panes: PanelPanes | null): void;
+
+  /**
+   * Called when the user toggles one of the declared panes from the host.
+   * The panel owns the state: flip it, then report it with {@link setPanes}.
+   */
+  onPaneToggle?(callback: (side: PanelPaneSide) => void): () => void;
+}
+
+export type PanelPaneSide = 'left' | 'right';
+
+/** One side pane of a fullscreen panel, as the host's toggle shows it. */
+export interface PanelPaneState {
+  /** Names the pane in the toggle's tooltip, e.g. "Crew roster". */
+  label: string;
+  collapsed: boolean;
+}
+
+export interface PanelPanes {
+  left?: PanelPaneState;
+  right?: PanelPaneState;
+}
+
+/**
+ * Props for {@link PanelHostComponents.SessionTranscript}.
+ */
+export interface PanelSessionTranscriptProps {
+  /**
+   * Session to render. The composer sends to this session, never to whichever
+   * session is active elsewhere in the window. Changing it remounts the
+   * transcript.
+   */
+  sessionId: string;
+
+  /**
+   * Hide the message list and keep only the composer and pending prompts
+   * (permission requests, questions).
+   */
+  collapseTranscript?: boolean;
+
+  /** Extra class names for the wrapper element (it fills its parent by default). */
+  className?: string;
+}
+
+/**
+ * Components the host renders on behalf of a panel.
+ *
+ * @example
+ * ```tsx
+ * const Transcript = host.components?.SessionTranscript;
+ * return Transcript ? <Transcript sessionId={id} /> : null;
+ * ```
+ */
+export interface PanelHostComponents {
+  /**
+   * The full agent transcript for one session in this workspace, with its
+   * composer, queued prompts, and interactive prompts. File links open in the
+   * editor through the same path as {@link PanelHost.openFile}.
+   */
+  SessionTranscript: ComponentType<PanelSessionTranscriptProps>;
 }
 
 /**

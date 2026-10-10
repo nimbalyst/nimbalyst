@@ -726,7 +726,7 @@ Retrieve recent logs from the renderer process console output. This captures ALL
 **Log Sources:**
 - `renderer`: Console output from extension code running in the renderer process
 - `main`: Main process logs related to extension operations
-- `build`: Output from `npm run build` during extension compilation
+- `build`: Output from the package `build` script during extension compilation
 
 **Example Response:**
 ```
@@ -907,7 +907,7 @@ The log capture system uses a ring buffer architecture:
 └─────────────────────────────────────────────────┘
         ↑                    ↑                    ↑
    Renderer            Main Process          Build Output
-   Console              Logs                 (npm run build)
+   Console              Logs                 (run build)
 ```
 
 **Log Entry Fields:**

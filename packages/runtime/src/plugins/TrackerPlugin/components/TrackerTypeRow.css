@@ -1,0 +1,28 @@
+/* One row with the type chip first: the chips join the row instead of
+   forming a block of their own (which wrapped below the type chip). */
+.tracker-type-row .tracker-field-pills {
+  display: contents;
+}
+
+/* Values stay on one line; the chip's title carries the full text. */
+.tracker-type-row .tracker-field-pill-labeled {
+  max-width: 280px;
+}
+
+.tracker-page-view-add-field {
+  padding: 2px 6px;
+}
+
+/* A typed file's row sits above the body in the editor's text column, as a
+   typed page's does (`TrackerPageView.css`). */
+.tracker-document-header {
+  padding: 20px 46px 0;
+}
+
+/* Matches the editor's own narrow-window padding. */
+@media (max-width: 1025px) {
+  .tracker-document-header {
+    padding-left: 8px;
+    padding-right: 8px;
+  }
+}

@@ -1,139 +1,143 @@
 package com.nimbalyst.app.sync
 
-import com.google.gson.Gson
-import com.google.gson.JsonObject
-import com.google.gson.JsonSyntaxException
-import com.nimbalyst.app.attachments.ImageCompressor
-import com.nimbalyst.app.attachments.PendingAttachment
-import com.nimbalyst.app.crypto.CryptoManager
-import com.nimbalyst.app.data.MessageEntity
-import com.nimbalyst.app.data.NimbalystRepository
-import com.nimbalyst.app.data.ProjectEntity
-import com.nimbalyst.app.data.QueuedPromptEntity
-import com.nimbalyst.app.data.SessionEntity
-import com.nimbalyst.app.notifications.NotificationManager
-import com.nimbalyst.app.pairing.PairingCredentials
-import com.nimbalyst.app.pairing.PairingStore
 import android.content.Context
 import android.content.pm.ApplicationInfo
 import android.util.Log
-import androidx.annotation.VisibleForTesting
-import java.io.File
-import java.net.HttpURLConnection
-import java.net.URL
-import java.nio.charset.StandardCharsets
+import com.google.gson.Gson
+import com.google.gson.JsonObject
+import com.nimbalyst.app.attachments.PendingAttachment
+import com.nimbalyst.app.crypto.CryptoManager
+import com.nimbalyst.app.data.NimbalystRepository
+import com.nimbalyst.app.notifications.NotificationManager
+import com.nimbalyst.app.pairing.PairingCredentials
+import com.nimbalyst.app.pairing.PairingStore
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.isActive
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
-class SyncManager(
+/**
+ * Owns the sync lifecycle: credentials, the index and session sockets, JWT
+ * refresh, and the public API the UI calls. Message application lives in
+ * [IndexMessageHandler] and [SessionRoomHandler], each fed by its own serial
+ * [SyncIngestionQueue]; outbound index updates are built by
+ * [SessionIndexUpdates]. The public API is documented for the UI in
+ * nimbalyst-local/orchestration/android-sync-api.md.
+ */
+class SyncManager internal constructor(
     private val context: Context,
     private val repository: NimbalystRepository,
-    private val pairingStore: PairingStore,
+    private val credentialStore: SyncCredentialStore,
     private val notificationManager: NotificationManager,
     private val scope: CoroutineScope,
+    socketFactory: WebSocketFactory,
+    private val tokenRefresher: TokenRefresher,
+    authClock: () -> Long = System::currentTimeMillis,
 ) {
-    private val gson = Gson()
+    constructor(
+        context: Context,
+        repository: NimbalystRepository,
+        pairingStore: PairingStore,
+        notificationManager: NotificationManager,
+        scope: CoroutineScope,
+    ) : this(
+        context = context,
+        repository = repository,
+        credentialStore = PairingStoreCredentials(pairingStore),
+        notificationManager = notificationManager,
+        scope = scope,
+        socketFactory = WebSocketClient.defaultSocketFactory,
+        tokenRefresher = HttpTokenRefresher(Gson()),
+    )
 
-    companion object {
-        private const val TAG = "SyncManager"
-
-        /**
-         * Applies an index snapshot to [repository], choosing between the
-         * pruning path ([NimbalystRepository.reconcileIndexSnapshot]) and the
-         * safe upsert-only path ([NimbalystRepository.replaceIndexSnapshot]).
-         *
-         * The gate: if [projects].size < [rawProjectCount], one or more entries
-         * failed to decrypt. Pruning in that case would silently wipe
-         * stale-but-valid cache entries. We fall back to upsert-only so those
-         * entries survive until the next clean snapshot arrives.
-         *
-         * Exposed as an [internal] companion function so that unit tests can
-         * drive the routing logic and verify real repository effects without
-         * constructing a [SyncManager] instance (which requires
-         * [com.nimbalyst.app.pairing.PairingStore] ->
-         * [androidx.security.crypto.EncryptedSharedPreferences] ->
-         * Android KeyStore, unavailable in Robolectric unit tests).
-         */
-        @VisibleForTesting
-        internal suspend fun applyIndexSnapshot(
-            repository: NimbalystRepository,
-            projects: List<ProjectEntity>,
-            sessions: List<SessionEntity>,
-            rawProjectCount: Int,
-            syncedAt: Long
-        ) {
-            val canPrune = projects.size == rawProjectCount
-            if (canPrune) {
-                repository.reconcileIndexSnapshot(
-                    projects = projects,
-                    sessions = sessions,
-                    syncedAt = syncedAt
-                )
-            } else {
-                Log.w(
-                    TAG,
-                    "[handleIndexSyncResponse] decrypted ${projects.size}/$rawProjectCount project entries;" +
-                        " skipping prune to avoid wiping stale-but-valid cache entries"
-                )
-                repository.replaceIndexSnapshot(
-                    projects = projects,
-                    sessions = sessions,
-                    syncedAt = syncedAt
-                )
-            }
-        }
-
-        /**
-         * Returns true only when a remote draft update is newer than the last
-         * draft push this device sent for the same session. Equal timestamps are
-         * self-echoes from the server round trip and must not overwrite local
-         * typing.
-         */
-        @VisibleForTesting
-        internal fun shouldAcceptRemoteDraft(
-            incomingDraftUpdatedAt: Long?,
-            lastLocalPushAt: Long
-        ): Boolean {
-            val incomingTs = incomingDraftUpdatedAt ?: 0L
-            return incomingTs > lastLocalPushAt
-        }
+    private companion object {
+        const val TAG = "SyncManager"
+        const val REFRESH_RETRY_WINDOW_MS = 30_000L
     }
 
-    private val lastPushedDraftAt = ConcurrentHashMap<String, Long>()
+    private val gson = Gson()
 
-    private val indexClient = WebSocketClient(scope)
-    private val sessionClient = WebSocketClient(scope)
+    private val indexClient = WebSocketClient(scope, socketFactory = socketFactory)
+    private val sessionClient = WebSocketClient(scope, socketFactory = socketFactory)
     private val _state = MutableStateFlow(SyncConnectionState())
     private val _connectedDevices = MutableStateFlow<List<DeviceInfo>>(emptyList())
-    private val _availableModels = MutableStateFlow<List<SyncedAvailableModel>>(emptyList())
-    private val _desktopDefaultModel = MutableStateFlow<String?>(null)
 
-    private var activeCredentials: PairingCredentials? = null
-    private var crypto: CryptoManager? = null
+    @Volatile private var activeCredentials: PairingCredentials? = null
+    @Volatile private var crypto: CryptoManager? = null
+    @Volatile private var indexRoomId: String? = null
+
+    private val decoder = SessionEntryDecoder(gson)
+    private val indexUpdates = SessionIndexUpdates(gson)
+    private val presence = DevicePresence(context, gson)
+    private val settings = SettingsSyncApplier(context)
+    private val errors = SyncErrors()
+    private val auth = AuthHealthTracker(authClock)
+    private val signals = ExecutionSignals()
+    private val indexRequests = IndexSyncRequests(gson, indexClient::sendRaw)
+    private val requests = SyncRequestRegistry(scope, { channel, json ->
+        if (channel == SyncChannel.INDEX) indexClient.sendRaw(json) else sessionClient.sendRaw(json)
+    }, errors)
+    private val commands = SessionCommands(repository, gson, indexUpdates, { presence.deviceId }, { crypto }, requests)
+    private val sessionState = SessionStatePublisher(repository, decoder, indexUpdates, { crypto }, requests, scope)
+    private val prompts = PromptSender(repository, indexUpdates, { crypto }, { indexClient.isConnected }, { json ->
+        requests.sendConfirmed(SyncRequestKind.PROMPT, json)
+    })
+    private val creations = SessionCreationTracker(
+        scope = scope,
+        observeSession = repository::observeSession,
+        lookup = ::requestSessionIndexLookup,
+        onReady = { requestId, sessionId -> creationDrafts.remove(requestId)?.let { updateDraftInput(sessionId, it) } }
+    )
+    private val indexHandler = IndexMessageHandler(
+        repository, decoder, gson, { crypto }, _state, _connectedDevices,
+        settings, indexRequests, creations, commands, signals, errors,
+        onPong = requests::deliveryConfirmed
+    ) { replication }
+    private val _indexCoverage = MutableStateFlow(IndexCoverage())
+    @Volatile private var replication: IndexReplicationClient? = null
+    private val sessionHandler: SessionRoomHandler = SessionRoomHandler(
+        repository, decoder, gson, { crypto }, _state, signals, scope,
+        requestCatchUp = { id -> sessionIngestion.submit { sessionHandler.requestSync(id) } },
+        lookup = ::requestSessionIndexLookup
+    ) { sessionId, json -> sessionClient.connectedTag == sessionId && sessionClient.sendRaw(json) }
+    private val interactive = InteractiveResponses(gson, ::sendSessionControlMessage, ::appendToolResult)
+    private val creationDrafts = ConcurrentHashMap<String, String>()
+    private val indexIngestion = SyncIngestionQueue(scope, "index", ::reportIngestionFailure)
+    private val sessionIngestion = SyncIngestionQueue(scope, "session", ::reportIngestionFailure)
+
 
     // Marketing screenshot capture (debug builds only). When on, every network
     // entry point is inert and the connection state is frozen at "desktop
     // connected" so captures show a live-looking device with no server.
     private var screenshotMode = false
     private var jwtRefreshJob: Job? = null
-    private var pendingSessionJoin: String? = null
-    private var lastJwtRefreshAttempt: Long = 0
+    @Volatile private var lastJwtRefreshAttempt: Long = 0
 
     val state: StateFlow<SyncConnectionState> = _state.asStateFlow()
     val connectedDevices: StateFlow<List<DeviceInfo>> = _connectedDevices.asStateFlow()
-    val availableModels: StateFlow<List<SyncedAvailableModel>> = _availableModels.asStateFlow()
-    val desktopDefaultModel: StateFlow<String?> = _desktopDefaultModel.asStateFlow()
+    val availableModels: StateFlow<List<SyncedAvailableModel>> = settings.availableModels
+    val desktopDefaultModel: StateFlow<String?> = settings.defaultModel
+    val metaAgentEnabled: StateFlow<Boolean> = settings.metaAgentEnabled
+    val syncError: StateFlow<SyncError?> = errors.current
+    /** OK, degraded after 3 failed refreshes (banner), signed out after 5 (show login). */
+    val authHealth: StateFlow<AuthHealth> = auth.health
+    val executionTransitions: SharedFlow<SessionExecutionTransition> = signals.transitions
+    val pendingSessionCreations: StateFlow<Set<String>> = creations.pendingIds
+    val sessionCreationCompletions: SharedFlow<SessionCreationOutcome> = creations.completions
+    val indexCoverage: StateFlow<IndexCoverage> = _indexCoverage.asStateFlow()
 
     init {
+        decoder.onClientMetadataKnown = sessionState::clientMetadataKnown
+        // Only the index socket announces: presence is per device, not per room.
+        indexClient.deviceAnnouncement = presence::announcement
         indexClient.onConnectionStateChanged = { connected ->
             _state.update {
                 it.copy(
@@ -143,41 +147,27 @@ class SyncManager(
                 )
             }
             if (connected) {
-                notificationManager.state.value.deviceToken?.let(::registerPushToken)
-                requestFullSync()
-                startJwtRefreshTimer()
-                // If a session join was deferred waiting for index reconnection, do it now
-                pendingSessionJoin?.let { sessionId ->
-                    pendingSessionJoin = null
-                    Log.d(TAG, "[indexClient] Resuming deferred session join: $sessionId")
-                    connectSessionClient(sessionId)
-                }
+                onIndexConnected()
+            } else {
+                indexRequests.reset()
+                creations.failAll(
+                    "Disconnected before session creation was confirmed. " +
+                        "Check the session list after reconnecting before trying again."
+                )
+                requests.disconnect()
             }
         }
-        indexClient.onTextMessage = { message ->
-            scope.launch {
-                handleIndexMessage(message)
-            }
+        indexClient.onTextMessage = { message, _ ->
+            indexIngestion.submit { indexHandler.handle(message) }
         }
         indexClient.onFailure = { error ->
             _state.update { it.copy(isConnecting = false, lastError = error) }
         }
-        indexClient.onHttpError = { code ->
-            if (code == 401) {
-                val now = System.currentTimeMillis()
-                if (now - lastJwtRefreshAttempt < 30_000) {
-                    Log.w(TAG, "[indexClient] 401 but JWT was refreshed recently, not retrying")
-                } else {
-                    Log.w(TAG, "[indexClient] 401 - refreshing JWT")
-                    lastJwtRefreshAttempt = now
-                    scope.launch { refreshJwt() }
-                }
-            }
-        }
+        indexClient.onHttpError = { code -> if (code == 401) refreshAfterUnauthorized("indexClient") }
 
         sessionClient.onConnectionStateChanged = { connected ->
-            val sessionId = _state.value.activeSessionId
-            Log.d(TAG, "[sessionClient] connection=$connected activeSessionId=$sessionId")
+            val sessionId = sessionClient.connectedTag
+            Log.d(TAG, "[sessionClient] connection=$connected sessionId=$sessionId")
             _state.update {
                 it.copy(
                     sessionConnected = connected,
@@ -185,39 +175,21 @@ class SyncManager(
                 )
             }
             if (connected && sessionId != null) {
-                scope.launch {
-                    Log.d(TAG, "[sessionClient] Sending syncRequest for $sessionId")
-                    requestSessionSync(sessionId)
-                }
+                sessionIngestion.submit { sessionHandler.requestSync(sessionId) }
             }
         }
-        sessionClient.onTextMessage = { message ->
-            scope.launch {
-                val type = decodeEnvelope(message)?.type
-                Log.d(TAG, "[sessionClient] Received message type=$type len=${message.length}")
-                handleSessionMessage(message)
+        sessionClient.onTextMessage = { message, sessionId ->
+            // Captured at arrival: the socket's own session, not whichever
+            // session is active when the queue gets to it.
+            if (sessionId != null) {
+                sessionIngestion.submit { sessionHandler.handle(message, sessionId) }
             }
         }
         sessionClient.onFailure = { error ->
             Log.e(TAG, "[sessionClient] WebSocket failure: $error")
             _state.update { it.copy(lastError = error) }
         }
-        sessionClient.onHttpError = { code ->
-            if (code == 401) {
-                val now = System.currentTimeMillis()
-                if (now - lastJwtRefreshAttempt < 30_000) {
-                    Log.w(TAG, "[sessionClient] 401 but JWT was refreshed recently, not retrying")
-                } else {
-                    val sessionId = _state.value.activeSessionId
-                    Log.w(TAG, "[sessionClient] 401 - refreshing JWT and retrying session $sessionId")
-                    if (sessionId != null) {
-                        pendingSessionJoin = sessionId
-                        lastJwtRefreshAttempt = now
-                        scope.launch { refreshJwt() }
-                    }
-                }
-            }
-        }
+        sessionClient.onHttpError = { code -> if (code == 401) refreshAfterUnauthorized("sessionClient") }
 
         notificationManager.onTokenReceived = { token ->
             registerPushToken(token)
@@ -246,14 +218,14 @@ class SyncManager(
     }
 
     fun connectIfConfigured() {
-        if (pairingStore.state.value.isSyncConfigured) {
+        if (credentialStore.credentials?.hasAuthToken == true) {
             connect()
         }
     }
 
     fun connect() {
         if (screenshotMode) return
-        val credentials = pairingStore.state.value.credentials
+        val credentials = credentialStore.credentials
         if (credentials == null || !credentials.hasAuthToken) {
             _state.update {
                 it.copy(
@@ -263,8 +235,10 @@ class SyncManager(
             }
             return
         }
+        // A token after a forced sign-out means the user signed back in.
+        if (auth.health.value is AuthHealth.SignedOut) auth.recordSuccess()
 
-        val jwtClaims = extractJwtClaims(credentials.authJwt.orEmpty())
+        val jwtClaims = extractJwtClaims(credentials.authJwt.orEmpty(), gson)
         val routeUserId = credentials.routingUserId ?: jwtClaims?.sub
         if (routeUserId.isNullOrBlank()) {
             _state.update { it.copy(isConnecting = false, lastError = "Missing routing user ID.") }
@@ -287,18 +261,42 @@ class SyncManager(
             personalUserId = credentials.personalUserId,
             personalOrgId = credentials.personalOrgId
         )
+        val roomId = "org:$orgId:user:$routeUserId:index"
+        val authToken = credentials.authJwt.orEmpty()
+
+        if (roomId == indexRoomId && crypto != null) {
+            // Same account and room: this is a credential refresh (the UI calls
+            // connect whenever stored credentials change). Keep the open
+            // sockets and the active session; only the token changes.
+            applyAuthToken(authToken)
+            return
+        }
+
+        if (indexRoomId != null) {
+            // A different account. Nothing decoded for the old one may land in
+            // this account's database.
+            leaveSessionRoom()
+            indexIngestion.reset()
+            decoder.clear()
+            sessionState.clear()
+            replication?.cancel()
+            replication = null
+            _indexCoverage.value = IndexCoverage()
+            commands.clear()
+            sessionHandler.clear()
+            requests.cancel()
+        }
+        indexRoomId = roomId
         crypto = CryptoManager.fromSeed(credentials.encryptionSeed, cryptoUserId)
         _state.update { it.copy(isConnecting = true, lastError = null) }
 
-        scope.launch {
-            repository.clearPrototypeData()
-        }
+        indexIngestion.submit { repository.clearPrototypeData() }
 
-        val roomId = "org:$orgId:user:$routeUserId:index"
+        presence.markConnected()
         indexClient.connect(
             serverUrl = credentials.serverUrl,
             roomId = roomId,
-            authToken = credentials.authJwt.orEmpty()
+            authToken = authToken
         )
     }
 
@@ -307,6 +305,18 @@ class SyncManager(
         stopJwtRefreshTimer()
         leaveSessionRoom()
         indexClient.disconnect()
+        indexIngestion.reset()
+        // The next connect may be a different account; nothing parked for
+        // this one may be published there.
+        decoder.clear()
+        replication?.cancel()
+        replication = null
+        commands.clear()
+        sessionHandler.clear()
+        creationDrafts.clear()
+        requests.cancel()
+        errors.clear()
+        indexRoomId = null
         _connectedDevices.value = emptyList()
         _state.update {
             it.copy(
@@ -324,32 +334,78 @@ class SyncManager(
             connectIfConfigured()
             return
         }
-        indexClient.sendRaw(gson.toJson(IndexSyncRequest()))
+        if (v2Negotiated) indexIngestion.submit { replication?.start() } else indexRequests.requestFull()
+    }
+
+    /**
+     * Asks for one session's row, e.g. to open a session that has not synced
+     * yet. On v2 this is a lookup page (with ancestors); on a legacy server a
+     * full index sync, folded into one already in flight.
+     */
+    fun requestSessionIndexLookup(sessionId: String) {
+        if (screenshotMode) return
+        when {
+            !indexClient.isConnected -> connectIfConfigured()
+            v2Negotiated -> indexIngestion.submit { replication?.lookup(listOf(sessionId)) }
+            else -> indexRequests.lookup(sessionId)
+        }
+    }
+
+    private val v2Negotiated: Boolean get() = _indexCoverage.value.compatibility == IndexCoverage.Compatibility.V2
+
+    /** A fresh driver per index connection; its seed request doubles as the v2 probe. */
+    private fun startReplication() {
+        replication?.cancel()
+        val client = IndexReplicationClient(
+            gson = gson,
+            store = repository.indexReplication,
+            repository = repository,
+            decoder = decoder,
+            crypto = { crypto },
+            send = indexClient::sendRaw,
+            coverage = _indexCoverage,
+            scope = scope,
+            submit = indexIngestion::submit,
+            onApplied = indexHandler::afterReplicatedPage,
+            onBootstrapFinalized = indexHandler::bootstrapFinalized,
+            onLegacyServer = { indexRequests.requestFull() }
+        )
+        replication = client
+        client.setForeground(presence.isInForeground)
+        indexIngestion.submit { client.start() }
     }
 
     fun joinSessionRoom(sessionId: String) {
         _state.update { it.copy(activeSessionId = sessionId) }
         if (screenshotMode) return
-
-        // If the index client isn't connected, we need to reconnect first
-        // (likely expired JWT). Queue the session join for after reconnection.
+        scope.launch { commands.warmHost(sessionId) }
+        connectSessionClient(sessionId)
         if (!indexClient.isConnected) {
-            Log.w(TAG, "[joinSessionRoom] Index not connected, reconnecting first")
-            pendingSessionJoin = sessionId
-            scope.launch {
-                // Try JWT refresh first, then reconnect
-                refreshJwt()
-                // After reconnect, the index onConnectionStateChanged callback
-                // will fire, and we check pendingSessionJoin there.
-            }
+            // Likely an expired JWT; the index connect callback rejoins the
+            // active session once the fresh token lands.
+            Log.w(TAG, "[joinSessionRoom] Index not connected, reconnecting")
+            indexClient.ensureConnected()
+        }
+    }
+
+    /**
+     * Leave the session room. Pass [expectedSessionId] from a screen's dispose
+     * path: navigating A to B disposes A after B has joined, and an unscoped
+     * leave would tear down B's room.
+     */
+    fun leaveSessionRoom(expectedSessionId: String? = null) {
+        if (screenshotMode) return
+        val active = _state.value.activeSessionId
+        if (expectedSessionId != null && active != expectedSessionId) {
+            Log.d(TAG, "[leaveSessionRoom] skipping stale leave for $expectedSessionId; active is $active")
             return
         }
-
-        connectSessionClient(sessionId)
+        sessionClient.disconnect()
+        _state.update { it.copy(sessionConnected = false, activeSessionId = null) }
     }
 
     private fun connectSessionClient(sessionId: String) {
-        val credentials = activeCredentials ?: pairingStore.state.value.credentials
+        val credentials = activeCredentials ?: credentialStore.credentials
         if (credentials == null || !credentials.hasAuthToken) {
             Log.w(TAG, "[connectSessionClient] No credentials or auth token")
             return
@@ -366,195 +422,86 @@ class SyncManager(
         sessionClient.connect(
             serverUrl = credentials.serverUrl,
             roomId = roomId,
-            authToken = credentials.authJwt.orEmpty()
+            authToken = credentials.authJwt.orEmpty(),
+            tag = sessionId
         )
     }
 
-    fun createSession(
-        projectId: String,
-        initialPrompt: String? = null
-    ): Result<Unit> {
+    /** Called on every index (re)connect, including after a token refresh. */
+    private fun onIndexConnected() {
+        notificationManager.state.value.deviceToken?.let(::registerPushToken)
+        startReplication()
+        startJwtRefreshTimer()
+        indexIngestion.submit { requests.reconnect() }
+        rejoinActiveSession()
+    }
+
+    /**
+     * Asks a host to create a session. Returns the requestId, or the reason no
+     * request was sent. The outcome arrives on [sessionCreationCompletions] and
+     * from [awaitSessionCreation].
+     */
+    fun createSession(options: SessionCreationOptions): Result<String> {
         val crypto = crypto ?: return Result.failure(IllegalStateException("Sync is not ready."))
         if (!indexClient.isConnected) {
-            return Result.failure(IllegalStateException("Index room is not connected."))
+            return Result.failure(IllegalStateException("Connect to sync before creating a session."))
         }
-
         return runCatching {
-            val encryptedProjectId = crypto.encryptProjectId(projectId)
-            val encryptedPrompt = initialPrompt
-                ?.takeIf { it.isNotBlank() }
-                ?.let { crypto.encrypt(it) }
-
-            val request = CreateSessionRequestMessage(
-                request = EncryptedCreateSessionRequest(
-                    requestId = UUID.randomUUID().toString(),
-                    encryptedProjectId = encryptedProjectId,
-                    projectIdIv = CryptoManager.projectIdIvBase64,
-                    encryptedInitialPrompt = encryptedPrompt?.encrypted,
-                    initialPromptIv = encryptedPrompt?.iv,
-                    timestamp = System.currentTimeMillis()
-                )
+            val requestId = UUID.randomUUID().toString()
+            val json = buildCreateSessionRequest(
+                options, requestId, crypto, _connectedDevices.value, gson, System.currentTimeMillis()
             )
-
-            val sent = indexClient.sendRaw(gson.toJson(request))
-            if (!sent) {
-                throw IllegalStateException("Failed to send create session request.")
+            creations.register(requestId)
+            options.initialDraft?.let { creationDrafts[requestId] = it }
+            if (!indexClient.sendRaw(json)) {
+                creations.fail(requestId, "Failed to send create session request.")
+                creationDrafts.remove(requestId)
+                error("Failed to send create session request.")
             }
+            requestId
         }
     }
+
+    suspend fun awaitSessionCreation(requestId: String): SessionCreationOutcome = creations.await(requestId)
+
+    @Deprecated("Use createSession(SessionCreationOptions)")
+    fun createSession(projectId: String, initialPrompt: String? = null): Result<Unit> =
+        createSession(SessionCreationOptions(projectId = projectId, initialPrompt = initialPrompt)).map { }
 
     suspend fun sendPrompt(
         sessionId: String,
         text: String,
         attachments: List<PendingAttachment> = emptyList()
-    ): Result<Unit> {
-        val promptText = text.trim()
-        if (promptText.isBlank() && attachments.isEmpty()) {
-            return Result.failure(IllegalArgumentException("Prompt cannot be empty."))
-        }
+    ): Result<Unit> = prompts.send(sessionId, text, attachments)
+        .onSuccess { _state.update { it.copy(lastError = null) } }
+        .map { }
 
-        val crypto = crypto ?: return Result.failure(IllegalStateException("Sync is not ready."))
-        if (!indexClient.isConnected) {
-            return Result.failure(IllegalStateException("Index room is not connected."))
-        }
+    suspend fun cancelSession(sessionId: String): Result<Unit> = commands.cancelSession(sessionId)
 
-        val session = repository.getSession(sessionId)
-            ?: return Result.failure(IllegalStateException("Session not found."))
+    suspend fun setSessionArchived(sessionId: String, isArchived: Boolean): Result<Unit> =
+        commands.setSessionArchived(sessionId, isArchived)
 
-        return try {
-            val now = System.currentTimeMillis()
-            val promptId = UUID.randomUUID().toString()
-            val encryptedPrompt = crypto.encrypt(promptText)
-            val encryptedProjectId = crypto.encryptProjectId(session.projectId)
-            val queuedPrompt = EncryptedQueuedPrompt(
-                id = promptId,
-                encryptedPrompt = encryptedPrompt.encrypted,
-                iv = encryptedPrompt.iv,
-                timestamp = now,
-                source = "keyboard"
-            ).also { prompt ->
-                val encryptedAttachments = attachments.mapNotNull { attachment ->
-                    val compressed = ImageCompressor.compress(attachment.bitmap) ?: return@mapNotNull null
-                    val encrypted = crypto.encryptData(compressed.data)
-                    WireEncryptedAttachment(
-                        id = attachment.id,
-                        filename = attachment.filename,
-                        mimeType = "image/jpeg",
-                        encryptedData = encrypted.encrypted,
-                        iv = encrypted.iv,
-                        size = compressed.data.size,
-                        width = compressed.width,
-                        height = compressed.height
-                    )
-                }
-                prompt.encryptedAttachments = encryptedAttachments.takeIf { it.isNotEmpty() }
-            }
+    /** Moves a session into [parentSessionId]'s workstream, or out of one when null. */
+    suspend fun updateSessionParent(sessionId: String, parentSessionId: String?): Result<Unit> =
+        commands.updateSessionParent(sessionId, parentSessionId)
 
-            val update = IndexUpdateMessage(
-                session = IndexUpdateEntry(
-                    sessionId = sessionId,
-                    encryptedProjectId = encryptedProjectId,
-                    projectIdIv = CryptoManager.projectIdIvBase64,
-                    encryptedTitle = session.titleEncrypted,
-                    titleIv = session.titleIv,
-                    provider = session.provider ?: "claude-code",
-                    model = session.model,
-                    mode = session.mode,
-                    messageCount = repository.messageCount(sessionId),
-                    lastMessageAt = now,
-                    createdAt = session.createdAt,
-                    updatedAt = now,
-                    isExecuting = session.isExecuting,
-                    queuedPromptCount = 1,
-                    encryptedQueuedPrompts = listOf(queuedPrompt)
-                )
-            )
+    fun createWorktree(projectId: String, targetDeviceId: String? = null): Result<String> =
+        commands.createWorktree(projectId, targetDeviceId)
 
-            val sent = indexClient.sendRaw(gson.toJson(update))
-            if (!sent) {
-                throw IllegalStateException("Failed to send prompt update.")
-            }
+    fun clearSyncError() = errors.clear()
 
-            repository.upsertQueuedPrompt(
-                QueuedPromptEntity(
-                    id = promptId,
-                    sessionId = sessionId,
-                    promptTextEncrypted = encryptedPrompt.encrypted,
-                    iv = encryptedPrompt.iv,
-                    createdAt = now,
-                    sentAt = now,
-                    promptTextDecrypted = promptText,
-                    source = null
-                )
-            )
-            repository.upsertSession(
-                session.copy(
-                    hasQueuedPrompts = true,
-                    updatedAt = now,
-                    lastMessageAt = now
-                )
-            )
-            _state.update { it.copy(lastError = null) }
-            Result.success(Unit)
-        } catch (error: Exception) {
-            Result.failure(error)
-        }
-    }
+    /** Addressed to the session's host once [joinSessionRoom] has read it. */
+    fun sendSessionControlMessage(sessionId: String, messageType: String, payload: JsonObject? = null): Result<Unit> =
+        commands.sendControlNow(sessionId, messageType, payload)
 
-    fun sendSessionControlMessage(
-        sessionId: String,
-        messageType: String,
-        payload: JsonObject? = null
-    ): Result<Unit> {
-        if (!indexClient.isConnected) {
-            return Result.failure(IllegalStateException("Index room is not connected."))
-        }
+    fun registerPushToken(token: String): Result<Unit> = sendIndex(presence.registerPushToken(token), "register push token")
 
-        val message = SessionControlMessage(
-            message = SessionControlPayload(
-                sessionId = sessionId,
-                messageType = messageType,
-                payload = payload,
-                timestamp = System.currentTimeMillis()
-            )
-        )
-        return if (indexClient.sendRaw(gson.toJson(message))) {
-            Result.success(Unit)
-        } else {
-            Result.failure(IllegalStateException("Failed to send session control message."))
-        }
-    }
+    fun unregisterPushToken(): Result<Unit> = sendIndex(presence.unregisterPushToken(), "unregister push token")
 
-    fun registerPushToken(token: String): Result<Unit> {
-        if (!indexClient.isConnected) {
-            return Result.failure(IllegalStateException("Index room is not connected."))
-        }
-
-        val message = RegisterPushTokenMessage(
-            token = token,
-            platform = "android",
-            deviceId = WebSocketClient.getDeviceId(context)
-        )
-        return if (indexClient.sendRaw(gson.toJson(message))) {
-            Result.success(Unit)
-        } else {
-            Result.failure(IllegalStateException("Failed to register push token."))
-        }
-    }
-
-    fun unregisterPushToken(): Result<Unit> {
-        if (!indexClient.isConnected) {
-            return Result.failure(IllegalStateException("Index room is not connected."))
-        }
-
-        val message = UnregisterPushTokenMessage(
-            deviceId = WebSocketClient.getDeviceId(context)
-        )
-        return if (indexClient.sendRaw(gson.toJson(message))) {
-            Result.success(Unit)
-        } else {
-            Result.failure(IllegalStateException("Failed to unregister push token."))
-        }
+    private fun sendIndex(json: String, what: String): Result<Unit> = when {
+        !indexClient.isConnected -> Result.failure(IllegalStateException("Index room is not connected."))
+        indexClient.sendRaw(json) -> Result.success(Unit)
+        else -> Result.failure(IllegalStateException("Failed to $what."))
     }
 
     fun appendToolResult(
@@ -563,7 +510,7 @@ class SyncManager(
         content: String
     ): Result<Unit> {
         val crypto = crypto ?: return Result.failure(IllegalStateException("Sync is not ready."))
-        if (_state.value.activeSessionId != sessionId || !sessionClient.isConnected) {
+        if (sessionClient.connectedTag != sessionId || !sessionClient.isConnected) {
             return Result.failure(IllegalStateException("Session room is not connected."))
         }
 
@@ -598,98 +545,7 @@ class SyncManager(
         body: JsonObject
     ): Result<Unit> {
         return try {
-            when (action) {
-                "askUserQuestionSubmit" -> {
-                    val answers = body.getAsJsonObject("answers") ?: JsonObject()
-                    val response = JsonObject().apply { add("answers", answers.deepCopy()) }
-                    sendSessionControlMessage(
-                        sessionId = sessionId,
-                        messageType = "prompt_response",
-                        payload = jsonObject(
-                            "promptType" to "ask_user_question",
-                            "promptId" to promptId,
-                            "response" to response
-                        )
-                    ).getOrThrow()
-                    appendToolResult(sessionId, promptId, gson.toJson(response)).getOrThrow()
-                }
-
-                "toolPermissionSubmit" -> {
-                    val response = body.getAsJsonObject("response") ?: JsonObject()
-                    sendSessionControlMessage(
-                        sessionId = sessionId,
-                        messageType = "prompt_response",
-                        payload = jsonObject(
-                            "promptType" to "tool_permission",
-                            "promptId" to promptId,
-                            "response" to response
-                        )
-                    ).getOrThrow()
-                    appendToolResult(sessionId, promptId, gson.toJson(response)).getOrThrow()
-                }
-
-                "exitPlanModeApprove" -> {
-                    sendSessionControlMessage(
-                        sessionId = sessionId,
-                        messageType = "prompt_response",
-                        payload = jsonObject(
-                            "promptType" to "exit_plan_mode",
-                            "promptId" to promptId,
-                            "response" to jsonObject("approved" to true)
-                        )
-                    ).getOrThrow()
-                }
-
-                "exitPlanModeDeny" -> {
-                    val response = jsonObject("approved" to false)
-                    body.get("feedback")?.takeIf { !it.isJsonNull }?.asString?.let {
-                        response.addProperty("feedback", it)
-                    }
-                    sendSessionControlMessage(
-                        sessionId = sessionId,
-                        messageType = "prompt_response",
-                        payload = jsonObject(
-                            "promptType" to "exit_plan_mode",
-                            "promptId" to promptId,
-                            "response" to response
-                        )
-                    ).getOrThrow()
-                }
-
-                "gitCommit" -> {
-                    val response = jsonObject(
-                        "action" to "committed",
-                        "files" to body.getAsJsonArray("files"),
-                        "message" to body.get("message")?.takeIf { !it.isJsonNull }?.asString.orEmpty()
-                    )
-                    sendSessionControlMessage(
-                        sessionId = sessionId,
-                        messageType = "prompt_response",
-                        payload = jsonObject(
-                            "promptType" to "git_commit",
-                            "promptId" to promptId,
-                            "response" to response
-                        )
-                    ).getOrThrow()
-                }
-
-                "gitCommitCancel" -> {
-                    val response = jsonObject("action" to "cancelled")
-                    sendSessionControlMessage(
-                        sessionId = sessionId,
-                        messageType = "prompt_response",
-                        payload = jsonObject(
-                            "promptType" to "git_commit",
-                            "promptId" to promptId,
-                            "response" to response
-                        )
-                    ).getOrThrow()
-                    appendToolResult(sessionId, promptId, gson.toJson(response)).getOrThrow()
-                }
-
-                else -> throw IllegalArgumentException("Unsupported interactive action: $action")
-            }
-
+            interactive.respond(sessionId, action, promptId, body)
             _state.update { it.copy(lastError = null) }
             Result.success(Unit)
         } catch (error: Exception) {
@@ -697,487 +553,60 @@ class SyncManager(
         }
     }
 
-    fun leaveSessionRoom() {
-        if (screenshotMode) return
-        sessionClient.disconnect()
-        _state.update { it.copy(sessionConnected = false, activeSessionId = null) }
+    /** Saves the draft locally and publishes it; republished after reconnect if the send does not land. */
+    suspend fun updateDraftInput(sessionId: String, draftInput: String) = sessionState.updateDraft(sessionId, draftInput)
+
+    /** Marks [sessionId] read up to [readAt] locally and publishes the marker; republished after reconnect if needed. */
+    suspend fun markSessionRead(sessionId: String, readAt: Long) = sessionState.markRead(sessionId, readAt)
+
+    /** Report real user interaction; feeds the presence status other devices see. */
+    fun reportUserActivity() {
+        presence.reportActivity()
     }
 
-    suspend fun updateDraftInput(sessionId: String, draftInput: String) {
-        val crypto = crypto ?: return
-        if (!indexClient.isConnected) return
-
-        val session = repository.getSession(sessionId) ?: return
-        val now = System.currentTimeMillis()
-        val storeDraft = draftInput.ifBlank { null }
-
-        // Persist locally first
-        repository.updateDraftInput(sessionId, storeDraft, now)
-        lastPushedDraftAt[sessionId] = now
-
-        // Build encrypted client metadata with draft
-        val clientMetadata = ClientMetadata(
-            draftInput = draftInput,  // Send "" explicitly to clear on other devices
-            draftUpdatedAt = now,
-            phase = session.phase,
-            tags = session.tagsJson?.let {
-                try { gson.fromJson(it, Array<String>::class.java).toList() } catch (_: Exception) { null }
-            }
-        )
-        val metaJson = gson.toJson(clientMetadata)
-        val encryptedMeta = crypto.encrypt(metaJson)
-        val encryptedProjectId = crypto.encryptProjectId(session.projectId)
-
-        val update = IndexUpdateMessage(
-            session = IndexUpdateEntry(
-                sessionId = sessionId,
-                encryptedProjectId = encryptedProjectId,
-                projectIdIv = CryptoManager.projectIdIvBase64,
-                encryptedTitle = session.titleEncrypted,
-                titleIv = session.titleIv,
-                provider = session.provider ?: "claude-code",
-                model = session.model,
-                mode = session.mode,
-                messageCount = repository.messageCount(sessionId),
-                lastMessageAt = session.lastMessageAt ?: now,
-                createdAt = session.createdAt,
-                updatedAt = now,
-                encryptedClientMetadata = encryptedMeta.encrypted,
-                clientMetadataIv = encryptedMeta.iv
-            )
-        )
-
-        indexClient.sendRaw(gson.toJson(update))
-    }
-
-    private suspend fun handleIndexMessage(message: String) {
-        val type = decodeEnvelope(message)?.type
-        when (type) {
-            "indexSyncResponse" -> handleIndexSyncResponse(message)
-            "indexBroadcast" -> handleIndexBroadcast(message)
-            "indexDeleteBroadcast" -> handleIndexDeleteBroadcast(message)
-            "projectBroadcast" -> handleProjectBroadcast(message)
-            "createSessionResponseBroadcast" -> handleCreateSessionResponse(message)
-            "settingsSyncBroadcast" -> handleSettingsSyncBroadcast(message)
-            "devicesList" -> handleDevicesList(message)
-            "deviceJoined" -> handleDeviceJoined(message)
-            "deviceLeft" -> handleDeviceLeft(message)
-            "error" -> handleServerError(message)
-            null -> Log.w(TAG, "Index message with no type field")
-            else -> Log.d(TAG, "Unhandled index message type: $type")
+    /**
+     * The server withholds push from a device that announced itself active in
+     * the last two minutes, so leaving the foreground is announced right away
+     * rather than on the next 30s heartbeat.
+     */
+    fun setAppInForeground(inForeground: Boolean) {
+        if (presence.isInForeground == inForeground) return
+        presence.setForeground(inForeground)
+        indexClient.announceNow()
+        indexIngestion.submit { replication?.setForeground(inForeground) }
+        // A backgrounded phone is often offline; refreshing then only piles up
+        // failures. The token has likely expired by the time the user is back,
+        // so refresh at once instead of waiting out the interval.
+        if (!inForeground) {
+            stopJwtRefreshTimer()
+        } else if (indexRoomId != null && !screenshotMode) {
+            startJwtRefreshTimer()
+            scope.launch { refreshJwt() }
         }
     }
 
-    private suspend fun handleSessionMessage(message: String) {
-        val type = decodeEnvelope(message)?.type
-        when (type) {
-            "syncResponse" -> handleSessionSyncResponse(message)
-            "messageBroadcast" -> handleMessageBroadcast(message)
-            "metadataBroadcast" -> handleMetadataBroadcast(message)
-            "error" -> handleServerError(message)
-            null -> Log.w(TAG, "Session message with no type field")
-            else -> Log.d(TAG, "Unhandled session message type: $type")
-        }
+    /** Test hook: whether the periodic JWT refresh is running. */
+    internal val isJwtRefreshScheduled: Boolean get() = jwtRefreshJob?.isActive == true
+
+    /** Test hook: waits until both rooms have applied everything received so far. */
+    internal suspend fun awaitIngestionIdle() {
+        indexIngestion.awaitIdle()
+        sessionIngestion.awaitIdle()
     }
 
-    private fun decodeEnvelope(message: String): ServerMessageEnvelope? {
-        return try {
-            gson.fromJson(message, ServerMessageEnvelope::class.java)
-        } catch (e: JsonSyntaxException) {
-            Log.w(TAG, "Failed to decode message envelope: ${e.message}")
-            null
-        }
-    }
+    /** Test hook: session-room work queued after this waits for [gate]. */
+    internal fun holdSessionIngestionForTest(gate: kotlinx.coroutines.Deferred<Unit>) = sessionIngestion.submit { gate.await() }
 
-    private suspend fun handleIndexSyncResponse(message: String) {
-        val response = parse<IndexSyncResponse>(message) ?: return
-        val rawProjectCount = response.projects.size
-        val projects = response.projects.mapNotNull(::processProjectEntry)
-        val sessions = response.sessions.mapNotNull { processSessionEntry(it) }
-        val syncedAt = System.currentTimeMillis()
-        applyIndexSnapshot(
-            repository = repository,
-            projects = projects,
-            sessions = sessions.map { it.session },
-            rawProjectCount = rawProjectCount,
-            syncedAt = syncedAt
-        )
-        sessions.forEach { syncQueuedPrompts(it) }
-        _state.update { it.copy(lastIndexSyncAt = syncedAt, lastError = null) }
-    }
-
-    private suspend fun handleIndexBroadcast(message: String) {
-        val broadcast = parse<IndexBroadcast>(message) ?: return
-        processSessionEntry(broadcast.session)?.let { processed ->
-            repository.upsertSession(processed.session)
-            syncQueuedPrompts(processed)
-        }
-    }
-
-    private suspend fun handleIndexDeleteBroadcast(message: String) {
-        val broadcast = parse<IndexDeleteBroadcast>(message) ?: return
-        repository.deleteSession(broadcast.sessionId)
-    }
-
-    private suspend fun handleProjectBroadcast(message: String) {
-        val broadcast = parse<ProjectBroadcast>(message) ?: return
-        val project = processProjectEntry(broadcast.project) ?: return
-        repository.replaceIndexSnapshot(
-            projects = listOf(project),
-            sessions = emptyList(),
-            syncedAt = System.currentTimeMillis()
-        )
-    }
-
-    private fun handleCreateSessionResponse(message: String) {
-        val broadcast = parse<CreateSessionResponseBroadcast>(message) ?: return
-        if (broadcast.response.success) {
-            _state.update { it.copy(lastError = null) }
-        } else {
-            _state.update {
-                it.copy(lastError = broadcast.response.error ?: "Desktop rejected the session creation request.")
-            }
-        }
-    }
-
-    private fun handleSettingsSyncBroadcast(message: String) {
-        val broadcast = parse<SettingsSyncBroadcast>(message) ?: return
-        val settingsJson = crypto?.decryptOrNull(
-            broadcast.settings.encryptedSettings,
-            broadcast.settings.settingsIv
-        ) ?: return
-        val settings = parse<SyncedSettings>(settingsJson) ?: return
-
-        _availableModels.value = settings.availableModels.orEmpty()
-        _desktopDefaultModel.value = settings.defaultModel
-        _state.update { it.copy(lastError = null) }
-    }
-
-    private suspend fun handleSessionSyncResponse(message: String) {
-        val sessionId = _state.value.activeSessionId ?: run {
-            Log.w(TAG, "[sessionSync] No activeSessionId, ignoring syncResponse"); return
-        }
-        val response = parse<SessionSyncResponse>(message) ?: run {
-            Log.w(TAG, "[sessionSync] Failed to parse SessionSyncResponse"); return
-        }
-        Log.d(TAG, "[sessionSync] Got syncResponse: ${response.messages.size} encrypted messages, hasMore=${response.hasMore}, cursor=${response.cursor}")
-        response.metadata?.let { mergeSessionMetadata(sessionId, it) }
-
-        val decryptedMessages = response.messages.mapNotNull { processMessageEntry(it, sessionId) }
-        Log.d(TAG, "[sessionSync] Decrypted ${decryptedMessages.size}/${response.messages.size} messages")
-        val lastSequence = maxOf(
-            repository.syncState(sessionId)?.lastSequence ?: 0,
-            decryptedMessages.maxOfOrNull { it.sequence } ?: 0
-        )
-        val syncedAt = System.currentTimeMillis()
-
-        repository.persistSessionMessages(
-            sessionId = sessionId,
-            messages = decryptedMessages,
-            cursor = response.cursor,
-            lastSequence = lastSequence,
-            syncedAt = syncedAt
-        )
-        val storedCount = repository.messageCount(sessionId)
-        Log.d(TAG, "[sessionSync] After persist: $storedCount messages in DB for $sessionId")
-        _state.update { it.copy(lastSessionSyncAt = syncedAt, lastError = null) }
-
-        if (response.hasMore) {
-            requestSessionSync(sessionId, lastSequence)
-        }
-    }
-
-    private suspend fun handleMessageBroadcast(message: String) {
-        val sessionId = _state.value.activeSessionId ?: return
-        val broadcast = parse<MessageBroadcast>(message) ?: return
-        val decrypted = processMessageEntry(broadcast.message, sessionId) ?: return
-        repository.persistSessionMessages(
-            sessionId = sessionId,
-            messages = listOf(decrypted),
-            cursor = null,
-            lastSequence = decrypted.sequence,
-            syncedAt = System.currentTimeMillis()
-        )
-    }
-
-    private suspend fun handleMetadataBroadcast(message: String) {
-        val sessionId = _state.value.activeSessionId ?: return
-        val broadcast = parse<MetadataBroadcast>(message) ?: return
-        mergeSessionMetadata(sessionId, broadcast.metadata)
-    }
-
-    private fun handleDevicesList(message: String) {
-        val devices = parse<DevicesListMessage>(message)?.devices ?: return
-        _connectedDevices.value = devices
-    }
-
-    private fun handleDeviceJoined(message: String) {
-        val device = parse<DeviceJoinedMessage>(message)?.device ?: return
-        _connectedDevices.update { current ->
-            if (current.any { it.deviceId == device.deviceId }) current else current + device
-        }
-    }
-
-    private fun handleDeviceLeft(message: String) {
-        val deviceId = parse<DeviceLeftMessage>(message)?.deviceId ?: return
-        _connectedDevices.update { current -> current.filterNot { it.deviceId == deviceId } }
-    }
-
-    private fun handleServerError(message: String) {
-        val serverError = parse<ServerErrorMessage>(message) ?: return
-        _state.update { it.copy(lastError = "${serverError.code}: ${serverError.message}") }
-    }
-
-    private suspend fun requestSessionSync(sessionId: String, explicitSinceSeq: Int? = null) {
-        val sinceSeq = explicitSinceSeq ?: repository.syncState(sessionId)?.lastSequence
-        val effectiveSinceSeq = sinceSeq?.takeIf { it > 0 }
-        Log.d(TAG, "[requestSessionSync] sessionId=$sessionId sinceSeq=$effectiveSinceSeq")
-        sessionClient.sendRaw(
-            gson.toJson(
-                SessionSyncRequest(sinceSeq = effectiveSinceSeq)
-            )
-        )
-    }
-
-    private fun processProjectEntry(entry: ServerProjectEntry): ProjectEntity? {
-        val crypto = crypto ?: return null
-        val projectId = crypto.decryptOrNull(entry.encryptedProjectId, entry.projectIdIv) ?: return null
-        return ProjectEntity(
-            id = projectId,
-            name = File(projectId).name.ifBlank { projectId },
-            sessionCount = entry.sessionCount ?: 0,
-            lastUpdatedAt = entry.lastActivityAt,
-            sortOrder = 0,
-            commandsJson = null
-        )
-    }
-
-    private suspend fun processSessionEntry(entry: ServerSessionEntry): ProcessedSessionEntry? {
-        val crypto = crypto ?: return null
-        val projectId = crypto.decryptOrNull(entry.encryptedProjectId, entry.projectIdIv) ?: return null
-        val existing = repository.getSession(entry.sessionId)
-        val titleDecrypted = crypto.decryptOrNull(entry.encryptedTitle, entry.titleIv)
-        val clientMetadata = decodeClientMetadata(entry.encryptedClientMetadata, entry.clientMetadataIv)
-        val remoteDraftInput = clientMetadata?.draftInput
-        val draftInput = remoteDraftInput?.ifBlank { null }
-        val acceptDraft = remoteDraftInput != null && shouldAcceptRemoteDraft(
-            incomingDraftUpdatedAt = clientMetadata?.draftUpdatedAt,
-            lastLocalPushAt = lastPushedDraftAt[entry.sessionId] ?: 0L
-        )
-
-        return ProcessedSessionEntry(
-            session = SessionEntity(
-                id = entry.sessionId,
-                projectId = projectId,
-                titleEncrypted = entry.encryptedTitle,
-                titleIv = entry.titleIv,
-                titleDecrypted = titleDecrypted ?: existing?.titleDecrypted,
-                provider = entry.provider ?: existing?.provider,
-                model = entry.model ?: existing?.model,
-                mode = entry.mode ?: existing?.mode,
-                sessionType = entry.sessionType ?: existing?.sessionType,
-                parentSessionId = entry.parentSessionId ?: existing?.parentSessionId,
-                phase = clientMetadata?.phase ?: existing?.phase,
-                tagsJson = clientMetadata?.tags?.takeIf { it.isNotEmpty() }?.let(gson::toJson) ?: existing?.tagsJson,
-                worktreeId = entry.worktreeId ?: existing?.worktreeId,
-                isArchived = entry.isArchived ?: existing?.isArchived ?: false,
-                isPinned = entry.isPinned ?: existing?.isPinned ?: false,
-                branchedFromSessionId = entry.branchedFromSessionId ?: existing?.branchedFromSessionId,
-                branchPointMessageId = entry.branchPointMessageId ?: existing?.branchPointMessageId,
-                branchedAt = entry.branchedAt ?: existing?.branchedAt,
-                isExecuting = entry.isExecuting ?: existing?.isExecuting ?: false,
-                hasQueuedPrompts = clientMetadata?.hasPendingPrompt
-                    ?: entry.hasPendingPrompt
-                    ?: when {
-                        entry.queuedPromptCount == 0 -> false
-                        entry.queuedPromptCount != null -> entry.queuedPromptCount > 0
-                        else -> existing?.hasQueuedPrompts ?: false
-                    },
-                contextTokens = clientMetadata?.currentContext?.tokens ?: existing?.contextTokens,
-                contextWindow = clientMetadata?.currentContext?.contextWindow ?: existing?.contextWindow,
-                createdAt = entry.createdAt,
-                updatedAt = entry.updatedAt,
-                lastSyncedSeq = existing?.lastSyncedSeq ?: 0,
-                lastReadAt = entry.lastReadAt ?: existing?.lastReadAt,
-                lastMessageAt = entry.lastMessageAt ?: existing?.lastMessageAt,
-                draftInput = if (acceptDraft) draftInput else existing?.draftInput,
-                draftUpdatedAt = if (acceptDraft) {
-                    clientMetadata?.draftUpdatedAt ?: existing?.draftUpdatedAt
-                } else {
-                    existing?.draftUpdatedAt
-                }
-            ),
-            queuedPrompts = decryptQueuedPrompts(entry.sessionId, entry.encryptedQueuedPrompts),
-            clearQueuedPrompts = entry.queuedPromptCount == 0 || entry.encryptedQueuedPrompts?.isEmpty() == true
-        )
-    }
-
-    private fun processMessageEntry(entry: ServerMessageEntry, sessionId: String): MessageEntity? {
-        val crypto = crypto ?: return null
-        val contentDecrypted = crypto.decryptOrNull(entry.encryptedContent, entry.iv) ?: return null
-        return MessageEntity(
-            id = entry.id,
-            sessionId = sessionId,
-            sequence = entry.sequence,
-            source = entry.source,
-            direction = entry.direction,
-            encryptedContent = entry.encryptedContent,
-            iv = entry.iv,
-            contentDecrypted = contentDecrypted,
-            metadataJson = entry.metadata?.toString(),
-            createdAt = entry.createdAt
-        )
-    }
-
-    private suspend fun mergeSessionMetadata(
-        sessionId: String,
-        metadata: SessionRoomMetadata
-    ) {
-        val existing = repository.getSession(sessionId) ?: return
-        val crypto = crypto ?: return
-        val clientMetadata = decodeClientMetadata(metadata.encryptedClientMetadata, metadata.clientMetadataIv)
-        val remoteDraftInput = clientMetadata?.draftInput
-        val draftInput = remoteDraftInput?.ifBlank { null }
-        val titleDecrypted = if (metadata.title != null) {
-            metadata.title
-        } else {
-            crypto.decryptOrNull(existing.titleEncrypted, existing.titleIv)
-        }
-        val projectId = when {
-            !metadata.encryptedProjectId.isNullOrBlank() && !metadata.projectIdIv.isNullOrBlank() ->
-                crypto.decryptOrNull(metadata.encryptedProjectId, metadata.projectIdIv) ?: existing.projectId
-            else -> existing.projectId
-        }
-        val acceptDraft = remoteDraftInput != null && shouldAcceptRemoteDraft(
-            incomingDraftUpdatedAt = clientMetadata?.draftUpdatedAt,
-            lastLocalPushAt = lastPushedDraftAt[sessionId] ?: 0L
-        )
-
-        repository.upsertSession(
-            existing.copy(
-                projectId = projectId,
-                titleDecrypted = titleDecrypted ?: existing.titleDecrypted,
-                provider = metadata.provider ?: existing.provider,
-                model = metadata.model ?: existing.model,
-                mode = metadata.mode ?: existing.mode,
-                isExecuting = metadata.isExecuting ?: existing.isExecuting,
-                updatedAt = metadata.updatedAt ?: existing.updatedAt,
-                createdAt = metadata.createdAt ?: existing.createdAt,
-                phase = clientMetadata?.phase ?: existing.phase,
-                tagsJson = clientMetadata?.tags?.takeIf { it.isNotEmpty() }?.let(gson::toJson) ?: existing.tagsJson,
-                hasQueuedPrompts = clientMetadata?.hasPendingPrompt ?: existing.hasQueuedPrompts,
-                contextTokens = clientMetadata?.currentContext?.tokens ?: existing.contextTokens,
-                contextWindow = clientMetadata?.currentContext?.contextWindow ?: existing.contextWindow,
-                draftInput = if (acceptDraft) draftInput else existing.draftInput,
-                draftUpdatedAt = if (acceptDraft) {
-                    clientMetadata?.draftUpdatedAt ?: existing.draftUpdatedAt
-                } else {
-                    existing.draftUpdatedAt
-                }
-            )
-        )
-    }
-
-    private suspend fun syncQueuedPrompts(entry: ProcessedSessionEntry) {
-        when {
-            entry.queuedPrompts != null -> repository.replaceRemoteQueuedPrompts(
-                sessionId = entry.session.id,
-                prompts = entry.queuedPrompts
-            )
-            entry.clearQueuedPrompts -> repository.clearRemoteQueuedPrompts(entry.session.id)
-        }
-    }
-
-    private fun decryptQueuedPrompts(
-        sessionId: String,
-        encryptedPrompts: List<EncryptedQueuedPrompt>?
-    ): List<QueuedPromptEntity>? {
-        val crypto = crypto ?: return null
-        val prompts = encryptedPrompts?.takeIf { it.isNotEmpty() } ?: return null
-        return prompts.mapNotNull { prompt ->
-            val plaintext = crypto.decryptOrNull(prompt.encryptedPrompt, prompt.iv) ?: return@mapNotNull null
-            QueuedPromptEntity(
-                id = prompt.id,
-                sessionId = sessionId,
-                promptTextEncrypted = prompt.encryptedPrompt,
-                iv = prompt.iv,
-                createdAt = prompt.timestamp,
-                sentAt = null,
-                promptTextDecrypted = plaintext,
-                source = prompt.source ?: "desktop"
-            )
-        }
-    }
-
-    private fun decodeClientMetadata(
-        encryptedMetadata: String?,
-        metadataIv: String?
-    ): ClientMetadata? {
-        val crypto = crypto ?: return null
-        val json = crypto.decryptOrNull(encryptedMetadata, metadataIv) ?: return null
-        return parse<ClientMetadata>(json)
-    }
-
-    private inline fun <reified T> parse(json: String): T? {
-        return try {
-            gson.fromJson(json, T::class.java)
-        } catch (e: Exception) {
-            Log.w(TAG, "Failed to parse ${T::class.java.simpleName}: ${e.message}")
-            null
-        }
-    }
-
-    private fun jsonObject(vararg entries: Pair<String, Any?>): JsonObject {
-        return JsonObject().apply {
-            entries.forEach { (key, value) ->
-                when (value) {
-                    null -> add(key, com.google.gson.JsonNull.INSTANCE)
-                    is String -> addProperty(key, value)
-                    is Boolean -> addProperty(key, value)
-                    is Number -> addProperty(key, value)
-                    is JsonObject -> add(key, value.deepCopy())
-                    is com.google.gson.JsonArray -> add(key, value.deepCopy())
-                    is com.google.gson.JsonElement -> add(key, value.deepCopy())
-                    else -> add(key, gson.toJsonTree(value))
-                }
-            }
-        }
-    }
-
-    private fun extractJwtClaims(jwt: String): JwtClaims? {
-        val parts = jwt.split('.')
-        if (parts.size != 3) {
-            return null
-        }
-
-        val payload = runCatching {
-            val normalized = parts[1]
-                .replace('-', '+')
-                .replace('_', '/')
-                .let { value ->
-                    val padding = value.length % 4
-                    if (padding == 0) value else value + "=".repeat(4 - padding)
-                }
-            String(java.util.Base64.getDecoder().decode(normalized), StandardCharsets.UTF_8)
-        }.getOrNull() ?: return null
-
-        val json = parse<JsonObject>(payload) ?: return null
-        val orgId = json.getAsJsonObject("https://stytch.com/organization")
-            ?.get("organization_id")
-            ?.takeIf { !it.isJsonNull }
-            ?.asString
-
-        return JwtClaims(
-            sub = json.get("sub")?.takeIf { !it.isJsonNull }?.asString,
-            orgId = orgId
-        )
+    private fun reportIngestionFailure(error: Throwable) {
+        _state.update { it.copy(lastError = "Sync could not apply an update: ${error.message}") }
+        errors.report(SyncErrorKind.STORAGE, "A synced change could not be saved on this device.")
     }
 
     // -- JWT Refresh --
-    // Stytch JWTs expire after ~5 minutes. Refresh every 4 minutes to stay connected.
 
     private fun startJwtRefreshTimer() {
         stopJwtRefreshTimer()
+        if (!presence.isInForeground) return
         jwtRefreshJob = scope.launch {
             while (isActive) {
                 delay(JWT_REFRESH_INTERVAL_MS)
@@ -1191,85 +620,74 @@ class SyncManager(
         jwtRefreshJob = null
     }
 
-    private suspend fun refreshJwt() {
-        val credentials = pairingStore.state.value.credentials ?: return
-        val sessionToken = credentials.sessionToken
-        if (sessionToken.isNullOrBlank()) {
-            Log.d(TAG, "No session token available for JWT refresh")
+    private fun refreshAfterUnauthorized(source: String) {
+        val now = System.currentTimeMillis()
+        if (now - lastJwtRefreshAttempt < REFRESH_RETRY_WINDOW_MS) {
+            Log.w(TAG, "[$source] 401 but JWT was refreshed recently, not retrying")
             return
         }
+        Log.w(TAG, "[$source] 401 - refreshing JWT")
+        lastJwtRefreshAttempt = now
+        scope.launch { refreshJwt() }
+    }
 
-        val baseUrl = credentials.serverUrl
-            .replace("wss://", "https://")
-            .replace("ws://", "http://")
-            .trimEnd('/')
-
-        try {
-            val url = URL("$baseUrl/auth/refresh")
-            val connection = (url.openConnection() as HttpURLConnection).apply {
-                requestMethod = "POST"
-                setRequestProperty("Content-Type", "application/json")
-                doOutput = true
-                outputStream.write("""{"session_token":"$sessionToken"}""".toByteArray())
-            }
-
-            val responseCode = connection.responseCode
-            if (responseCode != 200) {
-                Log.w(TAG, "JWT refresh failed with status $responseCode")
+    internal suspend fun refreshJwt() {
+        val credentials = credentialStore.credentials ?: return
+        val result = tokenRefresher.refresh(credentials)
+        // A sign-out, sign-in or re-pair during the await: the answer is the previous
+        // session's, and must neither overwrite nor sign out the one stored now.
+        val current = credentialStore.credentials
+        if (current == null || current.serverUrl != credentials.serverUrl || current.encryptionSeed != credentials.encryptionSeed ||
+            current.authUserId != credentials.authUserId || current.sessionToken != credentials.sessionToken
+        ) {
+            Log.w(TAG, "Dropping a JWT refresh answer for a session that is no longer stored")
+            return
+        }
+        val refreshed = when (result) {
+            is TokenRefresh.Refreshed -> result.credentials
+            // Offline or a server error: no verdict on the session, so it never counts toward sign-out.
+            TokenRefresh.Unavailable -> return
+            TokenRefresh.Rejected -> {
+                if (auth.recordFailure() is AuthHealth.SignedOut) {
+                    // Escalate rather than retry forever: clear the session so the UI shows login.
+                    disconnect()
+                    credentialStore.credentials?.let { credentialStore.save(it.signedOut()) }
+                }
                 return
             }
+        }
+        auth.recordSuccess()
+        credentialStore.save(refreshed)
+        activeCredentials = activeCredentials?.copy(
+            authJwt = refreshed.authJwt,
+            sessionToken = refreshed.sessionToken,
+            authExpiresAt = refreshed.authExpiresAt
+        ) ?: refreshed
 
-            val responseBody = connection.inputStream.bufferedReader().readText()
-            val json = parse<JsonObject>(responseBody) ?: return
+        // Never disconnect here: that leaves the session room and clears the
+        // active session, and nothing rejoins it (NIM-7271).
+        applyAuthToken(refreshed.authJwt.orEmpty())
+        Log.d(TAG, "JWT refreshed successfully")
+    }
 
-            val newJwt = json.get("session_jwt")?.takeIf { !it.isJsonNull }?.asString
-            if (newJwt.isNullOrBlank()) {
-                Log.w(TAG, "JWT refresh response missing session_jwt")
-                return
-            }
+    /**
+     * Installs a fresh token without tearing anything down: open sockets stay
+     * open, and any room that dropped (typically on a 401) reconnects with it.
+     */
+    private fun applyAuthToken(authToken: String) {
+        indexClient.updateAuthToken(authToken)
+        sessionClient.updateAuthToken(authToken)
+        indexClient.ensureConnected()
+        rejoinActiveSession()
+    }
 
-            val newSessionToken = json.get("session_token")?.takeIf { !it.isJsonNull }?.asString
-                ?: sessionToken
-            val newUserId = json.get("user_id")?.takeIf { !it.isJsonNull }?.asString
-                ?: credentials.authUserId
-            val newEmail = json.get("email")?.takeIf { !it.isJsonNull }?.asString
-                ?: credentials.authEmail
-            val newExpiresAt = json.get("expires_at")?.takeIf { !it.isJsonNull }?.asString
-                ?: credentials.authExpiresAt
-            val newOrgId = json.get("org_id")?.takeIf { !it.isJsonNull }?.asString
-                ?: credentials.orgId
-
-            pairingStore.savePairing(
-                credentials.copy(
-                    authJwt = newJwt,
-                    sessionToken = newSessionToken,
-                    authUserId = newUserId,
-                    authEmail = newEmail,
-                    authExpiresAt = newExpiresAt,
-                    orgId = newOrgId
-                )
-            )
-
-            // Reconnect with the fresh JWT
-            disconnect()
-            connect()
-
-            Log.d(TAG, "JWT refreshed successfully")
-        } catch (e: Exception) {
-            Log.w(TAG, "JWT refresh request failed: ${e.message}")
+    /** Brings the session room back for the session the user has open. */
+    private fun rejoinActiveSession() {
+        val sessionId = _state.value.activeSessionId ?: return
+        if (sessionClient.connectedTag == sessionId) {
+            sessionClient.ensureConnected()
+        } else {
+            connectSessionClient(sessionId)
         }
     }
 }
-
-private const val JWT_REFRESH_INTERVAL_MS = 4L * 60L * 1000L  // 4 minutes
-
-private data class JwtClaims(
-    val sub: String?,
-    val orgId: String?
-)
-
-private data class ProcessedSessionEntry(
-    val session: SessionEntity,
-    val queuedPrompts: List<QueuedPromptEntity>?,
-    val clearQueuedPrompts: Boolean,
-)

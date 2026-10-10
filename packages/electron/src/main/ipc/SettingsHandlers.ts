@@ -683,10 +683,16 @@ export function registerSettingsHandlers() {
 
     // Developer mode (global app setting)
     safeHandle('developer-mode:get', async () => {
-        return isDeveloperMode();
+        const enabled = isDeveloperMode();
+        // A `false` here hydrates a window into Standard Mode. Log it so a
+        // spurious flip (NIM-3963) can be told apart from a real setting.
+        if (!enabled) {
+            logger.main.info(`[SettingsHandlers] developer-mode:get -> false (stored key present: ${getAppSetting('developerMode') !== undefined})`);
+        }
+        return enabled;
     });
 
-    safeHandle('developer-mode:set', async (_event, enabled: boolean) => {
+    safeHandle('developer-mode:set', async (event, enabled: boolean) => {
         // Logged because this write was previously silent, which left no way to
         // tell a spurious flip back to Standard Mode from a deliberate one.
         const before = isDeveloperMode();
@@ -694,6 +700,11 @@ export function registerSettingsHandlers() {
             logger.main.info(`[SettingsHandlers] developer-mode:set ${before} -> ${enabled}`);
         }
         setDeveloperMode(enabled);
+        // Main is the source of truth; keep every other window in step.
+        for (const win of BrowserWindow.getAllWindows()) {
+            if (win.isDestroyed() || win.webContents.id === event.sender.id) continue;
+            win.webContents.send('app-settings:changed', { key: 'developerMode', value: enabled });
+        }
     });
 
     // Feature walkthrough state (shown on first launch)

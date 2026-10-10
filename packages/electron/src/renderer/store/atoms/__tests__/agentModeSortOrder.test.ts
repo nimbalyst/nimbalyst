@@ -32,3 +32,11 @@ describe('mergeWithDefaults - sessionHistoryLayout.sortOrder (#924)', () => {
     expect(merged.sessionHistoryLayout.sortOrder).toBe('updated');
   });
 });
+
+describe('mergeWithDefaults - sessionHistoryLayout.compactRows', () => {
+  it('keeps a saved compact preference and defaults older layouts to full rows', () => {
+    expect(mergeWithDefaults({ sessionHistoryLayout: { compactRows: true } as never }).sessionHistoryLayout.compactRows).toBe(true);
+    expect(mergeWithDefaults({ sessionHistoryLayout: { sortOrder: 'created' } as never }).sessionHistoryLayout.compactRows).toBe(false);
+    expect(mergeWithDefaults(undefined).sessionHistoryLayout.compactRows).toBe(false);
+  });
+});

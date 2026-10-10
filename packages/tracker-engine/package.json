@@ -23,15 +23,15 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "prepublishOnly": "npm run build"
+    "prepublishOnly": "pnpm run build"
   },
   "devDependencies": {
     "fake-indexeddb": "^6.2.5",
     "typescript": "^5.0.0"
   },
   "dependencies": {
-    "@nimbalyst/tracker-core": "0.1.0",
-    "@nimbalyst/tracker-schema": "0.1.0",
-    "@nimbalyst/collab-protocol": "0.1.0"
+    "@nimbalyst/tracker-core": "workspace:*",
+    "@nimbalyst/tracker-schema": "workspace:*",
+    "@nimbalyst/collab-protocol": "workspace:*"
   }
 }

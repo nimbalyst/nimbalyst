@@ -133,6 +133,45 @@ describe('pending question navigation', () => {
     expect(vlistState.scrollToIndex).not.toHaveBeenCalledWith(expect.any(Number), { align: 'start' });
   });
 
+  it.each([
+    ['the answer auto-resume', { text: '[Resuming after answering a question]\n\nContinue?: Yes' }],
+    ['an agent send', { text: 'Child finished', promptActor: 'agent' as const }],
+    ['an unpersisted optimistic send', { text: 'Do something else', optimistic: true }],
+  ])('keeps an unanswered question open after %s', (_label, row) => {
+    const answered = question(1, 'AskUserQuestion', '{"answers":{"Continue?":"Yes"}}');
+    render(view([answered, question(2), makeMessage(3, { type: 'user_message', ...row })]));
+    flushFrames();
+    expect(screen.queryByTestId('ask-user-question-skipped')).toBeNull();
+    screen.getByTestId('ask-user-question-submit');
+  });
+
+  it('closes a question the user moved past with a new message, but not one still open', () => {
+    const newTurn = makeMessage(2, { type: 'user_message', text: 'Do something else' });
+    const first = render(view([question(1), newTurn]));
+    flushFrames();
+    expect(screen.queryByLabelText('Jump to question')).toBeNull();
+    expect(vlistState.scrollToIndex).not.toHaveBeenCalledWith(expect.any(Number), { align: 'start' });
+    screen.getByTestId('ask-user-question-skipped');
+    expect(screen.queryByTestId('ask-user-question-submit')).toBeNull();
+    expect(screen.queryByTestId('ask-user-question-option')).toBeNull();
+    first.unmount();
+
+    // Thinking animates, so frames never settle here; assert without flushing.
+    const running = (messages: TranscriptViewMessage[]) => (
+      <RichTranscriptView sessionId="questions-running" sessionStatus="running" messages={messages}
+        provider="claude-code" persistScrollState={false} />
+    );
+    const { container, rerender } = render(running([question(1), newTurn]));
+    // A skipped question must not hide Thinking for the turn that replaced it.
+    expect(container.querySelector('.rich-transcript-waiting')).not.toBeNull();
+
+    // Same question asked after the latest user message: open and answerable.
+    rerender(running([makeMessage(0, { type: 'user_message', text: 'Start' }), question(1)]));
+    expect(container.querySelector('.rich-transcript-waiting')).toBeNull();
+    expect(screen.queryByTestId('ask-user-question-skipped')).toBeNull();
+    screen.getByTestId('ask-user-question-submit');
+  });
+
   it('cancels queued bottom-follow when a question arrives and targets only the latest duplicate card', () => {
     const { rerender, container } = render(view([makeMessage(0, { text: 'Running' })]));
     flushFrames();

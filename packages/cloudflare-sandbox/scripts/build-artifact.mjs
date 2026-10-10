@@ -6,6 +6,18 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
+// The workspace hoists dependencies, so the SDK may sit in any ancestor's
+// node_modules. Its exports map does not expose package.json to require.resolve.
+async function readInstalledPackage(name, from = packageRoot) {
+  for (let dir = from; ; dir = dirname(dir)) {
+    try {
+      return JSON.parse(await readFile(resolve(dir, 'node_modules', name, 'package.json'), 'utf8'));
+    } catch (error) {
+      if (error.code !== 'ENOENT' || dirname(dir) === dir) throw error;
+    }
+  }
+}
+
 export function validateRelease(release, pkg, imageConfig, installed) {
   if (release.schemaVersion !== 1 || release.sdkVersion !== pkg.dependencies['@cloudflare/sandbox'] || installed.version !== release.sdkVersion
     || imageConfig.sandbox.sdkVersion !== release.sdkVersion
@@ -28,7 +40,7 @@ export async function buildArtifact(outDir = resolve(packageRoot, 'dist')) {
   const release = JSON.parse(await readFile(resolve(packageRoot, 'release.json'), 'utf8'));
   const pkg = JSON.parse(await readFile(resolve(packageRoot, 'package.json'), 'utf8'));
   const imageConfig = JSON.parse(await readFile(resolve(packageRoot, 'container/image.config.json'), 'utf8'));
-  const installed = JSON.parse(await readFile(resolve(packageRoot, 'node_modules/@cloudflare/sandbox/package.json'), 'utf8'));
+  const installed = await readInstalledPackage('@cloudflare/sandbox');
   validateRelease(release, pkg, imageConfig, installed);
   const result = await build({
     absWorkingDir: packageRoot,

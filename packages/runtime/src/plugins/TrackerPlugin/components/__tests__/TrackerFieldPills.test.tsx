@@ -2,7 +2,8 @@ import { describe, it, expect, vi } from 'vitest';
 import React from 'react';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { TrackerFieldPills } from '../TrackerFieldPills';
-import type { FieldDefinition } from '@nimbalyst/tracker-schema';
+import { globalRegistry, emptyLabelRegistry, type FieldDefinition } from '@nimbalyst/tracker-schema';
+import { labelPropertyToFieldDefinition, unwrapLabelFieldValues } from '../trackerLabelFields';
 
 const statusField: FieldDefinition = {
   name: 'state',
@@ -135,5 +136,36 @@ describe('TrackerFieldPills', () => {
     expect(row.className).toContain('tracker-field-pills');
     expect(row.className).toContain('tracker-document-field-pills');
     screen.getByTestId('tracker-document-field-pill-state');
+  });
+
+  it('shows a legacy qualified label property by its value, never the stored object', () => {
+    const flag = labelPropertyToFieldDefinition({
+      id: 'feature-flag',
+      label: 'Feature flag',
+      type: 'string',
+      qualifiers: { rollout: { type: 'number', label: 'Rollout %' } },
+    }, 'feature');
+    const stored = { 'feature-flag': { value: 'new-editor', qualifiers: { rollout: 25 } } };
+    renderPills([flag], unwrapLabelFieldValues([flag], stored));
+
+    const chip = screen.getByTestId('tracker-field-pill-feature-flag');
+    expect(chip.textContent).toContain('new-editor');
+  });
+
+  it('names labels on a label-ref chip and keeps an unknown label rather than dropping it', async () => {
+    globalRegistry.setLabels({ labels: [{ id: 'feature', label: 'Feature' }], properties: [], claimProperties: {} });
+    try {
+      const { onSave } = renderPills([{ name: 'labels', type: 'label-ref', multiValue: true }], { labels: ['feature', 'pending-label'] });
+      const chip = screen.getByTestId('tracker-field-pill-labels');
+      expect(chip.textContent).toContain('Feature, pending-label');
+
+      fireEvent.click(chip);
+      // The picker loads lazily on first edit.
+      expect((await screen.findByTestId('label-ref-picker-row-pending-label')).getAttribute('data-unknown')).toBe('true');
+      fireEvent.click(screen.getByTestId('label-ref-picker-row-feature'));
+      expect(onSave).toHaveBeenCalledWith('labels', ['pending-label']);
+    } finally {
+      globalRegistry.setLabels(emptyLabelRegistry());
+    }
   });
 });

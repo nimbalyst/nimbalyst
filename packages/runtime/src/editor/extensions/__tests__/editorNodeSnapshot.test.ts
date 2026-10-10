@@ -26,10 +26,15 @@ import '../registerBuiltinExtensions';
  * owned by a Nimbalyst built-in extension. Sorted alphabetically.
  */
 const EXPECTED_NODE_TYPES = [
+  'action-button',
   'artificial',
   'autolink',
   'board-header',
+  'callout',
+  'chart',
+  'citation',
   'code',
+  'code-excerpt',
   'code-highlight',
   'collapsible-container',
   'collapsible-content',
@@ -53,17 +58,24 @@ const EXPECTED_NODE_TYPES = [
   'list',
   'listitem',
   'mark',
+  'mention',
   'mermaid',
   'overflow',
   'page-break',
+  'page-mark',
   'paragraph',
+  'quadrant',
   'quote',
   'root',
   'tab',
+  'tab-panel',
   'table',
   'tablecell',
   'tablerow',
+  'tabs',
   'text',
+  'toc',
+  'transclusion',
 ];
 
 describe('Nimbalyst editor node-set snapshot', () => {

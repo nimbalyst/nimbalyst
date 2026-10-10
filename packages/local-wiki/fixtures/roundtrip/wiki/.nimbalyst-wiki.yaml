@@ -1,0 +1,4 @@
+formatVersion: 1
+tables:
+  partner:
+    order: 3000

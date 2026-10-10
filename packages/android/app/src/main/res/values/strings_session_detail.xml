@@ -1,0 +1,66 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="session_detail_untitled">Untitled session</string>
+    <string name="session_detail_back">Back</string>
+    <string name="session_detail_more">More</string>
+    <string name="session_detail_scroll_to_top">Scroll to Top</string>
+    <string name="session_detail_jump_to_prompt">Jump to Prompt</string>
+    <string name="session_detail_executing">Executing…</string>
+    <string name="session_detail_waiting">Waiting for response</string>
+
+    <string name="session_detail_prompt_picker_search">Search prompts</string>
+    <string name="session_detail_prompt_picker_no_results">No prompts match \"%1$s\"</string>
+    <string name="session_detail_prompt_number">#%1$d</string>
+    <string name="session_detail_prompt_fallback">Prompt %1$d</string>
+    <string name="session_detail_cancel">Cancel</string>
+    <string name="session_detail_ok">OK</string>
+
+    <string name="session_detail_compose_placeholder">Message…</string>
+    <string name="session_detail_send">Send</string>
+    <string name="session_detail_queue">Queue prompt</string>
+    <string name="session_detail_stop">Stop</string>
+    <string name="session_detail_add">Add</string>
+    <string name="session_detail_add_actions">Actions…</string>
+    <string name="session_detail_add_photo_library">Photo Library</string>
+    <string name="session_detail_add_camera">Take Photo</string>
+    <string name="session_detail_add_paste">Paste from Clipboard</string>
+    <string name="session_detail_remove_attachment">Remove attachment</string>
+    <string name="session_detail_command_source_project">Project</string>
+    <string name="session_detail_command_source_builtin">Built-in</string>
+    <string name="session_detail_command_source_user">User</string>
+    <string name="session_detail_command_source_plugin">Plugin</string>
+    <string name="session_detail_command_source_other">Other</string>
+    <string name="session_detail_actions_title">Actions</string>
+    <string name="session_detail_actions_filter">Filter actions</string>
+    <string name="session_detail_actions_empty">No actions in this project.</string>
+    <string name="session_detail_actions_no_match">No matching actions.</string>
+    <string name="session_detail_action_opens_session">Opens a new session</string>
+    <string name="session_detail_action_opens_session_model">Opens a new session · %1$s</string>
+    <string name="session_detail_session_starting">Starting a new session…</string>
+    <string name="session_detail_session_create_failed_title">Couldn\'t Start Session</string>
+    <string name="session_detail_session_create_failed">The session could not be created.</string>
+    <string name="session_detail_stop_failed">Couldn\'t stop the session: %1$s</string>
+    <string name="session_detail_stop_failed_unknown">Couldn\'t stop the session.</string>
+
+    <plurals name="session_detail_queued_count">
+        <item quantity="one">%1$d QUEUED</item>
+        <item quantity="other">%1$d QUEUED</item>
+    </plurals>
+    <string name="session_detail_queued_from_phone">Queued from a phone</string>
+    <string name="session_detail_queued_from_desktop">Queued from the desktop app</string>
+
+    <string name="session_detail_send_error_title">Send Error</string>
+    <string name="session_detail_send_error">Failed to send: %1$s</string>
+    <string name="session_detail_send_error_unknown">Failed to send the prompt.</string>
+    <string name="session_detail_delivery_warning_title">Delivery Warning</string>
+    <string name="session_detail_delivery_warning">Your prompt was sent, but this device hasn\'t confirmed desktop activity yet. Check the session before sending again.</string>
+
+    <string name="session_detail_attachment_load_failed">Couldn\'t load the image.</string>
+    <string name="session_detail_attachment_limit">You can attach up to %1$d images.</string>
+    <string name="session_detail_clipboard_empty">There is no image on the clipboard.</string>
+    <string name="session_detail_camera_permission_denied">Camera access is needed to take a photo.</string>
+
+    <string name="session_detail_open_file_unavailable">Opening files isn\'t available on Android yet.</string>
+    <string name="session_detail_interactive_invalid">The transcript sent an invalid response.</string>
+    <string name="session_detail_interactive_failed">Failed to send the response to the desktop app.</string>
+</resources>

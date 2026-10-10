@@ -28,6 +28,7 @@
       "@nimbalyst/tracker-schema/*": ["../tracker-schema/src/*"],
       "@nimbalyst/tracker-engine": ["../tracker-engine/src/index.ts"],
       "@nimbalyst/tracker-engine/*": ["../tracker-engine/src/*"],
+      "@nimbalyst/local-wiki": ["../local-wiki/src/index.ts"],
       "@nimbalyst/runtime": ["../runtime/src/index.ts"],
       "@nimbalyst/runtime/*": ["../runtime/src/*"],
       "@nimbalyst/extension-sdk": ["../extension-sdk/src/index.ts"],

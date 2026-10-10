@@ -8,6 +8,7 @@
 import type { ComponentType } from 'react';
 import { getExtensionLoader, type LoadedPanel, type PanelHostProps, type PanelGutterButtonProps } from '@nimbalyst/runtime';
 import { registerCommand, unregisterExtension } from '../commands/ExtensionCommandRegistry';
+import { prunePanelGutterBadges } from './panelGutterBadges';
 
 // ============================================================================
 // Types
@@ -49,6 +50,12 @@ export interface RegisteredPanel {
    * Injected into the HelpContent system automatically.
    */
   tooltip?: string;
+
+  /**
+   * Whether the extension declares `permissions.ai`. Gates the host
+   * components that expose agent sessions (`host.components`).
+   */
+  sessionAccess: boolean;
 
   /** Main panel component */
   component: ComponentType<PanelHostProps>;
@@ -137,12 +144,14 @@ function syncPanels(): void {
 
   // Build a map of extensionId -> requiredReleaseChannel for badge rendering
   const channelByExtension = new Map<string, 'stable' | 'alpha' | undefined>();
+  const aiExtensions = new Set<string>();
   for (const ext of loader.getLoadedExtensions()) {
     channelByExtension.set(ext.manifest.id, ext.manifest.requiredReleaseChannel);
+    if (ext.manifest.permissions?.ai === true) aiExtensions.add(ext.manifest.id);
   }
 
   registeredPanels = loadedPanels.map(p =>
-    convertToRegisteredPanel(p, channelByExtension.get(p.extensionId))
+    convertToRegisteredPanel(p, channelByExtension.get(p.extensionId), aiExtensions.has(p.extensionId))
   );
 
   // Auto-register panel toggle commands for new panels
@@ -170,6 +179,9 @@ function syncPanels(): void {
   // Sort by order
   registeredPanels.sort((a, b) => a.order - b.order);
 
+  // A disabled or unloaded extension must not leave a badge behind.
+  prunePanelGutterBadges(new Set(registeredPanels.map(p => p.id)));
+
   // Notify listeners
   notifyListeners();
 
@@ -178,7 +190,8 @@ function syncPanels(): void {
 
 function convertToRegisteredPanel(
   loaded: LoadedPanel,
-  requiredReleaseChannel: 'stable' | 'alpha' | undefined
+  requiredReleaseChannel: 'stable' | 'alpha' | undefined,
+  sessionAccess: boolean
 ): RegisteredPanel {
   return {
     id: loaded.id,
@@ -190,6 +203,7 @@ function convertToRegisteredPanel(
     order: loaded.contribution.order ?? 100,
     requiredReleaseChannel,
     tooltip: loaded.contribution.tooltip,
+    sessionAccess,
     component: loaded.component,
     gutterButton: loaded.gutterButton,
     settingsComponent: loaded.settingsComponent,

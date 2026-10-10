@@ -12,7 +12,8 @@ import { useMemo } from 'react';
 import type { TrackerRecord } from '@nimbalyst/runtime/core/TrackerRecord';
 import type { Readiness } from '@nimbalyst/runtime/plugins/TrackerPlugin/models/trackerReadiness';
 import type { TrackerIdentity } from '@nimbalyst/runtime/core/DocumentService';
-import { filterTrackerRecords } from '@nimbalyst/runtime/plugins/TrackerPlugin/components/trackerRowData';
+import { resolveColumnsForType } from '@nimbalyst/runtime/plugins/TrackerPlugin/components/trackerColumns';
+import { compareRecords, filterTrackerRecords } from '@nimbalyst/runtime/plugins/TrackerPlugin/components/trackerRowData';
 import {
   filterTrackerItems,
   findPersonalViewClauses,
@@ -87,5 +88,16 @@ export function useTrackerViewRows(
     effective.ordering,
   ), [records, effective, identity, searchTerm, readinessByItemId, favoriteItemIds, viewedAtByItemId, nowMs]);
 
-  return { rows, personalClauses };
+  const sortedRows = useMemo(() => {
+    if (!effective.sortColumns?.length) return rows;
+    const columns = resolveColumnsForType(effective.selectedType === 'all' ? '' : effective.selectedType);
+    return [...rows].sort((a, b) => {
+      for (const sort of effective.sortColumns!) {
+        const comparison = compareRecords(a, b, sort.field, columns);
+        if (comparison) return sort.direction === 'asc' ? comparison : -comparison;
+      }
+      return a.id.localeCompare(b.id);
+    });
+  }, [rows, effective]);
+  return { rows: sortedRows, personalClauses };
 }

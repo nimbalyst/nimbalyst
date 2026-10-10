@@ -1,10 +1,13 @@
 import { test, expect } from '@playwright/test';
 import type { ElectronApplication, Page } from 'playwright';
 import { launchElectronApp, createTempWorkspace, TEST_TIMEOUTS } from '../helpers';
+import { switchToAgentMode, switchToFilesMode } from '../utils/testHelpers';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 
-test.describe.configure({ mode: 'serial' });
+// Several tests (and beforeAll) reload the renderer and wait up to
+// SIDEBAR_LOAD for it to boot again, so the default 15s budget is too tight.
+test.describe.configure({ mode: 'serial', timeout: 2 * TEST_TIMEOUTS.SIDEBAR_LOAD });
 
 /**
  * E2E coverage for the multi-project rail (issue #155).
@@ -17,13 +20,61 @@ test.describe.configure({ mode: 'serial' });
  *   3. Per-workspace UI state (sidebar width, tabs) survives a switch.
  *   4. Closing the active project from the rail promotes the next entry
  *      and tears down only the closed project's services.
- *   5. Cap at 8 projects: the 9th add is rejected without altering the rail.
+ *   5. Cap at 8 projects: restored projects beyond it are kept, but the add
+ *      button is disabled.
  *
  * Tests assume the dev server is running (helpers.ts enforces this) and
  * that the renderer exposes `window.electronAPI`. Reads/writes go through
  * IPC instead of the launch screen so the rail entry path can be exercised
  * deterministically without picking folders manually.
  */
+/**
+ * Every session rendered in the (always-mounted) agent panel must belong to
+ * `workspacePath`. This is the rail-switch leak guard: a stale panel from the
+ * previously active workspace fails it. An empty panel passes, and so does
+ * the session Files mode's chat panel auto-creates for the new workspace, so
+ * callers seed a source session first (seedAgentSession).
+ */
+async function expectAgentPanelOwnedBy(page: Page, workspacePath: string): Promise<void> {
+  await expect
+    .poll(() =>
+      page.evaluate(async (ws) => {
+        const ids = Array.from(
+          document.querySelectorAll('[data-layout="agent-mode-wrapper"] .agent-session-panel[data-session-id]'),
+        ).map((el) => el.getAttribute('data-session-id'));
+        const owners = await Promise.all(
+          ids.map(async (id) => (await window.electronAPI.invoke('sessions:get', id))?.session?.workspacePath),
+        );
+        return owners.filter((owner) => owner !== ws);
+      }, workspacePath),
+    )
+    .toEqual([]);
+}
+
+/**
+ * Gives the active workspace an agent session the panel is showing, so the
+ * leak guard above has something to catch: without it an empty panel passes
+ * whether or not the switch cleaned up. Returns to Files mode afterwards.
+ */
+async function seedAgentSession(page: Page, workspacePath: string): Promise<void> {
+  // Agent mode auto-creates a session for a workspace that has none.
+  await switchToAgentMode(page);
+  await expect
+    .poll(() =>
+      page.evaluate(async (ws) => {
+        const ids = Array.from(
+          document.querySelectorAll('[data-layout="agent-mode-wrapper"] .agent-session-panel[data-session-id]'),
+        ).map((el) => el.getAttribute('data-session-id'));
+        const owners = await Promise.all(
+          ids.map(async (id) => (await window.electronAPI.invoke('sessions:get', id))?.session?.workspacePath),
+        );
+        return owners.includes(ws);
+      }, workspacePath),
+    )
+    .toBe(true);
+  await switchToFilesMode(page);
+}
+
 test.describe('Multi-Project Rail', () => {
   let electronApp: ElectronApplication;
   let page: Page;
@@ -32,6 +83,8 @@ test.describe('Multi-Project Rail', () => {
   let workspaceC: string;
 
   test.beforeAll(async () => {
+    // Launch plus a reload: two full renderer boots.
+    test.setTimeout(3 * TEST_TIMEOUTS.SIDEBAR_LOAD);
     workspaceA = await createTempWorkspace();
     workspaceB = await createTempWorkspace();
     workspaceC = await createTempWorkspace();
@@ -106,7 +159,7 @@ test.describe('Multi-Project Rail', () => {
     const items = rail.locator('[data-testid="project-rail-item"]');
     await expect(items).toHaveCount(2);
 
-    const active = rail.locator('[data-testid="project-rail-item"].active');
+    const active = rail.locator('[data-testid="project-rail-item"].is-active');
     await expect(active).toHaveCount(1);
   });
 
@@ -116,14 +169,13 @@ test.describe('Multi-Project Rail', () => {
 
     const firstItem = items.first();
     await firstItem.click();
-    await page.waitForTimeout(300);
 
     // The clicked item should now be active.
-    await expect(firstItem).toHaveClass(/active/);
+    await expect(firstItem).toHaveClass(/\bis-active\b/);
 
     // The other item must NOT be active simultaneously.
     const secondItem = items.nth(1);
-    await expect(secondItem).not.toHaveClass(/active/);
+    await expect(secondItem).not.toHaveClass(/\bis-active\b/);
   });
 
   test('rail click updates workspace context in-process (no reload)', async () => {
@@ -146,18 +198,18 @@ test.describe('Multi-Project Rail', () => {
     // Click the first rail icon and confirm the summary header carries
     // the matching path.
     await items.first().click();
-    await expect(page.locator('.workspace-summary-header-path')).toContainText(firstPath!);
+    await expect(page.locator('.workspace-summary-header-path:visible')).toContainText(firstPath!);
+    await seedAgentSession(page, firstPath!);
 
     // Click the second rail icon WITHOUT a reload. The summary header
     // and sidebar must follow the new active workspace.
     await items.nth(1).click();
-    await expect(page.locator('.workspace-summary-header-path')).toContainText(secondPath!);
+    await expect(page.locator('.workspace-summary-header-path:visible')).toContainText(secondPath!);
 
-    // The agent panel should reflect the new workspace's empty state
-    // (neither test workspace was seeded with a session, so both render
-    // the empty placeholder). The test would have failed pre-fix because
-    // the previous workspace's transcript was still visible.
-    await expect(page.locator('.agent-mode-empty')).toBeVisible({ timeout: TEST_TIMEOUTS.SIDEBAR_LOAD });
+    // The agent panel must not keep showing the previous workspace's
+    // session. The test would have failed pre-fix because the previous
+    // workspace's transcript was still visible.
+    await expectAgentPanelOwnedBy(page, secondPath!);
   });
 
   test('closing the active project promotes the next entry', async () => {
@@ -167,31 +219,29 @@ test.describe('Multi-Project Rail', () => {
 
     // Click the active item to surface its close button (CSS shows it on
     // hover or when active).
-    const activeItem = rail.locator('[data-testid="project-rail-item"].active');
+    const activeItem = rail.locator('[data-testid="project-rail-item"].is-active');
     await activeItem.hover();
-
-    // Auto-accept the streaming-confirm dialog (none expected here, but
-    // installing a handler is harmless if no dialog opens).
-    page.once('dialog', (dialog) => dialog.accept());
 
     const closeButton = activeItem.locator('.project-rail-item-close');
     await closeButton.click();
 
     await expect(items).toHaveCount(1);
-    await expect(items.first()).toHaveClass(/active/);
+    await expect(items.first()).toHaveClass(/\bis-active\b/);
   });
 
-  test('switching to a fresh workspace shows the agent empty state', async () => {
+  test('switching to a fresh workspace does not leak the previous agent session', async () => {
     // Regression for the rail-switch session leak: when the rail switches
-    // to a workspace whose `selectedWorkstreamAtom` is null (e.g. a project
-    // added to the rail for the first time), the agent panel must reflect
-    // the new workspace and render its empty state — not keep rendering
-    // the previous workspace's transcript / tab. The
-    // `attachWorkspaceSwitchCleanup` subscriber clears the global
-    // `activeSessionIdAtom` on every flip so AgentMode falls back to the
-    // empty render path.
+    // to a project added to the rail for the first time, the agent panel
+    // must reflect the new workspace, not keep rendering the previous
+    // workspace's transcript / tab. The `attachWorkspaceSwitchCleanup`
+    // subscriber clears the global `activeSessionIdAtom` on every flip.
     const freshWorkspace = await createTempWorkspace();
     await fs.writeFile(path.join(freshWorkspace, 'fresh.md'), '# Fresh\n', 'utf8');
+
+    const previousPath = await page
+      .locator('[data-testid="project-rail"] [data-testid="project-rail-item"].is-active')
+      .getAttribute('data-project-path');
+    await seedAgentSession(page, previousPath!);
 
     try {
       await page.evaluate(async (workspacePath) => {
@@ -211,20 +261,20 @@ test.describe('Multi-Project Rail', () => {
       await page.waitForSelector('.workspace-sidebar', { timeout: TEST_TIMEOUTS.SIDEBAR_LOAD });
 
       // The fresh workspace must own the active rail slot and the agent
-      // panel must show its empty state — no leaked tabs from the
-      // previously active workspace.
+      // panel must not show sessions from the previously active workspace.
       const rail = page.locator('[data-testid="project-rail"]');
-      const activeItem = rail.locator('[data-testid="project-rail-item"].active');
-      await expect(activeItem).toHaveCount(1);
+      const activeItem = rail.locator('[data-testid="project-rail-item"].is-active');
+      await expect(activeItem).toHaveAttribute('data-project-path', freshWorkspace);
 
-      const empty = page.locator('.agent-mode-empty');
-      await expect(empty).toBeVisible({ timeout: TEST_TIMEOUTS.SIDEBAR_LOAD });
+      await expectAgentPanelOwnedBy(page, freshWorkspace);
     } finally {
       await fs.rm(freshWorkspace, { recursive: true, force: true }).catch(() => undefined);
     }
   });
 
-  test('rail rejects projects beyond the cap', async () => {
+  test('restored projects beyond the cap are kept and adding more is blocked', async () => {
+    // The eight-project cap gates new additions only; projects restored from
+    // saved state are preserved (see openProjects.ts).
     const extraPaths: string[] = [];
     for (let i = 0; i < 9; i++) {
       const dir = await createTempWorkspace();
@@ -243,8 +293,12 @@ test.describe('Multi-Project Rail', () => {
       await page.reload();
       await page.waitForSelector('.workspace-sidebar', { timeout: TEST_TIMEOUTS.SIDEBAR_LOAD });
 
-      const items = page.locator('[data-testid="project-rail"] [data-testid="project-rail-item"]');
-      await expect(items).toHaveCount(8);
+      const rail = page.locator('[data-testid="project-rail"]');
+      // Restore merges these with the projects still live in this window.
+      for (const p of extraPaths) {
+        await expect(rail.locator(`[data-testid="project-rail-item"][data-project-path="${p}"]`)).toHaveCount(1);
+      }
+      await expect(rail.locator('[data-testid="project-rail-add"]')).toBeDisabled();
     } finally {
       await Promise.all(extraPaths.map((p) => fs.rm(p, { recursive: true, force: true }).catch(() => undefined)));
     }

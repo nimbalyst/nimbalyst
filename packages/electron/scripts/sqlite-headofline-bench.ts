@@ -12,7 +12,7 @@
  * but blocks every concurrent hot writer until the slow op completes.
  *
  * Run:
- *   cd packages/electron && npx tsx scripts/sqlite-headofline-bench.ts
+ *   cd packages/electron && pnpm exec tsx scripts/sqlite-headofline-bench.ts
  *
  * Numbers vary by hardware; what matters is the relative shape, not the
  * absolute throughput.

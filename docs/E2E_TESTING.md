@@ -57,22 +57,22 @@ This lets the user see the test run directly in the conversation without opening
 
 ```bash
 # Run specific test file with max-failures
-npx playwright test e2e/monaco/file-watcher-updates.spec.ts --max-failures=1
+pnpm exec playwright test e2e/monaco/file-watcher-updates.spec.ts --max-failures=1
 
 # Run tests in a directory
-npx playwright test e2e/monaco/
+pnpm exec playwright test e2e/monaco/
 
 # Run all E2E tests (avoid unless explicitly asked)
-npx playwright test
+pnpm exec playwright test
 ```
 
-**IMPORTANT**: Always use `npx playwright test` directly for E2E tests. Never use parallel execution as it corrupts PGLite.
+**IMPORTANT**: Always use `pnpm exec playwright test` directly for E2E tests. Never use parallel execution as it corrupts PGLite.
 
 ## Installation
 
 ```bash
-npm install -D @playwright/test
-npx playwright install --with-deps
+pnpm add -Dw @playwright/test
+pnpm exec playwright install --with-deps
 ```
 
 > **Tip:** run these commands at the repository root so all workspace projects share the same Playwright binaries.
@@ -85,22 +85,22 @@ All commands below should be run from `packages/electron/`.
 
 ```bash
 # Smoke test (1 file, ~15s) - run after any UI change
-npx playwright test e2e/smoke/visual-smoke.spec.ts
+pnpm exec playwright test e2e/smoke/visual-smoke.spec.ts
 
 # Core tests (~5 files, ~1 min) - run before pushing
-npx playwright test e2e/core/ e2e/files/ e2e/editors/
+pnpm exec playwright test e2e/core/ e2e/files/ e2e/editors/
 
 # Full suite (~29 files, ~5 min) - run before releases
-npx playwright test
+pnpm exec playwright test
 
 # Single file
-npx playwright test e2e/ai/diff.spec.ts
+pnpm exec playwright test e2e/ai/diff.spec.ts
 
 # Single test by line number
-npx playwright test e2e/ai/diff.spec.ts:55
+pnpm exec playwright test e2e/ai/diff.spec.ts:55
 
 # With failure details
-npx playwright test --reporter=line
+pnpm exec playwright test --reporter=line
 ```
 
 ### E2E runs take over the user's desktop
@@ -121,24 +121,24 @@ background check.
 
 | Scenario | Command | Time |
 | --- | --- | --- |
-| Quick sanity check | `npx playwright test e2e/smoke/` | ~15s |
-| Working on editors | `npx playwright test e2e/editors/` | ~1 min |
-| Working on AI features | `npx playwright test e2e/ai/` | ~1 min |
-| Working on file operations | `npx playwright test e2e/files/` | ~30s |
-| Before pushing a PR | `npx playwright test e2e/core/ e2e/files/ e2e/editors/ e2e/smoke/` | ~2 min |
-| Before a release | `npx playwright test` (full suite) | ~5 min |
+| Quick sanity check | `pnpm exec playwright test e2e/smoke/` | ~15s |
+| Working on editors | `pnpm exec playwright test e2e/editors/` | ~1 min |
+| Working on AI features | `pnpm exec playwright test e2e/ai/` | ~1 min |
+| Working on file operations | `pnpm exec playwright test e2e/files/` | ~30s |
+| Before pushing a PR | `pnpm exec playwright test e2e/core/ e2e/files/ e2e/editors/ e2e/smoke/` | ~2 min |
+| Before a release | `pnpm exec playwright test` (full suite) | ~5 min |
 
 ### Pre-Release Checklist
 
-1. Make sure `npm run dev` is running (tests connect to the dev server on port 5273)
-2. Run the full suite: `npx playwright test --reporter=line`
+1. Make sure `pnpm run dev` is running (tests connect to the dev server on port 5273)
+2. Run the full suite: `pnpm exec playwright test --reporter=line`
 3. Review failures - known flaky tests are documented in the [e2e-test-inventory.md](./../nimbalyst-local/plans/e2e-test-inventory.md)
 4. Fix any new failures before releasing
 
 ### Important Constraints
 
 - **One file at a time**: Each spec file launches its own Electron instance. The PGLite database only allows one connection, so Playwright must run with `workers: 1` (configured in `playwright.config.ts`).
-- **Dev server required**: Tests expect the Vite dev server running on port 5273. Start it with `npm run dev` in `packages/electron/`.
+- **Dev server required**: Tests expect the Vite dev server running on port 5273. Start it with `pnpm run dev` in `packages/electron/`.
 - **No parallel execution**: Never use `--workers=N` with N > 1.
 
 ## Extension Tests (CDP-based)
@@ -152,7 +152,7 @@ Extension tests are separate from E2E tests. They connect to a **running** Nimba
 | **Config** | `playwright.config.ts` | `packages/electron/playwright-extension.config.ts` |
 | **How it runs** | Launches fresh Electron | Connects to running Nimbalyst via CDP |
 | **Location** | `packages/electron/e2e/` | `packages/extensions/*/tests/` |
-| **Prerequisite** | Dev server on port 5273 | Full `npm run dev` with CDP on port 9222 |
+| **Prerequisite** | Dev server on port 5273 | Full `pnpm run dev` with CDP on port 9222 |
 
 ### Writing Extension Tests
 
@@ -188,20 +188,20 @@ The `test` fixture from `@nimbalyst/extension-sdk/testing` automatically finds t
 
 ```bash
 # Run all extension tests
-npm run test:extensions
+pnpm run test:extensions
 
 # Run tests for a specific extension (substring match)
-npm run test:extensions -- csv
+pnpm run test:extensions csv
 
 # List available extension test suites
-npm run test:extensions -- --list
+pnpm run test:extensions --list
 ```
 
 ### Playwright Extension Panel
 
 The Playwright panel in Nimbalyst auto-detects extension tests and shows them alongside E2E tests. A config dropdown lets you switch between E2E and extension test configs. Clicking "Run" on an extension test automatically uses the correct config and environment.
 
-> **Build first:** make sure `npm run build --workspace @nimbalyst/electron` has been executed so `packages/electron/out/main/index.js` exists before launching the Electron project.
+> **Build first:** make sure `pnpm --filter @nimbalyst/electron run build` has been executed so `packages/electron/out/main/index.js` exists before launching the Electron project.
 
 Artifacts (traces, screenshots, videos) are captured on the first retry or failure and saved under `playwright-report/`.
 
@@ -1015,26 +1015,26 @@ Common CSS selectors used in tests:
 ### Run with UI
 
 ```bash
-npx playwright test --ui
-npx playwright test e2e/ai/diff.spec.ts --ui
+pnpm exec playwright test --ui
+pnpm exec playwright test e2e/ai/diff.spec.ts --ui
 ```
 
 ### Run in headed mode
 
 ```bash
-npx playwright test --headed
+pnpm exec playwright test --headed
 ```
 
 ### Debug specific test
 
 ```bash
-npx playwright test e2e/ai/diff.spec.ts:55 --headed --debug
+pnpm exec playwright test e2e/ai/diff.spec.ts:55 --headed --debug
 ```
 
 ### View test report
 
 ```bash
-npx playwright show-report
+pnpm exec playwright show-report
 ```
 
 **Agents: do not run this.** It opens a browser window on the user's desktop. The `list` reporter
@@ -1047,7 +1047,7 @@ command-line `--reporter=html` cannot pop it open either.
 Tests include console.log statements for debugging. Check the test output or use:
 
 ```bash
-npx playwright test --reporter=line
+pnpm exec playwright test --reporter=line
 ```
 
 ## Making the App More Testable

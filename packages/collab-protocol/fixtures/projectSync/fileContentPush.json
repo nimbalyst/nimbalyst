@@ -1,0 +1,13 @@
+{
+  "type": "fileContentPush",
+  "syncId": "sync-a",
+  "encryptedContent": "Y2lwaGVydGV4dA==",
+  "contentIv": "aXYtY29udGVudA==",
+  "contentHash": "hash-a",
+  "encryptedPath": "cGF0aA==",
+  "pathIv": "aXYtcGF0aA==",
+  "encryptedTitle": "dGl0bGU=",
+  "titleIv": "aXYtdGl0bGU=",
+  "lastModifiedAt": 1790000001000,
+  "requestId": "push-1"
+}

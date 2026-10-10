@@ -9,7 +9,7 @@
     {
       "name": "nimbalyst-wiki",
       "source": "./plugins/nimbalyst-wiki",
-      "description": "A team wiki kept current by your Claude Code sessions, with a per-session page of what changed."
+      "description": "Your project's Nimbalyst Wiki from Claude Code, on the team server or as local files: read it for context and record decisions where they belong."
     }
   ]
 }

@@ -26,9 +26,10 @@
  */
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { useAtomValue } from 'jotai';
+import { atom, useAtomValue } from 'jotai';
 import {
   activeCollabScopeAtom,
+  getPersonalCollabDocsSession,
   refreshSharedFolders,
   sharedFoldersAtom,
   type SharedFolder,
@@ -53,10 +54,20 @@ export interface SharedFolderTreeState {
   expandFolder(folderId: string): void;
 }
 
-export function useSharedFolderTree(isOpen: boolean): SharedFolderTreeState {
-  const folders = useAtomValue(sharedFoldersAtom);
+/** Which Pages section the tree lists: the team's (from TeamRoom) or this project's Personal pages. */
+export type SharedFolderSection = 'team' | 'personal';
+
+const NO_FOLDERS = atom<SharedFolder[]>([]);
+
+export function useSharedFolderTree(isOpen: boolean, section: SharedFolderSection = 'team'): SharedFolderTreeState {
   const collabScope = useAtomValue(activeCollabScopeAtom);
   const workspacePath = useAtomValue(activeWorkspacePathAtom);
+  const teamFolders = useAtomValue(sharedFoldersAtom);
+  // Personal pages are local, so there is nothing to refresh and nothing that can be stale.
+  const personalFolders = useAtomValue(
+    section === 'personal' && workspacePath ? getPersonalCollabDocsSession(workspacePath).atoms.sharedFolders : NO_FOLDERS,
+  );
+  const folders = section === 'personal' ? personalFolders : teamFolders;
 
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [refreshFailed, setRefreshFailed] = useState(false);
@@ -64,6 +75,11 @@ export function useSharedFolderTree(isOpen: boolean): SharedFolderTreeState {
 
   useEffect(() => {
     if (!isOpen) return;
+    if (section === 'personal') {
+      setRefreshFailed(!workspacePath);
+      setIsRefreshing(false);
+      return;
+    }
     let cancelled = false;
     setIsRefreshing(true);
     setRefreshFailed(false);
@@ -87,7 +103,7 @@ export function useSharedFolderTree(isOpen: boolean): SharedFolderTreeState {
     return () => {
       cancelled = true;
     };
-  }, [collabScope, isOpen, workspacePath]);
+  }, [collabScope, isOpen, section, workspacePath]);
 
   const tree = useMemo(() => buildShareFolderTree(folders), [folders]);
 

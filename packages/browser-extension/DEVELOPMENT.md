@@ -6,7 +6,7 @@ This guide covers development, testing, and debugging of the Nimbalyst browser e
 
 ### Prerequisites
 
-- Node.js 18+ and npm
+- Node.js 24 (see `.nvmrc`) and pnpm via corepack
 - Chrome browser (for testing)
 - Nimbalyst desktop app installed
 
@@ -14,21 +14,21 @@ This guide covers development, testing, and debugging of the Nimbalyst browser e
 
 ```bash
 cd packages/browser-extension
-npm install
-npm run build
+pnpm install
+pnpm run build
 ```
 
 ### Development Workflow
 
 ```bash
 # Watch mode - rebuilds on file changes
-npm run watch
+pnpm run watch
 
 # Manual build
-npm run build
+pnpm run build
 
 # Clean and rebuild
-npm run clean && npm run build
+pnpm run clean && pnpm run build
 ```
 
 ## Loading the Extension in Chrome
@@ -372,7 +372,7 @@ For Firefox/Safari support in the future:
 Not yet ready for Chrome Web Store, but when ready:
 
 1. Update version in manifest.json and package.json
-2. Build production version: `npm run build`
+2. Build production version: `pnpm run build`
 3. Create ZIP of `dist/` directory
 4. Upload to Chrome Web Store Developer Dashboard
 5. Fill out store listing (description, screenshots, etc.)

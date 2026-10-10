@@ -54,7 +54,26 @@ vi.mock('../permissionGrantStore', async (orig) => {
   return { ...actual, isPermissionGranted: vi.fn() };
 });
 
+vi.mock('../../services/extensionSessions/extensionSessionsService', () => ({
+  dispatchExtensionSessionsOp: vi.fn(async () => ({ sessionId: 's-1' })),
+  setOwnedSessionEventSink: vi.fn(),
+}));
+
+vi.mock('../backendPanelBadges', () => ({
+  setBackendPanelGutterBadge: vi.fn(async () => {}),
+  registerBackendPanelBadgeHandlers: vi.fn(),
+  clearBackendPanelGutterBadgesForModule: vi.fn(),
+}));
+
 import { PrivilegedExtensionHost } from '../PrivilegedExtensionHost';
+import {
+  clearBackendPanelGutterBadgesForModule,
+  setBackendPanelGutterBadge,
+} from '../backendPanelBadges';
+import {
+  dispatchExtensionSessionsOp,
+  setOwnedSessionEventSink,
+} from '../../services/extensionSessions/extensionSessionsService';
 import { isPermissionGranted } from '../permissionGrantStore';
 import {
   getBackendTools,
@@ -93,13 +112,14 @@ function makeManaged(send: (m: unknown) => void) {
 function drive(
   host: PrivilegedExtensionHost,
   managed: unknown,
-  payload: unknown
+  payload: unknown,
+  method = 'registerMcpTools'
 ): Promise<void> {
   return (host as unknown as {
     handleBrokerRequest: (
       m: unknown, c: unknown, r: string, method: string, p: unknown, l: string,
     ) => Promise<void>;
-  }).handleBrokerRequest(managed, ctx, 'req-1', 'registerMcpTools', payload, 'test');
+  }).handleBrokerRequest(managed, ctx, 'req-1', method, payload, 'test');
 }
 
 describe('PrivilegedExtensionHost broker registerMcpTools', () => {
@@ -174,5 +194,88 @@ describe('PrivilegedExtensionHost broker registerMcpTools', () => {
     const error = sent[0].error as { name?: string; message?: string };
     expect(error.name).toBe('CapabilityDeniedError');
     expect(error.message).toContain('mcp-server-register');
+  });
+});
+
+describe('PrivilegedExtensionHost broker sessions', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('scopes every sessions op to the runtime\'s own extension and workspace, behind ai-sessions', async () => {
+    const host = new PrivilegedExtensionHost();
+    const sent: Array<Record<string, unknown>> = [];
+    const managed = makeManaged((m) => sent.push(m as Record<string, unknown>));
+    const forged = { op: 'create', args: { ownerKey: 'ada', extensionId: 'com.other' }, extensionId: 'com.other', workspacePath: '/elsewhere' };
+
+    grantMock.mockReturnValue(false);
+    await drive(host, managed, forged, 'sessions');
+    expect(dispatchExtensionSessionsOp).not.toHaveBeenCalled();
+    expect(sent[0].kind).toBe('broker-error');
+    expect(grantMock).toHaveBeenCalledWith('com.nimbalyst.memory', 'memory-engine', 'ai-sessions', '/ws');
+
+    grantMock.mockReturnValue(true);
+    await drive(host, managed, forged, 'sessions');
+    expect(dispatchExtensionSessionsOp).toHaveBeenCalledWith(
+      { extensionId: 'com.nimbalyst.memory', workspacePath: '/ws' },
+      'create',
+      forged.args
+    );
+    expect(sent[1]).toMatchObject({ kind: 'broker-response', result: { result: { sessionId: 's-1' } } });
+  });
+
+  it('delivers owned-session settles only to running modules of the owning extension holding ai-sessions', () => {
+    const host = new PrivilegedExtensionHost();
+    const sink = vi.mocked(setOwnedSessionEventSink).mock.calls.at(-1)![0]!;
+    const modules = (host as unknown as { modules: Map<string, unknown> }).modules;
+    const inbox: Record<string, unknown[]> = { owner: [], activating: [], noGrant: [], other: [], otherWs: [], crashed: [] };
+    const add = (name: string, extensionId: string, workspacePath: string, granted: string[], status = 'running') => {
+      const m = makeManaged((msg) => inbox[name].push(msg)) as any;
+      m.args = { ...m.args, extensionId, workspacePath, module: { id: name } };
+      m.grantedPermissions = granted;
+      m.state = { status };
+      modules.set(name, m);
+    };
+    expect(sink.hasListeners()).toBe(false);
+    add('owner', 'com.example.owner', '/ws', ['ai-sessions']);
+    add('noGrant', 'com.example.owner', '/ws', []);
+    add('other', 'com.other', '/ws', ['ai-sessions']);
+    add('otherWs', 'com.example.owner', '/ws2', ['ai-sessions']);
+    // Still inside activate(): it may already have subscribed and started a session.
+    add('activating', 'com.example.owner', '/ws', ['ai-sessions'], 'starting');
+    add('crashed', 'com.example.owner', '/ws', ['ai-sessions'], 'crashed');
+    expect(sink.hasListeners()).toBe(true);
+
+    const event = { sessionId: 's', ownerKey: 'ada', outcome: 'completed' } as any;
+    sink.emit('com.example.owner', '/ws', event);
+    expect(inbox.owner).toEqual([{ kind: 'broker-event', event: 'sessions:settled', payload: event }]);
+    expect(inbox.activating).toEqual(inbox.owner);
+    expect([inbox.noGrant, inbox.other, inbox.otherWs, inbox.crashed]).toEqual([[], [], [], []]);
+  });
+});
+
+describe('PrivilegedExtensionHost broker panels', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  it('needs no grant, scopes the badge to the runtime context, and still gates unknown methods', async () => {
+    const host = new PrivilegedExtensionHost();
+    const sent: Array<Record<string, unknown>> = [];
+    const managed = makeManaged((m) => sent.push(m as Record<string, unknown>));
+    grantMock.mockReturnValue(false);
+
+    await drive(host, managed, { panelId: 'desk', value: 2, tone: 'warning', extensionId: 'com.other' }, 'panels');
+    expect(grantMock).not.toHaveBeenCalled();
+    expect(setBackendPanelGutterBadge).toHaveBeenCalledWith(ctx, 'desk', 2, 'warning');
+    expect(sent[0]).toMatchObject({ kind: 'broker-response', result: {} });
+
+    await drive(host, managed, {}, 'notARealMethod');
+    expect(sent[1].kind).toBe('broker-error');
+  });
+
+  it('clears a module\'s backend badges when it stops or crashes', () => {
+    const host = new PrivilegedExtensionHost();
+    const managed = makeManaged(() => {}) as any;
+    (host as any).setState(managed, { status: 'running', startedAt: 0, methods: [] });
+    expect(clearBackendPanelGutterBadgesForModule).not.toHaveBeenCalled();
+    (host as any).setState(managed, { status: 'crashed', exitCode: 1, crashedAt: 0 });
+    expect(clearBackendPanelGutterBadgesForModule).toHaveBeenCalledWith('com.nimbalyst.memory', 'memory-engine', '/ws');
   });
 });

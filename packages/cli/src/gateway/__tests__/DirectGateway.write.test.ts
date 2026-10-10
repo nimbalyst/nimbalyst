@@ -168,6 +168,26 @@ describe('DirectGateway offline writes', () => {
     expect(rawRow('byte-parity').data).toBe(JSON.stringify(expectedAppData));
   });
 
+  it('caps a long description edit in the activity trail exactly like the app writer', async () => {
+    const identity = getCurrentIdentity(WORKSPACE);
+    const before = 'a'.repeat(30_000);
+    const after = 'b'.repeat(30_000);
+    seed({ id: 'long-parity', issueKey: 'NIM-1', type: 'bug', data: { title: 'Plan', description: before } });
+
+    vi.spyOn(Date, 'now').mockReturnValue(1_788_200_000_000);
+    vi.spyOn(Math, 'random').mockReturnValue(0.5);
+    const expected: Record<string, any> = {};
+    appendAppActivity(expected, identity, 'updated', { field: 'description', oldValue: before, newValue: after });
+
+    const gateway = new DirectGateway(dbPath);
+    await gateway.updateTracker(WORKSPACE, 'NIM-1', { description: after });
+    gateway.close();
+
+    const stored = JSON.parse(rawRow('long-parity').data);
+    expect(JSON.stringify(stored.activity)).toBe(JSON.stringify(expected.activity));
+    expect(stored.activity[0].newValue.length).toBeLessThan(1_000);
+  });
+
   it('creates a solo-workspace item without a key or number and explains the unassigned key', async () => {
     const gw = new DirectGateway(dbPath);
     const rec = await gw.createTracker(WORKSPACE, {

@@ -11,7 +11,7 @@ A disjointness check that only compares the *source* files is not a disjointness
 - `CHANGELOG.md` — see below, this one has its own rule
 - `docs/FEATURE_INVENTORY.md` — the integrating session owns it; slices send capability changes, platform/opt-in limits, and source evidence in their handoff. The integrator applies the update before the batch's final handoff or commit proposal, following the root `CLAUDE.md` rule.
 - `CLAUDE.md`, `.claude/rules/*`, `docs/*` — guidance edits
-- `package.json` / `package-lock.json` — any dependency change
+- `package.json` / `pnpm-lock.yaml` — any dependency change
 - Barrel files (`index.ts`), shared type modules, and central registries such as `KeyboardShortcutsDialog.tsx` or a store's atom index
 - A large component two slices both need to import from
 
@@ -27,7 +27,7 @@ This applies to a session working alone too. There is no point at which "edit th
 
 ### Orchestrator responsibilities
 
-- **Run the gate once.** Slices never run `npm run typecheck` or `npm run test:prepush`; concurrent runs produce false failures. The orchestrator runs it once for the batch. Slices run only their own targeted vitest file.
+- **Run the gate once.** Slices never run `pnpm typecheck` or `pnpm test:prepush`; concurrent runs produce false failures. The orchestrator runs it once for the batch. Slices run only their own targeted vitest file.
 - **State the constraint in the brief.** Tell each slice which files it owns, that siblings are live in the same checkout, and that it must not use whole-file `Write` on a file it did not create.
 - **Re-check anchors after a long wait.** Line numbers you captured before a sibling ran may have moved. Re-grep before editing.
 - **Decide the commit split yourself.** Slices that each try to commit will race on shared files. Either they all report back and the orchestrator commits, or each slice commits strictly the files it owns and never the shared ones.

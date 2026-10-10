@@ -14,23 +14,23 @@ But if you're still seeing unchanged content marked in the app, it's because the
 ### 1. Rebuild the rexical package
 ```bash
 cd packages/rexical
-npm run build
+pnpm run build
 ```
 
 ### 2. Rebuild the electron app
 ```bash
 cd ../electron
-npm run build
+pnpm run build
 ```
 
 ### 3. Restart the development server (if running)
 ```bash
 # Kill any running dev servers
-pkill -f "npm run dev"
+pkill -f "pnpm run dev"
 
 # Start fresh
 cd packages/electron
-npm run dev
+pnpm run dev
 ```
 
 ## Verify the Fixes
@@ -38,7 +38,7 @@ npm run dev
 ### Test 1: Run the unit tests
 ```bash
 cd packages/rexical
-npx vitest run src/plugins/DiffPlugin/__tests__/unit/larger-doc-test2.test.ts
+pnpm exec vitest run src/plugins/DiffPlugin/__tests__/unit/larger-doc-test2.test.ts
 ```
 
 You should see:
@@ -49,7 +49,7 @@ After accepting all: 2831 bytes, contains title: true ✓
 
 ### Test 2: Run the integration tests
 ```bash
-npx vitest run src/plugins/DiffPlugin/__tests__/integration/debug-unchanged-marked.test.ts
+pnpm exec vitest run src/plugins/DiffPlugin/__tests__/integration/debug-unchanged-marked.test.ts
 ```
 
 You should see:
@@ -91,7 +91,7 @@ Exact matches (similarity === 1.0 && isExact) are skipped entirely.
 
 To see detailed diff logging:
 ```bash
-DIFF_DEBUG=1 npm run dev
+DIFF_DEBUG=1 pnpm run dev
 ```
 
 This will show in the console:

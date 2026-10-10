@@ -1,17 +1,58 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { MaterialSymbol } from '@nimbalyst/runtime/ui/icons/MaterialSymbol';
 import type { CollabDocumentTypeDescriptor } from '@nimbalyst/collab-client/core';
-import { flattenCollabFolderOptions, type SharedFolder } from '@nimbalyst/collab-client/docs';
+import {
+  flattenCollabFolderOptions,
+  type CollabTreeNode,
+  type SharedFolder,
+  type SharedParentKind,
+} from '@nimbalyst/collab-client/docs';
+import { buildCollabTreeDestinations, type CollabTreeDestination } from './collabTreeDestinations';
 
 export interface CollabCreateItemDialogProps {
   isOpen: boolean;
   kind: 'document' | 'folder';
   documentDescriptor?: CollabDocumentTypeDescriptor;
   folders: SharedFolder[];
+  /**
+   * The sidebar page tree. When set, the picker mirrors it (pages, typed
+   * pages, types) instead of listing `folders`.
+   */
+  tree?: CollabTreeNode[];
+  /** Resolves page icons when `tree` is set. */
+  documentTypeDescriptors?: readonly CollabDocumentTypeDescriptor[];
+  rootLabel?: string;
   targetFolderId: string | null;
-  onTargetFolderChange: (folderId: string | null) => void;
+  /** With `tree`: whether `targetFolderId` is a page or a typed page. */
+  targetParentKind?: SharedParentKind;
+  onTargetFolderChange: (folderId: string | null, parentKind?: SharedParentKind) => void;
   onConfirm: (name: string) => void;
   onCancel: () => void;
+}
+
+const NO_DESCRIPTORS: readonly CollabDocumentTypeDescriptor[] = [];
+
+/** First-class folders in the destination row shape. */
+function folderDestinations(folders: SharedFolder[]): CollabTreeDestination[] {
+  const options = flattenCollabFolderOptions(folders).filter(option => option.folderId !== null);
+  const stack: string[] = [];
+  return options.map((option, index) => {
+    stack.length = option.depth;
+    const ancestorKeys = stack.slice();
+    stack[option.depth] = option.folderId!;
+    return {
+      key: option.folderId!,
+      parentId: option.folderId,
+      parentKind: 'page',
+      name: option.name,
+      depth: option.depth,
+      icon: 'folder',
+      expandedIcon: 'folder_open',
+      selectable: true,
+      ancestorKeys,
+      hasChildren: (options[index + 1]?.depth ?? -1) > option.depth,
+    };
+  });
 }
 
 export function CollabCreateItemDialog({
@@ -19,42 +60,31 @@ export function CollabCreateItemDialog({
   kind,
   documentDescriptor,
   folders,
+  tree,
+  documentTypeDescriptors = NO_DESCRIPTORS,
+  rootLabel = 'Team root',
   targetFolderId,
+  targetParentKind = 'page',
   onTargetFolderChange,
   onConfirm,
   onCancel,
 }: CollabCreateItemDialogProps) {
   const [name, setName] = useState('');
-  const [expandedFolderIds, setExpandedFolderIds] = useState<Set<string>>(new Set());
+  const [expandedKeys, setExpandedKeys] = useState<Set<string>>(new Set());
   const inputRef = useRef<HTMLInputElement>(null);
   const wasOpenRef = useRef(false);
-  const options = useMemo(() => flattenCollabFolderOptions(folders), [folders]);
-  const optionById = useMemo(
-    () => new Map(options.flatMap(option => option.folderId ? [[option.folderId, option]] : [])),
-    [options],
-  );
-  const ancestorIdsByFolderId = useMemo(() => {
-    const ancestors = new Map<string, string[]>();
-    const stack: string[] = [];
-    for (const option of options) {
-      if (!option.folderId) continue;
-      stack.length = option.depth;
-      ancestors.set(option.folderId, stack.slice());
-      stack[option.depth] = option.folderId;
-    }
-    return ancestors;
-  }, [options]);
-  const foldersWithChildren = useMemo(() => {
-    const folderIds = new Set<string>();
-    for (let index = 1; index < options.length - 1; index += 1) {
-      const option = options[index];
-      const nextOption = options[index + 1];
-      if (option.folderId && nextOption.depth > option.depth) {
-        folderIds.add(option.folderId);
-      }
-    }
-    return folderIds;
-  }, [options]);
+  const options = useMemo(() => {
+    if (!isOpen) return [];
+    return tree ? buildCollabTreeDestinations(tree, documentTypeDescriptors) : folderDestinations(folders);
+  }, [documentTypeDescriptors, folders, isOpen, tree]);
+  const selectedOption = targetFolderId === null
+    ? null
+    : options.find(option => option.selectable
+      && option.parentId === targetFolderId
+      && (!tree || option.parentKind === targetParentKind)) ?? null;
+  const selectedKey = selectedOption?.key ?? null;
+  // A tree still loading has no rows yet; keep the target until it arrives.
+  const optionsReady = !tree || tree.length > 0;
 
   const documentDisplayName = documentDescriptor?.displayName ?? 'Document';
   const documentSuffix = documentDescriptor?.defaultExtension ?? '';
@@ -74,39 +104,110 @@ export function CollabCreateItemDialog({
     if (wasOpenRef.current) return;
     wasOpenRef.current = true;
     setName('');
-    const expanded = new Set(ancestorIdsByFolderId.get(targetFolderId ?? '') ?? []);
-    if (targetFolderId) expanded.add(targetFolderId);
-    setExpandedFolderIds(expanded);
+    const expanded = new Set(selectedOption?.ancestorKeys ?? []);
+    if (selectedOption) expanded.add(selectedOption.key);
+    setExpandedKeys(expanded);
     inputRef.current?.focus();
-  }, [ancestorIdsByFolderId, isOpen, targetFolderId]);
+  }, [isOpen, selectedOption]);
 
   useEffect(() => {
-    if (isOpen && !options.some(option => option.folderId === targetFolderId)) {
-      onTargetFolderChange(null);
+    if (isOpen && optionsReady && targetFolderId !== null && !selectedOption) {
+      onTargetFolderChange(null, 'page');
     }
-  }, [isOpen, onTargetFolderChange, options, targetFolderId]);
+  }, [isOpen, onTargetFolderChange, optionsReady, selectedOption, targetFolderId]);
 
   if (!isOpen) return null;
 
-  const toggleFolder = (folderId: string) => {
-    setExpandedFolderIds(current => {
+  const toggleExpanded = (key: string) => {
+    setExpandedKeys(current => {
       const next = new Set(current);
-      if (next.has(folderId)) next.delete(folderId);
-      else next.add(folderId);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
       return next;
     });
   };
 
-  const visibleOptions = options.filter(option => (
-    option.folderId === null
-    || (ancestorIdsByFolderId.get(option.folderId) ?? []).every(folderId => expandedFolderIds.has(folderId))
-  ));
-  const selectedPathIds = targetFolderId
-    ? [...(ancestorIdsByFolderId.get(targetFolderId) ?? []), targetFolderId]
-    : [];
-  const destinationPath = selectedPathIds.length > 0
-    ? `${selectedPathIds.map(folderId => optionById.get(folderId)?.name).filter(Boolean).join(' / ')} /`
-    : 'Team root /';
+  const nameByKey = new Map(options.map(option => [option.key, option.name]));
+  const visibleOptions = options.filter(option => option.ancestorKeys.every(key => expandedKeys.has(key)));
+  const destinationPath = selectedOption
+    ? `${[...selectedOption.ancestorKeys, selectedOption.key].map(key => nameByKey.get(key)).filter(Boolean).join(' / ')} /`
+    : `${rootLabel} /`;
+  const selectOption = (option: CollabTreeDestination) => {
+    if (option.selectable) onTargetFolderChange(option.parentId, option.parentKind);
+    else if (option.hasChildren) toggleExpanded(option.key);
+  };
+  const renderRow = (
+    rowKey: string,
+    label: string,
+    depthPx: number,
+    isSelected: boolean,
+    icon: React.ReactNode,
+    extra: {
+      option?: CollabTreeDestination;
+      isExpanded?: boolean;
+      onSelect: () => void;
+    },
+  ) => {
+    const { option, isExpanded = false, onSelect } = extra;
+    const disabled = option ? !option.selectable : false;
+    return (
+      <div
+        key={rowKey}
+        role="treeitem"
+        aria-selected={isSelected}
+        aria-disabled={disabled || undefined}
+        aria-expanded={option?.hasChildren ? isExpanded : undefined}
+        tabIndex={0}
+        className={`collab-create-location-option relative flex items-center gap-1 px-2 py-1.5 rounded text-[13px] select-none ${
+          disabled ? 'cursor-default' : 'cursor-pointer'
+        } ${
+          isSelected
+            ? 'bg-[var(--nim-primary)]/20 text-[var(--nim-text)]'
+            : disabled
+              ? 'text-[var(--nim-text-faint)]'
+              : 'text-[var(--nim-text)] hover:bg-[var(--nim-bg-tertiary)]'
+        }`}
+        style={{ paddingLeft: depthPx }}
+        data-testid={`collab-create-location-option-${rowKey}`}
+        onClick={onSelect}
+        onDoubleClick={() => { if (option?.hasChildren) toggleExpanded(option.key); }}
+        onKeyDown={event => {
+          if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            onSelect();
+          }
+        }}
+      >
+        {isSelected && (
+          <span aria-hidden className="absolute left-0 top-1 bottom-1 w-0.5 rounded bg-[var(--nim-primary)]" />
+        )}
+        {option && (
+          <button
+            type="button"
+            className={`w-4 h-4 inline-flex items-center justify-center text-[var(--nim-text-faint)] ${
+              option.hasChildren ? 'cursor-pointer' : 'cursor-default invisible'
+            }`}
+            aria-label={isExpanded ? 'Collapse' : 'Expand'}
+            onClick={event => {
+              event.stopPropagation();
+              if (option.hasChildren) toggleExpanded(option.key);
+            }}
+          >
+            <MaterialSymbol icon={isExpanded ? 'expand_more' : 'chevron_right'} size={16} />
+          </button>
+        )}
+        <span className={`inline-flex items-center justify-center ${
+          isSelected ? 'text-[var(--nim-primary)]' : 'text-[var(--nim-text-muted)]'
+        }`}>
+          {icon}
+        </span>
+        <span className="flex-1 truncate">{label}</span>
+        {option?.hint ? (
+          <span className="shrink-0 text-[11px] text-[var(--nim-text-faint)]">{option.hint}</span>
+        ) : null}
+      </div>
+    );
+  };
 
   const handleSubmit = (event: React.FormEvent) => {
     event.preventDefault();
@@ -194,7 +295,7 @@ export function CollabCreateItemDialog({
               id={locationLabelId}
               className="text-[11px] uppercase tracking-wider font-semibold text-[var(--nim-text-faint)] mb-1.5"
             >
-              Destination folder
+              {tree ? 'Location' : 'Destination folder'}
             </div>
             <div
               className="collab-create-location-picker collab-create-location-options nim-scrollbar bg-[var(--nim-bg-secondary)] border border-[var(--nim-border-subtle,var(--nim-border))] rounded-md p-1 mb-3 max-h-[240px] overflow-y-auto"
@@ -202,64 +303,18 @@ export function CollabCreateItemDialog({
               role="tree"
               aria-labelledby={locationLabelId}
             >
+              {renderRow('root', rootLabel, 8, selectedKey === null, <MaterialSymbol icon="workspaces" size={18} />, {
+                onSelect: () => onTargetFolderChange(null, 'page'),
+              })}
               {visibleOptions.map(option => {
-                const isRoot = option.folderId === null;
-                const isSelected = option.folderId === targetFolderId;
-                const isExpanded = option.folderId ? expandedFolderIds.has(option.folderId) : false;
-                const hasChildren = option.folderId ? foldersWithChildren.has(option.folderId) : false;
-                const depthPx = isRoot ? 8 : 8 + option.depth * 18;
-
-                return (
-                  <div
-                    key={option.folderId ?? 'root'}
-                    role="treeitem"
-                    aria-selected={isSelected}
-                    aria-expanded={hasChildren ? isExpanded : undefined}
-                    tabIndex={0}
-                    className={`collab-create-location-option relative flex items-center gap-1 px-2 py-1.5 rounded text-[13px] cursor-pointer select-none ${
-                      isSelected
-                        ? 'bg-[var(--nim-primary)]/20 text-[var(--nim-text)]'
-                        : 'text-[var(--nim-text)] hover:bg-[var(--nim-bg-tertiary)]'
-                    }`}
-                    style={{ paddingLeft: depthPx }}
-                    data-testid={`collab-create-location-option-${option.folderId ?? 'root'}`}
-                    onClick={() => onTargetFolderChange(option.folderId)}
-                    onDoubleClick={() => { if (option.folderId && hasChildren) toggleFolder(option.folderId); }}
-                    onKeyDown={event => {
-                      if (event.key === 'Enter' || event.key === ' ') {
-                        event.preventDefault();
-                        onTargetFolderChange(option.folderId);
-                      }
-                    }}
-                  >
-                    {isSelected && (
-                      <span aria-hidden className="absolute left-0 top-1 bottom-1 w-0.5 rounded bg-[var(--nim-primary)]" />
-                    )}
-                    {!isRoot && (
-                      <button
-                        type="button"
-                        className={`w-4 h-4 inline-flex items-center justify-center text-[var(--nim-text-faint)] ${
-                          hasChildren ? 'cursor-pointer' : 'cursor-default invisible'
-                        }`}
-                        aria-label={isExpanded ? 'Collapse' : 'Expand'}
-                        onClick={event => {
-                          event.stopPropagation();
-                          if (option.folderId && hasChildren) toggleFolder(option.folderId);
-                        }}
-                      >
-                        <MaterialSymbol icon={isExpanded ? 'expand_more' : 'chevron_right'} size={16} />
-                      </button>
-                    )}
-                    <span className={`inline-flex items-center justify-center ${
-                      isSelected ? 'text-[var(--nim-primary)]' : 'text-[var(--nim-text-muted)]'
-                    }`}>
-                      <MaterialSymbol
-                        icon={isRoot ? 'workspaces' : isExpanded ? 'folder_open' : 'folder'}
-                        size={18}
-                      />
-                    </span>
-                    <span className="flex-1 truncate">{isRoot ? 'Team root' : option.name}</span>
-                  </div>
+                const isExpanded = expandedKeys.has(option.key);
+                return renderRow(
+                  option.key,
+                  option.name,
+                  8 + option.depth * 18,
+                  option.key === selectedKey,
+                  <MaterialSymbol icon={isExpanded && option.expandedIcon ? option.expandedIcon : option.icon} size={18} />,
+                  { option, isExpanded, onSelect: () => selectOption(option) },
                 );
               })}
             </div>

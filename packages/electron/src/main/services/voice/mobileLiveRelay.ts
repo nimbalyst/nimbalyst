@@ -29,6 +29,18 @@ export function decodeMobileLiveRequest(json: string, projectId: string, localHo
   } catch { return null; }
 }
 
+/**
+ * Whether a local session row belongs to the scoped host. `decodeMobileLiveRequest`
+ * already proved scope.hostDeviceId is this desktop. Only phone-created sessions are
+ * host-stamped, so a session started here has no hostDeviceId and is still ours; a
+ * session stamped for another host, or a mirror of a remote one, is not.
+ */
+export function isSessionOwnedByScopedHost(metadata: Record<string, unknown> | undefined, scopedHostDeviceId: string): boolean {
+  const host = metadata?.hostDeviceId;
+  if (host != null) return host === scopedHostDeviceId;
+  return metadata?.remoteHostDeviceId == null;
+}
+
 /** Persist reservations before dispatch: a lost reply must never replay a mutation. */
 export class MobileLiveActions {
   constructor(private readonly read: (id: string) => boolean, private readonly reserve: (id: string) => void) {}

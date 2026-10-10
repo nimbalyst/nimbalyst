@@ -8,47 +8,12 @@ import { $getNodeByKey, NodeKey } from 'lexical';
 import { $isMermaidNode } from './MermaidNode';
 import { ErrorBoundary } from 'react-error-boundary';
 import { useTheme } from '../../context/ThemeContext';
+import { renderMermaid } from './mermaidRender';
 
 interface MermaidComponentProps {
   content: string;
   nodeKey: NodeKey;
   className?: string;
-}
-
-// Dynamic import to avoid bundling mermaid when not needed
-let mermaidModule: any = null;
-let mermaidLoadPromise: Promise<any> | null = null;
-let lastInitTheme: string | null = null;
-
-async function loadMermaid(isDarkTheme: boolean): Promise<any> {
-  const themeKey = isDarkTheme ? 'dark' : 'light';
-
-  if (!mermaidLoadPromise) {
-    mermaidLoadPromise = (async () => {
-      const module = await import('mermaid');
-      const mermaid = module.default || (module as any).mermaid || module;
-      if (typeof mermaid.initialize !== 'function') {
-        console.error('Invalid mermaid instance:', mermaid);
-        throw new Error('Failed to load mermaid module');
-      }
-      mermaidModule = mermaid;
-      return mermaid;
-    })();
-  }
-
-  await mermaidLoadPromise;
-
-  if (lastInitTheme !== themeKey) {
-    lastInitTheme = themeKey;
-    mermaidModule.initialize({
-      startOnLoad: false,
-      theme: isDarkTheme ? 'dark' : 'default',
-      securityLevel: 'antiscript',
-      fontFamily: 'monospace',
-    });
-  }
-
-  return mermaidModule;
 }
 
 function MermaidDiagram({ content, id, renderKey }: { content: string; id: string; renderKey: number }) {
@@ -70,14 +35,10 @@ function MermaidDiagram({ content, id, renderKey }: { content: string; id: strin
     // Debounce the render by 500ms
     renderTimeoutRef.current = setTimeout(async () => {
       try {
-        const mermaid = await loadMermaid(isDarkTheme);
-
-        if (!mounted) return;
-
         // Use mermaid.render() for more control - it returns SVG directly
         // Use a unique ID with renderKey to avoid mermaid's internal caching issues
         const elementId = `mermaid_${id}_${renderKey}_${Date.now()}`;
-        const { svg, bindFunctions } = await mermaid.render(elementId, content);
+        const { svg, bindFunctions } = await renderMermaid(elementId, content, isDarkTheme);
 
         if (!mounted) return;
 

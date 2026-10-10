@@ -6,6 +6,8 @@ import type { TrackerRecord } from '../../../../core/TrackerRecord';
 import { StatusBar } from '../../components/StatusBar';
 import type { TrackerDataModel } from '@nimbalyst/tracker-schema';
 import { findAssociatedTrackerItem } from '../TrackerDocumentHeader';
+import { TrackerTypeRow } from '../../components/TrackerTypeRow';
+import { globalRegistry } from '../../models';
 
 function record(overrides: Partial<TrackerRecord> = {}): TrackerRecord {
   return {
@@ -65,5 +67,38 @@ describe('TrackerDocumentHeader tracker item link', () => {
 
     expect(onOpen).toHaveBeenCalledOnce();
     screen.getByText('Plan');
+  });
+});
+
+describe('TrackerTypeRow', () => {
+  it('shows only filled fields, offers the rest from "+", and keeps relations off a page row', () => {
+    globalRegistry.register({
+      type: 'ttr-plan', displayName: 'Plan', displayNamePlural: 'Plans', icon: 'flag', color: '#336699',
+      modes: { inline: false, fullDocument: true }, idPrefix: 'p', idFormat: 'ulid',
+      fields: [
+        { name: 'title', type: 'string' },
+        { name: 'status', type: 'select', options: [{ value: 'draft', label: 'Draft' }] },
+        { name: 'owner', type: 'string' },
+        { name: 'goal', type: 'relationship' },
+      ],
+    } as unknown as TrackerDataModel);
+    try {
+      const row = (fieldSet: 'page' | 'all') => render(
+        <TrackerTypeRow typeId="ttr-plan" values={{ status: 'draft', goal: 'g1' }} editable onSaveField={vi.fn()} fieldSet={fieldSet} testIdBase={fieldSet} />,
+      );
+      const shown = (base: string) => Array.from(screen.getByTestId(`${base}-props`).querySelectorAll('.tracker-field-pill[data-field]'))
+        .map((pill) => pill.getAttribute('data-field'));
+
+      row('page');
+      expect(shown('page')).toEqual(['status']);
+      row('all');
+      expect(shown('all')).toEqual(['status', 'goal']);
+
+      fireEvent.click(screen.getByTestId('all-add-field'));
+      expect(Array.from(screen.getByTestId('all-add-field-menu').querySelectorAll('[role="menuitem"]'))
+        .map((item) => item.getAttribute('data-field'))).toEqual(['owner', 'tags']);
+    } finally {
+      globalRegistry.unregister('ttr-plan');
+    }
   });
 });

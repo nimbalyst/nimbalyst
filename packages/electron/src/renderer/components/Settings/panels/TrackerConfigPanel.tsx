@@ -18,6 +18,7 @@ import {
 } from '@nimbalyst/runtime/plugins/TrackerPlugin/models/trackerLifecycle';
 import { ConfirmDialog } from '../../ConfirmDialog/ConfirmDialog';
 import { errorNotificationService } from '../../../services/ErrorNotificationService';
+import { requestConfirmation } from '../../../dialogs/requestConfirmation';
 import { trackerSyncConfigChangeAtom } from '../../../store/atoms/trackerSync';
 import { deriveIssueKeyPrefix, LEGACY_ISSUE_KEY_PREFIX } from '../../../../shared/trackerIssueKeyPrefix';
 import { AlphaBadge, SETTINGS_ALPHA_TOOLTIP } from '../../common/AlphaBadge';
@@ -116,17 +117,25 @@ function DeleteTrackerTypeButton({
   const handleClick = useCallback(async () => {
     if (!workspacePath) return;
     if (count > 0) {
-      window.alert(
+      errorNotificationService.showWarning(
+        'Tracker type still has items',
         `Cannot delete "${model.displayNamePlural}": ${count} item${count === 1 ? '' : 's'} of this type still exist. Delete those items first.`
       );
       return;
     }
-    if (!window.confirm(`Delete tracker type "${model.displayNamePlural}"? This cannot be undone.`)) {
+    const approved = await requestConfirmation({
+      title: 'Delete tracker type?',
+      message: `Delete tracker type "${model.displayNamePlural}"? This cannot be undone.`,
+      confirmLabel: 'Delete',
+      destructive: true,
+    });
+    if (!approved) {
       return;
     }
     const fileDeleted = await deleteCustomTrackerYAML(workspacePath, model.type);
     if (!fileDeleted) {
-      window.alert(
+      errorNotificationService.showError(
+        'Could not delete tracker type',
         `Could not find the source YAML file for "${model.displayNamePlural}" in .nimbalyst/trackers/. The tracker type was not deleted.`
       );
       return;
@@ -914,7 +923,10 @@ export function TrackerConfigPanel({ workspacePath }: TrackerConfigPanelProps) {
       }
       await refreshSchemaOverrides(globalRegistry.getAll());
     } catch (err) {
-      window.alert(err instanceof Error ? err.message : `Could not customize ${model.displayNamePlural}.`);
+      errorNotificationService.showError(
+        'Could not customize schema',
+        err instanceof Error ? err.message : `Could not customize ${model.displayNamePlural}.`,
+      );
     }
   }, [refreshSchemaOverrides, workspacePath]);
 
@@ -928,7 +940,10 @@ export function TrackerConfigPanel({ workspacePath }: TrackerConfigPanelProps) {
       );
       await refreshSchemaOverrides(globalRegistry.getAll());
     } catch (err) {
-      window.alert(err instanceof Error ? err.message : `Could not reset ${model.displayNamePlural}.`);
+      errorNotificationService.showError(
+        'Could not reset schema',
+        err instanceof Error ? err.message : `Could not reset ${model.displayNamePlural}.`,
+      );
     }
   }, [refreshSchemaOverrides, workspacePath]);
 

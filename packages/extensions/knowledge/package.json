@@ -11,5 +11,8 @@
     "build": "vite build && vite build --config vite.backend.config.ts",
     "typecheck": "tsc --noEmit",
     "test": "echo \"tests run via root vitest\""
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.7.0"
   }
 }

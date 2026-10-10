@@ -49,7 +49,12 @@ const documents: SharedDocument[] = [
   },
 ];
 
-async function createSurface(personalState: boolean, readReceipts: boolean, hostOverrides: Partial<CollabHost> = {}) {
+async function createSurface(
+  personalState: boolean,
+  readReceipts: boolean,
+  hostOverrides: Partial<CollabHost> = {},
+  sidebarProps: React.ComponentProps<typeof CollabSidebar> = {},
+) {
   const documentTypes = [] as const;
   const host = {
     surface: personalState ? 'desktop' : 'web_console',
@@ -77,6 +82,7 @@ async function createSurface(personalState: boolean, readReceipts: boolean, host
       allSharedDocuments: atom(documents),
       trashedSharedDocuments: atom([]),
       sharedFolders: atom([]),
+      typePlacements: atom([]),
       syncStatus: atom('connected'),
       hasTeam: atom(true),
       activeTeamUserId: atom('member-self'),
@@ -103,7 +109,7 @@ async function createSurface(personalState: boolean, readReceipts: boolean, host
     view = render(
       <Provider store={createStore()}>
         <CollabDocsUIProvider session={session}>
-          <CollabSidebar />
+          <CollabSidebar {...sidebarProps} />
           <SharedDocsListView />
         </CollabDocsUIProvider>
       </Provider>,
@@ -163,6 +169,27 @@ describe('personal UI capability availability', () => {
   });
 });
 
+it('collapses a section to its header row and reports the toggle', async () => {
+  const onToggleCollapsed = vi.fn();
+  const view = await createSurface(true, true, {}, { sectionTitle: 'Team', collapsed: true, onToggleCollapsed });
+  const sidebar = view.getByTestId('collab-sidebar');
+  const toggle = sidebar.querySelector<HTMLButtonElement>('.collab-sidebar-section-toggle')!;
+  expect(toggle.getAttribute('aria-expanded')).toBe('false');
+  expect(sidebar.querySelector('.collab-tree-filter, .file-tree-file')).toBeNull();
+  fireEvent.click(toggle);
+  expect(onToggleCollapsed).toHaveBeenCalledOnce();
+
+  view.rerender(
+    <Provider store={createStore()}>
+      <CollabDocsUIProvider session={view.session}>
+        <CollabSidebar sectionTitle="Team" collapsed={false} onToggleCollapsed={onToggleCollapsed} />
+      </CollabDocsUIProvider>
+    </Provider>,
+  );
+  expect(view.container.querySelector('.collab-sidebar-section-toggle')!.getAttribute('aria-expanded')).toBe('true');
+  expect(view.container.querySelector('.file-tree-file')).not.toBeNull();
+});
+
 // Propagation alone does not cancel an anchor's native navigation.
 it.each(['Favorite', 'Unfavorite'])('cancels native document navigation when clicking %s in the browser sidebar', async (label) => {
   const browser = await createSurface(true, false, {
@@ -187,5 +214,5 @@ it.each(['Favorite', 'Unfavorite'])('cancels native document navigation when cli
     scope,
     documentId: document.documentId,
     teamProjectId: document.teamProjectId,
-  }, 'sidebar');
+  }, 'sidebar', { newTab: false });
 });

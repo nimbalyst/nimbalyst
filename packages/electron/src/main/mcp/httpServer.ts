@@ -29,7 +29,7 @@ import {
   registerWorkspaceMappingForConnection,
   ExtensionToolDefinition,
 } from "./mcpWorkspaceResolver";
-import { handleBackendTool, isBackendTool } from "./tools/backendToolHandler";
+import { filterBackendToolsForSession, handleBackendTool, isBackendTool } from "./tools/backendToolHandler";
 import { setBackendToolsChangeNotifier } from "./backendToolRegistry";
 
 // Tool handlers + schemas
@@ -54,10 +54,15 @@ import {
 } from "./tools/canvasWorkingSetToolHandlers";
 import {
   handleCreateSharedDoc,
+  handleImportFileToPages,
   handleCreateSharedFolder,
   handleMoveSharedItem,
   handleRenameSharedItem,
   handleDeleteSharedItem,
+  handleListPages,
+  handleSearchPages,
+  handleSetPageType,
+  handleSetPageFields,
   getCollabIndexToolSchemas,
 } from "./tools/collabIndexToolHandlers";
 import {
@@ -434,9 +439,11 @@ function createSharedMcpServer(
       );
       // Backend-module-registered tools (executed by the module, not the
       // renderer) live in a parallel registry; merge them in for this endpoint.
-      const backendTools = await getAvailableBackendTools(
-        workspacePath,
-        currentFilePath
+      // This server serves one Nimbalyst session, so owned-sessions tools are
+      // filtered for that session here (the registry itself is per workspace).
+      const backendTools = await filterBackendToolsForSession(
+        await getAvailableBackendTools(workspacePath, currentFilePath),
+        sessionId
       );
       allTools = [
         ...selectExtensionToolsForEndpoint(extensionTools, endpoint.extensionShortName),
@@ -560,6 +567,9 @@ function createSharedMcpServer(
         case "createSharedFolder":
           return handleCreateSharedFolder(args, workspacePath);
 
+        case "importFileToPages":
+          return handleImportFileToPages(args, workspacePath);
+
         case "moveSharedItem":
           return handleMoveSharedItem(args, workspacePath);
 
@@ -568,6 +578,18 @@ function createSharedMcpServer(
 
         case "deleteSharedItem":
           return handleDeleteSharedItem(args, workspacePath);
+
+        case "listPages":
+          return handleListPages(args, workspacePath);
+
+        case "searchPages":
+          return handleSearchPages(args, workspacePath);
+
+        case "setPageType":
+          return handleSetPageType(args, workspacePath);
+
+        case "setPageFields":
+          return handleSetPageFields(args, workspacePath);
 
         case "findOrgMembers":
           return handleFindOrgMembers(args, workspacePath);
@@ -708,7 +730,10 @@ function createSharedMcpServer(
           if (workspacePath) {
             const resolvedBackendWs = await resolveBackendWorkspacePath(workspacePath);
             if (isBackendTool(toolName, resolvedBackendWs)) {
-              return handleBackendTool(toolName, name, args, resolvedBackendWs);
+              return handleBackendTool(toolName, name, args, resolvedBackendWs, {
+                sessionId: sessionId ?? null,
+                caller: "agent",
+              });
             }
           }
           return handleExtensionTool(toolName, name, args, sessionId, workspacePath);

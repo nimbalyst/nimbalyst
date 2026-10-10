@@ -57,7 +57,7 @@ import type { BlockerVisibilityScope } from '../models/trackerBlockerVisibility'
 import { TrackerUnreadDot } from '../../../readReceipts/TrackerUnreadDot';
 import { DisplayOptionsPanel } from './DisplayOptionsPanel';
 import { TrackerTypeCell } from './TrackerTypeCell';
-import { useTrackerRows } from './useTrackerRows';
+import { useTrackerRows, type ConfirmTrackerDelete } from './useTrackerRows';
 import { TrackerFavoriteStar } from './TrackerFavoriteStar';
 import { compareRecords, groupTrackerRecords, searchMatchesRecord } from './trackerRowData';
 
@@ -92,6 +92,8 @@ interface TrackerTableProps {
   onArchiveItems?: (itemIds: string[], archive: boolean) => void;
   /** Callback for bulk/single delete action */
   onDeleteItems?: (itemIds: string[]) => void;
+  /** Host confirmation for delete; delete is unavailable without it. */
+  confirmDelete?: ConfirmTrackerDelete;
   /** Copy a shareable deep link for the given tracker item. Only shown when
    *  exactly one item is selected. Callers omit this when the workspace
    *  has no team configured. */
@@ -747,6 +749,7 @@ export function TrackerTable({
   overrideItems,
   onArchiveItems,
   onDeleteItems,
+  confirmDelete,
   onCopyDeepLink,
   onOpenDocument,
   searchQuery: externalSearchQuery,
@@ -942,6 +945,7 @@ export function TrackerTable({
     activeTypeFilter,
     onItemSelect,
     onDeleteItems,
+    confirmDelete,
     onArchiveItems,
     onSwitchToFilesMode,
   });
@@ -1451,6 +1455,7 @@ export function TrackerTable({
         onOpenDocument={onOpenDocument}
         onArchiveItems={onArchiveItems}
         onDeleteItems={onDeleteItems}
+        confirmDelete={confirmDelete}
         closeContextMenu={closeContextMenu}
         clearSelection={() => setSelectedIds(new Set())}
       />

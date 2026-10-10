@@ -30,8 +30,11 @@ import type {
   ProjectSyncResponseMessage,
   FileContentBroadcastMessage,
   FileDeleteBroadcastMessage,
+  FileContentPushAckMessage,
+  ProjectSyncFileRejection,
 } from '@nimbalyst/collab-protocol';
 import { appendSyncClientParams } from './syncClientInfo';
+import { UnconfirmedPushes, type PushedFileRef } from './projectSyncPushConfirmations';
 import type { PersonalJwt, PersonalMemberId } from '../auth/jwtScopes';
 
 
@@ -67,6 +70,36 @@ export interface ProjectSyncResponse {
   deletedSyncIds: string[];
   needFromClient: string[];
   yjsUpdates: ProjectSyncYjsUpdate[];
+  /**
+   * Earlier pushes that got no ack, which the server now says it holds. Comes
+   * before anything else in the response, so a baseline can be settled first.
+   */
+  confirmedPushes?: PushedFileRef[];
+}
+
+/**
+ * What the server did with a content push. A file is `rejected` only when the
+ * server said so in an ack. `stored` also covers a push sent to a server that
+ * predates the ack, which stores what it receives without answering.
+ * `unconfirmed` is a push queued offline (the sync request that precedes the
+ * replay re-requests it) or one an acking server never answered (dropped
+ * socket, timeout); the latter is settled by the next sync response, which
+ * reports it in `confirmedPushes` only if the server holds what was pushed.
+ */
+export interface ProjectFilePushOutcome {
+  stored: string[];
+  rejected: ProjectSyncFileRejection[];
+  unconfirmed: string[];
+}
+
+const PUSH_ACK_TIMEOUT_MS = 30_000;
+
+interface PendingPush {
+  projectId: string;
+  ws: WebSocket;
+  files: PushedFileRef[];
+  resolve: (outcome: ProjectFilePushOutcome) => void;
+  timer: ReturnType<typeof setTimeout> | undefined;
 }
 
 // ============================================================================
@@ -119,6 +152,11 @@ export class ProjectSyncProvider {
   // always diffs against *current* disk state, never a stale startup snapshot
   // (NIM-853, Layer 1).
   private manifestProviders = new Map<string, () => Promise<ProjectSyncManifestFile[]>>();
+  private pendingPushes = new Map<string, PendingPush>(); // requestId -> pending ack
+  // Whether the server behind a socket acks pushes, learned from its first
+  // projectSyncResponse. Absent until then.
+  private pushAckSockets = new WeakMap<WebSocket, boolean>();
+  private unconfirmedPushes = new UnconfirmedPushes();
 
   // Event callbacks
   private onFileUpdateCallbacks = new Set<(projectId: string, file: ProjectSyncFileUpdate) => void>();
@@ -169,6 +207,7 @@ export class ProjectSyncProvider {
 
       ws.onclose = () => {
         this.connections.delete(projectId);
+        this.settlePendingPushes(projectId);
         this.notifyStatus(projectId, false);
         this.scheduleReconnect(projectId);
       };
@@ -196,6 +235,7 @@ export class ProjectSyncProvider {
       ws.close();
       this.connections.delete(projectId);
     }
+    this.settlePendingPushes(projectId);
     this.notifyStatus(projectId, false);
   }
 
@@ -218,6 +258,15 @@ export class ProjectSyncProvider {
   }
 
   // MARK: - Sync Request
+
+  /**
+   * Re-announce current disk state so the server re-offers what this client
+   * lacks, through the normal receive path (timestamps, conflicts, deletes).
+   * No-op when the project is not connected; the next connect does the same.
+   */
+  resync(projectId: string): Promise<void> {
+    return this.sendFreshSyncRequest(projectId);
+  }
 
   /** Rebuild the manifest from current disk state and send the sync request. */
   private async sendFreshSyncRequest(projectId: string): Promise<void> {
@@ -246,6 +295,8 @@ export class ProjectSyncProvider {
         yjsSeq: f.yjsSeq,
       })),
     };
+    const confirm = this.unconfirmedPushes.syncIds(projectId);
+    if (confirm.length > 0) msg.confirm = confirm;
     this.sendJson(projectId, msg);
   }
 
@@ -260,9 +311,14 @@ export class ProjectSyncProvider {
     }
 
     switch (envelope.type) {
-      case 'projectSyncResponse':
-        await this.handleSyncResponse(projectId, JSON.parse(raw) as ProjectSyncResponseMessage);
+      case 'projectSyncResponse': {
+        const msg = envelope as ProjectSyncResponseMessage;
+        this.notePushAckSupport(projectId, msg.pushAck === true);
+        // Settled before the await, so a later push of the same file supersedes it.
+        const confirmedPushes = this.unconfirmedPushes.settle(projectId, msg);
+        await this.handleSyncResponse(projectId, msg, confirmedPushes);
         break;
+      }
       case 'fileContentBroadcast':
         await this.handleFileContentBroadcast(projectId, JSON.parse(raw) as FileContentBroadcastMessage);
         break;
@@ -275,6 +331,9 @@ export class ProjectSyncProvider {
       case 'fileYjsUpdateBroadcast':
         // Future: handle Yjs updates
         break;
+      case 'fileContentPushAck':
+        this.handlePushAck(JSON.parse(raw) as FileContentPushAckMessage);
+        break;
       case 'error': {
         const err = JSON.parse(raw) as { message: string };
         console.error(`[ProjectSync] Server error for ${projectId}:`, err.message);
@@ -283,7 +342,7 @@ export class ProjectSyncProvider {
     }
   }
 
-  private async handleSyncResponse(projectId: string, msg: ProjectSyncResponseMessage): Promise<void> {
+  private async handleSyncResponse(projectId: string, msg: ProjectSyncResponseMessage, confirmedPushes: PushedFileRef[]): Promise<void> {
     const key = this.config.encryptionKey;
 
     const decryptFile = async (entry: ProjectSyncFileEntry): Promise<ProjectSyncFileUpdate> => {
@@ -314,6 +373,7 @@ export class ProjectSyncProvider {
       deletedSyncIds: msg.deletedSyncIds,
       needFromClient: msg.needFromClient,
       yjsUpdates: msg.yjsUpdates,
+      ...(confirmedPushes.length > 0 ? { confirmedPushes } : {}),
     };
 
     // console.log(`[ProjectSync] Sync response for ${projectId}: ${updatedFiles.length} updated, ${newFiles.length} new, ${msg.deletedSyncIds.length} deleted, ${msg.needFromClient.length} needed`);
@@ -361,7 +421,7 @@ export class ProjectSyncProvider {
     relativePath: string,
     title: string,
     lastModifiedAt: number
-  ): Promise<void> {
+  ): Promise<ProjectFilePushOutcome> {
     const key = this.config.encryptionKey;
     const contentHash = await this.sha256(content);
 
@@ -382,8 +442,9 @@ export class ProjectSyncProvider {
       encryptedTitle: encTitle.encrypted,
       titleIv: encTitle.iv,
       lastModifiedAt,
+      requestId: crypto.randomUUID(),
     };
-    this.sendOrQueue(projectId, msg);
+    return this.sendAwaitingAck(projectId, msg, [{ syncId, contentHash, lastModifiedAt }]);
   }
 
   async pushFileBatch(
@@ -395,7 +456,7 @@ export class ProjectSyncProvider {
       title: string;
       lastModifiedAt: number;
     }>
-  ): Promise<void> {
+  ): Promise<ProjectFilePushOutcome> {
     const key = this.config.encryptionKey;
 
     const entries = await Promise.all(
@@ -423,8 +484,9 @@ export class ProjectSyncProvider {
     const msg: FileContentBatchPushMessage = {
       type: 'fileContentBatchPush',
       files: entries,
+      requestId: crypto.randomUUID(),
     };
-    this.sendOrQueue(projectId, msg);
+    return this.sendAwaitingAck(projectId, msg, entries.map(({ syncId, contentHash, lastModifiedAt }) => ({ syncId, contentHash, lastModifiedAt })));
   }
 
   deleteFile(projectId: string, syncId: string): void {
@@ -515,6 +577,99 @@ export class ProjectSyncProvider {
       const queue = this.offlineQueues.get(projectId) ?? [];
       queue.push(json);
       this.offlineQueues.set(projectId, queue);
+    }
+  }
+
+  /**
+   * Send a push and resolve with what the server did with it. A push that
+   * cannot go out now is queued for replay and reported unconfirmed at once:
+   * its eventual ack has no waiter, and the sync request that precedes the
+   * replay re-requests anything the server lacks. A server that does not ack
+   * stores what it receives, so its pushes resolve stored once sent.
+   */
+  private sendAwaitingAck(
+    projectId: string,
+    msg: FileContentPushMessage | FileContentBatchPushMessage,
+    files: PushedFileRef[],
+  ): Promise<ProjectFilePushOutcome> {
+    const requestId = msg.requestId!;
+    const syncIds = files.map(f => f.syncId);
+    this.unconfirmedPushes.supersede(projectId, syncIds);
+    const ws = this.connections.get(projectId);
+    if (ws?.readyState !== WebSocket.OPEN) {
+      this.sendOrQueue(projectId, msg);
+      return Promise.resolve({ stored: [], rejected: [], unconfirmed: syncIds });
+    }
+    const pushAck = this.pushAckSockets.get(ws);
+    if (pushAck === false) {
+      ws.send(JSON.stringify(msg));
+      return Promise.resolve({ stored: syncIds, rejected: [], unconfirmed: [] });
+    }
+    // Not known yet: notePushAckSupport settles it, or arms the timeout.
+    return new Promise((resolve) => {
+      const pending: PendingPush = { projectId, ws, files, resolve, timer: undefined };
+      this.pendingPushes.set(requestId, pending);
+      if (pushAck) this.armAckTimeout(requestId, pending);
+      ws.send(JSON.stringify(msg));
+    });
+  }
+
+  private armAckTimeout(requestId: string, pending: PendingPush): void {
+    pending.timer = setTimeout(() => this.settleUnanswered(requestId), PUSH_ACK_TIMEOUT_MS);
+  }
+
+  private handlePushAck(ack: FileContentPushAckMessage): void {
+    const pending = ack.requestId ? this.pendingPushes.get(ack.requestId) : undefined;
+    if (!pending) return; // Replayed from the offline queue, or already timed out.
+    this.pendingPushes.delete(ack.requestId!);
+    clearTimeout(pending.timer);
+    // A file is rejected only when the server says so.
+    const rejectedIds = new Set(ack.rejected.map(r => r.syncId));
+    pending.resolve({
+      stored: pending.files.map(f => f.syncId).filter(id => !rejectedIds.has(id)),
+      rejected: ack.rejected,
+      unconfirmed: [],
+    });
+  }
+
+  /**
+   * Record whether this socket's server acks pushes. A pre-ack server's
+   * pending pushes are stored; an acking server's now wait a bounded time.
+   */
+  private notePushAckSupport(projectId: string, pushAck: boolean): void {
+    const ws = this.connections.get(projectId);
+    if (!ws || this.pushAckSockets.has(ws)) return;
+    this.pushAckSockets.set(ws, pushAck);
+    for (const [requestId, pending] of this.pendingPushes) {
+      if (pending.ws !== ws) continue;
+      if (pushAck) this.armAckTimeout(requestId, pending);
+      else this.settleUnanswered(requestId);
+    }
+  }
+
+  /**
+   * A sent push that will get no ack. On a pre-ack server that means stored.
+   * Anywhere else it may or may not have landed, so it stays unconfirmed until
+   * the next sync response says what the server holds.
+   */
+  private settleUnanswered(requestId: string): void {
+    const pending = this.pendingPushes.get(requestId);
+    if (!pending) return;
+    this.pendingPushes.delete(requestId);
+    clearTimeout(pending.timer);
+    const syncIds = pending.files.map(f => f.syncId);
+    if (this.pushAckSockets.get(pending.ws) === false) {
+      pending.resolve({ stored: syncIds, rejected: [], unconfirmed: [] });
+      return;
+    }
+    this.unconfirmedPushes.add(pending.projectId, pending.files);
+    pending.resolve({ stored: [], rejected: [], unconfirmed: syncIds });
+  }
+
+  /** A closed socket will never deliver the acks it owed. */
+  private settlePendingPushes(projectId: string): void {
+    for (const [requestId, pending] of this.pendingPushes) {
+      if (pending.projectId === projectId) this.settleUnanswered(requestId);
     }
   }
 

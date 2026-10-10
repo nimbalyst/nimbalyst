@@ -1,32 +1,30 @@
-import type { JSX } from 'react';
 import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { VList, type VListHandle, type CacheSnapshot } from 'virtua';
-import type { TranscriptViewMessage, SessionData } from '../../../ai/server/types';
+import type { TranscriptViewMessage } from '../../../ai/server/types';
 import type { ToolCallDiffLoadResult } from '../../../ai/server/transcript';
-import { isInteractiveWidgetTool, stripMcpPrefix } from '../../../ai/server/interactivePromptTools';
+import { isInteractiveWidgetTool, partitionUnansweredQuestions, stripMcpPrefix } from '../../../ai/server/interactivePromptTools';
 import type { TranscriptSettings } from '../types';
-import { MessageSegment } from './MessageSegment';
-import { MarkdownRenderer, type TranscriptFileLocation } from './MarkdownRenderer';
-import { ProviderIcon } from '../../icons/ProviderIcons';
+import type { TranscriptFileLocation } from './MarkdownRenderer';
 import { MaterialSymbol } from '../../icons/MaterialSymbol';
-import { formatMessageTime, formatDuration, formatTurnFinishedAt } from '../../../utils/dateUtils';
+import { formatMessageTime } from '../../../utils/dateUtils';
 import { copyToClipboard } from '../../../utils/clipboard';
-import { JSONViewer } from './JSONViewer';
-import { formatToolArguments, extractFilePathFromArgs } from '../utils/pathResolver';
-import { EditToolResultCard } from './EditToolResultCard';
 import { TranscriptSearchBar } from './TranscriptSearchBar';
-import { formatToolDisplayName } from '../utils/toolNameFormatter';
-import { isToolLikeMessage } from '../utils/messageTypeHelpers';
-import { getCustomToolWidget, ToolWidgetErrorBoundary, type ToolCallDiffResult } from './CustomToolWidgets';
-import { useTranscriptToolWidgetRegistryVersion } from '../contributions';
-import { ToolCallChanges } from './ToolCallChanges';
 import { setSessionIsAtBottom, getSessionIsAtBottom } from '../../../store/atoms/transcriptScroll';
 import { isAppleMobileWebKit } from '../../../utils/platform';
 import { usePendingPermissionNavigation } from './usePendingPermissionNavigation';
 import { usePendingQuestionNavigation } from './usePendingQuestionNavigation';
-import { AttachmentStagingDeniedCard } from './AttachmentStagingDeniedCard';
 import { useElapsedTimeRef } from './CustomToolWidgets/useElapsedTime';
+import type { SubagentChildContext, TranscriptToolShared } from './TranscriptToolCard';
+import { TranscriptMessageRow, computeTranscriptRowInfos, type TranscriptRowInfo } from './TranscriptMessageRow';
 
+// Edit/diff extraction moved with the tool card; re-exported for existing importers.
+export {
+  parseUnifiedDiffToReplacements,
+  extractCodexFileChanges,
+  toolCallDiffsToEdits,
+  extractEditsFromToolMessage,
+  formatSubagentAuditLabel,
+} from './TranscriptToolCard';
 // Per-session VList cache - survives component remounts so returning to a session
 // doesn't re-measure all items from scratch
 const vlistCacheMap = new Map<string, CacheSnapshot>();
@@ -368,106 +366,6 @@ const PromptAdditionsInline: React.FC<{
   );
 };
 
-const REMINDER_KIND_LABELS: Record<string, string> = {
-  session_naming: 'Session metadata reminder',
-  wakeup_resume: 'Resumed from scheduled wakeup',
-};
-
-// Keyed by the known PermissionDeniedReasonType values from the SDK. Typed
-// here as a partial record so an unknown value (forward-compatible SDK
-// addition) falls back to the raw string or "SDK" in the renderer.
-const REASON_TYPE_LABELS: Partial<Record<string, string>> = {
-  classifier: 'Auto-mode classifier',
-  mode: 'Permission mode',
-  rule: 'Permission rule',
-  asyncAgent: 'Async agent',
-};
-
-const PermissionDeniedCard: React.FC<{
-  message: TranscriptViewMessage;
-}> = ({ message }) => {
-  const payload = message.systemMessage;
-  const toolName = payload?.deniedToolName ?? 'unknown tool';
-  const reason = payload?.deniedReason;
-  const reasonType = payload?.deniedReasonType;
-  const reasonLabel = (reasonType && REASON_TYPE_LABELS[reasonType]) ?? reasonType ?? 'SDK';
-
-  return (
-    <div
-      data-testid="permission-denied-card"
-      className="permission-denied-card ml-6 mb-2 rounded-md border border-[var(--nim-error)] bg-[var(--nim-error-bg,rgba(239,68,68,0.08))] px-3 py-2"
-    >
-      <div className="flex items-center gap-2 text-xs text-[var(--nim-error)]">
-        <MaterialSymbol icon="block" size={14} />
-        <span className="font-semibold uppercase tracking-[0.08em]">Tool denied</span>
-        <span className="text-[var(--nim-text-muted)]">·</span>
-        <code className="text-[11px] font-mono text-[var(--nim-text)]">{toolName}</code>
-        <span className="ml-auto text-[10px] text-[var(--nim-text-faint)]">
-          {formatMessageTime(message.createdAt?.getTime() ?? 0)}
-        </span>
-      </div>
-      {reason && (
-        <p className="m-0 mt-1.5 text-[0.875rem] leading-relaxed text-[var(--nim-text-muted)] whitespace-normal break-words">
-          {reason}
-        </p>
-      )}
-      <p className="m-0 mt-1 text-[10px] uppercase tracking-wide text-[var(--nim-text-faint)]">
-        Source: {reasonLabel}
-      </p>
-    </div>
-  );
-};
-
-const SystemReminderCard: React.FC<{
-  message: TranscriptViewMessage;
-}> = ({ message }) => {
-  const [isExpanded, setIsExpanded] = useState(false);
-
-  const content = (message.text ?? '')
-    .replace(/^\s*<SYSTEM_REMINDER>/, '')
-    .replace(/<\/SYSTEM_REMINDER>\s*$/, '')
-    .replace(/`([^`]+)`/g, '$1')
-    .trim();
-
-  if (!content) {
-    return null;
-  }
-
-  const reminderKind =
-    message.systemMessage?.reminderKind ??
-    (typeof message.metadata?.reminderKind === 'string'
-      ? (message.metadata.reminderKind as string)
-      : undefined);
-  const label =
-    (reminderKind && REMINDER_KIND_LABELS[reminderKind]) ?? 'System Reminder';
-
-  return (
-    <div className="rich-transcript-system-reminder ml-6 mb-2 rounded-md border border-[var(--nim-border)] bg-[var(--nim-bg-tertiary)] px-3 py-2">
-      <button
-        type="button"
-        onClick={() => setIsExpanded(v => !v)}
-        className="flex w-full items-center gap-2 text-left text-xs text-[var(--nim-text-muted)] hover:text-[var(--nim-text)]"
-        aria-expanded={isExpanded}
-      >
-        <MaterialSymbol
-          icon="chevron_right"
-          size={14}
-          className={`shrink-0 transition-transform ${isExpanded ? 'rotate-90' : ''}`}
-        />
-        <MaterialSymbol icon="notification_important" size={14} />
-        <span className="font-medium uppercase tracking-[0.08em]">{label}</span>
-        <span className="ml-auto text-[10px] text-[var(--nim-text-faint)]">
-          {formatMessageTime(message.createdAt?.getTime() ?? 0)}
-        </span>
-      </button>
-      {isExpanded && (
-        <p className="m-0 mt-2 text-[0.875rem] leading-relaxed text-[var(--nim-text-muted)] whitespace-normal break-words">
-          {content}
-        </p>
-      )}
-    </div>
-  );
-};
 
 interface RichTranscriptViewProps {
   sessionId: string;
@@ -550,19 +448,6 @@ const defaultSettings: TranscriptSettings = {
   showSessionInit: false,
 };
 
-// Lowercased tool names that should render with EditToolResultCard.
-// 'applypatch'/'apply_patch' covers Codex ACP's apply_patch tool, which
-// emits its diff via a `changes: { [path]: { type, unified_diff } }` shape
-// (parsed in extractEditsFromToolMessage).
-// Codex app-server's `file_change` is NOT in this set -- its `changes` is an
-// array of `{path, kind, diff}` rather than the {old_string,new_string}/
-// {content} shapes extractEditsFromToolMessage understands, so it routes
-// through extractCodexFileChanges in renderToolCard instead. (#1191: it used
-// to depend on main-side fileDiffs enrichment, which lazy diff loading removed.)
-const EDIT_TOOL_NAMES = new Set([
-  'edit', 'write', 'multi-edit', 'multiedit', 'multi_edit',
-  'applypatch', 'apply_patch',
-]);
 
 const TRANSCRIPT_BOTTOM_THRESHOLD_PX = 50;
 const DESKTOP_TRANSCRIPT_BUFFER_PX = 10000;
@@ -585,6 +470,18 @@ export function shouldAutoScrollTranscript(
 }
 
 /**
+ * True when the user has scrolled to the native top but the first row is still
+ * drawn above it. On iOS WebKit virtua defers size-correction jumps until a
+ * scroll gesture ends (writing scrollTop mid-momentum kills the momentum), and
+ * reports the pending amount through a negative `getItemOffset(0)`. Rows above
+ * the viewport are estimated before they are measured, so a long flick upward
+ * bounces off a false top several messages into the session.
+ */
+export function isAtFalseTranscriptTop(scrollOffset: number, firstRowOffset: number): boolean {
+  return scrollOffset <= 1 && firstRowOffset < -1;
+}
+
+/**
  * True only when there is a live, non-collapsed text selection whose anchor sits
  * inside the transcript root. Scopes the auto-scroll suppression to selections
  * made in the transcript, so selecting text elsewhere (the composer, a sidebar)
@@ -598,17 +495,6 @@ export function hasActiveTranscriptSelection(root: HTMLElement | null): boolean 
   return anchor != null && root.contains(anchor);
 }
 
-const isEditToolName = (name?: string): boolean => {
-  if (!name) return false;
-  const normalized = name.toLowerCase();
-  if (EDIT_TOOL_NAMES.has(normalized)) return true;
-  if (normalized.endsWith('__edit')) return true;
-  if (normalized.endsWith(':edit')) return true;
-  return false;
-};
-
-const WRITE_TOOL_NAMES = new Set(['write', 'notebookedit']);
-
 /**
  * The interactive-prompt tool set and the MCP prefix rule live in
  * `ai/server/interactivePromptTools` because the transcript parser and the live
@@ -617,101 +503,7 @@ const WRITE_TOOL_NAMES = new Set(['write', 'notebookedit']);
  */
 export { stripMcpPrefix, isInteractiveWidgetTool };
 
-/** Formats provider-supplied sub-agent execution metadata without normalizing it. */
-export function formatSubagentAuditLabel(
-  model: string | null | undefined,
-  reasoningEffort: string | null | undefined,
-): string | null {
-  const parts: string[] = [];
-  if (model) parts.push(`Model: ${model}`);
-  if (reasoningEffort) parts.push(`Reasoning effort: ${reasoningEffort}`);
-  return parts.length > 0 ? parts.join('; ') : null;
-}
 
-const isFileModifyingTool = (name?: string): boolean => {
-  if (!name) return false;
-  const normalized = name.toLowerCase();
-  if (EDIT_TOOL_NAMES.has(normalized)) return true;
-  if (WRITE_TOOL_NAMES.has(normalized)) return true;
-  if (normalized.endsWith('__edit')) return true;
-  if (normalized.endsWith(':edit')) return true;
-  if (normalized.endsWith('__write')) return true;
-  if (normalized.endsWith(':write')) return true;
-  return false;
-};
-
-const countLines = (s: string | undefined | null): number => {
-  if (!s) return 0;
-  const lines = s.split('\n');
-  // Don't count trailing empty line from final newline
-  if (lines.length > 0 && lines[lines.length - 1] === '') return lines.length - 1;
-  return lines.length;
-};
-
-/**
- * Compute file modification stats for a turn by scanning tool messages.
- * Returns null if no file modifications were detected.
- */
-const computeTurnFileStats = (
-  messages: TranscriptViewMessage[],
-  turnStartIdx: number,
-  turnEndIdx: number
-): { filesModified: number; linesAdded: number; linesRemoved: number } | null => {
-  const modifiedFiles = new Set<string>();
-  let totalAdded = 0;
-  let totalRemoved = 0;
-
-  for (let i = turnStartIdx + 1; i <= turnEndIdx; i++) {
-    const msg = messages[i];
-    if (msg.type !== 'tool_call' || !msg.toolCall) continue;
-
-    const toolName = msg.toolCall.toolName;
-    if (!isFileModifyingTool(toolName)) continue;
-    if (msg.isError) continue;
-
-    const args = msg.toolCall.arguments;
-    if (!args) continue;
-
-    const filePath = args.file_path || args.filePath || args.notebook_path || args.path;
-    if (typeof filePath === 'string') {
-      modifiedFiles.add(filePath);
-    }
-
-    const normalized = (toolName || '').toLowerCase();
-    const isEdit = EDIT_TOOL_NAMES.has(normalized) || normalized.endsWith('__edit') || normalized.endsWith(':edit');
-
-    if (isEdit) {
-      const oldStr = args.old_string as string | undefined;
-      const newStr = args.new_string as string | undefined;
-      if (oldStr != null || newStr != null) {
-        totalRemoved += countLines(oldStr);
-        totalAdded += countLines(newStr);
-      }
-    } else {
-      // Write / NotebookEdit - new content
-      const content = args.content as string | undefined;
-      if (content) {
-        totalAdded += countLines(content);
-      }
-    }
-  }
-
-  if (modifiedFiles.size === 0 && totalAdded === 0 && totalRemoved === 0) return null;
-  return { filesModified: modifiedFiles.size, linesAdded: totalAdded, linesRemoved: totalRemoved };
-};
-
-const safeParseJson = (value: string): any | null => {
-  try {
-    return JSON.parse(value);
-  } catch {
-    return null;
-  }
-};
-
-const looksLikeJson = (value: string) => {
-  const trimmed = value.trim();
-  return (trimmed.startsWith('{') && trimmed.endsWith('}')) || (trimmed.startsWith('[') && trimmed.endsWith(']'));
-};
 
 const getTranscriptMessageKey = (
   sessionId: string,
@@ -725,443 +517,6 @@ const getTranscriptMessageKey = (
   return `${sessionId}-${stableId}`;
 };
 
-const getTranscriptToolKey = (
-  toolMsg: TranscriptViewMessage,
-  fallbackIndex: number,
-  depth: number
-): string => {
-  const stableId =
-    toolMsg.toolCall?.providerToolCallId ||
-    toolMsg.subagentId ||
-    (Number.isFinite(toolMsg.id) ? `id-${toolMsg.id}` : null) ||
-    (Number.isFinite(toolMsg.sequence) ? `seq-${toolMsg.sequence}` : null) ||
-    `idx-${fallbackIndex}`;
-  // Append fallbackIndex as a tiebreaker. Some providers report the same
-  // providerToolCallId for both a parent tool and a derived/echo row at the
-  // same depth, which would collide if we keyed by stableId alone.
-  return `tool-${depth}-${stableId}-i${fallbackIndex}`;
-};
-
-const stableSerialize = (value: unknown): string => {
-  if (value === null || value === undefined) return String(value);
-  if (typeof value !== 'object') return JSON.stringify(value);
-  if (Array.isArray(value)) {
-    return `[${value.map(item => stableSerialize(item)).join(',')}]`;
-  }
-
-  const entries = Object.entries(value as Record<string, unknown>)
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(([key, child]) => `${JSON.stringify(key)}:${stableSerialize(child)}`);
-
-  return `{${entries.join(',')}}`;
-};
-
-const buildEditSignature = (edit: Record<string, any>): string => {
-  const resolvedPath = edit.filePath || edit.file_path || edit.targetFilePath || '';
-  return stableSerialize({
-    filePath: resolvedPath,
-    replacements: edit.replacements,
-    oldString: edit.old_string ?? edit.oldText,
-    newString: edit.new_string ?? edit.newText,
-    content: edit.content,
-    applied: edit.applied,
-    type: edit.type,
-  });
-};
-
-/**
- * Parse a unified diff string into the `replacements: [{oldText, newText}]`
- * shape DiffViewer expects. Hunks are split on `@@` headers; one replacement
- * is emitted per hunk so the rendered diff preserves hunk boundaries.
- *
- * Used to bridge Codex ACP's `apply_patch` tool output (which carries hunks
- * as a single unified diff string) into the same renderer Claude's Edit uses.
- */
-export const parseUnifiedDiffToReplacements = (
-  unifiedDiff: string
-): Array<{ oldText: string; newText: string }> => {
-  if (!unifiedDiff) return [];
-  const lines = unifiedDiff.split('\n');
-  const replacements: Array<{ oldText: string; newText: string }> = [];
-  let oldBuf: string[] = [];
-  let newBuf: string[] = [];
-  let inHunk = false;
-
-  const flush = () => {
-    if (oldBuf.length === 0 && newBuf.length === 0) return;
-    replacements.push({ oldText: oldBuf.join('\n'), newText: newBuf.join('\n') });
-    oldBuf = [];
-    newBuf = [];
-  };
-
-  for (const line of lines) {
-    if (line.startsWith('@@')) {
-      flush();
-      inHunk = true;
-      continue;
-    }
-    if (!inHunk) continue;
-    if (line === '') continue; // trailing newline / blank between hunks
-    if (line.startsWith('\\ ')) continue; // "\ No newline at end of file"
-    if (line.startsWith('-')) {
-      oldBuf.push(line.slice(1));
-    } else if (line.startsWith('+')) {
-      newBuf.push(line.slice(1));
-    } else {
-      const ctx = line.startsWith(' ') ? line.slice(1) : line;
-      oldBuf.push(ctx);
-      newBuf.push(ctx);
-    }
-  }
-  flush();
-  return replacements;
-};
-
-/**
- * Detect Codex `apply_patch`'s `changes` shape -- a record keyed by file
- * path whose values are `{ type: 'add'|'update'|'delete'|'move',
- * unified_diff?: string, move_path?: string|null }`. Returns one synthesized
- * edit per entry, ready for EditToolResultCard.
- */
-const extractApplyPatchChanges = (changes: unknown): any[] => {
-  if (!changes || typeof changes !== 'object' || Array.isArray(changes)) return [];
-  const out: any[] = [];
-  for (const [path, raw] of Object.entries(changes as Record<string, unknown>)) {
-    if (!raw || typeof raw !== 'object') continue;
-    const entry = raw as Record<string, unknown>;
-    const kind = typeof entry.type === 'string' ? entry.type : undefined;
-    const unifiedDiff = typeof entry.unified_diff === 'string' ? entry.unified_diff : undefined;
-
-    if (kind === 'add') {
-      // Codex apply_patch carries the full new-file body as `content` for
-      // type: 'add'. Older variants (or other apply_patch implementations)
-      // may instead provide a unified_diff whose `+` lines comprise the
-      // file -- prefer `content` but fall back to extracting from the diff.
-      let content = '';
-      if (typeof entry.content === 'string') {
-        content = entry.content;
-      } else if (unifiedDiff) {
-        content = unifiedDiff
-          .split('\n')
-          .filter((l) => l.startsWith('+') && !l.startsWith('+++'))
-          .map((l) => l.slice(1))
-          .join('\n');
-      }
-      out.push({ filePath: path, type: 'add', operation: 'create', content });
-      continue;
-    }
-
-    if (kind === 'delete') {
-      out.push({ filePath: path, type: 'delete', operation: 'delete', content: '' });
-      continue;
-    }
-
-    if (unifiedDiff) {
-      const replacements = parseUnifiedDiffToReplacements(unifiedDiff);
-      out.push({
-        filePath: path,
-        type: kind ?? 'update',
-        operation: 'edit',
-        replacements,
-      });
-    }
-  }
-  return out;
-};
-
-/**
- * Detect the Codex app-server `file_change` shape -- an ARRAY of
- * `{ path, kind: 'add'|'update'|'delete', move_path?: string|null, diff: string }`
- * (see CodexAppServerRawParser.parseFileChangeItem). The `diff` field's meaning
- * depends on `kind`, per providers/codex/patchReverse.ts:
- *
- *   add    -> raw post-edit file content (NOT a unified diff)
- *   update -> one or more standard unified-diff hunks
- *   delete -> the removed content, formatted as `-` lines
- *
- * Rendering straight off these arguments keeps Codex edits on the red/green
- * EditToolResultCard without touching the lazy history-diff machinery: the
- * patch text is already in the persisted tool call, so no snapshot reads and
- * no diff computation are needed.
- *
- * The legacy `@openai/codex-sdk` transport passes the SDK's `changes` through
- * verbatim and those entries carry no `diff`, so they yield no edits here and
- * fall through to the generic tool card.
- */
-export const extractCodexFileChanges = (changes: unknown): any[] => {
-  if (!Array.isArray(changes)) return [];
-  const out: any[] = [];
-  for (const raw of changes) {
-    if (!raw || typeof raw !== 'object') continue;
-    const entry = raw as Record<string, unknown>;
-    const filePath = typeof entry.path === 'string' ? entry.path : undefined;
-    const diff = typeof entry.diff === 'string' ? entry.diff : undefined;
-    if (!filePath || !diff) continue;
-    const kind = typeof entry.kind === 'string' ? entry.kind : 'update';
-
-    if (kind === 'add') {
-      out.push({ filePath, type: 'add', operation: 'create', content: diff });
-      continue;
-    }
-
-    if (kind === 'delete') {
-      out.push({
-        filePath,
-        type: 'delete',
-        operation: 'delete',
-        old_string: stripLeadingDiffMarkers(diff),
-        new_string: '',
-      });
-      continue;
-    }
-
-    const replacements = parseUnifiedDiffToReplacements(diff);
-    if (replacements.length === 0) continue;
-    out.push({ filePath, type: 'update', operation: 'edit', replacements });
-  }
-  return out;
-};
-
-/** Strip the leading `-` from each line of a Codex delete diff. */
-const stripLeadingDiffMarkers = (diff: string): string =>
-  diff
-    .split('\n')
-    .map((line) => (line.startsWith('-') ? line.slice(1) : line))
-    .join('\n');
-
-/**
- * Map resolved `ToolCallDiffResult[]` into the edit-record shape
- * EditToolResultCard expects. Used by transcript rows that are enriched in
- * main before the renderer sees them (for example Codex `file_change`).
- */
-export const toolCallDiffsToEdits = (diffs: any[]): any[] => {
-  const out: any[] = [];
-  for (const diff of diffs) {
-    if (!diff || typeof diff !== 'object') continue;
-    const filePath = typeof diff.filePath === 'string' ? diff.filePath : undefined;
-    if (!filePath) continue;
-    const operation = typeof diff.operation === 'string' ? diff.operation : 'edit';
-
-    if (operation === 'create') {
-      // Prefer the explicit `content` field when the matcher provided it
-      // (Write/Edit tools include the file body directly). For Codex
-      // `file_change` with kind='add', the matcher returns
-      // `diffs: [{ oldString: '', newString: <full body> }]` from its
-      // history-snapshot fallback because the SDK's FileChangeItem.changes
-      // doesn't carry content -- pull the body off newString in that case
-      // so NewFilePreview renders with the actual file contents instead
-      // of an empty preview.
-      let content = typeof diff.content === 'string' ? diff.content : '';
-      if (!content && Array.isArray(diff.diffs) && diff.diffs.length > 0) {
-        content = diff.diffs
-          .map((d: any) => (typeof d?.newString === 'string' ? d.newString : ''))
-          .join('');
-      }
-      out.push({
-        filePath,
-        type: 'add',
-        operation: 'create',
-        content,
-      });
-      continue;
-    }
-
-    const replacements = Array.isArray(diff.diffs)
-      ? diff.diffs
-          .filter((d: any) => d && typeof d === 'object')
-          .map((d: any) => ({
-            oldText: typeof d.oldString === 'string' ? d.oldString : '',
-            newText: typeof d.newString === 'string' ? d.newString : '',
-          }))
-      : [];
-
-    if (operation === 'delete') {
-      // ToolCallMatcher returns the file's last-known content as a single
-      // diff entry for delete. Render it as red-only by clearing newText.
-      const first = replacements[0] ?? { oldText: '', newText: '' };
-      out.push({
-        filePath,
-        type: 'delete',
-        operation: 'delete',
-        old_string: first.oldText,
-        new_string: '',
-      });
-      continue;
-    }
-
-    out.push({
-      filePath,
-      type: 'update',
-      operation: 'edit',
-      replacements: replacements.length > 0 ? replacements : undefined,
-    });
-  }
-  return out;
-};
-
-export const extractEditsFromToolMessage = (message: TranscriptViewMessage): any[] => {
-  const tool = message.toolCall;
-  if (!tool) return [];
-
-  const args = tool.arguments as Record<string, any> | undefined;
-  const fallbackPath =
-    tool.targetFilePath ||
-    (args?.file_path as string | undefined) ||
-    (args?.filePath as string | undefined) ||
-    (args?.path as string | undefined);
-
-  const edits: any[] = [];
-  const visited = new WeakSet<object>();
-  const seenEditSignatures = new Set<string>();
-
-  const pushEdit = (raw: any, fallback?: string) => {
-    if (!raw || typeof raw !== 'object') return;
-    const normalized: any = { ...raw };
-
-    if (Array.isArray(normalized.content)) {
-      const flattened = normalized.content
-        .map((block: any) => {
-          if (typeof block === 'string') return block;
-          if (block && typeof block.text === 'string') return block.text;
-          return '';
-        })
-        .filter(Boolean)
-        .join('\n')
-        .trim();
-      if (flattened) {
-        normalized.content = flattened;
-      }
-    }
-
-    if (
-      !normalized.filePath &&
-      !normalized.file_path &&
-      !normalized.targetFilePath &&
-      fallback
-    ) {
-      normalized.filePath = fallback;
-    }
-
-    const signature = buildEditSignature(normalized);
-    if (seenEditSignatures.has(signature)) {
-      return;
-    }
-    seenEditSignatures.add(signature);
-    edits.push(normalized);
-  };
-
-  const visit = (value: any, localFallback?: string) => {
-    if (value === null || value === undefined) return;
-    const fallback = localFallback || fallbackPath;
-
-    if (Array.isArray(value)) {
-      value.forEach(item => visit(item, fallback));
-      return;
-    }
-
-    if (typeof value === 'string') {
-      if (looksLikeJson(value)) {
-        const parsed = safeParseJson(value);
-        if (parsed) {
-          visit(parsed, fallback);
-        }
-      }
-      return;
-    }
-
-    if (typeof value !== 'object') {
-      return;
-    }
-
-    if (visited.has(value as object)) {
-      return;
-    }
-    visited.add(value as object);
-
-    const candidate = value as Record<string, any>;
-    const candidateFilePath =
-      candidate.file_path ||
-      candidate.filePath ||
-      candidate.targetFilePath ||
-      candidate.file ||
-      fallback;
-
-    const hasReplacementArray = Array.isArray(candidate.replacements) && candidate.replacements.length > 0;
-    const hasTextContent = typeof candidate.content === 'string' && candidate.content.trim().length > 0;
-    const hasContentBlocks =
-      Array.isArray(candidate.content) &&
-      candidate.content.some((block: any) => typeof block === 'string' || typeof block?.text === 'string');
-    const hasDiffLike =
-      typeof candidate.diff === 'string' ||
-      typeof candidate.newText === 'string' ||
-      typeof candidate.oldText === 'string' ||
-      typeof candidate.new_string === 'string' ||
-      typeof candidate.old_string === 'string';
-
-    if (hasReplacementArray || hasTextContent || hasContentBlocks || hasDiffLike) {
-      pushEdit(candidate, candidateFilePath);
-    }
-
-    if (candidate.edit) {
-      const editPath = candidate.edit?.file_path || candidate.edit?.filePath || candidateFilePath;
-      visit(candidate.edit, editPath);
-    }
-
-    if (Array.isArray(candidate.edits)) {
-      candidate.edits.forEach((entry: any) => {
-        const entryPath = entry?.file_path || entry?.filePath || candidateFilePath;
-        visit(entry, entryPath);
-      });
-    }
-
-    Object.entries(candidate).forEach(([key, child]) => {
-      if (key === 'edit' || key === 'edits' || key === 'replacements') {
-        return;
-      }
-
-      if (typeof child === 'string' && looksLikeJson(child)) {
-        const parsed = safeParseJson(child);
-        if (parsed) {
-          visit(parsed, candidateFilePath);
-        }
-        return;
-      }
-
-      if (child && typeof child === 'object') {
-        visit(child, candidateFilePath);
-      }
-    });
-  };
-
-  // Codex ACP `apply_patch` carries its diff under `changes: { [path]: { type, unified_diff } }`
-  // in either args or result. Detect first so the rest of the recursive walk
-  // doesn't fall back to dumping the raw JSON.
-  const fromArgs = extractApplyPatchChanges((args as any)?.changes);
-  if (fromArgs.length > 0) {
-    return fromArgs;
-  }
-  const resultObj =
-    typeof tool.result === 'string' && looksLikeJson(tool.result)
-      ? safeParseJson(tool.result)
-      : tool.result;
-  const fromResult = extractApplyPatchChanges((resultObj as any)?.changes);
-  if (fromResult.length > 0) {
-    return fromResult;
-  }
-
-  // Note: toolCall.changes contains {path, patch} metadata -- not edit instructions.
-  // Edits are extracted from tool arguments and result payloads via visit() below.
-
-  if (args) {
-    visit(args);
-  }
-
-  if (tool.result) {
-    visit(tool.result);
-  }
-
-  return edits;
-};
 
 export const RichTranscriptView = React.forwardRef<
   { scrollToMessage: (index: number) => void; scrollToTop: () => void },
@@ -1174,10 +529,6 @@ export const RichTranscriptView = React.forwardRef<
   const [copiedMessageIndex, setCopiedMessageIndex] = useState<number | null>(null);
   const [showSearchBar, setShowSearchBar] = useState(false);
 
-  // Subscribe to the transcript tool-widget registry so extension
-  // enable/disable cycles cause this view to re-render and pick up
-  // newly contributed widgets without a session reload.
-  useTranscriptToolWidgetRegistryVersion();
 
   // Notify the parent when the find-in-page search bar visibility changes
   // so it can shift `FloatingTranscriptActions` (sibling, absolutely positioned
@@ -1192,6 +543,9 @@ export const RichTranscriptView = React.forwardRef<
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const viewRootRef = useRef<HTMLDivElement>(null);
   const vlistRef = useRef<VListHandle>(null);
+  // Set when a scroll gesture hits a false top (see isAtFalseTranscriptTop);
+  // onScrollEnd finishes the trip to the first row once virtua applies its jump.
+  const hitFalseTopRef = useRef(false);
   const messageRefs = useRef<Map<number, HTMLDivElement>>(new Map());
   const isAtBottomRef = useRef(
     persistScrollState ? getSessionIsAtBottom(sessionId) : true
@@ -1327,21 +681,26 @@ export const RichTranscriptView = React.forwardRef<
     [currentTeammates]
   );
 
+  // Question tool calls with no result, split by the last user message. The
+  // superseded ones render as skipped even when no durable result row exists
+  // (older transcripts).
+  const unansweredQuestions = useMemo(() => partitionUnansweredQuestions(messages), [messages]);
+  // Keyed on content so the Set keeps its identity across streamed frames;
+  // sub-agent tool cards receive it and would otherwise re-render every frame.
+  const skippedQuestionIdsKey = unansweredQuestions.superseded.map(question => question.id).join('\u0000');
+  const skippedQuestionIds = useMemo(
+    () => new Set(skippedQuestionIdsKey ? skippedQuestionIdsKey.split('\u0000') : []),
+    [skippedQuestionIdsKey]
+  );
+
   // Determine if we're waiting for a response (used for scroll behavior and UI)
   const isWaitingForResponse = useMemo(() => {
     // Session is waiting for the USER to answer — not thinking, don't show the indicator.
     // Check the prop (live IPC state) AND scan messages directly (survives session reloads).
     if (hasPendingInteractivePrompt) return false;
-    // Match BOTH the bare tool name and the MCP-prefixed form
-    // (`mcp__nimbalyst-mcp__AskUserQuestion`); strict equality on just the
-    // bare name left the "Thinking…" indicator rendered on top of the
-    // already-rendered AskUserQuestion widget.
-    const hasPendingQuestion = messages.some(
-      msg => isToolLikeMessage(msg)
-        && !!msg.toolCall
-        && stripMcpPrefix(msg.toolCall.toolName ?? '') === 'AskUserQuestion'
-        && !msg.toolCall.result
-    );
+    // Only an OPEN question means the agent is waiting on the user. A question
+    // the user moved past by sending a new message must not hide Thinking.
+    const hasPendingQuestion = unansweredQuestions.open.length > 0;
     if (hasPendingQuestion) return false;
     // Check isProcessing prop first (most reliable for queued prompts from mobile)
     if (isProcessing) return true;
@@ -1352,7 +711,7 @@ export const RichTranscriptView = React.forwardRef<
     }
     if (runningTeammates.length > 0) return true;
     return false;
-  }, [messages, sessionStatus, isProcessing, hasPendingInteractivePrompt, runningTeammates]);
+  }, [messages, sessionStatus, isProcessing, hasPendingInteractivePrompt, runningTeammates, unansweredQuestions]);
 
   /**
    * Anchored to the last user message, the same anchor "Finished in ..." uses.
@@ -1563,7 +922,7 @@ export const RichTranscriptView = React.forwardRef<
     vlistRef.current.scrollToIndex(lastIndex, { align: 'end' });
   }, [messages.length, isWaitingForResponse]);
 
-  const toggleMessageCollapse = (index: number) => {
+  const toggleMessageCollapse = useCallback((index: number) => {
     setCollapsedMessages(prev => {
       const next = new Set(prev);
       if (next.has(index)) {
@@ -1573,7 +932,7 @@ export const RichTranscriptView = React.forwardRef<
       }
       return next;
     });
-  };
+  }, []);
 
   const toggleToolExpand = useCallback((toolId: string) => {
     setExpandedTools(prev => {
@@ -1587,7 +946,7 @@ export const RichTranscriptView = React.forwardRef<
     });
   }, []);
 
-  const copyTranscriptViewMessageContent = async (message: TranscriptViewMessage, index: number) => {
+  const copyTranscriptViewMessageContent = useCallback(async (message: TranscriptViewMessage, index: number) => {
     try {
       await copyToClipboard(message.text ?? '');
       setCopiedMessageIndex(index);
@@ -1595,805 +954,95 @@ export const RichTranscriptView = React.forwardRef<
     } catch (err) {
       console.error('Failed to copy to clipboard:', err);
     }
-  };
+  }, []);
 
-  // Auto-expand sub-agent (Task) tools
+  const registerMessageRef = useCallback((index: number, el: HTMLDivElement | null) => {
+    if (el) {
+      messageRefs.current.set(index, el);
+    } else {
+      messageRefs.current.delete(index);
+    }
+  }, []);
+
+  // Auto-expand sub-agent (Task) tools. Keep the same Set when every id is
+  // already expanded: a new Set re-renders every row holding a tool card.
   useEffect(() => {
-    const subAgentIds = new Set<string>();
-    messages.forEach(msg => {
-      if (msg.type === 'subagent' && msg.subagentId) {
-        subAgentIds.add(msg.subagentId);
-      }
-    });
-
-    if (subAgentIds.size > 0) {
-      setExpandedTools(prev => {
-        const next = new Set(prev);
-        subAgentIds.forEach(id => next.add(id));
-        return next;
-      });
-    }
-  }, [messages]);
-
-  // Helper to check if message is a login-required error
-  // Uses SDK's first-class isAuthError flag when available (preferred)
-  // Falls back to string matching for backwards compatibility with old messages
-  const isLoginRequiredError = (message: TranscriptViewMessage) => {
-    // First-class detection via SDK's isAuthError flag (most reliable)
-    if (message.isAuthError === true) {
-      return true;
-    }
-
-    // Codex app-server pre-flight auth required -- treat the same so the
-    // last-message-only widget gating in shouldShowLoginWidgetForIndex applies.
-    if (message.isCodexAuthRequired === true) {
-      return true;
-    }
-
-    // Fallback to string matching for backwards compatibility
-    // IMPORTANT: Only match specific authentication error patterns, NOT generic words
-    const content = message.text || '';
-    const lowerContent = content.toLowerCase();
-    return (
-      lowerContent.includes('invalid api key') ||
-      lowerContent.includes('please run /login') ||
-      // Match "401 unauthorized" or "unauthorized error" but not just "unauthorized" alone
-      lowerContent.includes('401 unauthorized') ||
-      lowerContent.includes('unauthorized error') ||
-      lowerContent.includes('authentication required') ||
-      lowerContent.includes('oauth token has expired') ||
-      lowerContent.includes('token has expired') ||
-      lowerContent.includes('expired token') ||
-      lowerContent.includes('please obtain a new token') ||
-      lowerContent.includes('refresh your existing token') ||
-      lowerContent.includes('authentication_error') ||
-      // Match "/login" only at word boundary (not in URLs)
-      /\b\/login\b/.test(lowerContent)
-    );
-  };
-
-  // Helper to check if we should show the login widget for a given message index
-  // Only show the widget if this is a login error AND it's the last message in the session
-  // This prevents redundant widgets from being shown when scrolling through history
-  const shouldShowLoginWidgetForIndex = (index: number): boolean => {
-    const message = messages[index];
-    if (!isLoginRequiredError(message) || message.type === 'user_message') {
-      return false;
-    }
-
-    // Only show the login widget if this is the last message in the session
-    // This prevents re-rendering/re-checking login status when scrolling through old messages
-    return index === messages.length - 1;
-  };
-
-  // Helper to get provider display name
-  const getProviderDisplayName = (provider?: string): string => {
-    switch (provider) {
-      case 'claude':
-        return 'Claude';
-      case 'claude-code':
-        return 'Claude Agent';
-      case 'claude-code-cli':
-        return 'Claude Code CLI';
-      case 'openai':
-      case 'openai-codex':
-        return 'OpenAI';
-      case 'lmstudio':
-        return 'LM Studio';
-      default:
-        return 'Agent';
-    }
-  };
-
-  // Helper to extract text content from tool result
-  const extractResultText = (result: any): string | null => {
-    if (typeof result === 'string') {
-      return result;
-    }
-
-    // Handle array of content blocks (Anthropic format)
-    if (Array.isArray(result)) {
-      const textParts: string[] = [];
-      for (const block of result) {
-        if (block.type === 'text' && block.text) {
-          textParts.push(block.text);
+    setExpandedTools(prev => {
+      let next: Set<string> | null = null;
+      for (const msg of messages) {
+        if (msg.type === 'subagent' && msg.subagentId && !prev.has(msg.subagentId)) {
+          next ??= new Set(prev);
+          next.add(msg.subagentId);
         }
       }
-      return textParts.length > 0 ? textParts.join('\n') : null;
-    }
+      return next ?? prev;
+    });
+  }, [messages]);
 
-    return null;
-  };
+  const subagentContext = useMemo<SubagentChildContext>(
+    () => ({ expandedTools, skippedQuestionIds, currentTeammates }),
+    [expandedTools, skippedQuestionIds, currentTeammates]
+  );
 
-  // Recursive tool rendering helper
-  const renderToolCard = (toolMsg: TranscriptViewMessage, toolIndex: number, depth: number = 0): JSX.Element | null => {
-    if (!toolMsg.toolCall) return null;
+  const toolShared = useMemo<TranscriptToolShared>(
+    () => ({
+      sessionId,
+      workspacePath,
+      readFile,
+      onOpenFile,
+      onOpenSession,
+      renderEmbeddedFile,
+      canEmbedFile,
+      loadToolCallDiffs,
+      onToggleTool: toggleToolExpand,
+    }),
+    [sessionId, workspacePath, readFile, onOpenFile, onOpenSession, renderEmbeddedFile, canEmbedFile, loadToolCallDiffs, toggleToolExpand]
+  );
 
-    // Hide Task tool calls that were cancelled as siblings of a parallel spawn.
-    // These get exactly "<tool_use_error>Sibling tool call errored</tool_use_error>"
-    // as their result and were never actually started.
-    if (toolMsg.toolCall.toolName === 'Task' && toolMsg.isError) {
-      const result = toolMsg.toolCall.result;
-      const resultStr = typeof result === 'string' ? result : '';
-      if (/^\s*(<tool_use_error>)?\s*Sibling tool call errored\s*(<\/tool_use_error>)?\s*$/.test(resultStr)) {
-        return null;
-      }
-    }
-
-    const tool = toolMsg.toolCall;
-    const toolId = tool.providerToolCallId || tool.toolName || `tool-${toolIndex}`;
-    const toolRenderKey = getTranscriptToolKey(toolMsg, toolIndex, depth);
-    const isExpanded = expandedTools.has(toolId);
-    const isSubAgent = toolMsg.type === 'subagent';
-    const isTeammate = isSubAgent && !!(toolMsg.subagent?.teammateName || toolMsg.subagent?.teamName);
-    const hasChildren = isSubAgent && toolMsg.subagent?.childEvents && toolMsg.subagent.childEvents.length > 0;
-    const lazyDiffLoader = tool.providerToolCallId && loadToolCallDiffs
-      ? () => loadToolCallDiffs(tool.providerToolCallId!, toolMsg.createdAt?.getTime())
-      : undefined;
-
-    // Check for custom widget first
-    const CustomWidget = tool.toolName ? getCustomToolWidget(tool.toolName) : undefined;
-    if (CustomWidget) {
-      return (
-        <div
-          key={toolRenderKey}
-          data-transcript-tool-id={depth === 0 && !supersededToolIndices.has(toolIndex) ? tool.providerToolCallId : undefined}
-          className={`rich-transcript-tool-container mb-2 ${depth > 0 ? 'nested ml-0' : ''}`}
-          style={{ marginLeft: depth > 0 ? '1rem' : '0' }}
-        >
-          <ToolWidgetErrorBoundary toolName={tool.toolName}>
-            <CustomWidget
-              message={toolMsg}
-              isExpanded={isExpanded}
-              onToggle={() => toggleToolExpand(toolId)}
-              workspacePath={workspacePath}
-              sessionId={sessionId}
-              readFile={readFile}
-              loadToolCallDiffs={lazyDiffLoader}
-            />
-          </ToolWidgetErrorBoundary>
-        </div>
-      );
-    }
-
-    // Codex `file_change` carries its patch text in the tool arguments, so it
-    // renders as a red/green diff without any main-side enrichment.
-    const isCodexFileChange = tool.toolName === 'file_change';
-    const editTool = isEditToolName(tool.toolName) || isCodexFileChange;
-    const editEntries = isCodexFileChange
-      ? extractCodexFileChanges((tool.arguments as Record<string, any> | undefined)?.changes)
-      : editTool ? extractEditsFromToolMessage(toolMsg) : [];
-    const toolDisplayName = formatToolDisplayName(tool.toolName || '') || tool.toolName || 'Tool';
-
-    if (editTool && editEntries.length > 0) {
-      return (
-        <div
-          key={toolRenderKey}
-          className={`rich-transcript-tool-container mb-2 ${depth > 0 ? 'nested ml-0' : ''}`}
-          style={{ marginLeft: depth > 0 ? '1rem' : '0' }}
-        >
-          <EditToolResultCard
-            toolMessage={toolMsg}
-            edits={editEntries}
-            workspacePath={workspacePath}
-            onOpenFile={onOpenFile}
-            renderEmbeddedFile={renderEmbeddedFile}
-            canEmbedFile={canEmbedFile}
-          />
-        </div>
-      );
-    }
-
-    // Extract description from arguments for sub-agents
-    const toolArgs = tool.arguments as Record<string, any> | undefined;
-    const description = (isSubAgent && toolArgs?.description ? toolArgs.description : null) as string | null;
-    const prompt = (isSubAgent && toolArgs?.prompt ? toolArgs.prompt : null) as string | null;
-    const subagentAuditLabel = isSubAgent
-      ? formatSubagentAuditLabel(toolMsg.subagent?.model, toolMsg.subagent?.reasoningEffort)
-      : null;
-
-    // Extract result text
-    const resultText = tool.result ? extractResultText(tool.result) : null;
-
-    // Special styling for sub-agents and teammates
-    const cardClass = isTeammate
-      ? 'rich-transcript-tool-card teammate rounded border border-[var(--nim-border)] overflow-hidden'
-      : isSubAgent
-        ? 'rich-transcript-tool-card sub-agent rounded border border-[var(--nim-border)] overflow-hidden'
-        : depth > 0
-          ? 'rich-transcript-tool-card child-tool rounded border border-[var(--nim-border)] overflow-hidden bg-[var(--nim-bg-tertiary)]'
-          : 'rich-transcript-tool-card rounded border border-[var(--nim-border)] overflow-hidden bg-[var(--nim-bg-secondary)]';
-
-    return (
-      <div key={toolRenderKey} className={`rich-transcript-tool-container mb-2 ${depth > 0 ? 'nested ml-0' : ''}`} style={{ marginLeft: depth > 0 ? '1rem' : '0' }}>
-        <div className={cardClass}>
-          <button onClick={() => toggleToolExpand(toolId)} className="rich-transcript-tool-button w-full py-1 px-2 flex items-center gap-1.5 text-left border-none cursor-pointer text-sm bg-transparent">
-            {isTeammate ? (
-              // Group icon for team teammates
-              <MaterialSymbol icon="group" size={16} className="rich-transcript-tool-icon sub-agent-icon w-4 h-4 text-[var(--nim-primary)] shrink-0" />
-            ) : isSubAgent && toolArgs?.run_in_background ? (
-              // Cloud icon for background (async) agents
-              <MaterialSymbol icon="cloud_sync" size={16} className="rich-transcript-tool-icon sub-agent-icon w-4 h-4 text-[var(--nim-primary)] shrink-0" />
-            ) : isSubAgent ? (
-              // Document icon for synchronous sub-agents
-              <MaterialSymbol icon="description" size={16} className="rich-transcript-tool-icon sub-agent-icon w-4 h-4 text-[var(--nim-primary)] shrink-0" />
-            ) : (
-              // Wrench icon for regular tools
-              <MaterialSymbol icon="build" size={16} className="rich-transcript-tool-icon w-4 h-4 text-[var(--nim-primary)] shrink-0" />
-            )}
-            <span className="rich-transcript-tool-name font-mono text-sm text-[var(--nim-text)] font-medium" title={tool.toolName || undefined}>
-              {isTeammate
-                ? (toolMsg.subagent?.teammateName || 'Teammate')
-                : isSubAgent
-                  ? (toolArgs?.run_in_background ? 'Background Agent' : 'Sub-Agent')
-                  : toolDisplayName}
-              {isTeammate && toolMsg.subagent?.teammateMode && (
-                <span className="rich-transcript-tool-subagent-type text-[var(--nim-text-muted)] font-normal text-xs ml-1">({toolMsg.subagent?.teammateMode})</span>
-              )}
-              {isSubAgent && !isTeammate && toolMsg.subagent?.agentType && (
-                <span className="rich-transcript-tool-subagent-type text-[var(--nim-primary)] font-semibold"> [{toolMsg.subagent?.agentType}]</span>
-              )}
-            </span>
-            {subagentAuditLabel && (
-              <span
-                className="rich-transcript-subagent-audit min-w-0 max-w-40 truncate text-[11px] text-[var(--nim-text-muted)]"
-                aria-label={subagentAuditLabel}
-                title={subagentAuditLabel}
-              >
-                {toolMsg.subagent?.model}{toolMsg.subagent?.model && toolMsg.subagent?.reasoningEffort ? ' · ' : ''}{toolMsg.subagent?.reasoningEffort}
-              </span>
-            )}
-            {!isSubAgent && tool.arguments && (() => {
-              const argStr = formatToolArguments(tool.toolName, tool.arguments, workspacePath);
-              if (!argStr) return null;
-
-              // Check if there's a clickable file path (only for tools that reference actual files)
-              const filePath = extractFilePathFromArgs(tool.toolName, tool.arguments);
-              const isClickable = onOpenFile && filePath;
-
-              if (isClickable) {
-                return (
-                  <span
-                    role="link"
-                    tabIndex={0}
-                    className="rich-transcript-tool-args rich-transcript-tool-args-link text-[var(--nim-text-muted)] flex-1 overflow-hidden text-ellipsis whitespace-nowrap bg-transparent border-none p-0 m-0 font-inherit text-[var(--nim-link)] cursor-pointer no-underline text-left hover:underline"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onOpenFile(filePath);
-                    }}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter' || e.key === ' ') {
-                        e.stopPropagation();
-                        e.preventDefault();
-                        onOpenFile(filePath);
-                      }
-                    }}
-                    title={`Open ${filePath}`}
-                  >
-                    {argStr}
-                  </span>
-                );
-              }
-              return <span className="rich-transcript-tool-args text-[var(--nim-text-muted)] flex-1 overflow-hidden text-ellipsis whitespace-nowrap">{argStr}</span>;
-            })()}
-            {/* Status indicator: sub-agents/teammates show live status, regular tools show success/error */}
-            {isSubAgent ? (() => {
-              // Look up teammate status from session metadata
-              // Try tool.teammateAgentId first, then extract agent_id from result text
-              let agentId = toolMsg.subagentId;
-              if (!agentId && tool.result && typeof tool.result === 'string') {
-                const match = tool.result.match(/agent_id:\s*(\S+)/);
-                if (match) agentId = match[1].replace(/[.,]$/, '');
-              }
-              const teammateStatus = agentId ? currentTeammates?.find(t => t.agentId === agentId)?.status : undefined;
-              // If no metadata yet but spawn succeeded (isError due to interception), assume running
-              const effectiveStatus = teammateStatus || (tool.result && toolMsg.isError ? 'running' : tool.result ? 'completed' : null);
-              if (effectiveStatus === 'running') {
-                return (
-                  <span className="flex items-center gap-1 shrink-0">
-                    <span className="inline-block w-3 h-3 border-2 border-[var(--nim-bg-tertiary)] border-t-[var(--nim-primary)] rounded-full animate-spin" />
-                    <span className="text-[11px] text-[var(--nim-text-muted)]">Running</span>
-                  </span>
-                );
-              }
-              if (effectiveStatus === 'idle') {
-                return (
-                  <span className="flex items-center gap-1 shrink-0">
-                    <span className="text-[var(--nim-primary)] text-[10px]">&#9675;</span>
-                    <span className="text-[11px] text-[var(--nim-text-muted)]">Idle</span>
-                  </span>
-                );
-              }
-              if (effectiveStatus === 'completed') {
-                return (
-                  <span className="flex items-center gap-1 shrink-0">
-                    <MaterialSymbol icon="check_circle" size={14} className="text-[var(--nim-success)]" />
-                    <span className="text-[11px] text-[var(--nim-text-muted)]">Done</span>
-                  </span>
-                );
-              }
-              if (effectiveStatus === 'errored') {
-                return (
-                  <span className="flex items-center gap-1 shrink-0">
-                    <MaterialSymbol icon="cancel" size={14} className="text-[var(--nim-error)]" />
-                    <span className="text-[11px] text-[var(--nim-text-muted)]">Errored</span>
-                  </span>
-                );
-              }
-              // Still waiting for result / no status yet - show progress spinner if available
-              if (!tool.result && tool.progress.length > 0) {
-                return (
-                  <span className="flex items-center gap-1 shrink-0">
-                    <span className="inline-block w-3 h-3 border-2 border-[var(--nim-primary)] border-t-transparent rounded-full animate-spin" />
-                    <span className="text-[11px] text-[var(--nim-text-muted)]">Running</span>
-                  </span>
-                );
-              }
-              return null;
-            })() : (
-              <>
-                {tool.result && !toolMsg.isError && (
-                  <MaterialSymbol icon="check_circle" size={16} className="rich-transcript-tool-success w-4 h-4 text-[var(--nim-success)] shrink-0" />
-                )}
-                {tool.result && toolMsg.isError && (
-                  <MaterialSymbol icon="cancel" size={16} className="rich-transcript-tool-error w-4 h-4 text-[var(--nim-error)] shrink-0" />
-                )}
-              </>
-            )}
-            <MaterialSymbol icon={isExpanded ? "expand_more" : "chevron_right"} size={16} className="rich-transcript-tool-chevron w-3 h-3 text-[var(--nim-text-faint)]" />
-          </button>
-
-          {isExpanded && (
-            <div className="rich-transcript-tool-expanded p-2 text-sm border-t border-[var(--nim-border)]">
-              {/* Show description for sub-agents */}
-              {isSubAgent && description && (
-                <div className="rich-transcript-tool-section mb-1.5">
-                  <div className="rich-transcript-tool-description text-sm text-[var(--nim-text)] leading-relaxed mb-2">{description}</div>
-                </div>
-              )}
-
-              {/* Show prompt for sub-agents (collapsable) */}
-              {isSubAgent && prompt && (
-                <details className="rich-transcript-tool-details my-2">
-                  <summary className="rich-transcript-tool-details-summary text-xs text-[var(--nim-text-faint)] cursor-pointer py-1 select-none hover:text-[var(--nim-text-muted)]">View full prompt</summary>
-                  <div className="rich-transcript-tool-details-content mt-1 text-sm">
-                    <MarkdownRenderer content={prompt} isUser={false} onOpenFile={onOpenFile} onOpenSession={onOpenSession} />
-                  </div>
-                </details>
-              )}
-
-              {/* Show regular tool arguments (not for sub-agents) */}
-              {!isSubAgent && tool.arguments && Object.keys(tool.arguments).length > 0 && (
-                <div className="rich-transcript-tool-section mb-1.5">
-                  <div className="rich-transcript-tool-section-label text-[var(--nim-text-faint)] mb-0.5 text-xs">Arguments:</div>
-                  <JSONViewer data={tool.arguments} maxHeight="16rem" />
-                </div>
-              )}
-
-              {/* Recursively render child tools */}
-              {hasChildren && (
-                <div className="rich-transcript-tool-section mb-1.5">
-                  <div className="rich-transcript-tool-section-label text-[var(--nim-text-faint)] mb-0.5 text-xs">
-                    {isTeammate ? 'Teammate' : 'Sub-agent'} Actions ({(toolMsg.subagent?.childEvents ?? []).length}):
-                  </div>
-                  <div className="rich-transcript-subagent-children flex flex-col gap-1 mt-2">
-                    {(toolMsg.subagent?.childEvents ?? []).map((childMsg: TranscriptViewMessage, childIdx: number) =>
-                      renderToolCard(childMsg, childIdx, depth + 1)
-                    )}
-                  </div>
-                </div>
-              )}
-
-              {/* Show progress indicator for running sub-agents/teammates */}
-              {isSubAgent && !tool.result && tool.progress.length > 0 && (
-                <div className="rich-transcript-tool-section mb-1.5 flex items-center gap-2 text-xs text-[var(--nim-text-muted)]">
-                  <span className="inline-block w-3 h-3 border-2 border-[var(--nim-primary)] border-t-transparent rounded-full animate-spin" />
-                  <span>Running <span className="font-mono text-[var(--nim-text)]">{tool.progress[tool.progress.length - 1]?.progressContent}</span></span>
-                  <span>({Math.round(tool.progress[tool.progress.length - 1]?.elapsedSeconds ?? 0)}s)</span>
-                </div>
-              )}
-
-              {/* Show result - extract text from JSON if possible */}
-              {tool.result && (
-                <details className="rich-transcript-tool-details my-2" open={!isSubAgent}>
-                  <summary className="rich-transcript-tool-details-summary text-xs text-[var(--nim-text-faint)] cursor-pointer py-1 select-none hover:text-[var(--nim-text-muted)]">
-                    {isSubAgent ? 'View result' : 'Result'}
-                  </summary>
-                  <div className="rich-transcript-tool-details-content mt-1 text-sm">
-                    {resultText ? (
-                      <MarkdownRenderer content={resultText} isUser={false} onOpenFile={onOpenFile} onOpenSession={onOpenSession} />
-                    ) : typeof tool.result === 'string' ? (
-                      <MarkdownRenderer content={tool.result} isUser={false} onOpenFile={onOpenFile} onOpenSession={onOpenSession} />
-                    ) : (
-                      <JSONViewer data={tool.result} maxHeight="16rem" />
-                    )}
-                  </div>
-                </details>
-              )}
-
-              {/* File changes caused by this tool call */}
-              {!isSubAgent && ((tool.fileDiffs && tool.fileDiffs.length > 0) || lazyDiffLoader) && (
-                <ToolCallChanges
-                  diffs={tool.fileDiffs}
-                  isExpanded={isExpanded}
-                  workspacePath={workspacePath}
-                  onOpenFile={onOpenFile}
-                  renderEmbeddedFile={renderEmbeddedFile}
-                  canEmbedFile={canEmbedFile}
-                  loadDiffs={lazyDiffLoader}
-                />
-              )}
-            </div>
-          )}
-        </div>
-      </div>
+  // Neighbour-derived row state in one pass. Unchanged infos keep their
+  // identity (compared against the previous pass), so memoized rows skip.
+  const previousRowInfosRef = useRef<TranscriptRowInfo[] | null>(null);
+  const rowInfos = useMemo(() => {
+    const next = computeTranscriptRowInfos(
+      messages,
+      {
+        showToolCalls: settings.showToolCalls,
+        expandedTools,
+        supersededToolIndices,
+        skippedQuestionIds,
+        subagentContext,
+        isWaitingForResponse,
+        restartAfterIndex,
+      },
+      previousRowInfosRef.current
     );
-  };
+    previousRowInfosRef.current = next;
+    return next;
+  }, [messages, settings.showToolCalls, expandedTools, supersededToolIndices, skippedQuestionIds, subagentContext, isWaitingForResponse, restartAfterIndex]);
 
   // Rendered message rows. Each row's outer div carries `data-message-index`
   // and registers its DOM node in `messageRefs` so imperative scroll and
   // selection helpers can find them.
-  const renderedMessages = messages.map((message, index) => {
-    const messageKey = getTranscriptMessageKey(sessionId, message, index);
-    // Skip tool calls superseded by a later event with the same providerToolCallId
-    if (supersededToolIndices.has(index)) {
-      return <div key={messageKey} style={{ display: 'none' }} />;
-    }
-
-    const isUser = message.type === 'user_message';
-    const isTool = isToolLikeMessage(message);
-    const isCollapsed = collapsedMessages.has(index);
-
-    // Hide assistant/tool messages that sit between agent notifications.
-    // These are the agent's internal processing turns after receiving a teammate/sub-agent
-    // message - they appear as dark bars with scrollbars and add visual noise.
-    // NEVER hide interactive tool widgets (ToolPermission, ExitPlanMode, etc.) that require user action.
-    // Also never hide assistant messages that would carry interactive widgets in toolMessagesBefore.
-    if (message.type === 'assistant_message' || isToolLikeMessage(message)) {
-      const isInteractiveWidget = isToolLikeMessage(message)
-        && isInteractiveWidgetTool(message.toolCall?.toolName);
-      // For assistant messages, check if preceding tool messages contain interactive widgets
-      let hasInteractiveToolsBefore = false;
-      if (message.type === 'assistant_message') {
-        let checkPrev = index - 1;
-        while (checkPrev >= 0 && isToolLikeMessage(messages[checkPrev])) {
-          if (isInteractiveWidgetTool(messages[checkPrev].toolCall?.toolName)) {
-            hasInteractiveToolsBefore = true;
-            break;
-          }
-          checkPrev--;
-        }
-      }
-      if (!isInteractiveWidget && !hasInteractiveToolsBefore) {
-        // Walk back to find the nearest user message (skipping tool and assistant messages)
-        let prevIdx = index - 1;
-        while (prevIdx >= 0 && messages[prevIdx].type !== 'user_message') prevIdx--;
-        if (prevIdx >= 0 && messages[prevIdx].metadata?.isTeammateMessage) {
-          // The most recent user message before this is a teammate notification.
-          // Only hide empty processing turns (no substantive content).
-          const hasNoContent = !message.text?.trim();
-          if (hasNoContent) {
-            return <div key={messageKey} style={{ display: 'none' }} />;
-          }
-        }
-      }
-    }
-
-    // Find tool messages that should be grouped with this message
-    const toolMessagesBefore: { message: TranscriptViewMessage, index: number }[] = [];
-    if (message.type === 'assistant_message') {
-      let checkIdx = index - 1;
-      while (checkIdx >= 0 && isToolLikeMessage(messages[checkIdx])) {
-        toolMessagesBefore.unshift({ message: messages[checkIdx], index: checkIdx });
-        checkIdx--;
-      }
-    }
-
-    // Skip rendering tool messages - they'll be rendered with their assistant message
-    if (isTool) {
-      let nextIndex = index + 1;
-      while (nextIndex < messages.length && isToolLikeMessage(messages[nextIndex])) {
-        nextIndex++;
-      }
-      if (nextIndex < messages.length && messages[nextIndex].type === 'assistant_message') {
-        // Return empty div for virtualization (can't return null)
-        return <div key={messageKey} style={{ display: 'none' }} />;
-      }
-    }
-
-    // Check if this is the start of a new message group
-    let effectivePrevMessage = null;
-    let checkIdx = index - 1;
-    while (checkIdx >= 0 && isToolLikeMessage(messages[checkIdx])) {
-      checkIdx--;
-    }
-    if (checkIdx >= 0) {
-      effectivePrevMessage = messages[checkIdx];
-    }
-    const isNewGroup = !effectivePrevMessage || effectivePrevMessage.type !== message.type;
-
-    // Render orphaned tool calls.
-    // When settings.showToolCalls is false, hide non-interactive tool
-    // rows from the chat view but always render interactive widgets
-    // (ToolPermission / ExitPlanMode / AskUserQuestion /
-    // PromptForUserInput / RequestUserInput / GitCommitProposal)
-    // so the user can still act on prompts.
-    if (isTool && message.toolCall) {
-      const isInteractiveWidget = isInteractiveWidgetTool(message.toolCall.toolName);
-      if (!settings.showToolCalls && !isInteractiveWidget) {
-        return <div key={messageKey} style={{ display: 'none' }} />;
-      }
-      return (
-        <div key={messageKey} className="rich-transcript-tool-container orphan ml-6 mb-2">
-          {renderToolCard(message, index, 0)}
-        </div>
-      );
-    }
-
-    // Render teammate/sub-agent messages as compact inline notifications
-    if (isUser && message.metadata?.isTeammateMessage) {
-      const teammateName = (message.metadata?.teammateName as string) || 'agent';
-      const label = `Received message from agent ${teammateName}`;
-      const content = message.text?.trim();
-      // Show first line as preview (truncated)
-      const firstLine = content?.split('\n')[0] || '';
-      const preview = firstLine.length > 100 ? firstLine.slice(0, 100) + '...' : firstLine;
-      const hasMoreContent = content && (content.includes('\n') || content.length > 100);
-      return (
-        <div
-          key={messageKey}
-          data-message-index={index}
-          ref={(el) => {
-            if (el) {
-              messageRefs.current.set(index, el);
-            } else {
-              messageRefs.current.delete(index);
-            }
-          }}
-          className="rich-transcript-message rich-transcript-teammate-notification rounded-md relative max-w-full overflow-x-hidden break-words mb-1"
-        >
-          {hasMoreContent ? (
-            <details>
-              <summary className="flex items-center gap-1.5 py-0.5 text-xs text-[var(--nim-text-faint)] hover:text-[var(--nim-text-muted)]">
-                <MaterialSymbol icon="chevron_right" size={14} className="teammate-chevron transition-transform shrink-0 w-3.5" />
-                <span className="flex-1 truncate">{label}: {preview}</span>
-                <span className="text-[10px] shrink-0">{formatMessageTime(message.createdAt?.getTime() ?? 0)}</span>
-              </summary>
-              <div className="teammate-content ml-5 mt-1 mb-0.5">
-                <MarkdownRenderer content={content} isUser={false} onOpenFile={onOpenFile} onOpenSession={onOpenSession} />
-              </div>
-            </details>
-          ) : (
-            <div className="flex items-center gap-1.5 py-0.5 text-xs text-[var(--nim-text-faint)]">
-              <MaterialSymbol icon="chevron_right" size={14} className="shrink-0 w-3.5 invisible" />
-              <span className="flex-1 truncate">{label}: {content}</span>
-              <span className="text-[10px] shrink-0">{formatMessageTime(message.createdAt?.getTime() ?? 0)}</span>
-            </div>
-          )}
-        </div>
-      );
-    }
-
-    if (message.type === 'system_message' && message.systemMessage?.systemType === 'permission_denied') {
-      if (message.systemMessage.isAttachmentStagingDenied) {
-        const priorUserMessage = messages
-          .slice(0, index)
-          .reverse()
-          .find((candidate) => candidate.type === 'user_message');
-        return (
-          <div key={messageKey} data-message-index={index}>
-            <AttachmentStagingDeniedCard
-              sessionId={sessionId}
-              systemMessage={message.systemMessage}
-              prompt={priorUserMessage?.text ?? ''}
-              attachments={priorUserMessage?.attachments ?? []}
-            />
-          </div>
-        );
-      }
-      // Auto-mode classifier denials are paired with a re-prompt from the
-      // PermissionDenied SDK hook (see AgentToolHooks.createPermissionDeniedHook).
-      // The user sees the regular ToolPermission widget with the classifier
-      // reason in its warnings, so rendering the red "Tool denied" card on top
-      // of that would be redundant and confusing -- skip it.
-      //
-      // Other deny sources (`rule`, `mode`, `asyncAgent`, headless auto-deny)
-      // stay visible because no re-prompt happens for those paths.
-      if (message.systemMessage.deniedReasonType === 'classifier') {
-        return <div key={messageKey} style={{ display: 'none' }} />;
-      }
-      return (
-        <div
-          key={messageKey}
-          data-message-index={index}
-          ref={(el) => {
-            if (el) messageRefs.current.set(index, el);
-          }}
-        >
-          <PermissionDeniedCard message={message} />
-        </div>
-      );
-    }
-
-    if ((message.type === 'system_message' && message.systemMessage?.systemType !== 'error') || (message.metadata?.promptType as string) === 'system_reminder') {
-      return (
-        <div
-          key={messageKey}
-          data-message-index={index}
-          ref={(el) => {
-            if (el) {
-              messageRefs.current.set(index, el);
-            } else {
-              messageRefs.current.delete(index);
-            }
-          }}
-        >
-          <SystemReminderCard message={message} />
-        </div>
-      );
-    }
-
-    return (
-      <div
-        key={messageKey}
-        data-message-index={index}
-        ref={(el) => {
-          if (el) {
-            messageRefs.current.set(index, el);
-          } else {
-            messageRefs.current.delete(index);
-          }
-        }}
-        className={`rich-transcript-message rounded-md relative max-w-full overflow-x-hidden break-words mb-2 ${isUser ? 'user bg-[var(--nim-bg-secondary)]' : 'assistant bg-[var(--nim-bg)]'} ${settings.compactMode ? 'compact p-2' : 'normal p-3'} ${!isNewGroup ? 'continuation -mt-1' : ''}`}
-      >
-        {/* Restart indicator line (dev mode only) - rendered before the first message after restart */}
-        {restartAfterIndex >= 0 && index === restartAfterIndex && (
-          <div className="flex items-center gap-3 mb-3">
-            <div className="flex-1 h-px bg-[var(--nim-error)]" />
-            <span className="text-[11px] font-medium text-[var(--nim-error)] whitespace-nowrap">
-              Nimbalyst restarted {formatMessageTime(appStartTime!)}
-            </span>
-            <div className="flex-1 h-px bg-[var(--nim-error)]" />
-          </div>
-        )}
-        {isNewGroup && (
-          <div className="rich-transcript-message-header flex items-center gap-2 mb-1.5">
-            <div className={`rich-transcript-message-avatar w-7 h-7 rounded-full shrink-0 flex items-center justify-center ${isUser ? 'user' : 'assistant'}`}>
-              {isUser ? (
-                <MaterialSymbol icon="person" size={18} />
-              ) : (
-                <ProviderIcon provider={provider || 'claude-code'} size={18} />
-              )}
-            </div>
-            <div className="rich-transcript-message-meta flex-1 flex items-baseline gap-2">
-              <span className="rich-transcript-message-sender font-medium text-[var(--nim-text)] text-sm">
-                {isUser ? 'You' : getProviderDisplayName(provider)}
-              </span>
-              {isUser && message.mode === 'planning' && (
-                <span
-                  className="text-[10px] rounded-full font-medium"
-                  style={{ backgroundColor: '#3b82f6', color: 'white', padding: '2px 6px' }}
-                >
-                  Plan
-                </span>
-              )}
-              <span className="rich-transcript-message-time text-xs text-[var(--nim-text-faint)]">
-                {formatMessageTime(message.createdAt?.getTime() ?? 0)}
-              </span>
-            </div>
-            <div className="rich-transcript-message-actions flex items-center gap-1">
-              {(message.text ?? '').length > 200 && (
-                <button
-                  onClick={() => toggleMessageCollapse(index)}
-                  className="rich-transcript-collapse-button p-1 rounded-md bg-transparent border-none text-[var(--nim-text-faint)] cursor-pointer transition-colors hover:bg-[var(--nim-bg-secondary)] hover:text-[var(--nim-text-muted)]"
-                  title={isCollapsed ? "Show full message" : "Collapse message"}
-                >
-                  {isCollapsed ? (
-                    <MaterialSymbol icon="visibility" size={16} />
-                  ) : (
-                    <MaterialSymbol icon="visibility_off" size={16} />
-                  )}
-                </button>
-              )}
-            </div>
-          </div>
-        )}
-
-        {toolMessagesBefore.length > 0 && (() => {
-          // Filter out non-interactive tool messages when settings.showToolCalls
-          // is off; always keep interactive widgets so the user can act on prompts.
-          const visibleToolMessages = settings.showToolCalls
-            ? toolMessagesBefore
-            : toolMessagesBefore.filter(
-                ({ message: toolMsg }) => isInteractiveWidgetTool(toolMsg.toolCall?.toolName)
-              );
-          if (visibleToolMessages.length === 0) return null;
-          return (
-            <div className={`rich-transcript-tool-messages flex flex-col gap-2 mb-1.5 ${isNewGroup ? 'indented ml-6' : ''}`}>
-              {visibleToolMessages.map(({ message: toolMsg, index: toolIndex }) =>
-                renderToolCard(toolMsg, toolIndex, 0)
-              )}
-            </div>
-          );
-        })()}
-
-        <div className={`rich-transcript-message-content relative ${isNewGroup ? 'ml-6' : 'no-indent ml-0'}`}>
-          {/* Copy button - shows on hover */}
-          <div className="rich-transcript-message-copy-action absolute -top-1 right-0 z-[1]">
-            <button
-              onClick={() => copyTranscriptViewMessageContent(message, index)}
-              className={`rich-transcript-copy-button p-1.5 rounded-md bg-[var(--nim-bg-secondary)] border border-[var(--nim-border)] cursor-pointer transition-all flex items-center justify-center hover:bg-[var(--nim-bg-hover)] ${copiedMessageIndex === index ? 'copied' : ''}`}
-              title="Copy as Markdown"
-            >
-              {copiedMessageIndex === index ? (
-                <MaterialSymbol icon="check" size={16} className="text-[var(--nim-success)]" />
-              ) : (
-                <MaterialSymbol icon="content_copy" size={16} className="text-[var(--nim-text-faint)]" />
-              )}
-            </button>
-          </div>
-          <MessageSegment
-            message={message}
-            isUser={isUser}
-            isCollapsed={isCollapsed}
-            showToolCalls={false}
-            showThinking={settings.showThinking}
-            expandedTools={expandedTools}
-            onToggleToolExpand={toggleToolExpand}
-            documentContext={documentContext}
-            shouldShowLoginWidget={shouldShowLoginWidgetForIndex(index)}
-            sessionId={sessionId}
-            isLastMessage={index === messages.length - 1}
-            onOpenFile={onOpenFile}
-            onOpenSession={onOpenSession}
-            onCompact={onCompact}
-            provider={provider}
-            workspacePath={workspacePath}
-          />
-        </div>
-
-        {/* Show elapsed time at the end of a completed assistant turn */}
-        {!isUser && (() => {
-          // Check if this is the last message in the assistant group
-          let nextNonToolIdx = index + 1;
-          while (nextNonToolIdx < messages.length && isToolLikeMessage(messages[nextNonToolIdx])) {
-            nextNonToolIdx++;
-          }
-          const isEndOfGroup = nextNonToolIdx >= messages.length || messages[nextNonToolIdx].type !== 'assistant_message';
-          if (!isEndOfGroup) return null;
-          // Don't show for the last assistant group if still streaming
-          if (isWaitingForResponse && nextNonToolIdx >= messages.length) return null;
-          // Find the preceding user-input message that triggered this turn
-          // Only consider genuine user input (isUserInput), not system-generated user-role messages
-          let startIdx = index - 1;
-          while (startIdx >= 0 && !(messages[startIdx].type === 'user_message')) {
-            startIdx--;
-          }
-          if (startIdx < 0) return null; // No preceding user input message
-          const startTimestamp = messages[startIdx].createdAt?.getTime() ?? 0;
-          const endTimestamp = message.createdAt?.getTime() ?? 0;
-          const duration = formatDuration(startTimestamp, endTimestamp);
-          if (!duration || duration === '0ms') return null;
-          const finishedAt = formatTurnFinishedAt(endTimestamp);
-          const fileStats = computeTurnFileStats(messages, startIdx, index);
-          return (
-            <div className="rich-transcript-turn-elapsed text-xs text-[var(--nim-text-faint)] mt-2 ml-6">
-              Finished in {duration}
-              {finishedAt && <span> {finishedAt}</span>}
-              {fileStats && (
-                <span>
-                  {' · '}{fileStats.filesModified} file{fileStats.filesModified !== 1 ? 's' : ''}
-                  {fileStats.linesAdded > 0 && <span className="text-[var(--nim-success)] opacity-60"> +{fileStats.linesAdded}</span>}
-                  {fileStats.linesRemoved > 0 && <span className="text-[var(--nim-error)] opacity-60"> -{fileStats.linesRemoved}</span>}
-                </span>
-              )}
-            </div>
-          );
-        })()}
-
-      </div>
-    );
-  });
+  const renderedMessages = messages.map((message, index) => (
+    <TranscriptMessageRow
+      key={getTranscriptMessageKey(sessionId, message, index)}
+      message={message}
+      index={index}
+      info={rowInfos[index]}
+      isCollapsed={collapsedMessages.has(index)}
+      isCopied={copiedMessageIndex === index}
+      showThinking={settings.showThinking}
+      compactMode={settings.compactMode}
+      provider={provider}
+      documentContext={documentContext}
+      appStartTime={appStartTime}
+      onCompact={onCompact}
+      toolShared={toolShared}
+      onToggleCollapse={toggleMessageCollapse}
+      onCopy={copyTranscriptViewMessageContent}
+      registerMessageRef={registerMessageRef}
+    />
+  ));
 
   return (
     <div ref={viewRootRef} className="rich-transcript-view h-full flex flex-col bg-[var(--nim-bg)] relative overflow-x-hidden select-text">
@@ -2474,9 +1123,22 @@ export const RichTranscriptView = React.forwardRef<
                   bufferSize={vlistBufferSize}
                   itemSize={90}
                   cache={vlistCacheMap.get(sessionId)}
+                  onScrollEnd={() => {
+                    if (!hitFalseTopRef.current) return;
+                    hitFalseTopRef.current = false;
+                    // Programmatic scrollToIndex applies jumps immediately and
+                    // re-measures until stable, so it lands on the real first row.
+                    vlistRef.current?.scrollToIndex(0, { align: 'start' });
+                  }}
                   onScroll={(offset) => {
                     // Track if we're at the bottom for auto-scroll using per-session atom
                     if (vlistRef.current) {
+                      if (isAtFalseTranscriptTop(offset, vlistRef.current.getItemOffset(0))) {
+                        hitFalseTopRef.current = true;
+                      } else if (offset > vlistRef.current.viewportSize / 2) {
+                        // User headed back down in the same gesture; don't yank them up.
+                        hitFalseTopRef.current = false;
+                      }
                       const scrollSize = vlistRef.current.scrollSize;
                       const viewportSize = vlistRef.current.viewportSize;
                       const distanceFromBottom = scrollSize - offset - viewportSize;

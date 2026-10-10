@@ -65,6 +65,15 @@ export interface TranscriptViewMessage {
   text?: string;
   mode?: 'agent' | 'planning' | 'auto';
   attachments?: UserMessagePayload['attachments'];
+  /** user_message only: who sent the prompt, when the raw row recorded it. */
+  promptActor?: UserMessagePayload['promptActor'];
+  /** user_message only: automated origin such as `interactive-question`. */
+  promptOrigin?: string;
+  /**
+   * user_message only: shown before main persisted it. A send that then fails
+   * leaves this row behind, so it must not close open questions.
+   */
+  optimistic?: boolean;
   toolCall?: {
     toolName: string;
     toolDisplayName: string;
@@ -244,6 +253,8 @@ function projectEvent(
       if (p.attachments) {
         base.attachments = p.attachments;
       }
+      if (p.promptActor) base.promptActor = p.promptActor;
+      if (p.promptOrigin) base.promptOrigin = p.promptOrigin;
       break;
     }
     case 'assistant_message': {

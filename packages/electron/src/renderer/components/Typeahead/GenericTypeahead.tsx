@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { createPortal } from 'react-dom';
+import { getWindowControlsZones } from '@nimbalyst/runtime/ui/floating/windowControlsClearance';
 import { getCursorCoordinates } from './typeaheadUtils';
 
 export interface TypeaheadOption {
@@ -128,14 +129,16 @@ export function GenericTypeahead({
           absoluteLeft = padding;
         }
 
-        // Ensure menu fits vertically in viewport
-        if (absoluteTop < padding) {
+        // Ensure menu fits vertically in viewport, and never reaches into the
+        // custom title-bar strip where its clicks are unreliable.
+        const topFloor = Math.max(padding, ...getWindowControlsZones().map((zone) => zone.bottom));
+        if (absoluteTop < topFloor) {
           // Not enough space above, position below cursor
           absoluteTop = textareaRect.top + coords.top + 20; // 20px below cursor
         }
         if (absoluteTop + menuHeight > viewportHeight - padding) {
           // Shift up to fit
-          absoluteTop = viewportHeight - menuHeight - padding;
+          absoluteTop = Math.max(topFloor, viewportHeight - menuHeight - padding);
         }
 
         setPosition({ top: absoluteTop, left: absoluteLeft });

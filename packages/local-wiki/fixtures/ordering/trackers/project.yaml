@@ -1,0 +1,6 @@
+type: project
+displayName: Project
+storage: pages
+fields:
+  - name: status
+    type: select

@@ -46,8 +46,9 @@ export const BRAINSTORM_CHOREOGRAPHY =
   'CLAUDE.md and recall for durable facts. Do these BEFORE ask_coding_agent -- ' +
   'they answer in under a second, whereas the coding agent can take minutes. ' +
   'Only fall back to ask_coding_agent when memory returns nothing or the question ' +
-  'truly needs live code inspection. Use remember to store decisions or ' +
-  'preferences worth keeping. ' +
+  'truly needs live code inspection. Use remember to store preferences ' +
+  'worth keeping; record a project decision where the project records ' +
+  'decisions, not only here. ' +
   'Brainstorm loop: when an idea is fleshed out, kick off a plan with ' +
   'submit_agent_prompt phrased as "/design <idea>"; when it finishes, call ' +
   'get_latest_plan and summarize it back so the user can refine it by voice; ' +

@@ -38,7 +38,7 @@ export interface CachedSessionIndex {
   /** Structural type: 'session' | 'workstream' | 'blitz' */
   sessionType?: string;
   /** Parent session ID for workstream/worktree hierarchy */
-  parentSessionId?: string;
+  parentSessionId?: string | null;
   /** Worktree ID for git worktree association */
   worktreeId?: string;
   /** Stable device ID of the host that owns this session. */
@@ -46,7 +46,7 @@ export interface CachedSessionIndex {
   /** Agent role marker (e.g. 'meta-agent', 'standard'); drives mobile meta-agent grouping. */
   agentRole?: string;
   /** Meta-agent parent session ID for spawned children; drives mobile meta-agent grouping. */
-  createdBySessionId?: string;
+  createdBySessionId?: string | null;
   isArchived?: boolean;
   isPinned?: boolean;
   branchedFromSessionId?: string;
@@ -107,9 +107,9 @@ export function mergeSessionIndexMetadata(
     hostDeviceId: 'hostDeviceId' in meta ? meta.hostDeviceId : cached.hostDeviceId,
     // Meta-agent grouping fields: apply when the update carries them,
     // otherwise preserve the cached value (also held by the `...cached`
-    // spread above). createdBySessionId is normalized null -> undefined.
+    // spread above). Explicit null clears the manager on every device.
     agentRole: 'agentRole' in meta ? meta.agentRole : cached.agentRole,
-    createdBySessionId: 'createdBySessionId' in meta ? (meta.createdBySessionId ?? undefined) : cached.createdBySessionId,
+    createdBySessionId: 'createdBySessionId' in meta ? meta.createdBySessionId : cached.createdBySessionId,
     isArchived: 'isArchived' in meta ? meta.isArchived : cached.isArchived,
     isPinned: 'isPinned' in meta ? (meta as any).isPinned : cached.isPinned,
     lastMessageAt: updatedAt ?? cached.lastMessageAt,

@@ -5,20 +5,20 @@ This repository uses [Playwright](https://playwright.dev) for automated end-to-e
 ## Installation
 
 ```bash
-npm install -D @playwright/test
-npx playwright install --with-deps
+pnpm add -Dw @playwright/test
+pnpm exec playwright install --with-deps
 ```
 
 > **Tip:** run these commands at the repository root so all workspace projects share the same Playwright binaries.
 
 ## Running Tests
 
-- `npm run test:e2e` runs every Playwright project defined in `playwright.config.ts`.
-- `npm run test:e2e -- --project=electron` executes only the Electron scenario.
-- `npx playwright test e2e/ai/diff-reliability.spec.ts` runs a specific test file.
-- `npx playwright test e2e/ai/diff-reliability.spec.ts:55` runs a specific test by line number.
+- `pnpm run test:e2e` runs every Playwright project defined in `playwright.config.ts`.
+- `pnpm run test:e2e --project=electron` executes only the Electron scenario.
+- `pnpm exec playwright test e2e/ai/diff-reliability.spec.ts` runs a specific test file.
+- `pnpm exec playwright test e2e/ai/diff-reliability.spec.ts:55` runs a specific test by line number.
 
-> **Build first:** make sure `npm run build --workspace @nimbalyst/electron` has been executed so `packages/electron/out/main/index.js` exists before launching the Electron project.
+> **Build first:** make sure `pnpm --filter @nimbalyst/electron run build` has been executed so `packages/electron/out/main/index.js` exists before launching the Electron project.
 
 Artifacts (traces, screenshots, videos) are captured on the first retry or failure and saved under `playwright-report/`.
 
@@ -789,26 +789,26 @@ Common CSS selectors used in tests:
 ### Run with UI
 
 ```bash
-npx playwright test --ui
-npx playwright test e2e/ai/diff-reliability.spec.ts --ui
+pnpm exec playwright test --ui
+pnpm exec playwright test e2e/ai/diff-reliability.spec.ts --ui
 ```
 
 ### Run in headed mode
 
 ```bash
-npx playwright test --headed
+pnpm exec playwright test --headed
 ```
 
 ### Debug specific test
 
 ```bash
-npx playwright test e2e/ai/diff-reliability.spec.ts:55 --headed --debug
+pnpm exec playwright test e2e/ai/diff-reliability.spec.ts:55 --headed --debug
 ```
 
 ### View test report
 
 ```bash
-npx playwright show-report
+pnpm exec playwright show-report
 ```
 
 ### Enable verbose logging
@@ -816,7 +816,7 @@ npx playwright show-report
 Tests include console.log statements for debugging. Check the test output or use:
 
 ```bash
-npx playwright test --reporter=line
+pnpm exec playwright test --reporter=line
 ```
 
 ## Making the App More Testable

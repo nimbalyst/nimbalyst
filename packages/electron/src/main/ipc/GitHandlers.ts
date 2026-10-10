@@ -46,6 +46,7 @@ import {
   setGitStatusRefreshCoordinator,
 } from '../services/GitStatusRefreshCoordinator';
 import { isReadOnlyGitCommandLine } from '../services/gitCommandClassifier';
+import { validateGitCwd, validateGitOperand, validateGitOptions, validatedGitRebaseArgs } from '../services/gitOperandValidation';
 
 function isGitRepository(repoPath: string): boolean {
   try {
@@ -527,7 +528,8 @@ export function registerGitHandlers(): void {
     'git:push',
     async (_event, repoPath: string, options?: { force?: boolean; setUpstream?: boolean; remote?: string; branch?: string }):
       Promise<{ success: boolean; error?: string }> => {
-      if (!repoPath) throw new Error('repoPath is required');
+      validateGitCwd(repoPath, 'repoPath');
+      validateGitOptions(options, ['force', 'setUpstream'], ['remote', 'branch']);
       if (!isGitRepository(repoPath)) return { success: false, error: 'Not a git repository' };
 
       return gitOperationLock.withLock(repoPath, 'git:push', async () => {
@@ -542,8 +544,9 @@ export function registerGitHandlers(): void {
             };
           }
 
+          validateGitOperand(branch, 'branch');
           const pushArgs: string[] = ['push'];
-          const remote = options?.remote || 'origin';
+          const remote = options?.remote === undefined ? 'origin' : options.remote;
 
           if (options?.setUpstream) {
             pushArgs.push('--set-upstream');
@@ -551,7 +554,7 @@ export function registerGitHandlers(): void {
             pushArgs.push('--force-with-lease');
           }
 
-          pushArgs.push(remote, branch);
+          pushArgs.push('--', remote, branch);
           const result = await runGitCommandStreaming(operationLog, repoPath, pushArgs);
           return result.success
             ? { success: true }
@@ -621,14 +624,15 @@ export function registerGitHandlers(): void {
     'git:fetch',
     async (_event, repoPath: string, options?: { remote?: string }):
       Promise<{ success: boolean; error?: string }> => {
-      if (!repoPath) throw new Error('repoPath is required');
+      validateGitCwd(repoPath, 'repoPath');
+      validateGitOptions(options, [], ['remote']);
       if (!isGitRepository(repoPath)) return { success: false, error: 'Not a git repository' };
 
       try {
         const result = await runGitCommandStreaming(
           operationLog,
           repoPath,
-          ['fetch', options?.remote || 'origin'],
+          ['fetch', '--', options?.remote === undefined ? 'origin' : options.remote],
         );
         return result.success ? { success: true } : { success: false, error: result.error };
       } catch (error) {
@@ -645,18 +649,11 @@ export function registerGitHandlers(): void {
     'git:rebase',
     async (_event, repoPath: string, options: { target?: string; action?: 'continue' | 'abort' | 'skip' }):
       Promise<{ success: boolean; error?: string; conflicts?: string[] }> => {
-      if (!repoPath) throw new Error('repoPath is required');
+      validateGitCwd(repoPath, 'repoPath');
+      const args = validatedGitRebaseArgs(options);
       if (!isGitRepository(repoPath)) return { success: false, error: 'Not a git repository' };
 
       return gitOperationLock.withLock(repoPath, 'git:rebase', async () => {
-        const args = options.action
-          ? ['rebase', `--${options.action}`]
-          : options.target
-            ? ['rebase', options.target]
-            : null;
-        if (!args) {
-          throw new Error('rebase requires either a target branch or an action (continue/abort/skip)');
-        }
         const result = await runGitCommandStreaming(operationLog, repoPath, args);
         if (result.success) return { success: true };
         const status = await simpleGit(repoPath).status();
@@ -705,24 +702,26 @@ export function registerGitHandlers(): void {
     'git:set-upstream',
     async (_event, repoPath: string, remote: string, branch?: string):
       Promise<{ success: boolean; error?: string }> => {
-      if (!repoPath) throw new Error('repoPath is required');
-      if (!remote) throw new Error('remote is required');
+      validateGitCwd(repoPath, 'repoPath');
+      validateGitOperand(remote, 'remote');
+      if (branch !== undefined) validateGitOperand(branch, 'branch');
       if (!isGitRepository(repoPath)) return { success: false, error: 'Not a git repository' };
 
       try {
         const git: SimpleGit = simpleGitWithHookEnv(repoPath);
         const status = await git.status();
-        const targetBranch = branch || normalizeCurrentBranch(status.current);
+        const targetBranch = branch === undefined ? normalizeCurrentBranch(status.current) : branch;
         if (!targetBranch || targetBranch === 'HEAD') {
           return {
             success: false,
             error: 'You are in detached HEAD. Checkout a branch before setting upstream.',
           };
         }
+        validateGitOperand(targetBranch, 'branch');
         const result = await runGitCommandStreaming(
           operationLog,
           repoPath,
-          ['push', '--set-upstream', remote, targetBranch],
+          ['push', '--set-upstream', '--', remote, targetBranch],
         );
         return result.success ? { success: true } : { success: false, error: result.error };
       } catch (error) {
@@ -739,8 +738,8 @@ export function registerGitHandlers(): void {
     'git:checkout',
     async (_event, repoPath: string, ref: string):
       Promise<{ success: boolean; error?: string }> => {
-      if (!repoPath) throw new Error('repoPath is required');
-      if (!ref) throw new Error('ref is required');
+      validateGitCwd(repoPath, 'repoPath');
+      validateGitOperand(ref, 'ref');
       if (!isGitRepository(repoPath)) return { success: false, error: 'Not a git repository' };
 
       return gitOperationLock.withLock(repoPath, 'git:checkout', async () => {
@@ -757,8 +756,8 @@ export function registerGitHandlers(): void {
     'git:cherry-pick',
     async (_event, repoPath: string, hash: string):
       Promise<{ success: boolean; error?: string; conflicts?: string[] }> => {
-      if (!repoPath) throw new Error('repoPath is required');
-      if (!hash) throw new Error('hash is required');
+      validateGitCwd(repoPath, 'repoPath');
+      validateGitOperand(hash, 'hash');
       if (!isGitRepository(repoPath)) return { success: false, error: 'Not a git repository' };
 
       return gitOperationLock.withLock(repoPath, 'git:cherry-pick', async () => {
@@ -775,17 +774,18 @@ export function registerGitHandlers(): void {
    */
   safeHandle(
     'git:create-branch',
-    async (_event, repoPath: string, branchName: string, fromHash: string):
+    async (_event, repoPath: string, branchName: string, fromHash?: string):
       Promise<{ success: boolean; error?: string }> => {
-      if (!repoPath) throw new Error('repoPath is required');
-      if (!branchName) throw new Error('branchName is required');
+      validateGitCwd(repoPath, 'repoPath');
+      validateGitOperand(branchName, 'branchName');
+      if (fromHash !== undefined) validateGitOperand(fromHash, 'fromHash');
       if (!isGitRepository(repoPath)) return { success: false, error: 'Not a git repository' };
 
       return gitOperationLock.withLock(repoPath, 'git:create-branch', async () => {
         const result = await runGitCommandStreaming(
           operationLog,
           repoPath,
-          ['checkout', '-b', branchName, fromHash || 'HEAD'],
+          ['checkout', '-b', branchName, fromHash === undefined ? 'HEAD' : fromHash],
         );
         return result.success ? { success: true } : { success: false, error: result.error };
       });

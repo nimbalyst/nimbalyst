@@ -1,41 +1,33 @@
 # Nimbalyst for Android
 
-Native Android companion app for Nimbalyst, mirroring the native iOS package architecture while explicitly excluding voice-agent features in the first implementation track.
+Native Android companion app for Nimbalyst. It follows the iOS app's architecture: a Kotlin + Jetpack Compose shell, a Room database, WebSocket sync with the collab server, and one `WebView` that renders the shared React transcript. Voice features are out of scope on Android.
 
-## Current Status
+## What works today
 
-This package currently contains:
+- **Pairing:** scan the desktop's pairing QR code with the in-app CameraX + ML Kit scanner. Settings also accepts a pasted QR payload. Pairing links (`nimbalyst://pair`) are deliberately **not** routed from outside the app, because a pairing payload selects the sync server and encryption context.
+- **Sign-in:** Google sign-in in a Custom Tab, or an email magic link when the pairing carries an email. The `nimbalyst://auth/callback` link completes sign-in. A failed callback shows the server's `error_description` on the sign-in screen.
+- **Sync:** end-to-end encrypted AES-GCM / PBKDF2 (wire-compatible with iOS and desktop) over OkHttp WebSockets to the index and session rooms, hydrating a local Room database.
+- **Projects and sessions:** browse projects and sessions synced from the desktop app, with unread indicators, and create a new session on the desktop from the session list.
+- **Transcript:** the React transcript bundle (`src/transcript/`) in a `WebView`, including interactive widget responses (AskUserQuestion, ToolPermission, ExitPlanMode, GitCommit) sent back to the desktop.
+- **Prompts:** queue prompts from Android, with photo library and camera attachments.
+- **Push notifications:** client code exists (FCM token registration and notification taps that open a session), but it only works in a build that includes `app/google-services.json`, and delivery also depends on the collab server's Firebase configuration. Without the file the build stays green and push is inert.
+- **Account:** sign out, unpair, and delete account from Settings.
+- **Look:** dark only, using the same Nimbalyst palette as iOS (`ui/theme/`).
 
-- a Kotlin + Jetpack Compose Android app scaffold
-- an Android `WebView` host for the shared transcript renderer
-- a Room-backed local store for projects, sessions, messages, and sync watermarks
-- a Kotlin AES-GCM / PBKDF2 crypto layer compatible with the iOS and desktop wire format
-- an OkHttp WebSocket sync manager for index-room and session-room hydration
-- QR payload import, editable pairing/auth credentials, and `nimbalyst://` deep-link handling for pairing and auth callbacks
-- a browser-login entry point that launches the existing server OAuth flow
-- a CameraX + ML Kit QR scanner for pairing import in onboarding and settings
-- a desktop session-creation request flow from the Projects screen
-- queued prompt sync and prompt submission from Android through the index-room update path
-- native image attachments for prompts via photo picker and quick camera capture
-- interactive widget responses bridged from the transcript `WebView` back to desktop session control
-- unread-state tracking for the active session and unread indicators in the session list
-- desktop settings/model metadata sync surfaced in Android settings
-- notification permission and FCM token registration plumbing wired on the Android client (the server-side push send path lives in the sibling `nimbalyst-collab` repository, not this monorepo)
-- a dedicated Vite transcript bundle setup under `src/transcript/`
-- package-local docs and scripts so Android work can evolve without touching the monorepo root
+## Not implemented yet
 
-What is not implemented yet:
-
-- push notifications
-- production-ready UX polish and release hardening
+Much of this is tracked in the Android/iOS parity plan. Notable gaps compared with iOS: the files and document views, an adaptive tablet layout, a model picker, and multiple accounts.
 
 ## Structure
 
 ```text
 packages/android/
   app/                         # Android application module
-  src/transcript/              # React transcript bundle for Android WebView
-  scripts/                     # Package-local helper scripts
+    src/main/java/.../ui/      # Compose screens; ui/theme and ui/components hold shared styling
+    src/debug/                 # Debug-only screenshot mode (demo data, fake pairing)
+    src/test/                  # JVM unit tests (Robolectric where Android APIs are needed)
+  src/transcript/              # React transcript bundle for the Android WebView
+  scripts/                     # Transcript asset sync helpers
   package.json                 # Transcript build/test scripts
   build.gradle.kts             # Root Android Gradle config
   settings.gradle.kts          # Android Gradle settings
@@ -47,59 +39,44 @@ packages/android/
 
 ```bash
 cd packages/android
-npm install
-npm run build:transcript
-npm run sync:transcript-assets
+pnpm install
+pnpm run build:transcript
+pnpm run sync:transcript-assets
 ```
 
 ### Android app
 
-The project builds with JDK 17. It targets `JavaVersion.VERSION_17` / `jvmTarget = "17"`, and Temurin 17 matches CI. From the repository root:
+The project targets `JavaVersion.VERSION_17` / `jvmTarget = "17"`. CI uses Temurin 17; OpenJDK 20 also works locally. Avoid GraalVM, which can fail the AGP `jlink` step. From the repository root:
 
 ```bash
-npm run android:test:unit         # ./gradlew :app:testDebugUnitTest
-npm run android:assemble:debug    # ./gradlew :app:assembleDebug
-npm run android:assemble:release  # ./gradlew :app:assembleRelease
-npm run android:bundle:release    # ./gradlew :app:bundleRelease
+pnpm run android:test:unit         # ./gradlew :app:testDebugUnitTest
+pnpm run android:assemble:debug    # ./gradlew :app:assembleDebug
+pnpm run android:assemble:release  # ./gradlew :app:assembleRelease
+pnpm run android:bundle:release    # ./gradlew :app:bundleRelease
 ```
 
-To run Gradle directly, point `JAVA_HOME` at a Temurin 17 install:
+To run Gradle directly:
 
 ```bash
 cd packages/android
-JAVA_HOME=/path/to/temurin-17 ./gradlew :app:assembleDebug
-JAVA_HOME=/path/to/temurin-17 ./gradlew :app:testDebugUnitTest
+JAVA_HOME=/path/to/jdk ./gradlew :app:assembleDebug
+JAVA_HOME=/path/to/jdk ./gradlew :app:testDebugUnitTest
 ```
 
-If `JAVA_HOME` points at GraalVM, Android builds can fail during the AGP `jlink` step. Temurin 17 sidesteps that and matches the Gradle config.
+Open `packages/android/` in Android Studio, not the repo root.
+
+### Play Store screenshots
+
+`pnpm run android:screenshots` and `pnpm run android:walkthrough` drive an emulator against the debug-only screenshot mode. See [ANDROID_MARKETING_SCREENSHOTS.md](../../docs/ANDROID_MARKETING_SCREENSHOTS.md).
 
 ### Builds, signing, and CI
 
-- `google-services` is applied conditionally (only when `app/google-services.json` exists), so the build is green without it and push stays inert until the file is added.
+- `google-services` is applied only when `app/google-services.json` exists. Never commit that file.
 - CI can inject Firebase config from the optional `ANDROID_GOOGLE_SERVICES_JSON_BASE64` GitHub secret by decoding it to `app/google-services.json` before the Gradle build.
-- The release `signingConfig` reads the keystore path and credentials from environment variables: `NIMBALYST_ANDROID_KEYSTORE`, `NIMBALYST_ANDROID_KEYSTORE_PASSWORD`, `NIMBALYST_ANDROID_KEY_ALIAS`, `NIMBALYST_ANDROID_KEY_PASSWORD`. With no keystore the release build is unsigned. Minification stays off.
-- `.github/workflows/android-build.yml` builds both the APK and Play-ready AAB in CI. Pushes and pull requests run the unsigned validation job, which receives no signing secrets at all and uploads `android-unsigned-apk` / `android-unsigned-aab`. A signed build runs only for an `android/v*` tag, in a separate job gated on the `android-release` protected environment. To get a signed AAB without cutting a tag, build locally with `npm run android:bundle:signed`.
-- To cut a signed Android release: `git tag android/vX.Y.Z && git push origin android/vX.Y.Z`, then approve the `android-release` deployment when GitHub prompts. The signed APK and AAB arrive as `android-release-apk` / `android-release-aab` on that run.
+- The release `signingConfig` reads the keystore path and credentials from `NIMBALYST_ANDROID_KEYSTORE`, `NIMBALYST_ANDROID_KEYSTORE_PASSWORD`, `NIMBALYST_ANDROID_KEY_ALIAS`, and `NIMBALYST_ANDROID_KEY_PASSWORD`. With no keystore the release build is unsigned. Minification stays off.
+- `.github/workflows/android-build.yml` builds the APK and AAB. Pushes and pull requests run an unsigned job with no signing secrets. A signed build runs only for an `android/v*` tag, in a job gated on the `android-release` protected environment, and fails fast if `ANDROID_GOOGLE_SERVICES_JSON_BASE64` is missing.
+- To cut a signed release: `git tag android/vX.Y.Z && git push origin android/vX.Y.Z`, then approve the `android-release` deployment. For a local signed AAB, run `pnpm run android:bundle:signed`.
 
-The app currently boots into a native Compose shell with placeholder project, session, and settings screens plus a `TranscriptWebView` container that will load the generated transcript asset bundle once `dist-transcript/` has been synced into the Android build assets.
+### Server side
 
-Android can now:
-
-- store and edit pairing, auth, and routing credentials locally
-- import the same pairing payload shape used by iOS QR flows
-- scan the desktop pairing QR directly from onboarding and settings
-- receive `nimbalyst://auth/callback?...` links; pairing payloads are accepted only through the in-app QR scanner
-- open the existing browser login flow from Settings
-- connect to CollabV3 index and session rooms and hydrate the local Room database
-- request new desktop sessions and wait for the returning index broadcast
-- queue prompts from Android and render queued prompts in the session detail view
-- attach photos from the library or quick camera capture when queueing prompts
-- send AskUserQuestion, ToolPermission, ExitPlanMode, and GitCommit widget responses from the transcript bridge
-- clear unread indicators as sessions are viewed on Android
-- show desktop-synced available models and the current default model in settings
-- enable push notifications from Settings, request notification permission, and attempt FCM token registration when Firebase config is present
-
-Current push blocker:
-
-- There is no `google-services.json` in this workspace, so Android cannot complete real FCM registration yet. The `google-services` plugin is applied conditionally, so the build stays green and push stays inert until the file is added.
-- Firebase/FCM secrets still need to be provided to the collab server environment (the sibling `nimbalyst-collab` repository) before Android push can deliver in production.
+Push delivery and the sync rooms live in the collab server, the sibling `nimbalyst-collab` repository. Android push changes usually need coordinated client and server work.

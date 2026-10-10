@@ -1,5 +1,6 @@
 import type { SharedDocumentAnchor } from '../../../shared/documentDeepLinks';
 import { focusSharedDocumentAnchor } from './sharedDocumentAnchor';
+import { initConsoleLinkListeners } from './consoleLinkListeners';
 /**
  * Centralized IPC listeners for deep-link navigation events.
  *
@@ -307,6 +308,10 @@ async function drainPendingFor(workspacePath: string | null): Promise<void> {
  */
 export function initDeepLinkListeners(): () => void {
   const cleanups: Array<() => void> = [];
+
+  // Console links (`https://console.nimbalyst.com/...`) main routes here
+  // instead of the browser, clicked or arriving as `nimbalyst://console/...`.
+  cleanups.push(initConsoleLinkListeners());
 
   // Live: shared document link routed to this window.
   cleanups.push(

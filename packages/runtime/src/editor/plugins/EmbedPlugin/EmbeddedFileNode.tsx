@@ -5,16 +5,19 @@
 
 import type { JSX } from 'react';
 import type { NodeKey } from 'lexical';
-import React from 'react';
+import React, { Suspense } from 'react';
 
 import { getEmbedPluginCallbacks } from './EmbedPluginCallbacks';
+import { isLinkPreviewLink } from '../LinkPreviewPlugin/linkPreviewLinks';
+
+const LinkPreviewBlock = React.lazy(() => import('../LinkPreviewPlugin/LinkPreviewBlock').then((module) => ({ default: module.LinkPreviewBlock })));
 import { EmbeddedFileNodeDecorator, type EmbedAttrs } from './EmbeddedFileNodeCore';
 
 EmbeddedFileNodeDecorator.set((node) => (
   <EmbedFrameSlot
     src={node.__src}
     label={node.__label}
-    attrs={node.__attrs}
+    attrs={node.getAttrs()}
     nodeKey={node.__key}
   />
 ));
@@ -32,6 +35,16 @@ function EmbedFrameSlot(props: {
   attrs: EmbedAttrs;
   nodeKey: NodeKey;
 }): JSX.Element {
+  if (props.attrs.namedPageView) return <span data-named-page-view={props.attrs.namedPageView} className="text-xs text-nim-muted">Named view: {props.label}</span>;
+  // A web link preview is drawn here on every host; the host renderer only
+  // knows files and placed views.
+  if (isLinkPreviewLink(props.src, props.attrs)) {
+    return (
+      <Suspense fallback={<div className="link-preview-block my-3 min-h-[64px] rounded-lg border border-nim bg-nim-secondary" contentEditable={false} />}>
+        <LinkPreviewBlock src={props.src} label={props.label} attrs={props.attrs} nodeKey={props.nodeKey} />
+      </Suspense>
+    );
+  }
   const callbacks = getEmbedPluginCallbacks();
   const Renderer = callbacks.renderEmbed;
   if (Renderer) {

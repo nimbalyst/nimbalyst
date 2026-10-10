@@ -28,7 +28,7 @@ vi.mock('@nimbalyst/runtime', () => ({
 
 import {
   hasTerminalizedAskUserQuestion,
-  persistAskUserQuestionTerminalResult,
+  persistInteractivePromptTerminalResult,
   clearTerminalizedAskUserQuestions,
 } from '../askUserQuestionFallbackResolution';
 
@@ -51,7 +51,7 @@ describe('AskUserQuestion fallback terminal result', () => {
 
     expect(hasTerminalizedAskUserQuestion(sessionId, questionId)).toBe(false);
 
-    await persistAskUserQuestionTerminalResult({
+    await persistInteractivePromptTerminalResult({
       sessionId,
       questionId,
       answers: { 'Which framework?': 'React' },
@@ -75,7 +75,7 @@ describe('AskUserQuestion fallback terminal result', () => {
     const questionId = 'toolu_q2';
     clearTerminalizedAskUserQuestions(sessionId);
 
-    await persistAskUserQuestionTerminalResult({
+    await persistInteractivePromptTerminalResult({
       sessionId,
       questionId,
       answers: {},

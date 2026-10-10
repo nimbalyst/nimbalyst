@@ -130,6 +130,33 @@ final class SessionListProjectionTests: XCTestCase {
         try assertParity(db, phase: .complete)
     }
 
+    func testThreeLevelTreeRehomesDescendantsAndRefreshesBothAncestorGroups() throws {
+        let db = try makeDatabase()
+        try write(db) { database in
+            try Session(id: "root", projectId: "/p", createdAt: 1, updatedAt: 1).save(database)
+            try Session(id: "other", projectId: "/p", createdAt: 1, updatedAt: 2).save(database)
+            try Session(id: "manager", projectId: "/p", parentSessionId: "root", createdAt: 2, updatedAt: 3).save(database)
+            try Session(id: "worker", projectId: "/p", parentSessionId: "manager", isExecuting: true,
+                        createdAt: 3, updatedAt: 4).save(database)
+        }
+        try assertParity(db)
+        XCTAssertEqual(try db.sessionListItem(containing: "worker", filter: filter)?.group.key, "ws:root")
+        XCTAssertEqual(Set(try db.sessionListGroupMemberIds(filter: filter, groupKey: "ws:root")), ["root", "manager", "worker"])
+        try write(db) { database in
+            try database.execute(sql: "UPDATE sessions SET parentSessionId = 'other' WHERE id = 'manager'")
+        }
+        try assertParity(db)
+        XCTAssertEqual(try db.sessionListItem(containing: "worker", filter: filter)?.group.key, "ws:other")
+        XCTAssertEqual(try db.sessionListItem(containing: "root", filter: filter)?.group.kind, .standalone)
+        XCTAssertEqual(try db.sessionListItem(containing: "other", filter: filter)?.group.status, .processing)
+        try write(db) { database in
+            try database.execute(sql: "UPDATE sessions SET isExecuting = 0, updatedAt = 100 WHERE id = 'worker'")
+        }
+        try assertParity(db)
+        XCTAssertEqual(try db.sessionListItem(containing: "other", filter: filter)?.group.status, .idle)
+        XCTAssertEqual(try db.sessionListItem(containing: "other", filter: filter)?.group.orderTimestamp, 100)
+    }
+
     func testChildrenAndDeepLinksAgreeWithTheLivePath() throws {
         let db = try makeDatabase()
         try write(db) { database in
@@ -364,24 +391,65 @@ final class SessionListProjectionTests: XCTestCase {
         XCTAssertEqual(try db.sessionListPage(filter: filter, after: nil, limit: 10).items.count, 1)
     }
 
-    func testMetaAgentFlagFlipRebuildsRatherThanReportingStaleGrouping() throws {
+    func testManagerRoleDoesNotOverrideHierarchyOrClaimAnIsolatedSession() throws {
         let db = try makeDatabase()
         try write(db) { database in
-            try Session(id: "meta", projectId: "/p", agentRole: "meta-agent",
-                        createdAt: 1, updatedAt: 1).save(database)
-            try Session(id: "sub", projectId: "/p", createdBySessionId: "meta",
-                        createdAt: 2, updatedAt: 2).save(database)
+            try Session(id: "meta", projectId: "/p", agentRole: "meta-agent", createdAt: 1, updatedAt: 1).save(database)
+            try Session(id: "sub", projectId: "/p", createdBySessionId: "meta", createdAt: 2, updatedAt: 2).save(database)
         }
-        try db.refreshSessionListProjection(projectId: projectId, metaAgentEnabled: true)
-        XCTAssertEqual(try db.sessionListPage(filter: filter, after: nil, limit: 10).items.map(\.group.kind),
-                       [.metaAgent])
+        for enabled in [true, false] {
+            try db.refreshSessionListProjection(projectId: projectId, metaAgentEnabled: enabled)
+            var scoped = filter
+            scoped.metaAgentEnabled = enabled
+            XCTAssertEqual(try db.sessionListPage(filter: scoped, after: nil, limit: 10).items.map(\.group.kind),
+                           [.standalone, .standalone])
+        }
+    }
 
-        var off = filter
-        off.metaAgentEnabled = false
-        // The stored grouping no longer applies: the read must not serve it.
-        try db.refreshSessionListProjection(projectId: projectId, metaAgentEnabled: false)
-        XCTAssertEqual(try db.sessionListPage(filter: off, after: nil, limit: 10).items.map(\.group.kind),
-                       [.standalone, .standalone])
+    func testTreePagingKeepsAncestorsBeforeActiveDescendantsAndClampsPhoneDepth() throws {
+        let db = try makeDatabase()
+        try write(db) { database in
+            for (id, parent, time) in [("root", "", 1), ("manager", "root", 2), ("worker", "manager", 3),
+                                        ("deep", "worker", 100), ("sibling", "root", 10)] {
+                try Session(id: id, projectId: "/p", parentSessionId: parent.isEmpty ? nil : parent,
+                            createdAt: 1, updatedAt: time).save(database)
+            }
+        }
+        try assertParity(db)
+        for scoped in [filter, SessionListFilter(projectId: projectId, includeArchived: true)] {
+            let first = try db.sessionListChildren(filter: scoped, groupKey: "ws:root", after: nil, limit: 2)
+            let second = try db.sessionListChildren(filter: scoped, groupKey: "ws:root", after: first.nextCursor, limit: 2)
+            let rows = first.rows + second.rows
+            XCTAssertEqual(rows.map(\.id), ["manager", "worker", "deep", "sibling"])
+            XCTAssertEqual(rows.map(\.treeDepth), [1, 2, 3, 1])
+            XCTAssertEqual(rows.map(\.phoneIndentationLevel), [1, 2, 2, 1])
+            XCTAssertFalse(second.hasMore)
+        }
+    }
+
+    func testLateAncestorArchiveDeletionAndCyclesDoNotLoseDescendants() throws {
+        let db = try makeDatabase()
+        try write(db) { database in
+            try Session(id: "manager", projectId: "/p", parentSessionId: "root", createdAt: 1, updatedAt: 2).save(database)
+            try Session(id: "worker", projectId: "/p", parentSessionId: "manager", createdAt: 1, updatedAt: 3).save(database)
+        }
+        try assertParity(db)
+        XCTAssertEqual(try db.sessionListItem(containing: "worker", filter: filter)?.group.key, "ws:manager")
+        try write(db) { database in
+            try Session(id: "root", projectId: "/p", createdAt: 1, updatedAt: 1).save(database)
+        }
+        try assertParity(db)
+        XCTAssertEqual(try db.sessionListItem(containing: "worker", filter: filter)?.group.key, "ws:root")
+        try write(db) { try $0.execute(sql: "UPDATE sessions SET isArchived = 1 WHERE id = 'root'") }
+        try assertParity(db)
+        XCTAssertEqual(try db.sessionListItem(containing: "worker", filter: filter)?.group.key, "ws:manager")
+        try write(db) { try $0.execute(sql: "DELETE FROM sessions WHERE id = 'root'") }
+        try assertParity(db)
+        try write(db) { try $0.execute(sql: "UPDATE sessions SET parentSessionId = 'worker' WHERE id = 'manager'") }
+        try assertParity(db)
+        let group = try XCTUnwrap(db.sessionListItem(containing: "worker", filter: filter))
+        XCTAssertEqual(Set(try db.sessionListGroupMemberIds(filter: filter, groupKey: group.group.key)), ["manager", "worker"])
+        XCTAssertEqual(try db.sessionListChildren(filter: filter, groupKey: group.group.key, after: nil, limit: 10).rows.map(\.id), ["worker"])
     }
 
     func testArchiveAndSearchViewsFallBackToTheLiveQuery() throws {

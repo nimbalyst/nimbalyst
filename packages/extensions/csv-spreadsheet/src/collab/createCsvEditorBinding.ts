@@ -6,6 +6,7 @@ import type { GridOperations, GridSourceData } from "../utils/gridOperations";
 import type { SpreadsheetData } from "../types";
 import type { useSpreadsheetMetadata } from "../hooks/useSpreadsheetMetadata";
 import { parseCSV } from "../utils/csvParser";
+import { formattingFromFile } from "../sheetMeta/formatting";
 import { CsvBinding } from "./csvBinding";
 import {
   CsvMetaBinding,
@@ -64,6 +65,8 @@ export function createCsvEditorBinding(
     if (sharedMeta) {
       data.headerRowCount = sharedMeta.headerRowCount;
       data.hasHeaders = sharedMeta.headerRowCount > 0;
+      data.frozenRowCount = sharedMeta.frozenRowCount;
+      data.namedRanges = sharedMeta.namedRanges;
     }
     const gridData = prepareGridData(data);
     // Stash for the deferred ref-callback path. The collab createBinding
@@ -123,7 +126,9 @@ export function createCsvEditorBinding(
       getCurrentCsv: async () => {
         const gridOps = gridOpsRef.current;
         if (!gridOps) throw new Error("CSV grid operations are not ready");
-        return await gridOps.toCSV();
+        // Unqueued: publication runs inside a command's mutation, after the
+        // write, and waiting on the command queue from there would deadlock.
+        return await gridOps.serializeCSV();
       },
       onRemoteContent: (content: string) => {
         // Route through the same applyContent path the host uses for
@@ -169,6 +174,7 @@ export function createCsvEditorBinding(
       columnFormats: parsed.data.columnFormats,
       columnWidths: parsed.metadata?.columnWidths ?? {},
       cellStyles: parsed.data.cellStyles,
+      ...formattingFromFile(parsed.metadata),
     });
   } else {
     const snapshot = metaBinding.snapshot();

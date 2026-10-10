@@ -12,6 +12,10 @@ const ownership = vi.hoisted(() => ({
 vi.mock("../../externalSessions/ExternalSessionService", () => ({
   claimExternalSessionForLocalExecution: ownership.claim,
 }));
+vi.mock("../supersedeOpenQuestions", () => ({
+  snapshotQuestionsToSupersede: vi.fn(async () => null),
+  closeSupersededQuestions: vi.fn(async () => ({ superseded: [], skipped: [] })),
+}));
 vi.mock("../claudeCliSubmit", () => ({
   submitClaudeCliPrompt: ownership.submit,
 }));

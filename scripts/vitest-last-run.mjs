@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * `npm run test:last` -- print the last vitest run, and say whether it is still
+ * `pnpm run test:last` -- print the last vitest run, and say whether it is still
  * true.
  *
  * This used to be `cat .vitest/last-run.log`, which answers "what failed?" but
@@ -19,7 +19,7 @@ const logPath = path.join(LOG_DIR, 'last-run.log');
 const statePath = path.join(LOG_DIR, 'last-run.json');
 
 if (!fs.existsSync(logPath)) {
-  console.log('No recorded test run. Run: npm run test:prepush');
+  console.log('No recorded test run. Run: pnpm run test:prepush');
   process.exit(0);
 }
 
@@ -52,7 +52,7 @@ if (verdict === 'current') {
   banner.push('');
   banner.push(
     failing.length > 0
-      ? `Rerun only the affected files, not the suite: npx vitest --run ${failing.join(' ')}`
+      ? `Rerun only the affected files, not the suite: pnpm exec vitest --run ${failing.join(' ')}`
       : 'Rerun only the files your edits affect, not the whole suite.',
   );
 } else {

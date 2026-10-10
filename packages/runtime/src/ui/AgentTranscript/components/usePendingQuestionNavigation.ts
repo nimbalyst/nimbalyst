@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, type RefObject } from 'react';
 import type { VListHandle } from 'virtua';
 import type { TranscriptViewMessage } from '../../../ai/server/types';
-import { stripMcpPrefix } from '../../../ai/server/interactivePromptTools';
+import { partitionUnansweredQuestions } from '../../../ai/server/interactivePromptTools';
 import { isToolLikeMessage } from '../utils/messageTypeHelpers';
 
 interface PendingQuestion {
@@ -10,28 +10,17 @@ interface PendingQuestion {
 }
 
 // Permission, plan and commit prompts intentionally have separate navigation.
-const QUESTION_TOOLS = new Set(['AskUserQuestion', 'PromptForUserInput', 'RequestUserInput']);
-
+// A question the user moved past by sending a new message is closed, so only
+// open questions drive the Jump button and auto-scroll.
 function findPendingQuestions(messages: TranscriptViewMessage[]): PendingQuestion[] {
-  const seen = new Set<string>();
-  const questions: PendingQuestion[] = [];
-  // Match the transcript's last-occurrence-wins handling of provider echoes.
-  // Walk backwards to resolve a whole contiguous tool group in linear time.
-  let nextNonTool = messages.length;
-  for (let index = messages.length - 1; index >= 0; index--) {
-    const message = messages[index];
-    if (!isToolLikeMessage(message)) nextNonTool = index;
-    const tool = message.toolCall;
-    const id = tool?.providerToolCallId;
-    if (!id || seen.has(id)) continue;
-    seen.add(id);
-    if (!isToolLikeMessage(message) || !QUESTION_TOOLS.has(stripMcpPrefix(tool.toolName ?? '')) || tool.result) continue;
-    questions.push({
-      id,
-      rowIndex: messages[nextNonTool]?.type === 'assistant_message' ? nextNonTool : index,
+  return partitionUnansweredQuestions(messages).open
+    .filter(({ index }) => isToolLikeMessage(messages[index]))
+    .map(({ id, index }) => {
+      // Target the assistant row that encloses the contiguous tool group.
+      let rowIndex = index;
+      while (rowIndex < messages.length && isToolLikeMessage(messages[rowIndex])) rowIndex++;
+      return { id, rowIndex: messages[rowIndex]?.type === 'assistant_message' ? rowIndex : index };
     });
-  }
-  return questions.reverse();
 }
 
 export function usePendingQuestionNavigation({ messages, sessionId, ready, vlistRef, scrollContainerRef }: {

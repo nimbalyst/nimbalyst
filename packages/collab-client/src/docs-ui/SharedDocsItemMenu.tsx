@@ -5,9 +5,10 @@
  * folders existed. A host that shows the list without the tree -- the browser
  * console, where folders are rows -- had no way to rename, move or trash
  * anything, so the actions live here too, against the same session calls and
- * the same name-collision rules the tree applies. The dual-write of a
- * document's path into its title is deliberate and matches the tree: clients
- * that predate first-class folders still build their tree from the title.
+ * the same name-collision rules the tree applies. A document stores its bare
+ * name (no folder path, no ".md" on a page); where it sits is its parent.
+ * Names compare as they show, so an older "Folder/Child.md" and a new "Child"
+ * under the same parent collide.
  */
 
 import React, { useCallback, useMemo, useState } from 'react';
@@ -18,14 +19,16 @@ import {
   type SharedFolder,
   collectFolderSubtree,
   flattenCollabFolderOptions,
-  getCollabDocumentPath,
   getCollabNodeName,
+  getSharedDocumentDisplayPath,
   joinCollabPath,
+  pageDisplayName,
 } from '@nimbalyst/collab-client/docs';
 import { useCollabDocsUI } from './CollabDocsUIProvider';
 import { applySharedDocumentRenameSuffix, getSharedDocumentRenameParts } from './documentPresentation';
 import { InputModal } from './primitives/InputModal';
-import { FloatingPortal, useFloatingMenu, virtualElement } from './primitives/useFloatingMenu';
+import { confirmDestructive } from './primitives/confirmDestructive';
+import { FloatingPortal, useFloatingMenu, virtualElement } from '../ui-primitives/useFloatingMenu';
 import { stableCategory } from './analytics';
 
 export type SharedDocsMenuTarget =
@@ -228,11 +231,17 @@ export function SharedDocsItemMenu({
   });
 
   const folderPathById = useMemo(() => buildFolderPaths(folders), [folders]);
+  // Each row's location as it shows: its parents' path plus its shown name.
+  const shownPath = useCallback((document: SharedDocument): string => {
+    const path = getSharedDocumentDisplayPath(document, folders);
+    const leaf = getCollabNodeName(path);
+    return joinCollabPath(path.slice(0, Math.max(0, path.length - leaf.length - 1)), pageDisplayName(leaf, document.documentType));
+  }, [folders]);
   const existingPaths = useMemo(() => {
     const paths = new Set<string>(folderPathById.values());
-    for (const document of documents) paths.add(getCollabDocumentPath(document));
+    for (const document of documents) paths.add(shownPath(document));
     return paths;
-  }, [documents, folderPathById]);
+  }, [documents, folderPathById, shownPath]);
 
   const warn = useCallback((title: string, message: string) => {
     host.notify?.({ level: 'warning', title, message, duration: 5000 });
@@ -282,7 +291,7 @@ export function SharedDocsItemMenu({
     }
   }, [host, scope, track]);
 
-  const remove = useCallback((target: SharedDocsMenuTarget) => {
+  const remove = useCallback(async (target: SharedDocsMenuTarget) => {
     if (target.kind === 'document') {
       if (!canMutate('move this document to Trash')) return;
       session.trashDocument(target.document.documentId);
@@ -297,7 +306,11 @@ export function SharedDocsItemMenu({
     if (docCount > 0) parts.push(`${docCount} document${docCount === 1 ? '' : 's'}`);
     if (folderCount > 0) parts.push(`${folderCount} subfolder${folderCount === 1 ? '' : 's'}`);
     const detail = parts.length > 0 ? ` and its ${parts.join(' and ')}` : '';
-    if (!window.confirm(`Delete shared folder "${target.folder.name}"${detail}? This cannot be undone.`)) return;
+    // In the page tree a folder is a page, and removing it moves its subtree to Trash.
+    const confirmed = session.isPageTree()
+      ? await confirmDestructive('Move page to Trash', `Move "${target.folder.name}"${detail} to Trash?`)
+      : await confirmDestructive('Delete shared folder', `Delete shared folder "${target.folder.name}"${detail}? This cannot be undone.`);
+    if (!confirmed) return;
     session.removeFolder(target.folder.folderId);
     host.trackEvent?.('collab_folder_deleted', { actorType: 'user', source: 'home' });
   }, [canMutate, documents, folders, host, session, track]);
@@ -327,19 +340,18 @@ export function SharedDocsItemMenu({
     if (!canMutate('rename this document')) return;
     const parts = getSharedDocumentRenameParts(target.document, descriptors);
     const requestedName = getCollabNodeName(requested.trim()) || requested.trim();
-    const name = applySharedDocumentRenameSuffix(requestedName, parts.suffix);
-    if (!name) return;
+    const name = pageDisplayName(applySharedDocumentRenameSuffix(requestedName, parts.suffix), target.document.documentType);
+    if (!name || name === target.document.title) return;
     const parentId = target.document.parentFolderId ?? null;
     const parentPath = parentId ? folderPathById.get(parentId) ?? '' : '';
     const nextPath = joinCollabPath(parentPath, name);
-    if (!nextPath || nextPath === getCollabDocumentPath(target.document)) return;
-    if (existingPaths.has(nextPath)) {
+    if (nextPath !== shownPath(target.document) && existingPaths.has(nextPath)) {
       warn('Name already in use', `A document or folder named "${nextPath}" already exists.`);
       return;
     }
-    await session.updateDocumentTitle(target.document.documentId, nextPath);
+    await session.updateDocumentTitle(target.document.documentId, name);
     track('renamed', target.document);
-  }, [canMutate, descriptors, existingPaths, folderPathById, host, renaming, session, track, warn]);
+  }, [canMutate, descriptors, existingPaths, folderPathById, host, renaming, session, shownPath, track, warn]);
 
   const move = useCallback(async (targetFolderId: string | null) => {
     if (!moving) return;
@@ -358,16 +370,19 @@ export function SharedDocsItemMenu({
       return;
     }
     if (!canMutate('move this document')) return;
-    const nextPath = joinCollabPath(targetPath, getCollabNodeName(getCollabDocumentPath(target.document)));
-    if (!nextPath || nextPath === getCollabDocumentPath(target.document)) return;
+    // Unchanged means the same parent (a page parent here), whatever the title holds.
+    const { document } = target;
+    if ((document.parentFolderId ?? null) === targetFolderId && (document.parentKind ?? 'page') === 'page') return;
+    const name = pageDisplayName(document.title, document.documentType);
+    const nextPath = joinCollabPath(targetPath, name);
     if (existingPaths.has(nextPath)) {
       warn('Name already in use', `A document or folder named "${nextPath}" already exists.`);
       return;
     }
-    // First-class reparent plus the title dual-write, in that order, as the tree does.
-    session.moveDocument(target.document.documentId, targetFolderId);
-    await session.updateDocumentTitle(target.document.documentId, nextPath);
-    track('moved', target.document);
+    session.moveDocument(document.documentId, targetFolderId);
+    // An older title still carrying a folder path or ".md" is stored bare.
+    if (name !== document.title) await session.updateDocumentTitle(document.documentId, name);
+    track('moved', document);
   }, [canMutate, existingPaths, folderPathById, folders, host, moving, session, track, warn]);
 
   const target = state?.target ?? null;
@@ -401,8 +416,8 @@ export function SharedDocsItemMenu({
             <MenuItem
               icon="delete"
               danger
-              label={target.kind === 'document' ? 'Move to Trash' : 'Delete'}
-              onClick={choose(() => remove(target))}
+              label={target.kind === 'document' || session.isPageTree() ? 'Move to Trash' : 'Delete'}
+              onClick={choose(() => { void remove(target); })}
             />
           </div>
         </FloatingPortal>

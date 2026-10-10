@@ -1,7 +1,7 @@
 /**
  * Session index round-trip fixture (local-only, no Wrangler/Electron app required).
  *
- * Build: npm run build:node --workspace=@nimbalyst/runtime
+ * Build: pnpm --filter @nimbalyst/runtime run build:node
  * Run:   node packages/ios/scripts/session-index-fixture.cjs [--self-test]
  * Swift: cd packages/ios/NimbalystNative && swift test --filter SessionIndexRoundTripTests
  * The first stdout line is the ephemeral loopback port; provider logs use stderr.
@@ -345,7 +345,7 @@ function receive(ws, message, mutationDelivery) {
 async function main() {
   const startupTimeout = setTimeout(() => { console.error('fixture startup timed out'); process.exit(1); }, 6000);
   const runtimePath = path.resolve(__dirname, '../../runtime/dist-node/sync/CollabV3Sync.js');
-  assert(fs.existsSync(runtimePath), `Missing runtime Node build: ${runtimePath}. Run npm run build:node --workspace=@nimbalyst/runtime from the repository root.`);
+  assert(fs.existsSync(runtimePath), `Missing runtime Node build: ${runtimePath}. Run pnpm --filter @nimbalyst/runtime run build:node from the repository root.`);
   const { createCollabV3Sync } = await import(require('node:url').pathToFileURL(runtimePath).href);
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   const port = server.address().port;

@@ -20,12 +20,12 @@ on:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-  # Make npm resilient to transient registry socket drops (ECONNRESET): retry
-  # individual failed requests instead of aborting the whole `npm ci`.
-  npm_config_fetch_retries: '5'
-  npm_config_fetch_retry_mintimeout: '20000'
-  npm_config_fetch_retry_maxtimeout: '120000'
-  npm_config_fetch_timeout: '300000'
+  # Make pnpm resilient to transient registry socket drops (ECONNRESET): retry
+  # individual failed requests instead of aborting the whole install.
+  pnpm_config_fetch_retries: '5'
+  pnpm_config_fetch_retry_mintimeout: '20000'
+  pnpm_config_fetch_retry_maxtimeout: '120000'
+  pnpm_config_fetch_timeout: '300000'
 
 concurrency:
   group: publish-extension-sdk-${{ github.ref }}
@@ -48,12 +48,16 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
+      # Reads the version from `packageManager` in the root package.json.
+      - name: Setup pnpm
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+
       - name: Setup Node.js
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: '24'
-          cache: 'npm'
-          cache-dependency-path: '**/package-lock.json'
+          cache: 'pnpm'
+          cache-dependency-path: 'pnpm-lock.yaml'
 
       - name: Install dependencies
         env:
@@ -61,7 +65,7 @@ jobs:
           # api.github.com; unauthenticated runners share a 60 req/hr limit per
           # egress IP and intermittently fail the whole install.
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: npm ci
+        run: pnpm install --frozen-lockfile
 
       - name: Verify expected version matches package.json
         if: ${{ inputs.version != '' }}
@@ -76,11 +80,12 @@ jobs:
           echo "Version match: $PKG_VERSION"
 
       - name: Run public release checks
-        run: npm run extension-sdk:check-public
+        run: pnpm run extension-sdk:check-public
 
+      # Same pack command the publish job uses.
       - name: Dry run pack
         working-directory: packages/extension-sdk
-        run: npm pack --dry-run
+        run: pnpm pack --dry-run
 
   publish:
     name: Publish @nimbalyst/extension-sdk
@@ -101,6 +106,10 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
+      # Reads the version from `packageManager` in the root package.json.
+      - name: Setup pnpm
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+
       - name: Setup Node.js
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
@@ -109,8 +118,8 @@ jobs:
           # upgrade step that hits a known self-replace bug on the runner.
           node-version: '24'
           registry-url: 'https://registry.npmjs.org'
-          cache: 'npm'
-          cache-dependency-path: '**/package-lock.json'
+          cache: 'pnpm'
+          cache-dependency-path: 'pnpm-lock.yaml'
 
       - name: Install dependencies
         env:
@@ -118,14 +127,28 @@ jobs:
           # api.github.com; unauthenticated runners share a 60 req/hr limit per
           # egress IP and intermittently fail the whole install.
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: npm ci
+        run: pnpm install --frozen-lockfile
 
+      # `npm publish <tarball>` runs no lifecycle scripts, so the clean build
+      # that `prepublishOnly` used to trigger happens here.
+      - name: Build
+        working-directory: packages/extension-sdk
+        run: pnpm run build:clean
+
+      # pnpm packs (rewriting any `workspace:*` specifiers to real versions);
+      # npm publishes, so Trusted Publishing keeps going through npm's OIDC
+      # exchange. `--provenance` is what triggers that exchange. Without it the
+      # CLI publishes anonymously and bails on ENEEDAUTH even when
+      # id-token: write is granted.
       - name: Publish to npm (Trusted Publishing via OIDC)
         working-directory: packages/extension-sdk
-        # `--provenance` is what triggers npm's OIDC exchange. Without it the
-        # CLI publishes anonymously and bails on ENEEDAUTH even when
-        # id-token: write is granted.
-        run: npm publish --access public --provenance
+        run: |
+          set -euo pipefail
+          PACK_DIR="$RUNNER_TEMP/extension-sdk-package"
+          mkdir -p "$PACK_DIR"
+          pnpm pack --pack-destination "$PACK_DIR"
+          TARBALL=$(ls "$PACK_DIR"/*.tgz)
+          npm publish "$TARBALL" --access public --provenance
 
       - name: Summary
         run: |

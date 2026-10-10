@@ -126,11 +126,11 @@ Uploads all `.nimext` files, screenshots, and `registry.json` to the R2 bucket u
 
 ### Capture marketplace screenshots
 
-Requires the Nimbalyst dev server running (`cd packages/electron && npm run dev`):
+Requires the Nimbalyst dev server running (`cd packages/electron && pnpm run dev`):
 
 ```bash
 cd packages/electron
-npm run marketing:screenshots:grep -- "extension-"
+pnpm run marketing:screenshots:grep "extension-"
 ```
 
 This runs the Playwright spec at `marketing/specs/extension-screenshots.spec.ts`, which reads each extension's `marketplace.screenshots` from its manifest, opens the sample files, and captures dark/light theme screenshots into the extension's `screenshots/` directory.
@@ -139,10 +139,10 @@ This runs the Playwright spec at `marketing/specs/extension-screenshots.spec.ts`
 
 ```bash
 # Staging
-npm run deploy:staging
+pnpm run deploy:staging
 
 # Production (bumps version automatically)
-npm run deploy:production
+pnpm run deploy:production
 ```
 
 The deploy script bumps the version in `package.json`, passes it to the Worker as a build-time define, and runs `wrangler deploy`.
@@ -150,7 +150,7 @@ The deploy script bumps the version in `package.json`, passes it to the Worker a
 ## Cloudflare account isolation
 
 This Worker deploys to the **Nimbalyst** Cloudflare account
-(`454b0e55f2d7f9abc0d52d4217ecdc3c`). Every npm script and shell script
+(`454b0e55f2d7f9abc0d52d4217ecdc3c`). Every package script and shell script
 that shells out to wrangler sets:
 
 ```
@@ -160,15 +160,15 @@ XDG_CONFIG_HOME="$HOME/.config/nimbalyst"
 Wrangler reads its OAuth tokens from `~/.config/nimbalyst/.wrangler/`,
 isolated from any other Cloudflare accounts on this machine. The same
 `XDG_CONFIG_HOME` is reused by `packages/collabv3` and
-`packages/collabv3-metrics` so one `npm run login` covers all three.
+`packages/collabv3-metrics` so one `pnpm run login` covers all three.
 
-Always go through the npm scripts. Running `wrangler` directly from the
+Always go through the package scripts (`pnpm run ...`). Running `wrangler` directly from the
 shell will use the default config dir and may pick a different account.
 
 ```bash
-npm run login        # one-time: sign in to the Nimbalyst account
-npm run whoami       # sanity-check the active account
-npm run wrangler -- <subcommand>   # any unaliased wrangler command
+pnpm run login        # one-time: sign in to the Nimbalyst account
+pnpm run whoami       # sanity-check the active account
+pnpm run wrangler <subcommand>   # any unaliased wrangler command
 ```
 
 ## Infrastructure Setup (one-time)

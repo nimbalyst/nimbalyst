@@ -5,11 +5,18 @@
  * Pure. `planOntologyChange` turns one change into the pages it touches, a
  * before/after of one of them, the tracker writes that apply it and the writes
  * that undo it -- so the preview a reader approves and the migration that runs
- * are computed by the same function. Schema changes (a kind option, a
- * predicate) cannot be written from the browser; an agent applies them and
- * marks the change, and data changes that need them wait until they exist.
+ * are computed by the same function. Schema changes (a label, a property, a
+ * broader link, a range) cannot be written from the browser; an agent applies
+ * them and marks the change, and data changes that need them wait until they
+ * exist. The label changes live in `ontologyLabelProposals.ts`.
+ *
+ * `add-kind-option`, `add-predicate` and `reclassify-pages` are retired:
+ * agents no longer draft them, but proposals that carry them still read, plan
+ * and render.
  */
+import type { LabelRegistry } from '../../../../tracker-schema/src/browser';
 import { type HealthItem, type KnowledgeGraph } from './ontologyKnowledge';
+import { type LabelChange } from './ontologyLabelProposals';
 import { type OntologyRecordLike } from './ontologyRecords';
 export declare const ONTOLOGY_PROPOSAL_TYPE = "ontology-proposal";
 export type ProposalStatus = 'proposed' | 'accepted' | 'applied' | 'rejected' | 'undone';
@@ -35,7 +42,7 @@ export interface PredicateDraft {
     subjectKinds?: string[];
     qualifiers?: Record<string, unknown>;
 }
-export type OntologyChange = ChangeBase & ({
+export type OntologyChange = ChangeBase & (LabelChange | {
     type: 'add-kind-option';
     value: string;
     label: string;
@@ -74,7 +81,10 @@ export type OntologyChange = ChangeBase & ({
     valueText?: boolean;
 });
 export type OntologyChangeType = OntologyChange['type'];
+/** Types an agent may draft today. */
 export declare const CHANGE_TYPES: readonly OntologyChangeType[];
+/** No longer drafted; kept so proposals that carry them still read, plan and apply. */
+export declare const RETIRED_CHANGE_TYPES: readonly OntologyChangeType[];
 /** Changes to the schema, which an agent applies; the rest are data the page writes. */
 export declare const SCHEMA_CHANGE_TYPES: ReadonlySet<OntologyChangeType>;
 export interface ParsedChanges {
@@ -160,6 +170,10 @@ export interface PlanEnv {
     kindOptions: ReadonlySet<string>;
     predicateLabel: (id: string) => string;
     newId: () => string;
+    /** The label registry in force (the kind stand-in included), for label changes. */
+    labels?: LabelRegistry;
+    /** Whether an id is a declared predicate. */
+    isPredicate?: (id: string) => boolean;
 }
 export declare function planOntologyChange<T extends OntologyRecordLike>(change: OntologyChange, graph: KnowledgeGraph<T>, env: PlanEnv): ChangePlan<T>;
 export interface ProposalRequestDraft {
@@ -169,7 +183,7 @@ export interface ProposalRequestDraft {
 }
 /**
  * What the Improve button writes: a `proposed` proposal with no changes and a
- * request naming the health check and the pages, which the knowledge skill's
+ * request naming the health check and the pages, which the wiki update skill's
  * agent workflow picks up and fills in.
  */
 export declare function proposalRequestFor<T extends OntologyRecordLike>(item: HealthItem<T>): ProposalRequestDraft;

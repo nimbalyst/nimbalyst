@@ -12,8 +12,8 @@
  * queries every time its row painted.
  */
 import type { TrackerRecord } from '../../../core/TrackerRecord';
-import type { FieldDefinition, TrackerRelationshipValue } from '@nimbalyst/tracker-schema';
-import { type StatusCategory } from '@nimbalyst/tracker-schema';
+import type { FieldDefinition, TrackerRelationshipValue } from '../../../../../tracker-schema/src/browser';
+import { type StatusCategory } from '../../../../../tracker-schema/src/browser';
 /** Relationship key a collection uses to point at its members. */
 export declare const COLLECTION_MEMBER_KEY = "has-item";
 /** Relationship key a member uses to point back at its collection. */

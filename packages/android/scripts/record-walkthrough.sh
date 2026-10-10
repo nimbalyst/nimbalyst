@@ -71,7 +71,7 @@ trap cleanup EXIT
 if [ "$MODE" = "demo" ]; then
     if [ "$SKIP_BUILD" -eq 0 ]; then
         echo "[1/4] Building debug APK..."
-        (cd "$ANDROID_DIR" && npm run build:transcript >/dev/null && ./gradlew :app:assembleDebug -q)
+        (cd "$ANDROID_DIR" && pnpm run build:transcript >/dev/null && ./gradlew :app:assembleDebug -q)
     fi
     [ -f "$APK" ] || { echo "Debug APK not found at $APK" >&2; exit 1; }
 

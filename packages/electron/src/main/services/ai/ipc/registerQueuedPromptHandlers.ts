@@ -8,6 +8,7 @@ import { flushNextClaudeCliQueuedPromptForSession } from '.././claudeCliQueueFlu
 import { type AIServiceContext } from './AIServiceContext';
 import { getSessionStateManager } from '@nimbalyst/runtime/ai/server/SessionStateManager';
 import { remoteSessions } from '../remoteSessions';
+import { canDispatchIntoDrain } from '../drainFollowUp';
 
 /**
  * Queued-prompt lifecycle: claim, complete, fail, list, create, delete, and the
@@ -171,6 +172,12 @@ export function registerQueuedPromptHandlers(ctx: AIServiceContext): void {
       sessionId,
       promptCount: 1
     });
+
+    // A Claude Code turn that has answered but is draining a background task
+    // takes this prompt on its live query now, not when the task finishes.
+    if (queuedSession?.provider === 'claude-code' && queuedSession.workspacePath && canDispatchIntoDrain(sessionId)) {
+      void ctx.driveQueuedPrompts(sessionId, queuedSession.workspacePath, 'drain-follow-up');
+    }
 
     // claude-code-cli (NIM-806): the CLI queue normally drains on the PID
     // watcher's running->idle transition. But a prompt queued while the CLI is

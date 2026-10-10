@@ -9,16 +9,16 @@
 #      not the (possibly weeks-old) base it was branched from. CHANGELOG.md
 #      conflicts are auto-resolved (they never affect runtime); any real source
 #      conflict stops the script — that itself is a review finding.
-#   4. Runs an incremental `npm install` (only the dep delta).
+#   4. Runs an incremental `pnpm install` (only the dep delta).
 #   5. Prints the dev:user2 launch command (isolated userData + port 5274), or
 #      launches it directly with --run.
 #
 # Usage:
 #   scripts/review-pr.sh <PR_NUMBER> [--run] [--no-merge] [--skip-install]
 #
-#   --run           launch `npm run dev:user2` when prep finishes (default: just print the command)
+#   --run           launch `pnpm run dev:user2` when prep finishes (default: just print the command)
 #   --no-merge      test the PR exactly as-authored, without merging current main
-#   --skip-install  skip npm install (use when you know deps are unchanged)
+#   --skip-install  skip pnpm install (use when you know deps are unchanged)
 
 set -euo pipefail
 
@@ -103,10 +103,10 @@ fi
 
 # 5. Incremental dependency install.
 if [[ "$DO_INSTALL" == true ]]; then
-  echo ">> npm install (incremental)..."
-  ( cd "$REVIEW_WT" && npm install )
+  echo ">> pnpm install (incremental)..."
+  ( cd "$REVIEW_WT" && pnpm install )
 else
-  echo ">> Skipping npm install (--skip-install)."
+  echo ">> Skipping pnpm install (--skip-install)."
 fi
 
 echo ""
@@ -115,11 +115,11 @@ echo " PR #$PR ready for review in:"
 echo "   $REVIEW_WT"
 echo ""
 echo " Launch the isolated test instance (userData: electron-user2, port 5274):"
-echo "   cd \"$REVIEW_WT/packages/electron\" && npm run dev:user2"
+echo "   cd \"$REVIEW_WT/packages/electron\" && pnpm run dev:user2"
 echo "=============================================================="
 
 if [[ "$DO_RUN" == true ]]; then
   echo ">> Launching dev:user2..."
   cd "$REVIEW_WT/packages/electron"
-  exec npm run dev:user2
+  exec pnpm run dev:user2
 fi

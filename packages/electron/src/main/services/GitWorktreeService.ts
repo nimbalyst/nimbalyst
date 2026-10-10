@@ -14,6 +14,7 @@
 
 import simpleGit, { SimpleGit } from 'simple-git';
 import { simpleGitWithHookEnv } from './gitEnv';
+import { validateGitCwd, validateGitOperand } from './gitOperandValidation';
 import * as path from 'path';
 import * as fs from 'fs';
 import { ulid } from 'ulid';
@@ -1998,12 +1999,8 @@ ${newLines.map(line => '+' + line).join('\n')}`;
     untrackedFiles?: string[];
     stashWarning?: boolean;
   }> {
-    if (!worktreePath) {
-      throw new Error('worktreePath is required');
-    }
-    if (!baseBranch) {
-      throw new Error('baseBranch is required');
-    }
+    validateGitCwd(worktreePath, 'worktreePath');
+    validateGitOperand(baseBranch, 'baseBranch');
 
     // Use lock to prevent concurrent merge/rebase/squash operations
     return gitOperationLock.withLock(worktreePath, 'rebaseFromBase', () =>

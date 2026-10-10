@@ -106,7 +106,8 @@ import {
 } from '../../store';
 import { streamCompletionSignalAtom } from '../../store/atoms/sessionTranscript';
 import { sessionBackgroundTasksAtom } from '../../store/atoms/sessionBackgroundTasks';
-import { convertToWorkstreamAtom, sessionPromptAdditionsAtom, sessionLastSubmitAtAtom, sessionDraftLocalModifiedAtAtom, nextOptimisticId } from '../../store/atoms/sessions';
+import { sessionPromptAdditionsAtom, sessionLastSubmitAtAtom, sessionDraftLocalModifiedAtAtom, nextOptimisticId } from '../../store/atoms/sessions';
+import { sessionViewRetention } from '../../store/sessionViewRetention';
 import { clearAIInputHistoryAtom } from '../../store/atoms/aiInputUndo';
 import {
   cliTerminalExpandedAtom,
@@ -131,11 +132,13 @@ import { setAgentModeSettingsAtom, showPromptAdditionsAtom, hasExternalEditorAto
 import { supportsEffortLevel, supportsThinkingToggle, parseEffortLevel, resolveThinkingMode, type EffortLevel, type ThinkingMode } from '../../utils/modelUtils';
 import { buildPlanImplementationPrompt, resolvePlanFilePath } from '../../utils/pathUtils';
 import { resolveTranscriptClickPath } from '../../utils/resolveTranscriptClickPath';
+import { openAgentEditedPage } from '../../utils/agentEditedPage';
 import { autoCommitEnabledAtom, setAutoCommitEnabledAtom } from '../../store/atoms/autoCommitAtoms';
 import { diffPeekSizeAtom, setDiffPeekSizeAtom } from '../../store/atoms/diffPeekSizeAtoms';
 import { registerSessionWorkspace, loadInitialSessionFileState } from '../../store/listeners/fileStateListeners';
 import { sessionFileEditsAtom } from '../../store/atoms/sessionFiles';
 import { SESSION_PHASE_COLUMNS, setSessionPhaseAtom, type SessionPhase } from '../../store/atoms/sessionKanban';
+import { mergeRestoredPromptIntoDraft } from '../../../shared/restoredDraft';
 
 /**
  * Detect a metadata value that's the artifact of `{...stringValue, ...}` -
@@ -205,6 +208,7 @@ function makeOptimisticUserMessage(
     subagentId: null,
     mode,
     attachments,
+    optimistic: true,
   };
 }
 
@@ -369,6 +373,8 @@ const LocalSessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscrip
 }, ref) => {
   const posthog = usePostHog();
   const inputRef = useRef<AIInputRef>(null);
+  // Guards the await between Enter and the composer clearing against a second send.
+  const submittingRef = useRef(false);
   const transcriptPanelRef = useRef<{ scrollToMessage: (index: number) => void; scrollToTop: () => void }>(null);
   const loadToolCallDiffs = useCallback(
     (toolCallItemId: string, toolCallTimestamp?: number): Promise<ToolCallDiffLoadResult> =>
@@ -430,7 +436,6 @@ const LocalSessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscrip
 
   // Child session creation for "start new session" option
   const createChildSession = useSetAtom(createChildSessionAtom);
-  const convertToWorkstream = useSetAtom(convertToWorkstreamAtom);
   const sessionChildren = useAtomValue(sessionChildrenAtom(sessionId));
   const sessionParentId = useAtomValue(sessionParentIdAtom(sessionId));
   const defaultModel = useAtomValue(defaultAgentModelAtom);
@@ -767,6 +772,9 @@ const LocalSessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscrip
   // ============================================================
   // Load session data on mount
   // ============================================================
+  // Keep this session's messages resident while it is shown.
+  useEffect(() => (sessionId ? sessionViewRetention.acquire(sessionId) : undefined), [sessionId]);
+
   useEffect(() => {
     if (!sessionId || !workspacePath) return;
     if (!hasSessionData) {
@@ -1275,6 +1283,30 @@ const LocalSessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscrip
     const sessionRegistry = store.get(sessionRegistryAtom);
     message = expandSessionMentions(message, sessionRegistry);
 
+    // Record the prompt durably before the composer and its persisted draft
+    // are cleared. Setup before the provider logs the prompt can stall, and a
+    // quit during that stall used to lose the text. If this write fails, the
+    // draft is left alone and nothing is sent.
+    if (submittingRef.current) {
+      blocked('duplicate_prompt');
+      return;
+    }
+    submittingRef.current = true;
+    let submissionId: string;
+    try {
+      ({ submissionId } = await window.electronAPI.invoke('ai:recordPendingSubmission', sessionId, message) as { submissionId: string });
+    } catch (error) {
+      console.error('[SessionTranscript] Failed to record submission:', error);
+      updateSessionStore({
+        sessionId,
+        updates: { messages: [...messages, makeOptimisticError('Could not save your message, so it was not sent. Your text is still in the composer.')] },
+      });
+      blocked('submission_record_failed');
+      return;
+    } finally {
+      submittingRef.current = false;
+    }
+
     setLastSubmitAt(Date.now());
     setDraftInput('');
     setDraftAttachments([]);
@@ -1305,6 +1337,7 @@ const LocalSessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscrip
         attachments: attachments.length > 0 ? attachments : undefined,
         mode: overrideMode,
         inputType: 'user' as const,
+        submissionId,
       };
 
       await window.electronAPI.invoke('ai:sendMessage', message, docContext, sessionId, workspacePath);
@@ -1327,6 +1360,12 @@ const LocalSessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscrip
           messages: [...messages, userMessage, errorMessage],
         },
       });
+      // Give the text back so a failed send can be retried, keeping anything
+      // typed since. The `prev` form reads the live draft, not the one above.
+      setDraftInput(prev => mergeRestoredPromptIntoDraft(prev, message));
+      if (attachments.length > 0) {
+        setDraftAttachments(prev => (prev && prev.length > 0 ? prev : attachments));
+      }
       setIsProcessing(false);
     }
   }, [sessionId, sessionData, isLoading, getEffectiveDocumentContext, aiMode, workspacePath, setDraftInput, setDraftAttachments, setLastSubmitAt, resetHistory, updateSessionStore, handleQueue, setIsProcessing, messages, sessionHasMessages, startedCliSessionId, mode, onClearSession, onClearAgentSession, clearAIInputHistory, provider, recordClaudeActivity]);
@@ -1367,6 +1406,7 @@ const LocalSessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscrip
           actionLabel: action.label,
           config: {
             model: action.config.model,
+            effort: action.config.effort,
             foreground: action.config.foreground,
             autoSubmit: action.config.autoSubmit,
             worktree: action.config.worktree,
@@ -1429,7 +1469,14 @@ const LocalSessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscrip
     return !!registration?.supportsTranscriptEmbed;
   }, []);
 
+  // Read through a ref so handleCompact keeps its identity across message
+  // updates; it is threaded down to every transcript row, and a new identity
+  // per streamed frame would defeat the row memoization.
+  const compactStateRef = useRef({ sessionData, messages });
+  compactStateRef.current = { sessionData, messages };
+
   const handleCompact = useCallback(async () => {
+    const { sessionData, messages } = compactStateRef.current;
     if (!sessionData) return;
 
     // Phase 4: the provider's declared capability chooses the mechanism. This
@@ -1477,7 +1524,7 @@ const LocalSessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscrip
     } catch (error) {
       console.error('[SessionTranscript] Failed to send /compact command:', error);
     }
-  }, [sessionId, sessionData, messages, getEffectiveDocumentContext, aiMode, workspacePath, updateSessionStore, compactionSupport]);
+  }, [sessionId, getEffectiveDocumentContext, aiMode, workspacePath, updateSessionStore, compactionSupport]);
 
   const handleTodoClick = useCallback((todo: TodoItem) => {
     onTodoClick?.(todo);
@@ -1686,45 +1733,15 @@ const LocalSessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscrip
 
   // Handler for "Start new session to implement" option
   // Creates a new session and opens it with a populated draft before stopping the current plan session.
-  // For worktree sessions: creates a new session in the same worktree (no parent-child hierarchy)
-  // For regular sessions: creates a workstream hierarchy (converts to workstream if needed)
+  // The implementation session stays under the planning session in the same container.
   const handleExitPlanModeStartNewSession = useCallback(async (requestId: string, confirmSessionId: string, planFilePath: string) => {
     try {
-      let newSessionId: string | null = null;
-
-      // Check if we're in a worktree session
-      if (worktreeId && onCreateWorktreeSession) {
-        // Worktree sessions: create a new session in the same worktree (NOT a workstream)
-        // This avoids creating workstreams-within-worktrees which is not supported
-        console.log('[SessionTranscript] Creating new session in worktree:', worktreeId);
-        newSessionId = await onCreateWorktreeSession(worktreeId);
-      } else {
-        // Regular sessions: use workstream hierarchy logic
-        const hasChildren = sessionChildren.length > 0;
-
-        if (hasChildren || sessionParentId) {
-          // Already part of a workstream hierarchy - create a child of the appropriate parent
-          // If sessionParentId exists, we're a child session - create sibling under the same parent
-          // If hasChildren, we're the root - create child under us
-          const parentId = sessionParentId || confirmSessionId;
-          newSessionId = await createChildSession({
-            parentSessionId: parentId,
-            workspacePath: workspacePath || '',
-            provider: 'claude-code',
-            model: defaultModel,
-          });
-        } else {
-          // Single session - convert to workstream first, which creates a sibling session
-          const result = await convertToWorkstream({
-            sessionId: confirmSessionId,
-            workspacePath: workspacePath || '',
-            model: defaultModel,
-          });
-          if (result?.siblingId) {
-            newSessionId = result.siblingId;
-          }
-        }
-      }
+      const newSessionId = await createChildSession({
+        parentSessionId: confirmSessionId,
+        workspacePath: workspacePath || '',
+        provider: 'claude-code',
+        model: defaultModel,
+      });
 
       if (!newSessionId) {
         console.error('[SessionTranscript] Failed to create new implementation session');
@@ -1754,7 +1771,7 @@ const LocalSessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscrip
     } catch (error) {
       console.error('[SessionTranscript] Failed to start new session for implementation:', error);
     }
-  }, [sessionChildren, sessionParentId, workspacePath, worktreeId, onCreateWorktreeSession, createChildSession, convertToWorkstream, sessionWorktreePath, posthog, defaultModel, openSessionWithDraft, stopExitPlanModeSession]);
+  }, [sessionChildren, sessionParentId, workspacePath, worktreeId, onCreateWorktreeSession, createChildSession, sessionWorktreePath, posthog, defaultModel, openSessionWithDraft, stopExitPlanModeSession]);
 
   const handleExitPlanModeCancel = useCallback(async (requestId: string, confirmSessionId: string) => {
     try {
@@ -2166,6 +2183,7 @@ const LocalSessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscrip
           await window.electronAPI.invoke('workspace:open-file', { workspacePath, filePath });
         }
       },
+      openPage: (uri: string) => openAgentEditedPage(uri, workspacePath || ''),
       trackEvent: (eventName: string, properties?: Record<string, unknown>) => {
         posthog?.capture(eventName, properties);
       },
@@ -2207,6 +2225,7 @@ const LocalSessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscrip
       retryAttachmentStaging: (...args) => liveHostRef.current!.retryAttachmentStaging!(...args),
       openAttachmentSettings: (...args) => liveHostRef.current!.openAttachmentSettings!(...args),
       openFile: (...args) => liveHostRef.current!.openFile(...args),
+      openPage: (...args) => liveHostRef.current!.openPage!(...args),
       trackEvent: (...args) => liveHostRef.current!.trackEvent(...args),
     };
 

@@ -34,6 +34,18 @@ export interface CollabScope {
     orgId: string;
     indexConfig: CollabIndexConfig;
 }
+/** `orgId` of a Personal pages scope: local to this device, no team or account. */
+export declare const PERSONAL_COLLAB_ORG_ID = "local";
+/** Scope key of a workspace's Personal pages, distinct from its team scope key. */
+export declare function personalCollabScopeKey(workspacePath: string): string;
+/** The Personal pages scope for a workspace. It never connects to a server. */
+export declare function createPersonalCollabScope(workspacePath: string): CollabScope;
+/** True for a Personal pages scope, which must never stand in for the team scope. */
+export declare function isPersonalCollabScope(scope: CollabScope | null | undefined): boolean;
+/** True for a Personal pages scope key; for callers that hold only the key. */
+export declare function isPersonalCollabScopeKey(scopeKey: string): boolean;
+/** The workspace path a Personal pages scope key belongs to. */
+export declare function workspacePathFromPersonalScopeKey(scopeKey: string): string;
 /** A scope lookup failure with an explicit retry contract for shared lifecycle code. */
 export declare class CollabScopeResolutionError extends Error {
     readonly retryable: boolean;
@@ -107,8 +119,28 @@ export type CollabArtifactRef = {
     kind: 'tracker';
     scope: CollabScope;
     trackerId: string;
+}
+/** A tracker type placed in the page tree: opens the type's table. */
+ | {
+    kind: 'type';
+    scope: CollabScope;
+    typeId: string;
 };
 export type CollabOpenSource = 'sidebar' | 'home' | 'quick_open' | 'deep_link' | 'restart_restore' | 'history' | 'agent_tool' | 'share_to_team' | 'embedded_document' | 'feedback_request';
+/**
+ * How a user click asked to open an artifact. A host that navigates in place
+ * (desktop Pages) shows it in the current tab, or a new tab when `newTab`
+ * (Cmd, or Ctrl off macOS, was held). Without options a host keeps its
+ * default: the desktop focuses or adds a tab.
+ */
+export interface CollabOpenOptions {
+    newTab: boolean;
+}
+/** The open options a click carries. */
+export declare function collabOpenOptions(event: {
+    metaKey: boolean;
+    ctrlKey: boolean;
+}): CollabOpenOptions;
 /** Browser-safe projection of a host's document/editor catalog. */
 export interface CollabDocumentTypeDescriptor {
     documentType: string;
@@ -164,6 +196,8 @@ export interface CollabDocsCreateInput {
     descriptor: CollabDocumentTypeDescriptor;
     requestedName: string;
     parentFolderId: string | null;
+    /** What `parentFolderId` names: a page (default) or a typed page (tracker item id). */
+    parentKind?: 'page' | 'item';
     sourceContent: string | Uint8Array;
 }
 export interface CollabDocsCapability<TItem = unknown, TContainer = unknown, TCommand extends CollabCommand = CollabCommand, TResult extends CollabCommandResult = CollabCommandResult> {
@@ -233,7 +267,7 @@ export interface CollabHost<TDocuments extends CollabDocsCapability = CollabDocs
      * scope may omit it, and callers fall back to fetching once (#3716).
      */
     onMembersChanged?(cb: () => void): Unsubscribe;
-    openArtifact(ref: CollabArtifactRef, source: CollabOpenSource): void;
+    openArtifact(ref: CollabArtifactRef, source: CollabOpenSource, options?: CollabOpenOptions): void;
     /** Host-native durable URL/deep link for copy-link affordances. */
     artifactUrl?(ref: CollabArtifactRef): string | null;
     personalState: CollabCapabilityAvailability<CollabPersonalStateCapability>;

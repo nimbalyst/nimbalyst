@@ -10,10 +10,13 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { TrackerRecord } from '@nimbalyst/runtime/core/TrackerRecord';
 import { loadBuiltinTrackers } from '@nimbalyst/runtime/plugins/TrackerPlugin/models';
 
-const { selectedRange, gridElement } = vi.hoisted(() => ({
+const { selectedRange, gridElement, requestConfirmation } = vi.hoisted(() => ({
   selectedRange: { current: null as { y: number; y1: number } | null },
   gridElement: {} as Record<string, any>,
+  requestConfirmation: vi.fn(),
 }));
+
+vi.mock('../../../dialogs/requestConfirmation', () => ({ requestConfirmation }));
 
 vi.mock('@revolist/react-datagrid', async () => {
   const React = await import('react');
@@ -87,6 +90,7 @@ describe('TrackerGridView row context menu', () => {
 
   beforeEach(() => {
     selectedRange.current = null;
+    requestConfirmation.mockReset();
     (window as any).electronAPI = { documentService: { updateTrackerItem: vi.fn() } };
   });
 
@@ -106,7 +110,7 @@ describe('TrackerGridView row context menu', () => {
 
   it('acts on every row of the selected range when the click lands inside it', async () => {
     const onDeleteItems = vi.fn();
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    requestConfirmation.mockResolvedValue(true);
     renderGrid({ onDeleteItems });
 
     selectedRange.current = { y: 0, y1: 1 };
@@ -115,8 +119,26 @@ describe('TrackerGridView row context menu', () => {
     await waitFor(() => screen.getByText('2 items selected'));
 
     fireEvent.click(screen.getByTestId('tracker-row-context-delete'));
-    expect(onDeleteItems).toHaveBeenCalledWith(['bug-1', 'bug-2']);
-    confirmSpy.mockRestore();
+    await waitFor(() => expect(onDeleteItems).toHaveBeenCalledWith(['bug-1', 'bug-2']));
+    expect(requestConfirmation).toHaveBeenCalledWith(expect.objectContaining({
+      message: 'Delete 2 items? This cannot be undone.',
+      confirmLabel: 'Delete',
+      destructive: true,
+    }));
+  });
+
+  it('does not delete when the in-app confirmation is cancelled', async () => {
+    const onDeleteItems = vi.fn();
+    requestConfirmation.mockResolvedValue(false);
+    renderGrid({ onDeleteItems });
+
+    rightClickRow(0);
+    await waitFor(() => screen.getByText('1 item selected'));
+    fireEvent.click(screen.getByTestId('tracker-row-context-delete'));
+
+    await waitFor(() => expect(requestConfirmation).toHaveBeenCalled());
+    await Promise.resolve();
+    expect(onDeleteItems).not.toHaveBeenCalled();
   });
 
   it('offers the deep link only for a single-row selection', async () => {

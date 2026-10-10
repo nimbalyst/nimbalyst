@@ -39,17 +39,22 @@ inputs:
 runs:
   using: composite
   steps:
+    # Reads the version from `packageManager` in the root package.json.
+    - name: Setup pnpm
+      uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+
     - name: Setup Node.js
       uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
       with:
         node-version: '24'
-        cache: 'npm'
-        cache-dependency-path: '**/package-lock.json'
+        cache: 'pnpm'
+        cache-dependency-path: 'pnpm-lock.yaml'
 
-    # node_modules cache short-circuits `npm ci` when the lockfile is
+    # node_modules cache short-circuits `pnpm install` when the lockfile is
     # unchanged, so the common case makes ZERO registry calls and can't hit a
     # transient network failure. Exact-key match only (no restore-keys) so we
-    # never run against a partially-stale tree -- on miss we just `npm ci`.
+    # never run against a partially-stale tree -- on miss we just install.
+    # Separate key prefix from ci.yml: this tree is installed without scripts.
     - name: Cache node_modules
       id: cache-node-modules
       uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -58,12 +63,17 @@ runs:
           node_modules
           packages/*/node_modules
           packages/extensions/*/node_modules
-        key: node-modules-android-${{ runner.os }}-node24-${{ hashFiles('**/package-lock.json') }}
+          packages/extensions/nimbalyst-memory/engine/node_modules
+          packages/extension-sdk-docs/examples/*/node_modules
+        key: node-modules-pnpm-android-${{ runner.os }}-node24-${{ hashFiles('pnpm-lock.yaml', 'pnpm-workspace.yaml', 'patches/**') }}
 
+    # --ignore-scripts skips the Electron download and install-app-deps native
+    # rebuild, which this job never uses. It also skips the root and
+    # collab-protocol `prepare` builds; the next steps build what is needed.
     - name: Install dependencies
       if: steps.cache-node-modules.outputs.cache-hit != 'true'
       shell: bash
-      run: npm ci --ignore-scripts
+      run: pnpm install --frozen-lockfile --ignore-scripts
 
     - name: Setup Java
       uses: actions/setup-java@b6effb05e454b25005698d916606bdc6ffcbf961 # v5.7.0
@@ -81,18 +91,18 @@ runs:
       shell: bash
       run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
 
-    # tracker-core and extension-sdk are consumed through their built `dist`,
-    # produced only by their `prepare` scripts. `npm ci --ignore-scripts` skips
-    # those, and a cache hit skips the install entirely, so build them here or
-    # the transcript bundle fails with: Failed to resolve entry for package
-    # "@nimbalyst/tracker-core".
+    # tracker-core, extension-sdk, and collab-protocol are consumed through
+    # their built `dist`, produced by `prepare` scripts during a scripted
+    # install. `--ignore-scripts` skips those, and a cache hit skips the
+    # install entirely, so build them here or the transcript bundle fails
+    # with: Failed to resolve entry for package "@nimbalyst/tracker-core".
     - name: Build workspace deps
       shell: bash
-      run: npm run build:workspace-deps
+      run: pnpm run build:workspace-deps
 
     - name: Build transcript bundle
       shell: bash
-      run: npm run android:build:transcript
+      run: pnpm run android:build:transcript
 
     - name: Verify transcript bundle exists
       shell: bash
@@ -108,6 +118,21 @@ runs:
         echo "Transcript bundle built successfully"
         du -sh packages/android/dist-transcript
         du -sh packages/android/dist-transcript/assets
+
+    # The sync<Variant>EditorAssets Gradle task throws if packages/android/dist-editor
+    # is missing, so the document editor bundle must exist before any Gradle build.
+    - name: Build editor bundle
+      shell: bash
+      run: pnpm --dir packages/android run build:editor
+
+    - name: Verify editor bundle exists
+      shell: bash
+      run: |
+        if [ ! -f "packages/android/dist-editor/editor.html" ]; then
+          echo "Error: editor.html not found in packages/android/dist-editor/"
+          exit 1
+        fi
+        du -sh packages/android/dist-editor
 
     # Fail loudly if this is a signed release build without a Firebase config:
     # shipping a signed AAB with push silently disabled is a launch-blocking

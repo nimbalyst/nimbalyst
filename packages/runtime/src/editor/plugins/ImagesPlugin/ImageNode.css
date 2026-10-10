@@ -38,10 +38,6 @@
   pointer-events: none;
 }
 
-.image-control-wrapper--resizing {
-  touch-action: none;
-}
-
 .image-context-menu {
   z-index: 100;
   min-width: 140px;

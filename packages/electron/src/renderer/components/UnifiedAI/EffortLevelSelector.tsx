@@ -3,6 +3,7 @@ import { MaterialSymbol } from '@nimbalyst/runtime/ui/icons/MaterialSymbol';
 import type { EffortLevel } from '../../utils/modelUtils';
 import { EFFORT_LEVELS, DEFAULT_EFFORT_LEVEL, clampEffortLevel, getAvailableEffortLevels } from '../../utils/modelUtils';
 import { FloatingPortal, useFloatingMenu } from '../../hooks/useFloatingMenu';
+import { useMenuTypeahead } from '../../hooks/useMenuTypeahead';
 
 interface EffortLevelSelectorProps {
   open?: boolean;
@@ -22,6 +23,7 @@ interface EffortLevelSelectorProps {
 export function EffortLevelSelector({ open, onOpenChange, level, onLevelChange, disabled = false, disabledTitle, modelId }: EffortLevelSelectorProps) {
   const menu = useFloatingMenu({ placement: 'top-start', offsetPx: 4, open, onOpenChange });
   const { isOpen, setIsOpen } = menu;
+  const { getTypeaheadMatch, resetTypeahead } = useMenuTypeahead(isOpen);
 
   useEffect(() => {
     if (disabled) {
@@ -41,9 +43,14 @@ export function EffortLevelSelector({ open, onOpenChange, level, onLevelChange, 
   }, [menu.refs.setFloating]);
 
   const handleKeyDown = (event: React.KeyboardEvent<HTMLDivElement>) => {
-    if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') return;
-    event.preventDefault();
     const options = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>('button'));
+    if (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') {
+      const match = getTypeaheadMatch(event, availableLevels);
+      options[match]?.focus();
+      return;
+    }
+    event.preventDefault();
+    resetTypeahead();
     const index = options.indexOf(document.activeElement as HTMLButtonElement);
     options[(index + (event.key === 'ArrowDown' ? 1 : -1) + options.length) % options.length]?.focus();
   };

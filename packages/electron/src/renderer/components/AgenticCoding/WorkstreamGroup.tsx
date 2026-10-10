@@ -1,14 +1,11 @@
-import { SessionProviderIcon } from './SessionProviderIcon';
+import { SessionTree } from './SessionTree.tsx';
+import { sessionRegistryAtom } from '../../store/atoms/sessions';
 import React, { useState, useCallback, useEffect, useRef, memo, useMemo } from 'react';
 import { useAtomValue, useSetAtom } from 'jotai';
+import { compactRowsAtom } from '../../store/atoms/agentMode';
 import { MaterialSymbol } from '@nimbalyst/runtime/ui/icons/MaterialSymbol';
 import { copyToClipboard } from '@nimbalyst/runtime/utils/clipboard';
 import {
-  sessionProcessingAtom,
-  sessionUnreadAtom,
-  sessionPendingPromptAtom,
-  sessionHasPendingInteractivePromptAtom,
-  sessionListTitleAtom,
   groupSessionStatusAtom,
   reparentSessionAtom,
   refreshSessionListAtom,
@@ -22,11 +19,7 @@ import { errorNotificationService } from '../../services/ErrorNotificationServic
 import { WorktreeIcon } from '../common/WorktreeIcon';
 import { dialogRef, DIALOG_IDS } from '../../dialogs';
 import type { ShareDialogData } from '../../dialogs';
-import { SessionContextMenu } from './SessionContextMenu';
-import { SessionRelativeTime } from './SessionRelativeTime';
 import { FullTitleTooltip } from './FullTitleTooltip';
-import { sessionAgentWakePendingAtom } from '../../store/atoms/teamInbox';
-import { sessionBackgroundTasksAtom, describeBackgroundWait } from '../../store/atoms/sessionBackgroundTasks';
 
 /**
  * Unified component for rendering expandable session groups in the session history.
@@ -190,6 +183,8 @@ export const WorkstreamGroup: React.FC<WorkstreamGroupProps> = ({
   onAddSuperLoop,
   onWorktreeCleanGitignored,
 }) => {
+  const registry = useAtomValue(sessionRegistryAtom);
+  const compact = useAtomValue(compactRowsAtom);
   const [showContextMenu, setShowContextMenu] = useState(false);
   const [contextMenuPosition, setContextMenuPosition] = useState({ x: 0, y: 0 });
   const [adjustedContextMenuPosition, setAdjustedContextMenuPosition] = useState<{ x: number; y: number } | null>(null);
@@ -271,18 +266,6 @@ export const WorkstreamGroup: React.FC<WorkstreamGroupProps> = ({
   const [isRenamingWorkstream, setIsRenamingWorkstream] = useState(false);
   const [workstreamRenameValue, setWorkstreamRenameValue] = useState('');
   const workstreamRenameInputRef = useRef<HTMLInputElement>(null);
-
-  // Sort sessions: pinned first, then by sortBy field (respecting parent sort preference)
-  const sortedSessions = React.useMemo(() => {
-    return [...sessions].sort((a, b) => {
-      if (a.isPinned && !b.isPinned) return -1;
-      if (!a.isPinned && b.isPinned) return 1;
-      if (sortBy === 'created') {
-        return b.createdAt - a.createdAt;
-      }
-      return (b.updatedAt || b.createdAt) - (a.updatedAt || a.createdAt);
-    });
-  }, [sessions, sortBy]);
 
   // Calculate total uncommitted count across all sessions in the workstream
   const totalUncommittedCount = React.useMemo(() => {
@@ -575,15 +558,24 @@ export const WorkstreamGroup: React.FC<WorkstreamGroupProps> = ({
   const displayIsArchived = type === 'worktree' ? worktree?.isArchived : isArchived;
   const sessionCount = sessions.length || childCount || 0;
 
+  if (['workstream'].includes(type)) {
+    const root = registry.get(id) ?? { id, title, provider: provider || 'claude-code', isPinned: isPinned ?? false, isArchived: isArchived ?? false, childCount: childCount ?? 0, sessionType: 'workstream' as const, workspaceId: projectPath || '', createdAt: 0, updatedAt: 0, messageCount: 0, parentSessionId: null, worktreeId: null, uncommittedCount: 0 };
+    return <SessionTree root={root} sessions={sessions} activeSessionId={activeSessionId} projectPath={projectPath}
+      onSessionSelect={onSessionSelect} onSessionDelete={onSessionDelete} onSessionArchive={onSessionArchive}
+      onSessionUnarchive={onSessionUnarchive} onSessionPinToggle={onSessionPinToggle}
+      onSessionRename={onSessionRename} onSessionBranch={onSessionBranch} />;
+  }
+
+
   return (
     <div
-      className={`workstream-group mb-1 ${displayIsArchived ? 'archived' : ''} ${isActive ? 'active' : ''} ${isSelected ? 'selected' : ''}`}
+      className={`workstream-group pb-1 ${displayIsArchived ? 'archived' : ''} ${isActive ? 'active' : ''} ${isSelected ? 'selected' : ''}`}
       data-testid={type === 'worktree' ? 'worktree-group' : 'workstream-group'}
       onMouseLeave={handleCloseContextMenu}
     >
       {/* Header */}
       <div
-        className={`workstream-group-header flex items-center gap-0 text-[0.8125rem] text-[var(--nim-text)] transition-colors duration-150 rounded-md mx-2 w-[calc(100%-1rem)] ${
+        className={`workstream-group-header flex items-center gap-0 text-[0.8125rem] text-[var(--nim-text)] transition-colors duration-150 rounded-md mr-2 w-[calc(100%-0.5rem)] ${
           isSelected ? 'bg-[var(--nim-bg-selected)]' : isActive ? 'bg-[var(--nim-bg-selected)]' : 'hover:bg-[var(--nim-bg-hover)]'
         } ${isValidDropTarget ? 'bg-[rgba(83,89,93,0.4)] border-2 border-dashed border-[var(--nim-primary)]' : ''}`}
         onContextMenu={handleContextMenu}
@@ -593,7 +585,7 @@ export const WorkstreamGroup: React.FC<WorkstreamGroupProps> = ({
       >
         {/* Chevron - separate click target for expand/collapse */}
         <button
-          className="workstream-group-chevron-button flex items-center justify-center w-6 h-full min-h-[2.5rem] p-0 bg-transparent border-none cursor-pointer text-[var(--nim-text-faint)] shrink-0 rounded-l-md hover:bg-[var(--nim-bg-secondary)] focus:outline-none focus-visible:outline-2 focus-visible:outline-[var(--nim-border-focus)] focus-visible:outline-offset-[-2px]"
+          className={`workstream-group-chevron-button flex items-center justify-center w-6 h-full ${compact ? 'min-h-[1.5rem]' : 'min-h-[2.5rem]'} p-0 bg-transparent border-none cursor-pointer text-[var(--nim-text-faint)] shrink-0 rounded-l-md hover:bg-[var(--nim-bg-secondary)] focus:outline-none focus-visible:outline-2 focus-visible:outline-[var(--nim-border-focus)] focus-visible:outline-offset-[-2px]`}
           onClick={handleChevronClick}
           aria-expanded={isExpanded}
           aria-label={`${isExpanded ? 'Collapse' : 'Expand'} ${type}`}
@@ -607,7 +599,7 @@ export const WorkstreamGroup: React.FC<WorkstreamGroupProps> = ({
 
         {/* Main clickable area - icon and content */}
         <div
-          className="workstream-group-main flex items-start gap-2 flex-1 min-w-0 py-1 pr-2 pl-1 cursor-pointer focus:outline-none focus-visible:outline-2 focus-visible:outline-[var(--nim-border-focus)] focus-visible:outline-offset-[-2px] focus-visible:rounded"
+          className={`workstream-group-main flex ${compact ? 'items-center' : 'items-start'} gap-2 flex-1 min-w-0 ${compact ? 'py-0.5' : 'py-1'} pr-2 pl-1 cursor-pointer focus:outline-none focus-visible:outline-2 focus-visible:outline-[var(--nim-border-focus)] focus-visible:outline-offset-[-2px] focus-visible:rounded`}
           onClick={handleHeaderClick}
           role="button"
           tabIndex={0}
@@ -637,8 +629,8 @@ export const WorkstreamGroup: React.FC<WorkstreamGroupProps> = ({
           </div>
 
           {/* Content */}
-          <div className="workstream-group-content flex-1 min-w-0 flex flex-col gap-0.5">
-            <div className="workstream-group-row-primary flex items-center gap-1">
+          <div className={`workstream-group-content flex-1 min-w-0 flex ${compact ? 'items-center gap-1.5' : 'flex-col gap-0.5'}`}>
+            <div className={`workstream-group-row-primary flex items-center gap-1 ${compact ? 'flex-1 min-w-0' : ''}`}>
               {isRenamingWorktree && type === 'worktree' ? (
                 <input
                   ref={worktreeRenameInputRef}
@@ -680,7 +672,7 @@ export const WorkstreamGroup: React.FC<WorkstreamGroupProps> = ({
                 <WorkstreamGroupStatusIndicator sessionIds={sessions.map(s => s.id)} />
               )}
             </div>
-            <div className="workstream-group-row-secondary flex items-center gap-1.5 flex-wrap">
+            <div className={`workstream-group-row-secondary flex items-center gap-1.5 ${compact ? 'shrink-0 flex-nowrap' : 'flex-wrap'}`}>
               {/* Git status badges for worktrees */}
               {type === 'worktree' && gitStatus && (
                 <>
@@ -746,37 +738,11 @@ export const WorkstreamGroup: React.FC<WorkstreamGroupProps> = ({
 
       {/* Sessions List */}
       {isExpanded && (
-        <div className="workstream-group-sessions pt-1 pb-1 pl-10 animate-[workstreamSlideDown_0.2s_ease-out]">
-          {sortedSessions.map(session => (
-            <WorkstreamSessionItem
-              key={session.id}
-              session={session}
-              isActive={session.id === activeSessionId}
-              onClick={(e) => {
-                // Always go through onSessionSelect so shift/cmd-click selection works.
-                // onSessionSelect (handleSessionClick) handles the regular click path
-                // by calling its own onSessionSelect which navigates to the session.
-                onSessionSelect(session.id, e);
-              }}
-              onDelete={onSessionDelete ? () => onSessionDelete(session.id) : undefined}
-              onArchive={onSessionArchive ? () => onSessionArchive(session.id) : undefined}
-              onUnarchive={onSessionUnarchive ? () => onSessionUnarchive(session.id) : undefined}
-              onPinToggle={onSessionPinToggle ? (pinned) => onSessionPinToggle(session.id, pinned) : undefined}
-              onRename={onSessionRename ? (newName) => onSessionRename(session.id, newName) : undefined}
-              onBranch={onSessionBranch ? () => onSessionBranch(session.id) : undefined}
-              onRemoveFromWorkstream={type === 'workstream' && projectPath ? async () => {
-                const success = await reparentSession({
-                  sessionId: session.id,
-                  oldParentId: id,
-                  newParentId: null,
-                  workspacePath: projectPath,
-                });
-                if (success) {
-                  await refreshSessionList();
-                }
-              } : undefined}
-            />
-          ))}
+        <div className="workstream-group-sessions pt-1 pb-1 pl-4 animate-[workstreamSlideDown_0.2s_ease-out]">
+          <SessionTree sessions={sessions} activeSessionId={activeSessionId} projectPath={projectPath}
+            onSessionSelect={onSessionSelect} onSessionDelete={onSessionDelete} onSessionArchive={onSessionArchive}
+            onSessionUnarchive={onSessionUnarchive} onSessionPinToggle={onSessionPinToggle}
+            onSessionRename={onSessionRename} onSessionBranch={onSessionBranch} />
         </div>
       )}
 
@@ -993,267 +959,6 @@ export const WorkstreamGroup: React.FC<WorkstreamGroupProps> = ({
           opacity: 0.5;
         }
       `}</style>
-    </div>
-  );
-};
-
-/**
- * Status indicator for workstream child sessions.
- * Subscribes to Jotai atoms for real-time processing/unread/pending state.
- */
-const WorkstreamSessionStatusIndicator = memo<{ sessionId: string; uncommittedCount?: number }>(({ sessionId, uncommittedCount }) => {
-  const hasPendingInteractivePrompt = useAtomValue(sessionHasPendingInteractivePromptAtom(sessionId));
-  const isProcessing = useAtomValue(sessionProcessingAtom(sessionId));
-  const hasPendingPrompt = useAtomValue(sessionPendingPromptAtom(sessionId));
-  const hasAgentWakePending = useAtomValue(sessionAgentWakePendingAtom(sessionId));
-  const hasUnread = useAtomValue(sessionUnreadAtom(sessionId));
-  const backgroundTasks = useAtomValue(sessionBackgroundTasksAtom(sessionId));
-
-  // Priority: interactive prompt > processing > pending prompt > unread > uncommitted count
-  if (hasPendingInteractivePrompt) {
-    return (
-      <div className="workstream-session-item-status waiting-for-input flex items-center justify-center text-[var(--nim-warning)] animate-pulse" title="Waiting for your response">
-        <MaterialSymbol icon="contact_support" size={12} />
-      </div>
-    );
-  }
-
-  if (isProcessing && backgroundTasks?.length) {
-    return (
-      <div className="workstream-session-item-status background-wait flex items-center justify-center text-[var(--nim-text-muted)] animate-pulse" title={describeBackgroundWait(backgroundTasks, Date.now())}>
-        <MaterialSymbol icon="timelapse" size={12} />
-      </div>
-    );
-  }
-
-  if (isProcessing) {
-    return (
-      <div className="workstream-session-item-status processing flex items-center justify-center text-[var(--nim-primary)] animate-spin" title="Processing...">
-        <MaterialSymbol icon="progress_activity" size={12} />
-      </div>
-    );
-  }
-
-  if (hasAgentWakePending) {
-    return (
-      <div className="workstream-session-item-status agent-wake-pending flex items-center justify-center text-[var(--nim-warning)]" title="Room message pending agent dispatch">
-        <MaterialSymbol icon="hourglass_top" size={12} />
-      </div>
-    );
-  }
-
-  if (hasPendingPrompt) {
-    return (
-      <div className="workstream-session-item-status pending-prompt flex items-center justify-center text-[var(--nim-warning)]" title="Waiting for your response">
-        <MaterialSymbol icon="help" size={12} />
-      </div>
-    );
-  }
-
-  if (hasUnread) {
-    return (
-      <div className="workstream-session-item-status unread flex items-center justify-center text-[var(--nim-primary)]" title="Unread response">
-        <MaterialSymbol icon="circle" size={6} fill />
-      </div>
-    );
-  }
-
-  if (uncommittedCount && uncommittedCount > 0) {
-    return (
-      <span
-        className="workstream-session-item-badge uncommitted text-[0.625rem] py-[0.0625rem] px-1 rounded-lg font-medium text-[var(--nim-warning)] bg-[color-mix(in_srgb,var(--nim-warning)_15%,transparent)]"
-        title={`${uncommittedCount} uncommitted change${uncommittedCount !== 1 ? 's' : ''}`}
-      >
-        {uncommittedCount}
-      </span>
-    );
-  }
-
-  return null;
-});
-
-// Child session item within a workstream group
-interface WorkstreamSessionItemProps {
-  session: SessionItem;
-  isActive: boolean;
-  onClick: (e: Pick<React.MouseEvent, 'metaKey' | 'ctrlKey' | 'shiftKey'>) => void;
-  onDelete?: () => void;
-  onArchive?: () => void;
-  onUnarchive?: () => void;
-  onPinToggle?: (isPinned: boolean) => void;
-  onRename?: (newName: string) => void;
-  onBranch?: () => void;
-  onRemoveFromWorkstream?: () => void;
-}
-
-const WorkstreamSessionItem: React.FC<WorkstreamSessionItemProps> = ({
-  session,
-  isActive,
-  onClick,
-  onDelete,
-  onArchive,
-  onUnarchive,
-  onPinToggle,
-  onRename,
-  onBranch,
-  onRemoveFromWorkstream,
-}) => {
-  const [showContextMenu, setShowContextMenu] = useState(false);
-  const [contextMenuPosition, setContextMenuPosition] = useState({ x: 0, y: 0 });
-  const [isRenaming, setIsRenaming] = useState(false);
-  const [renameValue, setRenameValue] = useState('');
-  const renameInputRef = useRef<HTMLInputElement>(null);
-  const shareInfo = useAtomValue(sessionShareAtom(session.id));
-
-  const currentTitle = useAtomValue(sessionListTitleAtom(session.id));
-  const displayTitle = currentTitle || session.title || 'Untitled Session';
-
-  const handleContextMenu = useCallback((e: React.MouseEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setContextMenuPosition({ x: e.clientX, y: e.clientY });
-    setShowContextMenu(true);
-  }, []);
-
-  const handleDelete = () => {
-    setShowContextMenu(false);
-    onDelete?.();
-  };
-
-  const handleArchive = () => {
-    setShowContextMenu(false);
-    onArchive?.();
-  };
-
-  const handleUnarchive = () => {
-    setShowContextMenu(false);
-    onUnarchive?.();
-  };
-
-  const handlePinToggle = (isPinned: boolean) => {
-    setShowContextMenu(false);
-    onPinToggle?.(isPinned);
-  };
-
-  const handleBranch = () => {
-    setShowContextMenu(false);
-    onBranch?.();
-  };
-
-  const handleRemoveFromWorkstream = () => {
-    setShowContextMenu(false);
-    onRemoveFromWorkstream?.();
-  };
-
-  const handleRenameSubmit = () => {
-    const trimmedValue = renameValue.trim();
-    if (trimmedValue && trimmedValue !== displayTitle && onRename) {
-      onRename(trimmedValue);
-    }
-    setIsRenaming(false);
-  };
-
-  const handleRenameKeyDown = (e: React.KeyboardEvent) => {
-    e.stopPropagation();
-    if (e.key === 'Enter') {
-      e.preventDefault();
-      handleRenameSubmit();
-    } else if (e.key === 'Escape') {
-      e.preventDefault();
-      setIsRenaming(false);
-    }
-  };
-
-
-  useEffect(() => {
-    if (isRenaming && renameInputRef.current) {
-      renameInputRef.current.focus();
-      renameInputRef.current.select();
-    }
-  }, [isRenaming]);
-
-  return (
-    <div
-      data-testid="workstream-child-item"
-      className={`workstream-session-item flex items-center gap-2 py-1.5 px-3 mr-2 mb-0.5 cursor-pointer rounded transition-colors duration-150 select-none ${
-        isActive ? 'active bg-[var(--nim-bg-selected)]' : 'hover:bg-[var(--nim-bg-hover)]'
-      } ${session.isArchived ? 'opacity-60 hover:opacity-80' : ''} focus:outline-2 focus:outline-[var(--nim-border-focus)] focus:outline-offset-[-2px]`}
-      onClick={onClick}
-      onContextMenu={handleContextMenu}
-      role="button"
-      tabIndex={0}
-      onKeyDown={(e) => {
-        if (e.key === 'Enter' || e.key === ' ') {
-          e.preventDefault();
-          onClick(e);
-        }
-      }}
-      aria-label={`Session: ${displayTitle}`}
-      aria-current={isActive ? 'page' : undefined}
-    >
-      <SessionProviderIcon sessionId={session.id} provider={session.provider} isActive={isActive} />
-      {session.isPinned && (
-        <MaterialSymbol icon="push_pin" size={10} className={`workstream-session-item-pin-icon shrink-0 -ml-1 opacity-70 ${
-          isActive ? 'text-[var(--nim-primary)]' : 'text-[var(--nim-text-faint)]'
-        }`} />
-      )}
-      {shareInfo && (
-        <MaterialSymbol icon="link" size={10} className={`workstream-session-item-share-icon shrink-0 -ml-1 opacity-70 ${
-          isActive ? 'text-[var(--nim-primary)]' : 'text-[var(--nim-text-faint)]'
-        }`} title="Shared" />
-      )}
-      {isRenaming ? (
-        <input
-          ref={renameInputRef}
-          type="text"
-          className="workstream-session-item-rename-input flex-1 min-w-0 py-0.5 px-1.5 text-xs font-medium border border-[var(--nim-primary)] rounded bg-[var(--nim-bg)] text-[var(--nim-text)] outline-none box-border"
-          value={renameValue}
-          onChange={(e) => setRenameValue(e.target.value)}
-          onKeyDown={handleRenameKeyDown}
-          onBlur={handleRenameSubmit}
-          onClick={(e) => e.stopPropagation()}
-        />
-      ) : (
-        <>
-          <FullTitleTooltip
-            label={displayTitle}
-            className={`workstream-session-item-title flex-1 text-xs text-[var(--nim-text)] whitespace-nowrap overflow-hidden text-ellipsis ${
-              isActive ? 'font-medium' : ''
-            }`}
-          >
-            {displayTitle}
-          </FullTitleTooltip>
-          <span className="workstream-session-item-timestamp shrink-0 text-[0.6875rem] text-[var(--nim-text-faint)] ml-2">
-            <SessionRelativeTime sessionId={session.id} fallbackTimestamp={session.updatedAt || session.createdAt} />
-          </span>
-        </>
-      )}
-      <div className="workstream-session-item-right flex items-center gap-1 shrink-0">
-        <WorkstreamSessionStatusIndicator sessionId={session.id} uncommittedCount={session.uncommittedCount} />
-      </div>
-
-      {/* Context Menu */}
-      {showContextMenu && (
-        <SessionContextMenu
-          sessionId={session.id}
-          title={displayTitle}
-          position={contextMenuPosition}
-          onClose={() => setShowContextMenu(false)}
-          isArchived={session.isArchived}
-          isPinned={session.isPinned}
-          isWorkstream={(session.childCount ?? 0) > 0}
-          isWorktreeSession={!!session.worktreeId}
-          parentSessionId={session.parentSessionId}
-          phase={session.phase}
-          onRename={onRename ? () => { setRenameValue(displayTitle); setIsRenaming(true); } : undefined}
-          onPinToggle={onPinToggle ? handlePinToggle : undefined}
-          onBranch={onBranch ? handleBranch : undefined}
-          onRemoveFromWorkstream={onRemoveFromWorkstream ? handleRemoveFromWorkstream : undefined}
-          onArchive={onArchive ? handleArchive : undefined}
-          onUnarchive={onUnarchive ? handleUnarchive : undefined}
-          onDelete={onDelete ? handleDelete : undefined}
-        />
-      )}
     </div>
   );
 };

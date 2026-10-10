@@ -88,11 +88,13 @@ import {
 } from './QueueDriveService';
 import { createWorkspaceWindowResolver } from './resolveWorkspaceWindow';
 import { runQueueDriveAttempt } from './queueDriveAttempt';
+import { wakeParentAfterChildSettle } from './wakeParentAfterChildSettle';
 import { clearStuckRunningState } from './clearStuckRunningState';
 import { publishQueuedPromptsToSync } from './queuedPromptSyncPublisher';
 import { onWorkspaceWindowAvailable } from '../../window/workspaceWindowAvailability';
 import { dispatchQueuedPromptToClaudeCli } from './claudeCliQueueDispatch';
 import { publishQueuedPromptClaim } from './queuedPromptClaimEvents';
+import { canDispatchIntoDrain, isLeadTurnPending } from './drainFollowUp';
 import { ensureClaudeCliSession } from './claudeCliLauncherSingleton';
 import {
   resolveProviderWorkflowCatalog,
@@ -285,6 +287,13 @@ export class AIService {
       attachments,
       documentContext: queuedDocumentContext,
     });
+    // A Claude Code turn that has answered but is draining a background task
+    // takes this prompt on its live query now (drainFollowUp.ts). Covers
+    // send_prompt, mentions and extension sessions, which queue through here.
+    const liveWorkspacePath = getSessionStateManager().getSessionState(sessionId)?.workspacePath;
+    if (liveWorkspacePath && canDispatchIntoDrain(sessionId)) {
+      this.requestQueueDrive(sessionId, liveWorkspacePath, 'drain-follow-up');
+    }
     return { id: created.id, prompt: created.prompt, createdAt: created.createdAt };
   }
 
@@ -431,6 +440,7 @@ export class AIService {
           const liveState = getSessionStateManager().getSessionState(id);
           return !!liveState && (liveState.status === 'running' || liveState.isStreaming);
         },
+        canDispatchIntoDrain,
         resolveWindow: (path, allowAutoOpen) =>
           this.queueWindowResolver.resolve(path, { allowAutoOpen }),
         failAllPending: async (id, errorMessage) => {
@@ -917,39 +927,20 @@ export class AIService {
       logError: (message, error) => logger.main.error(message, error),
       logInfo: (message) => logger.main.info(message),
       resolveLiveWindow: findWindowByWorkspace,
+      canBypassChainGuard: () => canDispatchIntoDrain(sessionId),
+      isLeadTurnPending: () => isLeadTurnPending(sessionId),
       onAfterSettled: async () => {
         try {
           const { AISessionsRepository } = await import('@nimbalyst/runtime/storage/repositories/AISessionsRepository');
-          const childSession = await AISessionsRepository.get(sessionId);
-          if (!childSession?.createdBySessionId) return;
-
-          // Honor fire-and-forget. spawn_session sets metadata.notifyParent=false
-          // on the child for /launch-new-session-style hand-offs where the parent
-          // does not want to be re-driven when the child settles. Without this
-          // guard, every child settle wakes the parent unconditionally, which
-          // re-drives the meta-agent in a loop. Matches the guard in
-          // MetaAgentService.handleChildSessionEvent.
-          const childMetadata = (childSession.metadata as Record<string, unknown> | undefined) ?? undefined;
-          if (childMetadata && childMetadata.notifyParent === false) return;
-
-          // Do not re-drive the parent when the child chain just settled in
-          // 'error'. A failed child (e.g. an antigravity 429) has no result to
-          // deliver, and waking the parent on every such settle is the meta-agent
-          // spin loop. Native children settle 'completed', so this is a no-op for
-          // them. settledChildErrored is captured in onChainSettled before
-          // endSession evicts the child's in-memory state.
-          if (settledChildErrored) return;
-
-          const metaSession = await AISessionsRepository.get(childSession.createdBySessionId);
-          if (!metaSession?.workspacePath) return;
-
-          const stateManager = getSessionStateManager();
-          const metaState = stateManager.getSessionState(metaSession.id);
-          const metaStatus = metaState?.status || 'idle';
-          if (metaStatus === 'idle' || metaStatus === 'error') {
-            logger.main.info(`[AIService] ${source}: waking meta-agent ${metaSession.id} after child ${sessionId} completed`);
-            this.requestQueueDrive(metaSession.id, metaSession.workspacePath, 'meta-agent');
-          }
+          await wakeParentAfterChildSettle({
+            childSessionId: sessionId,
+            source,
+            settledChildErrored,
+            getSession: (id) => AISessionsRepository.get(id),
+            getSessionStatus: (id) => getSessionStateManager().getSessionState(id)?.status,
+            requestQueueDrive: (id, path) => this.requestQueueDrive(id, path, 'meta-agent'),
+            logInfo: (message) => logger.main.info(message),
+          });
         } catch (metaErr) {
           logger.main.error(`[AIService] ${source}: error checking meta-agent wakeup:`, metaErr);
         }
@@ -1170,12 +1161,9 @@ export class AIService {
             };
 
             // Store /context data in currentContext (snapshot of context window)
-            // Preserve cumulative input/output tokens from modelUsage
+            // Preserve every cumulative counter (tokens, cache, cost, baselines)
             const tokenUsage = {
-              inputTokens: currentUsage.inputTokens,
-              outputTokens: currentUsage.outputTokens,
-              totalTokens: currentUsage.totalTokens,
-              costUSD: currentUsage.costUSD,
+              ...currentUsage,
               // Legacy fields for backward compatibility
               contextWindow: parsedUsage.contextWindow,
               categories: parsedUsage.categories,

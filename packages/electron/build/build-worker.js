@@ -9,6 +9,12 @@ const esbuild = require('esbuild');
 const path = require('path');
 const fs = require('fs');
 
+// Resolve PGLite through Node from this package so the build follows wherever
+// the package manager placed it instead of assuming the repo-root node_modules.
+// The package does not export package.json; its `require` entry is dist/index.cjs.
+const pgliteCjsEntry = require.resolve('@electric-sql/pglite');
+const pgliteDistDir = path.dirname(pgliteCjsEntry);
+
 async function buildWorker() {
   const outDir = path.join(__dirname, '../out');
 
@@ -85,10 +91,7 @@ async function buildWorker() {
       // for `import.meta.url` and resolves `pglite.wasm` / `pglite.data` from
       // the same directory as the worker bundle (where we copy them below).
       alias: {
-        '@electric-sql/pglite': path.join(
-          __dirname,
-          '../../../node_modules/@electric-sql/pglite/dist/index.cjs',
-        ),
+        '@electric-sql/pglite': pgliteCjsEntry,
         // The worker imports a couple of leaf modules from the runtime
         // (`storage/toolOutputRetention`, ...). Those deep subpaths are not in
         // the runtime's `exports` map, so node resolution would fall back to
@@ -214,18 +217,15 @@ async function buildWorker() {
 
     // Copy PGLite runtime files that are loaded dynamically at runtime
     // The binary loader embeds some files, but PGLite loads these via fs.readFile
-    const pgliteDistDir = path.join(__dirname, '../../../node_modules/@electric-sql/pglite/dist');
     const filesToCopy = ['pglite.data', 'pglite.wasm'];
 
     for (const file of filesToCopy) {
       const src = path.join(pgliteDistDir, file);
       const dest = path.join(outDir, file);
-      if (fs.existsSync(src)) {
-        fs.copyFileSync(src, dest);
-        console.log(`Copied ${file} to out/`);
-      } else {
-        console.warn(`Warning: ${file} not found at ${src}`);
-      }
+      // A missing file means the packaged app cannot open its database; fail
+      // the build here rather than ship it.
+      fs.copyFileSync(src, dest);
+      console.log(`Copied ${file} to out/`);
     }
   } catch (error) {
     console.error('Failed to build worker bundle:', error);

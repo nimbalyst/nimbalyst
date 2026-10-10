@@ -1,0 +1,34 @@
+/**
+ * A type's page scrolls as one column: header, prose, then the table. The
+ * table takes the tab's full height once scrolled to, and scrolls its own rows
+ * (the grid virtualizes and needs a bounded height). Header, prose and table
+ * share the typed page's 46px text gutter (`TrackerPageView.css`).
+ */
+
+.type-page-tab-scroller {
+  container-type: size;
+}
+
+.type-page-tab-type-chip {
+  color: var(--nim-purple);
+  background-color: color-mix(in srgb, var(--nim-purple) 14%, transparent);
+}
+
+/* Prose is a short introduction, not a whole document. */
+.type-page-tab .type-page-prose .ContentEditable__root {
+  min-height: 48px;
+}
+
+.type-page-tab-table {
+  height: 100cqh;
+  min-height: 320px;
+  padding: 6px 46px 16px;
+}
+
+/* Matches the editor's own narrow-window padding, as the typed page does. */
+@container (max-width: 1025px) {
+  .type-page-tab-table {
+    padding-left: 8px;
+    padding-right: 8px;
+  }
+}

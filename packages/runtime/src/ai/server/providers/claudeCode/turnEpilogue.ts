@@ -110,22 +110,7 @@ export async function* finishTurn(
     await host.toolHooksService.createTurnEndSnapshots();
   }
 
-  // Prefer result.usage (deduplicated by Anthropic via message.id) for token totals.
-  // modelUsage over-counts because the agent stream emits each assistant message
-  // 2-3x (one event per content block) and modelUsage sums the dupes. Use the
-  // modelUsage sum only as a fallback when result.usage is absent. See NIM-689.
-  let totalInputTokens = state.usageData?.input_tokens || 0;
-  let totalOutputTokens = state.usageData?.output_tokens || 0;
-
-  if (state.modelUsageData && !state.usageData) {
-    totalInputTokens = 0;
-    totalOutputTokens = 0;
-    for (const modelName of Object.keys(state.modelUsageData)) {
-      const modelStats = state.modelUsageData[modelName];
-      totalInputTokens += modelStats.inputTokens || 0;
-      totalOutputTokens += modelStats.outputTokens || 0;
-    }
-  }
+  const usage = buildTurnCompleteUsage(state);
 
   // Compute context fill from last assistant message's usage (not cumulative result.usage).
   // CRITICAL: Use lastAssistantUsage, NOT usageData (which gets overwritten by cumulative result.usage).
@@ -144,15 +129,7 @@ export async function* finishTurn(
     // Don't send content here - it's already been sent in chunks
     // The AIService accumulates the chunks itself
     isComplete: true,
-    ...(state.usageData || state.modelUsageData ? {
-      usage: {
-        input_tokens: totalInputTokens,
-        output_tokens: totalOutputTokens,
-        cache_read_input_tokens: state.usageData?.cache_read_input_tokens || 0,
-        cache_creation_input_tokens: state.usageData?.cache_creation_input_tokens || 0,
-        total_tokens: totalInputTokens + totalOutputTokens
-      }
-    } : {}),
+    ...(usage ? { usage } : {}),
     // Include modelUsage for detailed per-model breakdown and cost tracking
     ...(state.modelUsageData ? { modelUsage: state.modelUsageData } : {}),
     // Context fill from last assistant message (for context window display)
@@ -349,4 +326,48 @@ export async function* handleTurnError(
   }
 
   return { retry: false };
+}
+
+/**
+ * The `complete` chunk's usage for one turn, or undefined when the SDK reported
+ * none. Prefers result.usage (deduplicated by Anthropic via message.id).
+ * modelUsage over-counts because the agent stream emits each assistant message
+ * 2-3x (one event per content block) and modelUsage sums the dupes, so its sum
+ * is only a fallback when result.usage is absent. See NIM-689.
+ *
+ * Anthropic reports input_tokens EXCLUDING cache reads and writes, so the three
+ * input counters are disjoint and each is summed over the turn's API calls.
+ */
+export function buildTurnCompleteUsage(
+  state: Pick<TurnState, 'usageData' | 'modelUsageData'>
+): NonNullable<StreamChunk['usage']> | undefined {
+  if (state.usageData) {
+    const input = state.usageData.input_tokens || 0;
+    const output = state.usageData.output_tokens || 0;
+    return {
+      input_tokens: input,
+      output_tokens: output,
+      cache_read_input_tokens: state.usageData.cache_read_input_tokens || 0,
+      cache_creation_input_tokens: state.usageData.cache_creation_input_tokens || 0,
+      total_tokens: input + output,
+    };
+  }
+  if (!state.modelUsageData) return undefined;
+  let input = 0;
+  let output = 0;
+  let cacheRead = 0;
+  let cacheCreation = 0;
+  for (const stats of Object.values(state.modelUsageData)) {
+    input += stats.inputTokens || 0;
+    output += stats.outputTokens || 0;
+    cacheRead += stats.cacheReadInputTokens || 0;
+    cacheCreation += stats.cacheCreationInputTokens || 0;
+  }
+  return {
+    input_tokens: input,
+    output_tokens: output,
+    cache_read_input_tokens: cacheRead,
+    cache_creation_input_tokens: cacheCreation,
+    total_tokens: input + output,
+  };
 }

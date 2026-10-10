@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { execFile } from 'child_process';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import * as fs from 'fs/promises';
@@ -45,6 +46,7 @@ async function makeGitFile(target: string): Promise<void> {
 }
 
 async function git(args: string[], cwd: string): Promise<void> {
+  if (args[0] !== 'init') assertGitSandbox(cwd, testTempRoot);
   await execFileAsync('git', args, { cwd, env: gitSandboxEnv(testTempRoot) });
 }
 
@@ -213,5 +215,50 @@ describe('explainGitPushFailure', () => {
   it('passes through empty and missing errors', () => {
     expect(explainGitPushFailure(undefined, context)).toBeUndefined();
     expect(explainGitPushFailure('', context)).toBe('');
+  });
+});
+
+describe('benign local Git operand semantics', () => {
+  it('accepts revision checkout/creation/cherry-pick/rebase and remote separators in isolated repos', async () => {
+    const source = path.join(tmpRoot, 'source repo');
+    const receiver = path.join(tmpRoot, 'receiver repo');
+    await mkdirp(source);
+    await mkdirp(receiver);
+    for (const repo of [source, receiver]) {
+      await initScratchRepo(repo);
+      await git(['branch', '-M', repo === source ? 'main' : 'receiver'], repo);
+      await fs.writeFile(path.join(repo, 'baseline.txt'), 'baseline\n');
+      await git(['add', 'baseline.txt'], repo);
+      await git(['commit', '-q', '-m', 'baseline'], repo);
+    }
+    await fs.writeFile(path.join(source, 'second.txt'), 'second\n');
+    await git(['add', 'second.txt'], source);
+    await git(['commit', '-q', '-m', 'second'], source);
+
+    await git(['checkout', '-b', 'topic/日本語', 'HEAD~1'], source);
+    await git(['cherry-pick', 'main'], source);
+    expect(await fs.readFile(path.join(source, 'second.txt'), 'utf8')).toBe('second\n');
+    await git(['checkout', 'refs/heads/main'], source);
+    await git(['checkout', '@{-1}'], source);
+    const current = await execFileAsync('git', ['branch', '--show-current'], { cwd: source, env: gitSandboxEnv(testTempRoot) });
+    expect(current.stdout.trim()).toBe('topic/日本語');
+    await git(['checkout', 'HEAD^'], source);
+    await git(['checkout', '-b', 'from-revision', 'HEAD'], source);
+    await git(['rebase', 'main'], source);
+    expect(await fs.readFile(path.join(source, 'second.txt'), 'utf8')).toBe('second\n');
+
+    // Both ends are disposable local repositories. No network transports or hooks.
+    assertGitSandbox(receiver, testTempRoot);
+    await git(['push', '--', receiver, 'main'], source);
+    await git(['push', '--force-with-lease', '--', receiver, 'main'], source);
+    await git(['fetch', '--', receiver], source);
+    await git(['push', '--set-upstream', '--', receiver, 'main'], source);
+    const upstream = await execFileAsync('git', ['config', 'branch.main.remote'], { cwd: source, env: gitSandboxEnv(testTempRoot) });
+    expect(upstream.stdout.trim()).toBe(receiver);
+    const [sourceHead, receiverMain] = await Promise.all([
+      execFileAsync('git', ['rev-parse', 'main'], { cwd: source, env: gitSandboxEnv(testTempRoot) }),
+      execFileAsync('git', ['rev-parse', 'main'], { cwd: receiver, env: gitSandboxEnv(testTempRoot) }),
+    ]);
+    expect(receiverMain.stdout).toBe(sourceHead.stdout);
   });
 });

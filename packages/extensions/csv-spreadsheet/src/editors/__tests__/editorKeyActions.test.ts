@@ -1,6 +1,8 @@
 // @vitest-environment node
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
+import type { ColumnDataSchemaModel } from '@revolist/revogrid';
 import { resolveEditorKeyAction, type EditorKeyAction } from '../editorKeyActions';
+import { SheetsTextEditor } from '../SheetsTextEditor';
 
 /**
  * The whole point of the fix: an arrow key inside an open cell editor must stay
@@ -30,5 +32,25 @@ describe('resolveEditorKeyAction', () => {
 
   it.each(cases)('%s', (_name, event, expected) => {
     expect(resolveEditorKeyAction(event)).toBe(expected);
+  });
+});
+
+/**
+ * A fast typed run (`4` then Enter) can commit an editor RevoGrid has built but
+ * not yet rendered. The typed text was moved into `initialText` when it was
+ * built, so reading only the (missing) textarea saved '' and lost the cell.
+ */
+describe('SheetsTextEditor commit before render', () => {
+  const data = { model: { B: 'old' }, prop: 'B' } as unknown as ColumnDataSchemaModel;
+
+  it('saves the typed text, or the existing value, when the textarea is not there yet', () => {
+    const save = vi.fn();
+    const typed = new SheetsTextEditor(data, save, vi.fn());
+    typed.initialText = '4';
+    typed.commit(true);
+    expect(save).toHaveBeenLastCalledWith('4', true);
+
+    new SheetsTextEditor(data, save, vi.fn()).commit(true);
+    expect(save).toHaveBeenLastCalledWith('old', true);
   });
 });

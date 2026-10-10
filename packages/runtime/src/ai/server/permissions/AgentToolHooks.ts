@@ -13,7 +13,7 @@
 
 import path from 'path';
 import fs from 'fs';
-import { parseBashForFileOps, hasShellChainingOperators, splitOnShellOperators } from './BashCommandAnalyzer';
+import { parseBashForFileOps } from './BashCommandAnalyzer';
 import { generateToolPattern, buildToolDescription } from './toolPermissionHelpers';
 import { getPatternDisplayName } from '../types';
 import type { TrustChecker } from '../providers/ProviderPermissionMixin';
@@ -57,11 +57,6 @@ export interface AgentToolHooksOptions {
    * Function to check if a workspace is trusted
    */
   trustChecker?: TrustChecker;
-
-  /**
-   * Function to check if a pattern is approved in persisted settings
-   */
-  patternChecker?: (workspacePath: string, pattern: string) => Promise<boolean>;
 
   /**
    * Function to save an approved pattern to persisted settings
@@ -154,7 +149,6 @@ export class AgentToolHooks {
   ) => Promise<void>;
   private readonly logSecurity: (message: string, data?: any) => void;
   private readonly trustChecker?: TrustChecker;
-  private readonly patternChecker?: (workspacePath: string, pattern: string) => Promise<boolean>;
   private readonly patternSaver?: (workspacePath: string, pattern: string) => Promise<void>;
   private readonly getCurrentMode?: () => 'planning' | 'agent' | 'auto' | undefined;
   private readonly setCurrentMode?: (mode: 'planning' | 'agent' | 'auto' | undefined) => void;
@@ -195,7 +189,6 @@ export class AgentToolHooks {
     this.logAgentMessage = options.logAgentMessage;
     this.logSecurity = options.logSecurity;
     this.trustChecker = options.trustChecker;
-    this.patternChecker = options.patternChecker;
     this.patternSaver = options.patternSaver;
     this.getCurrentMode = options.getCurrentMode;
     this.setCurrentMode = options.setCurrentMode;
@@ -229,12 +222,12 @@ export class AgentToolHooks {
    * - Teammate tool delegation
    * - ExitPlanMode confirmation in planning mode
    * - Bash file operation tracking and tagging
-   * - Compound Bash command security checks
    * - Pre-edit file tagging for Edit/Write/MultiEdit
+   *
+   * Compound Bash commands are checked in canUseTool instead
+   * (authorizeCompoundBashCommand), so user PreToolUse hooks can approve them.
    */
   createPreToolUseHook() {
-    const pathForTrust = this.permissionsPath || this.workspacePath;
-
     return async (input: any, toolUseID: string | undefined, options: { signal: AbortSignal }) => {
       const toolName = input.tool_name;
       const toolInput = input.tool_input;
@@ -260,34 +253,14 @@ export class AgentToolHooks {
       // attribution service is now the single source of truth for pending diff tags.
       // Bash editedFilesThisTurn tracking is handled in createPostToolUseHook() instead.
 
-      // SECURITY: Check each part of compound Bash commands separately
-      // Claude's pattern matching (e.g., Bash(git add:*)) can be bypassed with chained commands
-      // like "git add file && rm -rf /". PreToolUse runs BEFORE SDK's allow rules, so we can catch this.
-      // See: https://github.com/anthropics/claude-code/issues/4956
-      if (toolName === 'Bash') {
-        // In bypass-all mode, skip compound command checking entirely
-        if (pathForTrust && this.trustChecker) {
-          const trustStatus = this.trustChecker(pathForTrust);
-          if (trustStatus.trusted && trustStatus.mode === 'bypass-all') {
-            return {};
-          }
-        }
-
-        // In Auto session mode, the SDK classifier is the sole decision-maker
-        // for Bash. Running our compound-bash splitter here would preempt the
-        // classifier and surface a Nimbalyst permission prompt for benign
-        // sub-commands (cd, echo, npx ...) that the classifier would have
-        // approved silently. Defer to the classifier; if it denies, the
-        // PermissionDenied hook will re-prompt with the classifier's reason.
-        if (this.getCurrentMode?.() === 'auto') {
-          return {};
-        }
-
-        const compoundResult = await this.handleCompoundBashCommand(toolInput, options);
-        if (compoundResult) {
-          return compoundResult;
-        }
-      }
+      // Compound Bash commands are NOT prompted for here. The SDK runs every
+      // matching PreToolUse hook in parallel, so a prompt raised inside this
+      // hook cannot see an `allow` returned by a user's own PreToolUse hook
+      // (.claude/settings.json) and would ask anyway. Returning no decision
+      // lets the SDK combine hook decisions, apply its own allow/deny rules
+      // (which match each sub-command of a compound command independently),
+      // and only then call canUseTool, which checks the sub-commands one by one
+      // (see authorizeCompoundBashCommand).
 
       // WebFetch/WebSearch: Let SDK handle via canUseTool
       // The SDK reads settings.json and calls canUseTool when permission is needed
@@ -785,191 +758,6 @@ export class AgentToolHooks {
         }
       };
     }
-  }
-
-  /**
-   * Handle compound Bash command security checks
-   */
-  private async handleCompoundBashCommand(
-    toolInput: any,
-    options: { signal: AbortSignal }
-  ): Promise<any | null> {
-    const command = (toolInput?.command as string) || '';
-
-    // Use quote-aware detection to avoid false positives on heredocs/quoted strings
-    if (!hasShellChainingOperators(command)) {
-      return null; // Not a compound command
-    }
-
-    if (!this.getSessionApprovedPatterns || !this.getPendingToolPermissions) {
-      return null; // Can't check permissions without these
-    }
-
-    this.logSecurity(`[PreToolUse] Compound Bash command detected, checking each part:`, { command: command.slice(0, 100) });
-
-    // Split on unquoted &&, ||, ; while respecting quotes and heredocs
-    const subCommands = splitOnShellOperators(command);
-
-    // Check each sub-command
-    for (const subCommand of subCommands) {
-      const subPattern = generateToolPattern('Bash', { command: subCommand });
-
-      // Skip if already approved in session
-      if (this.getSessionApprovedPatterns().has(subPattern)) {
-        this.logSecurity(`[PreToolUse] Sub-command already approved in session:`, { subCommand: subCommand.slice(0, 50), pattern: subPattern });
-        continue;
-      }
-
-      // Also check if pattern is in persisted settings (would be auto-approved by SDK)
-      if (this.patternChecker) {
-        try {
-          const isAllowed = await this.patternChecker(this.workspacePath, subPattern);
-          if (isAllowed) {
-            this.logSecurity(`[PreToolUse] Sub-command allowed by settings:`, { subCommand: subCommand.slice(0, 50), pattern: subPattern });
-            // Add to session cache so we don't check file again
-            this.getSessionApprovedPatterns().add(subPattern);
-            continue;
-          }
-        } catch (e) {
-          // If check fails, proceed to ask user
-          this.logSecurity(`[PreToolUse] Failed to check settings:`, { error: e });
-        }
-      }
-
-      // Need to check this sub-command - use permission flow
-      this.logSecurity(`[PreToolUse] Sub-command needs approval:`, { subCommand: subCommand.slice(0, 50), pattern: subPattern });
-
-      const requestId = `compound-${this.sessionId || 'unknown'}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-      const subDescription = `Part of compound command: ${subCommand.slice(0, 60)}${subCommand.length > 60 ? '...' : ''}`;
-
-      // Create permission request for this sub-command
-      const request = {
-        id: requestId,
-        toolName: 'Bash',
-        rawCommand: subCommand,
-        actionsNeedingApproval: [{
-          action: {
-            pattern: subPattern,
-            displayName: subDescription,
-            command: subCommand,
-            isDestructive: true,
-            referencedPaths: [],
-            hasRedirection: false,
-          },
-          decision: 'ask' as const,
-          reason: 'Sub-command of compound command requires approval',
-          isDestructive: true,
-          isRisky: true,
-          warnings: ['This is part of a compound command - each part is checked separately'],
-          outsidePaths: [],
-          sensitivePaths: [],
-        }],
-        hasDestructiveActions: true,
-        createdAt: Date.now(),
-      };
-
-      // Log as nimbalyst_tool_use so SessionManager creates a toolCall for ToolPermissionWidget rendering
-      if (this.sessionId) {
-        const patternDisplay = getPatternDisplayName(subPattern);
-        await this.logAgentMessage(
-          this.sessionId,
-          'claude-code',
-          'output',
-          JSON.stringify({
-            type: 'nimbalyst_tool_use',
-            id: requestId,
-            name: 'ToolPermission',
-            input: {
-              requestId,
-              toolName: 'Bash',
-              rawCommand: subCommand,
-              pattern: subPattern,
-              patternDisplayName: patternDisplay,
-              isDestructive: true,
-              warnings: ['This is part of a compound command - each part is checked separately'],
-              workspacePath: this.workspacePath,
-            }
-          })
-        );
-      }
-
-      // Wait for user approval
-      const responsePromise = new Promise<{ decision: 'allow' | 'deny'; scope: 'once' | 'session' | 'always' | 'always-all' }>((resolve, reject) => {
-        this.getPendingToolPermissions!().set(requestId, { resolve, reject, request });
-      });
-
-      // Emit event to show permission UI
-      this.emit('toolPermission:pending', {
-        requestId,
-        sessionId: this.sessionId,
-        workspacePath: this.workspacePath,
-        request,
-        timestamp: Date.now()
-      });
-
-      try {
-        const response = await responsePromise;
-
-        // Emit resolved event so the renderer clears the "waiting for input" indicator
-        this.emit('toolPermission:resolved', {
-          requestId,
-          sessionId: this.sessionId,
-          response,
-          timestamp: Date.now()
-        });
-
-        if (response.decision === 'deny') {
-          this.logSecurity(`[PreToolUse] Sub-command denied:`, { subCommand: subCommand.slice(0, 50) });
-          return {
-            hookSpecificOutput: {
-              hookEventName: 'PreToolUse' as const,
-              permissionDecision: 'deny' as const,
-              permissionDecisionReason: `Command denied: ${subCommand.slice(0, 50)}`
-            }
-          };
-        }
-
-        // Cache approval if not 'once'
-        if (response.scope !== 'once') {
-          this.getSessionApprovedPatterns().add(subPattern);
-          this.logSecurity(`[PreToolUse] Sub-command approved and cached:`, { pattern: subPattern, scope: response.scope });
-        }
-
-        // Save to settings if 'always'
-        if (response.scope === 'always' && this.patternSaver) {
-          try {
-            await this.patternSaver(this.workspacePath, subPattern);
-          } catch (e) {
-            console.error('[AGENT-HOOKS] Failed to save pattern:', e);
-          }
-        }
-      } catch (error) {
-        // Emit resolved event on error path too, so the indicator is cleared
-        this.emit('toolPermission:resolved', {
-          requestId,
-          sessionId: this.sessionId,
-          response: { decision: 'deny', scope: 'once' },
-          timestamp: Date.now()
-        });
-        this.logSecurity(`[PreToolUse] Sub-command permission failed:`, { error });
-        return {
-          hookSpecificOutput: {
-            hookEventName: 'PreToolUse' as const,
-            permissionDecision: 'deny' as const,
-            permissionDecisionReason: `Permission check failed for: ${subCommand.slice(0, 50)}`
-          }
-        };
-      }
-    }
-
-    // All sub-commands approved, allow the compound command
-    this.logSecurity(`[PreToolUse] All sub-commands approved, allowing compound command`);
-    return {
-      hookSpecificOutput: {
-        hookEventName: 'PreToolUse' as const,
-        permissionDecision: 'allow' as const
-      }
-    };
   }
 
   /**

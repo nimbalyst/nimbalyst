@@ -23,6 +23,7 @@ import {
   getToolPermissionResponseChannel,
 } from '../../mcp/tools/interactiveToolHandlers';
 import { deliverMobilePromptResponse, resolveSessionProvider } from './MobilePromptDelivery';
+import { isInteractivePromptClosed } from './questionTerminalResultLookup';
 import { handleGitCommitResponse } from './MobileGitCommitResponse';
 import { buildToolPermissionResponseRecord } from './claudeCliToolPermission';
 import { findWindowByWorkspace } from '../../window/WindowManager';
@@ -314,7 +315,9 @@ function handlePromptResponse(
 
     case 'request_user_input': {
       const response = payload.response as RequestUserInputResponse;
-      handleRequestUserInputResponse(sessionId, payload.promptId, response);
+      void handleRequestUserInputResponse(sessionId, payload.promptId, response).catch((error) => {
+        log.error('[Mobile] RequestUserInput response failed:', error);
+      });
       break;
     }
 
@@ -333,14 +336,20 @@ function handlePromptResponse(
  * MCP transport dropped or the desktop wasn't open when the prompt was
  * created). Then notify all windows to clear the pending UI.
  */
-function handleRequestUserInputResponse(
+async function handleRequestUserInputResponse(
   sessionId: string,
   promptId: string,
   response: RequestUserInputResponse,
-): void {
+): Promise<void> {
   log.info(
     `[Mobile] RequestUserInput response: promptId=${promptId}, sessionId=${sessionId}, cancelled=${response.cancelled === true}`,
   );
+  // A form closed by a newer user turn must not be answered, and must never
+  // reach the session fallback channel where it could settle a newer form.
+  if (await isInteractivePromptClosed(sessionId, promptId)) {
+    log.warn(`[Mobile] RequestUserInput response refused, prompt already closed: ${promptId}`);
+    return;
+  }
 
   const { rawId, waiterIds } = resolvePromptTargets(promptId);
   const answers = response.cancelled ? {} : (response.answers ?? {});

@@ -34,6 +34,7 @@ enum VoiceSessionListActionPolicy {
 
 #if os(iOS)
 import os
+import Combine
 import UIKit
 import GRDB
 
@@ -117,12 +118,9 @@ public final class VoiceAgent: ObservableObject {
     var screenRevision = 0
     var screenObservation: (any DatabaseCancellable)?
     var screenObservationId = UUID()
-    var promptSpeaker: any VoicePromptSpeaker = NativeVoicePromptSpeaker()
     var promptPresentation: VoicePromptPresentation?
     var promptAnswerReceipt: VoicePromptPresentation?
     var promptRenewal: Task<Void, Never>?
-    var promptReadoutCallId: String?
-    var readingPrompt = false
     var eventQueue = VoiceEventQueue()
     var eventSince = Date().timeIntervalSince1970 * 1000
     var announcementDeadline: Task<Void, Never>?
@@ -140,6 +138,14 @@ public final class VoiceAgent: ObservableObject {
     var connectionGeneration = VoiceConnectionGeneration()
     let toolResults = VoiceToolResults()
     var toolScopes: [String: VoiceRelayScope] = [:]
+    /// Conversation records still owed to the desktop; the last one is current.
+    var voiceLogs: [VoiceConversationLog] = []
+    var voiceLogFlushing = false
+    var voiceLogRetry: Task<Void, Never>?
+    var voiceLogSupportedHosts: [String: Bool] = [:]
+    /// The conversation the last record belongs to; a reconnect keeps appending to it.
+    var voiceLogConversation: UUID?
+    var voiceLogSyncWatch: AnyCancellable?
     @Published public internal(set) var effectiveEngine: VoiceEngineKind = .realtime
     @Published public internal(set) var liveUsage = LiveUsage()
     @Published public internal(set) var liveTranscripts: [LiveTranscript] = []
@@ -282,6 +288,7 @@ public final class VoiceAgent: ObservableObject {
 
             let client: any VoiceEngine
             effectiveEngine = settings.effectiveEngine
+            beginConversationLog()
             if effectiveEngine == .live {
                 let live = LiveClient(apiKey: apiKey, settings: settings,
                     instructions: buildCompactInstructions(), tools: buildCoreToolDefinitions(), context: retainedContext)
@@ -300,6 +307,7 @@ public final class VoiceAgent: ObservableObject {
                 live.onTranscripts = { [weak self] fragments in
                     guard let self, self.connectionGeneration.accepts(epoch) else { return }
                     self.liveTranscripts = fragments
+                    self.withConversationLog { $0.recordTranscripts(fragments, final: false) }
                     self.retainedContext = String(fragments.map { "\($0.speaker): \($0.text)" }.joined(separator: "\n").suffix(12000))
                     self.resetIdleTimer()
                 }
@@ -344,6 +352,7 @@ public final class VoiceAgent: ObservableObject {
 
     /// Stop voice mode entirely. Disconnects from OpenAI and releases audio resources.
     public func deactivate() {
+        endConversationLog()
         invalidatePromptPresentation()
         promptAnswerReceipt = nil
         _ = connectionGeneration.replace()

@@ -23,6 +23,7 @@ import { $convertToEnhancedMarkdownString } from '../editor/markdown/EnhancedMar
 import { $convertFromEnhancedMarkdownString } from '../editor/markdown/EnhancedMarkdownImport';
 import { getHeadlessBodyTransformers } from '../editor/markdown/headlessBodyTransformers';
 import { HeadlessBodyNodes } from '../editor/nodes/headlessBodyNodes';
+import { applyMarkdownReplacementsToHeadlessEditor } from './headlessMarkdownReplace';
 import type { HeadlessLexicalYDoc } from './HeadlessLexicalYDoc';
 import { withUnknownNodePlaceholders } from './unknownNodePlaceholders';
 import { withHeadlessLexicalBridge } from './withHeadlessLexicalBridge';
@@ -71,6 +72,42 @@ export function markdownToLexicalYUpdate(
     withHeadlessLexicalBridge(doc, { nodes }, (headless) => {
       assertHydrated(doc, headless);
       headless.applyUpdate(() => $replaceRootWithMarkdown(markdown));
+    });
+    return encodeStateAsUpdate(doc, before);
+  } finally {
+    doc.destroy();
+  }
+}
+
+export interface MarkdownTextReplacement {
+  /** Exact text in the body's markdown; never empty. */
+  oldText: string;
+  newText: string;
+}
+
+/**
+ * Apply exact text replacements to a Lexical collaborative document and
+ * return only what changed, as the mounted editor would apply them, so a
+ * concurrent edit elsewhere and comment anchors survive. Throws when any
+ * `oldText` is empty or not in the body; nothing is applied then.
+ */
+export function applyMarkdownReplacementsToLexicalYUpdate(
+  state: Uint8Array,
+  replacements: readonly MarkdownTextReplacement[],
+): Uint8Array {
+  // The desktop reads an empty oldText as "replace the whole body"; a
+  // headless writer never replaces a body wholesale.
+  if (replacements.some((replacement) => !replacement.oldText)) {
+    throw new Error('markdown-ydoc: every replacement needs the exact oldText it replaces');
+  }
+  const doc = new Doc();
+  try {
+    applyUpdate(doc, state);
+    const before = encodeStateVector(doc);
+    const nodes = withUnknownNodePlaceholders(doc, HeadlessBodyNodes);
+    withHeadlessLexicalBridge(doc, { nodes }, (headless) => {
+      assertHydrated(doc, headless);
+      applyMarkdownReplacementsToHeadlessEditor(headless.editor, replacements, getHeadlessBodyTransformers());
     });
     return encodeStateAsUpdate(doc, before);
   } finally {

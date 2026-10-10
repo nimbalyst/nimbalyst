@@ -22,6 +22,7 @@ import {
 } from '@nimbalyst/runtime/plugins/TrackerPlugin/trackerRecordAccessors';
 import { UserAvatar } from '@nimbalyst/runtime/plugins/TrackerPlugin/components/UserAvatar';
 import { groupTrackerItems } from '@nimbalyst/collab-client/trackers';
+import { collabOpenOptions, type CollabOpenOptions } from '@nimbalyst/collab-client/core';
 import { TrackerSurfaceMessage } from './primitives/TrackerSurfaceMessage';
 import { TrackerSwatchBadge } from './primitives/TrackerSwatchBadge';
 import { NEUTRAL_SWATCH, PRIORITY_COLORS } from './board/trackerBoardTokens';
@@ -34,7 +35,8 @@ export interface TrackerListViewProps {
   rows: TrackerRecord[];
   groupBy: TrackerGroupBy;
   selectedItemId?: string | null;
-  onOpenItem: (itemId: string) => void;
+  /** `options` carries Cmd/Ctrl from the click, so a host can open a new tab. */
+  onOpenItem: (itemId: string, options?: CollabOpenOptions) => void;
   loaded: boolean;
   /** Host opts into a touch-first row without changing desktop consumers. */
   stacked?: boolean;
@@ -61,7 +63,7 @@ function TrackerListRow({
   item: TrackerRecord;
   selected: boolean;
   unreadSlot: React.ReactNode;
-  onOpen: () => void;
+  onOpen: (event: React.MouseEvent) => void;
   onContextMenu?: (event: React.MouseEvent) => void;
 }) {
   const status = getRecordStatus(item);
@@ -166,14 +168,14 @@ export function TrackerListView({
             </div>
           )}
           {group.items.map((item) => stacked ? (
-            <TrackerStackedRow key={item.id} item={item} selected={selectedItemId === item.id} showType={showType} onOpen={() => onOpenItem(item.id)} />
+            <TrackerStackedRow key={item.id} item={item} selected={selectedItemId === item.id} showType={showType} onOpen={(event) => onOpenItem(item.id, collabOpenOptions(event))} />
           ) : (
             <TrackerListRow
               key={item.id}
               item={item}
               selected={selectedItemId === item.id}
               unreadSlot={renderUnreadSlot?.(item.id)}
-              onOpen={() => onOpenItem(item.id)}
+              onOpen={(event) => onOpenItem(item.id, collabOpenOptions(event))}
               onContextMenu={onRowContextMenu
                 ? (event) => onRowContextMenu(item.id, event)
                 : undefined}

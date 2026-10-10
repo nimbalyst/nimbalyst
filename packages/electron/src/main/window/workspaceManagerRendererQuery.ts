@@ -7,6 +7,8 @@ export interface WorkspaceManagerWindowOptions {
    * activating and StartupActivation foregrounds the app once at the end.
    */
   startupReveal?: boolean;
+  /** Reveal without activating: the app is in the background (#1609 recovery). */
+  revealInactive?: boolean;
 }
 
 export type WorkspaceManagerRendererQuery = Record<string, string>;

@@ -347,10 +347,13 @@ describe('MetaAgentService child-spawn effort level', () => {
     vi.mocked(databaseWorker.query).mockResolvedValue({ rows: [{ in_flight: '0', total: '0' }] } as any);
   });
 
+  // Effort is written with the row (create) so the first turn can never read it
+  // missing; count follow-up writes too so a regression to either shows up.
   const effortWrites = () =>
-    vi.mocked(AISessionsRepository.updateMetadata).mock.calls
-      .map((call) => (call[1] as any)?.metadata?.effortLevel)
-      .filter((level) => level !== undefined);
+    [
+      ...vi.mocked(AISessionsRepository.create).mock.calls.map((call) => (call[0] as any)?.metadata?.effortLevel),
+      ...vi.mocked(AISessionsRepository.updateMetadata).mock.calls.map((call) => (call[1] as any)?.metadata?.effortLevel),
+    ].filter((level) => level !== undefined);
 
   it('persists a requested effort level so the child runs at it instead of the app default', async () => {
     const service = MetaAgentService.getInstance();

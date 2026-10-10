@@ -534,7 +534,7 @@ E2E tests are located in `packages/electron/e2e/permissions/`:
 
 ```bash
 # Run permission tests
-npx playwright test e2e/permissions/
+pnpm exec playwright test e2e/permissions/
 ```
 
 Test coverage includes:

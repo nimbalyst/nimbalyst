@@ -52,11 +52,6 @@ test.beforeAll(async () => {
 
   page = await electronApp.firstWindow();
 
-  page.on('dialog', dialog => dialog.dismiss().catch(() => {}));
-  await page.evaluate(() => {
-    window.confirm = () => true;
-  });
-
   await waitForAppReady(page);
 });
 

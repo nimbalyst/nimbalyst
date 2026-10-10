@@ -55,6 +55,7 @@ import {
   sessionListWorkspaceAtom,
 } from '../../store/atoms/sessions';
 import { SessionContextMenu } from '../AgenticCoding/SessionContextMenu';
+import { sessionArchiveSubtreeIds } from '../AgenticCoding/sessionArchiveSelection';
 import { WorktreeIcon } from '../common/WorktreeIcon';
 import { SessionTranscriptPeek } from '../AgenticCoding/SessionTranscriptPeek';
 import { ArchiveWorktreeDialog } from '../AgentMode/ArchiveWorktreeDialog';
@@ -1464,8 +1465,10 @@ export const SessionKanbanBoard: React.FC<SessionKanbanBoardProps> = ({ onSessio
           try {
             const result = await window.electronAPI.invoke('sessions:update-metadata', sessionId, { isArchived: true });
             if (result.success) {
-              updateSessionStore({ sessionId, updates: { isArchived: true } });
-              setPhase({ sessionId, phase: null });
+              sessionArchiveSubtreeIds(registry, [sessionId]).forEach(id => {
+                updateSessionStore({ sessionId: id, updates: { isArchived: true } });
+                setPhase({ sessionId: id, phase: null });
+              });
             }
           } catch (err) {
             console.error('[SessionKanbanBoard] Failed to archive session:', err);
@@ -1477,8 +1480,10 @@ export const SessionKanbanBoard: React.FC<SessionKanbanBoardProps> = ({ onSessio
         // Archive AND clear phase so the session leaves the board entirely
         const result = await window.electronAPI.invoke('sessions:update-metadata', sessionId, { isArchived: true });
         if (result.success) {
-          updateSessionStore({ sessionId, updates: { isArchived: true } });
-          setPhase({ sessionId, phase: null });
+          sessionArchiveSubtreeIds(registry, [sessionId]).forEach(id => {
+            updateSessionStore({ sessionId: id, updates: { isArchived: true } });
+            setPhase({ sessionId: id, phase: null });
+          });
         }
       } catch (err) {
         console.error('[SessionKanbanBoard] Failed to archive session:', err);

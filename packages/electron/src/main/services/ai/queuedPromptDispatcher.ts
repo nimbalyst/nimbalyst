@@ -88,6 +88,9 @@ interface DispatchClaimedQueuedPromptOptions {
   startSession: (options: { sessionId: string; workspacePath: string }) => Promise<void>;
   targetWindow: Electron.BrowserWindow;
   workspacePath: string;
+  /** The provider started (or is about to start) a turn of its own, e.g. a background-task wake. */
+  isLeadTurnPending?: () => boolean;
+  logInfo?: (message: string) => void;
 }
 
 export async function dispatchClaimedQueuedPrompt(
@@ -109,6 +112,8 @@ export async function dispatchClaimedQueuedPrompt(
     startSession,
     targetWindow,
     workspacePath,
+    isLeadTurnPending,
+    logInfo,
   } = options;
 
   const settleIds = claimedIds && claimedIds.length > 0 ? claimedIds : [claimed.id];
@@ -162,6 +167,14 @@ export async function dispatchClaimedQueuedPrompt(
       // releasing here would let the FIFO continuation start a second turn
       // underneath it (#1018).
       processingSet.releaseIfOwner(sessionId, guardToken);
+      // NIM-7428: the turn ended by waking the session with background-task
+      // results. That wake turn's own completion continues the queue, ends the
+      // session and reports to the parent; doing it here would end a running
+      // session, or send a prompt that aborts the wake and drops its results.
+      if (isLeadTurnPending?.()) {
+        logInfo?.(`[AIService] ${source} finally: session ${sessionId} woke for background results; its wake turn owns the queue`);
+        return;
+      }
       try {
         await continueQueuedPromptChain(
           sessionId,
@@ -210,6 +223,9 @@ interface TryClaimAndDispatchNextQueuedPromptOptions {
   resolveLiveWindow?: (workspacePath: string) => Electron.BrowserWindow | null;
   targetWindow: Electron.BrowserWindow | null;
   workspacePath: string;
+  /** True when a draining turn holds the guard but its live query can take this prompt. */
+  canBypassChainGuard?: () => boolean;
+  isLeadTurnPending?: DispatchClaimedQueuedPromptOptions['isLeadTurnPending'];
 }
 
 export async function tryClaimAndDispatchNextQueuedPrompt(
@@ -231,6 +247,8 @@ export async function tryClaimAndDispatchNextQueuedPrompt(
     resolveLiveWindow,
     targetWindow,
     workspacePath,
+    canBypassChainGuard,
+    isLeadTurnPending,
   } = options;
 
   const liveWindow =
@@ -243,7 +261,7 @@ export async function tryClaimAndDispatchNextQueuedPrompt(
     return false;
   }
 
-  if (processingSet.has(sessionId)) {
+  if (processingSet.has(sessionId) && !canBypassChainGuard?.()) {
     logInfo(`[AIService] ${source}: session ${sessionId} already processing a queued prompt, skipping`);
     return false;
   }
@@ -307,6 +325,8 @@ export async function tryClaimAndDispatchNextQueuedPrompt(
     startSession,
     targetWindow: liveWindow,
     workspacePath,
+    isLeadTurnPending,
+    logInfo,
   });
 
   return true;

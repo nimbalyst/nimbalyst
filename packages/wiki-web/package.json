@@ -1,0 +1,64 @@
+{
+  "name": "@nimbalyst/wiki-web",
+  "version": "0.2.0",
+  "description": "Browser app for `nim wiki serve`: shows a Nimbalyst local wiki folder in a browser. Static files only; nim serves them.",
+  "license": "MIT",
+  "type": "module",
+  "nimbalystWikiApi": 1,
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "homepage": "https://github.com/nimbalyst/nimbalyst/tree/main/packages/wiki-web#readme",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/nimbalyst/nimbalyst.git",
+    "directory": "packages/wiki-web"
+  },
+  "scripts": {
+    "build": "vite build && node scripts/check-size.mjs",
+    "check:size": "node scripts/check-size.mjs",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@lexical/code": "0.44.0",
+    "@lexical/code-core": "0.44.0",
+    "@lexical/extension": "0.44.0",
+    "@lexical/hashtag": "0.44.0",
+    "@lexical/headless": "0.44.0",
+    "@lexical/history": "0.44.0",
+    "@lexical/html": "0.44.0",
+    "@lexical/link": "0.44.0",
+    "@lexical/list": "0.44.0",
+    "@lexical/mark": "0.44.0",
+    "@lexical/markdown": "0.44.0",
+    "@lexical/overflow": "0.44.0",
+    "@lexical/react": "0.44.0",
+    "@lexical/rich-text": "0.44.0",
+    "@lexical/selection": "0.44.0",
+    "@lexical/table": "0.44.0",
+    "@lexical/utils": "0.44.0",
+    "@lexical/yjs": "0.44.0",
+    "@nimbalyst/collab-bundle": "workspace:*",
+    "@nimbalyst/local-wiki": "workspace:*",
+    "@revolist/react-datagrid": "4.21.4",
+    "@revolist/revogrid": "4.21.4",
+    "@types/react": "^19.2.17",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^5.1.2",
+    "autoprefixer": "^10.5.0",
+    "lexical": "0.44.0",
+    "postcss": "^8.5.6",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7",
+    "tailwindcss": "^3.4.19",
+    "typescript": "^5.5.0",
+    "vite": "^7.1.12",
+    "vitest": "4.1.11",
+    "y-protocols": "^1.0.7",
+    "yjs": "13.6.32"
+  }
+}

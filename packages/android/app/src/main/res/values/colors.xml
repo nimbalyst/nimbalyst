@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Window colors for the XML theme; must match ui/theme/NimbalystColors.kt. -->
+    <color name="nim_background_secondary">#FF1A1A1A</color>
+</resources>

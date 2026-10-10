@@ -17,13 +17,15 @@ type PGliteLike = {
   query: <T = any>(sql: string, params?: any[]) => Promise<{ rows: T[] }>;
 };
 
+const ARCHIVED_SUBTREES = `WITH RECURSIVE archived_subtrees(id, workspace_id) AS (
+  SELECT id, workspace_id FROM ai_sessions WHERE is_archived = TRUE
+  UNION
+  SELECT c.id, c.workspace_id FROM ai_sessions c JOIN archived_subtrees p ON c.parent_session_id = p.id AND c.workspace_id = p.workspace_id
+)`;
 const ORPHAN_PREDICATE = `
   (c.is_archived = FALSE OR c.is_archived IS NULL)
   AND c.parent_session_id IS NOT NULL
-  AND EXISTS (
-    SELECT 1 FROM ai_sessions p
-    WHERE p.id = c.parent_session_id AND p.is_archived = TRUE
-  )
+  AND c.id IN (SELECT id FROM archived_subtrees)
 `;
 
 export async function healArchivedWorkstreamChildren(
@@ -33,7 +35,7 @@ export async function healArchivedWorkstreamChildren(
   // the common (already-clean) startup path read-only rather than issuing a
   // no-op UPDATE on every launch.
   const countResult = await db.query<{ count: number | string }>(
-    `SELECT COUNT(*) as count FROM ai_sessions c WHERE ${ORPHAN_PREDICATE}`
+    `${ARCHIVED_SUBTREES} SELECT COUNT(*) as count FROM ai_sessions c WHERE ${ORPHAN_PREDICATE}`
   );
   const orphanCount = Number(countResult.rows[0]?.count ?? 0);
   if (!orphanCount) {
@@ -41,7 +43,7 @@ export async function healArchivedWorkstreamChildren(
   }
 
   await db.query(
-    `UPDATE ai_sessions
+    `${ARCHIVED_SUBTREES} UPDATE ai_sessions
      SET is_archived = TRUE
      WHERE id IN (
        SELECT c.id FROM ai_sessions c WHERE ${ORPHAN_PREDICATE}

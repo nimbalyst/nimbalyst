@@ -1,0 +1,6 @@
+{
+  "type": "docIndexRemove",
+  "documentId": "page-3",
+  "requestId": "remove-3",
+  "purge": true
+}

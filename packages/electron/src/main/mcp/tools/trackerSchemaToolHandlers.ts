@@ -5,10 +5,7 @@ import type {
   TrackerSchemaPatch,
 } from '@nimbalyst/runtime/plugins/TrackerPlugin/models';
 import {
-  classifyPredicateRegistryChanges,
-  destructivePredicateRegistryChanges,
   resolveTrackerSchemaChangeGate,
-  validatePredicateRegistry,
   validateTrackerTypePredicateDeclarations,
   type PredicateDeclaringType,
   type PredicateDefinition,
@@ -37,7 +34,7 @@ import {
   materializeTrackerTypeDef,
   removeTrackerTypeDef,
 } from '../../services/tracker/trackerTypeDefStore';
-import { writeWorkspacePredicateRegistry } from '../../services/tracker/trackerPredicateRegistryFile';
+import { applyPredicateRegistryArgs } from './trackerVocabularyArgs';
 import { getDocumentServiceForWorkspace } from './trackerToolItemAccess';
 import {
   destructiveSchemaChangeToolResult,
@@ -130,72 +127,10 @@ function buildTrackerSchemaFromArgs(args: any): any {
     overwrite: _overwrite,
     promoteExistingItems: _promoteExistingItems,
     predicates: _predicates,
+    removePredicates: _removePredicates,
     ...rest
   } = args ?? {};
   return rest;
-}
-
-/**
- * Apply a `predicates:` declaration (knowledge-scopes 4.1): replace the
- * project's registry.
- *
- * Replace, not merge, matching how the room publishes it -- see
- * `TrackerDataModelRegistry.setPredicates`. That makes removal expressible,
- * which is why the destructive gate below is not optional: removing a
- * predicate, narrowing its `subjectKinds`, or making a qualifier required
- * invalidates statements already written on teammates' items, exactly as
- * removing a field does, so it goes through the same
- * additive-versus-destructive rule type schemas get.
- *
- * Returns a tool error result, or null when the registry was applied.
- */
-async function applyPredicateRegistryArgs(
-  workspacePath: string,
-  args: any,
-): Promise<{ error: McpToolResult } | { applied: PredicateDefinition[]; summary: string }> {
-  const validation = validatePredicateRegistry(args.predicates);
-  if (!validation.valid) {
-    return {
-      error: {
-        content: [{
-          type: 'text',
-          text: `Error: invalid predicate registry.\n${validation.issues
-            .map(issue => `- ${issue.code} at '${issue.path}': ${issue.message}`)
-            .join('\n')}`,
-        }],
-        isError: true,
-      },
-    };
-  }
-
-  const { classification, changes } = classifyPredicateRegistryChanges(
-    globalRegistry.getAllPredicates(),
-    validation.predicates,
-  );
-  if (classification === 'destructive' && args?.confirmDestructive !== true) {
-    const destructive = destructivePredicateRegistryChanges(changes);
-    return {
-      error: {
-        content: [{
-          type: 'text',
-          text: `This predicate registry change is destructive and needs \`confirmDestructive: true\`:\n${destructive
-            .map(change => `- ${change.kind} on '${change.predicateId}'`)
-            .join('\n')}\nStatements already written under these predicates stop validating.`,
-        }],
-        isError: true,
-      },
-    };
-  }
-
-  await writeWorkspacePredicateRegistry(workspacePath, validation.predicates);
-  globalRegistry.setPredicates(validation.predicates);
-
-  return {
-    applied: validation.predicates,
-    summary: classification === 'none'
-      ? `Predicate registry unchanged (${validation.predicates.length} predicate(s)).`
-      : `Wrote ${validation.predicates.length} predicate(s) to .nimbalyst/predicates.yaml (${classification} change).`,
-  };
 }
 
 async function persistAttributedTrackerSchemaEdit(
@@ -310,6 +245,25 @@ export async function handleTrackerDefineType(
   args: any,
   workspacePath: string | undefined,
 ): Promise<McpToolResult> {
+  const vocabularySummaries: string[] = [];
+  const result = await defineTrackerType(args, workspacePath, vocabularySummaries);
+  if (!result.isError || vocabularySummaries.length === 0) return result;
+  // Vocabulary is written before the type is checked, and is not rolled back.
+  // Without this the caller sees only the type error, retries, and is told the
+  // registry is "unchanged" by a call that never wrote anything.
+  const note = `\n\nAlready applied before this error:\n${vocabularySummaries.join('\n')}`;
+  return {
+    ...result,
+    content: result.content.map((part, index) =>
+      index === 0 && part.type === 'text' ? { ...part, text: `${part.text ?? ''}${note}` } : part),
+  };
+}
+
+async function defineTrackerType(
+  args: any,
+  workspacePath: string | undefined,
+  vocabularySummaries: string[],
+): Promise<McpToolResult> {
   try {
     if (!workspacePath) {
       return {
@@ -322,30 +276,40 @@ export async function handleTrackerDefineType(
     // an agent doesn't think the type is missing (NIM-760).
     ensureWorkspaceTrackerSchemasLoaded(workspacePath);
 
-    // Predicates first: a type declaring `predicate:` on a field needs the verb
+    // The earlier knowledge graph's label registry is no longer authored here.
+    // Refuse rather than ignore, so an older skill sees why nothing changed.
+    if (args?.labels !== undefined) {
+      return {
+        content: [{ type: 'text', text: 'Error: `labels` is no longer supported. Give a page a tracker type and use `predicates` for named relations. An existing .nimbalyst/labels.yaml still loads unchanged.' }],
+        isError: true,
+      };
+    }
+
+    // Vocabulary first: a type declaring `predicate:` on a field needs the verb
     // to exist before the declaration below is checked against the registry.
-    let predicateSummary = '';
-    if (Array.isArray(args?.predicates)) {
+    let appliedPredicates: PredicateDefinition[] | null = null;
+    if (Array.isArray(args?.predicates) || Array.isArray(args?.removePredicates)) {
       const outcome = await applyPredicateRegistryArgs(workspacePath, args);
       if ('error' in outcome) return outcome.error;
-      predicateSummary = outcome.summary;
-      // A registry-only call is complete here.
-      if (!args?.schema && !args?.patch && typeof args?.type !== 'string') {
-        return {
-          content: [{
-            type: 'text',
-            text: JSON.stringify({
-              structured: {
-                action: 'defined-predicates' as const,
-                count: outcome.applied.length,
-                predicates: outcome.applied,
-              },
-              summary: predicateSummary,
-            }),
-          }],
-          isError: false,
-        };
-      }
+      appliedPredicates = outcome.applied;
+      vocabularySummaries.push(outcome.summary);
+    }
+    const vocabularySummary = vocabularySummaries.join('\n');
+    // A vocabulary-only call is complete here.
+    if (vocabularySummaries.length > 0 && !args?.schema && !args?.patch && typeof args?.type !== 'string') {
+      return {
+        content: [{
+          type: 'text',
+          text: JSON.stringify({
+            structured: {
+              action: 'defined-vocabulary' as const,
+              ...(appliedPredicates ? { count: appliedPredicates.length, predicates: appliedPredicates } : {}),
+            },
+            summary: vocabularySummary,
+          }),
+        }],
+        isError: false,
+      };
     }
 
     const requestedDefinition = args?.patch ?? (

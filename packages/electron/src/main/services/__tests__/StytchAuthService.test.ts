@@ -56,12 +56,14 @@ import {
   refreshSession,
   refreshSessionForAccount,
   refreshSessionForAccountDetailed,
+  resolvePersonalUserId,
   setAuthCallbackSuccessHandler,
   setSyncAccount,
   sendMagicLink,
   signInWithGoogle,
   signOut,
 } from '../StytchAuthService';
+import { getSessionSyncConfig } from '../../utils/store';
 
 function createJwt(payload: Record<string, unknown>): string {
   return [
@@ -199,6 +201,58 @@ describe('StytchAuthService personal JWT refresh', () => {
     });
 
     await expect(refreshPersonalSession('https://sync.example')).resolves.toBe(true);
+    expect(getPersonalSessionJwt()).toBe(freshPersonalJwt);
+  });
+
+  // At launch the persisted sessionJwt is a team JWT from the last run, long
+  // expired. Sending it to /switch got a bare 401 from the worker's auth gate on
+  // every startup, so the personal-org exchange (and its NIM-859 correction)
+  // never ran.
+  it('resolves personalUserId by refreshing before the personal-org exchange', async () => {
+    const personalUserId = 'member-personal';
+    const expiredTeamJwt = createJwt({ sub: 'member-team', exp: Math.floor(Date.now() / 1000) - 600 });
+    const refreshedTeamJwt = createJwt({ sub: 'member-team', exp: Math.floor(Date.now() / 1000) + 300 });
+    const freshPersonalJwt = createJwt({ sub: personalUserId, exp: Math.floor(Date.now() / 1000) + 300 });
+
+    await handleAuthCallback({
+      intent: 'sign-in',
+      sessionToken: 'initial-session-token',
+      sessionJwt: createJwt({ sub: personalUserId, exp: Math.floor(Date.now() / 1000) - 60 }),
+      userId: personalUserId,
+      orgId: 'org-personal',
+    });
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        session_token: 'stale-team-session-token',
+        session_jwt: expiredTeamJwt,
+        user_id: 'member-team',
+        org_id: 'org-team',
+        expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
+      }),
+    });
+    await refreshSession('https://sync.example');
+
+    fetchMock.mockImplementationOnce(async () => ({
+      ok: true,
+      json: async () => ({
+        session_token: 'latest-team-session-token',
+        session_jwt: refreshedTeamJwt,
+        user_id: 'member-team',
+        org_id: 'org-team',
+        expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
+      }),
+    }));
+    fetchMock.mockImplementationOnce(async (_url: string, init?: RequestInit) => {
+      const auth = (init?.headers as Record<string, string>)?.Authorization;
+      const body = JSON.parse(String(init?.body)) as { sessionToken?: string };
+      if (auth !== `Bearer ${refreshedTeamJwt}` || body.sessionToken !== 'latest-team-session-token') {
+        return { ok: false, status: 401, json: async () => { throw new Error('not json'); } };
+      }
+      return { ok: true, status: 200, json: async () => ({ sessionToken: 'personal-session-token', sessionJwt: freshPersonalJwt }) };
+    });
+
+    await expect(resolvePersonalUserId('wss://sync.example')).resolves.toBe(personalUserId);
     expect(getPersonalSessionJwt()).toBe(freshPersonalJwt);
   });
 });
@@ -898,6 +952,21 @@ describe('StytchAuthService personal refresh outcome classification', () => {
       ok: false,
       reason: 'network',
     });
+  });
+
+  it('refreshes against the derived server, not a malformed saved serverUrl', async () => {
+    await signInPersonal();
+    // A real install had this typo saved; every refresh failed with ERR_UNKNOWN_URL_SCHEME.
+    vi.mocked(getSessionSyncConfig).mockReturnValue({ serverUrl: 'was://sync.nimbalyst.com' } as never);
+    fetchMock.mockRejectedValue(new Error('stop after the request is built'));
+    try {
+      await refreshPersonalSessionForAccountDetailed('org-personal');
+    } finally {
+      vi.mocked(getSessionSyncConfig).mockReturnValue({ serverUrl: 'https://sync.example' } as never);
+    }
+
+    expect(fetchMock).toHaveBeenCalled();
+    expect(String(fetchMock.mock.calls[0][0])).toMatch(/^https:\/\/sync\.nimbalyst\.com\//);
   });
 
   it('carries the transport error detail so the sync log can name it', async () => {

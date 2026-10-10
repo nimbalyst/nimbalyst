@@ -1200,11 +1200,13 @@ export class OpenCodeSDKProtocol implements AgentProtocol {
         const tokens = info.tokens as Record<string, unknown> | undefined;
         if (!tokens) break;
         const cache = tokens.cache as Record<string, unknown> | undefined;
+        // OpenCode reports input EXCLUDING cache reads/writes, which it keeps
+        // under tokens.cache -- the same disjoint shape as the event's usage.
         const inputTokens = toTokenCount(tokens.input);
         const outputTokens = toTokenCount(tokens.output);
-        const contextFillTokens = inputTokens
-          + toTokenCount(cache?.read)
-          + toTokenCount(cache?.write);
+        const cacheReadTokens = toTokenCount(cache?.read);
+        const cacheWriteTokens = toTokenCount(cache?.write);
+        const contextFillTokens = inputTokens + cacheReadTokens + cacheWriteTokens;
         const reportedTotal = toOptionalTokenCount(tokens.total);
 
         events.push({
@@ -1213,6 +1215,8 @@ export class OpenCodeSDKProtocol implements AgentProtocol {
             input_tokens: inputTokens,
             output_tokens: outputTokens,
             total_tokens: reportedTotal ?? inputTokens + outputTokens,
+            cache_read_input_tokens: cacheReadTokens,
+            cache_creation_input_tokens: cacheWriteTokens,
           },
           contextFillTokens,
           metadata: {
@@ -1364,8 +1368,12 @@ function aggregateOpenCodeUsage(
       input_tokens: total.input_tokens + snapshot.usage.input_tokens,
       output_tokens: total.output_tokens + snapshot.usage.output_tokens,
       total_tokens: total.total_tokens + snapshot.usage.total_tokens,
+      cache_read_input_tokens:
+        (total.cache_read_input_tokens ?? 0) + (snapshot.usage.cache_read_input_tokens ?? 0),
+      cache_creation_input_tokens:
+        (total.cache_creation_input_tokens ?? 0) + (snapshot.usage.cache_creation_input_tokens ?? 0),
     }),
-    { input_tokens: 0, output_tokens: 0, total_tokens: 0 },
+    { input_tokens: 0, output_tokens: 0, total_tokens: 0, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
   );
 }
 

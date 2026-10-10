@@ -1,8 +1,8 @@
 /**
  * The knowledge graph's reading of a tracker room: `entity` pages with a
  * `kind`, `claim` statements between them, the market tree, dated facts, and
- * the content problems a reader can act on (stale facts, products with no
- * market or maker, duplicates).
+ * likely duplicates. `ontologyContentHealth.ts` turns these into the content
+ * problems a reader can act on.
  *
  * The vocabulary is the knowledge ontology's shared contract (r1 + r2):
  * `in-market`, `made-by`, `competes-with`, fact predicates carrying `asOf` and
@@ -48,8 +48,11 @@ export interface MarketNode<T extends OntologyRecordLike = OntologyRecordLike> {
     empty: boolean;
     overfull: boolean;
 }
-/** `kind: market` entities as a tree by `parent`; a market whose parent is not a market is a root. */
-export declare function buildMarketTree<T extends OntologyRecordLike>(graph: KnowledgeGraph<T>): Array<MarketNode<T>>;
+/**
+ * Market pages as a tree by `parent`; a market whose parent is not a market is
+ * a root. `isMarket` reads the `market-node` role once there is a registry.
+ */
+export declare function buildMarketTree<T extends OntologyRecordLike>(graph: KnowledgeGraph<T>, isMarket?: (record: T) => boolean): Array<MarketNode<T>>;
 export type AsOfPrecision = 'day' | 'month' | 'year';
 /** When a fact dated `asOf` goes stale: `days` after the end of its period (the day, month or year). */
 export declare function factStaleAt(asOf: unknown, precision: unknown, days?: number): number | null;
@@ -63,9 +66,13 @@ export interface FactValue<T extends OntologyRecordLike = OntologyRecordLike> {
     /** `undated` has no `asOf`; `stale` is past its threshold; `current` is neither. */
     state: 'current' | 'stale' | 'undated';
 }
-/** The current value of every fact: per subject and predicate, the asserted claim with the latest `asOf`. */
-export declare function currentFacts<T extends OntologyRecordLike>(graph: KnowledgeGraph<T>, now: number, days?: number): Array<FactValue<T>>;
-export type ContentHealthCheck = 'stale-facts' | 'missing-market' | 'missing-maker' | 'missing-competes-with' | 'duplicates';
+/**
+ * The current value of every fact: per subject and predicate, the asserted
+ * claim with the latest `asOf`. Facts are the predicates labels put in a fact
+ * box (`factPredicates`).
+ */
+export declare function currentFacts<T extends OntologyRecordLike>(graph: KnowledgeGraph<T>, now: number, days?: number, factPredicates?: ReadonlySet<string>): Array<FactValue<T>>;
+export type ContentHealthCheck = 'stale-facts' | 'unmet-expects' | 'range-violation' | 'unknown-label' | 'duplicates';
 export interface HealthItem<T extends OntologyRecordLike = OntologyRecordLike> {
     /** Stable across renders and sessions: an Improve request and its proposal carry it. */
     id: string;
@@ -81,6 +88,10 @@ export interface HealthItem<T extends OntologyRecordLike = OntologyRecordLike> {
     items: T[];
     /** Ids of `items`, in order: what a search or filter over the affected items takes. */
     itemIds: string[];
+    /** Labels the problem is about, so a type page can show its own. */
+    labelIds?: string[];
+    /** `info` reports are observations, not problems to fix. */
+    severity?: 'info';
     /** Duplicates only: the records that look like one thing, the one to keep first. */
     groups?: T[][];
     /** Ids of `groups`, in the same shape. */
@@ -89,20 +100,11 @@ export interface HealthItem<T extends OntologyRecordLike = OntologyRecordLike> {
 /** A health item before its ids are derived from its records. */
 export type HealthDraft<T extends OntologyRecordLike = OntologyRecordLike> = Omit<HealthItem<T>, 'itemIds' | 'groupIds'>;
 export declare function withHealthIds<T extends OntologyRecordLike>(draft: HealthDraft<T>): HealthItem<T>;
-/** Live records whose title or an alias matches another's, across entity and competitor items. */
-export declare function findDuplicateGroups<T extends OntologyRecordLike>(graph: KnowledgeGraph<T>): T[][];
-export declare function plural(count: number, one: string, many?: string): string;
-export interface ContentHealthOptions {
-    now: number;
-    /** Stale threshold in days after the end of a fact's period. Default 90. */
-    staleDays?: number;
-    /** Include products with no `competes-with` claim. The wiki home leaves it out; the inspector includes it. */
-    includeCompetesWith?: boolean;
-}
 /**
- * Problems with the graph's content, each with a count and the items it is
- * about: stale or undated facts, products with no market or maker, and likely
- * duplicates. Checks with nothing to report are omitted. Returns nothing when
- * the room has no knowledge types.
+ * Live records whose title or an alias matches another's, across entity and
+ * competitor items. Structure pages (areas, home) are navigation and never
+ * count; `isStructure` says which those are (by label role once there is a
+ * registry).
  */
-export declare function computeContentHealth<T extends OntologyRecordLike>(records: readonly T[] | KnowledgeGraph<T>, options: ContentHealthOptions): Array<HealthItem<T>>;
+export declare function findDuplicateGroups<T extends OntologyRecordLike>(graph: KnowledgeGraph<T>, isStructure?: (record: T) => boolean): T[][];
+export declare function plural(count: number, one: string, many?: string): string;

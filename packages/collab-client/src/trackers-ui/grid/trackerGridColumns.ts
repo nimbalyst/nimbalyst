@@ -88,7 +88,7 @@ function formatValueParts(
 }
 
 /** Human-readable text for a stored value, by column render type. */
-function formatValue(
+export function formatValue(
   col: TrackerColumnDef,
   value: unknown,
   trackerType: string,
@@ -462,6 +462,22 @@ export function buildGridActionsColumn(): ColumnRegular {
     sortable: false,
     readonly: true,
     cellTemplate: (createElement: HyperFunc<VNode>) => contextMenuNode(createElement, 'column'),
+  };
+}
+
+/** A read-only text column whose value the host computed into the row under `id`. */
+export function buildDerivedGridColumn(column: { id: string; label: string; width?: number }): ColumnRegular {
+  return {
+    prop: column.id,
+    name: column.label,
+    size: column.width ?? 200,
+    minSize: 60,
+    sortable: false,
+    readonly: true,
+    cellTemplate: (createElement: HyperFunc<VNode>, props: CellTemplateProp) => {
+      const text = String(props.model?.[column.id] ?? '');
+      return textNode(createElement, text, text);
+    },
   };
 }
 

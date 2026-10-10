@@ -204,11 +204,18 @@ export interface ProtocolEvent {
   /** Error message (for 'error' events) */
   error?: string;
 
-  /** Token usage (for 'usage' or 'complete' events) */
+  /**
+   * Token usage (for 'usage' or 'complete' events). When the provider reports a
+   * prompt-cache split, `input_tokens` is uncached input only and the cache
+   * reads/writes go in their own fields (Anthropic's shape), so the three input
+   * counts never overlap. Omit the cache fields when the provider has no split.
+   */
   usage?: {
     input_tokens: number;
     output_tokens: number;
     total_tokens: number;
+    cache_read_input_tokens?: number;
+    cache_creation_input_tokens?: number;
   };
 
   /** Current context fill tokens for this turn (provider-reported snapshot) */

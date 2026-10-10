@@ -1,5 +1,8 @@
 // @vitest-environment node
 import { describe, it, expect, afterEach } from 'vitest';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import {
   getHostEnvironment,
   setHostEnvironment,
@@ -86,18 +89,25 @@ describe('HostEnvironment', () => {
 
 describe('claudeCodeEnvironment against an injected host', () => {
   it('takes the packaged branch and derives the unpacked sibling from the injected app path', async () => {
-    setHostEnvironment({
-      isPackaged: () => true,
-      getAppPath: () => '/Applications/Nimbalyst.app/Contents/Resources/app.asar',
-    });
+    const fixture = mkdtempSync(path.join(tmpdir(), 'nimbalyst-host-environment-'));
+    try {
+      setHostEnvironment({
+        isPackaged: () => true,
+        getAppPath: () => path.join(fixture, 'app.asar'),
+      });
+      const binaryPath = path.join(
+        fixture, 'app.asar.unpacked', 'node_modules',
+        `@anthropic-ai/claude-agent-sdk-${process.platform}-${process.arch}`,
+        process.platform === 'win32' ? 'claude.exe' : 'claude',
+      );
+      mkdirSync(path.dirname(binaryPath), { recursive: true });
+      writeFileSync(binaryPath, 'test binary');
 
-    const { resolveNativeBinaryPath } = await import('../../electron/claudeCodeEnvironment');
-
-    // The packaged branch constructs a path under app.asar.unpacked and checks
-    // the filesystem. Nothing is there in a test, so the honest answer is
-    // undefined -- the point is that it took the packaged branch at all, which
-    // it can only do by reading the injected host.
-    expect(resolveNativeBinaryPath()).toBeUndefined();
+      const { resolveNativeBinaryPath } = await import('../../electron/claudeCodeEnvironment');
+      expect(resolveNativeBinaryPath()).toBe(binaryPath);
+    } finally {
+      rmSync(fixture, { recursive: true, force: true });
+    }
   });
 
   it('reports no orphaned self-update files when the host is not packaged', async () => {

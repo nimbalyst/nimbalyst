@@ -36,16 +36,19 @@ public enum ModelLabel {
 
     /// Mirrors `CLAUDE_CODE_VARIANT_VERSIONS` in `modelConstants.ts`.
     private static let claudeCodeVariantVersions: [String: String] = [
-        "fable": "5",
+        "fable": "5.1",
+        "fable-5": "5",
         "opus": "5.5",
         "opus-5-5": "5.5",
         "opus-5": "5",
-        "sonnet": "5",
-        "haiku": "4.5",
+        "sonnet": "5.5",
+        "sonnet-5": "5",
+        "haiku": "5.5",
         "opus-4-8": "4.8",
         "opus-4-7": "4.7",
         "opus-4-6": "4.6",
         "sonnet-4-6": "4.6",
+        "haiku-4-5": "4.5",
     ]
 
     private static func claudeCodeLabel(_ modelId: String?, providerFallback: String = "Claude Agent") -> String? {
@@ -116,7 +119,9 @@ public enum ModelLabel {
     /// Mirrors `CLAUDE_MODELS[*].shortName` in `modelConstants.ts`.
     private static let claudeApiShortNames: [String: String] = [
         "claude-fable-5": "Fable 5",
+        "claude-sonnet-5-5": "Sonnet 5.5",
         "claude-sonnet-5": "Sonnet 5",
+        "claude-haiku-5-5": "Haiku 5.5",
         "claude-opus-5": "Opus 5",
         "claude-opus-4-8": "Opus 4.8",
         "claude-opus-4-7": "Opus 4.7",
@@ -155,6 +160,7 @@ public enum ModelLabel {
     /// (e.g. "GPT-5.4" rather than just "5.4") so the badge reads cleanly
     /// without relying on a neighboring provider word.
     private static let openAIShortNames: [String: String] = [
+        "gpt-6.1-sol": "GPT-6.1 Sol",
         "gpt-6-sol": "GPT-6 Sol",
         "gpt-6-luna": "GPT-6 Luna",
         "gpt-5.6-sol": "GPT-5.6 Sol",

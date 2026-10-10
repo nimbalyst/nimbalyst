@@ -1,0 +1,187 @@
+{
+  "formatVersion": 1,
+  "types": [
+    {
+      "typeId": "project",
+      "displayName": "Project",
+      "displayNamePlural": "Projects",
+      "storage": "pages",
+      "fields": [
+        {
+          "name": "status",
+          "type": "select"
+        }
+      ],
+      "titleField": "title"
+    },
+    {
+      "typeId": "vendor",
+      "displayName": "Vendor",
+      "displayNamePlural": "Vendors",
+      "storage": "table",
+      "fields": [
+        {
+          "name": "name",
+          "type": "string"
+        },
+        {
+          "name": "score",
+          "type": "number"
+        },
+        {
+          "name": "active",
+          "type": "boolean"
+        }
+      ],
+      "titleField": "name"
+    }
+  ],
+  "tree": [
+    {
+      "kind": "page",
+      "id": "01JOHOME000000000000000000",
+      "title": "Home",
+      "path": "Home.md",
+      "dir": "Home",
+      "type": null,
+      "order": 500,
+      "documentType": "markdown",
+      "fields": {},
+      "children": []
+    },
+    {
+      "kind": "page",
+      "id": "01JOMIDDLE0000000000000000",
+      "title": "Middle",
+      "path": "Middle.md",
+      "dir": "Middle",
+      "type": null,
+      "order": 1500.5,
+      "documentType": "markdown",
+      "fields": {},
+      "children": []
+    },
+    {
+      "kind": "page",
+      "id": "01JOPROJECTS00000000000000",
+      "title": "Projects",
+      "path": "Projects.md",
+      "dir": "Projects",
+      "type": null,
+      "order": 3000,
+      "documentType": "markdown",
+      "fields": {},
+      "children": [
+        {
+          "kind": "page",
+          "id": "01JOROADMAP000000000000000",
+          "title": "Roadmap",
+          "path": "Projects/Roadmap.md",
+          "dir": "Projects/Roadmap",
+          "type": null,
+          "order": 1000,
+          "documentType": "markdown",
+          "fields": {
+            "planStatus": {
+              "planId": "plan-roadmap",
+              "progress": 40,
+              "tags": [
+                "q4",
+                "mobile"
+              ]
+            },
+            "summary": "Folded summary over two lines.\n",
+            "notes": "Line one\nLine two\n",
+            "quoted": "it's",
+            "escaped": "tab\tand \"quote\""
+          },
+          "children": []
+        },
+        {
+          "kind": "page",
+          "id": "01JOLAUNCH0000000000000000",
+          "title": "Launch",
+          "path": "Projects/Launch.md",
+          "dir": "Projects/Launch",
+          "type": "project",
+          "order": 2000,
+          "documentType": "markdown",
+          "fields": {
+            "status": "blocked",
+            "owner": "sam"
+          },
+          "children": []
+        }
+      ]
+    },
+    {
+      "kind": "page",
+      "id": "01JOALPHA00000000000000000",
+      "title": "Alpha",
+      "path": "Alpha.md",
+      "dir": "Alpha",
+      "type": null,
+      "order": null,
+      "documentType": "markdown",
+      "fields": {},
+      "children": []
+    },
+    {
+      "kind": "page",
+      "id": "tmp_NPJF78Y4K4R9YEWYF2WN",
+      "title": "Budget",
+      "path": "Budget.csv",
+      "dir": "Budget",
+      "type": null,
+      "order": null,
+      "documentType": "csv",
+      "fields": {},
+      "children": []
+    },
+    {
+      "kind": "table",
+      "typeId": "vendor",
+      "title": "Vendors",
+      "path": "vendor.csv",
+      "header": [
+        "id",
+        "name",
+        "score",
+        "active"
+      ],
+      "rows": [
+        {
+          "id": "01JOVENDOR1000000000000000",
+          "title": "Vend One",
+          "fields": {
+            "name": "Vend One",
+            "score": 4.5,
+            "active": true
+          }
+        },
+        {
+          "id": "01JOVENDOR2000000000000000",
+          "title": "Vend Two",
+          "fields": {
+            "name": "Vend Two",
+            "active": false
+          }
+        }
+      ]
+    },
+    {
+      "kind": "page",
+      "id": "01JOZETA000000000000000000",
+      "title": "zeta",
+      "path": "zeta.md",
+      "dir": "zeta",
+      "type": null,
+      "order": null,
+      "documentType": "markdown",
+      "fields": {},
+      "children": []
+    }
+  ],
+  "links": [],
+  "trashedIds": []
+}

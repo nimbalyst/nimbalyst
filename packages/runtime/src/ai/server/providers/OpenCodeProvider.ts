@@ -281,10 +281,16 @@ export class OpenCodeProvider extends BaseAgentProvider {
   /**
    * Build system prompt for the OpenCode session.
    */
-  protected buildSystemPrompt(documentContext?: DocumentContext): string {
+  protected buildSystemPrompt(
+    documentContext?: DocumentContext,
+    sessionDirective?: string,
+    hasOutOfBandNaming: boolean = false,
+  ): string {
     return buildClaudeCodeSystemPrompt({
       hasSessionNaming: isInternalMcpServerEnabled(),
+      hasOutOfBandNaming,
       toolReferenceStyle: 'opencode' as any,
+      sessionDirective,
       trackersEnabled: areTrackerToolsEnabled(resolveTrackersWorkspacePath(documentContext)),
     });
   }
@@ -303,7 +309,9 @@ export class OpenCodeProvider extends BaseAgentProvider {
       return;
     }
 
-    const systemPrompt = this.buildSystemPrompt(documentContext);
+    const systemPrompt = this.buildSystemPrompt(
+      documentContext, await this.getSessionDirective(sessionId), this.isNamedOutOfBand(sessionId, documentContext),
+    );
     const { userMessageAddition, messageWithContext } = buildUserMessageAddition(message, documentContext);
 
     // Emit prompt additions for UI

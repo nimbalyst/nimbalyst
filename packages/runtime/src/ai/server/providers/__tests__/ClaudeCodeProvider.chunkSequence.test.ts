@@ -40,6 +40,7 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
 import os from 'os';
 import { ClaudeCodeProvider } from '../ClaudeCodeProvider';
 import type { StreamChunk } from '../../types';
+import { AISessionsRepository } from '../../../../storage/repositories/AISessionsRepository';
 
 /** A scripted stand-in for the SDK's Query handle. */
 function scriptQuery(script: Array<Record<string, unknown> | (() => never)>): AsyncIterable<unknown> {
@@ -1090,4 +1091,152 @@ describe('ClaudeCodeProvider.sendMessage chunk sequence', () => {
     // already 'never'; pinning it keeps an inherited setting from changing that.
     expect((options.settings as Record<string, unknown>).askUserQuestionTimeout).toBe('never');
   });
+
+  // The appended system prompt heads the prompt-cache prefix on every resumed
+  // turn (NIM-1988), so `metadata.sessionDirective` is read on the first turn
+  // and frozen: a mid-session edit must not reach the second turn.
+  it('appends the session directive from metadata and freezes it for the session', async () => {
+    let metadata: Record<string, unknown> = {};
+    AISessionsRepository.setStore({ get: async () => ({ metadata }) } as never);
+    const appendedPrompts = async (): Promise<string[]> => {
+      const { provider } = await makeProvider();
+      queryMock.mockReset();
+      queryMock.mockImplementation(() =>
+        scriptQuery([INIT_CHUNK, { type: 'result', subtype: 'success', is_error: false, num_turns: 1 }]),
+      );
+      await runTurn(provider, 'turn one');
+      metadata = { sessionDirective: 'Directive edited mid-session.' };
+      await runTurn(provider, 'turn two');
+      return queryMock.mock.calls.map(([args]) => (args as { options: { systemPrompt: { append: string } } }).options.systemPrompt.append);
+    };
+    try {
+      const [plainTurn1] = await appendedPrompts();
+
+      metadata = { sessionDirective: 'Only triage GitHub issues.' };
+      const [turn1, turn2] = await appendedPrompts();
+      expect(turn1).toContain('Only triage GitHub issues.');
+      expect(turn2).toBe(turn1);
+      expect(turn1.replace('\nOnly triage GitHub issues.\n', '')).toBe(plainTurn1);
+    } finally {
+      AISessionsRepository.clearStore();
+    }
+  });
+
+  // NIM-7327 follow-up: a prompt sent after the answer, while a backgrounded
+  // shell keeps the turn draining, used to wait for the shell (up to 30 min)
+  // or kill it via Send now. It is now delivered on the same live query, and
+  // the shell survives the handoff.
+  it('delivers a follow-up into the live query while a background shell keeps running', async () => {
+    const { provider } = await makeProvider();
+    const live = liveQuery();
+    queryMock.mockImplementation(({ prompt }: { prompt: AsyncIterable<unknown> }) => {
+      live.attach(prompt);
+      return live.query;
+    });
+    const settled: unknown[] = [];
+    provider.on('subagents:drainSettled', (payload) => settled.push(payload));
+    const idleMessages: Array<{ message: string }> = [];
+    provider.on('teammate:messageWhileIdle', (payload) => idleMessages.push(payload));
+
+    live.send(
+      INIT_CHUNK,
+      {
+        type: 'system',
+        subtype: 'task_started',
+        task_id: 'task_1',
+        task_type: 'local_bash',
+        is_backgrounded: true,
+        description: 'sleep 45',
+        tool_use_id: 'toolu_bg',
+      },
+      { type: 'assistant', session_id: 'sdk-session-1', message: { id: 'msg_1', content: [{ type: 'text', text: 'STARTED' }] } },
+      { type: 'result', subtype: 'success', is_error: false, num_turns: 1 },
+    );
+    const first: StreamChunk[] = [];
+    const firstTurn = runTurn(provider, 'start the shell', (chunk) => first.push(chunk));
+    await waitFor(() => first.some((chunk) => chunk.type === 'complete'));
+    await waitFor(() => provider.canAcceptFollowUpDuringDrain());
+
+    const second: StreamChunk[] = [];
+    const secondTurn = runTurn(provider, 'follow up', (chunk) => second.push(chunk));
+    await waitFor(() => live.prompts.length === 2);
+    expect((live.prompts[1] as { message: { content: unknown } }).message.content).toBe('follow up');
+
+    // The displaced turn ends without closing the process, ending its stdin,
+    // reaping the shell, or releasing the session.
+    await firstTurn;
+    expect(live.close).not.toHaveBeenCalled();
+    expect(live.promptStreamEnded).toBe(false);
+    expect(settled).toEqual([]);
+    expect(first.filter((chunk) => chunk.type === 'text').map((chunk) => chunk.content)).toEqual(['STARTED']);
+
+    live.send(
+      INIT_CHUNK,
+      { type: 'assistant', session_id: 'sdk-session-1', message: { id: 'msg_2', content: [{ type: 'text', text: 'FOLLOWUP_OK' }] } },
+      { type: 'result', subtype: 'success', is_error: false, num_turns: 1 },
+    );
+    await waitFor(() => second.some((chunk) => chunk.type === 'complete'));
+    expect(second.filter((chunk) => chunk.type === 'text').map((chunk) => chunk.content)).toEqual(['FOLLOWUP_OK']);
+    expect(queryMock).toHaveBeenCalledTimes(1);
+
+    // The shell finishes later; the adopted turn drains it like any other turn.
+    live.send({ type: 'system', subtype: 'task_notification', task_id: 'task_1', status: 'completed', summary: 'sleep finished' });
+    await secondTurn;
+    expect(live.close).toHaveBeenCalledOnce();
+    expect(idleMessages).toHaveLength(1);
+    expect(idleMessages[0].message).toContain('sleep 45');
+  });
 });
+
+/**
+ * A live CLI stand-in: it reads the provider's prompt stream the way the SDK
+ * does and yields whatever the test sends, so a turn can stay open across a
+ * second sendMessage.
+ */
+function liveQuery() {
+  const outbox: unknown[] = [];
+  let wake: (() => void) | null = null;
+  const prompts: unknown[] = [];
+  let promptStreamEnded = false;
+  const close = vi.fn();
+  const query = {
+    async *[Symbol.asyncIterator]() {
+      while (true) {
+        if (outbox.length > 0) {
+          yield outbox.shift();
+          continue;
+        }
+        await new Promise<void>((resolve) => { wake = resolve; });
+      }
+    },
+    interrupt: async () => {},
+    streamInput: async () => {},
+    close,
+  };
+  return {
+    query,
+    close,
+    prompts,
+    get promptStreamEnded() { return promptStreamEnded; },
+    attach(prompt: AsyncIterable<unknown>) {
+      void (async () => {
+        for await (const message of prompt) prompts.push(message);
+        promptStreamEnded = true;
+      })();
+    },
+    send(...chunks: unknown[]) {
+      outbox.push(...chunks);
+      const resolve = wake;
+      wake = null;
+      resolve?.();
+    },
+  };
+}
+
+async function waitFor(check: () => boolean): Promise<void> {
+  for (let attempt = 0; attempt < 400; attempt++) {
+    if (check()) return;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  throw new Error('waitFor timed out');
+}

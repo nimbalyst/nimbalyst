@@ -99,14 +99,14 @@ Run the PR's changed-file list against these tiers.
 
 **Tier 1 -- executes with release secrets**
 - `.github/workflows/**`, `.github/actions/**`
-- Any script those workflows invoke: `scripts/**`, `packages/*/scripts/**`, and every `npm run <x>` a workflow calls -- trace `<x>` through `package.json` and read the file it lands on.
+- Any script those workflows invoke: `scripts/**`, `packages/*/scripts/**`, and every `pnpm run <x>` a workflow calls -- trace `<x>` through `package.json` and read the file it lands on.
 - `electron-build.yml` carries Apple/DigiCert signing, R2, Slack, and `contents: write`, and does **not** run on fork PRs (`push` on tags + `release/**`, `pull_request` only into `release`, `workflow_dispatch`). That is the danger, not the safety: the change merges into `main` looking harmless and executes later on a release branch with every secret attached. **CODEOWNERS on `.github/` does not cover the scripts those workflows call.**
 
 **Tier 2 -- executes on the maintainer's machine at install or commit time**
-- `package.json` `scripts` in any workspace -- especially `prepare`, `postinstall`, and any `pre*`/`post*` pair. Root `prepare` runs `scripts/install-git-hooks.mjs`; root `postinstall` runs `patch-package`.
-- `patches/**` -- every `npm ci` applies these into `node_modules`. A `.patch` is arbitrary code injection wearing a diff costume, and a diff-of-a-diff is easy to skim past.
+- `package.json` `scripts` in any workspace -- especially `prepare`, `postinstall`, and any `pre*`/`post*` pair. Root `prepare` runs `scripts/install-git-hooks.mjs`. Install scripts of dependencies are gated by the `allowBuilds` allowlist in `pnpm-workspace.yaml`, so a new `true` entry there is a Tier 2 finding.
+- `patches/**` and `patchedDependencies` in `pnpm-workspace.yaml` -- every `pnpm install` applies these into `node_modules`. A `.patch` is arbitrary code injection wearing a diff costume, and a diff-of-a-diff is easy to skim past.
 - `scripts/install-git-hooks.mjs`, `.husky/**`, anything writing `.git/hooks`
-- `package-lock.json` / any lockfile, `.npmrc`, `overrides` / `resolutions`
+- `pnpm-lock.yaml` / any lockfile, `.npmrc`, `pnpm-workspace.yaml` (`overrides`, `allowBuilds`, `minimumReleaseAge`, `minimumReleaseAgeExclude`, `patchedDependencies`). Loosening `minimumReleaseAge` or adding a `minimumReleaseAgeExclude` entry needs a stated reason
 - `.devcontainer/**`, `Dockerfile`, `docker-compose*`
 
 **Tier 3 -- executes inside *your* agent, or steers it**
@@ -230,8 +230,8 @@ Only work this when step 2 hit a tier or the PR touches dependencies. It is a ch
 **Dependencies**
 - New runtime dep: who publishes it, how old is it, weekly downloads, and does it run install scripts (`npm view <pkg> scripts`)? A dependency whose job could be twenty lines of local code is a finding on its own.
 - Name confusion: compare the exact spelling and scope against the popular package it resembles (`@types/x` vs `types-x`, hyphen/underscore swaps, `.js` suffixes).
-- Lockfile: every changed entry's `resolved` must point at `registry.npmjs.org` or an existing internal `file:` link -- flag any git, tarball, or alternate-registry URL. An `integrity` change on an entry whose `version` did **not** change means the tarball was swapped: BLOCK.
-- Lockfile churn far larger than the `package.json` diff, or `peer: true` flags disappearing (see CLAUDE.md), means the contributor's npm rewrote the tree. Ask them to redo it rather than merging it.
+- Lockfile: every changed entry's resolution must point at the npm registry or an existing internal `workspace:` / `file:` link -- flag any git, tarball, or alternate-registry URL. An `integrity` change on an entry whose version did **not** change means the tarball was swapped: BLOCK.
+- Lockfile churn far larger than the `package.json` diff, or a `package-lock.json` reappearing, means the contributor used the wrong package manager or rewrote the tree. Ask them to redo it rather than merging it.
 - Version bumps: read the upstream diff for the bumped range, not just the number.
 
 **Workflow changes**
@@ -299,7 +299,7 @@ When a category does expand, lead with whether each finding is **blocker** or **
 
 ## Execution Surface
 
-Include only when step 2 hit a tier. One line per file: what it is, what executes it, and what a malicious version of it would get. Be concrete -- "runs on every `npm ci` including the maintainer's" beats "install-time code".
+Include only when step 2 hit a tier. One line per file: what it is, what executes it, and what a malicious version of it would get. Be concrete -- "runs on every `pnpm install` including the maintainer's" beats "install-time code".
 
 - `path` -- [what runs it] -- [what it would get]
 

@@ -31,7 +31,8 @@ export type DriveReason =
   | 'wakeup'
   | 'agent-wake'
   | 'restart-continuation'
-  | 'safety-sweep';
+  | 'safety-sweep'
+  | 'drain-follow-up';
 
 /** Why an attempt could not dispatch. All of these are retryable except workspace-missing. */
 export type BlockedReason =

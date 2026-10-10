@@ -7,6 +7,7 @@ import { ExtensionConfigPanel } from './ExtensionConfigPanel';
 import { ExtensionBackendModulesSection } from '../../ExtensionPermissions/ExtensionBackendModulesSection';
 import { useTheme } from '../../../hooks/useTheme';
 import { ToggleSwitch } from '../../GlobalSettings/SettingsToggle';
+import { requestConfirmation } from '../../../dialogs/requestConfirmation';
 
 interface InstalledExtension {
   id: string;
@@ -290,7 +291,13 @@ export const InstalledExtensionsPanel: React.FC<InstalledExtensionsPanelProps> =
   }, [posthog]);
 
   const handleUninstall = useCallback(async (extensionId: string) => {
-    if (!window.confirm('Uninstall this extension? This will remove its files and settings.')) return;
+    const approved = await requestConfirmation({
+      title: 'Uninstall extension?',
+      message: 'Uninstall this extension? This will remove its files and settings.',
+      confirmLabel: 'Uninstall',
+      destructive: true,
+    });
+    if (!approved) return;
     setProcessingId(extensionId);
     setError(null);
     try {

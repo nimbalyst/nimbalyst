@@ -165,6 +165,13 @@ export default defineConfig({
         find: '@nimbalyst/tracker-engine',
         replacement: fileURLToPath(new URL('../tracker-engine/src', import.meta.url)),
       },
+      // The bare root resolves to the browser barrel: `trackers-ui` re-exports
+      // it wholesale, and the full root carries authoring-only classifiers no
+      // browser surface calls. See `tracker-schema/src/browser.ts`.
+      {
+        find: /^@nimbalyst\/tracker-schema$/,
+        replacement: fileURLToPath(new URL('../tracker-schema/src/browser.ts', import.meta.url)),
+      },
       {
         find: '@nimbalyst/tracker-schema',
         replacement: fileURLToPath(new URL('../tracker-schema/src', import.meta.url)),
@@ -221,6 +228,7 @@ export default defineConfig({
         'trackers-ui': resolve(import.meta.dirname, 'src/trackers-ui.ts'),
         'quick-open': resolve(import.meta.dirname, 'src/quick-open.ts'),
         inbox: resolve(import.meta.dirname, 'src/inbox.ts'),
+        pages: resolve(import.meta.dirname, 'src/pages.ts'),
       },
       formats: ['es'],
       cssFileName: 'styles',

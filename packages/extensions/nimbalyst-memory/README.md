@@ -28,8 +28,8 @@ The next scoped-memory, review-queue, nightly-distillation, and team-sync work i
 
 ```sh
 cd engine
-npm run build       # tsc → dist/ (produces dist/serve.js)
-npm run typecheck
+pnpm run build       # tsc → dist/ (produces dist/serve.js)
+pnpm run typecheck
 ```
 
 Engine tests run under the repo's root vitest (`packages/extensions/nimbalyst-memory/engine/src/__tests__`).

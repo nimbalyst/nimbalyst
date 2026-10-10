@@ -15,6 +15,8 @@ const vlistState = vi.hoisted(() => ({
   onScroll: null as ((offset: number) => void) | null,
   scrollSize: 3000,
   viewportSize: 300,
+  scrollOffset: 0,
+  scrollToIndex: vi.fn(),
 }));
 
 vi.mock('virtua', async () => {
@@ -28,11 +30,12 @@ vi.mock('virtua', async () => {
         vlistState.onScroll = onScroll ?? null;
         ReactModule.useImperativeHandle(ref, () => ({
           cache: undefined,
-          scrollOffset: 0,
+          get scrollOffset() { return vlistState.scrollOffset; },
           scrollSize: vlistState.scrollSize,
           viewportSize: vlistState.viewportSize,
           findItemIndex: () => 0,
-          scrollToIndex: vi.fn(),
+          getItemOffset: () => 0,
+          scrollToIndex: vlistState.scrollToIndex,
           scrollTo: vi.fn(),
         }));
         return <div>{ReactModule.Children.toArray(children)}</div>;
@@ -44,11 +47,40 @@ vi.mock('virtua', async () => {
 describe('RichTranscriptView scroll-to-bottom overlay', () => {
   beforeEach(() => {
     vlistState.onScroll = null;
+    vlistState.scrollOffset = 0;
+    vlistState.scrollToIndex.mockClear();
     vi.stubGlobal('CSS', { highlights: { delete: vi.fn(), set: vi.fn() } });
     vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
       callback(0);
       return 1;
     });
+  });
+
+  it('follows streamed updates until the reader leaves the bottom, then resumes on return', () => {
+    const message = {
+      id: 1, sequence: 1, createdAt: new Date(1_784_648_445_000),
+      type: 'assistant_message' as const, subagentId: null, text: 'First chunk',
+    };
+    const view = (text: string) => (
+      <RichTranscriptView sessionId="stream-follow-contract" sessionStatus="running"
+        messages={[{ ...message, text }]} provider="claude-code" persistScrollState={false} />
+    );
+    const { rerender } = render(view(message.text));
+    vlistState.scrollToIndex.mockClear();
+
+    // A same-row Markdown update can grow well beyond the near-bottom threshold.
+    rerender(view('First chunk\n\nMore streaming content'));
+    // A running session includes the trailing waiting indicator after this row.
+    expect(vlistState.scrollToIndex).toHaveBeenCalledWith(1, { align: 'end' });
+    vlistState.scrollToIndex.mockClear();
+
+    act(() => { vlistState.scrollOffset = 900; vlistState.onScroll?.(900); });
+    rerender(view('First chunk\n\nMore streaming content\n\nAnother chunk'));
+    expect(vlistState.scrollToIndex).not.toHaveBeenCalled();
+
+    act(() => { vlistState.scrollOffset = 2700; vlistState.onScroll?.(2700); });
+    rerender(view('First chunk\n\nMore streaming content\n\nAnother chunk\n\nFinal chunk'));
+    expect(vlistState.scrollToIndex).toHaveBeenCalledWith(1, { align: 'end' });
   });
 
   it('only ever makes the button interactive, never the full-width band', () => {

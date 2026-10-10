@@ -976,6 +976,34 @@ describe('ClaudeCodeRawParser', () => {
     });
   });
 
+  describe('system/informational (SDK 0.3.283+)', () => {
+    // Shape captured live from CLI 2.1.284 (a UserPromptSubmit hook systemMessage).
+    const informational = (level: string, content = 'UserPromptSubmit says: probe hook system message') => makeRawMessage({
+      content: JSON.stringify({ type: 'system', subtype: 'informational', content, level, uuid: 'u-1', session_id: 's-1' }),
+    });
+
+    it.each([
+      ['notice', 'status'],
+      ['suggestion', 'status'],
+      ['warning', 'error'],
+    ])('renders level %s as a %s system message', async (level, systemType) => {
+      const descriptors = await new ClaudeCodeRawParser().parseMessage(informational(level), makeContext());
+      expect(descriptors).toEqual([expect.objectContaining({
+        type: 'system_message',
+        systemType,
+        text: 'UserPromptSubmit says: probe hook system message',
+      })]);
+    });
+
+    it('keeps level info out of the transcript (SDK: verbose transcript mode only)', async () => {
+      expect(await new ClaudeCodeRawParser().parseMessage(informational('info'), makeContext())).toEqual([]);
+    });
+
+    it('ignores an informational message with blank content', async () => {
+      expect(await new ClaudeCodeRawParser().parseMessage(informational('warning', '  '), makeContext())).toEqual([]);
+    });
+  });
+
   describe('auto-mode permission_denied (issue #371)', () => {
     it('parses system/permission_denied raw message into a system_message descriptor', async () => {
       const parser = new ClaudeCodeRawParser();

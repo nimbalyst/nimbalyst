@@ -25,6 +25,8 @@ export interface TrackerSchemaOutboxDeps {
   newMutationId: () => string;
   /** The engine's cmid -> lane id map, which rejection acks are resolved through. */
   pendingLaneIds: Map<string, string>;
+  /** Whether the room advertised that it refuses a create-only mutation for an existing type. */
+  createOnlySupported: () => boolean;
 }
 
 export class TrackerSchemaOutbox {
@@ -54,9 +56,11 @@ export class TrackerSchemaOutbox {
     return this.running;
   }
 
-  /** The room answered this mutation, either way. */
-  settle(clientMutationId: string): void {
+  /** The room answered this mutation, either way. Returns what it carried, if it was ours. */
+  settle(clientMutationId: string): { type: string; model: string | null } | undefined {
+    const sent = this.inFlight.get(clientMutationId);
     this.inFlight.delete(clientMutationId);
+    return sent;
   }
 
   /** A new socket means nothing sent on the old one will be acked. */
@@ -77,16 +81,39 @@ export class TrackerSchemaOutbox {
 
     const pending = await hooks.listUnsynced();
     if (!this.deps.isOpen()) return;
-    const toSend = pending
-      .map(def => ({ type: def.type, model: def.deleted ? null : def.model }))
-      .filter(def => !this.isInFlight(def.type, def.model));
+    const createOnly = this.deps.createOnlySupported();
+    const toSend: Array<{ type: string; model: string | null; createOnly: boolean }> = [];
+    for (const def of pending) {
+      const model = def.deleted ? null : def.model;
+      if (this.isInFlight(def.type, model)) continue;
+      if (def.createOnly === 'required' && model !== null && !createOnly) {
+        // An older room would upsert over a definition someone else created.
+        // Refusing here is the fail-safe; the host retires the creation.
+        console.warn(`[TrackerSchemaSync] not sending create-only type=${def.type}: room cannot refuse an existing type`);
+        try {
+          hooks.onSettled?.({
+            type: def.type,
+            model,
+            accepted: false,
+            error: {
+              code: 'createOnlyUnsupported',
+              message: 'This team\'s server must be updated before new types can be created here.',
+            },
+          });
+        } catch (err) {
+          console.error('[TrackerSchemaSync] onSettled threw', err);
+        }
+        continue;
+      }
+      toSend.push({ type: def.type, model, createOnly: def.createOnly !== undefined && model !== null && createOnly });
+    }
     if (toSend.length > 0) {
       console.info(`[TrackerSchemaSync] pushing ${toSend.length} unsynced schema mutation(s)`);
     }
     for (const def of toSend) {
       const clientMutationId = this.deps.newMutationId();
       this.deps.pendingLaneIds.set(clientMutationId, def.type);
-      this.inFlight.set(clientMutationId, def);
+      this.inFlight.set(clientMutationId, { type: def.type, model: def.model });
       // The model JSON travels as plaintext; the server encrypts it at rest
       // with the team DEK. A null payload is a tombstone.
       console.info(
@@ -97,6 +124,7 @@ export class TrackerSchemaOutbox {
         clientMutationId,
         schemaType: def.type,
         encryptedPayload: def.model,
+        ...(def.createOnly ? { createOnly: true } : {}),
       });
     }
   }

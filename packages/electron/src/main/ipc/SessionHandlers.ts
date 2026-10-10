@@ -24,6 +24,9 @@ import { getSessionsForFile } from '../services/fileSessionLookup';
 import { normalizeSessionPhaseMetadataUpdate } from '../services/session/sessionPhaseTransition';
 import { destroyProviderForArchivedSession } from '../services/ai/archiveSessionProviderLifecycle';
 import { resolveSessionModelSelection } from '../services/ai/sessionModelSelection';
+import { inheritedOwnership, stripOwnerControlledMetadata } from '../services/extensionSessions/sessionOwnership';
+import { readSessionSubtree } from '../services/sessionHierarchy';
+import { isLocalWikiItemId } from '../services/localWiki/localWikiItemIds';
 
 // Initialize session manager
 const sessionManager = new SessionManager();
@@ -243,8 +246,15 @@ export async function registerSessionHandlers() {
                 providerConfig: session.providerConfig,
                 providerSessionId: session.providerSessionId,
                 worktreeId: session.worktreeId || null,
+                parentSessionId: session.parentSessionId ?? null,
                 agentRole: session.agentRole || 'standard',
                 createdBySessionId: session.createdBySessionId || null,
+                // Written with the row, so a directive or notifyParent is never
+                // missing when the first turn reads it. Ownership is assigned
+                // only by the host (extension session broker, spawn inheritance).
+                ...(session.metadata && typeof session.metadata === 'object'
+                    ? { metadata: normalizeSessionPhaseMetadataUpdate(stripOwnerControlledMetadata(session.metadata)) }
+                    : {}),
             };
             // console.log('[SessionHandlers] Creating session with payload:', JSON.stringify(createPayload));
 
@@ -256,11 +266,6 @@ export async function registerSessionHandlers() {
                 launchSource,
                 hadPrefilledPrompt,
             });
-
-            // Update with full metadata
-            if (session.metadata) {
-                await AISessionsRepository.updateMetadata(session.id, { metadata: session.metadata });
-            }
 
             return { success: true, id: session.id };
         } catch (error) {
@@ -357,11 +362,17 @@ export async function registerSessionHandlers() {
                 }
             }
 
+            if (updates.metadata) {
+                updates.metadata = stripOwnerControlledMetadata(updates.metadata);
+            }
             await AISessionsRepository.updateMetadata(sessionId, updates);
 
             if (updates.isArchived === true) {
-                destroyProviderForArchivedSession(
-                    sessionId,
+                const subtree = currentSession.workspacePath
+                    ? await readSessionSubtree(database, sessionId, currentSession.workspacePath)
+                    : [{ id: sessionId }];
+                for (const row of subtree) destroyProviderForArchivedSession(
+                    row.id,
                     (id) => ProviderFactory.destroyProvider(id),
                     (id, cleanupError) => {
                         console.error(`[SessionHandlers] Failed to destroy provider for archived session ${id}:`, cleanupError);
@@ -402,7 +413,7 @@ export async function registerSessionHandlers() {
         try {
             // Extract sessionType and metadata from updates
             const { sessionType, ...rawMetadataFields } = updates;
-            const metadataFields = normalizeSessionPhaseMetadataUpdate(rawMetadataFields);
+            const metadataFields = normalizeSessionPhaseMetadataUpdate(stripOwnerControlledMetadata(rawMetadataFields));
 
             // Build update payload
             const updatePayload: any = {};
@@ -528,31 +539,24 @@ export async function registerSessionHandlers() {
         try {
             if (await remoteSessions.get(parentSessionId, workspacePath)) {
                 const sessions = await remoteSessions.list(workspacePath, []);
-                return {success: true, children: sessions.filter(session => session.parentSessionId === parentSessionId && (options?.includeArchived || !session.isArchived))};
+                const children: typeof sessions = [];
+                const queue = [{ id: parentSessionId, depth: 0 }];
+                const seen = new Set([parentSessionId]);
+                while (queue.length) {
+                    const parent = queue.shift()!;
+                    if (parent.depth >= 8) continue;
+                    for (const session of sessions) {
+                        if (session.parentSessionId !== parent.id || seen.has(session.id)) continue;
+                        seen.add(session.id);
+                        queue.push({ id: session.id, depth: parent.depth + 1 });
+                        if (options?.includeArchived || !session.isArchived) children.push({ ...session, depth: parent.depth + 1 });
+                    }
+                }
+                return {success: true, children};
             }
-
-            const { database } = await import('../database/PGLiteDatabaseWorker');
             const includeArchived = options?.includeArchived === true;
-            const archivedFilter = includeArchived
-                ? ''
-                : 'AND (s.is_archived = FALSE OR s.is_archived IS NULL)';
-
-            const { rows } = await database.query<any>(
-                `SELECT s.id, s.provider, s.model, s.session_type, s.mode, s.agent_role, s.created_by_session_id, s.title, s.workspace_id,
-                        s.worktree_id, s.parent_session_id, s.created_at, s.updated_at, s.is_archived, s.is_pinned,
-                        s.metadata,
-                        COUNT(m.id) as message_count,
-                        (SELECT COUNT(*) FROM ai_sessions cs WHERE cs.parent_session_id = s.id) as child_count
-                 FROM ai_sessions s
-                 LEFT JOIN ai_agent_messages m ON s.id = m.session_id AND m.direction = 'input' AND (m.hidden = FALSE OR m.hidden IS NULL)
-                 WHERE s.parent_session_id = $1 AND s.workspace_id = $2
-                   ${archivedFilter}
-                 GROUP BY s.id, s.provider, s.model, s.session_type, s.mode, s.agent_role, s.created_by_session_id, s.title, s.workspace_id,
-                          s.worktree_id, s.parent_session_id, s.created_at, s.updated_at, s.is_archived, s.is_pinned,
-                          s.metadata
-                 ORDER BY s.created_at ASC`,
-                [parentSessionId, workspacePath]
-            );
+            const rows = (await readSessionSubtree(database, parentSessionId, workspacePath))
+                .filter(row => row.id !== parentSessionId && (includeArchived || !row.is_archived));
 
             // Calculate uncommitted file counts per session
             // Uses cached git status and a query bounded to currently-uncommitted paths
@@ -594,8 +598,12 @@ export async function registerSessionHandlers() {
                     workspaceId: row.workspace_id,
                     worktreeId: row.worktree_id || null,
                     parentSessionId: row.parent_session_id,
-                    isArchived: row.is_archived || false,
-                    isPinned: row.is_pinned || false,
+                    depth: Number(row.depth),
+                    descendantCount: Number(row.descendant_count) || 0,
+                    isArchived: !!row.is_archived,
+                    isPinned: !!row.is_pinned,
+                    hasUnread: !!metadata.hasUnread,
+                    hasPendingInteractivePrompt: !!metadata.hasPendingPrompt,
                     messageCount: typeof row.message_count === 'string'
                         ? parseInt(row.message_count, 10) || 0
                         : (row.message_count || 0),
@@ -644,6 +652,11 @@ export async function registerSessionHandlers() {
                 providedModel,
             );
 
+            // A child made under an extension-owned session stays owned by that
+            // extension (never inheriting its directive), written at creation.
+            const parentRow = await AISessionsRepository.get(parentSessionId);
+            if (!parentRow || parentRow.workspacePath !== workspacePath) throw new Error('Parent session not found in this workspace');
+            if (worktreeId && worktreeId !== parentRow.worktreeId) throw new Error('Parent session is in a different worktree');
             const createPayload = {
                 id: sessionId,
                 provider,
@@ -651,7 +664,9 @@ export async function registerSessionHandlers() {
                 title: 'New Session',
                 workspaceId: workspacePath,
                 parentSessionId,  // Link to parent
-                worktreeId: worktreeId || null,  // Inherit from parent if provided
+                createdBySessionId: parentSessionId,
+                worktreeId: parentRow.worktreeId || null,
+                metadata: inheritedOwnership(parentRow?.metadata),
             };
 
             await AISessionsRepository.create(createPayload as any);
@@ -677,6 +692,7 @@ export async function registerSessionHandlers() {
         sessionId: string;
         newParentId: string | null;
         workspacePath: string;
+        restoreManagerId?: string | null;
     }) => {
         try {
             const { sessionId, newParentId, workspacePath } = payload;
@@ -702,16 +718,18 @@ export async function registerSessionHandlers() {
                     return { success: false, error: 'Parent session is in a different workspace' };
                 }
 
-                // Parent must not itself be a child session (no nested workstreams)
-                if (parent.parentSessionId) {
-                    return { success: false, error: 'Cannot nest workstreams: parent is already a child session' };
-                }
             }
-
-            // Update parent_session_id
-            await AISessionsRepository.updateMetadata(sessionId, { parentSessionId: newParentId });
-
-            return { success: true };
+            const managerId = payload.restoreManagerId !== undefined ? payload.restoreManagerId : newParentId;
+            if (managerId) {
+                const manager = await AISessionsRepository.get(managerId);
+                if (managerId === sessionId || !manager || manager.workspacePath !== workspacePath) throw new Error('Invalid session manager');
+            }
+            await AISessionsRepository.updateMetadata(sessionId, { parentSessionId: newParentId, createdBySessionId: managerId,
+                expectedParentSessionId: session.parentSessionId ?? null, expectedCreatedBySessionId: session.createdBySessionId ?? null });
+            for (const window of BrowserWindow.getAllWindows()) {
+                if (!window.isDestroyed()) window.webContents.send('sessions:refresh-list', { workspacePath, sessionId });
+            }
+            return { success: true, previousParentId: session.parentSessionId ?? null, previousManagerId: session.createdBySessionId ?? null };
         } catch (error) {
             console.error('[SessionHandlers] Failed to set session parent:', error);
             return { success: false, error: String(error) };
@@ -1100,6 +1118,10 @@ export async function registerSessionHandlers() {
     // Link a tracker item or file to a session
     // trackerId can be a DB tracker item ID or "file:path/to/file.md" for file-based items
     safeHandle('tracker:link-session', async (_event, payload: { trackerId: string; sessionId: string }) => {
+        // A Local wiki item is a file in the wiki folder, not a tracker row.
+        if (isLocalWikiItemId(payload?.trackerId)) {
+            return { success: false, error: 'Local wiki pages cannot be linked to sessions yet' };
+        }
         try {
             if (payload.trackerId.startsWith('file:')) {
                 // File-based link: only write to session metadata (no tracker_items row to update)

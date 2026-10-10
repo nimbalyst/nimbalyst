@@ -6,7 +6,7 @@ set -e
 
 # Pin wrangler's config dir to the Nimbalyst OAuth profile so deploys can't
 # accidentally land on whatever Cloudflare account is selected in the
-# default config. Mirrors the npm scripts in package.json.
+# default config. Mirrors the package.json scripts.
 export XDG_CONFIG_HOME="${XDG_CONFIG_HOME:-$HOME/.config/nimbalyst}"
 
 BUMP_TYPE="${1:-patch}"
@@ -37,7 +37,7 @@ require('fs').writeFileSync('./package.json', JSON.stringify(pkg, null, 2) + '\n
 echo "Deploying marketplace Worker v${NEW_VERSION}..."
 
 # Deploy with version injected
-npx wrangler deploy --define "VERSION:\"${NEW_VERSION}\"" "$@"
+pnpm exec wrangler deploy --define "VERSION:\"${NEW_VERSION}\"" "$@"
 
 echo ""
 echo "Deployed marketplace Worker v${NEW_VERSION}"

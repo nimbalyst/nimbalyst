@@ -74,6 +74,8 @@ async function boot(options?: { listenState?: 'listening' | 'sleeping' }) {
   store.set(voice.voiceActiveSessionIdAtom, FOCUSED_SESSION);
   store.set(voice.voiceWorkspacePathAtom, '/ws');
   store.set(voice.voiceDbSessionIdAtom, 'voice-db-1');
+  // Its transcript is on screen; background refreshes only reload resident sessions.
+  store.set(sessions.sessionStoreAtom('voice-db-1'), { id: 'voice-db-1', workspacePath: '/ws', messages: [] } as never);
   store.set(voice.voiceListenStateAtom, options?.listenState ?? 'listening');
 
   const dispose = listenersModule.initVoiceModeListeners();

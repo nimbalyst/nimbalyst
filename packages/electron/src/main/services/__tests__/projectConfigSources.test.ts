@@ -5,7 +5,7 @@ import { tmpdir } from 'os';
 import * as path from 'path';
 import type { SyncProvider, ProjectConfig } from '@nimbalyst/runtime/sync/types';
 const source = vi.hoisted(() => ({ filePath: undefined as string | undefined, clearCache: vi.fn(), count: 1, missingRoots: new Set<string>() }));
-vi.mock('fs', () => ({ existsSync: (root: string) => !source.missingRoots.has(root) }));
+vi.mock('fs', async (importOriginal) => ({ ...await importOriginal<typeof import('fs')>(), existsSync: (root: string) => !source.missingRoots.has(root) }));
 vi.mock('@nimbalyst/runtime/ai/server/providers/claudeCode/claudeConfigDir', () => ({ resolveClaudeConfigDir: () => '/user/.claude' }));
 
 vi.mock('../../file/WorkspaceEventBus', () => ({
@@ -69,6 +69,41 @@ it('publishes disk actions at cold start and after add/edit/delete events withou
   sync.stop();
   expect(bus.removeGitignoreBypass).toHaveBeenCalledWith(workspace, file, expect.any(String));
   expect(bus.unsubscribe).toHaveBeenCalledTimes(4);
+});
+
+it('publishes the Local wiki folder once its marker exists and republishes on marker or location changes', async () => {
+  workspace = await mkdtemp(path.join(tmpdir(), 'mobile-config-'));
+  const marker = path.join(workspace, 'docs', 'wiki', '.nimbalyst-wiki.yaml');
+  const locationFile = path.join(workspace, '.nimbalyst', 'local-wiki.json');
+  await mkdir(path.dirname(locationFile), { recursive: true });
+  await writeFile(locationFile, JSON.stringify({ location: 'docs/wiki/' }));
+  source.missingRoots.add(marker);
+  const send = vi.fn(async (_path: string, _config: ProjectConfig) => {});
+  const provider = { syncProjectConfig: send } as unknown as SyncProvider;
+  const sync = createProjectConfigSync({ ...projectConfigSources, getProvider: () => provider,
+    getEnabledProjects: () => [workspace], isProjectEnabled: () => true, warn: vi.fn() });
+  await sync.refresh();
+  expect(send.mock.calls.at(-1)![1].localWiki).toBeUndefined();
+  expect(bus.addGitignoreBypass).toHaveBeenCalledWith(workspace, locationFile, expect.any(String));
+  const listener = vi.mocked(bus.subscribe).mock.calls[0][2];
+  source.missingRoots.delete(marker);
+  listener.onAdd(marker);
+  await vi.waitFor(() => expect(send.mock.calls.at(-1)![1].localWiki).toEqual({ folder: 'docs/wiki' }));
+  // Wiki types (those declaring storage:) ride along; app-only types and the source path do not.
+  const typesDir = path.join(workspace, '.nimbalyst', 'trackers');
+  await mkdir(typesDir);
+  await writeFile(path.join(typesDir, 'bug.yaml'), 'type: bug\ndisplayName: Bug\n');
+  await writeFile(path.join(typesDir, 'partner.yaml'), 'type: partner\ndisplayName: Partner\nstorage: table\nroles: { title: name }\nfields:\n  - { name: name, type: string }\n  - { name: tags, type: array, itemType: string, multiValue: true }\n');
+  listener.onAdd(path.join(typesDir, 'partner.yaml'));
+  await vi.waitFor(() => expect(send.mock.calls.at(-1)![1].localWiki).toEqual({ folder: 'docs/wiki', types: [{
+    typeId: 'partner', displayName: 'Partner', displayNamePlural: 'Partners', storage: 'table', titleField: 'name',
+    fields: [{ name: 'name', type: 'string' }, { name: 'tags', type: 'array', itemType: 'string', multiValue: true }],
+  }] }));
+  // A location outside the project is refused, so no folder reaches the phone.
+  await writeFile(locationFile, JSON.stringify({ location: '../elsewhere' }));
+  listener.onChange(locationFile);
+  await vi.waitFor(() => expect(send.mock.calls.at(-1)![1].localWiki).toBeUndefined());
+  sync.stop();
 });
 
 it('rejects unreadable action content instead of publishing an empty slice', async () => {

@@ -41,6 +41,13 @@ vi.mock('../../database/PGLiteDatabaseWorker', () => ({
 
 import { ProjectFileSyncService } from '../ProjectFileSyncService';
 import { dirtyEditorRegistry } from '../DirtyEditorRegistry';
+import { logger } from '../../utils/logger';
+
+/** Provider push stubs that report every file stored, like a server ack. */
+const ackContent = async (_projectId: string, syncId: string) => ({ stored: [syncId], rejected: [], unconfirmed: [] });
+const ackBatch = async (_projectId: string, files: Array<{ syncId: string }>) => ({
+  stored: files.map((f) => f.syncId), rejected: [], unconfirmed: [],
+});
 
 /** Deterministic syncId derivation -- must match ProjectFileSyncService.syncIdFromPath. */
 function syncIdFromPath(relativePath: string): string {
@@ -56,7 +63,7 @@ describe('ProjectFileSyncService.handleFileSaved', () => {
     tmpDir = await mkdtemp(path.join(os.tmpdir(), 'pfs-test-'));
     service = new ProjectFileSyncService();
 
-    pushFileContent = vi.fn(async () => undefined);
+    pushFileContent = vi.fn(ackContent);
     // Inject a mock provider so no real WebSocket / encryption is needed.
     (service as any).provider = { pushFileContent };
 
@@ -119,9 +126,9 @@ describe('ProjectFileSyncService remote-write conflict guard', () => {
     tmpDir = await mkdtemp(path.join(os.tmpdir(), 'pfs-guard-'));
     service = new ProjectFileSyncService();
 
-    pushFileBatch = vi.fn(async () => undefined);
+    pushFileBatch = vi.fn(ackBatch);
     (service as any).provider = {
-      pushFileContent: vi.fn(async () => undefined),
+      pushFileContent: vi.fn(ackContent),
       pushFileBatch,
     };
     (service as any)._fileMapCache = new Map<string, { fileMap: Map<string, string>; workspacePath: string }>();
@@ -188,6 +195,172 @@ describe('ProjectFileSyncService remote-write conflict guard', () => {
 });
 
 /**
+ * Push acks over the real provider and a fake socket, so the baseline the guard
+ * consults is whatever the provider's outcome actually produced. A server that
+ * predates `fileContentPushAck` never answers a push; one that acks can still
+ * lose an ack with its connection.
+ */
+describe('ProjectFileSyncService push acks over a live provider', () => {
+  class FakeSocket {
+    static OPEN = 1;
+    static last: FakeSocket;
+    readyState = FakeSocket.OPEN;
+    sent: any[] = [];
+    onopen: (() => void) | null = null;
+    onmessage: ((e: { data: string }) => void) | null = null;
+    onclose: (() => void) | null = null;
+    onerror: (() => void) | null = null;
+    constructor() { FakeSocket.last = this; }
+    send(data: string) { this.sent.push(JSON.parse(data)); }
+    close() { this.readyState = 3; }
+  }
+  // Bounded by time, not loop turns: the encryption behind each send runs on the
+  // threadpool, and under a loaded full-suite run 200 turns could pass before the
+  // request was sent, leaving `request` undefined.
+  const settle = async (done: () => boolean) => {
+    const deadline = Date.now() + 4_000;
+    while (!done() && Date.now() < deadline) await new Promise((r) => setImmediate(r));
+  };
+  /** Let already-queued async work run for a fixed number of turns. */
+  const drain = async () => {
+    for (let i = 0; i < 200; i++) await new Promise((r) => setImmediate(r));
+  };
+  const rel = 'note.md';
+  const syncId = syncIdFromPath(rel);
+  let tmpDir: string;
+  let filePath: string;
+
+  beforeEach(async () => {
+    tmpDir = await mkdtemp(path.join(os.tmpdir(), 'pfs-ack-'));
+    filePath = path.join(tmpDir, rel);
+    vi.stubGlobal('WebSocket', FakeSocket);
+  });
+
+  afterEach(async () => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+    await rm(tmpDir, { recursive: true, force: true });
+  });
+
+  /** A synced note at A, connected, with the server's first answer advertising acks or not. */
+  async function connected(pushAck: boolean) {
+    const fsp = await import('fs/promises');
+    const { ProjectSyncProvider } = await import('@nimbalyst/runtime/sync');
+    const key = await crypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
+    const encrypt = async (text: string) => {
+      const iv = crypto.getRandomValues(new Uint8Array(12));
+      const data = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, new TextEncoder().encode(text));
+      return { encrypted: Buffer.from(data).toString('base64'), iv: Buffer.from(iv).toString('base64') };
+    };
+    /** The wire entry another device's write of `content` produces. */
+    const remoteEntry = async (content: string) => {
+      const [c, p, t] = await Promise.all([encrypt(content), encrypt(rel), encrypt('note')]);
+      return {
+        syncId, encryptedContent: c.encrypted, contentIv: c.iv, contentHash: sha256(content), encryptedPath: p.encrypted,
+        pathIv: p.iv, encryptedTitle: t.encrypted, titleIv: t.iv, lastModifiedAt: Date.now() + 60_000, hasYjs: false,
+      };
+    };
+    const provider = new ProjectSyncProvider({
+      serverUrl: 'https://sync.test', orgId: 'org', personalMemberId: 'member' as any, encryptionKey: key, getJwt: async () => 'jwt' as any,
+    });
+    const service = new ProjectFileSyncService();
+    (service as any).provider = provider;
+    provider.onSyncResponse((projectId, response) => (service as any).handleSyncResponse(projectId, response));
+    provider.onFileUpdate((projectId, file) => (service as any).handleRemoteFileUpdate(projectId, file));
+
+    const t0 = Date.now() - 120_000;
+    await writeFile(filePath, 'A', 'utf-8');
+    await fsp.utimes(filePath, new Date(t0), new Date(t0));
+    (service as any).projectStates.set('proj-enc', new Map([[syncId, { syncId, contentHash: sha256('A'), lastSyncedMtime: t0 }]]));
+    (service as any)._fileMapCache = new Map([['proj-enc', { fileMap: new Map([[syncId, filePath]]), workspacePath: tmpDir }]]);
+
+    await provider.connect('proj-enc', () => (service as any).buildManifest(tmpDir, 'proj-enc', { seedBaseline: false }));
+    const open = async () => {
+      const ws = FakeSocket.last;
+      ws.onopen!();
+      await settle(() => ws.sent.some((m) => m.type === 'projectSyncRequest'));
+      return { ws, request: ws.sent.find((m) => m.type === 'projectSyncRequest') };
+    };
+    const { ws } = await open();
+    ws.onmessage!({ data: JSON.stringify({ type: 'projectSyncResponse', ...(pushAck ? { pushAck } : {}), updatedFiles: [], newFiles: [], yjsUpdates: [], needFromClient: [], deletedSyncIds: [] }) });
+
+    /** Save B, then lose the connection before any ack. */
+    const saveBAndDrop = async () => {
+      vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+      await writeFile(filePath, 'B', 'utf-8');
+      const saved = service.handleFileSaved(filePath, tmpDir, 'proj-enc');
+      await settle(() => ws.sent.some((m) => m.type === 'fileContentPush'));
+      ws.onclose!();
+      await saved;
+      await vi.advanceTimersByTimeAsync(30_000); // reconnect backoff
+      vi.useRealTimers();
+      expect(FakeSocket.last).not.toBe(ws);
+      return open();
+    };
+    const mdContents = async () => Promise.all((await fsp.readdir(tmpDir)).filter((f) => f.endsWith('.md')).sort()
+      .map((f) => fsp.readFile(path.join(tmpDir, f), 'utf-8')));
+    return { fsp, provider, service, ws, remoteEntry, saveBAndDrop, mdContents };
+  }
+
+  const response = (extra: object) => ({ data: JSON.stringify({
+    type: 'projectSyncResponse', pushAck: true, updatedFiles: [], newFiles: [], yjsUpdates: [], needFromClient: [], deletedSyncIds: [], ...extra,
+  }) });
+
+  it('keeps a later mobile edit after a save the server stored without acking', async () => {
+    const { fsp, provider, service, ws, remoteEntry } = await connected(false);
+
+    // Save A -> B. The server stores it and, being old, sends nothing back.
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    await writeFile(filePath, 'B', 'utf-8');
+    const saved = service.handleFileSaved(filePath, tmpDir, 'proj-enc');
+    await settle(() => ws.sent.some((m) => m.type === 'fileContentPush'));
+    await vi.advanceTimersByTimeAsync(60_000);
+    await saved;
+    vi.useRealTimers();
+
+    // Mobile then edits the stored B into C.
+    ws.sent = [];
+    ws.onmessage!({ data: JSON.stringify({ type: 'fileContentBroadcast', ...(await remoteEntry('C')), fromConnectionId: 'mobile' }) });
+
+    await vi.waitFor(async () => expect(await fsp.readFile(filePath, 'utf-8')).toBe('C'));
+    expect(ws.sent.filter((m) => m.type === 'fileContentPush')).toEqual([]);
+    provider.disconnectAll();
+  });
+
+  it('keeps both sides when a lost ack hid a failed store and another device wrote meanwhile', async () => {
+    const { fsp, provider, remoteEntry, saveBAndDrop, mdContents } = await connected(true);
+    // The server failed to store B; its rejection ack went down with the socket.
+    const { ws, request } = await saveBAndDrop();
+    expect(request.confirm).toEqual([syncId]);
+    // Another device wrote C on top of A while this desktop was away.
+    ws.onmessage!(response({
+      pushConfirmations: [{ syncId, contentHash: sha256('C') }],
+      updatedFiles: [await remoteEntry('C')],
+    }));
+
+    await vi.waitFor(async () => expect(await mdContents()).toHaveLength(2));
+    expect(await fsp.readFile(filePath, 'utf-8')).toBe('B');
+    expect((await mdContents()).sort()).toEqual(['B', 'C']);
+    provider.disconnectAll();
+  });
+
+  it('confirms a push whose ack was lost from the next sync response, so a later edit applies', async () => {
+    const { fsp, provider, remoteEntry, saveBAndDrop, mdContents } = await connected(true);
+    const { ws, request } = await saveBAndDrop();
+    // The server did store B. It reports the hash it holds for each file the client asks about.
+    ws.onmessage!(response({
+      pushConfirmations: (request.confirm ?? []).map((id: string) => ({ syncId: id, contentHash: sha256('B') })),
+    }));
+    await drain();
+
+    ws.onmessage!({ data: JSON.stringify({ type: 'fileContentBroadcast', ...(await remoteEntry('C')), fromConnectionId: 'mobile' }) });
+    await vi.waitFor(async () => expect(await fsp.readFile(filePath, 'utf-8')).toBe('C'));
+    expect(await mdContents()).toEqual(['C']);
+    provider.disconnectAll();
+  });
+});
+
+/**
  * Layer 1: the manifest must be rebuilt from *current* disk on every (re)connect,
  * not captured once at startup -- otherwise a reconnect re-announces stale state
  * and the server pushes its older copy down (the NIM-853 trigger).
@@ -237,6 +410,23 @@ describe('ProjectFileSyncService.buildManifest', () => {
     const syncId = syncIdFromPath(rel);
     expect(manifest.some((f: any) => f.syncId === syncId)).toBe(true);
   });
+
+  it('leaves out a file whose encrypted form exceeds the server row cap, warning once (NIM-7337)', async () => {
+    // 1.6 MB of plaintext is ~2.1 MB once encrypted and base64'd: over the 2 MB DO SQLite cap.
+    await writeFile(path.join(tmpDir, 'huge.md'), 'x'.repeat(1_600_000), 'utf-8');
+    await writeFile(path.join(tmpDir, 'ok.md'), 'x'.repeat(1_000_000), 'utf-8');
+    const warn = vi.spyOn(logger.main, 'warn');
+
+    const m1 = await (service as any).buildManifest(tmpDir, 'proj-enc', { seedBaseline: true });
+    const m2 = await (service as any).buildManifest(tmpDir, 'proj-enc', { seedBaseline: false });
+
+    for (const manifest of [m1, m2]) {
+      expect(manifest.map((f: any) => f.syncId)).toEqual([syncIdFromPath('ok.md')]);
+    }
+    expect((service as any).projectStates.get('proj-enc').has(syncIdFromPath('huge.md'))).toBe(false);
+    expect(warn.mock.calls.filter(([msg]) => String(msg).includes('huge.md'))).toHaveLength(1);
+    warn.mockRestore();
+  });
 });
 
 /**
@@ -284,8 +474,8 @@ describe('ProjectFileSyncService durable baseline', () => {
     // Restart: a brand-new instance with an empty in-memory cache.
     const second = new ProjectFileSyncService();
     (second as any).provider = {
-      pushFileContent: vi.fn(async () => undefined),
-      pushFileBatch: vi.fn(async () => undefined),
+      pushFileContent: vi.fn(ackContent),
+      pushFileBatch: vi.fn(ackBatch),
     };
     (second as any)._fileMapCache = new Map();
     (second as any)._fileMapCache.set('proj-enc', { fileMap: new Map([[syncId, filePath]]), workspacePath: tmpDir });
@@ -330,8 +520,8 @@ describe('ProjectFileSyncService dirty-editor deferral', () => {
     tmpDir = await mkdtemp(path.join(os.tmpdir(), 'pfs-dirty-'));
     service = new ProjectFileSyncService();
     (service as any).provider = {
-      pushFileContent: vi.fn(async () => undefined),
-      pushFileBatch: vi.fn(async () => undefined),
+      pushFileContent: vi.fn(ackContent),
+      pushFileBatch: vi.fn(ackBatch),
       disconnectAll: vi.fn(),
     };
     (service as any)._fileMapCache = new Map();
@@ -406,9 +596,9 @@ describe('ProjectFileSyncService sync-response edge cases', () => {
     dirtyEditorRegistry.clear();
     tmpDir = await mkdtemp(path.join(os.tmpdir(), 'pfs-edge-'));
     service = new ProjectFileSyncService();
-    pushFileBatch = vi.fn(async () => undefined);
+    pushFileBatch = vi.fn(ackBatch);
     (service as any).provider = {
-      pushFileContent: vi.fn(async () => undefined),
+      pushFileContent: vi.fn(ackContent),
       pushFileBatch,
       disconnectAll: vi.fn(),
     };
@@ -460,6 +650,28 @@ describe('ProjectFileSyncService sync-response edge cases', () => {
       newFiles: [], deletedSyncIds: [], needFromClient: [], yjsUpdates: [],
     });
     expect(await fsp.readFile(filePath, 'utf-8')).toBe(remoteContent);
+  });
+
+  it('advances baselines only for files the server confirmed stored (NIM-7337)', async () => {
+    const files = ['stored.md', 'rejected.md'].map((rel) => ({ rel, filePath: path.join(tmpDir, rel), syncId: syncIdFromPath(rel) }));
+    for (const f of files) {
+      await writeFile(f.filePath, `# ${f.rel} local\n`, 'utf-8');
+      (service as any).projectStates.get('proj-enc').set(f.syncId, { syncId: f.syncId, contentHash: sha256('old'), lastSyncedMtime: 1 });
+      (service as any)._fileMapCache.get('proj-enc').fileMap.set(f.syncId, f.filePath);
+    }
+    pushFileBatch.mockResolvedValueOnce({
+      stored: [files[0].syncId],
+      rejected: [{ syncId: files[1].syncId, code: 'store_failed', message: 'boom' }],
+      unconfirmed: [],
+    });
+
+    await (service as any).handleSyncResponse('proj-enc', {
+      updatedFiles: [], newFiles: [], deletedSyncIds: [], needFromClient: files.map((f) => f.syncId), yjsUpdates: [],
+    });
+
+    const state = (service as any).projectStates.get('proj-enc');
+    expect(state.get(files[0].syncId).contentHash).toBe(sha256('# stored.md local\n'));
+    expect(state.get(files[1].syncId).contentHash).toBe(sha256('old'));
   });
 
   it('does not delete a file that is open with unsaved edits', async () => {
@@ -542,8 +754,8 @@ describe('ProjectFileSyncService deferred remote delete', () => {
     dirtyEditorRegistry.clear();
     tmpDir = await mkdtemp(path.join(os.tmpdir(), 'pfs-del-'));
     service = new ProjectFileSyncService();
-    pushFileContent = vi.fn(async () => undefined);
-    (service as any).provider = { pushFileContent, pushFileBatch: vi.fn(async () => undefined), disconnectAll: vi.fn() };
+    pushFileContent = vi.fn(ackContent);
+    (service as any).provider = { pushFileContent, pushFileBatch: vi.fn(ackBatch), disconnectAll: vi.fn() };
     (service as any)._fileMapCache = new Map();
     (service as any)._fileMapCache.set('proj-enc', { fileMap: new Map(), workspacePath: tmpDir });
     (service as any).projectStates.set('proj-enc', new Map());

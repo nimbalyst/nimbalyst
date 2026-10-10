@@ -837,6 +837,28 @@ table.nim-diff-add {
   background: var(--nim-diff-add-bg);
 }
 
+.quadrant-container.nim-diff-remove,
+.quadrant-container.nim-diff-add {
+  width: auto;
+  border-radius: 8px;
+}
+
+.quadrant-container.nim-diff-remove {
+  outline: 3px solid var(--nim-diff-remove-border);
+}
+
+.quadrant-container.nim-diff-add {
+  outline: 3px solid var(--nim-diff-add-border);
+}
+
+/* Mermaid appends a hidden tooltip to <body> with position:absolute but no
+   top/left, so it sits below the app root and makes the document scrollable.
+   Mermaid sets inline top/left when it actually shows the tooltip. */
+.mermaidTooltip {
+  top: 0;
+  left: 0;
+}
+
 /* Mermaid SVG dark theme overrides.
    Mermaid renders inline styles, so !important is needed to override them.
    Uses CSS variables so they adapt to any dark theme variant. */

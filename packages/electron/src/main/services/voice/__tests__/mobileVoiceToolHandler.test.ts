@@ -86,6 +86,7 @@ describe('handleMobileVoiceToolCall', () => {
       'nimbalyst-memory.search_project_knowledge',
       { query: 'voice' },
       '/ws',
+      { sessionId: null, caller: 'voice' },
     );
   });
 

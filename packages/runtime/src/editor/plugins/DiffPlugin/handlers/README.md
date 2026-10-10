@@ -28,6 +28,10 @@ The system consists of:
 - Easier to debug and test specific node behaviors
 - Reduced complexity in the main diff algorithm
 
+## Widget (decorator) nodes
+
+A decorator node draws from its own fields, so marking it `modified` changes nothing on screen and approving keeps the old content. `DefaultDiffHandler` therefore shows any changed decorator as the old node `removed` plus a new node `added`, which the generic approve/reject passes settle. A new widget needs no handler unless it must update in place (e.g. `DecisionDiffHandler`, where two copies would share one ID). Give its container CSS for `.nim-diff-add` / `.nim-diff-remove` if its own background hides the default highlight.
+
 ## Usage
 
 ### Basic Usage

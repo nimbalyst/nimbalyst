@@ -1,5 +1,6 @@
 import ElectronStore from "electron-store";
 import { app } from "electron";
+import fs from "node:fs";
 import path from "node:path";
 import { assertPrivateFileWritable, hardenPrivateFile } from "./privateFile";
 import {
@@ -8,12 +9,67 @@ import {
 } from "../services/credentials/legacyProviderCredentials";
 import { withCredentialLock } from "../services/credentials/credentialLock";
 
+const EMPTY_READ_RETRIES = 3;
+const preservedUnreadable = new Set<string>();
+
+function isEmptyObject(value: unknown): boolean {
+  return !!value && typeof value === "object" && Object.keys(value).length === 0;
+}
+
+function readRaw(file: string): string | null {
+  try {
+    return fs.readFileSync(file, "utf8");
+  } catch {
+    return null;
+  }
+}
+
+function isEmptyJsonObject(raw: string): boolean {
+  if (raw.trim() === "") return true;
+  try {
+    return isEmptyObject(JSON.parse(raw));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The file still fails to parse after retries, so conf will treat it as empty
+ * and the next write replaces it. Copy it aside first so it can be restored.
+ */
+function preserveUnreadable(file: string): void {
+  const raw = readRaw(file);
+  const key = `${file}:${raw?.length}`;
+  if (raw === null || isEmptyJsonObject(raw) || preservedUnreadable.has(key)) return;
+  preservedUnreadable.add(key);
+  const backup = `${file}.unreadable-${new Date().toISOString().replace(/[:.]/g, "-")}`;
+  console.error(
+    `[PrivateSettingsStore] ${path.basename(file)} is unreadable (${raw.length} bytes); preserved at ${backup} before it is treated as empty`
+  );
+  fs.writeFileSync(backup, raw, { mode: 0o600 });
+}
+
 /** All app-owned settings use this boundary, including bootstrap readers. */
 export default class PrivateSettingsStore<
   T extends Record<string, any> = Record<string, unknown>
 > extends ElectronStore<T> {
+  // conf re-reads and re-parses the file on every access and, with
+  // `clearInvalidConfig`, turns any parse failure into `{}`. One bad read then
+  // reports every setting at its default (Developer Mode flipping to Standard
+  // Mode, NIM-3963), and a `set` during that read writes `{ key }` over the
+  // whole file. An empty result is only trusted when the file is really empty.
   override get store(): T {
-    return super.store;
+    let value = super.store;
+    for (let attempt = 1; attempt <= EMPTY_READ_RETRIES && isEmptyObject(value); attempt++) {
+      const raw = readRaw(this.path);
+      if (raw === null || isEmptyJsonObject(raw)) return value;
+      console.warn(
+        `[PrivateSettingsStore] ${path.basename(this.path)} read as empty but holds ${raw.length} bytes; retrying (${attempt}/${EMPTY_READ_RETRIES})`
+      );
+      value = super.store;
+    }
+    if (isEmptyObject(value)) preserveUnreadable(this.path);
+    return value;
   }
   override set store(value: T) {
     withCredentialLock(path.dirname(this.path), () => {

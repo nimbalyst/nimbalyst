@@ -12,6 +12,31 @@ final class IndexIngestionTests: XCTestCase {
     private let otherCrypto = CryptoManager(key: SymmetricKey(data: Data(repeating: 8, count: 32)))
     private let projectPath = "/test/ingestion"
 
+    func testPhoneMoveReconcilesAcceptedManagerAndExplicitNullRejection() async throws {
+        let db = try DatabaseManager()
+        let sync = manager(db)
+        _ = try await receive(sync, sessions: [try entry("child", updatedAt: 1)])
+        try sync.updateSessionParent(sessionId: "child", parentSessionId: "manager")
+        var canonical = try entry("child", updatedAt: 2)
+        canonical["parentSessionId"] = "manager"
+        canonical["createdBySessionId"] = "manager"
+        _ = try await receive(sync, sessions: [canonical])
+        XCTAssertEqual(try db.session(byId: "child")?.parentSessionId, "manager")
+        XCTAssertEqual(try db.session(byId: "child")?.createdBySessionId, "manager")
+
+        // Legacy partial updates omit these fields and must retain the edges.
+        _ = try await receive(sync, sessions: [try entry("child", updatedAt: 3)])
+        XCTAssertEqual(try db.session(byId: "child")?.parentSessionId, "manager")
+        try sync.updateSessionParent(sessionId: "child", parentSessionId: "invalid-target")
+        canonical["updatedAt"] = 4
+        canonical["parentSessionId"] = NSNull()
+        canonical["createdBySessionId"] = NSNull()
+        _ = try await receive(sync, sessions: [canonical])
+        XCTAssertNil(try db.session(byId: "child")?.parentSessionId,
+                     "A desktop rejection back to top level must undo the optimistic phone move")
+        XCTAssertNil(try db.session(byId: "child")?.createdBySessionId)
+    }
+
     func testMalformedPageReportsFieldWithoutLoggingPayload() throws {
         let data = try JSONSerialization.data(withJSONObject: [
             "type": "indexPageResponse", "protocolVersion": 2, "requestId": "request", "mode": "bootstrap", "complete": false,

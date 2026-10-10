@@ -1,0 +1,43 @@
+.citation-chip {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  vertical-align: 4px;
+  margin-left: 2px;
+  padding: 2px 4px;
+  border-radius: 7px;
+  font-size: 9px;
+  font-weight: 700;
+  line-height: 1;
+  cursor: default;
+  user-select: none;
+}
+
+.citation-chip--human {
+  background: var(--nim-primary);
+  color: var(--nim-bg);
+}
+
+.citation-chip--human.citation-chip--open {
+  outline: 2px solid color-mix(in srgb, var(--nim-primary) 50%, transparent);
+}
+
+.citation-chip--source {
+  color: var(--nim-text-faint);
+  border: 1px solid var(--nim-border);
+  font-weight: 500;
+}
+
+.citation-sources-line {
+  margin-top: 18px;
+  padding-top: 10px;
+  border-top: 1px solid var(--nim-border);
+  color: var(--nim-text-faint);
+  font-size: 12px;
+  user-select: none;
+}
+
+.citation-sources-line b {
+  color: var(--nim-text-muted);
+  font-weight: 500;
+}

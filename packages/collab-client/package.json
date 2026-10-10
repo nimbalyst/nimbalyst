@@ -17,13 +17,29 @@
       "types": "./src/docs/index.ts",
       "default": "./src/docs/index.ts"
     },
+    "./docs/pageTreeToolCore": {
+      "types": "./src/docs/pageTreeToolCore.ts",
+      "default": "./src/docs/pageTreeToolCore.ts"
+    },
+    "./docs/pageTypes": {
+      "types": "./src/docs/pageTypes/index.ts",
+      "default": "./src/docs/pageTypes/index.ts"
+    },
     "./docs-ui": {
       "types": "./src/docs-ui/index.ts",
       "default": "./src/docs-ui/index.ts"
     },
+    "./docs-ui/setPageType": {
+      "types": "./src/docs-ui/setPageType/index.ts",
+      "default": "./src/docs-ui/setPageType/index.ts"
+    },
     "./docs-ui/EditorHeaderBar": {
-      "types": "./src/docs-ui/primitives/EditorHeaderBar.tsx",
-      "default": "./src/docs-ui/primitives/EditorHeaderBar.tsx"
+      "types": "./src/ui-primitives/EditorHeaderBar.tsx",
+      "default": "./src/ui-primitives/EditorHeaderBar.tsx"
+    },
+    "./docs-ui/history": {
+      "types": "./src/docs-ui/history/index.ts",
+      "default": "./src/docs-ui/history/index.ts"
     },
     "./feedback": {
       "types": "./src/feedback/index.ts",
@@ -45,6 +61,10 @@
       "types": "./src/quick-open/index.ts",
       "default": "./src/quick-open/index.ts"
     },
+    "./pages": {
+      "types": "./src/pages/index.ts",
+      "default": "./src/pages/index.ts"
+    },
     "./feedback-ui": {
       "types": "./src/feedback-ui/index.ts",
       "default": "./src/feedback-ui/index.ts"
@@ -57,23 +77,32 @@
       "types": "./src/trackers-ui/index.ts",
       "default": "./src/trackers-ui/index.ts"
     },
+    "./trackers-ui/embed": {
+      "types": "./src/trackers-ui/embed/index.ts",
+      "default": "./src/trackers-ui/embed/index.ts"
+    },
+    "./trackers-ui/page": {
+      "types": "./src/trackers-ui/page/index.ts",
+      "default": "./src/trackers-ui/page/index.ts"
+    },
     "./trackers-ui/references": {
       "types": "./src/trackers-ui/references/index.ts",
       "default": "./src/trackers-ui/references/index.ts"
     },
     "./trackers-ui/board.css": "./src/trackers-ui/board/TrackerBoardCard.css",
-    "./trackers-ui/grid.css": "./src/trackers-ui/grid/trackerGrid.css"
+    "./trackers-ui/grid.css": "./src/trackers-ui/grid/trackerGrid.css",
+    "./trackers-ui/page.css": "./src/trackers-ui/page/TrackerPageView.css"
   },
   "scripts": {
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@floating-ui/react": "^0.27.19",
-    "@nimbalyst/collab-protocol": "*",
-    "@nimbalyst/tracker-schema": "0.1.0",
-    "@nimbalyst/tracker-engine": "0.1.0",
-    "@nimbalyst/runtime": "*",
-    "@nimbalyst/tracker-core": "*",
+    "@nimbalyst/collab-protocol": "workspace:*",
+    "@nimbalyst/tracker-schema": "workspace:*",
+    "@nimbalyst/tracker-engine": "workspace:*",
+    "@nimbalyst/runtime": "workspace:*",
+    "@nimbalyst/tracker-core": "workspace:*",
     "jotai": "^2.16.1",
     "jotai-family": "^1.1.0"
   },
@@ -97,6 +126,6 @@
     "@types/react": "^19.2.17",
     "react": "^19.2.7",
     "typescript": "^5.0.0",
-    "yjs": ">=13.5.42"
+    "yjs": "13.6.32"
   }
 }

@@ -39,7 +39,8 @@ import {
     dispatchAppActionLink,
     type AppAction,
 } from './utils/appActionLinks';
-import { createWorkspaceManagerWindow, setupWorkspaceManagerHandlers, wasWorkspaceManagerManuallyClosed } from './window/WorkspaceManagerWindow.ts';
+import { createWorkspaceManagerWindow, getWorkspaceManagerWindow, setupWorkspaceManagerHandlers, wasWorkspaceManagerManuallyClosed } from './window/WorkspaceManagerWindow.ts';
+import { initializeApplicationWindowRecovery } from './window/ApplicationWindowRecovery';
 import { createTeamManagementWindow, setupTeamManagementHandlers } from './window/TeamManagementWindow';
 import { setupTrayPanelHandlers } from './window/TrayPanelWindow';
 import { setupMenuBarIslandHandlers } from './window/MenuBarIslandWindow';
@@ -77,6 +78,10 @@ import { registerPullRequestHandlers, stopPullRequestPollScheduler } from './ipc
 import { registerGithubIssueHandlers } from './ipc/GithubIssueHandlers';
 import { registerReadReceiptHandlers } from './ipc/ReadReceiptHandlers';
 import { registerTrackerPersonalStateHandlers } from './ipc/TrackerPersonalStateHandlers';
+import { registerTrackerPageLinkHandlers } from './ipc/TrackerPageLinkHandlers';
+import { registerTrackerPageTypeHandlers } from './ipc/TrackerPageTypeHandlers';
+import { registerLinkPreviewHandlers } from './ipc/LinkPreviewHandlers';
+import { registerCodeExcerptHandlers } from './ipc/CodeExcerptHandlers';
 import {
     registerTeamInboxHandlers,
     shutdownTeamInboxHandlers,
@@ -192,7 +197,8 @@ import {
 } from './protocols/collabAssetProtocol';
 import { SessionNamingService } from './services/SessionNamingService';
 import { SessionWakeupScheduler } from './services/SessionWakeupScheduler';
-import { getSessionWakeupsStore, repositoryManager } from './services/RepositoryManager';
+import { getPendingSubmissionStore, getSessionWakeupsStore, repositoryManager } from './services/RepositoryManager';
+import { recoverPendingSubmissionsOnBoot } from './services/ai/pendingSubmissions';
 import { ExtensionDevService } from './services/ExtensionDevService';
 import { MetaAgentService } from './services/MetaAgentService';
 import { notificationService } from './services/NotificationService';
@@ -281,6 +287,8 @@ import { ensureWorkspaceLocalNumbersInBackground } from './services/tracker/ensu
 import { initTrackerSchemaService, updateTrackerSchemaWorkspace } from './services/TrackerSchemaService';
 import { registerTrackerLifecycleIpc } from './services/tracker/trackerLifecycleService';
 import { initTrackerNavigationService } from './services/TrackerNavigationService';
+import { initPersonalPagesService } from './services/PersonalPagesService';
+import { initLocalWikiService } from './services/localWiki/LocalWikiService';
 import { initTrackerSavedViewService } from './services/TrackerSavedViewService';
 import { initTrackerRevisionService } from './services/tracker/trackerRevisionService';
 import {
@@ -320,10 +328,12 @@ import { registerCollabV3TestHandlers } from './ipc/CollabV3TestHandlers';
 import { registerHeapSnapshotHandlers } from './ipc/HeapSnapshotHandlers';
 import { getPermissionService } from './services/PermissionService';
 import { ClaudeSettingsManager } from './services/ClaudeSettingsManager';
+import { setClaudeModelPickerSource } from '@nimbalyst/runtime/ai/claudeCustomModels';
 import { TrayManager } from './tray/TrayManager';
 import { pathToFileURL } from 'url';
 import { registerLinuxAppImageProtocolHandler } from './services/LinuxProtocolRegistration';
 import { installWindowOpenGuard } from './window/windowOpenGuard';
+import { openConsoleDeepLink } from './services/consoleLinks/consoleLinkHandlers';
 import { resolveClaudeConfigDir } from '@nimbalyst/runtime/ai/server/providers/claudeCode/claudeConfigDir';
 import { parseConversationDeepLink } from '../shared/conversationDeepLinks';
 import {
@@ -1048,6 +1058,9 @@ async function handleDeepLink(url: string): Promise<void> {
         // port matches the pending-flow ledger.
         if (parsed.host === 'auth' && parsed.pathname === '/callback') {
             await handleAuthCallbackUrl(url);
+        } else if (parsed.host === 'console') {
+            // A console link the web console handed back: nimbalyst://console/<console path>
+            openConsoleDeepLink(url, getMostRecentlyFocusedWorkspaceWindow());
         } else if (parsed.host === 'install' || parsed.pathname?.startsWith('/install/')) {
             // Handle extension install: nimbalyst://install/com.nimbalyst.excalidraw
             const extensionId = parsed.host === 'install'
@@ -1991,6 +2004,10 @@ app.whenReady().then(async () => {
     registerGithubIssueHandlers();
     registerReadReceiptHandlers();
     registerTrackerPersonalStateHandlers();
+    registerTrackerPageLinkHandlers();
+    registerTrackerPageTypeHandlers();
+    registerLinkPreviewHandlers();
+    registerCodeExcerptHandlers();
     registerWakeupHandlers();
     registerBlitzHandlers();
     registerProjectMigrationHandlers();
@@ -2023,6 +2040,8 @@ app.whenReady().then(async () => {
     initTrackerSchemaService(); // Register IPC handlers + load built-in schemas
     registerTrackerLifecycleIpc(); // Promote to team / archive, from the UI
     initTrackerNavigationService();
+    initPersonalPagesService();
+    initLocalWikiService();
     initTrackerSavedViewService();
     initTrackerRevisionService();
 
@@ -2375,6 +2394,8 @@ app.whenReady().then(async () => {
         const settingsManager = ClaudeSettingsManager.getInstance();
         return settingsManager.getUserLevelEnv();
     });
+    // Custom gateway models from Claude settings `modelPicker` for the picker.
+    setClaudeModelPickerSource((workspacePath) => ClaudeSettingsManager.getInstance().getModelPicker(workspacePath));
     OpenAICodexProvider.setClaudeSettingsEnvLoader(async () => {
         const settingsManager = ClaudeSettingsManager.getInstance();
         return settingsManager.getUserLevelEnv();
@@ -2869,6 +2890,8 @@ app.whenReady().then(async () => {
     } catch (sweepErr) {
       logger.main.error('[Main] Boot sweep failed:', sweepErr);
     }
+
+    await recoverPendingSubmissionsOnBoot(getPendingSubmissionStore());
 
     // Check for pending restart continuations and queue continuation prompts
     await checkForRestartContinuation(aiService);
@@ -3468,16 +3491,13 @@ app.whenReady().then(async () => {
     });
 });
 
-// Activate handler (macOS)
-app.on('activate', () => {
-    // Avoid resurrecting windows while quitting
-    if (isAppQuitting) return;
-    // Only create window if app is ready (screen module requires app to be ready)
-    if (!app.isReady()) return;
-    // On macOS, show WorkspaceManager when dock icon is clicked and no windows are open
-    if (BrowserWindow.getAllWindows().length === 0) {
-        createWorkspaceManagerWindow();
-    }
+initializeApplicationWindowRecovery({
+    // quit-and-install strips before-quit, so isAppQuitting never flips on that path.
+    isQuitting: () => isAppQuitting || isAppRestarting || AutoUpdaterService.isUpdatingApp(),
+    getPreferredProjectWindow: getMostRecentlyFocusedWorkspaceWindow,
+    getWorkspaceManagerWindow,
+    createWorkspaceManagerWindow,
+    wasWorkspaceManagerManuallyClosed,
 });
 
 let migrationQuitDraining = false;
@@ -4125,35 +4145,6 @@ app.on('before-quit', async (event) => {
         console.log(`[QUIT] [${t16}] Calling app.exit(0) (${t16-t15}ms after timeout set)`);
         try { app.exit(0); } catch {}
     }, 50);
-});
-
-// Window all closed handler
-app.on('window-all-closed', () => {
-  logger.main.info('All windows closed');
-  if (isAppQuitting) {
-    // App is quitting, allow normal quit to proceed
-    app.quit();
-    return;
-  }
-
-  // Check if the WorkspaceManager itself was manually closed by the user
-  // In that case, don't reopen it (quit on Windows/Linux, stay running on macOS)
-  if (wasWorkspaceManagerManuallyClosed()) {
-    if (process.platform !== 'darwin') {
-      logger.main.info('WorkspaceManager manually closed on non-macOS platform, quitting app');
-      app.quit();
-    } else {
-      logger.main.info('WorkspaceManager manually closed on macOS, app stays running (dock icon can reopen)');
-    }
-    return;
-  }
-
-  // A project window was closed (not the WorkspaceManager)
-  // Show the WorkspaceManager so user can open another project
-  if (app.isReady()) {
-    logger.main.info('Project window closed, showing WorkspaceManager');
-    createWorkspaceManagerWindow();
-  }
 });
 
 // Windows-specific shutdown signal handlers

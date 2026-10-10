@@ -13,7 +13,7 @@
  * this field is the attach point, not a capture form.
  */
 import React from 'react';
-import type { CitationFieldValue, FieldDefinition } from '@nimbalyst/tracker-schema';
+import type { CitationFieldValue, FieldDefinition } from '../../../../../tracker-schema/src/browser';
 import { type CitationInspectorHost } from './CitationInspector';
 import type { RelationshipCandidate } from './RelationshipFieldEditor';
 export interface CitationFieldEditorProps {

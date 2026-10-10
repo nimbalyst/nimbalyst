@@ -15,7 +15,7 @@ import type { SessionIndexData } from './types';
  */
 export interface SyncedSessionIndexFields {
   sessionType?: string;
-  parentSessionId?: string;
+  parentSessionId?: string | null;
   worktreeId?: string;
   hostDeviceId?: string;
   isArchived?: boolean;
@@ -26,13 +26,12 @@ export interface SyncedSessionIndexFields {
   /** Agent role marker (e.g. 'meta-agent'); drives mobile meta-agent grouping. */
   agentRole?: string;
   /** Parent meta-agent session id for spawned children; drives mobile grouping. */
-  createdBySessionId?: string;
+  createdBySessionId?: string | null;
 }
 
 /**
  * Build the plaintext relationship/flag portion of a wire `SessionIndexEntry`
- * from a local session record. `createdBySessionId` is normalized from
- * `string | null` (PGLite) to `string | undefined` for the wire.
+ * from a local session record. Explicit null clears a relationship on the wire.
  */
 export function buildSyncedSessionIndexFields(
   session: SessionIndexData,
@@ -51,6 +50,6 @@ export function buildSyncedSessionIndexFields(
     branchPointMessageId: session.branchPointMessageId,
     branchedAt: session.branchedAt,
     agentRole: session.agentRole,
-    createdBySessionId: session.createdBySessionId ?? undefined,
+    createdBySessionId: session.createdBySessionId,
   };
 }

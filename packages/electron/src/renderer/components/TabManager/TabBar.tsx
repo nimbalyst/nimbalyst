@@ -1,4 +1,5 @@
-import React, { useCallback, useEffect, useRef, useState, memo } from 'react';
+import React, { useCallback, useContext, useEffect, useRef, useState, memo } from 'react';
+import { TrackerTabIssueKeyContext } from './trackerTabIssueKey';
 import { useSetAtom, useAtomValue } from 'jotai';
 import { Tab } from './TabManager';
 import { isTabJumpShortcut } from './tabShortcuts';
@@ -9,6 +10,8 @@ import {
 } from '../../hooks/useTabState';
 import { CommonFileActions } from '../CommonFileActions';
 import { historyDialogFileAtom } from '../../store';
+import { PERSONAL_PAGE_TAB_PREFIX, isPersonalPageTabPath } from '../../contexts/TabsContext';
+import { personalPageHistoryKey } from '../CollabMode/usePersonalPageBody';
 import { KeyboardShortcuts, getShortcutDisplay } from '../../../shared/KeyboardShortcuts';
 import { MaterialSymbol } from '@nimbalyst/runtime/ui/icons/MaterialSymbol';
 import { trackerItemByIdAtom } from '@nimbalyst/runtime/plugins/TrackerPlugin/trackerDataAtoms';
@@ -22,11 +25,12 @@ import { getTypeIcon } from '@nimbalyst/runtime/plugins/TrackerPlugin/components
 const TrackerTabLabel = memo<{ trackerItemId: string; fallback: string; isActive: boolean }>(
   ({ trackerItemId, fallback, isActive }) => {
     const item = useAtomValue(trackerItemByIdAtom(trackerItemId));
+    const showIssueKey = useContext(TrackerTabIssueKeyContext);
     const icon = getTypeIcon(item?.primaryType ?? '');
     const title = (item?.fields?.title as string | undefined) ?? '';
-    const label = item?.issueKey
+    const label = item?.issueKey && showIssueKey
       ? `${item.issueKey} ${title}`.trim()
-      : (title || fallback);
+      : (title || item?.issueKey || fallback);
     return (
       <>
         <MaterialSymbol icon={icon} size={13} className="tab-tracker-icon mr-1 shrink-0 opacity-80" />
@@ -195,6 +199,16 @@ const TabItem: React.FC<TabItemProps> = ({
           fallback={tab.fileName}
           isActive={tab.id === activeTabId}
         />
+      ) : tab.kind === 'type' || tab.kind === 'personal-page' ? (
+        <>
+          {/* Same icons as the type and document rows in the Wiki tree. */}
+          {tab.kind === 'type'
+            ? <MaterialSymbol icon="table" size={13} className="tab-type-icon mr-1 shrink-0 opacity-80 text-[var(--nim-purple)]" />
+            : <MaterialSymbol icon="description" size={13} className="tab-personal-page-icon mr-1 shrink-0 opacity-80" />}
+          <span className={`tab-title flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-[13px] text-[var(--nim-text-muted)] ${tab.id === activeTabId ? 'text-[var(--nim-text)] font-medium' : ''}`}>
+            {tab.fileName}
+          </span>
+        </>
       ) : (
         <>
           <span className={`tab-title flex-1 overflow-hidden text-ellipsis whitespace-nowrap text-[13px] text-[var(--nim-text-muted)] ${tab.id === activeTabId ? 'text-[var(--nim-text)] font-medium' : ''}`}>
@@ -234,6 +248,7 @@ interface TabBarProps {
   onToggleAIChat?: () => void; // Toggle AI Chat panel
   isAIChatCollapsed?: boolean; // Whether AI Chat is collapsed
   onTabDoubleClick?: (tabId: string) => void; // Double-click a tab (e.g. maximize editor)
+  leading?: React.ReactNode; // Controls before the tabs
 }
 
 export const TabBar: React.FC<TabBarProps> = ({
@@ -251,7 +266,8 @@ export const TabBar: React.FC<TabBarProps> = ({
   isActive = true,
   onToggleAIChat,
   isAIChatCollapsed = false,
-  onTabDoubleClick
+  onTabDoubleClick,
+  leading
 }) => {
   const openHistoryDialog = useSetAtom(historyDialogFileAtom);
   const [contextMenuTab, setContextMenuTab] = useState<string | null>(null);
@@ -401,7 +417,10 @@ export const TabBar: React.FC<TabBarProps> = ({
     if (contextMenuTab) {
       const tab = tabs.find(t => t.id === contextMenuTab);
       if (tab?.filePath) {
-        openHistoryDialog(tab.filePath);
+        // A personal page's history is keyed by its document, not its tab path.
+        openHistoryDialog(isPersonalPageTabPath(tab.filePath)
+          ? personalPageHistoryKey(tab.filePath.slice(PERSONAL_PAGE_TAB_PREFIX.length))
+          : tab.filePath);
       }
     }
     closeContextMenu();
@@ -676,6 +695,7 @@ export const TabBar: React.FC<TabBarProps> = ({
   return (
     <>
       <div className="tab-bar-container flex items-center h-9 select-none bg-[var(--nim-bg-secondary)]">
+        {leading}
         <div className="tab-bar-scrollable nim-scrollbar-thin flex-1 flex items-center h-full px-2 overflow-x-auto overflow-y-hidden" ref={tabBarRef}>
           {tabs.map((tab, index) => (
             <TabItem

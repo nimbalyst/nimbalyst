@@ -80,6 +80,8 @@ Past incident (NIM-899): the transcript backfill ran un-awaited at startup with 
 - **`project_state`**: Per-project state including window bounds, UI layout, open tabs, file tree, and editor settings
 - **`session_state`**: Global session restoration data for windows and focus order
 - **`document_history`**: Compressed document edit history with binary content storage
+- **`personal_page_documents`**, **`personal_page_type_placements`**, **`personal_page_item_placements`**: Per-workspace personal pages (no account needed), one page tree: pages with their markdown body, body version and sibling `sort_order` (null until the group is first reordered), tracker-type placements and typed-page (tracker item) placements. Every parent column has a `parent_kind` beside it (`'page'`, or `'item'` when the parent is a tracker item id; schema 0051). Owned by `PersonalPagesService`; body snapshots go to `document_history` under `personal-doc://<documentId>`
+- **`personal_page_folders`**: The personal folder tree from before schema 0050, kept read-only as a recoverable record (`converted_at` marks each folder once its page exists)
 
 ## Data Locations (macOS)
 

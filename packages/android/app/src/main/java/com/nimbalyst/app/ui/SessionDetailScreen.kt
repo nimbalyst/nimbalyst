@@ -1,61 +1,72 @@
 package com.nimbalyst.app.ui
 
-import android.content.Context
-import android.graphics.Bitmap
-import android.graphics.ImageDecoder
-import android.net.Uri
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.PickVisualMediaRequest
-import androidx.activity.result.contract.ActivityResultContracts
+import android.widget.Toast
+import androidx.annotation.VisibleForTesting
 import androidx.compose.foundation.background
-import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.imePadding
-import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.ArrowUpward
+import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.FormatListNumbered
+import androidx.compose.material.icons.filled.Memory
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
-import androidx.compose.material3.Card
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
-import androidx.annotation.VisibleForTesting
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
-import androidx.compose.ui.unit.dp
+import androidx.lifecycle.HasDefaultViewModelProviderFactory
+import androidx.lifecycle.viewmodel.CreationExtras
+import androidx.lifecycle.viewmodel.compose.LocalViewModelStoreOwner
+import androidx.lifecycle.viewmodel.compose.viewModel
 import com.nimbalyst.app.NimbalystApplication
-import com.nimbalyst.app.analytics.AnalyticsManager
-import com.nimbalyst.app.attachments.PendingAttachment
+import com.nimbalyst.app.R
+import com.nimbalyst.app.documents.DocumentFileSheet
+import com.nimbalyst.app.transcript.TranscriptPrompt
 import com.nimbalyst.app.transcript.TranscriptWebView
-import kotlinx.coroutines.Job
+import com.nimbalyst.app.transcript.rememberTranscriptController
+import com.nimbalyst.app.ui.navigation.DocumentSurfaceMarker
+import com.nimbalyst.app.ui.sessiondetail.ActionPickerSheet
+import com.nimbalyst.app.ui.sessiondetail.ComposeBar
+import com.nimbalyst.app.ui.sessiondetail.PromptPickerSheet
+import com.nimbalyst.app.ui.sessiondetail.QueuedPromptsList
+import com.nimbalyst.app.ui.sessiondetail.SessionDetailStores
+import com.nimbalyst.app.ui.sessiondetail.SessionDetailViewModel
+import com.nimbalyst.app.ui.sessiondetail.SessionNotice
+import com.nimbalyst.app.ui.sessiondetail.SessionStatusBar
+import com.nimbalyst.app.ui.sessiondetail.rememberAttachmentLaunchers
+import com.nimbalyst.app.ui.theme.NimbalystColors
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
-private const val DRAFT_DEBOUNCE_MS = 500L
-private const val DELIVERY_TIMEOUT_MS = 10_000L
+private const val PROMPT_LIST_REFRESH_DEBOUNCE_MS = 500L
 
 @VisibleForTesting
 internal fun shouldApplyRemoteDraft(
@@ -81,167 +92,176 @@ internal fun shouldApplyRemoteDraft(
 @Composable
 fun SessionDetailScreen(
     sessionId: String,
-    onBack: () -> Unit
+    onBack: () -> Unit,
+    /** Opens a session a launcher action created. Hosts should push it like a list selection. */
+    onOpenSession: (String) -> Unit = {},
 ) {
     val context = LocalContext.current
+    var openFilePath by rememberSaveable(sessionId) { mutableStateOf<String?>(null) }
     val app = context.applicationContext as NimbalystApplication
+    // Each session's ViewModel lives in a bounded per-session store, not the
+    // Activity's, so leaving sessions releases their collectors and bitmaps.
+    val stores: SessionDetailStores = viewModel()
+    val activityOwner = checkNotNull(LocalViewModelStoreOwner.current)
+    val sessionOwner = remember(sessionId) { stores.owner(sessionId) }
+    val viewModel: SessionDetailViewModel = viewModel(
+        viewModelStoreOwner = sessionOwner,
+        key = "session-detail",
+        factory = remember(sessionId) { SessionDetailViewModel.factory(sessionId, stores.composeState(sessionId)) },
+        extras = (activityOwner as? HasDefaultViewModelProviderFactory)?.defaultViewModelCreationExtras
+            ?: CreationExtras.Empty
+    )
     val coroutineScope = rememberCoroutineScope()
-    var draftPrompt by remember { mutableStateOf("") }
-    var promptStatus by remember { mutableStateOf<String?>(null) }
-    var isSendingPrompt by remember { mutableStateOf(false) }
-    var pendingAttachments by remember { mutableStateOf<List<PendingAttachment>>(emptyList()) }
-    // Draft sync state
-    var isApplyingRemoteDraft by remember { mutableStateOf(false) }
-    var lastSubmitAt by remember { mutableLongStateOf(0L) }
-    var lastLocalEditAt by remember { mutableLongStateOf(0L) }
-    var draftDebounceJob by remember { mutableStateOf<Job?>(null) }
-    // Delivery timeout state
-    var deliveryWarning by remember { mutableStateOf<String?>(null) }
-    var deliveryTimeoutJob by remember { mutableStateOf<Job?>(null) }
+    val transcriptController = rememberTranscriptController()
+    val launchers = rememberAttachmentLaunchers(viewModel)
 
-    val photoPickerLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.PickVisualMedia()
-    ) { uri ->
-        if (uri == null) return@rememberLauncherForActivityResult
-        val bitmap = decodeBitmap(context, uri)
-        if (bitmap == null) {
-            promptStatus = "Failed to load the selected image."
-        } else {
-            pendingAttachments = pendingAttachments + PendingAttachment(bitmap = bitmap)
-            promptStatus = "Added photo attachment."
-        }
-    }
-    val cameraPreviewLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.TakePicturePreview()
-    ) { bitmap ->
-        if (bitmap != null) {
-            pendingAttachments = pendingAttachments + PendingAttachment(
-                bitmap = bitmap,
-                filename = "camera.jpg"
-            )
-            promptStatus = "Captured camera attachment."
-        }
-    }
+    val session by viewModel.session.collectAsState()
+    val messages by viewModel.messages.collectAsState()
+    val queuedPrompts by viewModel.queuedPrompts.collectAsState()
+    val attachments by viewModel.attachments.collectAsState()
+    val sendError by viewModel.sendError.collectAsState()
+    val deliveryWarning by viewModel.deliveryWarning.collectAsState()
+    val notice by viewModel.notice.collectAsState()
+    val commands by viewModel.commands.collectAsState()
+    val actions by viewModel.actions.collectAsState()
+    val openSession by viewModel.openSession.collectAsState()
+    val sessionCreateError by viewModel.sessionCreateError.collectAsState()
+    val stopError by viewModel.stopError.collectAsState()
 
-    val sessions by app.repository.observeActiveSessions().collectAsState(initial = emptyList())
-    val session = sessions.firstOrNull { it.id == sessionId }
-    val messages by app.repository.observeMessagesForSession(sessionId)
-        .collectAsState(initial = emptyList())
-    val queuedPrompts by app.repository.observeQueuedPromptsForSession(sessionId)
-        .collectAsState(initial = emptyList())
+    var promptList by remember { mutableStateOf<List<TranscriptPrompt>>(emptyList()) }
+    var showPromptPicker by rememberSaveable { mutableStateOf(false) }
+    var showTitleMenu by remember { mutableStateOf(false) }
+    var showOverflowMenu by remember { mutableStateOf(false) }
+    var showActionPicker by rememberSaveable { mutableStateOf(false) }
 
     LaunchedEffect(sessionId) {
-        AnalyticsManager.capture("mobile_session_viewed")
         app.syncManager.joinSessionRoom(sessionId)
     }
 
     DisposableEffect(sessionId) {
         onDispose {
-            draftDebounceJob?.cancel()
-            deliveryTimeoutJob?.cancel()
-            app.syncManager.leaveSessionRoom()
+            app.syncManager.leaveSessionRoom(expectedSessionId = sessionId)
         }
     }
 
     LaunchedEffect(sessionId, messages.lastOrNull()?.createdAt) {
         val readAt = messages.lastOrNull()?.createdAt ?: session?.lastMessageAt ?: return@LaunchedEffect
-        app.repository.markSessionRead(sessionId, readAt)
+        app.syncManager.markSessionRead(sessionId, readAt)
     }
 
-    // Seed compose text from synced draft on enter
-    LaunchedEffect(sessionId) {
-        val existingDraft = app.repository.getSession(sessionId)?.draftInput
-        if (draftPrompt.isEmpty() && !existingDraft.isNullOrBlank()) {
-            isApplyingRemoteDraft = true
-            draftPrompt = existingDraft
-            isApplyingRemoteDraft = false
-        }
+    // Debounced so a burst of synced messages is one bridge call.
+    LaunchedEffect(messages.size) {
+        delay(PROMPT_LIST_REFRESH_DEBOUNCE_MS)
+        promptList = transcriptController.getPromptList()
     }
 
-    // Apply incoming remote draft updates
-    LaunchedEffect(session?.draftInput, session?.draftUpdatedAt) {
-        val remoteDraft = session?.draftInput ?: ""
-        if (!shouldApplyRemoteDraft(
-                currentDraft = draftPrompt,
-                remoteDraft = remoteDraft,
-                remoteDraftUpdatedAt = session?.draftUpdatedAt,
-                lastSubmitAt = lastSubmitAt,
-                lastLocalEditAt = lastLocalEditAt
+    LaunchedEffect(openSession) {
+        val created = openSession ?: return@LaunchedEffect
+        viewModel.consumeOpenSession()
+        onOpenSession(created)
+    }
+
+    LaunchedEffect(notice) {
+        val current = notice ?: return@LaunchedEffect
+        val message = when (current) {
+            SessionNotice.LoadFailed -> context.getString(R.string.session_detail_attachment_load_failed)
+            SessionNotice.LimitReached -> context.getString(
+                R.string.session_detail_attachment_limit,
+                SessionDetailViewModel.MAX_ATTACHMENTS
             )
-        ) {
-            return@LaunchedEffect
+            SessionNotice.ClipboardEmpty -> context.getString(R.string.session_detail_clipboard_empty)
+            SessionNotice.InteractiveInvalid -> context.getString(R.string.session_detail_interactive_invalid)
+            SessionNotice.InteractiveFailed -> context.getString(R.string.session_detail_interactive_failed)
+            SessionNotice.SessionStarting -> context.getString(R.string.session_detail_session_starting)
         }
-
-        isApplyingRemoteDraft = true
-        draftPrompt = remoteDraft
-        isApplyingRemoteDraft = false
+        Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+        viewModel.dismissNotice()
     }
 
-    // Cancel delivery timeout when desktop starts executing
-    LaunchedEffect(session?.isExecuting) {
-        if (session?.isExecuting == true) {
-            deliveryTimeoutJob?.cancel()
-            deliveryTimeoutJob = null
-            deliveryWarning = null
-        }
-    }
+    val sessionTitle = session?.titleDecrypted ?: stringResource(R.string.session_detail_untitled)
 
-    val sessionTitle = session?.titleDecrypted ?: "Untitled session"
-
-    val submitPrompt = { promptText: String, attachments: List<PendingAttachment> ->
-        coroutineScope.launch {
-            // Clear draft immediately before sending to prevent stale echo
-            draftDebounceJob?.cancel()
-            draftDebounceJob = null
-            lastSubmitAt = System.currentTimeMillis()
-            launch { app.syncManager.updateDraftInput(sessionId, "") }
-
-            isSendingPrompt = true
-            AnalyticsManager.capture(
-                "mobile_ai_message_sent",
-                mapOf(
-                    "hasAttachments" to attachments.isNotEmpty(),
-                    "attachmentCount" to attachments.size
-                )
-            )
-            val result = app.syncManager.sendPrompt(
-                sessionId = sessionId,
-                text = promptText,
-                attachments = attachments
-            )
-            result.onSuccess {
-                draftPrompt = ""
-                pendingAttachments = emptyList()
-                promptStatus = "Prompt queued on desktop."
-
-                // Start delivery timeout -- warn if desktop doesn't start executing within 10s
-                deliveryTimeoutJob?.cancel()
-                deliveryTimeoutJob = launch {
-                    delay(DELIVERY_TIMEOUT_MS)
-                    if (session?.isExecuting != true) {
-                        deliveryWarning = "Your prompt was sent but the desktop hasn't started processing it. Make sure the desktop app is running and connected."
-                    }
-                }
-            }.onFailure { error ->
-                // Restore draft so user doesn't lose their text
-                draftPrompt = promptText
-                promptStatus = error.message ?: "Failed to queue prompt."
-            }
-            isSendingPrompt = false
-        }
-    }
-
-    // Delivery warning dialog
-    if (deliveryWarning != null) {
+    sendError?.let { error ->
         AlertDialog(
-            onDismissRequest = { deliveryWarning = null },
-            title = { Text("Delivery Warning") },
-            text = { Text(deliveryWarning ?: "") },
+            onDismissRequest = viewModel::dismissSendError,
+            title = { Text(stringResource(R.string.session_detail_send_error_title)) },
+            text = {
+                Text(
+                    if (error.isBlank()) {
+                        stringResource(R.string.session_detail_send_error_unknown)
+                    } else {
+                        stringResource(R.string.session_detail_send_error, error)
+                    }
+                )
+            },
             confirmButton = {
-                TextButton(onClick = { deliveryWarning = null }) {
-                    Text("OK")
+                TextButton(onClick = viewModel::dismissSendError) { Text(stringResource(R.string.session_detail_ok)) }
+            }
+        )
+    }
+
+    sessionCreateError?.let { error ->
+        AlertDialog(
+            onDismissRequest = viewModel::dismissSessionCreateError,
+            title = { Text(stringResource(R.string.session_detail_session_create_failed_title)) },
+            text = { Text(error.ifBlank { stringResource(R.string.session_detail_session_create_failed) }) },
+            confirmButton = {
+                TextButton(onClick = viewModel::dismissSessionCreateError) {
+                    Text(stringResource(R.string.session_detail_ok))
                 }
             }
+        )
+    }
+
+    stopError?.let { error ->
+        AlertDialog(
+            onDismissRequest = viewModel::dismissStopError,
+            text = {
+                Text(
+                    if (error.isBlank()) {
+                        stringResource(R.string.session_detail_stop_failed_unknown)
+                    } else {
+                        stringResource(R.string.session_detail_stop_failed, error)
+                    }
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = viewModel::dismissStopError) { Text(stringResource(R.string.session_detail_ok)) }
+            }
+        )
+    }
+
+    if (showActionPicker) {
+        ActionPickerSheet(
+            actions = actions,
+            onSelect = { action ->
+                showActionPicker = false
+                viewModel.applyAction(action)
+            },
+            onDismiss = { showActionPicker = false }
+        )
+    }
+
+    if (deliveryWarning) {
+        AlertDialog(
+            onDismissRequest = viewModel::dismissDeliveryWarning,
+            title = { Text(stringResource(R.string.session_detail_delivery_warning_title)) },
+            text = { Text(stringResource(R.string.session_detail_delivery_warning)) },
+            confirmButton = {
+                TextButton(onClick = viewModel::dismissDeliveryWarning) {
+                    Text(stringResource(R.string.session_detail_ok))
+                }
+            }
+        )
+    }
+
+    if (showPromptPicker) {
+        PromptPickerSheet(
+            prompts = promptList,
+            onSelect = { prompt ->
+                showPromptPicker = false
+                transcriptController.scrollToMessage(prompt.index)
+            },
+            onDismiss = { showPromptPicker = false }
         )
     }
 
@@ -252,29 +272,78 @@ fun SessionDetailScreen(
             .imePadding()
     ) {
         TopAppBar(
+            colors = TopAppBarDefaults.topAppBarColors(containerColor = NimbalystColors.backgroundSecondary),
             title = {
-                Column {
+                Box {
                     Text(
                         text = sessionTitle,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
-                        style = MaterialTheme.typography.titleMedium
+                        style = MaterialTheme.typography.titleMedium,
+                        modifier = Modifier.clickable { showTitleMenu = true }
                     )
-                    if (session != null) {
-                        Text(
-                            text = "${session.provider ?: "unknown"} -- ${session.mode ?: "agent"}",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                    DropdownMenu(expanded = showTitleMenu, onDismissRequest = { showTitleMenu = false }) {
+                        DropdownMenuItem(
+                            text = { Text(stringResource(R.string.session_detail_scroll_to_top)) },
+                            leadingIcon = { Icon(Icons.Filled.ArrowUpward, contentDescription = null) },
+                            onClick = {
+                                showTitleMenu = false
+                                transcriptController.scrollToTop()
+                            }
                         )
                     }
                 }
             },
             navigationIcon = {
                 IconButton(onClick = onBack) {
-                    Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back")
+                    Icon(
+                        Icons.AutoMirrored.Filled.ArrowBack,
+                        contentDescription = stringResource(R.string.session_detail_back)
+                    )
+                }
+            },
+            actions = {
+                Box {
+                    IconButton(onClick = {
+                        showOverflowMenu = true
+                        coroutineScope.launch { promptList = transcriptController.getPromptList() }
+                    }) {
+                        Icon(Icons.Filled.MoreVert, contentDescription = stringResource(R.string.session_detail_more))
+                    }
+                    DropdownMenu(expanded = showOverflowMenu, onDismissRequest = { showOverflowMenu = false }) {
+                        if (promptList.isNotEmpty()) {
+                            DropdownMenuItem(
+                                text = { Text(stringResource(R.string.session_detail_jump_to_prompt)) },
+                                leadingIcon = { Icon(Icons.Filled.FormatListNumbered, contentDescription = null) },
+                                onClick = {
+                                    showOverflowMenu = false
+                                    showPromptPicker = true
+                                }
+                            )
+                        }
+                        val provider = session?.provider
+                        val model = session?.model
+                        if (provider != null && model != null) {
+                            if (promptList.isNotEmpty()) HorizontalDivider()
+                            DropdownMenuItem(
+                                text = { Text(provider) },
+                                leadingIcon = { Icon(Icons.Filled.Memory, contentDescription = null) },
+                                enabled = false,
+                                onClick = {}
+                            )
+                            DropdownMenuItem(
+                                text = { Text(model) },
+                                leadingIcon = { Icon(Icons.Filled.AutoAwesome, contentDescription = null) },
+                                enabled = false,
+                                onClick = {}
+                            )
+                        }
+                    }
                 }
             }
         )
+
+        session?.let { SessionStatusBar(session = it) }
 
         TranscriptWebView(
             modifier = Modifier
@@ -286,143 +355,42 @@ fun SessionDetailScreen(
             model = session?.model ?: "unknown",
             mode = session?.mode ?: "agent",
             messages = messages,
-            onPromptSubmitted = { text -> submitPrompt(text, emptyList()) },
-            onInteractiveResponse = { bridgeMessage ->
-                coroutineScope.launch {
-                    val promptId = bridgeMessage.promptId
-                        ?: bridgeMessage.requestId
-                        ?: bridgeMessage.questionId
-                        ?: bridgeMessage.proposalId
-                        ?: ""
-                    val action = bridgeMessage.action
-                    if (promptId.isBlank() || action.isNullOrBlank()) {
-                        promptStatus = "Transcript sent an invalid interactive response."
-                    } else {
-                        val result = app.syncManager.handleInteractiveResponse(
-                            sessionId = sessionId,
-                            action = action,
-                            promptId = promptId,
-                            body = bridgeMessage.raw
-                        )
-                        result.onSuccess {
-                            promptStatus = "Interactive response sent to desktop."
-                        }.onFailure { error ->
-                            promptStatus = error.message ?: "Failed to send interactive response."
-                        }
-                    }
+            onPromptSubmitted = viewModel::sendTranscriptPrompt,
+            onInteractiveResponse = viewModel::sendInteractiveResponse,
+            controller = transcriptController,
+            onOpenFile = { path ->
+                if (session?.projectId != null) {
+                    openFilePath = path
+                } else {
+                    Toast.makeText(context, R.string.session_detail_open_file_unavailable, Toast.LENGTH_SHORT).show()
                 }
             }
         )
 
-        // Compose bar
-        Card(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(8.dp)
-        ) {
-            Column(
-                modifier = Modifier.padding(12.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                if (queuedPrompts.isNotEmpty()) {
-                    Text(
-                        text = "${queuedPrompts.size} prompt${if (queuedPrompts.size > 1) "s" else ""} queued",
-                        style = MaterialTheme.typography.labelMedium,
-                        color = MaterialTheme.colorScheme.primary
-                    )
-                }
-
-                OutlinedTextField(
-                    value = draftPrompt,
-                    onValueChange = { newText ->
-                        draftPrompt = newText
-                        // Debounced draft sync push (skip if applying remote draft)
-                        if (!isApplyingRemoteDraft) {
-                            lastLocalEditAt = System.currentTimeMillis()
-                            draftDebounceJob?.cancel()
-                            draftDebounceJob = coroutineScope.launch {
-                                delay(DRAFT_DEBOUNCE_MS)
-                                app.syncManager.updateDraftInput(sessionId, newText)
-                            }
-                        }
-                    },
-                    modifier = Modifier.fillMaxWidth(),
-                    enabled = !isSendingPrompt,
-                    minLines = 1,
-                    maxLines = 6,
-                    placeholder = { Text("Send prompt to desktop") }
-                )
-
-                if (pendingAttachments.isNotEmpty()) {
-                    pendingAttachments.forEach { attachment ->
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text(
-                                text = attachment.filename,
-                                style = MaterialTheme.typography.bodySmall,
-                                modifier = Modifier.weight(1f)
-                            )
-                            OutlinedButton(
-                                onClick = {
-                                    pendingAttachments = pendingAttachments.filterNot {
-                                        it.id == attachment.id
-                                    }
-                                }
-                            ) {
-                                Text("Remove")
-                            }
-                        }
-                    }
-                }
-
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    OutlinedButton(
-                        onClick = {
-                            photoPickerLauncher.launch(
-                                PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
-                            )
-                        },
-                        enabled = !isSendingPrompt
-                    ) {
-                        Text("Photo")
-                    }
-                    OutlinedButton(
-                        onClick = { cameraPreviewLauncher.launch(null) },
-                        enabled = !isSendingPrompt
-                    ) {
-                        Text("Camera")
-                    }
-                    Spacer(modifier = Modifier.weight(1f))
-                    Button(
-                        enabled = !isSendingPrompt && (draftPrompt.isNotBlank() || pendingAttachments.isNotEmpty()),
-                        onClick = { submitPrompt(draftPrompt, pendingAttachments) }
-                    ) {
-                        Text(if (isSendingPrompt) "Sending..." else "Send")
-                    }
-                }
-
-                promptStatus?.let { status ->
-                    Text(
-                        text = status,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            }
+        val projectIdForFile = session?.projectId
+        val pathToOpen = openFilePath
+        if (projectIdForFile != null && pathToOpen != null) {
+            DocumentSurfaceMarker()
+            DocumentFileSheet(projectIdForFile, pathToOpen, onDismiss = { openFilePath = null })
         }
-    }
-}
 
-private fun decodeBitmap(context: Context, uri: Uri): Bitmap? {
-    return runCatching {
-        val source = ImageDecoder.createSource(context.contentResolver, uri)
-        ImageDecoder.decodeBitmap(source)
-    }.getOrNull()
+        QueuedPromptsList(prompts = queuedPrompts)
+
+        ComposeBar(
+            text = viewModel.compose.text,
+            onTextChange = viewModel::onTextChange,
+            onFocusChanged = viewModel::onFocusChanged,
+            attachments = attachments,
+            onRemoveAttachment = viewModel::removeAttachment,
+            isExecuting = session?.isExecuting == true,
+            commands = commands,
+            hasActions = actions.isNotEmpty(),
+            onOpenActions = { showActionPicker = true },
+            onPickPhotos = launchers.pickPhotos,
+            onTakePhoto = launchers.takePhoto,
+            onPaste = launchers.paste,
+            onSubmit = viewModel::submit,
+            onStop = viewModel::stop
+        )
+    }
 }

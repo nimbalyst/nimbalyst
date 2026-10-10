@@ -69,11 +69,11 @@ enum SessionIndexUpdates {
 
     /// Publishes a reparent. Without this the phone's move is local-only and
     /// the desktop reasserts the old parent on the next index page.
-    static func parent(session: Session, parentSessionId: String, crypto: CryptoManager) throws -> String {
+    static func parent(session: Session, parentSessionId: String?, crypto: CryptoManager) throws -> String {
         var entry = try base(session: session, messageCount: nil, crypto: crypto,
                              updatedAt: Int(Date().timeIntervalSince1970 * 1000))
         entry.parentSessionId = parentSessionId
-        return try encode(entry)
+        return try encodeMessage(ParentUpdateMessage(session: ParentUpdateEntry(entry: entry)))
     }
 
     /// The fields every one of these messages carries. Title is re-encrypted
@@ -117,7 +117,11 @@ enum SessionIndexUpdates {
     }
 
     static func encode(_ entry: IndexUpdateEntry) throws -> String {
-        let data = try JSONEncoder().encode(IndexUpdateMessage(session: entry))
+        try encodeMessage(IndexUpdateMessage(session: entry))
+    }
+
+    private static func encodeMessage(_ message: some Encodable) throws -> String {
+        let data = try JSONEncoder().encode(message)
         guard let json = String(data: data, encoding: .utf8) else {
             throw SessionIndexUpdateError.encodingFailed
         }
@@ -127,4 +131,24 @@ enum SessionIndexUpdates {
 
 enum SessionIndexUpdateError: Error {
     case encodingFailed
+}
+
+/// Only a hierarchy edit writes a null parent. Draft/read updates still omit
+/// that field, and manager assignment is never copied from the phone cache.
+private struct ParentUpdateMessage: Encodable {
+    let type = "indexUpdate"
+    let session: ParentUpdateEntry
+}
+
+private struct ParentUpdateEntry: Encodable {
+    let entry: IndexUpdateEntry
+    private enum CodingKeys: String, CodingKey { case parentSessionId }
+
+    func encode(to encoder: Encoder) throws {
+        try entry.encode(to: encoder)
+        if entry.parentSessionId == nil {
+            var values = encoder.container(keyedBy: CodingKeys.self)
+            try values.encodeNil(forKey: .parentSessionId)
+        }
+    }
 }

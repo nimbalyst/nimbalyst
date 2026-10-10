@@ -13,9 +13,11 @@ import {
   encodeTrackerSchemaPatchPayload,
   encodeTrackerSchemaModelPayload,
   encodeTrackerPredicateRegistryPayload,
+  encodeTrackerLabelRegistryPayload,
+  TRACKER_LABEL_REGISTRY_SCHEMA_TYPE,
   TRACKER_PREDICATE_REGISTRY_SCHEMA_TYPE,
 } from '../schemaSyncPayload';
-import type { PredicateDefinition } from '@nimbalyst/tracker-schema';
+import type { LabelRegistry, PredicateDefinition } from '@nimbalyst/tracker-schema';
 import type { TrackerDataModel } from '@nimbalyst/tracker-schema';
 
 function featureSeed(): TrackerDataModel {
@@ -318,7 +320,6 @@ describe('predicate registry payload (knowledge-scopes 4.1)', () => {
     subjectKinds: ['product'],
     valueShape: 'entity',
     direction: 'directed',
-    qualifiers: { via: { type: 'relationship', required: true } },
   }];
 
   it('round-trips under the reserved schema type', () => {
@@ -349,6 +350,44 @@ describe('predicate registry payload (knowledge-scopes 4.1)', () => {
     // top-level `type` plus `fields[]`. This payload is neither, so that client
     // never acquires a broken tracker type named after the reserved key.
     expect(parsed.payloadKind).not.toBe('trackerSchemaPatch');
+    expect(parsed.type).toBeUndefined();
+    expect(parsed.fields).toBeUndefined();
+  });
+});
+
+describe('label registry payload', () => {
+  const registry: LabelRegistry = {
+    labels: [
+      { id: 'capability', label: 'Capability', properties: ['owner'] },
+      { id: 'feature', label: 'Feature', broader: ['capability'], properties: ['surface', 'implemented-in'] },
+    ],
+    properties: [
+      { id: 'owner', label: 'Owner', type: 'string' },
+      { id: 'surface', label: 'Surface', type: 'select', options: ['desktop', 'web'] },
+    ],
+    // A predicate that has not arrived on its own row yet must not drop this one.
+    claimProperties: { 'implemented-in': { range: ['feature'] } },
+  };
+
+  it('round-trips under the reserved schema type and nowhere else', () => {
+    const json = encodeTrackerLabelRegistryPayload(registry);
+    expect(decodeTrackerSchemaPayload(TRACKER_LABEL_REGISTRY_SCHEMA_TYPE, json)).toEqual({ kind: 'labels', registry });
+    expect(decodeTrackerSchemaPayload('entity', json)).toBeNull();
+    expect(decodeTrackerSchemaPayload(TRACKER_PREDICATE_REGISTRY_SCHEMA_TYPE, json)).toBeNull();
+  });
+
+  it('keeps a registry with a newer key and drops one with a broader cycle', () => {
+    const newer = { ...registry, labels: [{ ...registry.labels[0], futureKey: 1 }, registry.labels[1]] };
+    expect(decodeTrackerSchemaPayload(TRACKER_LABEL_REGISTRY_SCHEMA_TYPE, encodeTrackerLabelRegistryPayload(newer as LabelRegistry)))
+      .not.toBeNull();
+    const cyclic = { ...registry, labels: [{ ...registry.labels[0], broader: ['feature'] }, registry.labels[1]] };
+    expect(decodeTrackerSchemaPayload(TRACKER_LABEL_REGISTRY_SCHEMA_TYPE, encodeTrackerLabelRegistryPayload(cyclic))).toBeNull();
+  });
+
+  it('is dropped by the model/patch rules a client predating it applies', () => {
+    const parsed = JSON.parse(encodeTrackerLabelRegistryPayload(registry));
+    expect(parsed.payloadKind).not.toBe('trackerSchemaPatch');
+    expect(parsed.payloadKind).not.toBe('trackerPredicateRegistry');
     expect(parsed.type).toBeUndefined();
     expect(parsed.fields).toBeUndefined();
   });

@@ -43,7 +43,11 @@ export declare const TIMELINE_CREATED_FIELD = "created";
  * only a target date belongs at its target date), then any other date field the
  * type declares, then the record's creation instant.
  */
-export declare function resolveTimelineDates(item: TrackerRecord): TrackerTimelineDates | null;
+export interface TrackerTimelineFields {
+    start?: string;
+    end?: string;
+}
+export declare function resolveTimelineDates(item: TrackerRecord, fields?: TrackerTimelineFields): TrackerTimelineDates | null;
 /** Midnight of the local day containing `date`. */
 export declare function startOfLocalDay(date: Date): Date;
 /** Midnight of the local Sunday that starts the week containing `date`. */
@@ -109,4 +113,4 @@ export interface TrackerTimelineModel {
  */
 export declare function buildTrackerTimeline(items: TrackerRecord[], groupBy: TrackerGroupBy, ordering: TrackerOrdering, 
 /** Names relationship rows from the referenced record; see the resolver's docs. */
-resolveLabel?: TrackerRelationshipLabelResolver): TrackerTimelineModel;
+resolveLabel?: TrackerRelationshipLabelResolver, fields?: TrackerTimelineFields): TrackerTimelineModel;

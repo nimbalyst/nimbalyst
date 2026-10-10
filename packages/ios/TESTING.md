@@ -30,10 +30,10 @@ packages/ios/
 ```bash
 # Run Swift tests
 cd packages/ios
-npm run test:swift
+pnpm run test:swift
 
 # Build transcript
-npm run build:transcript
+pnpm run build:transcript
 ```
 
 ### Individual Test Steps
@@ -41,7 +41,7 @@ npm run build:transcript
 **Build transcript only:**
 ```bash
 cd packages/ios
-npx vite build --config vite.config.transcript.ts
+pnpm exec vite build --config vite.config.transcript.ts
 ```
 
 **Run Swift tests only:**
@@ -169,7 +169,7 @@ If `testTranscriptBundleExists` fails:
 1. Manually run the build:
    ```bash
    cd packages/ios
-   npx vite build --config vite.config.transcript.ts
+   pnpm exec vite build --config vite.config.transcript.ts
    mkdir -p NimbalystApp/Resources/transcript-dist
    cp dist-transcript/transcript.html NimbalystApp/Resources/transcript-dist/
    cp -R dist-transcript/assets NimbalystApp/Resources/transcript-dist/

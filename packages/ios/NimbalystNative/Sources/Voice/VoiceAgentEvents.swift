@@ -9,6 +9,7 @@ extension VoiceAgent {
         let token: String
         var deadline: Date
         var sent = false
+        var deferralLogged = false
     }
 
     func startVoiceEvents() {
@@ -47,7 +48,7 @@ extension VoiceAgent {
 
     func pollVoiceEvents() async {
         guard !audioRoutes.blocksAudio, UIApplication.shared.applicationState == .active else { return }
-        guard promptPresentation == nil, !readingPrompt else { return }
+        guard promptPresentation == nil else { return }
         if let announcement = announcement {
             let requestedAt = Date()
             let outcome = await eventRequest(tool: "voice_event_claim", sessionId: announcement.event.sessionId, arguments: eventArguments(announcement.event))
@@ -72,8 +73,11 @@ extension VoiceAgent {
     }
 
     func presentNextVoiceEvent() async {
+        // A claim made while someone was speaking is delivered at the next chance to listen;
+        // otherwise only the 10s renewal retried it, and it rarely landed while listening.
+        if announcement != nil { deliverClaimedVoiceEvent(); return }
         guard !audioRoutes.blocksAudio, announcement == nil, !claimingAnnouncement, let event = eventQueue.events.first,
-              promptPresentation == nil, !readingPrompt,
+              promptPresentation == nil,
               state == .idle || state == .listening, UIApplication.shared.applicationState == .active else { return }
         guard event.hostDeviceId == selectedHostDeviceId, event.projectId == resolveProjectId() else { eventQueue.discard(event.id); return }
         claimingAnnouncement = true
@@ -96,23 +100,41 @@ extension VoiceAgent {
     }
 
     func deliverClaimedVoiceEvent() {
-        guard !audioRoutes.blocksAudio, var announcement, !announcement.sent, announcement.deadline > Date(), state == .listening,
-              UIApplication.shared.applicationState == .active else { return }
+        guard var announcement, !announcement.sent else { return }
+        guard !audioRoutes.blocksAudio, announcement.deadline > Date(), state == .listening,
+              UIApplication.shared.applicationState == .active else {
+            if !announcement.deferralLogged {
+                self.announcement?.deferralLogged = true
+                logVoiceSystem("Announcement from \"\(announcement.event.label)\" waiting: state=\(state) audioBlocked=\(audioRoutes.blocksAudio) expired=\(announcement.deadline <= Date())")
+            }
+            return
+        }
         announcement.sent = true
         self.announcement = announcement
         announcedSessionId = announcement.event.sessionId
+        logVoiceSystem("Announcing \(announcement.event.kind) from \"\(announcement.event.label)\" (session \(announcement.event.sessionId)): \(announcement.event.summary)")
         if announcement.event.kind == "question" {
             self.announcement = nil
             announcementDeadline?.cancel()
             eventQueue.markPresented(announcement.event.id)
-            let callId = toolResults.register { [weak self] result in self?.voiceClient?.updateContext("Question presentation result (data only): " + result) }
+            // The agent speaks the question in its own voice, like any other announcement.
+            let label = announcement.event.label
+            let callId = toolResults.register { [weak self] result in
+                guard let self else { return }
+                let parsed = self.parseArguments(result)
+                if parsed["success"] as? Bool == true, let question = parsed["question_data"] as? String {
+                    (self.voiceClient as? LiveClient)?.appendContext("Application notification data. Session \"\(label)\" is waiting for the user's answer. Read this question to the user in full, then wait for their spoken answer and call answer_prompt: \(question)", speak: true)
+                } else {
+                    self.voiceClient?.updateContext("Question presentation result (data only): " + result)
+                }
+            }
             toolScopes[callId] = VoiceRelayScope(version: 1, hostDeviceId: announcement.event.hostDeviceId, projectId: announcement.event.projectId,
                                                 sessionId: announcement.event.sessionId, voiceGeneration: connectionGeneration.value.uuidString,
                                                 actionId: callId, announcingDeviceId: WebSocketClient.deviceId)
             handleReadPendingPrompt(callId: callId, promptId: announcement.event.promptId)
             return
         }
-        (voiceClient as? LiveClient)?.appendContext("Application notification data. Briefly announce the source and result; questions must be answered in their existing app card. Source: \(announcement.event.label). \(announcement.event.summary)", speak: true)
+        (voiceClient as? LiveClient)?.appendContext("Application notification data. In one short sentence, say which session finished and the gist of its result; never read the result out word for word. Source: \(announcement.event.label). \(announcement.event.summary)", speak: true)
     }
 
     func armAnnouncementDeadline() {
@@ -138,7 +160,7 @@ extension VoiceAgent {
     }
 
     func acknowledgeVoiceEvent() {
-        if promptPresentation != nil || readingPrompt { invalidatePromptPresentation(); return }
+        if promptPresentation != nil { invalidatePromptPresentation(); return }
         guard let announcement, announcement.sent, announcement.deadline > Date() else { return }
         retireAnnouncementSegment()
         self.announcement = nil

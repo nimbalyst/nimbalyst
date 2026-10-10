@@ -1,9 +1,17 @@
 import * as path from 'path';
+import * as fs from 'fs';
 import * as fsPromises from 'fs/promises';
 import simpleGit from 'simple-git';
 import {
   globalRegistry,
   parseTrackerYAML,
+  parseTrackerTypeYAML,
+  parseTrackerSchemaFileDeclaration,
+  resolveTrackerTypeDeclarations,
+  declarationForResolvedModel,
+  isDerivedTrackerTypeDeclaration,
+  TRACKER_SCHEMA_DECLARED_FORM_KEY,
+  type DerivedTrackerTypeDeclaration,
   serializeTrackerYAML,
   ensureTagsSupport,
   parseTrackerSchemaPatchYAML,
@@ -14,6 +22,7 @@ import {
   resolveTrackerSchemaFileContent,
   isTrackerPatchFileName,
   type TrackerDataModel,
+  type TrackerTypeDeclaration,
 } from '@nimbalyst/runtime/plugins/TrackerPlugin/models';
 import {
   listMaterializedTrackerTypeDefs,
@@ -84,13 +93,16 @@ export function patchFileNameForType(type: string): string {
  */
 export const resolveSchemaModelFromContent = resolveTrackerSchemaFileContent;
 
+/** The registrable form of a schema file: a derived type stays as declared. */
+export const parseSchemaDeclarationFromContent = parseTrackerSchemaFileDeclaration;
+
 /** Read the `type` a schema file targets without fully resolving a patch. */
 export function readSchemaFileType(fileName: string, content: string): string | undefined {
   try {
     if (isTrackerPatchFileName(fileName)) {
       return parseTrackerSchemaPatchYAML(content).type;
     }
-    return parseTrackerYAML(content).type;
+    return parseTrackerTypeYAML(content).type;
   } catch {
     return undefined;
   }
@@ -136,6 +148,20 @@ export function projectedSchemaFormForFile(fileName: string, model: TrackerDataM
   return projected;
 }
 
+/** {@link projectedSchemaFormForFile} for a file holding a subtype's declaration. */
+function projectedDeclarationForFile(fileName: string, body: string, model: TrackerDataModel): TrackerDataModel {
+  let projected: TrackerDataModel;
+  try {
+    projected = resolveSchemaModelFromContent(fileName, body);
+  } catch {
+    // Base not registered here yet: the resolved model is the best re-read.
+    projected = { ...model };
+  }
+  const activity = (model as TrackerSchemaWithActivity).activity;
+  if (Array.isArray(activity)) (projected as TrackerSchemaWithActivity).activity = [...activity];
+  return projected;
+}
+
 /**
  * Compare models as the REGISTRY will hold them, not as they happen to arrive.
  *
@@ -150,25 +176,71 @@ export function projectedSchemaFormForFile(fileName: string, model: TrackerDataM
  */
 export function normalizedForSchemaComparison(model: TrackerDataModel): TrackerDataModel {
   try {
-    const { activity: _activity, ...schema } = model as TrackerSchemaWithActivity;
-    return ensureTagsSupport(parseTrackerYAML(serializeTrackerYAML(schema as TrackerDataModel)));
+    // `extends` is set aside for the round trip: the full-model parser rejects
+    // it, and a resolved derived model is complete without it.
+    const { activity: _activity, extends: base, ...schema } = model as TrackerSchemaWithActivity;
+    const normalized = ensureTagsSupport(parseTrackerYAML(serializeTrackerYAML(schema as TrackerDataModel)));
+    return base ? { ...normalized, extends: base } : normalized;
   } catch {
     return model;
   }
 }
 
 export function parseSyncedTrackerSchemaModel(type: string, modelJson: string): TrackerDataModel | null {
+  return parseSyncedTrackerSchemaForm(type, modelJson)?.model ?? null;
+}
+
+/**
+ * A mirror row or payload: the resolved model, plus the subtype declaration
+ * stored beside it when there is one. The declaration is never left on the
+ * model, which every consumer reads as a plain full model.
+ */
+export function parseSyncedTrackerSchemaForm(
+  type: string,
+  modelJson: string,
+): { model: TrackerDataModel; declared?: DerivedTrackerTypeDeclaration } | null {
   try {
-    const parsed = JSON.parse(modelJson) as Partial<TrackerDataModel>;
+    const parsed = JSON.parse(modelJson) as Partial<TrackerDataModel> & Record<string, unknown>;
     if (!parsed || typeof parsed !== 'object') return null;
     if (parsed.type !== type) return null;
     if (!Array.isArray(parsed.fields)) return null;
+    const { [TRACKER_SCHEMA_DECLARED_FORM_KEY]: sidecar, ...resolved } = parsed;
+    const declared = isDerivedTrackerTypeDeclaration(sidecar as DerivedTrackerTypeDeclaration)
+      && (sidecar as DerivedTrackerTypeDeclaration).type === type
+      ? sidecar as DerivedTrackerTypeDeclaration
+      : undefined;
     // Normalize old-client JSON through the same permanent compatibility path
     // as legacy files; any subsequent write emits only the new shape.
-    return normalizeTrackerSharingModel(parsed as TrackerDataModel, 'team');
+    return { model: normalizeTrackerSharingModel(resolved as unknown as TrackerDataModel, 'team'), declared };
   } catch {
     return null;
   }
+}
+
+/**
+ * Register a resolved model the way the registry must hold it: a subtype as its
+ * declaration (given, already in force, or recovered from the base), so it is
+ * re-resolved when the base changes instead of frozen at this copy. Only a
+ * declaration that fails the inheritance rules falls back to the copy.
+ */
+export function registerResolvedTrackerSchema(
+  model: TrackerDataModel,
+  declared?: DerivedTrackerTypeDeclaration,
+): void {
+  const registered = model.extends ? globalRegistry.getDeclaredModel(model.type) : undefined;
+  const declaration = declarationForResolvedModel(
+    model,
+    declared ?? (registered?.extends === model.extends ? registered : undefined),
+  );
+  if (declaration) {
+    try {
+      globalRegistry.register(declaration);
+      return;
+    } catch (err) {
+      logger.main.warn(`[TrackerSchemaService] keeping the resolved copy of '${model.type}':`, err);
+    }
+  }
+  globalRegistry.register(model);
 }
 
 export async function findWorkspaceSchemaFileByType(workspacePath: string, type: string): Promise<string | null> {
@@ -264,14 +336,14 @@ export async function projectUnprojectedSharedSchemas(workspacePath: string): Pr
   const pending = await listUnprojectedTeamOwnedTrackerTypes(workspacePath);
   for (const row of pending) {
     const raw: unknown = row.model;
-    const model = parseSyncedTrackerSchemaModel(
+    const form = parseSyncedTrackerSchemaForm(
       row.type,
       typeof raw === 'string' ? raw : JSON.stringify(raw),
     );
-    if (!model) continue;
+    if (!form) continue;
     // Builtin overrides project as a delta for the same reason they travel as
     // one: the local file keeps picking up shipped builtin fields.
-    await writeBackSharedSchema(workspacePath, model, globalRegistry.isBuiltin(row.type));
+    await writeBackSharedSchema(workspacePath, form.model, globalRegistry.isBuiltin(row.type), form.declared);
   }
 }
 
@@ -354,7 +426,7 @@ export async function writeThroughTeamTrackerSchemaEdit(
       return shared ? JSON.stringify(projectedSchemaFormForFile(fileName, shared)) : null;
     },
   });
-  globalRegistry.register(model);
+  registerResolvedTrackerSchema(model);
   await refreshSharedSchemaHeader(workspacePath, filePath, model);
 }
 
@@ -368,6 +440,7 @@ export async function writeBackSharedSchema(
   workspacePath: string,
   model: TrackerDataModel,
   asPatch = false,
+  declared?: DerivedTrackerTypeDeclaration,
 ): Promise<void> {
   const trackersDir = path.join(workspacePath, '.nimbalyst', 'trackers');
   // A builtin override projects as a DELTA file, so the local copy keeps
@@ -379,15 +452,20 @@ export async function writeBackSharedSchema(
   try {
     await fsPromises.mkdir(trackersDir, { recursive: true });
     markSelfWrittenSchemaFile(filePath);
-    const content = await addSharedSchemaHeader(
-      workspacePath,
-      filePath,
+    // A subtype projects as its declaration, so the file never spells out
+    // inherited fields as overrides of its base.
+    const registered = !seed && model.extends ? globalRegistry.getDeclaredModel(model.type) : undefined;
+    const declaration = seed ? undefined : declarationForResolvedModel(
       model,
-      serializeSchemaForFile(fileName, model),
+      declared ?? (registered?.extends === model.extends ? registered : undefined),
     );
+    const body = declaration ? serializeTrackerYAML(declaration) : serializeSchemaForFile(fileName, model);
+    const content = await addSharedSchemaHeader(workspacePath, filePath, model, body);
     await fsPromises.writeFile(filePath, content, 'utf-8');
     // Record what a RE-READ of the file yields, not the model we were handed.
-    const projected = projectedSchemaFormForFile(fileName, model);
+    const projected = declaration
+      ? projectedDeclarationForFile(fileName, body, model)
+      : projectedSchemaFormForFile(fileName, model);
     await markTrackerTypeDefProjected(workspacePath, model.type, JSON.stringify(projected));
     // A full-copy override left over from before this type went delta would be
     // loaded alongside the patch; retire it so one file defines one type.
@@ -498,4 +576,42 @@ export async function getTrackerSchemaOwnershipDetails(
     });
   }
   return result;
+}
+
+export interface WorkspaceSchemaDiskRead {
+  models: TrackerDataModel[];
+  canReconcile: boolean;
+}
+
+/**
+ * Read and parse the on-disk YAML schema models for a workspace. Best-effort:
+ * unreadable directories and unparseable files are skipped (logged) rather than
+ * treated as an empty set, mirroring the safeguard in loadWorkspaceSchemas so a
+ * transient read error never masquerades as "all YAML deleted."
+ */
+export function readWorkspaceSchemaModelsFromDisk(workspacePath: string): WorkspaceSchemaDiskRead {
+  const trackersDir = path.join(workspacePath, '.nimbalyst', 'trackers');
+  const models: TrackerDataModel[] = [];
+  let files: string[];
+  try {
+    if (!fs.existsSync(trackersDir)) return { models, canReconcile: true };
+    files = orderSchemaFilesForLoad(fs.readdirSync(trackersDir).filter(
+      f => f.endsWith('.yaml') || f.endsWith('.yml'),
+    ));
+  } catch (err) {
+    console.error(`[TrackerSchemaService] readWorkspaceSchemaModelsFromDisk failed for ${trackersDir}:`, err);
+    return { models, canReconcile: false };
+  }
+
+  const declarations: TrackerTypeDeclaration[] = [];
+  for (const file of files) {
+    try {
+      const content = fs.readFileSync(path.join(trackersDir, file), 'utf-8');
+      declarations.push(parseSchemaDeclarationFromContent(file, content));
+    } catch (err) {
+      console.error(`[TrackerSchemaService] Failed to parse ${file} for drift check:`, err);
+    }
+  }
+  models.push(...resolveTrackerTypeDeclarations(declarations));
+  return { models, canReconcile: true };
 }

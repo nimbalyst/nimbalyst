@@ -227,6 +227,8 @@ async function createRow(
         : result.rows[0].data,
       globalRegistry.get(payload.type)?.fields ?? [],
       trackerRowUpdatedToIso(result.rows[0].updated),
+      undefined,
+      payload.content ?? undefined,
     );
 
     // Notify watchers

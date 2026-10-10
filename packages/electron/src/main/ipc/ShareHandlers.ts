@@ -632,7 +632,7 @@ export function registerShareHandlers() {
     'share:fileAsLink',
     async (
       _event,
-      options: { filePath: string; expirationDays?: number | null; personalOrgId?: string }
+      options: { filePath: string; expirationDays?: number | null; personalOrgId?: string; mermaidSvgs?: Record<string, string> }
     ): Promise<{ success: boolean; url?: string; shareId?: string; isUpdate?: boolean; encryptionKey?: string; owningPersonalOrgId?: string; error?: string }> => {
       const { filePath, expirationDays } = options;
 
@@ -667,7 +667,7 @@ export function registerShareHandlers() {
         const viewerType = getViewerTypeForFile(filePath);
         const contentToEncrypt = viewerType
           ? content                            // Raw content -- extension viewer renders it
-          : exportFileToHtml(filePath, content); // Pre-rendered HTML -- iframe viewer
+          : exportFileToHtml(filePath, content, { mermaidSvgs: options.mermaidSvgs }); // Pre-rendered HTML -- iframe viewer
 
         // Use hashed file path as key identifier (avoids leaking paths in electron-store)
         const keyId = `file:${createHash('sha256').update(filePath).digest('hex').slice(0, 16)}`;

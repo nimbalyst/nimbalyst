@@ -17,10 +17,11 @@
 import React, { useCallback, useState } from 'react';
 import { useAtomValue } from 'jotai';
 import { MaterialSymbol } from '@nimbalyst/runtime/ui/icons/MaterialSymbol';
-import { activeCollabScopeAtom, createSharedFolder } from '../../store/atoms/collabDocuments';
+import { activeCollabScopeAtom, createSharedFolder, getPersonalCollabDocsSession } from '../../store/atoms/collabDocuments';
+import { activeWorkspacePathAtom } from '../../store/atoms/openProjects';
 import { normalizeCollabPath } from '../CollabMode/collabTree';
 import { SharedFolderTree } from './SharedFolderTree';
-import type { SharedFolderTreeState } from './useSharedFolderTree';
+import type { SharedFolderSection, SharedFolderTreeState } from './useSharedFolderTree';
 
 export interface SharedFolderPickerPanelProps {
   folderTree: SharedFolderTreeState;
@@ -30,6 +31,8 @@ export interface SharedFolderPickerPanelProps {
   highlightFolderId?: string | null;
   /** Blocks folder creation until the surface has seeded its selection. */
   canCreateFolder: boolean;
+  /** The Pages section the tree lists; a new page is created there. Defaults to Team. */
+  section?: SharedFolderSection;
 }
 
 export function SharedFolderPickerPanel({
@@ -38,8 +41,11 @@ export function SharedFolderPickerPanel({
   onSelectFolder,
   highlightFolderId,
   canCreateFolder,
+  section = 'team',
 }: SharedFolderPickerPanelProps) {
   const collabScope = useAtomValue(activeCollabScopeAtom);
+  const workspacePath = useAtomValue(activeWorkspacePathAtom);
+  const rootLabel = section === 'personal' ? 'Top of Personal' : 'Top of Team';
   const {
     isRefreshing,
     refreshFailed,
@@ -85,15 +91,21 @@ export function SharedFolderPickerPanel({
       return;
     }
     try {
-      if (!collabScope) return;
-      const folderId = await createSharedFolder(collabScope, trimmed, parentFolderId);
+      let folderId: string;
+      if (section === 'personal') {
+        if (!workspacePath) return;
+        folderId = await getPersonalCollabDocsSession(workspacePath).createFolder(trimmed, parentFolderId);
+      } else {
+        if (!collabScope) return;
+        folderId = await createSharedFolder(collabScope, trimmed, parentFolderId);
+      }
       onSelectFolder(folderId);
       expandFolder(folderId);
       if (parentFolderId) expandFolder(parentFolderId);
     } catch (error) {
       console.error('[SharedFolderPickerPanel] Failed to create shared folder:', error);
     }
-  }, [cancelNewFolder, collabScope, expandFolder, idByPath, newFolderName, newFolderParentId, onSelectFolder, pathById]);
+  }, [cancelNewFolder, collabScope, expandFolder, idByPath, newFolderName, newFolderParentId, onSelectFolder, pathById, section, workspacePath]);
 
   const isRootCreateOpen = newFolderParentId === null;
 
@@ -101,7 +113,7 @@ export function SharedFolderPickerPanel({
     <div className="shared-folder-picker-panel">
       <div className="flex items-center justify-between mb-1.5">
         <div className="text-[11px] uppercase tracking-wider font-semibold text-[var(--nim-text-faint)]">
-          Destination folder
+          Inside
         </div>
         <button
           type="button"
@@ -109,23 +121,23 @@ export function SharedFolderPickerPanel({
           disabled={isRefreshing || refreshFailed || !canCreateFolder}
           className="text-[11px] text-[var(--nim-primary)] hover:underline inline-flex items-center gap-1 disabled:opacity-50 disabled:no-underline"
         >
-          <MaterialSymbol icon="create_new_folder" size={13} />
-          New folder
+          <MaterialSymbol icon="note_add" size={13} />
+          New page
         </button>
       </div>
       <div className="share-to-team-tree bg-[var(--nim-bg-secondary)] border border-[var(--nim-border-subtle,var(--nim-border))] rounded-md p-1 mb-3 max-h-[240px] overflow-y-auto">
         {isRefreshing ? (
           <div className="flex items-center justify-center gap-2 px-3 py-6 text-[12px] text-[var(--nim-text-muted)]">
             <MaterialSymbol icon="progress_activity" size={16} className="animate-spin" />
-            Refreshing shared folders…
+            Refreshing pages…
           </div>
         ) : refreshFailed ? (
           <div className="px-3 py-6 text-center text-[12px] text-[var(--nim-text-muted)]">
-            Shared folders could not be refreshed. Close this dialog and try again.
+            The wiki could not be refreshed. Close this dialog and try again.
           </div>
         ) : (
           <>
-            {/* Team root row */}
+            {/* Section root row */}
             <div
               role="treeitem"
               aria-selected={selectedFolderId === null}
@@ -153,7 +165,7 @@ export function SharedFolderPickerPanel({
               <span className={`inline-flex items-center justify-center ${selectedFolderId === null ? 'text-[var(--nim-primary)]' : 'text-[var(--nim-text-muted)]'}`}>
                 <MaterialSymbol icon="workspaces" size={18} />
               </span>
-              <span className="flex-1 truncate">Team root</span>
+              <span className="flex-1 truncate">{rootLabel}</span>
               {highlightFolderId === null && (
                 <span className="text-[10px] font-medium uppercase tracking-wide px-1.5 py-0.5 rounded-full bg-[var(--nim-primary)]/15 text-[var(--nim-primary)]">
                   last used
@@ -194,7 +206,7 @@ export function SharedFolderPickerPanel({
                     }
                   }}
                   onBlur={() => { void commitNewFolder(); }}
-                  placeholder="Folder name"
+                  placeholder="Page name"
                   className="flex-1 bg-[var(--nim-bg)] border border-[var(--nim-primary)] rounded text-[13px] text-[var(--nim-text)] px-2 py-1 outline-none"
                 />
               </div>

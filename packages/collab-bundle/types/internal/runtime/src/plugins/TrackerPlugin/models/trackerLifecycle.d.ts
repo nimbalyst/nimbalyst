@@ -15,7 +15,7 @@
  * Pure and I/O-free on purpose: the Electron main process drives the writes,
  * the renderer draws the surfaces, and both agree on the rules stated here.
  */
-import type { TrackerDataModel } from '@nimbalyst/tracker-schema';
+import type { TrackerDataModel } from '../../../../../tracker-schema/src/browser';
 export { TRACKER_DEPENDENCY_CYCLE_MESSAGE, TRACKER_LOCAL_ISSUE_KEY_BRIEF_MESSAGE, TRACKER_LOCAL_ISSUE_KEY_MESSAGE, TRACKER_NO_TEAM_ISSUE_KEY_MESSAGE, TRACKER_UNASSIGNED_ISSUE_KEY_MESSAGE, } from '@nimbalyst/tracker-core';
 /** Whether a tracker has been retired. Absent means active. */
 export declare function isTrackerArchived(model: Pick<TrackerDataModel, 'archived'> | null | undefined): boolean;

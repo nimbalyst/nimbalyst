@@ -26,6 +26,7 @@
 import React, { createContext, useContext, useEffect, useMemo } from 'react';
 import { Provider as JotaiProvider } from 'jotai';
 import { store } from '@nimbalyst/runtime/store';
+import type { TeamMemberOption } from '@nimbalyst/runtime/plugins/TrackerPlugin/components/TrackerFieldEditor';
 import type {
   TrackerDataSource,
   TrackerIdentity,
@@ -62,7 +63,11 @@ export interface TrackersUIContextValue {
   /** Who "me" is, for assignment-based queues. Comes from the team JWT in the browser. */
   identity: TrackerIdentity | null;
   capabilities: TrackerUICapabilities;
+  /** Who a `user` field can name. Empty without a team, and people cells fall back to free text. */
+  teamMembers: readonly TeamMemberOption[];
 }
+
+const NO_MEMBERS: readonly TeamMemberOption[] = [];
 
 /**
  * `null`, not a permissive default value: "no provider" and "a provider that
@@ -77,6 +82,7 @@ export interface TrackersUIProviderProps {
   dataSource?: TrackerDataSource | null;
   identity: TrackerIdentity | null;
   capabilities?: TrackerUICapabilities;
+  teamMembers?: readonly TeamMemberOption[];
   children: React.ReactNode;
 }
 
@@ -84,6 +90,7 @@ export function TrackersUIProvider({
   dataSource,
   identity,
   capabilities = BROWSER_TRACKER_UI_CAPABILITIES,
+  teamMembers = NO_MEMBERS,
   children,
 }: TrackersUIProviderProps) {
   const dataStore = useMemo(
@@ -95,8 +102,8 @@ export function TrackersUIProvider({
     return () => dataStore?.stop();
   }, [dataStore]);
   const value = useMemo(
-    () => ({ dataSource: dataSource ?? null, dataStore, identity, capabilities }),
-    [dataSource, dataStore, identity, capabilities],
+    () => ({ dataSource: dataSource ?? null, dataStore, identity, capabilities, teamMembers }),
+    [dataSource, dataStore, identity, capabilities, teamMembers],
   );
   return (
     <JotaiProvider store={store}>
@@ -119,6 +126,10 @@ export function useTrackersUI(): TrackersUIContextValue {
  */
 export function useTrackerUICapabilities(): TrackerUICapabilities {
   return useContext(TrackersUIContext)?.capabilities ?? BROWSER_TRACKER_UI_CAPABILITIES;
+}
+
+export function useTrackersUITeamMembers(): readonly TeamMemberOption[] {
+  return useContext(TrackersUIContext)?.teamMembers ?? NO_MEMBERS;
 }
 
 export function useTrackerDataSourceOrThrow(): TrackerDataSource {

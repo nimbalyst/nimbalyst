@@ -91,4 +91,23 @@ describe('createPersistentPromptStream', () => {
     const second = await iterator.next();
     expect(second.done).toBe(true);
   });
+
+  // A follow-up sent while a background shell keeps the previous turn's query
+  // alive goes into this same stream. A second streamInput() would close the
+  // CLI's stdin when its finite stream ended, killing the shell.
+  it('push() delivers a later message on the open stream without ending it', async () => {
+    const { iterable, controller } = createPersistentPromptStream(makeMessage());
+    const iterator = iterable[Symbol.asyncIterator]();
+    await iterator.next();
+
+    const pending = iterator.next();
+    const followUp = { ...makeMessage(), message: { role: 'user' as const, content: 'follow-up' } };
+    expect(controller.push(followUp)).toBe(true);
+    expect((await pending).value).toBe(followUp);
+    expect(controller.isEnded()).toBe(false);
+
+    controller.end('done');
+    expect((await iterator.next()).done).toBe(true);
+    expect(controller.push(makeMessage())).toBe(false);
+  });
 });

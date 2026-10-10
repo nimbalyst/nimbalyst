@@ -39,6 +39,8 @@ import type {
   AgentToolDefinition,
 } from '../types';
 import type { AgentCapabilities } from '../agentCapabilities';
+import { appendSessionDirective } from '../../prompt';
+import { FrozenSessionDirectives } from './sessionDirective';
 
 /**
  * Host bridge contract. The electron main process installs an
@@ -152,6 +154,7 @@ export class ExtensionAgentProvider extends EventEmitter implements AIProvider {
   readonly contributionId: string;
   readonly sessionId: string;
   readonly model?: string;
+  private readonly sessionDirectives = new FrozenSessionDirectives();
 
   constructor(opts: ExtensionAgentProviderOptions) {
     super();
@@ -170,7 +173,7 @@ export class ExtensionAgentProvider extends EventEmitter implements AIProvider {
     });
   }
 
-  sendMessage(
+  async *sendMessage(
     message: string,
     documentContext?: DocumentContext,
     sessionId?: string,
@@ -180,13 +183,18 @@ export class ExtensionAgentProvider extends EventEmitter implements AIProvider {
     tools?: AgentToolDefinition[],
     systemPrompt?: string
   ): AsyncIterableIterator<StreamChunk> {
-    return requireBridge().sendMessage({
+    // The session id passed on each turn wins over the constructor's --
+    // matches the existing contract used by ClaudeCodeProvider, which
+    // updates its session id mid-stream when the SDK rotates it.
+    const turnSessionId = sessionId ?? this.sessionId;
+    // The host's persona prompt does not include the session directive, so it
+    // is appended here (frozen). Without one, `systemPrompt` passes through
+    // untouched, including staying undefined for a normal session.
+    const sessionDirective = await this.sessionDirectives.get(turnSessionId);
+    yield* requireBridge().sendMessage({
       extensionId: this.extensionId,
       contributionId: this.contributionId,
-      // The session id passed on each turn wins over the constructor's --
-      // matches the existing contract used by ClaudeCodeProvider, which
-      // updates its session id mid-stream when the SDK rotates it.
-      sessionId: sessionId ?? this.sessionId,
+      sessionId: turnSessionId,
       message,
       model: this.model,
       documentContext,
@@ -194,7 +202,7 @@ export class ExtensionAgentProvider extends EventEmitter implements AIProvider {
       workspacePath,
       attachments,
       tools,
-      systemPrompt,
+      systemPrompt: sessionDirective ? appendSessionDirective(systemPrompt ?? '', sessionDirective) : systemPrompt,
     });
   }
 

@@ -324,10 +324,10 @@ Until the automated multi-instance Playwright test lands, verify by running two 
 
 ```bash
 # Terminal 1 — primary instance
-cd packages/electron && npm run dev
+cd packages/electron && pnpm run dev
 
 # Terminal 2 — second isolated instance
-cd packages/electron && npm run dev:user2
+cd packages/electron && pnpm run dev:user2
 ```
 
 Sign in as different team members in each. Share a `.yourext` file from instance A. Open it from the Collab Mode sidebar in instance B. Verify:

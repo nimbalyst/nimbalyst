@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { asTeamMemberId } from '@nimbalyst/runtime/auth/jwtScopes';
+import { createPersonalCollabScope } from '@nimbalyst/collab-client/core';
 
 const { trackTeamAnalyticsEvent } = vi.hoisted(() => ({
   trackTeamAnalyticsEvent: vi.fn(),
@@ -20,6 +21,7 @@ vi.mock('../../components/CollabMode/collabTree', () => ({
   normalizeCollabPath: (value: string) => value.replace(/\\/g, '/').split('/').filter(Boolean).join('/'),
 }));
 vi.mock('../../store/atoms/collabDocuments', () => ({
+  getPersonalCollabHost: vi.fn(),
   getSharedDocumentsForScope: vi.fn(() => []),
   getSharedFoldersForScope: vi.fn(() => []),
   pendingCollabDocumentAtom: Symbol('pendingCollabDocumentAtom'),
@@ -99,6 +101,7 @@ function makeHarness(options: {
   const documents = options.documents ?? [];
   const folders = options.folders ?? [];
   const events: string[] = [];
+  const personalBodies = new Map<string, string>();
   const seedResults = [...(options.seedResults ?? [true])];
   const seedRetryFlags: boolean[] = [];
   let extensionLoaded = options.extensionLoaded ?? true;
@@ -132,7 +135,7 @@ function makeHarness(options: {
         ? { ok: false, error: 'ack timed out' }
         : { ok: true };
     },
-    register: async (_scope, documentId, title, documentType, parentFolderId, metadata) => {
+    register: async (_scope, documentId, title, documentType, parentFolderId, metadata, placement) => {
       events.push('register');
       documents.push({
         documentId,
@@ -141,6 +144,7 @@ function makeHarness(options: {
         documentType,
         ...metadata,
         parentFolderId,
+        ...(placement?.parentKind === 'item' ? { parentKind: 'item' as const } : {}),
         createdBy: '',
         createdAt: 100,
         updatedAt: 100,
@@ -161,6 +165,16 @@ function makeHarness(options: {
       events.push('publish');
     },
     cleanup: async () => { events.push('cleanup'); },
+    openPersonal: (_scope, document) => {
+      published.push(document);
+      events.push('open-personal');
+    },
+    discardPersonal: () => { events.push('discard-personal'); },
+    writePersonalBody: async (_scope, documentId, content) => {
+      events.push('write-body');
+      personalBodies.set(documentId, content);
+    },
+    trashPersonal: async () => { events.push('trash-personal'); },
     generateId: () => `doc-${++generated}`,
     now: () => 100,
     hashContent: async content => `hash:${typeof content === 'string' ? content : content.byteLength}`,
@@ -168,6 +182,7 @@ function makeHarness(options: {
   return {
     orchestrator: new CollaborativeDocumentCreationOrchestrator(deps),
     deps,
+    personalBodies,
     documents,
     events,
     published,
@@ -179,6 +194,82 @@ function makeHarness(options: {
 
 describe('CollaborativeDocumentCreationOrchestrator', () => {
   beforeEach(() => trackTeamAnalyticsEvent.mockClear());
+
+  it('creates a personal page by registering it locally, without credentials or a room seed', async () => {
+    const harness = makeHarness();
+    const scope = createPersonalCollabScope('/workspace');
+
+    const document = await harness.orchestrator.create({
+      scope,
+      descriptor: markdownDescriptor,
+      requestedName: 'Reading list',
+      parentFolderId: null,
+      sourceContent: '# Reading list',
+    });
+
+    // The body is written before the page opens; an agent's initialContent
+    // must not come back as an empty page.
+    expect(harness.events).toEqual(['register', 'write-body', 'open-personal']);
+    expect(harness.personalBodies.get(document.documentId)).toBe('# Reading list');
+    expect(document).toMatchObject({
+      title: 'Reading list',
+      teamProjectId: null,
+      metadataVersion: 2,
+      editorId: 'builtin.lexical',
+    });
+    expect(harness.published.map((row) => row.documentId)).toEqual([document.documentId]);
+    expect(trackTeamAnalyticsEvent).not.toHaveBeenCalledWith('collab_document_created', expect.anything());
+  });
+
+  it('fails a personal page main refused to save, with the reason, and opens nothing', async () => {
+    const scope = createPersonalCollabScope('/workspace');
+    const refused = makeHarness();
+    refused.deps.register = async () => {
+      refused.events.push('register');
+      throw new Error('Database not initialized');
+    };
+    await expect(refused.orchestrator.create({
+      scope, descriptor: markdownDescriptor, requestedName: 'Ideas', parentFolderId: null,
+    })).rejects.toMatchObject({ code: 'register-failed', message: 'Database not initialized' });
+    expect(refused.events).toEqual(['register', 'discard-personal']);
+    expect(refused.published).toEqual([]);
+
+    const unsaved = makeHarness({ registrationAcked: false });
+    await expect(unsaved.orchestrator.create({
+      scope, descriptor: markdownDescriptor, requestedName: 'Ideas', parentFolderId: null,
+    })).rejects.toMatchObject({ code: 'register-failed' });
+    expect(unsaved.events).toEqual(['register', 'discard-personal']);
+    expect(unsaved.published).toEqual([]);
+  });
+
+  it('sends a personal page whose body did not save to Trash and fails, rather than leaving it empty', async () => {
+    const harness = makeHarness();
+    harness.deps.writePersonalBody = async () => {
+      harness.events.push('write-body');
+      throw new Error('disk full');
+    };
+    await expect(harness.orchestrator.create({
+      scope: createPersonalCollabScope('/workspace'), descriptor: markdownDescriptor,
+      requestedName: 'Notes', parentFolderId: null, sourceContent: 'Some notes',
+    })).rejects.toMatchObject({ message: expect.stringContaining('disk full') });
+    expect(harness.events).toEqual(['register', 'write-body', 'trash-personal']);
+    expect(harness.published).toEqual([]);
+
+    // No content, nothing to write.
+    const empty = makeHarness();
+    await empty.orchestrator.create({
+      scope: createPersonalCollabScope('/workspace'), descriptor: markdownDescriptor, requestedName: 'Blank', parentFolderId: null,
+    });
+    expect(empty.events).toEqual(['register', 'open-personal']);
+
+    // A new editor page starts from its type's default file, not an empty file its editor cannot read.
+    const blankMockup = { ...mockupDescriptor, creation: { defaultContent: '<html></html>', source: 'newFileMenu' as const } };
+    const mockup = makeHarness({ descriptor: blankMockup });
+    const created = await mockup.orchestrator.create({
+      scope: createPersonalCollabScope('/workspace'), descriptor: blankMockup, requestedName: 'Login', parentFolderId: null,
+    });
+    expect(mockup.personalBodies.get(created.documentId)).toBe('<html></html>');
+  });
 
   it('can create a cascade child without publishing it as the pending open document', async () => {
     const harness = makeHarness({ descriptor: mockupDescriptor });
@@ -215,7 +306,7 @@ describe('CollaborativeDocumentCreationOrchestrator', () => {
 
     expect(harness.events).toEqual(['resolve-config', 'register', 'seed', 'cleanup', 'publish']);
     expect(document).toMatchObject({
-      title: 'Architecture.md',
+      title: 'Architecture',
       documentType: 'markdown',
       metadataVersion: 2,
       fileExtension: '.md',
@@ -224,10 +315,11 @@ describe('CollaborativeDocumentCreationOrchestrator', () => {
     expect(register).toHaveBeenCalledWith(
       TEST_SCOPE,
       'doc-1',
-      'Architecture.md',
+      'Architecture',
       'markdown',
       null,
       { metadataVersion: 2, fileExtension: '.md', editorId: 'builtin.lexical' },
+      { parentKind: 'page' },
     );
     expect(trackTeamAnalyticsEvent).toHaveBeenCalledWith('collab_document_created', expect.objectContaining({
       source: 'new_document',
@@ -273,6 +365,45 @@ describe('CollaborativeDocumentCreationOrchestrator', () => {
       sourceContent: '',
     });
     expect(harness.events).toEqual(['resolve-config', 'register', 'cleanup', 'publish']);
+  });
+
+  it("creates a type's prose page once, under the type's parent, as `type-page:<typeId>` without opening it", async () => {
+    const harness = makeHarness({
+      folders: [{ folderId: 'arch', parentFolderId: null, name: 'Architecture', sortOrder: 0, createdBy: '', createdAt: 1, updatedAt: 1 }],
+    });
+    const input = { scope: TEST_SCOPE, typeId: 'module', typeName: 'Modules', parentFolderId: 'arch' };
+
+    const [first, concurrent] = await Promise.all([harness.orchestrator.ensureTypePage(input), harness.orchestrator.ensureTypePage(input)]);
+    const again = await harness.orchestrator.ensureTypePage(input);
+
+    expect(first).toMatchObject({ documentId: 'type-page:module', title: 'Modules', parentFolderId: 'arch', documentType: 'markdown' });
+    expect(concurrent.documentId).toBe('type-page:module');
+    expect(again.documentId).toBe('type-page:module');
+    expect(harness.events).toEqual(['resolve-config', 'register', 'cleanup']);
+
+    // A page of the same name beside it does not block the type page, and a
+    // placement parent that is gone puts it at the root instead.
+    const crowded = makeHarness({
+      documents: [{ documentId: 'p', teamProjectId: null, title: 'Modules.md', documentType: 'markdown', createdBy: '', createdAt: 1, updatedAt: 1 }],
+    });
+    expect(await crowded.orchestrator.ensureTypePage({ ...input, parentFolderId: null })).toMatchObject({ documentId: 'type-page:module', title: 'Modules (type)' });
+    const orphaned = makeHarness();
+    expect(await orphaned.orchestrator.ensureTypePage(input)).toMatchObject({ documentId: 'type-page:module', parentFolderId: null });
+
+    const personal = makeHarness();
+    await personal.orchestrator.ensureTypePage({ ...input, scope: createPersonalCollabScope('/workspace'), parentFolderId: null });
+    expect(personal.events).toEqual(['register']);
+  });
+
+  it('creates the prose of the same type id in two workspaces from one renderer', async () => {
+    const harness = makeHarness();
+    // Each workspace has its own index; neither sees the other's row.
+    harness.deps.getDocuments = () => [];
+    const input = { typeId: 'module', typeName: 'Modules', parentFolderId: null };
+    await harness.orchestrator.ensureTypePage({ ...input, scope: createPersonalCollabScope('/workspace-a') });
+    await expect(harness.orchestrator.ensureTypePage({ ...input, scope: createPersonalCollabScope('/workspace-b') }))
+      .resolves.toMatchObject({ documentId: 'type-page:module' });
+    expect(harness.events).toEqual(['register', 'register']);
   });
 
   it('trashes the announced row when the seed that follows it fails', async () => {
@@ -374,7 +505,8 @@ describe('CollaborativeDocumentCreationOrchestrator', () => {
       });
 
       expect(document).toMatchObject({
-        title: `Untitled${suffix}`,
+        // A markdown page stores its bare name; other types keep their suffix.
+        title: documentType === 'markdown' ? 'Untitled' : `Untitled${suffix}`,
         documentType,
         metadataVersion: 2,
         fileExtension: suffix,
@@ -404,6 +536,39 @@ describe('CollaborativeDocumentCreationOrchestrator', () => {
       sourceContent: '',
     })).rejects.toMatchObject({ code: 'name-collision' });
     expect(harness.events).toEqual([]);
+  });
+
+  it('stores a bare page name that collides with an older ".md" or full-path sibling title', async () => {
+    const existing = (documentId: string, title: string, parentFolderId: string | null = null) => ({
+      documentId, teamProjectId: null, title, documentType: 'markdown', createdBy: '', createdAt: 1, updatedAt: 1, parentFolderId,
+    });
+    const harness = makeHarness({ documents: [existing('old', 'Specs.md')] });
+    await expect(harness.orchestrator.create({
+      scope: TEST_SCOPE, descriptor: markdownDescriptor, requestedName: 'Specs', parentFolderId: null, sourceContent: '',
+    })).rejects.toMatchObject({ code: 'name-collision' });
+    const document = await harness.orchestrator.create({
+      scope: TEST_SCOPE, descriptor: markdownDescriptor, requestedName: 'Folder/Child.md', parentFolderId: null, sourceContent: '',
+    });
+    expect(document.title).toBe('Child');
+  });
+
+  it('creates a page under a typed page, colliding only with that typed page\'s children', async () => {
+    const existing = (documentId: string, title: string, parentFolderId: string | null, parentKind?: 'item') => ({
+      documentId, teamProjectId: null, title, documentType: 'markdown', createdBy: '', createdAt: 1, updatedAt: 1, parentFolderId,
+      ...(parentKind ? { parentKind } : {}),
+    });
+    const harness = makeHarness({ documents: [existing('root-notes', 'Notes', null), existing('item-notes', 'Plan', 'mod_1', 'item')] });
+    const register = vi.spyOn(harness.deps, 'register');
+    const document = await harness.orchestrator.create({
+      scope: TEST_SCOPE, descriptor: markdownDescriptor, requestedName: 'Notes', parentFolderId: 'mod_1', parentKind: 'item', sourceContent: '',
+    });
+    expect(document).toMatchObject({ title: 'Notes', parentFolderId: 'mod_1', parentKind: 'item' });
+    expect(register).toHaveBeenCalledWith(
+      TEST_SCOPE, 'doc-1', 'Notes', 'markdown', 'mod_1', expect.anything(), { parentKind: 'item' },
+    );
+    await expect(harness.orchestrator.create({
+      scope: TEST_SCOPE, descriptor: markdownDescriptor, requestedName: 'Plan', parentFolderId: 'mod_1', parentKind: 'item', sourceContent: '',
+    })).rejects.toMatchObject({ code: 'name-collision' });
   });
 
   it('saves the local-origin binding after registration and before publish', async () => {

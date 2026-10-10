@@ -196,6 +196,12 @@ describe('ClaudeCodeTranscriptAdapter', () => {
       const items = adapter.processChunk({ type: 'rate_limit_event' });
       expect(items.some(i => i.kind === 'rate_limit')).toBe(true);
     });
+
+    it('never turns a system/informational chunk into streamed assistant text', () => {
+      // SDK 0.3.283+ emits these; ClaudeCodeRawParser renders them from the raw log.
+      const items = adapter.processChunk({ type: 'system', subtype: 'informational', level: 'notice', content: 'UserPromptSubmit says: blocked' });
+      expect(items).toEqual([]);
+    });
   });
 
   describe('processChunk: /context structured report', () => {

@@ -5,6 +5,8 @@ import Combine
 public enum WorkspaceSelection: Hashable {
     case session(String)
     case document(String)
+    /// A team console page (Team Wiki / Team Trackers), shown in `PagesView`.
+    case pages(ConsoleRoute)
 }
 
 @MainActor
@@ -14,6 +16,9 @@ final class WorkspaceNavigationState: ObservableObject {
     @Published private(set) var selection: WorkspaceSelection?
     @Published var compactColumn: NavigationSplitViewColumn = .sidebar
     @Published private(set) var hosts: [DeviceInfo] = []
+    /// Outlives `hosts`, which is empty from foreground until the socket reconnects.
+    /// Changes only alongside a `hosts` write, so it needs no publisher of its own.
+    private var knownDesktopIds: Set<String> = []
     private var hostSubscription: AnyCancellable?
     private weak var hostSource: AnyObject?
     private var composeStates: [String: SessionComposeState] = [:]
@@ -30,9 +35,19 @@ final class WorkspaceNavigationState: ObservableObject {
         hostSubscription?.cancel()
         hostSubscription = publisher.sink { [weak self] devices in
             guard let self else { return }
-            hosts = devices.filter { $0.type == "desktop" || $0.type == "headless" }
+            let roster = devices.filter { $0.type == "desktop" || $0.type == "headless" }
+            for device in roster {
+                if device.type == "desktop" { knownDesktopIds.insert(device.deviceId) }
+                else { knownDesktopIds.remove(device.deviceId) }
+            }
+            hosts = roster
             adoptDefaultHost(from: hosts)
         }
+    }
+
+    /// Desktop-created sessions carry no hostDeviceId and are listed under a desktop.
+    var includesUnattributedSessions: Bool {
+        hostDeviceId.map(knownDesktopIds.contains) ?? false
     }
 
     func stopObservingHosts() {
@@ -61,6 +76,12 @@ final class WorkspaceNavigationState: ObservableObject {
         if selection != nil { compactColumn = .detail }
     }
 
+    /// A detail's own Back (Pages hides the system one): clear it and show the sidebar.
+    func leaveDetail() {
+        selection = nil
+        compactColumn = .sidebar
+    }
+
     func composeState(for sessionId: String) -> SessionComposeState {
         if let existing = composeStates[sessionId] { return existing }
         let state = SessionComposeState()
@@ -70,13 +91,14 @@ final class WorkspaceNavigationState: ObservableObject {
 
     func clearAccount() {
         hostDeviceId = nil
+        knownDesktopIds = []
         composeStates.removeAll()
         chooseProject(nil)
     }
 
     func openSession(_ sessionId: String, database: DatabaseManager?) {
         let plan = SessionNavigation.plan(for: sessionId, in: database)
-        hostDeviceId = (try? database?.session(byId: sessionId))?.hostDeviceId
+        hostDeviceId = host(for: try? database?.session(byId: sessionId))
         project = plan.project
         select(.session(sessionId))
     }
@@ -84,8 +106,16 @@ final class WorkspaceNavigationState: ObservableObject {
     /// A late sync response must not replace a newer sidebar choice.
     func adoptResolvedSession(_ session: Session, database: DatabaseManager?) {
         guard selection == .session(session.id) else { return }
-        hostDeviceId = session.hostDeviceId
+        hostDeviceId = host(for: session)
         project = SessionNavigation.plan(for: session.id, in: database).project
+    }
+
+    /// Desktop-created sessions carry no hostDeviceId and are listed under a desktop.
+    /// Clearing the computer for them would unscope the list and end a voice conversation.
+    private func host(for session: Session?) -> String? {
+        if let owner = session?.hostDeviceId { return owner }
+        if hosts.contains(where: { $0.deviceId == hostDeviceId && $0.type == "desktop" }) { return hostDeviceId }
+        return hosts.first(where: { $0.type == "desktop" })?.deviceId ?? hostDeviceId
     }
 }
 
@@ -98,6 +128,7 @@ struct WorkspaceNavigationView: View {
     #endif
     private var hosts: [DeviceInfo] { navigation.hosts }
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
+    @ObservedObject private var consoleLinks = ConsoleLinkInbox.shared
 
     private var selection: Binding<WorkspaceSelection?> {
         Binding(get: { navigation.selection }, set: { navigation.select($0) })
@@ -132,7 +163,7 @@ struct WorkspaceNavigationView: View {
                 if let project = navigation.project {
                     SessionListView(
                         project: project, selection: selection, hostDeviceId: navigation.hostDeviceId,
-                        includeUnattributedSessions: hosts.contains { $0.deviceId == navigation.hostDeviceId && $0.type == "desktop" }
+                        includeUnattributedSessions: navigation.includesUnattributedSessions
                     )
                         .id(project.id)
                         .toolbar {
@@ -179,6 +210,17 @@ struct WorkspaceNavigationView: View {
         .onChange(of: appState.databaseManager.map(ObjectIdentifier.init)) { previous, _ in
             // Initial database hydration must retain a cold-launch notification intent.
             if previous != nil { navigation.clearAccount() }
+        }
+        // Universal links, nimbalyst://console, transcript links: select the page like a row.
+        .onReceive(consoleLinks.routes) { route in
+            // Act on the emitted value: `pending` still holds the previous one here.
+            navigation.select(.pages(route))
+            consoleLinks.acknowledge(route)
+        }
+        .alert("Personal pages live on your desktop", isPresented: $consoleLinks.personalPageRequested) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text("Open this page in Nimbalyst on your computer.")
         }
     }
 
@@ -227,9 +269,15 @@ struct WorkspaceNavigationView: View {
             case .document(let documentId):
                 #if canImport(UIKit)
                 if let document = try? database.document(byId: documentId) {
-                    DocumentEditorView(document: document)
-                        .id(documentId)
+                    // Wiki links select the target like a sidebar row, so the
+                    // detail stack never pushes.
+                    WikiAwareDocumentView(document: document) { navigation.select(.document($0)) }
+                    .id(documentId)
                 }
+                #endif
+            case .pages(let route):
+                #if canImport(UIKit)
+                PagesView(route: route, onLeave: { navigation.leaveDetail() }, onKeepRoute: { navigation.select(.pages($0)) })
                 #endif
             case nil:
                 ContentUnavailableView("Select a session or file", systemImage: "sidebar.left")

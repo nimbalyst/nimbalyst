@@ -152,7 +152,7 @@ export interface SessionIndexEntry {
   /** Structural type: 'session' | 'workstream' | 'blitz' */
   sessionType?: string;
   /** Parent session ID for workstream/worktree hierarchy (plaintext UUID) */
-  parentSessionId?: string;
+  parentSessionId?: string | null;
   /** Worktree ID for git worktree association (plaintext UUID) */
   worktreeId?: string;
   /** Stable device ID of the host that owns this session. */
@@ -160,7 +160,7 @@ export interface SessionIndexEntry {
   /** Agent role marker (e.g. 'meta-agent', 'standard'). Plaintext - drives mobile meta-agent grouping. */
   agentRole?: string;
   /** Meta-agent parent session ID for spawned children (plaintext UUID). Drives mobile meta-agent grouping. */
-  createdBySessionId?: string;
+  createdBySessionId?: string | null;
   /** Whether the session is archived */
   isArchived?: boolean;
   /** Whether the session is pinned */

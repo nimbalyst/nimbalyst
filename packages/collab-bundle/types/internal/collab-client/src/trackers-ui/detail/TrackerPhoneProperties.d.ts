@@ -1,5 +1,5 @@
 import React from 'react';
-import type { FieldDefinition } from '@nimbalyst/tracker-schema';
+import type { FieldDefinition } from '../../../../tracker-schema/src/browser';
 import { type TeamMemberOption } from '../../../../runtime/src/plugins/TrackerPlugin/components/TrackerFieldEditor';
 export declare function TrackerPhoneProperties({ fields, values, editing, onChange, teamMembers }: {
     fields: FieldDefinition[];

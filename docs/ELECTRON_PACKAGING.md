@@ -15,17 +15,17 @@ The second job matters because several integrations depend on code or binaries t
 
 The package-level build commands live in `packages/electron/package.json`.
 
-- `npm run build`
+- `pnpm run build`
   Builds the Electron main/preload bundles and the worker bundle.
-- `npm run build:extensions`
+- `pnpm run build:extensions`
   Builds bundled extensions that ship with the app.
-- `npm run validate:extra-resources`
+- `pnpm run validate:extra-resources`
   Runs the pre-pack normalization and validation steps.
-- `npm run build:mac`, `build:mac:local`, `build:mac:notarized`
+- `pnpm run build:mac`, `build:mac:local`, `build:mac:notarized`
   macOS packaging entry points. These route through `build/build-with-env.js`.
-- `npm run build:win`, `build:win:arm64`, `build:win:all`
+- `pnpm run build:win`, `build:win:arm64`, `build:win:all`
   Windows packaging entry points.
-- `npm run build:linux`
+- `pnpm run build:linux`
   Linux packaging entry point.
 
 `build/build-with-env.js` exists mainly for macOS packaging. Before invoking `electron-builder`, it reruns:
@@ -33,7 +33,7 @@ The package-level build commands live in `packages/electron/package.json`.
 - `build/normalize-extra-resources.js`
 - `build/validate-extra-resources.js`
 
-This is important because mac build entry points go through the wrapper directly rather than through `npm run validate:extra-resources`.
+This is important because mac build entry points go through the wrapper directly rather than through `pnpm run validate:extra-resources`.
 
 ## Packaged Layout
 
@@ -147,7 +147,7 @@ File: `packages/electron/build/normalize-extra-resources.js`
 
 Problem:
 
-- npm workspace hoisting is not stable enough to assume every dependency always lands in the same `node_modules` directory.
+- Workspace hoisting is not stable enough to assume every dependency always lands in the same `node_modules` directory.
 - `electron-builder` treats `extraResources.from` as literal paths.
 - If a dependency is present at the alternate workspace location, packaging can silently skip it or fail validation.
 

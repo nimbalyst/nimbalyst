@@ -27,6 +27,7 @@ import {
   useRole,
 } from '@floating-ui/react';
 
+import { windowControlsClearance } from '../../../ui/floating/windowControlsClearance';
 import type { CommentMember } from '../types';
 
 /** Stable id for the option at `index`, for `aria-activedescendant`. */
@@ -71,6 +72,7 @@ export function CommentMentionPicker({
       offset(4),
       flip({ padding: 8 }),
       shift({ padding: 8 }),
+      windowControlsClearance(),
       size({
         padding: 8,
         apply: ({ availableHeight, elements }) => {

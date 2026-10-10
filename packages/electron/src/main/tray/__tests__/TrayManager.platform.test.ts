@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
 // Hoisted mocks. The vi.mock factories below reference these handles, so they
@@ -82,6 +83,7 @@ vi.mock('electron', () => ({
   app: {
     dock: undefined,
     on: vi.fn(),
+    removeListener: vi.fn(),
     isReady: () => true,
   },
   nativeImage: {
@@ -185,6 +187,8 @@ vi.mock('../TrayManager', async (importOriginal) => {
 
 import { TrayManager, groupTraySessions } from '../TrayManager';
 import { STALL_AFTER_MS } from '../fleetSnapshot';
+import { windows } from '../../window/windowState';
+import { initializeApplicationWindowRecovery } from '../../window/ApplicationWindowRecovery';
 
 function resetSingleton() {
   // Reset the private singleton between tests so each it() runs against a
@@ -198,6 +202,78 @@ function stubPlatform(value: NodeJS.Platform): () => void {
   Object.defineProperty(process, 'platform', { value, configurable: true });
   return () => Object.defineProperty(process, 'platform', original);
 }
+
+describe('tray window recovery (#1609)', () => {
+  let dispose: () => void;
+  let preferred: unknown = null;
+  const createManager = vi.fn();
+  beforeEach(() => {
+    vi.clearAllMocks();
+    resetSingleton();
+    windows.clear();
+    preferred = null;
+    dispose = initializeApplicationWindowRecovery({
+      isQuitting: () => false,
+      getPreferredProjectWindow: () => preferred as never,
+      getWorkspaceManagerWindow: () => null,
+      createWorkspaceManagerWindow: createManager,
+      wasWorkspaceManagerManuallyClosed: () => false,
+    });
+  });
+
+  afterEach(() => {
+    dispose();
+    windows.clear();
+    browserGetAllWindows.mockReturnValue([]);
+  });
+
+  it('opens the managed project instead of a hidden strip or capture window', () => {
+    const auxiliary = { isDestroyed: () => false, show: vi.fn(), focus: vi.fn(), webContents: { send: vi.fn() } };
+    const project = {
+      isDestroyed: () => false, isMinimized: () => true,
+      restore: vi.fn(), show: vi.fn(), focus: vi.fn(),
+    };
+    browserGetAllWindows.mockReturnValue([auxiliary, project]);
+    windows.set(1, project as never);
+
+    TrayManager.getInstance().handleOpenApp();
+
+    expect(auxiliary.show).not.toHaveBeenCalled();
+    expect(project.restore).toHaveBeenCalled();
+    expect(project.show).toHaveBeenCalled();
+    expect(project.focus).toHaveBeenCalled();
+  });
+
+  it('starts a new session in the most recently focused project, not the oldest', () => {
+    const project = () => ({
+      isDestroyed: () => false, isMinimized: () => false,
+      show: vi.fn(), focus: vi.fn(), webContents: { send: vi.fn() },
+    });
+    const older = project();
+    const recent = project();
+    windows.set(1, older as never);
+    windows.set(2, recent as never);
+    preferred = recent;
+
+    TrayManager.getInstance().handleNewSession();
+
+    expect(recent.webContents.send).toHaveBeenCalledWith('tray:new-session');
+    expect(older.webContents.send).not.toHaveBeenCalled();
+  });
+
+  it.each(['open', 'new-session', 'session'])('opens Project Manager for %s when only auxiliary windows remain', (action) => {
+    const auxiliary = { isDestroyed: () => false, show: vi.fn(), focus: vi.fn(), webContents: { send: vi.fn() } };
+    browserGetAllWindows.mockReturnValue([auxiliary]);
+    findWindowByWorkspaceMock.mockReturnValue(null);
+    const tm = TrayManager.getInstance();
+    if (action === 'open') tm.handleOpenApp();
+    else if (action === 'new-session') tm.handleNewSession();
+    else tm.handleSessionClick('s1', '/workspace/a');
+
+    expect(createManager).toHaveBeenCalledOnce();
+    expect(auxiliary.show).not.toHaveBeenCalled();
+  });
+});
 
 describe('TrayManager - cross-platform initialisation (#39)', () => {
   let restorePlatform: () => void = () => {};
@@ -334,6 +410,7 @@ describe('TrayManager unread actions', () => {
     const tm = TrayManager.getInstance();
     const targetWindow = {
       isDestroyed: vi.fn(() => false),
+      isMinimized: vi.fn(() => false),
       show: vi.fn(),
       focus: vi.fn(),
       webContents: { send: vi.fn() },

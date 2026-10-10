@@ -102,6 +102,13 @@ export interface ClaudeCodePromptOptions {
    * replaces. Providers that do not have the bug leave it undefined.
    */
   gitContext?: string;
+  /**
+   * Standing instructions for this one session, from its
+   * `metadata.sessionDirective` (written by whoever created the session: an
+   * automation, an extension). Appended last, never replacing the normal
+   * prompt. Same freeze requirement as `gitContext`: resolve once per session.
+   */
+  sessionDirective?: string;
   isVoiceMode?: boolean;
   voiceModeCodingAgentPrompt?: {
     prepend?: string;
@@ -142,6 +149,7 @@ export function buildClaudeCodeSystemPrompt(options: ClaudeCodePromptOptions): s
     toolReferenceStyle = 'claude',
     worktreePath,
     gitContext,
+    sessionDirective,
     isVoiceMode = false,
     voiceModeCodingAgentPrompt,
     planTrackingEnabled = false,
@@ -308,6 +316,10 @@ The user is interacting via voice mode. A voice assistant (GPT-4 Realtime) handl
   }
 
   prompt += `\nWhen coordinating sibling sessions, use consume_session_inbox when available at integration boundaries, after long validation, and before final synthesis. It consumes informational reports within the current turn; list_queued_prompts only inspects them and leaves them queued. Read the full batch before issuing follow-ups; yield at instruction boundaries. Never poll an empty inbox. Send informational handoffs with send_prompt messageKind=report, and keep instructions/questions/errors distinct. Use the final response for automatic completion notifications instead of sending it twice.\n`;
+  const directive = sessionDirective?.trim();
+  if (directive) {
+    prompt += `\n${directive}\n`;
+  }
   return prompt + `
 </addendum>
 `;
@@ -318,7 +330,13 @@ export type MetaAgentWorkflowPreset = 'default' | 'implement-review-test' | 'res
 export function buildMetaAgentSystemPrompt(
   style: ToolReferenceStyle = 'claude',
   workflowPreset: MetaAgentWorkflowPreset = 'default',
-  options?: { provider?: string; model?: string; modelDisplayName?: string }
+  options?: {
+    provider?: string;
+    model?: string;
+    modelDisplayName?: string;
+    /** See `ClaudeCodePromptOptions.sessionDirective`; an orchestrator can carry standing instructions too. */
+    sessionDirective?: string;
+  }
 ): string {
   // Meta-agent tools fold onto the deferred `nimbalyst-host` server, and
   // update_session_meta onto the eager core `nimbalyst` (MCP consolidation Phase 5).
@@ -445,7 +463,18 @@ If any step surfaces issues, repeat the loop until resolved.
 5. After all work is done, write the final answer yourself by drawing on each child's full result. Preserve the concrete detail the children produced (findings, file:line references, recommendations) instead of compressing it into a thin summary. Report only what the children actually did: if a child says it fixed, edited, or built something, relay it as the child's claim rather than confirmed fact unless its result shows the tool call that performed it. End with remaining risks and next steps.`;
   }
 
-  return prompt;
+  return appendSessionDirective(prompt, options?.sessionDirective);
+}
+
+/**
+ * Append a session directive to a whole system prompt (the meta-agent persona,
+ * or whatever prompt a tool-loop provider was handed). A blank directive
+ * returns the prompt unchanged.
+ */
+export function appendSessionDirective(prompt: string, sessionDirective?: string): string {
+  const directive = sessionDirective?.trim();
+  if (!directive) return prompt;
+  return prompt ? `${prompt}\n\n${directive}` : directive;
 }
 
 /**

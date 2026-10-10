@@ -38,8 +38,15 @@ import type {
   BrokerPayloads,
   BrokerResults,
   HostToBackendMessage,
+  SessionsSettledEventName,
 } from './extensionBackendRpc';
-import type { ExtensionPermissionId } from '@nimbalyst/extension-sdk';
+import type {
+  BackendPanelsService,
+  BackendSessionsService,
+  BackendToolCallContext,
+  ExtensionPermissionId,
+  OwnedSessionSettledEvent,
+} from '@nimbalyst/extension-sdk';
 
 type SendToHost = (msg: BackendToHostMessage) => void;
 
@@ -216,6 +223,20 @@ export interface BackendServices {
     name: string;
     args: Record<string, unknown>;
   }): Promise<unknown>;
+
+  /**
+   * Create, drive, and read AI sessions this extension owns. Every call is
+   * scoped by the host to this module's extension and bound workspace.
+   * Requires: `ai-sessions`.
+   */
+  sessions: BackendSessionsService;
+
+  /**
+   * Update this extension's own panel gutter buttons while the panel is not
+   * mounted. The host rejects panel ids the manifest does not declare.
+   * No permission required.
+   */
+  panels: BackendPanelsService;
 }
 
 class PermissionDeniedInRuntime extends Error {
@@ -393,8 +414,49 @@ function buildServices(ctx: BackendRuntimeContext, send: SendToHost): BackendSer
       return res.result;
     },
 
+    sessions: buildSessionsService(assert, send),
+
+    panels: {
+      setGutterBadge: async (panelId, value, options) => {
+        await makeBrokerCall(send, 'panels', { panelId, value, tone: options?.tone });
+      },
+    },
+
     // Per Q7: emitEvent / requestPermission / askUserQuestion are NOT injected
     // here. Providers that need them layer their own bridge atop this object.
+  };
+}
+
+// Must equal SESSIONS_SETTLED_EVENT in extensionBackendRpc (type-checked).
+const SESSIONS_SETTLED: SessionsSettledEventName = 'sessions:settled';
+
+function buildSessionsService(
+  assert: (permissionId: ExtensionPermissionId) => void,
+  send: SendToHost
+): BackendSessionsService {
+  // Every op round-trips as one `sessions` broker call; the host derives the
+  // owning extension and workspace from the runtime, never from these args.
+  const call = async <T>(op: string, args: unknown): Promise<T> => {
+    assert('ai-sessions');
+    const res = await makeBrokerCall(send, 'sessions', { op, args });
+    return res.result as T;
+  };
+  return {
+    create: (options) => call('create', options),
+    createWorkstream: (options) => call('createWorkstream', options),
+    sendPrompt: (sessionId, prompt) => call('sendPrompt', { sessionId, prompt }),
+    getStatus: (sessionId) => call('getStatus', { sessionId }),
+    getResult: (sessionId) => call('getResult', { sessionId }),
+    listOwned: (options) => call('listOwned', options ?? {}),
+    getUsage: (options) => call('getUsage', options),
+    updateOwnerMetadata: (sessionId, patch) => call('updateOwnerMetadata', { sessionId, patch }),
+    notifyUser: (options) => call('notifyUser', options),
+    onSettled: (handler) => {
+      assert('ai-sessions');
+      return _subscribeBrokerEvent(SESSIONS_SETTLED, (payload) =>
+        handler(payload as OwnedSessionSettledEvent)
+      );
+    },
   };
 }
 
@@ -439,6 +501,8 @@ export type BackendMethod =
 export interface BackendMethodContext {
   services: BackendServices;
   signal: AbortSignal;
+  /** Present when the method runs as an MCP tool: who called it. */
+  call?: BackendToolCallContext;
 }
 
 export interface BackendActivateContext {
@@ -509,6 +573,7 @@ async function handleRequest(
     const ret = (method as BackendMethod)(msg.params, {
       services,
       signal: abort.signal,
+      ...(msg.callContext ? { call: msg.callContext } : {}),
     });
 
     if (msg.streaming) {

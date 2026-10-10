@@ -3,9 +3,18 @@ import { atomFamily } from '../debug/atomFamilyRegistry';
 
 export type ActionLaunch = 'same-session' | 'new-session';
 
+export type ActionEffort = 'low' | 'medium' | 'high' | 'xhigh' | 'max' | 'ultra';
+
+/** Model and effort an action pins; applied to the composer pickers on insert. */
+export interface ActionPickerSettings {
+  model?: string;
+  effort?: ActionEffort;
+}
+
 export interface ActionLaunchConfig {
   launch: ActionLaunch;
   model?: string;
+  effort?: ActionEffort;
   foreground: boolean;
   autoSubmit: boolean;
   worktree: boolean;
@@ -26,7 +35,8 @@ export interface ActionPromptParseDiagnostic {
     | 'unknown-action-key'
     | 'invalid-launch'
     | 'invalid-bool'
-    | 'invalid-model';
+    | 'invalid-model'
+    | 'invalid-effort';
   label: string;
   message: string;
 }

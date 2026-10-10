@@ -20,14 +20,14 @@ The proxy records byte-exact segment sizes plus estimated tokens at four UTF-8 b
 - Run commands from the repository root.
 - Be signed in with the current Claude Code CLI. The default binary is `~/.claude/local/claude`; set `CLAUDE_BIN` to override it.
 - Start Nimbalyst before using `nimbalyst` mode. The runner reads the live, user-only `mcp-endpoint.json` descriptor and does not modify Claude settings.
-- Install repository dependencies so `npx tsx` can import the runtime prompt.
+- Install repository dependencies so `pnpm exec tsx` can import the runtime prompt.
 
 ## Validate configuration without an API call
 
 ```bash
 for profile in raw addendum core platform-mcp extension-mcp all-mcp plugins full; do
   CLAUDE_CONTEXT_MODEL=haiku CLAUDE_CONTEXT_MAX_BUDGET_USD=0.25 \
-    npx tsx scripts/manual-tests/claude-context-overhead/run.ts "$profile" --dry-run
+    pnpm exec tsx scripts/manual-tests/claude-context-overhead/run.ts "$profile" --dry-run
 done
 ```
 
@@ -49,7 +49,7 @@ for repeat in 1 2; do
     CLAUDE_CONTEXT_MODEL=haiku \
     CLAUDE_CONTEXT_MAX_BUDGET_USD=0.25 \
     CLAUDE_CONTEXT_RUN_LABEL="r$repeat" \
-      npx tsx scripts/manual-tests/claude-context-overhead/run.ts "$profile"
+      pnpm exec tsx scripts/manual-tests/claude-context-overhead/run.ts "$profile"
   done
 done
 ```

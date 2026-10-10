@@ -11,6 +11,7 @@ import { useSetAtom } from 'jotai';
 import { useTheme } from '../../hooks/useTheme';
 import { createExtensionStorage } from '@nimbalyst/runtime';
 import { createPanelHost, type PanelHostOptions } from './PanelHostImpl';
+import { PanelSessionTranscript } from './PanelSessionTranscript';
 import type { RegisteredPanel } from './PanelRegistry';
 import { setExtensionPanelAIContextAtom } from '../../store/atoms/extensionPanels';
 
@@ -154,10 +155,11 @@ function PanelContainerInner({
       onOpenPanel: openPanel,
       onClose: closePanel,
       onThemeChange,
+      sessionTranscript: panel.sessionAccess ? PanelSessionTranscript : undefined,
     };
 
     return createPanelHost(options);
-  }, [panel.id, panel.extensionId, panel.aiSupported, workspacePath, storage, openFile, openPanel, closePanel, onThemeChange]);
+  }, [panel.id, panel.extensionId, panel.aiSupported, panel.sessionAccess, workspacePath, storage, openFile, openPanel, closePanel, onThemeChange]);
 
   // Subscribe to AI context changes and sync to atom
   useEffect(() => {

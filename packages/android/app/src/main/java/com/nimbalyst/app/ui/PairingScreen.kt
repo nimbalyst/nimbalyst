@@ -9,8 +9,8 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.PhotoCamera
 import androidx.compose.material.icons.filled.QrCodeScanner
-import androidx.compose.material3.Button
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -21,11 +21,15 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import com.nimbalyst.app.R
 import com.nimbalyst.app.analytics.AnalyticsManager
 import com.nimbalyst.app.pairing.PairingCredentials
 import com.nimbalyst.app.pairing.QRPairingData
+import com.nimbalyst.app.ui.components.NimbalystPrimaryButton
+import com.nimbalyst.app.ui.theme.NimbalystColors
 
 @Composable
 fun PairingScreen(
@@ -33,13 +37,14 @@ fun PairingScreen(
 ) {
     var showQrScanner by remember { mutableStateOf(false) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
+    val invalidQrMessage = stringResource(R.string.pairing_invalid_qr)
 
     if (showQrScanner) {
         PairingQrScanner(
             onScanned = { rawValue ->
                 val parsed = QRPairingData.parse(rawValue)
                 if (parsed == null) {
-                    errorMessage = "Invalid pairing QR code. Try again."
+                    errorMessage = invalidQrMessage
                     showQrScanner = false
                 } else {
                     AnalyticsManager.setDistinctIdFromPairing(parsed.analyticsId)
@@ -60,54 +65,60 @@ fun PairingScreen(
         return
     }
 
+    // Layout mirrors iOS PairingView: icon, title, instructions, error, then the scan button.
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .padding(32.dp),
+            .padding(horizontal = 40.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
         Icon(
             imageVector = Icons.Default.QrCodeScanner,
             contentDescription = null,
-            modifier = Modifier.size(80.dp),
-            tint = MaterialTheme.colorScheme.primary
+            modifier = Modifier.size(72.dp),
+            tint = NimbalystColors.primary
         )
 
         Spacer(modifier = Modifier.height(24.dp))
 
         Text(
-            text = "Pair with Nimbalyst",
+            text = stringResource(R.string.pairing_title),
             style = MaterialTheme.typography.headlineMedium,
             textAlign = TextAlign.Center
         )
 
-        Spacer(modifier = Modifier.height(12.dp))
+        Spacer(modifier = Modifier.height(16.dp))
 
         Text(
-            text = "Open Nimbalyst on your Mac, go to Settings, and scan the pairing QR code.",
+            text = stringResource(R.string.pairing_instructions),
             style = MaterialTheme.typography.bodyLarge,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             textAlign = TextAlign.Center
         )
-
-        Spacer(modifier = Modifier.height(32.dp))
-
-        Button(
-            onClick = { showQrScanner = true },
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            Text("Scan QR Code")
-        }
 
         errorMessage?.let { error ->
             Spacer(modifier = Modifier.height(16.dp))
             Text(
                 text = error,
                 style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.error,
+                color = NimbalystColors.error,
                 textAlign = TextAlign.Center
             )
         }
+
+        Spacer(modifier = Modifier.height(32.dp))
+
+        NimbalystPrimaryButton(
+            text = stringResource(R.string.pairing_scan_button),
+            onClick = {
+                errorMessage = null
+                showQrScanner = true
+            },
+            modifier = Modifier.fillMaxWidth(),
+            leading = {
+                Icon(Icons.Default.PhotoCamera, contentDescription = null, modifier = Modifier.size(20.dp))
+            }
+        )
     }
 }

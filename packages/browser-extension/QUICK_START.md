@@ -6,8 +6,8 @@ Get the Nimbalyst Web Clipper extension up and running in 5 minutes.
 
 ```bash
 cd packages/browser-extension
-npm install
-npm run build
+pnpm install
+pnpm run build
 ```
 
 This creates a `dist/` directory with the packaged extension.
@@ -101,9 +101,9 @@ This is expected - the Nimbalyst app needs to implement the protocol handler (Ph
 - Pin the extension to make it always visible
 
 **Build errors**:
-- Make sure you ran `npm install` first
-- Check that Node.js 18+ is installed
-- Try `npm run clean && npm run build`
+- Make sure you ran `pnpm install` first
+- Check that Node.js 24 is installed (see `.nvmrc`)
+- Try `pnpm run clean && pnpm run build`
 
 **Context menus don't appear**:
 - Reload the extension in `chrome://extensions/`

@@ -239,7 +239,8 @@ const TOOL_DESCRIPTORS = [
     name: 'remember',
     description:
       'Append a durable fact to memory (ADD-only; never overwrites). Use for ' +
-      'preferences, decisions, and project truths worth recalling later. ' +
+      'preferences and project truths worth recalling later; record a project ' +
+      'decision where the project records decisions, not only here. ' +
       'Secrets are redacted before storage, and a page that is mostly ' +
       'credentials is refused outright (returns ok:false).',
     inputSchema: {

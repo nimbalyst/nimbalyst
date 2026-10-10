@@ -21,8 +21,8 @@
     "yjs": ">=13.5.42"
   },
   "devDependencies": {
-    "@nimbalyst/extension-sdk": "*",
+    "@nimbalyst/extension-sdk": "workspace:*",
     "typescript": "^5.0.0",
-    "yjs": ">=13.5.42"
+    "yjs": "13.6.32"
   }
 }

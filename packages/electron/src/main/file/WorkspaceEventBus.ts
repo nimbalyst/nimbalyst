@@ -11,6 +11,7 @@ import { ATOMIC_WRITE_TEMP_SUFFIX, RECOVERY_SNAPSHOT_INFIX } from './safeFileWri
 import { logger } from '../utils/logger';
 import { shouldExcludeDir } from '../utils/fileFilters';
 import { isPathInWorkspace } from '../utils/workspaceDetection';
+import { validateWorkspaceWatchPath } from './workspaceWatchSafety';
 
 /**
  * .git is always ignored — it's an internal data structure, never user content.
@@ -92,39 +93,6 @@ function pathContainsExcludedDir(relativePath: string): boolean {
   if (/(?:^|\/)nimbalyst-local\/attachments(?:\/|$)/.test(normalized)) return true;
   const segments = normalized.split('/').filter(Boolean);
   return segments.some((segment) => shouldExcludeDir(segment));
-}
-
-// ---------------------------------------------------------------------------
-// Workspace path safety
-// ---------------------------------------------------------------------------
-
-/**
- * Minimum depth from filesystem root for a workspace path to be watchable.
- * Paths like `/`, `/Users`, `/home` are too broad and would flood FSEvents.
- */
-const MIN_WORKSPACE_DEPTH = 3;
-
-/**
- * Returns the depth of a path from the filesystem root.
- * `/` = 0, `/Users` = 1, `/Users/ghinkle` = 2, `/Users/ghinkle/project` = 3
- */
-function pathDepth(p: string): number {
-  const resolved = path.resolve(p);
-  const segments = resolved.split(path.sep).filter(Boolean);
-  return segments.length;
-}
-
-/**
- * Validate that a workspace path is safe to watch recursively.
- * Returns an error message if unsafe, or null if safe.
- */
-function validateWorkspacePath(workspacePath: string): string | null {
-  const depth = pathDepth(workspacePath);
-  if (depth < MIN_WORKSPACE_DEPTH) {
-    return `Workspace path "${workspacePath}" is too shallow (depth ${depth}, minimum ${MIN_WORKSPACE_DEPTH}). ` +
-      `Watching this path would monitor the entire filesystem and freeze the process.`;
-  }
-  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -470,7 +438,7 @@ export async function subscribe(
     await existing.lifecycle.start();
     return;
   }
-  const validationError = validateWorkspacePath(key);
+  const validationError = validateWorkspaceWatchPath(key);
   if (validationError) throw new Error(validationError);
 
   const entry: BusEntry = {

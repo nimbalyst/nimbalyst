@@ -9,7 +9,7 @@
 
 import React, { useMemo, useEffect, useCallback } from 'react';
 import { DocumentHeaderRegistry } from './DocumentHeaderRegistry';
-import type { DocumentHeaderComponentProps } from './DocumentHeaderRegistry';
+import type { DocumentHeaderComponentProps, DocumentHeaderProvider } from './DocumentHeaderRegistry';
 
 interface DocumentHeaderContainerProps {
   filePath: string;
@@ -114,12 +114,21 @@ export const DocumentHeaderContainer: React.FC<DocumentHeaderContainerProps> = (
     trackerFieldCapabilities,
   };
 
+  const render = (provider: DocumentHeaderProvider) => {
+    const Component = provider.component;
+    return <Component key={provider.id} {...componentProps} />;
+  };
+  const barProviders = providers.filter((provider) => !provider.inline);
+  const inlineProviders = providers.filter((provider) => provider.inline);
+
   return (
-    <div className="document-header-container w-full bg-[var(--nim-bg)] border-b border-[var(--nim-border)]">
-      {providers.map(provider => {
-        const Component = provider.component;
-        return <Component key={provider.id} {...componentProps} />;
-      })}
-    </div>
+    <>
+      {barProviders.length > 0 && (
+        <div className="document-header-container w-full bg-[var(--nim-bg)] border-b border-[var(--nim-border)]">
+          {barProviders.map(render)}
+        </div>
+      )}
+      {inlineProviders.map(render)}
+    </>
   );
 };

@@ -8,7 +8,7 @@
  * receives one field at a time exactly as it did when this was a form.
  */
 import React from 'react';
-import type { TrackerDataModel } from '@nimbalyst/tracker-schema';
+import type { TrackerDataModel } from '../../../../../tracker-schema/src/browser';
 import type { TeamMemberOption } from './TrackerFieldEditor';
 import type { RelationshipCandidate } from './RelationshipFieldEditor';
 import './StatusBarSlider.css';

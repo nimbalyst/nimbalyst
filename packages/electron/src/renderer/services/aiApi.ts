@@ -3,6 +3,8 @@ import { logger } from '../utils/logger';
 import type { DocumentContext, Message, SessionData } from '@nimbalyst/runtime/ai/server/types';
 import { editorRegistry } from '@nimbalyst/runtime/ai/EditorRegistry';
 import { applyAgentDiff } from './agentDocumentAccess';
+import { store } from '@nimbalyst/runtime/store';
+import { activeWorkspacePathAtom } from '../store/atoms/openProjects';
 
 const LOG_PREVIEW_LENGTH = 400;
 
@@ -273,7 +275,9 @@ class AIApi {
         }
 
         const result = await applyAgentDiff(targetFilePath, data.replacements, {
-          workspacePath: data.workspacePath,
+          // Without a workspace the other-project check is skipped, so fall
+          // back to this window's, as the MCP applyDiff handler does.
+          workspacePath: data.workspacePath ?? store.get(activeWorkspacePathAtom) ?? undefined,
           ...(data.agent ? { agent: data.agent } : {}),
         });
         logger.api.info('Renderer applyDiff result', result);

@@ -23,8 +23,8 @@ cd packages/electron
 CURRENT_VERSION=$(node -p "require('./package.json').version")
 echo "Current version: $CURRENT_VERSION"
 
-# Bump version using npm
-npm version $RELEASE_TYPE --no-git-tag-version
+# Bump version
+pnpm version $RELEASE_TYPE --no-git-tag-version --no-git-checks
 
 # Get new version
 NEW_VERSION=$(node -p "require('./package.json').version")
@@ -33,8 +33,9 @@ echo "New version: $NEW_VERSION"
 # Go back to root
 cd ../..
 
-# Update root package-lock.json
-npm install --package-lock-only
+# Keep pnpm-lock.yaml in sync (workspace links do not record versions, so this
+# is normally a no-op; it fails loudly if a manifest drifted)
+pnpm install --lockfile-only
 
 # Check if CHANGELOG.md exists
 if [ ! -f "CHANGELOG.md" ]; then
@@ -97,7 +98,7 @@ awk '
 COMMIT_NOTES=$(echo "$RELEASE_NOTES" | sed '/^<!--/d')
 
 # Create commit with release notes
-git add packages/electron/package.json package-lock.json CHANGELOG.md
+git add packages/electron/package.json pnpm-lock.yaml CHANGELOG.md
 git commit -m "Release v$NEW_VERSION
 
 $COMMIT_NOTES"

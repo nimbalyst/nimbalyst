@@ -1,7 +1,7 @@
 /**
  * Tracker data model system exports
  */
-export * from '@nimbalyst/tracker-schema';
+export * from '../../../../../tracker-schema/src/browser';
 export * from './trackerCreatePayload';
 export * from './trackerRelationships';
 export * from './trackerCollections';

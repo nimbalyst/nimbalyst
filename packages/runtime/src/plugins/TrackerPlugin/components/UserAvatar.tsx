@@ -36,8 +36,8 @@ export const UserAvatar: React.FC<UserAvatarProps> = ({
       displayName = identity.split('@')[0];
     }
   } else {
-    displayName = identity.displayName;
-    email = identity.email;
+    email = identity.email ?? null;
+    displayName = identity.displayName || email?.split('@')[0] || 'Unknown';
   }
 
   const initials = getInitials(displayName);

@@ -66,6 +66,28 @@ describe('LiveTrackerReferenceRenderer', () => {
     expect(peek?.textContent).not.toContain('Owned by platform');
   });
 
+  it('never shows a keyless item\'s raw id inline in the chip appearance', async () => {
+    const fake = fakeDataSource();
+    const resolver = createTrackerReferenceResolver(fake.source, { schema: fakeSchema() });
+    const competitor = item({ id: 'competitor_1787921177066_w5a0b2', type: 'entity', title: 'Reddit', status: 'active' });
+    const keyed = item({ id: 'ent-gateway', issueKey: 'KB-1', type: 'entity', title: 'API gateway', status: 'active' });
+
+    const { container } = render(
+      <TrackerReferenceResolverProvider resolver={resolver}>
+        <LiveTrackerReferenceRenderer referenceKey={competitor.id} nodeKey="n1" view="chip" />
+        <LiveTrackerReferenceRenderer referenceKey="KB-1" nodeKey="n2" view="chip" />
+      </TrackerReferenceResolverProvider>,
+    );
+    await act(() => fake.release([competitor, keyed]));
+
+    const chips = [...container.querySelectorAll('.tracker-reference-live-chip')];
+    const parts = (chip: Element) =>
+      [...chip.querySelectorAll('.tracker-reference-live-chip-key, .tracker-reference-live-chip-title')].map((el) => el.textContent);
+    expect(chips.map(parts)).toEqual([['Reddit'], ['KB-1', 'API gateway']]);
+    expect(chips[0].textContent).not.toContain(competitor.id);
+    expect(chips[0].getAttribute('title')).toContain(competitor.id);
+  });
+
   it('renders a card from live resolver data and follows item changes', async () => {
     const fake = fakeDataSource();
     const onOpenItem = vi.fn();

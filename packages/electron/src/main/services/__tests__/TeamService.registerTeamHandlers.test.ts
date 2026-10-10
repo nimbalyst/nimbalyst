@@ -118,6 +118,7 @@ vi.mock('../CollabBackupService', () => ({}));
 vi.mock('../TeamAuthBootstrap', () => ({ createTeamAuthBootstrap: (fn: unknown) => fn }));
 
 import {
+  canListProjectAccess,
   invalidateListTeamsCache,
   pendingInviteForEmail,
   registerTeamHandlers,
@@ -458,4 +459,14 @@ describe('team:list completeness', () => {
     expect(result).toMatchObject({ success: false, complete: false, teams: [{ orgId: 'org-b' }] });
   });
 
+});
+
+describe('projection sync project-access listing', () => {
+  it('only asks the admin-only endpoint for teams where the caller is an owner or admin', () => {
+    expect(canListProjectAccess({ teamProjectId: 'p', role: 'admin' })).toBe(true);
+    expect(canListProjectAccess({ teamProjectId: 'p', role: 'owner' })).toBe(true);
+    // A member gets a 403 on every sync; the role-derived projection stands instead.
+    expect(canListProjectAccess({ teamProjectId: 'p', role: 'member' })).toBe(false);
+    expect(canListProjectAccess({ teamProjectId: null, role: 'admin' })).toBe(false);
+  });
 });

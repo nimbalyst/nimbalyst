@@ -8,12 +8,14 @@ import {
   isSubjectKindAllowed,
   predicateValueShapeAcceptsFieldType,
   validatePredicateDefinition,
-  validatePredicateQualifiers,
   validatePredicateRegistry,
   validateTrackerTypePredicateDeclarations,
   type PredicateDefinition,
 } from '../predicateRegistry.js';
-import { classifyPredicateRegistryChanges } from '../trackerPredicateRegistryChangeClassifier.js';
+import {
+  classifyPredicateRegistryChanges,
+  isDestructivePredicateRegistryChange,
+} from '../trackerPredicateRegistryChangeClassifier.js';
 import { parsePredicateRegistryYAML, serializePredicateRegistryYAML } from '../YAMLParser.js';
 import { validateCitationLocator } from '../citationLocator.js';
 
@@ -26,12 +28,6 @@ const INTEGRATES_WITH: PredicateDefinition = {
   valueShape: 'entity',
   direction: 'directed',
   transitive: false,
-  qualifiers: {
-    via: { type: 'relationship', targetTrackerTypes: ['connector'], required: true },
-    operations: { type: 'array', itemType: 'string', required: true },
-    authentication: { type: 'string' },
-    testedClientVersion: { type: 'string' },
-  },
 };
 
 function codes(issues: ReadonlyArray<{ code: string }>): string[] {
@@ -71,7 +67,7 @@ describe('predicate declarations', () => {
     expect(parsed.predicates).toEqual([INTEGRATES_WITH]);
   });
 
-  it('is strict in both directions and collects every issue in one pass', () => {
+  it('collects every issue in one pass and reports unknown keys as warnings', () => {
     const result = validatePredicateDefinition({
       id: 'Integrates With',
       label: 'integrates with',
@@ -79,33 +75,39 @@ describe('predicate declarations', () => {
       valueShape: 'thing',
       direction: 'directed',
       inversLabel: 'typo',
-      qualifiers: {
-        via: { type: 'relationship', targetTrackerType: ['connector'] },
-        mode: { type: 'select' },
-      },
     });
 
     expect(result.valid).toBe(false);
-    expect(codes(result.issues).sort()).toEqual([
+    expect(codes(result.issues)).toEqual([
       'PREDICATE_INVALID_FIELD', // id grammar
       'PREDICATE_INVALID_FIELD', // empty subjectKinds
       'PREDICATE_INVALID_FIELD', // unknown valueShape
-      'PREDICATE_MISSING_FIELD', // select with no options
-      'PREDICATE_UNKNOWN_FIELD', // inversLabel
-      'PREDICATE_UNKNOWN_FIELD', // targetTrackerType
-    ].sort());
+    ]);
+    expect(result.warnings?.map(w => w.path)).toEqual(['inversLabel']);
   });
 
-  it('rejects a property on the wrong qualifier type', () => {
-    const result = validatePredicateDefinition({
-      ...INTEGRATES_WITH,
-      qualifiers: { operations: { type: 'string', itemType: 'string' } },
-    });
-    expect(result.valid).toBe(false);
-    expect(result.issues[0]).toMatchObject({
-      code: 'PREDICATE_INVALID_FIELD',
-      path: 'qualifiers.operations.itemType',
-    });
+  it('keeps a predicate that carries a key from a newer release', () => {
+    const result = validatePredicateRegistry([{ ...INTEGRATES_WITH, range: ['product'] }]);
+    expect(result.valid).toBe(true);
+    expect(result.predicates?.[0]).toMatchObject({ id: 'integrates-with', range: ['product'] });
+    expect(result.warnings).toEqual([
+      expect.objectContaining({ code: 'PREDICATE_UNKNOWN_FIELD', path: '[0].range' }),
+    ]);
+  });
+
+  it('treats a leftover qualifiers block as an unknown key and drops it on write', () => {
+    // Relations carry no qualifiers. A registry written before that must still
+    // load, even when its qualifier declarations would once have been rejected.
+    const legacy = { ...INTEGRATES_WITH, qualifiers: { mode: { type: 'select' } } };
+    const result = validatePredicateRegistry([legacy]);
+    expect(result.valid).toBe(true);
+    expect(result.warnings).toEqual([
+      expect.objectContaining({ code: 'PREDICATE_UNKNOWN_FIELD', path: '[0].qualifiers' }),
+    ]);
+
+    const rewritten = serializePredicateRegistryYAML(result.predicates ?? []);
+    expect(rewritten).not.toContain('qualifiers');
+    expect(parsePredicateRegistryYAML(rewritten).predicates).toEqual([INTEGRATES_WITH]);
   });
 
   it('reports a duplicate id on the later entry rather than letting one win silently', () => {
@@ -166,53 +168,6 @@ describe('subject kinds and value shape', () => {
   });
 });
 
-describe('qualifier values', () => {
-  it('rejects an omitted bag when a qualifier is required', () => {
-    const result = validatePredicateQualifiers(INTEGRATES_WITH, undefined);
-    expect(result.valid).toBe(false);
-    expect(codes(result.issues)).toEqual(['PREDICATE_QUALIFIER_REQUIRED', 'PREDICATE_QUALIFIER_REQUIRED']);
-  });
-
-  it('accepts a complete bag and rejects an unknown qualifier', () => {
-    const complete = {
-      via: { itemId: 'itm_connector' },
-      operations: ['read', 'write'],
-      authentication: 'oauth',
-    };
-    expect(validatePredicateQualifiers(INTEGRATES_WITH, complete).valid).toBe(true);
-
-    const typo = validatePredicateQualifiers(INTEGRATES_WITH, { ...complete, operation: ['read'] });
-    expect(typo.issues).toEqual([
-      expect.objectContaining({ code: 'PREDICATE_QUALIFIER_UNKNOWN', path: 'operation' }),
-    ]);
-  });
-
-  it('checks the declared value type, not merely presence', () => {
-    const result = validatePredicateQualifiers(INTEGRATES_WITH, {
-      via: { notAnItem: true },
-      operations: ['read', 7],
-    });
-    expect(codes(result.issues)).toEqual([
-      'PREDICATE_QUALIFIER_INVALID_TYPE',
-      'PREDICATE_QUALIFIER_INVALID_TYPE',
-    ]);
-  });
-
-  it('rejects a select value outside its options', () => {
-    const predicate: PredicateDefinition = {
-      id: 'supports-capability',
-      label: 'supports',
-      subjectKinds: ['*'],
-      valueShape: 'entity',
-      direction: 'directed',
-      qualifiers: { support: { type: 'select', options: ['yes', 'partial', 'no', 'unknown'] } },
-    };
-    expect(validatePredicateQualifiers(predicate, { support: 'partial' }).valid).toBe(true);
-    expect(codes(validatePredicateQualifiers(predicate, { support: 'maybe' }).issues))
-      .toEqual(['PREDICATE_QUALIFIER_INVALID_OPTION']);
-  });
-});
-
 describe('write-time validation through the registry', () => {
   function registryWithPredicate(): TrackerDataModelRegistry {
     const registry = new TrackerDataModelRegistry();
@@ -221,29 +176,12 @@ describe('write-time validation through the registry', () => {
     return registry;
   }
 
-  it('rejects a statement missing a required qualifier, with the shared code', () => {
+  it('accepts a statement as the named relation alone, ignoring a stale qualifier bag', () => {
     const registry = registryWithPredicate();
-    const result = registry.validate('product', {
-      integrations: [{ itemId: 'itm_notion', qualifiers: { operations: ['read'] } }],
-    });
-    expect(result.valid).toBe(false);
-    expect(result.errors).toEqual([
-      expect.objectContaining({
-        code: 'PREDICATE_QUALIFIER_REQUIRED',
-        field: 'integrations[0].qualifiers.via',
-      }),
-    ]);
-  });
-
-  it('accepts a complete statement', () => {
-    const registry = registryWithPredicate();
-    const result = registry.validate('product', {
-      integrations: [{
-        itemId: 'itm_notion',
-        qualifiers: { via: { itemId: 'itm_webhook' }, operations: ['read', 'write'] },
-      }],
-    });
-    expect(result.valid).toBe(true);
+    expect(registry.validate('product', { integrations: [{ itemId: 'itm_notion' }] }).valid).toBe(true);
+    expect(registry.validate('product', {
+      integrations: [{ itemId: 'itm_notion', qualifiers: { operations: 7 } }],
+    }).valid).toBe(true);
   });
 
   it('reports an unknown predicate once for the field, not once per entry', () => {
@@ -259,12 +197,7 @@ describe('write-time validation through the registry', () => {
 
   it('rejects statements once the registry narrows subjectKinds under a valid field', () => {
     const registry = registryWithPredicate();
-    const statement = {
-      integrations: [{
-        itemId: 'itm_notion',
-        qualifiers: { via: { itemId: 'itm_webhook' }, operations: ['read'] },
-      }],
-    };
+    const statement = { integrations: [{ itemId: 'itm_notion' }] };
     expect(registry.validate('product', statement).valid).toBe(true);
 
     registry.setPredicates([{ ...INTEGRATES_WITH, subjectKinds: ['capability'] }]);
@@ -293,7 +226,7 @@ describe('registry change classification', () => {
     expect(classify([{ ...INTEGRATES_WITH, label: 'talks to' }]).classification).toBe('none');
   });
 
-  it('classifies the three cases contract 4.1 names as destructive', () => {
+  it('classifies a removal and a subjectKinds narrowing as destructive', () => {
     expect(classify([]).changes).toEqual([
       expect.objectContaining({ kind: 'predicate-removed', predicateId: 'integrates-with' }),
     ]);
@@ -301,60 +234,41 @@ describe('registry change classification', () => {
     expect(classify([{ ...INTEGRATES_WITH, subjectKinds: [] }]).changes).toEqual([
       expect.objectContaining({ kind: 'subject-kinds-narrowed' }),
     ]);
-
-    const required = classify([{
-      ...INTEGRATES_WITH,
-      qualifiers: {
-        ...INTEGRATES_WITH.qualifiers,
-        authentication: { type: 'string', required: true },
-      },
-    }]);
-    expect(required.classification).toBe('destructive');
-    expect(required.changes).toEqual([
-      expect.objectContaining({ kind: 'qualifier-made-required', qualifierName: 'authentication' }),
-    ]);
   });
 
-  it('classifies an optional addition, a widening, and a relaxation as additive', () => {
+  it('classifies a subjectKinds widening as additive', () => {
     expect(classify([{ ...INTEGRATES_WITH, subjectKinds: ['product', 'capability'] }]).classification)
       .toBe('additive');
-
-    const added = classify([{
-      ...INTEGRATES_WITH,
-      qualifiers: { ...INTEGRATES_WITH.qualifiers, notes: { type: 'string' } },
-    }]);
-    expect(added.classification).toBe('additive');
-    expect(added.changes).toEqual([
-      expect.objectContaining({ kind: 'qualifier-added', qualifierName: 'notes' }),
-    ]);
-
-    const relaxed = classify([{
-      ...INTEGRATES_WITH,
-      qualifiers: { ...INTEGRATES_WITH.qualifiers, operations: { type: 'array', itemType: 'string' } },
-    }]);
-    expect(relaxed.classification).toBe('additive');
   });
 
-  it('classifies a NEW required qualifier as destructive, not as an addition', () => {
-    const result = classify([{
-      ...INTEGRATES_WITH,
-      qualifiers: { ...INTEGRATES_WITH.qualifiers, tier: { type: 'string', required: true } },
-    }]);
-    expect(result.classification).toBe('destructive');
+  it('classifies objectKinds narrowing as destructive and widening as additive, absent meaning any', () => {
+    const scoped = (objectKinds?: string[]) => ({ ...INTEGRATES_WITH, objectKinds });
+    const between = (before?: string[], after?: string[]) =>
+      classifyPredicateRegistryChanges([scoped(before)], [scoped(after)]);
+
+    const narrowed = between(['technology', 'person'], ['technology']);
+    expect(narrowed.classification).toBe('destructive');
+    expect(narrowed.changes).toEqual([
+      expect.objectContaining({ kind: 'object-kinds-narrowed', previousValue: ['technology', 'person'], nextValue: ['technology'] }),
+    ]);
+    expect(isDestructivePredicateRegistryChange(narrowed.changes[0]!)).toBe(true);
+
+    // Adding a restriction where there was none narrows; removing one widens.
+    expect(between(undefined, ['technology']).changes).toEqual([
+      expect.objectContaining({ kind: 'object-kinds-narrowed', previousValue: ['*'] }),
+    ]);
+    expect(between(['technology'], undefined).classification).toBe('additive');
+    expect(between(['technology'], ['technology', 'person']).changes).toEqual([
+      expect.objectContaining({ kind: 'object-kinds-widened' }),
+    ]);
+    // Absent and ['*'] are the same contract.
+    expect(between(undefined, ['*']).classification).toBe('none');
   });
 
-  it('classifies an unprovable qualifier diff as destructive by default', () => {
-    const result = classify([{
-      ...INTEGRATES_WITH,
-      qualifiers: {
-        ...INTEGRATES_WITH.qualifiers,
-        via: { type: 'relationship', targetTrackerTypes: ['connector', 'product'], required: true },
-      },
-    }]);
-    expect(result.classification).toBe('destructive');
-    expect(result.changes).toEqual([
-      expect.objectContaining({ kind: 'qualifier-definition-changed', qualifierName: 'via' }),
-    ]);
+  it('ignores a retired qualifiers block on either side', () => {
+    const legacy = { ...INTEGRATES_WITH, qualifiers: { via: { type: 'string', required: true } } } as PredicateDefinition;
+    expect(classifyPredicateRegistryChanges([legacy], [INTEGRATES_WITH]).classification).toBe('none');
+    expect(classifyPredicateRegistryChanges([INTEGRATES_WITH], [legacy]).classification).toBe('none');
   });
 
   it('classifies a direction flip as destructive: every stored edge re-reads', () => {

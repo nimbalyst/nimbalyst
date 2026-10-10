@@ -1,7 +1,7 @@
 #!/bin/bash
 # Creates a Docker container for E2E testing with proper node_modules isolation.
 #
-# CRITICAL: Two layers of protection prevent npm ci from corrupting host binaries:
+# CRITICAL: Two layers of protection prevent pnpm install from corrupting host binaries:
 # 1. Anonymous Docker volumes for each node_modules dir (belt)
 # 2. --cap-add=SYS_ADMIN so post-create.sh can tmpfs-mount any node_modules
 #    that weren't covered by a volume flag (suspenders)
@@ -19,7 +19,7 @@ CONTAINER_NAME="${1:-nimbalyst-e2e-$(basename "$(pwd)")-$(date +%s)}"
 
 # Build volume flags for ALL node_modules directories (root + every workspace package)
 NODE_MODULES_VOLUMES="-v /workspaces/nimbalyst/node_modules"
-for pkg_json in $(find packages -name package.json -maxdepth 3 -not -path "*/node_modules/*"); do
+for pkg_json in $(find packages -name package.json -maxdepth 4 -not -path "*/node_modules/*"); do
   pkg_dir=$(dirname "$pkg_json")
   NODE_MODULES_VOLUMES="$NODE_MODULES_VOLUMES -v /workspaces/nimbalyst/$pkg_dir/node_modules"
 done
@@ -33,7 +33,7 @@ docker run -d \
   --cap-add=SYS_ADMIN \
   -v "$(pwd):/workspaces/nimbalyst" \
   $NODE_MODULES_VOLUMES \
-  -v nimbalyst-npm-cache:/root/.npm \
+  -v nimbalyst-pnpm-store:/root/.local/share/pnpm/store \
   -v nimbalyst-playwright-cache:/root/.cache/ms-playwright \
   -e DISPLAY=:99 \
   -e PLAYWRIGHT=1 \

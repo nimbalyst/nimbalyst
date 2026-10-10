@@ -41,6 +41,8 @@ final class WebSocketClient: @unchecked Sendable {
     var onMessageAsync: (@MainActor @Sendable (Data) async -> Void)?
     var onConnectedAsync: (@MainActor @Sendable () async -> Void)?
     var onError: (@MainActor @Sendable (String) -> Void)?
+    /// Why the socket last dropped, for diagnostics (the voice conversation record).
+    private(set) var lastDisconnectReason: String?
 
     /// Callback for connection state changes.
     var onConnectionStateChanged: (@MainActor (Bool) -> Void)?
@@ -164,6 +166,8 @@ final class WebSocketClient: @unchecked Sendable {
 
     @MainActor
     private func performConnect() {
+        // A live socket torn down here was dropped by the app, not the network.
+        if ready { lastDisconnectReason = "The app restarted the sync connection." }
         reconnectWork?.cancel()
         reconnectWork = nil
         readinessDeadline?.cancel()
@@ -374,6 +378,7 @@ final class WebSocketClient: @unchecked Sendable {
             self.readinessDeadline = nil
             self.stopDeviceAnnounceTimer()
             self.stopPings()
+            self.lastDisconnectReason = message
             self.onConnectionStateChanged?(false)
             self.onError?(message)
 

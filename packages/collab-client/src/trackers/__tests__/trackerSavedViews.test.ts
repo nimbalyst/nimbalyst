@@ -917,3 +917,7 @@ describe('the built-in Ready view', () => {
     expect(merged[0].builtIn).toBe(true);
   });
 });
+
+ it('keeps selected timeline fields when normalizing a view', () => {
+  expect(normalizeViewDefinition({ ...createDefaultViewDefinition(), timelineFields: { start: 'launchDate', end: 'dueDate' } }).timelineFields).toEqual({ start: 'launchDate', end: 'dueDate' });
+});

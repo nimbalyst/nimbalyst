@@ -6,6 +6,7 @@ import {
   type CollabDocsViewPreferences,
   type CollabDocumentTypeDescriptor,
   type CollabHost,
+  type CollabOpenOptions,
   type CollabOpenSource,
   type CollabPersonalStateCapability,
   type CollabPersonalStateRow,
@@ -19,6 +20,7 @@ import type {
   SharedDocument,
   SharedFolder,
 } from '@nimbalyst/collab-client/docs';
+import { TYPE_PAGE_DOCUMENT_PREFIX } from '@nimbalyst/collab-client/docs';
 import { store } from '@nimbalyst/runtime/store';
 import { errorNotificationService } from './ErrorNotificationService';
 import {
@@ -53,7 +55,7 @@ interface LegacyCollabDiscoveryState {
 
 export interface ElectronCollabHostOptions {
   scopeKey: string;
-  openArtifact?: (ref: CollabArtifactRef, source: CollabOpenSource) => void;
+  openArtifact?: (ref: CollabArtifactRef, source: CollabOpenSource, options?: CollabOpenOptions) => void;
 }
 
 type ElectronDocsCapability = CollabDocsCapability<
@@ -64,7 +66,10 @@ type ElectronDocsCapability = CollabDocsCapability<
 >;
 
 const DOCUMENT_PERSONAL_STATE_PREFIX = 'document:';
-let documentTypesAdapter: () => readonly CollabDocumentTypeDescriptor[] = () => [];
+// One shared empty list: `useSyncExternalStore` consumers compare snapshot
+// identity, and a fresh `[]` per call would re-render forever.
+const NO_DOCUMENT_TYPES: readonly CollabDocumentTypeDescriptor[] = [];
+let documentTypesAdapter: () => readonly CollabDocumentTypeDescriptor[] = () => NO_DOCUMENT_TYPES;
 let documentTypesSubscribe: (cb: () => void) => () => void = () => () => undefined;
 let createDocumentAdapter: (input: CollabDocsCreateInput) => Promise<void> = async () => {
   throw new Error('Collaborative document creation is not registered');
@@ -80,7 +85,7 @@ export function registerElectronCollabDocumentTypes(
   documentTypesSubscribe = subscribe;
   return () => {
     if (documentTypesAdapter === adapter) {
-      documentTypesAdapter = () => [];
+      documentTypesAdapter = () => NO_DOCUMENT_TYPES;
       documentTypesSubscribe = () => () => undefined;
     }
   };
@@ -99,6 +104,17 @@ export function registerElectronCollabDocumentCreation(
     }
   };
 }
+
+/**
+ * The registered catalog and creation adapters, for the Personal pages host:
+ * one catalog for both sections, and one creation pipeline that branches on
+ * the scope it is given.
+ */
+export const electronCollabDocumentAdapters = {
+  documentTypes: (): readonly CollabDocumentTypeDescriptor[] => documentTypesAdapter(),
+  onDocumentTypesChanged: (cb: () => void): (() => void) => documentTypesSubscribe(cb),
+  createDocument: (input: CollabDocsCreateInput): Promise<void> => createDocumentAdapter(input),
+};
 
 function storedDocumentItemId(documentId: string): string {
   return `${DOCUMENT_PERSONAL_STATE_PREFIX}${documentId}`;
@@ -242,6 +258,7 @@ export class ElectronCollabHost implements CollabHost<ElectronDocsCapability> {
   private scopePromise: Promise<CollabScope> | null = null;
   private dataSource: ElectronCollabDocumentsDataSource | null = null;
   private dataSourcePromise: Promise<ElectronCollabDocumentsDataSource> | null = null;
+  private dataSourceGeneration = 0;
   private readonly scopeListeners = new Set<(scope: CollabScope | null) => void>();
   private openArtifactImpl?: ElectronCollabHostOptions['openArtifact'];
   readonly personalState = {
@@ -359,14 +376,17 @@ export class ElectronCollabHost implements CollabHost<ElectronDocsCapability> {
     };
   }
 
-  openArtifact(ref: CollabArtifactRef, source: CollabOpenSource): void {
+  openArtifact(ref: CollabArtifactRef, source: CollabOpenSource, options?: CollabOpenOptions): void {
     if (!this.openArtifactImpl) {
       throw new Error('This Electron host was created without a navigation adapter');
     }
-    this.openArtifactImpl(ref, source);
-    if (source === 'history' && ref.kind === 'document') {
-      store.set(historyDialogFileAtom, buildCollabUri(ref.scope.orgId, ref.documentId));
-    }
+    this.openArtifactImpl(ref, source, options);
+    if (source !== 'history') return;
+    // A typed page's body and a type page's prose are document rooms of their own.
+    const historyDocumentId = ref.kind === 'document' ? ref.documentId
+      : ref.kind === 'tracker' ? `tracker-content/${ref.trackerId}`
+        : ref.kind === 'type' ? `${TYPE_PAGE_DOCUMENT_PREFIX}${ref.typeId}` : null;
+    if (historyDocumentId) store.set(historyDialogFileAtom, buildCollabUri(ref.scope.orgId, historyDocumentId));
   }
 
   artifactUrl(ref: CollabArtifactRef): string | null {
@@ -376,6 +396,8 @@ export class ElectronCollabHost implements CollabHost<ElectronDocsCapability> {
     if (ref.kind === 'folder') {
       return buildSharedFolderDeepLink(ref.folderId, ref.scope.orgId);
     }
+    // A type page has no deep link yet.
+    if (ref.kind === 'type') return null;
     return buildTrackerDeepLink(ref.trackerId, ref.scope.orgId, { view: 'document' });
   }
 
@@ -442,11 +464,21 @@ export class ElectronCollabHost implements CollabHost<ElectronDocsCapability> {
    * The listener contract is identical to a project change.
    */
   invalidateScope(): void {
-    this.dataSource?.dispose();
     this.scopePromise = null;
+    this.releaseDataSource();
+    for (const listener of this.scopeListeners) listener(null);
+  }
+
+  /**
+   * Dispose the current source and forget it, so the next use builds a fresh
+   * one. The host outlives any one docs session; a session disposing the source
+   * must not leave the disposed instance for the next session to reuse.
+   */
+  private releaseDataSource(): void {
+    this.dataSourceGeneration += 1;
+    this.dataSource?.dispose();
     this.dataSource = null;
     this.dataSourcePromise = null;
-    for (const listener of this.scopeListeners) listener(null);
   }
 
   private async resolveCurrentScope(): Promise<CollabScope> {
@@ -532,7 +564,14 @@ export class ElectronCollabHost implements CollabHost<ElectronDocsCapability> {
   }
 
   private async ensureDataSource(): Promise<ElectronCollabDocumentsDataSource> {
-    this.dataSourcePromise ??= this.resolveScope().then((scope) => {
+    if (this.dataSourcePromise) return this.dataSourcePromise;
+    const generation = this.dataSourceGeneration;
+    this.dataSourcePromise = this.resolveScope().then((scope) => {
+      // Released while the scope resolved: the session that asked is gone.
+      // Retrying would build and connect a source nobody owns.
+      if (generation !== this.dataSourceGeneration) {
+        throw new Error('Data source was disposed while its scope resolved');
+      }
       const source = new ElectronCollabDocumentsDataSource({
         scope,
         getJwt: () => this.getTeamJwt(scope.orgId),
@@ -558,6 +597,8 @@ export class ElectronCollabHost implements CollabHost<ElectronDocsCapability> {
         let cancelled = false;
         void this.ensureDataSource().then((source) => {
           if (!cancelled) unsubscribe = source.subscribe(cb);
+        }, () => {
+          // Released before the source existed; that session is gone.
         });
         return () => {
           cancelled = true;
@@ -565,9 +606,10 @@ export class ElectronCollabHost implements CollabHost<ElectronDocsCapability> {
         };
       },
       command: async (command) => (await this.ensureDataSource()).command(command),
+      searchPages: async (query) => (await this.ensureDataSource()).searchPages?.(query) ?? null,
       status: () => this.dataSource?.status() ?? 'disconnected',
       dispose: () => {
-        this.dataSource?.dispose();
+        this.releaseDataSource();
       },
     };
   }

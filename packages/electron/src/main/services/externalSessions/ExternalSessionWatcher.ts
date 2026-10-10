@@ -37,8 +37,14 @@ export class ExternalSessionWatcher {
     cwd: string;
     route: ExternalScope;
     refs: ExternalSessionRef[];
+    /** Discovery-time stamps: taken before the read, so a later append never looks settled. */
+    stamps: Map<string, string>;
     next: number;
   };
+  // Files whose last ingest could learn nothing more, keyed to the stamp they had.
+  // Discovery is the recovery path for missed events; revisiting these every
+  // pass re-read and re-queried every log in the project.
+  private settled = new Map<string, string>();
   constructor(private readonly deps: Dependencies) {}
 
   start(): Promise<void> {
@@ -79,6 +85,7 @@ export class ExternalSessionWatcher {
     await this.running;
     await Promise.all(this.deps.sources.map((source) => source.dispose()));
     this.changed.clear();
+    this.settled.clear();
     this.pendingDiscovery = undefined;
     this.routes.clear();
     this.roots.clear();
@@ -207,10 +214,18 @@ export class ExternalSessionWatcher {
       if (!this.pendingDiscovery) {
         const { source, cwd, route } =
           pairs[this.discoveryIndex++ % pairs.length];
-        const refs = await source.discover(cwd);
+        const stamps = new Map<string, string>();
+        const refs = await source.discover(cwd, {
+          skipUnchanged: (file, { inode, size, mtimeMs }) => {
+            const stamp = `${inode}:${size}:${mtimeMs}`;
+            if (this.settled.get(file) === stamp) return true;
+            stamps.set(file, stamp);
+            return false;
+          },
+        });
         pagesRead++;
         if (!eligible()) return;
-        this.pendingDiscovery = { source, cwd, route, refs, next: 0 };
+        this.pendingDiscovery = { source, cwd, route, refs, stamps, next: 0 };
       }
       const page = this.pendingDiscovery;
       const route = routes.get(page.cwd);
@@ -240,7 +255,15 @@ export class ExternalSessionWatcher {
           );
           if (result.hasMore && this.changed.size < 512)
             this.changed.add(ref.filePath);
+          const stamp = page.stamps.get(ref.filePath);
+          this.settled.delete(ref.filePath);
+          if (result.settled && stamp) {
+            this.settled.set(ref.filePath, stamp);
+            if (this.settled.size > 8192)
+              this.settled.delete(this.settled.keys().next().value!);
+          }
         } catch (error) {
+          this.settled.delete(ref.filePath);
           logger.main.warn(
             "[ExternalSessions] Import batch failed; next scoped scan retries",
             error

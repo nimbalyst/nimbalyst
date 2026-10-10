@@ -1,0 +1,15 @@
+{
+  "type": "projectSyncRequest",
+  "files": [
+    {
+      "syncId": "sync-a",
+      "contentHash": "hash-a",
+      "lastModifiedAt": 1790000001000,
+      "hasYjs": false,
+      "yjsSeq": 0
+    }
+  ],
+  "confirm": [
+    "sync-unanswered"
+  ]
+}

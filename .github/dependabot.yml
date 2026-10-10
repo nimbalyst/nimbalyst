@@ -6,8 +6,11 @@ version: 2
 # PRs are opened ungrouped -- one per advisory per manifest -- which in a
 # 13-workspace monorepo is the PR volume that gets a bot ignored.
 updates:
-  # Root npm workspaces tree. One lockfile covers every package listed in the
-  # root `workspaces` array, so a single entry covers all of them.
+  # Root pnpm workspace (Dependabot's `npm` ecosystem also handles pnpm). One
+  # pnpm-lock.yaml covers every project listed in pnpm-workspace.yaml,
+  # including @nimbalyst/memory-engine, which used to sit outside the npm
+  # workspaces and needed its own entry, and packages/browser-extension and
+  # packages/cloudflare-sandbox, which used to keep separate npm lockfiles.
   - package-ecosystem: npm
     directory: /
     schedule:
@@ -15,21 +18,6 @@ updates:
     open-pull-requests-limit: 0
     groups:
       npm-security:
-        applies-to: security-updates
-        patterns:
-          - '*'
-
-  # @nimbalyst/memory-engine sits one level below the `packages/extensions/*`
-  # workspace glob, so it is NOT an npm workspace and the root lockfile does not
-  # cover it. Without its own entry its advisories go unreported -- this is the
-  # manifest that carried a high-severity js-yaml alert nobody was seeing.
-  - package-ecosystem: npm
-    directory: /packages/extensions/nimbalyst-memory/engine
-    schedule:
-      interval: weekly
-    open-pull-requests-limit: 0
-    groups:
-      memory-engine-security:
         applies-to: security-updates
         patterns:
           - '*'

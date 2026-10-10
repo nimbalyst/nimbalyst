@@ -13,6 +13,7 @@ import React, { useCallback, useMemo, useState } from 'react';
 import { getShowInFileBrowserLabel } from '@nimbalyst/runtime';
 import {
   useFloating,
+  autoUpdate,
   FloatingPortal,
   useDismiss,
   useHover,
@@ -24,7 +25,7 @@ import {
   size,
   type VirtualElement,
 } from '@floating-ui/react';
-import { windowControlsClearance } from '@nimbalyst/runtime/ui/floating/windowControlsClearance';
+import { clearWindowControls, getWindowControlsZones, windowControlsClearance } from '@nimbalyst/runtime/ui/floating/windowControlsClearance';
 import { useAtom, useAtomValue, useSetAtom, useStore } from 'jotai';
 import { OrgSwitcher } from './OrgSwitcher';
 import {
@@ -41,6 +42,8 @@ import {
   projectActivitySummaryAtom,
 } from '../store/atoms/sessionActivity';
 import { generateWorkspaceAccentColor } from './WorkspaceSummaryHeader';
+import { requestConfirmation } from '../dialogs/requestConfirmation';
+import { errorNotificationService } from '../services/ErrorNotificationService';
 import './ProjectRail.css';
 
 const REVEAL_LABEL = getShowInFileBrowserLabel();
@@ -278,7 +281,10 @@ export function ProjectRail() {
 
   const handleOpenAddMenu = useCallback(() => {
     if (atCap) {
-      window.alert('The project limit is eight per window. Close a project or enable Allow unlimited projects in Settings > Advanced.');
+      errorNotificationService.showWarning(
+        'Project limit reached',
+        'The project limit is eight per window. Close a project or enable Allow unlimited projects in Settings > Advanced.',
+      );
       return;
     }
     refreshRecents();
@@ -294,9 +300,11 @@ export function ProjectRail() {
       // the prompt when closing an inactive rail project.
       const streaming = activity.get(project.path)?.streaming.size ?? 0;
       if (streaming > 0) {
-        const proceed = window.confirm(
-          `${project.name} has ${streaming} streaming session${streaming === 1 ? '' : 's'}. Close anyway? Sessions will be paused.`
-        );
+        const proceed = await requestConfirmation({
+          title: 'Close project',
+          message: `${project.name} has ${streaming} streaming session${streaming === 1 ? '' : 's'}. Close anyway? Sessions will be paused.`,
+          confirmLabel: 'Close project',
+        });
         if (!proceed) return;
       }
 
@@ -342,12 +350,11 @@ export function ProjectRail() {
   } = useFloating({
     open: addMenuOpen,
     onOpenChange: setAddMenuOpen,
-    // `right-start` grows the menu downward from the top of the `+` button.
-    // The old `right-end` grew it upward, so with two or more recents it was
-    // taller than the space above the button and `shift()` clamped it to the
-    // top of the window — beside the traffic lights and ~140px away from the
-    // button that opened it, which read as "the + did nothing" (GitHub #1096).
-    placement: 'right-start',
+    // The Add button stays at the bottom of the rail. Align the menu's
+    // bottom with it, and track size changes as recent folders load.
+    placement: 'right-end',
+    strategy: 'fixed',
+    whileElementsMounted: autoUpdate,
     middleware: [
       offset(8),
       flip({ padding: 8 }),
@@ -355,9 +362,12 @@ export function ProjectRail() {
       windowControlsClearance(),
       size({
         padding: 8,
-        apply({ availableHeight, elements, middlewareData }) {
-          const pushed = middlewareData.windowControlsClearance?.pushed ?? 0;
-          elements.floating.style.maxHeight = `${Math.max(0, availableHeight - pushed)}px`;
+        apply({ availableHeight, elements, x, rects }) {
+          // Reserve the controls band from the viewport's padded top, not
+          // from the menu's current y: bottom alignment makes y depend on
+          // height, so subtracting the last push can cause a resize loop.
+          const reserved = clearWindowControls(x, 8, rects.floating.width, getWindowControlsZones()) - 8;
+          elements.floating.style.maxHeight = `${Math.max(0, availableHeight - reserved)}px`;
           elements.floating.style.overflowY = 'auto';
         },
       }),

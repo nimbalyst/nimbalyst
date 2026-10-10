@@ -1,0 +1,142 @@
+# Knowledge graph label pack: market (opt-in).
+#
+# For projects that track the landscape they decide in: products, the markets
+# they sit in, who makes them, what they compete on, and dated facts about them.
+# Needs the core pack. Its predicates (in-market, made-by, competes-with and
+# the dated facts) are in `predicates.yaml` next to this file.
+#
+# `organization` is defined by the core pack; the entry here EXTENDS it with the
+# organization facts. When a label already exists, wiki setup unions its
+# `properties`, `factBox` and `expects` with the pack's and keeps every other
+# key as the project has it.
+#
+# `factBox` is the order a page's fact box shows. On a product page the maker
+# box shows the first three entries of the organization's `factBox`.
+labels:
+  - id: product
+    label: Product
+    pluralLabel: Products
+    description: Software or a service someone ships.
+    icon: inventory_2
+    role: page
+    properties: [website, in-market, made-by, competes-with, lifecycle, pricing, license, platforms, launched, users]
+    expects:
+      - { property: in-market, min: 1 }
+      - { property: made-by, min: 1 }
+    factBox: [lifecycle, pricing, license, platforms, launched, users]
+    template: |
+      ## What it is
+
+      ## Who uses it and why
+
+      ## Where it overlaps with us
+
+      ## Where it differs
+
+  - id: organization
+    label: Organization
+    pluralLabel: Organizations
+    description: A company, team, or institution. Title it by its common name; when that equals a product's name, use "Name (company)".
+    icon: apartment
+    role: page
+    properties: [website, annual-revenue, funding-total, valuation, last-round, headcount, founded, hq]
+    factBox: [annual-revenue, funding-total, headcount, valuation, last-round, founded, hq]
+    template: |
+      ## Who they are
+
+      ## Why they matter to us
+
+  - id: market
+    label: Market
+    pluralLabel: Markets
+    description: A category node in the market tree. Top-level markets sit under the Markets area; a submarket sets parent to its market. Products join one with an in-market claim.
+    icon: storefront
+    role: market-node
+    template: |
+      ## What defines this market
+
+      ## Who buys here, and what they choose on
+
+      ## Where we stand
+
+  - id: capability
+    label: Capability
+    pluralLabel: Capabilities
+    description: Something a product or system can do, independent of who ships it.
+    icon: bolt
+    role: page
+    template: |
+      ## What it lets someone do
+
+      ## Who has it, and how well
+
+  - id: technology
+    label: Technology
+    pluralLabel: Technologies
+    description: A library, runtime, model, or platform things are built on.
+    icon: memory
+    role: page
+    properties: [website, lifecycle, license]
+    template: |
+      ## What it is
+
+      ## Why it matters to us
+
+  - id: protocol
+    label: Protocol
+    pluralLabel: Protocols
+    description: A published way for systems to talk to each other.
+    icon: swap_horiz
+    role: page
+    properties: [website]
+    template: |
+      ## What it specifies
+
+      ## Who implements it
+
+  - id: format
+    label: Format
+    pluralLabel: Formats
+    description: A file or data format.
+    icon: description
+    role: page
+    properties: [website]
+    template: |
+      ## What it holds
+
+      ## Who reads and writes it
+
+  - id: connector
+    label: Connector
+    pluralLabel: Connectors
+    description: A mechanism one system uses to reach another -- an integration, plugin, or adapter.
+    icon: cable
+    role: page
+    properties: [provided-by, integrates-with]
+    template: |
+      ## What it connects
+
+      ## What operations it supports
+
+  # Kept loadable for pages written before labels. New pages use `connector`.
+  - id: configured-target
+    label: Configured target
+    pluralLabel: Configured targets
+    description: A specific configured endpoint a connector reaches. Kept for older pages; prefer connector for new ones.
+    icon: settings_ethernet
+    role: page
+    broader: [connector]
+
+# Keys `predicates.yaml` cannot carry yet, keyed by predicate id.
+claimProperties:
+  in-market:
+    range: [market]
+    facet: true
+  made-by:
+    range: [organization, person]
+    facet: true
+  competes-with:
+    range: [product, capability]
+  lifecycle:
+    options: [active, declining, unmaintained, defunct]
+    facet: true

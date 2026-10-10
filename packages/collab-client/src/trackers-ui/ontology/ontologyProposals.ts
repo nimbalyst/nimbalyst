@@ -5,11 +5,24 @@
  * Pure. `planOntologyChange` turns one change into the pages it touches, a
  * before/after of one of them, the tracker writes that apply it and the writes
  * that undo it -- so the preview a reader approves and the migration that runs
- * are computed by the same function. Schema changes (a kind option, a
- * predicate) cannot be written from the browser; an agent applies them and
- * marks the change, and data changes that need them wait until they exist.
+ * are computed by the same function. Schema changes (a label, a property, a
+ * broader link, a range) cannot be written from the browser; an agent applies
+ * them and marks the change, and data changes that need them wait until they
+ * exist. The label changes live in `ontologyLabelProposals.ts`.
+ *
+ * `add-kind-option`, `add-predicate` and `reclassify-pages` are retired:
+ * agents no longer draft them, but proposals that carry them still read, plan
+ * and render.
  */
+import type { LabelRegistry } from '@nimbalyst/tracker-schema';
 import { claimPredicate, entityKind, type HealthItem, type KnowledgeGraph } from './ontologyKnowledge';
+import {
+  LABEL_CHANGE_TYPES,
+  LABEL_SCHEMA_CHANGE_TYPES,
+  labelChangeProblem,
+  planLabelChange,
+  type LabelChange,
+} from './ontologyLabelProposals';
 import {
   isEmptyFieldValue,
   ontologyFieldValue,
@@ -48,6 +61,7 @@ export interface PredicateDraft {
 }
 
 export type OntologyChange = ChangeBase & (
+  | LabelChange
   | { type: 'add-kind-option'; value: string; label: string; icon?: string }
   | { type: 'reclassify-pages'; toKind: string; pageIds: string[] }
   | { type: 'add-market-node'; title: string; parentId?: string | null; summary?: string; aliases?: string[] }
@@ -72,11 +86,14 @@ export type OntologyChange = ChangeBase & (
 );
 
 export type OntologyChangeType = OntologyChange['type'];
+/** Types an agent may draft today. */
 export const CHANGE_TYPES: readonly OntologyChangeType[] = [
-  'add-kind-option', 'reclassify-pages', 'add-market-node', 'add-predicate', 'merge-duplicates', 'move-field-to-claims',
+  ...LABEL_CHANGE_TYPES, 'add-market-node', 'merge-duplicates', 'move-field-to-claims',
 ];
+/** No longer drafted; kept so proposals that carry them still read, plan and apply. */
+export const RETIRED_CHANGE_TYPES: readonly OntologyChangeType[] = ['add-kind-option', 'add-predicate', 'reclassify-pages'];
 /** Changes to the schema, which an agent applies; the rest are data the page writes. */
-export const SCHEMA_CHANGE_TYPES: ReadonlySet<OntologyChangeType> = new Set(['add-kind-option', 'add-predicate']);
+export const SCHEMA_CHANGE_TYPES: ReadonlySet<OntologyChangeType> = new Set([...LABEL_SCHEMA_CHANGE_TYPES, 'add-kind-option', 'add-predicate']);
 
 // ---------------------------------------------------------------------------
 // Reading and writing the JSON fields
@@ -91,6 +108,8 @@ function nonEmpty(value: unknown): value is string {
 }
 
 function changeProblem(change: Record<string, unknown>): string | null {
+  const labelProblem = labelChangeProblem(change);
+  if (labelProblem !== undefined) return labelProblem;
   switch (change.type) {
     case 'add-kind-option': return nonEmpty(change.value) && nonEmpty(change.label) ? null : 'needs value and label';
     case 'reclassify-pages': return nonEmpty(change.toKind) && isStringArray(change.pageIds) ? null : 'needs toKind and pageIds';
@@ -268,6 +287,10 @@ export interface PlanEnv {
   kindOptions: ReadonlySet<string>;
   predicateLabel: (id: string) => string;
   newId: () => string;
+  /** The label registry in force (the kind stand-in included), for label changes. */
+  labels?: LabelRegistry;
+  /** Whether an id is a declared predicate. */
+  isPredicate?: (id: string) => boolean;
 }
 
 type Ref = { itemId: string };
@@ -315,6 +338,14 @@ function claimExists<T extends OntologyRecordLike>(graph: KnowledgeGraph<T>, sub
 
 export function planOntologyChange<T extends OntologyRecordLike>(change: OntologyChange, graph: KnowledgeGraph<T>, env: PlanEnv): ChangePlan<T> {
   switch (change.type) {
+    case 'add-label':
+    case 'add-property':
+    case 'add-label-property':
+    case 'add-broader':
+    case 'extend-range':
+    case 'apply-label':
+    case 'split-label':
+      return planLabelChange(change, graph, env);
     case 'add-kind-option': {
       const exists = env.kindOptions.has(change.value);
       return emptyPlan(`Add the kind "${change.label}" (${change.value})`, {
@@ -333,7 +364,6 @@ export function planOntologyChange<T extends OntologyRecordLike>(change: Ontolog
           before: [{ label: predicate.id, value: used ? 'in use' : 'not declared' }],
           after: [
             { label: predicate.id, value: `${predicate.direction}, ${predicate.valueShape}${predicate.inverseLabel ? `, inverse "${predicate.inverseLabel}"` : ''}` },
-            ...Object.keys(predicate.qualifiers ?? {}).length ? [{ label: 'Qualifiers', value: Object.keys(predicate.qualifiers ?? {}).join(', ') }] : [],
           ],
         },
         satisfied: Boolean(change.appliedAt),
@@ -520,7 +550,7 @@ export interface ProposalRequestDraft {
 
 /**
  * What the Improve button writes: a `proposed` proposal with no changes and a
- * request naming the health check and the pages, which the knowledge skill's
+ * request naming the health check and the pages, which the wiki update skill's
  * agent workflow picks up and fills in.
  */
 export function proposalRequestFor<T extends OntologyRecordLike>(item: HealthItem<T>): ProposalRequestDraft {

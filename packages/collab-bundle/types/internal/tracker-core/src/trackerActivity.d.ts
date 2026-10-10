@@ -8,6 +8,15 @@
  * once here and both hosts call it.
  */
 /**
+ * Longest `oldValue` / `newValue` an entry stores. The trail shows at most 80
+ * characters of a value, but entries used to carry a whole description on each
+ * side, so a long plan edited a few times outgrew the 256 KiB shared-item limit
+ * and stopped syncing (NIM-7336).
+ */
+export declare const MAX_ACTIVITY_VALUE_CHARS = 500;
+/** Bound an activity value to `MAX_ACTIVITY_VALUE_CHARS`, marking the cut with an ellipsis. */
+export declare function capActivityValue(value: string | undefined): string | undefined;
+/**
  * Append or coalesce an activity entry in a tracker item's `data.activity`.
  *
  * Mutates `data` in place, and migrates a legacy `customFields.activity` array

@@ -33,6 +33,7 @@ import { logger } from '../utils/logger';
 import { getCollabSyncWsUrl } from '../utils/collabSyncUrl';
 import { findTeamForWorkspace, getOrgScopedIdentity, getOrgScopedJwt } from './TeamService';
 import { getCollabBackupService } from './CollabBackupService';
+import type { TeamJwt, TeamMemberId } from '@nimbalyst/runtime/auth/jwtScopes';
 import { windows, windowStates } from '../window/windowState';
 
 const IDLE_TTL_MS = 30_000;
@@ -217,19 +218,84 @@ async function applyViaOpenRenderer(
  * team's org key and JWT. Returns null when the workspace has no team or
  * the org envelope hasn't been shared yet.
  */
+/**
+ * Team identity for body rooms in the wrangler-backed collab E2E harness.
+ *
+ * `findTeamForWorkspace` fails closed without a Stytch session, and the harness
+ * deliberately has none, so every team item's body room was unavailable there.
+ * Installed only by `CollabTestIdentityHandlers` (gated on `!app.isPackaged`,
+ * `PLAYWRIGHT=1`, and a loopback server), which already hands the renderer the
+ * same org, member, and pre-authorized query for its own document rooms.
+ */
+export interface BodyRoomTestIdentity {
+  orgId: string;
+  serverUrl: string;
+  teamMemberId: TeamMemberId;
+  getJwt: () => Promise<TeamJwt>;
+  /** `test_user_id` / `test_org_id` the local worker authorizes on. */
+  urlExtraQuery: string;
+}
+
+let testIdentity: BodyRoomTestIdentity | null = null;
+
+export function setBodyRoomIdentityForTests(identity: BodyRoomTestIdentity | null): void {
+  testIdentity = identity;
+}
+
+interface BodyRoomIdentity {
+  orgId: string;
+  teamProjectId: string | null;
+  serverUrl: string;
+  teamMemberId: TeamMemberId;
+  getJwt: () => Promise<TeamJwt>;
+  createWebSocket: (url: string) => WebSocket;
+}
+
+async function resolveBodyRoomIdentity(workspacePath: string): Promise<BodyRoomIdentity | null> {
+  if (testIdentity) {
+    const { orgId, serverUrl, teamMemberId, getJwt, urlExtraQuery } = testIdentity;
+    return {
+      orgId,
+      teamProjectId: null,
+      serverUrl,
+      teamMemberId,
+      getJwt,
+      createWebSocket: (url) => {
+        const authorized = new URL(url);
+        for (const [key, value] of new URLSearchParams(urlExtraQuery)) authorized.searchParams.set(key, value);
+        return new WebSocket(authorized.toString());
+      },
+    };
+  }
+
+  const team = await findTeamForWorkspace(workspacePath);
+  if (!team) return null;
+  const { teamMemberId } = await getOrgScopedIdentity(team.orgId);
+  return {
+    orgId: team.orgId,
+    teamProjectId: team.teamProjectId ?? null,
+    serverUrl: getCollabSyncWsUrl(),
+    teamMemberId,
+    getJwt: () => getOrgScopedJwt(team.orgId),
+    // Node's bundled global WebSocket is unavailable on older Electron
+    // versions; use the `ws` package consistently with TrackerSyncManager.
+    createWebSocket: (url) => new WebSocket(url),
+  };
+}
+
 async function resolveConfig(
   workspacePath: string,
   itemId: string,
 ): Promise<DocumentSyncConfig | null> {
-  const team = await findTeamForWorkspace(workspacePath);
+  const team = await resolveBodyRoomIdentity(workspacePath);
   if (!team) return null;
 
   const documentId = `tracker-content/${itemId}`;
-  const { teamMemberId } = await getOrgScopedIdentity(team.orgId);
+  const { teamMemberId } = team;
 
   return {
-    serverUrl: getCollabSyncWsUrl(),
-    getJwt: () => getOrgScopedJwt(team.orgId),
+    serverUrl: team.serverUrl,
+    getJwt: team.getJwt,
     orgId: team.orgId,
     teamMemberId,
     documentId,
@@ -237,7 +303,7 @@ async function resolveConfig(
       getCollabBackupService().onContentChanged({
         documentId,
         orgId: team.orgId,
-        projectId: team.teamProjectId ?? null,
+        projectId: team.teamProjectId,
         documentType: 'markdown',
         title: itemId,
         relativePath: null,
@@ -256,9 +322,7 @@ async function resolveConfig(
         },
       });
     },
-    // Node's bundled global WebSocket is unavailable on older Electron
-    // versions; use the `ws` package consistently with TrackerSyncManager.
-    createWebSocket: ((url: string) => new WebSocket(url)) as unknown as DocumentSyncConfig['createWebSocket'],
+    createWebSocket: team.createWebSocket as unknown as DocumentSyncConfig['createWebSocket'],
     // No reviewGate -- the service-as-peer must never block on user
     // approval; it just lands the merge and exits.
   };

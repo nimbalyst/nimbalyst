@@ -11,6 +11,24 @@
 /** How many entries survive on an item before the oldest are dropped. */
 const MAX_ACTIVITY_ENTRIES = 100;
 
+/**
+ * Longest `oldValue` / `newValue` an entry stores. The trail shows at most 80
+ * characters of a value, but entries used to carry a whole description on each
+ * side, so a long plan edited a few times outgrew the 256 KiB shared-item limit
+ * and stopped syncing (NIM-7336).
+ */
+export const MAX_ACTIVITY_VALUE_CHARS = 500;
+
+/** Bound an activity value to `MAX_ACTIVITY_VALUE_CHARS`, marking the cut with an ellipsis. */
+export function capActivityValue(value: string | undefined): string | undefined {
+  if (value === undefined || value.length <= MAX_ACTIVITY_VALUE_CHARS) return value;
+  let end = MAX_ACTIVITY_VALUE_CHARS - 1;
+  // Never split a surrogate pair.
+  const last = value.charCodeAt(end - 1);
+  if (last >= 0xd800 && last <= 0xdbff) end -= 1;
+  return `${value.slice(0, end)}…`;
+}
+
 function normalizeIdentityValue(value: unknown): string | null {
   return typeof value === "string" && value.trim()
     ? value.trim().toLowerCase()
@@ -84,7 +102,7 @@ export function appendActivity(
 
   if (shouldCoalesce) {
     if (details?.field !== "content") {
-      lastEntry.newValue = details?.newValue;
+      lastEntry.newValue = capActivityValue(details?.newValue);
     }
     lastEntry.timestamp = now;
     data.activity =
@@ -99,8 +117,8 @@ export function appendActivity(
     authorIdentity,
     action,
     field: details?.field,
-    oldValue: details?.oldValue,
-    newValue: details?.newValue,
+    oldValue: capActivityValue(details?.oldValue),
+    newValue: capActivityValue(details?.newValue),
     timestamp: now,
     // Only present when supplied, so a host that never passes one still
     // writes the same bytes as before.

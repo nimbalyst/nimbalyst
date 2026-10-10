@@ -44,6 +44,15 @@
       "swiftSource": "packages/ios/NimbalystNative/Sources/Sync/IndexReplicationProtocol.swift"
     },
     {
+      "file": "projectConfig.desktop.json",
+      "tsType": "ProjectConfig",
+      "tsSource": "packages/runtime/src/sync/types.ts",
+      "direction": "desktopToIos",
+      "swiftType": "ProjectConfig",
+      "notes": "Decrypted plaintext of encryptedConfig on project index entries and projectConfigUpdate. actions and localWiki are omitted when the project has none; localWiki.types only when the wiki defines types.",
+      "swiftSource": "packages/ios/NimbalystNative/Sources/Sync/SyncProtocol.swift"
+    },
+    {
       "file": "settingsPayload.desktop.json",
       "tsType": "SyncedSettings",
       "tsSource": "packages/runtime/src/sync/types.ts",

@@ -1,6 +1,7 @@
 package com.nimbalyst.app.sync
 
 import com.google.gson.JsonObject
+import com.nimbalyst.app.data.PendingExecution
 
 data class ServerMessageEnvelope(
     val type: String
@@ -14,6 +15,8 @@ data class IndexSyncRequest(
 data class CreateSessionRequestMessage(
     val type: String = "createSessionRequest",
     val request: EncryptedCreateSessionRequest,
+    /** Routes the request to one host. Absent means broadcast to every desktop. */
+    val targetDeviceId: String? = null,
 )
 
 data class IndexUpdateMessage(
@@ -30,15 +33,58 @@ data class IndexUpdateEntry(
     val provider: String? = null,
     val model: String? = null,
     val mode: String? = null,
-    val messageCount: Int,
+    // Null means "unchanged": the server keeps its own count (COALESCE). A
+    // phone that has not synced a session's transcript must not send its
+    // local count of zero.
+    val messageCount: Int? = null,
     val lastMessageAt: Long,
     val createdAt: Long,
     val updatedAt: Long,
+    // Execution state belongs to the desktop. Null (omitted) leaves it alone.
     val isExecuting: Boolean? = null,
     val queuedPromptCount: Int? = null,
     val encryptedQueuedPrompts: List<EncryptedQueuedPrompt>? = null,
     val encryptedClientMetadata: String? = null,
     val clientMetadataIv: String? = null,
+    // The server only ever advances this (max), so a stale value is harmless.
+    val lastReadAt: Long? = null,
+    val sessionType: String? = null,
+    val parentSessionId: String? = null,
+    val worktreeId: String? = null,
+    val hostDeviceId: String? = null,
+    val agentRole: String? = null,
+    val createdBySessionId: String? = null,
+    val isArchived: Boolean? = null,
+    val isPinned: Boolean? = null,
+    val branchedFromSessionId: String? = null,
+    val branchPointMessageId: Int? = null,
+    val branchedAt: Long? = null,
+    val pendingExecution: PendingExecution? = null,
+    val hasPendingPrompt: Boolean? = null,
+)
+
+/**
+ * Patches only a row's client-metadata blob, read marker or execution flag.
+ * Unlike [IndexUpdateMessage], the server never touches title, model, mode or
+ * timestamps for it, so a stale local row cannot overwrite a newer one.
+ */
+data class IndexClientMetadataPatchMessage(
+    val type: String = "indexClientMetadataPatch",
+    val patch: IndexClientMetadataPatch,
+)
+
+data class IndexClientMetadataPatch(
+    val sessionId: String,
+    val encryptedClientMetadata: String? = null,
+    val clientMetadataIv: String? = null,
+    val isExecuting: Boolean? = null,
+    /** The server only ever advances this (max). */
+    val lastReadAt: Long? = null,
+)
+
+data class DeviceAnnounceMessage(
+    val type: String = "deviceAnnounce",
+    val device: DeviceInfo,
 )
 
 data class EncryptedQueuedPrompt(
@@ -48,6 +94,17 @@ data class EncryptedQueuedPrompt(
     val timestamp: Long,
     val source: String? = null,
     var encryptedAttachments: List<WireEncryptedAttachment>? = null,
+    /** Turn options the sender pinned for this prompt. */
+    val options: RemoteTurnOptions? = null,
+)
+
+/** Per-turn options carried with a queued prompt. Every field is optional on the wire. */
+data class RemoteTurnOptions(
+    /** "agent" or "planning". */
+    val mode: String? = null,
+    val model: String? = null,
+    /** Free-form, so a new level from a newer desktop still decodes. */
+    val effortLevel: String? = null,
 )
 
 data class WireEncryptedAttachment(
@@ -71,12 +128,41 @@ data class EncryptedCreateSessionRequest(
     val parentSessionId: String? = null,
     val provider: String? = null,
     val model: String? = null,
+    val agentRole: String? = null,
     val timestamp: Long,
+)
+
+data class CreateWorktreeRequestMessage(
+    val type: String = "createWorktreeRequest",
+    val request: CreateWorktreeRequest,
+    /** Routes the request to the project's host. Absent means broadcast. */
+    val targetDeviceId: String? = null,
+)
+
+data class CreateWorktreeRequest(
+    val requestId: String,
+    val encryptedProjectId: String,
+    val projectIdIv: String,
+    val timestamp: Long,
+)
+
+data class CreateWorktreeResponseBroadcast(
+    val type: String,
+    val response: CreateWorktreeResponse,
+    val fromConnectionId: String? = null,
+)
+
+data class CreateWorktreeResponse(
+    val requestId: String,
+    val success: Boolean,
+    val error: String? = null,
 )
 
 data class SessionSyncRequest(
     val type: String = "syncRequest",
     val sinceSeq: Int? = null,
+    /** Message id cursor; the server accepts either this or [sinceSeq]. */
+    val sinceId: String? = null,
 )
 
 data class RegisterPushTokenMessage(
@@ -105,6 +191,10 @@ data class SessionControlPayload(
     val payload: JsonObject? = null,
     val timestamp: Long,
     val sentBy: String = "mobile",
+    /** Stable id of this device, so the receiving host can filter its own echoes. */
+    val sentByDeviceId: String? = null,
+    /** The host that owns the session. Absent means broadcast to every desktop. */
+    val targetDeviceId: String? = null,
 )
 
 data class IndexSyncResponse(
@@ -117,12 +207,112 @@ data class IndexSyncResponse(
 data class ServerProjectEntry(
     val encryptedProjectId: String,
     val projectIdIv: String,
+    val encryptedName: String? = null,
+    val nameIv: String? = null,
+    val encryptedPath: String? = null,
+    val pathIv: String? = null,
+    val syncEnabled: Boolean? = null,
     val sessionCount: Int? = null,
     val lastActivityAt: Long? = null,
     val encryptedConfig: String? = null,
     val configIv: String? = null,
+    /** SHA-256 of the git remote URL, used for project document sync routing. */
+    val gitRemoteHash: String? = null,
 )
 
+/** Decrypted `encryptedConfig` of a project entry. */
+data class ProjectConfig(
+    val commands: List<SyncedSlashCommand>? = null,
+    val lastCommandsUpdate: Long? = null,
+    /** Absent on desktops that predate action sync. */
+    val actions: List<SyncedActionPrompt>? = null,
+    val lastActionsUpdate: Long? = null,
+    /** Carried in the blob by the desktop; the entry's plaintext field is the one read. */
+    val gitRemoteHash: String? = null,
+    /** Absent when the project has no Local wiki or the desktop predates wiki sync. */
+    val localWiki: LocalWikiConfig? = null,
+)
+
+/**
+ * Where the project's Local wiki lives, relative to the project root, and the
+ * wiki's type definitions (their YAML does not sync as files).
+ */
+data class LocalWikiConfig(
+    val folder: String? = null,
+    val types: List<SyncedWikiType>? = null,
+)
+
+/** A wiki type definition (`.nimbalyst/trackers/<type>.yaml` with `storage:`), as `loadTypeDefs` reads it. */
+data class SyncedWikiType(
+    val typeId: String,
+    val displayName: String,
+    val displayNamePlural: String,
+    /** "pages" or "table". */
+    val storage: String,
+    /** Field holding the item title. */
+    val titleField: String,
+    val fields: List<SyncedWikiField> = emptyList(),
+)
+
+data class SyncedWikiField(
+    val name: String,
+    val type: String,
+    val itemType: String? = null,
+    val multiValue: Boolean? = null,
+)
+
+/**
+ * `localWiki.types` re-serialized from the raw blob rather than from
+ * [SyncedWikiType], so a field a newer desktop adds survives to the reader.
+ */
+fun rawLocalWikiTypes(configJson: String): String? = runCatching {
+    com.google.gson.JsonParser.parseString(configJson).asJsonObject
+        .getAsJsonObject("localWiki")?.get("types")
+        ?.takeIf { it.isJsonArray }?.toString()
+}.getOrNull()
+
+/**
+ * The wiki folder if it is a relative path inside the project: `/`-separated,
+ * no trailing slash. Absolute paths and `..` segments are dropped rather than
+ * trusted, since readers join the folder onto synced document paths.
+ */
+fun normalizeLocalWikiFolder(raw: String?): String? {
+    val folder = raw?.trim()?.trimEnd('/') ?: return null
+    if (folder.isEmpty() || folder.startsWith("/")) return null
+    val segments = folder.split("/")
+    if (segments.any { it.isEmpty() || it == "." || it == ".." }) return null
+    return folder
+}
+
+data class SyncedSlashCommand(
+    val name: String,
+    val description: String? = null,
+    /** "builtin" | "project" | "user" | "plugin" */
+    val source: String? = null,
+)
+
+/**
+ * An action prompt from the desktop workspace's ai-actions.md. Everything past
+ * [body] is optional: same-session actions send none of it.
+ */
+data class SyncedActionPrompt(
+    val id: String,
+    val label: String,
+    val body: String,
+    val truncated: Boolean? = null,
+    /** "new-session" for launcher actions. */
+    val launch: String? = null,
+    val model: String? = null,
+    val autoSubmit: Boolean? = null,
+    val worktree: Boolean? = null,
+) {
+    val launchesNewSession: Boolean get() = launch == "new-session"
+
+    /** Worktree launches need a worktree first; shown but not offered as launchers. */
+    val isSupportedOnMobile: Boolean get() = worktree != true
+}
+
+@com.google.gson.annotations.JsonAdapter(SessionHierarchyAdapter::class)
 data class ServerSessionEntry(
     val sessionId: String,
     val encryptedProjectId: String,
@@ -134,7 +324,13 @@ data class ServerSessionEntry(
     val mode: String? = null,
     val sessionType: String? = null,
     val parentSessionId: String? = null,
+    /** Agent role marker, e.g. "meta-agent". */
+    val agentRole: String? = null,
+    /** The meta-agent session that spawned this one. */
+    val createdBySessionId: String? = null,
     val worktreeId: String? = null,
+    /** Stable id of the desktop or headless host that runs this session. */
+    val hostDeviceId: String? = null,
     val isArchived: Boolean? = null,
     val isPinned: Boolean? = null,
     val branchedFromSessionId: String? = null,
@@ -144,6 +340,8 @@ data class ServerSessionEntry(
     val lastMessageAt: Long? = null,
     val createdAt: Long,
     val updatedAt: Long,
+    /** A prompt accepted but not started. Transient: the server does not store it. */
+    val pendingExecution: PendingExecution? = null,
     val isExecuting: Boolean? = null,
     val queuedPromptCount: Int? = null,
     val encryptedQueuedPrompts: List<EncryptedQueuedPrompt>? = null,
@@ -151,7 +349,12 @@ data class ServerSessionEntry(
     val encryptedClientMetadata: String? = null,
     val clientMetadataIv: String? = null,
     val lastReadAt: Long? = null,
-)
+) {
+    // Local decode metadata, never serialized as wire fields. Declared in the
+    // body so it stays out of equals/hashCode/copy.
+    @Transient var parentSessionIdPresent: Boolean = false
+    @Transient var createdBySessionIdPresent: Boolean = false
+}
 
 data class ClientMetadata(
     val currentContext: ContextInfo? = null,
@@ -160,6 +363,7 @@ data class ClientMetadata(
     val tags: List<String>? = null,
     val draftInput: String? = null,
     val draftUpdatedAt: Long? = null,
+    val hasBeenNamed: Boolean? = null,
 )
 
 data class ContextInfo(
@@ -203,7 +407,8 @@ data class EncryptedSettingsPayload(
     val settingsIv: String,
     val deviceId: String,
     val timestamp: Long,
-    val version: Int,
+    /** Desktop seeds this from Date.now(), so it exceeds Int range. */
+    val version: Long,
 )
 
 data class SettingsSyncBroadcast(
@@ -216,7 +421,9 @@ data class SyncedSettings(
     val openaiApiKey: String? = null,
     val availableModels: List<SyncedAvailableModel>? = null,
     val defaultModel: String? = null,
-    val version: Int,
+    /** Whether the desktop meta-agent feature is on; gates the mobile Meta Agent UI. */
+    val metaAgentEnabled: Boolean? = null,
+    val version: Long,
 )
 
 data class SyncedAvailableModel(
@@ -247,12 +454,20 @@ data class DeviceInfo(
     val lastActiveAt: Long,
     val isFocused: Boolean? = null,
     val status: String? = null,
+    /** Server-set: false for a known installation that is not connected now. */
+    val isOnline: Boolean? = null,
+    /** Server-set: epoch ms the server last saw this device. */
+    val lastSeenAt: Long? = null,
+    /** Server-set: the user hid this installation from their device list. */
+    val inventoryHidden: Boolean? = null,
 )
 
 data class ServerErrorMessage(
     val type: String,
     val code: String,
-    val message: String
+    val message: String,
+    /** Echoed when the failure answers a specific request. */
+    val requestId: String? = null,
 )
 
 data class SessionSyncResponse(
@@ -292,7 +507,10 @@ data class MetadataBroadcast(
 )
 
 data class SessionRoomMetadata(
+    /** Legacy plaintext title; current servers send only [encryptedTitle]. */
     val title: String? = null,
+    val encryptedTitle: String? = null,
+    val titleIv: String? = null,
     val provider: String? = null,
     val model: String? = null,
     val mode: String? = null,
@@ -303,4 +521,8 @@ data class SessionRoomMetadata(
     val projectIdIv: String? = null,
     val encryptedClientMetadata: String? = null,
     val clientMetadataIv: String? = null,
+    /** The in-flight turn, when the room has one. Absent means unchanged. */
+    val pendingExecution: PendingExecution? = null,
+    /** Rides on metadata so a phone only in the session room still sees the queue change. */
+    val encryptedQueuedPrompts: List<EncryptedQueuedPrompt>? = null,
 )

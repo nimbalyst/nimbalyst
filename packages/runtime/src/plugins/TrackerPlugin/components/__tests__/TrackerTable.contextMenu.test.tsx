@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { getDefaultStore } from 'jotai';
 import type { TrackerRecord } from '../../../../core/TrackerRecord';
 import { globalRegistry, loadBuiltinTrackers } from '../../models';
@@ -55,6 +55,73 @@ describe('TrackerTable context menu trigger', () => {
     fireEvent.click(screen.getAllByTestId('tracker-row-more-actions')[1]);
 
     expect(screen.getByText('2 items selected')).toBeDefined();
+  });
+});
+
+describe('TrackerTable delete confirmation', () => {
+  beforeAll(() => loadBuiltinTrackers());
+
+  beforeEach(() => {
+    (window as any).electronAPI = {
+      documentService: { updateTrackerItem: vi.fn() },
+    };
+  });
+
+  function renderSelected(props: Record<string, unknown>) {
+    render(
+      <TrackerTable
+        filterType="bug"
+        hideTypeTabs
+        hideToolbar
+        overrideItems={[record('bug-1'), record('bug-2')]}
+        {...props}
+      />,
+    );
+    const rows = screen.getAllByTestId('tracker-table-row');
+    fireEvent.click(rows[0], { metaKey: true });
+    fireEvent.click(rows[1], { metaKey: true });
+  }
+
+  it('deletes from the context menu only after the host confirms', async () => {
+    const onDeleteItems = vi.fn();
+    const confirmDelete = vi.fn().mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+    const nativeConfirm = vi.spyOn(window, 'confirm');
+    renderSelected({ onDeleteItems, confirmDelete });
+
+    fireEvent.click(screen.getAllByTestId('tracker-row-more-actions')[1]);
+    fireEvent.click(screen.getByTestId('tracker-row-context-delete'));
+    await waitFor(() => expect(confirmDelete).toHaveBeenCalledWith(2));
+    expect(onDeleteItems).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getAllByTestId('tracker-row-more-actions')[1]);
+    fireEvent.click(screen.getByTestId('tracker-row-context-delete'));
+    await waitFor(() => expect(onDeleteItems).toHaveBeenCalledWith(['bug-1', 'bug-2']));
+    expect(nativeConfirm).not.toHaveBeenCalled();
+    nativeConfirm.mockRestore();
+  });
+
+  it('deletes on Cmd+Delete only after the host confirms', async () => {
+    const onDeleteItems = vi.fn();
+    const confirmDelete = vi.fn().mockResolvedValue(true);
+    renderSelected({ onDeleteItems, confirmDelete });
+
+    fireEvent.keyDown(document.querySelector('.tracker-table-container')!, { key: 'Delete', metaKey: true });
+    await waitFor(() => expect(onDeleteItems).toHaveBeenCalledWith(['bug-1', 'bug-2']));
+    expect(confirmDelete).toHaveBeenCalledWith(2);
+  });
+
+  it('refuses to delete without a host confirm rather than raising a native dialog', async () => {
+    const onDeleteItems = vi.fn();
+    const nativeConfirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    renderSelected({ onDeleteItems });
+
+    fireEvent.keyDown(document.querySelector('.tracker-table-container')!, { key: 'Delete', metaKey: true });
+    fireEvent.click(screen.getAllByTestId('tracker-row-more-actions')[1]);
+    expect(screen.queryByTestId('tracker-row-context-delete')).toBeNull();
+    await Promise.resolve();
+    expect(nativeConfirm).not.toHaveBeenCalled();
+    expect(onDeleteItems).not.toHaveBeenCalled();
+    nativeConfirm.mockRestore();
   });
 });
 

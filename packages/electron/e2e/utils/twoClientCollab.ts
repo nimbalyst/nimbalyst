@@ -1,4 +1,5 @@
 import type { ElectronApplication, Page } from "@playwright/test";
+import { execSync } from "child_process";
 import * as fs from "fs/promises";
 import * as os from "os";
 import * as path from "path";
@@ -11,6 +12,42 @@ import {
 import { startWrangler, stopWrangler } from "./wranglerHelpers";
 
 export type CollabClientLabel = "A" | "B";
+
+const APP_CLOSE_TIMEOUT_MS = 20_000;
+
+/**
+ * `ElectronApplication.close()` resolves on the child's `close` event, which
+ * waits for every holder of its stdio pipes, not just the main process. A
+ * descendant that outlives the app keeps it pending with no timeout, and the
+ * spec's `finally` never reaches `stopWrangler`. Bound it, record what was
+ * still running, and kill the app's process group (Playwright launches
+ * Electron detached, so its pid is the group id).
+ */
+async function closeAppBounded(app: ElectronApplication, label: string): Promise<void> {
+  const pid = app.process().pid;
+  const closed = app.close().then(() => true, () => true);
+  const finished = await Promise.race([
+    closed,
+    new Promise<false>((resolve) => setTimeout(() => resolve(false), APP_CLOSE_TIMEOUT_MS)),
+  ]);
+  if (finished || !pid) return;
+  try {
+    const group = execSync("ps -axo pid,ppid,pgid,stat,etime,command", { encoding: "utf8" })
+      .split("\n")
+      .filter((line, index) => index === 0 || line.trim().split(/\s+/)[2] === String(pid));
+    console.warn(
+      `[TwoClientCollab] ${label} app.close() still pending after ${APP_CLOSE_TIMEOUT_MS}ms; process group ${pid}:\n${group.join("\n")}`
+    );
+  } catch {
+    // Diagnostics only.
+  }
+  try {
+    process.kill(-pid, "SIGKILL");
+  } catch {
+    // Group already gone.
+  }
+  await Promise.race([closed, new Promise((resolve) => setTimeout(resolve, 5_000))]);
+}
 
 export interface TwoClientCollabClient {
   app: ElectronApplication;
@@ -43,6 +80,11 @@ export interface TwoClientCollabHarnessOptions {
    * nothing.
    */
   clients?: readonly CollabClientLabel[];
+  /**
+   * Runs after the org is seeded and before any client launches, for a spec
+   * that has to shape server state the clients' first sync must see.
+   */
+  beforeClientsLaunch?: (harness: TwoClientCollabHarness) => Promise<void>;
 }
 
 const DEFAULT_PORT = 8797;
@@ -117,6 +159,8 @@ export class TwoClientCollabHarness {
     await this.writeWorkspaceFixtures();
     await this.startServer();
     await this.makeOrgServerManaged();
+    await this.provisionClientMembers();
+    await this.options.beforeClientsLaunch?.(this);
     for (const label of this.launchedClients) {
       await this.launchClient(label, false);
     }
@@ -168,7 +212,7 @@ export class TwoClientCollabHarness {
   async closeClient(label: CollabClientLabel): Promise<void> {
     const client = this.clients.get(label);
     this.clients.delete(label);
-    await client?.app.close().catch(() => undefined);
+    if (client) await closeAppBounded(client.app, label);
   }
 
   async openSharedMode(label: CollabClientLabel): Promise<Page> {
@@ -413,6 +457,9 @@ export class TwoClientCollabHarness {
     }
 
     const app = await launchElectronApp({
+      // An independently built main, so a main-process change can be exercised
+      // without rebuilding the `out/` the running dev app owns.
+      mainPath: process.env.NIMBALYST_E2E_MAIN_PATH,
       workspace,
       permissionMode: "allow-all",
       preserveTestDatabase: true,
@@ -448,7 +495,7 @@ export class TwoClientCollabHarness {
       this.clients.set(label, client);
       return client;
     } catch (error) {
-      await app.close().catch(() => undefined);
+      await closeAppBounded(app, label);
       throw error;
     }
   }
@@ -461,7 +508,7 @@ export class TwoClientCollabHarness {
    *
    * Exposed because a browser client connects with `test_enforce_gate=1` -- it
    * runs the real project-access gate rather than the dev bypass the Electron
-   * clients rely on -- so a cross-host spec has to seed membership and a
+   * clients connect with -- so a cross-host spec has to seed membership and a
    * project before it can join anything.
    */
   async postInternal(
@@ -485,6 +532,59 @@ export class TwoClientCollabHarness {
     }
     const text = await response.text();
     return text ? JSON.parse(text) : null;
+  }
+
+  /** GET a TeamRoom `/internal/` endpoint as the org owner. */
+  private async getInternal(internalPath: string): Promise<unknown> {
+    const url = new URL(
+      `http://127.0.0.1:${this.port}/sync/org:${this.orgId}:team/internal/${internalPath}`
+    );
+    url.searchParams.set("test_user_id", this.ownerUserId);
+    url.searchParams.set("test_org_id", this.orgId);
+    const response = await fetch(url);
+    if (!response.ok) {
+      throw new Error(
+        `${internalPath} failed: ${response.status} ${await response.text()}`
+      );
+    }
+    return response.json();
+  }
+
+  /**
+   * Put each Electron client on the roster with edit access to the org's
+   * primary project, which both the document and tracker rooms route to.
+   *
+   * The clients connect through the dev auth bypass, but a room restored from
+   * hibernation rebuilds its sockets as enforced (the bypass is not in the
+   * socket tags) and checks the real roster on the next message. Without a
+   * roster row that check revokes the socket (4003) and a tracker upsert in
+   * flight is dropped. Admin, because the bypass gave the clients full rights
+   * and specs define types and change schema.
+   */
+  private async provisionClientMembers(): Promise<void> {
+    const metadata = (await this.getInternal("get-metadata")) as {
+      teamProjectId?: unknown;
+    };
+    const teamProjectId = metadata.teamProjectId;
+    if (typeof teamProjectId !== "string" || !teamProjectId) {
+      throw new Error("The org has no primary project to grant the clients");
+    }
+    for (const label of this.launchedClients) {
+      const userId = this.users[label];
+      await this.postInternal("add-member", {
+        userId,
+        role: "admin",
+        name: `E2E client ${label}`,
+        email: `${userId}@example.test`,
+        actorUserId: this.ownerUserId,
+      });
+      await this.postInternal("grant-project-access", {
+        projectId: teamProjectId,
+        userId,
+        projectRole: "project-admin",
+        actorUserId: this.ownerUserId,
+      });
+    }
   }
 
   /**

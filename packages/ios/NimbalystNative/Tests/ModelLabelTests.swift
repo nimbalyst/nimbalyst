@@ -9,21 +9,31 @@ final class ModelLabelTests: XCTestCase {
     // MARK: - Claude Code
 
     func testClaudeCodeCanonicalVariants() {
-        XCTAssertEqual(ModelLabel.shortLabel(provider: "claude-code", model: "claude-code:fable"), "Fable 5")
+        XCTAssertEqual(ModelLabel.shortLabel(provider: "claude-code", model: "claude-code:fable"), "Fable 5.1")
         XCTAssertEqual(ModelLabel.shortLabel(provider: "claude-code", model: "claude-code:opus"), "Opus 5.5")
-        XCTAssertEqual(ModelLabel.shortLabel(provider: "claude-code", model: "claude-code:sonnet"), "Sonnet 5")
-        XCTAssertEqual(ModelLabel.shortLabel(provider: "claude-code", model: "claude-code:haiku"), "Haiku 4.5")
+        XCTAssertEqual(ModelLabel.shortLabel(provider: "claude-code", model: "claude-code:sonnet"), "Sonnet 5.5")
+        XCTAssertEqual(ModelLabel.shortLabel(provider: "claude-code", model: "claude-code:haiku"), "Haiku 5.5")
+        XCTAssertEqual(ModelLabel.shortLabel(provider: "claude-code", model: "claude-code:haiku-4-5"), "Haiku 4.5")
     }
 
     func testClaudeCodeExtendedContextVariants() {
-        XCTAssertEqual(ModelLabel.shortLabel(provider: "claude-code", model: "claude-code:fable-1m"), "Fable 5")
+        XCTAssertEqual(ModelLabel.shortLabel(provider: "claude-code", model: "claude-code:fable-1m"), "Fable 5.1")
         XCTAssertEqual(ModelLabel.shortLabel(provider: "claude-code", model: "claude-code:opus-1m"), "Opus 5.5")
-        XCTAssertEqual(ModelLabel.shortLabel(provider: "claude-code", model: "claude-code:sonnet-1m"), "Sonnet 5")
+        XCTAssertEqual(ModelLabel.shortLabel(provider: "claude-code", model: "claude-code:sonnet-1m"), "Sonnet 5.5")
     }
 
     func testClaudeCodeFableAliasVariants() {
-        // `fable-5` is accepted as an input alias for `fable` on desktop.
+        // `fable-5` is the pinned previous generation; `fable-5-1` is an alias for `fable`.
         XCTAssertEqual(ModelLabel.shortLabel(provider: "claude-code", model: "claude-code:fable-5"), "Fable 5")
+        XCTAssertEqual(ModelLabel.shortLabel(provider: "claude-code", model: "claude-code:fable-5-1"), "Fable 5.1")
+    }
+
+    func testClaudeCodeSonnet55AndPinnedSonnet5() {
+        for provider in ["claude-code", "claude-code-cli"] {
+            XCTAssertEqual(ModelLabel.shortLabel(provider: provider, model: "\(provider):sonnet-5-5"), "Sonnet 5.5")
+            XCTAssertEqual(ModelLabel.shortLabel(provider: provider, model: "\(provider):sonnet-5"), "Sonnet 5")
+            XCTAssertEqual(ModelLabel.shortLabel(provider: provider, model: "\(provider):sonnet-5-1m"), "Sonnet 5")
+        }
     }
 
     func testClaudeCodeOpus55AndPinnedOpus5() {
@@ -66,10 +76,10 @@ final class ModelLabelTests: XCTestCase {
     func testClaudeCodeCliVariantsMatchAgent() {
         // The subscription CLI shares the variant set with the SDK provider, so
         // the model badge resolves the same way (must NOT collapse to Sonnet).
-        XCTAssertEqual(ModelLabel.shortLabel(provider: "claude-code-cli", model: "claude-code-cli:fable"), "Fable 5")
+        XCTAssertEqual(ModelLabel.shortLabel(provider: "claude-code-cli", model: "claude-code-cli:fable"), "Fable 5.1")
         XCTAssertEqual(ModelLabel.shortLabel(provider: "claude-code-cli", model: "claude-code-cli:opus"), "Opus 5.5")
         XCTAssertEqual(ModelLabel.shortLabel(provider: "claude-code-cli", model: "claude-code-cli:opus-1m"), "Opus 5.5")
-        XCTAssertEqual(ModelLabel.shortLabel(provider: "claude-code-cli", model: "claude-code-cli:sonnet-1m"), "Sonnet 5")
+        XCTAssertEqual(ModelLabel.shortLabel(provider: "claude-code-cli", model: "claude-code-cli:sonnet-1m"), "Sonnet 5.5")
         XCTAssertEqual(ModelLabel.shortLabel(provider: "claude-code-cli", model: "claude-code-cli:opus-4-6"), "Opus 4.6")
     }
 
@@ -84,6 +94,8 @@ final class ModelLabelTests: XCTestCase {
     func testClaudeApiKnownModels() {
         XCTAssertEqual(ModelLabel.shortLabel(provider: "claude", model: "claude:claude-fable-5"), "Fable 5")
         XCTAssertEqual(ModelLabel.shortLabel(provider: "claude", model: "claude:claude-opus-5"), "Opus 5")
+        XCTAssertEqual(ModelLabel.shortLabel(provider: "claude", model: "claude:claude-sonnet-5-5"), "Sonnet 5.5")
+        XCTAssertEqual(ModelLabel.shortLabel(provider: "claude", model: "claude:claude-haiku-5-5"), "Haiku 5.5")
         XCTAssertEqual(ModelLabel.shortLabel(provider: "claude", model: "claude:claude-sonnet-5"), "Sonnet 5")
         XCTAssertEqual(ModelLabel.shortLabel(provider: "claude", model: "claude:claude-opus-4-7"), "Opus 4.7")
         XCTAssertEqual(ModelLabel.shortLabel(provider: "claude", model: "claude:claude-sonnet-4-6"), "Sonnet 4.6")

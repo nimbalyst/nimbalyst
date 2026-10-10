@@ -500,6 +500,24 @@ describe('projectRawMessagesToViewMessages', () => {
     });
   });
 
+  it('carries prompt provenance from the raw row onto user messages', async () => {
+    const input = (id: number, metadata?: Record<string, unknown>) => raw({
+      id, direction: 'input', content: JSON.stringify({ prompt: `p${id}` }), metadata,
+    });
+    const vms = await projectRawMessagesToViewMessages([
+      input(1, { promptProvenance: { actor: 'human', origin: 'composer' } }),
+      input(2, { promptProvenance: { actor: 'agent', origin: 'session-orchestration' } }),
+      input(3, { promptOrigin: 'interactive-question' }),
+      input(4),
+    ], 'claude-code');
+    expect(vms.map(vm => [vm.promptActor, vm.promptOrigin])).toEqual([
+      ['human', undefined],
+      ['agent', undefined],
+      [undefined, 'interactive-question'],
+      [undefined, undefined],
+    ]);
+  });
+
   it('rawMessagesToCanonicalEvents assigns sequential ids and sequences', async () => {
     const messages: RawMessage[] = [
       raw({ id: 1, direction: 'input', content: JSON.stringify({ prompt: 'first' }) }),

@@ -26,10 +26,9 @@ import {
     $setDiffState,
     $setOriginalMarkdown,
 } from '../core/DiffState';
-import {
-    $convertNodeToEnhancedMarkdownString,
-    $convertFromEnhancedMarkdownString,
-} from '../../../markdown';
+// Deep paths, not the `markdown` barrel, which loads React (see diffUtils.ts).
+import {$convertNodeToEnhancedMarkdownString} from '../../../markdown/EnhancedMarkdownExport';
+import {$convertFromEnhancedMarkdownString} from '../../../markdown/EnhancedMarkdownImport';
 
 // Row whose cell-by-cell similarity to a partner must be at least this
 // fraction for the pair to be merged into a single 'modified' row instead of

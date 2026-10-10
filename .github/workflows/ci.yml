@@ -19,13 +19,13 @@ concurrency:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-  # Make npm resilient to transient registry socket drops (ECONNRESET) on the
+  # Make pnpm resilient to transient registry socket drops (ECONNRESET) on the
   # cache-miss path: retry individual failed requests instead of aborting the
-  # whole `npm ci`. (Cache hits skip npm ci and make no registry calls at all.)
-  npm_config_fetch_retries: '5'
-  npm_config_fetch_retry_mintimeout: '20000'
-  npm_config_fetch_retry_maxtimeout: '120000'
-  npm_config_fetch_timeout: '300000'
+  # whole install. (Cache hits skip the install and make no registry calls.)
+  pnpm_config_fetch_retries: '5'
+  pnpm_config_fetch_retry_mintimeout: '20000'
+  pnpm_config_fetch_retry_maxtimeout: '120000'
+  pnpm_config_fetch_timeout: '300000'
 
 jobs:
   changes:
@@ -57,17 +57,27 @@ jobs:
         if: needs.changes.outputs.docs-only != 'true'
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
+      # Reads the version from `packageManager` in the root package.json.
+      - name: Setup pnpm
+        if: needs.changes.outputs.docs-only != 'true'
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+
       - name: Setup Node.js
         if: needs.changes.outputs.docs-only != 'true'
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: '24'
-          cache: 'npm'
-          cache-dependency-path: '**/package-lock.json'
+          cache: 'pnpm'
+          cache-dependency-path: 'pnpm-lock.yaml'
 
-      # node_modules cache short-circuits `npm ci` (~75s -> ~5s) when dependency
-      # metadata and patches are unchanged. We rely on exact-key match (no
-      # restore-keys) so we never run with a partially-stale tree.
+      # node_modules cache short-circuits `pnpm install` when dependency
+      # metadata and patches are unchanged. The pnpm store cache above only
+      # saves downloads; a store-backed install still links the tree and runs
+      # every lifecycle script (Electron download, install-app-deps native
+      # rebuild, workspace `prepare` builds), which this skips. We rely on
+      # exact-key match (no restore-keys) so we never run with a partially-stale
+      # tree. pnpm-workspace.yaml is in the key because it carries overrides,
+      # patchedDependencies, and allowBuilds.
       - name: Cache node_modules
         if: needs.changes.outputs.docs-only != 'true'
         id: cache-node-modules
@@ -77,7 +87,9 @@ jobs:
             node_modules
             packages/*/node_modules
             packages/extensions/*/node_modules
-          key: node-modules-${{ runner.os }}-node24-${{ hashFiles('**/package-lock.json', 'patches/**') }}
+            packages/extensions/nimbalyst-memory/engine/node_modules
+            packages/extension-sdk-docs/examples/*/node_modules
+          key: node-modules-pnpm-${{ runner.os }}-node24-${{ hashFiles('pnpm-lock.yaml', 'pnpm-workspace.yaml', 'patches/**') }}
 
       - name: Install dependencies
         if: needs.changes.outputs.docs-only != 'true' && steps.cache-node-modules.outputs.cache-hit != 'true'
@@ -86,11 +98,11 @@ jobs:
           # api.github.com; unauthenticated runners share a 60 req/hr limit per
           # egress IP and intermittently fail the whole install.
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: npm ci
+        run: pnpm install --frozen-lockfile
 
       # tracker-core and extension-sdk are consumed through their built `dist`,
-      # which only exists as a side effect of `npm ci` running their `prepare`
-      # scripts. The install step above is skipped on a node_modules cache hit
+      # which only exists as a side effect of `pnpm install` running their
+      # `prepare` scripts. The install step above is skipped on a node_modules cache hit
       # and the cache does not carry those dist dirs, so build them explicitly
       # or downstream vite builds fail with: Failed to resolve entry for
       # package "@nimbalyst/tracker-core".
@@ -112,11 +124,11 @@ jobs:
 
       - name: Check override/dep sync
         if: needs.changes.outputs.docs-only != 'true'
-        run: npm run check:override-sync
+        run: pnpm run check:override-sync
 
       - name: Check tracked text files for raw NUL bytes
         if: needs.changes.outputs.docs-only != 'true'
-        run: npm run check:text-nuls -- --ref HEAD
+        run: pnpm run check:text-nuls --ref HEAD
 
       - name: Static invariants and scanner regression tests
         if: needs.changes.outputs.docs-only != 'true'
@@ -131,6 +143,10 @@ jobs:
         run: |
           set -o pipefail
           node scripts/run-validation.mjs unit 2>&1 | tee /tmp/vitest-ci.log
+
+      - name: Print Vitest failures
+        if: failure() && needs.changes.outputs.docs-only != 'true'
+        run: cat .vitest/last-run.log || true
 
       - name: Record Vitest summary
         id: vitest-summary
@@ -147,13 +163,17 @@ jobs:
         if: needs.changes.outputs.docs-only != 'true'
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
+      - name: Setup pnpm
+        if: needs.changes.outputs.docs-only != 'true'
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+
       - name: Setup Node.js
         if: needs.changes.outputs.docs-only != 'true'
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: '24'
-          cache: 'npm'
-          cache-dependency-path: '**/package-lock.json'
+          cache: 'pnpm'
+          cache-dependency-path: 'pnpm-lock.yaml'
 
       - name: Cache node_modules
         if: needs.changes.outputs.docs-only != 'true'
@@ -164,7 +184,9 @@ jobs:
             node_modules
             packages/*/node_modules
             packages/extensions/*/node_modules
-          key: node-modules-${{ runner.os }}-node24-${{ hashFiles('**/package-lock.json', 'patches/**') }}
+            packages/extensions/nimbalyst-memory/engine/node_modules
+            packages/extension-sdk-docs/examples/*/node_modules
+          key: node-modules-pnpm-${{ runner.os }}-node24-${{ hashFiles('pnpm-lock.yaml', 'pnpm-workspace.yaml', 'patches/**') }}
 
       - name: Install dependencies
         if: needs.changes.outputs.docs-only != 'true' && steps.cache-node-modules.outputs.cache-hit != 'true'
@@ -173,7 +195,7 @@ jobs:
           # api.github.com; unauthenticated runners share a 60 req/hr limit per
           # egress IP and intermittently fail the whole install.
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: npm ci
+        run: pnpm install --frozen-lockfile
 
       # Build packages consumed through their `dist` (required before typecheck
       # and before the runtime build). See the note in the Unit Tests job: a
@@ -184,7 +206,7 @@ jobs:
 
       - name: Public extension SDK smoke checks
         if: needs.changes.outputs.docs-only != 'true'
-        run: npm run extension-sdk:check-public
+        run: pnpm run extension-sdk:check-public
 
       # Cache the runtime build output (~46s vite build). Key includes
       # everything the build reads: runtime sources/config, extension-sdk
@@ -197,24 +219,24 @@ jobs:
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: packages/runtime/dist
-          key: runtime-dist-${{ runner.os }}-node24-${{ hashFiles('packages/runtime/src/**', 'packages/runtime/vite.config.*', 'packages/runtime/package.json', 'packages/runtime/tsconfig*.json', 'packages/extension-sdk/src/**', 'package-lock.json', 'patches/**') }}
+          key: runtime-dist-${{ runner.os }}-node24-${{ hashFiles('packages/runtime/src/**', 'packages/runtime/vite.config.*', 'packages/runtime/package.json', 'packages/runtime/tsconfig*.json', 'packages/extension-sdk/src/**', 'pnpm-lock.yaml', 'patches/**') }}
 
       - name: Build runtime
         if: needs.changes.outputs.docs-only != 'true' && steps.cache-runtime-dist.outputs.cache-hit != 'true'
         working-directory: packages/runtime
-        run: npm run build
+        run: pnpm run build
 
       # The cache contains the browser dist only. A cache miss builds dist-node
       # as part of the runtime build; a hit still needs its Node declarations.
       - name: Build Node runtime on cache hit
         if: needs.changes.outputs.docs-only != 'true' && steps.cache-runtime-dist.outputs.cache-hit == 'true'
-        run: npm run build:node --workspace=@nimbalyst/runtime
+        run: pnpm --filter @nimbalyst/runtime run build:node
 
       # This consumes runtime's built Node exports, so it must run after runtime
-      # rather than in npm ci's workspace prepare lifecycle.
+      # rather than in the install's workspace prepare lifecycle.
       - name: Build Node package
         if: needs.changes.outputs.docs-only != 'true'
-        run: npm run build --workspace=@nimbalyst/node
+        run: pnpm --filter @nimbalyst/node run build
 
       - name: Typecheck every workspace from the shared inventory
         if: needs.changes.outputs.docs-only != 'true'
@@ -233,13 +255,17 @@ jobs:
         if: needs.changes.outputs.docs-only != 'true'
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
+      - name: Setup pnpm
+        if: needs.changes.outputs.docs-only != 'true'
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+
       - name: Setup Node.js
         if: needs.changes.outputs.docs-only != 'true'
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: '24'
-          cache: 'npm'
-          cache-dependency-path: '**/package-lock.json'
+          cache: 'pnpm'
+          cache-dependency-path: 'pnpm-lock.yaml'
 
       - name: Cache node_modules
         if: needs.changes.outputs.docs-only != 'true'
@@ -250,7 +276,9 @@ jobs:
             node_modules
             packages/*/node_modules
             packages/extensions/*/node_modules
-          key: node-modules-${{ runner.os }}-node24-${{ hashFiles('**/package-lock.json', 'patches/**') }}
+            packages/extensions/nimbalyst-memory/engine/node_modules
+            packages/extension-sdk-docs/examples/*/node_modules
+          key: node-modules-pnpm-${{ runner.os }}-node24-${{ hashFiles('pnpm-lock.yaml', 'pnpm-workspace.yaml', 'patches/**') }}
 
       - name: Install dependencies
         if: needs.changes.outputs.docs-only != 'true' && steps.cache-node-modules.outputs.cache-hit != 'true'
@@ -259,7 +287,7 @@ jobs:
           # api.github.com; unauthenticated runners share a 60 req/hr limit per
           # egress IP and intermittently fail the whole install.
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: npm ci
+        run: pnpm install --frozen-lockfile
 
       # See the note in the Unit Tests job: a node_modules cache hit skips the
       # install that would have built these, and the transcript bundle pulls in
@@ -295,9 +323,9 @@ jobs:
   # To run them locally:
   #   1. Check out nimbalyst-collab as a sibling directory:
   #        git clone <nimbalyst-collab-url> ../nimbalyst-collab
-  #        cd ../nimbalyst-collab && npm install
-  #   2. From stravu-editor, start the dev server (npm run dev).
-  #   3. RUN_COLLAB_TESTS=1 npx playwright test \
+  #        cd ../nimbalyst-collab && pnpm install
+  #   2. From stravu-editor, start the dev server (pnpm run dev).
+  #   3. RUN_COLLAB_TESTS=1 pnpm exec playwright test \
   #        e2e/tracker/tracker-sync-collab.spec.ts
   #
   # Override the server location with COLLAB_SERVER_PATH (relative to

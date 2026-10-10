@@ -181,6 +181,43 @@ describe('planTrackerDrain', () => {
     expect(plan.actions).toEqual([]);
   });
 
+  it('never creates a team item from a file projection the room has never had', () => {
+    const file = { id: 'fm:decision:wiki/decision/second.md', trackerType: 'decision', syncStatus: 'local' };
+    const plan = planTrackerDrain({
+      workspacePath: WORKSPACE,
+      syncedRowCount: 0,
+      candidates: [
+        candidate({ ...file, source: { source: 'frontmatter' } }),
+        // Once shared it is the room's item, and the drain keeps it current.
+        candidate({ ...file, id: 'fm:decision:old.md', previouslyShared: true, source: { source: 'frontmatter' } }),
+      ],
+    });
+    expect(plan.actions).toEqual([
+      { kind: 'skip', id: file.id, cause: 'routine' },
+      { kind: 'upsert', id: 'fm:decision:old.md' },
+    ]);
+  });
+
+  it('never creates a team item from an inline #type[...] marker the room has never had', () => {
+    const scanned = { source: 'inline', module: 'temptests/fixture.md' };
+    const plan = planTrackerDrain({
+      workspacePath: WORKSPACE,
+      syncedRowCount: 0,
+      candidates: [
+        candidate({ id: 'bug_a', source: scanned }),
+        candidate({ id: 'bug_b', previouslyShared: true, source: scanned }),
+        // An agent-created item with an inline origin has no document_path:
+        // it was made deliberately and drains like any native item.
+        candidate({ id: 'bug_c', source: { source: 'inline', sourceRef: 'notes.md' } }),
+      ],
+    });
+    expect(plan.actions).toEqual([
+      { kind: 'skip', id: 'bug_a', cause: 'routine' },
+      { kind: 'upsert', id: 'bug_b' },
+      { kind: 'upsert', id: 'bug_c' },
+    ]);
+  });
+
   it('counts an unresolved never-shared row separately instead of aborting', () => {
     const plan = planTrackerDrain({
       workspacePath: WORKSPACE,

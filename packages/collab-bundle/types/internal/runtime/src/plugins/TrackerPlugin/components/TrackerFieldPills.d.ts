@@ -12,7 +12,7 @@
  * fields to show (see `useTrackerFieldLayout`), and supply `onSave`.
  */
 import React from 'react';
-import type { FieldDefinition } from '@nimbalyst/tracker-schema';
+import type { FieldDefinition } from '../../../../../tracker-schema/src/browser';
 import { type TeamMemberOption } from './TrackerFieldEditor';
 import type { RelationshipCandidate } from './RelationshipFieldEditor';
 import type { CitationInspectorHost } from './CitationInspector';

@@ -379,6 +379,16 @@ describe('trackerTypeDefStore materialization lifecycle (SQLite, migration 0012)
       expect(JSON.parse(all[0].model)).toEqual(edited);
       expect(all[0].sync_id).toBe(14); // still team-owned; server assigns the next version
       expect(JSON.parse(all[0].synced_model!)).toEqual(shared); // baseline stays server truth
+      expect(out[0].createOnly).toBeUndefined(); // an edit of the room's type is an update
+    });
+
+    it('pushes a team type the room has never held as create-only, so it cannot replace a concurrent one', async () => {
+      const customer = model('customer', { displayName: 'Customer', sharing: 'team' });
+      await materializeYamlTrackerTypeDef(WS, customer, db);
+
+      const out = await listUnsyncedTrackerSchemaDefs(WS, db);
+      expect(out).toHaveLength(1);
+      expect(out[0]).toMatchObject({ type: 'customer', deleted: false, createOnly: 'whenSupported' });
     });
 
     it('asks the connected engine to push a queued edit instead of waiting for a reconnect (NIM-6654)', async () => {

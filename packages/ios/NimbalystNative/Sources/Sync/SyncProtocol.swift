@@ -18,51 +18,6 @@ struct IndexSyncResponse: Codable, @unchecked Sendable {
     let since: Int?
 }
 
-/// A session entry as received from the server (encrypted fields).
-struct ServerSessionEntry: Codable {
-    let sessionId: String
-    let encryptedProjectId: String
-    let projectIdIv: String
-    let encryptedTitle: String?
-    let titleIv: String?
-    let provider: String?
-    let model: String?
-    let mode: String?
-    /// Structural type: "session", "workstream", or "blitz"
-    let sessionType: String?
-    /// Parent session ID for workstream/worktree hierarchy
-    let parentSessionId: String?
-    /// Agent role marker (e.g. "meta-agent"); gates meta-agent powers on desktop
-    let agentRole: String?
-    /// Session ID of the meta-agent that spawned this sub-agent (child link)
-    let createdBySessionId: String?
-    /// Worktree ID for git worktree association
-    let worktreeId: String?
-    /// Stable ID of the desktop or headless host that owns execution
-    let hostDeviceId: String?
-    /// Whether this session is archived
-    let isArchived: Bool?
-    /// Whether this session is pinned
-    let isPinned: Bool?
-    /// Session ID this was branched/forked from
-    let branchedFromSessionId: String?
-    /// Message sequence number where the branch occurred
-    let branchPointMessageId: Int?
-    /// Timestamp when the branch was created
-    let branchedAt: Int?
-    let messageCount: Int?
-    let lastMessageAt: Int?
-    let createdAt: Int
-    let updatedAt: Int
-    let pendingExecution: PendingExecution?
-    let isExecuting: Bool?
-    let queuedPromptCount: Int?
-    let encryptedQueuedPrompts: [EncryptedQueuedPrompt]?
-    let hasPendingPrompt: Bool?
-    let encryptedClientMetadata: String?
-    let clientMetadataIv: String?
-    let lastReadAt: Int?
-}
 
 struct PendingExecution: Codable {
     let messageId: String
@@ -161,6 +116,38 @@ struct ProjectConfig: Codable {
     /// Absent on desktops that predate action sync.
     let actions: [SyncedActionPrompt]?
     let lastActionsUpdate: Int?
+    /// Carried in the blob by the desktop; the phone reads it from the plaintext entry field instead.
+    let gitRemoteHash: String?
+    /// Absent when the project has no Local wiki or the desktop predates wiki sync.
+    let localWiki: LocalWikiConfig?
+}
+
+/// Where the project's Local wiki lives, relative to the project root, and
+/// the wiki's type definitions (their YAML does not sync as files).
+struct LocalWikiConfig: Codable {
+    let folder: String
+    let types: [SyncedWikiType]?
+}
+
+/// A wiki type definition from the desktop (`.nimbalyst/trackers/<type>.yaml`
+/// with `storage:`), as `loadTypeDefs` in `packages/local-wiki` reads it.
+public struct SyncedWikiType: Codable, Hashable, Sendable {
+    public let typeId: String
+    public let displayName: String
+    public let displayNamePlural: String
+    /// "pages" or "table".
+    public let storage: String
+    /// Field holding the item title.
+    public let titleField: String
+    public let fields: [SyncedWikiField]
+}
+
+public struct SyncedWikiField: Codable, Hashable, Sendable {
+    public let name: String
+    /// Tracker field type: string, text, number, select, multiselect, relationship, ...
+    public let type: String
+    public let itemType: String?
+    public let multiValue: Bool?
 }
 
 /// The parts of the project config blob that get stored on `Project`.
@@ -170,8 +157,37 @@ struct ProjectConfig: Codable {
 struct DecodedProjectConfig {
     let commandsJson: String?
     let actionsJson: String?
+    let localWikiFolder: String?
+    /// Raw JSON text of `localWiki.types`; nil without a wiki or without types.
+    let localWikiTypesJSON: String?
 
-    static let empty = DecodedProjectConfig(commandsJson: nil, actionsJson: nil)
+    static let empty = DecodedProjectConfig(commandsJson: nil, actionsJson: nil, localWikiFolder: nil, localWikiTypesJSON: nil)
+}
+
+/// `localWiki.types` re-serialized from the raw blob rather than from
+/// `SyncedWikiType`, so a field a newer desktop adds survives to the reader.
+private func rawLocalWikiTypes(_ configData: Data) -> String? {
+    guard let root = try? JSONSerialization.jsonObject(with: configData) as? [String: Any],
+          let wiki = root["localWiki"] as? [String: Any],
+          let types = wiki["types"] as? [Any],
+          let data = try? JSONSerialization.data(withJSONObject: types, options: [.sortedKeys]) else {
+        return nil
+    }
+    return String(data: data, encoding: .utf8)
+}
+
+/// Accept a wiki folder only if it is a relative path inside the project.
+///
+/// The desktop sends `/`-separated paths with no trailing slash; anything
+/// absolute or climbing out with `..` is dropped rather than trusted, since
+/// views join it onto synced document paths.
+func normalizeLocalWikiFolder(_ raw: String?) -> String? {
+    guard var folder = raw?.trimmingCharacters(in: .whitespaces) else { return nil }
+    while folder.hasSuffix("/") { folder.removeLast() }
+    guard !folder.isEmpty, !folder.hasPrefix("/") else { return nil }
+    let segments = folder.split(separator: "/", omittingEmptySubsequences: false)
+    guard !segments.contains(where: { $0.isEmpty || $0 == "." || $0 == ".." }) else { return nil }
+    return folder
 }
 
 /// Project a decrypted project-config JSON string onto the columns `Project`
@@ -200,7 +216,13 @@ func decodeProjectConfig(fromJson configJson: String) -> DecodedProjectConfig {
         actionsJson = jsonStr
     }
 
-    return DecodedProjectConfig(commandsJson: commandsJson, actionsJson: actionsJson)
+    let localWikiFolder = normalizeLocalWikiFolder(config.localWiki?.folder)
+    return DecodedProjectConfig(
+        commandsJson: commandsJson,
+        actionsJson: actionsJson,
+        localWikiFolder: localWikiFolder,
+        localWikiTypesJSON: localWikiFolder == nil ? nil : rawLocalWikiTypes(configData)
+    )
 }
 
 /// Lightweight slash command manifest synced from desktop.

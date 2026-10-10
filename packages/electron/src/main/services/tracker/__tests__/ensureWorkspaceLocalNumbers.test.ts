@@ -22,6 +22,7 @@ vi.mock('../../../utils/logger', () => ({
   logger: { main: { info: vi.fn(), error: vi.fn() } },
 }));
 
+import { globalRegistry, parseTrackerYAML } from '@nimbalyst/tracker-schema';
 import {
   ensureWorkspaceLocalNumbers,
   resetLocalNumberSweepStateForTests,
@@ -43,6 +44,7 @@ describe('ensureWorkspaceLocalNumbers', () => {
       { db: true },
       { store: true },
       '/src/solo',
+      expect.any(Function),
     );
   });
 
@@ -67,6 +69,26 @@ describe('ensureWorkspaceLocalNumbers', () => {
     mockAssignMissingLocalKeys.mockResolvedValue(7);
     expect(await ensureWorkspaceLocalNumbers('/src/solo')).toBe(7);
     expect(mockAssignMissingLocalKeys).toHaveBeenCalledTimes(2);
+  });
+
+  // Numbers are opt-in per type. The sweep is what would quietly re-number
+  // every new item on the next window open if it stopped asking the type.
+  it('numbers only types whose YAML opts in to local numbers', async () => {
+    const model = (type: string, localNumbers?: boolean) => parseTrackerYAML(
+      `type: ${type}\ndisplayName: X\ndisplayNamePlural: Xs\nicon: bug\ncolor: '#000'\nidPrefix: x\n`
+      + `modes:\n  inline: true\n${localNumbers ? 'localNumbers: true\n' : ''}fields:\n  - name: title\n    type: string\n`,
+    );
+    globalRegistry.register(model('lknplain'));
+    globalRegistry.register(model('lknopted', true));
+
+    await ensureWorkspaceLocalNumbers('/src/solo');
+    const isNumberedType = mockAssignMissingLocalKeys.mock.calls[0][3] as (type: string) => boolean;
+
+    expect(isNumberedType('lknplain')).toBe(false);
+    expect(isNumberedType('lknopted')).toBe(true);
+    expect(isNumberedType('lknunregistered')).toBe(false);
+    globalRegistry.unregister('lknplain');
+    globalRegistry.unregister('lknopted');
   });
 
   it('ignores an empty workspace path', async () => {

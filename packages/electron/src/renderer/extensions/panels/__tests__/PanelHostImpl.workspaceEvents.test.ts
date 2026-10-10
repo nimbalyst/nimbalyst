@@ -1,3 +1,4 @@
+// @vitest-environment node
 /**
  * `onWorkspaceEvent` is the only path an extension panel has to host events, and
  * its filter decides what the Git panel ever hears about.
@@ -12,6 +13,7 @@ import { describe, expect, it, beforeEach, vi } from 'vitest';
 
 const listeners = new Map<string, Array<(data: unknown) => void>>();
 const roots: string[] = [];
+const invoke = vi.fn(async (..._args: unknown[]) => ({}));
 
 vi.mock('@nimbalyst/runtime/store', () => ({
   store: { get: () => roots },
@@ -21,12 +23,13 @@ vi.mock('../ExtensionFileStorageImpl', () => ({
 }));
 
 const { createPanelHost } = await import('../PanelHostImpl');
+const { getPanelGutterBadge, prunePanelGutterBadges } = await import('../panelGutterBadges');
 
 function emit(event: string, data: unknown): void {
   for (const listener of listeners.get(event) ?? []) listener(data);
 }
 
-function makeHost(workspacePath: string) {
+function makeHost(workspacePath: string, extra: Record<string, unknown> = {}) {
   return createPanelHost({
     panelId: 'git',
     extensionId: 'nimbalyst.git',
@@ -37,14 +40,17 @@ function makeHost(workspacePath: string) {
     onOpenPanel: () => {},
     onClose: () => {},
     onThemeChange: () => () => {},
+    ...extra,
   } as never);
 }
 
 beforeEach(() => {
   listeners.clear();
   roots.length = 0;
+  invoke.mockClear();
   (globalThis as never as { window: unknown }).window = {
     electronAPI: {
+      invoke,
       on: (event: string, callback: (data: unknown) => void) => {
         const forEvent = listeners.get(event) ?? [];
         forEvent.push(callback);
@@ -86,5 +92,61 @@ describe('PanelHostImpl.onWorkspaceEvent', () => {
     emit('extension:message', { kind: 'ping' });
 
     expect(received).toEqual([{ kind: 'ping' }]);
+  });
+});
+
+/**
+ * The two panel seams that reach agent state. Main trusts `callerExtensionId`
+ * to refuse another extension's backend tools, and the transcript embed must
+ * stay on the host's workspace; both hold only because the host fills those
+ * values in after the panel's own arguments.
+ */
+describe('PanelHostImpl agent seams', () => {
+  it('stamps backend tool calls with the host extension id, not a panel-supplied one', async () => {
+    const host = makeHost('/repo');
+    await host.callBackendTool('example.panel_status', { callerExtensionId: 'someone.else' });
+
+    expect(invoke).toHaveBeenCalledWith('extensions:ai-call-backend-tool', {
+      toolName: 'example.panel_status',
+      args: { callerExtensionId: 'someone.else' },
+      workspacePath: '/repo',
+      callerExtensionId: 'nimbalyst.git',
+    });
+  });
+
+  it('offers the transcript only when injected, bound to the host workspace and file opener', () => {
+    expect(makeHost('/repo').components).toBeUndefined();
+
+    const opened: string[] = [];
+    const Transcript = () => null;
+    const host = makeHost('/repo', {
+      sessionTranscript: Transcript,
+      onOpenFile: (path: string) => opened.push(path),
+    });
+    const Embed = host.components!.SessionTranscript as (props: object) => { type: unknown; props: Record<string, unknown> };
+    const element = Embed({ sessionId: 'session-b', workspacePath: '/elsewhere' });
+
+    expect(element.type).toBe(Transcript);
+    expect(element.props.sessionId).toBe('session-b');
+    expect(element.props.workspacePath).toBe('/repo');
+    (element.props.onOpenFile as (path: string) => void)('/repo/a.ts');
+    expect(opened).toEqual(['/repo/a.ts']);
+  });
+});
+
+describe('PanelHostImpl.setGutterBadge', () => {
+  // A fullscreen panel unmounts when the user leaves it; the badge is what
+  // brings them back, so it outlives the host. It must not outlive the extension.
+  it('keeps the badge after the host is disposed, and drops it once the panel is unregistered', () => {
+    const host = makeHost('/repo') as ReturnType<typeof makeHost> & { dispose(): void };
+    host.setGutterBadge(3, { tone: 'warning' });
+    host.dispose();
+    expect(getPanelGutterBadge('git')).toEqual({ count: 3, tone: 'warning' });
+
+    prunePanelGutterBadges(new Set(['other.panel']));
+    expect(getPanelGutterBadge('git')).toBeUndefined();
+
+    makeHost('/repo').setGutterBadge(null);
+    expect(getPanelGutterBadge('git')).toBeUndefined();
   });
 });

@@ -126,18 +126,23 @@ For the complete list of every event we send and its properties, see [POSTHOG_EV
 
 ## Building from Source
 
-Nimbalyst is a TypeScript / Electron monorepo using npm workspaces.
+Nimbalyst is a TypeScript / Electron monorepo using pnpm workspaces. It needs Node 24 (see `.nvmrc`); pnpm is pinned by the `packageManager` field and provided by corepack.
 
 ```bash
-# Install dependencies (npm 7+ required)
-npm install
+# One-time: enable corepack (ships with Node 24)
+corepack enable
+
+# Install dependencies
+pnpm install
 
 # Start the Electron app in dev mode
-cd packages/electron && npm run dev
+cd packages/electron && pnpm run dev
 
 # Build a local Mac binary
-cd packages/electron && npm run build:mac:local
+cd packages/electron && pnpm run build:mac:local
 ```
+
+See [CONTRIBUTING.md](./CONTRIBUTING.md) for notes on `allowBuilds` and the release-age cooldown.
 
 Major workspaces:
 

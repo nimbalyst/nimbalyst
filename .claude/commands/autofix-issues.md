@@ -116,7 +116,7 @@ Each brief must be self-contained. A slice that has to re-investigate has alread
 - The exact files this slice owns, and that siblings are live in the same checkout
 - Never whole-file `Write` on a file it did not create
 - Failing test first, then the fix. Extend an existing test file where one fits
-- Run **only** its own targeted vitest file. Never `npm run typecheck` or `npm run test:prepush` — concurrent full runs produce false failures
+- Run **only** its own targeted vitest file. Never `pnpm typecheck` or `pnpm test:prepush` — concurrent full runs produce false failures
 - Never touch `CHANGELOG.md`
 - Commit only its own files, with `Fixes #<issue>`. If its targeted test does not pass, do not commit — report back instead
 - Its tracker overlay id, to link the session and set status
@@ -126,7 +126,7 @@ Each brief must be self-contained. A slice that has to re-investigate has alread
 
 1. Wait for the slices. Do not poll in a tight loop; you are notified as each finishes.
 2. Read what each one reports. A slice that declined to commit is a result, not a failure — surface its reasoning.
-3. Run the gate **once** for the whole batch: `npm run typecheck && npm run test:prepush`. Check the reported failure counts, not just the exit code — `test:prepush` has exited 0 with a failing test.
+3. Run the gate **once** for the whole batch: `pnpm typecheck && pnpm test:prepush`. Check the reported failure counts, not just the exit code — `test:prepush` has exited 0 with a failing test.
 4. On failure, send the failure back to the slice that owns those files. Do not hand-patch another session's work when that session still has the context.
 
 The gate is necessary and not sufficient. A green suite says nothing broke that was already covered; it does not say the fixes are right. That is Step 7.

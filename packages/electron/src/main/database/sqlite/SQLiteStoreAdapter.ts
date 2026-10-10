@@ -42,6 +42,7 @@ export interface SQLiteStoreAdapterOptions {
  */
 export interface StoreDbAdapter {
   query<T = unknown>(sql: string, params?: unknown[]): Promise<{ rows: T[] }>;
+  runTransaction(statements: Array<{ sql: string; params?: any[]; expectedRows?: number }>): Promise<void>;
 
   /**
    * Full-text search over `ai_agent_messages.content`. Returns ranked
@@ -99,6 +100,7 @@ export function createSQLiteStoreAdapter(
   _opts: SQLiteStoreAdapterOptions = {},
 ): StoreDbAdapter {
   return {
+    runTransaction: (statements) => db.runTransaction(statements),
     async query<T = unknown>(sql: string, params: unknown[] = []): Promise<{ rows: T[] }> {
       // SQLiteDatabase.adaptSqlForSQLite handles dialect translation
       // internally via dialectTranslator. This adapter is a thin pass-through

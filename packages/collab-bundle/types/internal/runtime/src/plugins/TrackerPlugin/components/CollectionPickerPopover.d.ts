@@ -14,7 +14,7 @@
  * both sides of the link consistent via the normal inverse-propagation path.
  */
 import React from 'react';
-import type { FieldDefinition, TrackerRelationshipValue } from '@nimbalyst/tracker-schema';
+import type { FieldDefinition, TrackerRelationshipValue } from '../../../../../tracker-schema/src/browser';
 import type { RelationshipCandidate } from './RelationshipFieldEditor';
 import './CollectionPickerPopover.css';
 export interface CollectionPickerPopoverProps {

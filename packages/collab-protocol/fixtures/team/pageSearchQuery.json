@@ -1,0 +1,11 @@
+{
+  "type": "pageSearchQuery",
+  "requestId": "search-1",
+  "projectId": "project-1",
+  "query": "yjs autom",
+  "limit": 20,
+  "typeIds": [
+    "module",
+    "decision"
+  ]
+}

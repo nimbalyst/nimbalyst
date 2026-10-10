@@ -394,6 +394,8 @@ describe('MetaAgentService workspace-alias resolution (#1551)', () => {
     });
 
     expect(result.worktreeId).toBe('wt-own');
+    expect(result.parentSessionId).toBeNull();
+    expect(result.createdBySessionId).toBe('meta');
     expect(result.worktreePath).toBe(fixture.worktree);
     expect(createdWorkspaceIds()).toEqual([fixture.alias]);
 

@@ -8,7 +8,7 @@
  * in ../models/trackerRelationships, so this component stays a thin view.
  */
 import React from 'react';
-import type { FieldDefinition, TrackerRelationshipValue } from '@nimbalyst/tracker-schema';
+import type { FieldDefinition, TrackerRelationshipValue } from '../../../../../tracker-schema/src/browser';
 /** A selectable target item for the typeahead. */
 export interface RelationshipCandidate {
     itemId: string;

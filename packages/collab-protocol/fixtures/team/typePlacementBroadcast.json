@@ -1,0 +1,13 @@
+{
+  "type": "typePlacementBroadcast",
+  "placement": {
+    "typeId": "bug",
+    "projectId": "project-1",
+    "parentFolderId": "NIM-42",
+    "parentKind": "item",
+    "sortOrder": 1024,
+    "createdBy": "member-1",
+    "createdAt": 1790000000000,
+    "updatedAt": 1790000001000
+  }
+}

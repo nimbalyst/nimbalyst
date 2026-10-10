@@ -186,7 +186,36 @@ export interface RelationshipEdge {
   relationshipTypeKey?: string;
   targetItemId: string;
   targetTrackerType?: string;
+  /** Predicate id: the field's declared `predicate`, or a body link's `rel=`. */
+  predicate?: string | null;
   metadata?: Record<string, unknown>;
+}
+
+/**
+ * One line of a page's Links section, read through
+ * `document-service:tracker-item-links`. Covers both body links (`body:<rel>`,
+ * `body:link`) and relationship-field edges, in either direction.
+ */
+export interface TrackerPageLink {
+  /** `out`: this item is the source; `in`: the other item links here. */
+  direction: 'out' | 'in';
+  /** Null for a plain link or a relationship field with no declared predicate. */
+  predicateId: string | null;
+  /**
+   * The indexed relationship type. For a field edge this honors a value's own
+   * `relationshipTypeKey` over the field default (null when neither is set), so
+   * a predicate-less edge can still be labelled the right way round. For a body
+   * edge it is the predicate id, or 'link' for a plain link.
+   */
+  relationshipTypeKey: string | null;
+  otherItemId: string;
+  otherTitle: string;
+  otherIssueKey: string | null;
+  otherTypeId: string;
+  /** The sentence around a body link; null for field edges. */
+  sentence: string | null;
+  /** `body:<rel>`, `body:link`, or the relationship field id. */
+  sourceFieldId: string;
 }
 
 /** A minimal reference to the source item, stamped onto a target's inverse field. */
@@ -277,6 +306,7 @@ export function deriveRelationshipEdges(
         relationshipTypeKey: v.relationshipTypeKey ?? def.relationshipTypeKey,
         targetItemId: v.itemId,
         targetTrackerType: v.trackerType,
+        predicate: def.predicate ?? null,
         metadata: v.metadata,
       });
     }

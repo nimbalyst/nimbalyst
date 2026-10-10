@@ -32,12 +32,15 @@ import type { DocumentModelEditorHandle } from './document-model/types';
 import { fileDeletedAtomFamily } from '../store/atoms/fileWatch';
 import { assertFileSaveSucceeded } from '../utils/fileSaveResult';
 import { createProjectFileSystemHost } from './projectFileSystemHost';
+import { isCollabUri } from '@nimbalyst/collab-protocol';
 
 const LOG_PREFIX = '[HiddenTabManager]';
 const TTL_MS = 30_000; // 30 seconds after last release before cleanup
 const MAX_HIDDEN_EDITORS = 5;
 const POLL_INTERVAL_MS = 100;
 const POLL_TIMEOUT_MS = 10_000;
+/** How long a shared-page editor gets to bind to its document after registering its API. */
+const BINDING_SETTLE_MS = 1_000;
 
 interface HiddenEditorInstance {
   filePath: string;
@@ -52,6 +55,8 @@ interface HiddenEditorInstance {
   /** Cleanup for the file-deleted atom subscription */
   fileDeletedUnsub: (() => void) | null;
   editorAPIOwnerToken: EditorAPIOwnerToken;
+  /** A shared page's replica, released with the editor. */
+  releaseCollab?: () => void;
 }
 
 class HiddenTabManager {
@@ -107,6 +112,14 @@ class HiddenTabManager {
     // Check if a visible editor already has this file open
     if (this.isEditorAPIAvailable(filePath)) {
       // console.log(`${LOG_PREFIX} Visible editor already open for ${filePath}`);
+      return;
+    }
+
+    // A shared page (collab:// URI) has no file extension and no file on disk;
+    // its editor binds to the page's shared document instead (NIM-7397).
+    if (isCollabUri(filePath)) {
+      if (this.editors.size >= MAX_HIDDEN_EDITORS) this.evictOldest();
+      await this.mountCollabEditor(filePath, workspacePath);
       return;
     }
 
@@ -283,6 +296,56 @@ class HiddenTabManager {
   }
 
   /**
+   * Mount the editor of a shared page, bound to its shared document. Resolves
+   * once its API is registered and its binding has registered a content flush,
+   * or a settle window passes for editors that bind without one.
+   */
+  private async mountCollabEditor(uri: string, workspacePath: string): Promise<void> {
+    if (!this.hiddenContainer) this.initialize();
+    const editorAPIOwnerToken = createEditorAPIOwnerToken(`hidden:${uri}`);
+    // Loaded on first use: it brings in the shared-document and editor-registry graph.
+    const { prepareHiddenCollabEditor } = await import('./hiddenCollabEditor');
+    const prepared = await prepareHiddenCollabEditor(uri, workspacePath, editorAPIOwnerToken);
+    const container = document.createElement('div');
+    container.style.width = '100%';
+    container.style.height = '100%';
+    // Visible while it initializes, as for a file: canvas editors need it.
+    this.hiddenContainer!.style.left = '0px';
+    this.hiddenContainer!.style.top = '0px';
+    this.hiddenContainer!.style.zIndex = '-9999';
+    this.hiddenContainer!.appendChild(container);
+    const root = createRoot(container);
+    root.render(React.createElement(prepared.component, { host: prepared.host }));
+    this.editors.set(uri, {
+      filePath: uri,
+      container,
+      root,
+      host: prepared.host,
+      refCount: 1,
+      ttlTimer: null,
+      extensionId: prepared.extensionId,
+      documentModelHandle: null,
+      fileDeletedUnsub: null,
+      editorAPIOwnerToken,
+      releaseCollab: prepared.release,
+    });
+    try {
+      await this.waitForEditorAPI(uri);
+      const deadline = Date.now() + BINDING_SETTLE_MS;
+      while (!prepared.isBound() && Date.now() < deadline) {
+        await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+    } catch (error) {
+      this.unmountEditor(uri);
+      throw error;
+    } finally {
+      this.hiddenContainer!.style.left = '-9999px';
+      this.hiddenContainer!.style.top = '-9999px';
+      this.hiddenContainer!.style.zIndex = '';
+    }
+  }
+
+  /**
    * Unmount a hidden editor and clean up.
    */
   private unmountEditor(filePath: string): void {
@@ -309,6 +372,7 @@ class HiddenTabManager {
     }
 
     instance.root.unmount();
+    instance.releaseCollab?.();
 
     if (instance.container.parentNode) {
       instance.container.parentNode.removeChild(instance.container);

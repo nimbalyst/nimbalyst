@@ -25,6 +25,11 @@ const CitationFieldEditor = React.lazy(() =>
   import('./CitationFieldEditor').then((module) => ({ default: module.CitationFieldEditor })),
 );
 
+/** Lazy for the same reason: only a type that carries labels has a `label-ref` field. */
+const LabelRefPicker = React.lazy(() =>
+  import('./LabelRefPicker').then((module) => ({ default: module.LabelRefPicker })),
+);
+
 /** Team member info for user picker dropdown */
 export interface TeamMemberOption {
   /** Stable organization member id, when the roster provider exposes it. */
@@ -121,7 +126,8 @@ export const TrackerFieldEditor: React.FC<TrackerFieldEditorProps> = ({
   showLabel = true,
 }) => {
   const fieldId = `field-${field.name}`;
-  const label = formatFieldLabel(field.name);
+  // A field a label brought carries its property's own label.
+  const label = (field as { displayLabel?: string }).displayLabel || formatFieldLabel(field.name);
   // Field type is authoritative from the schema definition
   const effectiveType = field.type;
 
@@ -370,6 +376,16 @@ export const TrackerFieldEditor: React.FC<TrackerFieldEditorProps> = ({
               onOpenItem={onOpenRelationship}
               readOnly={field.readOnly || !citationHost}
             />
+          </React.Suspense>
+        </div>
+      );
+
+    case 'label-ref':
+      return (
+        <div className={wrapperClasses}>
+          {renderLabel()}
+          <React.Suspense fallback={null}>
+            <LabelRefPicker value={value} onChange={onChange} readOnly={field.readOnly} />
           </React.Suspense>
         </div>
       );

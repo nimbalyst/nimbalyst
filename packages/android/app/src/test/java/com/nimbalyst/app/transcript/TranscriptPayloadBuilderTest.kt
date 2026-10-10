@@ -84,4 +84,30 @@ class TranscriptPayloadBuilderTest {
 
         assertEquals(rawEnvelope, content)
     }
+
+    @Test
+    fun `payload carries the session's isExecuting and the replace flag only when set`() {
+        val metadata = TranscriptMetadata("Running", "claude-code", "sonnet", "agent", isExecuting = true)
+
+        val running = JsonParser.parseString(
+            TranscriptPayloadBuilder.buildSessionPayload("s", metadata, emptyList(), replace = true)
+        ).asJsonObject
+        assertTrue(running.getAsJsonObject("metadata").get("isExecuting").asBoolean)
+        assertTrue(running.get("replace").asBoolean)
+
+        val plain = JsonParser.parseString(
+            TranscriptPayloadBuilder.buildSessionPayload("s", metadata.copy(isExecuting = false), emptyList())
+        ).asJsonObject
+        assertFalse(plain.has("replace"))
+        assertFalse(JsonParser.parseString(TranscriptPayloadBuilder.buildMetadataJson(metadata.copy(isExecuting = false)))
+            .asJsonObject.get("isExecuting").asBoolean)
+    }
+
+    @Test
+    fun `session id arguments are spliced into scripts as safe JS string literals`() {
+        val encodedId = TranscriptPayloadBuilder.jsString("id' ")
+        // U+2028 is a line terminator in pre-ES2019 JS; it must be escaped.
+        assertFalse(encodedId.contains(' '))
+        assertEquals("id' ", JsonParser.parseString(encodedId).asString)
+    }
 }

@@ -16,18 +16,21 @@ import { createRoot, Root } from 'react-dom/client';
 import { Provider as JotaiProvider, useAtomValue } from 'jotai';
 import { fileSaveRequestAtom } from '../../store/atoms/appCommands';
 import type { TextReplacement } from '@nimbalyst/runtime';
-import type { CollabScope } from '@nimbalyst/collab-client/core';
+import type { CollabOpenOptions, CollabScope } from '@nimbalyst/collab-client/core';
 import type { Tab } from '../TabManager/TabManager';
 import { TabEditor } from '../TabEditor/TabEditor';
 import { CollaborativeTabEditor } from '../TabEditor/CollaborativeTabEditor';
 import type { DocumentSessionActions } from '../TabEditor/DocumentSessionControl';
 import { TabEditorErrorBoundary } from '../TabEditorErrorBoundary';
 import { logger } from '../../utils/logger';
-import { useTabsActions, type TabData, notifyDirtyStateChange, isTrackerTabPath } from '../../contexts/TabsContext';
+import { useTabsActions, type TabData, notifyDirtyStateChange, isNonFilesystemTab, isTrackerTabPath, isTypeTabPath, TYPE_TAB_PREFIX, isPersonalPageTabPath, PERSONAL_PAGE_TAB_PREFIX } from '../../contexts/TabsContext';
+import { PersonalPageTab } from '../CollabMode/PersonalPageTab';
 import { TrackerResourceEditor } from '../AgentMode/TrackerResourceEditor';
-import { SharedDocsListView } from '@nimbalyst/collab-client/docs-ui';
-import { ElectronCollabDocsUIRoot } from '../CollabMode/ElectronCollabDocsUIProvider';
-import { isSharedHomeTab } from '../CollabMode/sharedHomeTab';
+import { TrackerPageView } from '../TrackerMode/TrackerPageView';
+import { TypePageTab } from '../CollabMode/TypePageTab';
+import { PagesSearchTab } from '../CollabMode/PagesSearchTab';
+import { PagesTypesTab } from '../CollabMode/PagesTypesTab';
+import { pagesSectionTabFor } from '../CollabMode/pagesSectionTabs';
 import { FeedbackRequestResultsTab } from '../FeedbackRequest/FeedbackRequestResultsTab';
 import { isFeedbackRequestTab } from '../FeedbackRequest/feedbackRequestTab';
 import { isCollabUri, parseCollabUri } from '@nimbalyst/collab-protocol';
@@ -39,7 +42,6 @@ import {
 } from '../../utils/collabDocumentOpener';
 import { getPersistedCollabDocMetadata } from '../../utils/collabOpenDocsPersistence';
 import { store, editorDirtyAtom, editorHasUnacceptedChangesAtom, makeEditorKey } from '@nimbalyst/runtime/store';
-import { titleBarCreateMenusAtom } from '../../store/atoms/titleBarCreate';
 import { clearMockupAnnotationsForFile, getMockupFilePath } from '../UnifiedAI/MockupAnnotationIndicator';
 import { resolveDesktopCollabScope } from '../../store/atoms/collabDocuments';
 
@@ -63,7 +65,11 @@ interface TabContentProps {
   // Tracker resource tabs: open another tracker item (relationship/backlink).
   // Workstream-scoped; passed by the workstream host so TabContent stays
   // workstream-agnostic.
-  onOpenTracker?: (trackerItemId: string) => void;
+  onOpenTracker?: (trackerItemId: string, options?: CollabOpenOptions) => void;
+  // Pages mode: tracker tabs render as typed pages (TrackerPageView), not the
+  // tracker detail pane, and file tabs (Local wiki pages) accept agent edits
+  // instead of showing them for review.
+  trackerPageHeader?: boolean;
   // Owning workstream id (when this TabContent hosts a workstream strip) — used
   // to persist per-tracker-tab content-focus state.
   workstreamId?: string;
@@ -95,6 +101,7 @@ const TabContentComponent: React.FC<TabContentProps> = ({
   onOpenSessionInChat,
   onTabClose,
   onOpenTracker,
+  trackerPageHeader,
   documentSessionActions,
   workstreamId,
   workspaceId,
@@ -129,6 +136,7 @@ const TabContentComponent: React.FC<TabContentProps> = ({
     onOpenSessionInChat,
     onTabClose,
     onOpenTracker,
+    trackerPageHeader,
     documentSessionActions,
     workstreamId,
     workspaceId,
@@ -144,6 +152,7 @@ const TabContentComponent: React.FC<TabContentProps> = ({
     onOpenSessionInChat,
     onTabClose,
     onOpenTracker,
+    trackerPageHeader,
     documentSessionActions,
     workstreamId,
     workspaceId,
@@ -162,14 +171,14 @@ const TabContentComponent: React.FC<TabContentProps> = ({
   const loadContent = useCallback(async (filePath: string, title?: string): Promise<string> => {
     // Tracker resources don't load from disk -- the tracker body is owned by
     // TrackerItemDetail (PGLite or collaborative Y.Doc).
-    if (isTrackerTabPath(filePath)) {
+    if (isTrackerTabPath(filePath) || isTypeTabPath(filePath) || isPersonalPageTabPath(filePath)) {
       return '';
     }
 
-    // The Shared Docs Home tab is a virtual surface with no backing content;
-    // short-circuit before the generic virtual:// loader (which would call
-    // documentService.loadVirtual and fail).
-    if (isSharedHomeTab(filePath)) {
+    // A section's Search and Types are virtual surfaces with no backing
+    // content; short-circuit before the generic virtual:// loader (which would
+    // call documentService.loadVirtual and fail).
+    if (pagesSectionTabFor(filePath)) {
       return '';
     }
 
@@ -324,10 +333,12 @@ const TabContentComponent: React.FC<TabContentProps> = ({
 
     const root = createRoot(element);
 
-    // Shared Docs Home tab: a self-contained list view over the shared-doc
-    // index. No save/dirty/getContent wiring; opening a row hands off via
-    // pendingCollabDocumentAtom (see SharedDocsListView).
-    if (isSharedHomeTab(tab.filePath)) {
+    // A section's Search or Types (a leftover Shared Home tab is Team Search).
+    // No save/dirty/getContent wiring; rows open through the section's host.
+    const sectionView = pagesSectionTabFor(tab.filePath);
+    if (sectionView) {
+      const workspacePath = propsRef.current.workspaceId;
+      const SectionTab = sectionView.view === 'search' ? PagesSearchTab : PagesTypesTab;
       root.render(
         <JotaiProvider store={store}>
           <TabEditorErrorBoundary
@@ -341,20 +352,7 @@ const TabContentComponent: React.FC<TabContentProps> = ({
               propsRef.current.onTabClose?.(tab.id);
             }}
           >
-            {propsRef.current.collabScope
-              ? (
-                // Own React root: context does not cross, so the Shared Docs
-                // context has to be re-established here or the view throws.
-                <ElectronCollabDocsUIRoot scope={propsRef.current.collabScope}>
-                  {/* Creation is owned by the sidebar and republished for the
-                      title bar; the home view triggers that same action rather
-                      than opening a creation path of its own. */}
-                  <SharedDocsListView
-                    onCreateDocument={() => store.get(titleBarCreateMenusAtom).collab?.onPrimary?.()}
-                  />
-                </ElectronCollabDocsUIRoot>
-              )
-              : null}
+            {workspacePath ? <SectionTab lane={sectionView.lane} workspacePath={workspacePath} /> : null}
           </TabEditorErrorBoundary>
         </JotaiProvider>
       );
@@ -390,11 +388,13 @@ const TabContentComponent: React.FC<TabContentProps> = ({
       return;
     }
 
-    // Tracker resource tabs render the tracker detail host, not a file editor.
-    // No save/dirty/getContent wiring — the tracker owns its own persistence
-    // (PGLite / collaborative Y.Doc via TrackerItemDetail).
+    // Tracker resource tabs render the tracker detail host (or, in Pages mode,
+    // the typed page), not a file editor. No save/dirty/getContent wiring — the
+    // tracker owns its own persistence (PGLite / collaborative Y.Doc via
+    // useTrackerItemBody).
     if (tab.kind === 'tracker' || isTrackerTabPath(tab.filePath)) {
       const trackerItemId = tab.trackerItemId ?? tab.filePath.replace(/^tracker:\/\//, '');
+      const pageWorkspacePath = propsRef.current.trackerPageHeader ? propsRef.current.workspaceId : undefined;
       root.render(
         <JotaiProvider store={store}>
           <TabEditorErrorBoundary
@@ -408,18 +408,28 @@ const TabContentComponent: React.FC<TabContentProps> = ({
               propsRef.current.onTabClose?.(tab.id);
             }}
           >
-            <TrackerResourceEditor
-              trackerItemId={trackerItemId}
-              workspacePath={propsRef.current.workspaceId}
-              workstreamId={propsRef.current.workstreamId}
-              onClose={() => propsRef.current.onTabClose?.(tab.id)}
-              onOpenTracker={propsRef.current.onOpenTracker}
-              onSwitchToAgentMode={
-                propsRef.current.onSwitchToAgentMode
-                  ? (sessionId: string) => propsRef.current.onSwitchToAgentMode?.(undefined, sessionId)
-                  : undefined
-              }
-            />
+            {pageWorkspacePath ? (
+              <TrackerPageView
+                itemId={trackerItemId}
+                workspacePath={pageWorkspacePath}
+                collabScope={propsRef.current.collabScope}
+                // In Pages a link with no click to read (a relation pill, a grid row) is a plain click.
+                onOpenItem={(itemId, options) => propsRef.current.onOpenTracker?.(itemId, options ?? { newTab: false })}
+              />
+            ) : (
+              <TrackerResourceEditor
+                trackerItemId={trackerItemId}
+                workspacePath={propsRef.current.workspaceId}
+                workstreamId={propsRef.current.workstreamId}
+                onClose={() => propsRef.current.onTabClose?.(tab.id)}
+                onOpenTracker={propsRef.current.onOpenTracker}
+                onSwitchToAgentMode={
+                  propsRef.current.onSwitchToAgentMode
+                    ? (sessionId: string) => propsRef.current.onSwitchToAgentMode?.(undefined, sessionId)
+                    : undefined
+                }
+              />
+            )}
           </TabEditorErrorBoundary>
         </JotaiProvider>
       );
@@ -427,7 +437,66 @@ const TabContentComponent: React.FC<TabContentProps> = ({
       return;
     }
 
-    const handleManualSaveReady = (saveFn: () => Promise<void>) => {
+    // A tracker type's page (Pages mode): the type's table, nothing to save.
+    if (tab.kind === 'type' || isTypeTabPath(tab.filePath)) {
+      const typeId = tab.trackerTypeId ?? tab.filePath.slice(TYPE_TAB_PREFIX.length);
+      const workspacePath = propsRef.current.workspaceId;
+      root.render(
+        <JotaiProvider store={store}>
+          <TabEditorErrorBoundary
+            filePath={tab.filePath}
+            fileName={tab.fileName}
+            onRetry={() => {
+              removeTabEditor(tab.id);
+              createTabEditor(tab, content);
+            }}
+            onClose={() => {
+              propsRef.current.onTabClose?.(tab.id);
+            }}
+          >
+            {workspacePath ? (
+              <TypePageTab
+                typeId={typeId}
+                workspacePath={workspacePath}
+                onOpenItem={(itemId, options) => propsRef.current.onOpenTracker?.(itemId, options ?? { newTab: false })}
+              />
+            ) : null}
+          </TabEditorErrorBoundary>
+        </JotaiProvider>
+      );
+      tabInstancesRef.current.set(tab.id, { root, element, tabData: tab, content });
+      return;
+    }
+
+    // A personal page (Pages mode): its body saves itself through local IPC,
+    // so no save/dirty/getContent wiring.
+    if (tab.kind === 'personal-page' || isPersonalPageTabPath(tab.filePath)) {
+      const documentId = tab.personalDocumentId ?? tab.filePath.slice(PERSONAL_PAGE_TAB_PREFIX.length);
+      const workspacePath = propsRef.current.workspaceId;
+      root.render(
+        <JotaiProvider store={store}>
+          <TabEditorErrorBoundary
+            filePath={tab.filePath}
+            fileName={tab.fileName}
+            onRetry={() => {
+              removeTabEditor(tab.id);
+              createTabEditor(tab, content);
+            }}
+            onClose={() => {
+              propsRef.current.onTabClose?.(tab.id);
+            }}
+          >
+            {workspacePath ? (
+              <PersonalPageTab documentId={documentId} workspacePath={workspacePath} fallbackTitle={tab.fileName} />
+            ) : null}
+          </TabEditorErrorBoundary>
+        </JotaiProvider>
+      );
+      tabInstancesRef.current.set(tab.id, { root, element, tabData: tab, content });
+      return;
+    }
+
+    const handleManualSaveReady =(saveFn: () => Promise<void>) => {
       saveFunctionsRef.current.set(tab.id, saveFn);
       if (tab.id === activeTabIdRef.current && propsRef.current.onManualSaveReady) {
         propsRef.current.onManualSaveReady(saveFn);
@@ -518,6 +587,8 @@ const TabContentComponent: React.FC<TabContentProps> = ({
               onSwitchToAgentMode={propsRef.current.onSwitchToAgentMode}
               onOpenSessionInChat={propsRef.current.onOpenSessionInChat}
               workspaceId={propsRef.current.workspaceId}
+              // A file tab in the Wiki is a Local wiki page, never under review.
+              acceptAgentEdits={propsRef.current.trackerPageHeader}
             />
           )}
         </TabEditorErrorBoundary>
@@ -528,7 +599,7 @@ const TabContentComponent: React.FC<TabContentProps> = ({
   }, []);
 
   // Remove a TabEditor instance
-  const removeTabEditor = useCallback((tabId: string) => {
+  const removeTabEditor = useCallback((tabId: string, options?: { keepCollabConfig?: boolean }) => {
     const instance = tabInstancesRef.current.get(tabId);
     if (!instance) return;
 
@@ -544,12 +615,19 @@ const TabContentComponent: React.FC<TabContentProps> = ({
       }
     }
 
+    // Two Pages tabs can show the same page; per-path state stays while the
+    // other one still does.
+    const pathStillShown = Array.from(tabsActions.getSnapshot().tabs.values())
+      .some((other) => other.id !== tabId && other.filePath === instance.tabData.filePath);
+
     // Clean up Jotai atoms for this tab
-    editorDirtyAtom.remove(editorKey);
-    editorHasUnacceptedChangesAtom.remove(editorKey);
+    if (!pathStillShown) {
+      editorDirtyAtom.remove(editorKey);
+      editorHasUnacceptedChangesAtom.remove(editorKey);
+    }
 
     // Clean up collab config registry for collaborative tabs
-    if (isCollabUri(instance.tabData.filePath)) {
+    if (isCollabUri(instance.tabData.filePath) && !options?.keepCollabConfig && !pathStillShown) {
       const config = propsRef.current.workspaceId
         ? getCollabConfigForScopeKey(propsRef.current.workspaceId, instance.tabData.filePath)
         : undefined;
@@ -626,13 +704,20 @@ const TabContentComponent: React.FC<TabContentProps> = ({
       // Other tabs will get editors when they become active
       for (const tab of currentTabs) {
         const isActiveTab = tab.id === newActiveTabId;
-        const hasEditor = tabInstancesRef.current.has(tab.id);
+        let hasEditor = tabInstancesRef.current.has(tab.id);
         const isLoading = loadingRef.current.has(tab.id);
 
-        // Handle file rename/move: if tab filePath changed, recreate the editor
-        if (hasEditor) {
-          const instance = tabInstancesRef.current.get(tab.id);
-          if (instance && instance.tabData.filePath !== tab.filePath) {
+        const instance = hasEditor ? tabInstancesRef.current.get(tab.id) : undefined;
+        if (instance && instance.tabData.filePath !== tab.filePath && isNonFilesystemTab(tab.filePath)) {
+          // The tab navigated to another page (Pages). Unmount the old page,
+          // saving it if dirty, and mount the new one through the load path
+          // below, which resolves a shared page's collab config. The old
+          // page keeps its config so Back reopens it as it was.
+          removeTabEditor(tab.id, { keepCollabConfig: true });
+          hasEditor = false;
+        } else if (instance) {
+          // Handle file rename/move: if tab filePath changed, recreate the editor
+          if (instance.tabData.filePath !== tab.filePath) {
             console.log(`[TabContent] Tab ${tab.id} file path changed: ${instance.tabData.filePath} -> ${tab.filePath}, recreating editor`);
             // Clean up old dirty atom
             const oldEditorKey = makeEditorKey(instance.tabData.filePath);
@@ -654,10 +739,13 @@ const TabContentComponent: React.FC<TabContentProps> = ({
           const content = tab.content || await loadContent(tab.filePath, tab.fileName);
           loadingRef.current.delete(tab.id);
 
-          // Check tab still exists after async load
-          const freshSnapshot = tabsActions.getSnapshot();
-          if (freshSnapshot.tabs.has(tab.id)) {
-            createTabEditor(tab, content);
+          // Check tab still exists after async load. A tab that navigated
+          // again meanwhile was skipped as loading, so sync once more for it.
+          const freshTab = tabsActions.getSnapshot().tabs.get(tab.id);
+          if (freshTab && freshTab.filePath === tab.filePath) {
+            createTabEditor(freshTab, content);
+          } else if (freshTab) {
+            void syncTabs();
           }
         }
         // Non-active tabs without editors: no action needed

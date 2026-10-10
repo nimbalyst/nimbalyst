@@ -4,8 +4,30 @@ import java.net.URI
 import java.net.URLDecoder
 import java.nio.charset.StandardCharsets
 
+/**
+ * Parses `nimbalyst://auth/callback`. Stateless: the caller decides where a failure is
+ * shown (MainActivity hands it to the sign-in screen through the navigation state).
+ */
 object AuthCallbackParser {
     fun parse(
+        deepLink: String,
+        pairedUserId: String?
+    ): AuthCallbackParseResult = parseCallback(deepLink, pairedUserId)
+
+    /**
+     * Error text for a callback that carries `error` / `error_description`, or
+     * null when it is not an error. The collab worker redirects here with those
+     * parameters when sign-in fails server-side. Mirrors iOS
+     * `AuthManager.authErrorMessage(fromCallbackParams:)`.
+     */
+    internal fun serverErrorMessage(params: Map<String, String>): String? {
+        params["error_description"]?.trim()?.takeIf { it.isNotEmpty() }?.let { return it }
+        val code = params["error"]?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+        // A bare code is not a sentence; wrap it so the UI reads as a message.
+        return "Sign-in failed ($code)."
+    }
+
+    private fun parseCallback(
         deepLink: String,
         pairedUserId: String?
     ): AuthCallbackParseResult {
@@ -17,6 +39,8 @@ object AuthCallbackParser {
         }
 
         val params = parseQuery(uri.rawQuery)
+        serverErrorMessage(params)?.let { return AuthCallbackParseResult.Failure(it) }
+
         val sessionToken = params["session_token"]
         val sessionJwt = params["session_jwt"]
         val userId = params["user_id"]

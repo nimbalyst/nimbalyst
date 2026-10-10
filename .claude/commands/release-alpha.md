@@ -106,7 +106,7 @@ Do **not** run `/promote-public-release` until the alpha prerelease build is gre
      ```
    - The script will:
      - bump `packages/electron/package.json`
-     - update `package-lock.json`
+     - update `pnpm-lock.yaml`
      - move `[Unreleased]` into a new versioned section
      - create the release commit
      - create the annotated `v*` tag

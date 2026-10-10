@@ -328,6 +328,71 @@ describe.each(PERSISTENCE_BACKENDS)('TrackerSyncEngine ($name)', backend => {
     a.engine.destroy();
   });
 
+  it('never sends a required create-only type to a room that cannot refuse an existing one', async () => {
+    // The fake room predates create-only: its bootstrap does not advertise it,
+    // and it would upsert whatever it is sent.
+    const server = createFakeServer();
+    const settled: Array<{ type: string; accepted: boolean; error?: { code: string } }> = [];
+    let pending: Array<{ type: string; model: string | null; deleted: boolean; createOnly?: 'required' | 'whenSupported' }> = [];
+    const a = await buildEngine({ room: server.room, serverConnect: server.connect, encryptionKey: key });
+    a.config.schemaSync = {
+      listUnsynced: async () => pending,
+      applyRemote: async (def) => { pending = pending.filter(row => row.type !== def.type); },
+      onSettled: (outcome) => {
+        settled.push(outcome);
+        pending = pending.filter(row => row.type !== outcome.type);
+      },
+    };
+    await a.engine.connect();
+    await waitUntil(() => a.engine.getStatus() === 'connected');
+
+    pending = [
+      { type: 'customer', model: schemaModelJson('customer'), deleted: false, createOnly: 'required' },
+      { type: 'vendor', model: schemaModelJson('vendor'), deleted: false, createOnly: 'whenSupported' },
+    ];
+    await a.engine.flushSchemas();
+    await waitUntil(() => settled.length === 2);
+
+    expect(settled.find(o => o.type === 'customer')).toMatchObject({ accepted: false, error: { code: 'createOnlyUnsupported' } });
+    expect(settled.find(o => o.type === 'vendor')).toMatchObject({ accepted: true });
+    // The desktop's "when supported" falls back to today's plain upsert; the required one never left.
+    expect(server.room.receivedSchemaMutations.map(m => [m.schemaType, 'createOnly' in m])).toEqual([['vendor', false]]);
+
+    a.engine.destroy();
+  });
+
+  it('applies schema deliveries one at a time, in arrival order', async () => {
+    // A slow apply of an older delivery that finishes after a newer one would
+    // leave the older content on disk and the older syncId in the host's gate.
+    const server = createFakeServer();
+    const b = await buildEngine({ room: server.room, serverConnect: server.connect, encryptionKey: key });
+    const events: string[] = [];
+    b.config.schemaSync = {
+      listUnsynced: async () => [],
+      applyRemote: async (def) => {
+        events.push(`start:${def.syncId}`);
+        if (events.length === 1) await new Promise(resolve => setTimeout(resolve, 30));
+        events.push(`end:${def.syncId}`);
+      },
+    };
+    await b.engine.connect();
+    await waitUntil(() => b.engine.getStatus() === 'connected');
+
+    let pending = [{ type: 'epic', model: schemaModelJson('epic'), deleted: false }];
+    const a = await buildEngine({ room: server.room, serverConnect: server.connect, encryptionKey: key });
+    a.config.schemaSync = { listUnsynced: async () => pending, applyRemote: async () => {} };
+    await a.engine.connect();
+    await waitUntil(() => a.engine.getStatus() === 'connected');
+    pending = [{ type: 'epic', model: schemaModelJson('epic-v2'), deleted: false }];
+    await a.engine.flushSchemas();
+
+    await waitUntil(() => events.length === 4);
+    expect(events).toEqual(['start:1', 'end:1', 'start:2', 'end:2']);
+
+    a.engine.destroy();
+    b.engine.destroy();
+  });
+
   it('completes schema bootstrap before applying the first item batch', async () => {
     const server = createFakeServer();
     const model = schemaModelJson('epic');

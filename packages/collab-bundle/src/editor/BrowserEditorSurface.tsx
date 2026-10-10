@@ -11,6 +11,7 @@ import {
   type PresenceAnnouncementState,
 } from './presenceAnnouncements';
 import type { CollabEditorPresence } from './types';
+import { openClickedPageReference } from './consoleLinkOpener';
 
 /** Long enough to fold a reconnect's leave/rejoin pair into one message. */
 const PRESENCE_ANNOUNCE_DEBOUNCE_MS = 900;
@@ -137,6 +138,8 @@ export function BrowserEditorSurface({
     <div
       className="collab-bundle-editor"
       onKeyDownCapture={releaseTabFromDocument}
+      onClick={(event) => openClickedPageReference(event.nativeEvent)}
+      onAuxClick={(event) => openClickedPageReference(event.nativeEvent)}
     >
       {subscribeToPresence && (
         <PresenceAnnouncements subscribeToPresence={subscribeToPresence} />

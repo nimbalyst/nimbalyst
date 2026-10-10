@@ -2,21 +2,14 @@
 
 set -e
 
-RELEASE_TYPE=$1
 PLIST_PATH="packages/ios/NimbalystApp/Sources/Info.plist"
 CHANGELOG_PATH="IOS_CHANGELOG.md"
 
-if [ -z "$RELEASE_TYPE" ]; then
-  echo "Usage: ./scripts/ios-release.sh [patch|minor|major]"
-  exit 1
-fi
-
-if [ "$RELEASE_TYPE" != "patch" ] && [ "$RELEASE_TYPE" != "minor" ] && [ "$RELEASE_TYPE" != "major" ]; then
-  echo "Error: Release type must be patch, minor, or major"
-  exit 1
-fi
-
-echo "Preparing iOS $RELEASE_TYPE release..."
+# The marketing version is NOT bumped here. After a release is accepted in the
+# App Store, the plist is moved to the next expected version by hand, and that
+# is the version TestFlight builds carry until it ships. This script releases
+# whatever version the plist already holds and only increments the build number.
+echo "Preparing iOS release..."
 
 # Verify Info.plist exists
 if [ ! -f "$PLIST_PATH" ]; then
@@ -31,41 +24,23 @@ if [ ! -f "$CHANGELOG_PATH" ]; then
 fi
 
 # Read current version and build number using PlistBuddy
-CURRENT_VERSION=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$PLIST_PATH")
+NEW_VERSION=$(/usr/libexec/PlistBuddy -c "Print :CFBundleShortVersionString" "$PLIST_PATH")
 CURRENT_BUILD=$(/usr/libexec/PlistBuddy -c "Print :CFBundleVersion" "$PLIST_PATH")
-
-echo "Current version: $CURRENT_VERSION (build $CURRENT_BUILD)"
-
-# Parse semver components
-IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT_VERSION"
-
-# Bump version based on release type
-case $RELEASE_TYPE in
-  major)
-    MAJOR=$((MAJOR + 1))
-    MINOR=0
-    PATCH=0
-    ;;
-  minor)
-    MINOR=$((MINOR + 1))
-    PATCH=0
-    ;;
-  patch)
-    PATCH=$((PATCH + 1))
-    ;;
-esac
-
-NEW_VERSION="$MAJOR.$MINOR.$PATCH"
 NEW_BUILD=$((CURRENT_BUILD + 1))
 
-echo "New version: $NEW_VERSION (build $NEW_BUILD)"
+if git rev-parse -q --verify "refs/tags/ios/v$NEW_VERSION" >/dev/null; then
+  echo "Error: tag ios/v$NEW_VERSION already exists."
+  echo "Info.plist still holds a version that was already released; set the next version in it first."
+  exit 1
+fi
+
+echo "Releasing version: $NEW_VERSION (build $CURRENT_BUILD -> $NEW_BUILD)"
 
 # Update Info.plist
-/usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $NEW_VERSION" "$PLIST_PATH"
 /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $NEW_BUILD" "$PLIST_PATH"
 
 # The widget extension is a separate bundle and App Store Connect rejects an
-# embedded extension whose version does not match the app's, so it bumps here too.
+# embedded extension whose version does not match the app's, so it is kept in step here.
 WIDGET_PLIST_PATH="packages/ios/NimbalystApp/NimbalystWidgets/Info.plist"
 if [ -f "$WIDGET_PLIST_PATH" ]; then
   /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $NEW_VERSION" "$WIDGET_PLIST_PATH"
@@ -128,6 +103,7 @@ COMMIT_NOTES=$(echo "$RELEASE_NOTES" | sed '/^<!--/d')
 
 # Stage files
 git add "$PLIST_PATH" "$CHANGELOG_PATH"
+[ -f "$WIDGET_PLIST_PATH" ] && git add "$WIDGET_PLIST_PATH"
 
 # Create commit
 git commit -m "iOS Release v$NEW_VERSION (build $NEW_BUILD)

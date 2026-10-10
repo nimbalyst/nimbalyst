@@ -31,7 +31,7 @@ A host-agnostic **project-knowledge + facts engine** exposed as an **MCP server*
 ## Running
 
 ```sh
-npm run build            # tsc → dist/
+pnpm run build            # tsc → dist/
 node dist/serve.js       # stdio MCP server
 ```
 

@@ -21,7 +21,7 @@
   },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
-    "prepare": "npm run build",
+    "prepare": "pnpm run build",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {

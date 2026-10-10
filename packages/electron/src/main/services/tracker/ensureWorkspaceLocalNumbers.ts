@@ -19,6 +19,7 @@
 import { database } from '../../database/PGLiteDatabaseWorker';
 import { logger } from '../../utils/logger';
 import { assignMissingLocalKeys } from './localKeyAllocator';
+import { typeHasLocalNumbers } from './localNumberTypes';
 import { repairTrackerIdentityKeys } from './trackerIdentityKeyRepair';
 import { workspaceLocalKeyStore } from './workspaceLocalKeyStore';
 
@@ -30,7 +31,8 @@ import { workspaceLocalKeyStore } from './workspaceLocalKeyStore';
 const sweptWorkspaces = new Set<string>();
 
 /**
- * Number every unnumbered item in the workspace.
+ * Number every unnumbered item in the workspace whose type opts in to local
+ * numbers.
  *
  * Never throws: a workspace whose numbers cannot be assigned still works
  * everywhere, so a failed sweep must not take window creation down with it.
@@ -41,7 +43,9 @@ export async function ensureWorkspaceLocalNumbers(workspacePath: string): Promis
   sweptWorkspaces.add(workspacePath);
 
   try {
-    const assigned = await assignMissingLocalKeys(database, workspaceLocalKeyStore, workspacePath);
+    const assigned = await assignMissingLocalKeys(
+      database, workspaceLocalKeyStore, workspacePath, typeHasLocalNumbers,
+    );
     if (assigned > 0) {
       logger.main.info(
         '[LocalNumbers] assigned', assigned, 'local tracker numbers for', workspacePath,

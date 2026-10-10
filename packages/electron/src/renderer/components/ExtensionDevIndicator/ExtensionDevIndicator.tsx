@@ -69,6 +69,7 @@ export const ExtensionDevIndicator: React.FC<ExtensionDevIndicatorProps> = ({
   const [extensions, setExtensions] = useState<InstalledExtension[]>([]);
   const [rebuildingExtension, setRebuildingExtension] = useState<string | null>(null);
   const [rebuildNotice, setRebuildNotice] = useState<RebuildNotice | null>(null);
+  const rebuildInProgress = useRef(false);
   const buttonRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const rebuildSubmenuRef = useRef<HTMLDivElement>(null);
@@ -244,65 +245,40 @@ export const ExtensionDevIndicator: React.FC<ExtensionDevIndicatorProps> = ({
     setConsoleOpen(true);
   };
 
-  const handleRebuildExtension = async (extension: InstalledExtension) => {
-    setRebuildingExtension(extension.id);
+  const handleRebuild = async (targets: InstalledExtension[], operation: string) => {
+    if (rebuildInProgress.current || targets.length === 0) return;
+    rebuildInProgress.current = true;
+    setRebuildingExtension(operation);
     setRebuildNotice(null);
+    const failures: string[] = [];
     try {
-      const result = await window.electronAPI.extensions.devReload(extension.id, extension.path);
-      if (!result.success) {
-        console.error(`[ExtensionDevIndicator] Failed to rebuild ${extension.name}:`, result.error);
-        setRebuildNotice({
-          kind: 'error',
-          message: `${extension.name}: ${summarizeRebuildError(result.error)}`,
-        });
-      } else {
-        setExtensions(current => current.map(item => (
-          item.id === extension.id ? { ...item, staleBundleWarning: undefined } : item
-        )));
-        setRebuildNotice({ kind: 'success', message: `${extension.name} rebuilt and reloaded.` });
-      }
-    } catch (error) {
-      console.error(`[ExtensionDevIndicator] Failed to rebuild ${extension.name}:`, error);
-      setRebuildNotice({
-        kind: 'error',
-        message: `${extension.name}: ${summarizeRebuildError(String(error))}`,
-      });
-    } finally {
-      setRebuildingExtension(null);
-    }
-  };
-
-  const handleRebuildAll = async () => {
-    setRebuildingExtension('all');
-    setRebuildNotice(null);
-    const failed: string[] = [];
-    const rebuiltIds = new Set<string>();
-    try {
-      for (const ext of extensions) {
-        const result = await window.electronAPI.extensions.devReload(ext.id, ext.path);
-        if (!result.success) {
-          console.error(`[ExtensionDevIndicator] Failed to rebuild ${ext.name}:`, result.error);
-          failed.push(ext.name);
-        } else {
-          rebuiltIds.add(ext.id);
+      // Rebuild sequentially; one failed extension must not prevent the rest from installing.
+      for (const extension of targets) {
+        try {
+          const result = await window.electronAPI.extensions.devReload(extension.id, extension.path);
+          if (!result.success) throw new Error(summarizeRebuildError(result.error));
+          setExtensions(current => current.map(item => (
+            item.id === extension.id ? { ...item, staleBundleWarning: undefined } : item
+          )));
+        } catch (error) {
+          console.error(`[ExtensionDevIndicator] Failed to rebuild ${extension.name}:`, error);
+          failures.push(`${extension.name}: ${summarizeRebuildError(error instanceof Error ? error.message : String(error))}`);
         }
       }
-      setExtensions(current => current.map(item => (
-        rebuiltIds.has(item.id) ? { ...item, staleBundleWarning: undefined } : item
-      )));
-      setRebuildNotice(failed.length > 0
-        ? { kind: 'error', message: `Build failed for ${failed.join(', ')}. Open View Logs for details.` }
-        : { kind: 'success', message: `Rebuilt and reloaded ${extensions.length} extension${extensions.length === 1 ? '' : 's'}.` });
-    } catch (error) {
-      console.error('[ExtensionDevIndicator] Failed to rebuild extensions:', error);
-      setRebuildNotice({ kind: 'error', message: summarizeRebuildError(String(error)) });
+      setRebuildNotice(failures.length > 0
+        ? { kind: 'error', message: failures.join(' · ') }
+        : { kind: 'success', message: targets.length === 1
+          ? `${targets[0].name} rebuilt and reloaded.`
+          : `Rebuilt and reloaded ${targets.length} extensions.` });
     } finally {
+      rebuildInProgress.current = false;
       setRebuildingExtension(null);
-      setRebuildSubmenuOpen(false);
+      if (operation === 'all' || operation === 'stale') setRebuildSubmenuOpen(false);
     }
   };
 
-  const staleExtensionCount = extensions.filter(extension => extension.staleBundleWarning).length;
+  const staleExtensions = extensions.filter(extension => extension.staleBundleWarning);
+  const staleExtensionCount = staleExtensions.length;
 
   return (
     <>
@@ -357,9 +333,32 @@ export const ExtensionDevIndicator: React.FC<ExtensionDevIndicatorProps> = ({
               role="status"
             >
               <MaterialSymbol icon="warning" size={16} />
-              <span>
-                {staleExtensionCount} stale extension bundle{staleExtensionCount === 1 ? '' : 's'} detected. Rebuild before testing.
-              </span>
+              <div className="min-w-0 flex-1">
+                <span>{staleExtensionCount} stale extension bundle{staleExtensionCount === 1 ? '' : 's'} detected.</span>
+                <ul aria-label="Stale extensions" className="extension-dev-stale-list list-none m-0 mt-2 p-0 max-h-40 overflow-y-auto space-y-1">
+                  {staleExtensions.map(extension => (
+                    <li key={extension.id} className="flex items-center justify-between gap-2">
+                      <span className="min-w-0 break-words">{extension.name}</span>
+                      <button
+                        className="extension-dev-reinstall shrink-0 bg-transparent border-none p-1 rounded text-[var(--nim-link)] hover:enabled:bg-[var(--nim-bg-hover)] disabled:opacity-50 disabled:cursor-not-allowed"
+                        aria-label={`Reinstall ${extension.name}`}
+                        onClick={() => handleRebuild([extension], extension.id)}
+                        disabled={rebuildingExtension !== null}
+                      >
+                        {rebuildingExtension === extension.id ? 'Reinstalling...' : 'Reinstall'}
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+                <button
+                  className="extension-dev-reinstall-stale mt-2 w-full p-1.5 rounded border border-[var(--nim-border)] bg-[var(--nim-bg-secondary)] text-[var(--nim-text)] hover:enabled:bg-[var(--nim-bg-hover)] disabled:opacity-50 disabled:cursor-not-allowed"
+                  data-testid="extension-dev-reinstall-stale"
+                  onClick={() => handleRebuild(staleExtensions, 'stale')}
+                  disabled={rebuildingExtension !== null}
+                >
+                  {rebuildingExtension === 'stale' ? 'Reinstalling stale extensions...' : 'Reinstall stale extensions'}
+                </button>
+              </div>
             </div>
           )}
 
@@ -434,7 +433,7 @@ export const ExtensionDevIndicator: React.FC<ExtensionDevIndicatorProps> = ({
                   <div className="p-1 max-h-[calc(100vh-48px)] overflow-y-auto">
                     <button
                       className="extension-dev-menu-action flex items-center gap-2 w-full p-2 border-none bg-transparent text-[var(--nim-text)] text-[13px] font-inherit text-left rounded cursor-pointer transition-colors duration-100 hover:enabled:bg-[var(--nim-bg-hover)] disabled:text-[var(--nim-text-faint)] disabled:cursor-not-allowed [&_.material-symbols-outlined]:text-[var(--nim-text-muted)]"
-                      onClick={handleRebuildAll}
+                      onClick={() => handleRebuild(extensions, 'all')}
                       disabled={rebuildingExtension !== null}
                       role="menuitem"
                     >
@@ -450,7 +449,7 @@ export const ExtensionDevIndicator: React.FC<ExtensionDevIndicatorProps> = ({
                       <button
                         key={ext.id}
                         className="extension-dev-menu-action flex items-center gap-2 w-full p-2 border-none bg-transparent text-[var(--nim-text)] text-[13px] font-inherit text-left rounded cursor-pointer transition-colors duration-100 hover:enabled:bg-[var(--nim-bg-hover)] disabled:text-[var(--nim-text-faint)] disabled:cursor-not-allowed [&_.material-symbols-outlined]:text-[var(--nim-text-muted)]"
-                        onClick={() => handleRebuildExtension(ext)}
+                        onClick={() => handleRebuild([ext], ext.id)}
                         disabled={rebuildingExtension !== null}
                         role="menuitem"
                         title={ext.staleBundleWarning}

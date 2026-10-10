@@ -71,6 +71,10 @@ export interface SavedViewDefinition {
   sortBy: SortColumn;
   /** Flat list/table sort direction. */
   sortDirection: SortDirection;
+  /** Ordered field sorts for placed views; empty uses the legacy single sort. */
+  sortColumns?: Array<{ field: string; direction: SortDirection }>;
+  /** Explicit timeline dates; absent preserves automatic date discovery. */
+  timelineFields?: { start?: string; end?: string };
   /** Genuine-open lookback in days; null means any time. */
   recentlyViewedDays: 7 | 30 | 90 | null;
   /**
@@ -120,6 +124,7 @@ export function createDefaultViewDefinition(): SavedViewDefinition {
     groupBy: 'none',
     ordering: MANUAL_TRACKER_ORDERING,
     sortBy: 'lastIndexed',
+    sortColumns: [],
     sortDirection: 'desc',
     recentlyViewedDays: 30,
     columnConfig: null,
@@ -174,6 +179,8 @@ export function normalizeViewDefinition(raw: Partial<SavedViewDefinition> | unde
     groupBy: normalizeTrackerGroupBy(raw.groupBy ?? legacyColumnGroupBy(raw.columnConfig)),
     ordering: normalizeTrackerOrdering(raw.ordering),
     sortBy: typeof raw.sortBy === 'string' ? raw.sortBy : base.sortBy,
+    ...(raw.timelineFields && (typeof raw.timelineFields.start === 'string' || typeof raw.timelineFields.end === 'string') ? { timelineFields: { ...(typeof raw.timelineFields.start === 'string' ? { start: raw.timelineFields.start } : {}), ...(typeof raw.timelineFields.end === 'string' ? { end: raw.timelineFields.end } : {}) } } : {}),
+    sortColumns: Array.isArray(raw.sortColumns) ? raw.sortColumns.filter(sort => sort && typeof sort.field === 'string' && (sort.direction === 'asc' || sort.direction === 'desc')) : [],
     sortDirection: raw.sortDirection === 'asc' || raw.sortDirection === 'desc'
       ? raw.sortDirection
       : base.sortDirection,
@@ -508,6 +515,16 @@ export function filterTrackerItems(
 }
 
 /**
+ * The records a view starts from: archived ones only when it asks for them
+ * (the Archived filter, or a column filter on `archived`), otherwise none.
+ */
+export function selectArchivedForView(items: readonly TrackerRecord[], def: TrackerItemFilterDefinition): TrackerRecord[] {
+  const showArchived = def.activeFilters.includes('archived');
+  const filtersArchived = (def.columnFilters?.clauses ?? []).some(clause => clause.field === 'archived');
+  return filtersArchived ? [...items] : items.filter((record) => !!record.archived === showArchived);
+}
+
+/**
  * Count filtered records within a sidebar type or folder scope. The type scope
  * is applied before the row filters so `recently-updated` matches the selected
  * type/folder view rather than a workspace-global top 50.
@@ -519,11 +536,8 @@ export function countFilteredTrackerItemsByTypes(
   ctx: FilterContext = {},
 ): number {
   const wantedTypes = new Set(types);
-  const showArchived = def.activeFilters.includes('archived');
-  const filtersArchived = (def.columnFilters?.clauses ?? []).some(clause => clause.field === 'archived');
-  const scopedItems = items.filter((record) => (
-    (filtersArchived || record.archived === showArchived)
-    && (wantedTypes.has(record.primaryType) || record.typeTags.some((type) => wantedTypes.has(type)))
+  const scopedItems = selectArchivedForView(items, def).filter((record) => (
+    wantedTypes.has(record.primaryType) || record.typeTags.some((type) => wantedTypes.has(type))
   ));
 
   return filterTrackerItems(scopedItems, def, ctx).length;

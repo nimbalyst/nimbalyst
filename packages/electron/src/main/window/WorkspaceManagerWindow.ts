@@ -240,6 +240,8 @@ export function createWorkspaceManagerWindow(options: WorkspaceManagerWindowOpti
       // the end of startup.
       window.showInactive();
       notifyStartupWindowRevealed(window);
+    } else if (options.revealInactive) {
+      window.showInactive();
     } else {
       window.show();
     }
@@ -661,4 +663,8 @@ export function closeWorkspaceManagerWindow() {
 
 export function isWorkspaceManagerOpen(): boolean {
   return workspaceManagerWindow !== null && !workspaceManagerWindow.isDestroyed();
+}
+
+export function getWorkspaceManagerWindow(): BrowserWindow | null {
+  return isWorkspaceManagerOpen() ? workspaceManagerWindow : null;
 }

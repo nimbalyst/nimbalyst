@@ -123,6 +123,16 @@ export function isRichTextEditingTarget(target: EventTarget | null): boolean {
   return host !== null && host.getAttribute('contenteditable') !== 'false';
 }
 
+/**
+ * True when the keystroke landed inside a surface that claims `chord` for
+ * itself with `data-claims-shortcuts="mod+k mod+b"` (the CSV grid uses Cmd+K
+ * for links and Cmd+B for bold). Opt-in per element; nothing else changes.
+ */
+export function isShortcutClaimedByTarget(target: EventTarget | null, chord: 'mod+k' | 'mod+b'): boolean {
+  if (!(target instanceof Element)) return false;
+  return target.closest(`[data-claims-shortcuts~="${chord}"]`) !== null;
+}
+
 export function useKeyboardShortcuts({
   activeMode,
   workspaceMode,
@@ -183,7 +193,8 @@ export function useKeyboardShortcuts({
 
       // Cmd/Ctrl+B toggles the active left pane, except inside a rich-text
       // editor where it is bold.
-      if (workspaceMode && isToggleSidebarShortcut(e) && !isRichTextEditingTarget(e.target)) {
+      if (workspaceMode && isToggleSidebarShortcut(e) && !isRichTextEditingTarget(e.target)
+        && !isShortcutClaimedByTarget(e.target, 'mod+b')) {
         e.preventDefault();
         e.stopPropagation();
         toggleActiveLeftPane();
@@ -211,7 +222,7 @@ export function useKeyboardShortcuts({
 
       // Cmd+K for Agent mode (toggle session history if already in agent mode)
       // This is a global shortcut, but should be preempted if another component handles it
-      if (isAppModifier && e.key === 'k' && !e.shiftKey) {
+      if (isAppModifier && e.key === 'k' && !e.shiftKey && !isShortcutClaimedByTarget(e.target, 'mod+k')) {
         e.preventDefault();
         e.stopPropagation();
 

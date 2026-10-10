@@ -81,6 +81,30 @@ describe('TeamSyncProvider pre-cutover content', () => {
     provider.destroy();
   });
 
+  it('keeps a known title when a broadcast for the same document carries an unreadable one', async () => {
+    const onDocumentChanged = vi.fn();
+    const provider = createProvider({ onDocumentChanged });
+    const row = {
+      documentType: 'markdown', createdBy: 'user-1', createdAt: 1, updatedAt: 2, projectId: 'p', parentFolderId: null,
+    };
+    const receive = (document: Record<string, unknown>) =>
+      (provider as any).handleMessage({ data: JSON.stringify({ type: 'docIndexBroadcast', document }) });
+
+    // A converted folder: never written.
+    await receive({ ...row, documentId: 'known', encryptedTitle: 'Specs', titleIv: '', hasContent: false });
+    // A body edit on an older server re-broadcast the at-rest ciphertext.
+    await receive({ ...row, documentId: 'known', encryptedTitle: 'Q2lwaGVy', titleIv: 'aXY=', updatedAt: 9 });
+    await receive({ ...row, documentId: 'unknown', encryptedTitle: 'Q2lwaGVy', titleIv: 'aXY=' });
+
+    expect(onDocumentChanged.mock.calls[0][0].hasContent).toBe(false);
+    // An older server sends no flag: a page, never a folder.
+    expect(onDocumentChanged.mock.calls[1][0].hasContent).toBeUndefined();
+    expect(onDocumentChanged.mock.calls[1][0]).toMatchObject({ documentId: 'known', title: 'Specs', updatedAt: 9 });
+    expect(onDocumentChanged.mock.calls[1][0].decryptFailed).toBeUndefined();
+    expect(onDocumentChanged.mock.calls[2][0]).toMatchObject({ documentId: 'unknown', title: '', decryptFailed: true });
+    provider.destroy();
+  });
+
   it('refuses a folder name with a non-empty iv rather than returning ciphertext', async () => {
     const provider = createProvider();
     const decryptFolderName = (provider as unknown as {

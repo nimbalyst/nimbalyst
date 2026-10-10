@@ -291,6 +291,33 @@ it("does not reread a rejected foreign header on every append, but invalidates o
   expect(await source.discover(cwd)).toMatchObject([{ externalId: "local" }]);
   expect(reads).toHaveBeenCalledTimes(2);
 });
+it("skips subagent rollouts such as auto-review guardian threads without rereading them", async () => {
+  const file = path.join(dir, "2026/09/14/rollout-guardian.jsonl");
+  await fs.writeFile(
+    file,
+    JSON.stringify({
+      type: "session_meta",
+      payload: {
+        id: "guardian",
+        parent_thread_id: "parent",
+        cwd,
+        source: { subagent: { other: "guardian" } },
+        thread_source: "guardian_review",
+      },
+    }) + "\n"
+  );
+  const reads = vi.spyOn(reader, "readJsonl");
+  expect(await source.discover(cwd)).toEqual([]);
+  await fs.appendFile(file, '{"type":"event_msg","payload":{}}\n');
+  expect(await source.discover(cwd)).toEqual([]);
+  expect(reads).toHaveBeenCalledTimes(1);
+  await expect(
+    source.readSince(
+      { providerId: "openai-codex", externalId: "guardian", workspacePath: cwd, filePath: file, updatedAt: 0 },
+      null
+    )
+  ).rejects.toThrow();
+});
 it("maps current ordinal rollouts to the same canonical command/file/MCP output as live app-server items", async () => {
   await source.dispose();
   source = new CodexSource({

@@ -151,16 +151,18 @@ function createTrayPanelWindow(bounds: Rectangle): BrowserWindow {
   // replace the `popover` vibrancy with a flat opaque colour (#4817).
   markWindowTransparent(window);
 
-  window.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  // On macOS, `visibleOnFullScreen: true` makes Electron call its own
+  // DockHide() -- transforming the whole process to a UI-element app, which
+  // strips the Dock icon and the Cmd+Tab entry -- unless
+  // `skipTransformProcessType` is set. That transform is what kept demoting the
+  // app after `type: 'panel'` was dropped.
+  window.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true, skipTransformProcessType: true });
   window.setAlwaysOnTop(true, 'floating');
 
-  // Creating this window demotes the app to the accessory activation policy,
-  // which strips the Dock icon and the Cmd+Tab entry for the whole app --
-  // opening the panel made Nimbalyst unreachable from the app switcher. Dropping
-  // `type: 'panel'` was not enough on its own; some other option here still does
-  // it, so re-assert the policy. Electron exposes no `getActivationPolicy` to
-  // test against, and nothing in the app ever wants a non-regular policy (the
-  // one `dock.hide()` is for ELECTRON_RUN_AS_NODE, which has no tray at all).
+  // Backstop for any other path that demotes the app to the accessory
+  // activation policy. Electron exposes no `getActivationPolicy` to test
+  // against, and nothing in the app ever wants a non-regular policy (the one
+  // `dock.hide()` is for ELECTRON_RUN_AS_NODE, which has no tray at all).
   //
   // Setting a policy rebuilds the Dock tile and discards the runtime icon, so
   // the icon has to go back immediately after or dev reverts to the stock

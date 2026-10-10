@@ -1,6 +1,7 @@
+// @vitest-environment node
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('@nimbalyst/runtime', () => ({
+vi.mock('@nimbalyst/runtime/storage/repositories/AISessionsRepository', () => ({
   AISessionsRepository: {
     updateMetadata: vi.fn(),
   },
@@ -12,7 +13,7 @@ vi.mock('../../../database/PGLiteDatabaseWorker', () => ({
   },
 }));
 
-import { AISessionsRepository } from '@nimbalyst/runtime';
+import { AISessionsRepository } from '@nimbalyst/runtime/storage/repositories/AISessionsRepository';
 import { database } from '../../../database/PGLiteDatabaseWorker';
 import { disableParentNotificationsAfterDirectTakeover } from '../childSessionTakeover';
 import { deletePendingChildUpdates } from '../pendingChildUpdates';
@@ -39,6 +40,17 @@ describe('disableParentNotificationsAfterDirectTakeover', () => {
       id: 'child-2',
       createdBySessionId: 'parent-2',
       metadata: { notifyParent: false },
+    } as any);
+
+    expect(AISessionsRepository.updateMetadata).not.toHaveBeenCalled();
+    expect(database.query).not.toHaveBeenCalled();
+  });
+
+  it('leaves a child whose owner routes its settles to itself alone', async () => {
+    await disableParentNotificationsAfterDirectTakeover({
+      id: 'child-owned',
+      createdBySessionId: 'parent-owned',
+      metadata: { sessionOwner: { extensionId: 'com.example.owner', key: 'ada', routeChildUpdatesToOwner: true } },
     } as any);
 
     expect(AISessionsRepository.updateMetadata).not.toHaveBeenCalled();

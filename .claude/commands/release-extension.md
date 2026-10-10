@@ -26,7 +26,7 @@ Goal: find every extension whose source has changed since it was last pushed to 
 ### D1. Run the status report
 
 ```bash
-npm run marketplace:status
+pnpm run marketplace:status
 ```
 
 This does the whole comparison -- do NOT hand-roll it with `curl` and `git log`. It reads `packages/marketplace/release-extensions.txt`, resolves each extension's `manifest.json`, fetches the live registry, and for anything declaring a collaborative editor it also downloads the **published bundle** and compares its `collaboration` declarations against the local manifest.
@@ -42,7 +42,7 @@ Statuses it emits:
 Notes:
 - An extension's `package.json` `version` is NOT maintained in this repo. `manifest.json` is the only source of truth -- never "fix" a package.json to match.
 - Add `--no-bundles` to skip the published-bundle downloads when you only need version comparison.
-- `npm run --prefix packages/marketplace status:check` exits non-zero when anything needs shipping (for CI).
+- `pnpm --dir packages/marketplace run status:check` exits non-zero when anything needs shipping (for CI).
 
 ### D2. Present the results and let the user choose
 
@@ -82,7 +82,7 @@ Also update `manifest.marketplace.changelog` if present -- prepend a new entry f
 
 If the extension has a `package.json` with a `build` script:
 ```bash
-cd {extension-path} && npm install && npm run build
+cd {extension-path} && pnpm install && pnpm run build
 ```
 
 Verify that `dist/` exists after the build.
@@ -135,7 +135,7 @@ unzip -p /tmp/verify.nimext manifest.json | node -p "
 
 Confirm the version, the checksum match, and -- for a collaborative editor -- that `collaboration.supported` is what you expect. A shared document silently fails to open for every recipient when that flag is missing from the shipped bundle.
 
-Then re-run `npm run marketplace:status` and confirm the extension no longer appears under "Needs shipping".
+Then re-run `pnpm run marketplace:status` and confirm the extension no longer appears under "Needs shipping".
 
 ### 10. Update the bundled mock registry
 

@@ -182,7 +182,7 @@ export function KeyboardShortcutsDialog({ isOpen, onClose }: KeyboardShortcutsDi
         { label: 'Toggle Terminal Panel', shortcut: KeyboardShortcuts.view.toggleTerminalPanel }, // shared/KeyboardShortcuts.ts:48 - Ctrl+`
         { label: 'Toggle Claude CLI Terminal Drawer', shortcut: KeyboardShortcuts.view.toggleCliTerminalDrawer }, // Ctrl+Shift+` — active claude-code-cli session only
         { label: 'Tracker Mode', shortcut: KeyboardShortcuts.view.trackerMode }, // shared/KeyboardShortcuts.ts:49 - Cmd+T
-        { label: 'Shared Documents', shortcut: KeyboardShortcuts.view.collabMode }, // shared/KeyboardShortcuts.ts:50 - Cmd+D
+        { label: 'Wiki', shortcut: KeyboardShortcuts.view.collabMode }, // shared/KeyboardShortcuts.ts:50 - Cmd+D
         { label: 'Organization', shortcut: KeyboardShortcuts.view.orgMode }, // Cmd+Alt+M — only when the project belongs to an organization
         { label: 'Toggle Sidebar', shortcut: KeyboardShortcuts.view.toggleSidebar }, // shared/KeyboardShortcuts.ts:51 - Cmd+B
         { label: 'Toggle Expanded Tab', shortcut: KeyboardShortcuts.view.toggleExpandedTab }, // Shift+Escape — same as double-clicking a tab
@@ -224,6 +224,15 @@ export function KeyboardShortcutsDialog({ isOpen, onClose }: KeyboardShortcutsDi
         { label: 'Next Conversation', shortcut: KeyboardShortcuts.orgWindow.nextConversation }, // shared/KeyboardShortcuts.ts - Cmd+Shift+]
         { label: 'Previous Conversation', shortcut: KeyboardShortcuts.orgWindow.previousConversation }, // shared/KeyboardShortcuts.ts - Cmd+Shift+[
         { label: 'Mark All as Read', shortcut: KeyboardShortcuts.orgWindow.markAllRead }, // shared/KeyboardShortcuts.ts - Cmd+Shift+U
+      ],
+    },
+    {
+      // Pages navigates like a wiki: a click shows the page in the current tab.
+      title: 'Wiki',
+      shortcuts: [
+        { label: 'Back in the current tab', shortcut: KeyboardShortcuts.view.navigateBack }, // App.tsx -> pagesTabNavigation.ts - Cmd+[
+        { label: 'Forward in the current tab', shortcut: KeyboardShortcuts.view.navigateForward }, // App.tsx -> pagesTabNavigation.ts - Cmd+]
+        { label: 'Open a page in a new tab', shortcut: IS_MAC ? '⌘+Click' : 'Ctrl+Click' }, // usePagesTabNavigation.tsx
       ],
     },
     {

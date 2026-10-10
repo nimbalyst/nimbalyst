@@ -71,7 +71,7 @@ Track bugs, tasks, ideas, and other items in `nimbalyst-local/tracker/`:
 - **bugs.md**: Issues and defects (`#bug`, prefix: `bug`)
 - **tasks.md**: Work items and todos (`#task`, prefix: `tsk`)
 - **ideas.md**: Concepts to explore (`#idea`, prefix: `id`)
-- **decisions.md**: Important decisions (`#decision`, prefix: `dec`)
+- **decisions.md**: Important decisions (`#decision`, prefix: `dec`). Not every choice needs one. If the project has a Wiki, follow its "How we write this wiki" page: mark the decision in the page it affects, and add a decision item only when no single page owns it, work hangs off it, it isn't settled, or its reasons don't fit in the mark. Without a Wiki, a decision usually belongs in its plan doc.
 - **plans.md**: Plans and features (`#plan`, prefix: `pln`)
 
 ### Custom Tracker Types (per-workspace)

@@ -2302,5 +2302,12 @@ describe('EditorScreenshotWidget', () => {
     const img = container.querySelector('img');
     expect(img).not.toBeNull();
     expect(img?.getAttribute('src')).toContain('data:image/png;base64,');
+
+    // The lightbox must portal out of the transcript, otherwise a transformed
+    // transcript ancestor confines the fixed overlay to the transcript pane.
+    fireEvent.click(screen.getByTitle('Click to enlarge'));
+    const dialog = screen.getByRole('dialog', { name: 'Image preview' });
+    expect(container.contains(dialog)).toBe(false);
+    expect(dialog.parentElement).toBe(document.body);
   });
 });

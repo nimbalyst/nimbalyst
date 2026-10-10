@@ -18,6 +18,7 @@ import { selectedOrgIdAtom } from '../../../store/atoms/orgScope';
 import { EMPTY_TEAM_INBOX_SNAPSHOT, teamInboxSnapshotAtom } from '../../../store/atoms/teamInbox';
 import { activeExtensionPanelAtom } from '../../../store/atoms/extensionPanels';
 import { windowModeAtom, setWindowModeAtom } from '../../../store/atoms/windowMode';
+import { activeWorkspacePathAtom } from '../../../store/atoms/openProjects';
 
 const projectOrg = vi.hoisted(() => ({ current: null as { orgId: string; name: string } | null }));
 const extensionButtons = vi.hoisted(() => ({ current: [] as Array<{ id: string; label: string; icon: string; placement: 'sidebar'; isAlpha: boolean }> }));
@@ -47,7 +48,7 @@ vi.mock('../../CodexUsageIndicator', () => ({ CodexUsageIndicator: () => null })
 vi.mock('../../GeminiUsageIndicator', () => ({ GeminiUsageIndicator: () => null }));
 vi.mock('../../UnifiedAI/VoiceModeButton', () => ({ VoiceModeButton: () => null }));
 
-import { NavigationGutter } from '../NavigationGutter';
+import { NavigationGutter, ORG_MODE_GUTTER_BUTTON_ENABLED } from '../NavigationGutter';
 
 afterEach(() => {
   cleanup();
@@ -93,7 +94,18 @@ describe('Org mode gutter item', () => {
     expect(screen.queryByTestId('org-mode-button')).toBeNull();
   });
 
-  it('switches to Org mode without touching the window\'s org selection, and badges unread', () => {
+  it('offers Pages with a workspace open even without a team, since Personal pages need none', () => {
+    const store = createStore();
+    renderGutter(store);
+    expect(screen.queryByTestId('collab-mode-button')).toBeNull();
+    cleanup();
+
+    store.set(activeWorkspacePathAtom, '/workspace');
+    renderGutter(store);
+    screen.getByTestId('collab-mode-button');
+  });
+
+  it.skipIf(!ORG_MODE_GUTTER_BUTTON_ENABLED)('switches to Org mode without touching the window\'s org selection, and badges unread', () => {
     projectOrg.current = { orgId: 'org-project', name: 'Project Org' };
     const store = createStore();
     // The standalone window is pointed somewhere else; the mode must not care.

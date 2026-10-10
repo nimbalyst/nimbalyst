@@ -156,6 +156,11 @@ function isStrandedByPolicyChange(candidate: DrainCandidate): boolean {
     && !candidate.previouslyShared;
 }
 
+function isFileProjection(source: Record<string, any> | null): boolean {
+  if (source?.source === 'frontmatter') return true;
+  return source?.source === 'inline' && !!source.module;
+}
+
 /**
  * Decide the whole run before any of it executes.
  *
@@ -175,6 +180,17 @@ export function planTrackerDrain(facts: DrainFacts): DrainPlan {
   let policyDrivenDeletes = 0;
 
   for (const candidate of facts.candidates) {
+    // A markdown file reaches the team only by promotion at share time, which
+    // renames its row to a native id before the first push. A projection the
+    // room has never had is a local file, whatever its tracker publishes by
+    // default; pushing it created test fixtures as team items. The same holds
+    // for an inline `#type[...]` marker the file scan projected (it carries the
+    // file as `module`); an agent-created item with an inline origin has no
+    // document path and drains like a native item.
+    if (!candidate.previouslyShared && isFileProjection(candidate.source)) {
+      actions.push({ kind: 'skip', id: candidate.id, cause: 'routine' });
+      continue;
+    }
     const action = decideBackfillAction(
       candidate.resolution,
       candidate.source,

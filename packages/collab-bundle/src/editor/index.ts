@@ -1,5 +1,27 @@
 export { mountCollabEditor } from './mount';
 export { resolveCollabEditorUser } from './presence';
+// A host renders placed views (tracker views in a page) inside its own tracker provider.
+export { setBrowserPlacedViewRenderer, type BrowserPlacedViewRenderer } from './documentEmbeds';
+// The live placed view the host renders there, loaded when a page with a view
+// opens. Here rather than in `./trackers-ui` because its 2x2 chart is part of
+// the editor graph; the host still wraps it in its `TrackersUIProvider`.
+export const loadPlacedViewEmbed = () => import('@nimbalyst/collab-client/trackers-ui/embed');
+// Host hooks the editor's page marks and citation chips read: who a new mark
+// is by, and what a citation can open on this host.
+export { setPageMarkAuthorProvider, type PageMarkAuthor } from '@nimbalyst/runtime/editor/plugins/PageMarkPlugin/pageMarkHost';
+export { setCitationHost, type CitationHost } from '@nimbalyst/runtime/editor/plugins/CitationPlugin/citationHost';
+export {
+  setConsoleLinkOpener,
+  setPageReferenceOpener,
+  type ConsoleLinkOpener,
+  type PageReferenceOpener,
+} from './consoleLinkOpener';
+// Relative file links (`Personas/CMO.md`): a host that serves a folder of pages resolves them itself.
+export { setWorkspaceFileLinkOpener, type WorkspaceFileLinkOpener } from '@nimbalyst/runtime/editor/utils/workspaceLinkNavigation';
+// trackers-ui must not load the editor graph, so the host builds the views controller from this entry.
+export { createNamedPageViewsController, type NamedPageViewsController } from '@nimbalyst/runtime/editor/plugins/EmbedPlugin/namedPageViewsController';
+// Page history: the markdown diff and revision projection. The dialog is in `./docs-ui`.
+export { DiffPreviewEditor, previewMarkdownRevisionSnapshot, type DiffNavigationState } from './pageHistory';
 
 // Extension-provided editors. The Lexical mount above is one tenant of the
 // collaborative session; this is the generic one, for editors an extension
@@ -53,7 +75,8 @@ export type {
 } from '@nimbalyst/collab-client/trackers-ui/references';
 // Tracker body seeding carries the Markdown/Lexical codec, so it ships here
 // and hosts inject it into `BrowserTrackerDataSource` from `./trackers-ui`.
-export { seedTrackerBody } from '@nimbalyst/collab-client/trackers/body';
+export { openBrowserDocumentRoom, readDocumentRoomMarkdown, seedTrackerBody } from '@nimbalyst/collab-client/trackers/body';
+export type { BrowserDocumentRoomOptions } from '@nimbalyst/collab-client/trackers/body';
 export type { TrackerBodyRoom, TrackerBodySeeder } from '@nimbalyst/collab-client/trackers/body';
 export { installCollabEditorBridge } from './bridge';
 export type {
@@ -80,6 +103,8 @@ export type {
   CollabEditorWriteRejection,
   CommentMember,
   InMemorySource,
+  PlacedViewTypeOption,
+  PlacedViewTypeSource,
   ResolvedCollabEditorUser,
   TeamDocumentId,
   TeamJwt,

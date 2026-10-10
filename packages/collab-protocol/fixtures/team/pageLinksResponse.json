@@ -1,0 +1,36 @@
+{
+  "type": "pageLinksResponse",
+  "requestId": "links-1",
+  "outgoing": [
+    {
+      "source": { "kind": "item", "itemId": "item-42" },
+      "projectId": "project-1",
+      "title": null,
+      "target": { "kind": "page", "documentId": "page-1" },
+      "rel": null,
+      "sentence": "See Specs.",
+      "count": 2
+    }
+  ],
+  "incoming": [
+    {
+      "source": { "kind": "item", "itemId": "item-7" },
+      "projectId": "project-1",
+      "title": null,
+      "target": { "kind": "item", "ref": "NIM-42" },
+      "rel": "built-on",
+      "sentence": "Sync is built on NIM-42.",
+      "count": 1
+    },
+    {
+      "source": { "kind": "page", "documentId": "page-1" },
+      "projectId": "project-1",
+      "title": "Specs",
+      "target": { "kind": "item", "ref": "item-42" },
+      "rel": null,
+      "sentence": "Covers item-42.",
+      "count": 1
+    }
+  ],
+  "status": "ready"
+}

@@ -4,5 +4,5 @@ export declare function TrackerStackedRow({ item, selected, showType, onOpen }: 
     item: TrackerRecord;
     selected: boolean;
     showType: boolean;
-    onOpen: () => void;
+    onOpen: (event: React.MouseEvent) => void;
 }): React.JSX.Element;

@@ -1,6 +1,7 @@
 import type { TeamJwt, TeamMemberId } from '../../../../runtime/src/auth/jwtScopes';
 import type { TrackerIdentity } from '../../../../runtime/src/core/DocumentService';
 import { IndexedDbTrackerPersistence } from '@nimbalyst/tracker-engine';
+import { type TrackerItemPayload } from '@nimbalyst/tracker-engine';
 import { type TrackerNavigationSyncHooks, type TrackerPresenceIdentity, type TrackerSchemaSyncHooks } from '@nimbalyst/tracker-engine';
 import type { TrackerAccessTermination } from '@nimbalyst/tracker-engine';
 import type { TrackerDataChange, TrackerDataCommand, TrackerDataCommandResult, TrackerDataSnapshot, TrackerDataSource, TrackerSyncState, TrackerItemRevisionRecord, TrackerRevisionRef } from '../dataSource';
@@ -54,6 +55,12 @@ export declare function purgeBrowserTrackerRoom(orgId: string, teamProjectId: st
 export declare function purgeBrowserTrackerOrganization(orgId: string, indexedDbFactory?: IDBFactory): Promise<void>;
 /** Purge all tracker data when the browser team session itself is gone. */
 export declare function purgeAllBrowserTrackerData(indexedDbFactory?: IDBFactory): Promise<void>;
+/**
+ * `labels` is the item's add-wins label set, not a field: reads project it
+ * from `payload.labels` over whatever `fields.labels` says, so an update must
+ * diff into the set or it is lost on the next read.
+ */
+export declare function updatePayload(payload: TrackerItemPayload, updates: Record<string, unknown>, currentUser: TrackerIdentity): TrackerItemPayload;
 export declare class BrowserTrackerDataSource implements TrackerDataSource {
     private readonly options;
     private readonly persistence;
@@ -68,6 +75,8 @@ export declare class BrowserTrackerDataSource implements TrackerDataSource {
     snapshot(): Promise<TrackerDataSnapshot>;
     subscribe(cb: (change: TrackerDataChange) => void): () => void;
     status(): TrackerSyncState;
+    /** Push the schema lane now; before bootstrap finishes, the bootstrap pushes it. */
+    flushSchemas(): Promise<void>;
     /**
      * Not available in the browser yet, and it throws rather than approximating.
      *

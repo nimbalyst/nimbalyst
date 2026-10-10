@@ -406,7 +406,14 @@ describe('CodexAppServerProtocol', () => {
       type: 'complete',
       contextFillTokens: 4555,
       contextWindow: 258400,
-      usage: { input_tokens: 19146, output_tokens: 5, total_tokens: 19151 },
+      // Codex counts cached input inside inputTokens; the event splits it out.
+      usage: {
+        input_tokens: 19146 - 9984,
+        cache_read_input_tokens: 9984,
+        cache_creation_input_tokens: 0,
+        output_tokens: 5,
+        total_tokens: 19151,
+      },
     });
 
     protocol.cleanupSession(session);

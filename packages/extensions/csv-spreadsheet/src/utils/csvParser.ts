@@ -4,6 +4,7 @@
 
 import Papa from 'papaparse';
 import type { SpreadsheetData, Cell, CSVMetadata, CellStyleRanges, ColumnFormat } from '../types';
+import { formattingForFile, formattingFromFile, type SheetFormatting } from '../sheetMeta/formatting';
 
 /** Comment prefix for nimbalyst metadata */
 const METADATA_PREFIX = '# nimbalyst:';
@@ -36,6 +37,63 @@ export function serializeMetadata(metadata: CSVMetadata): string {
   return `${METADATA_PREFIX} ${JSON.stringify(metadata)}`;
 }
 
+/** The sheet-level fields the metadata comment carries. */
+export interface MetadataLineFields extends Partial<SheetFormatting> {
+  headerRowCount: number;
+  frozenColumnCount: number;
+  columnFormats?: Record<number, ColumnFormat>;
+  columnWidths?: Record<number, number>;
+  cellStyles?: CellStyleRanges;
+}
+
+export interface MetadataLineContext {
+  /** What a reload would auto-detect from the rows being written. */
+  detectedHeaderRowCount?: number;
+  /** The file already carries the line; keep it even at defaults. */
+  keepLine?: boolean;
+}
+
+/**
+ * The metadata comment line for a sheet, or null when nothing differs from
+ * what a reload of the plain rows would produce. The single builder for both
+ * serializers, so a new metadata field cannot be written by one save path and
+ * silently dropped by the other. A header count equal to the auto-detected one
+ * is not a reason to write the line: a plain CSV stays plain.
+ */
+export function buildMetadataLine(fields: MetadataLineFields, context: MetadataLineContext = {}): string | null {
+  const { headerRowCount, frozenColumnCount } = fields;
+  const nonEmpty = <T extends object>(value: T | undefined): value is T =>
+    !!value && Object.keys(value).length > 0;
+  const columnFormats = nonEmpty(fields.columnFormats) ? fields.columnFormats : undefined;
+  const columnWidths = nonEmpty(fields.columnWidths) ? fields.columnWidths : undefined;
+  const cellStyles = nonEmpty(fields.cellStyles) ? fields.cellStyles : undefined;
+  const formatting = formattingForFile(fields);
+
+  if (!context.keepLine && headerRowCount === (context.detectedHeaderRowCount ?? 0)
+    && frozenColumnCount <= 0 && !columnFormats && !columnWidths && !cellStyles
+    && Object.keys(formatting).length === 0) {
+    return null;
+  }
+
+  return serializeMetadata({
+    hasHeaders: headerRowCount > 0,
+    headerRowCount,
+    frozenColumnCount,
+    ...(columnFormats ? { columnFormats } : {}),
+    ...(columnWidths ? { columnWidths } : {}),
+    ...(cellStyles ? { cellStyles } : {}),
+    ...formatting,
+  });
+}
+
+/** Quote a field if it contains the delimiter, a quote, or a line break. */
+export function quoteCsvField(value: string, delimiter: ',' | '\t'): string {
+  if (value.includes(delimiter) || value.includes('"') || value.includes('\n') || value.includes('\r')) {
+    return `"${value.replace(/"/g, '""')}"`;
+  }
+  return value;
+}
+
 /**
  * Detect the delimiter used in a CSV file
  */
@@ -44,6 +102,55 @@ export function detectDelimiter(content: string): ',' | '\t' {
   const tabCount = (firstLine.match(/\t/g) || []).length;
   const commaCount = (firstLine.match(/,/g) || []).length;
   return tabCount > commaCount ? '\t' : ',';
+}
+
+/**
+ * The delimiter to write a file back with. Content wins when its first line
+ * has a separator in it; a single-column or empty file has nothing to detect,
+ * so the extension decides -- otherwise a new `.tsv` would save with commas
+ * the moment a second column appeared.
+ */
+export function resolveFileDelimiter(content: string, filePath: string): ',' | '\t' {
+  const { contentWithoutMetadata } = parseMetadata(content);
+  const firstLine = contentWithoutMetadata.split('\n')[0] || '';
+  if (firstLine.includes('\t') || firstLine.includes(',')) {
+    return detectDelimiter(contentWithoutMetadata);
+  }
+  return filePath.toLowerCase().endsWith('.tsv') ? '\t' : ',';
+}
+
+/** How a file's bytes are laid out beyond its cells, so a save can write them back the same way. */
+export interface CsvFileLayout {
+  readonly lineEnding: '\n' | '\r\n';
+  readonly trailingNewline: boolean;
+  /** The file carried a `# nimbalyst:` line; saves keep it even at defaults. */
+  readonly hasMetadataLine: boolean;
+}
+
+export const DEFAULT_FILE_LAYOUT: CsvFileLayout = { lineEnding: '\n', trailingNewline: false, hasMetadataLine: false };
+
+export function detectFileLayout(content: string): CsvFileLayout {
+  const { metadata, contentWithoutMetadata } = parseMetadata(content);
+  return {
+    lineEnding: content.includes('\r\n') ? '\r\n' : '\n',
+    trailingNewline: contentWithoutMetadata.length > 0 && contentWithoutMetadata.endsWith('\n'),
+    hasMetadataLine: metadata !== null,
+  };
+}
+
+/**
+ * Header rows a file without a metadata line gets: one when there is more than
+ * one row and every cell of the first, up to its last non-empty one, is
+ * non-empty, non-numeric text. Both the parser and the serializers call this
+ * on the same rows, so a save only writes a header count the reload would not
+ * detect by itself. Trailing empty cells do not count: a save trims empty
+ * trailing columns, and the answer must not change when it does.
+ */
+export function autoDetectHeaderRowCount(firstRow: readonly string[], rowCount: number): number {
+  let width = firstRow.length;
+  while (width > 0 && firstRow[width - 1] === '') width -= 1;
+  if (rowCount <= 1 || width === 0) return 0;
+  return firstRow.slice(0, width).every((value) => value !== '' && isNaN(parseFloat(value))) ? 1 : 0;
 }
 
 /**
@@ -66,6 +173,12 @@ export function parseCSV(content: string): { data: SpreadsheetData; delimiter: '
   }
 
   const rawRows = result.data as string[][];
+  // The final line break ends the last row; it does not start an empty one.
+  // `CsvFileLayout.trailingNewline` remembers it for the save.
+  const last = rawRows[rawRows.length - 1];
+  if (rawRows.length > 1 && last.length === 1 && last[0] === '' && contentWithoutMetadata.endsWith('\n')) {
+    rawRows.pop();
+  }
 
   // Ensure we have at least one row
   if (rawRows.length === 0) {
@@ -99,12 +212,7 @@ export function parseCSV(content: string): { data: SpreadsheetData; delimiter: '
   } else if (metadata !== null) {
     headerRowCount = metadata.hasHeaders ? 1 : 0;
   } else {
-    // Auto-detect: first row looks like headers if non-numeric, non-empty strings
-    const looksLikeHeaders = rows.length > 1 &&
-      rows[0].every(cell =>
-        cell.raw !== '' && isNaN(parseFloat(cell.raw))
-      );
-    headerRowCount = looksLikeHeaders ? 1 : 0;
+    headerRowCount = autoDetectHeaderRowCount(normalizedRows[0], rows.length);
   }
 
   const hasHeaders = headerRowCount > 0;
@@ -124,8 +232,10 @@ export function parseCSV(content: string): { data: SpreadsheetData; delimiter: '
       hasHeaders,
       headerRowCount,
       frozenColumnCount,
+      frozenRowCount: Number.isInteger(metadata?.frozenRowCount) ? Math.max(0, metadata!.frozenRowCount as number) : 0,
       columnFormats,
       cellStyles,
+      namedRanges: formattingFromFile(metadata).namedRanges,
     },
     delimiter,
     metadata,
@@ -187,45 +297,29 @@ export function createCell(value: string): Cell {
 /**
  * Serialize SpreadsheetData back to CSV format
  */
-export function serializeToCSV(data: SpreadsheetData, delimiter: ',' | '\t' = ',', includeMetadata: boolean = true): string {
-  const rows = data.rows.map(row =>
-    row.map(cell => {
-      // Always save the raw value (including formulas)
-      const value = cell.raw;
+export function serializeToCSV(
+  data: SpreadsheetData,
+  delimiter: ',' | '\t' = ',',
+  includeMetadata: boolean = true,
+  columnWidths?: Record<number, number>,
+  formatting?: Partial<SheetFormatting>,
+): string {
+  // Always save the raw value (including formulas)
+  const csvContent = data.rows
+    .map(row => row.map(cell => quoteCsvField(cell.raw, delimiter)).join(delimiter))
+    .join('\n');
 
-      // Quote the value if it contains the delimiter, quotes, or newlines
-      if (value.includes(delimiter) || value.includes('"') || value.includes('\n') || value.includes('\r')) {
-        return `"${value.replace(/"/g, '""')}"`;
-      }
+  if (!includeMetadata) return csvContent;
 
-      return value;
-    })
-  );
-
-  const csvContent = rows.map(row => row.join(delimiter)).join('\n');
-
-  // Prepend metadata comment if requested AND if using non-default features
-  if (includeMetadata) {
-    const hasColumnFormats = Object.keys(data.columnFormats || {}).length > 0;
-    const hasCellStyles = Object.keys(data.cellStyles || {}).length > 0;
-    const headerRowCount = data.headerRowCount || (data.hasHeaders ? 1 : 0);
-    const frozenColumnCount = data.frozenColumnCount || 0;
-    const hasNonDefaultMetadata = headerRowCount > 0 || frozenColumnCount > 0
-      || hasColumnFormats || hasCellStyles;
-
-    if (hasNonDefaultMetadata) {
-      const metadata: CSVMetadata = {
-        hasHeaders: data.hasHeaders,
-        headerRowCount,
-        frozenColumnCount,
-        ...(hasColumnFormats ? { columnFormats: data.columnFormats } : {}),
-        ...(hasCellStyles ? { cellStyles: data.cellStyles } : {}),
-      };
-      return `${serializeMetadata(metadata)}\n${csvContent}`;
-    }
-  }
-
-  return csvContent;
+  const metadataLine = buildMetadataLine({
+    headerRowCount: data.headerRowCount || (data.hasHeaders ? 1 : 0),
+    frozenColumnCount: data.frozenColumnCount || 0,
+    columnFormats: data.columnFormats,
+    columnWidths,
+    cellStyles: data.cellStyles,
+    ...formatting,
+  }, { detectedHeaderRowCount: autoDetectHeaderRowCount(data.rows[0]?.map((cell) => cell.raw) ?? [], data.rows.length) });
+  return metadataLine ? `${metadataLine}\n${csvContent}` : csvContent;
 }
 
 /**

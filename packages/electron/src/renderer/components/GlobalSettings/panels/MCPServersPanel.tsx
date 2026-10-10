@@ -11,6 +11,8 @@ import {
   MCPOAuthTriggerResult,
 } from './mcpOAuthAnalytics';
 import { withStaticClientId } from './mcpStaticClientId';
+import { requestConfirmation } from '../../../dialogs/requestConfirmation';
+import { errorNotificationService } from '../../../services/ErrorNotificationService';
 
 interface MCPServerConfig {
   command?: string;
@@ -1181,7 +1183,13 @@ function MCPServersPanelInner({ scope = 'user', workspacePath }: MCPServersPanel
     const serverUrl = getOAuthServerUrl(config);
     if (!serverUrl) return;
 
-    if (!confirm('Revoke authorization? You will need to re-authorize to use this server.')) {
+    const ok = await requestConfirmation({
+      title: 'Revoke authorization',
+      message: 'Revoke authorization? You will need to re-authorize to use this server.',
+      confirmLabel: 'Revoke',
+      destructive: true,
+    });
+    if (!ok) {
       return;
     }
 
@@ -1404,7 +1412,13 @@ function MCPServersPanelInner({ scope = 'user', workspacePath }: MCPServersPanel
   const handleDelete = async () => {
     if (!selectedServer) return;
 
-    if (!confirm(`Delete MCP server "${selectedServer.name}"?`)) {
+    const ok = await requestConfirmation({
+      title: 'Delete MCP server',
+      message: `Delete MCP server "${selectedServer.name}"?`,
+      confirmLabel: 'Delete',
+      destructive: true,
+    });
+    if (!ok) {
       return;
     }
 
@@ -1427,7 +1441,7 @@ function MCPServersPanelInner({ scope = 'user', workspacePath }: MCPServersPanel
         : await window.electronAPI.invoke('mcp-config:write-user', config);
 
       if (!result.success) {
-        alert(`Failed to delete: ${result.error}`);
+        errorNotificationService.showError('Failed to delete MCP server', `Failed to delete: ${result.error}`);
         isLocalChangeRef.current = false;
         return;
       }
@@ -1446,7 +1460,7 @@ function MCPServersPanelInner({ scope = 'user', workspacePath }: MCPServersPanel
     } catch (err: unknown) {
       const errorMsg = err instanceof Error ? err.message : 'Failed to delete server';
       console.error('Failed to delete server:', errorMsg);
-      alert(`Error: ${errorMsg}`);
+      errorNotificationService.showError('Failed to delete MCP server', `Error: ${errorMsg}`);
       isLocalChangeRef.current = false;
     }
   };
@@ -1496,7 +1510,7 @@ function MCPServersPanelInner({ scope = 'user', workspacePath }: MCPServersPanel
     } catch (err: unknown) {
       const errorMsg = err instanceof Error ? err.message : 'Failed to toggle server providers';
       console.error('Failed to toggle server providers:', errorMsg);
-      alert(`Error: ${errorMsg}`);
+      errorNotificationService.showError('Failed to update MCP server', `Error: ${errorMsg}`);
       isLocalChangeRef.current = false;
     }
   };

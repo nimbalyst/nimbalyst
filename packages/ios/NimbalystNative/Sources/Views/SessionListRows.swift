@@ -149,6 +149,17 @@ public enum PhaseFilter: String, CaseIterable, Sendable {
 enum ProjectTab: String, CaseIterable {
     case sessions = "Sessions"
     case files = "Files"
+    /// Only for projects with a Local wiki.
+    case wiki = "Wiki"
+    /// Only for projects that map to a team project: the team console's Wiki and Trackers.
+    case team = "Team"
+
+    static func available(for project: Project, hasTeam: Bool = false) -> [ProjectTab] {
+        var tabs: [ProjectTab] = [.sessions, .files]
+        if project.localWikiFolder != nil { tabs.append(.wiki) }
+        if hasTeam { tabs.append(.team) }
+        return tabs
+    }
 }
 
 // MARK: - WorkstreamSection
@@ -156,13 +167,16 @@ enum ProjectTab: String, CaseIterable {
 /// A workstream or worktree group. Collapsed, it renders only the header — its child
 /// rows are fetched (and paged) on expansion, so a group with thousands of children
 /// costs the same as one with three.
-struct WorkstreamSection: View {
+struct WorkstreamSection<HeaderMenu: View, ChildMenu: View>: View {
     let item: SessionListPageItem
     let children: [SessionListRow]
     let hasMoreChildren: Bool
     @Binding var isExpanded: Bool
     var voiceFocusedSessionId: String?
     var onLoadMoreChildren: () -> Void
+    var onSelectRoot: () -> Void
+    @ViewBuilder var headerContextMenu: () -> HeaderMenu
+    @ViewBuilder var childContextMenu: (SessionListRow) -> ChildMenu
 
     private var isWorktree: Bool { item.group.kind == .worktree }
 
@@ -181,6 +195,7 @@ struct WorkstreamSection: View {
                     isWorktree: isWorktree
                 )
                 .tag(WorkspaceSelection.session(item.parent.id))
+                .contextMenu { headerContextMenu() }
             } else {
                 DisclosureGroup(isExpanded: $isExpanded) {
                     ForEach(children) { child in
@@ -189,18 +204,32 @@ struct WorkstreamSection: View {
                             isChild: true,
                             voiceFocusedSessionId: voiceFocusedSessionId
                         )
+                        .padding(.leading, CGFloat(child.phoneIndentationLevel) * 12)
+                        .overlay(alignment: .leading) {
+                            if child.treeDepth > 2 {
+                                Rectangle().fill(Color.secondary.opacity(0.25))
+                                    .frame(width: 1).padding(.leading, 24)
+                            }
+                        }
                         .tag(WorkspaceSelection.session(child.id))
+                        .contextMenu { childContextMenu(child) }
                     }
                     if hasMoreChildren {
                         ChildPageLoader(onAppear: onLoadMoreChildren)
                     }
                 } label: {
-                    WorkstreamHeader(
-                        title: title,
-                        childCount: item.group.childCount,
-                        status: item.group.status,
-                        isWorktree: isWorktree
-                    )
+                    if !isWorktree && item.parent.sessionType != "workstream" {
+                        Button(action: onSelectRoot) {
+                            WorkstreamHeader(title: title, childCount: item.group.childCount,
+                                             status: item.group.status, isWorktree: false)
+                        }
+                        .buttonStyle(.plain)
+                        .contextMenu { headerContextMenu() }
+                    } else {
+                        WorkstreamHeader(title: title, childCount: item.group.childCount,
+                                         status: item.group.status, isWorktree: isWorktree)
+                            .contextMenu { headerContextMenu() }
+                    }
                 }
             }
         }

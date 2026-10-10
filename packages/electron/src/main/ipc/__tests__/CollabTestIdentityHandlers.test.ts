@@ -1,11 +1,12 @@
 // @vitest-environment node
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const { appMock, handlers, removeHandlerMock, safeHandleMock } = vi.hoisted(
+const { appMock, handlers, removeHandlerMock, safeHandleMock, setBodyRoomIdentityMock } = vi.hoisted(
   () => {
     const handlers = new Map<string, (...args: any[]) => any>();
     return {
       appMock: { isPackaged: false },
+      setBodyRoomIdentityMock: vi.fn(),
       handlers,
       removeHandlerMock: vi.fn((channel: string) => {
         handlers.delete(channel);
@@ -32,6 +33,9 @@ vi.mock("../../utils/logger", () => ({
 vi.mock("../../utils/store", () => ({ getWorkspaceState: vi.fn(() => ({})) }));
 vi.mock("../collabDocumentTypeResolver", () => ({
   resolveCollabDocumentType: vi.fn(() => "mindmap"),
+}));
+vi.mock("../../services/MainBodyDocService", () => ({
+  setBodyRoomIdentityForTests: setBodyRoomIdentityMock,
 }));
 vi.mock("../../protocols/collabAssetProtocol", () => ({
   registerCollabAssetDocument: vi.fn(),
@@ -75,6 +79,7 @@ describe("registerCollabTestIdentityHandlers", () => {
 
     expect(safeHandleMock).not.toHaveBeenCalled();
     expect(removeHandlerMock).not.toHaveBeenCalled();
+    expect(setBodyRoomIdentityMock).not.toHaveBeenCalled();
   });
 
   it("does nothing without the full Playwright harness environment", () => {
@@ -108,6 +113,15 @@ describe("registerCollabTestIdentityHandlers", () => {
     );
 
     const expectedQuery = "test_user_id=e2e-user-a&test_org_id=e2e-org";
+    // Main-owned tracker body rooms get the same team identity.
+    expect(setBodyRoomIdentityMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        orgId: "e2e-org",
+        teamMemberId: "e2e-user-a",
+        serverUrl: "ws://127.0.0.1:8797",
+        urlExtraQuery: expectedQuery,
+      })
+    );
     const event = {
       sender: { id: 7, isDestroyed: () => false, once: vi.fn() },
     };

@@ -19,7 +19,7 @@ import { SAVED_CREDENTIAL } from '../../../shared/providerCredentials';
 
 import { atom, type Atom } from 'jotai';
 import posthog from 'posthog-js';
-import { copyToClipboard } from '@nimbalyst/runtime';
+import { copyToClipboard } from '@nimbalyst/runtime/utils/clipboard';
 import { store } from '@nimbalyst/runtime/store';
 import { type EffortLevel, type ThinkingMode, DEFAULT_EFFORT_LEVEL, DEFAULT_THINKING_MODE, parseEffortLevel, parseThinkingMode } from '@nimbalyst/runtime/ai/server/effortLevels';
 import { AlphaFeatureTag, getDefaultAlphaFeatures } from '../../../shared/alphaFeatures';
@@ -2043,6 +2043,11 @@ function scheduleDeveloperFeaturePersist(
       }
     }
   }, DEVELOPER_FEATURE_PERSIST_DEBOUNCE_MS);
+}
+
+/** True while a local developer-settings change has not reached main yet. */
+export function hasPendingDeveloperFeaturePersist(): boolean {
+  return developerFeaturePersistTimer !== null;
 }
 
 // === Derived read-only atoms (slices) ===

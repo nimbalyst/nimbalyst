@@ -5,7 +5,6 @@ import OpenAI from 'openai';
 import { BaseAgentProvider } from './BaseAgentProvider';
 import { buildUserMessageAddition } from './documentContextUtils';
 import { describeUnusableWorkspacePath } from './workspacePreconditions';
-import { buildClaudeCodeSystemPrompt, buildMetaAgentSystemPrompt, type MetaAgentWorkflowPreset } from '../../prompt';
 import { DEFAULT_MODELS } from '../../modelConstants';
 import { AIToolCall, AIToolResult } from '../../types';
 import {
@@ -30,8 +29,9 @@ import { ToolPermissionService } from '../permissions/ToolPermissionService';
 import { PermissionMode, TrustChecker, PermissionPatternSaver, PermissionPatternChecker, SecurityLogger } from './ProviderPermissionMixin';
 import { CodexSdkModuleLike, loadCodexSdkModule } from './codex/codexSdkLoader';
 import { resolvePackagedCodexBinaryPath } from './codex/codexBinaryPath';
+import { buildCodexSystemPrompt } from './codex/codexSystemPrompt';
 import { McpConfigService } from '../services/McpConfigService';
-import { getMcpConfigService, isInternalMcpServerEnabled, areTrackerToolsEnabled, resolveTrackersWorkspacePath } from '../services/mcpServerConfig';
+import { getMcpConfigService } from '../services/mcpServerConfig';
 import { MCPServerConfig } from '../../../types/MCPServerConfig';
 import { safeJSONSerialize } from '../../../utils/serialization';
 import { AskUserQuestionPrompt, AskUserQuestionPromptOption } from './shared/askUserQuestionTypes';
@@ -121,8 +121,10 @@ export class OpenAICodexProvider extends BaseAgentProvider {
     contextWindow: number;
     maxTokens: number;
   }> = [
-    // GPT-6 catalog entries require codex >= 0.153.0 (Astra) and >= 0.155.0
-    // (Sol, Luna); the catalog lists a 272k default context window for all three.
+    // GPT-6 catalog entries require codex >= 0.153.0 (Astra), >= 0.155.0
+    // (Sol, Luna), and >= 0.159.1 (6.1 Sol); the catalog lists a 272k default
+    // context window for all of them.
+    { id: 'gpt-6.1-sol', name: 'GPT-6.1 Sol', contextWindow: 272000, maxTokens: 128000 },
     { id: 'gpt-6-sol', name: 'GPT-6 Sol', contextWindow: 272000, maxTokens: 128000 },
     { id: 'gpt-6-astra', name: 'GPT-6 Astra', contextWindow: 272000, maxTokens: 128000 },
     { id: 'gpt-6-luna', name: 'GPT-6 Luna', contextWindow: 272000, maxTokens: 128000 },
@@ -134,6 +136,7 @@ export class OpenAICodexProvider extends BaseAgentProvider {
     { id: 'gpt-5.4-mini', name: 'GPT-5.4 Mini', contextWindow: 400000, maxTokens: 128000 },
   ];
   private static readonly MODEL_FALLBACK_PRIORITY: ReadonlyArray<string> = [
+    'gpt-6.1-sol',
     'gpt-6-sol',
     'gpt-6-luna',
     'gpt-5.6-sol',
@@ -979,7 +982,11 @@ export class OpenAICodexProvider extends BaseAgentProvider {
     const agentRole = await this.getAgentRole(sessionId);
     const isMetaAgent = agentRole === 'meta-agent';
     const workflowPreset = isMetaAgent ? await this.getWorkflowPreset(sessionId) : 'default';
-    const systemPrompt = this.buildSystemPrompt(documentContext, isMetaAgent, workflowPreset);
+    const systemPrompt = buildCodexSystemPrompt({
+      documentContext, isMetaAgent, workflowPreset, model: this.config?.model ?? undefined,
+      sessionDirective: await this.getSessionDirective(sessionId),
+      hasOutOfBandNaming: this.isNamedOutOfBand(sessionId, documentContext),
+    });
     const { userMessageAddition, messageWithContext } = buildUserMessageAddition(message, documentContext);
     const unsupportedAttachmentHints = attachments?.filter(
       (attachment) => attachment.type !== 'image' && attachment.type !== 'document'
@@ -1887,44 +1894,13 @@ export class OpenAICodexProvider extends BaseAgentProvider {
     super.destroy();
   }
 
-  /**
-   * Build system prompt for Codex using the same addendum as Claude Code.
-   * Uses buildClaudeCodeSystemPrompt to include Nimbalyst-specific instructions
-   * for visual tools, worktrees, session naming, etc.
-   */
-  protected buildSystemPrompt(documentContext?: DocumentContext, isMetaAgent: boolean = false, workflowPreset: MetaAgentWorkflowPreset = 'default'): string {
-    if (isMetaAgent) {
-      return buildMetaAgentSystemPrompt('codex', workflowPreset, {
-        provider: 'openai-codex',
-        model: this.config?.model ?? undefined,
-      });
-    }
-
-    const hasSessionNaming = isInternalMcpServerEnabled();
-    const worktreePath = documentContext?.worktreePath;
-    const isVoiceMode = (documentContext as any)?.isVoiceMode;
-    const voiceModeCodingAgentPrompt = (documentContext as any)?.voiceModeCodingAgentPrompt;
-    // Note: Agent teams are not currently supported for Codex
-    const enableAgentTeams = false;
-
-    return buildClaudeCodeSystemPrompt({
-      hasSessionNaming,
-      toolReferenceStyle: 'codex',
-      worktreePath,
-      isVoiceMode,
-      voiceModeCodingAgentPrompt,
-      enableAgentTeams,
-      trackersEnabled: areTrackerToolsEnabled(resolveTrackersWorkspacePath(documentContext)),
-    });
-  }
-
   private async getConfiguredModel(): Promise<string> {
     const configured = this.config?.model || OpenAICodexProvider.DEFAULT_MODEL;
     const parsed = ModelIdentifier.tryParse(configured);
     const resolved = parsed ? parsed.model : configured.replace(/^openai-codex:/, '');
     const normalized = resolved.toLowerCase();
     if (normalized === 'openai-codex-cli' || normalized === 'default' || normalized === 'cli') {
-      return 'gpt-6-sol';
+      return 'gpt-6.1-sol';
     }
 
     // Pass the model directly to the Codex SDK without pre-validation.

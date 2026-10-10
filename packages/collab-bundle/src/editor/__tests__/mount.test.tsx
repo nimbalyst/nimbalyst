@@ -7,11 +7,15 @@ import { asTeamJwt, asTeamMemberId } from '@nimbalyst/runtime/auth/jwtScopes';
 import { collabCommentControllerRegistry } from '@nimbalyst/runtime/editor/commenting/CollabCommentControllerRegistry';
 import { withHeadlessLexicalBridge } from '@nimbalyst/runtime/sync/withHeadlessLexicalBridge';
 import { HeadlessBodyNodes } from '@nimbalyst/runtime/editor/nodes/headlessBodyNodes';
-import { $getRoot } from 'lexical';
+import { $createParagraphNode, $getRoot, type LexicalEditor } from 'lexical';
+import { getAllExtensionUserCommands } from '@nimbalyst/runtime/editor/extensions/extensionContributionsStore';
 import { uint8ArrayToBase64, base64ToUint8Array } from '@nimbalyst/runtime/sync/documentSyncBase64';
 import { $createEmbeddedFileNode } from '@nimbalyst/runtime/editor/plugins/EmbedPlugin/EmbeddedFileNode';
+import { createNamedPageViewsController } from '@nimbalyst/runtime/editor/plugins/EmbedPlugin/namedPageViewsController';
 import { MarkdownCollabContentAdapter } from '@nimbalyst/runtime/sync/MarkdownCollabContentAdapter';
+import { buildTrackerReferenceHref } from '@nimbalyst/runtime/plugins/TrackerLinkPlugin/trackerReferenceHref';
 import { decisionMembersFromComments, mountCollabEditor } from '../mount';
+import { setConsoleLinkOpener, setPageReferenceOpener } from '../consoleLinkOpener';
 import { CollabPresenceSurface } from '../presence';
 import {
   asTeamDocumentId,
@@ -37,6 +41,27 @@ afterEach(() => {
 });
 
 describe('in-memory collaborative editor harness', () => {
+  it('edits named views through the browser document and withdraws the editor on teardown', async () => {
+    const yDocument = new Y.Doc();
+    MarkdownCollabContentAdapter.seedFromFile(yDocument, 'Preserve the type description.');
+    const element = document.createElement('div'); document.body.append(element);
+    let editor: LexicalEditor | null = null;
+    const handle = mountCollabEditor({ element, source: { kind: 'in-memory', document: yDocument }, user: { memberId: asTeamMemberId('author'), name: 'Author' }, onLexicalEditor: value => { editor = value; } });
+    mountedHandles.push(handle);
+    await settle();
+    expect(editor).not.toBeNull();
+    const views = createNamedPageViewsController(editor!, 'task');
+    await act(async () => views.add('browser-view', 'Open tasks', { mode: 'list' }));
+    await settle();
+    expect(handle.getMarkdown()).toContain('```page-view');
+    expect(handle.getMarkdown()).toContain('Preserve the type description.');
+    await act(async () => handle.setReadOnly(true));
+    await settle();
+    expect(() => views.patch('browser-view', { mode: 'board' })).toThrow('not editable');
+    await act(async () => handle.destroy());
+    expect(editor).toBeNull();
+    views.dispose();
+  });
   it('renders persisted subject embeds through each mount’s authorized preview without crossing scopes', async () => {
     const mounts = ['one', 'two'].map((scope) => {
       const yDocument = new Y.Doc();
@@ -125,6 +150,15 @@ describe('in-memory collaborative editor harness', () => {
       status: 'not-required',
       reason: 'in-memory',
     });
+
+    // Page history restore: the whole body is replaced through the live
+    // editor, so the collaborative document (what peers see) holds it too.
+    await act(async () => handle.replaceMarkdown!('# Restored version\n\nRESTORED-MARKER'));
+    await settle();
+    expect(editable?.textContent).not.toContain('PREPOPULATED-MARKER');
+    expect(MarkdownCollabContentAdapter.exportToFile(yDocument)).toContain('RESTORED-MARKER');
+    handle.setReadOnly(true);
+    expect(() => handle.replaceMarkdown!('# Not allowed')).toThrow('read-only');
   });
 
   it('records browser decision votes in the shared document using the team member identity', async () => {
@@ -153,6 +187,69 @@ describe('in-memory collaborative editor harness', () => {
     fireEvent.click(option);
     fireEvent.click(element.querySelector('[data-testid="decision-answer"]')!);
     await waitFor(() => expect(yDocument.getMap('decisions').get('browser-q\x1fteam-reader')).toMatchObject({ answer: { type: 'singleSelect', selectedId: 'yes' } }));
+  });
+
+  it('writes references inserted in a team room as that project\'s console links', () => {
+    const element = document.createElement('div'); document.body.append(element);
+    const handle = mountCollabEditor({
+      element,
+      source: {
+        kind: 'team-room', serverUrl: 'ws://collab.test',
+        room: { orgId: asTeamOrgId('org-1'), projectId: asTeamProjectId('project-1'), documentId: asTeamDocumentId('doc-1') },
+        auth: { scope: 'team', memberId: asTeamMemberId('team-reader'), getTeamJwt: async () => asTeamJwt('team-jwt') },
+        createWebSocket: () => new FakeRoomSocket() as unknown as WebSocket,
+      },
+      user: { memberId: asTeamMemberId('team-reader'), name: 'Reader' },
+    });
+    expect(buildTrackerReferenceHref('NIM-1')).toBe('https://console.nimbalyst.com/org/org-1/project/project-1/page/item/NIM-1');
+    handle.destroy();
+    expect(buildTrackerReferenceHref('NIM-1')).toBeNull();
+  });
+
+  it('offers placed views in the slash menu and writes them as that project\'s console view links', async () => {
+    const element = document.createElement('div'); document.body.append(element);
+    const handle = mountCollabEditor({
+      element,
+      source: {
+        kind: 'team-room', serverUrl: 'ws://collab.test',
+        room: { orgId: asTeamOrgId('org-1'), projectId: asTeamProjectId('project-1'), documentId: asTeamDocumentId('doc-1') },
+        auth: { scope: 'team', memberId: asTeamMemberId('team-writer'), getTeamJwt: async () => asTeamJwt('team-jwt') },
+        createWebSocket: () => new FakeRoomSocket() as unknown as WebSocket,
+      },
+      user: { memberId: asTeamMemberId('team-writer'), name: 'Writer' },
+      placedViewTypes: {
+        list: () => [
+          { type: 'competitor', displayName: 'Competitor', displayNamePlural: 'Competitors', fields: [{ name: 'reach', type: 'number' }, { name: 'price', type: 'number' }, { name: 'title', type: 'string' }] },
+          { type: 'module', displayName: 'Module', fields: [{ name: 'title', type: 'string' }] },
+        ],
+        subscribe: () => () => undefined,
+      },
+    });
+    const titles = () => getAllExtensionUserCommands().map((command) => command.title);
+    await waitFor(() => expect(titles()).toEqual(expect.arrayContaining(['Table: Competitors', '2x2: Competitors', 'Table: Module', 'Decisions list', 'Open questions list'])));
+    expect(titles()).not.toContain('2x2: Module');
+
+    const editable = await waitFor(() => {
+      const found = element.querySelector('[contenteditable]') as (HTMLElement & { __lexicalEditor?: LexicalEditor }) | null;
+      expect(found?.__lexicalEditor).toBeTruthy();
+      return found!;
+    });
+    const editor = editable.__lexicalEditor!;
+    const entry = getAllExtensionUserCommands().find((command) => command.title === '2x2: Competitors')!;
+    act(() => {
+      editor.update(() => {
+        const paragraph = $createParagraphNode();
+        $getRoot().append(paragraph);
+        paragraph.select();
+        editor.dispatchCommand(entry.command, entry.payload);
+      }, { discrete: true });
+    });
+    const placed = editor.getEditorState().read(() => $getRoot().getChildren().find((node) => node.getType() === 'embedded-file')?.exportJSON()) as { src: string; attrs: Record<string, string> } | undefined;
+    expect(placed?.src).toBe('https://console.nimbalyst.com/org/org-1/project/project-1/view/type/competitor');
+    expect(placed?.attrs).toEqual({ mode: '2x2', x: 'reach', y: 'price' });
+
+    handle.destroy();
+    expect(titles()).not.toContain('Decisions list');
   });
 
   it('paints tracker and shared-document references written by a desktop client', async () => {
@@ -188,6 +285,72 @@ describe('in-memory collaborative editor harness', () => {
     expect(handle.getMarkdown()).toContain(
       '(nimbalyst://doc/fa164469-0e2b-4f1a-9c2d-6b1f0a3d5e77)',
     );
+  });
+
+  it('shows a reference to someone\'s Personal page as on the author\'s device, opened through the host, never resolved here', async () => {
+    const yDocument = new Y.Doc();
+    MarkdownCollabContentAdapter.seedFromFile(
+      yDocument,
+      'Mine is [NIM-7](https://console.nimbalyst.com/app/item/NIM-7) and ours is [NIM-8](nimbalyst://NIM-8).',
+    );
+    const element = globalThis.document.createElement('div');
+    globalThis.document.body.append(element);
+    const opened: string[] = [];
+    const stopOpener = setConsoleLinkOpener((href) => { opened.push(href); return true; });
+    const handle = mountCollabEditor({ element, source: { kind: 'in-memory', document: yDocument }, user: { memberId: asTeamMemberId('member'), name: 'Member' } });
+    mountedHandles.push(handle);
+    await settle();
+
+    const personal = element.querySelectorAll('[data-testid="tracker-reference-author-device"]');
+    expect(personal).toHaveLength(1);
+    expect(personal[0]!.textContent).toContain('on the author\'s device');
+    expect(element.querySelector('[data-issue-key="NIM-8"]:not([data-testid="tracker-reference-author-device"])')).not.toBeNull();
+    fireEvent.click(personal[0]!);
+    expect(opened).toEqual(['https://console.nimbalyst.com/app/item/NIM-7']);
+    stopOpener();
+  });
+
+  it('opens a link to another page through the host in this tab, and a Cmd+click in a new browser tab', async () => {
+    const href = 'https://console.nimbalyst.com/org/o1/project/p1/document/d2';
+    const yDocument = new Y.Doc();
+    MarkdownCollabContentAdapter.seedFromFile(yDocument, `See [Launch Plan](${href}).`);
+    const element = globalThis.document.createElement('div');
+    globalThis.document.body.append(element);
+    const opened: string[] = [];
+    const stopOpener = setConsoleLinkOpener((link) => { opened.push(link); return true; });
+    const windowOpen = vi.spyOn(window, 'open').mockReturnValue(null);
+    const handle = mountCollabEditor({ element, source: { kind: 'in-memory', document: yDocument }, user: { memberId: asTeamMemberId('member'), name: 'Member' } });
+    mountedHandles.push(handle);
+    await settle();
+
+    const anchor = element.querySelector<HTMLAnchorElement>(`a[href="${href}"]`)!;
+    fireEvent.click(anchor);
+    expect(opened).toEqual([href]);
+    expect(windowOpen).not.toHaveBeenCalled();
+
+    fireEvent.click(anchor, { metaKey: true });
+    expect(opened).toEqual([href]);
+    expect(windowOpen).toHaveBeenCalledWith(href, '_blank', 'noopener,noreferrer');
+    windowOpen.mockRestore();
+    stopOpener();
+  });
+
+  it('opens an @ reference to a team page through the host, in a new tab on Cmd+click', async () => {
+    const yDocument = new Y.Doc();
+    MarkdownCollabContentAdapter.seedFromFile(yDocument, 'See [Launch Plan](nimbalyst://doc/d2?orgId=o1).');
+    const element = globalThis.document.createElement('div');
+    globalThis.document.body.append(element);
+    const opened: Array<[string, boolean]> = [];
+    const stopOpener = setPageReferenceOpener((documentId, { newTab }) => { opened.push([documentId, newTab]); });
+    const handle = mountCollabEditor({ element, source: { kind: 'in-memory', document: yDocument }, user: { memberId: asTeamMemberId('member'), name: 'Member' } });
+    mountedHandles.push(handle);
+    await settle();
+
+    const chip = element.querySelector<HTMLElement>('.document-reference')!;
+    fireEvent.click(chip);
+    fireEvent.click(chip, { metaKey: true });
+    expect(opened).toEqual([['d2', false], ['d2', true]]);
+    stopOpener();
   });
 
   it('carries no formatting toolbar and applies the browser-host chrome', async () => {

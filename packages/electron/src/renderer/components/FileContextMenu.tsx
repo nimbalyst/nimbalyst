@@ -5,6 +5,7 @@ import type { NewFileType, ExtensionFileType } from './NewFileMenu';
 import { CommonFileActions } from './CommonFileActions';
 import { useFloatingMenu, FloatingPortal, virtualElement } from '../hooks/useFloatingMenu';
 import { historyDialogFileAtom } from '../store';
+import { requestConfirmation } from '../dialogs/requestConfirmation';
 
 interface FileContextMenuProps {
   x: number;
@@ -107,7 +108,7 @@ export function FileContextMenu({
     }
   };
 
-  const handleDelete = () => {
+  const handleDelete = async () => {
     // Check if we have multiple items selected
     const hasMultipleSelected = selectedPaths && selectedPaths.size > 1;
 
@@ -115,7 +116,13 @@ export function FileContextMenu({
       const selectedArray = Array.from(selectedPaths);
       const confirmMessage = `Are you sure you want to delete ${selectedArray.length} items?`;
 
-      if (window.confirm(confirmMessage)) {
+      const confirmed = await requestConfirmation({
+        title: 'Delete items?',
+        message: confirmMessage,
+        confirmLabel: 'Delete',
+        destructive: true,
+      });
+      if (confirmed) {
         onDeleteMultiple(selectedArray);
         onClose();
       }
@@ -124,7 +131,13 @@ export function FileContextMenu({
         ? `Are you sure you want to delete the folder "${fileName}" and all its contents?`
         : `Are you sure you want to delete "${fileName}"?`;
 
-      if (window.confirm(confirmMessage)) {
+      const confirmed = await requestConfirmation({
+        title: fileType === 'directory' ? 'Delete folder?' : 'Delete file?',
+        message: confirmMessage,
+        confirmLabel: 'Delete',
+        destructive: true,
+      });
+      if (confirmed) {
         onDelete(filePath);
         onClose();
       }

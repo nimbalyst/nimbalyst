@@ -66,6 +66,8 @@ import { isDesktopTrulyAway } from '../SyncManager';
 import { requestMobilePush } from './mobilePushRequest';
 import { AISessionsRepository } from '@nimbalyst/runtime';
 import { getClaudeCodeApiUpstreamUrl } from '../../utils/store';
+import { ClaudeSettingsManager } from '../ClaudeSettingsManager';
+import { resolveClaudeCliProxyUpstream } from './claudeCliObservation/proxyUpstream';
 import type { AssembledAssistantMessage } from './claudeCliObservation/claudeApiMessageAssembler';
 
 /**
@@ -214,7 +216,14 @@ export async function startClaudeCliProxyObservation(opts: {
   // Undefined → direct to api.anthropic.com (unchanged default). Observation of
   // the ORIGINAL request body / response SSE is unaffected — we only change where
   // the bytes are forwarded.
-  const apiUpstreamUrl = getClaudeCodeApiUpstreamUrl();
+  // A loopback ANTHROPIC_BASE_URL in Claude's own settings is followed too.
+  const { upstreamUrl: apiUpstreamUrl, ignoredClaudeSettingsBaseUrl } = resolveClaudeCliProxyUpstream(
+    getClaudeCodeApiUpstreamUrl(),
+    await ClaudeSettingsManager.getInstance().getEffectiveEnvValue(workspacePath, 'ANTHROPIC_BASE_URL'),
+  );
+  if (ignoredClaudeSettingsBaseUrl) {
+    console.warn(`[ClaudeCliObservation] not following non-loopback ANTHROPIC_BASE_URL from Claude settings: ${ignoredClaudeSettingsBaseUrl}`);
+  }
 
   const observation = new ClaudeCliProxyObservation({
     sessionId,

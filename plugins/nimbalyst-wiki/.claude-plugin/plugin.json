@@ -1,12 +1,18 @@
 {
   "name": "nimbalyst-wiki",
-  "version": "0.1.0",
-  "description": "A team wiki kept current by your Claude Code sessions: read it as context, record decisions and established facts, and review each session's changes on one page.",
+  "version": "0.3.0",
+  "description": "Your project's Nimbalyst Wiki from Claude Code: the team's pages on the Nimbalyst server, or a local wiki of plain files in the repository. Read pages as context, and record what people decided in the page it affects, with citations to what was said.",
   "author": {
     "name": "Nimbalyst",
     "url": "https://nimbalyst.com"
   },
   "homepage": "https://nimbalyst.com",
   "repository": "https://github.com/nimbalyst/nimbalyst",
-  "keywords": ["wiki", "knowledge", "knowledge-graph", "team"]
+  "keywords": [
+    "pages",
+    "wiki",
+    "knowledge",
+    "team",
+    "local"
+  ]
 }

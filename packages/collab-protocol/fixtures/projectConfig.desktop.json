@@ -1,0 +1,59 @@
+{
+  "commands": [
+    {
+      "name": "review",
+      "description": "Review the change",
+      "source": "project"
+    }
+  ],
+  "lastCommandsUpdate": 1789232410000,
+  "gitRemoteHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "actions": [
+    {
+      "id": "plan-it",
+      "label": "Plan it",
+      "body": "Write a plan for this",
+      "truncated": true,
+      "launch": "new-session",
+      "model": "claude-code:opus",
+      "autoSubmit": true,
+      "worktree": false
+    }
+  ],
+  "lastActionsUpdate": 1789232411000,
+  "localWiki": {
+    "folder": "nimbalyst-local/wiki",
+    "types": [
+      {
+        "typeId": "competitor",
+        "displayName": "Competitor",
+        "displayNamePlural": "Competitors",
+        "storage": "pages",
+        "titleField": "title",
+        "fields": [
+          {
+            "name": "partners",
+            "type": "relationship",
+            "itemType": "partner",
+            "multiValue": true
+          }
+        ]
+      },
+      {
+        "typeId": "partner",
+        "displayName": "Partner",
+        "displayNamePlural": "Partners",
+        "storage": "table",
+        "titleField": "name",
+        "fields": [
+          {
+            "name": "tags",
+            "type": "array",
+            "itemType": "string",
+            "multiValue": false
+          }
+        ]
+      }
+    ]
+  }
+}

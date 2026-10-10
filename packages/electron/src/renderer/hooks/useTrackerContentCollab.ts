@@ -55,6 +55,7 @@ import {
 } from '../store/listeners/collabStateListeners';
 import { getTeamSyncProviderForScopeKey } from '../store/atoms/collabDocuments';
 import { buildCollabUri } from '@nimbalyst/collab-protocol';
+import { CollabHistoryClient } from '@nimbalyst/runtime/sync/collabHistoryClient';
 import { notifyDocumentCommentRecipients } from '../services/documentCommentNotifier';
 import { trackerContentCollabKey } from './trackerContentCollabKey';
 import type { TrackerSharing } from '@nimbalyst/tracker-schema';
@@ -130,6 +131,8 @@ interface TrackerContentCollabResult {
    * cache row exists OR the fetch has not yet resolved.
    */
   bodyCacheMarkdown: string | null;
+  /** The body room's page history: its `collab://` URI and REST client. */
+  history: { uri: string; client: CollabHistoryClient } | null;
 }
 
 function randomCursorColor(): string {
@@ -466,6 +469,21 @@ export function useTrackerContentCollab({
     };
   }, [providerEpoch, title, workspacePath]);
 
+  // The body room serves the same revision API as any shared page.
+  const history = useMemo(() => {
+    const config = acquisitionConfigRef.current;
+    if (!config || providerEpoch === 0) return null;
+    return {
+      uri: buildCollabUri(config.orgId, config.documentId),
+      client: new CollabHistoryClient({
+        serverUrl: config.serverUrl,
+        getJwt: config.getJwt,
+        orgId: config.orgId,
+        documentId: config.documentId,
+      }),
+    };
+  }, [providerEpoch]);
+
   // Local-only tracker, or team-synced tracker in a workspace with no team.
   // Either way: no collab, parent should render the local PGLite editor.
   if (!isCollabActive && !isCollabPending) {
@@ -474,6 +492,7 @@ export function useTrackerContentCollab({
       syncProvider: null, commentsConfig: null,
       providerEpoch: 0,
       bodyCacheMarkdown: null,
+      history: null,
     };
   }
 
@@ -485,5 +504,6 @@ export function useTrackerContentCollab({
     commentsConfig,
     providerEpoch,
     bodyCacheMarkdown,
+    history,
   };
 }

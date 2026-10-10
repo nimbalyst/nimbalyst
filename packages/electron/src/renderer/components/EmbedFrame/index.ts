@@ -27,7 +27,8 @@ import {
 import { setCanvasCallbacks } from '@nimbalyst/runtime/canvas';
 
 import { customEditorRegistry } from '../CustomEditors/registry';
-import { EmbedFrame } from './EmbedFrame';
+import { DesktopEmbedRenderer } from './DesktopEmbedRenderer';
+import { registerPlacedViewCommands } from './placedViewCommands';
 import { CanvasCardHost } from './CanvasCardHost';
 import { CanvasCardPreview } from './CanvasCardPreview';
 import { canvasCardCommentCounts } from './canvasCardCommentCounts';
@@ -46,7 +47,10 @@ function syncEmbeddableExtensions(): void {
 }
 
 export function registerEmbedFrame(): void {
-  setEmbedPluginCallbacks({ renderEmbed: EmbedFrame });
+  // A placed view (`parsePlacedViewUrl`) draws live; anything else is a file or shared document.
+  setEmbedPluginCallbacks({ renderEmbed: DesktopEmbedRenderer });
+  // Slash entries that place a view of a type, or a list of decisions, in the page.
+  registerPlacedViewCommands();
   // The canvas's card slot, filled from the same place and for the same reason:
   // one renderer-side module owns "how a reference becomes a mounted editor,"
   // whether the surface arranging those references is a document or a board.

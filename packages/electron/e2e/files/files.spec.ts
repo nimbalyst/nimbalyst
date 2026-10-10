@@ -78,14 +78,6 @@ test.beforeAll(async () => {
 
   page = await electronApp.firstWindow();
 
-  // Handle any dialogs (dismiss them)
-  page.on('dialog', dialog => dialog.dismiss().catch(() => {}));
-
-  // Override window.confirm to auto-accept (for delete confirmation)
-  await page.evaluate(() => {
-    window.confirm = () => true;
-  });
-
   await waitForAppReady(page);
 });
 
@@ -230,12 +222,14 @@ test('should save immediately with manual save (Cmd+S) overriding autosave timer
 
   await page.waitForTimeout(100);
 
-  await electronApp.evaluate(({ BrowserWindow }) => {
-    const focused = BrowserWindow.getFocusedWindow();
-    if (focused) {
-      focused.webContents.send('file-save');
-    }
-  });
+  // Target this page's window by URL, not getFocusedWindow(): that is null
+  // whenever the test window loses OS focus, and the save is silently dropped.
+  const sent = await electronApp.evaluate(({ BrowserWindow }, url) => {
+    const win = BrowserWindow.getAllWindows().find((w) => !w.isDestroyed() && w.webContents.getURL() === url);
+    win?.webContents.send('file-save');
+    return Boolean(win);
+  }, page.url());
+  expect(sent).toBe(true);
 
   await expect(tab.locator('.tab-dirty-indicator')).toHaveCount(0, { timeout: 2000 });
 
@@ -295,6 +289,7 @@ test('deleting an open file should close the tab and not recreate the file', asy
 
   const deleteButton = page.locator('[data-testid="context-menu-delete"]');
   await deleteButton.click();
+  await page.locator('.confirm-dialog-button-confirm').click();
 
   await expect(page.locator('.file-tabs-container .tab .tab-title', { hasText: 'op-delete.md' })).toHaveCount(0, { timeout: 5000 });
 
@@ -582,10 +577,15 @@ test('expanding a directory after opening a file does not scroll back', async ()
   await page.locator(PLAYWRIGHT_TEST_SELECTORS.filterMenuAllFiles).click();
   await page.waitForTimeout(500);
 
-  // 1. Wait for tree to load
-  await expect(
-    page.locator(PLAYWRIGHT_TEST_SELECTORS.fileTreeItem, { hasText: 'dir-00' })
-  ).toBeVisible({ timeout: TEST_TIMEOUTS.FILE_TREE_LOAD });
+  // 1. Wait for tree to load. The tree is virtualized and earlier tests leave
+  // it scrolled down, so dir-00 is not rendered until scrolled back to the top.
+  const treeScroller = await getTreeScroller(page);
+  await expect
+    .poll(async () => {
+      await treeScroller.evaluate(el => { el.scrollTop = 0; });
+      return page.locator(PLAYWRIGHT_TEST_SELECTORS.fileTreeItem, { hasText: 'dir-00' }).isVisible();
+    }, { timeout: TEST_TIMEOUTS.FILE_TREE_LOAD })
+    .toBe(true);
 
   // 2. Expand zzz-deep and open target.md via the tree (scrolls tree down).
   // The file lives under zzz-deep/ so pass the relative path -- bare

@@ -28,6 +28,8 @@ export interface ExternalIngestResult {
   messagesAdded: number;
   hasMore: boolean;
   skipped?: boolean;
+  /** Re-ingesting this file before it changes on disk cannot produce anything new. */
+  settled?: boolean;
 }
 export interface LegacyExternalMessage {
   id: number;
@@ -232,8 +234,14 @@ export class ExternalSessionIngestor {
             session.metadata?.externalIngestionOwner === "nimbalyst"))
       );
     };
+    // A Nimbalyst-owned row never becomes importable; live turns and pending
+    // claims are transient and must be revisited.
+    const nativeOwned =
+      !!session &&
+      (!isImportedSessionConfig(session.providerConfig) ||
+        session.metadata?.externalIngestionOwner === "nimbalyst");
     if (owned() || (await this.deps.hasPendingOwnership?.(ref, route)))
-      return skipped();
+      return nativeOwned ? { ...skipped(), settled: true } : skipped();
     if (!eligible() || owned()) return skipped();
     const cursor = await this.deps.persistence.getCursor(identity);
     if (!eligible() || owned()) return skipped();
@@ -277,7 +285,11 @@ export class ExternalSessionIngestor {
           titleKind: batch.titleKind,
           model: batch.model,
         });
-        return { messagesAdded: 0, hasMore: batch.hasMore };
+        return {
+          messagesAdded: 0,
+          hasMore: batch.hasMore,
+          settled: !batch.hasMore,
+        };
       }
       createdTitle = ref.parentToolUseId
         ? "Imported Session"
@@ -426,6 +438,10 @@ export class ExternalSessionIngestor {
       sessionId,
       messagesAdded: messages.length,
       hasMore: batch.hasMore,
+      // An undefined parent title can mean title reconstruction is still behind
+      // the cursor, which only later passes over the same bytes complete.
+      settled:
+        !batch.hasMore && (!!ref.parentToolUseId || batch.title !== undefined),
     };
   }
 

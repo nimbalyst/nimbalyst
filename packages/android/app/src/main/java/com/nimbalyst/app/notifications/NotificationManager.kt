@@ -50,6 +50,17 @@ class NotificationManager(
         }
     }
 
+    /**
+     * True until the one-time "turn on notifications?" prompt after sign-in has been
+     * answered either way. Someone who already enabled push is never asked.
+     */
+    fun shouldOfferOptIn(): Boolean =
+        !preferences.getBoolean(KEY_OPT_IN_OFFERED, false) && !_state.value.isEnabledInApp
+
+    fun markOptInOffered() {
+        preferences.edit().putBoolean(KEY_OPT_IN_OFFERED, true).apply()
+    }
+
     fun refreshAuthorization() {
         val authorized = hasNotificationPermission()
         _state.update {
@@ -146,6 +157,7 @@ class NotificationManager(
     companion object {
         private const val PREFS_NAME = "nimbalyst_notifications"
         private const val KEY_PUSH_ENABLED = "push_enabled"
+        private const val KEY_OPT_IN_OFFERED = "push_opt_in_offered"
     }
 }
 

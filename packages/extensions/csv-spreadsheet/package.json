@@ -21,7 +21,7 @@
     "use-undoable": "^5.0.0"
   },
   "devDependencies": {
-    "@nimbalyst/extension-sdk": "*",
+    "@nimbalyst/extension-sdk": "workspace:*",
     "@revolist/react-datagrid": "4.21.4",
     "@revolist/revogrid": "4.21.4",
     "@types/papaparse": "^5.3.14",
@@ -30,7 +30,7 @@
     "@vitejs/plugin-react": "^5.1.2",
     "typescript": "^5.0.0",
     "vite": "^7.1.12",
-    "yjs": ">=13.5.42",
+    "yjs": "13.6.32",
     "y-protocols": "^1.0.5"
   },
   "peerDependencies": {

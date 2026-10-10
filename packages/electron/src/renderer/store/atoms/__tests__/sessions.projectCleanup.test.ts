@@ -57,7 +57,8 @@ describe('closed project conversation cache', () => {
     expect(store.get(sessionStoreAtom(sessionId))).toBeNull();
   });
 
-  it.each([loadSessionDataAtom, reloadSessionDataAtom])('rejects obsolete loads across close and reopen', async (loadAtom) => {
+  // reloadSessionDataAtom only refreshes resident data, and close releases it.
+  it.each([loadSessionDataAtom])('rejects obsolete loads across close and reopen', async (loadAtom) => {
     const store = createStore();
     const old = deferred();
     const fresh = deferred();

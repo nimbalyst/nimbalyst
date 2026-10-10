@@ -9,11 +9,13 @@ export function SessionProviderIcon({
   provider,
   size = 14,
   isActive = false,
+  hideLaunchCount = false,
 }: {
   sessionId: string;
   provider?: string;
   size?: number;
   isActive?: boolean;
+  hideLaunchCount?: boolean;
 }) {
   const count = useAtomValue(sessionLaunchCountAtom(sessionId));
   const label = `Launched ${count} session${count === 1 ? "" : "s"}`;
@@ -24,7 +26,7 @@ export function SessionProviderIcon({
       }`}
     >
       <ProviderIcon provider={provider || "claude"} size={size} />
-      {count > 0 && (
+      {!hideLaunchCount && count > 0 && (
         <span
           className="session-launch-icon inline-flex text-[var(--nim-text-muted)]"
           title={label}

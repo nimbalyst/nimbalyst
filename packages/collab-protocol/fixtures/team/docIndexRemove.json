@@ -1,0 +1,5 @@
+{
+  "type": "docIndexRemove",
+  "documentId": "page-2",
+  "requestId": "remove-1"
+}

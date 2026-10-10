@@ -31,7 +31,7 @@ An explicit invocation, or approval of the landing handoff from `/review-contrib
 
 ## 3. Validate the integrated result
 
-Set phase to `validating`. Review the final diff against the target branch for scope, accidental reversions, and unresolved blockers. Run focused tests for changed behavior and the repository's required pre-push gate (`npm run typecheck && npm run test:prepush` here). Read recorded failures instead of rerunning the whole gate blindly. Perform required manual verification when possible; report any remaining gap explicitly and do not claim it passed.
+Set phase to `validating`. Review the final diff against the target branch for scope, accidental reversions, and unresolved blockers. Run focused tests for changed behavior and the repository's required pre-push gate (`pnpm typecheck && pnpm test:prepush` here). Read recorded failures instead of rerunning the whole gate blindly. Perform required manual verification when possible; report any remaining gap explicitly and do not claim it passed.
 
 Do not merge with unresolved blockers, a failing required gate, or missing required verification. Fix failures within the approved scope; ask only when resolving them requires a new decision. Never bypass branch protection, required reviews, or CI approval restrictions.
 

@@ -14,6 +14,7 @@ import { isDateOnlyValue, parseDate } from '../models/dateUtils';
 import { resolveDisplayIssueKey } from '../models/localIssueKey';
 import { resolveRoleFieldName, getFieldByRole, getItemPublicationState } from '../trackerRecordAccessors';
 import { resolveCellEditor, READONLY_STRUCTURAL_COLUMNS, type CellEditorKind } from './trackerCellEditors';
+import { isQualifiedFieldProperty } from '@nimbalyst/tracker-schema';
 
 // ============================================================================
 // Types
@@ -202,6 +203,9 @@ export function resolveColumnsForType(type: string): TrackerColumnDef[] {
       fieldToRole.set(fieldName, role as TrackerSchemaRole);
     }
   }
+  // An item's title is its `title` field unless a role says otherwise, so a
+  // type that declares no roles still gets a Title column.
+  if (!model.roles?.title && !fieldToRole.has('title')) fieldToRole.set('title', 'title');
 
   // Structural columns always present
   const columns: TrackerColumnDef[] = [...STRUCTURAL_COLUMNS];
@@ -497,8 +501,19 @@ export function getCellValue(record: TrackerRecord, columnId: string): any {
     case 'archived': return record.archived;
     case 'module': return record.system.documentPath;
     case 'shared': return getItemPublicationState(record);
-    default: return record.fields[columnId];
+    default: return unwrapQualifiedCellValue(columnId, record.fields[columnId]);
   }
+}
+
+/**
+ * A field-stored label property that declares qualifiers (earlier knowledge
+ * graph data) stores `{ value, qualifiers }`; a cell shows (and sorts by) the
+ * value alone.
+ */
+function unwrapQualifiedCellValue(columnId: string, stored: unknown): unknown {
+  if (!stored || typeof stored !== 'object' || Array.isArray(stored) || !('value' in stored)) return stored;
+  const property = globalRegistry.getLabelRegistry().properties.find(candidate => candidate.id === columnId);
+  return property && isQualifiedFieldProperty(property) ? (stored as { value: unknown }).value : stored;
 }
 
 /**
@@ -514,6 +529,8 @@ export function getFieldForColumn(type: string, columnId: string): FieldDefiniti
  * Get initials from a display name (for avatar rendering).
  */
 export function getInitials(name: string): string {
+  // Synced identities can arrive without a display name.
+  if (!name?.trim()) return '?';
   const parts = name.trim().split(/\s+/);
   if (parts.length >= 2) return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
   return name.substring(0, 2).toUpperCase();

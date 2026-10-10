@@ -168,9 +168,9 @@ export {
   getAllExtensionTransformers,
   getAllExtensionDynamicOptions,
   subscribeToExtensionContributions,
-  useExtensionUserCommands,
   type EditorExtensionContributions,
 } from './extensions/extensionContributionsStore';
+export { useExtensionUserCommands } from './extensions/useExtensionUserCommands';
 
 // Lexical-extension contributions from Nimbalyst extensions. The
 // electron-side bridge writes here; `NimbalystEditor` reads from here
@@ -318,3 +318,21 @@ export type {
   EmbedFrameProps,
   EmbedPluginCallbacks,
 } from './plugins/EmbedPlugin';
+
+// Decision and open-question marks on a sentence; inline citations.
+export {
+  $createPageMarkNode,
+  $isPageMarkNode,
+  PageMarkNode,
+} from './plugins/PageMarkPlugin/PageMarkNode';
+export type { SerializedPageMarkNode } from './plugins/PageMarkPlugin/PageMarkNode';
+export { PAGE_MARK_TRANSFORMER } from './plugins/PageMarkPlugin/PageMarkTransformer';
+export { OPEN_PAGE_MARK_EDITOR_COMMAND } from './plugins/PageMarkPlugin/pageMarkEvents';
+export { setPageMarkAuthorProvider } from './plugins/PageMarkPlugin/pageMarkHost';
+export * from '../core/pageMarkSyntax';
+export { $createCitationNode, $isCitationNode, CitationNode } from './plugins/CitationPlugin/CitationNode';
+export type { SerializedCitationNode } from './plugins/CitationPlugin/CitationNodeCore';
+export { CITATION_TRANSFORMER } from './plugins/CitationPlugin/CitationTransformer';
+export { setCitationHost } from './plugins/CitationPlugin/citationHost';
+export type { CitationHost } from './plugins/CitationPlugin/citationHost';
+export * from '../core/citationSyntax';

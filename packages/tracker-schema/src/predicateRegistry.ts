@@ -1,9 +1,9 @@
 /**
  * Predicate registry (knowledge-scopes contract 4.1).
  *
- * A predicate is the verb in a statement: `product --integrates-with--> product`,
- * qualified by "via which connector", "which operations", "tested against which
- * client version". The registry is the declaration of those verbs, and it is a
+ * A predicate is the verb in a statement: `product --integrates-with--> product`.
+ * A relation is just that: a named predicate with an inverse label, carrying no
+ * qualifiers. The registry is the declaration of those verbs, and it is a
  * SCHEMA ARTIFACT, not project configuration. Per decision 12 the room owns it
  * and publishes it to every client exactly like a type definition;
  * `.nimbalyst/predicates.yaml` is a local copy, never the distribution
@@ -11,10 +11,8 @@
  * type definitions already ride.
  *
  * This module is pure: plain objects in, issues out. It is reachable from
- * desktop, the web console, the collab server (which depends on this package
- * for C3/C4/C5), and both MCP surfaces, which is the whole point -- section 7
- * requires that "a predicate with required qualifiers rejects a claim missing
- * them" report the SAME code on all four.
+ * desktop, the web console, the collab server, and both MCP surfaces, so a bad
+ * declaration reports the SAME code on all of them.
  *
  * Three properties shape this file, and they are the same three that shape
  * `./citationLocator.ts` for the same reasons.
@@ -22,16 +20,14 @@
  * **Stable codes.** Every failure carries a `PREDICATE_*` code and a property
  * path. A message is for a person; a code is what a caller may branch on.
  *
- * **Strict in both directions.** An unknown qualifier, an unknown property on a
- * predicate declaration, and an unknown qualifier type are all rejections. The
- * concrete failure a tolerant reader produces here: `operation` for
- * `operations` is dropped, the required qualifier reads as missing, and the
- * author is told to supply a qualifier they believe they just supplied. Worse,
- * with `required` absent it is accepted and the statement claims a precision
- * nobody wrote.
+ * **Tolerant on declarations.** An unknown KEY on a predicate declaration is a
+ * warning: a later release adds keys (`objectKinds`) to this file, and a
+ * client that rejected them would drop the whole registry and every field's
+ * contract with it. The key is kept, not stripped. A `qualifiers` key left over
+ * from an earlier registry lands here too.
  *
- * **Every issue in one pass.** A form or an MCP caller fixes a value in one
- * round trip rather than one per property.
+ * **Every issue in one pass.** A form or an MCP caller fixes a declaration in
+ * one round trip rather than one per property.
  *
  * What this module does NOT do: resolve a relationship target, read items, or
  * decide whether a registry change is safe. That last one is
@@ -64,50 +60,6 @@ export type PredicateDirection = 'directed' | 'symmetric';
 
 export const PREDICATE_DIRECTIONS: readonly PredicateDirection[] = ['directed', 'symmetric'];
 
-export type PredicateQualifierType =
-  | 'string'
-  | 'number'
-  | 'boolean'
-  | 'date'
-  | 'select'
-  | 'relationship'
-  | 'array';
-
-export const PREDICATE_QUALIFIER_TYPES: readonly PredicateQualifierType[] = [
-  'string',
-  'number',
-  'boolean',
-  'date',
-  'select',
-  'relationship',
-  'array',
-];
-
-/** Item types an `array` qualifier may hold. Nested objects are deliberately absent. */
-export type PredicateQualifierItemType = 'string' | 'number' | 'boolean';
-
-export const PREDICATE_QUALIFIER_ITEM_TYPES: readonly PredicateQualifierItemType[] = [
-  'string',
-  'number',
-  'boolean',
-];
-
-export interface PredicateQualifierDefinition {
-  type: PredicateQualifierType;
-  /** Absent means optional. A qualifier becoming required is a destructive change. */
-  required?: boolean;
-  /** For `array`. Absent accepts any of {@link PREDICATE_QUALIFIER_ITEM_TYPES}. */
-  itemType?: PredicateQualifierItemType;
-  /** For `select`. Values, not labels: a qualifier is data, not presentation. */
-  options?: string[];
-  /** For `relationship`. Allowed target tracker types, or `'*'` for any. */
-  targetTrackerTypes?: string[] | '*';
-  /** Presentation only; never affects validation or change classification. */
-  label?: string;
-  /** Presentation only. */
-  description?: string;
-}
-
 export interface PredicateDefinition {
   id: string;
   label: string;
@@ -120,11 +72,17 @@ export interface PredicateDefinition {
    * domain-specific schemas narrow the kinds that extend it.
    */
   subjectKinds: string[];
+  /**
+   * Tracker types that may be the object of an `entity` statement, resolved
+   * through `extends` like {@link subjectKinds}. Absent or `['*']` accepts any
+   * type. This is what lets a link hover card offer only the relations that
+   * make sense between two pages' types.
+   */
+  objectKinds?: string[];
   valueShape: PredicateValueShape;
   direction: PredicateDirection;
   /** Advisory for traversal; nothing in this package walks a transitive closure. */
   transitive?: boolean;
-  qualifiers?: Record<string, PredicateQualifierDefinition>;
 }
 
 export type PredicateErrorCode =
@@ -138,13 +96,7 @@ export type PredicateErrorCode =
   // Field declaration against the registry
   | 'PREDICATE_UNKNOWN'
   | 'PREDICATE_VALUE_SHAPE_MISMATCH'
-  | 'PREDICATE_SUBJECT_KIND_NOT_ALLOWED'
-  // Write-time qualifier values
-  | 'PREDICATE_QUALIFIERS_NOT_AN_OBJECT'
-  | 'PREDICATE_QUALIFIER_REQUIRED'
-  | 'PREDICATE_QUALIFIER_UNKNOWN'
-  | 'PREDICATE_QUALIFIER_INVALID_TYPE'
-  | 'PREDICATE_QUALIFIER_INVALID_OPTION';
+  | 'PREDICATE_SUBJECT_KIND_NOT_ALLOWED';
 
 export interface PredicateIssue {
   code: PredicateErrorCode;
@@ -161,29 +113,18 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-/** Predicate and qualifier ids are wire keys: kebab-ish, no spaces, no dots. */
+/** Predicate ids are wire keys: kebab-ish, no spaces, no dots. */
 const PREDICATE_ID_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
-const QUALIFIER_NAME_PATTERN = /^[A-Za-z][A-Za-z0-9_-]*$/;
 
 const PREDICATE_KEYS: readonly string[] = [
   'id',
   'label',
   'inverseLabel',
   'subjectKinds',
+  'objectKinds',
   'valueShape',
   'direction',
   'transitive',
-  'qualifiers',
-];
-
-const QUALIFIER_KEYS: readonly string[] = [
-  'type',
-  'required',
-  'itemType',
-  'options',
-  'targetTrackerTypes',
-  'label',
-  'description',
 ];
 
 // ---------------------------------------------------------------------------
@@ -191,14 +132,18 @@ const QUALIFIER_KEYS: readonly string[] = [
 // ---------------------------------------------------------------------------
 
 export type PredicateDefinitionValidation =
-  | { valid: true; predicate: PredicateDefinition; issues: [] }
-  | { valid: false; predicate: null; issues: PredicateIssue[] };
+  | { valid: true; predicate: PredicateDefinition; issues: []; warnings?: PredicateIssue[] }
+  | { valid: false; predicate: null; issues: PredicateIssue[]; warnings?: PredicateIssue[] };
+
+/** Only present when non-empty, so a clean result keeps its historical shape. */
+function withWarnings<T extends object>(result: T, warnings: PredicateIssue[]): T & { warnings?: PredicateIssue[] } {
+  return warnings.length > 0 ? { ...result, warnings } : result;
+}
 
 /**
  * Validate one predicate declaration. Returns the narrowed definition on
  * success and every issue on failure, never a partially-accepted value: a
- * predicate missing half its qualifier declarations validates writes against a
- * contract nobody authored.
+ * half-valid predicate types fields against a contract nobody authored.
  */
 export function validatePredicateDefinition(value: unknown): PredicateDefinitionValidation {
   if (!isPlainObject(value)) {
@@ -210,10 +155,11 @@ export function validatePredicateDefinition(value: unknown): PredicateDefinition
   }
 
   const issues: PredicateIssue[] = [];
+  const warnings: PredicateIssue[] = [];
 
   for (const key of Object.keys(value)) {
     if (!PREDICATE_KEYS.includes(key)) {
-      issues.push(issue('PREDICATE_UNKNOWN_FIELD', key, `'${key}' is not part of a predicate declaration`));
+      warnings.push(issue('PREDICATE_UNKNOWN_FIELD', key, `'${key}' is not part of a predicate declaration`));
     }
   }
 
@@ -240,6 +186,23 @@ export function validatePredicateDefinition(value: unknown): PredicateDefinition
     );
   }
 
+  if (
+    value.objectKinds !== undefined
+    && (
+      !Array.isArray(value.objectKinds)
+      || value.objectKinds.length === 0
+      || value.objectKinds.some(kind => typeof kind !== 'string' || kind.trim().length === 0)
+    )
+  ) {
+    issues.push(
+      issue(
+        'PREDICATE_INVALID_FIELD',
+        'objectKinds',
+        `'objectKinds' must be a non-empty array of tracker type names, or ['*'], when present`,
+      ),
+    );
+  }
+
   requireEnum(value, 'valueShape', PREDICATE_VALUE_SHAPES, issues);
   requireEnum(value, 'direction', PREDICATE_DIRECTIONS, issues);
 
@@ -247,130 +210,16 @@ export function validatePredicateDefinition(value: unknown): PredicateDefinition
     issues.push(issue('PREDICATE_INVALID_FIELD', 'transitive', `'transitive' must be a boolean when present`));
   }
 
-  if (value.qualifiers !== undefined) {
-    if (!isPlainObject(value.qualifiers)) {
-      issues.push(issue('PREDICATE_INVALID_FIELD', 'qualifiers', `'qualifiers' must be an object keyed by qualifier name`));
-    } else {
-      for (const [name, declaration] of Object.entries(value.qualifiers)) {
-        validateQualifierDeclaration(name, declaration, issues);
-      }
-    }
-  }
-
-  if (issues.length > 0) return { valid: false, predicate: null, issues };
-  return { valid: true, predicate: value as unknown as PredicateDefinition, issues: [] };
-}
-
-function validateQualifierDeclaration(
-  name: string,
-  declaration: unknown,
-  issues: PredicateIssue[],
-): void {
-  const base = `qualifiers.${name}`;
-  if (!QUALIFIER_NAME_PATTERN.test(name)) {
-    issues.push(
-      issue('PREDICATE_INVALID_FIELD', base, `Qualifier name '${name}' must start with a letter and contain no spaces or dots`),
-    );
-  }
-  if (!isPlainObject(declaration)) {
-    issues.push(issue('PREDICATE_INVALID_FIELD', base, `Qualifier '${name}' must be an object`));
-    return;
-  }
-
-  for (const key of Object.keys(declaration)) {
-    if (!QUALIFIER_KEYS.includes(key)) {
-      issues.push(issue('PREDICATE_UNKNOWN_FIELD', `${base}.${key}`, `'${key}' is not part of a qualifier declaration`));
-    }
-  }
-
-  const type = declaration.type;
-  if (type === undefined) {
-    issues.push(issue('PREDICATE_MISSING_FIELD', `${base}.type`, `Qualifier '${name}' is missing 'type'`));
-  } else if (typeof type !== 'string' || !PREDICATE_QUALIFIER_TYPES.includes(type as PredicateQualifierType)) {
-    issues.push(
-      issue(
-        'PREDICATE_INVALID_FIELD',
-        `${base}.type`,
-        `Qualifier '${name}' has unknown type '${String(type)}'; expected one of ${PREDICATE_QUALIFIER_TYPES.join(', ')}`,
-      ),
-    );
-  }
-
-  if (declaration.required !== undefined && typeof declaration.required !== 'boolean') {
-    issues.push(issue('PREDICATE_INVALID_FIELD', `${base}.required`, `'required' must be a boolean when present`));
-  }
-
-  if (declaration.itemType !== undefined) {
-    if (
-      typeof declaration.itemType !== 'string'
-      || !PREDICATE_QUALIFIER_ITEM_TYPES.includes(declaration.itemType as PredicateQualifierItemType)
-    ) {
-      issues.push(
-        issue(
-          'PREDICATE_INVALID_FIELD',
-          `${base}.itemType`,
-          `'itemType' must be one of ${PREDICATE_QUALIFIER_ITEM_TYPES.join(', ')}`,
-        ),
-      );
-    } else if (type !== 'array') {
-      issues.push(
-        issue('PREDICATE_INVALID_FIELD', `${base}.itemType`, `'itemType' only applies to an 'array' qualifier`),
-      );
-    }
-  }
-
-  if (declaration.options !== undefined) {
-    if (
-      !Array.isArray(declaration.options)
-      || declaration.options.length === 0
-      || declaration.options.some(option => typeof option !== 'string' || option.length === 0)
-    ) {
-      issues.push(
-        issue('PREDICATE_INVALID_FIELD', `${base}.options`, `'options' must be a non-empty array of strings`),
-      );
-    } else if (type !== 'select') {
-      issues.push(
-        issue('PREDICATE_INVALID_FIELD', `${base}.options`, `'options' only applies to a 'select' qualifier`),
-      );
-    }
-  } else if (type === 'select') {
-    issues.push(
-      issue('PREDICATE_MISSING_FIELD', `${base}.options`, `A 'select' qualifier must declare 'options'`),
-    );
-  }
-
-  if (declaration.targetTrackerTypes !== undefined) {
-    const targets = declaration.targetTrackerTypes;
-    const wellFormed = targets === '*'
-      || (Array.isArray(targets)
-        && targets.length > 0
-        && targets.every(t => typeof t === 'string' && t.length > 0));
-    if (!wellFormed) {
-      issues.push(
-        issue(
-          'PREDICATE_INVALID_FIELD',
-          `${base}.targetTrackerTypes`,
-          `'targetTrackerTypes' must be '*' or a non-empty array of tracker type names`,
-        ),
-      );
-    } else if (type !== 'relationship') {
-      issues.push(
-        issue(
-          'PREDICATE_INVALID_FIELD',
-          `${base}.targetTrackerTypes`,
-          `'targetTrackerTypes' only applies to a 'relationship' qualifier`,
-        ),
-      );
-    }
-  }
-
-  checkOptionalString(declaration, 'label', issues, base);
-  checkOptionalString(declaration, 'description', issues, base);
+  if (issues.length > 0) return withWarnings({ valid: false as const, predicate: null, issues }, warnings);
+  return withWarnings(
+    { valid: true as const, predicate: value as unknown as PredicateDefinition, issues: [] as [] },
+    warnings,
+  );
 }
 
 export type PredicateRegistryValidation =
-  | { valid: true; predicates: PredicateDefinition[]; issues: [] }
-  | { valid: false; predicates: null; issues: PredicateIssue[] };
+  | { valid: true; predicates: PredicateDefinition[]; issues: []; warnings?: PredicateIssue[] }
+  | { valid: false; predicates: null; issues: PredicateIssue[]; warnings?: PredicateIssue[] };
 
 /**
  * Validate a whole registry. Entry issues are prefixed with the index, and a
@@ -387,11 +236,18 @@ export function validatePredicateRegistry(value: unknown): PredicateRegistryVali
   }
 
   const issues: PredicateIssue[] = [];
+  const warnings: PredicateIssue[] = [];
   const predicates: PredicateDefinition[] = [];
   const seen = new Set<string>();
 
   value.forEach((entry, index) => {
     const result = validatePredicateDefinition(entry);
+    for (const entryWarning of result.warnings ?? []) {
+      warnings.push({
+        ...entryWarning,
+        path: entryWarning.path ? `[${index}].${entryWarning.path}` : `[${index}]`,
+      });
+    }
     if (!result.valid) {
       for (const entryIssue of result.issues) {
         issues.push({
@@ -411,8 +267,8 @@ export function validatePredicateRegistry(value: unknown): PredicateRegistryVali
     predicates.push(result.predicate);
   });
 
-  if (issues.length > 0) return { valid: false, predicates: null, issues };
-  return { valid: true, predicates, issues: [] };
+  if (issues.length > 0) return withWarnings({ valid: false as const, predicates: null, issues }, warnings);
+  return withWarnings({ valid: true as const, predicates, issues: [] as [] }, warnings);
 }
 
 // ---------------------------------------------------------------------------
@@ -475,151 +331,6 @@ export function predicateValueShapeAcceptsFieldType(
 }
 
 // ---------------------------------------------------------------------------
-// Qualifier values
-// ---------------------------------------------------------------------------
-
-export type PredicateQualifiersValidation =
-  | { valid: true; issues: [] }
-  | { valid: false; issues: PredicateIssue[] };
-
-/**
- * Validate the qualifier bag on one statement against its predicate.
- *
- * `undefined` is treated as an empty bag rather than as "skip": a predicate
- * with a required qualifier must reject a statement that omits the bag
- * entirely, which is the acceptance gate in section 7 verbatim.
- */
-export function validatePredicateQualifiers(
-  predicate: PredicateDefinition,
-  value: unknown,
-): PredicateQualifiersValidation {
-  const declarations = predicate.qualifiers ?? {};
-
-  if (value !== undefined && value !== null && !isPlainObject(value)) {
-    return {
-      valid: false,
-      issues: [
-        issue('PREDICATE_QUALIFIERS_NOT_AN_OBJECT', '', `Qualifiers for '${predicate.id}' must be an object`),
-      ],
-    };
-  }
-
-  const bag: Record<string, unknown> = isPlainObject(value) ? value : {};
-  const issues: PredicateIssue[] = [];
-
-  for (const [name, declaration] of Object.entries(declarations)) {
-    const qualifier = bag[name];
-    if (qualifier === undefined || qualifier === null || qualifier === '') {
-      if (declaration.required) {
-        issues.push(
-          issue(
-            'PREDICATE_QUALIFIER_REQUIRED',
-            name,
-            `Predicate '${predicate.id}' requires qualifier '${name}'`,
-          ),
-        );
-      }
-      continue;
-    }
-    checkQualifierValue(predicate.id, name, declaration, qualifier, issues);
-  }
-
-  for (const name of Object.keys(bag)) {
-    if (!(name in declarations)) {
-      issues.push(
-        issue(
-          'PREDICATE_QUALIFIER_UNKNOWN',
-          name,
-          `Predicate '${predicate.id}' declares no qualifier '${name}'`,
-        ),
-      );
-    }
-  }
-
-  if (issues.length > 0) return { valid: false, issues };
-  return { valid: true, issues: [] };
-}
-
-function checkQualifierValue(
-  predicateId: string,
-  name: string,
-  declaration: PredicateQualifierDefinition,
-  value: unknown,
-  issues: PredicateIssue[],
-): void {
-  const wrongType = (expected: string) =>
-    issues.push(
-      issue(
-        'PREDICATE_QUALIFIER_INVALID_TYPE',
-        name,
-        `Qualifier '${name}' of '${predicateId}' must be ${expected}`,
-      ),
-    );
-
-  switch (declaration.type) {
-    case 'string':
-      if (typeof value !== 'string') wrongType('a string');
-      return;
-    case 'number':
-      if (typeof value !== 'number' || !Number.isFinite(value)) wrongType('a finite number');
-      return;
-    case 'boolean':
-      if (typeof value !== 'boolean') wrongType('a boolean');
-      return;
-    case 'date':
-      // A date qualifier is an ISO string on the wire; `Date` does not survive
-      // the JSON round trip the field bag already goes through.
-      if (typeof value !== 'string' || Number.isNaN(Date.parse(value))) {
-        wrongType('an ISO date string');
-      }
-      return;
-    case 'select':
-      if (typeof value !== 'string') {
-        wrongType('a string');
-        return;
-      }
-      if (declaration.options && !declaration.options.includes(value)) {
-        issues.push(
-          issue(
-            'PREDICATE_QUALIFIER_INVALID_OPTION',
-            name,
-            `Qualifier '${name}' of '${predicateId}' must be one of ${declaration.options.join(', ')}`,
-          ),
-        );
-      }
-      return;
-    case 'relationship': {
-      // Same shape a relationship field value uses, so a qualifier target is
-      // resolved, rendered, and indexed by the code that already does that.
-      const targets = Array.isArray(value) ? value : [value];
-      if (targets.length === 0) {
-        wrongType('a relationship reference with an itemId');
-        return;
-      }
-      for (const target of targets) {
-        const itemId = isPlainObject(target) ? target.itemId : undefined;
-        if (typeof itemId !== 'string' || itemId.length === 0) {
-          wrongType('a relationship reference with an itemId');
-          return;
-        }
-      }
-      return;
-    }
-    case 'array': {
-      if (!Array.isArray(value)) {
-        wrongType('an array');
-        return;
-      }
-      const itemType = declaration.itemType;
-      if (!itemType) return;
-      const matches = value.every(entry => typeof entry === itemType);
-      if (!matches) wrongType(`an array of ${itemType}`);
-      return;
-    }
-  }
-}
-
-// ---------------------------------------------------------------------------
 // Field declarations
 // ---------------------------------------------------------------------------
 
@@ -636,11 +347,9 @@ export interface PredicateFieldDeclarationContext {
  * Validate a field's `predicate:` against the registry, at the moment the type
  * is declared rather than at the moment an item is written.
  *
- * This is deliberately separate from qualifier validation. A value-shape or
- * subject-kind mismatch is a defect in the SCHEMA, and reporting it on every
- * item write would point the author at data that is fine. `tracker_define_type`
- * and the schema editor call this; the write path calls
- * {@link validatePredicateQualifiers}.
+ * A value-shape or subject-kind mismatch is a defect in the SCHEMA, and
+ * reporting it on every item write would point the author at data that is
+ * fine. `tracker_define_type` and the schema editor call this.
  */
 export function validatePredicateFieldDeclaration(
   predicateId: string,
@@ -744,18 +453,11 @@ function checkOptionalString(
   raw: Record<string, unknown>,
   key: string,
   issues: PredicateIssue[],
-  pathPrefix?: string,
 ): void {
   const value = raw[key];
   if (value === undefined) return;
   if (typeof value !== 'string') {
-    issues.push(
-      issue(
-        'PREDICATE_INVALID_FIELD',
-        pathPrefix ? `${pathPrefix}.${key}` : key,
-        `'${key}' must be a string when present`,
-      ),
-    );
+    issues.push(issue('PREDICATE_INVALID_FIELD', key, `'${key}' must be a string when present`));
   }
 }
 

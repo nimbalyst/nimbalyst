@@ -166,6 +166,25 @@ Look at the originating session and propose a new plan.
       expect(actions[0].body).toBe('Look at the originating session and propose a new plan.');
     });
 
+    it('parses effort and falls back with a diagnostic on an unknown level', () => {
+      const ok = parseActionPromptsFile(`## A
+model: claude-code:sonnet
+effort: Medium
+
+Body.
+`);
+      expect(ok.diagnostics).toEqual([]);
+      expect(ok.actions[0].config).toMatchObject({ model: 'claude-code:sonnet', effort: 'medium' });
+
+      const bad = parseActionPromptsFile(`## B
+effort: turbo
+
+Body.
+`);
+      expect(bad.diagnostics.map((d) => d.code)).toEqual(['invalid-effort']);
+      expect(bad.actions[0].config?.effort).toBeUndefined();
+    });
+
     it('fills missing keys with defaults when a partial config is given', () => {
       const content = `## Just launch
 launch: new-session
@@ -178,6 +197,7 @@ Body here.
       expect(actions[0].config).toEqual({
         launch: 'new-session',
         model: undefined,
+        effort: undefined,
         foreground: true,
         autoSubmit: true,
         worktree: false,

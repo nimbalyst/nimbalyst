@@ -36,9 +36,11 @@ import {
 import type { RelationshipCandidate } from './RelationshipFieldEditor';
 import type { CitationInspectorHost } from './CitationInspector';
 import { CollectionPickerPopover } from './CollectionPickerPopover';
+import { TrackerFieldChoiceList, teamMemberChoices, type TrackerFieldChoice } from './TrackerFieldChoiceList';
 import { isCollectionRelationshipField } from '../models/trackerCollections';
 import { UserAvatar } from './UserAvatar';
-import { formatTrackerFieldLabel, isTrackerFieldEmpty, shouldLabelTrackerField } from './trackerFieldLayout';
+import { isTrackerFieldEmpty, shouldLabelTrackerField, trackerFieldDisplayLabel } from './trackerFieldLayout';
+import { labelRefDisplayNames } from './labelRefValue';
 import './TrackerFieldPills.css';
 
 /** Default prefix for the `data-testid`s this component emits. */
@@ -143,7 +145,11 @@ function fieldDisplayValue(
   teamMembers: TeamMemberOption[],
   relationshipCandidates?: RelationshipCandidate[],
 ): string {
-  if (isTrackerFieldEmpty(value)) return formatTrackerFieldLabel(field.name);
+  if (isTrackerFieldEmpty(value)) return trackerFieldDisplayLabel(field);
+  if (field.type === 'label-ref') {
+    const names = labelRefDisplayNames(value);
+    return names.length <= 2 ? names.join(', ') : `${names.slice(0, 2).join(', ')} +${names.length - 2}`;
+  }
   if (field.type === 'select') {
     return field.options?.find((option) => option.value === value)?.label ?? String(value);
   }
@@ -171,7 +177,7 @@ function fieldDisplayValue(
   if (field.type === 'boolean') return value ? 'Yes' : 'No';
   if (field.type === 'url' && typeof value === 'object') {
     const url = value as { label?: unknown; url?: unknown };
-    return String(url.label ?? url.url ?? formatTrackerFieldLabel(field.name));
+    return String(url.label ?? url.url ?? trackerFieldDisplayLabel(field));
   }
   return String(value);
 }
@@ -183,6 +189,7 @@ function fieldIcon(field: FieldDefinition, value: unknown): string {
   }
   if (field.type === 'user') return 'person';
   if (field.type === 'array') return 'label';
+  if (field.type === 'label-ref') return 'sell';
   if (field.type === 'relationship' || field.type === 'reference') return 'link';
   if (field.type === 'citation') return 'format_quote';
   if (field.type === 'date' || field.type === 'datetime') return 'calendar_today';
@@ -233,7 +240,7 @@ export const TrackerFieldPill: React.FC<TrackerFieldPillProps> = ({
   // and starting a new one are the whole job, and the generic relationship
   // typeahead does neither well.
   const isCollectionField = isCollectionRelationshipField(field);
-  const label = formatTrackerFieldLabel(field.name);
+  const label = trackerFieldDisplayLabel(field);
   const displayValue = fieldDisplayValue(field, localValue, members, relationshipCandidates);
   // An empty chip already reads as its label, so only a filled one needs one.
   const showLabel = shouldLabelTrackerField(field, localValue, labelFields);
@@ -313,25 +320,16 @@ export const TrackerFieldPill: React.FC<TrackerFieldPillProps> = ({
     void onSave(field.name, nextValue);
   }, [field.name, onSave]);
 
-  const directChoices = useMemo(() => {
+  const directChoices = useMemo((): TrackerFieldChoice[] => {
     if (field.type === 'select') {
       return (field.options ?? []).map((option) => ({
         value: option.value,
         label: option.label,
         icon: option.icon,
         color: option.color,
-        avatarIdentity: undefined as string | undefined,
       }));
     }
-    if (field.type === 'user') {
-      return members.map((member) => ({
-        value: member.email,
-        label: member.name ?? member.email,
-        icon: 'person',
-        color: undefined,
-        avatarIdentity: member.name ?? member.email,
-      }));
-    }
+    if (field.type === 'user') return teamMemberChoices(members);
     return [];
   }, [field.options, field.type, members]);
 
@@ -413,52 +411,13 @@ export const TrackerFieldPill: React.FC<TrackerFieldPillProps> = ({
                 testIdBase={`${testIdBase}-collection-picker`}
               />
             ) : directChoiceField ? (
-              <div
-                className="tracker-field-choice-list"
-                data-testid={`${testIdBase}-choices-${field.name}`}
-              >
-                {!field.required && (
-                  <button
-                    type="button"
-                    role="option"
-                    aria-selected={empty}
-                    className={empty
-                      ? 'tracker-field-choice tracker-field-choice-selected'
-                      : 'tracker-field-choice'}
-                    onClick={() => handleDirectChange('')}
-                  >
-                    <MaterialSymbol icon="remove" size={15} />
-                    <span className="tracker-field-choice-label">None</span>
-                  </button>
-                )}
-                {directChoices.map((choice) => {
-                  const selected = choice.value === localValue;
-                  return (
-                    <button
-                      key={choice.value}
-                      type="button"
-                      role="option"
-                      aria-selected={selected}
-                      className={selected
-                        ? 'tracker-field-choice tracker-field-choice-selected'
-                        : 'tracker-field-choice'}
-                      onClick={() => handleDirectChange(choice.value)}
-                    >
-                      {choice.avatarIdentity ? (
-                        <UserAvatar identity={choice.avatarIdentity} size={16} />
-                      ) : (
-                        <MaterialSymbol
-                          icon={choice.icon ?? 'circle'}
-                          size={15}
-                          style={choice.color ? { color: choice.color } : undefined}
-                        />
-                      )}
-                      <span className="tracker-field-choice-label">{choice.label}</span>
-                      {selected && <MaterialSymbol icon="check" size={15} />}
-                    </button>
-                  );
-                })}
-              </div>
+              <TrackerFieldChoiceList
+                choices={directChoices}
+                value={localValue}
+                allowNone={!field.required}
+                onPick={handleDirectChange}
+                testId={`${testIdBase}-choices-${field.name}`}
+              />
             ) : (
               <TrackerFieldEditor
                 field={field}

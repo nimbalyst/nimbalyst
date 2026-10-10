@@ -69,3 +69,13 @@ export type {
   TrackerNavigationFolder,
   TrackerTypePlacement,
 } from '@nimbalyst/runtime/sync/trackerNavigation';
+
+/**
+ * Typed pages and type pages, loaded when a host opens one so the eager graph
+ * above does not carry them: the typed page layout, its Links section and
+ * crumb helpers, and the type page's table. Placed views are not here: they
+ * render inside a page's editor (see `setBrowserPlacedViewRenderer` in
+ * `./editor`), and their 2x2 chart is part of the editor graph.
+ */
+export const loadTrackerPage = () => import('@nimbalyst/collab-client/trackers-ui/page');
+

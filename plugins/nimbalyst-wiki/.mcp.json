@@ -1,0 +1,22 @@
+{
+  "mcpServers": {
+    "nimbalyst-team": {
+      "type": "http",
+      "url": "https://sync.nimbalyst.com/mcp"
+    },
+    "nimbalyst-session": {
+      "type": "stdio",
+      "command": "node",
+      "args": [
+        "${CLAUDE_PLUGIN_ROOT}/scripts/session-inputs.mjs"
+      ]
+    },
+    "nimbalyst-local": {
+      "type": "stdio",
+      "command": "node",
+      "args": [
+        "${CLAUDE_PLUGIN_ROOT}/scripts/nim-local-mcp.mjs"
+      ]
+    }
+  }
+}

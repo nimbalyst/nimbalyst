@@ -23,6 +23,7 @@ import { act, cleanup, render } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { SessionListItem } from '../SessionListItem';
+import { SessionTree } from '../SessionTree';
 import {
   sessionLastActivityAtom,
   sessionUnreadAtom,
@@ -103,6 +104,27 @@ describe('session list render budget', () => {
     });
 
     expect(budget.totalRenders, budget.report()).toBe(0);
+  });
+
+  it('does not repaint tree rows when the session history re-renders with fresh handlers', async () => {
+    const store = createStore();
+    const at = 1_700_000_000_000;
+    const sessions = [
+      { id: 'parent', title: 'Parent', createdAt: at, updatedAt: at },
+      { id: 'child-1', title: 'Child 1', createdAt: at, updatedAt: at, parentSessionId: 'parent' },
+      { id: 'child-2', title: 'Child 2', createdAt: at, updatedAt: at, parentSessionId: 'parent' },
+    ] as any[];
+    // SessionHistory passes plain (non-useCallback) handlers, so every list
+    // render hands each row new functions and used to rebuild its chevron JSX.
+    const tree = () => <Provider store={store}><SessionTree sessions={sessions} activeSessionId="child-1" onSessionSelect={() => {}} onSessionDelete={() => {}} /></Provider>;
+    const { rerender } = render(tree());
+    await act(async () => { await Promise.resolve(); });
+
+    const budget = await measureRenders(async () => {
+      await act(async () => { rerender(tree()); });
+    });
+
+    expect(budget.rendersOf('SessionListItem'), budget.report()).toBe(0);
   });
 
   it('costs the same for one streaming session whether the list has 5 rows or 50', async () => {

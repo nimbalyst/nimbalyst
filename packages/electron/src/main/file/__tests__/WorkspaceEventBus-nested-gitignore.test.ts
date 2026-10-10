@@ -107,8 +107,8 @@ function fireWatchEvent(eventType: string, filename: string) {
  *     nested/rootfs/etc/foo.txt
  */
 function buildIssue207Layout(): { workspace: string; cleanup: () => void } {
-  // Bus refuses workspaces below MIN_WORKSPACE_DEPTH=3, so on Linux CI where
-  // os.tmpdir() is /tmp (depth 1) we need an extra parent level.
+  // Nest under an extra parent so the workspace is never a bare container dir
+  // like /tmp, which the bus refuses to watch.
   const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nimbalyst-test-'));
   const parent = path.join(baseDir, 'parent');
   fs.mkdirSync(parent, { recursive: true });

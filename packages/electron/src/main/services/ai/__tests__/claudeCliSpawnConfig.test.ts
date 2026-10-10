@@ -461,14 +461,23 @@ describe('buildClaudeCliSpawnConfig', () => {
 });
 
 describe('resolveClaudeCliModelArg', () => {
-  it('resolves explicit Opus 5.5 while preserving pinned Opus 5', () => {
+  it('passes custom gateway models verbatim and never leaks a provider prefix', () => {
+    expect(resolveClaudeCliModelArg('claude-code-cli:custom/Fast')).toBe('Fast');
+    expect(resolveClaudeCliModelArg('claude-code:custom/Smart')).toBe('Smart');
+    expect(resolveClaudeCliModelArg('claude-code-cli:NotAVariant')).toBeUndefined();
+  });
+
+  it('resolves explicit 5.5 versions while preserving pinned 5 versions', () => {
     expect(resolveClaudeCliModelArg('claude-code-cli:opus-5-5')).toBe('claude-opus-5-5');
     expect(resolveClaudeCliModelArg('claude-code-cli:opus-5')).toBe('claude-opus-5');
+    expect(resolveClaudeCliModelArg('claude-code-cli:sonnet-5-5')).toBe('claude-sonnet-5-5');
+    expect(resolveClaudeCliModelArg('claude-code-cli:sonnet-5')).toBe('claude-sonnet-5');
   });
   it('strips the provider prefix and translates -1m to the CLI `[1m]` form (NIM-809)', () => {
     expect(resolveClaudeCliModelArg('claude-code-cli:opus-1m')).toBe('claude-opus-5-5[1m]');
-    expect(resolveClaudeCliModelArg('claude-code-cli:sonnet')).toBe('sonnet');
-    expect(resolveClaudeCliModelArg('claude-code:haiku')).toBe('haiku');
+    expect(resolveClaudeCliModelArg('claude-code-cli:sonnet')).toBe('claude-sonnet-5-5');
+    expect(resolveClaudeCliModelArg('claude-code:haiku')).toBe('claude-haiku-5-5');
+    expect(resolveClaudeCliModelArg('claude-code:haiku-4-5')).toBe('claude-haiku-4-5-20251001');
   });
 
   it('preserves pinned opus versions without requesting extended context', () => {
@@ -501,7 +510,7 @@ describe('resolveClaudeCliModelArg', () => {
   it('passes a bare variant through (normalized), translating -1m to [1m]', () => {
     expect(resolveClaudeCliModelArg('opus')).toBe('claude-opus-5-5');
     expect(resolveClaudeCliModelArg('opus-1m')).toBe('claude-opus-5-5[1m]');
-    expect(resolveClaudeCliModelArg('SONNET')).toBe('sonnet');
+    expect(resolveClaudeCliModelArg('SONNET')).toBe('claude-sonnet-5-5');
   });
 
   it('passes an unrecognized bare model name through unchanged (CLI accepts full model names)', () => {

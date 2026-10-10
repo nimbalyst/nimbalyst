@@ -55,7 +55,7 @@ for NIMEXT in "$INPUT_DIR"/*.nimext; do
 
   R2_KEY="extensions/${EXT_ID}/${EXT_VERSION}.nimext"
   echo "  Uploading $EXT_ID v$EXT_VERSION -> $R2_KEY"
-  npx wrangler r2 object put "$BUCKET_NAME/$R2_KEY" --file "$NIMEXT" --content-type "application/zip" --remote $WRANGLER_ENV
+  pnpm exec wrangler r2 object put "$BUCKET_NAME/$R2_KEY" --file "$NIMEXT" --content-type "application/zip" --remote $WRANGLER_ENV
 
   # Upload screenshots if they exist in the .nimext
   SCREENSHOTS=$(unzip -l "$NIMEXT" 2>/dev/null | grep "screenshots/" | awk '{print $4}' | grep -v "/$" || true)
@@ -76,7 +76,7 @@ for NIMEXT in "$INPUT_DIR"/*.nimext; do
       esac
 
       echo "    Screenshot: $R2_SS_KEY"
-      npx wrangler r2 object put "$BUCKET_NAME/$R2_SS_KEY" --file "$TEMP_DIR/$SS" --content-type "$CT" --remote $WRANGLER_ENV
+      pnpm exec wrangler r2 object put "$BUCKET_NAME/$R2_SS_KEY" --file "$TEMP_DIR/$SS" --content-type "$CT" --remote $WRANGLER_ENV
     done
 
     rm -rf "$TEMP_DIR/screenshots"
@@ -90,7 +90,7 @@ REGISTRY="$INPUT_DIR/registry.json"
 if [ -f "$REGISTRY" ]; then
   echo ""
   echo "  Uploading registry.json"
-  npx wrangler r2 object put "$BUCKET_NAME/registry.json" --file "$REGISTRY" --content-type "application/json" --remote $WRANGLER_ENV
+  pnpm exec wrangler r2 object put "$BUCKET_NAME/registry.json" --file "$REGISTRY" --content-type "application/json" --remote $WRANGLER_ENV
 else
   echo ""
   echo "Warning: No registry.json found. Run generate-registry.sh first."

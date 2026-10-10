@@ -7,6 +7,9 @@ struct IndexListPlaceholder: View {
     let symbol: String
     let emptyDescription: String
     let observationState: IndexLoadState
+    /// Local query failure, when there is one. Without it the screen cannot tell
+    /// a broken local database from a failed server sync.
+    var localFailure: SessionListLoadFailure? = nil
 
     var body: some View {
         VStack(spacing: 12) {
@@ -15,6 +18,12 @@ struct IndexListPlaceholder: View {
                     .font(.largeTitle)
                 Text("Couldn’t load \(noun.lowercased())")
                 Text("Pull down to try again.").font(.caption)
+                if let localFailure {
+                    Text("Error reading this device’s database: \(localFailure.detail)")
+                        .font(.caption2)
+                } else if appState.indexLoadState == .failed {
+                    Text("The server sync failed.").font(.caption2)
+                }
             } else if observationState == .loading || appState.indexLoadState == .loading {
                 ProgressView()
                 Text("Loading \(noun.lowercased())…")

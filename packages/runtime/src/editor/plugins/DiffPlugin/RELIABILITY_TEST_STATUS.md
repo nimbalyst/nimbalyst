@@ -11,7 +11,7 @@ This document tracks the status of DiffPlugin reliability testing and telemetry 
 - **Passing**: 463 (98.3%)
 - **Skipped**: 8 (1.7%)
 - **Failing**: 0
-- **Test Files**: 52 passed, 1 skipped (53 total) -- run from repo root with `npx vitest run packages/runtime/src/editor/plugins/DiffPlugin/__tests__`
+- **Test Files**: 52 passed, 1 skipped (53 total) -- run from repo root with `pnpm exec vitest run packages/runtime/src/editor/plugins/DiffPlugin/__tests__`
 
 The previously documented 82 failures (table operations, list formatting, complex formatting, horizontal rules) are no longer reproducible -- they have been fixed by intervening work and the suite is green when run with the root `vitest.config.ts` (which sets `globals: true`). Running vitest from inside the runtime package without the root config produced spurious "describe is not defined" errors -- always run from the repo root.
 
@@ -65,10 +65,10 @@ None of the skipped tests block the current Lexical Diff System Investigation an
 ```bash
 # Run all diff reliability tests
 cd packages/electron
-npx playwright test e2e/ai/diff-reliability.spec.ts
+pnpm exec playwright test e2e/ai/diff-reliability.spec.ts
 
 # Run specific test suite
-npx playwright test e2e/ai/diff-reliability.spec.ts -g "Complex Structures"
+pnpm exec playwright test e2e/ai/diff-reliability.spec.ts -g "Complex Structures"
 ```
 
 ### Telemetry System
@@ -201,17 +201,17 @@ Based on the diff-plugin-reliability.md plan:
 ```bash
 # Run all DiffPlugin unit tests
 cd packages/rexical
-npx vitest run src/plugins/DiffPlugin/__tests__
+pnpm exec vitest run src/plugins/DiffPlugin/__tests__
 
 # Run specific test file
-npx vitest run src/plugins/DiffPlugin/__tests__/unit/TreeMatcher.test.ts
+pnpm exec vitest run src/plugins/DiffPlugin/__tests__/unit/TreeMatcher.test.ts
 
 # Run E2E diff reliability tests
 cd packages/electron
-npx playwright test e2e/ai/diff-reliability.spec.ts
+pnpm exec playwright test e2e/ai/diff-reliability.spec.ts
 
 # Run with telemetry enabled
-DIFF_TELEMETRY=true npx vitest run src/plugins/DiffPlugin/__tests__
+DIFF_TELEMETRY=true pnpm exec vitest run src/plugins/DiffPlugin/__tests__
 ```
 
 ## Debugging
@@ -223,7 +223,7 @@ import { diffTelemetry } from '@nimbalyst/runtime/plugins/DiffPlugin/core/DiffTe
 diffTelemetry.enable();
 
 // Via environment variable
-DIFF_TELEMETRY=true npm run test
+DIFF_TELEMETRY=true pnpm run test
 ```
 
 ### Access Telemetry Data

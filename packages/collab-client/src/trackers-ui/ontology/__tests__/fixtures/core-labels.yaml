@@ -1,0 +1,78 @@
+# Knowledge graph label pack: core. Every project gets it.
+#
+# A label is a tag that carries fields: put a label on an entity and the entity
+# has that label's properties. A page may carry several labels, and a label may
+# sit under several broader labels. This file is a fragment of the project's
+# label registry (`.nimbalyst/labels.yaml`); the wiki setup skill merges it
+# by id and never overwrites an entry the project already has.
+#
+# Labels here are for knowledge-graph pages (`entity` items). They are not
+# tracker types.
+labels:
+  - id: area
+    label: Area
+    pluralLabel: Areas
+    description: A section of the wiki. Top-level areas have no parent; subareas set parent to their area. Navigation only, never a statement about what a page is.
+    icon: folder
+    role: structure
+    template: |
+      ## What this area covers
+
+      ## What it leaves out
+
+  - id: home
+    label: Home
+    pluralLabel: Home
+    description: The wiki's front page. One per project.
+    icon: home
+    role: structure
+    template: |
+      ## What this wiki covers
+
+      ## Where to start
+
+  - id: topic
+    label: Topic
+    pluralLabel: Topics
+    description: A synthesis or overview page -- a landscape, a strategy, a practice -- that links the pages it draws on.
+    icon: topic
+    role: page
+    template: |
+      ## Summary
+
+      ## What we concluded
+
+      ## Open questions
+
+  - id: person
+    label: Person
+    pluralLabel: People
+    description: Someone the team works with or learns from. Record what they decided or asked for, not a biography.
+    icon: person
+    role: page
+    properties: [website]
+    template: |
+      ## Who they are to us
+
+      ## What they asked for or decided
+
+  - id: organization
+    label: Organization
+    pluralLabel: Organizations
+    description: A company, team, or institution. Title it by its common name; when that equals a product's name, use "Name (company)".
+    icon: apartment
+    role: page
+    properties: [website]
+    template: |
+      ## Who they are
+
+      ## Why they matter to us
+
+  # Deprecated. Kept loadable so pages written before labels still resolve;
+  # never apply it to a new page. When nothing fits, propose a label instead.
+  - id: concept
+    label: Concept
+    pluralLabel: Concepts
+    description: Deprecated. Kept so old pages still load; do not apply it to new pages. Propose a label when nothing else fits.
+    icon: lightbulb
+    role: page

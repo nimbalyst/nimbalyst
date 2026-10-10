@@ -72,6 +72,7 @@ export function selectSessionsForIndexSync<T extends SessionIndexData>(allLocalS
         (Boolean(localSession.isArchived) !== Boolean(serverSession.isArchived)) ||
         (Boolean(localSession.isPinned) !== Boolean(serverSession.isPinned)) ||
         ((localSession.parentSessionId ?? null) !== (serverSession.parentSessionId ?? null)) ||
+        ((localSession.createdBySessionId ?? null) !== (serverSession.createdBySessionId ?? null)) ||
         (localSession.title !== serverSession.title)
       ) {
         sessionsNeedingIndexUpdate.push(localSession);

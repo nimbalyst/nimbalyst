@@ -6,7 +6,7 @@ import { getStatusColor } from '@nimbalyst/runtime/plugins/TrackerPlugin/compone
 import { TrackerSwatchBadge } from './primitives/TrackerSwatchBadge';
 
 export function TrackerStackedRow({ item, selected, showType, onOpen }: {
-  item: TrackerRecord; selected: boolean; showType: boolean; onOpen: () => void;
+  item: TrackerRecord; selected: boolean; showType: boolean; onOpen: (event: React.MouseEvent) => void;
 }) {
   const status = getRecordStatus(item);
   const progress = getFieldByRole(item, 'progress');

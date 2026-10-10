@@ -31,6 +31,9 @@ vi.mock('@nimbalyst/runtime', () => ({
   },
 }));
 
+// The real transcript drags in the whole agent UI; these tests never mount it.
+vi.mock('../PanelSessionTranscript', () => ({ PanelSessionTranscript: () => null }));
+
 vi.mock('../../../hooks/useTheme', () => ({
   useTheme: () => ({ theme: 'dark' }),
 }));

@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "build:transcript": "vite build --config vite.config.transcript.ts",
+    "build:editor": "vite build --config vite.config.editor.ts",
     "sync:transcript-assets": "bash ./scripts/sync-transcript-assets.sh",
     "android:assemble:debug": "./gradlew :app:assembleDebug",
     "android:assemble:release": "./gradlew :app:assembleRelease",
@@ -12,7 +13,7 @@
     "android:test:unit": "./gradlew :app:testDebugUnitTest"
   },
   "dependencies": {
-    "@nimbalyst/runtime": "file:../runtime",
+    "@nimbalyst/runtime": "workspace:*",
     "react": "^19.2.7",
     "react-dom": "^19.2.7"
   },

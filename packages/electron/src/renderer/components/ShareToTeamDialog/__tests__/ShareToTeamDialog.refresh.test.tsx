@@ -18,11 +18,17 @@ vi.mock('@nimbalyst/runtime/ui/icons/MaterialSymbol', () => ({
   MaterialSymbol: ({ icon }: { icon: string }) => <span data-icon={icon} />,
 }));
 
+const personalSession = vi.hoisted(() => ({ atoms: { sharedFolders: null as unknown }, createFolder: () => Promise.resolve('new') }));
 vi.mock('../../../store/atoms/collabDocuments', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../../store/atoms/collabDocuments')>();
+  const { atom } = await import('jotai');
+  personalSession.atoms.sharedFolders = atom([
+    { folderId: 'ideas', parentFolderId: null, name: 'Ideas', sortOrder: 0, createdBy: '', createdAt: 1, updatedAt: 1 },
+  ]);
   return {
     ...actual,
     refreshSharedFolders: vi.fn().mockResolvedValue(true),
+    getPersonalCollabDocsSession: () => personalSession,
   };
 });
 
@@ -134,18 +140,18 @@ describe('ShareToTeamDialog folder refresh', () => {
     screen.getByText('Already shared');
     // The mockup is already shared -- it is reused, not created -- so the
     // count is the parent plus the one calc sheet.
-    screen.getByRole('button', { name: 'Share 2 documents' });
+    screen.getByRole('button', { name: 'Copy 2 documents to Team' });
 
     fireEvent.click(screen.getByRole('checkbox', { name: 'Share budget.calc.md' }));
     screen.getByText(/teammates cannot open/i);
-    screen.getByRole('button', { name: 'Share 1 document' });
+    screen.getByRole('button', { name: 'Copy 1 document to Team' });
 
     await waitFor(() =>
       expect(
-        (screen.getByRole('button', { name: 'Share 1 document' }) as HTMLButtonElement).disabled,
+        (screen.getByRole('button', { name: 'Copy 1 document to Team' }) as HTMLButtonElement).disabled,
       ).toBe(false),
     );
-    fireEvent.click(screen.getByRole('button', { name: 'Share 1 document' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Copy 1 document to Team' }));
     expect(onConfirm).toHaveBeenCalledWith(expect.objectContaining({
       selectedEmbeddedDocumentPaths: ['/workspace/wireframe.mockup.html'],
     }));
@@ -182,7 +188,7 @@ describe('ShareToTeamDialog folder refresh', () => {
     );
 
     await waitFor(() => expect(refreshSharedFolders).toHaveBeenCalledTimes(1));
-    await waitFor(() => screen.getByText('Engineering / Specs /'));
+    await waitFor(() => screen.getByText('Team / Engineering / Specs /'));
 
     rerender(
       <Provider store={store}>
@@ -214,22 +220,51 @@ describe('ShareToTeamDialog folder refresh', () => {
     );
 
     await waitFor(() => expect(refreshSharedFolders).toHaveBeenCalledTimes(2));
-    await waitFor(() => screen.getByText('Specs /'));
+    await waitFor(() => screen.getByText('Team / Specs /'));
     // The reopen's async refresh re-seeds selection; until it settles the confirm
     // button is disabled (hasInitializedSelection === false) even though the stale
-    // selection already renders "Specs /". Wait for it to be enabled before clicking,
+    // selection already renders "Team / Specs /". Wait for it to be enabled before clicking,
     // otherwise the click is a no-op and onConfirm is never called.
     await waitFor(() =>
       expect(
-        (screen.getByRole('button', { name: 'Share to Team' }) as HTMLButtonElement).disabled,
+        (screen.getByRole('button', { name: 'Copy to Team' }) as HTMLButtonElement).disabled,
       ).toBe(false),
     );
-    fireEvent.click(screen.getByRole('button', { name: 'Share to Team' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Copy to Team' }));
     expect(onConfirm).toHaveBeenCalledWith({
+      section: 'team',
       folderId: 'specs',
       folderPath: 'Specs',
       sharedName: 'notes.md',
       selectedEmbeddedDocumentPaths: [],
     });
+  });
+
+  it('copies to Personal from its own page tree, with no linked documents', async () => {
+    const onConfirm = vi.fn();
+    Object.defineProperty(window, 'electronAPI', { configurable: true, value: { invoke: vi.fn().mockResolvedValue({}) } });
+    store.set(activeWorkspacePathAtom, workspacePath);
+    store.set(activeCollabScopeAtom, collabScope);
+    render(
+      <Provider store={store}>
+        <ShareToTeamDialog
+          isOpen
+          onClose={() => {}}
+          fileName="notes.md"
+          sourceRelPath="notes.md"
+          descriptor={markdownDescriptor}
+          embeddedDocuments={[{ absolutePath: '/workspace/a.mockup.html', fileName: 'a.mockup.html', descriptor: markdownDescriptor } as never]}
+          sections={['team', 'personal']}
+          onConfirm={onConfirm}
+        />
+      </Provider>,
+    );
+    fireEvent.click(screen.getByRole('radio', { name: 'Personal' }));
+    fireEvent.click(await screen.findByText('Ideas'));
+    await waitFor(() => expect((screen.getByRole('button', { name: 'Copy to Personal' }) as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(screen.getByRole('button', { name: 'Copy to Personal' }));
+    expect(onConfirm).toHaveBeenCalledWith(expect.objectContaining({ section: 'personal', folderId: 'ideas', selectedEmbeddedDocumentPaths: [] }));
+    // Once, for Team, which it opened on; switching to Personal reads local pages.
+    expect(refreshSharedFolders).toHaveBeenCalledTimes(1);
   });
 });

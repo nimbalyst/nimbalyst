@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import { describe, it, expect, afterEach, vi } from 'vitest';
+import { act } from 'react';
 import { DataStore, gatherGrouping } from '@revolist/revogrid';
 // RevoGrid does not export ColumnService publicly. This test intentionally
 // exercises the pinned runtime bundle that patch-package repairs.
@@ -16,6 +17,8 @@ import {
   ROW_ITEM_ID,
   ROW_ITEM_TYPE,
 } from '../grid/trackerGridColumns';
+import { createTrackerCellEditor } from '../grid/trackerGridEditors';
+import { filterTrackerFieldChoices } from '../grid/TrackerGridChoicePopover';
 
 const gridType = 'gridColumnSpec';
 
@@ -440,5 +443,53 @@ describe('buildGridColumns cellCompare', () => {
     // An emptied cell is stored as '' -- it must bucket with the blanks, not sort first.
     expect(compare('', new Date('2026-05-20T12:00:00Z'))).toBeGreaterThan(0);
     expect(compare('', undefined)).toBe(0);
+  });
+});
+
+describe('user cell editor', () => {
+  const h = (tag: string) => ({ tag });
+  const members = [{ email: 'ada@example.com', name: 'Ada' }, { email: 'bo@example.com', name: 'Bo' }];
+  async function open(teamMembers: { email: string; name?: string }[], editCell: { val: string; value?: string }) {
+    const save = vi.fn();
+    const editor = (createTrackerCellEditor({ kind: 'user' }, { teamMembers: () => teamMembers }) as any)({ prop: 'owner' }, save, vi.fn());
+    editor.editCell = editCell;
+    const tag = editor.render(h).tag as string;
+    editor.element = document.body.appendChild(document.createElement('div'));
+    await act(async () => { editor.componentDidRender(); });
+    const labels = () => Array.from(document.querySelectorAll('[data-testid="tracker-grid-choice-popover"] .tracker-field-choice-label')).map(label => label.textContent);
+    const press = (key: string) => act(async () => {
+      document.querySelector('.tracker-grid-choice-filter')!.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true }));
+    });
+    return { tag, editor, save, labels, press };
+  }
+  afterEach(() => { document.body.innerHTML = ''; });
+
+  it('opens the chip choice list of members, keeps a non-member value, and commits the email', async () => {
+    const { tag, editor, save, labels } = await open(members, { val: 'old-name' });
+    expect(tag).toBe('div');
+    expect(labels()).toEqual(['None', 'old-name', 'Ada', 'Bo']);
+    const ada = document.querySelectorAll<HTMLButtonElement>('[data-testid="tracker-grid-choice-popover"] [role="option"]')[2];
+    await act(async () => { ada.click(); });
+    expect(save).toHaveBeenCalledWith('ada@example.com', false);
+    await act(async () => { editor.disconnectedCallback(); await Promise.resolve(); });
+    expect(document.querySelector('[data-testid="tracker-grid-choice-popover"]')).toBeNull();
+  });
+
+  it('filters by the key that started the edit, and Enter picks the match', async () => {
+    const { save, labels, press } = await open(members, { value: 'ada@example.com', val: 'b' });
+    expect(labels()).toEqual(['Bo']);
+    // The filter must hold focus, or every key after the first goes back to the grid.
+    expect(document.activeElement?.className).toBe('tracker-grid-choice-filter');
+    await press('Enter');
+    expect(save).toHaveBeenCalledWith('bo@example.com', false);
+  });
+
+  it('ranks a name match ahead of an email-only match', () => {
+    const choices = [{ value: 'kim@gmail.com', label: 'Kim' }, { value: 'greg@example.com', label: 'Greg' }];
+    expect(filterTrackerFieldChoices(choices, 'g').map(choice => choice.label)).toEqual(['Greg', 'Kim']);
+  });
+
+  it('stays free text when there is no team', async () => {
+    expect((await open([], { val: 'someone' })).tag).toBe('input');
   });
 });

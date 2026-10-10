@@ -71,7 +71,7 @@ if ! curl -s http://127.0.0.1:5273 > /dev/null 2>&1; then
   if ! curl -s http://[::1]:5273 > /dev/null 2>&1; then
     echo ""
     echo "Dev server is not running on port 5273."
-    echo "Start it with: cd packages/electron && npm run dev"
+    echo "Start it with: cd packages/electron && pnpm run dev"
     echo ""
     exit 1
   fi

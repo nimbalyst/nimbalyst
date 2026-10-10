@@ -20,13 +20,31 @@ over the wire protocol defined in
 
 If you want to work on an accepted issue, say so on the issue — we'll assign it to you and can point you at the relevant code before you start.
 
+## Development setup
+
+The repo needs Node 24 (see `.nvmrc`) and pnpm, which is pinned by the `packageManager` field in `package.json`. Node 24 ships corepack, so enable it once and install:
+
+```bash
+corepack enable
+pnpm install
+```
+
+npm is blocked at the repository root: `devEngines` in `package.json` makes any `npm` command there fail with `EBADDEVENGINES`. Use the pnpm equivalent.
+
+All pnpm settings live in the root `pnpm-workspace.yaml`; `.npmrc` holds registry and auth only. Two settings affect day-to-day work:
+
+- `allowBuilds` is an allowlist of packages permitted to run install scripts. A new dependency with an install script fails `pnpm install` until it is added there as `true` or `false`, which is a security decision that reviewers will look at.
+- `minimumReleaseAge` is a 72 hour cooldown, so a version published less than 3 days ago will not resolve. Wait for it to age, or add a scoped entry to `minimumReleaseAgeExclude` with a comment giving the reason.
+
+Run a script in one package with `pnpm --filter <package> run <script>`, and run the pre-push gate with `pnpm typecheck && pnpm test:prepush`.
+
 ## Review and merge
 
 Every change to `main` arrives through a pull request, and merges need an approving review alongside green required checks and resolved review conversations. [MAINTAINERS.md](./MAINTAINERS.md) describes the roles and who currently holds them.
 
 A small set of release and security-sensitive paths carries an additional ownership requirement, listed in [`.github/CODEOWNERS`](./.github/CODEOWNERS).
 
-Pull requests that change `package-lock.json` or anything in `patches/` need review from the release manager as well as a maintainer, because the signed release build installs dependencies and applies those patches while holding code-signing credentials. See [MAINTAINERS.md](./MAINTAINERS.md). These land a little slower; that is expected and not a reflection on the change.
+Pull requests that change `pnpm-lock.yaml`, `pnpm-workspace.yaml`, or anything in `patches/` need review from the release manager as well as a maintainer, because the signed release build installs dependencies and applies those patches while holding code-signing credentials. See [MAINTAINERS.md](./MAINTAINERS.md). These land a little slower; that is expected and not a reflection on the change.
 
 ## Commit authorship
 

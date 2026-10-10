@@ -1,4 +1,5 @@
-import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
+import { AISessionsRepository } from '../../../../storage/repositories/AISessionsRepository';
 import { ProviderFactory } from '../../ProviderFactory';
 import { configureMcpServers } from '../../services/mcpServerConfig';
 import { ClaudeCodeDeps } from '../claudeCode/dependencyInjection';
@@ -73,6 +74,29 @@ describe('ClaudeCodeProvider in-band session naming (NIM-1988)', () => {
       expect(turn2).toBe(turn1);
     } finally {
       ProviderFactory.destroyProvider(sessionId, 'claude-code');
+    }
+  });
+
+  // The phase fallback reads the raw store row, where SQLite returns the
+  // has_been_named column as 0/1. A named session must skip the fallback on
+  // both backends.
+  it('skips the default phase for a named session when the row flag is SQLite 1', async () => {
+    const updateMetadata = vi.spyOn(AISessionsRepository, 'updateMetadata').mockResolvedValue(undefined as never);
+    try {
+      for (const [sessionId, hasBeenNamed] of [['phase-named', 1], ['phase-unnamed', 0]] as const) {
+        vi.spyOn(AISessionsRepository, 'get').mockResolvedValueOnce({ id: sessionId, hasBeenNamed, metadata: {} } as never);
+        const provider = ProviderFactory.createProvider('claude-code', sessionId) as unknown as {
+          maybeApplyDefaultSessionPhase(id: string): Promise<void>;
+        };
+        try {
+          await provider.maybeApplyDefaultSessionPhase(sessionId);
+        } finally {
+          ProviderFactory.destroyProvider(sessionId, 'claude-code');
+        }
+      }
+      expect(updateMetadata.mock.calls).toEqual([['phase-unnamed', { metadata: { phase: 'planning' } }]]);
+    } finally {
+      vi.restoreAllMocks();
     }
   });
 });

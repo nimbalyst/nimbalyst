@@ -16,6 +16,7 @@ import type { TrackerRecord } from '../../../core/TrackerRecord';
 import { ProviderIcon } from '../../../ui/icons/ProviderIcons';
 import { getRecordTitle } from '../trackerRecordAccessors';
 import { getStatusColor, getPriorityColor, getTypeColor, getTypeIcon } from './trackerColumns';
+import type { ConfirmTrackerDelete } from './useTrackerRows';
 
 const PRIORITIES = ['critical', 'high', 'medium', 'low'] as const;
 
@@ -75,6 +76,8 @@ export interface TrackerRowContextMenuProps {
   onLaunchWorktree?: (itemId: string) => void;
   onArchiveItems?: (itemIds: string[], archive: boolean) => void;
   onDeleteItems?: (itemIds: string[]) => void;
+  /** Confirms a delete; the Delete action is hidden without it. */
+  confirmDelete?: ConfirmTrackerDelete;
   closeContextMenu: () => void;
   clearSelection: () => void;
 }
@@ -98,6 +101,7 @@ export function TrackerRowContextMenu({
   onLaunchWorktree,
   onArchiveItems,
   onDeleteItems,
+  confirmDelete,
   closeContextMenu,
   clearSelection,
 }: TrackerRowContextMenuProps): JSX.Element | null {
@@ -293,14 +297,14 @@ export function TrackerRowContextMenu({
           </button>
         )}
 
-        {onDeleteItems && (
+        {onDeleteItems && confirmDelete && (
           <button
             className="w-full flex items-center gap-2 px-3 py-1.5 text-left text-[#ef4444] hover:bg-[var(--nim-bg-hover)] cursor-pointer"
             data-testid="tracker-row-context-delete"
-            onClick={() => {
+            onClick={async () => {
               closeContextMenu();
               const ids = Array.from(selectedIds);
-              if (window.confirm(`Delete ${ids.length} item${ids.length > 1 ? 's' : ''}? This cannot be undone.`)) {
+              if (await confirmDelete(ids.length)) {
                 onDeleteItems(ids);
                 clearSelection();
               }

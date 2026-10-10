@@ -8,6 +8,7 @@ import {
   recalculateFormulas,
 } from '../formulaEngine';
 import { parseUrlCell } from '../formatters';
+import { rewriteFormulaForStructuralEdit } from '../../structure/rewriteFormula';
 
 const cell = (raw: string, computed: Cell['computed']): Cell => ({ raw, computed });
 
@@ -53,6 +54,15 @@ describe('formula engine', () => {
     { formula: '=Z99', expected: { value: null, error: '#REF!' } },
     { formula: '=D1', expected: { value: null, error: '#CIRC!' } },
     { formula: '=SUM(1,)', expected: { value: null, error: '#VALUE!' } },
+    // Function names shaped like cell refs: a name followed by `(` is a call.
+    { formula: '=LOG10(100)', expected: { value: 2 } },
+    { formula: '=ATAN2(1,1)', expected: { value: Math.PI / 4 } },
+    // Excel's argument order is (x_num, y_num); formula.js takes (y, x).
+    { formula: '=ATAN2(1,0)', expected: { value: 0 } },
+    { formula: '=ATAN2(0,1)', expected: { value: Math.PI / 2 } },
+    { formula: '=DEC2BIN(5)', expected: { value: '101' } },
+    { formula: '=LOG10 (A1)', expected: { value: 0 } },
+    { formula: '=DAYS360("2026-01-01","2026-02-01")', expected: { value: 30 } },
   ])('evaluates $formula', ({ formula, expected }) => {
     expect(evaluateFormula(formula, data, 0, 3)).toEqual(expected);
   });
@@ -130,12 +140,122 @@ describe('formula engine', () => {
       expect(evaluateFormula('="Due "&A1', dates, 0, 3)).toEqual({ value: 'Due 2026-08-18' });
     });
 
-    it('does not reach into date text from range aggregates', () => {
-      // Pre-existing and unchanged: range values go to formula.js as-is, and it
-      // ignores strings. Coercing them in `resolveRange` would also rewrite the
-      // keys VLOOKUP and MATCH compare against, so the gap stays pinned here
-      // rather than papered over.
+    it('leaves date text alone in an untyped column', () => {
+      // Without a date format the column is text, and formula.js ignores text.
       expect(evaluateFormula('=MAX(A1:B1)', dates, 0, 3)).toEqual({ value: 0 });
+    });
+  });
+
+  /**
+   * A date-typed column stores text, so MAX/MIN/SUM over it used to see only
+   * strings and return 0. Numeric aggregates read those cells as serials; lookup
+   * and criteria functions still see the text they compare against.
+   */
+  describe('aggregates over date-typed columns', () => {
+    const typed = {
+      rows: [
+        [cell('2026-08-18', '2026-08-18'), cell('2026-08-18 06:00:00', '2026-08-18 06:00:00'), cell('a', 'a')],
+        [cell('2026-08-25', '2026-08-25'), cell('', ''), cell('b', 'b')],
+        [cell('2026-08-20', '2026-08-20'), cell('2026-08-19 18:00:00', '2026-08-19 18:00:00'), cell('c', 'c')],
+      ],
+      columnCount: 3,
+      columnFormats: { 0: { type: 'date' as const }, 1: { type: 'datetime' as const } },
+    };
+    const serial = (formula: string) => evaluateFormula(formula, typed, 0, 9).value as number;
+
+    it('takes MAX and MIN of a date column as serials', () => {
+      expect(serial('=MAX(A1:A3)')).toBe(serial('=A2+0'));
+      expect(serial('=MIN(A1:A3)')).toBe(serial('=A1+0'));
+    });
+
+    it('sums, averages and counts date and datetime cells', () => {
+      expect(serial('=SUM(A1:A2)')).toBe(serial('=A1+A2'));
+      expect(serial('=AVERAGE(B1:B3)')).toBe((serial('=B1+0') + serial('=B3+0')) / 2);
+      expect(serial('=COUNT(A1:B3)')).toBe(5);
+    });
+
+    // R2-4: formula dates were cached as Date objects and scalar refs skipped
+    // the range conversion, so formula.js ignored both and returned 0.
+    it('R2-4 reads formula dates and scalar date refs as serials, leaving cached values alone', () => {
+      const formulaDates: SpreadsheetData = {
+        rows: [
+          [cell('=DATE(2026,8,18)', null), cell('2026-08-18', '2026-08-18')],
+          [cell('=DATE(2026,8,25)', null), cell('2026-08-25', '2026-08-25')],
+          [cell('=MAX(A1:A2)', null), cell('=MAX(B1,B2)', null)],
+          [cell('="d "&A1', null), cell('=MIN(A1,B2)', null)],
+        ],
+        columnCount: 2,
+        hasHeaders: false,
+        headerRowCount: 0,
+        frozenColumnCount: 0,
+        columnFormats: { 0: { type: 'date' }, 1: { type: 'date' } },
+        cellStyles: {},
+      };
+      const expected = serial('=A2+0');
+      const rows = recalculateFormulas(formulaDates).rows;
+      expect(rows[2][0].computed).toBe(expected);
+      expect(rows[2][1].computed).toBe(expected);
+      expect(rows[3][1].computed).toBe(serial('=A1+0'));
+      // A1's cached Date still reads as a date to text functions.
+      expect(rows[3][0].computed).toBe('d 2026-08-18');
+      expect(evaluateFormula('=MAX(DATE(2026,8,18),DATE(2026,8,25))', typed, 0, 9).value).toBe(expected);
+    });
+
+    it('keeps lookup keys as the text the column stores', () => {
+      expect(evaluateFormula('=VLOOKUP("2026-08-25",A1:C3,3,FALSE)', typed, 0, 9)).toEqual({ value: 'b' });
+      expect(evaluateFormula('=COUNTIF(A1:A3,"2026-08-20")', typed, 0, 9)).toEqual({ value: 1 });
+    });
+  });
+
+  describe('whole-column and whole-row references', () => {
+    it('aggregates a whole column bounded by the used range', () => {
+      expect(evaluateFormula('=SUM(A:A)', data, 0, 3)).toEqual({ value: 6 });
+      expect(evaluateFormula('=SUM(A:B)', data, 0, 3)).toEqual({ value: 66 });
+      expect(evaluateFormula('=SUM($A:$A)', data, 0, 3)).toEqual({ value: 6 });
+    });
+
+    it('aggregates a whole row bounded by the used range', () => {
+      expect(evaluateFormula('=SUM(2:2)', data, 0, 3)).toEqual({ value: 22 });
+      expect(evaluateFormula('=SUM(1:$2)', data, 2, 3)).toEqual({ value: 33 });
+    });
+
+    it('recalculates a dependent of a whole-column reference', () => {
+      const sheet = makeSpreadsheet([
+        [cell('1', 1), cell('=SUM(A:A)', null)],
+        [cell('=A1*5', null), cell('', '')],
+      ]);
+      expect(recalculateFormulas(sheet).rows[0][1].computed).toBe(6);
+    });
+
+    it('flags a whole-column reference that includes its own cell as circular', () => {
+      const sheet = makeSpreadsheet([[cell('1', 1)], [cell('=SUM(A:A)', null)]]);
+      expect(recalculateFormulas(sheet).rows[1][0].error).toBe('#CIRC!');
+    });
+  });
+
+  /** Structural rewrites leave `#REF!` in formula text; it has to evaluate as an error value. */
+  describe('error literals (R1-3)', () => {
+    it.each([
+      ['=IFERROR(#REF!,42)', { value: 42 }],
+      ['=#REF!+1', { value: null, error: '#REF!' }],
+      ['=SUM(1,#DIV/0!)', { value: null, error: '#DIV/0!' }],
+      ['=IFNA(#N/A,1)', { value: 1 }],
+      ['=IFNA(#name?,1)', { value: null, error: '#NAME?' }],
+      ['=ISERROR(#NUM!)', { value: 'TRUE' }],
+      ['=ISERROR(1/0)', { value: 'TRUE' }],
+      ['=ISERROR(A1)', { value: 'FALSE' }],
+      ['=ISERR(#N/A)', { value: 'FALSE' }],
+      ['=ISERR(#VALUE!)', { value: 'TRUE' }],
+      ['=ISNA(#N/A)', { value: 'TRUE' }],
+      ['=ISNA(#NULL!)', { value: 'FALSE' }],
+    ])('evaluates %s', (formula, expected) => {
+      expect(evaluateFormula(formula, data, 0, 3)).toEqual(expected);
+    });
+
+    it('evaluates a formula after a structural delete turned its reference into #REF!', () => {
+      const rewritten = rewriteFormulaForStructuralEdit('=IFERROR(A2*2,42)', { type: 'deleteRows', at: 1, count: 1 });
+      expect(rewritten).toBe('=IFERROR(#REF!*2,42)');
+      expect(evaluateFormula(rewritten, data, 0, 3)).toEqual({ value: 42 });
     });
   });
 

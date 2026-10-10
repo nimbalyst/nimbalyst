@@ -129,11 +129,9 @@ test('clicking the URL in the floating link tooltip opens the file in a tab, not
     timeout: TEST_TIMEOUTS.EDITOR_LOAD,
   });
 
-  // Move the caret into the link text with the keyboard — that raises the
-  // floating link editor. Clicking the URL inside it was the original
-  // white-window repro (an <a target="_blank"> with a relative href).
-  await page.keyboard.press('ArrowLeft');
-  await page.keyboard.press('ArrowLeft');
+  // Hovering the link raises its card. Clicking the URL inside it was the
+  // original white-window repro (an <a target="_blank"> with a relative href).
+  await editor.locator('a[href="./samples/tooltip-target.md"]').hover();
 
   const tooltipLink = page.locator('.link-editor .link-view a');
   await expect(tooltipLink).toBeVisible({ timeout: TEST_TIMEOUTS.EDITOR_LOAD });

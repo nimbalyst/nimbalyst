@@ -4,6 +4,7 @@ import {
   resolveWindowControlsZones,
   clearWindowControls,
   windowControlsClearance,
+  TITLE_BAR_BUFFER,
   type WindowControlsZone,
 } from '../windowControlsClearance';
 
@@ -36,15 +37,15 @@ function runMiddleware(
 }
 
 describe('resolveWindowControlsZones', () => {
-  it('derives a left band from the macOS titlebar area', () => {
+  it('reserves the full title-bar strip plus a buffer on macOS', () => {
     expect(resolveWindowControlsZones(MACOS_TITLEBAR_RECT, MACOS_VIEWPORT_WIDTH)).toEqual([
-      { left: 0, right: 80, bottom: 38 },
+      { left: 0, right: 2048, bottom: 38 + TITLE_BAR_BUFFER },
     ]);
   });
 
-  it('derives a right band when the controls sit on the right', () => {
+  it('reserves the same strip when the controls sit on the right', () => {
     expect(resolveWindowControlsZones(WINDOWS_TITLEBAR_RECT, MACOS_VIEWPORT_WIDTH)).toEqual([
-      { left: 1848, right: 2048, bottom: 38 },
+      { left: 0, right: 2048, bottom: 38 + TITLE_BAR_BUFFER },
     ]);
   });
 
@@ -58,33 +59,35 @@ describe('resolveWindowControlsZones', () => {
 
 describe('clearWindowControls', () => {
   const zones = resolveWindowControlsZones(MACOS_TITLEBAR_RECT, MACOS_VIEWPORT_WIDTH);
+  const floor = 38 + TITLE_BAR_BUFFER;
 
   it('clears the project rail add menu that #1096 reported', () => {
     // The `+` menu with >=2 recents is clamped by shift() to (56, 8) and its
     // left 24px land in the controls band.
-    expect(clearWindowControls(56, 8, 260, zones)).toBe(38);
+    expect(clearWindowControls(56, 8, 260, zones)).toBe(floor);
   });
 
-  it('leaves popovers that do not reach the band alone', () => {
-    // Same column, but already below the title bar.
+  it('clears a top-clamped menu far from the window controls', () => {
+    // The file tree's folder menu, right-clicked near the bottom of a short
+    // window, is clamped to (184, 8). On macOS the mousedown on its first item
+    // reached the renderer but the mouseup never did, so the item never fired.
+    expect(clearWindowControls(184, 8, 246, zones)).toBe(floor);
+    expect(clearWindowControls(900, 40, 260, zones)).toBe(floor);
+  });
+
+  it('leaves popovers already below the buffer alone', () => {
     expect(clearWindowControls(56, 120, 260, zones)).toBe(120);
-    // Top-clamped, but far to the right of the macOS controls.
-    expect(clearWindowControls(900, 8, 260, zones)).toBe(8);
-  });
-
-  it('does not move an element whose right edge stops short of the band', () => {
-    expect(clearWindowControls(1900, 8, 100, resolveWindowControlsZones(WINDOWS_TITLEBAR_RECT, 2048))).toBe(38);
-    expect(clearWindowControls(1700, 8, 100, resolveWindowControlsZones(WINDOWS_TITLEBAR_RECT, 2048))).toBe(8);
+    expect(clearWindowControls(900, floor, 260, zones)).toBe(floor);
   });
 });
 
 describe('windowControlsClearance middleware', () => {
   const zones = resolveWindowControlsZones(MACOS_TITLEBAR_RECT, MACOS_VIEWPORT_WIDTH);
 
-  it('pushes an overlapping menu below the controls and reports the push', () => {
+  it('pushes an overlapping menu below the strip and reports the push', () => {
     const result = runMiddleware(56, 8, { width: 260, height: 475 }, zones);
-    expect(result.y).toBe(38);
-    expect(result.data).toEqual({ pushed: 30 });
+    expect(result.y).toBe(38 + TITLE_BAR_BUFFER);
+    expect(result.data).toEqual({ pushed: 30 + TITLE_BAR_BUFFER });
   });
 
   it('is inert when nothing overlaps', () => {

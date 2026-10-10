@@ -18,6 +18,7 @@ import {
   creationPublicationKey,
   publishCreatedTrackerItem,
 } from './TrackerCreationPublication';
+import { createTrackerItem } from '../../services/localWikiTrackerRecords';
 
 export function useTrackerQuickCreateSubmission(
   workspacePath: string | null,
@@ -66,10 +67,8 @@ export function useTrackerQuickCreateSubmission(
       }
       store.set(draftAtom, { ...draft, submitting: true, error: null });
       try {
-        const result =
-          await window.electronAPI.documentService.createTrackerItem(
-            built.payload,
-          );
+        // A wiki type's item is a file in the Local wiki; any other stays in the app database.
+        const result = await createTrackerItem(built.payload);
         if (!result.success)
           throw new Error(result.error || 'Could not create the item');
         const current = store.get(draftAtom);

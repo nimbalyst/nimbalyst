@@ -16,6 +16,7 @@ import { logger } from '../utils/logger';
 import { getCollabSyncWsUrl, getCollabSyncHttpUrl } from '../utils/collabSyncUrl';
 import { isAuthenticated, getStytchUserId, getUserEmail, getAuthState, getPersonalUserId, getPersonalSessionJwt, refreshPersonalSessionDetailed } from '../services/StytchAuthService';
 import { findTeamForWorkspace, resolveTeamForWorkspace, getOrgScopedJwt } from '../services/TeamService';
+import { currentTeamProjectId } from '../services/teamCurrentProject';
 import { getOrgIdFromJwt, getJwtExp, getSubFromJwt } from '../services/jwtOrg';
 import { getWorkspaceState, updateWorkspaceState } from '../utils/store';
 import { createSingleFlight } from '../utils/asyncCache';
@@ -1044,7 +1045,8 @@ export function registerDocumentSyncHandlers(): void {
         // workspace matched to a SECONDARY project this is that project's id;
         // the TeamSyncProvider tags every docIndexRegister with it so the
         // server's project-partitioned doc index attributes docs correctly.
-        teamProjectId: team.teamProjectId ?? null,
+        // Pages show this project only; the agent page tools resolve it the same way.
+        teamProjectId: currentTeamProjectId(team),
         serverUrl,
         teamMemberId,
         userName: getUserDisplayName(teamMemberId),

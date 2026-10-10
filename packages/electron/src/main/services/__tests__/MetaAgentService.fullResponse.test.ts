@@ -13,9 +13,13 @@ import { describe, expect, it, vi } from 'vitest';
 vi.mock('@nimbalyst/runtime/storage/repositories/AISessionsRepository', () => ({
   AISessionsRepository: { create: vi.fn(), updateMetadata: vi.fn(), get: vi.fn() },
 }));
-vi.mock('@nimbalyst/runtime/storage/repositories/AgentMessagesRepository', () => ({
-  AgentMessagesRepository: { list: vi.fn() },
-}));
+vi.mock('@nimbalyst/runtime/storage/repositories/AgentMessagesRepository', () => {
+  // Same contract as the real store: list() is oldest-first, listTail() is the
+  // newest N rows (oldest-to-newest). Fixtures stub list(); listTail derives from it.
+  const list = vi.fn();
+  const listTail = vi.fn(async (sessionId: string, limit: number) => ((await list(sessionId)) ?? []).slice(-limit));
+  return { AgentMessagesRepository: { list, listTail } };
+});
 vi.mock('@nimbalyst/runtime/storage/repositories/SessionFilesRepository', () => ({
   SessionFilesRepository: { getFilesBySession: vi.fn().mockResolvedValue([]) },
 }));
@@ -61,7 +65,8 @@ vi.mock('../../mcp/metaAgentServer', () => ({
 vi.mock('../metaAgentNotificationSignature', () => ({ computeNotificationSignature: vi.fn() }));
 vi.mock('../metaAgentMessageText', () => ({
   extractMessageText: (content: unknown) => (typeof content === 'string' ? content : ''),
-  extractUserPrompts: () => ['original task'],
+  extractUserPrompts: (messages: Array<{ direction: string; content: unknown }>) =>
+    messages.filter((m) => m.direction === 'input').map((m) => String(m.content)),
 }));
 vi.mock('../ai/claudeCliLauncherSingleton', () => ({
   ClaudeCliLauncherConfig: { setMetaAgentServerPort: vi.fn() },
@@ -136,6 +141,31 @@ describe('MetaAgentService buildSessionResultData full child response (FIX A)', 
     // which is exactly why fullResponse is needed for synthesis.
     expect(data.lastResponse).toContain('PART_TWO_final');
     expect(data.lastResponse).not.toContain('PART_ONE_narration');
+  });
+
+  // NIM-7428: list() is oldest-first, so a child past one page of rows reported a
+  // response from mid-session. Coordinators read that as "the child stopped
+  // mid-task" and re-sent work the child had already finished and reported.
+  it('reports the newest turn for a child longer than one page of messages', async () => {
+    const rows = [
+      { id: 1, direction: 'input', content: 'original task', metadata: null },
+      ...Array.from({ length: 598 }, (_, i) => ({ id: i + 2, direction: 'output', content: `progress ${i}`, metadata: null })),
+      { id: 600, direction: 'input', content: 'coordinator follow-up', metadata: null },
+      { id: 601, direction: 'output', content: 'FINAL REPORT: all tests pass', metadata: null },
+    ];
+    vi.mocked(AgentMessagesRepository.list).mockImplementation((async (_id: string, opts?: { limit?: number; offset?: number }) => {
+      const offset = opts?.offset ?? 0;
+      return rows.slice(offset, opts?.limit === undefined ? undefined : offset + opts.limit);
+    }) as never);
+
+    const service = MetaAgentService.getInstance();
+    const data = await (service as any).buildSessionResultData('child-long', '/ws', PREFETCHED);
+
+    expect(data.lastResponse).toBe('FINAL REPORT: all tests pass');
+    expect(data.fullResponse).toBe('FINAL REPORT: all tests pass');
+    expect(data.recentMessages.at(-1)?.text).toBe('FINAL REPORT: all tests pass');
+    expect(data.originalPrompt).toBe('original task');
+    expect(data.userPrompts).toEqual(['original task', 'coordinator follow-up']);
   });
 });
 

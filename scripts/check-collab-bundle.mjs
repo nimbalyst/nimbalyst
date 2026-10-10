@@ -40,7 +40,23 @@ export const COLLAB_BUNDLE_EAGER_GZIP_BUDGET_BYTES = {
   // rail, keyboard map, lock/group, plus the floating-ui focus and list
   // navigation hooks their menus use). Reset with ~10% headroom.
   canvas: 160_000,
-  editor: 320_000,
+  // Measured at 322,230 gzip bytes on 2026-10-03 after decision and
+  // open-question marks, citations, the 2x2 block and console link parsing
+  // landed. Their popovers, chips and chart already load on demand; what is
+  // left (node cores, transformers, link parsers) must register before a page
+  // is read. Raised from 320,000 with ~2% headroom.
+  // 2026-10-05: 332,074 after the link hover card (FloatingLinkEditorPlugin
+  // rewrite) and Pages navigation; raised from 330,000 with ~2% headroom.
+  // 2026-10-09: 342,147 after the chart, callout, columns and inline TOC
+  // blocks registered their node cores and transformers. Vega loads lazily
+  // in its own chunk. Raised from 339,000 with ~2% headroom.
+  // 2026-10-09: 351,752 after transclusion, mentions, link previews and code
+  // excerpts registered their node cores and transformers. Raised from
+  // 349,000 with ~2% headroom.
+  // 2026-10-09: 362,835 after the wiki blocks gained bottom-right resize
+  // grips and block-menu items (type, title, columns, depth, reset size).
+  // Raised from 359,000 with ~2% headroom.
+  editor: 370_000,
   // Measured at 70,625 gzip bytes on 2026-09-08, when the list took over
   // folder browsing from the tree for the browser console (folder rows, the
   // browse scope, the row "more" action). The row context menu itself is
@@ -50,7 +66,17 @@ export const COLLAB_BUNDLE_EAGER_GZIP_BUDGET_BYTES = {
   // its static path includes the shared floating-ui chunk, which grew when the
   // canvas menus started using FloatingFocusManager and useListNavigation.
   // Reset with ~6% headroom.
-  'docs-ui': 80_000,
+  // 2026-10-02: 81,044 bytes. The Pages tree lets pages nest and typed pages
+  // sit under any page; the page menu, move dialog and tree builder are lazy,
+  // and what remains is the sidebar's page-row and drag handling. Reset with
+  // ~3.5% headroom.
+  // 2026-10-02: 83,980 bytes after typed pages became parents, plain pages got
+  // a sort order and the native confirms became an in-app dialog (lazy, own
+  // root). Reset with ~5% headroom so small Pages changes need no shuffling.
+  // 2026-10-04: 88,122 bytes after Pages became per project (the session keeps
+  // other projects' pages in a separate link-only index and refuses writes to
+  // them). Raised with ~4% headroom.
+  'docs-ui': 92_000,
   // Sep 5 privacy-aware document transport graph measured 35,049 bytes.
   // Keep a narrow allowance for the supported response/refresh contract.
   'feedback-ui': 35_500,
@@ -80,7 +106,14 @@ export const COLLAB_BUNDLE_EAGER_GZIP_BUDGET_BYTES = {
   // was made lazy and its inspector-only helpers left the entry. What remains
   // is the wiki home's content-health check and the schema store's predicate
   // registry read, both needed on first paint. Reset with ~2% headroom.
-  'trackers-ui': 182_500,
+  // 2026-10-02: 182,664 bytes. No new eager module: the predicate registry
+  // lost its qualifiers and the label registry's property qualifiers moved to
+  // their own module with their own error codes, which costs a few hundred
+  // bytes of strings. Reset with ~2% headroom.
+  // 2026-10-03: 188,280 bytes after typed pages and type pages moved into
+  // collab-client for the web console, console links, and the page links
+  // query; their views and editors load on demand. Reset with ~4% headroom.
+  'trackers-ui': 196_000,
   // Deliberately tight. This entry is a WebSocket client over the protocol
   // package and nothing else; anything that makes it jump has dragged a UI
   // graph in behind it.

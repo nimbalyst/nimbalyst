@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { TrackerRecord } from '../../../../core/TrackerRecord';
 import { globalRegistry, type TrackerDataModel } from '../../models';
 import { useTrackerRows } from '../useTrackerRows';
+import { setTrackerHostWriter } from '../../trackerHostWriter';
 
 vi.mock('posthog-js/react', () => ({
   usePostHog: () => ({ capture: vi.fn() }),
@@ -207,6 +208,38 @@ describe('useTrackerRows cell writes', () => {
 
     expect(updateTrackerItemInFile).toHaveBeenCalledWith({ itemId: 'item-1', updates: { points: 5 } });
     expect(updateTrackerItem).not.toHaveBeenCalled();
+  });
+
+  it('sends host-owned records to the host writer, single and bulk, and counts its failures', async () => {
+    registerCustomType();
+    const updateTrackerItem = vi.fn().mockResolvedValue({ success: true });
+    const updateTrackerItems = vi.fn().mockResolvedValue({ success: true, results: [{ itemId: 'db', success: true }] });
+    (window as any).electronAPI = { documentService: { updateTrackerItem, updateTrackerItems } };
+    const write = vi.fn(async (item: TrackerRecord) => item.id !== 'wiki-bad');
+    setTrackerHostWriter({ handles: (item) => item.source === 'local-wiki', write });
+    try {
+      // A wiki typed page has a documentPath but is neither native nor frontmatter.
+      const wiki: TrackerRecord = { ...makeRecord('wiki'), source: 'local-wiki' as TrackerRecord['source'], system: { ...makeRecord('wiki').system, documentPath: '/w/Acme.md' } };
+      const bad: TrackerRecord = { ...wiki, id: 'wiki-bad' };
+      const db = makeRecord('db');
+      const { result } = renderHook(() => useTrackerRows({ items: [wiki, bad, db], activeTypeFilter: customType }));
+      expect(result.current.isItemEditable(wiki)).toBe(true);
+
+      await act(async () => {
+        await result.current.handleFieldUpdate(wiki, 'points', 3);
+      });
+      expect(write).toHaveBeenCalledWith(wiki, { points: 3 });
+      expect(updateTrackerItem).not.toHaveBeenCalled();
+
+      let outcome: { written: number; failed: number } | undefined;
+      await act(async () => {
+        outcome = await result.current.handleItemsUpdate([wiki, bad, db].map(item => ({ item, updates: { done: true } })));
+      });
+      expect(outcome).toEqual({ written: 2, failed: 1 });
+      expect(updateTrackerItems.mock.calls[0][0].entries.map((entry: { itemId: string }) => entry.itemId)).toEqual(['db']);
+    } finally {
+      setTrackerHostWriter(null);
+    }
   });
 
   it('replays entries whose record is no longer in the rendered list', async () => {

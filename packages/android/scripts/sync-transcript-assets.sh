@@ -8,7 +8,7 @@ ASSET_DIR="$ROOT_DIR/app/build/generated/transcript-assets/transcript-dist"
 
 if [ ! -f "$DIST_DIR/transcript.html" ]; then
   echo "Transcript bundle not found in $DIST_DIR"
-  echo "Run: npm run build:transcript"
+  echo "Run: pnpm run build:transcript"
   exit 1
 fi
 

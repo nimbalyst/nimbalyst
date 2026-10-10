@@ -4,7 +4,7 @@
  * an empty bucket that can remove relationship membership.
  */
 import type { TrackerRecord } from '../../../runtime/src/core/TrackerRecord';
-import type { TrackerRelationshipValue } from '@nimbalyst/tracker-schema';
+import type { TrackerRelationshipValue } from '../../../tracker-schema/src/browser';
 import { type TrackerGroupBy, type TrackerGroupingAxis, type TrackerOrdering, type TrackerRelationshipLabelResolver } from './model';
 import type { TrackerStatusScope } from './model';
 export interface TrackerBoardColumn {
@@ -25,6 +25,7 @@ export interface TrackerBoardColumn {
      * display, rather than a label reconstructed from whatever survived.
      */
     ref?: TrackerRelationshipValue;
+    fieldValue?: unknown;
 }
 /** The axis the board actually lays out; `none` is a status board. */
 export declare function resolveBoardAxis(groupBy: TrackerGroupBy): TrackerGroupingAxis;

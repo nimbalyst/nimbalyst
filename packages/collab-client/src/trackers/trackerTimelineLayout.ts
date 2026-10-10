@@ -111,9 +111,18 @@ function firstDeclaredDateField(item: TrackerRecord): { field: string; date: Dat
  * only a target date belongs at its target date), then any other date field the
  * type declares, then the record's creation instant.
  */
-export function resolveTimelineDates(item: TrackerRecord): TrackerTimelineDates | null {
-  const start = firstNamedField(item, START_FIELD_NAMES);
-  const end = firstNamedField(item, END_FIELD_NAMES);
+export interface TrackerTimelineFields { start?: string; end?: string }
+
+function selectedDate(item: TrackerRecord, field: string | undefined): { field: string; date: Date } | null {
+  if (!field) return null;
+  const date = usableDate(item.fields[field]);
+  return date ? { field, date } : null;
+}
+
+export function resolveTimelineDates(item: TrackerRecord, fields?: TrackerTimelineFields): TrackerTimelineDates | null {
+  const explicit = Boolean(fields?.start || fields?.end);
+  const start = explicit ? selectedDate(item, fields?.start) : firstNamedField(item, START_FIELD_NAMES);
+  const end = explicit ? selectedDate(item, fields?.end) : firstNamedField(item, END_FIELD_NAMES);
 
   if (start) {
     // An end at or before the start is contradictory data. Drawing the bar
@@ -128,6 +137,7 @@ export function resolveTimelineDates(item: TrackerRecord): TrackerTimelineDates 
   }
   if (end) return { start: end.date, end: null, startField: end.field };
 
+  if (explicit) return null;
   const declared = firstDeclaredDateField(item);
   if (declared) return { start: declared.date, end: null, startField: declared.field };
 
@@ -305,10 +315,11 @@ export function buildTrackerTimeline(
   ordering: TrackerOrdering,
   /** Names relationship rows from the referenced record; see the resolver's docs. */
   resolveLabel?: TrackerRelationshipLabelResolver,
+  fields?: TrackerTimelineFields,
 ): TrackerTimelineModel {
   const datesById = new Map<string, TrackerTimelineDates | null>();
   for (const item of items) {
-    if (!datesById.has(item.id)) datesById.set(item.id, resolveTimelineDates(item));
+    if (!datesById.has(item.id)) datesById.set(item.id, resolveTimelineDates(item, fields));
   }
 
   const dated = [...datesById.values()].filter((d): d is TrackerTimelineDates => d !== null);

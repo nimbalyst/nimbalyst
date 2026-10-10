@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="session_list_tab_wiki">Wiki</string>
+    <string name="wiki_search_placeholder">Search pages</string>
+    <string name="wiki_loading">Loading wiki…</string>
+    <string name="wiki_syncing">Syncing wiki…</string>
+    <string name="wiki_empty">Wiki pages will appear here once synced from the desktop app.</string>
+    <string name="wiki_unsupported_version">This wiki was written by a newer version of Nimbalyst. Update the app to read it.</string>
+    <string name="wiki_no_matches">No pages match \"%1$s\"</string>
+    <string name="wiki_conflict_badge">Conflict</string>
+    <string name="wiki_expand">Expand %1$s</string>
+    <string name="wiki_collapse">Collapse %1$s</string>
+    <string name="wiki_table_malformed">This table could not be read. Fix the file on the desktop app.</string>
+    <string name="wiki_table_empty">Empty table</string>
+    <string name="wiki_page_read_only">Read-only on the phone</string>
+    <string name="wiki_link_not_synced">That page has not synced to this device yet.</string>
+</resources>

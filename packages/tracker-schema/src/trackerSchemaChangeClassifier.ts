@@ -42,7 +42,13 @@ export type AdditiveTrackerSchemaChange =
       constraint: TrackerSchemaConstraint;
       previousValue: unknown;
       nextValue: unknown;
-    });
+    })
+  | {
+      // A type that had no workflow status field names one. No stored value
+      // changes meaning, so only MOVING or dropping the role is destructive.
+      kind: 'workflow-status-field-assigned';
+      nextFieldName: string;
+    };
 
 export type DestructiveTrackerSchemaChange =
   | (FieldChange & { kind: 'field-removed'; field: FieldDefinition })
@@ -402,7 +408,9 @@ export function classifyTrackerSchemaChanges(
     if (entry.seed) compareField(changes, previous, next, entry.seed, entry.target);
   }
 
-  if (previous.roles?.workflowStatus !== next.roles?.workflowStatus) {
+  if (!previous.roles?.workflowStatus && next.roles?.workflowStatus) {
+    changes.push({ kind: 'workflow-status-field-assigned', nextFieldName: next.roles.workflowStatus });
+  } else if (previous.roles?.workflowStatus !== next.roles?.workflowStatus) {
     changes.push({
       kind: 'workflow-status-field-changed',
       previousFieldName: previous.roles?.workflowStatus,

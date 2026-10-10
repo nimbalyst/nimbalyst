@@ -127,6 +127,53 @@ describe("ExternalSessionWatcher", () => {
       vi.useRealTimers();
     }
   });
+  it("skips a settled file on later discovery passes until its file stamp changes", async () => {
+    vi.useFakeTimers();
+    const h = harness(5000);
+    let stamp = { inode: 1, size: 10, mtimeMs: 1 };
+    h.source.discover.mockImplementation(
+      async (_cwd: string, options?: { skipUnchanged?: Function }) =>
+        options?.skipUnchanged?.("/logs/idle.jsonl", stamp)
+          ? []
+          : [
+              {
+                providerId: "claude-code",
+                externalId: "idle-file",
+                workspacePath: "/workspace",
+                filePath: "/logs/idle.jsonl",
+                updatedAt: 1,
+              },
+            ]
+    );
+    h.ingest.mockResolvedValueOnce({
+      messagesAdded: 0,
+      hasMore: false,
+      skipped: true,
+    });
+    h.ingest.mockResolvedValue({
+      messagesAdded: 0,
+      hasMore: false,
+      settled: true,
+    });
+    try {
+      await h.watcher.start();
+      // An unsettled outcome (e.g. a transient ownership skip) is retried.
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(h.ingest).toHaveBeenCalledTimes(2);
+      await vi.advanceTimersByTimeAsync(15000);
+      expect(h.ingest).toHaveBeenCalledTimes(2);
+      stamp = { ...stamp, size: 20, mtimeMs: 2 };
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(h.ingest).toHaveBeenCalledTimes(3);
+      // Restarting the watcher (setting toggle) forgets every settled stamp.
+      await h.watcher.stop();
+      await h.watcher.start();
+      expect(h.ingest).toHaveBeenCalledTimes(4);
+    } finally {
+      await h.watcher.stop();
+      vi.useRealTimers();
+    }
+  });
   it("preserves every reference from a discovery page across bounded ticks without filesystem events", async () => {
     vi.useFakeTimers();
     const h = harness();
@@ -179,7 +226,10 @@ describe("ExternalSessionWatcher", () => {
     );
     const start = h.watcher.start();
     await vi.waitFor(() =>
-      expect(h.source.discover).toHaveBeenCalledWith("/workspace")
+      expect(h.source.discover).toHaveBeenCalledWith(
+        "/workspace",
+        expect.anything()
+      )
     );
     const stop = h.watcher.stop();
     resolve([

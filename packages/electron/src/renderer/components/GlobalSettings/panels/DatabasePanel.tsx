@@ -37,6 +37,8 @@ import {
 } from '../../../store/atoms/dbMigration';
 import type { MigrationOperationSnapshot } from '../../../../shared/migrationOperation';
 import { hydrateMigrationOperation, refreshDbRecoveryState } from '../../../store/listeners/dbMigrationListeners';
+import { requestConfirmation } from '../../../dialogs/requestConfirmation';
+import { errorNotificationService } from '../../../services/ErrorNotificationService';
 import { HistoryMigrationWarning, Stat, DryRunResultCard, DryRunProgress, AdoptDryRunSection, type DryRunResult } from './database/MigrationProgressViews';
 import { formatBytes, formatDuration } from './database/dbFormat';
 import { RecoverySection } from './database/RecoverySection';
@@ -190,15 +192,17 @@ export function DatabasePanel(): React.ReactElement {
     const ageBlurb = ageHrs < 1
       ? 'less than an hour'
       : `about ${Math.round(ageHrs)} hour${ageHrs >= 1.5 ? 's' : ''}`;
-    const ok = window.confirm(
-      `Switch to the dry-run SQLite copy?\n\n`
-      + `Nimbalyst will:\n`
-      + `  1. Close the current PGLite database\n`
-      + `  2. Copy anything new since the dry-run (${ageBlurb} ago)\n`
-      + `  3. Make SQLite the active backend\n`
-      + `  4. Preserve the old PGLite for rollback\n\n`
-      + `A relaunch is required after switching.`,
-    );
+    const ok = await requestConfirmation({
+      title: 'Switch to SQLite',
+      message: `Switch to the dry-run SQLite copy?\n\n`
+        + `Nimbalyst will:\n`
+        + `  1. Close the current PGLite database\n`
+        + `  2. Copy anything new since the dry-run (${ageBlurb} ago)\n`
+        + `  3. Make SQLite the active backend\n`
+        + `  4. Preserve the old PGLite for rollback\n\n`
+        + `A relaunch is required after switching.`,
+      confirmLabel: 'Switch to SQLite',
+    });
     if (!ok) return;
     setAdoptRunning(true);
     setAdoptError(null);
@@ -230,16 +234,24 @@ export function DatabasePanel(): React.ReactElement {
 
   const rollback = useCallback(async () => {
     if (!window.electronAPI) return;
-    if (!window.confirm('Restore the preserved PGLite database? You will lose any data created since the migration. Requires a relaunch.')) {
-      return;
-    }
+    const ok = await requestConfirmation({
+      title: 'Restore PGLite database',
+      message: 'Restore the preserved PGLite database? You will lose any data created since the migration. Requires a relaunch.',
+      confirmLabel: 'Restore PGLite',
+      destructive: true,
+    });
+    if (!ok) return;
     const resp = (await window.electronAPI.invoke('db:migration:rollback')) as
       | { success: true; restoredFrom: string }
       | { success: false; error: string };
     if (!resp.success) {
-      window.alert(`Rollback failed: ${resp.error}`);
+      errorNotificationService.showError('Rollback failed', `Rollback failed: ${resp.error}`);
     } else {
-      window.alert(`Restored from ${resp.restoredFrom}. Please relaunch Nimbalyst.`);
+      errorNotificationService.showInfo(
+        'Database restored',
+        `Restored from ${resp.restoredFrom}. Please relaunch Nimbalyst.`,
+        { duration: 0 },
+      );
     }
     void loadStatus();
   }, [loadStatus]);

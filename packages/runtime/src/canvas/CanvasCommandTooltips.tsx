@@ -7,6 +7,7 @@ import {
   shift,
   useFloating,
 } from '@floating-ui/react';
+import { windowControlsClearance } from '../ui/floating/windowControlsClearance';
 import { CANVAS_HELP_CONTENT } from './canvasHelpContent';
 import './CanvasCommandTooltips.css';
 
@@ -21,7 +22,7 @@ export function CanvasCommandTooltips({
   const { refs, floatingStyles } = useFloating({
     open: target !== null,
     placement: target?.closest('.canvas-tool-rail') ? 'right' : 'bottom',
-    middleware: [offset(8), flip(), shift({ padding: 8 })],
+    middleware: [offset(8), flip(), shift({ padding: 8 }), windowControlsClearance()],
     whileElementsMounted: autoUpdate,
   });
   useEffect(() => {

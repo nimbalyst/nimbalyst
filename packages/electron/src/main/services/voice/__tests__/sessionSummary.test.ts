@@ -12,6 +12,9 @@ vi.mock('@nimbalyst/runtime', () => ({
   AISessionsRepository: { list: (...a: any[]) => list(...a) },
 }));
 
+const live = vi.fn();
+vi.mock('../voicePromptLiveness', () => ({ sessionHasLivePrompt: () => live() }));
+
 import { getSessionSummaryForVoice } from '../sessionSummary';
 
 const WS = '/ws';
@@ -42,6 +45,7 @@ function makeWindow(sessionsById: Record<string, any>) {
 beforeEach(() => {
   vi.clearAllMocks();
   list.mockResolvedValue([]);
+  live.mockReturnValue(true);
 });
 
 describe('getSessionSummaryForVoice', () => {
@@ -126,6 +130,12 @@ describe('getSessionSummaryForVoice', () => {
     )).toBe(true);
     // The resolved permission prompt is excluded.
     expect(out.summary).not.toContain('rm -rf build');
+
+    // After a restart the transcript still holds the question, but nothing can answer it.
+    live.mockReturnValue(false);
+    const stale = await getSessionSummaryForVoice(WS, 'sess-1');
+    expect(stale.summary).not.toContain('waiting for your input');
+    expect(stale.summary).not.toContain('Which theme should be the default?');
   });
 
   it('does not add a waiting-for-input section when no question is pending', async () => {

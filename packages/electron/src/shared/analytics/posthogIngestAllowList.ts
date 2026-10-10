@@ -60,6 +60,10 @@ export const INGESTED_ALWAYS = [
   'worktree_created',
   'mcp_server_added',
   'claude_plugin_installed',
+  // Export of database Personal pages into the Local wiki folder: rare, and the
+  // record of a one-way data move. Added here 2026-10-08; the PostHog
+  // transformation must gain the same name before any of it arrives.
+  'local_wiki_export',
 ] as const;
 
 /**
@@ -324,6 +328,9 @@ export const INTENTIONALLY_DROPPED = [
   'mobile_pairing_completed',
   'mobile_push_requested',
   'mobile_request_user_input_response',
+  // Not yet on the PostHog transformation; move to INGESTED_ALWAYS together
+  // with adding it there.
+  'mobile_session_load_error',
   'mobile_workstream_created',
   'mobile_worktree_created',
   'permission_setting_changed',

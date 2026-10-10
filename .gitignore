@@ -191,6 +191,8 @@ plans/
 
 # MCP config (may contain personal API tokens)
 .mcp.json
+# Plugin server declarations ship with the plugin and hold no tokens.
+!plugins/*/.mcp.json
 
 # Database recovery dumps (one-off triage artifacts, never publish)
 recovered-data/
@@ -218,7 +220,7 @@ packages/ios/screenshots/
 packages/android/screenshots/
 
 # Auto-generated platform artifacts
-packages/android/app/schemas/
+# (packages/android/app/schemas/ is committed: Room migration tests read it)
 packages/marketplace/.wrangler/
 
 # Scratch/working directories at repo root (not source)

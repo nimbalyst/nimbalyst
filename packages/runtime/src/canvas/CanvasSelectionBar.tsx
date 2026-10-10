@@ -35,6 +35,7 @@ import {
   useListNavigation,
   useRole,
 } from '@floating-ui/react';
+import { windowControlsClearance } from '../ui/floating/windowControlsClearance';
 
 import {
   getCommand,
@@ -284,7 +285,7 @@ function MenuButton({
     onOpenChange: setOpen,
     placement: 'bottom-start',
     whileElementsMounted: autoUpdate,
-    middleware: [offset(6), flip({ padding: 8 }), shift({ padding: 8 })],
+    middleware: [offset(6), flip({ padding: 8 }), shift({ padding: 8 }), windowControlsClearance()],
   });
   const { getReferenceProps, getFloatingProps, getItemProps } = useInteractions([
     useDismiss(context),
@@ -389,7 +390,7 @@ function ColorControl({
     onOpenChange: setOpen,
     placement: 'bottom-start',
     whileElementsMounted: autoUpdate,
-    middleware: [offset(6), flip({ padding: 8 }), shift({ padding: 8 })],
+    middleware: [offset(6), flip({ padding: 8 }), shift({ padding: 8 }), windowControlsClearance()],
   });
   const { getReferenceProps, getFloatingProps, getItemProps } = useInteractions([
     useDismiss(context),

@@ -28,8 +28,12 @@ import {
 import { loadTypeSchema } from './typeSchema.js';
 import { dim, green } from '../cli/colors.js';
 import * as fs from 'fs';
+import { runLocalTracker } from './trackerLocal.js';
 
 export async function runTracker(args: ParsedArgs): Promise<number> {
+  // Types placed in the local wiki are served from its files; see trackerLocal.ts.
+  const local = await runLocalTracker(args);
+  if (local !== null) return local;
   const verb = args.verb;
   switch (verb) {
     case 'list':

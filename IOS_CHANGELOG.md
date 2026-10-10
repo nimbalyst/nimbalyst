@@ -20,6 +20,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Removed
 <!-- Removed features go here -->
 
+## [1.2.1] - 2026-10-07
+
+
+### Added
+- Live voice: reach and answer questions for sessions started on the desktop, choose audio input/output devices, and use computer inventory controls
+- Orchestrators and their workers appear as nested session trees
+- Session model shown in the session detail status bar
+- Remote sandbox sessions run with the shared composer
+- More compact session list and header
+
+### Changed
+- Computer switching moved to the status button
+- Reconnecting is quiet, and the transcript reloads after the app returns from the background
+
+### Fixed
+- App hanging on the launch screen
+- Sync failures are now visible, and newer local state is preserved
+- Newly created and mobile-created sessions load without reopening; creation failures are reported
+- Consumed prompts no longer reappear in the queue
+- False prompt delivery warnings
+- Session search and history sync restored
+- Sessions refresh after returning from the background
+- Session list stalls and flashing during updates; desktop sessions stay listed while reconnecting
+- Duplicate and out-of-order session messages
+- iPhone fleet Live Activity recovers after reconnecting and after a card ends
+- Session sidebar stays visible after rotation
+- Transcript scrolls to the first message
+- "Sync interrupted" notice clears on reconnect
+- Session errors dismiss safely
+- Live voice context and session loading
+- Personal sync keeps publishing past index rows written under another key
+- Reduced database contention during session sync
+
+### Removed
+<!-- Removed features go here -->
+
 ## [1.2.0] - 2026-09-09
 
 

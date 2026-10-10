@@ -15,7 +15,10 @@
     "skipLibCheck": true,
     "types": [
       "node"
-    ]
+    ],
+    "paths": {
+      "@nimbalyst/runtime/core/*": ["../../runtime/src/core/*"]
+    }
   },
   "include": [
     "src"

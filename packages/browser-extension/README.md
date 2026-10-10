@@ -25,8 +25,8 @@ A Chrome browser extension that clips web pages to your Nimbalyst workspace as c
 
 ```bash
 cd packages/browser-extension
-npm install
-npm run build
+pnpm install
+pnpm run build
 ```
 
 Then load in Chrome:
@@ -39,7 +39,7 @@ Then load in Chrome:
 
 Register a Chrome Web Store developer account ($5 one-time fee) at https://chrome.google.com/webstore/devconsole, then:
 
-1. Build the extension: `npm run build`
+1. Build the extension: `pnpm run build`
 2. Create a zip of the `dist/` directory: `cd dist && zip -r ../nimbalyst-web-clipper.zip . && cd ..`
 3. Upload the zip in the developer console
 4. Fill in the store listing:
@@ -71,8 +71,8 @@ The `content_scripts` declaration with `<all_urls>` is needed so the content scr
 ## Development
 
 ```bash
-npm run build        # Build once
-npm run watch        # Build and watch for changes
+pnpm run build        # Build once
+pnpm run watch        # Build and watch for changes
 ```
 
 ### Architecture

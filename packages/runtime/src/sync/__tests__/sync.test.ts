@@ -98,18 +98,57 @@ describe('SyncedSessionStore', () => {
     }
   });
 
-  it('warns separately for unpublished messages and timestamp metadata, preserving the message outcome', async () => {
+  it('warns for an unsent message and holds its timestamp back, then warns separately for an unpublished timestamp', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
       const outcome = { published: false, reason: 'message disconnected' };
-      mockSyncProvider.pushChange = vi.fn().mockResolvedValueOnce(outcome)
-        .mockResolvedValueOnce({ published: false, reason: 'index disconnected' });
+      mockSyncProvider.pushChange = vi.fn().mockResolvedValueOnce(outcome);
       const message = { sessionId: 's1', source: 'claude-code', direction: 'output' as const, content: 'hello' };
-      await expect(createMessageSyncHandler(mockSyncProvider).onMessageCreated(message, 123)).resolves.toEqual(outcome);
+      const handler = createMessageSyncHandler(mockSyncProvider);
+      await expect(handler.onMessageCreated(message, 123)).resolves.toEqual(outcome);
       expect(warn).toHaveBeenCalledWith(expect.stringMatching(/s1.*message disconnected/));
-      expect(warn).toHaveBeenCalledWith(expect.stringMatching(/s1.*index disconnected/));
+      expect(mockSyncProvider.pushChange).toHaveBeenCalledTimes(1);
+
+      mockSyncProvider.pushChange = vi.fn().mockResolvedValueOnce({ published: true })
+        .mockResolvedValueOnce({ published: false, reason: 'index disconnected' });
+      await handler.onMessageCreated({ ...message, sessionId: 's2' }, 124);
+      expect(warn).toHaveBeenCalledWith(expect.stringMatching(/s2.*index disconnected/));
     } finally {
       warn.mockRestore();
+    }
+  });
+
+  it('delivers messages refused at the session connection cap, then publishes their timestamp', async () => {
+    const events: string[] = [];
+    const capRefusal = Object.assign(new Error('at the session connection cap'), { code: 'SESSION_CONNECTION_CAP' });
+    mockSyncProvider.isConnected = vi.fn().mockReturnValue(false);
+    mockSyncProvider.connect = vi.fn().mockRejectedValue(capRefusal);
+    mockSyncProvider.pushChange = vi.fn(async (sessionId: string, change: SessionChange) => {
+      events.push(`${change.type}:${sessionId}`);
+      return change.type === 'message_added'
+        ? { published: false, reason: 'not connected', retryable: true }
+        : { published: true };
+    });
+    mockSyncProvider.sendSessionMessages = vi.fn(async (sessionId: string, messages: { content: string }[]) => {
+      events.push(`sent:${sessionId}:${messages.map(m => m.content).join(',')}`);
+      return { published: true };
+    });
+    const handler = createMessageSyncHandler(mockSyncProvider, { outbox: { coalesceMs: 20 } });
+    const prompt = { sessionId: 's11', source: 'claude-code', direction: 'input' as const, content: 'prompt', createdAt: new Date() };
+    const reply = { ...prompt, direction: 'output' as const, content: 'reply' };
+    try {
+      await expect(handler.onMessageCreated(prompt, 100)).resolves.toMatchObject({ published: false, queued: true });
+      await handler.onMessageCreated(reply, 200);
+      // Until the rows are out, the index must not claim the session is current.
+      expect(events).not.toContain('metadata_updated:s11');
+
+      await vi.waitFor(() => expect(events).toContain('metadata_updated:s11'));
+      expect(events).toEqual(['sent:s11:prompt,reply', 'metadata_updated:s11']);
+      expect(mockSyncProvider.pushChange).toHaveBeenLastCalledWith('s11', { type: 'metadata_updated', metadata: { updatedAt: 200 } });
+      // One refused connect per burst, not one per message.
+      expect(mockSyncProvider.connect).toHaveBeenCalledTimes(1);
+    } finally {
+      handler.dispose();
     }
   });
 

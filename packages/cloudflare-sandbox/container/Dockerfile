@@ -73,10 +73,14 @@ RUN apt-get update \
 COPY --from=node-dist /opt/nimbalyst/node /opt/nimbalyst/node
 ENV PATH=/opt/nimbalyst/node/bin:${PATH}
 # Root devDependencies include Playwright and electron-builder, neither of which
-# this image installs -- but the belt-and-braces guard costs nothing.
+# this image installs -- but the belt-and-braces guard costs nothing. CI=true
+# keeps pnpm from prompting before it rewrites node_modules for the prune.
 ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 \
-    npm_config_fund=false \
-    npm_config_audit=false
+    COREPACK_ENABLE_DOWNLOAD_PROMPT=0 \
+    CI=true
+# pnpm comes from the root `packageManager` pin via corepack, which Node 24
+# ships, so the image and a developer checkout run the same pnpm.
+RUN corepack enable pnpm
 
 WORKDIR /build
 # The context is the staged tree, whose contents are the allowlist in
@@ -84,15 +88,11 @@ WORKDIR /build
 COPY . /build
 
 # This install reproduces the root install packages/node/README.md documents,
-# narrowed to the four workspaces the runner needs. Two flags carry the history:
-#
-# --include-workspace-root, because the workspace builds genuinely need root
-# devDependencies. Excluding it looks like the tidier choice and fails twice:
-# npm still runs the root `postinstall` (`patch-package`, a root devDependency
-# -- `sh: 1: patch-package: not found`), and `extension-sdk/src/testing.ts`
-# imports `@playwright/test` and `playwright`, so `tsc` fails on 7 errors. The
-# dev-prune step below is what keeps those out of the shipped layer, rather than
-# an install narrow enough to break the build.
+# narrowed to the four workspaces the runner needs plus their workspace
+# dependencies (the trailing `...`). pnpm installs the root importer as well,
+# and the build needs it: `extension-sdk/src/testing.ts` imports
+# `@playwright/test` and `playwright`, root devDependencies, so `tsc` fails
+# without them. The dev-prune step below keeps them out of the shipped layer.
 #
 # --ignore-scripts, because none of this dependency set needs an install script
 # and skipping them keeps the install deterministic. Each reason was checked,
@@ -100,39 +100,42 @@ COPY . /build
 #   - better-sqlite3 13 has no install script at all; its Node-API binding ships
 #     inside the package tarball (prebuilds/linux-x64.node).
 #   - the Claude Code binary is a plain optionalDependency package, no scripts.
-#   - the two @lexical/* patches patch-package would apply are editor-tree
-#     packages the headless closure never imports.
 #   - the workspace `prepare` builds run explicitly in the next step.
+# Patches are not scripts; pnpm applies them during the install regardless.
+#
+# --store-dir names the cache mount, and --package-import-method=copy because a
+# hardlink cannot cross from that mount into the build filesystem.
+#
 # The smoke check at the end of this build is what proves the result works.
-RUN --mount=type=cache,target=/root/.npm \
-    npm ci --ignore-scripts --include-workspace-root \
-      --workspace=@nimbalyst/node \
-      --workspace=@nimbalyst/runtime \
-      --workspace=@nimbalyst/extension-sdk \
-      --workspace=@nimbalyst/tracker-core
+RUN --mount=type=cache,target=/pnpm-store \
+    pnpm install --frozen-lockfile --ignore-scripts --package-import-method=copy --store-dir=/pnpm-store \
+      --filter '@nimbalyst/node...' \
+      --filter '@nimbalyst/runtime...' \
+      --filter '@nimbalyst/extension-sdk...' \
+      --filter '@nimbalyst/tracker-core...'
 
 # Same order as packages/node/README.md: workspace deps, then the runtime's
 # `node` export condition (dist-node/), then the runner itself.
-RUN npm run build:workspace-deps \
- && npm run build:node --workspace=@nimbalyst/runtime \
- && npm run build --workspace=@nimbalyst/node
+RUN pnpm run build:workspace-deps \
+ && pnpm --filter @nimbalyst/runtime run build:node \
+ && pnpm --filter @nimbalyst/node run build
 
-# Drop build-only dependencies. If this ever removes something the runner needs,
-# the smoke check in the final stage fails the build; set PRUNE_DEV=0 to bisect.
+# Drop build-only dependencies by reinstalling the same selection with --prod.
+# If this ever removes something the runner needs, the smoke check in the final
+# stage fails the build; set PRUNE_DEV=0 to bisect.
 #
-# --ignore-scripts here for a specific reason: `npm prune` re-runs workspace
-# `prepare` scripts, and @nimbalyst/tracker-core's prepare is `tsc -p
-# tsconfig.json`. Pruning removes typescript first, so the rebuild it triggers
-# dies on `sh: 1: tsc: not found` -- pruning a dev dependency and then demanding
-# it back. The dist/ output built in the previous step is what ships; nothing
-# needs rebuilding here.
-RUN set -eux; \
+# --ignore-scripts here for a specific reason: workspace `prepare` scripts such
+# as @nimbalyst/tracker-core's `tsc -p tsconfig.json` would run after typescript
+# is gone and die on `tsc: not found`. The dist/ output built in the previous
+# step is what ships; nothing needs rebuilding here.
+RUN --mount=type=cache,target=/pnpm-store \
+    set -eux; \
     if [ "${PRUNE_DEV}" = "1" ]; then \
-      npm prune --omit=dev --ignore-scripts --include-workspace-root \
-        --workspace=@nimbalyst/node \
-        --workspace=@nimbalyst/runtime \
-        --workspace=@nimbalyst/extension-sdk \
-        --workspace=@nimbalyst/tracker-core; \
+      pnpm install --prod --frozen-lockfile --ignore-scripts --package-import-method=copy --store-dir=/pnpm-store \
+        --filter '@nimbalyst/node...' \
+        --filter '@nimbalyst/runtime...' \
+        --filter '@nimbalyst/extension-sdk...' \
+        --filter '@nimbalyst/tracker-core...'; \
     fi
 
 # The build leaves TypeScript sources next to the emitted JS. They are dead
@@ -156,6 +159,8 @@ RUN rm -rf \
       /build/packages/runtime/scripts \
       /build/packages/extension-sdk/src \
       /build/packages/tracker-core/src \
+      /build/packages/tracker-schema/src \
+      /build/packages/tracker-engine/src \
       /build/bin \
       /build/.nimbalyst-build-context
 
@@ -173,8 +178,8 @@ LABEL org.opencontainers.image.title="nimbalyst-sandbox-node" \
       com.nimbalyst.node.version="${NODE_VERSION}"
 
 COPY --from=node-dist /opt/nimbalyst/node /opt/nimbalyst/node
-# One COPY from the builder stage, not from the host: this preserves the npm
-# workspace layout -- hoisted /opt/nimbalyst/app/node_modules plus the relative
+# One COPY from the builder stage, not from the host: this preserves the pnpm
+# hoisted workspace layout -- hoisted /opt/nimbalyst/app/node_modules plus the relative
 # @nimbalyst/* symlinks into packages/ -- which is what makes the runner
 # resolvable at all. It also puts the SQL migrations exactly where
 # packages/node's resolveSchemaDir() looks by default.

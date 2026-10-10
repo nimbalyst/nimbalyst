@@ -70,6 +70,7 @@ vi.mock('../../../../../tracker-schema/src/TrackerDataModel', () => ({
 import { ElectronDocumentService, getCanonicalTrackerItemIdFromRow } from '../ElectronDocumentService';
 import { applyHeadlessBodyMarkdown, readHeadlessBodyMarkdown } from '../MainBodyDocService';
 import { isTrackerSyncActive, syncTrackerItem, unsyncTrackerItem } from '../TrackerSyncManager';
+import { drainPendingTrackerItems } from '../tracker/trackerItemBackfill';
 
 const SCHEMA = `
   CREATE TABLE tracker_items (
@@ -321,20 +322,93 @@ describe('promoted rows survive a rescan', () => {
     expect(String(rows[0].content)).toContain('Edited by a teammate');
   });
 
-  it('binds a file whose frontmatter already carries trackerId to that id', async () => {
-    // A teammate's clone: the file is committed with `trackerId`, the row has
-    // not synced down yet. Projecting must use the declared id, not a fresh fm:.
-    await seedPlanFile(FILE_BODY, 'trackerId: plan_1700000000000_abc123\n');
+});
 
-    await (service as any).ensureFrontmatterProjectionRow(REL, 'plan');
+/**
+ * A file's `trackerId` binds it to an item this workspace already has. One
+ * naming an item the room has never sent (a fixture, a copied file, a clone
+ * whose rows have not synced down) used to become a native row under that id,
+ * which the reconnect drain then created in the team tracker.
+ */
+describe('a declared trackerId binds only to an item that exists', () => {
+  const DECISION_REL = 'wiki/decision/second.md';
+  const DECISION_FM_ID = `fm:decision:${DECISION_REL}`;
 
-    const rows = (await pglite.query<any>(`SELECT * FROM tracker_items WHERE source_ref = $1`, [REL])).rows;
-    expect(rows).toHaveLength(1);
-    expect(rows[0].id).toBe('plan_1700000000000_abc123');
-    expect(rows[0].source).toBe('native');
-    // The binding key is not a user-visible tracker field.
-    const data = typeof rows[0].data === 'string' ? JSON.parse(rows[0].data) : rows[0].data;
-    expect(data.trackerId).toBeUndefined();
+  async function seedDecisionFile(trackerId: string): Promise<void> {
+    const fullPath = path.join(tempDir, DECISION_REL);
+    await fs.mkdir(path.dirname(fullPath), { recursive: true });
+    await fs.writeFile(
+      fullPath,
+      `---\ntrackerStatus:\n  type: decision\ntrackerId: ${trackerId}\ntitle: Second\nstatus: accepted\n---\nx\n`,
+      'utf-8',
+    );
+  }
+
+  /** The real drain over the same database, for a team tracker that publishes by default. */
+  function drainPort() {
+    return {
+      query: (sql: string, params?: unknown[]) => pglite.query<any>(sql, params),
+      upsertItem: vi.fn(async () => {}),
+      deleteItem: vi.fn(async () => {}),
+      resolvePolicy: () => ({ known: true, policy: { sharing: 'team', draftByDefault: false } }) as const,
+      countSyncedRows: async () => 0,
+      emitEvent: vi.fn(),
+      reloadSchemas: async () => {},
+      toItem: (row: any) => (service as any).rowToTrackerItem(row),
+      log: { info: vi.fn(), warn: vi.fn() },
+    };
+  }
+
+  it('projects a file declaring an unknown id as a local fm: item, which the drain never pushes', async () => {
+    await seedDecisionFile('dec-2');
+
+    await (service as any).ensureFrontmatterProjectionRow(DECISION_REL, 'decision');
+
+    const rows = (await pglite.query<any>(`SELECT * FROM tracker_items`)).rows;
+    expect(rows.map((row) => [row.id, row.source, row.sync_status])).toEqual([
+      [DECISION_FM_ID, 'frontmatter', 'local'],
+    ]);
+
+    const port = drainPort();
+    await drainPendingTrackerItems(tempDir, port);
+    expect(port.upsertItem).not.toHaveBeenCalled();
+  });
+
+  it('binds a file declaring the id of an existing item to it, without a write the drain would push', async () => {
+    await pglite.query(
+      `INSERT INTO tracker_items (id, type, data, workspace, source, sync_status, sync_id)
+       VALUES ('dec-2', 'decision', $1, $2, 'native', 'synced', 42)`,
+      [JSON.stringify({ title: 'Second', status: 'accepted' }), tempDir],
+    );
+    await seedDecisionFile('dec-2');
+
+    const item = await (service as any).ensureFrontmatterProjectionRow(DECISION_REL, 'decision');
+
+    expect(item.id).toBe('dec-2');
+    const rows = (await pglite.query<any>(`SELECT * FROM tracker_items`)).rows;
+    expect(rows.map((row) => [row.id, row.sync_status, row.sync_id])).toEqual([['dec-2', 'synced', 42]]);
+
+    const port = drainPort();
+    await drainPendingTrackerItems(tempDir, port);
+    expect(port.upsertItem).not.toHaveBeenCalled();
+  });
+
+  it('does not bind to an item with that id in another workspace', async () => {
+    await pglite.query(
+      `INSERT INTO tracker_items (id, type, data, workspace, source, sync_status, sync_id)
+       VALUES ('dec-2', 'decision', $1, '/elsewhere', 'native', 'synced', 42)`,
+      [JSON.stringify({ title: 'Theirs' })],
+    );
+    await seedDecisionFile('dec-2');
+
+    await (service as any).ensureFrontmatterProjectionRow(DECISION_REL, 'decision');
+
+    const theirs = (await pglite.query<any>(`SELECT workspace, data FROM tracker_items WHERE id = 'dec-2'`)).rows[0];
+    expect(theirs.workspace).toBe('/elsewhere');
+    const data = typeof theirs.data === 'string' ? JSON.parse(theirs.data) : theirs.data;
+    expect(data.title).toBe('Theirs');
+    expect((await pglite.query<any>(`SELECT id FROM tracker_items WHERE workspace = $1`, [tempDir])).rows)
+      .toEqual([{ id: DECISION_FM_ID }]);
   });
 });
 

@@ -3,7 +3,7 @@ import React, { useState } from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { CollabCreateItemDialog } from '../CollabCreateItemDialog';
-import type { SharedFolder } from '@nimbalyst/collab-client/docs';
+import type { CollabTreeNode, CollabTreeTypeNode, SharedDocument, SharedFolder } from '@nimbalyst/collab-client/docs';
 
 vi.mock('@nimbalyst/runtime/ui/icons/MaterialSymbol', () => ({
   MaterialSymbol: ({ icon }: { icon: string }) => <span data-icon={icon} />,
@@ -70,6 +70,58 @@ describe('CollabCreateItemDialog', () => {
     screen.getByText('Will be created as');
     fireEvent.click(screen.getByRole('button', { name: 'Create Folder' }));
     expect(onConfirm).toHaveBeenCalledWith('Architecture');
+  });
+
+  it('mirrors the page tree: types shown but not pickable, typed pages and their children as targets', () => {
+    const page = (documentId: string, title: string, parentFolderId: string | null = null) => ({
+      documentId, title, documentType: 'markdown', parentFolderId, createdBy: 'u', createdAt: 1, updatedAt: 1,
+    }) as unknown as SharedDocument;
+    const tree: CollabTreeNode[] = [{
+      id: 'document:p-init', type: 'document', path: 'Initiatives', name: 'Initiatives', document: page('p-init', 'Initiatives'),
+      children: [{
+        id: 'type:initiative', type: 'type', typeId: 'initiative', path: '', name: 'Initiatives', count: 1,
+        placement: {} as CollabTreeTypeNode['placement'],
+        children: [{
+          id: 'item:i-pages', type: 'item', itemId: 'i-pages', typeId: 'initiative', path: '', name: 'Pages', typeLabel: 'Initiative',
+          children: [{
+            id: 'document:p-problems', type: 'document', path: '', name: 'Problems with Pages',
+            document: page('p-problems', 'Problems with Pages', 'i-pages'),
+          }],
+        }],
+      }],
+    }];
+    const onTargetFolderChange = vi.fn();
+    render(
+      <CollabCreateItemDialog
+        isOpen
+        kind="document"
+        folders={folders}
+        tree={tree}
+        rootLabel="Team"
+        targetFolderId="p-problems"
+        targetParentKind="page"
+        onTargetFolderChange={onTargetFolderChange}
+        onConfirm={() => {}}
+        onCancel={() => {}}
+      />,
+    );
+
+    // The selected page opens expanded down to it, nested under its typed page and type.
+    const problems = screen.getByTestId('collab-create-location-option-document:p-problems');
+    expect(problems.getAttribute('aria-selected')).toBe('true');
+    expect(problems.style.paddingLeft).toBe(`${8 + 3 * 18}px`);
+    expect(screen.queryByTestId('collab-create-location-option-f-specs')).toBeNull();
+    screen.getByText('Initiatives / Initiatives / Pages / Problems with Pages /');
+
+    fireEvent.click(screen.getByTestId('collab-create-location-option-item:i-pages'));
+    expect(onTargetFolderChange).toHaveBeenCalledWith('i-pages', 'item');
+
+    // A type row only collapses its items; it is never a target.
+    const typeRow = screen.getByTestId('collab-create-location-option-type:initiative');
+    expect(typeRow.getAttribute('aria-disabled')).toBe('true');
+    fireEvent.click(typeRow);
+    expect(onTargetFolderChange).toHaveBeenCalledTimes(1);
+    expect(screen.queryByTestId('collab-create-location-option-item:i-pages')).toBeNull();
   });
 
   it('shows the selected catalog type and keeps its compound suffix fixed', () => {

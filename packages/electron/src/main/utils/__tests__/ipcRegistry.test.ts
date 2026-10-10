@@ -2,16 +2,23 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const handlers = new Map<string, (...args: any[]) => any>();
+const listeners = new Map<string, (...args: any[]) => any>();
 
 vi.mock('electron', () => ({
   ipcMain: {
     handle: vi.fn((channel: string, handler: (...args: any[]) => any) => {
       handlers.set(channel, handler);
     }),
+    on: vi.fn((channel: string, listener: (...args: any[]) => any) => {
+      listeners.set(channel, listener);
+    }),
+    once: vi.fn((channel: string, listener: (...args: any[]) => any) => {
+      listeners.set(channel, listener);
+    }),
   },
 }));
 
-import { safeHandle, getIpcStatsSnapshot } from '../ipcRegistry';
+import { safeHandle, safeOn, safeOnce, getIpcStatsSnapshot } from '../ipcRegistry';
 
 function statsFor(channel: string) {
   return getIpcStatsSnapshot().find((row) => row.channel === channel);
@@ -39,4 +46,36 @@ describe('ipcRegistry invocation stats', () => {
     expect(warn.mock.calls.flat().join(' ')).not.toContain('ai:sendMessage');
     warn.mockRestore();
   }, 10_000);
+});
+
+describe('ipcRegistry listener errors', () => {
+  // A throw escaping an ipcMain.on listener raises Electron's native
+  // "JavaScript error in the main process" dialog.
+  it('logs and contains sync throws and async rejections from safeOn/safeOnce listeners', async () => {
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    safeOn('test:sync-throw', () => { throw new Error('sync boom'); });
+    safeOn('test:async-throw', async () => { throw new Error('async boom'); });
+    safeOnce('test:once-throw', () => { throw new Error('once boom'); });
+
+    expect(() => listeners.get('test:sync-throw')!({} as any)).not.toThrow();
+    expect(() => listeners.get('test:once-throw')!({} as any)).not.toThrow();
+    const unhandled = vi.fn();
+    process.on('unhandledRejection', unhandled);
+    await listeners.get('test:async-throw')!({} as any);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    process.off('unhandledRejection', unhandled);
+
+    expect(unhandled).not.toHaveBeenCalled();
+    const logged = error.mock.calls.map((call) => call.join(' ')).join('\n');
+    expect(logged).toContain('test:sync-throw');
+    expect(logged).toContain('test:async-throw');
+    expect(logged).toContain('test:once-throw');
+    error.mockRestore();
+  });
+
+  it('still rejects invoke errors from safeHandle to the renderer', async () => {
+    safeHandle('test:handle-throw', () => { throw new Error('handle boom'); });
+    await expect(handlers.get('test:handle-throw')!({} as any)).rejects.toThrow('handle boom');
+  });
 });

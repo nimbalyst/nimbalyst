@@ -47,6 +47,27 @@ describe('window mode hydration', () => {
     expect(store.get(windowModeAtom)).toBe('agent');
   });
 
+  it('falls back to files for a saved mode that no longer exists and writes the fallback back once', async () => {
+    // Wiki mode was removed; a workspace saved while it was open must still load,
+    // and main (which reads the persisted mode for Cmd+N) must see the fallback.
+    const invoke = vi.fn(async (channel: string) => (channel === 'workspace:get-state' ? { activeMode: 'wiki' } : undefined));
+    vi.stubGlobal('window', { electronAPI: { invoke } });
+    store.set(activeWorkspacePathAtom, '/workspace-removed-mode');
+    await initWindowMode('/workspace-removed-mode');
+    expect(store.get(windowModeAtom)).toBe('files');
+    expect(invoke.mock.calls.filter(([channel]) => channel === 'workspace:update-state'))
+      .toEqual([['workspace:update-state', '/workspace-removed-mode', { activeMode: 'files' }]]);
+
+    // A valid saved mode is not rewritten.
+    resetWindowMode();
+    invoke.mockClear();
+    invoke.mockImplementation(async (channel: string) => (channel === 'workspace:get-state' ? { activeMode: 'tracker' } : undefined));
+    store.set(activeWorkspacePathAtom, '/workspace-valid-mode');
+    await initWindowMode('/workspace-valid-mode');
+    expect(store.get(windowModeAtom)).toBe('tracker');
+    expect(invoke.mock.calls.some(([channel]) => channel === 'workspace:update-state')).toBe(false);
+  });
+
   it.each<ContentMode>(['files', 'agent', 'tracker', 'collab', 'org', 'pr-review', 'settings'])(
     'reveals %s through fullscreen, sidebar, and bottom panels even when already selected',
     (mode) => {

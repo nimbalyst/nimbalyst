@@ -56,6 +56,9 @@ async function initScratchRepo(cwd: string): Promise<void> {
   await git(['config', 'user.email', 'test@example.com'], cwd);
   await git(['config', 'user.name', 'Test User'], cwd);
   await git(['config', 'commit.gpgsign', 'false'], cwd);
+  // executeGitCommit inherits process.env, so a developer's global core.hooksPath
+  // would replace the hooks these tests write into .git/hooks.
+  await git(['config', 'core.hooksPath', path.join(cwd, '.git', 'hooks')], cwd);
   assertGitSandbox(cwd, testTempRoot);
 }
 

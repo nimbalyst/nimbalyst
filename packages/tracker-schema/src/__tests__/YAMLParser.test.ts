@@ -64,6 +64,33 @@ fields:
   });
 });
 
+describe('parseTrackerYAML — wiki types written per local-wiki FORMAT.md', () => {
+  const FORMAT_EXAMPLE = `
+type: partner
+displayName: Partner
+displayNamePlural: Partners
+storage: table
+fields:
+  - name: title
+    type: string
+`;
+
+  it('defaults the app-only keys a wiki type may leave out', () => {
+    const model = parseTrackerYAML(FORMAT_EXAMPLE);
+    expect(model.storage).toBe('table');
+    expect(model.idPrefix).toBe('par');
+    expect(model.modes).toEqual({ inline: true, fullDocument: false });
+    expect(model.icon).toBeTruthy();
+    expect(model.color).toBeTruthy();
+  });
+
+  it('still requires them on a type that is not in the wiki', () => {
+    expect(() => parseTrackerYAML(FORMAT_EXAMPLE.replace('storage: table\n', ''))).toThrow(
+      'Missing required field: icon'
+    );
+  });
+});
+
 describe('parseTrackerYAML — tracker sharing migration', () => {
   it.each([
     ['local', 'personal', false],
@@ -98,6 +125,30 @@ describe('parseTrackerYAML — tracker sharing migration', () => {
     const active = parseTrackerYAML(`${BASE}\nsharing: team\nfields:\n  - name: title\n    type: string\n`);
     expect(active.archived).toBeUndefined();
     expect(serializeTrackerYAML(active)).not.toContain('archived:');
+  });
+
+  // Local numbers (`NIM.75`) are opt-in per type. Losing the flag on a round
+  // trip would silently stop numbering a type the user asked to number.
+  it('round-trips localNumbers, and stays silent when a type does not opt in', () => {
+    const numbered = parseTrackerYAML(`${BASE}\nlocalNumbers: true\nfields:\n  - name: title\n    type: string\n`);
+    expect(numbered.localNumbers).toBe(true);
+    expect(parseTrackerYAML(serializeTrackerYAML(numbered)).localNumbers).toBe(true);
+
+    const plain = parseTrackerYAML(`${BASE}\nfields:\n  - name: title\n    type: string\n`);
+    expect(plain.localNumbers).toBeUndefined();
+    expect(serializeTrackerYAML(plain)).not.toContain('localNumbers:');
+  });
+
+  // `storage` is what makes a type a Local wiki type (local-wiki FORMAT.md).
+  // An app-side rewrite of the YAML that dropped it would move the type's items
+  // out of the wiki without anyone asking.
+  it('round-trips a wiki type\'s storage and ignores values the format does not define', () => {
+    const table = parseTrackerYAML(`${BASE}\nstorage: table\nfields:\n  - name: title\n    type: string\n`);
+    expect(table.storage).toBe('table');
+    expect(parseTrackerYAML(serializeTrackerYAML(table)).storage).toBe('table');
+    expect(parseTrackerYAML(`${BASE}\nstorage: pages\nfields:\n  - name: title\n    type: string\n`).storage).toBe('pages');
+    expect(parseTrackerYAML(`${BASE}\nstorage: sheet\nfields:\n  - name: title\n    type: string\n`).storage).toBeUndefined();
+    expect(serializeTrackerYAML(parseTrackerYAML(`${BASE}\nfields:\n  - name: title\n    type: string\n`))).not.toContain('storage:');
   });
 });
 

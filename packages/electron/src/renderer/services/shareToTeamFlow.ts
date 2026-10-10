@@ -33,8 +33,10 @@ import type { ShareToTeamData } from "../dialogs";
 import {
   activeTeamOrgIdAtom,
   buildSharedDocumentDeepLink,
+  getPersonalCollabHost,
   resolveDesktopCollabScope,
   trashSharedDocument,
+  workspaceHasTeamAtom,
 } from "../store/atoms/collabDocuments";
 import { activeWorkspacePathAtom } from "../store/atoms/openProjects";
 import { getRelativePath } from "../utils/pathUtils";
@@ -47,6 +49,7 @@ import {
   type CollaborativeDocumentTypeDescriptor,
 } from "./CollaborativeDocumentTypeCatalog";
 import { readShareToTeamSourceContent } from "./shareToTeamSourceContent";
+import { personalPageSupportsType } from "./personalPageTypes";
 import {
   CollaborativeDocumentCreationError,
   createCollaborativeDocument,
@@ -66,9 +69,14 @@ import {
 } from "../../shared/analytics/teamAnalytics";
 import { trackTeamAnalyticsEvent } from "../utils/teamAnalytics";
 
+/** The Pages section a copy lands in. */
+export type PagesSection = "team" | "personal";
+
 /** Everything the share dialog asks the author for. */
 export interface ShareToTeamAnswers {
   descriptor: CollaborativeDocumentTypeDescriptor;
+  /** Team when absent (callers from before Personal existed). */
+  section?: PagesSection;
   folderId: string | null;
   folderPath: string;
   sharedName: string;
@@ -96,6 +104,8 @@ export interface ShareToTeamAskOptions {
    * silently answering it would publish files the author never saw named.
    */
   skipWhenFullyAnswered?: boolean;
+  /** Pre-selects the section; the dialog still lets the author switch when both are offered. */
+  section?: PagesSection;
 }
 
 export type ShareFileToTeamResult =
@@ -197,6 +207,17 @@ export function resolveShareDescriptor(
     : { ok: false, reason: shareability.reason };
 }
 
+/** Where a copy of this type can go: Team needs a team; Personal holds any type but code. */
+export function shareSectionsFor(
+  descriptor: CollaborativeDocumentTypeDescriptor,
+  hasTeam: boolean
+): PagesSection[] {
+  return [
+    ...(hasTeam ? (["team"] as const) : []),
+    ...(personalPageSupportsType(descriptor.documentType) ? (["personal"] as const) : []),
+  ];
+}
+
 export async function askShareToTeam(
   target: ShareToTeamTarget,
   options: ShareToTeamAskOptions = {}
@@ -206,6 +227,15 @@ export async function askShareToTeam(
     return { status: "unavailable", reason: resolved.reason };
   }
   const descriptor = resolved.descriptor;
+  const sections = shareSectionsFor(descriptor, store.get(workspaceHasTeamAtom));
+  if (sections.length === 0) {
+    return {
+      status: "unavailable",
+      reason: `${descriptor.displayName} files can only be copied to Team pages, and this project has no team.`,
+    };
+  }
+  const initialSection =
+    options.section && sections.includes(options.section) ? options.section : sections[0]!;
 
   const workspacePath = store.get(activeWorkspacePathAtom);
   const sourceRelPath = workspacePath
@@ -216,7 +246,8 @@ export async function askShareToTeam(
   // this guard a spreadsheet would await a call that can only return [], which
   // pushes opening the dialog into a later microtask for no reason.
   const embeddedDocuments =
-    descriptor.documentType === "markdown" || descriptor.documentType === "canvas"
+    sections.includes("team") &&
+    (descriptor.documentType === "markdown" || descriptor.documentType === "canvas")
       ? await discoverShareEmbeddedDocuments(target.filePath, descriptor)
       : [];
 
@@ -226,12 +257,13 @@ export async function askShareToTeam(
   if (
     options.destination &&
     options.skipWhenFullyAnswered &&
-    embeddedDocuments.length === 0
+    (embeddedDocuments.length === 0 || initialSection === "personal")
   ) {
     return {
       status: "answered",
       answers: {
         descriptor,
+        section: initialSection,
         folderId: options.destination.folderId,
         folderPath: options.destination.folderPath,
         sharedName: target.fileName,
@@ -256,11 +288,14 @@ export async function askShareToTeam(
       sourceRelPath,
       descriptor,
       embeddedDocuments,
+      sections,
+      initialSection,
       // Only the folder is pre-answered; the dialog still asks the rest.
       ...(options.destination
         ? { initialFolderId: options.destination.folderId }
         : {}),
       onConfirm: ({
+        section,
         folderId,
         folderPath,
         sharedName,
@@ -271,6 +306,7 @@ export async function askShareToTeam(
           status: "answered",
           answers: {
             descriptor,
+            section,
             folderId,
             folderPath,
             sharedName,
@@ -318,6 +354,8 @@ export async function shareFileToTeam(params: {
 }): Promise<ShareFileToTeamResult> {
   const { filePath, fileName, answers } = params;
   const showNotifications = params.showNotifications !== false;
+  const personal = answers.section === "personal";
+  const failTitle = personal ? "Could not copy to Personal" : "Could not share to team";
   const {
     folderId,
     folderPath,
@@ -336,13 +374,8 @@ export async function shareFileToTeam(params: {
   ): ShareFileToTeamResult => {
     if (showNotifications) {
       if (options)
-        errorNotificationService.showError(
-          "Could not share to team",
-          message,
-          options
-        );
-      else
-        errorNotificationService.showError("Could not share to team", message);
+        errorNotificationService.showError(failTitle, message, options);
+      else errorNotificationService.showError(failTitle, message);
     }
     return { status: "failed", error: message };
   };
@@ -395,12 +428,16 @@ export async function shareFileToTeam(params: {
   // base64 images, mindmap's no-attachments) are handled differently or
   // not at all; we skip the markdown rewriter for them entirely.
   const workspacePath = store.get(activeWorkspacePathAtom);
-  const scope = workspacePath
-    ? (await resolveDesktopCollabScope(workspacePath)).scope
-    : null;
+  // A Personal copy is a local page: no team scope, no image upload, no linked
+  // documents (their links stay as they were in the file).
+  const scope = !workspacePath
+    ? null
+    : personal
+    ? getPersonalCollabHost(workspacePath).scope
+    : (await resolveDesktopCollabScope(workspacePath)).scope;
   if (!scope) {
     trackShareFailure("Collaboration scope is unavailable.");
-    return fail("The active team collaboration scope is unavailable.");
+    return fail(personal ? "No open project for Personal pages." : "The active team collaboration scope is unavailable.");
   }
   const normalizedFolder = normalizeCollabPath(folderPath);
   const trimmedName = sharedName.trim() || fileName;
@@ -417,6 +454,7 @@ export async function shareFileToTeam(params: {
   } = { kind: "no-assets" };
 
   if (
+    !personal &&
     documentType === "markdown" &&
     typeof initialContent === "string" &&
     initialContent &&
@@ -515,6 +553,7 @@ export async function shareFileToTeam(params: {
       failures: [],
     };
   if (
+    !personal &&
     (documentType === "markdown" || documentType === "canvas") &&
     workspacePath &&
     embeddedDocuments.length > 0 &&
@@ -566,10 +605,9 @@ export async function shareFileToTeam(params: {
       requestedName: trimmedName,
       parentFolderId: folderId,
       sourceContent: migratedContent,
-      localOrigin: {
-        sourceFilePath: filePath,
-        sourceContent: initialContent,
-      },
+      ...(personal
+        ? {}
+        : { localOrigin: { sourceFilePath: filePath, sourceContent: initialContent } }),
       operationId: documentId,
       documentId,
       ...(params.openAfterCreate === false ? { openAfterCreate: false } : {}),
@@ -608,7 +646,7 @@ export async function shareFileToTeam(params: {
     });
   }
   const finalTitle = createdDocument.title;
-  const teamOrgId = store.get(activeTeamOrgIdAtom);
+  const teamOrgId = personal ? null : store.get(activeTeamOrgIdAtom);
   const copyLinkAction = teamOrgId
     ? {
         label: "Copy Link",
@@ -658,6 +696,7 @@ export async function shareFileToTeam(params: {
   // Remember the destination folder so the next share defaults to it.
   if (
     params.persistLastSharedFolder !== false
+    && !personal
     && workspacePath
     && window.electronAPI?.invoke
   ) {
@@ -741,6 +780,8 @@ export async function shareFileToTeam(params: {
             } attachment${
               migrationToast.okCount === 1 ? "" : "s"
             }.${linkedSummary}`
+          : personal
+          ? `"${finalTitle}" is now a page in Personal.`
           : `"${finalTitle}" is now a collaborative document.${linkedSummary}`;
       if (linkedFailureCount > 0) {
         errorNotificationService.showWarning(
@@ -749,7 +790,7 @@ export async function shareFileToTeam(params: {
           { details: linkedDetails, duration: 10000, action: copyLinkAction }
         );
       } else {
-        errorNotificationService.showInfo("Shared to team", body, {
+        errorNotificationService.showInfo(personal ? "Copied to Personal" : "Shared to team", body, {
           duration: 4000,
           action: copyLinkAction,
         });

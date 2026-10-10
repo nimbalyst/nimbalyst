@@ -21,15 +21,17 @@ import { createPGLiteWorkspaceRepository } from './PGLiteWorkspaceRepository';
 import { createPGLiteDocumentsRepository } from './PGLiteDocumentsRepository';
 import { createPGLiteQueuedPromptsStore, type QueuedPromptsStore } from './PGLiteQueuedPromptsStore';
 import { createPGLiteSessionWakeupsStore, type SessionWakeupsStore } from './PGLiteSessionWakeupsStore';
+import { createPendingSubmissionStore, type PendingSubmissionStore } from './ai/pendingSubmissions';
 import { runAgentMessagesBackfill } from './AgentMessagesBackfill';
 import { healArchivedWorkstreamChildren } from './healArchivedWorkstreamChildren';
+import { migrateSessionTrees } from './sessionTreeMigration';
 import { runWhenFirstUsable } from './startupMaintenanceGate';
 import { database } from '../database/PGLiteDatabaseWorker';
 import { createSQLiteStoreAdapter } from '../database/sqlite/SQLiteStoreAdapter';
 import { logger } from '../utils/logger';
 import { pruneWorkstreamStates } from '../utils/store';
 import { drainAllLegacyPendingUpdates } from './LegacyPendingUpdateDrainService';
-import { initializeSync, shutdownSync, isSyncEnabled, reinitializeSync } from './SyncManager';
+import { initializeSync, shutdownSync, isSyncEnabled, reinitializeSync, getSyncProvider } from './SyncManager';
 import { shutdownTrackerSync, initializeTrackerSync } from './TrackerSyncManager';
 import { ensureWorkspaceLocalNumbersInBackground } from './tracker/ensureWorkspaceLocalNumbers';
 import { onAuthStateChange } from './StytchAuthService';
@@ -45,6 +47,7 @@ class RepositoryManager {
   private documentsRepository: DocumentsRepository | null = null;
   private queuedPromptsStore: QueuedPromptsStore | null = null;
   private sessionWakeupsStore: SessionWakeupsStore | null = null;
+  private pendingSubmissionStore: PendingSubmissionStore | null = null;
   private initialized = false;
   private authListenerUnsubscribe: (() => void) | null = null;
   private wasAuthenticated = false; // Track auth state to detect transitions
@@ -69,7 +72,7 @@ class RepositoryManager {
       const sqliteDatabase = database.getActiveSQLiteDatabase();
       const dbAdapter = sqliteDatabase
         ? createSQLiteStoreAdapter(sqliteDatabase)
-        : { query: database.query.bind(database) };
+        : { query: database.query.bind(database), runTransaction: database.runTransaction.bind(database) };
 
       // Create base session store
       this.baseSessionStore = createPGLiteSessionStore(
@@ -134,6 +137,14 @@ class RepositoryManager {
         }
       );
 
+      // Composer prompts between send and turn end. Writes through the base
+      // store so the record is never published to mobile sync.
+      const baseSessionStore = this.baseSessionStore!;
+      this.pendingSubmissionStore = createPendingSubmissionStore(
+        dbAdapter,
+        (sessionId, update) => baseSessionStore.updateMetadata(sessionId, update),
+      );
+
       // Create session wakeups store (scheduled re-invocations)
       this.sessionWakeupsStore = createPGLiteSessionWakeupsStore(
         dbAdapter,
@@ -182,6 +193,22 @@ class RepositoryManager {
       // Deferred like the backfill above so it never head-of-line-blocks the
       // shared SQLite worker while the first window loads.
       runWhenFirstUsable('archive-orphan-heal', async () => {
+        const { moved } = await migrateSessionTrees(dbAdapter);
+        if (moved) {
+          const provider = getSyncProvider();
+          if (provider) {
+            const { rows } = await dbAdapter.query<{ id: string; parent_session_id: string | null; created_by_session_id: string | null }>(
+              "SELECT id, parent_session_id, created_by_session_id FROM ai_sessions WHERE CAST(metadata->>'sessionTreeMigrationVersion' AS TEXT) = '1'");
+            for (let offset = 0; offset < rows.length; offset += 100) {
+              await Promise.allSettled(rows.slice(offset, offset + 100).map(row => provider.pushChange(row.id, {
+                type: 'metadata_updated', metadata: { parentSessionId: row.parent_session_id ?? null, createdBySessionId: row.created_by_session_id ?? null },
+              })));
+            }
+          }
+          for (const window of windows.values()) {
+            if (!window.isDestroyed()) window.webContents.send('sessions:refresh-list', {});
+          }
+        }
         const { healed } = await healArchivedWorkstreamChildren(dbAdapter);
         if (healed > 0) {
           logger.main.info(`[RepositoryManager] Archived ${healed} orphaned workstream child session(s) whose parent was archived (NIM-1831)`);
@@ -322,6 +349,13 @@ class RepositoryManager {
     return this.baseAgentMessagesStore;
   }
 
+  getPendingSubmissionStore(): PendingSubmissionStore {
+    if (!this.pendingSubmissionStore) {
+      throw new Error('RepositoryManager not initialized. Call initialize() first.');
+    }
+    return this.pendingSubmissionStore;
+  }
+
   /**
    * Get the queued prompts store instance.
    * Used for atomic prompt claiming and queue management.
@@ -459,6 +493,10 @@ export function getBaseAgentMessagesStore(): AgentMessagesStore {
 
 export function getQueuedPromptsStore(): QueuedPromptsStore {
   return repositoryManager.getQueuedPromptsStore();
+}
+
+export function getPendingSubmissionStore(): PendingSubmissionStore {
+  return repositoryManager.getPendingSubmissionStore();
 }
 
 export function getSessionWakeupsStore(): SessionWakeupsStore {

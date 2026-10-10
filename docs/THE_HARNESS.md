@@ -41,7 +41,7 @@ Primary brief. Loaded into every session's context automatically. Contains:
 - **Codebase overview** — monorepo layout, extension system pointer, dev commands.
 - **Cross-cutting patterns** — error handling, naming conventions, React DOM markers.
 - **Documentation reference table** — points the agent at the right `docs/*.md` file when working on a specific area (extensions, IPC, editor state, transcripts, etc.). The table is the single most load-bearing piece of context: "before editing X, read docs/Y.md."
-- **General guidelines** — no emojis, no time estimates, no unrequested commits, don't run `npm run dev` yourself.
+- **General guidelines** — no emojis, no time estimates, no unrequested commits, don't run `pnpm run dev` yourself.
 
 ### `.claude/rules/*.md`
 
@@ -231,14 +231,14 @@ How the agent confirms a fix actually works before announcing it.
 
 ### Unit tests
 
-- `npm run test:unit` (vitest)
-- Per-package: `npm run test` inside the package
-- iOS: `npm run ios:test:swift`
+- `pnpm run test:unit` (vitest)
+- Per-package: `pnpm run test` inside the package
+- iOS: `pnpm run ios:test:swift`
 
 ### E2E tests (Playwright on host)
 
 - Spec files under `packages/electron/e2e/`
-- Run with `npx playwright test <single-spec-file>` — **one file per command** (multiple files fight over the PGLite database lock)
+- Run with `pnpm exec playwright test <single-spec-file>` — **one file per command** (multiple files fight over the PGLite database lock)
 - Use `--max-failures=1`, read the error, fix, run again — never run multiple times when you already have the failure
 - The app is fast; tests use short timeouts (500–1000ms), not 5s
 - No real AI calls in E2E; use the `aiToolSimulator.ts` to simulate AI behavior
@@ -254,13 +254,13 @@ Per the end-to-end-verification rule: if a bug requires `/restart` to test, the 
 
 ### Type checks
 
-- `npm run typecheck` at the root
+- `pnpm run typecheck` at the root
 - Per-package `tsc --noEmit`
 - Type checks verify correctness, not feature correctness; don't conflate "tsc passes" with "the user can do the thing."
 
 ### Linting
 
-- `npm run lint` if present per package; ESLint config is workspace-wide
+- `pnpm run lint` if present per package; ESLint config is workspace-wide
 
 ---
 
@@ -289,7 +289,7 @@ When spawning a sibling session for a related sub-task, link it to the same work
 
 ### Multi-instance dev (for collab/sync testing)
 
-- `npm run dev:user2` — second instance with isolated `NIMBALYST_USER_DATA_DIR`, port `5274`, `--outDir=out2`
+- `pnpm run dev:user2` — second instance with isolated `NIMBALYST_USER_DATA_DIR`, port `5274`, `--outDir=out2`
 - Worktrees auto-derive a per-worktree userData dir via `crystal-run.sh`
 
 ### Worktrees

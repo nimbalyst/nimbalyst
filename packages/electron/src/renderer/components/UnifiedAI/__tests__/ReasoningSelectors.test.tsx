@@ -13,6 +13,21 @@ vi.mock('@nimbalyst/runtime/ui/icons/MaterialSymbol', () => ({
 afterEach(() => cleanup());
 
 describe('reasoning selector menu positioning', () => {
+  it('focuses effort by typeahead without selecting, and clears the query on reopening', () => {
+    const onLevelChange = vi.fn();
+    render(<EffortLevelSelector level="high" modelId="openai-codex/gpt-6-astra" onLevelChange={onLevelChange} />);
+    const trigger = screen.getByTestId('effort-level-selector');
+    fireEvent.click(trigger);
+    for (const key of 'me') fireEvent.keyDown(document.activeElement!, { key });
+    expect(document.activeElement).toBe(screen.getByRole('menuitemradio', { name: 'Medium' }));
+    expect(onLevelChange).not.toHaveBeenCalled();
+    fireEvent.click(document.activeElement!);
+    expect(onLevelChange).toHaveBeenCalledWith('medium');
+    fireEvent.click(trigger);
+    fireEvent.keyDown(document.activeElement!, { key: 'l' });
+    expect(document.activeElement).toBe(screen.getByRole('menuitemradio', { name: 'Low' }));
+  });
+
   it.each([
     {
       name: 'effort',

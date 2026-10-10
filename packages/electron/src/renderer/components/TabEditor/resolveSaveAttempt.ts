@@ -41,7 +41,7 @@ export interface SaveAttemptDeps {
     source: 'auto' | 'manual',
   ): Promise<SaveAttemptResult | null>;
   /** Returns true to overwrite external changes, false to reload from disk. */
-  confirmOverwrite(): boolean;
+  confirmOverwrite(): Promise<boolean>;
 }
 
 export interface SaveAttemptParams {
@@ -78,7 +78,7 @@ export async function resolveSaveAttempt(
       return { kind: 'autosave-conflict', diskContent, baseline: expectedDiskContent };
     }
 
-    if (!deps.confirmOverwrite()) {
+    if (!(await deps.confirmOverwrite())) {
       // Only reload when the main process actually handed back disk content;
       // otherwise there is nothing to replace the buffer with and this stays
       // a failure so the buffer is preserved.

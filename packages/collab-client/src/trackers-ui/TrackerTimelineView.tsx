@@ -13,6 +13,7 @@
 
 import React, { useEffect, useMemo, useState } from 'react';
 import { FloatingPortal, flip, offset, shift, useFloating, type VirtualElement } from '@floating-ui/react';
+import { windowControlsClearance } from '@nimbalyst/runtime/ui/floating/windowControlsClearance';
 import { MaterialSymbol } from '@nimbalyst/runtime/ui/icons/MaterialSymbol';
 import type { TrackerRecord } from '@nimbalyst/runtime/core/TrackerRecord';
 import {
@@ -28,10 +29,12 @@ import {
   TIMELINE_CREATED_FIELD,
   type TrackerTimelineBar,
   type TrackerTimelineDates,
+  type TrackerTimelineFields,
 } from '@nimbalyst/collab-client/trackers';
 
 export interface TrackerTimelineViewProps {
   items: TrackerRecord[];
+  fields?: TrackerTimelineFields;
   /** Grouping axis from the saved view; one row per bucket. */
   groupBy?: TrackerGroupBy;
   /** Within-row order from the saved view, used as the chronological tiebreak. */
@@ -88,6 +91,7 @@ interface HoveredBar {
 
 export const TrackerTimelineView: React.FC<TrackerTimelineViewProps> = ({
   items,
+  fields,
   groupBy = 'none',
   ordering = MANUAL_TRACKER_ORDERING,
   onItemSelect,
@@ -96,15 +100,15 @@ export const TrackerTimelineView: React.FC<TrackerTimelineViewProps> = ({
   resolveRelationshipLabel,
 }) => {
   const timeline = useMemo(
-    () => buildTrackerTimeline(items, groupBy, ordering, resolveRelationshipLabel),
-    [items, groupBy, ordering, resolveRelationshipLabel],
+    () => buildTrackerTimeline(items, groupBy, ordering, resolveRelationshipLabel, fields),
+    [items, groupBy, ordering, resolveRelationshipLabel, fields],
   );
 
   const [hovered, setHovered] = useState<HoveredBar | null>(null);
 
   const { refs, floatingStyles } = useFloating({
     placement: 'top-start',
-    middleware: [offset(8), flip({ padding: 8 }), shift({ padding: 8 })],
+    middleware: [offset(8), flip({ padding: 8 }), shift({ padding: 8 }), windowControlsClearance()],
   });
 
   // The anchor is the hovered bar's rect, handed over as a virtual element --

@@ -24,6 +24,11 @@ export interface QueueDriveAttemptDeps<W> {
   isChainActive(sessionId: string): boolean;
   /** Is the session mid-turn (running or streaming)? */
   isSessionBusy(sessionId: string): boolean;
+  /**
+   * Has the session's turn answered and is it only draining background tasks
+   * on a live query that can take the next prompt? Overrides both busy checks.
+   */
+  canDispatchIntoDrain?(sessionId: string): boolean;
   resolveWindow(workspacePath: string, allowAutoOpen: boolean): Promise<WindowResolution<W>>;
   failAllPending(sessionId: string, errorMessage: string): Promise<number>;
   dispatch(input: { sessionId: string; workspacePath: string; window: W; reason: DriveReason }): Promise<boolean>;
@@ -50,7 +55,7 @@ export async function runQueueDriveAttempt<W>(
     return { kind: 'nothing-pending' };
   }
 
-  if (deps.isChainActive(sessionId) || deps.isSessionBusy(sessionId)) {
+  if ((deps.isChainActive(sessionId) || deps.isSessionBusy(sessionId)) && !deps.canDispatchIntoDrain?.(sessionId)) {
     return { kind: 'deferred', reason: 'session-busy' };
   }
 

@@ -70,7 +70,7 @@ ELECTRON_BIN="$REPO_ROOT/node_modules/electron/dist/Electron.app/Contents/MacOS/
 APP_DIR="$REPO_ROOT/packages/electron"
 
 if [[ ! -x "$ELECTRON_BIN" ]]; then
-  echo "Electron binary not found at $ELECTRON_BIN -- run npm install first." >&2
+  echo "Electron binary not found at $ELECTRON_BIN -- run pnpm install first." >&2
   exit 1
 fi
 

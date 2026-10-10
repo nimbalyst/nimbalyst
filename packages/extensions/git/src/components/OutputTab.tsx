@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { OperationLogEntry } from '../hooks/useOperationLog';
 import { ErrorDetailPopup } from './ErrorDetailPopup';
 
@@ -151,10 +151,13 @@ function EntryRow({ entry }: { entry: OperationLogEntry }) {
 
 export function OutputTab({ entries, onClear }: OutputTabProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
+  const followOutputRef = useRef(true);
 
-  // Auto-scroll while commands append output as well as when entries are added.
-  useEffect(() => {
-    if (scrollRef.current) {
+  // Remember the user's position before output grows; checking the new height
+  // here would mistake appended output for the user scrolling away.
+  useLayoutEffect(() => {
+    if (entries.length === 0) followOutputRef.current = true;
+    if (scrollRef.current && followOutputRef.current) {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
     }
   }, [entries]);
@@ -170,7 +173,14 @@ export function OutputTab({ entries, onClear }: OutputTabProps) {
 
   return (
     <div className="git-output-tab">
-      <div className="git-output-scroll" ref={scrollRef}>
+      <div
+        className="git-output-scroll"
+        ref={scrollRef}
+        onScroll={event => {
+          const { scrollHeight, scrollTop, clientHeight } = event.currentTarget;
+          followOutputRef.current = scrollHeight - scrollTop - clientHeight <= 1;
+        }}
+      >
         {entries.map(entry => (
           <EntryRow key={entry.id} entry={entry} />
         ))}

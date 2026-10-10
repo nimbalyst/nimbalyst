@@ -35,7 +35,7 @@ export function ScopeSummaryHeader({
   headerClassName = '',
   actionsClassName = '',
 }: ScopeSummaryHeaderProps) {
-  const displayName = scopeName ?? (basename(scopeKey) || 'Shared Docs');
+  const displayName = scopeName ?? (basename(scopeKey) || 'Wiki');
   return (
     <>
       {showAccent ? <div className="workspace-color-accent h-[3px] w-full opacity-90 shrink-0" style={{ backgroundColor: generateScopeAccentColor(scopeKey) }} /> : null}

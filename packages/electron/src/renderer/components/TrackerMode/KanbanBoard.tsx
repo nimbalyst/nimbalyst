@@ -20,6 +20,7 @@ import { trackerRelationshipLabelAtom } from '@nimbalyst/runtime/plugins/Tracker
 import { TrackerUnreadDot } from '@nimbalyst/runtime/readReceipts/TrackerUnreadDot';
 import { TrackerFavoriteStar } from '@nimbalyst/runtime/plugins/TrackerPlugin/components/TrackerFavoriteStar';
 import { trackerModeStatusScopeAtom } from '../../store/atoms/trackers';
+import { requestConfirmation } from '../../dialogs/requestConfirmation';
 import {
   buildTrackerBoardColumns,
   groupItemsIntoBoardColumns,
@@ -700,10 +701,16 @@ export const KanbanBoard: React.FC<KanbanBoardProps> = ({
           {onDeleteItems && (
             <button
               className="w-full flex items-center gap-2 px-3 py-1.5 text-left text-[#ef4444] hover:bg-nim-tertiary cursor-pointer"
-              onClick={() => {
+              onClick={async () => {
                 closeContextMenu();
                 const ids = Array.from(selectedIds);
-                if (window.confirm(`Delete ${ids.length} item${ids.length > 1 ? 's' : ''}? This cannot be undone.`)) {
+                const approved = await requestConfirmation({
+                  title: ids.length > 1 ? 'Delete items?' : 'Delete item?',
+                  message: `Delete ${ids.length} item${ids.length > 1 ? 's' : ''}? This cannot be undone.`,
+                  confirmLabel: 'Delete',
+                  destructive: true,
+                });
+                if (approved) {
                   onDeleteItems(ids);
                   setSelectedIds(new Set());
                 }

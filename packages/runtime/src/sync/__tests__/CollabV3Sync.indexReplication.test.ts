@@ -142,6 +142,48 @@ describe('CollabV3 v2 index replication client', () => {
     vi.unstubAllGlobals();
   });
 
+  it('replays offline hierarchy moves on cold bootstrap even without queued prompts', async () => {
+    const { provider, indexSocket } = await createConnectedProvider();
+    const seen = vi.fn(async () => {});
+    provider.onIndexChange?.(seen, { replayHierarchy: true });
+    try {
+      const fetch = provider.fetchIndex!();
+      const request = await pageRequest(indexSocket, 0);
+      indexSocket.receive(pageResponse(request.requestId, { complete: true, cursor: 1,
+        entries: [sessionChange('phone-moved', 1, { parentSessionId: 'new-manager', createdBySessionId: null })] }));
+      await fetch;
+      expect(seen).toHaveBeenCalledWith('phone-moved', expect.objectContaining({ parentSessionId: 'new-manager', createdBySessionId: null }));
+    } finally { provider.disconnectAll(); }
+  });
+
+  it('replays verified hierarchy for a listener registered after bootstrap', async () => {
+    const { provider, indexSocket } = await createConnectedProvider();
+    try {
+      const fetch = provider.fetchIndex!();
+      const request = await pageRequest(indexSocket, 0);
+      indexSocket.receive(pageResponse(request.requestId, { complete: true, cursor: 1,
+        entries: [sessionChange('late-listener', 1, { parentSessionId: null, createdBySessionId: null })] }));
+      await fetch;
+      const seen = vi.fn(async () => {});
+      provider.onIndexChange?.(seen, { replayHierarchy: true });
+      await vi.waitFor(() => expect(seen).toHaveBeenCalledWith('late-listener', expect.objectContaining({ parentSessionId: null, createdBySessionId: null })));
+    } finally { provider.disconnectAll(); }
+  });
+
+  it('keeps generic UI listeners silent while bootstrapping hierarchy rows', async () => {
+    const { provider, indexSocket } = await createConnectedProvider();
+    const seen = vi.fn();
+    provider.onIndexChange?.(seen);
+    try {
+      const fetch = provider.fetchIndex!();
+      const request = await pageRequest(indexSocket, 0);
+      indexSocket.receive(pageResponse(request.requestId, { complete: true, cursor: 1,
+        entries: [sessionChange('ordinary-root', 1, { parentSessionId: null, createdBySessionId: null })] }));
+      await fetch;
+      expect(seen).not.toHaveBeenCalled();
+    } finally { provider.disconnectAll(); }
+  });
+
   it('retains queued rows across socket open until index verification completes', async () => {
     const key = await crypto.subtle.generateKey({ name: 'AES-GCM', length: 256 }, true, ['encrypt', 'decrypt']);
     const provider = createCollabV3Sync({ serverUrl: 'wss://sync.example.test', orgId: 'org-1', personalMemberId: asPersonalMemberId('user-1'), getJwt: async () => asPersonalJwt(jwtFor('user-1')), encryptionKey: key });

@@ -28,13 +28,14 @@ describe('contextWindowForCliModel', () => {
     expect(contextWindowForCliModel('claude-code-cli:sonnet-1M')).toBe(1_000_000);
     expect(contextWindowForCliModel('claude-code-cli:fable-1m')).toBe(1_000_000);
   });
-  it('returns 1M for legacy pinned variants (single row, no -1m duplicate) and 200k for haiku', () => {
+  it('returns 1M for legacy pinned variants (single row, no -1m duplicate) and 200k for haiku-4-5', () => {
     // opus-4-6/opus-4-7/sonnet-4-6 are 1M models too — matched by EXACT variant,
     // not family, so the mapping is precise rather than an accidental collapse.
     expect(contextWindowForCliModel('claude-code-cli:opus-4-6')).toBe(1_000_000);
     expect(contextWindowForCliModel('claude-code-cli:opus-4-7')).toBe(1_000_000);
     expect(contextWindowForCliModel('claude-code-cli:sonnet-4-6')).toBe(1_000_000);
-    expect(contextWindowForCliModel('claude-code-cli:haiku')).toBe(200_000);
+    expect(contextWindowForCliModel('claude-code-cli:haiku')).toBe(1_000_000);
+    expect(contextWindowForCliModel('claude-code-cli:haiku-4-5')).toBe(200_000);
     expect(contextWindowForCliModel(undefined)).toBe(200_000);
   });
 
@@ -48,7 +49,7 @@ describe('contextWindowForCliModel', () => {
   it('lets an observed 1M signal override the static per-variant seed', () => {
     expect(contextWindowForCliModel('claude-code-cli:opus', false)).toBe(200_000);
     expect(contextWindowForCliModel('claude-code-cli:opus-1m', false)).toBe(200_000);
-    expect(contextWindowForCliModel('claude-code-cli:haiku', true)).toBe(1_000_000);
+    expect(contextWindowForCliModel('claude-code-cli:haiku-4-5', true)).toBe(1_000_000);
     // No observation yet -> unchanged seed behavior.
     expect(contextWindowForCliModel('claude-code-cli:opus', undefined)).toBe(1_000_000);
   });
@@ -80,6 +81,8 @@ describe('buildClaudeCliTokenUsage', () => {
       inputTokens: 103, // 100 + 3 (cache reads NOT added to cumulative input)
       outputTokens: 92, // 50 + 42
       totalTokens: 195,
+      cacheReadInputTokens: 8000, // prev row predates the cache counters: read as 0
+      cacheCreationInputTokens: 400,
       costUSD: 1.25, // preserved (proxy can't compute cost)
       contextWindow: 200_000,
       currentContext: { tokens: 3 + 8000 + 400, contextWindow: 200_000 },

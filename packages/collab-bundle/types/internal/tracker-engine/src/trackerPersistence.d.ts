@@ -157,6 +157,15 @@ export interface TrackerPersistence {
      * user made them.
      */
     loadPendingTransactions(owner?: TrackerTransactionOwner): Promise<PersistedTrackerTransactionRow[]>;
+    /**
+     * Settle items with several unconfirmed `update` rows before they replay:
+     * every update row carries the whole item, so only the newest local state
+     * should be sent, and the rows' own timestamps may not say which that is.
+     * Must not delete anything; return how many replacement rows were queued.
+     * Called once per engine, before the first bootstrap applies remote state
+     * (NIM-7336).
+     */
+    consolidatePendingUpdates?(): Promise<number>;
 }
 export interface StoredTrackerItem {
     envelope: TrackerItemEnvelope;

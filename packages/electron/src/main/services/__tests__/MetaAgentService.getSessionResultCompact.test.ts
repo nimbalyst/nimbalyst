@@ -12,7 +12,7 @@ vi.mock('@nimbalyst/runtime/storage/repositories/AISessionsRepository', () => ({
   AISessionsRepository: { create: vi.fn(), updateMetadata: vi.fn(), get: vi.fn() },
 }));
 vi.mock('@nimbalyst/runtime/storage/repositories/AgentMessagesRepository', () => ({
-  AgentMessagesRepository: { list: vi.fn() },
+  AgentMessagesRepository: { list: vi.fn(), listTail: vi.fn() },
 }));
 vi.mock('@nimbalyst/runtime/storage/repositories/SessionFilesRepository', () => ({
   SessionFilesRepository: { getFilesBySession: vi.fn().mockResolvedValue([]) },
@@ -85,7 +85,7 @@ describe('MetaAgentService.getSessionResultJson includeFullResponse (FIX C)', ()
   it('includes fullResponse by default (no options passed -- unchanged behavior)', async () => {
     vi.mocked(AISessionsRepository.get).mockResolvedValue(SESSION_ROW as never);
     const longReport = 'R'.repeat(2000);
-    vi.mocked(AgentMessagesRepository.list).mockResolvedValue([
+    vi.mocked(AgentMessagesRepository.listTail).mockResolvedValue([
       { direction: 'output', content: longReport, metadata: null },
     ] as never);
 
@@ -99,7 +99,7 @@ describe('MetaAgentService.getSessionResultJson includeFullResponse (FIX C)', ()
   it('omits fullResponse (null) when includeFullResponse is explicitly false', async () => {
     vi.mocked(AISessionsRepository.get).mockResolvedValue(SESSION_ROW as never);
     const longReport = 'R'.repeat(2000);
-    vi.mocked(AgentMessagesRepository.list).mockResolvedValue([
+    vi.mocked(AgentMessagesRepository.listTail).mockResolvedValue([
       { direction: 'output', content: longReport, metadata: null },
     ] as never);
 
@@ -119,7 +119,7 @@ describe('MetaAgentService.getSessionResultJson includeFullResponse (FIX C)', ()
   it('includes fullResponse when includeFullResponse is explicitly true', async () => {
     vi.mocked(AISessionsRepository.get).mockResolvedValue(SESSION_ROW as never);
     const longReport = 'R'.repeat(2000);
-    vi.mocked(AgentMessagesRepository.list).mockResolvedValue([
+    vi.mocked(AgentMessagesRepository.listTail).mockResolvedValue([
       { direction: 'output', content: longReport, metadata: null },
     ] as never);
 

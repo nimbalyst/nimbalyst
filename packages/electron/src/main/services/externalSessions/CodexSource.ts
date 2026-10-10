@@ -293,9 +293,17 @@ export class CodexSource implements ExternalSessionSource {
       !path.isAbsolute(meta.payload.cwd)
     )
       return null;
+    // Subagent threads (auto-review guardians, spawned agents) are internal to
+    // their parent session, not sessions the user started. Cache them as
+    // foreign so appends do not reread the header.
+    const subagent =
+      typeof meta.payload.source === "object" &&
+      meta.payload.source !== null &&
+      "subagent" in meta.payload.source;
     if (
-      workspacePath !== undefined &&
-      !validWorkspace(meta.payload.cwd, workspacePath)
+      subagent ||
+      (workspacePath !== undefined &&
+        !validWorkspace(meta.payload.cwd, workspacePath))
     ) {
       // Only cache a complete, explicit foreign cwd. A partial header must retry.
       if (

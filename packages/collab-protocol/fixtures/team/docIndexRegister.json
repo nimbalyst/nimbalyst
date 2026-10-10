@@ -1,0 +1,14 @@
+{
+  "type": "docIndexRegister",
+  "documentId": "page-2",
+  "encryptedTitle": "Notes",
+  "titleIv": "",
+  "documentType": "markdown",
+  "metadataVersion": 2,
+  "fileExtension": ".md",
+  "editorId": "com.nimbalyst.markdown",
+  "projectId": "project-1",
+  "parentFolderId": "NIM-42",
+  "parentKind": "item",
+  "sortOrder": 2048
+}

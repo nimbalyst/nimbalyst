@@ -30,6 +30,7 @@ import {
   useRole,
   useInteractions,
 } from '@floating-ui/react';
+import { windowControlsClearance } from '@nimbalyst/runtime/ui/floating/windowControlsClearance';
 import {
   ProviderIcon,
   MaterialSymbol,
@@ -218,7 +219,7 @@ const WorkstreamHeaderTagsRow: React.FC<{ workstreamId: string }> = ({ workstrea
     open: overflowOpen,
     onOpenChange: setOverflowOpen,
     placement: 'bottom-end',
-    middleware: [offset(6), flip({ padding: 8 }), shift({ padding: 8 })],
+    middleware: [offset(6), flip({ padding: 8 }), shift({ padding: 8 }), windowControlsClearance()],
   });
   const overflowClick = useClick(overflowContext);
   const overflowDismiss = useDismiss(overflowContext);

@@ -40,6 +40,7 @@ import { SquashCommitModal } from './SquashCommitModal';
 import { BadGitStateDialog } from './BadGitStateDialog';
 import { HelpTooltip } from '../../help';
 import { refreshWorktreeChangedFiles } from '../../store/listeners/fileStateListeners';
+import { errorNotificationService } from '../../services/ErrorNotificationService';
 import { getWorktreeNameFromPath } from '../../utils/pathUtils';
 import { isPathInWorkspace } from '../../../shared/pathUtils';
 import { SuperFilesPanel } from './SuperFilesPanel';
@@ -267,7 +268,7 @@ export const GitOperationsPanel: React.FC<GitOperationsPanelProps> = React.memo(
 
       if (!sessionResult?.id) {
         console.error('[GitOperationsPanel] Failed to create AI session: no session ID returned');
-        alert('Failed to create AI session. Please try again.');
+        errorNotificationService.showError('Session Not Created', 'Failed to create AI session. Please try again.');
         return;
       }
 
@@ -278,7 +279,7 @@ export const GitOperationsPanel: React.FC<GitOperationsPanelProps> = React.memo(
 
       if (!sessionData) {
         console.error('[GitOperationsPanel] Failed to load AI session:', newSessionId);
-        alert('Failed to load AI session. Please check the session list.');
+        errorNotificationService.showError('Session Not Loaded', 'Failed to load AI session. Please check the session list.');
         return;
       }
 

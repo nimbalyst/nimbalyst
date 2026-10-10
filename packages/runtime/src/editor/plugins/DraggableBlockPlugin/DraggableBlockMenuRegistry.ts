@@ -6,7 +6,7 @@ export interface DraggableBlockMenuItem {
   icon?: string; // Material Symbols icon name
   nodeTypes: string[]; // Node types this menu item applies to
   command: (editor: LexicalEditor, node: LexicalNode) => void;
-  isVisible?: (node: LexicalNode) => boolean; // Optional visibility check
+  isVisible?: (node: LexicalNode, editor?: LexicalEditor) => boolean; // Optional visibility check, run inside editor.read()
   order?: number; // Sort order for menu items
 }
 
@@ -35,7 +35,7 @@ class DraggableBlockMenuRegistry {
     };
   }
 
-  getMenuItemsForNode(node: LexicalNode): DraggableBlockMenuItem[] {
+  getMenuItemsForNode(node: LexicalNode, editor?: LexicalEditor): DraggableBlockMenuItem[] {
     const nodeType = node.getType();
     const items: DraggableBlockMenuItem[] = [];
 
@@ -43,7 +43,7 @@ class DraggableBlockMenuRegistry {
       // Check if this menu item applies to this node type
       if (item.nodeTypes.includes(nodeType) || item.nodeTypes.includes('*')) {
         // Check visibility if function provided
-        if (!item.isVisible || item.isVisible(node)) {
+        if (!item.isVisible || item.isVisible(node, editor)) {
           items.push(item);
         }
       }

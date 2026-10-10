@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useState } from 'react';
+import { requestConfirmation } from '../../../dialogs/requestConfirmation';
 
 export interface LocalKeyPrefixConfig {
   prefix: string;
@@ -34,11 +35,13 @@ export function LocalKeyPrefixInput({ config, teamPrefix, onChange }: {
     // Renumbering is not what happens -- `NIM.42` becomes `NIC.42` -- but an
     // already-written reference to the old letters stops resolving, so say so
     // before doing it rather than after.
-    if (config.hasIssuedNumbers && !window.confirm(
-      `Rename this project's existing local numbers from ${config.prefix}. to ${upper}.?\n\n`
-      + `The numbers themselves stay the same. Anything already referring to a `
-      + `${config.prefix}. number will stop resolving.`,
-    )) {
+    if (config.hasIssuedNumbers && !(await requestConfirmation({
+      title: 'Rename local numbers?',
+      message: `Rename this project's existing local numbers from ${config.prefix}. to ${upper}.?\n\n`
+        + `The numbers themselves stay the same. Anything already referring to a `
+        + `${config.prefix}. number will stop resolving.`,
+      confirmLabel: 'Rename',
+    }))) {
       setDraft(config.prefix);
       return;
     }
@@ -53,7 +56,7 @@ export function LocalKeyPrefixInput({ config, teamPrefix, onChange }: {
     } finally {
       setSaving(false);
     }
-  }, [config.prefix, draft, onChange]);
+  }, [config.hasIssuedNumbers, config.prefix, draft, onChange]);
 
   const handleKeyDown = useCallback((event: React.KeyboardEvent) => {
     if (event.key === 'Enter') {

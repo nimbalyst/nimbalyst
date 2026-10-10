@@ -32,7 +32,7 @@ import type {
   ParseContext,
   CanonicalEventDescriptor,
 } from './parsers/IRawMessageParser';
-import { processDescriptor as processDescriptorShared } from './processDescriptor';
+import { processDescriptor as processDescriptorShared, stampPromptSource } from './processDescriptor';
 
 // ---------------------------------------------------------------------------
 // Dependencies (injected via interfaces)
@@ -303,6 +303,7 @@ export class TranscriptTransformer {
       try {
         const descriptors = await parser.parseMessage(msg, context);
         for (const desc of descriptors) {
+          stampPromptSource(desc, msg);
           const event = await this.processDescriptorWithNotify(
             writer,
             sessionId,
@@ -558,6 +559,7 @@ export class TranscriptTransformer {
       try {
         const descriptors = await parser.parseMessage(msg, context);
         for (const desc of descriptors) {
+          stampPromptSource(desc, msg);
           const event = suppressNotify
             ? await this.processDescriptor(writer, sessionId, desc, toolEventIds, subagentEventIds, targetStore)
             : await this.processDescriptorWithNotify(

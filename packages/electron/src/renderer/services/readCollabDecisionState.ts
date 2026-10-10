@@ -235,6 +235,12 @@ export async function readCollabDocWithDecisionState(
       );
     const { decisions } = result;
     const decisionState = snapshotCollabDecisions(acquisition.yDoc, decisions);
+    // Lets the tool name the page when its body is empty, so an empty read is
+    // an explicit answer rather than no output.
+    const page = {
+      title: acquisition.document?.title,
+      documentType: acquisition.documentType,
+    };
     // Sanitize an isolated projection, never the live replica or its persisted
     // history. Hidden historical seals may already contain individual ballots.
     const privateIds = privateDecisionIds(decisions);
@@ -248,6 +254,7 @@ export async function readCollabDocWithDecisionState(
           acquisition.yDoc
         ),
         decisionState,
+        ...page,
       };
     const projection = new Y.Doc();
     try {
@@ -271,7 +278,7 @@ export async function readCollabDocWithDecisionState(
         requireCollabCodec(acquisition.documentType),
         projection
       );
-      return { content, decisionState };
+      return { content, decisionState, ...page };
     } finally {
       projection.destroy();
     }

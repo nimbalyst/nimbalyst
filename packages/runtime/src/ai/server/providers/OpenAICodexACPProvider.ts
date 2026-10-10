@@ -278,7 +278,10 @@ export class OpenAICodexACPProvider extends BaseAgentProvider {
     const agentRole = await this.getAgentRole(sessionId);
     const isMetaAgent = agentRole === 'meta-agent';
     const workflowPreset = isMetaAgent ? await this.getWorkflowPreset(sessionId) : 'default';
-    const systemPrompt = this.buildSystemPrompt(documentContext, isMetaAgent, workflowPreset);
+    const sessionDirective = await this.getSessionDirective(sessionId);
+    const systemPrompt = this.buildSystemPrompt(
+      documentContext, isMetaAgent, workflowPreset, sessionDirective, this.isNamedOutOfBand(sessionId, documentContext),
+    );
     const { userMessageAddition, messageWithContext } = buildUserMessageAddition(message, documentContext);
     const unsupportedAttachmentHints = attachments?.filter(
       (attachment) => attachment.type !== 'image' && attachment.type !== 'document'
@@ -496,11 +499,18 @@ export class OpenAICodexACPProvider extends BaseAgentProvider {
     super.destroy();
   }
 
-  protected buildSystemPrompt(documentContext?: DocumentContext, isMetaAgent: boolean = false, workflowPreset: MetaAgentWorkflowPreset = 'default'): string {
+  protected buildSystemPrompt(
+    documentContext?: DocumentContext,
+    isMetaAgent: boolean = false,
+    workflowPreset: MetaAgentWorkflowPreset = 'default',
+    sessionDirective?: string,
+    hasOutOfBandNaming: boolean = false,
+  ): string {
     if (isMetaAgent) {
       return buildMetaAgentSystemPrompt('codex', workflowPreset, {
         provider: 'openai-codex-acp',
         model: this.config?.model ?? undefined,
+        sessionDirective,
       });
     }
 
@@ -511,8 +521,10 @@ export class OpenAICodexACPProvider extends BaseAgentProvider {
 
     return buildClaudeCodeSystemPrompt({
       hasSessionNaming,
+      hasOutOfBandNaming,
       toolReferenceStyle: 'codex',
       worktreePath,
+      sessionDirective,
       isVoiceMode,
       voiceModeCodingAgentPrompt,
       enableAgentTeams: false,

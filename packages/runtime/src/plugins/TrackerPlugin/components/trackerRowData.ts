@@ -189,7 +189,7 @@ export interface TrackerRecordGroup {
 /** Resolve the user-facing bucket name for one record. */
 export function getTrackerGroupLabel(
   record: TrackerRecord,
-  groupBy: string | null,
+  groupBy: TrackerGroupBy | string | null,
   resolveLabel?: TrackerRelationshipLabelResolver,
 ): string {
   const normalized = normalizeTrackerGroupBy(groupBy);

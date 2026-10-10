@@ -1,0 +1,8 @@
+{
+  "type": "typePlacementSet",
+  "typeId": "bug",
+  "projectId": "project-1",
+  "parentFolderId": "NIM-42",
+  "parentKind": "item",
+  "sortOrder": 1024
+}

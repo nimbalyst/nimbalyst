@@ -30,6 +30,7 @@ import {
   useInteractions,
   useRole,
 } from '@floating-ui/react';
+import { windowControlsClearance } from '../ui/floating/windowControlsClearance';
 import { Panel, useStore } from '@xyflow/react';
 
 import { MaterialSymbol } from '../ui/icons/MaterialSymbol';
@@ -141,7 +142,7 @@ export function CanvasZoomWidget({
     onOpenChange: setOpen,
     placement: 'top-end',
     whileElementsMounted: autoUpdate,
-    middleware: [offset(8), flip({ padding: 8 }), shift({ padding: 8 })],
+    middleware: [offset(8), flip({ padding: 8 }), shift({ padding: 8 }), windowControlsClearance()],
   });
   const { getReferenceProps, getFloatingProps } = useInteractions([
     useClick(context),

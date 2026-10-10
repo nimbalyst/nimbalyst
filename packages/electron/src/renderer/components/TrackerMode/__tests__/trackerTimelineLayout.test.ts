@@ -45,6 +45,13 @@ function record(
 }
 
 describe('resolveTimelineDates', () => {
+  it('uses explicit view dates and keeps missing dates undated instead of falling back to creation', () => {
+    const item = record('selected', { fields: { startDate: '2026-01-01', launchDate: '2026-10-12', finish: '2026-10-15' } });
+    expect(resolveTimelineDates(item, { start: 'launchDate', end: 'finish' })).toMatchObject({ startField: 'launchDate', endField: 'finish' });
+    expect(resolveTimelineDates(item, { start: 'missing' })).toBeNull();
+    expect(resolveTimelineDates(item, { end: 'finish' })).toMatchObject({ startField: 'finish', end: null });
+    expect(buildTrackerTimeline([item], 'none', 'manual', undefined, { start: 'missing' }).undatedCount).toBe(1);
+  });
   it('places an item by the date fields the schemas declare, then by creation', () => {
     const plan = resolveTimelineDates(record('1', {
       type: 'plan',

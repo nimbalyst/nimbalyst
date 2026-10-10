@@ -1,0 +1,11 @@
+type: competitor
+displayName: Competitor
+displayNamePlural: Competitors
+storage: pages
+fields:
+  - name: title
+    type: string
+  - name: tier
+    type: select
+  - name: website
+    type: url

@@ -105,7 +105,7 @@ Add the import and array entry in `packages/electron/src/renderer/tips/definitio
 - Call `recordUsage` where the feature is actually used: renderer via `useFeatureUsage(key).recordUsage()`, or main process via the feature-usage service / `featureUsage.record` IPC. Without this the condition never becomes true.
 
 ### 5. Test
-- Add/extend a case in `packages/electron/src/renderer/tips/__tests__/tipDefinitions.test.tsx` proving the condition is `true` for the target state and `false` when the feature was already used, plus that `action.onClick()` does the right thing. Run `npm run test:unit`.
+- Add/extend a case in `packages/electron/src/renderer/tips/__tests__/tipDefinitions.test.tsx` proving the condition is `true` for the target state and `false` when the feature was already used, plus that `action.onClick()` does the right thing. Run `pnpm run test:unit`.
 - The existing `tipDefinitions.test.tsx` validates required fields — make sure your tip passes it.
 - Live check (dev mode, renderer console): `window.__tipHelpers.listTips()` shows every tip with its `conditionMet`; `window.__tipHelpers.showTip('tip-my-feature')` force-shows yours; `window.__tipHelpers.dismissTip()` clears it. The Developer menu also has trigger/reset entries (`tips:reset` clears tip dismissal state).
 

@@ -9,6 +9,33 @@ export interface ExtensionBuildResult {
   stderr: string;
 }
 
+/**
+ * The package manager that owns an extension project. A pnpm project may forbid
+ * npm outright (`devEngines.packageManager`), so `npm run build` would fail
+ * there. Built-in extensions inherit the monorepo's pnpm lockfile from an
+ * ancestor directory; anything without a pnpm signal keeps using npm.
+ */
+export function detectExtensionPackageManager(extensionPath: string): 'pnpm' | 'npm' {
+  try {
+    const pkg = JSON.parse(fs.readFileSync(path.join(extensionPath, 'package.json'), 'utf8'));
+    if (typeof pkg.packageManager === 'string') {
+      return pkg.packageManager.startsWith('pnpm@') ? 'pnpm' : 'npm';
+    }
+    if (pkg.devEngines?.packageManager?.name === 'pnpm') return 'pnpm';
+  } catch {
+    // The caller reports a missing or unreadable package.json.
+  }
+  for (let dir = path.resolve(extensionPath); ; dir = path.dirname(dir)) {
+    if (fs.existsSync(path.join(dir, 'pnpm-lock.yaml')) || fs.existsSync(path.join(dir, 'pnpm-workspace.yaml'))) {
+      return 'pnpm';
+    }
+    if (fs.existsSync(path.join(dir, 'package-lock.json')) || fs.existsSync(path.join(dir, '.git'))) {
+      return 'npm';
+    }
+    if (path.dirname(dir) === dir) return 'npm';
+  }
+}
+
 /** Run an extension's package build and stream its output to Extension Dev logs. */
 export async function runExtensionBuild(
   extensionPath: string,
@@ -52,7 +79,7 @@ export async function runExtensionBuild(
       resolve(result);
     };
 
-    const child = spawn('npm', ['run', 'build'], {
+    const child = spawn(detectExtensionPackageManager(extensionPath), ['run', 'build'], {
       cwd: extensionPath,
       shell: true,
       env: { ...process.env, FORCE_COLOR: '0' },

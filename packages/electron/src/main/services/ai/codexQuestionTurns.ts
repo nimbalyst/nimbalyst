@@ -7,6 +7,8 @@ export interface QuestionAnswer {
   answers: Record<string, string>;
   cancelled?: boolean;
   respondedBy: "desktop" | "mobile";
+  /** Set when a new user turn closed the question instead of an answer. */
+  reason?: "superseded";
 }
 interface Waiter {
   answer(value: QuestionAnswer): void;

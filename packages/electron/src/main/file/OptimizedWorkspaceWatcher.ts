@@ -7,6 +7,13 @@ import { openFileReconciler } from './OpenFileReconciler';
 import * as workspaceEventBus from './WorkspaceEventBus';
 import { quickOpenFileNameCache } from './QuickOpenFileNameCache';
 
+interface TreeRefresh {
+    timer?: NodeJS.Timeout;
+    running: boolean;
+    dirty: boolean;
+    controller: AbortController;
+}
+
 /**
  * Optimized workspace watcher.
  *
@@ -20,8 +27,8 @@ import { quickOpenFileNameCache } from './QuickOpenFileNameCache';
  * can replace exactly that subtree.
  */
 export class OptimizedWorkspaceWatcher {
-    /** Debounce timers, keyed `${windowId}:${rootPath}` -- one per root. */
-    private updateTimers = new Map<string, NodeJS.Timeout>();
+    /** One pending refresh and at most one running scan per window/root. */
+    private refreshes = new Map<string, TreeRefresh>();
     /** Roots each window watches, in attachment order (primary first). */
     private roots = new Map<number, Set<string>>();
     private watchedPaths = new Map<number, Set<string>>();
@@ -62,32 +69,42 @@ export class OptimizedWorkspaceWatcher {
             this.watchedPaths.set(windowId, new Set([workspacePath]));
         }
 
-        // Debounced update function
-        const triggerUpdate = () => {
-            const key = this.timerKey(windowId, workspacePath);
-            const existingTimer = this.updateTimers.get(key);
-            if (existingTimer) {
-                clearTimeout(existingTimer);
-            }
+        const key = this.timerKey(windowId, workspacePath);
+        const refresh: TreeRefresh = { running: false, dirty: false, controller: new AbortController() };
+        this.refreshes.set(key, refresh);
+        const isCurrent = () => this.refreshes.get(key) === refresh && !window.isDestroyed();
 
-            const timer = setTimeout(() => {
+        const runUpdate = async () => {
+            refresh.timer = undefined;
+            if (!isCurrent() || refresh.running) return;
+            refresh.running = true;
+            refresh.dirty = false;
+            try {
                 logger.workspaceWatcher.debug('Updating file tree');
-                getFolderContents(workspacePath).then((fileTree) => {
-                    if (!window || window.isDestroyed()) {
-                        return;
-                    }
-                    // `rootPath` tells a multi-root renderer which subtree this
-                    // rebuild replaces. Single-root windows ignore it.
-                    window.webContents.send('workspace-file-tree-updated', {
-                        rootPath: workspacePath,
-                        fileTree,
-                    });
-                }).catch((error) => {
-                    logger.workspaceWatcher.error('Failed to update file tree:', error);
+                const fileTree = await getFolderContents(workspacePath, 0, refresh.controller.signal);
+                if (!isCurrent()) return;
+                window.webContents.send('workspace-file-tree-updated', {
+                    rootPath: workspacePath,
+                    fileTree,
                 });
-            }, 500);
+            } catch (error) {
+                logger.workspaceWatcher.error('Failed to update file tree:', error);
+            } finally {
+                refresh.running = false;
+                // Changes during the walk need one more pass, not another
+                // concurrent copy of a potentially enormous workspace tree.
+                if (isCurrent() && refresh.dirty) {
+                    refresh.timer = setTimeout(runUpdate, 500);
+                }
+            }
+        };
 
-            this.updateTimers.set(key, timer);
+        const triggerUpdate = () => {
+            if (!isCurrent()) return;
+            refresh.dirty = true;
+            if (refresh.running) return;
+            if (refresh.timer) clearTimeout(refresh.timer);
+            refresh.timer = setTimeout(runUpdate, 500);
         };
 
         const subscriberId = `workspace-watcher-${windowId}`;
@@ -278,10 +295,11 @@ export class OptimizedWorkspaceWatcher {
         }
 
         const key = this.timerKey(windowId, rootPath);
-        const timer = this.updateTimers.get(key);
-        if (timer) {
-            clearTimeout(timer);
-            this.updateTimers.delete(key);
+        const refresh = this.refreshes.get(key);
+        if (refresh) {
+            if (refresh.timer) clearTimeout(refresh.timer);
+            refresh.controller.abort();
+            this.refreshes.delete(key);
         }
     }
 
@@ -302,10 +320,11 @@ export class OptimizedWorkspaceWatcher {
             this.stop(windowId);
         }
 
-        for (const timer of this.updateTimers.values()) {
-            clearTimeout(timer);
+        for (const refresh of this.refreshes.values()) {
+            if (refresh.timer) clearTimeout(refresh.timer);
+            refresh.controller.abort();
         }
-        this.updateTimers.clear();
+        this.refreshes.clear();
     }
 
     getStats() {

@@ -8,14 +8,18 @@ struct VoiceScreenContext: Codable, Equatable {
     let sessionTitle: String?
     let documentId: String?
     let resolved: Bool
+    /// The desktop's pending-prompt bit for the visible session (synced as `hasQueuedPrompts`).
+    /// Without it the agent answered "no question" from the screen alone and never checked.
+    let waitingForInput: Bool
 
     init(hostId: String?, projectId: String?, sessionId: String?, documentId: String? = nil, session: Session?) {
         self.hostId = hostId
         self.projectId = projectId
         visibleSessionId = sessionId
         self.documentId = documentId
-        resolved = sessionId == nil || (hostId != nil && session?.id == sessionId && session?.projectId == projectId && session?.hostDeviceId == hostId)
+        resolved = sessionId == nil || (session?.id == sessionId && session?.isVoiceAvailable(onHost: hostId, projectId: projectId) == true)
         sessionTitle = resolved ? session?.titleDecrypted : nil
+        waitingForInput = resolved && session?.hasQueuedPrompts == true
     }
 
     var targetSessionId: String? { resolved ? visibleSessionId : nil }
@@ -72,7 +76,7 @@ extension VoiceAgent {
         switch selection {
         case .session(let id): sessionId = id; documentId = nil
         case .document(let id): sessionId = nil; documentId = id
-        case nil: sessionId = nil; documentId = nil
+        case .pages, nil: sessionId = nil; documentId = nil
         }
         selectHost(host)
         func publish(_ session: Session?) {
@@ -97,6 +101,7 @@ extension VoiceAgent {
         screenContext = context
         screenRevision += 1
         activeSessionId = context.targetSessionId
+        logVoiceSystem("Screen: session \(context.visibleSessionId ?? "none") \"\(context.sessionTitle ?? "")\" resolved=\(context.resolved) waitingForInput=\(context.waitingForInput)")
         if state != .disconnected { voiceClient?.updateContext(screenContextJSON()) }
         logger.info("Screen context revision=\(self.screenRevision) resolved=\(context.resolved) session=\(context.visibleSessionId ?? "none")")
     }

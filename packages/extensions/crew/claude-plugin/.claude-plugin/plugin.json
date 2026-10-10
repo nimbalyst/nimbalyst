@@ -1,0 +1,10 @@
+{
+  "name": "crew",
+  "version": "1.0.0",
+  "description": "Design and hire Nimbalyst crew members from an agent session",
+  "author": {
+    "name": "Nimbalyst",
+    "url": "https://nimbalyst.com"
+  },
+  "keywords": ["crew", "agents", "schedule"]
+}

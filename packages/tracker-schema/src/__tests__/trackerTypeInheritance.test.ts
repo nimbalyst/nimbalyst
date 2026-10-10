@@ -10,6 +10,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   resolveTrackerTypeInheritance,
+  deriveTrackerTypeDeclaration,
   isDerivedTrackerTypeDeclaration,
   TRACKER_INHERITANCE_MAX_DEPTH,
   type DerivedTrackerTypeDeclaration,
@@ -216,5 +217,27 @@ describe('TrackerDataModelRegistry inheritance', () => {
     };
     expect(() => registry.register(bad as TrackerDataModel)).toThrow(/retype/i);
     expect(registry.get('product')).toBeUndefined();
+  });
+});
+
+describe('deriveTrackerTypeDeclaration', () => {
+  it('recovers only what a resolved subtype adds, so a later base narrowing does not drop it', () => {
+    const declared: DerivedTrackerTypeDeclaration = {
+      type: 'product', extends: 'entity', icon: 'inventory_2',
+      fields: [{ name: 'sku', type: 'string' }],
+    };
+    const resolved = resolveTrackerTypeInheritance(declared, () => entityBase()).model!;
+    // A YAML round trip spells out parser defaults the base left implicit.
+    resolved.fields = resolved.fields.map((f) => (f.name === 'reviewState' ? { ...f, required: false } : f));
+
+    expect(deriveTrackerTypeDeclaration(resolved, entityBase())).toEqual(declared);
+
+    const registry = new TrackerDataModelRegistry();
+    registry.register(entityBase());
+    registry.register(deriveTrackerTypeDeclaration(resolved, entityBase()));
+    const narrowed = entityBase();
+    narrowed.fields[1] = { ...narrowed.fields[1], options: narrowed.fields[1].options!.slice(0, 2) };
+    registry.register(narrowed);
+    expect(registry.get('product')?.fields.map((f) => f.name)).toContain('sku');
   });
 });

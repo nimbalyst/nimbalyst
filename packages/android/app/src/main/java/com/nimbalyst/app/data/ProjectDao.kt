@@ -1,23 +1,30 @@
 package com.nimbalyst.app.data
 
 import androidx.room.Dao
+import androidx.room.Insert
+import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import androidx.room.Upsert
 import kotlinx.coroutines.flow.Flow
 
 @Dao
 interface ProjectDao {
-    @Query("SELECT * FROM projects ORDER BY sortOrder ASC, lastUpdatedAt DESC, name ASC")
+    /** Projects the index has sent. Provisional stand-ins are never listed. */
+    @Query("SELECT * FROM projects WHERE isProvisional = 0 ORDER BY sortOrder ASC, lastUpdatedAt DESC, name ASC")
     fun observeAll(): Flow<List<ProjectEntity>>
+
+    @Query("DELETE FROM projects WHERE isProvisional = 1 AND id NOT IN (SELECT projectId FROM sessions)")
+    suspend fun deleteUnreferencedProvisional()
 
     @Query("DELETE FROM projects WHERE id = :projectId")
     suspend fun deleteById(projectId: String)
 
-    @Query("DELETE FROM projects WHERE id NOT IN (:projectIds)")
-    suspend fun deleteNotIn(projectIds: List<String>)
+    /** Projects outside [projectIds] that no cached session names; deleting a named one would cascade its history. */
+    @Query("DELETE FROM projects WHERE id NOT IN (:projectIds) AND id NOT IN (SELECT projectId FROM sessions)")
+    suspend fun deleteUnreferencedNotIn(projectIds: List<String>)
 
-    @Query("DELETE FROM projects")
-    suspend fun deleteAll()
+    @Query("DELETE FROM projects WHERE id NOT IN (SELECT projectId FROM sessions)")
+    suspend fun deleteAllUnreferenced()
 
     @Query(
         """
@@ -56,6 +63,13 @@ interface ProjectDao {
     )
     suspend fun refreshProjectStats(projectId: String)
 
+    @Query("SELECT * FROM projects WHERE id IN (:projectIds)")
+    suspend fun getByIds(projectIds: List<String>): List<ProjectEntity>
+
     @Upsert
     suspend fun upsertAll(projects: List<ProjectEntity>)
+
+    /** Inserts rows whose id is absent; an existing project is left untouched. */
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insertIfMissing(projects: List<ProjectEntity>)
 }

@@ -54,7 +54,7 @@ export interface TrackerRecordGroup {
     items: TrackerRecord[];
 }
 /** Resolve the user-facing bucket name for one record. */
-export declare function getTrackerGroupLabel(record: TrackerRecord, groupBy: string | null, resolveLabel?: TrackerRelationshipLabelResolver): string;
+export declare function getTrackerGroupLabel(record: TrackerRecord, groupBy: TrackerGroupBy | string | null, resolveLabel?: TrackerRelationshipLabelResolver): string;
 /**
  * Keep each group's records contiguous while preserving the current sort order
  * within groups and the first-seen order of the groups themselves.

@@ -967,19 +967,25 @@ export async function resolvePersonalUserId(serverUrl: string): Promise<Personal
     return cached;
   }
 
-  const sessionToken = authState.sessionToken;
-  if (!sessionToken) {
+  if (!authState.sessionToken) {
     logger.main.warn('[StytchAuthService] Cannot resolve personalUserId: no session token');
     return cached;
   }
 
-  const jwt = authState.sessionJwt;
-  if (!jwt) {
-    logger.main.warn('[StytchAuthService] Cannot resolve personalUserId: no JWT');
-    return cached;
-  }
-
   try {
+    // At launch authState.sessionJwt is whatever was persisted by the last run
+    // -- typically a team-scoped JWT whose 5-minute lifetime is long gone. The
+    // worker's auth gate rejects it with a bare 401 before the exchange runs, so
+    // refresh first, exactly as doRefreshPersonalSession does. The refresh also
+    // rotates the session token, so both are read after it.
+    await refreshSession(serverUrl);
+    const sessionToken = authState.sessionToken;
+    const jwt = authState.sessionJwt;
+    if (!jwt || !sessionToken) {
+      logger.main.warn('[StytchAuthService] Cannot resolve personalUserId: no JWT after refresh');
+      return cached;
+    }
+
     // Convert ws(s):// to http(s):// for fetch
     const httpUrl = serverUrl.replace(/^wss:/, 'https:').replace(/^ws:/, 'http:');
     logger.main.info('[StytchAuthService] Resolving personalUserId via session exchange to personal org:', personalOrgId);
@@ -2030,14 +2036,21 @@ const PRODUCTION_SYNC_URL = 'https://sync.nimbalyst.com';
 const DEVELOPMENT_SYNC_URL = 'http://localhost:8790';
 
 /**
- * Get the sync server URL. Always returns a valid URL - defaults to production.
+ * Get the sync server URL from the environment, like the sync connection and
+ * sign-in do. The persisted `serverUrl` is not trusted: a saved
+ * `was://sync.nimbalyst.com` failed every refresh with ERR_UNKNOWN_URL_SCHEME
+ * while sync itself kept working on the derived URL.
  */
-function getSyncServerUrl(): string {
-  const config = getSessionSyncConfig();
-  if (config?.serverUrl) return config.serverUrl;
-  const isDev = process.env.NODE_ENV !== 'production';
+export function resolveSyncServerUrl(
+  config: { environment?: string } | null | undefined,
+  isDev: boolean,
+): string {
   const env = isDev ? config?.environment : undefined;
   return env === 'development' ? DEVELOPMENT_SYNC_URL : PRODUCTION_SYNC_URL;
+}
+
+function getSyncServerUrl(): string {
+  return resolveSyncServerUrl(getSessionSyncConfig(), process.env.NODE_ENV !== 'production');
 }
 
 /**

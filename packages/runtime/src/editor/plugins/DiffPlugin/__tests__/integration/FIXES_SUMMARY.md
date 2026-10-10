@@ -84,13 +84,13 @@ function extractAttrs(serialized: SerializedLexicalNode): Record<string, any> | 
 Run the tests:
 ```bash
 # Main test that was failing
-npx vitest run src/plugins/DiffPlugin/__tests__/unit/larger-doc-test2.test.ts
+pnpm exec vitest run src/plugins/DiffPlugin/__tests__/unit/larger-doc-test2.test.ts
 
 # Comprehensive integration tests
-npx vitest run src/plugins/DiffPlugin/__tests__/integration/comprehensive-diff.test.ts
+pnpm exec vitest run src/plugins/DiffPlugin/__tests__/integration/comprehensive-diff.test.ts
 
 # Exact match detection tests
-npx vitest run src/plugins/DiffPlugin/__tests__/integration/exact-match.test.ts
+pnpm exec vitest run src/plugins/DiffPlugin/__tests__/integration/exact-match.test.ts
 ```
 
 ## Next Steps

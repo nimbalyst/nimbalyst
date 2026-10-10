@@ -194,6 +194,17 @@ describe('MenuBarIslandWindow', () => {
    * when the fleet goes quiet -- which it used to do -- leaves an idle Mac with
    * no menu bar presence at all and no way out of the style.
    */
+  // `visibleOnFullScreen: true` without `skipTransformProcessType` makes
+  // Electron call DockHide(), which drops Nimbalyst out of the Dock and Cmd+Tab.
+  it('never lets the all-workspaces call hide the Dock', () => {
+    showMenuBarIsland(frame(1));
+
+    expect(win.setVisibleOnAllWorkspaces).toHaveBeenCalledWith(
+      true,
+      expect.objectContaining({ skipTransformProcessType: true }),
+    );
+  });
+
   it('stays on screen when the fleet goes quiet', async () => {
     showMenuBarIsland(frame(1));
     finishLoad();

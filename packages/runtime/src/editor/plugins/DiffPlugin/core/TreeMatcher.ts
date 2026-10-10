@@ -8,11 +8,12 @@ import {
 import {
   canonicalizeForest,
   getDiffTransformers,
-  levenshteinDistance,
   type CanonicalTreeNode,
 } from './canonicalTree';
+import {levenshteinDistance} from './textDistance';
 import {diffTrees, type DiffOp} from './ThresholdedOrderPreservingTree';
 import {generateUnifiedDiff, parseUnifiedDiff} from './standardDiffFormat';
+import {isDiffDebug} from './diffDebug';
 
 export type NodeDiff = {
   changeType: 'add' | 'remove' | 'update';
@@ -91,7 +92,7 @@ function calculateSimilarity(
   //   console.log(`  attrsMatch: ${attrsMatch}`);
   //   console.log(`  source.attrs:`, JSON.stringify(source.attrs, null, 2));
   //   console.log(`  target.attrs:`, JSON.stringify(target.attrs, null, 2));
-  // } else if (process?.env?.DIFF_DEBUG === '1' && (!textMatches || !attrsMatch)) {
+  // } else if (isDiffDebug() && (!textMatches || !attrsMatch)) {
   //   console.log(`[calculateSimilarity] NOT exact match for ${source.type}:`);
   //   console.log(`  textMatches: ${textMatches} (source="${source.text?.substring(0, 30)}", target="${target.text?.substring(0, 30)}")`);
   //   console.log(`  attrsMatch: ${attrsMatch}`);
@@ -347,7 +348,7 @@ export class WindowedTreeMatcher {
     };
 
     // Debug: log source and target structures
-    if (process?.env?.DIFF_DEBUG === '1') {
+    if (isDiffDebug()) {
       console.log('\n[TreeMatcher] SOURCE STRUCTURE:');
       sourceNodes.forEach((n, i) => {
         console.log(`  [${i}] ${n.type}: "${(n.text || '').substring(0, 40)}"`);
@@ -380,7 +381,7 @@ export class WindowedTreeMatcher {
       // heading: "MD Editor" won't match "Feature Requests" (0% text similarity)
       // listitem: "Three" won't match "undefined" (for nested list cases)
       // mermaid: content changes like "40" -> "60" should be detected as different
-      isTextual: (n) => n.type === 'text' || n.type === 'paragraph' || n.type === 'heading' || n.type === 'list' || n.type === 'listitem' || n.type === 'mermaid' || n.type === 'decision',
+      isTextual: (n) => n.type === 'text' || n.type === 'paragraph' || n.type === 'heading' || n.type === 'list' || n.type === 'listitem' || n.type === 'mermaid' || n.type === 'decision' || n.type === 'quadrant',
     });
 
     const diffs: NodeDiff[] = [];
@@ -457,6 +458,13 @@ export class WindowedTreeMatcher {
 
         if (sourceIdx >= sourceNodes.length || targetIdx >= targetNodes.length) continue;
 
+        // TOPT and the text guideposts may choose different valid alignments.
+        // Combining them must still preserve order: crossing a guidepost
+        // turns a requested move into an unchanged node at its old position.
+        if ([...targetToSource].some(([target, source]) =>
+          (target < targetIdx && source >= sourceIdx)
+          || (target > targetIdx && source <= sourceIdx))) continue;
+
         // Dedupe equal/replace ops by (sourceIdx, targetIdx) pair. Forced
         // guidepost ops are prepended to TOPT's own ops, and they often
         // collide on the same pair -- without this skip we end up creating
@@ -494,7 +502,7 @@ export class WindowedTreeMatcher {
         if (isExact) {
           if (nodesDeepEqual(sourceNodes[sourceIdx], targetNodes[targetIdx])) {
             // Debug: log skipped exact matches
-            if (process?.env?.DIFF_DEBUG === '1') {
+            if (isDiffDebug()) {
               console.log(`[TreeMatcher] Skipping exact match at source[${sourceIdx}] -> target[${targetIdx}]: ${sourceNodes[sourceIdx].type} "${(sourceNodes[sourceIdx].text || '').substring(0, 30)}" (similarity=${similarity.toFixed(4)})`);
             }
             // Still mark as matched to prevent false delete/add pairs,
@@ -507,7 +515,7 @@ export class WindowedTreeMatcher {
         }
 
         // Debug: log non-exact matches
-        if (process?.env?.DIFF_DEBUG === '1') {
+        if (isDiffDebug()) {
           console.log(`[TreeMatcher] Creating UPDATE for source[${sourceIdx}] -> target[${targetIdx}]: ${sourceNodes[sourceIdx].type} "${(sourceNodes[sourceIdx].text || '').substring(0, 30)}" (similarity=${similarity.toFixed(4)}, isExact=${toptSaysEqual})`);
         }
 
@@ -661,13 +669,13 @@ export class WindowedTreeMatcher {
           // If context doesn't match well, reduce similarity drastically
           const contextMatch = contextChecks > 0 ? contextScore / contextChecks : 0;
 
-          if (process?.env?.DIFF_DEBUG === '1') {
+          if (isDiffDebug()) {
             console.log(`[TreeMatcher] Fallback empty paragraph pairing [${i}]->[${j}]: contextScore=${contextScore}, contextChecks=${contextChecks}, contextMatch=${contextMatch.toFixed(3)}`);
           }
 
           if (contextMatch < 0.5) {
             // Context doesn't match - don't pair these empty paragraphs
-            if (process?.env?.DIFF_DEBUG === '1') {
+            if (isDiffDebug()) {
               console.log(`[TreeMatcher] BLOCKED fallback pairing [${i}]->[${j}]: contextMatch=${contextMatch.toFixed(3)} < 0.5`);
             }
             continue;
@@ -791,7 +799,7 @@ export class WindowedTreeMatcher {
 
     sequence.sort((a, b) => a.targetIndex - b.targetIndex);
 
-    if (process?.env?.DIFF_DEBUG === '1') {
+    if (isDiffDebug()) {
       console.log(
         '[TreeMatcher] diff summary',
         diffs.map((d) => ({

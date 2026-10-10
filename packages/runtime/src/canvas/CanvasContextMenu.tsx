@@ -45,6 +45,7 @@ import {
   useRole,
   type VirtualElement,
 } from '@floating-ui/react';
+import { windowControlsClearance } from '../ui/floating/windowControlsClearance';
 
 import {
   getCommand,
@@ -191,7 +192,7 @@ export function CanvasContextMenu({
       if (!next) onClose();
     },
     placement: 'right-start',
-    middleware: [offset(2), flip({ padding: 8 }), shift({ padding: 8 })],
+    middleware: [offset(2), flip({ padding: 8 }), shift({ padding: 8 }), windowControlsClearance()],
   });
 
   // A `VirtualElement` goes through `setPositionReference`, not `elements`:
@@ -449,7 +450,7 @@ function Submenu({
     open,
     onOpenChange: setOpen,
     placement: 'right-start',
-    middleware: [offset(4), flip({ padding: 8 }), shift({ padding: 8 })],
+    middleware: [offset(4), flip({ padding: 8 }), shift({ padding: 8 }), windowControlsClearance()],
   });
   const {
     getReferenceProps,

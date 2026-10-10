@@ -273,6 +273,20 @@ export class ClaudeCodeRawParser implements IRawMessageParser {
             createdAt: msg.createdAt,
           });
         }
+      } else if (parsed.type === 'system' && parsed.subtype === 'informational') {
+        // SDKInformationalMessage (SDK 0.3.283+): hook feedback such as a
+        // UserPromptSubmit block reason, and CLI warnings. The SDK renders
+        // `info` only in a verbose transcript mode, so we keep it out.
+        const content = typeof parsed.content === 'string' ? parsed.content.trim() : '';
+        if (content && parsed.level !== 'info') {
+          descriptors.push({
+            type: 'system_message',
+            text: content,
+            systemType: parsed.level === 'warning' ? 'error' : 'status',
+            searchable: false,
+            createdAt: msg.createdAt,
+          });
+        }
       } else if (parsed.type === 'system' && parsed.subtype === 'permission_denied') {
         // SDK auto-denied a tool call WITHOUT showing an interactive prompt.
         // Sources: SDK deny rule, `dontAsk` mode, headless-agent auto-deny,

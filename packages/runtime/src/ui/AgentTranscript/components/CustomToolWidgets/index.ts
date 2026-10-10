@@ -55,6 +55,7 @@ export { SuperProgressSnapshotWidget } from './SuperProgressSnapshotWidget';
 export { SuperLoopProgressWidget } from './SuperLoopProgressWidget';
 export { UpdateSessionMetaWidget } from './UpdateSessionMetaWidget';
 export { TrackerToolWidget } from './TrackerToolWidget';
+export { PageUpdateWidget } from './PageUpdateWidget';
 export { CrossSessionToolWidget } from './CrossSessionToolWidget';
 export { MemoryToolWidget } from './MemoryToolWidget';
 export { ToolWidgetErrorBoundary } from './ToolWidgetErrorBoundary';
@@ -83,6 +84,11 @@ export interface CustomToolWidgetProps {
   readFile?: (filePath: string) => Promise<{ success: boolean; content?: string; error?: string }>;
   /** Resolve history-derived file changes after explicit user disclosure. */
   loadToolCallDiffs?: () => Promise<ToolCallDiffLoadResult>;
+  /**
+   * Question tools only: the user sent a new message instead of answering, so
+   * the question is closed even if no terminal result was written for it.
+   */
+  superseded?: boolean;
   // Note: Interactive widgets read their host from interactiveWidgetHostAtom(sessionId)
   // No host prop needed - avoids prop drilling through the component tree
 }
@@ -114,6 +120,7 @@ import { SuperProgressSnapshotWidget } from './SuperProgressSnapshotWidget';
 import { SuperLoopProgressWidget } from './SuperLoopProgressWidget';
 import { UpdateSessionMetaWidget } from './UpdateSessionMetaWidget';
 import { TrackerToolWidget } from './TrackerToolWidget';
+import { PageUpdateWidget } from './PageUpdateWidget';
 import { MemoryToolWidget } from './MemoryToolWidget';
 import { CrossSessionToolWidget } from './CrossSessionToolWidget';
 
@@ -205,6 +212,9 @@ const BUILT_IN_TOOL_WIDGETS: CustomToolWidgetRegistry = {
   'tracker_update': TrackerToolWidget,
   'tracker_link_session': TrackerToolWidget,
   'tracker_link_file': TrackerToolWidget,
+
+  // An agent edit to a page: one "Updated <page>" line that opens the page.
+  'applyCollabDocEdit': PageUpdateWidget,
 
   // nimbalyst-memory MCP tools - recall/search show the query + returned
   // source documents (title + snippet) instead of a raw JSON blob. Both the

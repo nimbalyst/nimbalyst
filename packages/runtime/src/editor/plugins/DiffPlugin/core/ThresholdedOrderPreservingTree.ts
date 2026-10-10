@@ -1,4 +1,6 @@
 import type {CanonicalTreeNode} from './canonicalTree';
+import {LcsPattern} from './textDistance';
+import {isDiffDebug} from './diffDebug';
 
 type Path = number[];
 
@@ -71,6 +73,8 @@ type PairContext = {
     budget: PairBudget;
     signatures: WeakMap<CanonicalTreeNode, number>;
     signatureIds: Map<string, number>;
+    tokens: WeakMap<CanonicalTreeNode, string[]>;
+    patterns: WeakMap<CanonicalTreeNode, LcsPattern<string>>;
 };
 
 /**
@@ -162,19 +166,22 @@ function delCost(n: CanonicalTreeNode, opts: DiffOpts): number {
 }
 
 function tok(s = ''): string[] { return s.trim() ? s.trim().split(/\s+/) : []; }
-function lcsLen<T>(A: T[], B: T[]): number {
-    const n = A.length, m = B.length;
-    const dp = Array.from({ length: n + 1 }, () => new Array<number>(m + 1).fill(0));
-    for (let i = 1; i <= n; i++) for (let j = 1; j <= m; j++) {
-        dp[i][j] = A[i - 1] === B[j - 1] ? dp[i - 1][j - 1] + 1 : Math.max(dp[i - 1][j], dp[i][j - 1]);
-    }
-    return dp[n][m];
+/**
+ * A node is compared against every candidate sibling, so its tokens (and, on
+ * the source side, its LCS match masks) are built once per diff.
+ */
+function tokens(n: CanonicalTreeNode, ctx: PairContext): string[] {
+    let cached = ctx.tokens.get(n);
+    if (!cached) { cached = tok(n.text); ctx.tokens.set(n, cached); }
+    return cached;
 }
-function textSim(a?: string, b?: string): number {
-    const A = tok(a), B = tok(b);
+function textSim(a: CanonicalTreeNode, b: CanonicalTreeNode, ctx: PairContext): number {
+    const A = tokens(a, ctx), B = tokens(b, ctx);
     if (!A.length && !B.length) return 1;
     if (!A.length || !B.length) return 0;
-    return lcsLen(A, B) / Math.max(A.length, B.length);
+    let pattern = ctx.patterns.get(a);
+    if (!pattern) { pattern = new LcsPattern(A); ctx.patterns.set(a, pattern); }
+    return pattern.lcsWith(B) / Math.max(A.length, B.length);
 }
 function attrDist(a?: Record<string, any>, b?: Record<string, any>) {
     if (!a && !b) return 0;
@@ -298,16 +305,19 @@ function pairCost(a: CanonicalTreeNode, b: CanonicalTreeNode, opts: DiffOpts, ct
         pairMemo.set(k, 0); return 0;
     }
 
-    // Word-level LCS is the most expensive part of a cell; only pay it when the
-    // text actually contributes to the cost.
-    const txt = (opts.isTextual!(a) && opts.isTextual!(b)) ? (1 - textSim(a.text, b.text)) : 0;
-    const attr = attrDist(a.attrs, b.attrs);
-    const typePen = a.type === b.type ? 0 : opts.typePenalty;
+    const local = localCost(a, b, opts, ctx);
+
+    // Two leaves have no children to align, so `struct` is 0. Text runs inside
+    // list items are most of the pairs in a list-heavy file; skip the DP setup.
+    const A = kids(a), B = kids(b);
+    if (A.length === 0 && B.length === 0) {
+        pairMemo.set(k, local);
+        return local;
+    }
 
     // align children with *order-preserving* DP allowing matches only if pairCost ≤ threshold.
     // Identical leading/trailing children match at zero cost, so the DP only
     // covers the changed middle (offset `pre` into both sides).
-    const A = kids(a), B = kids(b);
     const { pre, suf } = identicalEdges(A, B, ctx);
     const m = A.length - pre - suf, n = B.length - pre - suf;
     ctx.budget.charge(m, n);
@@ -315,43 +325,143 @@ function pairCost(a: CanonicalTreeNode, b: CanonicalTreeNode, opts: DiffOpts, ct
     for (let i = 1; i <= m; i++) dp[i][0] = dp[i - 1][0] + delCost(A[pre + i - 1], opts);
     for (let j = 1; j <= n; j++) dp[0][j] = dp[0][j - 1] + delCost(B[pre + j - 1], opts);
 
-    // Precompute child pair costs (and refuse matches above threshold)
-    const PC: number[][] = Array.from({ length: m }, () => new Array<number>(n).fill(Infinity));
-    for (let mi = 0; mi < m; mi++) for (let mj = 0; mj < n; mj++) {
-        const i = pre + mi, j = pre + mj;
-        let c = pairCost(A[i], B[j], opts, ctx);
-
-        // EMPTY NODE CONTEXTUAL MATCHING (same as in alignChildren)
-        if (isEmptyNode(A[i]) && isEmptyNode(B[j])) {
-            const contextSim = contextualSimilarity(A[i], B[j], i, j, A, B);
-            // For strong context matches, treat as exact match
-            if (contextSim >= 0.8) {
-                c = 0;
-            } else {
-                const contextPenalty = (1 - contextSim) * 10.0;
-                c = c + contextPenalty;
-            }
-        }
-
-        // normalize to [0,1]ish by dividing by (del+ins) so threshold is meaningful across sizes
-        const base = delCost(A[i], opts) + delCost(B[j], opts) || 1;
-        const norm = c / base; // ~0 == identical, ~1 == replace
-        PC[mi][mj] = norm <= opts.pairAlignThreshold ? c : Infinity;
-    }
-
     for (let i = 1; i <= m; i++) {
         for (let j = 1; j <= n; j++) {
             const del = dp[i - 1][j] + delCost(A[pre + i - 1], opts);
             const ins = dp[i][j - 1] + delCost(B[pre + j - 1], opts);
-            const match = PC[i - 1][j - 1] < Infinity ? dp[i - 1][j - 1] + PC[i - 1][j - 1] : Infinity;
-            dp[i][j] = Math.min(del, ins, match);
+            const best = Math.min(del, ins);
+            const pc = childMatchCost(A, B, pre + i - 1, pre + j - 1, dp[i - 1][j - 1], best, opts, ctx);
+            dp[i][j] = pc < Infinity ? Math.min(best, dp[i - 1][j - 1] + pc) : best;
         }
     }
     const struct = dp[m][n];
-    const total = typePen + opts.wText * txt + opts.wAttr * attr + opts.wStruct * struct;
+    const total = local + opts.wStruct * struct;
 
     pairMemo.set(k, total);
     return total;
+}
+
+/**
+ * The part of `pairCost` that does not align children. The full cost only adds
+ * `wStruct * struct` to it, and `struct` is never negative, so this is also a
+ * lower bound on the full cost.
+ */
+function localCost(a: CanonicalTreeNode, b: CanonicalTreeNode, opts: DiffOpts, ctx: PairContext): number {
+    const txt = (opts.isTextual!(a) && opts.isTextual!(b)) ? (1 - textSim(a, b, ctx)) : 0;
+    const attr = attrDist(a.attrs, b.attrs);
+    const typePen = a.type === b.type ? 0 : opts.typePenalty;
+    return typePen + opts.wText * txt + opts.wAttr * attr;
+}
+
+/**
+ * A lower bound on the `struct` term of `pairCost(a, b)`: the same alignment of
+ * their children, but with each child pair costed by `localCost` and no
+ * threshold refusal. Every cell input is at most its exact counterpart, so the
+ * result is at most the exact `struct`. It costs one `localCost` per child
+ * pair instead of a full recursion per child pair.
+ */
+function structLowerBound(a: CanonicalTreeNode, b: CanonicalTreeNode, opts: DiffOpts, ctx: PairContext): number {
+    const A = kids(a), B = kids(b);
+    const { pre, suf } = identicalEdges(A, B, ctx);
+    const m = A.length - pre - suf, n = B.length - pre - suf;
+    let prev = new Array<number>(n + 1);
+    let cur = new Array<number>(n + 1);
+    prev[0] = 0;
+    for (let j = 1; j <= n; j++) prev[j] = prev[j - 1] + delCost(B[pre + j - 1], opts);
+    for (let i = 1; i <= m; i++) {
+        const ai = A[pre + i - 1];
+        cur[0] = prev[0] + delCost(ai, opts);
+        for (let j = 1; j <= n; j++) {
+            const bj = B[pre + j - 1];
+            const del = prev[j] + delCost(ai, opts);
+            const ins = cur[j - 1] + delCost(bj, opts);
+            // An empty-paragraph pair's context can bring its cost down to 0.
+            const floor = (isEmptyNode(ai) && isEmptyNode(bj)) || sameSubtree(ai, bj, ctx)
+                ? 0
+                : localCost(ai, bj, opts, ctx);
+            cur[j] = Math.min(del, ins, prev[j - 1] + floor);
+        }
+        [prev, cur] = [cur, prev];
+    }
+    return prev[n];
+}
+
+/**
+ * Cost of matching child `A[i]` with `B[j]` inside a sibling alignment, or
+ * Infinity when the match is refused (above `pairAlignThreshold`) or cannot
+ * win the cell.
+ *
+ * A match is taken only if `dpDiag + cost` beats `best` (the cheaper of delete
+ * and insert). When `dpDiag + localCost` already exceeds `best`, the full cost
+ * -- which recursively aligns both subtrees -- cannot win or tie, so it is never
+ * computed. Every DP value and backtrack choice is the same as computing it.
+ * That skip is what keeps a list whose every item changed (a renumbered label,
+ * #1606) from aligning every item's inline runs against every other item's.
+ *
+ * Empty paragraphs are never skipped: their contextual adjustment below can
+ * lower the cost to 0, under the bound.
+ */
+function childMatchCost(
+    A: CanonicalTreeNode[], B: CanonicalTreeNode[], i: number, j: number,
+    dpDiag: number, best: number, opts: DiffOpts, ctx: PairContext,
+): number {
+    const a = A[i], b = B[j];
+    const bothEmpty = isEmptyNode(a) && isEmptyNode(b);
+    if (!bothEmpty && !ctx.memo.has(keyFor(a, b)) && opts.allowTypePair!(a.type, b.type)
+        && !sameSubtree(a, b, ctx)) {
+        const local = localCost(a, b, opts, ctx);
+        if (dpDiag + local > best) return Infinity;
+        // Two unrelated lists cost far more than their text difference once
+        // their items are aligned; bound that alignment one level down before
+        // paying for the full recursion.
+        if (kids(a).length && kids(b).length
+            && dpDiag + (local + opts.wStruct * structLowerBound(a, b, opts, ctx)) > best) {
+            return Infinity;
+        }
+    }
+
+    let c = pairCost(a, b, opts, ctx);
+
+    // EMPTY NODE CONTEXTUAL MATCHING
+    // For empty nodes (paragraphs with no text), they all have identical text (empty string)
+    // so textSim("", "") = 1, making cost = 0. This makes TOPT unable to distinguish between
+    // empty paragraphs in different contexts. We need to ADD COST based on context mismatch.
+    if (bothEmpty) {
+        const contextSim = contextualSimilarity(a, b, i, j, A, B);
+        // contextSim ranges from 0 (no context match) to 1 (perfect context match)
+
+        // For STRONG context matches (>= 0.8), treat as exact match with zero cost
+        // This allows empty paragraphs in the same structural position to match cleanly
+        if (contextSim >= 0.8) {
+            c = 0;  // Perfect match - no cost
+
+            if (isDiffDebug()) {
+                console.log(`[TOPT] Empty node EXACT match [${i}]->[${j}]: contextSim=${contextSim.toFixed(3)}, cost=0.000 (strong context)`);
+            }
+        } else {
+            // Add penalty for poor context: (1 - contextSim) * penalty
+            // This makes empty nodes prefer matching in similar contexts
+            // Make penalty VERY HIGH (higher than delete+insert cost) to force context-based matching
+            const contextPenalty = (1 - contextSim) * 10.0;  // Penalty up to 10.0 for no context match
+            c = c + contextPenalty;
+
+            // Debug logging for empty node matching
+            if (isDiffDebug()) {
+                console.log(`[TOPT] Empty node pairing [${i}]->[${j}]: contextSim=${contextSim.toFixed(3)}, baseCost=${(c - contextPenalty).toFixed(3)}, penalty=${contextPenalty.toFixed(3)}, finalCost=${c.toFixed(3)}`);
+            }
+        }
+    }
+
+    // normalize to [0,1]ish by dividing by (del+ins) so threshold is meaningful across sizes
+    const base = delCost(a, opts) + delCost(b, opts) || 1;
+    const norm = c / base; // ~0 == identical, ~1 == replace
+    if (norm <= opts.pairAlignThreshold) return c; // only allow "match" when similar enough
+
+    // Debug: log blocked matches for empty nodes
+    if (isDiffDebug() && bothEmpty) {
+        console.log(`[TOPT] BLOCKED empty node pairing [${i}]->[${j}]: norm=${norm.toFixed(3)} > threshold=${opts.pairAlignThreshold}, cost=${c.toFixed(3)}, base=${base.toFixed(3)}`);
+    }
+    return Infinity;
 }
 
 // Recover the optimal child alignment (order-preserving; no "moves")
@@ -370,78 +480,31 @@ function alignChildren(a: CanonicalTreeNode, b: CanonicalTreeNode, opts: DiffOpt
     for (let i = 1; i <= m; i++) dp[i][0] = dp[i - 1][0] + delCost(A[pre + i - 1], opts);
     for (let j = 1; j <= n; j++) dp[0][j] = dp[0][j - 1] + delCost(B[pre + j - 1], opts);
 
+    // Filled as the DP reaches each cell; the backtrack reads it.
     const PC: number[][] = Array.from({ length: m }, () => new Array<number>(n).fill(Infinity));
-    const isExactMatch: boolean[][] = Array.from({ length: m }, () => new Array<boolean>(n).fill(false));
-    for (let mi = 0; mi < m; mi++) for (let mj = 0; mj < n; mj++) {
-        const i = pre + mi, j = pre + mj;
-        let c = pairCost(A[i], B[j], opts, ctx);
-        const base = delCost(A[i], opts) + delCost(B[j], opts) || 1;
-
-        // EMPTY NODE CONTEXTUAL MATCHING
-        // For empty nodes (paragraphs with no text), they all have identical text (empty string)
-        // so textSim("", "") = 1, making cost = 0. This makes TOPT unable to distinguish between
-        // empty paragraphs in different contexts. We need to ADD COST based on context mismatch.
-        if (isEmptyNode(A[i]) && isEmptyNode(B[j])) {
-            const contextSim = contextualSimilarity(A[i], B[j], i, j, A, B);
-            // contextSim ranges from 0 (no context match) to 1 (perfect context match)
-
-            // For STRONG context matches (>= 0.8), treat as exact match with zero cost
-            // This allows empty paragraphs in the same structural position to match cleanly
-            if (contextSim >= 0.8) {
-                c = 0;  // Perfect match - no cost
-
-                if (process?.env?.DIFF_DEBUG === '1') {
-                    console.log(`[TOPT] Empty node EXACT match [${i}]->[${j}]: contextSim=${contextSim.toFixed(3)}, cost=0.000 (strong context)`);
-                }
-            } else {
-                // Add penalty for poor context: (1 - contextSim) * penalty
-                // This makes empty nodes prefer matching in similar contexts
-                // Make penalty VERY HIGH (higher than delete+insert cost) to force context-based matching
-                const contextPenalty = (1 - contextSim) * 10.0;  // Penalty up to 10.0 for no context match
-                c = c + contextPenalty;
-
-                // Debug logging for empty node matching
-                if (process?.env?.DIFF_DEBUG === '1') {
-                    console.log(`[TOPT] Empty node pairing [${i}]->[${j}]: contextSim=${contextSim.toFixed(3)}, baseCost=${(c - contextPenalty).toFixed(3)}, penalty=${contextPenalty.toFixed(3)}, finalCost=${c.toFixed(3)}`);
-                }
-            }
-        }
-
-        const norm = c / base;
-        if (norm <= opts.pairAlignThreshold) {
-            PC[mi][mj] = c; // only allow "match" when similar enough
-        } else {
-            // Debug: log blocked matches for empty nodes
-            if (process?.env?.DIFF_DEBUG === '1' && isEmptyNode(A[i]) && isEmptyNode(B[j])) {
-                console.log(`[TOPT] BLOCKED empty node pairing [${i}]->[${j}]: norm=${norm.toFixed(3)} > threshold=${opts.pairAlignThreshold}, cost=${c.toFixed(3)}, base=${base.toFixed(3)}`);
-            }
-        }
-
-        // Track exact text matches - these should always be chosen
-        // For textual nodes with identical text, force cost to 0 to ensure they match
-        // EXCEPT for empty paragraphs which need context to disambiguate
-        const isEmpty = isEmptyNode(A[i]);
-        if (opts.isTextual!(A[i]) && opts.isTextual!(B[j]) && A[i].text === B[j].text && !isEmpty) {
-            isExactMatch[mi][mj] = true;
-            PC[mi][mj] = 0;  // Zero cost ensures exact matches are always chosen
-        } else if (process?.env?.DIFF_DEBUG === '1' && isEmpty && A[i].text === B[j].text) {
-            console.log(`[TOPT] NOT forcing exact match for empty node [${i}]->[${j}] (preserving contextual cost)`);
-        }
-    }
-
     for (let i = 1; i <= m; i++) for (let j = 1; j <= n; j++) {
-        const del = dp[i - 1][j] + delCost(A[pre + i - 1], opts);
-        const ins = dp[i][j - 1] + delCost(B[pre + j - 1], opts);
-        const match = PC[i - 1][j - 1] < Infinity ? dp[i - 1][j - 1] + PC[i - 1][j - 1] : Infinity;
+        const ai = A[pre + i - 1], bj = B[pre + j - 1];
 
         // CRITICAL: Force exact text matches to always be chosen
-        // When we have an exact text match, use it regardless of other costs
-        // This prevents position-based alignments from winning over identity matches
-        if (i > 0 && j > 0 && isExactMatch[i - 1][j - 1] && match < Infinity) {
-            dp[i][j] = dp[i - 1][j - 1];  // Match is free (cost already set to 0 in PC)
-        } else {
-            dp[i][j] = Math.min(del, ins, match);
+        // For textual nodes with identical text, force cost to 0 and take the
+        // match regardless of other costs. This prevents position-based
+        // alignments from winning over identity matches.
+        // EXCEPT for empty paragraphs which need context to disambiguate
+        const isEmpty = isEmptyNode(ai);
+        if (opts.isTextual!(ai) && opts.isTextual!(bj) && ai.text === bj.text && !isEmpty) {
+            PC[i - 1][j - 1] = 0;
+            dp[i][j] = dp[i - 1][j - 1];
+            continue;
+        } else if (isDiffDebug() && isEmpty && ai.text === bj.text) {
+            console.log(`[TOPT] NOT forcing exact match for empty node [${pre + i - 1}]->[${pre + j - 1}] (preserving contextual cost)`);
         }
+
+        const del = dp[i - 1][j] + delCost(ai, opts);
+        const ins = dp[i][j - 1] + delCost(bj, opts);
+        const best = Math.min(del, ins);
+        const pc = childMatchCost(A, B, pre + i - 1, pre + j - 1, dp[i - 1][j - 1], best, opts, ctx);
+        PC[i - 1][j - 1] = pc;
+        dp[i][j] = pc < Infinity ? Math.min(best, dp[i - 1][j - 1] + pc) : best;
     }
 
     // Backtrack in reverse: trailing identical run, the DP middle, then the
@@ -467,6 +530,8 @@ export function diffTrees(a: CanonicalTreeNode, b: CanonicalTreeNode, optsPartia
         budget: new PairBudget(opts.maxPairEvaluations),
         signatures: new WeakMap(),
         signatureIds: new Map(),
+        tokens: new WeakMap(),
+        patterns: new WeakMap(),
     };
     const ops: DiffOp[] = [];
 

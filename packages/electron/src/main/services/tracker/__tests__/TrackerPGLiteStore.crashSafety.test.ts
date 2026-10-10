@@ -211,7 +211,7 @@ function makeMockDb(options: MockDbOptions = {}) {
 
       if (/INTO\s+TRACKER_TRANSACTIONS/i.test(sql)) {
         // Param order: 1=client_mutation_id, 2=item_id, 3=workspace_path,
-        // 4=state, 5=kind, 6=payload, 7=enqueued_at (ms)
+        // 4=state, 5=kind, 6=payload, 7=enqueued_at (ISO string)
         const p = params ?? [];
         const cmid = String(p[0]);
         const next: MockTransactionRow = {
@@ -221,7 +221,7 @@ function makeMockDb(options: MockDbOptions = {}) {
           state: String(p[3]),
           kind: String(p[4]),
           payload: typeof p[5] === 'string' ? JSON.parse(p[5] as string) : p[5],
-          enqueued_at: new Date(Number(p[6])),
+          enqueued_at: new Date(String(p[6])),
           started_at: null,
           confirmed_sync_id: null,
           last_rejection: null,
@@ -404,17 +404,18 @@ describe('TrackerPGLiteStore.applyAndEnqueueAtomically — crash-safe ordering (
     expect(finalRow?.state).toBe('persistedEnqueue');
   });
 
-  it('a crash AFTER enqueueTransaction (call 2) leaves a recoverable pendingApply row that loadPendingTransactions surfaces; projection is unchanged', async () => {
+  it('a crash AFTER enqueueTransaction (call 3) leaves a recoverable pendingApply row that loadPendingTransactions surfaces; projection is unchanged', async () => {
     // Call ordering from the source (brand-new row, no prior projection):
     //   1. snapshotRow              -> SELECT FROM tracker_items
-    //   2. enqueueTransaction       -> INSERT INTO tracker_transactions (pendingApply)
-    //   3. applyOptimistic snapshot -> SELECT FROM tracker_items
-    //   4. applyOptimistic upsert   -> INSERT INTO tracker_items
-    //   5. markTransactionState     -> UPDATE tracker_transactions (persistedEnqueue)
+    //   2. enqueueTransaction clock -> SELECT MAX(enqueued_at) FROM tracker_transactions
+    //   3. enqueueTransaction       -> INSERT INTO tracker_transactions (pendingApply)
+    //   4. applyOptimistic snapshot -> SELECT FROM tracker_items
+    //   5. applyOptimistic upsert   -> INSERT INTO tracker_items
+    //   6. markTransactionState     -> UPDATE tracker_transactions (persistedEnqueue)
     //
-    // Throwing right after call 2 means the queue row is committed but
+    // Throwing right after call 3 means the queue row is committed but
     // the projection write has not happened yet.
-    const db = makeMockDb({ throwAfterCallIndex: 2 });
+    const db = makeMockDb({ throwAfterCallIndex: 3 });
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const store = new TrackerPGLiteStore(db as any, WORKSPACE);
 
@@ -443,20 +444,21 @@ describe('TrackerPGLiteStore.applyAndEnqueueAtomically — crash-safe ordering (
     expect(pending[0].payload).toEqual(payload);
   });
 
-  it('a crash AFTER the projection INSERT (call 4) still leaves a pendingApply row; replay through applyOptimistic is idempotent', async () => {
+  it('a crash AFTER the projection INSERT (call 5) still leaves a pendingApply row; replay through applyOptimistic is idempotent', async () => {
     // Walk the calls until we land just after the tracker_items INSERT,
     // then throw. Use a high call ceiling and stop right after we've
     // observed both writes.
     //
     // Sequence (brand-new row create):
     //   1. SELECT tracker_items                (outer snapshotRow)
-    //   2. INSERT tracker_transactions         (pendingApply)
-    //   3. SELECT tracker_items                (applyOptimistic's own snapshotRow)
-    //   4. INSERT tracker_items                (projection write)
-    //   5. UPDATE tracker_transactions         (promote -> persistedEnqueue)
+    //   2. SELECT MAX(enqueued_at)             (enqueue clock)
+    //   3. INSERT tracker_transactions         (pendingApply)
+    //   4. SELECT tracker_items                (applyOptimistic's own snapshotRow)
+    //   5. INSERT tracker_items                (projection write)
+    //   6. UPDATE tracker_transactions         (promote -> persistedEnqueue)
     //
-    // Throw after call 4: queue row still in pendingApply, projection done.
-    const db = makeMockDb({ throwAfterCallIndex: 4 });
+    // Throw after call 5: queue row still in pendingApply, projection done.
+    const db = makeMockDb({ throwAfterCallIndex: 5 });
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const store = new TrackerPGLiteStore(db as any, WORKSPACE);
 
@@ -469,8 +471,8 @@ describe('TrackerPGLiteStore.applyAndEnqueueAtomically — crash-safe ordering (
     expect(queued?.state).toBe(
       'pendingApply',
       // Note: `expect.toBe` doesn't take a message, but the failure shape
-      // makes the intent clear -- promotion to persistedEnqueue is call 5
-      // and our crash lands at 4.
+      // makes the intent clear -- promotion to persistedEnqueue is call 6
+      // and our crash lands at 5.
     );
 
     // Projection is written (mock state reflects the upsert).

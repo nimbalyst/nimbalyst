@@ -25,6 +25,11 @@
  *   user's choice. Tab in any other context is left alone so list
  *   indentation and focus traversal still work.
  *
+ * Web links:
+ *   A web link upgrades only when its title asks for a preview
+ *   (`preview=card` or `preview=embed`, see `linkPreviewLinks.ts`); Tab on a
+ *   lone web link adds that attribute. Transclusion links never upgrade.
+ *
  * Export rule:
  *   `EMBED_TRANSFORMER` writes the node back as `[label](src "k=v k=v")`.
  *   This is published into the extension contributions store so the
@@ -35,13 +40,11 @@
 import {
   $createParagraphNode,
   $createTextNode,
-  $getRoot,
+  $getNodeByKey,
   $getSelection,
-  $isElementNode,
   $isNodeSelection,
   $isParagraphNode,
   $isRangeSelection,
-  $isTextNode,
   COLLABORATION_TAG,
   COMMAND_PRIORITY_LOW,
   KEY_TAB_COMMAND,
@@ -57,6 +60,7 @@ import {
   $isEmbeddedFileNode,
   EmbeddedFileNode,
 } from '../../plugins/EmbedPlugin/EmbeddedFileNode';
+import { NAMED_PAGE_VIEW_TRANSFORMER } from '../../plugins/EmbedPlugin/namedPageView';
 import { EMBED_TRANSFORMER } from '../../plugins/EmbedPlugin/EmbedTransformer';
 import {
   parseEmbedAttrs,
@@ -64,10 +68,26 @@ import {
 } from '../../plugins/EmbedPlugin/embedAttrs';
 import {
   getEmbeddableExtensions,
-  isEmbeddableUrl,
   subscribeToEmbeddableExtensionsChanges,
 } from '../../plugins/EmbedPlugin/embeddableExtensions';
+import {
+  $rescanForEmbedUpgrade,
+  $upgradeParagraphIsolatedLinkToEmbed,
+  isEmptyTextNode,
+  isPreviewUpgrade,
+  isUpgradeableLink,
+} from '../../plugins/EmbedPlugin/embedUpgrade';
+import { setTitleAttr } from '../../plugins/EmbedPlugin/embedTitle';
+import { INSERT_LINK_PREVIEW_COMMAND } from '../../plugins/LinkPreviewPlugin/linkPreviewInsert';
+import '../../plugins/LinkPreviewPlugin/linkPreviewBlockMenu';
+import {
+  LINK_PREVIEW_ATTR,
+  defaultLinkPreviewMode,
+  isTranscludeTitle,
+} from '../../plugins/LinkPreviewPlugin/linkPreviewLinks';
 import { setExtensionContributions } from '../extensionContributionsStore';
+
+export { $rescanForEmbedUpgrade };
 
 const NAME = '@nimbalyst/editor/embed';
 
@@ -77,10 +97,6 @@ const NAME = '@nimbalyst/editor/embed';
  */
 const COLLAB_RESCAN_DEBOUNCE_MS = 250;
 
-function isEmptyTextNode(node: LexicalNode): boolean {
-  return $isTextNode(node) && node.getTextContent() === '';
-}
-
 /** Find the enclosing LinkNode for a selection-anchor node, if any. */
 function $findEnclosingLinkNode(node: LexicalNode | null): LinkNode | null {
   let current: LexicalNode | null = node;
@@ -88,43 +104,6 @@ function $findEnclosingLinkNode(node: LexicalNode | null): LinkNode | null {
     current = current.getParent();
   }
   return current as LinkNode | null;
-}
-
-function isEmbedOptOut(title: string | null | undefined): boolean {
-  if (!title) return false;
-  return parseEmbedAttrs(title).embed === 'false';
-}
-
-function $upgradeParagraphIsolatedLinkToEmbed(linkNode: LinkNode): void {
-  // Skip auto-links (`<https://...>` style) -- those aren't filesystem refs.
-  if (!$isLinkNode(linkNode)) return;
-
-  const url = linkNode.getURL();
-  const title = linkNode.getTitle() ?? '';
-  const attrs = parseEmbedAttrs(title);
-  if (!isEmbeddableUrl(url, attrs.embedType)) return;
-
-  // Respect explicit user opt-out (set by the Tab-downgrade path).
-  if (isEmbedOptOut(title)) return;
-
-  const parent = linkNode.getParent();
-  if (!parent || !$isParagraphNode(parent)) return;
-
-  // Paragraph must contain only this link (ignoring empty text-node siblings).
-  const meaningfulChildren = parent.getChildren().filter((c) => !isEmptyTextNode(c));
-  if (meaningfulChildren.length !== 1 || meaningfulChildren[0] !== linkNode) {
-    return;
-  }
-
-  const label = linkNode.getTextContent();
-  const embedNode = $createEmbeddedFileNode({
-    src: url,
-    label,
-    attrs,
-  });
-
-  // Replace the entire paragraph -- embeds are block-level, not inline.
-  parent.replace(embedNode);
 }
 
 /**
@@ -136,9 +115,16 @@ function $upgradeParagraphIsolatedLinkToEmbed(linkNode: LinkNode): void {
 function $upgradeLinkToEmbed(linkNode: LinkNode): boolean {
   if (!$isLinkNode(linkNode)) return false;
   const url = linkNode.getURL();
-  const title = linkNode.getTitle() ?? '';
+  let title = linkNode.getTitle() ?? '';
+  if (!isUpgradeableLink(url, title)) {
+    // A plain web link becomes a preview: the site's player when allowlisted,
+    // else a card. The mode is written into the title so it survives a save.
+    const mode = isTranscludeTitle(title) ? null : defaultLinkPreviewMode(url);
+    if (!mode) return false;
+    title = setTitleAttr(title, LINK_PREVIEW_ATTR, mode);
+  }
+  const preview = isPreviewUpgrade(url, title);
   const attrs = parseEmbedAttrs(title);
-  if (!isEmbeddableUrl(url, attrs.embedType)) return false;
 
   const parent = linkNode.getParent();
   if (!parent || !$isParagraphNode(parent)) return false;
@@ -148,13 +134,14 @@ function $upgradeLinkToEmbed(linkNode: LinkNode): boolean {
     return false;
   }
 
-  // Clear the opt-out, then upgrade.
+  // Clear the opt-out, then upgrade. A preview keeps the rest of its title as written.
   delete attrs.embed;
 
   const embedNode = $createEmbeddedFileNode({
     src: url,
     label: linkNode.getTextContent(),
     attrs,
+    title: preview ? setTitleAttr(title, 'embed', null) : null,
   });
   parent.replace(embedNode);
   return true;
@@ -165,12 +152,14 @@ function $upgradeLinkToEmbed(linkNode: LinkNode): boolean {
  * in the title so the auto-upgrade rule doesn't immediately reverse the
  * user's Tab. Returns true on success.
  */
-function $downgradeEmbedToLink(embedNode: EmbeddedFileNode): boolean {
+export function $downgradeEmbedToLink(embedNode: EmbeddedFileNode): boolean {
   if (!$isEmbeddedFileNode(embedNode)) return false;
   const src = embedNode.getSrc();
   const label = embedNode.getLabel() || src;
-  const attrs = { ...embedNode.getAttrs(), embed: 'false' };
-  const title = serializeEmbedAttrs(attrs);
+  const verbatim = embedNode.getTitle();
+  const title = verbatim !== null
+    ? setTitleAttr(verbatim, 'embed', 'false')
+    : serializeEmbedAttrs({ ...embedNode.getAttrs(), embed: 'false' });
 
   const linkNode = $createLinkNode(src, title ? { title } : undefined);
   linkNode.append($createTextNode(label));
@@ -207,28 +196,13 @@ function $handleTabToggle(): boolean {
   return false;
 }
 
-/**
- * Walk every node in the editor and upgrade any qualifying paragraph-
- * isolated `LinkNode` to an embed. Needed because the embeddable file-
- * type set is usually empty when the host markdown doc first loads
- * (extensions register their types AFTER initial import), so the
- * `registerNodeTransform` callbacks that ran on import all saw an empty
- * set and left links alone. This scan re-runs the upgrade rule against
- * the live tree once the set changes.
- */
-export function $rescanForEmbedUpgrade(): void {
-  const stack: LexicalNode[] = [$getRoot()];
-  while (stack.length > 0) {
-    const node = stack.pop()!;
-    if ($isLinkNode(node)) {
-      $upgradeParagraphIsolatedLinkToEmbed(node);
-      // Don't descend into a LinkNode's children -- text content can't
-      // host another link.
-      continue;
-    }
-    if ($isElementNode(node)) {
-      const children = node.getChildren();
-      for (const child of children) stack.push(child);
+/** The upgrade rule over the direct link children of the given elements only. */
+function $upgradeLinksIn(keys: readonly string[]): void {
+  for (const key of keys) {
+    const node = $getNodeByKey(key);
+    if (!$isParagraphNode(node)) continue;
+    for (const child of node.getChildren()) {
+      if ($isLinkNode(child)) $upgradeParagraphIsolatedLinkToEmbed(child);
     }
   }
 }
@@ -243,13 +217,21 @@ export const EmbedExtension = defineExtension({
     // Collapse bursts onto a trailing timer instead, and skip entirely when
     // no extension has registered an embeddable type (nothing can upgrade).
     let collabRescanTimer: ReturnType<typeof setTimeout> | null = null;
-    const scheduleCollabRescan = () => {
+    // With no file type registered (the browser editor), only a placed view
+    // can upgrade, so walk just the elements remote transactions touched.
+    const dirtyKeys = new Set<string>();
+    const scheduleCollabRescan = (dirty: Iterable<string>) => {
+      const fullWalk = getEmbeddableExtensions().length > 0;
+      if (!fullWalk) for (const key of dirty) dirtyKeys.add(key);
       if (collabRescanTimer !== null) return;
-      if (getEmbeddableExtensions().length === 0) return;
+      if (!fullWalk && dirtyKeys.size === 0) return;
       collabRescanTimer = setTimeout(() => {
         collabRescanTimer = null;
+        const keys = [...dirtyKeys];
+        dirtyKeys.clear();
         editor.update(() => {
-          $rescanForEmbedUpgrade();
+          if (getEmbeddableExtensions().length > 0) $rescanForEmbedUpgrade();
+          else $upgradeLinksIn(keys);
         });
       }, COLLAB_RESCAN_DEBOUNCE_MS);
     };
@@ -258,6 +240,7 @@ export const EmbedExtension = defineExtension({
       () => {
         if (collabRescanTimer !== null) clearTimeout(collabRescanTimer);
         collabRescanTimer = null;
+        dirtyKeys.clear();
       },
       editor.registerNodeTransform(LinkNode, (node) => {
         $upgradeParagraphIsolatedLinkToEmbed(node);
@@ -282,8 +265,8 @@ export const EmbedExtension = defineExtension({
       // inserts and the paragraph ends up duplicated. The debounce narrows
       // the window but does not close it; converging on a single writer needs
       // the embed import to happen at seed time.
-      editor.registerUpdateListener(({ tags }) => {
-        if (tags.has(COLLABORATION_TAG)) scheduleCollabRescan();
+      editor.registerUpdateListener(({ tags, dirtyElements }) => {
+        if (tags.has(COLLABORATION_TAG)) scheduleCollabRescan(dirtyElements.keys());
       }),
       editor.registerCommand(
         KEY_TAB_COMMAND,
@@ -314,5 +297,14 @@ export const EmbedExtension = defineExtension({
 });
 
 setExtensionContributions(NAME, {
-  markdownTransformers: [EMBED_TRANSFORMER],
+  markdownTransformers: [NAMED_PAGE_VIEW_TRANSFORMER, EMBED_TRANSFORMER],
+  userCommands: [
+    {
+      title: 'Link preview',
+      description: 'A card for a web link, or the player for a video or design file',
+      icon: 'link',
+      keywords: ['link', 'preview', 'bookmark', 'card', 'embed', 'url', 'video', 'youtube', 'figma', 'loom', 'vimeo'],
+      command: INSERT_LINK_PREVIEW_COMMAND,
+    },
+  ],
 });

@@ -240,7 +240,7 @@ Note the `issueType` field — that's the GitHub-native **type** (Bug / Feature 
 - Do not propose label cleanup as a side action.
 - Do not commit anything.
 - Do not start implementing fixes — `/investigate` is the entry point for spawned sessions, and it stops before implementation.
-- Do not run `npm run dev`.
+- Do not run `pnpm run dev`.
 - Do not spawn sessions for issues that already have an open/draft PR or a recent session covering them.
 - Do not close or label a public GitHub issue as a duplicate of a private `NIM-#` tracker item. The reporter can't see the tracker, so the close would be meaningless. Public-issue duplicates must point at another public GitHub issue.
 

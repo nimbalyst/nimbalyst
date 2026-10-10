@@ -234,7 +234,9 @@ export class CopilotCLIProvider extends BaseAgentProvider {
       return;
     }
 
-    const systemPrompt = this.buildSystemPrompt(documentContext);
+    const systemPrompt = this.buildSystemPrompt(
+      documentContext, await this.getSessionDirective(sessionId), this.isNamedOutOfBand(sessionId, documentContext),
+    );
     const { userMessageAddition, messageWithContext } = buildUserMessageAddition(message, documentContext);
 
     if (sessionId && (systemPrompt || userMessageAddition)) {
@@ -425,14 +427,20 @@ export class CopilotCLIProvider extends BaseAgentProvider {
     super.destroy();
   }
 
-  protected buildSystemPrompt(documentContext?: DocumentContext): string {
+  protected buildSystemPrompt(
+    documentContext?: DocumentContext,
+    sessionDirective?: string,
+    hasOutOfBandNaming: boolean = false,
+  ): string {
     const hasSessionNaming = isInternalMcpServerEnabled();
     const worktreePath = documentContext?.worktreePath;
 
     return buildClaudeCodeSystemPrompt({
       hasSessionNaming,
+      hasOutOfBandNaming,
       toolReferenceStyle: 'codex',
       worktreePath,
+      sessionDirective,
       isVoiceMode: false,
       enableAgentTeams: false,
       trackersEnabled: areTrackerToolsEnabled(resolveTrackersWorkspacePath(documentContext)),

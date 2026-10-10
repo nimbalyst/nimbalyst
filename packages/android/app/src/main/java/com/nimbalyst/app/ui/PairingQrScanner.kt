@@ -5,6 +5,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.provider.Settings
+import android.util.Log
 import android.util.Size
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -51,7 +52,9 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.content.ContextCompat
+import androidx.compose.ui.res.stringResource
 import com.google.mlkit.vision.barcode.BarcodeScanning
+import com.nimbalyst.app.R
 import com.google.mlkit.vision.barcode.common.Barcode
 import com.google.mlkit.vision.common.InputImage
 import java.util.concurrent.Executors
@@ -81,6 +84,8 @@ fun PairingQrScanner(
     ) { granted ->
         hasCameraPermission = granted
     }
+    // Set when CameraX cannot bind a back camera (none present, or in use/disabled).
+    var cameraUnavailable by remember { mutableStateOf(false) }
 
     LaunchedEffect(hasCameraPermission) {
         if (!hasCameraPermission) {
@@ -93,10 +98,11 @@ fun PairingQrScanner(
             .fillMaxSize()
             .background(Color.Black)
     ) {
-        if (hasCameraPermission) {
+        if (hasCameraPermission && !cameraUnavailable) {
             QrCameraPreview(
                 modifier = Modifier.fillMaxSize(),
-                onScanned = onScanned
+                onScanned = onScanned,
+                onCameraUnavailable = { cameraUnavailable = true }
             )
 
             // Centered viewfinder reticle to frame the QR code (matches iOS: a
@@ -164,28 +170,34 @@ fun PairingQrScanner(
                 verticalArrangement = Arrangement.spacedBy(16.dp)
             ) {
                 Text(
-                    text = "Camera access is required to scan the pairing QR code.",
+                    text = if (cameraUnavailable) {
+                        stringResource(R.string.pairing_camera_unavailable)
+                    } else {
+                        "Camera access is required to scan the pairing QR code."
+                    },
                     style = MaterialTheme.typography.bodyMedium,
                     color = Color.White,
                     textAlign = TextAlign.Center
                 )
-                Button(onClick = { permissionLauncher.launch(Manifest.permission.CAMERA) }) {
-                    Text("Allow camera")
-                }
-                // Escape hatch when the user has permanently denied the camera:
-                // re-requesting is silently inert, so route them to app settings.
-                OutlinedButton(
-                    onClick = {
-                        val intent = Intent(
-                            Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
-                            Uri.fromParts("package", context.packageName, null)
-                        ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                        context.startActivity(intent)
-                    },
-                    border = BorderStroke(1.dp, Color.White.copy(alpha = 0.7f)),
-                    colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White)
-                ) {
-                    Text("Open settings")
+                if (!cameraUnavailable) {
+                    Button(onClick = { permissionLauncher.launch(Manifest.permission.CAMERA) }) {
+                        Text("Allow camera")
+                    }
+                    // Escape hatch when the user has permanently denied the camera:
+                    // re-requesting is silently inert, so route them to app settings.
+                    OutlinedButton(
+                        onClick = {
+                            val intent = Intent(
+                                Settings.ACTION_APPLICATION_DETAILS_SETTINGS,
+                                Uri.fromParts("package", context.packageName, null)
+                            ).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                            context.startActivity(intent)
+                        },
+                        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.7f)),
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.White)
+                    ) {
+                        Text("Open settings")
+                    }
                 }
                 OutlinedButton(
                     onClick = onCancel,
@@ -203,6 +215,7 @@ fun PairingQrScanner(
 private fun QrCameraPreview(
     modifier: Modifier,
     onScanned: (String) -> Unit,
+    onCameraUnavailable: () -> Unit,
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -239,8 +252,7 @@ private fun QrCameraPreview(
         var boundAnalysis: ImageAnalysis? = null
         var disposed = false
 
-        cameraProviderFuture.addListener({
-            if (disposed) return@addListener
+        fun bindCamera() {
             val cameraProvider = cameraProviderFuture.get()
             boundProvider = cameraProvider
 
@@ -294,6 +306,17 @@ private fun QrCameraPreview(
                 preview,
                 analysis
             )
+        }
+
+        cameraProviderFuture.addListener({
+            if (disposed) return@addListener
+            // get() and bindToLifecycle throw on devices with no usable back camera.
+            try {
+                bindCamera()
+            } catch (error: Exception) {
+                Log.w("PairingQrScanner", "Camera unavailable", error)
+                onCameraUnavailable()
+            }
         }, ContextCompat.getMainExecutor(context))
 
         onDispose {

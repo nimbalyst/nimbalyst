@@ -44,6 +44,8 @@ import {
 } from '../atoms/trackers';
 import { getBodyDocCache } from '../../services/BodyDocCache';
 import { ElectronTrackerDataSource } from '../../services/ElectronTrackerDataSource';
+// A full replace comes from main's database, which never holds Local wiki items.
+import { remergeLocalWikiRecords } from '../../services/localWikiTrackerRecords';
 
 /** Auto-clear delay for transient rotation locks. Matches the typical
  *  team rotation window -- by 30s the org-wide write freeze should have
@@ -103,11 +105,12 @@ function itemCarriesRelationshipField(item: TrackerItem): boolean {
  * Fetch all tracker items from the main-process tracker read model and load
  * them into atoms.
  */
-async function loadAllTrackerItems(dataSource: TrackerDataSource): Promise<void> {
+async function loadAllTrackerItems(dataSource: TrackerDataSource, workspacePath: string | null): Promise<void> {
   try {
     const { items = [] } = await dataSource.command({ type: 'list-items' });
     const records = items.map(trackerItemToRecord);
     store.set(replaceAllTrackerItemsAtom, records);
+    remergeLocalWikiRecords(workspacePath);
   } catch (err) {
     console.error('[trackerSyncListeners] Failed to load tracker items:', err);
     // Mark as loaded even on error so UI doesn't stay in loading state
@@ -154,7 +157,7 @@ export function initTrackerSyncListeners(): () => void {
     relationshipReconcileTimer = setTimeout(() => {
       relationshipReconcileTimer = null;
       if (disposed) return;
-      if (trackerDataSource) void loadAllTrackerItems(trackerDataSource);
+      if (trackerDataSource) void loadAllTrackerItems(trackerDataSource, currentWorkspacePath);
     }, RELATIONSHIP_RECONCILE_DEBOUNCE_MS);
   };
 
@@ -173,6 +176,7 @@ export function initTrackerSyncListeners(): () => void {
     switch (change.type) {
       case 'items-replaced':
         store.set(replaceAllTrackerItemsAtom, change.items.map(trackerItemToRecord));
+        remergeLocalWikiRecords(currentWorkspacePath);
         return;
       case 'items-upserted':
         upsertItems(change.items);
@@ -343,6 +347,7 @@ export function initTrackerSyncListeners(): () => void {
         const snapshot = await dataSource.snapshot();
         if (disposed || currentWorkspacePath !== requestedWorkspacePath) return;
         store.set(replaceAllTrackerItemsAtom, snapshot.items.map(trackerItemToRecord));
+        remergeLocalWikiRecords(requestedWorkspacePath);
         store.set(replaceSharedTrackerViewsAtom, snapshot.savedViews);
         store.set(trackerSyncConnectionAtom, snapshot.sync);
       } catch (error) {
@@ -369,6 +374,9 @@ export function initTrackerSyncListeners(): () => void {
         const nextPath = store.get(activeWorkspacePathAtom);
         if (!nextPath || nextPath === currentWorkspacePath) return;
         currentWorkspacePath = nextPath;
+        // The previous project's wiki items leave the map now, not when the
+        // snapshot lands: until then they would still open and edit its files.
+        remergeLocalWikiRecords(nextPath);
         const nextDataSource = bindTrackerDataSource(nextPath);
         void initTrackerPanelLayout(nextPath);
         void store.set(loadTrackerNavigationAtom, nextPath).catch((error) => {
@@ -377,6 +385,7 @@ export function initTrackerSyncListeners(): () => void {
         void nextDataSource.snapshot().then((snapshot) => {
           if (disposed || currentWorkspacePath !== nextPath) return;
           store.set(replaceAllTrackerItemsAtom, snapshot.items.map(trackerItemToRecord));
+          remergeLocalWikiRecords(nextPath);
           store.set(replaceSharedTrackerViewsAtom, snapshot.savedViews);
           store.set(trackerSyncConnectionAtom, snapshot.sync);
         }).catch((error) => {

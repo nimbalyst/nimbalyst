@@ -4,3 +4,4 @@
 export { seedTrackerBody } from '../browser/seedTrackerBody';
 export { trackerBodyDocumentId } from '../browser/trackerBodyRoom';
 export type { TrackerBodyRoom, TrackerBodySeeder } from '../browser/trackerBodyRoom';
+export { openBrowserDocumentRoom, readDocumentRoomMarkdown, type BrowserDocumentRoomOptions } from '../browser/documentRoom';

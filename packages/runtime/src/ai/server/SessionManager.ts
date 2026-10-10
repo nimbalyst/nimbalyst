@@ -26,6 +26,7 @@ import {
 import type { TranscriptViewMessage } from './transcript/TranscriptProjector';
 import type { SessionData as ChatSession } from './types';
 import { parseContextUsageMessage } from './utils/contextUsage';
+import { fromDbBoolean } from '../../core/dbBoolean';
 import { TranscriptMigrationRepository } from '../../storage/repositories/TranscriptMigrationRepository';
 import { stagedAttachmentRegistry } from './attachments/stagedAttachmentRegistry';
 
@@ -168,6 +169,10 @@ function sessionDataFromChatSession(session: ChatSession, fallbackWorkspace: str
     documentContext,
     workspacePath: workspaceId,
     title: session.title ?? 'New conversation',
+    // Named by a caller (spawn_session, extension-owned) or by the agent. The
+    // streaming handler keys the provisional title and the naming prompt on it;
+    // SQLite hands the column back as 0/1.
+    hasBeenNamed: fromDbBoolean(session.hasBeenNamed),
     draftInput: session.draftInput ?? undefined,
     providerConfig,
     providerSessionId,
@@ -861,7 +866,11 @@ export class SessionManager {
     worktreePath?: string,
     worktreeProjectPath?: string,
     agentRole: AgentRole = 'standard',
-    createdBySessionId?: string | null
+    createdBySessionId?: string | null,
+    /** Initial metadata, written with the row (not in a follow-up update). */
+    metadata?: Record<string, unknown>,
+    /** Initial tree placement, validated and persisted with the row. */
+    parentSessionId?: string | null
   ): Promise<SessionData> {
     // workspacePath is REQUIRED - sessions cannot exist outside of a workspace
     if (!workspacePath) {
@@ -887,6 +896,8 @@ export class SessionManager {
       worktreeProjectPath,
       agentRole,
       createdBySessionId,
+      parentSessionId,
+      ...(metadata ? { metadata } : {}),
     });
 
     // Canonical transform columns default to null in the DB schema, so new
@@ -916,6 +927,8 @@ export class SessionManager {
       worktreeProjectPath,
       agentRole,
       createdBySessionId: createdBySessionId ?? null,
+      parentSessionId: parentSessionId ?? undefined,
+      ...(metadata ? { metadata } : {}),
     };
 
     this.currentSession = session;
@@ -1281,15 +1294,10 @@ export class SessionManager {
    * This persists cumulative token usage for the session
    */
   async updateSessionTokenUsage(sessionId: string, tokenUsage: SessionData['tokenUsage']): Promise<void> {
-    // Get current metadata and merge token usage into it
-    const session = await AISessionsRepository.get(sessionId);
-    const currentMetadata = (session?.metadata ?? {}) as Record<string, unknown>;
-
+    // Send only this key; the store merges it. Spreading a snapshot read here wrote
+    // stale values (e.g. an old hasPendingPrompt) back over newer ones.
     await AISessionsRepository.updateMetadata(sessionId, {
-      metadata: {
-        ...currentMetadata,
-        tokenUsage
-      }
+      metadata: { tokenUsage }
     });
 
     if (this.currentSession?.id === sessionId) {

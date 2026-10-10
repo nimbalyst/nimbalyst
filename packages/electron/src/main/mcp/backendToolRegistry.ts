@@ -38,7 +38,20 @@ export interface BackendToolDefinition {
   /** When true, the tool is also exposed to the voice agent (OpenAI Realtime). */
   voiceAgent?: boolean;
   scope?: 'global' | 'editor';
+  /**
+   * Reachable only from the owning extension's renderer (`callBackendTool`).
+   * Never listed to agents or the voice agent; agent lookups do not resolve it.
+   */
+  panelOnly?: boolean;
+  /**
+   * Which agent sessions see the tool. `'owned-sessions'` lists and runs it only
+   * for sessions whose `metadata.sessionOwner.extensionId` is this extension
+   * (see `filterBackendToolsForSession`); never for voice. Absent means `'all'`.
+   */
+  audience?: BackendToolAudience;
 }
+
+export type BackendToolAudience = 'all' | 'owned-sessions';
 
 /** The raw per-tool shape a backend module sends over `registerMcpTools`. */
 export interface RegisterBackendToolInput {
@@ -47,6 +60,8 @@ export interface RegisterBackendToolInput {
   inputSchema?: unknown;
   voiceAgent?: boolean;
   scope?: 'global' | 'editor';
+  panelOnly?: boolean;
+  audience?: BackendToolAudience;
 }
 
 // Keyed by the workspacePath the registering module was started for.
@@ -109,8 +124,10 @@ export function registerBackendTools(
     inputSchema: normalizeSchema(t.inputSchema),
     extensionId,
     moduleId,
-    voiceAgent: t.voiceAgent === true,
+    voiceAgent: t.voiceAgent === true && t.panelOnly !== true && t.audience !== 'owned-sessions',
     scope: t.scope ?? 'global',
+    ...(t.panelOnly === true ? { panelOnly: true } : {}),
+    ...(t.audience === 'owned-sessions' ? { audience: 'owned-sessions' as const } : {}),
   }));
   backendToolsByWorkspace.set(workspacePath, [...kept, ...added]);
   changeNotifier?.(workspacePath);
@@ -146,17 +163,35 @@ export function clearBackendToolsForModule(extensionId: string, moduleId: string
   }
 }
 
-/** All backend tools registered for a workspace. */
-export function getBackendTools(workspacePath: string | undefined): BackendToolDefinition[] {
+/** Every backend tool registered for a workspace, panel-only ones included. */
+function getAllBackendTools(workspacePath: string | undefined): BackendToolDefinition[] {
   if (!workspacePath) return [];
   return backendToolsByWorkspace.get(workspacePath) ?? [];
 }
 
-/** Backend tools opted in to the voice agent for a workspace. */
+/** Backend tools on the agent surface for a workspace (panel-only tools excluded). */
+export function getBackendTools(workspacePath: string | undefined): BackendToolDefinition[] {
+  return getAllBackendTools(workspacePath).filter((t) => t.panelOnly !== true);
+}
+
+/** Backend tools opted in to the voice agent for a workspace. Voice has no owning session, so owned-session tools never appear. */
 export function getVoiceEnabledBackendTools(
   workspacePath: string | undefined
 ): BackendToolDefinition[] {
-  return getBackendTools(workspacePath).filter((t) => t.voiceAgent === true);
+  return getBackendTools(workspacePath).filter(
+    (t) => t.voiceAgent === true && t.audience !== 'owned-sessions'
+  );
+}
+
+/**
+ * Whether a session owned by `ownerExtensionId` (null for an unowned session or
+ * the voice agent) may see and call this tool.
+ */
+export function isBackendToolVisibleTo(
+  tool: BackendToolDefinition,
+  ownerExtensionId: string | null
+): boolean {
+  return tool.audience !== 'owned-sessions' || tool.extensionId === ownerExtensionId;
 }
 
 /**
@@ -168,7 +203,10 @@ export function findBackendTool(
   workspacePath: string | undefined,
   toolName: string
 ): BackendToolDefinition | undefined {
-  const tools = getBackendTools(workspacePath);
+  return findIn(getBackendTools(workspacePath), toolName);
+}
+
+function findIn(tools: BackendToolDefinition[], toolName: string): BackendToolDefinition | undefined {
   const direct = tools.find((t) => t.name === toolName);
   if (direct) return direct;
   return tools.find((t) => t.name.includes('.') && t.name.replace(/\./g, '_') === toolName);
@@ -190,7 +228,8 @@ export function findOwnedBackendTool(
   toolName: string,
   callerExtensionId: string
 ): BackendToolDefinition | undefined {
-  const entry = findBackendTool(workspacePath, toolName);
+  // Includes panel-only tools: this is the extension's own renderer calling.
+  const entry = findIn(getAllBackendTools(workspacePath), toolName);
   if (!entry || entry.extensionId !== callerExtensionId) return undefined;
   return entry;
 }

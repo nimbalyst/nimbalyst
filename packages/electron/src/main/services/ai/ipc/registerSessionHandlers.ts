@@ -5,6 +5,7 @@ import { logger } from '../../../utils/logger';
 import { getDefaultEffortLevel, getDefaultThinkingMode } from '../../../utils/store';
 import { FEATURES, FeatureUsageService } from '../../FeatureUsageService.ts';
 import { getSyncProvider } from '../../SyncManager';
+import { getPendingSubmissionStore } from '../../RepositoryManager';
 import { trackCreateAiSession } from '../../analytics/sessionLaunchAnalytics';
 import { captureTutorialMilestone } from '../../tutorial/tutorialAnalytics';
 import { bucketAgeInDays, bucketCount, extractModelForProvider } from '.././aiServiceUtils';
@@ -292,9 +293,29 @@ export function registerSessionHandlers(ctx: AIServiceContext): void {
     return session;
   });
 
+  // Records a composer prompt durably before the renderer clears its draft.
+  // Throws on failure so the renderer keeps the text instead of losing it.
+  safeHandle('ai:recordPendingSubmission', async (_event, sessionId: string, prompt: string) => {
+    if (!sessionId) throw new Error('ai:recordPendingSubmission requires a sessionId');
+    const pending = await getPendingSubmissionStore().record(sessionId, prompt);
+    return { submissionId: pending.id };
+  });
+
   safeHandle('ai:sendMessage', async (...args: Parameters<NonNullable<typeof ctx.sendMessageHandler>>) => {
     if (args[3]) await remoteSessions.assertLocalExecution(args[3]);
-    return ctx.sendMessageHandler!(...args);
+    const sessionId = args[3];
+    const submissionId = (args[2] as { submissionId?: unknown } | undefined)?.submissionId;
+    try {
+      return await ctx.sendMessageHandler!(...args);
+    } finally {
+      // The turn is over, delivered or failed. A failure before delivery
+      // reaches the renderer as a rejection, and the renderer restores the text.
+      if (sessionId && typeof submissionId === 'string') {
+        await getPendingSubmissionStore().clear(sessionId, submissionId).catch(error => {
+          logger.main.error(`[AIService] Failed to clear pending submission ${submissionId} for ${sessionId}:`, error);
+        });
+      }
+    }
   });
 
   // Get session history (full session data with messages - slow)

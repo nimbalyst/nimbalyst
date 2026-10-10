@@ -47,6 +47,19 @@ describe('runQueueDriveAttempt', () => {
     });
   });
 
+  // A Claude Code turn that has answered but is draining a background shell
+  // holds both the chain guard and the running state for up to 30 minutes.
+  // Its live query can take the follow-up, so the prompt must not wait.
+  it('dispatches into a turn that is only draining background tasks', async () => {
+    const deps = createDeps({
+      isChainActive: vi.fn(() => true),
+      isSessionBusy: vi.fn(() => true),
+      canDispatchIntoDrain: vi.fn(() => true),
+    });
+
+    expect(await run(deps, 'renderer-trigger')).toEqual({ kind: 'dispatched', promptId: 'p1' });
+  });
+
   it.each([
     ['a queued chain is already running', { isChainActive: vi.fn(() => true) }],
     ['the session is mid-turn', { isSessionBusy: vi.fn(() => true) }],

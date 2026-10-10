@@ -18,7 +18,8 @@
  *  - added or changed locally, and the room did not change it: the local one,
  *    which the caller then pushes;
  *  - changed on both sides: the room's version wins, as it does for a type, and
- *    the id is reported so the caller can log what it overrode;
+ *    the id is reported so the caller can log what it overrode. The room
+ *    deleting a predicate this peer edited counts as changed on both sides;
  *  - deleted locally, and the room did not change it: stays deleted.
  *
  * With no baseline (a peer that has never applied a room registry), every local
@@ -80,7 +81,10 @@ export function mergePredicateRegistries(input: {
     if (samePredicate(mine, base)) continue;
     const theirs = merged.get(id);
     if (samePredicate(mine, theirs)) continue;
-    if (!theirs || samePredicate(theirs, base)) {
+    // Absent in the room: a local addition only when the baseline never had it.
+    // With a baseline entry, absence is the room's deletion, and it wins.
+    const roomUnchanged = theirs === undefined ? base === undefined : samePredicate(theirs, base);
+    if (roomUnchanged) {
       merged.set(id, mine);
       keptLocal.push(id);
     } else {

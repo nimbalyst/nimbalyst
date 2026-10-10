@@ -1,0 +1,88 @@
+.page-mark-editor {
+  z-index: 1000;
+  width: 300px;
+  padding: 12px;
+  border: 1px solid var(--nim-border);
+  border-radius: 8px;
+  background: var(--nim-bg-tertiary);
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.45);
+  font-size: 12px;
+  color: var(--nim-text-muted);
+}
+
+.page-mark-editor-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.page-mark-editor-kinds {
+  display: flex;
+  gap: 4px;
+}
+
+.page-mark-editor-kind {
+  flex: 1;
+  padding: 3px 8px;
+  border: 1px solid var(--nim-border);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--nim-text-muted);
+  font: inherit;
+  cursor: pointer;
+}
+
+.page-mark-editor-kind.is-active {
+  background: var(--nim-bg-selected);
+  color: var(--nim-text);
+}
+
+.page-mark-editor-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.page-mark-editor-field span {
+  width: 76px;
+  flex: none;
+  color: var(--nim-text-faint);
+}
+
+.page-mark-editor-field input {
+  flex: 1;
+  min-width: 0;
+  padding: 4px 6px;
+  border: 1px solid var(--nim-border);
+  border-radius: 4px;
+  background: var(--nim-bg);
+  color: var(--nim-text);
+  font: inherit;
+}
+
+.page-mark-editor-field input:focus {
+  outline: none;
+  border-color: var(--nim-border-focus);
+}
+
+.page-mark-editor-actions {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 4px;
+}
+
+.page-mark-editor-actions button {
+  padding: 4px 10px;
+  border: 1px solid var(--nim-border);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--nim-text-muted);
+  font: inherit;
+  cursor: pointer;
+}
+
+.page-mark-editor-actions .page-mark-editor-save {
+  border-color: var(--nim-primary);
+  background: var(--nim-primary);
+  color: var(--nim-bg);
+}

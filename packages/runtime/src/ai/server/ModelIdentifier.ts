@@ -16,6 +16,7 @@ import {
   DEFAULT_MODELS,
   normalizeClaudeCodeVariant,
 } from '../modelConstants';
+import { claudeCustomModelName, isClaudeCustomModelSegment } from '../claudeCustomModels';
 
 /**
  * Valid Claude Code model suffixes (e.g., -1m for 1M context window)
@@ -81,6 +82,7 @@ export class ModelIdentifier {
    */
   get baseVariant(): string {
     if (isClaudeCodeFamily(this.provider)) {
+      if (this.isCustomClaudeModel) return this.model;
       // Strip known suffixes
       let variant = this.model.toLowerCase();
       for (const suffix of CLAUDE_CODE_VALID_SUFFIXES) {
@@ -97,10 +99,20 @@ export class ModelIdentifier {
    * For Claude Code models, returns true if this is a variant with extended context (e.g., -1m)
    */
   get isExtendedContext(): boolean {
-    if (!isClaudeCodeFamily(this.provider)) {
+    if (!isClaudeCodeFamily(this.provider) || this.isCustomClaudeModel) {
       return false;
     }
     return this.model.toLowerCase().endsWith('-1m');
+  }
+
+  /** True for a user-defined gateway model (`claude-code:custom/<name>`). */
+  get isCustomClaudeModel(): boolean {
+    return isClaudeCodeFamily(this.provider) && isClaudeCustomModelSegment(this.model);
+  }
+
+  /** The gateway model name to send verbatim (`Fast`), or null for built-ins. */
+  get customClaudeModel(): string | null {
+    return isClaudeCodeFamily(this.provider) ? claudeCustomModelName(this.model) : null;
   }
 
   /**
@@ -161,6 +173,12 @@ export class ModelIdentifier {
 
     // Validate model for provider
     if (isClaudeCodeFamily(provider)) {
+      // User-defined gateway models (`custom/<name>`) bypass variant validation
+      // and keep their case; see claudeCustomModels.ts.
+      if (isClaudeCustomModelSegment(model)) {
+        return new ModelIdentifier(provider, model);
+      }
+
       const normalizedModel = model.toLowerCase();
 
       // Strip known suffixes to get base variant

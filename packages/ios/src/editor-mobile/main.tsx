@@ -7,12 +7,24 @@
  * Bridge API:
  *   JS -> Swift: webkit.messageHandlers.editorBridge.postMessage({ type, ... })
  *     - editorReady: editor mounted and ready
- *     - contentChanged: markdown content changed (debounced 500ms)
- *     - dirty: editor has unsaved changes
+ *     - contentChanged: { content, revision } to persist (debounced 500ms); native
+ *       answers saveResult(revision, ok)
+ *     - dirty: whether the editor differs from what native confirmed, or a save is in flight
+ *     - linkClicked: a link was tapped ({ href, title }); native decides where it goes
  *     - error: JS error occurred
+ *
+ *   Only the body goes through Lexical. The frontmatter text is kept as loaded
+ *   and re-attached on every save (see frontmatter.ts), and a load never
+ *   reports a content change, so opening or refreshing a file never saves it.
  *
  *   Swift -> JS: window.nimbalystEditor.*
  *     - loadMarkdown(content: string): load markdown into editor
+ *     - deferRemote(content: string): a remote version while edits are unsaved: take its
+ *       frontmatter now, and its body only if the edits are undone (see pendingSave.ts)
+ *     - flush(): { content, revision } | null: the save to persist now (frontmatter
+ *       attached), as the editor closes; revision null when it cannot be acked
+ *       (a save is still in flight); null when nothing is unsaved
+ *     - saveResult(revision: number, ok: boolean): whether that save was persisted
  *     - setReadOnly(readonly: boolean): toggle read-only mode
  *     - getContent(): string: get current markdown content
  *     - formatText(format: string): apply text format (bold, italic, underline, strikethrough, code)
@@ -39,7 +51,13 @@ import {
 import { $getRoot, FORMAT_TEXT_COMMAND } from 'lexical';
 import type { LexicalEditor, TextFormatType } from 'lexical';
 
+import { joinFrontmatter, splitFrontmatter } from './frontmatter';
+import { PendingSave } from './pendingSave';
+import { authoredLinkHref } from './linkHref';
 import './styles.css';
+
+/** Update tag for content loaded from native; such updates are not user edits. */
+const LOAD_TAG = 'nimbalyst-native-load';
 
 // ============================================================================
 // Bridge helpers
@@ -137,39 +155,106 @@ function EditorApp(): React.ReactElement {
   const [content, setContent] = useState<string | null>(null);
   const [readOnly, setReadOnly] = useState(false);
   const editorRef = useRef<LexicalEditor | null>(null);
-  const getContentRef = useRef<(() => string) | null>(null);
-  const contentChangeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  /** Frontmatter block as loaded; re-attached unchanged on save. */
+  const frontmatterRef = useRef('');
+  /** Debounced save of user edits (500ms) against the last loaded or saved body. */
+  const saveRef = useRef<PendingSave | null>(null);
+  if (!saveRef.current) {
+    saveRef.current = new PendingSave({
+      onDirty: (isDirty) => postToNative({ type: 'dirty', isDirty }),
+      onSave: (revision, body) => {
+        const content = joinFrontmatter(frontmatterRef.current, body);
+        // A flush hands its save back to native synchronously (see flush below).
+        if (flushCaptureRef.current) flushCaptureRef.current.request = { revision, content };
+        else postToNative({ type: 'contentChanged', revision, content });
+      },
+      // Called from the update listener; load after it returns. The load
+      // reports the editor clean.
+      onReload: (body) => queueMicrotask(() => {
+        const editor = editorRef.current;
+        if (editor) reloadRef.current?.(editor, body);
+      }),
+    });
+  }
+  const pendingSave = saveRef.current;
+  /** Set while `flush` runs, to take its save instead of posting it. */
+  const flushCaptureRef = useRef<{ request: { revision: number; content: string } | null } | null>(null);
+  /** applyBody, for the save's reload callback (created before it). */
+  const reloadRef = useRef<((editor: LexicalEditor, body: string) => void) | null>(null);
+  /** Body waiting for the editor to mount. */
+  const pendingBodyRef = useRef<string | null>(null);
 
-  // Debounced content change notification to Swift
-  const notifyContentChanged = useCallback((markdown: string) => {
-    if (contentChangeTimerRef.current) {
-      clearTimeout(contentChangeTimerRef.current);
-    }
-    contentChangeTimerRef.current = setTimeout(() => {
-      postToNative({ type: 'contentChanged', content: markdown });
-    }, 500);
+  const exportBody = useCallback((editor: LexicalEditor): string => {
+    return editor.getEditorState().read(() => $convertToEnhancedMarkdownString(getEditorTransformers()));
   }, []);
+
+  // `loaded` (in onUpdate) drops any scheduled save and in-flight revision.
+  const applyBody = useCallback((editor: LexicalEditor, body: string) => {
+    editor.update(
+      () => {
+        const root = $getRoot();
+        root.clear();
+        $convertFromEnhancedMarkdownString(body, getEditorTransformers());
+      },
+      {
+        tag: LOAD_TAG,
+        onUpdate: () => {
+          pendingSave.loaded(exportBody(editor));
+        },
+      },
+    );
+  }, [exportBody, pendingSave]);
+  reloadRef.current = applyBody;
 
   // Set up the Swift -> JS bridge
   useEffect(() => {
     const bridge = {
       loadMarkdown: (markdown: string) => {
         try {
+          const { prefix, body } = splitFrontmatter(markdown);
+          frontmatterRef.current = prefix;
           const editor = editorRef.current;
           if (editor) {
-            // Editor already mounted -- update content
-            editor.update(() => {
-              const root = $getRoot();
-              root.clear();
-              $convertFromEnhancedMarkdownString(markdown, getEditorTransformers());
-            });
+            applyBody(editor, body);
           } else {
-            // Editor not yet mounted -- set initial content
-            setContent(markdown);
+            // Mount the editor empty; handleEditorReady loads the body through
+            // the same tagged path so the load is never mistaken for an edit.
+            pendingBodyRef.current = body;
+            setContent('');
           }
         } catch (err) {
           postErrorToNative(err instanceof Error ? err : new Error(String(err)), 'loadMarkdown');
         }
+      },
+
+      // A remote version arrived while the user has unsaved body edits: the
+      // body stays as typed, but the next save carries the remote frontmatter
+      // (the phone never edits frontmatter, so the remote one is newest), and
+      // undoing the edits shows the remote body.
+      deferRemote: (markdown: string) => {
+        const { prefix, body } = splitFrontmatter(markdown);
+        frontmatterRef.current = prefix;
+        pendingSave.deferRemote(body);
+      },
+
+      // The editor is closing: the save to persist now. With a revision when
+      // it was emitted (native acks it); without one when a save is still in
+      // flight and the newer content cannot wait for that ack.
+      flush: (): { content: string; revision: number | null } | null => {
+        const capture = { request: null as { revision: number; content: string } | null };
+        flushCaptureRef.current = capture;
+        try {
+          pendingSave.flush();
+        } finally {
+          flushCaptureRef.current = null;
+        }
+        if (capture.request) return capture.request;
+        const body = pendingSave.finalBody();
+        return body === null ? null : { revision: null, content: joinFrontmatter(frontmatterRef.current, body) };
+      },
+
+      saveResult: (revision: number, ok: boolean) => {
+        pendingSave.ack(revision, ok);
       },
 
       setReadOnly: (isReadOnly: boolean) => {
@@ -177,10 +262,9 @@ function EditorApp(): React.ReactElement {
       },
 
       getContent: (): string => {
-        if (getContentRef.current) {
-          return getContentRef.current();
-        }
-        return '';
+        const editor = editorRef.current;
+        if (!editor) return '';
+        return joinFrontmatter(frontmatterRef.current, exportBody(editor));
       },
 
       formatText: (format: TextFormatType) => {
@@ -199,16 +283,25 @@ function EditorApp(): React.ReactElement {
     return () => {
       delete (window as any).nimbalystEditor;
     };
-  }, []); // Empty deps -- runs once on mount
+  }, [applyBody, exportBody]); // Stable callbacks -- runs once on mount
 
-  // Handle dirty state changes
-  const handleDirtyChange = useCallback((isDirty: boolean) => {
-    postToNative({ type: 'dirty', isDirty });
-  }, []);
-
-  // Handle getContent callback from NimbalystEditor
-  const handleGetContent = useCallback((fn: () => string) => {
-    getContentRef.current = fn;
+  // Links go to native, which opens wiki pages in the app and web links in
+  // the browser. Without this the web view would navigate itself away from the
+  // editor (relative links resolve against the bundle's file URL).
+  useEffect(() => {
+    const onClick = (event: MouseEvent) => {
+      const anchor = (event.target as Element | null)?.closest?.('.mobile-editor a[href]');
+      if (!anchor) return;
+      event.preventDefault();
+      event.stopPropagation();
+      postToNative({
+        type: 'linkClicked',
+        href: authoredLinkHref(editorRef.current, anchor),
+        title: anchor.getAttribute('title'),
+      });
+    };
+    document.addEventListener('click', onClick, true);
+    return () => document.removeEventListener('click', onClick, true);
   }, []);
 
   // Handle editor ready
@@ -216,24 +309,25 @@ function EditorApp(): React.ReactElement {
     editorRef.current = editor;
 
     // Listen for content changes to notify Swift
-    editor.registerUpdateListener(({ editorState, dirtyElements, dirtyLeaves }) => {
-      // Skip updates with no actual changes
+    editor.registerUpdateListener(({ editorState, dirtyElements, dirtyLeaves, tags }) => {
+      // Skip updates with no actual changes, and content native just loaded
       if (dirtyElements.size === 0 && dirtyLeaves.size === 0) return;
+      if (tags.has(LOAD_TAG)) return;
 
-      editorState.read(() => {
-        const markdown = $convertToEnhancedMarkdownString(getEditorTransformers());
-        notifyContentChanged(markdown);
-      });
+      pendingSave.edited(editorState.read(() => $convertToEnhancedMarkdownString(getEditorTransformers())));
     });
-  }, [notifyContentChanged]);
+
+    const pending = pendingBodyRef.current;
+    pendingBodyRef.current = null;
+    if (pending !== null) applyBody(editor, pending);
+    else pendingSave.loaded(exportBody(editor));
+  }, [applyBody, exportBody, pendingSave]);
 
   // Build editor config
   const editorConfig: EditorConfig = {
     editable: !readOnly,
     showToolbar: false,
     initialContent: content ?? undefined,
-    onDirtyChange: handleDirtyChange,
-    onGetContent: handleGetContent,
     onEditorReady: handleEditorReady,
   };
 

@@ -21,6 +21,12 @@ import { safeHandle } from '../../utils/ipcRegistry';
 import { handleTrackerDefineType } from '../../mcp/tools/trackerToolHandlers';
 import { ensureWorkspaceTrackerSchemasLoaded } from '../TrackerSchemaService';
 import {
+  clearDialogTypeCreation,
+  listenForTrackerSchemaOutcome,
+  markDialogTypeCreation,
+  retireLostTrackerTypeCreation,
+} from './trackerSchemaCreationOutcome';
+import {
   globalRegistry,
   parseTrackerSchemaPatchYAML,
   resolveTrackerPromotionEligibility,
@@ -125,7 +131,88 @@ export async function setTrackerArchived(
   await applyLifecycleChange(workspacePath, type, { archived });
 }
 
+/** How long a team type's creation waits for the room before saying it is still syncing. */
+const TEAM_TYPE_OUTCOME_TIMEOUT_MS = 10_000;
+
+export type NewTrackerTypeResult = {
+  type: string;
+  scope: 'team' | 'personal';
+  /** `syncing`: written here, and the room has not answered yet. */
+  status: 'created' | 'syncing';
+};
+
+/**
+ * Create a new type from the Pages "New type..." dialog. The schema's own
+ * `sharing` (or its parent's, for a subtype) decides team or personal, exactly
+ * as for the agent tool. Creation never replaces: an id already registered is
+ * refused here, and `overwrite: false` makes the write path refuse an existing
+ * file too.
+ *
+ * A personal type is done when it is written. A team type is done when the room
+ * accepts this creation: another client may have created the same id first, and
+ * the room refuses ours (`schemaExists`) rather than replacing theirs. That is
+ * reported to the caller, and the losing local file is retired so it is not
+ * left behind looking like the person's own type.
+ */
+export async function defineNewTrackerType(
+  workspacePath: string,
+  schema: { type?: unknown } & Record<string, unknown>,
+  options: { outcomeTimeoutMs?: number } = {},
+): Promise<NewTrackerTypeResult> {
+  if (typeof schema?.type !== 'string' || !schema.type) throw new Error('A new type needs a type id.');
+  const type = schema.type;
+  ensureWorkspaceTrackerSchemasLoaded(workspacePath);
+  if (globalRegistry.get(type)) throw new Error(`A type named "${type}" already exists.`);
+
+  const outcome = listenForTrackerSchemaOutcome(workspacePath, type);
+  // Before the write: its push may start before the write's promise resolves.
+  markDialogTypeCreation(workspacePath, type);
+  let scope: 'team' | 'personal';
+  try {
+    const result = await handleTrackerDefineType({ schema, overwrite: false }, workspacePath);
+    const first = result.content?.[0];
+    const text = first?.type === 'text' ? first.text ?? '' : '';
+    if (result.isError) throw new Error(text.replace(/^Error:\s*/, '') || `Could not create type '${type}'.`);
+    try {
+      scope = (JSON.parse(text).structured as { changeScope?: string }).changeScope === 'team' ? 'team' : 'personal';
+    } catch {
+      scope = schema.sharing === 'team' ? 'team' : 'personal';
+    }
+  } catch (error) {
+    outcome.cancel();
+    clearDialogTypeCreation(workspacePath, type);
+    throw error;
+  }
+  if (scope === 'personal') {
+    outcome.cancel();
+    clearDialogTypeCreation(workspacePath, type);
+    return { type, scope, status: 'created' };
+  }
+
+  const answer = await outcome.wait(options.outcomeTimeoutMs ?? TEAM_TYPE_OUTCOME_TIMEOUT_MS);
+  if (!answer) return { type, scope, status: 'syncing' };
+  if (answer.kind === 'settled' && answer.accepted) return { type, scope, status: 'created' };
+  if (answer.kind === 'roomDefined' || answer.code === 'schemaExists') {
+    await retireLostTrackerTypeCreation(workspacePath, type);
+    throw new Error(`Someone else just created a type named "${type}". Pick another name.`);
+  }
+  throw new Error(answer.message || `The team refused the new type (${answer.code ?? 'unknown'}).`);
+}
+
 export function registerTrackerLifecycleIpc(): void {
+  safeHandle('tracker-lifecycle:define-type', async (
+    _event,
+    payload: { workspacePath: string; schema: { type?: unknown } & Record<string, unknown> },
+  ) => {
+    if (!payload?.workspacePath) throw new Error('workspacePath is required');
+    if (!payload?.schema) throw new Error('schema is required');
+    try {
+      return { success: true, ...(await defineNewTrackerType(payload.workspacePath, payload.schema)) };
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  });
+
   safeHandle('tracker-lifecycle:promote', async (_event, payload: { workspacePath: string; type: string }) => {
     if (!payload?.workspacePath) throw new Error('workspacePath is required');
     if (!payload?.type) throw new Error('type is required');

@@ -370,7 +370,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('share:delete', options) as Promise<{ success: boolean; error?: string }>,
   getShareKeys: () =>
     ipcRenderer.invoke('share:getKeys') as Promise<Record<string, string>>,
-  shareFileAsLink: (options: { filePath: string; expirationDays?: number; personalOrgId?: string }) =>
+  shareFileAsLink: (options: { filePath: string; expirationDays?: number; personalOrgId?: string; mermaidSvgs?: Record<string, string> }) =>
     ipcRenderer.invoke('share:fileAsLink', options) as Promise<{ success: boolean; url?: string; shareId?: string; isUpdate?: boolean; encryptionKey?: string; owningPersonalOrgId?: string; error?: string }>,
   getShareExpirationPreference: () =>
     ipcRenderer.invoke('share:getExpirationPreference') as Promise<number>,
@@ -746,7 +746,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.on('mcp:readCollabDoc', handler);
     return () => ipcRenderer.removeListener('mcp:readCollabDoc', handler);
   },
-  sendMcpReadCollabDocResult: (resultChannel: string, result: { success: boolean; content?: string; decisionState?: unknown; error?: string; code?: string }) => {
+  sendMcpReadCollabDocResult: (resultChannel: string, result: { success: boolean; content?: string; title?: string; documentType?: string; decisionState?: unknown; error?: string; code?: string }) => {
     ipcRenderer.send(resultChannel, result);
   },
   onMcpReadCollabDocComments: (callback: (data: any) => void) => {
@@ -1018,7 +1018,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     updateTrackerItemContent: (payload: {
       itemId: string;
       content: any;
-    }) => ipcRenderer.invoke('document-service:tracker-item-update-content', payload) as Promise<{ success: boolean; error?: string }>,
+      expectedBodyVersion?: number;
+    }) => ipcRenderer.invoke('document-service:tracker-item-update-content', payload) as Promise<{ success: boolean; conflict?: boolean; bodyVersion?: number; error?: string }>,
     getTrackerItemContent: (payload: {
       itemId: string;
     }) => ipcRenderer.invoke('document-service:tracker-item-get-content', payload) as Promise<{ success: boolean; content?: any; error?: string }>,
@@ -1103,6 +1104,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     get: (type: string) => ipcRenderer.invoke('tracker-schema:get', type) as Promise<any | null>,
     getRoleField: (type: string, role: string) => ipcRenderer.invoke('tracker-schema:get-role-field', type, role) as Promise<string | null>,
     getFieldByRole: (type: string, role: string) => ipcRenderer.invoke('tracker-schema:get-field-by-role', type, role) as Promise<any | null>,
+    getVocabulary: (workspacePath: string) => ipcRenderer.invoke('tracker-schema:get-vocabulary', workspacePath) as Promise<{ labels: any; predicates: any[] } | null>,
     onChanged: (callback: (schemas: any[]) => void) => {
       const handler = (_event: any, schemas: any[]) => callback(schemas);
       ipcRenderer.on('tracker-schema:changed', handler);
@@ -1120,6 +1122,14 @@ contextBridge.exposeInMainWorld('electronAPI', {
       }>,
     setArchived: (payload: { workspacePath: string; type: string; archived: boolean }) =>
       ipcRenderer.invoke('tracker-lifecycle:set-archived', payload) as Promise<{ success: boolean; error?: string }>,
+    defineType: (payload: { workspacePath: string; schema: Record<string, unknown> }) =>
+      ipcRenderer.invoke('tracker-lifecycle:define-type', payload) as Promise<{
+        success: boolean;
+        type?: string;
+        scope?: 'team' | 'personal';
+        status?: 'created' | 'syncing';
+        error?: string;
+      }>,
   },
 
   // Plaintext recovery copies for collaborative content
@@ -1698,6 +1708,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // Open external links
   openExternal: (url: string) => ipcRenderer.invoke('open-external', url),
+  openInBrowser: (url: string) => ipcRenderer.invoke('open-in-browser', url),
   openThirdPartyNotices: () => ipcRenderer.invoke('legal:open-third-party-notices'),
 
   // Image operations

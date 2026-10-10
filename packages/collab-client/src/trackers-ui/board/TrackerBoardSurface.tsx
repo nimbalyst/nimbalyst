@@ -30,12 +30,14 @@ import {
   groupItemsIntoBoardColumns,
   resolveBoardAxis,
   resolveBoardDrop,
+  resolveBoardColumnWrite,
   type TrackerStatusScope,
 } from '@nimbalyst/collab-client/trackers';
 import { getStatusColor } from '@nimbalyst/runtime/plugins/TrackerPlugin/components/trackerColumns';
 import { TrackerSurfaceMessage } from '../primitives/TrackerSurfaceMessage';
 import { NEUTRAL_SWATCH } from './trackerBoardTokens';
 import { TrackerBoardCard } from './TrackerBoardCard';
+import { ViewNewItem } from '../embed/ViewNewItem';
 import { registerKanbanDragCallbacks } from './kanbanDragListeners';
 
 export interface TrackerBoardSurfaceProps {
@@ -52,6 +54,11 @@ export interface TrackerBoardSurfaceProps {
   /** Omit for a read-only permission state. */
   onItemUpdate?: (item: TrackerRecord, updates: Record<string, unknown>) => Promise<unknown> | unknown;
   currentIdentity?: TrackerIdentity | null;
+  sortDirection?: 'asc' | 'desc';
+  preserveRowOrder?: boolean;
+  hiddenColumns?: readonly string[];
+  renderCardFields?: (item: TrackerRecord) => React.ReactNode;
+  onCreateItem?: (title: string, fields?: Record<string, unknown>, requestId?: string) => Promise<void>;
 }
 
 const NO_SELECTION: ReadonlySet<string> = new Set<string>();
@@ -69,6 +76,11 @@ export function TrackerBoardSurface({
   onOpenItem,
   onItemUpdate,
   currentIdentity,
+  sortDirection = 'asc',
+  onCreateItem,
+  hiddenColumns,
+  preserveRowOrder,
+  renderCardFields,
 }: TrackerBoardSurfaceProps) {
   const [dragItemId, setDragItemId] = useState<string | null>(null);
   const [dragOverColumn, setDragOverColumn] = useState<string | null>(null);
@@ -84,8 +96,16 @@ export function TrackerBoardSurface({
     [groupBy, trackerType, rows, resolveRelationshipLabel, statusScope],
   );
   const grouped = useMemo(
-    () => groupItemsIntoBoardColumns(rows, columns, axis, ordering),
-    [rows, columns, axis, ordering],
+    () => {
+      const groups = groupItemsIntoBoardColumns(rows, columns, axis, ordering);
+      if (preserveRowOrder) {
+        const positions = new Map(rows.map((item, index) => [item.id, index]));
+        for (const items of Object.values(groups)) items.sort((a, b) => positions.get(a.id)! - positions.get(b.id)!);
+        return groups;
+      }
+      return ordering !== 'manual' && sortDirection === 'desc' ? Object.fromEntries(Object.entries(groups).map(([key, items]) => [key, [...items].reverse()])) : groups;
+    },
+    [rows, columns, axis, ordering, sortDirection, preserveRowOrder],
   );
 
   const clearDrag = useCallback(() => {
@@ -128,7 +148,9 @@ export function TrackerBoardSurface({
         const targetIndex = dropIndexRef.current;
         clearDrag();
         if (!item || !targetColumn) return;
-        const updates = resolveBoardDrop({
+        const updates = ordering !== 'manual'
+          ? sourceColumnKey === targetColumn.key ? null : resolveBoardColumnWrite(item, axis, targetColumn)
+          : resolveBoardDrop({
           item,
           axis,
           sourceColumnKey,
@@ -148,15 +170,18 @@ export function TrackerBoardSurface({
         setDropIndex(null);
       },
     });
-  }, [axis, clearDrag, columns, grouped, onItemUpdate]);
+  }, [axis, clearDrag, columns, grouped, onItemUpdate, ordering]);
 
-  if (rows.length === 0) {
+  if (rows.length === 0 && columns.length === 0) {
     return (
+      <div className="tracker-kanban-empty flex flex-col">
       <TrackerSurfaceMessage
         icon="view_kanban"
         message="No items to display"
         testId="tracker-kanban-empty"
       />
+      {onCreateItem ? <ViewNewItem onCreate={(title, requestId) => onCreateItem(title, undefined, requestId)} /> : null}
+      </div>
     );
   }
 
@@ -171,7 +196,7 @@ export function TrackerBoardSurface({
         </div>
       ) : null}
       <div className="flex-1 flex gap-3 p-3 overflow-x-auto overflow-y-hidden min-h-0">
-        {columns.map((column) => {
+        {columns.filter(column => !hiddenColumns?.includes(column.value ?? column.key)).map((column) => {
           const cards = grouped[column.key] ?? [];
           const color = axis === 'status' && column.value
             ? getStatusColor(column.value, trackerType)
@@ -214,6 +239,7 @@ export function TrackerBoardSurface({
                       onToggleSelected={(itemId) => onToggleSelected?.(itemId)}
                       onOpenDocument={onOpenItem}
                       currentIdentity={currentIdentity}
+                      fieldsSlot={renderCardFields?.(card)}
                     />
                     {cardIndex === cards.length - 1
                       && dragOverColumn === column.key
@@ -222,6 +248,12 @@ export function TrackerBoardSurface({
                       ) : null}
                   </React.Fragment>
                 ))}
+                {onCreateItem ? <ViewNewItem onCreate={(title, requestId) => {
+                  const item = { primaryType: trackerType, fields: {} } as TrackerRecord;
+                  const fields = resolveBoardColumnWrite(item, axis, column);
+                  if (!fields) return Promise.reject(new Error('Items cannot be created in this derived group'));
+                  return onCreateItem(title, fields, requestId);
+                }} /> : null}
                 <div className="min-h-[40px]" />
               </div>
             </div>

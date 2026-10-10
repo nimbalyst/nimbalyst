@@ -38,6 +38,29 @@ enum SessionLoadError {
             return "Transcript did not load within 15s. Local messages: \(msgCount), WebView ready: \(wvReady), Transcript ready: \(trReady)"
         }
     }
+
+    /// Properties for `mobile_session_load_error`. Counts and flags only: the
+    /// detail strings can carry session ids and server error text.
+    func analyticsProperties(localMessageCount: Int) -> [String: Any] {
+        var props: [String: Any] = ["localMessageCount": localMessageCount]
+        switch self {
+        case .decryptionFailed(let decrypted, let total):
+            props["errorType"] = "decryptionFailed"
+            props["decryptedCount"] = decrypted
+            props["serverMessageCount"] = total
+        case .syncFailed:
+            props["errorType"] = "syncFailed"
+        case .webViewFailed:
+            props["errorType"] = "webViewFailed"
+        case .noMessages:
+            props["errorType"] = "noMessages"
+        case .timeout(_, let wvReady, let trReady):
+            props["errorType"] = "timeout"
+            props["webViewReady"] = wvReady
+            props["transcriptReady"] = trReady
+        }
+        return props
+    }
 }
 
 /// Session detail view with an embedded web transcript and native compose bar.
@@ -104,11 +127,8 @@ public struct SessionDetailView: View {
     @StateObject private var transcriptController = TranscriptController()
     #endif
 
-    /// Cached prompt list for the jump-to-prompt sheet.
+    /// Cached prompt list shown in the title menu.
     @State private var promptList: [PromptEntry] = []
-
-    /// Whether the jump-to-prompt sheet is presented.
-    @State private var showPromptPicker = false
 
     /// Whether the transcript web view has loaded and rendered its first data.
     @State private var isTranscriptReady = false
@@ -144,9 +164,6 @@ public struct SessionDetailView: View {
 
     public var body: some View {
         VStack(spacing: 0) {
-            // Status bar
-            statusBar
-
             // Web transcript (iOS) or native fallback (macOS)
             #if canImport(UIKit)
             ZStack {
@@ -160,12 +177,13 @@ public struct SessionDetailView: View {
                     onReady: {
                         isWebViewReady = true
                         tryRevealTranscript()
+                        // Messages that landed before the web view was ready
+                        // produced an empty list; fetch it again now.
+                        refreshPromptList()
                     },
                     onError: { errorMessage in
                         if loadError == nil {
-                            withAnimation {
-                                loadError = .webViewFailed(errorMessage)
-                            }
+                            showLoadError(.webViewFailed(errorMessage))
                         }
                     },
                     onOpenFile: { filePath in
@@ -190,6 +208,8 @@ public struct SessionDetailView: View {
                     }
                 }
             }
+            // The web view stops at the landscape safe area; match its background there.
+            .background(NimbalystColors.backgroundSecondary.ignoresSafeArea(edges: .horizontal))
             #else
             nativeMessageList
             #endif
@@ -230,22 +250,33 @@ public struct SessionDetailView: View {
         .navigationTitle(displaySession.titleDecrypted ?? "Session")
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
-        .toolbarTitleMenu {
-            Button {
-                transcriptController.scrollToTop()
-            } label: {
-                Label("Scroll to Top", systemImage: "arrow.up")
-            }
-        }
         #endif
         .toolbar {
-            #if os(iOS)
-            if let voice = appState.voiceAgent, voice.state != .disconnected {
-                ToolbarItem(placement: .principal) {
-                    VoiceStatusPill(state: voice.state)
+            // A custom title button: the system title menu has a fixed narrow
+            // width that wraps every prompt onto several lines.
+            ToolbarItem(placement: .principal) {
+                HStack(spacing: 8) {
+                    #if canImport(UIKit)
+                    SessionTitleButton(
+                        title: displaySession.titleDecrypted ?? "Session",
+                        subtitle: SessionStatusIndicator.subtitle(for: displaySession),
+                        prompts: promptList,
+                        onOpen: refreshPromptList,
+                        onScrollToTop: { transcriptController.scrollToTop() },
+                        onSelectPrompt: { transcriptController.scrollToMessage(messageId: $0.id) }
+                    )
+                    #else
+                    Text(displaySession.titleDecrypted ?? "Session").font(.headline)
+                    #endif
+                    #if os(iOS)
+                    if let voice = appState.voiceAgent, voice.state != .disconnected {
+                        VoiceStatusPill(state: voice.state)
+                    }
+                    #endif
                 }
             }
-            #endif
+            // One item only: a second primary-action item overflows in portrait,
+            // and iOS hides both behind its own "more" button.
             ToolbarItem(placement: .primaryAction) {
                 sessionMenu
             }
@@ -346,27 +377,6 @@ public struct SessionDetailView: View {
             appState.syncManager?.leaveSessionRoom(expectedSessionId: session.id)
         }
         #if canImport(UIKit)
-        .sheet(isPresented: $showPromptPicker) {
-            NavigationStack {
-                PromptPickerList(
-                    promptList: promptList,
-                    onSelect: { prompt in
-                        showPromptPicker = false
-                        transcriptController.scrollToMessage(messageId: prompt.id)
-                    }
-                )
-                .navigationTitle("Jump to Prompt")
-                .navigationBarTitleDisplayMode(.inline)
-                .toolbar {
-                    ToolbarItem(placement: .cancellationAction) {
-                        Button("Cancel") { showPromptPicker = false }
-                    }
-                }
-            }
-            .presentationDetents([.medium, .large])
-        }
-        #endif
-        #if canImport(UIKit)
         .modifier(FileSheetModifier(
             document: $fileSheetDocument,
             toast: $fileNotAvailableToast,
@@ -454,68 +464,10 @@ public struct SessionDetailView: View {
         timeoutWorkItem?.cancel()
     }
 
-    private var hasStatusInfo: Bool {
-        displaySession.isExecuting || displaySession.hasQueuedPrompts || displaySession.contextUsagePercent != nil
-    }
-
-    @ViewBuilder
-    private var statusBar: some View {
-        if hasStatusInfo {
-            HStack(spacing: 12) {
-                if displaySession.hasQueuedPrompts {
-                    HStack(spacing: 6) {
-                        Image(systemName: "clock.fill")
-                            .foregroundStyle(NimbalystColors.warning)
-                            .font(.caption)
-                        Text("Waiting for response")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                } else if displaySession.isExecuting {
-                    HStack(spacing: 6) {
-                        ProgressView()
-                            .controlSize(.small)
-                            .tint(NimbalystColors.primary)
-                        Text("Executing...")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                }
-
-                Spacer()
-
-                if let modelLabel = ModelLabel.shortLabel(provider: displaySession.provider, model: displaySession.model) {
-                    Text(modelLabel)
-                        .font(.caption2)
-                        .foregroundStyle(NimbalystColors.textMuted)
-                        .lineLimit(1)
-                }
-
-                if let pct = displaySession.contextUsagePercent {
-                    ContextUsageBar(percent: pct)
-                }
-            }
-            .padding(.horizontal, 12)
-            .padding(.vertical, 6)
-            .background(.ultraThinMaterial)
-        }
-    }
-
     // MARK: - Session Menu
 
     private var sessionMenu: some View {
         Menu {
-            #if canImport(UIKit)
-            // Jump to prompt sheet trigger
-            if !promptList.isEmpty {
-                Button {
-                    showPromptPicker = true
-                } label: {
-                    Label("Jump to Prompt", systemImage: "text.line.first.and.arrowtriangle.forward")
-                }
-            }
-            #endif
-
             #if os(iOS)
             if let voice = appState.voiceAgent {
                 Button {
@@ -542,7 +494,12 @@ public struct SessionDetailView: View {
                 }
             }
         } label: {
-            Image(systemName: "ellipsis.circle")
+            HStack(spacing: 8) {
+                if SessionStatusIndicator.isVisible(for: displaySession) {
+                    SessionStatusIndicator(session: displaySession)
+                }
+                Image(systemName: "ellipsis.circle")
+            }
         }
     }
 
@@ -740,13 +697,11 @@ public struct SessionDetailView: View {
             // which is exactly the failure case we want to surface. If we've
             // been stuck 15s waiting on the sync response, the user needs to
             // see an error and a retry option, not an infinite spinner.
-            withAnimation {
-                loadError = .timeout(
-                    messageCount: messages.count,
-                    webViewReady: isWebViewReady,
-                    isTranscriptReady: isTranscriptReady
-                )
-            }
+            showLoadError(.timeout(
+                messageCount: messages.count,
+                webViewReady: isWebViewReady,
+                isTranscriptReady: isTranscriptReady
+            ))
         }
         timeoutWorkItem = item
         DispatchQueue.main.asyncAfter(deadline: .now() + 15, execute: item)
@@ -772,19 +727,25 @@ public struct SessionDetailView: View {
 
             if let error = diagnostic.error {
                 if diagnostic.decryptedCount == 0 && diagnostic.totalServerMessages > 0 {
-                    withAnimation {
-                        loadError = .decryptionFailed(
-                            decryptedCount: diagnostic.decryptedCount,
-                            totalCount: diagnostic.totalServerMessages
-                        )
-                    }
+                    showLoadError(.decryptionFailed(
+                        decryptedCount: diagnostic.decryptedCount,
+                        totalCount: diagnostic.totalServerMessages
+                    ))
                 } else {
-                    withAnimation {
-                        loadError = .syncFailed(error)
-                    }
+                    showLoadError(.syncFailed(error))
                 }
             }
         }
+    }
+
+    private func showLoadError(_ error: SessionLoadError) {
+        withAnimation {
+            loadError = error
+        }
+        AnalyticsManager.shared.capture(
+            "mobile_session_load_error",
+            properties: error.analyticsProperties(localMessageCount: messages.count)
+        )
     }
 
     // MARK: - Retry
@@ -1217,61 +1178,6 @@ struct PromptEntry: Identifiable {
     let text: String
     let createdAt: Int
 }
-
-// MARK: - Prompt Picker List
-
-#if canImport(UIKit)
-private struct PromptPickerList: View {
-    let promptList: [PromptEntry]
-    let onSelect: (PromptEntry) -> Void
-
-    @State private var searchText = ""
-
-    private var filteredPrompts: [PromptEntry] {
-        if searchText.isEmpty {
-            return promptList
-        }
-        return promptList.filter { $0.text.localizedCaseInsensitiveContains(searchText) }
-    }
-
-    var body: some View {
-        List(filteredPrompts) { prompt in
-            Button {
-                onSelect(prompt)
-            } label: {
-                HStack(spacing: 12) {
-                    Text("#\(prompt.number)")
-                        .font(.caption)
-                        .fontWeight(.semibold)
-                        .foregroundStyle(NimbalystColors.primary)
-                        .frame(minWidth: 30, alignment: .trailing)
-
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(prompt.text)
-                            .font(.body)
-                            .foregroundStyle(.primary)
-                            .lineLimit(2)
-
-                        if prompt.createdAt > 0 {
-                            Text(RelativeTimestamp.format(epochMs: prompt.createdAt))
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                }
-                .padding(.vertical, 2)
-            }
-        }
-        .listStyle(.plain)
-        .searchable(text: $searchText, prompt: "Search prompts")
-        .overlay {
-            if filteredPrompts.isEmpty && !searchText.isEmpty {
-                ContentUnavailableView.search(text: searchText)
-            }
-        }
-    }
-}
-#endif
 
 // MARK: - File Sheet Modifier
 

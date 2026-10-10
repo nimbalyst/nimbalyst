@@ -3,7 +3,16 @@
  */
 
 import { parseTrackerYAML, parseTrackerTypeYAML } from '@nimbalyst/tracker-schema';
-import { globalRegistry, type TrackerDataModel } from '@nimbalyst/tracker-schema';
+import {
+  deriveTrackerTypeDeclaration,
+  globalRegistry,
+  isDerivedTrackerTypeDeclaration,
+  resolveTrackerTypeInheritance,
+  type DerivedTrackerTypeDeclaration,
+  type TrackerDataModel,
+  type TrackerTypeDeclaration,
+  type TrackerTypeLookup,
+} from '@nimbalyst/tracker-schema';
 import { parseTrackerSchemaPatchYAML, resolveTrackerSchemaPatch } from '@nimbalyst/tracker-schema';
 
 // Built-in tracker definitions are authored as YAML under ./builtins and bundled
@@ -90,11 +99,84 @@ export function resolveTrackerSchemaFileContent(
   fileName: string,
   content: string,
 ): TrackerDataModel {
-  if (!isTrackerPatchFileName(fileName)) return parseTrackerYAML(content);
+  return resolveTrackerTypeDeclaration(parseTrackerSchemaFileDeclaration(fileName, content));
+}
+
+/**
+ * Parse a workspace schema file WITHOUT resolving a derived type (`extends`):
+ * a patch is resolved against its seed, a full model is returned as is, and a
+ * derived declaration is returned as declared. This is the form to register,
+ * since the registry re-resolves a declaration whenever its base changes and
+ * tolerates a base that has not loaded yet.
+ */
+export function parseTrackerSchemaFileDeclaration(
+  fileName: string,
+  content: string,
+): TrackerTypeDeclaration {
+  if (!isTrackerPatchFileName(fileName)) return parseTrackerTypeYAML(content);
   const patch = parseTrackerSchemaPatchYAML(content);
   const seed = globalRegistry.getBuiltinModel(patch.type) ?? globalRegistry.get(patch.type);
   if (!seed) throw new Error(`Tracker schema patch targets unknown type '${patch.type}'`);
   return resolveTrackerSchemaPatch(seed, patch);
+}
+
+/**
+ * Resolve a declaration to a full model. A derived type resolves against
+ * `lookup` (the registry by default); throws when it cannot, so a caller never
+ * holds a model that silently lacks its base's fields.
+ */
+/** Resolve a base against the registry: its declared form first, so chains resolve. */
+export const registryTrackerTypeLookup: TrackerTypeLookup = (type) =>
+  globalRegistry.getDeclaredModel(type) ?? globalRegistry.get(type);
+
+export function resolveTrackerTypeDeclaration(
+  declared: TrackerTypeDeclaration,
+  lookup: TrackerTypeLookup = registryTrackerTypeLookup,
+): TrackerDataModel {
+  if (!isDerivedTrackerTypeDeclaration(declared)) return declared;
+  const { model, errors } = resolveTrackerTypeInheritance(declared, lookup);
+  if (!model) throw new Error(errors.map((error) => error.message).join('; '));
+  return model;
+}
+
+/**
+ * The declaration to keep for a resolved model: `declared` when the caller has
+ * it, else one recovered by diffing against the base the registry holds now.
+ * Undefined for a plain type, or a subtype whose base is not registered.
+ *
+ * Every persisted and outgoing form of a subtype goes through this, so a
+ * resolved copy is never stored or registered as if it were the declaration.
+ */
+export function declarationForResolvedModel(
+  model: TrackerDataModel,
+  declared?: DerivedTrackerTypeDeclaration,
+): DerivedTrackerTypeDeclaration | undefined {
+  if (declared) return declared;
+  if (!model.extends) return undefined;
+  const base = globalRegistry.get(model.extends);
+  return base ? deriveTrackerTypeDeclaration(model, base) : undefined;
+}
+
+/**
+ * Resolve a set of declarations that may extend one another, in any order.
+ * Unresolvable derived types are dropped (and logged): a type whose base is
+ * missing has no complete model to offer.
+ */
+export function resolveTrackerTypeDeclarations(
+  declarations: readonly TrackerTypeDeclaration[],
+  fallback: TrackerTypeLookup = (type) => globalRegistry.getBuiltinModel(type),
+): TrackerDataModel[] {
+  const byType = new Map(declarations.map((declared) => [declared.type, declared]));
+  const lookup: TrackerTypeLookup = (type) => byType.get(type) ?? fallback(type);
+  const resolved: TrackerDataModel[] = [];
+  for (const declared of declarations) {
+    try {
+      resolved.push(resolveTrackerTypeDeclaration(declared, lookup));
+    } catch (error) {
+      console.error(`[TrackerPlugin] Cannot resolve tracker type '${declared.type}':`, error);
+    }
+  }
+  return resolved;
 }
 
 /**

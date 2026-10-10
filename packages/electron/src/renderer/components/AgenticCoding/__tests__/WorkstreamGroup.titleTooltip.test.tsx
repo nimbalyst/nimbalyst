@@ -3,32 +3,9 @@ import React from 'react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 
-vi.mock('jotai', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('jotai')>()),
-  useAtomValue: (target: { __testValue?: unknown }) =>
-    target && Object.prototype.hasOwnProperty.call(target, '__testValue') ? target.__testValue : {},
-  useSetAtom: () => () => {},
-}));
-vi.mock('@nimbalyst/runtime', () => ({
-  MaterialSymbol: () => null,
-  ProviderIcon: () => null,
-  copyToClipboard: () => {},
-}));
-vi.mock('../../../store', () => ({
-  sessionProcessingAtom: () => ({}),
-  sessionUnreadAtom: () => ({}),
-  sessionPendingPromptAtom: () => ({}),
-  sessionHasPendingInteractivePromptAtom: () => ({}),
-  sessionListTitleAtom: () => ({ __testValue: null }),
-  groupSessionStatusAtom: () => ({}),
-  reparentSessionAtom: () => ({}),
-  refreshSessionListAtom: () => ({}),
-  markSessionsReadAtom: () => ({}),
-  sessionShareAtom: () => ({}),
-  removeSessionShareAtom: () => ({}),
-  shareKeysAtom: () => ({}),
-  buildShareUrl: () => '',
-}));
+vi.mock('@nimbalyst/runtime/ui/icons/MaterialSymbol', () => ({ MaterialSymbol: () => null }));
+vi.mock('@nimbalyst/runtime/ui/icons/ProviderIcons', () => ({ ProviderIcon: () => null, resolveProviderIcon: (provider: string) => provider }));
+vi.mock('@nimbalyst/runtime/utils/clipboard', () => ({ copyToClipboard: () => {} }));
 vi.mock('../../../services/ErrorNotificationService', () => ({
   errorNotificationService: { showInfo: () => {}, showError: () => {} },
 }));
@@ -54,7 +31,7 @@ const setElementWidth = (element: Element, { clientWidth, scrollWidth }: { clien
 afterEach(() => cleanup());
 
 describe('WorkstreamGroup - full name on hover', () => {
-  it('shows complete workstream and child session names only when clipped', () => {
+  it('shows the merged session header name only when clipped', () => {
     const { container } = render(
       <WorkstreamGroup
         type="workstream"
@@ -64,19 +41,13 @@ describe('WorkstreamGroup - full name on hover', () => {
         isActive={false}
         onToggle={() => {}}
         onSelect={() => {}}
-        sessions={[{ id: 'session-1', title: childTitle, createdAt: 1_700_000_000_000 } as any]}
+        sessions={[{ id: 'session-1', parentSessionId: 'workstream-1', title: childTitle, createdAt: 1_700_000_000_000, updatedAt: 1_700_000_000_000 } as any]}
         activeSessionId={null}
         onSessionSelect={() => {}}
       />,
     );
 
-    const groupName = container.querySelector('.workstream-group-name')!;
-    setElementWidth(groupName, { clientWidth: 160, scrollWidth: 320 });
-    fireEvent.mouseEnter(groupName);
-    expect(screen.getByRole('tooltip').textContent).toBe(groupTitle);
-
-    fireEvent.mouseLeave(groupName);
-    const childName = container.querySelector('.workstream-session-item-title')!;
+    const childName = container.querySelector('.session-list-item-title')!;
     setElementWidth(childName, { clientWidth: 160, scrollWidth: 300 });
     fireEvent.mouseEnter(childName);
     expect(screen.getByRole('tooltip').textContent).toBe(childTitle);

@@ -201,6 +201,9 @@ export function registerMobileCreateSessionHandler(
       const resolvedModel = request.model || getDefaultAIModel() || 'claude-code:opus-1m';
       const resolvedSessionType = (request.sessionType || 'session') as import('@nimbalyst/runtime/ai/server/types').SessionType;
       const resolvedAgentRole = (request.agentRole || 'standard') as import('@nimbalyst/runtime/ai/server/types').AgentRole;
+      const { AISessionsRepository } = await import('@nimbalyst/runtime/storage/repositories/AISessionsRepository');
+      const parent = request.parentSessionId ? await AISessionsRepository.get(request.parentSessionId) : null;
+      if (request.parentSessionId && (!parent || parent.workspacePath !== workspacePath)) throw new Error('Parent session is not in this workspace');
       const session = await ctx.sessionManager.createSession(
         resolvedProvider,        // provider - from mobile or default
         undefined,               // documentContext
@@ -209,18 +212,15 @@ export function registerMobileCreateSessionHandler(
         resolvedModel,           // model - from mobile or desktop default
         resolvedSessionType,     // sessionType - from mobile request
         'agent',                 // mode
-        undefined,               // worktreeId
-        undefined,               // worktreePath
-        undefined,               // worktreeProjectPath
-        resolvedAgentRole        // agentRole - from mobile request or 'standard'
+        parent?.worktreeId ?? undefined,
+        parent?.worktreePath ?? undefined,
+        parent?.worktreeId ? workspacePath : undefined,
+        resolvedAgentRole,
+        request.parentSessionId ?? null,
+        undefined,
+        request.parentSessionId ?? null
       );
       await stampSessionHost(session.id, hostDeviceId);
-
-      // If a parentSessionId was provided, set it on the session
-      if (request.parentSessionId && session) {
-        const { AISessionsRepository } = await import('@nimbalyst/runtime/storage/repositories/AISessionsRepository');
-        await AISessionsRepository.updateMetadata(session.id, { parentSessionId: request.parentSessionId });
-      }
 
       logger.main.info('[MobileSync] Created session for mobile request:', {
         requestId: request.requestId,
@@ -230,7 +230,7 @@ export function registerMobileCreateSessionHandler(
 
       // parentSessionId must be present here -- syncSessionsToIndex builds a
       // fresh index entry from this payload and clobbers any partial
-      // parentSessionId set by the updateMetadata() above. Mobile clients (iOS)
+      // parentSessionId written in the atomic insert. Mobile clients (iOS)
       // need the parent association on the first sight of the session or it
       // shows up as a free-floating sibling.
       const publishOutcome = await publishSessionRow(syncProvider, {
@@ -240,10 +240,10 @@ export function registerMobileCreateSessionHandler(
         model: session.model,
         mode: session.mode,
         sessionType: session.sessionType,
-        parentSessionId: request.parentSessionId ?? session.parentSessionId ?? undefined,
+        parentSessionId: request.parentSessionId ?? session.parentSessionId ?? null,
         ...(hostDeviceId ? { hostDeviceId } : {}),
         agentRole: session.agentRole,
-        createdBySessionId: session.createdBySessionId ?? undefined,
+        createdBySessionId: session.createdBySessionId ?? null,
         workspaceId: session.workspacePath,
         workspacePath: session.workspacePath,
         messageCount: session.messages.length,

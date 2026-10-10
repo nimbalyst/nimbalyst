@@ -69,12 +69,30 @@ export const CLAUDE_MODELS: ModelDefinition[] = [
     contextWindow: 200000,
   },
   {
+    id: 'claude-sonnet-5-5',
+    displayName: 'Claude Sonnet 5.5 (1M)',
+    shortName: 'Sonnet 5.5',
+    maxTokens: 8192,
+    // Native 1M window with no 200K tier. Adaptive thinking only; rejects
+    // `temperature` (see ClaudeProvider.supportsTemperature).
+    contextWindow: 1000000,
+  },
+  {
     id: 'claude-sonnet-5',
     displayName: 'Claude Sonnet 5 (1M)',
     shortName: 'Sonnet 5',
     maxTokens: 8192,
     // Sonnet 5 ships with a 1M context window natively (dateless alias, pinned
     // snapshot). Adaptive thinking only; rejects `temperature` (see
+    // ClaudeProvider.supportsTemperature).
+    contextWindow: 1000000,
+  },
+  {
+    id: 'claude-haiku-5-5',
+    displayName: 'Claude Haiku 5.5 (1M)',
+    shortName: 'Haiku 5.5',
+    maxTokens: 8192,
+    // Native 1M window. Adaptive thinking only; rejects `temperature` (see
     // ClaudeProvider.supportsTemperature).
     contextWindow: 1000000,
   },
@@ -130,6 +148,13 @@ export const CLAUDE_MODELS: ModelDefinition[] = [
 ];
 
 export const OPENAI_MODELS: ModelDefinition[] = [
+  {
+    id: 'gpt-6.1-sol',
+    displayName: 'GPT-6.1 Sol',
+    shortName: '6.1 Sol',
+    maxTokens: 128000,
+    contextWindow: 272000,
+  },
   {
     id: 'gpt-6-sol',
     displayName: 'GPT-6 Sol',
@@ -269,21 +294,20 @@ export const OPENAI_MODELS: ModelDefinition[] = [
  *
  * Two kinds of variants:
  * - Canonical variants (`opus`, `sonnet`, `haiku`) — current-generation rows.
- *   Explicit SDK mappings pin Opus/Fable to the displayed release; other
- *   aliases are resolved by the SDK.
+ *   Explicit SDK mappings pin each one to the displayed release.
  * - Pinned variants (`opus-4-6`, ...) — always resolve to a specific
  *   Anthropic model ID via `CLAUDE_CODE_PINNED_SDK_MODELS`. Used to keep
- *   the previous-generation Opus selectable after bumping the canonical
- *   `opus` to the next version.
+ *   the previous generation selectable after bumping a canonical row to the
+ *   next version.
  */
-export type ClaudeCodeVariant = 'fable' | 'fable-5' | 'opus' | 'opus-5' | 'sonnet' | 'haiku' | 'opus-4-8' | 'opus-4-7' | 'opus-4-6' | 'sonnet-4-6';
-export type ClaudeCodeVariantInput = ClaudeCodeVariant | 'opus-5-5' | 'sonnet-5' | 'fable-5-1';
+export type ClaudeCodeVariant = 'fable' | 'fable-5' | 'opus' | 'opus-5' | 'sonnet' | 'sonnet-5' | 'haiku' | 'opus-4-8' | 'opus-4-7' | 'opus-4-6' | 'sonnet-4-6' | 'haiku-4-5';
+export type ClaudeCodeVariantInput = ClaudeCodeVariant | 'opus-5-5' | 'sonnet-5-5' | 'fable-5-1' | 'haiku-5-5';
 
 /**
  * Accepted input aliases for Claude Agent model identifiers.
  *
- * `opus-5-5`, `sonnet-5`, and `fable-5-1` normalize to their canonical
- * picker entries. Older version inputs remain pinned to that generation.
+ * `opus-5-5`, `sonnet-5-5`, `fable-5-1`, and `haiku-5-5` normalize to their
+ * canonical picker entries. Older version inputs remain pinned to that generation.
  */
 export const CLAUDE_CODE_ACCEPTED_VARIANT_INPUTS: readonly ClaudeCodeVariantInput[] = [
   'fable',
@@ -296,9 +320,12 @@ export const CLAUDE_CODE_ACCEPTED_VARIANT_INPUTS: readonly ClaudeCodeVariantInpu
   'opus-4-7',
   'opus-4-6',
   'sonnet',
+  'sonnet-5-5',
   'sonnet-5',
   'sonnet-4-6',
   'haiku',
+  'haiku-5-5',
+  'haiku-4-5',
 ] as const;
 
 const CLAUDE_CODE_VARIANT_INPUT_MAP: Readonly<Record<ClaudeCodeVariantInput, ClaudeCodeVariant>> = {
@@ -312,9 +339,12 @@ const CLAUDE_CODE_VARIANT_INPUT_MAP: Readonly<Record<ClaudeCodeVariantInput, Cla
   'opus-4-7': 'opus-4-7',
   'opus-4-6': 'opus-4-6',
   sonnet: 'sonnet',
-  'sonnet-5': 'sonnet',
+  'sonnet-5-5': 'sonnet',
+  'sonnet-5': 'sonnet-5',
   'sonnet-4-6': 'sonnet-4-6',
   haiku: 'haiku',
+  'haiku-5-5': 'haiku',
+  'haiku-4-5': 'haiku-4-5',
 };
 
 export function normalizeClaudeCodeVariant(variant: string): ClaudeCodeVariant | null {
@@ -326,12 +356,14 @@ export const CLAUDE_CODE_VARIANT_VERSIONS: Record<ClaudeCodeVariant, string> = {
   'fable-5': '5',
   opus: '5.5',
   'opus-5': '5',
-  sonnet: '5',
-  haiku: '4.5',
+  sonnet: '5.5',
+  'sonnet-5': '5',
+  haiku: '5.5',
   'opus-4-8': '4.8',
   'opus-4-7': '4.7',
   'opus-4-6': '4.6',
   'sonnet-4-6': '4.6',
+  'haiku-4-5': '4.5',
 };
 
 export const CLAUDE_CODE_MODEL_LABELS: Record<ClaudeCodeVariant, string> = {
@@ -340,11 +372,13 @@ export const CLAUDE_CODE_MODEL_LABELS: Record<ClaudeCodeVariant, string> = {
   opus: 'Opus',
   'opus-5': 'Opus',
   sonnet: 'Sonnet',
+  'sonnet-5': 'Sonnet',
   haiku: 'Haiku',
   'opus-4-8': 'Opus',
   'opus-4-7': 'Opus',
   'opus-4-6': 'Opus',
   'sonnet-4-6': 'Sonnet',
+  'haiku-4-5': 'Haiku',
 };
 
 /**
@@ -355,24 +389,29 @@ export const CLAUDE_CODE_MODEL_LABELS: Record<ClaudeCodeVariant, string> = {
 export const CLAUDE_CODE_PINNED_SDK_MODELS: Partial<Record<ClaudeCodeVariant, string>> = {
   opus: 'claude-opus-5-5',
   'opus-5': 'claude-opus-5',
+  sonnet: 'claude-sonnet-5-5',
+  'sonnet-5': 'claude-sonnet-5',
   fable: 'claude-fable-5-1',
   'fable-5': 'claude-fable-5',
+  haiku: 'claude-haiku-5-5',
+  'haiku-4-5': 'claude-haiku-4-5-20251001',
   'opus-4-8': 'claude-opus-4-8',
   'opus-4-7': 'claude-opus-4-7',
   'opus-4-6': 'claude-opus-4-6',
-  // Pinned so the previous-generation Sonnet stays selectable after the
-  // canonical `sonnet` alias rolled forward to Sonnet 5.
   'sonnet-4-6': 'claude-sonnet-4-6',
 };
 
-/** Shared UI/SDK gate: Opus 5.5 and Fable require adaptive thinking. */
+/**
+ * Shared UI/SDK gate. Mirrors the CLI's `rejects_disabled_thinking` model
+ * capability (CLI 2.1.284: Opus 5.5, Sonnet 5.5, Fable); the CLI silently
+ * ignores a disabled request for those, so the toggle would be a no-op.
+ */
 export function canDisableClaudeThinking(model: string | undefined): boolean {
   if (!model) return false;
   const raw = model.trim().toLowerCase().split(':').pop()!.replace(/(?:-1m|\[1m\])$/, '');
   const variant = normalizeClaudeCodeVariant(raw);
   const resolved = variant ? (CLAUDE_CODE_PINNED_SDK_MODELS[variant] ?? variant) : raw;
-  return /^(?:claude-)?sonnet(?:-|$)/.test(resolved)
-    || /^claude-opus-(?:4(?:-|$)|5(?:$|-\d{8}$))/.test(resolved);
+  return /^claude-(?:opus|sonnet)-(?:4(?:-|$)|5(?:$|-\d{8}$))/.test(resolved);
 }
 
 /**
@@ -387,8 +426,8 @@ export function canDisableClaudeThinking(model: string | undefined): boolean {
  *   - 1M is PLAN-GATED (code.claude.com/docs/en/model-config → "Extended
  *     context"): Max/Team/Enterprise auto-upgrade Opus to 1M with no
  *     configuration, Pro needs usage credits, API/pay-as-you-go has full access,
- *     and `CLAUDE_CODE_DISABLE_1M_CONTEXT=1` turns 1M off entirely. Sonnet 5 on
- *     the Anthropic API always runs 1M — it has no 200K variant at all.
+ *     and `CLAUDE_CODE_DISABLE_1M_CONTEXT=1` turns 1M off entirely. Sonnet 5 and
+ *     5.5 on the Anthropic API always run 1M — they have no 200K variant.
  *   - Setting `ANTHROPIC_BASE_URL` (our CLI observation proxy does) makes Claude
  *     Code treat the connection as an LLM gateway it can't verify, so it SKIPS
  *     the plan-based auto-upgrade and runs at 200k unless `[1m]` is explicit.
@@ -408,6 +447,8 @@ export const CLAUDE_CODE_NATIVE_1M_VARIANTS: readonly ClaudeCodeVariant[] = [
   'opus',
   'opus-5',
   'sonnet',
+  'sonnet-5',
+  'haiku',
   'opus-4-8',
   'opus-4-7',
   'opus-4-6',
@@ -428,9 +469,10 @@ export const CLAUDE_CODE_NATIVE_1M_VARIANTS: readonly ClaudeCodeVariant[] = [
  * present and 1M applies either way.
  *
  * Deliberately limited to `opus` and `fable`:
- *   - `sonnet` is excluded — Sonnet 5 has no 200K variant on the Anthropic API
+ *   - `sonnet` is excluded — Sonnet 5.x has no 200K variant on the Anthropic API
  *     and no `[1m]` suffix to select, so the row would be a dead option.
- *   - `haiku` has no 1M window.
+ *   - `haiku` (Haiku 5.5) is native 1M with no `[1m]` suffix, like Sonnet 5.x;
+ *     `haiku-4-5` has no 1M window.
  *   - pinned legacy variants retain their existing single picker row. Explicit
  *     saved `-1m` selections still resolve to the pinned ID with `[1m]`.
  */
@@ -439,7 +481,7 @@ export const CLAUDE_CODE_VARIANTS_WITH_1M: readonly ClaudeCodeVariant[] = ['opus
 /**
  * The base (non-`-1m`) context window for a Claude Agent variant, used to seed
  * the context-fill meter before any real signal arrives and as the fallback when
- * the SDK doesn't report a per-model window. Haiku is 200k; see
+ * the SDK doesn't report a per-model window. Haiku 4.5 is 200k; see
  * `CLAUDE_CODE_NATIVE_1M_VARIANTS` for why the rest are seeded at 1M and how the
  * seed gets corrected at runtime on each path.
  */
@@ -519,14 +561,14 @@ export const CLAUDE_CODE_SAFE_FALLBACK_MODEL = 'claude-code:opus' as const;
 
 export const DEFAULT_MODELS = {
   claude: 'claude:claude-opus-5-5',
-  openai: 'openai:gpt-6-sol',
+  openai: 'openai:gpt-6.1-sol',
   // Plain `opus` (not `opus-1m`): a plan-gated auto-upgrade gives Max/Team/
   // Enterprise 1M on the plain alias, while an explicit `[1m]` would spend usage
   // credits on Pro. The default must not opt anyone into that — see
   // CLAUDE_CODE_SAFE_FALLBACK_MODEL.
   'claude-code': 'claude-code:opus',
   'claude-code-cli': 'claude-code-cli:opus',
-  'openai-codex': 'openai-codex:gpt-6-sol',
+  'openai-codex': 'openai-codex:gpt-6.1-sol',
   // The deprecated ACP transport runs an older codex build with no GPT-6
   // catalog entries, so it stays on GPT-5.6.
   'openai-codex-acp': 'openai-codex-acp:gpt-5.6-sol',

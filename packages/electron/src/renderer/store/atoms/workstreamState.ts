@@ -62,6 +62,7 @@ function deepMergeWorkstreamState(
     }
   }
 
+  result.treeExpanded = typeof result.treeExpanded === 'boolean' ? result.treeExpanded : null;
   result.rightPanelMode = normalizeRightPanelMode(result.rightPanelMode);
   const previousMode = normalizeRightPanelMode(result.lastAuxiliaryPanelMode);
   result.lastAuxiliaryPanelMode = previousMode === 'file-viewer' ? 'edited-files' : previousMode;
@@ -234,6 +235,9 @@ export interface WorkstreamState {
   /** Resolved worktree path (cached so it's available synchronously on remount) */
   worktreePath: string | null;
 
+  /** Explicit sidebar expansion; null follows active/unread descendants. */
+  treeExpanded: boolean | null;
+
   // ===== UI State (persisted per-workstream) =====
   /** Layout mode (split/editor/transcript) */
   layoutMode: WorkstreamLayoutMode;
@@ -284,6 +288,7 @@ function createDefaultState(id: string): WorkstreamState {
     activeChildId: null,
     worktreeId: null,
     worktreePath: null,
+    treeExpanded: null,
     layoutMode: 'transcript', // Start with transcript maximized
     splitRatio: 0.5,
     filesSidebarVisible: true,
@@ -1115,7 +1120,7 @@ export const setWorkstreamFileScopeModeAtom = atom(
  * Convert a single session into a workstream.
  * Creates the workstream structure and updates state.
  */
-export const convertToWorkstreamAtom = atom(
+export const transferSessionStateToWrapperAtom = atom(
   null,
   (
     get,
@@ -1344,6 +1349,7 @@ export async function loadWorkstreamState(workstreamId: string): Promise<void> {
       const merged: WorkstreamState = {
         ...current,
         // UI state from persisted
+        treeExpanded: restored.treeExpanded,
         layoutMode: (saved as WorkstreamState).layoutMode ?? current.layoutMode,
         splitRatio: (saved as WorkstreamState).splitRatio ?? current.splitRatio,
         filesSidebarVisible: (saved as WorkstreamState).filesSidebarVisible ?? current.filesSidebarVisible,

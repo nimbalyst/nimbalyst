@@ -185,6 +185,14 @@ export const trackerIssueKeyPrefixesAtom = atom<Set<string>>((get) => {
 });
 
 /**
+ * Sorted, comma-joined issue-key prefixes. A string, so subscribers are only
+ * notified when the prefix set changes, not on every tracker item write.
+ */
+export const trackerIssueKeyPrefixesKeyAtom = atom((get) =>
+  Array.from(get(trackerIssueKeyPrefixesAtom)).sort().join(','),
+);
+
+/**
  * Count of non-archived records per type.
  */
 export const trackerItemCountByTypeAtom = atomFamily((type: string) =>

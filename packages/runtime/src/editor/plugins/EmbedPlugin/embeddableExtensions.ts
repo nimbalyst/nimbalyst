@@ -15,6 +15,9 @@
  * (e.g. `.mockup.html`) are fine; matching is by lowercased suffix.
  */
 
+import { parseConsoleLink } from '@nimbalyst/collab-protocol';
+import { parsePlacedViewUrl } from '../../../core/placedViewUrl';
+
 const embeddable = new Set<string>();
 const changeListeners = new Set<() => void>();
 
@@ -42,11 +45,15 @@ export function getEmbeddableExtensions(): readonly string[] {
 
 export function isEmbeddableUrl(url: string, embedType?: string): boolean {
   if (!url) return false;
+  // A placed view is not a file, so it needs no registered type.
+  if (parsePlacedViewUrl(url) !== null) return true;
   const isCollabReference = /^nimbalyst:\/\/doc\//i.test(url);
-  // Collaborative references intentionally have no file suffix in the URL.
-  // They are embeddable only when Share to Team preserved a registered type
-  // hint in the CommonMark title attributes.
-  if (isCollabReference) {
+  // A Personal page's console link (`/app/page/<id>`) names a page the same way.
+  const isPersonalPage = !isCollabReference && isPersonalPageConsoleLink(url);
+  // Page references intentionally have no file suffix in the URL. They are
+  // embeddable only when a registered type hint travels in the CommonMark
+  // title attributes.
+  if (isCollabReference || isPersonalPage) {
     if (!embedType) return false;
     return embeddable.has(normalize(embedType));
   }
@@ -59,6 +66,12 @@ export function isEmbeddableUrl(url: string, embedType?: string): boolean {
     if (pathPart.endsWith(ext)) return true;
   }
   return false;
+}
+
+function isPersonalPageConsoleLink(url: string): boolean {
+  if (!/^https:\/\//i.test(url)) return false;
+  const target = parseConsoleLink(url);
+  return target?.kind === 'page' && target.scope === 'local';
 }
 
 export function registerEmbeddableExtension(ext: string): void {

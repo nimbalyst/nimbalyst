@@ -59,7 +59,7 @@ elif [ -f "$EXTENSION_PATH/package.json" ]; then
   HAS_BUILD=$(node -p "!!require('$EXTENSION_PATH/package.json').scripts?.build" 2>/dev/null || echo "false")
   if [ "$HAS_BUILD" = "true" ]; then
     echo "  Running build..."
-    (cd "$EXTENSION_PATH" && npm run build)
+    (cd "$EXTENSION_PATH" && pnpm run build)
   fi
 fi
 

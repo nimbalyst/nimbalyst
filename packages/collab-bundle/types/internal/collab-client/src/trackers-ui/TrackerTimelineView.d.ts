@@ -13,8 +13,10 @@
 import React from 'react';
 import type { TrackerRecord } from '../../../runtime/src/core/TrackerRecord';
 import { type TrackerGroupBy, type TrackerOrdering, type TrackerRelationshipLabelResolver } from '../../../runtime/src/plugins/TrackerPlugin/models/index';
+import { type TrackerTimelineFields } from '../trackers/index';
 export interface TrackerTimelineViewProps {
     items: TrackerRecord[];
+    fields?: TrackerTimelineFields;
     /** Grouping axis from the saved view; one row per bucket. */
     groupBy?: TrackerGroupBy;
     /** Within-row order from the saved view, used as the chronological tiebreak. */

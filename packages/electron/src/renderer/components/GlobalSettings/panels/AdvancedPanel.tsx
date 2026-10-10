@@ -4,6 +4,7 @@ import { usePostHog } from 'posthog-js/react';
 import { MaterialSymbol } from '@nimbalyst/runtime/ui/icons/MaterialSymbol';
 import { SettingsToggle } from '../SettingsToggle';
 import { HelpTooltip } from '../../../help';
+import { requestConfirmation } from '../../../dialogs/requestConfirmation';
 import {
   advancedSettingsAtom,
   setAdvancedSettingsAtom,
@@ -647,9 +648,11 @@ function MultiProjectModeToggle() {
 
   const handleChange = async (next: boolean) => {
     if (!next && openProjects.length > 1) {
-      const proceed = window.confirm(
-        `${openProjects.length} projects are open in the rail. Disable multi-project mode? The other projects will be closed (their unsaved work stays on disk).`
-      );
+      const proceed = await requestConfirmation({
+        title: 'Disable multi-project mode',
+        message: `${openProjects.length} projects are open in the rail. Disable multi-project mode? The other projects will be closed (their unsaved work stays on disk).`,
+        confirmLabel: 'Disable and close projects',
+      });
       if (!proceed) return;
 
       // Release services for every non-active path before collapsing the

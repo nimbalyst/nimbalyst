@@ -1,0 +1,8 @@
+{
+  "type": "itemPlacementRemoveBroadcast",
+  "projectId": "project-1",
+  "itemIds": [
+    "NIM-42",
+    "NIM-43"
+  ]
+}

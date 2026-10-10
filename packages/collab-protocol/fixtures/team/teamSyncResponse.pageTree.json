@@ -1,0 +1,110 @@
+{
+  "type": "teamSyncResponse",
+  "team": {
+    "metadata": {
+      "orgId": "org-1",
+      "name": "Team",
+      "gitRemoteHash": null,
+      "teamProjectId": "project-1",
+      "createdBy": "member-1",
+      "createdAt": 1790000000000
+    },
+    "members": [],
+    "documents": [
+      {
+        "documentId": "page-1",
+        "encryptedTitle": "Specs",
+        "titleIv": "",
+        "documentType": "markdown",
+        "createdBy": "member-1",
+        "createdAt": 1790000000000,
+        "updatedAt": 1790000000000,
+        "projectId": "project-1",
+        "lastWriterUserId": null,
+        "parentFolderId": null,
+        "parentKind": "page",
+        "sortOrder": null,
+        "trashedAt": null,
+        "hasContent": false,
+        "fields": null
+      },
+      {
+        "documentId": "page-2",
+        "encryptedTitle": "Notes",
+        "titleIv": "",
+        "documentType": "markdown",
+        "metadataVersion": 2,
+        "fileExtension": ".md",
+        "editorId": "com.nimbalyst.markdown",
+        "createdBy": "member-1",
+        "createdAt": 1790000000000,
+        "updatedAt": 1790000002000,
+        "projectId": "project-1",
+        "lastWriterUserId": "member-1",
+        "parentFolderId": "NIM-42",
+        "parentKind": "item",
+        "sortOrder": 2048,
+        "trashedAt": null,
+        "hasContent": true,
+        "fields": {
+          "status": "current",
+          "owner": "greg@example.com",
+          "summary": "Meeting notes",
+          "tags": [
+            "notes"
+          ]
+        }
+      }
+    ],
+    "folders": [
+      {
+        "folderId": "page-1",
+        "parentFolderId": null,
+        "encryptedName": "Specs",
+        "nameIv": "",
+        "sortOrder": 0,
+        "projectId": "project-1",
+        "createdBy": "member-1",
+        "createdAt": 1790000000000,
+        "updatedAt": 1790000000000
+      }
+    ],
+    "pageTree": true,
+    "authorWriteEcho": true,
+    "pageFields": true,
+    "typePlacements": [
+      {
+        "typeId": "bug",
+        "projectId": "project-1",
+        "parentFolderId": "NIM-42",
+        "parentKind": "item",
+        "sortOrder": 1024,
+        "createdBy": "member-1",
+        "createdAt": 1790000000000,
+        "updatedAt": 1790000001000
+      }
+    ],
+    "itemPlacements": [
+      {
+        "itemId": "NIM-42",
+        "projectId": "project-1",
+        "parentId": "page-1",
+        "parentKind": "page",
+        "sortOrder": 2,
+        "createdBy": "member-1",
+        "createdAt": 1790000000000,
+        "updatedAt": 1790000001000
+      },
+      {
+        "itemId": "NIM-44",
+        "projectId": "project-1",
+        "parentId": "NIM-42",
+        "parentKind": "item",
+        "sortOrder": 1,
+        "createdBy": "member-1",
+        "createdAt": 1790000000000,
+        "updatedAt": 1790000001000
+      }
+    ]
+  }
+}

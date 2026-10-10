@@ -15,7 +15,12 @@ import androidx.room.PrimaryKey
             onDelete = ForeignKey.CASCADE
         )
     ],
-    indices = [Index("projectId"), Index("updatedAt"), Index("parentSessionId")]
+    indices = [
+        Index("projectId"),
+        Index("updatedAt"),
+        Index("parentSessionId"),
+        Index("createdBySessionId"),
+    ]
 )
 data class SessionEntity(
     @PrimaryKey val id: String,
@@ -47,5 +52,19 @@ data class SessionEntity(
     val lastMessageAt: Long? = null,
     val draftInput: String? = null,
     val draftUpdatedAt: Long? = null,
+    /** Agent role marker, e.g. "meta-agent". */
+    val agentRole: String? = null,
+    /** The meta-agent session that spawned this one. */
+    val createdBySessionId: String? = null,
+    /** Stable id of the desktop or headless host that runs this session. */
+    val hostDeviceId: String? = null,
+    val pendingExecution: PendingExecution? = null,
+    /**
+     * The last client-metadata blob the server holds for this session, as
+     * plaintext JSON. The server replaces the blob whole, so a draft push is
+     * written into this rather than rebuilt from the row's columns, which
+     * would drop fields this build does not model. Null until one is known.
+     */
+    val clientMetadataJson: String? = null,
 )
 

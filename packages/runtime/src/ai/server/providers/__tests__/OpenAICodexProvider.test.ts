@@ -232,7 +232,7 @@ describe('OpenAICodexProvider', () => {
   });
 
   it('returns fallback models when SDK model discovery is unavailable', async () => {
-    expect(OpenAICodexProvider.DEFAULT_MODEL).toBe('openai-codex:gpt-6-sol');
+    expect(OpenAICodexProvider.DEFAULT_MODEL).toBe('openai-codex:gpt-6.1-sol');
 
     const models = await OpenAICodexProvider.getModels(undefined, {
       loadSdkModule: async () => {
@@ -255,6 +255,7 @@ describe('OpenAICodexProvider', () => {
 
   it('leads the Codex roster with the GPT-6 models and keeps them out of the ACP roster', async () => {
     const expectedCodexModelIds = [
+      'gpt-6.1-sol',
       'gpt-6-sol',
       'gpt-6-astra',
       'gpt-6-luna',
@@ -268,7 +269,7 @@ describe('OpenAICodexProvider', () => {
     // The ACP transport is deprecated for OpenAI and runs a separate, much
     // older codex build with no GPT-6 catalog entries, so offering them there
     // would hand users a model that build cannot start.
-    const expectedAcpModelIds = expectedCodexModelIds.filter((id) => !id.startsWith('gpt-6-'));
+    const expectedAcpModelIds = expectedCodexModelIds.filter((id) => !/^gpt-6[.-]/.test(id));
     const codexModels = await OpenAICodexProvider.getModels(undefined, {
       loadSdkModule: async () => {
         throw new Error('sdk unavailable');
@@ -284,10 +285,10 @@ describe('OpenAICodexProvider', () => {
     );
   });
 
-  it('normalizes legacy codex default aliases to the GPT-6 Sol default', () => {
-    expect(OpenAICodexProvider.normalizeModelSelection('openai-codex:openai-codex-cli')).toBe('openai-codex:gpt-6-sol');
-    expect(OpenAICodexProvider.normalizeModelSelection('openai-codex:default')).toBe('openai-codex:gpt-6-sol');
-    expect(OpenAICodexProvider.normalizeModelSelection('cli')).toBe('openai-codex:gpt-6-sol');
+  it('normalizes legacy codex default aliases to the GPT-6.1 Sol default', () => {
+    expect(OpenAICodexProvider.normalizeModelSelection('openai-codex:openai-codex-cli')).toBe('openai-codex:gpt-6.1-sol');
+    expect(OpenAICodexProvider.normalizeModelSelection('openai-codex:default')).toBe('openai-codex:gpt-6.1-sol');
+    expect(OpenAICodexProvider.normalizeModelSelection('cli')).toBe('openai-codex:gpt-6.1-sol');
   });
 
   it.each([
@@ -357,7 +358,7 @@ describe('OpenAICodexProvider', () => {
         provider: 'openai-codex',
       }),
     ]));
-    expect(models).toHaveLength(9);
+    expect(models).toHaveLength(10);
   });
 
   it('preserves CLI auth when initialized without an API key', async () => {
@@ -1718,7 +1719,7 @@ describe('OpenAICodexProvider', () => {
     expect(errorChunk?.error).toContain('permission mode');
   });
 
-  it('maps default codex cli aliases to gpt-6-sol when starting a thread', async () => {
+  it('maps default codex cli aliases to gpt-6.1-sol when starting a thread', async () => {
     const startThread = vi.fn((config: { model: string }) => ({
       id: 'thread-legacy',
       runStreamed: async () => ({
@@ -1758,7 +1759,7 @@ describe('OpenAICodexProvider', () => {
 
     expect(startThread).toHaveBeenCalledTimes(1);
     const startArgs = (startThread.mock.calls as unknown as [Record<string, unknown>][])[0][0];
-    expect(startArgs.model).toBe('gpt-6-sol');
+    expect(startArgs.model).toBe('gpt-6.1-sol');
   });
 
   it('maps removed codex aliases to supported model ids', async () => {

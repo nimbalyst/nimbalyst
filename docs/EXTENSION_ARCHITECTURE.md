@@ -640,13 +640,87 @@ All types are exported from `@nimbalyst/extension-sdk`:
 | `ChatCompletionStreamOptions` | Extends options with `onChunk` callback |
 | `ChatCompletionStreamHandle` | Stream control: `abort()`, `result` promise |
 
+## Backend Modules: Tool Callers and Owned AI Sessions
+
+A privileged backend module (`contributions.backendModules`) can start and drive AI agent sessions, learn which session called one of its MCP tools, and expose tools only to its own panel. Types live in `@nimbalyst/extension-sdk` (`packages/extension-sdk/src/types/backendSessions.ts`). Built-in extensions are auto-granted; others see the permissions in the first-use consent prompt.
+
+### Tool call context
+
+A backend method invoked as an MCP tool receives `ctx.call: BackendToolCallContext`:
+
+```typescript
+methods: {
+  crew_flag: async (params, ctx) => {
+    ctx.call?.sessionId;     // calling AI session, or null (panel, voice)
+    ctx.call?.sessionOwner;  // { extensionId, key } only if THIS extension owns that session, else null
+    ctx.call?.caller;        // 'agent' | 'panel' | 'voice'
+  },
+}
+```
+
+The host resolves the context; the module cannot supply it. `ctx.call` is absent for plain RPC calls.
+
+### Panel-only tools
+
+Register a tool with `panelOnly: true` to reach it from the extension's own renderer via `callBackendTool` without offering it to agents. Panel-only tools are left out of the MCP tool list and the voice agent's tools, and an agent that names one gets `Unknown tool`.
+
+### Tool audience
+
+Backend tools default to `audience: 'all'`: every session in the workspace lists them, so an enabled extension's tools cost context in sessions that never use them. Register a tool with `audience: 'owned-sessions'` to list it only to sessions this extension owns (`metadata.sessionOwner.extensionId`, inherited by spawned descendants). The filter runs per session in the extension endpoint's ListTools (`filterBackendToolsForSession` in `mcp/tools/backendToolHandler.ts`); a call from any other session, or from voice, gets `Unknown tool`, and voice never lists it. The extension's own panel can still call it. The `nimbalyst-<ext>` endpoint itself is still configured for every session; with only owned-session tools it lists nothing to the rest.
+
+### Owned sessions (`ctx.services.sessions`)
+
+Requires the `ai-sessions` permission (declared in the module's `permissions`). A session is owned when its `metadata.sessionOwner` is `{ extensionId, key }`. The host writes the owner in the same insert as the row. Sessions an owned session spawns (`spawn_session`, `create_session`, a child created under it in the UI) inherit the owner, but not its `sessionDirective`.
+
+| Method | Notes |
+| --- | --- |
+| `create({ ownerKey, name, provider, model, prompt?, effortLevel?, directive?, workstreamId?, createdBySessionId?, ownerMetadata?, routeChildUpdatesToOwner? })` | `directive` is stored as `metadata.sessionDirective` (appended to the system prompt, frozen at the first turn). It is rejected for providers that never read it: the chat providers (`claude`, `openai`, `lmstudio`), `claude-code-cli`, and extension-contributed agents (`providerAppliesSessionDirective` in `runtime/src/ai/server/agentCapabilities.ts`). `prompt` is queued and dispatched immediately. |
+| `createWorkstream({ ownerKey, name })` | An ordinary `session_type='workstream'` container, owned. |
+| `sendPrompt(sessionId, prompt)` | Queued through the normal prompt queue; delivered when the session is idle. |
+| `getStatus` / `getResult` | Status, pending prompt, queued count; last assistant text and context fill. |
+| `listOwned({ key? })` | Roster with `hasPendingPrompt` and `queuedPromptCount` (unread signals). |
+| `getUsage({ key?, since })` | Session-granular: lifetime usage of owned sessions active at or after `since`. Each entry and the totals carry `inputTokens` (uncached), `outputTokens`, `cacheReadInputTokens`, `cacheCreationInputTokens`, `allTokens` (the sum of those four), `totalTokens` (historical per-provider meaning, see below), and `costUSD`. |
+| `updateOwnerMetadata(sessionId, patch)` | The `metadata.ownerMetadata` bag. Only the owner can write it: the session store drops `sessionOwner` and `ownerMetadata` from every ordinary metadata write, and a re-create of an owned row keeps its owner. |
+| `notifyUser({ sessionId, title, body, urgency })` | Same delivery as the `notify_user` tool; `critical` also pushes to the phone. |
+| `onSettled(handler)` | `completed` (queue empty), `error`, `waiting`, `interrupted`, with the session's lifetime `tokenUsage`. A failed turn delivers `error` only, not a trailing `completed`. Delivered while the module is running or still activating; settles while it is stopped are not replayed (poll `listOwned`). |
+
+Scoping is enforced by the host: every call runs as the calling module's extension in its bound workspace. The owner's extension id is never taken from the module, and any op on a session another extension owns (or an unowned one, or one in another workspace) is rejected.
+
+`routeChildUpdatesToOwner: true` changes what happens when an owned child settles. The parent that spawned it gets no `[Child Session Update]` prompt and is not re-driven. The owner gets `onSettled` instead. All three parent re-drive paths consult one check, `isParentNotificationSuppressed` in `services/extensionSessions/sessionOwnership.ts`: meta-agent child updates, the queue driver's post-settle wake, and the direct-takeover cleanup.
+
+Usage limits: the host persists only each session's lifetime `metadata.tokenUsage`, not per-turn history. Canonical transcript events, including `turn_ended`, are in-memory only. For an exact time window, diff consecutive `onSettled` `tokenUsage` snapshots and keep the ledger in the module's `dataDir`.
+
+Budget over `allTokens`. Cache reads dominate an agent turn, and `totalTokens` leaves them out (Claude Code, OpenCode) or folds them into input (Codex), so it undercounts real work and is not comparable across providers. The cache split is reported by Claude Code, Claude chat, Codex app-server, and OpenCode; every other provider stores 0 cache and leaves any cached tokens inside `inputTokens`. Sessions recorded before the cache fields existed read them as 0. Per-provider details: `services/ai/tokenUsageAccumulation.ts`.
+
+Lifecycle: granted backend modules start when their workspace opens, except modules that back an `aiAgentProvider`, which start on first use. They stop when the workspace has no window and no unfinished turn, so a scheduler in a module runs only while its project is open.
+
+## Panel Host: Backend Tools, Transcript Embed, Gutter Badge
+
+A panel (`contributions.panels`) receives `host: PanelHost` (`packages/extension-sdk/src/types/panel.ts`, implemented in `renderer/extensions/panels/PanelHostImpl.ts`). Three members connect it to the rest of the app:
+
+| Member | What it does |
+| --- | --- |
+| `host.callBackendTool(toolName, args?)` | Calls a tool this extension's own backend module registered, including `panelOnly` tools, and returns its parsed JSON result. The host adds the extension id and workspace; main refuses tools registered by another extension's module. |
+| `host.components?.SessionTranscript` | The full agent transcript for one session (`{ sessionId, collapseTranscript?, className? }`), with composer, queue, and interactive prompts. The composer sends to that `sessionId`, never to the window's active session. Present only when the manifest declares `permissions.ai: true`, because it lets the panel read any session in the workspace and prompt it. |
+| `host.setGutterBadge(value, { tone? })` | Badges the panel's existing gutter button: `null` clears, `0` is a dot, a positive number is a count; `tone: 'warning'` switches color. The host keeps the value after a fullscreen panel unmounts and clears it when the extension is disabled or unloaded. The backend module can keep it current while the panel is unmounted (next section); whichever writes last wins. |
+
+Extension panels share one renderer trust domain, so the host-stamped caller extension id is attribution, not authentication: panel-only tools hide controls from agents, they are not a security boundary against other installed extensions.
+
+`PanelExport.gutterButton` is declared in the SDK but not rendered by the gutter; use `setGutterBadge` on the default button instead.
+
+### Gutter badge from the backend (`ctx.services.panels`)
+
+`ctx.services.panels.setGutterBadge(panelId, value, { tone? })` sets the same badge from a backend module, so an event the module sees while the panel is closed (a new flag, a budget crossing) reaches the gutter. `panelId` is the bare id from the extension's own `contributions.panels`; the host prefixes the extension id from the module's runtime and rejects any id the manifest does not declare, so a module cannot badge another extension's panel. No permission is required, for the same reason the panel's own call needs none.
+
+Main broadcasts the badge with the module's workspace (`extension-panels:gutter-badge`, `main/extensions/backendPanelBadges.ts`). The renderer listener (`store/listeners/panelGutterBadgeListeners.ts`) shows it only while that workspace is active, re-applies each workspace's value when the project rail switches, and on mount replays the badges main holds, so a badge set before the window loaded is not lost. Badges a module set are cleared when that module stops or crashes.
+
 ## Extension Development
 
 When working on extensions in `packages/extensions/`:
 - Use `mcp__nimbalyst-extension-dev__extension_reload` to rebuild and reload extensions
 - Use `mcp__nimbalyst-extension-dev__extension_get_logs` to check for errors
 - Use `mcp__nimbalyst-extension-dev__extension_get_status` to verify extension state
-- **Never use manual `npm run build`** - always use the MCP tools for extension builds
+- **Never run a manual `pnpm run build` or `npm run build`** - always use the MCP tools for extension builds
 
 ## Marketplace Screenshots
 

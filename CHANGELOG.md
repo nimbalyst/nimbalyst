@@ -10,32 +10,246 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 <!-- New features go here -->
-- Opt into unlimited open projects with a scrollable project rail and cleanup of unused project resources.
-- Knowledge extension sets up a team wiki and installs an editable "How we write this wiki" guide that agents follow, and its vocabulary now covers markets, makers, competition, and dated, cited facts.
-- Knowledge curator (alpha): agents can sort commits, sessions, and tracker changes with TypeSafe's Jev model to decide what belongs in the knowledge graph, using your own TypeSafe API key or your Cloudflare account through Workers AI.
-- Team wiki from the terminal (alpha): a Claude Code plugin and `nim login` / `nim wiki` commands let an agent read and write a team project's knowledge wiki, with each session's edits listed in the web console.
+- New editor blocks for wiki pages: charts, callouts, columns, tabs, a table of contents, transclusions, `@` mentions of people and dates, link previews and video players, code excerpts, and buttons that start an agent session or create a new item. Most can be resized from a bottom-right grip and edited from the block menu.
+- Local wikis on iPhone, iPad and Android: a Wiki tab shows the project's page tree, follows links between pages in the app, and saves page edits back to the desktop
+- On iPhone, iPad and Android, a Team tab opens a team project's Wiki and Trackers (alpha)
+- The CSV spreadsheet editor gains a formatting toolbar, conditional formatting, data validation, wrap text, freezing, a status bar, formula autocomplete with click-to-insert references, named ranges, spreadsheet-style keyboard shortcuts and paste from other spreadsheet apps, and undo for every edit; agents can edit sheets with A1-range tools, including files that aren't open
 
 ### Changed
 <!-- Changes to existing functionality go here -->
-- iOS: the session detail status bar shows the session's model next to context usage
-- Claude Code sessions that have finished their turn but are still waiting on a background shell or sub-agent show a distinct indicator in the session list and name the task in the transcript
+- A document's frontmatter properties and the sources it cites now sit in a resizable Page info panel opened from the header, instead of a metadata bar above the page and a Sources line below it; a page whose status is not current shows it as a small tag at the top
 
 ### Fixed
 <!-- Bug fixes go here -->
-- Agent sessions no longer read and cache large or binary files that other tools write into the workspace (such as browser profiles), which flooded the log and grew memory.
-- File @-mention suggestions now pick up newly created and renamed files without opening Quick Open or reloading the window.
-- iOS: returning to the app after a long background shows a quiet "Reconnecting…" notice instead of the "Sync paused" warning
-- iOS: an open session no longer stays stuck loading after a long background
-- iOS: creating a session no longer shows "Unable to Create Session" when the desktop created it successfully
-- iOS: the running-sessions Live Activity starts again after an earlier card ends, and unread sessions keep it up for only 10 minutes after they finish
-- Changes to a team tracker type now reach teammates right away instead of after the next reconnect
-- A team project's knowledge relationship verbs are shared with teammates and the web console instead of staying on the machine that defined them
-- Improved load performance for very large Codex sessions
-- A session no longer stays marked as running after its turn ended while a question to you was still open
-- A question left open when the agent's connection drops no longer leaves the session stuck as waiting for your response (#1557).
+- A question left open when the agent connection drops no longer leaves the session waiting for your response (#1557).
+- Windows updates no longer fail with "Command failed ... Get-AuthenticodeSignature" when checking the downloaded installer's signature takes longer than 20 seconds
+- Clicking a link to another Local wiki page in the Wiki now opens that page in the same tab instead of switching to Files
+- Local wiki pages an agent edited now open in the Wiki with the edit applied instead of in red/green review
+- Removing a project's last slash command or action prompt on the desktop now removes it on the phone too
+- The iOS session list now shows an error when the device's database can't be read, instead of an empty list
+- The desktop no longer fails to refresh its sign-in every 30 seconds when its saved sync server address is malformed
+- A Local wiki type file written as the wiki format describes, without `icon`, `color`, `modes` or `idPrefix`, now loads; a type file that still fails to load shows in the Local section with the reason instead of its tables and typed pages silently disappearing
 
 ### Removed
 <!-- Removed features go here -->
+
+## [0.80.6] - 2026-10-09
+
+
+### Added
+- Actions can set an `effort` level, and choosing an action that sets a model or effort switches the composer's pickers to match
+- The Wiki's Local section (formerly Personal) keeps its pages as plain files in the project, default `nimbalyst-local/wiki`, which agents and the `nim` CLI can read and edit; existing Personal pages stay visible and can be exported to files
+- `nim wiki` commands, `nim mcp` (a stdio MCP server for the local wiki) and `nim wiki serve` (the local wiki in a browser) work without the desktop app, and Claude Code can create and maintain a local wiki through the Nimbalyst Wiki plugin
+
+### Changed
+- Local tracker item numbers (`NIM.75`) are only given to types that set `localNumbers: true`
+- The `nimbalyst-pages` Claude Code plugin is now `nimbalyst-wiki` (commands `/nimbalyst-wiki:setup`, `update`, `capture`), and `nim pages` is now `nim wiki`
+
+### Fixed
+- The Claude Code wiki plugin now includes its MCP servers, which were missing when it was installed from GitHub
+- Clicking a document link to an existing file, such as the root package.json, now opens it in large workspaces where the file was missing from the scan index
+- Windows no longer keep the full transcripts of agent sessions they have not opened or recently viewed in memory; reopening an older session reloads its history
+- Streaming agent responses no longer re-render every visible tool card and diff in the transcript on each update
+- A coordinating session now sees a long-running child session's latest response instead of an old message from early in its transcript
+
+### Removed
+<!-- Removed features go here -->
+
+## [0.80.5] - 2026-10-08
+
+
+### Added
+<!-- New features go here -->
+
+### Changed
+<!-- Changes to existing functionality go here -->
+- Tracker views placed in a page can be resized from a grip in the bottom-right corner, and a table without a set height fits its rows.
+- The tracker reference preview card on desktop shows the item's summary, its key fields, and what it links to.
+- Pages is now called Wiki: the Knowledge skills are /wiki:setup and /wiki:update, `nim wiki` works like `nim pages`, and agents on a wiki page are pointed at /wiki:update.
+
+### Fixed
+<!-- Bug fixes go here -->
+- Agents on desktop can list past the first 100 wiki pages.
+- The new shared doc location picker in the Wiki shows the same pages, typed pages and types as the sidebar tree, and defaults to the open page.
+- Tracker reference chips bold the item's name instead of its key, and no longer show a raw internal ID for types without an issue key.
+- Moving a session under a new parent no longer sends "moved by the user" notes to old sessions or wakes them when the session-tree update runs.
+- Open in browser on a shared document opens the web console again instead of doing nothing.
+
+### Removed
+<!-- Removed features go here -->
+
+## [0.80.4] - 2026-10-07
+
+
+
+
+
+### Added
+<!-- New features go here -->
+- Sessions now form nested trees on desktop and mobile, with drag-to-reassign, Undo, subtree activity summaries, and an optional compact one-line view.
+- Pages: plain pages have a status, owner, summary and tags, and can move between Personal and Team.
+- Pages: swipe two fingers on the trackpad to go Back and Forward.
+- Pages: copy a file from disk, including drawings, mind maps and other editor files, into Team or Personal pages with Copy to Pages... in Files or Add from Files... in Pages; agents can import files the same way.
+- Pages: `@` in a Personal page links your Personal pages and embeds Personal drawings and other editor pages; `@` in a local file also lists Team and Personal pages.
+- Agents can edit drawings, mind maps, data models and other editor pages in Pages with those editors' tools, without the page open.
+- Custom Claude models defined under `modelPicker` in Claude's settings now appear in the Claude Code model picker and are sent to your gateway by name.
+- Claude Haiku 5.5 is available in Claude Agent and Claude Chat; Haiku 4.5 stays selectable.
+
+### Changed
+<!-- Changes to existing functionality go here -->
+- The extension dev menu lists stale extensions and can reinstall them individually or together.
+- The extension build tool runs pnpm for extension projects that use pnpm.
+- Knowledge setup asks about your goals and creates a Home page with linked starter pages.
+- Pages: save named views, configure them with compact tracker-style controls, open them full-size, create items, find typed-page decisions, and recover failed edits; Home stays user-authored and the type map supports pan and zoom.
+- Removed vendor branding from embedded tracker tables in Pages.
+- 2x2 charts can be resized by selecting them like an image, and their labels no longer run off the chart or overlap each other.
+- Shared markdown links show 2x2 charts and Mermaid diagrams as images instead of their source.
+- Pages and shared documents use one header layout, with a clickable path, history, and a ⋯ menu that has the page's sidebar actions (rename, move, new page inside, favorite, trash, copy as Markdown, export to PDF).
+
+### Fixed
+<!-- Bug fixes go here -->
+- Git Output no longer jumps to the bottom while reading earlier output.
+- Fixed a terminal that could stop showing output after restoring its saved history.
+- Excalidraw drawings embedded in a document no longer show the menu and bottom toolbar until the embed is selected.
+- Team tracker items opened right after launch no longer open in local mode before your organization finishes loading.
+- Effort and Actions menus now support typeahead like the model picker.
+- Tracker table cells for people and select fields open the field chips' choice list with type-to-filter, instead of a plain text box for people or a native menu.
+- Pages with citations no longer fail to load with an editor update loop.
+- Fixed clicking a decided or open-question chip in Pages, the Mark open question toolbar button, and the chip not updating after switching a mark between decided and open.
+- Updated the desktop runtime with security fixes while preserving PDF export margins.
+- Fixed security issues in YAML metadata, extension archives, file-pattern matching, Git operations, MCP connections, proxy address handling and development tooling.
+- Fixed formatting loss on other clients when undoing collaborative text deletion.
+- Fixed a crash when stopping an active local database worker.
+- Kept transcript reading position stable when content above the viewport grows.
+- Restored edge styling in Mermaid flowcharts.
+- Agent edits to a 2x2 chart in a markdown file now show in the editor as a reviewable change instead of leaving the old chart in place.
+- Improved MCP connection reliability while tools await a response.
+- In the web console, clicking a link or `@` reference to another page in Pages opens it in the current tab; Cmd/Ctrl+click opens a new tab.
+- Improved reliability of repeated Anthropic chat requests by releasing completed-request listeners.
+- Fixed a tracker crash when a person has no display name.
+- Reduced startup time spent re-reading settings while scanning extensions and resolving teams.
+- Sessions launched from an action now get a descriptive name instead of keeping the action's label.
+- On iOS and Android, the session list no longer briefly shows only phone- and automation-created sessions when the app returns to the foreground.
+
+### Removed
+<!-- Removed features go here -->
+
+## [0.80.0] - 2026-10-05
+
+
+### Added
+<!-- New features go here -->
+- Pages: one page tree with nested pages, typed pages with header fields, type pages with an item table, subtypes, drag reordering, and Set type in place.
+- Pages: named relations written as links, with a Links section listing each relation and the sentence that made it.
+- Pages: mark sentences as decided or open, cite prompts, answers, comments and web sources, and place tables, 2x2 charts and decision lists in a page.
+- Pages: history with compare and restore for every page, and a Trash in each section that restores pages with their children.
+- Pages: Home, Search and Types in each section; Search covers page titles and text, Types shows a map or table, and New type works without an agent.
+- Pages: a Personal section that works offline with no account or team.
+- Pages in the web console, and the `nimbalyst-pages` Claude Code plugin and `nim pages` CLI for team pages.
+- Agents can list, search, create, place, reorder, retype and edit pages, cite the session, and read another team project's pages by name.
+
+### Changed
+<!-- Changes to existing functionality go here -->
+- Shared Docs mode is now Pages; it opens on Home, shows only the current project, and the Shared documents list is replaced by Search.
+- Clicking a page opens it in the current tab; Cmd+click opens a new tab, with per-tab Back and Forward (Cmd+[ / Cmd+]).
+- Agent edits to shared pages apply directly, with a version saved to history first.
+- Shared page history shows red and green diffs against the previous or current version.
+- Clicking a link in a document opens it; a hover card offers Edit and Copy.
+- New links in pages are console.nimbalyst.com links that open in the desktop app when possible.
+- Confirmations and errors in the desktop app use in-app dialogs instead of system dialogs.
+- Re-sharing a tracker type the team already owns is refused instead of overwriting the team's definition.
+- Knowledge extension skills write pages, typed pages and relations instead of claim and finding items.
+- Enlarged transcript images support pinch zoom.
+- iOS: session list and header take less space.
+
+### Fixed
+<!-- Bug fixes go here -->
+- A prompt sent while a session is starting is restored to the composer if the app quits first.
+- Structured input form answers submitted after a restart or after the agent call ended now resume the session.
+- Claude Code: a follow-up message runs right away while a background command is still running.
+- Agents can update or archive a tracker item that is missing an unrelated required field.
+- Pages deleted by an agent, or with child pages from the sidebar, go to Trash instead of being deleted permanently.
+- Team tracker sync starts even when one item has a backlog of unsent edits too large to load; oversized edits are refused with an error.
+- Phone sync skips an oversized project file instead of stopping the rest of the upload.
+- Pages team sync no longer stops with "Data source has been disposed" after error recovery.
+- Knowledge graph labels and relation names load for the open project.
+- A Mermaid syntax error no longer pushes the window's title bar out of view.
+- Editor screenshots in the transcript enlarge over the whole window.
+- The Add Project menu stays within the window.
+- No error dialog when a credential lock is released mid-check.
+- macOS: opening the menu bar panel no longer removes Nimbalyst from the Dock and Cmd+Tab.
+- Android: prompts are no longer lost on leaving mid-send or on a silently dropped connection, and offline phones stay signed in.
+- Android: no crash at launch during WebView updates, after moving to a new phone, or without a browser or camera app.
+- iOS: the "Sync interrupted" notice clears on reconnect and is less intrusive.
+- Windows: projects directly under a drive root can send prompts.
+
+### Removed
+<!-- Removed features go here -->
+- Tracker items no longer show the earlier knowledge graph's claim statements and qualifier editors; stored values are kept.
+
+## [0.79.1] - 2026-09-30
+
+
+### Added
+- Android: create worktrees, workstreams, and Meta Agent sessions, pick a model per session, edit synced documents in a Files tab, and cancel or archive sessions.
+- GPT-6.1 Sol in the Codex and OpenAI model pickers, now the default Codex model.
+- `/crew:hire` designs a new Crew member from any agent session, replacing the Hire dialog's "Describe the job" tab.
+
+### Changed
+- Quick Track's Cmd+Enter creates the item and closes the popup without switching to Tracker mode; the title field now spans the popup.
+
+### Fixed
+- Typing in a Crew dialog no longer loses focus every few seconds.
+- Context menus and popovers no longer open under the title bar, where their first item could not be clicked.
+- Concurrent label or predicate additions by two teammates to a shared knowledge graph no longer drop one of them.
+- Compound Bash commands no longer prompt for permission after a user PreToolUse hook has allowed them.
+- Codex auto-review and subagent threads no longer appear as separate "# AGENTS.md instructions" sessions.
+- Tracker types defined in a background project's window now appear in its tracker pane without a reload.
+- Claude Agent sessions in an externally created worktree no longer stay stuck on "running" after a background command finishes.
+- Transcript messages no longer flash and redraw while a session is streaming.
+
+## [0.79.0] - 2026-09-29
+
+
+### Added
+<!-- New features go here -->
+- Opt-in unlimited open projects with a scrollable project rail and cleanup of unused project resources.
+- Sonnet 5.5 for Claude Agent and the Claude API; the Sonnet row now runs Sonnet 5.5 and Sonnet 5 stays selectable.
+- Crew (alpha, off by default): persistent agent teammates that work scheduled shifts within token budgets and flag you when something needs you.
+- Extensions can start and drive their own agent sessions.
+- Knowledge extension sets up a team wiki with an editable "How we write this wiki" guide and optional market and project-spec vocabulary packs.
+- Knowledge graph labels: a page can carry several labels, each bringing its own fields and expected statements.
+- Ontology inspector in web console Tracker setup shows what a team project tracks and drafts fixes for gaps.
+- Navigable wiki Types map with search, minimap, and per-relationship details.
+- Knowledge curator (alpha): sort commits, sessions, and tracker changes into the knowledge graph with TypeSafe's Jev model or Workers AI.
+- Team wiki from the terminal (alpha): a Claude Code plugin and `nim wiki` commands read and write a team project's knowledge wiki.
+- iOS: Live voice conversations are recorded as voice sessions on the connected desktop, including tool calls.
+
+### Changed
+<!-- Changes to existing functionality go here -->
+- iOS: the session detail status bar shows the session's model.
+- Claude Code sessions waiting on a background shell or sub-agent show a distinct indicator and name the task in the transcript.
+
+### Fixed
+<!-- Bug fixes go here -->
+- Agent sessions no longer read and cache large or binary files written into the workspace, which flooded the log and grew memory.
+- File @-mention suggestions pick up newly created and renamed files without a reload.
+- Overlapping file-tree scans no longer exhaust memory while files change in large projects.
+- Improved load performance for very large Codex sessions.
+- Clicking the Dock or tray icon brings back the project window after the app sat in the background.
+- Following external Claude Code sessions keeps importing after the agent changes directory, and skips unchanged logs.
+- Sessions no longer stay marked as running, or lose their waiting-for-you state, around an open question.
+- A question left unanswered by sending a new message now shows as skipped.
+- Workstream sessions in the session list keep their "updated" time current.
+- Inline diffs no longer freeze the window for agent edits across long, list-heavy markdown files (#1606).
+- A sent prompt no longer stays duplicated below the transcript when the turn is slow to start (#1620).
+- Team tracker type changes reach teammates right away instead of after the next reconnect.
+- A team project's knowledge relationship verbs are shared with teammates and the web console.
+- iOS: returning after a long background shows a quiet "Reconnecting…" notice and no longer leaves an open session stuck loading.
+- iOS: creating a session no longer reports failure when the desktop created it.
+- iOS: Live voice reads a session's pending question in its own voice, relays your answer, and works for desktop-started sessions.
+- iOS: the running-sessions Live Activity restarts after an earlier card ends.
+- iOS: scrolling up in a long session reaches the first message.
 
 ## [0.78.5] - 2026-09-24
 

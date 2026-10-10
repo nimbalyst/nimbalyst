@@ -5,9 +5,14 @@
  * Handles communication between panels and the host application.
  */
 
+import type { ComponentType } from 'react';
+import { createElement } from 'react';
 import type { PanelHost, PanelAIContext, ExtensionStorage, ExtensionFileStorage, ExtensionDataAccess, ExecOptions, ExecResult } from '@nimbalyst/runtime';
+import type { PanelHostComponents, PanelPanes, PanelPaneSide, PanelSessionTranscriptProps } from '@nimbalyst/extension-sdk';
 import { store } from '@nimbalyst/runtime/store';
 import { ExtensionFileStorageImpl } from './ExtensionFileStorageImpl';
+import { setPanelGutterBadge } from './panelGutterBadges';
+import { addPanelPaneToggleHandler, setPanelPanes } from './panelPanes';
 import { workspaceRootPathsAtom } from '../../store/atoms/fileTree';
 import { isPathInWorkspace } from '../../../shared/pathUtils';
 
@@ -28,6 +33,29 @@ export interface PanelHostOptions {
   onOpenPanel: (panelId: string) => void;
   onClose: () => void;
   onThemeChange: (callback: (theme: string) => void) => () => void;
+
+  /**
+   * Host transcript component, passed only when the extension may see agent
+   * sessions (manifest `permissions.ai`). Injected rather than imported so this
+   * module stays free of the transcript's import graph.
+   */
+  sessionTranscript?: ComponentType<SessionTranscriptBindings & PanelSessionTranscriptProps>;
+}
+
+interface SessionTranscriptBindings {
+  workspacePath: string;
+  onOpenFile: (path: string) => void;
+}
+
+/** Bind the host's workspace and file-open path so the panel passes only a session id. */
+function createPanelHostComponents(
+  Transcript: ComponentType<SessionTranscriptBindings & PanelSessionTranscriptProps>,
+  bindings: SessionTranscriptBindings,
+): PanelHostComponents {
+  const SessionTranscript = (props: PanelSessionTranscriptProps) =>
+    createElement(Transcript, { ...props, ...bindings });
+  SessionTranscript.displayName = 'PanelHost.SessionTranscript';
+  return { SessionTranscript };
 }
 
 // ============================================================================
@@ -104,6 +132,7 @@ class PanelHostImpl implements PanelHost {
   readonly storage: ExtensionStorage;
   readonly files: ExtensionFileStorage;
   readonly data: ExtensionDataAccess;
+  readonly components?: PanelHostComponents;
 
   private _theme: string;
   private _isSettingsOpen = false;
@@ -137,6 +166,13 @@ class PanelHostImpl implements PanelHost {
     // Create AI context if supported
     if (options.aiSupported) {
       this.ai = new PanelAIContextImpl();
+    }
+
+    if (options.sessionTranscript) {
+      this.components = createPanelHostComponents(options.sessionTranscript, {
+        workspacePath: options.workspacePath,
+        onOpenFile: (path) => this.onOpenFile(path),
+      });
     }
   }
 
@@ -233,6 +269,30 @@ class PanelHostImpl implements PanelHost {
         exitCode: -1,
       };
     }
+  }
+
+  callBackendTool(toolName: string, args?: Record<string, unknown>): Promise<unknown> {
+    // callerExtensionId comes from the host, never from panel code: main uses
+    // it to refuse tools that another extension's backend module registered.
+    return window.electronAPI.invoke('extensions:ai-call-backend-tool', {
+      toolName,
+      args: args ?? {},
+      workspacePath: this.workspacePath,
+      callerExtensionId: this.extensionId,
+    });
+  }
+
+  setGutterBadge(value: number | null, options?: { tone?: 'default' | 'warning' }): void {
+    // Deliberately not cleared in dispose(): the badge must outlive the panel.
+    setPanelGutterBadge(this.panelId, value, options?.tone ?? 'default');
+  }
+
+  setPanes(panes: PanelPanes | null): void {
+    setPanelPanes(this.panelId, panes);
+  }
+
+  onPaneToggle(callback: (side: PanelPaneSide) => void): () => void {
+    return addPanelPaneToggleHandler(this.panelId, callback);
   }
 
   /**

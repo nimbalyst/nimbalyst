@@ -24,6 +24,8 @@ export type ApplyMarkdownReplacePayload =
       replacements: TextReplacementInput[];
       requestId?: string;
       onResult?: (result: ApplyMarkdownReplaceResult) => void;
+      /** Land as final text with no pending diff. See `agentEditsApplyDirectly`. */
+      acceptChanges?: boolean;
     };
 
 export const APPLY_MARKDOWN_REPLACE_COMMAND: LexicalCommand<ApplyMarkdownReplacePayload> =

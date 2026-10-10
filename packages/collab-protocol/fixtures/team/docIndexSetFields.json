@@ -1,0 +1,9 @@
+{
+  "type": "docIndexSetFields",
+  "documentId": "page-2",
+  "fields": {
+    "status": "outdated",
+    "owner": null
+  },
+  "requestId": "fields-1"
+}

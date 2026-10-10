@@ -17,7 +17,7 @@
  * after. There is no forced termination short of killing the process.
  */
 
-import type { ExtensionPermissionId } from '@nimbalyst/extension-sdk';
+import type { BackendToolCallContext, ExtensionPermissionId } from '@nimbalyst/extension-sdk';
 
 /**
  * Stable identity passed to a backend module on init. The module never
@@ -78,6 +78,11 @@ export type HostToBackendMessage =
       params: unknown;
       /** When true, the backend may reply with rpc-stream-chunk messages. */
       streaming?: boolean;
+      /**
+       * Set when the method runs as an MCP tool: who called it. Resolved by the
+       * host (never by the module) and surfaced to the method as `ctx.call`.
+       */
+      callContext?: BackendToolCallContext;
     }
   | {
       kind: 'rpc-cancel';
@@ -173,7 +178,9 @@ export type BrokerMethodName =
   | 'writeWorkspaceFile'
   | 'registerMcpTools'
   | 'toolExecutor'
-  | 'devToolExecutor';
+  | 'devToolExecutor'
+  | 'sessions'
+  | 'panels';
 
 /** Payload shapes for each broker method. Kept here so both sides share one truth. */
 export interface BrokerPayloads {
@@ -201,6 +208,10 @@ export interface BrokerPayloads {
       /** When true, the tool is also exposed to the voice agent (Realtime). */
       voiceAgent?: boolean;
       scope?: 'global' | 'editor';
+      /** Callable only from the extension's own renderer; hidden from agents. */
+      panelOnly?: boolean;
+      /** 'owned-sessions': listed and callable only in sessions this extension owns. */
+      audience?: 'all' | 'owned-sessions';
     }>;
   };
   toolExecutor: {
@@ -221,6 +232,19 @@ export interface BrokerPayloads {
     // NOTE: no workspacePath. The host pins the jail to its bound
     // ctx.workspacePath; the backend cannot influence the jail root.
   };
+  sessions: {
+    /** A `BackendSessionsService` method name (see extension-sdk backendSessions.ts). */
+    op: string;
+    args: unknown;
+    // NOTE: no extensionId or workspacePath. The host scopes every op to the
+    // calling module's own extension and bound workspace.
+  };
+  panels: {
+    /** Bare manifest panel id; the host rejects ids the calling extension does not declare. */
+    panelId: string;
+    value: number | null;
+    tone?: 'default' | 'warning';
+  };
 }
 
 /** Result shapes returned over broker-response for each method. */
@@ -234,7 +258,17 @@ export interface BrokerResults {
   toolExecutor: { result: string };
   /** Formatted text result the read-only dev tool produced. */
   devToolExecutor: { result: string };
+  sessions: { result: unknown };
+  panels: Record<string, never>;
 }
+
+/**
+ * `broker-event` name the host uses to deliver owned-session settles to the
+ * owning module (`ctx.services.sessions.onSettled`). Payload:
+ * `OwnedSessionSettledEvent` from extension-sdk.
+ */
+export type SessionsSettledEventName = 'sessions:settled';
+export const SESSIONS_SETTLED_EVENT: SessionsSettledEventName = 'sessions:settled';
 
 export interface SerializedError {
   message: string;

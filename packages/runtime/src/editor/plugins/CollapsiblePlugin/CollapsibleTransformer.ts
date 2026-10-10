@@ -93,8 +93,11 @@ export const COLLAPSIBLE_TRANSFORMER: MultilineElementTransformer = {
 
         return output;
     },
-    // Match opening <details> tag with optional attributes
-    regExpStart: /^<details(?:\s+[^>]*)?>$/,
+    // Match opening <details> tag with optional attributes. A `data-tab`
+    // panel belongs to the tabs block; when the tabs transformer declines a
+    // malformed one, its lines stay literal text rather than being read here,
+    // where the summary search would skip (and drop) lines before a nested one.
+    regExpStart: /^<details(?![^>]*\sdata-tab(?=[\s=>]))(?:\s+[^>]*)?>$/,
     // Match closing </details> tag
     regExpEnd: /^<\/details>$/,
     replace: (rootNode, children, startMatch, endMatch, linesInBetween) => {

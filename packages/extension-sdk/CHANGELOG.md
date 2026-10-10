@@ -8,6 +8,7 @@ The SDK is versioned independently of the Nimbalyst app. Each release declares i
 
 | SDK version | Minimum Nimbalyst app version |
 | --- | --- |
+| 0.7.0 | 0.79.0 |
 | 0.6.0 | 0.78.0 |
 | 0.5.0 | 0.70.0 |
 | 0.4.0 | 0.70.0 |
@@ -19,6 +20,22 @@ The SDK is versioned independently of the Nimbalyst app. Each release declares i
 | 0.1.0 | 0.58.5 |
 
 ## [Unreleased]
+
+## [0.7.0] - 2026-10-09
+
+Requires Nimbalyst 0.79.0.
+
+### Added
+
+- `BackendSessionsService` lets an extension backend create and own agent sessions and workstreams, send prompts, read status, results and usage, notify the user, and react when a session settles; it needs the new `ai-sessions` permission.
+- Backend extensions can define MCP tools (`BackendMcpToolDefinition`), and panels call them with `PanelHost.callBackendTool()`.
+- `PanelHost.setGutterBadge()` and `BackendPanelsService` show a count or warning badge on a panel's gutter icon.
+- `PanelHost.setPanes()` and `onPaneToggle()` give a panel resizable, hideable left and right panes like the built-in modes, and `PanelHostComponents` exposes the host's session transcript.
+- Agent usage events can report `cache_read_input_tokens` and `cache_creation_input_tokens` separately from uncached input.
+
+### Changed
+
+- The `yjs` peer dependency is pinned to 13.6.32, the version the app ships, so an extension cannot load a second copy.
 
 ## [0.6.0] - 2026-09-14
 

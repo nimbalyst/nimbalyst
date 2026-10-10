@@ -18,8 +18,8 @@
  * model on, so it rejects the payload and stays on its builtin rather than
  * ingesting a half-understood schema.
  */
-import type { DerivedTrackerTypeDeclaration, TrackerDataModel } from '@nimbalyst/tracker-schema';
-import { type PredicateDefinition, type TrackerSchemaPatch } from '@nimbalyst/tracker-schema';
+import type { DerivedTrackerTypeDeclaration, TrackerDataModel } from '../../../../../tracker-schema/src/browser';
+import { type LabelRegistry, type PredicateDefinition, type TrackerSchemaPatch } from '../../../../../tracker-schema/src/browser';
 /**
  * Sidecar key carrying the DECLARED form of a derived type (`extends`) next to
  * its resolved form.
@@ -66,6 +66,22 @@ export interface TrackerPredicateRegistryPayload {
     version: 1;
     predicates: PredicateDefinition[];
 }
+/**
+ * Reserved `schemaType` carrying the project's LABEL REGISTRY
+ * (`.nimbalyst/labels.yaml`: labels, field-stored properties, and claim
+ * property extensions). Same reasoning as `__predicates__` above, and the same
+ * old-client tolerance: no top-level `type` + `fields[]`, so a client that
+ * predates labels drops the envelope.
+ */
+export declare const TRACKER_LABEL_REGISTRY_SCHEMA_TYPE = "__labels__";
+/** Discriminator for a label-registry payload. */
+export declare const TRACKER_LABEL_REGISTRY_PAYLOAD = "trackerLabelRegistry";
+export interface TrackerLabelRegistryPayload {
+    payloadKind: typeof TRACKER_LABEL_REGISTRY_PAYLOAD;
+    /** Bumped only if the registry grammar itself changes. */
+    version: 1;
+    registry: LabelRegistry;
+}
 export interface TrackerSchemaPatchPayload {
     payloadKind: typeof TRACKER_SCHEMA_PATCH_PAYLOAD;
     /** Bumped only if the delta grammar itself changes. */
@@ -82,6 +98,9 @@ export type DecodedTrackerSchemaPayload = {
 } | {
     kind: 'predicates';
     predicates: PredicateDefinition[];
+} | {
+    kind: 'labels';
+    registry: LabelRegistry;
 };
 /**
  * Serialize a full model, optionally with the declared form of a derived type
@@ -91,6 +110,8 @@ export type DecodedTrackerSchemaPayload = {
 export declare function encodeTrackerSchemaModelPayload(model: TrackerDataModel, declared?: DerivedTrackerTypeDeclaration | null): string;
 /** Serialize the project's predicate registry for the reserved schema type. */
 export declare function encodeTrackerPredicateRegistryPayload(predicates: readonly PredicateDefinition[]): string;
+/** Serialize the project's label registry for the reserved schema type. */
+export declare function encodeTrackerLabelRegistryPayload(registry: LabelRegistry): string;
 /** Serialize a builtin override as a delta payload. */
 export declare function encodeTrackerSchemaPatchPayload(patch: TrackerSchemaPatch): string;
 /**

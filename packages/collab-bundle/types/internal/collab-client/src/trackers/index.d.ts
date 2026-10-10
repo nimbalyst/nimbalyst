@@ -14,3 +14,4 @@ export * from './trackerTagFilterUtils';
 export * from './trackerTimelineLayout';
 export * from './trackerViewModes';
 export * from './browser';
+export * from './consoleReferenceHref';

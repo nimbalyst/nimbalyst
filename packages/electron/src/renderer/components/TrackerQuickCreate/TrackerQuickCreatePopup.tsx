@@ -6,7 +6,8 @@
  * few letters, Enter picks), then collapses to a chip and puts the caret in the
  * title. The rapid-fire loop is the point — Enter creates, keeps the popup open
  * and keeps the type, so entering six bugs after a testing pass is six
- * sentences and six Enters. `Cmd+Enter` creates and closes into the new item.
+ * sentences and six Enters. `Cmd+Enter` creates and closes, leaving the user
+ * where they were.
  *
  * Shares its chrome with the session launch popup via `LaunchPopupShell`, and
  * is deliberately NOT registered with DialogProvider — it needs to coexist with
@@ -201,16 +202,18 @@ export const TrackerQuickCreatePopup: React.FC<TrackerQuickCreatePopupProps> = (
     if (workspaceRef.current !== workspacePath) return;
     setCreatedIds((current) => current.includes(itemId) ? current : [...current, itemId]);
     posthog?.capture('tracker_quick_create_item_created', { trackerType: selectedType, sharing: model?.sharing ?? 'personal', duplicatesShown: matches.length, closedAfterCreate: closeAfter });
-    if (closeAfter) { setOpen(false); openItem(itemId); }
+    // Closing leaves the user where they were; quick create is a capture
+    // surface, not a navigation. The created strip still offers "open".
+    if (closeAfter) setOpen(false);
     else pendingTitleFocus.current = true;
-  }, [workspacePath, selectedType, model?.sharing, matches.length, posthog, setOpen, openItem]);
+  }, [workspacePath, selectedType, model?.sharing, matches.length, posthog, setOpen]);
   useEffect(() => {
     if (draft.submitting || !pendingTitleFocus.current) return;
     pendingTitleFocus.current = false;
     titleRef.current?.focus();
   }, [draft.submitting]);
   const handleCreate = useTrackerQuickCreateSubmission(workspacePath, draftAtom, onCreated);
-  const submitAndOpen = useCallback(() => { void handleCreate(true); }, [handleCreate]);
+  const submitAndClose = useCallback(() => { void handleCreate(true); }, [handleCreate]);
 
   useEffect(() => {
     if (!open || !workspacePath) return;
@@ -350,7 +353,7 @@ export const TrackerQuickCreatePopup: React.FC<TrackerQuickCreatePopupProps> = (
             ref={titleRef}
             type="text"
             data-testid="tracker-quick-create-title"
-            className="tracker-quick-create-title select-text bg-transparent px-3 py-2 text-sm font-bold text-[var(--nim-text)] outline-none placeholder:font-normal placeholder:text-[var(--nim-text-muted)]"
+            className="tracker-quick-create-title block w-full select-text bg-transparent px-3 py-2 text-sm font-bold text-[var(--nim-text)] outline-none placeholder:font-normal placeholder:text-[var(--nim-text-muted)]"
             placeholder="Title"
             value={draft.title}
             onChange={(event) => {
@@ -374,7 +377,7 @@ export const TrackerQuickCreatePopup: React.FC<TrackerQuickCreatePopupProps> = (
             }
           />
 
-          <TrackerQuickCreateEditor key={draft.id} workspacePath={workspacePath} draftId={draft.id} draftAtom={draftAtom} onSubmit={submitAndOpen} />
+          <TrackerQuickCreateEditor key={draft.id} workspacePath={workspacePath} draftId={draft.id} draftAtom={draftAtom} onSubmit={submitAndClose} />
 
           {selectedType && primary.length > 0 && (
             <TrackerFieldPills
@@ -425,7 +428,7 @@ export const TrackerQuickCreatePopup: React.FC<TrackerQuickCreatePopupProps> = (
 
           <div className="tracker-quick-create-actions flex items-center justify-between border-t border-[var(--nim-border)] px-3 py-2">
             <span className="text-[11px] text-[var(--nim-text-muted)]">
-              Enter in Title to add another, {modifierLabel}+Enter to open it, {modifierLabel}+T to change type
+              {modifierLabel}+Enter to create, Enter in Title to create and add another, {modifierLabel}+T to change type
             </span>
             <button
               type="button"

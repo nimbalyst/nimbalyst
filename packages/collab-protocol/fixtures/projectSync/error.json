@@ -1,0 +1,6 @@
+{
+  "type": "error",
+  "code": "file_too_large",
+  "message": "Encrypted file is 2500000 bytes; the limit is 2031616",
+  "syncId": "sync-big"
+}

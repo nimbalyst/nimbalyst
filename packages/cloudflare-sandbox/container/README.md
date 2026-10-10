@@ -7,7 +7,7 @@ A `linux/amd64` image that adds the headless Nimbalyst runner (`@nimbalyst/node`
 | Path | Contents |
 | --- | --- |
 | `/opt/nimbalyst/node` | Node 24, installed from a checksum-verified official tarball. Deliberately off the default `PATH`. |
-| `/opt/nimbalyst/app` | The built workspace subset: `@nimbalyst/node` (`dist/`), `@nimbalyst/runtime` (`dist-node/`, the `node` export condition only), `@nimbalyst/extension-sdk`, `@nimbalyst/tracker-core`, and the hoisted `node_modules` including the native `better-sqlite3` binding and the linux-x64 Claude Code binary. |
+| `/opt/nimbalyst/app` | The built workspace subset: `@nimbalyst/node` (`dist/`), `@nimbalyst/runtime` (`dist-node/`, the `node` export condition only), `@nimbalyst/extension-sdk`, the `@nimbalyst/tracker-*` packages, and the hoisted `node_modules` including the native `better-sqlite3` binding and the linux-x64 Claude Code binary. |
 | `/opt/nimbalyst/app/packages/electron/src/main/database/sqlite/schemas` | The SQL migrations, unmodified. This is exactly where `packages/node`'s `resolveSchemaDir()` looks by default, so no `schemaDir` is needed in the config. |
 | `/usr/local/bin/nimbalyst-node` | Launcher. Uses our Node with a clean environment; also drops privileges if an administrator invokes it as root — uid, gid, `no_new_privs`, and the capability bounding set, so nothing reached later can hand root back. |
 | `/var/lib/nimbalyst`, `/workspace` | Writable, owned by `nimbalyst`. |
@@ -31,7 +31,7 @@ docker buildx build --platform linux/amd64 \
   packages/cloudflare-sandbox/container/.build-context
 ```
 
-`stage-build-context.mjs` copies only the paths in `buildContextAllowlist.mjs` (currently ~1,150 files / ~10 MB) and refuses to stage anything credential-shaped, anything reached through a symlink, or anything git does not track. **Tracked means present in git's index**, not merely "not ignored": the file that ships a pasted key is usually an ordinary scratch file nobody has added yet, and it is not gitignored either. A tracked file is one that has appeared in a diff. Working-tree bytes are what get staged — tracking is the admission check, not the source of the content.
+`stage-build-context.mjs` copies only the paths in `buildContextAllowlist.mjs` (currently ~1,350 files / ~11 MB) and refuses to stage anything credential-shaped, anything reached through a symlink, or anything git does not track. **Tracked means present in git's index**, not merely "not ignored": the file that ships a pasted key is usually an ordinary scratch file nobody has added yet, and it is not gitignored either. A tracked file is one that has appeared in a diff. Working-tree bytes are what get staged — tracking is the admission check, not the source of the content.
 
 Because the gate reads the index, a build run before the files are committed needs them added. To do that without touching the shared index, point git at a throwaway one:
 
@@ -123,9 +123,6 @@ Built and exercised on 2026-09-09 (`linux/amd64`, emulated on an arm64 daemon, D
 
 ### Why the build needs the root devDependencies
 
-`npm ci` here uses `--include-workspace-root` even though the image ships none of that toolchain. Narrowing the _install_ to the four workspaces fails twice, and both failures were found by real builds rather than reasoning:
+The filtered `pnpm install` (`--filter '@nimbalyst/node...'` and the other three) also installs the root importer, even though the image ships none of that toolchain. The build needs it: `extension-sdk/src/testing.ts` imports `@playwright/test` and `playwright`, root devDependencies, so `tsc` fails with seven errors without them.
 
-- npm still runs the root `postinstall` (`patch-package`), a root devDependency the narrow selection never installs — `sh: 1: patch-package: not found`.
-- `extension-sdk/src/testing.ts` imports `@playwright/test` and `playwright`, so `tsc` fails with seven errors.
-
-`npm prune --omit=dev` is what keeps them out of the shipped layer. Both `npm ci` and `npm prune` pass `--ignore-scripts`: prune re-runs workspace `prepare` scripts, and `@nimbalyst/tracker-core`'s prepare is `tsc -p tsconfig.json`, which dies on `tsc: not found` immediately after the prune removes typescript.
+A second `pnpm install --prod` over the same selection is what keeps them out of the shipped layer. Both installs pass `--ignore-scripts`: workspace `prepare` scripts such as `@nimbalyst/tracker-core`'s `tsc -p tsconfig.json` would otherwise run after typescript is gone and die on `tsc: not found`. pnpm comes from the root `packageManager` pin via corepack.

@@ -5,7 +5,8 @@
  * what order. A surface that replaces a full form with chips still has to
  * account for the rest of the schema: fields the layout drops (opaque objects,
  * multiselects, read-only values) and arrays of objects, which have no one-line
- * form at all. This puts that split in one place so every chip surface makes the
+ * form at all. A page header also passes `singleValuedOnly`, which sends every
+ * list to the overflow (`isSingleValuedField`). This puts that split in one place so every chip surface makes the
  * same call, and so a surface can exclude a field it renders itself (Tracker
  * Mode's detail pane keeps tags as an always-open row).
  */
@@ -15,9 +16,6 @@ import { globalRegistry } from '../models';
 import type { FieldDefinition } from '@nimbalyst/tracker-schema';
 import { getTrackerFieldLayout } from './trackerFieldLayout';
 
-/** Structural fields the surrounding chrome renders; neither chip nor overflow. */
-const CHROME_FIELDS = new Set(['title', 'description', 'created', 'updated']);
-
 /**
  * True when one chip can carry this field's value. An array of objects (a
  * plan's `agentSessions`, say) has no readable one-line form -- it stringifies
@@ -26,6 +24,9 @@ const CHROME_FIELDS = new Set(['title', 'description', 'created', 'updated']);
 export function isChipRenderableField(field: FieldDefinition): boolean {
   return !(field.type === 'array' && field.itemType === 'object');
 }
+
+/** Structural fields the surrounding chrome renders; neither chip nor overflow. */
+const CHROME_FIELDS = new Set(['title', 'description', 'created', 'updated']);
 
 /**
  * The type's tags field, whatever the schema calls it. Surfaces that keep tags
@@ -49,17 +50,21 @@ export interface TrackerChipFieldSections {
 /**
  * @param trackerType Registered tracker type name.
  * @param exclude Field names the surface renders on its own, in neither section.
+ * @param labelFields Fields the item's labels bring (`useTrackerLabelFields`).
+ * @param options.singleValuedOnly Page headers only: keep every list out of the chips.
  */
 export function getTrackerChipFieldSections(
   trackerType: string,
   exclude: readonly string[] = [],
+  labelFields: readonly FieldDefinition[] = [],
+  options: { singleValuedOnly?: boolean } = {},
 ): TrackerChipFieldSections {
   const excluded = new Set(exclude);
-  const chipFields = getTrackerFieldLayout(trackerType).filter(
+  const chipFields = getTrackerFieldLayout(trackerType, labelFields, options).filter(
     (field) => !excluded.has(field.name) && isChipRenderableField(field),
   );
   const chipNames = new Set(chipFields.map((field) => field.name));
-  const overflowFields = (globalRegistry.get(trackerType)?.fields ?? []).filter(
+  const overflowFields = [...(globalRegistry.get(trackerType)?.fields ?? []), ...labelFields].filter(
     (field) => !CHROME_FIELDS.has(field.name)
       && !excluded.has(field.name)
       && !chipNames.has(field.name),
@@ -71,10 +76,16 @@ export function getTrackerChipFieldSections(
 export function useTrackerChipFieldSections(
   trackerType: string,
   exclude: readonly string[] = [],
+  labelFields: readonly FieldDefinition[] = NO_FIELDS,
+  singleValuedOnly = false,
 ): TrackerChipFieldSections {
   const excludeKey = exclude.join('\u0000');
   return useMemo(
-    () => getTrackerChipFieldSections(trackerType, excludeKey ? excludeKey.split('\u0000') : []),
-    [trackerType, excludeKey],
+    () => getTrackerChipFieldSections(
+      trackerType, excludeKey ? excludeKey.split('\u0000') : [], labelFields, { singleValuedOnly },
+    ),
+    [trackerType, excludeKey, labelFields, singleValuedOnly],
   );
 }
+
+const NO_FIELDS: readonly FieldDefinition[] = [];

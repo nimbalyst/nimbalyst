@@ -271,6 +271,11 @@ export async function collectNodeTypes(probe, options = {}) {
       format: 'esm',
       jsx: 'automatic',
       logLevel: 'silent',
+      // Resolve lexical's `production` export, as the hosts' Vite builds do. Its
+      // `node` export picks dev/prod with a top-level await, which makes every
+      // importer async, and esbuild's async init deadlocks on any import cycle
+      // (markdown/index <-> MarkdownStreamProcessor hung this gate).
+      conditions: ['production'],
       // A host may mark its registration side-effect-free for tree shaking; the
       // probe imports it precisely for that side effect.
       ignoreAnnotations: true,

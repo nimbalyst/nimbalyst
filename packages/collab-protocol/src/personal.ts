@@ -879,8 +879,8 @@ export interface SessionIndexEntry {
   queuedPromptCount?: number;
   /** Omitted preserves the stored preview; an empty array clears it. */
   encryptedQueuedPrompts?: IndexEncryptedQueuedPrompt[];
-  /** Parent session ID for workstream/worktree hierarchy (plaintext UUID) */
-  parentSessionId?: string;
+  /** Parent session ID (plaintext UUID); omitted preserves, null clears. */
+  parentSessionId?: string | null;
   /** Structural type: 'session' (normal), 'workstream' (parent container), 'blitz' (quick task) */
   sessionType?: string;
   /** Worktree ID for git worktree association (plaintext UUID) */
@@ -889,8 +889,8 @@ export interface SessionIndexEntry {
   hostDeviceId?: string;
   /** Agent role marker (e.g. 'meta-agent', 'standard'). Plaintext - drives mobile meta-agent grouping. */
   agentRole?: string;
-  /** Meta-agent parent session ID for spawned children (plaintext UUID). Drives mobile meta-agent grouping. */
-  createdBySessionId?: string;
+  /** Manager session ID (plaintext UUID); omitted preserves, null clears. */
+  createdBySessionId?: string | null;
   /** Whether the session is archived */
   isArchived?: boolean;
   /** Whether the session is pinned */

@@ -14,10 +14,14 @@ import { asTeamMemberId } from '@nimbalyst/runtime/auth/jwtScopes';
 import {
   getPersistedCollabDocType,
   getPersistedCollabDocMetadata,
+  isPersistedCollabPageEntry,
   loadOpenCollabDocs,
+  loadOpenCollabTabs,
   persistOpenCollabDocs,
   readEntriesFromState,
+  readTabEntriesFromState,
 } from '../collabOpenDocsPersistence';
+import { activePageRow, openPageTab, toPersistedPageEntry } from '../../components/CollabMode/collabPageTabs';
 
 const TEST_SCOPE = {
   scopeKey: '/ws',
@@ -28,8 +32,11 @@ const TEST_SCOPE = {
 interface MockState {
   openCollabDocumentIds?: string[];
   openCollabDocumentEntries?: Array<{
-    documentId: string;
-    documentType: string;
+    documentId?: string;
+    documentType?: string;
+    kind?: 'tracker' | 'type' | 'personal';
+    artifactId?: string;
+    title?: string;
     displayPath?: string;
     metadataVersion?: 2;
     fileExtension?: string;
@@ -179,6 +186,105 @@ describe('collabOpenDocsPersistence', () => {
       ],
     });
     expect(entries).toEqual([{ documentId: 'good', documentType: 'excalidraw' }]);
+  });
+
+  it('round-trips item and type page tabs alongside docs, in order, with pinned state', async () => {
+    const harness = installMockElectronAPI();
+    const tabs = [
+      { kind: 'type' as const, artifactId: 'module', title: 'Modules', isPinned: true },
+      { documentId: 'doc-1', documentType: 'markdown', displayPath: 'Spec/Overview' },
+      { kind: 'tracker' as const, artifactId: 'item-flags', title: 'Flags', isPinned: false },
+    ];
+
+    await persistOpenCollabDocs(TEST_SCOPE, tabs);
+
+    expect(await loadOpenCollabTabs(TEST_SCOPE)).toEqual(tabs);
+    // Doc-only readers (and a downgraded build) never see a page tab as a doc.
+    expect(await loadOpenCollabDocs(TEST_SCOPE)).toEqual([tabs[1]]);
+    expect(harness.getState().openCollabDocumentIds).toEqual(['doc-1']);
+    expect(await getPersistedCollabDocMetadata(TEST_SCOPE, 'item-flags')).toBeUndefined();
+  });
+
+  it('names the tree row an open item or type page tab stands for', () => {
+    expect(activePageRow('tracker://item-flags')).toEqual({ itemId: 'item-flags', typeId: null });
+    expect(activePageRow('type://module')).toEqual({ itemId: null, typeId: 'module' });
+    expect(activePageRow('personal://doc-1')).toEqual({ itemId: null, typeId: null });
+    expect(activePageRow(null)).toEqual({ itemId: null, typeId: null });
+  });
+
+  it('restores a personal page tab across a restart, beside docs and item pages', async () => {
+    const harness = installMockElectronAPI();
+    const tabs = [
+      { kind: 'personal' as const, artifactId: 'pdoc-1', title: 'Reading list', isPinned: true },
+      { documentId: 'doc-1', documentType: 'markdown' },
+      { kind: 'tracker' as const, artifactId: 'item-flags', title: 'Flags', isPinned: false },
+    ];
+    await persistOpenCollabDocs(TEST_SCOPE, tabs);
+    expect(harness.getState().openCollabDocumentIds).toEqual(['doc-1']);
+    expect(await getPersistedCollabDocMetadata(TEST_SCOPE, 'pdoc-1')).toBeUndefined();
+
+    // Second launch: the restore loop reopens each page entry through openPageTab.
+    const opened: Array<{ path: string; title?: string; isPinned?: boolean }> = [];
+    for (const entry of await loadOpenCollabTabs(TEST_SCOPE)) {
+      if (!isPersistedCollabPageEntry(entry)) continue;
+      openPageTab((path, _content, _switch, title, state) => {
+        opened.push({ path, title, isPinned: state?.isPinned });
+        return path;
+      }, entry);
+    }
+    expect(opened[0]).toEqual({ path: 'personal://pdoc-1', title: 'Reading list', isPinned: true });
+
+    // The reopened tab persists back to the same entry.
+    expect(toPersistedPageEntry({
+      id: 't1', filePath: 'personal://pdoc-1', fileName: 'Reading list', content: '',
+      isDirty: false, isPinned: true,
+    })).toEqual(tabs[0]);
+  });
+
+  it('restores section Search and Types tabs, and a leftover Shared Home tab as Team Search', async () => {
+    const harness = installMockElectronAPI();
+    const tab = (filePath: string, fileName: string) => ({ id: filePath, filePath, fileName, content: '', isDirty: false, isPinned: false });
+    const entries = [
+      tab('virtual://shared-home', 'Shared documents'),
+      tab('virtual://pages-types/personal', 'Types'),
+      tab('virtual://pages-search/bogus', 'Search'),
+    ].map(toPersistedPageEntry);
+    expect(entries).toEqual([
+      { kind: 'search', artifactId: 'team', isPinned: false },
+      { kind: 'types', artifactId: 'personal', isPinned: false },
+      null,
+    ]);
+    await persistOpenCollabDocs(TEST_SCOPE, entries.filter((entry) => entry !== null));
+    expect(harness.getState().openCollabDocumentIds).toEqual([]);
+
+    const opened: Array<{ path: string; title?: string }> = [];
+    for (const entry of await loadOpenCollabTabs(TEST_SCOPE)) {
+      if (isPersistedCollabPageEntry(entry)) openPageTab((path, _content, _switch, title) => { opened.push({ path, title }); return path; }, entry);
+    }
+    expect(opened).toEqual([
+      { path: 'virtual://pages-search/team', title: 'Search' },
+      { path: 'virtual://pages-types/personal', title: 'Types' },
+    ]);
+  });
+
+  it('loads an old doc-only payload as doc tabs', async () => {
+    installMockElectronAPI({
+      openCollabDocumentEntries: [{ documentId: 'doc-1', documentType: 'excalidraw', isPinned: true }],
+    });
+    expect(await loadOpenCollabTabs(TEST_SCOPE)).toEqual([
+      { documentId: 'doc-1', documentType: 'excalidraw', isPinned: true },
+    ]);
+  });
+
+  it('drops malformed page entries', () => {
+    expect(readTabEntriesFromState({
+      openCollabDocumentEntries: [
+        { kind: 'tracker' } as any,
+        { kind: 'type', artifactId: '' } as any,
+        { kind: 'wiki', artifactId: 'x' } as any,
+        { kind: 'type', artifactId: 'module', title: 7 } as any,
+      ],
+    })).toEqual([{ kind: 'type', artifactId: 'module' }]);
   });
 
   it('drops malformed display paths without dropping an otherwise valid entry', () => {

@@ -104,26 +104,26 @@ The workflow (`/.github/workflows/electron-build.yml`) automatically:
 
 ```bash
 # Development mode with hot reload
-npm run dev
+pnpm run dev
 
 # Build without packaging
-npm run build
+pnpm run build
 ```
 
 ### Production Builds
 
 ```bash
 # macOS (local, unsigned)
-npm run build:mac:local
+pnpm run build:mac:local
 
 # macOS (signed and notarized)
-npm run build:mac:notarized
+pnpm run build:mac:notarized
 
 # Windows
-npm run build:win
+pnpm run build:win
 
 # Linux
-npm run build:linux
+pnpm run build:linux
 ```
 
 ## Release Artifacts
@@ -206,10 +206,10 @@ Set in repository Settings → Secrets:
 1. **Test locally** (without publishing)
 ```bash
    # Build and generate update files
-   npm run build:mac:local
+   pnpm run build:mac:local
    
    # Serve update files locally
-   npx http-server release -p 8080
+   pnpm dlx http-server release -p 8080
    
    # Point app to local server (dev only)
 ```

@@ -1,0 +1,4 @@
+/* Tailwind's preflight, loaded before the bundle's stylesheet as the web
+   console does (web-console/src/main.tsx): after it, preflight's element
+   resets would win against the bundle's editor rules at equal specificity. */
+@tailwind base;

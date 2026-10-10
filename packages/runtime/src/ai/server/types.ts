@@ -11,6 +11,7 @@ import type { EditorContextItem } from '@nimbalyst/extension-sdk/types/editor';
 import type { EffortLevel, ThinkingMode } from './effortLevels';
 import type { ToolResult } from './protocols/ProtocolInterface';
 import { ModelIdentifier } from './ModelIdentifier';
+import { claudeCustomModelName } from '../claudeCustomModels';
 import {
   CLAUDE_CODE_ACCEPTED_VARIANT_INPUTS,
   CLAUDE_CODE_PINNED_SDK_MODELS,
@@ -291,8 +292,10 @@ export function shouldBlockStartedSessionProviderSwitch(
  *
  * `fable` is the Fable tier above Opus (currently Fable 5.1). `fable-5` is the
  * pinned previous-generation Fable. Both run a 1M window natively.
+ *
+ * `haiku` is Haiku 5.5; `haiku-4-5` keeps Haiku 4.5 selectable.
  */
-export const CLAUDE_CODE_VARIANTS = ['fable', 'fable-5', 'opus', 'opus-5', 'opus-4-8', 'opus-4-7', 'opus-4-6', 'sonnet', 'sonnet-4-6', 'haiku'] as const;
+export const CLAUDE_CODE_VARIANTS = ['fable', 'fable-5', 'opus', 'opus-5', 'opus-4-8', 'opus-4-7', 'opus-4-6', 'sonnet', 'sonnet-5', 'sonnet-4-6', 'haiku', 'haiku-4-5'] as const;
 
 /**
  * Resolves a configured model string to the SDK model value.
@@ -314,6 +317,10 @@ export function resolveClaudeCodeModelVariant(configuredModel: string | undefine
 
   // Try parsing with ModelIdentifier
   const parsed = ModelIdentifier.tryParse(configured);
+  // Custom gateway models go to the SDK verbatim (no pinning, no [1m]); the
+  // user's router decides what they mean.
+  const customModel = parsed?.customClaudeModel ?? claudeCustomModelName(configured);
+  if (customModel) return customModel;
   if (parsed && isClaudeCodeFamily(parsed.provider)) {
     // baseVariant strips suffixes like -1m
     const variant = parsed.baseVariant as ClaudeCodeVariant;
@@ -361,6 +368,11 @@ export interface AIModel {
    * so a revoked credential never silently erases a selection (#916).
    */
   unavailable?: boolean;
+  /**
+   * Custom Claude gateway models only: the Anthropic model id whose
+   * capabilities this model shares (from Claude settings `modelPicker`).
+   */
+  behavesAs?: string;
 }
 
 export interface AIModelCost {
@@ -427,6 +439,8 @@ export interface SessionData {
   agentRole?: AgentRole;
   createdBySessionId?: string | null;
   messages: TranscriptViewMessage[];
+  /** Renderer-only: messages were dropped from memory; metadata is still current. */
+  messagesEvicted?: boolean;
   documentContext?: DocumentContext;
   workspacePath?: string;
   title?: string;
@@ -469,10 +483,16 @@ export interface SessionData {
     inputTokens: number;      // Cumulative input tokens across session lifetime
     outputTokens: number;     // Cumulative output tokens across session lifetime
     totalTokens: number;      // Total tokens (input + output)
+    // Cumulative prompt-cache reads/writes, disjoint from inputTokens (which is
+    // uncached input only). Absent on rows written before they were stored;
+    // read absent as 0. Per-provider semantics: tokenUsageAccumulation.ts.
+    cacheReadInputTokens?: number;
+    cacheCreationInputTokens?: number;
     // Internal Codex baseline tracking for cumulative SDK snapshots.
     // Not user-facing; used to convert provider-cumulative usage into per-session deltas.
-    providerCumulativeInputTokens?: number;
+    providerCumulativeInputTokens?: number;   // cache-inclusive
     providerCumulativeOutputTokens?: number;
+    providerCumulativeCachedInputTokens?: number;
     contextWindow?: number;   // Max context window size for the model (legacy, use currentContext)
     categories?: TokenUsageCategory[]; // Breakdown parsed from /context output (legacy, use currentContext)
     costUSD?: number;         // Total cost in USD (from SDK modelUsage)

@@ -9,12 +9,14 @@
 import React from 'react';
 import type { TrackerRecord } from '../../../runtime/src/core/TrackerRecord';
 import type { TrackerGroupBy } from '../../../runtime/src/plugins/TrackerPlugin/models/index';
+import { type CollabOpenOptions } from '../core/index';
 import './trackerList.css';
 export interface TrackerListViewProps {
     rows: TrackerRecord[];
     groupBy: TrackerGroupBy;
     selectedItemId?: string | null;
-    onOpenItem: (itemId: string) => void;
+    /** `options` carries Cmd/Ctrl from the click, so a host can open a new tab. */
+    onOpenItem: (itemId: string, options?: CollabOpenOptions) => void;
     loaded: boolean;
     /** Host opts into a touch-first row without changing desktop consumers. */
     stacked?: boolean;

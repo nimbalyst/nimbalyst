@@ -1,5 +1,5 @@
 #!/bin/bash
-# Wrapper script for npm run dev that supports --user-data-dir argument
+# Wrapper script for pnpm run dev that supports --user-data-dir argument
 # Usage: ./scripts/dev.sh --user-data-dir=/path/to/dir
 
 # Parse arguments for --user-data-dir
@@ -16,7 +16,7 @@ done
 # disagree at runtime (a multi-root `roots` array reaching a single-root
 # `getWorkspaceRelativeFilePath` crashed the file-edits sidebar this way).
 # tsc is incremental, so this costs ~1s once dist/ is warm.
-npm --prefix ../extension-sdk run build || exit 1
+pnpm --dir ../extension-sdk run build || exit 1
 
 # When NIMBALYST_USER_DATA_DIR is set, use a separate build output directory
 # to avoid triggering the primary dev instance's file watcher. Without this,
@@ -25,8 +25,8 @@ npm --prefix ../extension-sdk run build || exit 1
 if [ -n "$NIMBALYST_USER_DATA_DIR" ]; then
   export ELECTRON_ENTRY=out2/main/index.js
   echo "[dev.sh] Using isolated build output: out2/"
-  npm run build:worker && npx electron-vite dev --outDir=out2
+  pnpm run build:worker && pnpm exec electron-vite dev --outDir=out2
 else
   # dev-loop.sh serves the renderer itself; skip the missing-renderer warning.
-  npm run build:worker && npx electron-vite dev ${NIMBALYST_EXTERNAL_RENDERER:+--ignoreConfigWarning}
+  pnpm run build:worker && pnpm exec electron-vite dev ${NIMBALYST_EXTERNAL_RENDERER:+--ignoreConfigWarning}
 fi

@@ -74,6 +74,11 @@ let foregroundOnNextReveal = false;
 let capTimer: ReturnType<typeof setTimeout> | null = null;
 let activatedCallbacks: Array<() => void> = [];
 
+/** Automatic macOS activate events during launch must not bypass the reveal coordinator. */
+export function isStartupActivationPending(): boolean {
+    return phase === 'creating' || phase === 'waiting';
+}
+
 function unrefTimer(timer: ReturnType<typeof setTimeout>): void {
     const maybeUnref = timer as unknown as { unref?: () => void };
     if (typeof maybeUnref.unref === 'function') maybeUnref.unref();

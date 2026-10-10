@@ -153,7 +153,7 @@ function analyzeRelease() {
   const releasePath = path.join(__dirname, '../release');
   
   if (!fs.existsSync(releasePath)) {
-    console.log(`\n${colors.yellow}No release build found. Run 'npm run build:mac' first.${colors.reset}`);
+    console.log(`\n${colors.yellow}No release build found. Run 'pnpm run build:mac' first.${colors.reset}`);
     return;
   }
   
@@ -220,7 +220,7 @@ function main() {
   analyzeRelease();
   
   console.log(`\n${colors.bright}💡 Optimization Tips:${colors.reset}`);
-  console.log('1. Run "npm run optimize" to remove unnecessary platform binaries');
+  console.log('1. Run "pnpm run optimize" to remove unnecessary platform binaries');
   console.log('2. Consider installing @anthropic-ai/claude-agent-sdk globally instead of bundling');
   console.log('3. Use production builds with minification enabled');
   console.log('');

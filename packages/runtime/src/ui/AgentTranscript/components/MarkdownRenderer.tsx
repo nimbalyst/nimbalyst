@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useMemo, useCallback } from 'react';
-import ReactMarkdown, { defaultUrlTransform } from 'react-markdown';
+import ReactMarkdown, { defaultUrlTransform, type Components } from 'react-markdown';
 import type { PluggableList } from 'unified';
 import remarkGfm from 'remark-gfm';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
@@ -15,9 +15,9 @@ import { rehypeAutolinkSessionRefs } from '../markdown/rehypeAutolinkSessionRefs
 import { TrackerReferenceChip } from '../../../plugins/TrackerLinkPlugin';
 import { TRACKER_REFERENCE_URN_SCHEME } from '../../../plugins/TrackerLinkPlugin/TrackerReferenceNode';
 import { isTrackerReferenceKey } from '../../../plugins/TrackerLinkPlugin/trackerReferenceHref';
-import { trackerIssueKeyPrefixesAtom } from '../../../plugins/TrackerPlugin/trackerDataAtoms';
+import { trackerIssueKeyPrefixesKeyAtom } from '../../../plugins/TrackerPlugin/trackerDataAtoms';
 import { SessionReferenceChip } from '../session/SessionReferenceChip';
-import { sessionRefMapAtom } from '../session/sessionRefAtoms';
+import { sessionRefIdsKeyAtom } from '../session/sessionRefAtoms';
 import {
   dispatchAppActionHref,
   isAppActionHref,
@@ -583,13 +583,15 @@ export function resolveTranscriptFileTargetFromHref(href?: string): TranscriptFi
   };
 }
 
-export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({
+// Memoized: every new transcript message re-renders the visible rows, and
+// re-parsing each row's unchanged markdown dominated that render.
+export const MarkdownRenderer = React.memo(function MarkdownRenderer({
   content,
   isUser = false,
   isSystemMessage = false,
   onOpenFile,
   messageId
-}) => {
+}: MarkdownRendererProps) {
   // Stable per-block key for the OverflowWrapper wrap-preference cache.
   // Combines the message id (so different messages can never share a slot)
   // with the source-position offset of the code-fence node in the parsed
@@ -628,22 +630,14 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({
   );
   // Distinct issue-key prefixes actually used in this workspace (e.g. `NIM`),
   // so bare tracker keys in prose auto-link without matching `UTF-8`-style
-  // tokens. Sorted+joined into a stable dep so the plugin memo only rebuilds
-  // when the set of prefixes changes, not on every tracker-store update.
-  const trackerPrefixSet = useAtomValue(trackerIssueKeyPrefixesAtom);
-  const trackerPrefixKey = useMemo(
-    () => Array.from(trackerPrefixSet).sort().join(','),
-    [trackerPrefixSet],
-  );
+  // tokens. A joined string, so this re-renders only when the set of prefixes
+  // changes, not on every tracker-store update.
+  const trackerPrefixKey = useAtomValue(trackerIssueKeyPrefixesKeyAtom);
   // Known session ids so bare UUIDs in prose/tool results auto-link to a chip
-  // without turning unrelated UUIDs into dead session links. Sorted+joined so
-  // the plugin memo only rebuilds when the set of ids changes, not on every
-  // session-store update (e.g. a processing bit flipping).
-  const sessionRefMap = useAtomValue(sessionRefMapAtom);
-  const sessionIdKey = useMemo(
-    () => Array.from(sessionRefMap.keys()).sort().join(','),
-    [sessionRefMap],
-  );
+  // without turning unrelated UUIDs into dead session links. A joined string,
+  // so session metadata churn during a streaming turn does not re-render every
+  // markdown block in the transcript.
+  const sessionIdKey = useAtomValue(sessionRefIdsKeyAtom);
   const rehypePlugins = useMemo<PluggableList>(
     () => [
       // Autolink bare file paths into clickable file-open links. Only useful
@@ -670,6 +664,438 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({
   // See nimbalyst/nimbalyst#462.
   const processedContent = useMemo(() => escapeCurrencyDollars(content), [content]);
 
+  // Built once per instance. A new override function per render is a new
+  // component type to React, which remounts every element of the message.
+  const components = useMemo<Components>(() => ({
+    // Code blocks with syntax highlighting
+    code({ node, inline, className, children, isCodeBlock, ...props }: any) {
+      const match = /language-(\w+)/.exec(className || '');
+      const language = match ? match[1] : '';
+      const codeString = String(children).replace(/\n$/, '');
+      const isSingleLine = !codeString.includes('\n');
+      // react-markdown v9+ dropped the `inline` prop, so it's never set;
+      // `isCodeBlock` is injected by the `pre` override below and is the
+      // only reliable signal that this `<code>` came from a ``` fence
+      // rather than a `single-backtick` inline span - used to gate the
+      // hover-visible copy button to fenced blocks only.
+      const isFencedBlock = Boolean(isCodeBlock);
+
+      // True inline code (backticks in text)
+      if (inline) {
+        return (
+          <code
+            className={className}
+            style={{
+              backgroundColor: 'var(--nim-bg-tertiary)',
+              padding: '0.125rem 0.375rem',
+              borderRadius: '0.25rem',
+              fontSize: '0.875em',
+              fontFamily: 'var(--font-mono, monospace)',
+              color: 'var(--nim-text)'
+            }}
+            {...props}
+          >
+            {children}
+          </code>
+        );
+      }
+
+      // Only a fenced single-line block carries a copy button, so only it
+      // reserves room on the right for one. Inline spans reach this same
+      // style (the `inline` branch above is dead - react-markdown v9+
+      // never sets the prop) and must keep their tight padding.
+      const reservesCopyButtonRoom = isFencedBlock && isSingleLine;
+      const codeStyle: React.CSSProperties = {
+        backgroundColor: 'var(--nim-bg-tertiary)',
+        // 2rem clears the 20px button plus its 4px inset - reserved
+        // permanently so hovering never resizes the block.
+        padding: reservesCopyButtonRoom
+          ? '0.25rem 2rem 0.25rem 0.5rem'
+          // Keep multiline controls above the text, including when a
+          // long first line scrolls underneath their right-hand edge.
+          : isSingleLine ? '0.25rem 0.5rem' : '2.25rem 0.75rem 0.75rem',
+        borderRadius: isSingleLine ? '0.25rem' : '0.375rem',
+        fontSize: '0.8125rem',
+        lineHeight: isSingleLine ? '1.4' : '1.5',
+        margin: isSingleLine ? 0 : '0.5rem 0'
+      };
+
+      // Code block with language - use syntax highlighting
+      if (language) {
+        const syntaxBlock = (
+          <SyntaxHighlighter
+            style={{} as any}
+            customStyle={codeStyle}
+            language={language}
+            PreTag="div"
+            codeTagProps={{
+              style: {
+                fontFamily: 'var(--font-mono, monospace)',
+                fontSize: 'inherit',
+                background: 'none'
+              }
+            }}
+            {...props}
+          >
+            {codeString}
+          </SyntaxHighlighter>
+        );
+        if (!isFencedBlock) return syntaxBlock;
+        return isSingleLine
+          ? <CodeBlockContainer codeString={codeString}>{syntaxBlock}</CodeBlockContainer>
+          : (
+            <OverflowWrapper persistKey={codeBlockPersistKey(node)} codeString={codeString}>
+              {syntaxBlock}
+            </OverflowWrapper>
+          );
+      }
+
+      // Code block without language
+      const codeBlock = (
+        <code
+          className={className}
+          style={{
+            // Fenced blocks fill the row so the copy button has room;
+            // inline spans must stay inline or they break the sentence.
+            display: isFencedBlock || !isSingleLine ? 'block' : 'inline-block',
+            ...codeStyle,
+            fontFamily: 'var(--font-mono, monospace)',
+            color: 'var(--nim-text)'
+          }}
+          {...props}
+        >
+          {children}
+        </code>
+      );
+      if (!isFencedBlock) return codeBlock;
+      return isSingleLine
+        ? <CodeBlockContainer codeString={codeString}>{codeBlock}</CodeBlockContainer>
+        : (
+          <OverflowWrapper persistKey={codeBlockPersistKey(node)} codeString={codeString}>
+            {codeBlock}
+          </OverflowWrapper>
+        );
+    },
+    // Remove the default `<pre>` wrapper - styling is handled in the code
+    // component - but tag the surviving `<code>` child as a fenced block
+    // first. react-markdown only wraps fenced (```) code in `<pre>`;
+    // single-backtick inline code renders bare, so this is the only
+    // reliable way left to tell them apart (see `isFencedBlock` above).
+    pre: ({ children }) => (
+      <>
+        {React.Children.map(children, (child) =>
+          // Only tag component children (the `code` override's output), never a
+          // raw host element - cloning a custom prop onto e.g. a plain `<pre><div>`
+          // from a future plugin would trip React's unrecognized-DOM-prop warning.
+          React.isValidElement(child) && typeof child.type !== 'string'
+            ? React.cloneElement(child as React.ReactElement<any>, { isCodeBlock: true } as any)
+            : child
+        )}
+      </>
+    ),
+    // Headings
+    h1: ({ node: _node, children, style, ...props }: any) => (
+      <h1 {...props} style={{
+        fontSize: '1.875rem',
+        fontWeight: 700,
+        marginTop: '1.5rem',
+        marginBottom: '1rem',
+        color: 'var(--nim-text)',
+        borderBottom: '1px solid var(--nim-border)',
+        paddingBottom: '0.5rem',
+        ...(style || {})
+      }}>
+        {children}
+      </h1>
+    ),
+    h2: ({ node: _node, children, style, ...props }: any) => (
+      <h2 {...props} style={{
+        fontSize: '1.5rem',
+        fontWeight: 600,
+        marginTop: '1.25rem',
+        marginBottom: '0.75rem',
+        color: 'var(--nim-text)',
+        ...(style || {})
+      }}>
+        {children}
+      </h2>
+    ),
+    h3: ({ node: _node, children, style, ...props }: any) => (
+      <h3 {...props} style={{
+        fontSize: '1.25rem',
+        fontWeight: 600,
+        marginTop: '1rem',
+        marginBottom: '0.5rem',
+        color: 'var(--nim-text)',
+        ...(style || {})
+      }}>
+        {children}
+      </h3>
+    ),
+    h4: ({ node: _node, children, style, ...props }: any) => (
+      <h4 {...props} style={{
+        fontSize: '1.125rem',
+        fontWeight: 600,
+        marginTop: '1rem',
+        marginBottom: '0.5rem',
+        color: 'var(--nim-text)',
+        ...(style || {})
+      }}>
+        {children}
+      </h4>
+    ),
+    h5: ({ node: _node, children, style, ...props }: any) => (
+      <h5 {...props} style={{
+        fontSize: '1rem',
+        fontWeight: 600,
+        marginTop: '0.75rem',
+        marginBottom: '0.5rem',
+        color: 'var(--nim-text)',
+        ...(style || {})
+      }}>
+        {children}
+      </h5>
+    ),
+    h6: ({ node: _node, children, style, ...props }: any) => (
+      <h6 {...props} style={{
+        fontSize: '0.875rem',
+        fontWeight: 600,
+        marginTop: '0.75rem',
+        marginBottom: '0.5rem',
+        color: 'var(--nim-text)',
+        ...(style || {})
+      }}>
+        {children}
+      </h6>
+    ),
+    // Paragraphs
+    p: ({ node: _node, children, style, ...props }: any) => (
+      <p {...props} style={{
+        marginTop: '0.5rem',
+        marginBottom: '0.5rem',
+        lineHeight: '1.625',
+        color: 'var(--nim-text)',
+        ...(isUser && { whiteSpace: 'pre-wrap' }),
+        ...(style || {})
+      }}>
+        {children}
+      </p>
+    ),
+    // Links
+    a: ({ href, children, node, style, ...props }: any) => {
+      const appActionLink = isAppActionHref(href);
+      // Tracker reference links (`nimbalyst://NIM-123`) render as a live
+      // status chip instead of an anchor.
+      const trackerKey = parseTrackerReferenceHref(href);
+      if (trackerKey) {
+        return (
+          <TrackerReferenceChip
+            referenceKey={trackerKey}
+            previewStateKey={trackerReferencePreviewKey(node, trackerKey)}
+          />
+        );
+      }
+      // Session references (a bare session UUID href) render as a live
+      // session chip that resolves the title/phase and opens the session
+      // on click. Autolinked bare UUIDs and author-written UUID links both
+      // land here.
+      const sessionRefId =
+        href && SESSION_UUID_RE.test(href.trim()) ? href.trim() : null;
+      if (sessionRefId) {
+        return <SessionReferenceChip sessionId={sessionRefId} />;
+      }
+      // Paths wrapped by `rehypeAutolinkFilePaths` carry a marker with the
+      // raw match (possibly with a :line:col suffix). They may be
+      // workspace-relative, which the markdown-href resolver rejects, so
+      // resolve them directly here and strip the location suffix before
+      // opening.
+      const autolinkedPath = node?.properties?.dataFilePath as string | undefined;
+      const resolvedAutolink =
+        onOpenFile && autolinkedPath ? parseLineAndColumnSuffix(autolinkedPath) : null;
+      const fileTarget =
+        resolvedAutolink ?? (onOpenFile ? resolveTranscriptFileTargetFromHref(href) : null);
+      const filePath = fileTarget?.path ?? null;
+      const isInternalLink = Boolean(filePath) || appActionLink;
+      return (
+        <a
+          {...props}
+          href={href}
+          target={isInternalLink ? undefined : '_blank'}
+          rel={isInternalLink ? undefined : 'noopener noreferrer'}
+          onClick={(event) => {
+            if (appActionLink) {
+              event.preventDefault();
+              event.stopPropagation();
+              dispatchAppActionHref(href);
+              return;
+            }
+            if (filePath && onOpenFile) {
+              event.preventDefault();
+              onOpenFile(filePath, transcriptFileLocation(fileTarget));
+            }
+          }}
+          style={{
+            color: 'var(--nim-primary)',
+            textDecoration: 'underline',
+            cursor: 'pointer',
+            ...(style || {})
+          }}
+        >
+          {children}
+        </a>
+      );
+    },
+    // Lists
+    ul: ({ node: _node, children, style, ...props }: any) => (
+      <ul {...props} style={{
+        marginTop: '0.5rem',
+        marginBottom: '0.5rem',
+        paddingLeft: '1.5rem',
+        listStyleType: 'disc',
+        color: 'var(--nim-text)',
+        ...(style || {})
+      }}>
+        {children}
+      </ul>
+    ),
+    ol: ({ node: _node, children, style, ...props }: any) => (
+      <ol {...props} style={{
+        marginTop: '0.5rem',
+        marginBottom: '0.5rem',
+        paddingLeft: '1.5rem',
+        listStyleType: 'decimal',
+        color: 'var(--nim-text)',
+        ...(style || {})
+      }}>
+        {children}
+      </ol>
+    ),
+    li: ({ node: _node, children, style, ...props }: any) => (
+      <li {...props} style={{
+        marginTop: '0.25rem',
+        marginBottom: '0.25rem',
+        lineHeight: '1.625',
+        ...(style || {})
+      }}>
+        {children}
+      </li>
+    ),
+    // Blockquotes
+    blockquote: ({ node: _node, children, style, ...props }: any) => (
+      <blockquote {...props} style={{
+        borderLeft: '4px solid var(--nim-border)',
+        paddingLeft: '1rem',
+        marginLeft: '0',
+        marginTop: '0.75rem',
+        marginBottom: '0.75rem',
+        color: 'var(--nim-text-muted)',
+        fontStyle: 'italic',
+        ...(style || {})
+      }}>
+        {children}
+      </blockquote>
+    ),
+    // Tables
+    table: ({ node: _node, children, style, ...props }: any) => (
+      <div style={{ overflowX: 'auto', marginTop: '0.75rem', marginBottom: '0.75rem' }}>
+        <table {...props} style={{
+          width: '100%',
+          borderCollapse: 'collapse',
+          fontSize: '0.875rem',
+          border: '1px solid var(--nim-border)',
+          ...(style || {})
+        }}>
+          {children}
+        </table>
+      </div>
+    ),
+    thead: ({ node: _node, children, style, ...props }: any) => (
+      <thead {...props} style={{
+        backgroundColor: 'var(--nim-bg-secondary)',
+        borderBottom: '2px solid var(--nim-border)',
+        ...(style || {})
+      }}>
+        {children}
+      </thead>
+    ),
+    tbody: ({ node: _node, children, style, ...props }: any) => (
+      <tbody {...props} style={style}>
+        {children}
+      </tbody>
+    ),
+    tr: ({ node: _node, children, style, ...props }: any) => (
+      <tr {...props} style={{
+        borderBottom: '1px solid var(--nim-border)',
+        ...(style || {})
+      }}>
+        {children}
+      </tr>
+    ),
+    th: ({ node: _node, children, style, ...props }: any) => (
+      <th {...props} style={{
+        padding: '0.75rem',
+        textAlign: 'left',
+        fontWeight: 600,
+        color: 'var(--nim-text)',
+        ...(style || {})
+      }}>
+        {children}
+      </th>
+    ),
+    td: ({ node: _node, children, style, ...props }: any) => (
+      <td {...props} style={{
+        padding: '0.75rem',
+        color: 'var(--nim-text)',
+        ...(style || {})
+      }}>
+        {children}
+      </td>
+    ),
+    // Horizontal rule
+    hr: ({ node: _node, style, ...props }: any) => (
+      <hr {...props} style={{
+        border: 'none',
+        borderTop: '1px solid var(--nim-border)',
+        marginTop: '1rem',
+        marginBottom: '1rem',
+        ...(style || {})
+      }} />
+    ),
+    // Strong/Bold
+    strong: ({ node: _node, children, style, ...props }: any) => (
+      <strong {...props} style={{
+        fontWeight: 700,
+        color: 'var(--nim-text)',
+        ...(style || {})
+      }}>
+        {children}
+      </strong>
+    ),
+    // Emphasis/Italic
+    em: ({ node: _node, children, style, ...props }: any) => (
+      <em {...props} style={{
+        fontStyle: 'italic',
+        color: 'var(--nim-text)',
+        ...(style || {})
+      }}>
+        {children}
+      </em>
+    ),
+    // Strikethrough (GFM)
+    del: ({ node: _node, children, style, ...props }: any) => (
+      <del {...props} style={{
+        textDecoration: 'line-through',
+        color: 'var(--nim-text-faint)',
+        ...(style || {})
+      }}>
+        {children}
+      </del>
+    ),
+    // Extension overrides applied last so they can replace any of the
+    // core component handlers above.
+    ...contributions.components,
+  }), [codeBlockPersistKey, trackerReferencePreviewKey, isUser, onOpenFile, contributions.components]);
+
   return (
     <div
       className={`markdown-content text-[0.9375rem] leading-relaxed max-w-full overflow-x-hidden break-words [&>*:first-child]:mt-0 [&>*:last-child]:mb-0 ${isUser ? 'font-medium' : 'font-normal'} ${isSystemMessage ? 'opacity-85 font-mono text-[0.95em]' : ''}`}
@@ -681,438 +1107,10 @@ export const MarkdownRenderer: React.FC<MarkdownRendererProps> = ({
         remarkPlugins={remarkPlugins}
         rehypePlugins={rehypePlugins}
         urlTransform={transcriptUrlTransform}
-        components={{
-          // Code blocks with syntax highlighting
-          code({ node, inline, className, children, isCodeBlock, ...props }: any) {
-            const match = /language-(\w+)/.exec(className || '');
-            const language = match ? match[1] : '';
-            const codeString = String(children).replace(/\n$/, '');
-            const isSingleLine = !codeString.includes('\n');
-            // react-markdown v9+ dropped the `inline` prop, so it's never set;
-            // `isCodeBlock` is injected by the `pre` override below and is the
-            // only reliable signal that this `<code>` came from a ``` fence
-            // rather than a `single-backtick` inline span - used to gate the
-            // hover-visible copy button to fenced blocks only.
-            const isFencedBlock = Boolean(isCodeBlock);
-
-            // True inline code (backticks in text)
-            if (inline) {
-              return (
-                <code
-                  className={className}
-                  style={{
-                    backgroundColor: 'var(--nim-bg-tertiary)',
-                    padding: '0.125rem 0.375rem',
-                    borderRadius: '0.25rem',
-                    fontSize: '0.875em',
-                    fontFamily: 'var(--font-mono, monospace)',
-                    color: 'var(--nim-text)'
-                  }}
-                  {...props}
-                >
-                  {children}
-                </code>
-              );
-            }
-
-            // Only a fenced single-line block carries a copy button, so only it
-            // reserves room on the right for one. Inline spans reach this same
-            // style (the `inline` branch above is dead - react-markdown v9+
-            // never sets the prop) and must keep their tight padding.
-            const reservesCopyButtonRoom = isFencedBlock && isSingleLine;
-            const codeStyle: React.CSSProperties = {
-              backgroundColor: 'var(--nim-bg-tertiary)',
-              // 2rem clears the 20px button plus its 4px inset - reserved
-              // permanently so hovering never resizes the block.
-              padding: reservesCopyButtonRoom
-                ? '0.25rem 2rem 0.25rem 0.5rem'
-                // Keep multiline controls above the text, including when a
-                // long first line scrolls underneath their right-hand edge.
-                : isSingleLine ? '0.25rem 0.5rem' : '2.25rem 0.75rem 0.75rem',
-              borderRadius: isSingleLine ? '0.25rem' : '0.375rem',
-              fontSize: '0.8125rem',
-              lineHeight: isSingleLine ? '1.4' : '1.5',
-              margin: isSingleLine ? 0 : '0.5rem 0'
-            };
-
-            // Code block with language - use syntax highlighting
-            if (language) {
-              const syntaxBlock = (
-                <SyntaxHighlighter
-                  style={{} as any}
-                  customStyle={codeStyle}
-                  language={language}
-                  PreTag="div"
-                  codeTagProps={{
-                    style: {
-                      fontFamily: 'var(--font-mono, monospace)',
-                      fontSize: 'inherit',
-                      background: 'none'
-                    }
-                  }}
-                  {...props}
-                >
-                  {codeString}
-                </SyntaxHighlighter>
-              );
-              if (!isFencedBlock) return syntaxBlock;
-              return isSingleLine
-                ? <CodeBlockContainer codeString={codeString}>{syntaxBlock}</CodeBlockContainer>
-                : (
-                  <OverflowWrapper persistKey={codeBlockPersistKey(node)} codeString={codeString}>
-                    {syntaxBlock}
-                  </OverflowWrapper>
-                );
-            }
-
-            // Code block without language
-            const codeBlock = (
-              <code
-                className={className}
-                style={{
-                  // Fenced blocks fill the row so the copy button has room;
-                  // inline spans must stay inline or they break the sentence.
-                  display: isFencedBlock || !isSingleLine ? 'block' : 'inline-block',
-                  ...codeStyle,
-                  fontFamily: 'var(--font-mono, monospace)',
-                  color: 'var(--nim-text)'
-                }}
-                {...props}
-              >
-                {children}
-              </code>
-            );
-            if (!isFencedBlock) return codeBlock;
-            return isSingleLine
-              ? <CodeBlockContainer codeString={codeString}>{codeBlock}</CodeBlockContainer>
-              : (
-                <OverflowWrapper persistKey={codeBlockPersistKey(node)} codeString={codeString}>
-                  {codeBlock}
-                </OverflowWrapper>
-              );
-          },
-          // Remove the default `<pre>` wrapper - styling is handled in the code
-          // component - but tag the surviving `<code>` child as a fenced block
-          // first. react-markdown only wraps fenced (```) code in `<pre>`;
-          // single-backtick inline code renders bare, so this is the only
-          // reliable way left to tell them apart (see `isFencedBlock` above).
-          pre: ({ children }) => (
-            <>
-              {React.Children.map(children, (child) =>
-                // Only tag component children (the `code` override's output), never a
-                // raw host element - cloning a custom prop onto e.g. a plain `<pre><div>`
-                // from a future plugin would trip React's unrecognized-DOM-prop warning.
-                React.isValidElement(child) && typeof child.type !== 'string'
-                  ? React.cloneElement(child as React.ReactElement<any>, { isCodeBlock: true } as any)
-                  : child
-              )}
-            </>
-          ),
-          // Headings
-          h1: ({ node: _node, children, style, ...props }: any) => (
-            <h1 {...props} style={{
-              fontSize: '1.875rem',
-              fontWeight: 700,
-              marginTop: '1.5rem',
-              marginBottom: '1rem',
-              color: 'var(--nim-text)',
-              borderBottom: '1px solid var(--nim-border)',
-              paddingBottom: '0.5rem',
-              ...(style || {})
-            }}>
-              {children}
-            </h1>
-          ),
-          h2: ({ node: _node, children, style, ...props }: any) => (
-            <h2 {...props} style={{
-              fontSize: '1.5rem',
-              fontWeight: 600,
-              marginTop: '1.25rem',
-              marginBottom: '0.75rem',
-              color: 'var(--nim-text)',
-              ...(style || {})
-            }}>
-              {children}
-            </h2>
-          ),
-          h3: ({ node: _node, children, style, ...props }: any) => (
-            <h3 {...props} style={{
-              fontSize: '1.25rem',
-              fontWeight: 600,
-              marginTop: '1rem',
-              marginBottom: '0.5rem',
-              color: 'var(--nim-text)',
-              ...(style || {})
-            }}>
-              {children}
-            </h3>
-          ),
-          h4: ({ node: _node, children, style, ...props }: any) => (
-            <h4 {...props} style={{
-              fontSize: '1.125rem',
-              fontWeight: 600,
-              marginTop: '1rem',
-              marginBottom: '0.5rem',
-              color: 'var(--nim-text)',
-              ...(style || {})
-            }}>
-              {children}
-            </h4>
-          ),
-          h5: ({ node: _node, children, style, ...props }: any) => (
-            <h5 {...props} style={{
-              fontSize: '1rem',
-              fontWeight: 600,
-              marginTop: '0.75rem',
-              marginBottom: '0.5rem',
-              color: 'var(--nim-text)',
-              ...(style || {})
-            }}>
-              {children}
-            </h5>
-          ),
-          h6: ({ node: _node, children, style, ...props }: any) => (
-            <h6 {...props} style={{
-              fontSize: '0.875rem',
-              fontWeight: 600,
-              marginTop: '0.75rem',
-              marginBottom: '0.5rem',
-              color: 'var(--nim-text)',
-              ...(style || {})
-            }}>
-              {children}
-            </h6>
-          ),
-          // Paragraphs
-          p: ({ node: _node, children, style, ...props }: any) => (
-            <p {...props} style={{
-              marginTop: '0.5rem',
-              marginBottom: '0.5rem',
-              lineHeight: '1.625',
-              color: 'var(--nim-text)',
-              ...(isUser && { whiteSpace: 'pre-wrap' }),
-              ...(style || {})
-            }}>
-              {children}
-            </p>
-          ),
-          // Links
-          a: ({ href, children, node, style, ...props }: any) => {
-            const appActionLink = isAppActionHref(href);
-            // Tracker reference links (`nimbalyst://NIM-123`) render as a live
-            // status chip instead of an anchor.
-            const trackerKey = parseTrackerReferenceHref(href);
-            if (trackerKey) {
-              return (
-                <TrackerReferenceChip
-                  referenceKey={trackerKey}
-                  previewStateKey={trackerReferencePreviewKey(node, trackerKey)}
-                />
-              );
-            }
-            // Session references (a bare session UUID href) render as a live
-            // session chip that resolves the title/phase and opens the session
-            // on click. Autolinked bare UUIDs and author-written UUID links both
-            // land here.
-            const sessionRefId =
-              href && SESSION_UUID_RE.test(href.trim()) ? href.trim() : null;
-            if (sessionRefId) {
-              return <SessionReferenceChip sessionId={sessionRefId} />;
-            }
-            // Paths wrapped by `rehypeAutolinkFilePaths` carry a marker with the
-            // raw match (possibly with a :line:col suffix). They may be
-            // workspace-relative, which the markdown-href resolver rejects, so
-            // resolve them directly here and strip the location suffix before
-            // opening.
-            const autolinkedPath = node?.properties?.dataFilePath as string | undefined;
-            const resolvedAutolink =
-              onOpenFile && autolinkedPath ? parseLineAndColumnSuffix(autolinkedPath) : null;
-            const fileTarget =
-              resolvedAutolink ?? (onOpenFile ? resolveTranscriptFileTargetFromHref(href) : null);
-            const filePath = fileTarget?.path ?? null;
-            const isInternalLink = Boolean(filePath) || appActionLink;
-            return (
-              <a
-                {...props}
-                href={href}
-                target={isInternalLink ? undefined : '_blank'}
-                rel={isInternalLink ? undefined : 'noopener noreferrer'}
-                onClick={(event) => {
-                  if (appActionLink) {
-                    event.preventDefault();
-                    event.stopPropagation();
-                    dispatchAppActionHref(href);
-                    return;
-                  }
-                  if (filePath && onOpenFile) {
-                    event.preventDefault();
-                    onOpenFile(filePath, transcriptFileLocation(fileTarget));
-                  }
-                }}
-                style={{
-                  color: 'var(--nim-primary)',
-                  textDecoration: 'underline',
-                  cursor: 'pointer',
-                  ...(style || {})
-                }}
-              >
-                {children}
-              </a>
-            );
-          },
-          // Lists
-          ul: ({ node: _node, children, style, ...props }: any) => (
-            <ul {...props} style={{
-              marginTop: '0.5rem',
-              marginBottom: '0.5rem',
-              paddingLeft: '1.5rem',
-              listStyleType: 'disc',
-              color: 'var(--nim-text)',
-              ...(style || {})
-            }}>
-              {children}
-            </ul>
-          ),
-          ol: ({ node: _node, children, style, ...props }: any) => (
-            <ol {...props} style={{
-              marginTop: '0.5rem',
-              marginBottom: '0.5rem',
-              paddingLeft: '1.5rem',
-              listStyleType: 'decimal',
-              color: 'var(--nim-text)',
-              ...(style || {})
-            }}>
-              {children}
-            </ol>
-          ),
-          li: ({ node: _node, children, style, ...props }: any) => (
-            <li {...props} style={{
-              marginTop: '0.25rem',
-              marginBottom: '0.25rem',
-              lineHeight: '1.625',
-              ...(style || {})
-            }}>
-              {children}
-            </li>
-          ),
-          // Blockquotes
-          blockquote: ({ node: _node, children, style, ...props }: any) => (
-            <blockquote {...props} style={{
-              borderLeft: '4px solid var(--nim-border)',
-              paddingLeft: '1rem',
-              marginLeft: '0',
-              marginTop: '0.75rem',
-              marginBottom: '0.75rem',
-              color: 'var(--nim-text-muted)',
-              fontStyle: 'italic',
-              ...(style || {})
-            }}>
-              {children}
-            </blockquote>
-          ),
-          // Tables
-          table: ({ node: _node, children, style, ...props }: any) => (
-            <div style={{ overflowX: 'auto', marginTop: '0.75rem', marginBottom: '0.75rem' }}>
-              <table {...props} style={{
-                width: '100%',
-                borderCollapse: 'collapse',
-                fontSize: '0.875rem',
-                border: '1px solid var(--nim-border)',
-                ...(style || {})
-              }}>
-                {children}
-              </table>
-            </div>
-          ),
-          thead: ({ node: _node, children, style, ...props }: any) => (
-            <thead {...props} style={{
-              backgroundColor: 'var(--nim-bg-secondary)',
-              borderBottom: '2px solid var(--nim-border)',
-              ...(style || {})
-            }}>
-              {children}
-            </thead>
-          ),
-          tbody: ({ node: _node, children, style, ...props }: any) => (
-            <tbody {...props} style={style}>
-              {children}
-            </tbody>
-          ),
-          tr: ({ node: _node, children, style, ...props }: any) => (
-            <tr {...props} style={{
-              borderBottom: '1px solid var(--nim-border)',
-              ...(style || {})
-            }}>
-              {children}
-            </tr>
-          ),
-          th: ({ node: _node, children, style, ...props }: any) => (
-            <th {...props} style={{
-              padding: '0.75rem',
-              textAlign: 'left',
-              fontWeight: 600,
-              color: 'var(--nim-text)',
-              ...(style || {})
-            }}>
-              {children}
-            </th>
-          ),
-          td: ({ node: _node, children, style, ...props }: any) => (
-            <td {...props} style={{
-              padding: '0.75rem',
-              color: 'var(--nim-text)',
-              ...(style || {})
-            }}>
-              {children}
-            </td>
-          ),
-          // Horizontal rule
-          hr: ({ node: _node, style, ...props }: any) => (
-            <hr {...props} style={{
-              border: 'none',
-              borderTop: '1px solid var(--nim-border)',
-              marginTop: '1rem',
-              marginBottom: '1rem',
-              ...(style || {})
-            }} />
-          ),
-          // Strong/Bold
-          strong: ({ node: _node, children, style, ...props }: any) => (
-            <strong {...props} style={{
-              fontWeight: 700,
-              color: 'var(--nim-text)',
-              ...(style || {})
-            }}>
-              {children}
-            </strong>
-          ),
-          // Emphasis/Italic
-          em: ({ node: _node, children, style, ...props }: any) => (
-            <em {...props} style={{
-              fontStyle: 'italic',
-              color: 'var(--nim-text)',
-              ...(style || {})
-            }}>
-              {children}
-            </em>
-          ),
-          // Strikethrough (GFM)
-          del: ({ node: _node, children, style, ...props }: any) => (
-            <del {...props} style={{
-              textDecoration: 'line-through',
-              color: 'var(--nim-text-faint)',
-              ...(style || {})
-            }}>
-              {children}
-            </del>
-          ),
-          // Extension overrides applied last so they can replace any of the
-          // core component handlers above.
-          ...contributions.components,
-        }}
+        components={components}
       >
         {processedContent}
       </ReactMarkdown>
     </div>
   );
-};
+});

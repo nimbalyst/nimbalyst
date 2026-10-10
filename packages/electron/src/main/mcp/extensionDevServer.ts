@@ -828,7 +828,7 @@ function createExtensionDevMcpServer(
         {
           name: "extension_build",
           description:
-            "Build a Nimbalyst extension project. Runs `npm run build` in the extension directory and returns the build output.",
+            "Build a Nimbalyst extension project. Runs the package `build` script in the extension directory (pnpm for pnpm projects, npm otherwise) and returns the build output.",
           inputSchema: {
             type: "object",
             properties: {

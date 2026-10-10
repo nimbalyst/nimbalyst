@@ -36,6 +36,7 @@ import {
   useInteractions,
   useRole,
 } from '@floating-ui/react';
+import { windowControlsClearance } from '@nimbalyst/runtime/ui/floating/windowControlsClearance';
 import type {
   FeedbackAskArtifact,
   FeedbackRequestLifecycleStatus,
@@ -440,7 +441,7 @@ const LifecycleMenu: React.FC<{
     open,
     onOpenChange: setOpen,
     placement: 'bottom-end',
-    middleware: [offset(6), flip({ padding: 8 }), shift({ padding: 8 })],
+    middleware: [offset(6), flip({ padding: 8 }), shift({ padding: 8 }), windowControlsClearance()],
   });
   const { getReferenceProps, getFloatingProps } = useInteractions([
     useDismiss(context),

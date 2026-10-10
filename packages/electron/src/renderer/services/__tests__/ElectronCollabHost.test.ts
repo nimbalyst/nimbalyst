@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { store } from '@nimbalyst/runtime/store';
 import { parseTrackerDeepLink } from '../../../shared/trackerDeepLinks';
 import { historyDialogFileAtom } from '../../store/atoms/historyDialog';
+import { buildCollabUri } from '@nimbalyst/collab-protocol';
 
 const personalStateMocks = vi.hoisted(() => ({
   getForScope: vi.fn(),
@@ -23,6 +24,20 @@ vi.mock('../ErrorNotificationService', () => ({
 }));
 vi.mock('../orgSettingsClient', () => ({ applyOrgSettingsBroadcast: vi.fn() }));
 vi.mock('../conversationDirectoryClient', () => ({ applyConversationDescriptorBroadcast: vi.fn() }));
+const dataSources = vi.hoisted(() => [] as Array<{ disposed: boolean }>);
+vi.mock('../ElectronCollabDocumentsDataSource', () => ({
+  ElectronCollabDocumentsDataSource: class {
+    disposed = false;
+    constructor() { dataSources.push(this); }
+    async snapshot() {
+      if (this.disposed) throw new Error('Data source has been disposed');
+      return { items: [], containers: [] };
+    }
+    subscribe() { return () => undefined; }
+    status() { return 'connected'; }
+    dispose() { this.disposed = true; }
+  },
+}));
 
 import { ElectronCollabHost } from '../ElectronCollabHost';
 
@@ -216,8 +231,14 @@ describe('ElectronCollabHost personal state', () => {
 
     host.openArtifact(ref, 'history');
 
-    expect(openArtifact).toHaveBeenCalledWith(ref, 'history');
+    expect(openArtifact).toHaveBeenCalledWith(ref, 'history', undefined);
     expect(store.get(historyDialogFileAtom)).toBe('collab://org:org-1:doc:doc-1');
+
+    // A typed page's body and a type page's prose are rooms of their own.
+    host.openArtifact({ kind: 'tracker', scope, trackerId: 'item-1' }, 'history');
+    expect(store.get(historyDialogFileAtom)).toBe(buildCollabUri('org-1', 'tracker-content/item-1'));
+    host.openArtifact({ kind: 'type', scope, typeId: 'module' }, 'history');
+    expect(store.get(historyDialogFileAtom)).toBe(buildCollabUri('org-1', 'type-page:module'));
   });
 
   // A window opened before sign-in resolves once, fails non-retryably, and the
@@ -250,6 +271,56 @@ describe('ElectronCollabHost personal state', () => {
       scopeKey: '/workspace/signed-out',
       orgId: 'org-1',
     });
+  });
+
+  // Hosts are window singletons but a docs session is per mount: CollabMode
+  // remounting after a renderer error disposed the source through the session
+  // and the next session got the same disposed instance ("Data source has been
+  // disposed") until the window reloaded.
+  it('gives a session created after dispose a live data source', async () => {
+    dataSources.length = 0;
+    const host = new ElectronCollabHost({ scopeKey: '/workspace/remount' });
+    const source = host.documents.dataSource;
+
+    await source.snapshot();
+    source.dispose();
+    await expect(source.snapshot()).resolves.toEqual({ items: [], containers: [] });
+    expect(dataSources.map((s) => s.disposed)).toEqual([true, false]);
+
+    // Disposed while the source is still being created: the late source must
+    // not replace the one the next session gets.
+    const pending = source.snapshot();
+    host.invalidateScope();
+    await pending.catch(() => undefined);
+    await source.snapshot();
+    expect(dataSources.filter((s) => !s.disposed)).toHaveLength(1);
+    expect(host.peekInProcessDocumentsDataSource()).toBe(dataSources.find((s) => !s.disposed));
+  });
+
+  // An unmounted session's request must be cancelled, not carried into the
+  // next generation, or it creates and connects a source nobody owns.
+  it('drops a request whose session was disposed while the scope resolved', async () => {
+    dataSources.length = 0;
+    let finishResolve: () => void = () => undefined;
+    const config = {
+      success: true,
+      config: { orgId: 'org-1', teamProjectId: 'project-1', serverUrl: 'wss://example.test' },
+    };
+    (window as any).electronAPI.documentSync.resolveIndexConfig = vi.fn()
+      .mockImplementationOnce(() => new Promise((resolve) => { finishResolve = () => resolve(config); }))
+      .mockResolvedValue(config);
+    const host = new ElectronCollabHost({ scopeKey: '/workspace/pending' });
+    const source = host.documents.dataSource;
+
+    const pending = source.snapshot();
+    source.dispose();
+    finishResolve();
+
+    await expect(pending).rejects.toThrow('disposed');
+    expect(dataSources).toHaveLength(0);
+
+    await source.snapshot();
+    expect(dataSources).toHaveLength(1);
   });
 
   // Main answers whether a failed lookup can be retried; the renderer used to

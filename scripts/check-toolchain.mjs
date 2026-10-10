@@ -1,10 +1,10 @@
 /**
  * GUI git clients do not inherit a shell's version manager: an IDE launched
  * from the Dock resolves node through the manager's `default` alias, which can
- * be older than the version the terminal uses. With engine-strict=true that
- * surfaces as an `npm ci` EBADENGINE failure, which the pre-push hook used to
- * report as lockfile drift (2026-08-01: WebStorm ran the hook under node 22
- * and blamed package-lock.json, which was in sync).
+ * be older than the version the terminal uses. With engineStrict that surfaces
+ * as an install failure, which the pre-push hook used to report as lockfile
+ * drift (2026-08-01: WebStorm ran the hook under node 22 and blamed the
+ * lockfile, which was in sync).
  */
 import { readFileSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
@@ -16,10 +16,10 @@ export function minimumMajor(range) {
 }
 
 /** Returns one message per engine the running toolchain is too old for. */
-export function findToolchainProblems({ engines = {}, node, npm } = {}) {
+export function findToolchainProblems({ engines = {}, node, pnpm } = {}) {
   return [
     ['node', node],
-    ['npm', npm],
+    ['pnpm', pnpm],
   ].flatMap(([name, actual]) => {
     const min = minimumMajor(engines[name]);
     if (min === null || !actual) return [];
@@ -34,11 +34,11 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
   const problems = findToolchainProblems({
     engines,
     node: process.versions.node,
-    npm: process.argv[2],
+    pnpm: process.argv[2],
   });
 
   if (problems.length > 0) {
-    console.error('[check-toolchain] ERROR: wrong Node/npm toolchain for this repository.');
+    console.error('[check-toolchain] ERROR: wrong Node/pnpm toolchain for this repository.');
     for (const problem of problems) console.error(`[check-toolchain]   ${problem}`);
     console.error(`[check-toolchain] node resolved to: ${process.execPath}`);
     console.error('[check-toolchain] This is a PATH problem, not a lockfile problem. GUI git clients');

@@ -249,7 +249,7 @@ export const TranscriptEmbeddedFileCard: React.FC<TranscriptEmbeddedFileCardProp
                 * affordance. */}
               <div
                 className="transcript-embedded-file__canvas h-full overflow-hidden"
-                {...(isActive ? {} : { inert: '' as unknown as boolean })}
+                {...(isActive ? {} : { inert: true })}
               >
                 <React.Suspense
                   fallback={

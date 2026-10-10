@@ -91,6 +91,9 @@ struct NimbalystAppMain: App {
                         NSLog("[onOpenURL] Received URL: \(url.absoluteString.prefix(120))")
                         handleDeepLink(url)
                     }
+                    .onContinueUserActivity(NSUserActivityTypeBrowsingWeb) { activity in
+                        if let url = activity.webpageURL { handleUniversalLink(url) }
+                    }
             }
         }
         .onChange(of: scenePhase) { _, newPhase in
@@ -127,8 +130,24 @@ struct NimbalystAppMain: App {
             // instead of a second path that has to be kept in step with it.
             NSLog("[DeepLink] Opening session \(sessionId)")
             NotificationManager.shared.pendingSessionId = sessionId
+        case .console(let route):
+            ConsoleLinkInbox.shared.open(route)
+        case .consolePersonal:
+            ConsoleLinkInbox.shared.personalPageRequested = true
         case .unsupported:
             NSLog("[DeepLink] Ignored: URL is not allowlisted")
+        }
+    }
+
+    /// `applinks:console.nimbalyst.com`: a team page opens in Pages. With no
+    /// signed-in account there is nothing to show it with, so it goes to Safari.
+    private func handleUniversalLink(_ url: URL) {
+        guard appState.isPaired, appState.authManager.isAuthenticated else {
+            UIApplication.shared.open(url)
+            return
+        }
+        if !ConsoleLinkInbox.shared.open(url) {
+            UIApplication.shared.open(url)
         }
     }
 }

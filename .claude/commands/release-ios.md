@@ -78,7 +78,7 @@ Use today's date in `YYYY-MM-DD`.
 ### 7. Rebuild the iOS transcript bundle
 
 ```bash
-npm run ios:build:transcript
+pnpm run ios:build:transcript
 ```
 
 Then copy the output into the Xcode resources directory (these files are gitignored but the archive expects them in place):

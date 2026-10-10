@@ -5,12 +5,13 @@ import path from 'node:path';
 import test from 'node:test';
 import {
   expandWorkspacePatterns,
-  npmSpawnConfig,
+  orderForProducers,
   runPool,
   runScriptIn,
   selectWorkspaces,
 } from '../run-workspace-script.mjs';
 import { resolvePrepushBase } from '../resolve-prepush-base.mjs';
+import { packageManagerSpawnConfig } from '../package-manager.mjs';
 
 test('checks fork pushes against canonical upstream main', () => {
   const calls = [];
@@ -32,15 +33,15 @@ test('falls back to origin main when upstream is not configured', () => {
   assert.equal(base, 'fork-base');
 });
 
-test('launches the Windows npm shim through cmd.exe', () => {
-  assert.deepEqual(npmSpawnConfig('win32', { ComSpec: 'C:\\Windows\\cmd.exe' }), {
+test('launches the Windows pnpm shim through cmd.exe', () => {
+  assert.deepEqual(packageManagerSpawnConfig('win32', { ComSpec: 'C:\\Windows\\cmd.exe' }), {
     command: 'C:\\Windows\\cmd.exe',
-    argsPrefix: ['/d', '/s', '/c', 'npm.cmd'],
+    argsPrefix: ['/d', '/s', '/c', 'pnpm.cmd'],
   });
-  assert.deepEqual(npmSpawnConfig('linux'), { command: 'npm', argsPrefix: [] });
+  assert.deepEqual(packageManagerSpawnConfig('linux'), { command: 'pnpm', argsPrefix: [] });
 });
 
-test('runs an npm script in a workspace', async t => {
+test('runs a package script in a workspace', async t => {
   const rootDir = await mkdtemp(path.join(tmpdir(), 'run-workspace-script-'));
   t.after(() => rm(rootDir, { recursive: true, force: true }));
   await mkdir(path.join(rootDir, 'fixture'));
@@ -75,6 +76,17 @@ test('keeps only workspaces defining the script', () => {
     selectWorkspaces(Object.keys(manifests), 'typecheck', dir => manifests[dir]),
     ['packages/electron'],
   );
+});
+
+test('consumers of an output producer wait for it, and producers start first', () => {
+  const manifests = {
+    'packages/electron': { name: '@nimbalyst/electron' },
+    'packages/wiki-web': { name: '@nimbalyst/wiki-web', devDependencies: { '@nimbalyst/collab-bundle': 'workspace:*' } },
+    'packages/collab-bundle': { name: '@nimbalyst/collab-bundle' },
+  };
+  const { ordered, waitsFor } = orderForProducers(Object.keys(manifests), dir => manifests[dir]);
+  assert.deepEqual(ordered, ['packages/collab-bundle', 'packages/electron', 'packages/wiki-web']);
+  assert.deepEqual([...waitsFor], [['packages/wiki-web', ['packages/collab-bundle']]]);
 });
 
 test('pool runs every item, respects the limit, and preserves input order', async () => {

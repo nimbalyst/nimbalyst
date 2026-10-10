@@ -1,9 +1,12 @@
-import { describe, expect, it, beforeEach, afterEach } from 'vitest';
+// @vitest-environment node
+import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
 import simpleGit from 'simple-git';
 import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
 import { GitWorktreeService, WorkspaceHasNoCommitsError } from '../GitWorktreeService';
+import { gitOperationLock } from '../GitOperationLock';
+import * as operationLog from '../GitOperationLogService';
 import { assertGitSandbox, gitSandboxEnv } from '../testSupport/gitTestSandbox';
 
 describe('gitSandboxEnv', () => {
@@ -195,5 +198,46 @@ describe('GitWorktreeService.getChangedFiles untracked-directory expansion', () 
     // The embedded repo owns its own untracked file; the outer worktree must
     // not claim it.
     expect(paths).not.toContain('embedded-repo/inner.ts');
+  });
+});
+
+describe('GitWorktreeService.rebaseFromBase input boundary', () => {
+  it('rejects malformed cwd/base operands before lock, activity, preflight or storage', async () => {
+    const service = new GitWorktreeService();
+    const lock = vi.spyOn(gitOperationLock, 'withLock');
+    const activity = vi.spyOn(operationLog, 'recordGitActivity');
+    const journal = vi.spyOn(operationLog, 'getGitOperationLogService');
+    const preflight = vi.spyOn(service, 'checkGitState');
+    try {
+      for (const value of [undefined, null, false, 0, {}, [], '', 'a\0b', '-', '--continue']) {
+        await expect(service.rebaseFromBase('/fixture', value as string)).rejects.toThrow(/baseBranch/);
+      }
+      for (const value of [undefined, null, false, 0, {}, [], '', 'a\0b']) {
+        await expect(service.rebaseFromBase(value as string, 'main')).rejects.toThrow(/worktreePath/);
+      }
+      expect(lock).not.toHaveBeenCalled();
+      expect(activity).not.toHaveBeenCalled();
+      expect(journal).not.toHaveBeenCalled();
+      expect(preflight).not.toHaveBeenCalled();
+    } finally {
+      vi.restoreAllMocks();
+    }
+  });
+
+  it('passes benign operands unchanged to the existing locked activity', async () => {
+    const service = new GitWorktreeService();
+    const result = { success: true };
+    const lock = vi.spyOn(gitOperationLock, 'withLock').mockImplementation(async (_path, _name, fn) => fn());
+    const activity = vi.spyOn(operationLog, 'recordGitActivity').mockResolvedValue(result);
+    vi.spyOn(operationLog, 'getGitOperationLogService').mockReturnValue({} as operationLog.GitOperationLogService);
+    try {
+      for (const baseBranch of ['HEAD~1', 'HEAD^', '@{-1}', 'refs/heads/topic', 'origin/topic', 'topic/日本語']) {
+        await expect(service.rebaseFromBase('-relative repo', baseBranch)).resolves.toBe(result);
+        expect(lock).toHaveBeenLastCalledWith('-relative repo', 'rebaseFromBase', expect.any(Function));
+        expect(activity).toHaveBeenLastCalledWith({}, '-relative repo', ['rebase', baseBranch], expect.any(Function), expect.any(Function));
+      }
+    } finally {
+      vi.restoreAllMocks();
+    }
   });
 });

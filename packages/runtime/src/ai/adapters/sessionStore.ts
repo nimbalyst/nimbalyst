@@ -26,6 +26,10 @@ export interface SessionMeta {
   worktreeId: string | null;
   parentSessionId: string | null;
   childCount: number;
+  /** All descendants, independent of direct child count. */
+  descendantCount?: number;
+  /** Depth relative to the requested tree root; root is zero. */
+  depth?: number;
   uncommittedCount: number;
   createdAt: number;
   updatedAt: number;
@@ -79,6 +83,14 @@ export interface CreateSessionPayload {
   branchedFromSessionId?: string;  // ID of the session this was forked from
   branchPointMessageId?: number;  // Message ID where this branch diverged
   branchedAt?: number;  // Timestamp when the branch was created
+  /** Session already has a caller-assigned name; suppresses in-band self-naming. */
+  hasBeenNamed?: boolean;
+  /**
+   * Initial `metadata` blob, written in the same insert as the row. Anything a
+   * reader must never see missing (e.g. `sessionOwner`, `sessionDirective`,
+   * `notifyParent`) belongs here rather than in a follow-up updateMetadata.
+   */
+  metadata?: Record<string, unknown>;
 }
 
 /**
@@ -94,6 +106,9 @@ export interface PersistedDocumentState {
 
 export interface UpdateSessionMetadataPayload
   extends Omit<Partial<CreateSessionPayload>, 'providerSessionId'> {
+  /** Local optimistic guards for a move; never persisted or sent over sync. */
+  expectedParentSessionId?: string | null;
+  expectedCreatedBySessionId?: string | null;
   /**
    * Widened from `string` so a clear is expressible. Stores guard every column
    * with `!== undefined`, so `undefined` means "leave this column alone" --
@@ -111,6 +126,8 @@ export interface UpdateSessionMetadataPayload
   canonicalTransformStatus?: 'pending' | 'complete' | 'error' | null;
   canonicalLastTransformedAt?: Date | null;
   canonicalLastRawMessageId?: number | null;
+  /** Local-only remote authority context; never serialized or stored. */
+  hierarchySync?: { source: 'remote'; isCurrent: () => boolean };
 }
 
 export interface SessionListOptions {
@@ -122,7 +139,27 @@ export interface SessionSearchOptions extends SessionListOptions {
   direction?: 'all' | 'input' | 'output';
 }
 
+export interface HierarchySyncIntent {
+  sessionId: string;
+  revision: string;
+  parentSessionId: string | null;
+  createdBySessionId: string | null;
+}
+export interface RemoteHierarchySnapshotRow {
+  sessionId: string;
+  parentSessionId: string | null;
+  createdBySessionId?: string | null;
+}
+export interface HierarchySnapshotResult extends RemoteHierarchySnapshotRow {
+  accepted: boolean;
+  createdBySessionId: string | null;
+  error?: string;
+}
+
 export interface SessionStore {
+  listPendingHierarchyIntents?(): Promise<HierarchySyncIntent[]>;
+  acknowledgeHierarchyIntent?(id: string, revision: string, parent: string | null, manager: string | null): Promise<boolean>;
+  applyRemoteHierarchySnapshot?(rows: RemoteHierarchySnapshotRow[], isCurrent: () => boolean): Promise<HierarchySnapshotResult[]>;
   ensureReady(): Promise<void>;
   create(payload: CreateSessionPayload): Promise<void>;
   updateMetadata(sessionId: string, metadata: UpdateSessionMetadataPayload): Promise<void>;

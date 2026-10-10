@@ -10,11 +10,12 @@ export const ExitCode = {
   SCHEMA_INCOMPATIBLE: 4,
   WRITE_NOT_PERMITTED: 5,
   /**
-   * `nim wiki` only: the item's fields were written but its page text failed.
-   * Not retryable as-is: re-sending the call writes the fields again and hits
-   * the same page-text failure. Fix the text, or edit the page directly.
+   * Retired with the first `nim wiki` commands (fields written, page text failed); nothing
+   * returns it now. Kept so the number is never given another meaning.
    */
   PARTIAL_WRITE: 6,
+  /** A write based on a version that is no longer current (`nim wiki write --expected-version`). */
+  CONFLICT: 7,
 } as const;
 
 export type ExitCodeValue = (typeof ExitCode)[keyof typeof ExitCode];

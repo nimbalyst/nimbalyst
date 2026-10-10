@@ -13,7 +13,6 @@
  * covered by `LexicalExtension.nodes`, `register`, and `dependencies`.
  */
 
-import { useSyncExternalStore } from 'react';
 import type { Transformer } from '@lexical/markdown';
 
 import type {
@@ -122,16 +121,4 @@ export function subscribeToExtensionContributions(
   return () => {
     listeners.delete(listener);
   };
-}
-
-/**
- * Subscribe to the user-command list. The snapshot reference changes
- * whenever any contributor's user commands change.
- */
-export function useExtensionUserCommands(): ReadonlyArray<UserCommand> {
-  return useSyncExternalStore(
-    subscribeToExtensionContributions,
-    getAllExtensionUserCommands,
-    getAllExtensionUserCommands,
-  );
 }

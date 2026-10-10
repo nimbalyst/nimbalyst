@@ -13,9 +13,10 @@
  */
 
 import { BaseAIProvider } from '../AIProvider';
-import { AIProviderType, ProviderCapabilities } from '../types';
+import { AIProviderType, ProviderCapabilities, type DocumentContext } from '../types';
 import { AgentCapabilities, BUILTIN_AGENT_CAPABILITIES } from '../agentCapabilities';
 import { AISessionsRepository } from '../../../storage/repositories/AISessionsRepository';
+import { FrozenSessionDirectives } from './sessionDirective';
 import type { MetaAgentWorkflowPreset } from '../../prompt';
 import {
   ProviderPermissionMixin,
@@ -311,6 +312,32 @@ export abstract class BaseAgentProvider extends BaseAIProvider {
     } catch {
       return 'standard';
     }
+  }
+
+  private readonly sessionDirectives = new FrozenSessionDirectives();
+
+  /** `metadata.sessionDirective`, read on the session's first turn and frozen. */
+  protected getSessionDirective(sessionId?: string): Promise<string | undefined> {
+    return this.sessionDirectives.get(sessionId);
+  }
+
+  private readonly outOfBandNamingBySession = new Map<string, boolean>();
+
+  /**
+   * Whether the session was named by its caller (spawn_session, an
+   * extension-owned session) before its first turn, so the naming prompt must
+   * tell the agent not to set `name`. Frozen at the first turn: an unnamed
+   * session flips hasBeenNamed once it names itself, and the system prompt is
+   * re-sent every turn, so a live read would change it mid-session. Same
+   * invariant as ClaudeCodeProvider's outOfBandNamingDecision.
+   */
+  protected isNamedOutOfBand(sessionId: string | undefined, documentContext?: DocumentContext): boolean {
+    const live = documentContext?.hasBeenNamed === true;
+    if (!sessionId) return live;
+    const frozen = this.outOfBandNamingBySession.get(sessionId);
+    if (frozen !== undefined) return frozen;
+    this.outOfBandNamingBySession.set(sessionId, live);
+    return live;
   }
 
   protected async getWorkflowPreset(sessionId?: string): Promise<MetaAgentWorkflowPreset> {

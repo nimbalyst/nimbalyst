@@ -52,6 +52,11 @@ export function resolvePrompt(sessionId: string, promptId: string): void {
   }
 }
 
+/** True while this specific prompt is open (registered and not yet settled). */
+export function isPromptOpen(sessionId: string, promptId: string): boolean {
+  return openPromptIdsBySession.get(sessionId)?.has(promptId) === true;
+}
+
 /** True while the session is still waiting on at least one prompt. */
 export function hasOpenPrompts(sessionId: string): boolean {
   return (openPromptIdsBySession.get(sessionId)?.size ?? 0) > 0;

@@ -23,6 +23,7 @@
  * different one on desktop.
  */
 import React from 'react';
+import type { TeamMemberOption } from '../../../runtime/src/plugins/TrackerPlugin/components/TrackerFieldEditor';
 import type { TrackerDataSource, TrackerIdentity, TrackerViewMode } from '../trackers/index';
 import { type TrackerDataStore } from './trackerDataStore';
 export interface TrackerUICapabilities {
@@ -46,15 +47,18 @@ export interface TrackersUIContextValue {
     /** Who "me" is, for assignment-based queues. Comes from the team JWT in the browser. */
     identity: TrackerIdentity | null;
     capabilities: TrackerUICapabilities;
+    /** Who a `user` field can name. Empty without a team, and people cells fall back to free text. */
+    teamMembers: readonly TeamMemberOption[];
 }
 export interface TrackersUIProviderProps {
     /** Optional: a host may mount navigation or a card before a room is joined. */
     dataSource?: TrackerDataSource | null;
     identity: TrackerIdentity | null;
     capabilities?: TrackerUICapabilities;
+    teamMembers?: readonly TeamMemberOption[];
     children: React.ReactNode;
 }
-export declare function TrackersUIProvider({ dataSource, identity, capabilities, children, }: TrackersUIProviderProps): React.JSX.Element;
+export declare function TrackersUIProvider({ dataSource, identity, capabilities, teamMembers, children, }: TrackersUIProviderProps): React.JSX.Element;
 export declare function useTrackersUI(): TrackersUIContextValue;
 /**
  * Deliberately non-throwing, and deliberately closed: a leaf rendered with no
@@ -63,5 +67,6 @@ export declare function useTrackersUI(): TrackersUIContextValue;
  * mount it rather than of this file.
  */
 export declare function useTrackerUICapabilities(): TrackerUICapabilities;
+export declare function useTrackersUITeamMembers(): readonly TeamMemberOption[];
 export declare function useTrackerDataSourceOrThrow(): TrackerDataSource;
 export declare function useTrackerDataStoreOrThrow(): TrackerDataStore;

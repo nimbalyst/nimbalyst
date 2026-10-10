@@ -178,7 +178,9 @@ function createIslandWindow(): BrowserWindow {
   // dark 760x460 slab over the top of the screen on every theme change (#4817).
   markWindowTransparent(window);
 
-  window.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true });
+  // `skipTransformProcessType` keeps Electron from calling DockHide(), which
+  // `visibleOnFullScreen` otherwise does on macOS (see TrayPanelWindow).
+  window.setVisibleOnAllWorkspaces(true, { visibleOnFullScreen: true, skipTransformProcessType: true });
   window.setIgnoreMouseEvents(true, { forward: true });
 
   screen.on('display-metrics-changed', handleDisplayChange);
@@ -230,10 +232,10 @@ function createIslandWindow(): BrowserWindow {
     // see `requestInit`. Pushing here would land before React subscribes.
   }
 
-  // The tray panel found that creating a window with this shape can demote the
-  // app's activation policy, which strips the Dock icon and the Cmd+Tab entry
-  // for the whole app. Setting a policy rebuilds the Dock tile and discards the
-  // runtime icon, so the two calls belong together.
+  // Backstop against anything else demoting the app's activation policy, which
+  // strips the Dock icon and the Cmd+Tab entry for the whole app. Setting a
+  // policy rebuilds the Dock tile and discards the runtime icon, so the two
+  // calls belong together.
   if (process.platform === 'darwin') {
     app.setActivationPolicy('regular');
     applyDockIcon();

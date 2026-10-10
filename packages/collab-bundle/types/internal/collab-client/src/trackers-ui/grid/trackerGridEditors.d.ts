@@ -10,6 +10,7 @@
  */
 import type { EditorCtr, EditCell } from '@revolist/revogrid';
 import type { CellEditorDescriptor } from '../../../../runtime/src/plugins/TrackerPlugin/components/trackerCellEditors';
+import type { TeamMemberOption } from '../../../../runtime/src/plugins/TrackerPlugin/components/TrackerFieldEditor';
 /** A tracker item the relationship editor can target. */
 export interface RelationshipCandidate {
     itemId: string;
@@ -20,6 +21,8 @@ export interface RelationshipCandidate {
 export interface TrackerEditorContext {
     /** Candidates for relationship cells, narrowed by the field's target types. */
     relationshipCandidates?: () => RelationshipCandidate[];
+    /** Who a `user` cell can name; without any, the cell is free text. */
+    teamMembers?: () => readonly TeamMemberOption[];
 }
 /**
  * Shared key handling: Enter commits and advances one row, Tab/Shift+Tab commit

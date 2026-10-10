@@ -90,6 +90,8 @@ import { setWindowModeAtom } from '../../store/atoms/windowMode';
 import { defaultAgentModelAtom, worktreesFeatureAvailableAtom } from '../../store/atoms/appSettings';
 import { ModelIdentifier } from '@nimbalyst/runtime/ai/server/types';
 import { store } from '../../store';
+import { createTrackerItem, isLocalWikiRecord } from '../../services/localWikiTrackerRecords';
+import { deleteLocalWikiItem, refuseLocalWikiArchive } from '../../services/localWikiTrackerWrites';
 import { buildTrackerTagOptions } from './trackerTagFilterUtils';
 import {
   filterTrackerItems,
@@ -111,6 +113,7 @@ import {
 } from './trackerSessionLaunch';
 import { trackTeamAnalyticsEvent } from '../../utils/teamAnalytics';
 import { TrackerQuickAddOverlay } from './TrackerQuickAddOverlay';
+import { confirmTrackerItemDelete } from './confirmTrackerItemDelete';
 import { orgPresenceAtomFamily } from '../../store/atoms/teamInbox';
 import { gitStatusAtom } from '../../store/atoms/gitOperations';
 import type { TeamMemberOption } from '@nimbalyst/runtime/plugins/TrackerPlugin/components/TrackerFieldEditor';
@@ -859,6 +862,7 @@ export const TrackerMainView: React.FC<TrackerMainViewProps> = ({
   }, [documentItemId, setItemView]);
 
   const handleArchiveItem = useCallback(async (itemId: string, archive: boolean) => {
+    if (refuseLocalWikiArchive([store.get(trackerItemsMapAtom).get(itemId)]).length > 0) return;
     try {
       const result = await window.electronAPI.documentService.archiveTrackerItem({ itemId, archive });
       if (!result.success) {
@@ -870,6 +874,11 @@ export const TrackerMainView: React.FC<TrackerMainViewProps> = ({
   }, []);
 
   const handleDeleteItem = useCallback(async (itemId: string) => {
+    const wikiRecord = store.get(trackerItemsMapAtom).get(itemId);
+    if (wikiRecord && isLocalWikiRecord(wikiRecord)) {
+      if (await deleteLocalWikiItem(wikiRecord) && selectedItemId === itemId) setModeLayout({ selectedItemId: null });
+      return;
+    }
     try {
       const result = await window.electronAPI.documentService.deleteTrackerItem({ itemId });
       if (result.success) {
@@ -887,6 +896,11 @@ export const TrackerMainView: React.FC<TrackerMainViewProps> = ({
   /** Bulk delete for multi-select context menu */
   const handleDeleteItems = useCallback(async (itemIds: string[]) => {
     for (const itemId of itemIds) {
+      const wikiRecord = store.get(trackerItemsMapAtom).get(itemId);
+      if (wikiRecord && isLocalWikiRecord(wikiRecord)) {
+        if (await deleteLocalWikiItem(wikiRecord) && selectedItemId === itemId) setModeLayout({ selectedItemId: null });
+        continue;
+      }
       try {
         await window.electronAPI.documentService.deleteTrackerItem({ itemId });
         if (selectedItemId === itemId) {
@@ -940,7 +954,10 @@ export const TrackerMainView: React.FC<TrackerMainViewProps> = ({
 
   /** Bulk archive for multi-select context menu */
   const handleArchiveItems = useCallback(async (itemIds: string[], archive: boolean) => {
+    const items = store.get(trackerItemsMapAtom);
+    const refused = new Set(refuseLocalWikiArchive(itemIds.map((itemId) => items.get(itemId))).map((record) => record.id));
     for (const itemId of itemIds) {
+      if (refused.has(itemId)) continue;
       try {
         await window.electronAPI.documentService.archiveTrackerItem({ itemId, archive });
       } catch (error) {
@@ -977,7 +994,8 @@ export const TrackerMainView: React.FC<TrackerMainViewProps> = ({
         throw new Error(formatTrackerValidationErrors(built.errors));
       }
 
-      const result = await window.electronAPI.documentService.createTrackerItem(built.payload);
+      // A wiki type's item is a file in the Local wiki; any other stays in the app database.
+      const result = await createTrackerItem(built.payload);
 
       if (!result.success) {
         throw new Error(result.error || 'Failed to create tracker item');
@@ -1154,6 +1172,7 @@ export const TrackerMainView: React.FC<TrackerMainViewProps> = ({
       overrideItems={viewItemsWithPersonalFields}
       onArchiveItems={handleArchiveItems}
       onDeleteItems={handleDeleteItems}
+      confirmDelete={confirmTrackerItemDelete}
       onCopyDeepLink={teamOrgId ? handleCopyDeepLink : undefined}
       searchQuery={searchQuery}
       hasExternalFilters={hasExternalTableFilters}
@@ -1428,6 +1447,7 @@ export const TrackerMainView: React.FC<TrackerMainViewProps> = ({
               overrideItems={viewItemsWithPersonalFields}
               onArchiveItems={handleArchiveItems}
               onDeleteItems={handleDeleteItems}
+              confirmDelete={confirmTrackerItemDelete}
               onCopyDeepLink={teamOrgId ? handleCopyDeepLink : undefined}
               onOpenDocument={handleOpenItemAsDocument}
               searchQuery={searchQuery}

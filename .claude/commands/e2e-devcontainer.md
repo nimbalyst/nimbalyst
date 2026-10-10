@@ -60,7 +60,7 @@ fi
 
 # 3. Create unique container
 # CRITICAL: Always use create-container.sh — it isolates ALL node_modules dirs
-# with anonymous Docker volumes so npm ci doesn't corrupt host darwin binaries.
+# with anonymous Docker volumes so pnpm install doesn't corrupt host darwin binaries.
 CONTAINER_NAME="nimbalyst-e2e-$(basename "$(pwd)")-$(date +%s)"
 CONTAINER_NAME=$(bash .devcontainer/create-container.sh "${CONTAINER_NAME}")
 
@@ -95,7 +95,7 @@ When running tests, you can specify:
 ## Setup Process
 
 Every fresh container runs the full setup (`.devcontainer/post-create.sh`):
-1. `npm ci` - Install dependencies
+1. `pnpm install --frozen-lockfile` - Install dependencies
 2. Build runtime, extension-sdk, extensions
 3. Build Electron app
 4. Install Playwright browsers

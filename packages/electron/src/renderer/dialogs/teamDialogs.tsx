@@ -37,7 +37,11 @@ export interface ShareToTeamData {
   embeddedDocuments?: EmbeddedDocumentCandidate[];
   /** Pre-selects a folder the caller already got an answer for. */
   initialFolderId?: string | null;
+  /** Pages sections offered; Team only when absent. */
+  sections?: readonly ('team' | 'personal')[];
+  initialSection?: 'team' | 'personal';
   onConfirm: (params: {
+    section: 'team' | 'personal';
     folderId: string | null;
     folderPath: string;
     sharedName: string;
@@ -97,6 +101,8 @@ function ShareToTeamDialogWrapper({
       descriptor={data.descriptor}
       embeddedDocuments={data.embeddedDocuments}
       initialFolderId={data.initialFolderId}
+      sections={data.sections}
+      initialSection={data.initialSection}
       onConfirm={data.onConfirm}
     />
   );

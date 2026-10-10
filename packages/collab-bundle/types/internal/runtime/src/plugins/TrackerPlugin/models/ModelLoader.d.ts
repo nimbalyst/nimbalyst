@@ -1,7 +1,7 @@
 /**
  * Model loader for built-in and custom tracker definitions
  */
-import { type TrackerDataModel } from '@nimbalyst/tracker-schema';
+import { type DerivedTrackerTypeDeclaration, type TrackerDataModel, type TrackerTypeDeclaration, type TrackerTypeLookup } from '../../../../../tracker-schema/src/browser';
 /**
  * Raw YAML strings for every bundled builtin tracker type, in load order.
  * Keep this list in sync with the files under ./builtins.
@@ -35,6 +35,37 @@ export declare function isTrackerPatchFileName(fileName: string): boolean;
  * instead of registering a broken model.
  */
 export declare function resolveTrackerSchemaFileContent(fileName: string, content: string): TrackerDataModel;
+/**
+ * Parse a workspace schema file WITHOUT resolving a derived type (`extends`):
+ * a patch is resolved against its seed, a full model is returned as is, and a
+ * derived declaration is returned as declared. This is the form to register,
+ * since the registry re-resolves a declaration whenever its base changes and
+ * tolerates a base that has not loaded yet.
+ */
+export declare function parseTrackerSchemaFileDeclaration(fileName: string, content: string): TrackerTypeDeclaration;
+/**
+ * Resolve a declaration to a full model. A derived type resolves against
+ * `lookup` (the registry by default); throws when it cannot, so a caller never
+ * holds a model that silently lacks its base's fields.
+ */
+/** Resolve a base against the registry: its declared form first, so chains resolve. */
+export declare const registryTrackerTypeLookup: TrackerTypeLookup;
+export declare function resolveTrackerTypeDeclaration(declared: TrackerTypeDeclaration, lookup?: TrackerTypeLookup): TrackerDataModel;
+/**
+ * The declaration to keep for a resolved model: `declared` when the caller has
+ * it, else one recovered by diffing against the base the registry holds now.
+ * Undefined for a plain type, or a subtype whose base is not registered.
+ *
+ * Every persisted and outgoing form of a subtype goes through this, so a
+ * resolved copy is never stored or registered as if it were the declaration.
+ */
+export declare function declarationForResolvedModel(model: TrackerDataModel, declared?: DerivedTrackerTypeDeclaration): DerivedTrackerTypeDeclaration | undefined;
+/**
+ * Resolve a set of declarations that may extend one another, in any order.
+ * Unresolvable derived types are dropped (and logged): a type whose base is
+ * missing has no complete model to offer.
+ */
+export declare function resolveTrackerTypeDeclarations(declarations: readonly TrackerTypeDeclaration[], fallback?: TrackerTypeLookup): TrackerDataModel[];
 /**
  * Load all built-in tracker definitions
  */

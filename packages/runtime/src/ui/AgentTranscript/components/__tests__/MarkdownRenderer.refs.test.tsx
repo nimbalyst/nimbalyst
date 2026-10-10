@@ -13,6 +13,17 @@ import { trackerItemsMapAtom } from '../../../../plugins/TrackerPlugin/trackerDa
 import { sessionRefMapAtom } from '../../session/sessionRefAtoms';
 import { MarkdownRenderer } from '../MarkdownRenderer';
 
+// Pass-through spy: counts markdown parses without changing the output.
+const markdownParses = vi.hoisted(() => ({ count: 0 }));
+vi.mock('react-markdown', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('react-markdown')>();
+  const Counted = (props: any) => {
+    markdownParses.count++;
+    return actual.default(props);
+  };
+  return { ...actual, default: Counted };
+});
+
 const { render, screen, fireEvent, cleanup } = rtl;
 
 const SESSION = '72989f55-3c63-48e3-9abc-0123456789ab';
@@ -40,11 +51,12 @@ function renderWith(content: string) {
     sessionRefMapAtom,
     new Map([[SESSION, { id: SESSION, title: 'Child session', phase: 'implementing' }]]),
   );
-  return render(
+  const result = render(
     <Provider store={store}>
       <MarkdownRenderer content={content} />
     </Provider>,
   );
+  return { ...result, store };
 }
 
 describe('MarkdownRenderer reference autolinking', () => {
@@ -94,6 +106,63 @@ describe('MarkdownRenderer reference autolinking', () => {
         .querySelector('.tracker-reference-chip')
         ?.getAttribute('aria-expanded'),
     ).toBe('true');
+  });
+
+  // A streaming session rewrites the session and tracker maps constantly. The
+  // rendered markdown must update in place: a remount repaints every message
+  // in the transcript (the visible flashing).
+  it('keeps rendered markdown DOM nodes when session and tracker maps change', () => {
+    const { container, store } = renderWith(
+      `Intro paragraph for ${SESSION}.\n\n- item\n\n\`\`\`ts\nconst a = 1;\nconst b = 2;\n\`\`\``,
+    );
+    const paragraph = container.querySelector('p');
+    const listItem = container.querySelector('li');
+    const codeBlock = container.querySelector('pre, .markdown-content code');
+    expect(paragraph).not.toBeNull();
+
+    rtl.act(() => {
+      // Same ids, new identities: must not reach the renderer at all.
+      store.set(trackerItemsMapAtom, new Map([[trackerRecord.id, { ...trackerRecord }]]));
+      store.set(sessionRefMapAtom, new Map([[SESSION, { id: SESSION, title: 'Renamed', phase: 'implementing' }]]));
+    });
+    rtl.act(() => {
+      // A new known session id legitimately re-renders; nodes still survive.
+      const other = '11111111-2222-4333-8444-555555555555';
+      store.set(sessionRefMapAtom, new Map([
+        [SESSION, { id: SESSION, title: 'Renamed' }],
+        [other, { id: other, title: 'Other' }],
+      ]));
+    });
+
+    expect(container.querySelector('p')).toBe(paragraph);
+    expect(container.querySelector('li')).toBe(listItem);
+    expect(container.querySelector('pre, .markdown-content code')).toBe(codeBlock);
+    expect(screen.getByText('Renamed')).toBeDefined();
+  });
+
+  // Every new message re-renders the transcript rows; re-parsing each visible
+  // message's unchanged markdown cost ~60-120ms per streamed message.
+  it('does not re-parse unchanged markdown when its parent re-renders', () => {
+    const onOpenFile = vi.fn();
+    const renderMessage = (tick: number) => (
+      <div data-tick={tick}>
+        <MarkdownRenderer content="Some **bold** text." messageId="m1" onOpenFile={onOpenFile} />
+      </div>
+    );
+    const { rerender } = render(renderMessage(0));
+    const parsesAfterMount = markdownParses.count;
+
+    rerender(renderMessage(1));
+    rerender(renderMessage(2));
+    expect(markdownParses.count).toBe(parsesAfterMount);
+
+    rerender(
+      <div data-tick={3}>
+        <MarkdownRenderer content="Changed text." messageId="m1" onOpenFile={onOpenFile} />
+      </div>,
+    );
+    expect(markdownParses.count).toBe(parsesAfterMount + 1);
+    expect(screen.getByText('Changed text.')).toBeDefined();
   });
 
   it('does not autolink a token whose prefix is not a workspace tracker prefix', () => {

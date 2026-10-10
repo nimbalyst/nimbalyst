@@ -52,6 +52,9 @@ export interface UserMessageDescriptor {
   inputType?: 'user' | 'system_message';
   attachments?: UserMessagePayload['attachments'];
   createdAt?: Date;
+  /** Stamped from the raw row's metadata by `stampPromptSource`, not by parsers. */
+  promptActor?: UserMessagePayload['promptActor'];
+  promptOrigin?: string;
 }
 
 export interface AssistantMessageDescriptor {

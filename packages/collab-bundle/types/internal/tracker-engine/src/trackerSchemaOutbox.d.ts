@@ -23,6 +23,8 @@ export interface TrackerSchemaOutboxDeps {
     newMutationId: () => string;
     /** The engine's cmid -> lane id map, which rejection acks are resolved through. */
     pendingLaneIds: Map<string, string>;
+    /** Whether the room advertised that it refuses a create-only mutation for an existing type. */
+    createOnlySupported: () => boolean;
 }
 export declare class TrackerSchemaOutbox {
     private readonly deps;
@@ -33,8 +35,11 @@ export declare class TrackerSchemaOutbox {
     constructor(deps: TrackerSchemaOutboxDeps);
     /** Push what the host has queued. Concurrent calls coalesce into one follow-up run. */
     push(): Promise<void>;
-    /** The room answered this mutation, either way. */
-    settle(clientMutationId: string): void;
+    /** The room answered this mutation, either way. Returns what it carried, if it was ours. */
+    settle(clientMutationId: string): {
+        type: string;
+        model: string | null;
+    } | undefined;
     /** A new socket means nothing sent on the old one will be acked. */
     reset(): void;
     private isInFlight;

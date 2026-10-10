@@ -481,13 +481,13 @@ export const SuperLoopGroup: React.FC<SuperLoopGroupProps> = memo(({
 
   return (
     <div
-      className={`super-loop-group mb-1 ${loop.isArchived ? 'archived' : ''} ${isActive ? 'active' : ''} ${isSelected ? 'selected' : ''}`}
+      className={`super-loop-group pb-1 ${loop.isArchived ? 'archived' : ''} ${isActive ? 'active' : ''} ${isSelected ? 'selected' : ''}`}
       data-testid={`super-loop-group-${loopId}`}
       onMouseLeave={handleCloseContextMenu}
     >
       {/* Header - matches BlitzGroup/WorkstreamGroup header structure */}
       <div
-        className={`super-loop-group-header flex items-center gap-0 text-[0.8125rem] text-[var(--nim-text)] transition-colors duration-150 rounded-md mx-2 w-[calc(100%-1rem)] ${
+        className={`super-loop-group-header flex items-center gap-0 text-[0.8125rem] text-[var(--nim-text)] transition-colors duration-150 rounded-md mr-2 w-[calc(100%-0.5rem)] ${
           isSelected ? 'bg-[var(--nim-bg-selected)]' : isActive ? 'bg-[var(--nim-bg-selected)]' : 'hover:bg-[var(--nim-bg-hover)]'
         }`}
         onContextMenu={handleContextMenu}

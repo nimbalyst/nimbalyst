@@ -22,6 +22,7 @@ import { logger } from '../utils/logger';
 import { resolveWorkspacePathForPermissions } from './PermissionService';
 import { resolveProjectPath } from '../utils/workspaceDetection';
 import { resolveClaudeConfigDir } from '@nimbalyst/runtime/ai/server/providers/claudeCode/claudeConfigDir';
+import { resolveClaudeModelPicker, type ClaudeModelPickerConfig } from '@nimbalyst/runtime/ai/claudeCustomModels';
 
 const log = logger.main;
 
@@ -435,6 +436,39 @@ export class ClaudeSettingsManager {
         this.watchers.delete(filePath);
       }
     };
+  }
+
+  /** User, project, local settings (lowest to highest precedence); user only without a workspace. */
+  private async readSettingsLowToHigh(workspacePath: string | undefined): Promise<(ClaudeSettings | undefined)[]> {
+    // Deliberately not getEffectiveSettings: its worktree lookup hits the DB and
+    // logs, and this runs on every model-list fetch. The path-based project
+    // resolution below already maps worktrees to their parent project.
+    return Promise.all([
+      this.readSettingsFile(this.getUserLevelPath()),
+      ...(workspacePath
+        ? [this.readSettingsFile(this.getProjectSharedPath(workspacePath)), this.readSettingsFile(this.getProjectLocalPath(workspacePath))]
+        : []),
+    ]);
+  }
+
+  /**
+   * Custom models from `modelPicker` across user, project, and local settings
+   * (local wins). Worktrees resolve to their parent project.
+   */
+  async getModelPicker(workspacePath: string | undefined): Promise<ClaudeModelPickerConfig> {
+    return resolveClaudeModelPicker(await this.readSettingsLowToHigh(workspacePath));
+  }
+
+  /**
+   * One `env` value with Claude Code precedence (local > project > user).
+   */
+  async getEffectiveEnvValue(workspacePath: string | undefined, name: string): Promise<string | undefined> {
+    let value: string | undefined;
+    for (const settings of await this.readSettingsLowToHigh(workspacePath)) {
+      const candidate = (settings?.env as Record<string, unknown> | undefined)?.[name];
+      if (typeof candidate === 'string' && candidate.trim()) value = candidate.trim();
+    }
+    return value;
   }
 
   /**

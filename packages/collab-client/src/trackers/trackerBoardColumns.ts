@@ -29,7 +29,7 @@ import {
   resolveRoleFieldName,
 } from '@nimbalyst/runtime/plugins/TrackerPlugin/trackerRecordAccessors';
 import { compareCellValues } from '@nimbalyst/runtime/plugins/TrackerPlugin/components/trackerRowData';
-import { isTerminalStatus } from '@nimbalyst/tracker-schema';
+import { globalRegistry, isTerminalStatus } from '@nimbalyst/tracker-schema';
 import { generateKeyBetween } from '@nimbalyst/runtime/utils/fractionalIndex';
 import type { TrackerStatusScope } from './model';
 
@@ -51,6 +51,7 @@ export interface TrackerBoardColumn {
    * display, rather than a label reconstructed from whatever survived.
    */
   ref?: TrackerRelationshipValue;
+  fieldValue?: unknown;
 }
 
 const RELATIONSHIP_AXES: readonly TrackerGroupingAxis[] = ['milestone', 'goal'];
@@ -93,6 +94,22 @@ export function buildTrackerBoardColumns(
   statusScope: TrackerStatusScope = 'all',
 ): TrackerBoardColumn[] {
   const axis = resolveBoardAxis(groupBy);
+  if (typeof axis === 'object') {
+    const field = globalRegistry.get(filterType)?.fields.find(candidate => candidate.name === axis.fieldId);
+    if (!field || field.multiValue || !['select', 'boolean', 'user', 'relationship'].includes(field.type)) return [];
+    const columns = new Map<string, TrackerBoardColumn>();
+    const options = field.type === 'boolean' ? [{ value: 'true', label: 'Yes' }, { value: 'false', label: 'No' }] : field.options ?? [];
+    for (const option of options) {
+      const value = typeof option === 'string' ? option : option.value;
+      const label = typeof option === 'string' ? option : option.label;
+      const key = `field:${axis.fieldId}:value:${encodeURIComponent(value)}`;
+      columns.set(key, { key, value, label, empty: false });
+    }
+    for (const item of items) for (const group of resolveTrackerGroups(item, axis, resolveLabel)) {
+      if (!columns.has(group.key)) columns.set(group.key, { ...group, fieldValue: item.fields[axis.fieldId] });
+    }
+    return [...columns.values()].filter(column => !column.empty).concat([...columns.values()].filter(column => column.empty));
+  }
   if (axis === 'status') {
     const type = filterType === 'all' ? '' : filterType;
     return buildKanbanStatusColumns(filterType, items)
@@ -270,6 +287,21 @@ export function resolveBoardColumnWrite(
   axis: TrackerGroupingAxis,
   target: TrackerBoardColumn,
 ): Record<string, unknown> | null {
+  if (typeof axis === 'object') {
+    const field = globalRegistry.get(item.primaryType)?.fields.find(candidate => candidate.name === axis.fieldId);
+    if (!field || field.multiValue) return null;
+    if (field.type === 'boolean') return { [field.name]: target.value === null ? null : target.value === 'true' };
+    if (field.type === 'select') {
+      if (target.value !== null && !field.options?.some(option => (typeof option === 'string' ? option : option.value) === target.value)) return null;
+      return { [field.name]: target.value };
+    }
+    if (field.type === 'user') return target.empty ? { [field.name]: null } : target.fieldValue === undefined ? null : { [field.name]: target.fieldValue };
+    if (field.type === 'relationship') {
+      const refs = normalizeRelationshipValue(target.fieldValue);
+      return target.empty ? { [field.name]: serializeRelationshipValue(field, []) } : refs.length === 1 ? { [field.name]: serializeRelationshipValue(field, refs) } : null;
+    }
+    return null;
+  }
   switch (axis) {
     case 'status':
       return target.value === null

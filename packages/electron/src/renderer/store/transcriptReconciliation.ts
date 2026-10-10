@@ -72,10 +72,14 @@ export function reconcileTranscriptMessages(
   for (const message of [...current, ...incoming])
     if (message.id < 0) optimistic.set(message.id, message);
 
-  // Preserve the existing bounded timestamp match for optimistic input only;
-  // canonical messages are never deduplicated by text. One persisted input
-  // acknowledges at most one pending copy, and an already-present input is
-  // not reused to acknowledge another identical request on subsequent polls.
+  // Match optimistic input only; canonical messages are never deduplicated by
+  // text. One persisted input acknowledges at most one pending copy, and an
+  // already-present input is not reused to acknowledge another identical
+  // request on subsequent polls. There is no upper bound on the delay: the
+  // provider persists the prompt only after turn setup, which can take many
+  // seconds, and a missed match would pin the copy below the transcript
+  // (#1620). The persisted input must not predate the send, so a rebuilt
+  // generation cannot let an earlier identical prompt acknowledge a new one.
   const priorUsers = current.filter(
     (message) => message.id >= 0 && message.type === 'user_message',
   );
@@ -93,7 +97,7 @@ export function reconcileTranscriptMessages(
         persisted.type === message.type &&
         optimisticAcknowledgmentText(persisted.text) ===
           optimisticAcknowledgmentText(message.text) &&
-        Math.abs(messageTime(persisted) - messageTime(message)) < 5000,
+        messageTime(persisted) >= messageTime(message),
     );
     if (match < 0) return true;
     acknowledgements.splice(match, 1);

@@ -1,7 +1,9 @@
 package com.nimbalyst.app.ui
 
+import android.content.ActivityNotFoundException
 import android.net.Uri
 import androidx.browser.customtabs.CustomTabsIntent
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -11,16 +13,16 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.AccountCircle
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Email
+import androidx.compose.material.icons.filled.HowToReg
 import androidx.compose.material.icons.filled.Warning
-import androidx.compose.material3.Button
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -33,22 +35,31 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
+import com.nimbalyst.app.R
 import com.nimbalyst.app.analytics.AnalyticsManager
 import com.nimbalyst.app.auth.MagicLinkClient
 import com.nimbalyst.app.auth.hasEmailAccount
+import com.nimbalyst.app.ui.components.NimbalystPrimaryButton
+import com.nimbalyst.app.ui.components.NimbalystSecondaryButton
+import com.nimbalyst.app.ui.theme.NimbalystColors
+import com.nimbalyst.app.ui.theme.NimbalystShapes
 import kotlinx.coroutines.launch
 
 @Composable
 fun LoginScreen(
     serverUrl: String,
     pairedEmail: String?,
-    onUnpair: () -> Unit
+    onUnpair: () -> Unit,
+    /** Why the last auth callback failed (e.g. the server's error_description), or null. */
+    callbackFailure: String? = null,
+    onDismissCallbackFailure: () -> Unit = {},
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -58,188 +69,141 @@ fun LoginScreen(
     var errorMessage by remember { mutableStateOf<String?>(null) }
 
     val hasEmailAccount = hasEmailAccount(pairedEmail)
+    val networkError = stringResource(R.string.login_network_error)
+
+    fun sendMagicLink() {
+        if (isSending || !hasEmailAccount) return
+        isSending = true
+        errorMessage = null
+        onDismissCallbackFailure()
+        scope.launch {
+            MagicLinkClient.sendMagicLink(serverUrl, pairedEmail!!).fold(
+                onSuccess = { magicLinkSent = true },
+                onFailure = { errorMessage = it.message ?: networkError }
+            )
+            isSending = false
+        }
+    }
 
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .padding(32.dp),
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 32.dp, vertical = 48.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center
+        verticalArrangement = Arrangement.spacedBy(24.dp, Alignment.CenterVertically)
     ) {
         Icon(
-            imageVector = Icons.Default.AccountCircle,
+            imageVector = Icons.Default.HowToReg,
             contentDescription = null,
-            modifier = Modifier.size(80.dp),
-            tint = MaterialTheme.colorScheme.primary
+            modifier = Modifier.size(64.dp),
+            tint = NimbalystColors.primary
         )
 
-        Spacer(modifier = Modifier.height(24.dp))
-
         Text(
-            text = "Sign In",
+            text = stringResource(R.string.login_title),
             style = MaterialTheme.typography.headlineMedium,
             textAlign = TextAlign.Center
         )
 
-        Spacer(modifier = Modifier.height(12.dp))
-
-        if (!pairedEmail.isNullOrBlank()) {
-            Text(
-                text = buildAnnotatedString {
-                    append("Sign in as ")
-                    withStyle(SpanStyle(fontWeight = FontWeight.SemiBold)) {
-                        append(pairedEmail)
-                    }
-                    append(" to sync with your Mac.")
-                },
-                style = MaterialTheme.typography.bodyLarge,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                textAlign = TextAlign.Center
-            )
-        } else {
-            Text(
-                text = "Sign in to sync sessions with your Mac.",
-                style = MaterialTheme.typography.bodyLarge,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                textAlign = TextAlign.Center
-            )
-        }
-
-        Spacer(modifier = Modifier.height(32.dp))
+        Text(
+            text = if (!pairedEmail.isNullOrBlank()) {
+                boldSubstring(stringResource(R.string.login_subtitle_paired, pairedEmail), pairedEmail)
+            } else {
+                AnnotatedString(stringResource(R.string.login_subtitle))
+            },
+            style = MaterialTheme.typography.bodyLarge,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            textAlign = TextAlign.Center
+        )
 
         if (magicLinkSent) {
-            // "Check your email" state — mirrors iOS magicLinkSentView
+            // "Check your email" state -- mirrors iOS magicLinkSentView
             Column(
                 horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(16.dp)
+                verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 Icon(
                     imageVector = Icons.Default.Email,
                     contentDescription = null,
                     modifier = Modifier.size(48.dp),
-                    tint = MaterialTheme.colorScheme.primary
+                    tint = NimbalystColors.primary
                 )
-
                 Text(
-                    text = "Check your email",
+                    text = stringResource(R.string.login_check_email),
                     style = MaterialTheme.typography.titleMedium
                 )
-
                 Text(
-                    text = "We sent a sign-in link to $pairedEmail. Tap the link in your email to continue.",
+                    text = stringResource(R.string.login_magic_link_sent, pairedEmail.orEmpty()),
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     textAlign = TextAlign.Center
                 )
-
                 TextButton(
                     onClick = {
-                        if (!isSending && hasEmailAccount) {
-                            isSending = true
-                            errorMessage = null
-                            magicLinkSent = false
-                            scope.launch {
-                                val result = MagicLinkClient.sendMagicLink(serverUrl, pairedEmail!!)
-                                result.fold(
-                                    onSuccess = { magicLinkSent = true },
-                                    onFailure = { errorMessage = it.message ?: "Network error. Please try again." }
-                                )
-                                isSending = false
-                            }
-                        }
+                        magicLinkSent = false
+                        sendMagicLink()
                     },
                     enabled = !isSending
                 ) {
-                    Text("Resend link")
+                    Text(stringResource(R.string.login_resend_link), color = NimbalystColors.primary)
                 }
-
-                TextButton(
-                    onClick = { magicLinkSent = false }
-                ) {
+                TextButton(onClick = { magicLinkSent = false }) {
                     Text(
-                        text = "Use a different sign-in method",
+                        text = stringResource(R.string.login_use_different_method),
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
             }
         } else {
-            // Sign-in buttons state
-            Button(
-                onClick = {
-                    val loginUrl = serverUrl
-                        .replace("wss://", "https://")
-                        .replace("ws://", "http://")
-                        .trimEnd('/') + "/auth/login/google"
-                    AnalyticsManager.capture("mobile_login_started", mapOf("method" to "google"))
-                    CustomTabsIntent.Builder()
-                        .build()
-                        .launchUrl(context, Uri.parse(loginUrl))
-                },
-                enabled = !isSending,
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Text("Sign in with Google")
-            }
-
-            if (hasEmailAccount) {
-                Spacer(modifier = Modifier.height(12.dp))
-
-                OutlinedButton(
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                NimbalystPrimaryButton(
+                    text = stringResource(R.string.login_google),
                     onClick = {
-                        if (!isSending) {
-                            isSending = true
-                            errorMessage = null
-                            AnalyticsManager.capture("mobile_login_started", mapOf("method" to "magic_link"))
-                            scope.launch {
-                                val result = MagicLinkClient.sendMagicLink(serverUrl, pairedEmail!!)
-                                result.fold(
-                                    onSuccess = { magicLinkSent = true },
-                                    onFailure = { errorMessage = it.message ?: "Network error. Please try again." }
-                                )
-                                isSending = false
-                            }
+                        onDismissCallbackFailure()
+                        errorMessage = null
+                        val loginUrl = serverUrl
+                            .replace("wss://", "https://")
+                            .replace("ws://", "http://")
+                            .trimEnd('/') + "/auth/login/google"
+                        AnalyticsManager.capture("mobile_login_started", mapOf("method" to "google"))
+                        try {
+                            CustomTabsIntent.Builder()
+                                .build()
+                                .launchUrl(context, Uri.parse(loginUrl))
+                        } catch (_: ActivityNotFoundException) {
+                            // Custom Tabs falls back to any browser; this fires only when there is none.
+                            errorMessage = context.getString(R.string.login_no_browser)
                         }
                     },
-                    enabled = !isSending,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    if (isSending) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(16.dp),
-                            strokeWidth = 2.dp
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text("Sending...")
-                    } else {
-                        Text("Sign in with email link")
-                    }
+                    enabled = !isSending
+                )
+
+                if (hasEmailAccount) {
+                    NimbalystSecondaryButton(
+                        text = stringResource(if (isSending) R.string.login_sending else R.string.login_email_link),
+                        onClick = {
+                            AnalyticsManager.capture("mobile_login_started", mapOf("method" to "magic_link"))
+                            sendMagicLink()
+                        },
+                        enabled = !isSending,
+                        loading = isSending
+                    )
                 }
             }
         }
 
-        // Error row (non-null when a request failed)
-        if (errorMessage != null) {
-            Spacer(modifier = Modifier.height(16.dp))
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                modifier = Modifier.fillMaxWidth()
-            ) {
-                Icon(
-                    imageVector = Icons.Default.Warning,
-                    contentDescription = null,
-                    tint = MaterialTheme.colorScheme.error,
-                    modifier = Modifier.size(16.dp)
-                )
-                Text(
-                    text = errorMessage!!,
-                    color = MaterialTheme.colorScheme.error,
-                    style = MaterialTheme.typography.bodySmall
-                )
-            }
+        (errorMessage ?: callbackFailure)?.let { message ->
+            AuthErrorBanner(
+                message = message,
+                onDismiss = {
+                    errorMessage = null
+                    onDismissCallbackFailure()
+                }
+            )
         }
 
-        Spacer(modifier = Modifier.height(48.dp))
+        Spacer(modifier = Modifier.height(8.dp))
 
         TextButton(onClick = {
             AnalyticsManager.capture("mobile_device_unpairing")
@@ -247,9 +211,51 @@ fun LoginScreen(
             onUnpair()
         }) {
             Text(
-                text = "Unpair Device",
+                text = stringResource(R.string.login_unpair),
                 color = MaterialTheme.colorScheme.error
             )
         }
+    }
+}
+
+/** Warning-tinted banner matching the iOS LoginView auth error row. */
+@Composable
+private fun AuthErrorBanner(message: String, onDismiss: () -> Unit) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(NimbalystColors.warning.copy(alpha = 0.1f), NimbalystShapes.banner)
+            .padding(start = 12.dp, top = 4.dp, bottom = 4.dp)
+    ) {
+        Icon(
+            imageVector = Icons.Default.Warning,
+            contentDescription = null,
+            tint = NimbalystColors.warning,
+            modifier = Modifier.size(18.dp)
+        )
+        Text(
+            text = message,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            style = MaterialTheme.typography.bodyMedium,
+            modifier = Modifier.weight(1f).padding(vertical = 8.dp)
+        )
+        IconButton(onClick = onDismiss) {
+            Icon(
+                imageVector = Icons.Default.Close,
+                contentDescription = stringResource(R.string.login_dismiss_error),
+                tint = NimbalystColors.textFaint,
+                modifier = Modifier.size(16.dp)
+            )
+        }
+    }
+}
+
+private fun boldSubstring(text: String, bold: String): AnnotatedString = buildAnnotatedString {
+    append(text)
+    val start = text.indexOf(bold)
+    if (start >= 0) {
+        addStyle(SpanStyle(fontWeight = FontWeight.SemiBold), start, start + bold.length)
     }
 }

@@ -117,6 +117,41 @@ describe('TabsContext tracker tabs', () => {
     expect(watchedPaths('start')).not.toContain('tracker://T1');
   });
 
+  it('adds a type page tab with kind/trackerTypeId and never watches or stop-watches it', () => {
+    const { result } = renderHook(() => useTabs(), { wrapper });
+
+    let typeTabId: string | null = null;
+    act(() => {
+      typeTabId = result.current.addTab('type://module', '', true, 'Modules');
+    });
+
+    const tab = result.current.tabs.find((t) => t.filePath === 'type://module');
+    expect(tab!.kind).toBe('type');
+    expect(tab!.trackerTypeId).toBe('module');
+    expect(tab!.trackerItemId).toBeUndefined();
+    expect(tab!.fileName).toBe('Modules');
+    act(() => result.current.removeTab(typeTabId!));
+    expect(watchedPaths('start')).not.toContain('type://module');
+    expect(watchedPaths('stop')).not.toContain('type://module');
+  });
+
+  it('adds a personal page tab with kind/personalDocumentId and never watches or stop-watches it', () => {
+    const { result } = renderHook(() => useTabs(), { wrapper });
+
+    let pageTabId: string | null = null;
+    act(() => {
+      pageTabId = result.current.addTab('personal://doc-1', '', true, 'Notes');
+    });
+
+    const tab = result.current.tabs.find((t) => t.filePath === 'personal://doc-1');
+    expect(tab!.kind).toBe('personal-page');
+    expect(tab!.personalDocumentId).toBe('doc-1');
+    expect(tab!.fileName).toBe('Notes');
+    act(() => result.current.removeTab(pageTabId!));
+    expect(watchedPaths('start')).not.toContain('personal://doc-1');
+    expect(watchedPaths('stop')).not.toContain('personal://doc-1');
+  });
+
   it('still watches real file tabs (file behavior unchanged)', () => {
     const { result } = renderHook(() => useTabs(), { wrapper });
 

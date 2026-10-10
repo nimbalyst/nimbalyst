@@ -2,8 +2,9 @@
  * Build `nim` as a self-contained bundle.
  *
  * The CLI is published to npm as ONE artifact. Everything it needs from this
- * monorepo -- today that is `@nimbalyst/tracker-core`, which holds the tracker
- * record/lifecycle/key/release semantics the app and the CLI must agree on --
+ * monorepo -- `@nimbalyst/tracker-core` (the tracker record/lifecycle/key/release
+ * semantics the app and the CLI must agree on), `@nimbalyst/local-wiki` (the
+ * local wiki file format) and the page tool contract from `@nimbalyst/collab-protocol` --
  * is inlined into `dist` at build time. Nothing in this repo that is not
  * published to npm may appear in the tarball's `dependencies`, and inlining is
  * what guarantees that: a published `nim` carries the exact tracker semantics
@@ -21,7 +22,7 @@
  * declares only `main` and `VERSION` and so references nothing from a package
  * a consumer will not have.
  */
-import { rmSync, writeFileSync } from 'node:fs';
+import { readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import * as path from 'node:path';
@@ -31,6 +32,9 @@ import { build } from 'esbuild';
 const require = createRequire(import.meta.url);
 const packageDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const dist = path.join(packageDir, 'dist');
+// `nim --version`, `nim mcp`'s serverInfo and the wiki-web install hint all read
+// this, so it comes from package.json rather than a constant someone must bump.
+const { version } = JSON.parse(readFileSync(path.join(packageDir, 'package.json'), 'utf8'));
 
 rmSync(dist, { recursive: true, force: true });
 
@@ -65,6 +69,7 @@ await build({
   // segfault rather than erroring on an older host, so this floor is load-bearing.
   target: 'node22',
   external: ['better-sqlite3'],
+  define: { __NIM_VERSION__: JSON.stringify(version) },
   // Each entry is bundled independently rather than sharing chunks: the two bin
   // entries differ only in whether they declare the bundled SQLite channel
   // before anything opens a database, and that declaration is module state.

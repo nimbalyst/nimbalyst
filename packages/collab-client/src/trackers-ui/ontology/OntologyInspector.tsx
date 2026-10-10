@@ -1,8 +1,9 @@
 /**
  * The ontology inspector: "what does our team keep track of, and how do those
- * things relate?" Read-only. "What we track" is the main view and the concept
- * map is one click away; every gap opens a proposal, and proposals are the only
- * way anything here changes.
+ * things relate?" Read-only admin view of every tracker type; every gap opens a
+ * proposal, and proposals are the only way anything here changes. The label
+ * type map and per-label review live on the wiki's Types pages
+ * (`OntologyTypeMap`, `OntologyLabelReview`); `onOpenTypes` links there.
  *
  * Host-agnostic: the host passes the room's schemas, predicate registry (null
  * when it cannot read one) and records, and a writer when this reader may
@@ -10,20 +11,21 @@
  * desktop settings tab mount the same component.
  */
 import { useMemo, useState } from 'react';
-import type { PredicateDefinition, TrackerDataModel } from '@nimbalyst/tracker-schema';
+import type { LabelRegistry, PredicateDefinition, TrackerDataModel } from '@nimbalyst/tracker-schema';
 import { buildDomainModel, suggestStructureRequest, type DomainGap } from './ontologyDomain';
-import { buildKnowledgeGraph, ENTITY_TYPE } from './ontologyKnowledge';
+import { buildKnowledgeGraph, entityKind, ENTITY_TYPE } from './ontologyKnowledge';
+import { effectiveLabelRegistry } from './ontologyLabels';
 import { ONTOLOGY_PROPOSAL_TYPE, openProposalsByCheck, proposalRequestFor, type PlanEnv } from './ontologyProposals';
 import { ontologyFieldValue, ontologyRecordTitle, type OntologyRecordLike } from './ontologyRecords';
 import type { TrackerCommandFn, WriteContext } from './ontologyWriter';
-import { OntologyConceptMap } from './OntologyConceptMap';
 import type { GapAction } from './OntologyParts';
 import { OntologyProposalDrawer, type DrawerTarget } from './OntologyProposalDrawer';
 import type { ProposalSummary } from './OntologyRail';
 import { OntologyWhatWeTrack } from './OntologyWhatWeTrack';
 import './ontologyInspector.css';
 
-export type OntologyInspectorView = 'track' | 'map';
+/** Kept for hosts that pass it; the concept map moved to the wiki's Types page. */
+export type OntologyInspectorView = 'track';
 
 export interface OntologyInspectorWriter {
   command: TrackerCommandFn;
@@ -36,6 +38,8 @@ export interface OntologyInspectorProps {
   types: readonly TrackerDataModel[];
   /** Null when the host cannot read the room's registry; predicates are then keyed off claim ids. */
   predicates?: readonly PredicateDefinition[] | null;
+  /** The room's label registry; empty reads through the kind stand-in. */
+  labels?: LabelRegistry | null;
   records: readonly OntologyRecordLike[];
   /** Null for a reader who may not write: proposals can be read but not created or decided. */
   writer: OntologyInspectorWriter | null;
@@ -43,6 +47,8 @@ export interface OntologyInspectorProps {
   loaded?: boolean;
   onOpenItem?: (itemId: string) => void;
   initialView?: OntologyInspectorView;
+  /** Opens the wiki's Types section, where labels are browsed and reviewed. */
+  onOpenTypes?: () => void;
   /** Injected in tests; the inspector otherwise judges stale facts against the time it opened. */
   now?: number;
 }
@@ -50,15 +56,13 @@ export interface OntologyInspectorProps {
 const OPEN_STATUSES: ReadonlySet<string> = new Set(['proposed', 'accepted']);
 const SUGGEST_CHECK = 'suggest-structure';
 
-export function OntologyInspector({ types, predicates = null, records, writer, loaded = true, onOpenItem, initialView = 'track', now: fixedNow }: OntologyInspectorProps) {
+export function OntologyInspector({ types, predicates = null, labels = null, records, writer, loaded = true, onOpenItem, onOpenTypes, now: fixedNow }: OntologyInspectorProps) {
   const [openedAt] = useState(() => Date.now());
   const now = fixedNow ?? openedAt;
-  const [view, setView] = useState<OntologyInspectorView>(initialView);
   const [trackSelected, setTrackSelected] = useState<string | null>(null);
-  const [mapSelected, setMapSelected] = useState<string | null>(null);
   const [drawer, setDrawer] = useState<DrawerTarget | null>(null);
 
-  const model = useMemo(() => buildDomainModel({ types, predicates, records, now }), [types, predicates, records, now]);
+  const model = useMemo(() => buildDomainModel({ types, predicates, labels, records, now }), [types, predicates, labels, records, now]);
   const graph = useMemo(() => buildKnowledgeGraph(records), [records]);
   const proposalRecords = useMemo(
     () => records
@@ -78,13 +82,16 @@ export function OntologyInspector({ types, predicates = null, records, writer, l
 
   const env = useMemo<PlanEnv>(() => {
     const kind = types.find((model) => model.type === ENTITY_TYPE)?.fields.find((field) => field.name === 'kind');
-    const labels = new Map((predicates ?? []).map((predicate) => [predicate.id, predicate.label]));
+    const predicateLabels = new Map((predicates ?? []).map((predicate) => [predicate.id, predicate.label]));
+    const predicateIds = new Set((predicates ?? []).map((predicate) => predicate.id));
     return {
       kindOptions: new Set((kind?.options ?? []).map((option) => option.value)),
-      predicateLabel: (id) => labels.get(id) ?? id.replace(/-/g, ' '),
+      predicateLabel: (id) => predicateLabels.get(id) ?? id.replace(/-/g, ' '),
       newId: () => globalThis.crypto.randomUUID(),
+      labels: effectiveLabelRegistry(labels, { kindOptions: kind?.options, observedKinds: graph.entities.map(entityKind) }),
+      isPredicate: (id) => predicateIds.has(id),
     };
-  }, [types, predicates]);
+  }, [types, predicates, labels, graph]);
   const context = useMemo<WriteContext | null>(() => (writer ? { ...writer, now: () => new Date() } : null), [writer]);
 
   const openProposal = (id: string) => setDrawer({ kind: 'proposal', id });
@@ -107,18 +114,15 @@ export function OntologyInspector({ types, predicates = null, records, writer, l
   };
 
   return (
-    <div className="ontology-inspector" data-view={view}>
+    <div className="ontology-inspector" data-view="track">
       <div className="ontology-toolbar">
-        <div className="ontology-segmented" role="group" aria-label="Ontology view">
-          <button type="button" aria-pressed={view === 'track'} onClick={() => setView('track')}>What we track</button>
-          <button type="button" aria-pressed={view === 'map'} onClick={() => setView('map')}>Map</button>
-        </div>
         <span className="ontology-toolbar-note">Read-only. Changes go through proposals.</span>
+        {onOpenTypes && <button type="button" className="ontology-link" onClick={onOpenTypes}>Browse labels in the wiki's Types</button>}
         <button type="button" className="ontology-button" onClick={suggest}>Ask the agent to suggest improvements</button>
       </div>
       {!loaded ? (
         <p className="ontology-empty ontology-loading">Loading what this project tracks…</p>
-      ) : view === 'track' ? (
+      ) : (
         <OntologyWhatWeTrack
           model={model}
           gapAction={gapAction}
@@ -136,20 +140,6 @@ export function OntologyInspector({ types, predicates = null, records, writer, l
             setTrackSelected(id);
           }}
           now={now}
-        />
-      ) : (
-        <OntologyConceptMap
-          model={model}
-          selected={mapSelected}
-          onSelect={setMapSelected}
-          gapAction={gapAction}
-          proposals={proposals}
-          onOpenProposal={openProposal}
-          onOpenItem={onOpenItem}
-          onShowAll={(id) => {
-            setTrackSelected(id);
-            setView('track');
-          }}
         />
       )}
       {drawer && (

@@ -122,7 +122,7 @@ function validateExtraResourceSources() {
     }
     console.error(
       'Common causes:\n' +
-      ' - npm workspace hoisting changed after a dependency upgrade.\n' +
+      ' - pnpm hoisting placed the package somewhere else after a dependency upgrade.\n' +
       ' - cross-arch install step did not run or installed to the wrong location.\n' +
       ' - BUILD_ARCH env var not set to the target arch for this build.\n'
     );
@@ -147,14 +147,14 @@ function validateExtraResourceSources() {
         dir,
         binDir: path.join(dir, 'bin'),
         accept: (f) => f === 'rg' || f === 'rg.exe',
-        cause: '@vscode/ripgrep postinstall was skipped (e.g. npm ci --ignore-scripts)',
+        cause: '@vscode/ripgrep postinstall was skipped (e.g. pnpm install --ignore-scripts, or it is missing from allowBuilds)',
         fix: 'run `node node_modules/@vscode/ripgrep/lib/postinstall.js --force`',
       });
     }
     // claude-agent-sdk-<platform>-<arch>: the native `claude` binary sits at
     // the package root. If the package exists but the binary is missing, the
-    // cross-arch install step broke or npm pruned the cpu-mismatched optional
-    // dep. This is the Intel Mac failure mode where users saw "native CLI
+    // cross-arch install step broke or the target arch was not in pnpm's
+    // supportedArchitectures. This is the Intel Mac failure mode where users saw "native CLI
     // binary for darwin-x64 not found".
     const sdkMatch = rawFrom.match(/@anthropic-ai\/claude-agent-sdk-([a-z0-9]+)-\$\{arch\}$/);
     if (sdkMatch) {
@@ -166,8 +166,8 @@ function validateExtraResourceSources() {
         dir,
         binDir: dir,
         accept: (f) => f === binName,
-        cause: 'cross-arch install step failed to land the binary at root node_modules/, or npm pruned the cpu-mismatched optional dep',
-        fix: `npm install --no-save --force @anthropic-ai/claude-agent-sdk-${plat}-${buildArch}@<sdk-version>`,
+        cause: 'cross-arch install did not include this arch (pnpm supportedArchitectures), so the optional platform package was skipped',
+        fix: `pnpm install --frozen-lockfile --cpu=${buildArch} --os=${plat} (adds the target arch's optional packages)`,
       });
     }
     // @openai/codex-<platform>-<arch>: the native `codex` binary sits at
@@ -191,9 +191,9 @@ function validateExtraResourceSources() {
           path.join(dir, 'vendor', triple, binName),
         ] : [],
         cause: triple
-          ? `cross-arch install step failed to land the codex binary at vendor/${triple}/, or npm pruned the cpu-mismatched optional dep`
+          ? `cross-arch install did not include this arch (pnpm supportedArchitectures), so the codex binary is missing from vendor/${triple}/`
           : `unsupported codex target for plat=${plat}, arch=${buildArch}`,
-        fix: `npm install --no-save --force @openai/codex-${plat}-${buildArch}@<codex-version>`,
+        fix: `pnpm install --frozen-lockfile --cpu=${buildArch} --os=${plat} (adds the target arch's optional packages)`,
       });
     }
     // node-pty: the loadable native module must exist at one of three paths
@@ -214,7 +214,7 @@ function validateExtraResourceSources() {
           path.join(dir, 'prebuilds', ptyTarget, 'pty.node'),
         ],
         cause: `no loadable pty.node found for ${ptyTarget}; @electron/rebuild ran with buildFromSource=false and the upstream npm package ships no prebuild for this platform`,
-        fix: `npx @electron/rebuild --force --module-dir node_modules/node-pty --types prod --version <electron-version>`,
+        fix: `pnpm exec electron-rebuild --force --module-dir node_modules/node-pty --types prod --version <electron-version>`,
       });
     }
   }

@@ -8,6 +8,9 @@ import {
   styleClassNames,
 } from '../cellStyles';
 import type { CellStyleRanges, NormalizedSelectionRange } from '../../types';
+import { reorderRowMetadata } from '../../structure/reorderMetadata';
+import { EMPTY_FORMATTING } from '../../sheetMeta/formatting';
+import type { SheetMeta } from '../../commands/sheetState';
 
 const range = (
   startRow: number, startCol: number, endRow: number, endCol: number,
@@ -88,6 +91,33 @@ describe('applyStyleToRange', () => {
     let ranges = applyStyleToRange({}, range(0, 0, 0, 0), { textColor: 'red' });
     ranges = applyStyleToRange(ranges, range(0, 0, 0, 0), { textColor: 'default' });
     expect(ranges).toEqual({});
+  });
+
+  it('R4-4: a split piece landing on a styled cell keeps both entries\' properties', () => {
+    let ranges = applyStyleToRange({}, range(0, 0, 2, 0), { bold: true });
+    ranges = applyStyleToRange(ranges, range(0, 0, 0, 0), { italic: true });
+    ranges = applyStyleToRange(ranges, range(1, 0, 1, 0), { bold: false });
+    const index = new CellStyleIndex(ranges);
+    expect(index.styleAt(0, 0)).toEqual({ bold: true, italic: true });
+    expect(index.styleAt(1, 0)).toBeNull();
+    expect(index.styleAt(2, 0)).toEqual({ bold: true });
+  });
+
+  it('R4-4: sorting keeps per-property layering, and a property overridden in between stays under', () => {
+    const meta = { ...EMPTY_FORMATTING, cellStyles: { 'A1:A2': { bold: true }, A1: { italic: true } } } as unknown as SheetMeta;
+    const sorted = new CellStyleIndex(reorderRowMetadata(meta, 0, [0, 2, 1]).cellStyles);
+    expect([sorted.styleAt(0, 0), sorted.styleAt(1, 0), sorted.styleAt(2, 0)]).toEqual([{ bold: true, italic: true }, null, { bold: true }]);
+
+    // A1:B1 turns bold off over A1 between the two entries; moving A1's bold past it would flip that.
+    const between = { ...EMPTY_FORMATTING, cellStyles: { 'A1:A2': { bold: true }, 'A1:B1': { bold: false }, A1: { italic: true } } } as unknown as SheetMeta;
+    const kept = new CellStyleIndex(reorderRowMetadata(between, 0, [0, 2, 1]).cellStyles);
+    expect(kept.styleAt(0, 0)).toEqual({ italic: true });
+    expect(kept.styleAt(2, 0)).toEqual({ bold: true });
+  });
+
+  it('R4-4: overlapping borders keep both sides when a sort splits them onto one key', () => {
+    const meta = { ...EMPTY_FORMATTING, cellStyles: {}, borders: { 'A1:A2': { left: { style: 'thin' } }, A1: { top: { style: 'thick' } } } } as unknown as SheetMeta;
+    expect(reorderRowMetadata(meta, 0, [0, 2, 1]).borders.A1).toEqual({ left: { style: 'thin' }, top: { style: 'thick' } });
   });
 
   it('leaves other ranges untouched', () => {

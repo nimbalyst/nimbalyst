@@ -10,7 +10,7 @@
  * `relationship` stores {@link TrackerRelationshipValue}[], `multiselect`/`array`
  * store string[], and dates store ISO strings.
  */
-import type { FieldDefinition, FieldOption } from '@nimbalyst/tracker-schema';
+import type { FieldDefinition, FieldOption } from '../../../../../tracker-schema/src/browser';
 /** Which editor a cell renders when it enters edit mode. */
 export type CellEditorKind = 'text' | 'multiline' | 'number' | 'select' | 'multiselect' | 'date' | 'datetime' | 'boolean' | 'user' | 'relationship' | 'url' | 'readonly';
 export interface CellEditorDescriptor {

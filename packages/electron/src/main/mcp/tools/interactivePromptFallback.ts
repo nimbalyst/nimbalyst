@@ -9,6 +9,19 @@
 // registry so the guard can be relaxed safely in that sole-pending case while
 // staying strict when multiple prompts are concurrently pending.
 
+export function getRequestUserInputResponseChannel(
+  sessionId: string,
+  promptId: string,
+): string {
+  return `request-user-input-response:${sessionId || "unknown"}:${promptId}`;
+}
+
+export function getRequestUserInputFallbackResponseChannel(
+  sessionId: string,
+): string {
+  return `request-user-input-response:${sessionId || "unknown"}:__fallback__`;
+}
+
 /** Per-session count of interactive prompt waiters currently blocked on input. */
 const pendingInteractiveWaiters = new Map<string, number>();
 

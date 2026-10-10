@@ -55,12 +55,16 @@ export class TranscriptWriter {
       inputType?: 'user' | 'system_message';
       attachments?: UserMessagePayload['attachments'];
       createdAt?: Date;
+      promptActor?: UserMessagePayload['promptActor'];
+      promptOrigin?: string;
     },
   ): Promise<TranscriptEvent> {
     const payload: UserMessagePayload = {
       mode: options?.mode ?? 'agent',
       inputType: options?.inputType ?? 'user',
       ...(options?.attachments ? { attachments: options.attachments } : {}),
+      ...(options?.promptActor ? { promptActor: options.promptActor } : {}),
+      ...(options?.promptOrigin ? { promptOrigin: options.promptOrigin } : {}),
     };
 
     return this.insertEvent(sessionId, {

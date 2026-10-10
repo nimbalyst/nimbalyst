@@ -16,7 +16,7 @@
  * Deliberately free of the tracker-ui barrels: the collab bundle's editor entry
  * imports this, and it must not drag the grid or list surfaces into that graph.
  */
-import { type PredicateDefinition, type StatusCategory, type TrackerDataModel } from '@nimbalyst/tracker-schema';
+import { type PredicateDefinition, type StatusCategory, type TrackerDataModel } from '../../../../tracker-schema/src/browser';
 import type { TrackerDataSource, TrackerItem } from '../../trackers/dataSource';
 import { type TrackerReferenceSearchResult } from '../../../../runtime/src/plugins/TrackerLinkPlugin/trackerReferenceSearch';
 import type { TrackerReferenceStatusOption } from './trackerReferenceLifecycle';

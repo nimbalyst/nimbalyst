@@ -3,6 +3,7 @@ import react from '@vitejs/plugin-react';
 import { resolve } from 'path';
 import { copyFileSync, mkdirSync } from 'fs';
 import { dirname } from 'path';
+import { createRequire } from 'module';
 import { createManifestValidationPlugin } from '@nimbalyst/extension-sdk/vite';
 
 export default defineConfig({
@@ -18,24 +19,15 @@ export default defineConfig({
     {
       name: 'copy-pdfjs-worker',
       closeBundle() {
-        // Copy the PDF.js worker to the dist folder
-        // Try extension's own node_modules first, then fall back to monorepo root
-        const localWorkerSrc = resolve(__dirname, 'node_modules/pdfjs-dist/build/pdf.worker.min.mjs');
-        const rootWorkerSrc = resolve(__dirname, '../../../node_modules/pdfjs-dist/build/pdf.worker.min.mjs');
+        // Copy the PDF.js worker to the dist folder. Resolve through Node so the
+        // lookup follows wherever the package manager placed pdfjs-dist, and let
+        // a missing worker fail the build instead of shipping a broken viewer.
+        const require = createRequire(import.meta.url);
+        const workerSrc = resolve(dirname(require.resolve('pdfjs-dist/package.json')), 'build/pdf.worker.min.mjs');
         const workerDest = resolve(__dirname, 'dist/pdf.worker.min.mjs');
-
-        try {
-          mkdirSync(dirname(workerDest), { recursive: true });
-          // Try local first, then root
-          try {
-            copyFileSync(localWorkerSrc, workerDest);
-          } catch {
-            copyFileSync(rootWorkerSrc, workerDest);
-          }
-          console.log('Copied PDF.js worker to dist/');
-        } catch (error) {
-          console.error('Failed to copy PDF.js worker:', error);
-        }
+        mkdirSync(dirname(workerDest), { recursive: true });
+        copyFileSync(workerSrc, workerDest);
+        console.log('Copied PDF.js worker to dist/');
       },
     },
   ],

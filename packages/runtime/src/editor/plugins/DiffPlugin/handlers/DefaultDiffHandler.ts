@@ -15,11 +15,11 @@ import type {
   DiffNodeHandler,
 } from './DiffNodeHandler';
 import type {ElementNode, LexicalNode, SerializedLexicalNode} from 'lexical';
-import {$isElementNode, $isTextNode} from 'lexical';
+import {$isDecoratorNode, $isElementNode, $isTextNode} from 'lexical';
 
 import {getNodeContent} from '../core/calculateNodeSimilarity';
 import {createNodeFromSerialized} from '../core/createNodeFromSerialized';
-import {$setDiffState} from '../core/DiffState';
+import {$clearDiffState, $setDiffState} from '../core/DiffState';
 
 /**
  * Default handler for basic node types (paragraph, heading, text, etc.)
@@ -40,6 +40,10 @@ export class DefaultDiffHandler implements DiffNodeHandler {
     if ($isElementNode(liveNode) && sourceNode.type === targetNode.type) {
       // Handle element node updates (paragraph, heading, etc.)
       return this.handleElementNodeUpdate(liveNode, sourceNode, targetNode);
+    }
+
+    if ($isDecoratorNode(liveNode) && sourceNode.type === targetNode.type) {
+      return this.handleDecoratorNodeUpdate(liveNode, sourceNode, targetNode);
     }
 
     if (
@@ -155,6 +159,28 @@ export class DefaultDiffHandler implements DiffNodeHandler {
   }
 
   /**
+   * Widget blocks (2x2, images, embeds...) draw from their own fields, so a
+   * 'modified' mark alone leaves the old widget on screen and approving keeps
+   * the old content. Show the old one as removed and the new one as added;
+   * the generic approve/reject passes settle added/removed for any node.
+   */
+  private handleDecoratorNodeUpdate(
+    liveNode: LexicalNode,
+    sourceNode: SerializedLexicalNode,
+    targetNode: SerializedLexicalNode,
+  ): DiffHandlerResult {
+    if (serializedFields(sourceNode) === serializedFields(targetNode)) {
+      $clearDiffState(liveNode);
+      return {handled: true, skipChildren: true};
+    }
+    const next = createNodeFromSerialized(targetNode);
+    $setDiffState(liveNode, 'removed');
+    $setDiffState(next, 'added');
+    liveNode.insertAfter(next);
+    return {handled: true, skipChildren: true};
+  }
+
+  /**
    * Handle element node updates - simplified with DiffState
    */
   private handleElementNodeUpdate(
@@ -177,4 +203,10 @@ export class DefaultDiffHandler implements DiffNodeHandler {
 
     return {handled: true, skipChildren: false};
   }
+}
+
+/** A node's own fields, without NodeState (`$`), which carries diff bookkeeping. */
+function serializedFields(node: SerializedLexicalNode): string {
+  const {$: _state, ...fields} = node as SerializedLexicalNode & {$?: unknown};
+  return JSON.stringify(fields);
 }

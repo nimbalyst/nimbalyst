@@ -16,8 +16,6 @@ export interface TrackerRelationshipValue {
   revisionId?: string;
   /** Room-assigned display number for `revisionId`. Advisory; never resolves. */
   serverRevision?: number;
-  /** Qualifier values, when the owning field declares a `predicate` (4.1). */
-  qualifiers?: Record<string, unknown>;
 }
 
 export function isRelationshipField(
@@ -71,11 +69,5 @@ function coerceRelationship(entry: unknown): TrackerRelationshipValue | null {
   if (typeof object.revisionId === "string") value.revisionId = object.revisionId;
   if (typeof object.serverRevision === "number")
     value.serverRevision = object.serverRevision;
-  if (
-    object.qualifiers
-    && typeof object.qualifiers === "object"
-    && !Array.isArray(object.qualifiers)
-  )
-    value.qualifiers = object.qualifiers as Record<string, unknown>;
   return value;
 }

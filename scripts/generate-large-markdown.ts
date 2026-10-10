@@ -1,4 +1,4 @@
-#!/usr/bin/env npx tsx
+#!/usr/bin/env -S pnpm exec tsx
 
 import * as fs from 'fs';
 import * as path from 'path';
@@ -51,7 +51,7 @@ function main() {
       i++;
     } else if (args[i] === '--help') {
       console.log(`
-Usage: npx tsx generate-large-markdown.ts [options]
+Usage: pnpm exec tsx generate-large-markdown.ts [options]
 
 Options:
   --size <kb>      Target file size in KB (default: 100)

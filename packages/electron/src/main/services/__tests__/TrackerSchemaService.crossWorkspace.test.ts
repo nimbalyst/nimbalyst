@@ -15,16 +15,23 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 // Same electron / ipc / chokidar mocks as the sibling TrackerSchemaService tests
 // so the real service can run headless against temp workspace dirs.
-const { mockSafeHandle, mockWatch, mockWindowSend } = vi.hoisted(() => ({
-  mockSafeHandle: vi.fn(),
-  mockWatch: vi.fn(() => ({
-    on() {
-      return this;
+const { mockSafeHandle, mockWatch, mockWindowSend, testWindows, windowWorkspaces } = vi.hoisted(() => {
+  const mockWindowSend = vi.fn();
+  return {
+    mockSafeHandle: vi.fn(),
+    mockWatch: vi.fn(() => ({
+      on() {
+        return this;
+      },
+      close: vi.fn().mockResolvedValue(undefined),
+    })),
+    mockWindowSend,
+    testWindows: {
+      list: [] as Array<{ id: number; isDestroyed: () => boolean; webContents: { send: (...args: unknown[]) => void } }>,
     },
-    close: vi.fn().mockResolvedValue(undefined),
-  })),
-  mockWindowSend: vi.fn(),
-}));
+    windowWorkspaces: new Map<number, string>(),
+  };
+});
 
 vi.mock('electron', async () => ({
   app: {
@@ -40,8 +47,13 @@ vi.mock('electron', async () => ({
     quit: vi.fn(),
   },
   BrowserWindow: {
-    getAllWindows: () => [{ webContents: { send: mockWindowSend } }],
+    getAllWindows: () => testWindows.list,
   },
+}));
+
+vi.mock('../../window/windowState', () => ({
+  getWindowIdForWindow: (win: { id: number }) => win.id,
+  resolveActiveWorkspacePathForWindowId: (id: number) => windowWorkspaces.get(id),
 }));
 
 vi.mock('../../utils/ipcRegistry', () => ({
@@ -210,9 +222,45 @@ describe('TrackerSchemaService cross-workspace isolation (#1035)', () => {
     await writeSchema(wsB, 'gadget.yaml', gadgetYaml());
     await writeSchema(wsB, 'sprocket.yaml', sprocketYaml());
 
+    testWindows.list = [{ id: 1, isDestroyed: () => false, webContents: { send: mockWindowSend } }];
+    windowWorkspaces.clear();
+    mockWindowSend.mockClear();
+
     service = await import('../TrackerSchemaService');
     scope = await import('../tracker/trackerSchemaScope');
     ({ globalRegistry } = await import('@nimbalyst/tracker-schema'));
+  });
+
+  it('pushes a type defined in a non-active workspace to that workspace window', async () => {
+    // Window 1 shows A (the active schema workspace); window 2 shows B. An agent
+    // in B defines a new type. B's window only learns about types through
+    // `tracker-schema:changed`, so without a push the type is missing from its
+    // tracker pane until the window reloads.
+    const sendA = vi.fn();
+    const sendB = vi.fn();
+    testWindows.list = [
+      { id: 1, isDestroyed: () => false, webContents: { send: sendA } },
+      { id: 2, isDestroyed: () => false, webContents: { send: sendB } },
+    ];
+    windowWorkspaces.set(1, wsA);
+    windowWorkspaces.set(2, wsB);
+    service.initTrackerSchemaService(wsA);
+
+    await service.upsertWorkspaceTrackerSchema(wsB, gadgetYaml().replace(/gadget/g, 'keystone').replace(/Gadget/g, 'Keystone'));
+
+    await vi.waitFor(() => {
+      const pushedToB = sendB.mock.calls
+        .filter(([channel]) => channel === 'tracker-schema:changed')
+        .flatMap(([, schemas]) => (schemas as Array<{ type: string }>).map((s) => s.type));
+      expect(pushedToB).toContain('keystone');
+    });
+    // A's window must not receive B's type.
+    const pushedToA = sendA.mock.calls
+      .filter(([channel]) => channel === 'tracker-schema:changed')
+      .flatMap(([, schemas]) => (schemas as Array<{ type: string }>).map((s) => s.type));
+    expect(pushedToA).not.toContain('keystone');
+    // And the active view stays A's.
+    expect(service.getTrackerSchema('keystone')).toBeUndefined();
   });
 
   it('keeps the active workspace schema intact after a call targeting another workspace', () => {

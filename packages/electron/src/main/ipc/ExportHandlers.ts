@@ -3,7 +3,7 @@ import { safeHandle } from '../utils/ipcRegistry';
 import { writeFile } from 'fs/promises';
 import { logger } from '../utils/logger';
 import { AnalyticsService } from '../services/analytics/AnalyticsService';
-import { AISessionsRepository } from '@nimbalyst/runtime';
+import { AISessionsRepository } from '@nimbalyst/runtime/storage/repositories/AISessionsRepository';
 import type { SessionData } from '@nimbalyst/runtime/ai/server/types';
 import { exportSessionToHtml, getExportFilename } from '../services/SessionHtmlExporter';
 import { loadViewMessages } from '../utils/transcriptHelpers';
@@ -117,15 +117,12 @@ export function registerExportHandlers() {
           generateTaggedPDF,
           margins: margins
             ? {
-                marginType: 'custom',
                 top: margins.top ?? 0.4,
                 bottom: margins.bottom ?? 0.4,
                 left: margins.left ?? 0.4,
                 right: margins.right ?? 0.4,
               }
-            : {
-                marginType: 'default',
-              },
+            : undefined,
         });
 
         // Write the PDF to file

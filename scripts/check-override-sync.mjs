@@ -1,7 +1,7 @@
-// Guardrail: root `overrides` pins must stay compatible with the workspace
-// dependency ranges they force. An override is a hard pin applied to the whole
-// tree -- if it drifts below (or outside) the range a package declares, npm
-// silently resolves the OLD pinned version and the dependency bump is neutered
+// Guardrail: `overrides` pins in pnpm-workspace.yaml must stay compatible with
+// the workspace dependency ranges they force. An override is a hard pin applied
+// to the whole tree -- if it drifts below (or outside) the range a package
+// declares, pnpm silently resolves the OLD pinned version and the dependency bump is neutered
 // with no error. This bit us when claude-agent-sdk deps were bumped to ^0.3.161
 // in a feature commit but the root override stayed at 0.2.126.
 //
@@ -11,6 +11,7 @@ import { readFileSync, readdirSync, existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import semver from 'semver';
+import { readWorkspaceConfig } from './package-manager.mjs';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -35,12 +36,11 @@ function workspacePackageFiles() {
 
 const DEP_FIELDS = ['dependencies', 'devDependencies', 'optionalDependencies', 'peerDependencies'];
 
-const rootPkg = readJson(path.join(repoRoot, 'package.json'));
-const overrides = rootPkg.overrides ?? {};
+const overrides = readWorkspaceConfig(repoRoot).overrides ?? {};
 
-// Only bare-version overrides (e.g. "0.3.161"); skip nested objects like
-// { concurrently: { 'shell-quote': '...' } } which target a specific dep tree.
-const pinned = Object.entries(overrides).filter(([, v]) => typeof v === 'string');
+// Only whole-tree overrides (e.g. "0.3.161"); skip parent-scoped selectors like
+// `concurrently>shell-quote`, which target a specific dep tree.
+const pinned = Object.entries(overrides).filter(([k, v]) => typeof v === 'string' && !k.includes('>'));
 
 const pkgFiles = workspacePackageFiles();
 const errors = [];
@@ -51,14 +51,14 @@ for (const [name, override] of pinned) {
     for (const field of DEP_FIELDS) {
       const range = pkg[field]?.[name];
       if (!range || !semver.validRange(range) || !semver.validRange(override)) continue;
-      // If the override range and the declared range don't overlap, npm forces a
+      // If the override range and the declared range don't overlap, pnpm forces a
       // version outside what this package expects -- the dependency bump is
       // silently neutered. An exact pin ("0.3.161") is a single-version range,
       // so this also catches a stranded pin below a bumped range.
       if (!semver.intersects(override, range)) {
         errors.push(
           `${name}: override "${override}" does not overlap ${path.relative(repoRoot, file)} ` +
-            `(${field}) range "${range}" -- npm would force a version outside the declared range.`,
+            `(${field}) range "${range}" -- pnpm would force a version outside the declared range.`,
         );
       }
     }
@@ -69,8 +69,8 @@ if (errors.length > 0) {
   console.error('[check-override-sync] Root override(s) out of sync with workspace deps:\n');
   for (const e of errors) console.error(`  - ${e}`);
   console.error(
-    '\nBump the root `overrides` pin in package.json to match the dependency range ' +
-      '(see /update-libs Phase 2), then re-run `npm install`.',
+    '\nBump the `overrides` pin in pnpm-workspace.yaml to match the dependency range ' +
+      '(see /update-libs Phase 2), then re-run `pnpm install`.',
   );
   process.exit(1);
 }

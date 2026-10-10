@@ -42,6 +42,7 @@ import {
   DEFAULT_MODELS,
   baseContextWindowForVariant,
 } from '../../modelConstants';
+import { withClaudeCustomModels } from '../../claudeCustomModels';
 import type { ProviderSessionData } from './ProviderSessionManager';
 
 export class ClaudeCodeCliProvider extends BaseAgentProvider {
@@ -80,7 +81,7 @@ export class ClaudeCodeCliProvider extends BaseAgentProvider {
    * the `claude-code-cli:` namespace so the two providers stay distinct in the
    * registry and the per-session billing lock holds.
    */
-  static async getModels(): Promise<AIModel[]> {
+  static async getModels(workspacePath?: string): Promise<AIModel[]> {
     const models: AIModel[] = [];
 
     for (const variant of CLAUDE_CODE_VARIANTS) {
@@ -104,7 +105,8 @@ export class ClaudeCodeCliProvider extends BaseAgentProvider {
       }
     }
 
-    return models;
+    // User-defined gateway models from Claude settings `modelPicker`.
+    return withClaudeCustomModels('claude-code-cli', models, workspacePath);
   }
 
   static getDefaultModel(): string {

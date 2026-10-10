@@ -133,7 +133,7 @@ export function safeText(value: string): string {
 }
 
 /** As `safeText`, keeping the tabs and newlines a multi-line block needs. */
-function safeBlock(value: string): string {
+export function safeBlock(value: string): string {
   return value.replace(ANSI_SEQUENCE, '').replace(CONTROL_CHARS_KEEPING_WHITESPACE, '');
 }
 

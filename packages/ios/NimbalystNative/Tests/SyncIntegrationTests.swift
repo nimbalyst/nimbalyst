@@ -465,6 +465,24 @@ final class SyncIntegrationTests: XCTestCase {
         XCTAssertEqual(sync.syncError?.kind, .transport)
     }
 
+    /// Backgrounding drops the socket and reports a transport error; the
+    /// reconnect on return is what that error was waiting for, so it clears.
+    /// Any other kind is not answered by a reconnect and stays.
+    @MainActor
+    func testReconnectClearsTransportErrorButNotOtherKinds() throws {
+        let sync = manager(SendRecorder(), requestTimeout: .seconds(30))
+        _ = try sync.createWorktree(projectId: "/test/project")
+
+        sync.indexClient.onConnectionStateChanged?(false)
+        XCTAssertEqual(sync.syncError?.kind, .transport)
+        sync.indexClient.onConnectionStateChanged?(true)
+        XCTAssertNil(sync.syncError)
+
+        sync.report(SyncError(kind: .storage, message: "disk full"))
+        sync.indexClient.onConnectionStateChanged?(true)
+        XCTAssertEqual(sync.syncError?.kind, .storage)
+    }
+
     // MARK: - Error surface (R-D-2, R-D-3)
 
     /// R-D-2: a frame can be delivered and the socket error arrive after it, so
@@ -605,6 +623,45 @@ final class SyncIntegrationTests: XCTestCase {
         let entry = try JSONDecoder().decode(IndexUpdateMessage.self, from: Data(json.utf8)).session
         XCTAssertEqual(entry.sessionId, "child")
         XCTAssertEqual(entry.parentSessionId, "workstream-1")
+    }
+
+    @MainActor
+    func testParentClearPublishesExplicitNullAndRetriesWithoutAssigningManager() throws {
+        let recorder = SendRecorder()
+        let sync = manager(recorder)
+        try seedSession("child")
+        var cached = try XCTUnwrap(database.session(byId: "child"))
+        cached.parentSessionId = "old-parent"
+        cached.createdBySessionId = "desktop-manager"
+        try database.upsertSession(cached)
+
+        try sync.updateSessionParent(sessionId: "child", parentSessionId: "new-parent")
+        var message = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(try XCTUnwrap(recorder.sent.last).utf8)) as? [String: Any])
+        var entry = try XCTUnwrap(message["session"] as? [String: Any])
+        XCTAssertEqual(entry["parentSessionId"] as? String, "new-parent")
+        XCTAssertNil(entry["createdBySessionId"], "Desktop alone assigns the manager")
+        XCTAssertEqual(try database.session(byId: "child")?.createdBySessionId, "desktop-manager")
+
+        try sync.updateSessionParent(sessionId: "child", parentSessionId: nil)
+        message = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(try XCTUnwrap(recorder.sent.last).utf8)) as? [String: Any])
+        entry = try XCTUnwrap(message["session"] as? [String: Any])
+        XCTAssertTrue(entry["parentSessionId"] is NSNull, "Omission is not a clear")
+        XCTAssertNil(entry["createdBySessionId"])
+        XCTAssertNil(try database.session(byId: "child")?.parentSessionId)
+
+        recorder.failure = NSError(domain: "test", code: 1)
+        try sync.updateSessionParent(sessionId: "child", parentSessionId: nil)
+        XCTAssertEqual(sync.requests.replayCount, 1)
+        let beforeReplay = recorder.sent.count
+        recorder.failure = nil
+        sync.requests.reconnect()
+        XCTAssertEqual(recorder.sent.count, beforeReplay + 1, "A nil parent must not drop the queued clear")
+        message = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(try XCTUnwrap(recorder.sent.last).utf8)) as? [String: Any])
+        entry = try XCTUnwrap(message["session"] as? [String: Any])
+        XCTAssertTrue(entry["parentSessionId"] is NSNull)
+        XCTAssertNil(entry["createdBySessionId"])
+        XCTAssertEqual(try database.session(byId: "child")?.createdBySessionId, "desktop-manager")
+        XCTAssertEqual(sync.requests.replayCount, 0)
     }
 
     private func messageBroadcast(id: String, sequence: Int, text: String,

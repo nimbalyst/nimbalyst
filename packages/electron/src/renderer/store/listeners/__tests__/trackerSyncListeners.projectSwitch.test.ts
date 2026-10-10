@@ -3,6 +3,9 @@ import { store } from '@nimbalyst/runtime/store';
 import { activeWorkspacePathAtom } from '../../atoms/openProjects';
 import { initTrackerPanelLayout, sharedTrackerSavedViewsAtom } from '../../atoms/trackers';
 import { initTrackerSyncListeners } from '../trackerSyncListeners';
+import { trackerItemsMapAtom } from '@nimbalyst/runtime/plugins/TrackerPlugin/trackerDataAtoms';
+import type { TrackerRecord } from '@nimbalyst/tracker-core';
+import { mergeLocalWikiRecords } from '../../../services/localWikiTrackerRecords';
 import {
   createDefaultViewDefinition,
   serializeSharedSavedView,
@@ -95,6 +98,26 @@ describe('initTrackerSyncListeners project switch (NIM-668)', () => {
       ).length;
       expect(after).toBeGreaterThan(listCallsBeforeSwitch);
     });
+  });
+
+  it('drops the previous project\'s Local wiki items on a switch', async () => {
+    const wikiItem = { id: 'wiki-a', primaryType: 'competitor', typeTags: ['competitor'], source: 'local-wiki', archived: false,
+      syncStatus: 'local', system: { workspace: '/ws/A', createdAt: 'x', updatedAt: 'x' }, fields: { title: 'Acme' } } as TrackerRecord;
+    cleanup = initTrackerSyncListeners();
+    await vi.waitFor(() => {
+      expect(invoke).toHaveBeenCalledWith('document-service:tracker-items-list');
+    });
+    mergeLocalWikiRecords('/ws/A', [wikiItem]);
+    expect(store.get(trackerItemsMapAtom).has('wiki-a')).toBe(true);
+
+    store.set(activeWorkspacePathAtom, '/ws/B');
+    expect(store.get(trackerItemsMapAtom).has('wiki-a')).toBe(false);
+    await vi.waitFor(() => {
+      expect(invoke.mock.calls.filter(([channel]) => channel === 'document-service:tracker-items-list').length).toBe(2);
+    });
+    await Promise.resolve();
+    expect(store.get(trackerItemsMapAtom).has('wiki-a')).toBe(false);
+    mergeLocalWikiRecords('/ws/A', []);
   });
 
   it('clears and reloads shared views for the newly active workspace', async () => {

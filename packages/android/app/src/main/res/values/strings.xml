@@ -1,3 +1,52 @@
 <resources>
     <string name="app_name">Nimbalyst</string>
+
+    <!-- Pairing -->
+    <string name="pairing_title">Pair with Nimbalyst</string>
+    <string name="pairing_instructions">Open Nimbalyst in the desktop app, go to Settings &gt; Mobile Sync, and scan the QR code to pair this device.</string>
+    <string name="pairing_scan_button">Scan QR Code</string>
+    <string name="pairing_invalid_qr">Invalid QR code. Make sure you\'re scanning a Nimbalyst pairing code.</string>
+
+    <!-- Sign in -->
+    <string name="login_title">Sign In</string>
+    <!-- %1$s is the paired email; the screen renders it in bold. -->
+    <string name="login_subtitle_paired">Sign in as %1$s to sync with the desktop app.</string>
+    <string name="login_subtitle">Sign in with the same account you use on the desktop app to sync your sessions.</string>
+    <string name="login_google">Sign in with Google</string>
+    <string name="login_email_link">Sign in with email link</string>
+    <string name="login_sending">Sending…</string>
+    <string name="login_check_email">Check your email</string>
+    <string name="login_magic_link_sent">We sent a sign-in link to %1$s. Tap the link in your email to continue.</string>
+    <string name="login_resend_link">Resend link</string>
+    <string name="login_use_different_method">Use a different sign-in method</string>
+    <string name="login_network_error">Network error. Please try again.</string>
+    <string name="login_dismiss_error">Dismiss</string>
+    <string name="login_unpair">Unpair Device</string>
+
+    <!-- Projects -->
+    <string name="projects_header">Projects</string>
+    <string name="projects_empty_title">No Projects</string>
+    <string name="projects_empty">Projects will appear here once synced from the desktop app.</string>
+    <string name="settings">Settings</string>
+    <plurals name="project_session_count">
+        <item quantity="one">%1$d session</item>
+        <item quantity="other">%1$d sessions</item>
+    </plurals>
+
+    <!-- Shared components -->
+    <string name="connection_desktop_connected">Desktop connected</string>
+    <string name="connection_sync_only">Connected to sync server, desktop offline</string>
+    <string name="connection_offline">Offline</string>
+    <string name="phase_backlog">Backlog</string>
+    <string name="phase_planning">Planning</string>
+    <string name="phase_implementing">Implementing</string>
+    <string name="phase_validating">Validating</string>
+    <string name="phase_complete">Complete</string>
+    <string name="context_usage_percent">%1$d%%</string>
+    <string name="context_usage_label">Context %1$d%%</string>
+    <string name="webview_unavailable">Android System WebView is unavailable or updating. Try again in a moment.</string>
+    <string name="link_no_app">No app can open this link.</string>
+    <string name="login_no_browser">No browser is available to sign in with Google.</string>
+    <string name="camera_app_unavailable">No camera app is available.</string>
+    <string name="pairing_camera_unavailable">This device\'s camera could not be started, so the pairing code cannot be scanned.</string>
 </resources>

@@ -1,5 +1,5 @@
 /*
- * The ontology inspector: "What we track" cards, the concept map, the gaps
+ * The ontology inspector: "What we track" cards, the neighborhood diagram, the gaps
  * rail and the proposal drawer. Colors come from the host's --nim-* theme; the
  * four group accents fall back to the mockup's values where a theme has no
  * matching variable.
@@ -174,19 +174,8 @@
 .ontology-status[data-status='accepted'] { color: var(--nim-primary); }
 
 /* ---------- Concept map ---------- */
-.ontology-map { display: grid; grid-template-columns: minmax(0, 1fr) 380px; flex: 1; min-height: 0; }
-@container (max-width: 1000px) { .ontology-map { grid-template-columns: minmax(0, 1fr); } }
-.ontology-map-main { padding: 20px 24px 28px; min-width: 0; overflow: auto; }
-.ontology-map-main h1 { margin: 0 0 4px; font-size: 22px; font-weight: 650; letter-spacing: -.01em; }
-.ontology-map-sub { color: var(--nim-text-muted); font-size: 13px; margin: 0 0 14px; max-width: 80ch; }
-.ontology-map-key { display: flex; align-items: center; gap: 14px; margin-bottom: 10px; font-size: 12px; color: var(--nim-text-faint); flex-wrap: wrap; }
-.ontology-map-key > span { display: inline-flex; align-items: center; gap: 6px; }
-.ontology-map-key .ontology-key-line { width: 22px; height: 0; border-top: 2px solid var(--nim-text-faint); }
-.ontology-map-key .ontology-key-line[data-state='weak'] { border-top-style: dashed; opacity: .7; }
-.ontology-map-key .ontology-key-line[data-state='missing'] { border-top: 2px dashed var(--nim-warning); }
 .ontology-canvas { background-color: var(--ontology-canvas); background-image: radial-gradient(color-mix(in srgb, var(--nim-text-faint) 22%, transparent) 1px, transparent 1px); background-size: 18px 18px; border: 1px solid var(--ontology-rule); border-radius: 12px; overflow: hidden; }
 .ontology-canvas svg { display: block; width: 100%; height: auto; }
-.ontology-map-panel { border-left: 1px solid var(--ontology-rule); background: var(--ontology-surface); padding: 18px 20px 40px; overflow: auto; }
 .ontology-member-line { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; padding: 5px 0; font-size: 13px; border-bottom: 1px solid var(--ontology-rule); }
 .ontology-member-line > :first-child { color: var(--nim-text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ontology-member-line > :last-child { color: var(--nim-text-faint); font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 190px; }
@@ -212,9 +201,6 @@
 .ontology-edge[data-state='missing'] .ontology-edge-label rect { fill: color-mix(in srgb, var(--nim-warning) 10%, var(--nim-bg-secondary)); stroke: color-mix(in srgb, var(--nim-warning) 45%, transparent); }
 .ontology-edge[data-state='missing'] .ontology-edge-label text,
 .ontology-edge[data-state='missing'] .ontology-edge-label tspan { fill: var(--nim-warning); }
-.ontology-map-svg[data-focus='true'] .ontology-edge,
-.ontology-map-svg[data-focus='true'] .ontology-node { opacity: .22; }
-.ontology-map-svg[data-focus='true'] [data-lit='true'] { opacity: 1; }
 .ontology-region { fill: var(--nim-text-faint); font-size: 10.5px; letter-spacing: .1em; font-weight: 600; }
 .ontology-arrow { fill: var(--nim-text-faint); }
 .ontology-node-accent-market { fill: var(--ontology-market); }

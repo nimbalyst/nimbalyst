@@ -13,6 +13,7 @@
  */
 
 import { ModelIdentifier } from '@nimbalyst/runtime/ai/server/types';
+import { EFFORT_LEVELS, type EffortLevel } from '@nimbalyst/runtime/ai/server/effortLevels';
 
 export type ActionLaunch = 'same-session' | 'new-session';
 
@@ -20,6 +21,8 @@ export interface ActionLaunchConfig {
   launch: ActionLaunch;
   /** Provider:variant identifier (e.g. "claude-code:opus"); undefined = inherit parent's model */
   model?: string;
+  /** Reasoning effort (low|medium|high|xhigh|max|ultra); undefined = leave the session's effort alone */
+  effort?: EffortLevel;
   foreground: boolean;
   autoSubmit: boolean;
   worktree: boolean;
@@ -42,7 +45,8 @@ export type ActionPromptDiagnosticCode =
   | 'unknown-action-key'
   | 'invalid-launch'
   | 'invalid-bool'
-  | 'invalid-model';
+  | 'invalid-model'
+  | 'invalid-effort';
 
 export interface ActionPromptParseDiagnostic {
   level: 'warning';
@@ -71,6 +75,7 @@ const KEY_VALUE_PATTERN = /^([a-z][a-zA-Z0-9_-]*)\s*:\s*(.+?)\s*$/;
 const KNOWN_KEYS = new Set([
   'launch',
   'model',
+  'effort',
   'foreground',
   'autoSubmit',
   'worktree',
@@ -79,6 +84,7 @@ const KNOWN_KEYS = new Set([
 const DEFAULT_CONFIG: ActionLaunchConfig = {
   launch: 'same-session',
   model: undefined,
+  effort: undefined,
   foreground: true,
   autoSubmit: true,
   worktree: false,
@@ -173,6 +179,21 @@ function parseConfigBlock(label: string, lines: string[]): ConfigParseOutcome {
             code: 'invalid-model',
             label,
             message: `Invalid model "${v}" — expected provider:variant (e.g. "claude-code:opus"). Falling back to inherit.`,
+          });
+        }
+        break;
+      }
+      case 'effort': {
+        const v = value.trim().toLowerCase();
+        const match = EFFORT_LEVELS.find((entry) => entry.key === v);
+        if (match) {
+          result.effort = match.key;
+        } else {
+          diagnostics.push({
+            level: 'warning',
+            code: 'invalid-effort',
+            label,
+            message: `Invalid effort "${value.trim()}" — expected one of: ${EFFORT_LEVELS.map((entry) => entry.key).join(', ')}. Falling back to inherit.`,
           });
         }
         break;
@@ -317,7 +338,7 @@ Actions can also launch a brand-new sibling session in the current workstream
 instead of prefilling the current input.
 
 Recognized keys: \`launch\` (same-session | new-session), \`model\`
-(provider:variant), \`foreground\` (true/false), \`autoSubmit\` (true/false),
+(provider:variant), \`effort\` (low | medium | high | xhigh | max | ultra), \`foreground\` (true/false), \`autoSubmit\` (true/false),
 \`worktree\` (true/false). \`launch: same-session\` is the default; omit the
 block entirely to keep current behavior.
 

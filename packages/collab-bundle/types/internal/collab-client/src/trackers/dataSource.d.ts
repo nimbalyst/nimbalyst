@@ -97,6 +97,7 @@ export type TrackerDataChange = {
 };
 export interface TrackerCreateItemInput {
     id: string;
+    creationRequestId?: string;
     type: string;
     title: string;
     status: string;

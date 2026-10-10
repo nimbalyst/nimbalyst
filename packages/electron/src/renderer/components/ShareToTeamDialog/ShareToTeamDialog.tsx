@@ -4,7 +4,7 @@ import type { CollaborativeDocumentTypeDescriptor } from '../../services/Collabo
 import type { EmbeddedDocumentCandidate } from '../../services/embeddedDocumentShare';
 import { SharedFolderPickerPanel } from './SharedFolderPickerPanel';
 import { useLastSharedFolder } from './useLastSharedFolder';
-import { useSharedFolderTree } from './useSharedFolderTree';
+import { useSharedFolderTree, type SharedFolderSection } from './useSharedFolderTree';
 
 export interface ShareToTeamDialogProps {
   isOpen: boolean;
@@ -19,11 +19,15 @@ export interface ShareToTeamDialogProps {
    * already asked the author where this is going.
    */
   initialFolderId?: string | null;
+  /** The Pages sections the copy may go to, first is the default. */
+  sections?: readonly SharedFolderSection[];
+  initialSection?: SharedFolderSection;
   /**
-   * Called when the user confirms. Returns the selected destination folder
-   * (empty string = team root) and the shared name (with extension).
+   * Called when the user confirms. Returns the section, the parent page
+   * (null = top of the section) and the page name (with extension).
    */
   onConfirm: (params: {
+    section: SharedFolderSection;
     folderId: string | null;
     folderPath: string;
     sharedName: string;
@@ -32,6 +36,8 @@ export interface ShareToTeamDialogProps {
 }
 
 const EMPTY_EMBEDDED_DOCUMENTS: EmbeddedDocumentCandidate[] = [];
+const TEAM_ONLY: readonly SharedFolderSection[] = ['team'];
+const SECTION_LABEL: Record<SharedFolderSection, string> = { team: 'Team', personal: 'Personal' };
 
 export function splitShareFileName(
   fileName: string,
@@ -56,9 +62,18 @@ export function ShareToTeamDialog({
   sourceRelPath,
   embeddedDocuments = EMPTY_EMBEDDED_DOCUMENTS,
   initialFolderId,
+  sections = TEAM_ONLY,
+  initialSection,
   onConfirm,
 }: ShareToTeamDialogProps) {
-  const folderTree = useSharedFolderTree(isOpen);
+  const [section, setSection] = useState<SharedFolderSection>(initialSection ?? sections[0] ?? 'team');
+  useEffect(() => {
+    if (isOpen) setSection(initialSection ?? sections[0] ?? 'team');
+  }, [initialSection, isOpen, sections]);
+  const personal = section === 'personal';
+  // Linked documents are copied as Team pages; a Personal page keeps its links as they are.
+  const linkedDocuments = personal ? EMPTY_EMBEDDED_DOCUMENTS : embeddedDocuments;
+  const folderTree = useSharedFolderTree(isOpen, section);
   const {
     isRefreshing: isRefreshingFolders,
     refreshFailed: folderRefreshFailed,
@@ -96,8 +111,14 @@ export function ShareToTeamDialog({
   );
 
   // Folder rows themselves come only from TeamRoom, never workspace/PGLite state.
-  const { hasLoaded: hasLoadedState, folderId: resolvedLastSharedFolderId } =
-    useLastSharedFolder(isOpen, folderLookups);
+  const lastShared = useLastSharedFolder(isOpen, folderLookups);
+  // The remembered destination is a Team page; Personal starts at the top.
+  const hasLoadedState = personal || lastShared.hasLoaded;
+  const resolvedLastSharedFolderId = personal ? undefined : lastShared.folderId;
+  // A different section is a different tree: seed its selection again.
+  useEffect(() => {
+    setHasInitializedSelection(false);
+  }, [section]);
 
   // After both local preference state and the authoritative refresh finish,
   // seed selection exactly once for this open.
@@ -149,10 +170,11 @@ export function ShareToTeamDialog({
       || !hasInitializedSelection
     ) return;
     onConfirm({
+      section,
       folderId: selectedFolderId,
       folderPath: selectedFolderId ? (folderLookups.pathById.get(selectedFolderId) ?? '') : '',
       sharedName: `${trimmedName}${fileNameParts.suffix}`,
-      selectedEmbeddedDocumentPaths: [...selectedEmbeddedDocumentPaths],
+      selectedEmbeddedDocumentPaths: personal ? [] : [...selectedEmbeddedDocumentPaths],
     });
     onClose();
   }, [
@@ -162,6 +184,8 @@ export function ShareToTeamDialog({
     isRefreshingFolders,
     onClose,
     onConfirm,
+    personal,
+    section,
     selectedFolderId,
     selectedEmbeddedDocumentPaths,
     fileNameParts.suffix,
@@ -173,10 +197,11 @@ export function ShareToTeamDialog({
   const selectedFolderPath = selectedFolderId
     ? (folderLookups.pathById.get(selectedFolderId) ?? '')
     : '';
-  const destinationFolderLabel = selectedFolderPath || 'Team root';
+  const sectionLabel = SECTION_LABEL[section];
+  const destinationFolderLabel = selectedFolderPath || sectionLabel;
   const destinationFullPath = selectedFolderPath
-    ? `${selectedFolderPath.split('/').join(' / ')} /`
-    : 'Team root /';
+    ? `${sectionLabel} / ${selectedFolderPath.split('/').join(' / ')} /`
+    : `${sectionLabel} /`;
 
   const canConfirm = Boolean(sharedBaseName.trim())
     && !isRefreshingFolders
@@ -186,7 +211,7 @@ export function ShareToTeamDialog({
   const selectedEmbeddedCount = selectedEmbeddedDocumentPaths.size;
   // Already-shared embeds are reused, not created, so they don't count toward
   // what this action will actually share.
-  const newlySharedEmbeddedCount = embeddedDocuments.filter(
+  const newlySharedEmbeddedCount = linkedDocuments.filter(
     document => selectedEmbeddedDocumentPaths.has(document.absolutePath)
       && !document.alreadyShared,
   ).length;
@@ -201,19 +226,21 @@ export function ShareToTeamDialog({
         className="share-to-team-dialog flex max-h-[90vh] w-[460px] max-w-[92%] flex-col overflow-hidden rounded-xl border border-[var(--nim-border)] bg-[var(--nim-bg)] shadow-2xl"
         onClick={(e) => e.stopPropagation()}
         role="dialog"
-        aria-label="Share to Team"
+        aria-label="Copy to Wiki"
       >
         {/* Header */}
         <div className="flex items-start gap-3 px-5 pt-4 pb-3 border-b border-[var(--nim-border)]">
           <div className="w-7 h-7 rounded-md bg-[var(--nim-primary)]/15 text-[var(--nim-primary)] flex items-center justify-center shrink-0 mt-0.5">
-            <MaterialSymbol icon="group" size={18} />
+            <MaterialSymbol icon="note_add" size={18} />
           </div>
           <div className="flex-1 min-w-0">
             <h2 className="text-[14px] font-semibold text-[var(--nim-text)] m-0 leading-tight">
-              Share to Team
+              Copy to Wiki
             </h2>
             <p className="text-[12px] text-[var(--nim-text-faint)] m-0 mt-0.5 leading-snug">
-              Pick where this document should live in your team space.
+              {personal
+                ? 'A copy for you in Personal; the file on disk stays as it is.'
+                : 'A copy your team can open and edit; the file on disk stays as it is.'}
             </p>
           </div>
           <button
@@ -241,8 +268,26 @@ export function ShareToTeamDialog({
             </div>
           </div>
 
+          {sections.length > 1 && (
+            <div className="share-to-pages-section mb-4 flex gap-1 rounded-md border border-[var(--nim-border-subtle,var(--nim-border))] bg-[var(--nim-bg-secondary)] p-0.5" role="radiogroup" aria-label="Section">
+              {sections.map((option) => (
+                <button
+                  key={option}
+                  type="button"
+                  role="radio"
+                  aria-checked={section === option}
+                  onClick={() => setSection(option)}
+                  className={`flex flex-1 items-center justify-center gap-1.5 rounded px-2 py-1 text-[12px] ${section === option ? 'bg-[var(--nim-bg)] text-[var(--nim-text)] font-medium' : 'text-[var(--nim-text-muted)] hover:text-[var(--nim-text)]'}`}
+                >
+                  <MaterialSymbol icon={option === 'personal' ? 'person' : 'group'} size={14} />
+                  {SECTION_LABEL[option]}
+                </button>
+              ))}
+            </div>
+          )}
+
           <div className="text-[11px] uppercase tracking-wider font-semibold text-[var(--nim-text-faint)] mb-1.5">
-            Shared name
+            Page name
           </div>
           <div className="flex items-center gap-1.5 px-2 bg-[var(--nim-bg-secondary)] border border-[var(--nim-border-subtle,var(--nim-border))] rounded-md mb-4 focus-within:border-[var(--nim-primary)]">
             <MaterialSymbol icon="edit" size={14} className="text-[var(--nim-text-faint)]" />
@@ -277,11 +322,12 @@ export function ShareToTeamDialog({
             onSelectFolder={setSelectedFolderId}
             highlightFolderId={resolvedLastSharedFolderId}
             canCreateFolder={hasInitializedSelection}
+            section={section}
           />
 
           <div className="flex items-center gap-2 px-3 py-2 bg-[var(--nim-bg-secondary)] border border-[var(--nim-border-subtle,var(--nim-border))] rounded-md mb-3 text-[12px] text-[var(--nim-text-muted)]">
             <MaterialSymbol icon="place" size={14} className="text-[var(--nim-text-faint)]" />
-            <span>Will be shared as</span>
+            <span>Will be added as</span>
             <span className="text-[var(--nim-text)] font-medium truncate" title={destinationFolderLabel}>
               {destinationFullPath}
             </span>
@@ -290,7 +336,7 @@ export function ShareToTeamDialog({
             </span>
           </div>
 
-          {embeddedDocuments.length > 0 && (
+          {linkedDocuments.length > 0 && (
             <div className="share-to-team-linked-documents mb-3">
               <div className="text-[11px] uppercase tracking-wider font-semibold text-[var(--nim-text-faint)] mb-1.5">
                 Linked documents
@@ -299,7 +345,7 @@ export function ShareToTeamDialog({
                 <div className="px-3 py-2 text-[12px] leading-snug text-[var(--nim-text-muted)] border-b border-[var(--nim-border-subtle,var(--nim-border))]">
                   Sharing this document will also share the documents it embeds so your team can see them.
                 </div>
-                {embeddedDocuments.map(document => {
+                {linkedDocuments.map(document => {
                   const checked = selectedEmbeddedDocumentPaths.has(document.absolutePath);
                   return (
                     <label
@@ -338,7 +384,7 @@ export function ShareToTeamDialog({
                     </label>
                   );
                 })}
-                {selectedEmbeddedCount < embeddedDocuments.length && (
+                {selectedEmbeddedCount < linkedDocuments.length && (
                   <div className="px-3 py-2 text-[11px] leading-snug text-[var(--nim-warning)] border-t border-[var(--nim-border-subtle,var(--nim-border))]">
                     Unchecked documents stay as local links that teammates cannot open.
                   </div>
@@ -367,10 +413,10 @@ export function ShareToTeamDialog({
                 : 'bg-[var(--nim-primary)] text-[#0f1115] opacity-50 cursor-not-allowed'
             }`}
           >
-            <MaterialSymbol icon="group_add" size={16} />
-            {embeddedDocuments.length > 0
-              ? `Share ${shareDocumentCount} document${shareDocumentCount === 1 ? '' : 's'}`
-              : 'Share to Team'}
+            <MaterialSymbol icon="note_add" size={16} />
+            {linkedDocuments.length > 0
+              ? `Copy ${shareDocumentCount} document${shareDocumentCount === 1 ? '' : 's'} to ${sectionLabel}`
+              : `Copy to ${sectionLabel}`}
           </button>
         </div>
       </div>

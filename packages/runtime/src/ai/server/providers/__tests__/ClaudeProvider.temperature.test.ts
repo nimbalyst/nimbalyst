@@ -76,6 +76,7 @@ describe('ClaudeProvider.supportsTemperature', () => {
 
     it('returns false for a future dated/minor Sonnet 5 id', () => {
       expect(ClaudeProvider.supportsTemperature('claude-sonnet-5-1')).toBe(false);
+      expect(ClaudeProvider.supportsTemperature('claude-sonnet-5-5')).toBe(false);
       expect(ClaudeProvider.supportsTemperature('claude-sonnet-6')).toBe(false);
     });
 
@@ -111,9 +112,13 @@ describe('ClaudeProvider.supportsTemperature', () => {
   });
 
   describe('accepts temperature for Haiku and legacy models', () => {
-    it('returns true for Haiku variants', () => {
+    it('returns true for Haiku 4.5 and earlier', () => {
       expect(ClaudeProvider.supportsTemperature('claude-haiku-4-5')).toBe(true);
       expect(ClaudeProvider.supportsTemperature('claude-3-5-haiku-20241022')).toBe(true);
+    });
+
+    it('returns false for Haiku 5.5, which rejects sampling parameters', () => {
+      expect(ClaudeProvider.supportsTemperature('claude-haiku-5-5')).toBe(false);
     });
 
     it('returns true for legacy Claude 3 Opus', () => {

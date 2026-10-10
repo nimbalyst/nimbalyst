@@ -80,15 +80,15 @@ The backend augments `PATH` with common install locations (`/usr/local/bin`, `/o
 
 ```bash
 cd packages/extensions/github-issues-importer
-npm run build      # builds both the inert renderer entry and the backend module
+pnpm run build      # builds both the inert renderer entry and the backend module
 ```
 
-`npm run build` runs two Vite passes:
+`pnpm run build` runs two Vite passes:
 
 - `vite build` — `src/index.ts` → `dist/index.js` (inert renderer `main`; the manifest requires one)
 - `vite build --config vite.backend.config.ts` — `src/backend.ts` → `dist/backend.js` (the utility-process backend)
 
-Other scripts: `npm run dev` (watch build), `npm run typecheck`.
+Other scripts: `pnpm run dev` (watch build), `pnpm run typecheck`.
 
 ## Architecture
 

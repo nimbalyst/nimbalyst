@@ -140,6 +140,7 @@ import { initCollabReplicaListeners } from './store/listeners/collabReplicaListe
 import { initCollabConversionListeners } from './store/listeners/collabConversionListeners';
 import { initNotificationListeners } from './store/listeners/notificationListeners';
 import { initExtensionPermissionListeners } from './store/listeners/extensionPermissionListeners';
+import { initPanelGutterBadgeListeners } from './store/listeners/panelGutterBadgeListeners';
 import { initPermissionListeners } from './store/listeners/permissionListeners';
 import { initSoundListeners } from './store/listeners/soundListeners';
 import { initStytchAuthListeners } from './store/listeners/stytchAuthListeners';
@@ -153,6 +154,8 @@ import { initWorkspaceActivationListeners } from './store/listeners/workspaceAct
 import { initWindowFullScreenListener } from './store/listeners/windowFullScreenListeners';
 import { initThemeFallbackListener } from './store/listeners/themeFallbackListeners';
 import { initTrackerSyncListeners } from './store/listeners/trackerSyncListeners';
+import { installLocalWikiTrackerWriter } from './services/localWikiTrackerWrites';
+import { createTrackerItem } from './services/localWikiTrackerRecords';
 import { initPullRequestListeners } from './store/listeners/pullRequestListeners';
 import { initGithubIssueListeners } from './store/listeners/githubIssueListeners';
 import { initReadReceiptListeners } from './store/listeners/readReceiptListeners';
@@ -164,6 +167,9 @@ import { initWakeupListeners } from './store/listeners/wakeupListener';
 import { TrackerMode } from './components/TrackerMode';
 import { PullRequestMode, type PullRequestModeRef } from './components/PullRequestMode';
 import { CollabMode, type CollabModeRef } from './components/CollabMode';
+import { navigatePagesHistory } from './components/CollabMode/pagesTabNavigation';
+import { openAgentEditedPage } from './utils/agentEditedPage';
+import { openConsoleLinkInWindow } from './utils/openConsoleLink';
 import {
   OrgModeHost,
   PROJECT_ORG_MODE_SURFACE_ID,
@@ -199,6 +205,10 @@ import { registerAIChatPlugin } from './plugins/registerAIChatPlugin';
 import { registerTrackerPlugin } from './plugins/registerTrackerPlugin';
 import { registerSearchReplacePlugin } from './plugins/registerSearchReplacePlugin';
 import { registerEmbedFrame } from './components/EmbedFrame';
+import { registerCodeExcerptHost } from './plugins/registerCodeExcerptHost';
+import { registerTransclusionHost } from './plugins/registerTransclusionHost';
+import { registerActionButtonHost } from './plugins/registerActionButtonHost';
+import { registerPageKnowledgePlugin } from './plugins/registerPageKnowledgePlugin';
 import { registerExtensionSystem, setExtensionWorkspacePath } from './plugins/registerExtensionSystem';
 import { SettingsView } from './components/Settings/SettingsView';
 import type { SettingsCategory } from './components/Settings/SettingsSidebar';
@@ -219,6 +229,8 @@ import {
   initializePanelRegistry,
   getPanelById,
   PanelContainer,
+  togglePanelPane,
+  useFullscreenPanelPaneControls,
   electronStorageBackend,
   initializeElectronStorageBackend,
 } from './extensions/panels';
@@ -331,6 +343,10 @@ if (!pluginsRegistered) {
   registerAIChatPlugin();
   registerSearchReplacePlugin(); // Search/replace bar in fixed tab header
   registerEmbedFrame(); // Inline embeds of extension editors in markdown docs
+  registerTransclusionHost(); // Live read-only sections of other pages
+  registerCodeExcerptHost(); // Repo reads and open-at-line for code excerpts
+  registerActionButtonHost(); // Start-session and new-item buttons in pages
+  registerPageKnowledgePlugin(); // Marks list source, citation jumps, mark author
   pluginsRegistered = true;
 }
 
@@ -411,6 +427,7 @@ export default function App() {
     const cleanupMenuCommand = initMenuCommandListeners();
     const cleanupNotification = initNotificationListeners();
     const cleanupExtensionPermission = initExtensionPermissionListeners();
+    const cleanupPanelGutterBadges = initPanelGutterBadgeListeners();
     const cleanupPermission = initPermissionListeners();
     const cleanupSound = initSoundListeners();
     const cleanupStytchAuth = initStytchAuthListeners();
@@ -420,6 +437,7 @@ export default function App() {
     const cleanupTheme = initThemeListener();
     const cleanupThemeFallback = initThemeFallbackListener();
     const cleanupTrackerSync = initTrackerSyncListeners();
+    const cleanupLocalWikiTrackerWriter = installLocalWikiTrackerWriter();
     const cleanupWorktree = initWorktreeListeners();
     const cleanupPullRequest = initPullRequestListeners();
     const cleanupGithubIssue = initGithubIssueListeners();
@@ -459,6 +477,7 @@ export default function App() {
       cleanupMenuCommand?.();
       cleanupNotification?.();
       cleanupExtensionPermission?.();
+      cleanupPanelGutterBadges();
       cleanupPermission?.();
       cleanupSound?.();
       cleanupStytchAuth?.();
@@ -468,6 +487,7 @@ export default function App() {
       cleanupTheme?.();
       cleanupThemeFallback?.();
       cleanupTrackerSync?.();
+      cleanupLocalWikiTrackerWriter();
       cleanupWorktree?.();
       cleanupPullRequest?.();
       cleanupGithubIssue?.();
@@ -655,6 +675,7 @@ export default function App() {
   // Check if a fullscreen extension panel is active (hides other content modes)
   const activeFullscreenPanel = activeExtensionPanel ? getPanelById(activeExtensionPanel) : null;
   const isFullscreenPanelActive = activeFullscreenPanel?.placement === 'fullscreen';
+  const fullscreenPanelPaneControls = useFullscreenPanelPaneControls(isFullscreenPanelActive ? activeExtensionPanel : null);
 
   // Window mode - which view is active (files, agent, settings)
   const activeMode = useAtomValue(windowModeAtom);
@@ -857,8 +878,11 @@ export default function App() {
   }, []);
 
   // Unified navigation history (cross-mode back/forward)
-  const goBack = useSetAtom(goBackAtom);
-  const goForward = useSetAtom(goForwardAtom);
+  // While Pages is shown, Back and Forward step its active tab instead.
+  const goBackInWindow = useSetAtom(goBackAtom);
+  const goForwardInWindow = useSetAtom(goForwardAtom);
+  const goBack = useCallback(() => { if (!navigatePagesHistory(-1)) goBackInWindow(); }, [goBackInWindow]);
+  const goForward = useCallback(() => { if (!navigatePagesHistory(1)) goForwardInWindow(); }, [goForwardInWindow]);
 
   // Onboarding dialogs (UnifiedOnboarding, WindowsClaudeCodeWarning) - managed via DialogProvider
   useOnboarding({
@@ -1150,7 +1174,7 @@ export default function App() {
   const pullRequestModeRef = useRef<PullRequestModeRef | null>(null);
 
   const toggleActiveLeftPane = useCallback(() => {
-    if (isFullscreenPanelActive) return;
+    if (isFullscreenPanelActive) return void togglePanelPane(activeExtensionPanel!, 'left');
     if (activeMode === 'files') {
       editorModeRef.current?.toggleSidebarCollapsed();
     } else if (activeMode === 'agent') {
@@ -1162,10 +1186,10 @@ export default function App() {
     } else if (activeMode === 'org') {
       orgModeRef.current?.toggleSidebarCollapsed();
     }
-  }, [activeMode, isFullscreenPanelActive, toggleAgentCollapsed, toggleTrackerCollapsed]);
+  }, [activeMode, activeExtensionPanel, isFullscreenPanelActive, toggleAgentCollapsed, toggleTrackerCollapsed]);
 
   const toggleActiveRightPane = useCallback(() => {
-    if (isFullscreenPanelActive) return;
+    if (isFullscreenPanelActive) return void togglePanelPane(activeExtensionPanel!, 'right');
     if (activeMode === 'files') {
       editorModeRef.current?.toggleAIChatCollapsed();
     } else if (activeMode === 'agent') {
@@ -1175,7 +1199,7 @@ export default function App() {
     } else if (activeMode === 'pr-review') {
       pullRequestModeRef.current?.toggleChatCollapsed();
     }
-  }, [activeMode, isFullscreenPanelActive]);
+  }, [activeMode, activeExtensionPanel, isFullscreenPanelActive]);
 
   // Expand the active tab to fill the window — the menu/shortcut equivalent of
   // double-clicking a tab. Only the modes that own editor tabs implement it.
@@ -1208,7 +1232,7 @@ export default function App() {
   }, [toggleExpandedTabVersion, toggleActiveEditorMaximized]);
 
   const windowTopBarPanelControls = useMemo<WindowTopBarPanelControls | undefined>(() => {
-    if (isFullscreenPanelActive) return undefined;
+    if (isFullscreenPanelActive) return fullscreenPanelPaneControls;
     if (activeMode === 'files') {
       return {
         left: {
@@ -1285,6 +1309,7 @@ export default function App() {
     collabPanelState,
     filesAIChatCollapsed,
     filesSidebarCollapsed,
+    fullscreenPanelPaneControls,
     isFullscreenPanelActive,
     prPanelState,
     toggleActiveLeftPane,
@@ -1389,7 +1414,7 @@ export default function App() {
       files: 'Files',
       agent: 'Agent',
       tracker: 'Tracker',
-      collab: 'Shared Docs',
+      collab: 'Wiki',
       org: 'Organization',
       'pr-review': 'PR Review',
       settings: 'Settings',
@@ -2123,8 +2148,16 @@ export default function App() {
   // Listen for tracker item navigation events (from TrackerToolWidget in transcript)
   useEffect(() => {
     const handleNavigateTrackerItem = (e: Event) => {
-      const itemId = (e as CustomEvent).detail?.itemId;
+      const detail = (e as CustomEvent).detail;
+      const itemId = detail?.itemId;
       if (typeof itemId !== 'string') return;
+
+      // A reference in a page shown in Pages opens the typed page there, like
+      // any page link: the current tab, or a new one on Cmd/Ctrl.
+      if (activeModeStateRef.current === 'collab' && detail.fromPage && workspacePath) {
+        void openAgentEditedPage(`tracker://${itemId}`, workspacePath, { source: 'embedded_document', options: { newTab: Boolean(detail.newTab) } });
+        return;
+      }
 
       // Contextual navigation: in Agent Mode with a workstream selected, open
       // the tracker as a workstream resource tab (statefully attached to the
@@ -2199,7 +2232,8 @@ export default function App() {
       try {
         const prefix = (item.type || 'itm').substring(0, 3);
         const id = `${prefix}_${Date.now().toString(36)}${Math.random().toString(36).substring(2, 8)}`;
-        const result = await window.electronAPI.documentService.createTrackerItem({
+        // A wiki type's item is a file in the Local wiki; any other stays in the app database.
+        const result = await createTrackerItem({
           id,
           type: item.type,
           title: item.title || `New ${item.type}`,
@@ -2724,6 +2758,10 @@ export default function App() {
           if (href && (href.startsWith('http://') || href.startsWith('https://'))) {
             event.preventDefault();
             event.stopPropagation();
+
+            // A console link in a page shown in Pages navigates like any page
+            // link there (the current tab, or a new one on Cmd/Ctrl).
+            if (anchor.closest('.collab-mode .tab-content') && openConsoleLinkInWindow(href, { newTab: event.metaKey || event.ctrlKey })) return;
 
             // Open in default browser
             window.electronAPI.openExternal(href).catch((error) => {

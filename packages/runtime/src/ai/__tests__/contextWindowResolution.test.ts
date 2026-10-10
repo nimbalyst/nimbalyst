@@ -109,12 +109,13 @@ describe('1M variant lists', () => {
     expect(CLAUDE_CODE_NATIVE_1M_VARIANTS).toContain('opus');
     expect(CLAUDE_CODE_NATIVE_1M_VARIANTS).toContain('fable');
     expect(CLAUDE_CODE_NATIVE_1M_VARIANTS).toContain('sonnet');
-    expect(CLAUDE_CODE_NATIVE_1M_VARIANTS).not.toContain('haiku');
+    expect(CLAUDE_CODE_NATIVE_1M_VARIANTS).toContain('haiku');
+    expect(CLAUDE_CODE_NATIVE_1M_VARIANTS).not.toContain('haiku-4-5');
   });
 
   it('offers -1m rows for the dateless opus/fable aliases only', () => {
-    // sonnet: Sonnet 5 has no 200K variant and no `[1m]` suffix — a dead row.
-    // haiku: no 1M window.
+    // sonnet: Sonnet 5.x has no 200K variant and no `[1m]` suffix — a dead row.
+    // haiku: Haiku 5.5 is native 1M with no `[1m]` suffix; Haiku 4.5 has no 1M window.
     // Pinned legacy models retain their existing single picker row.
     expect([...CLAUDE_CODE_VARIANTS_WITH_1M].sort()).toEqual(['fable', 'opus']);
   });
@@ -127,14 +128,16 @@ describe('1M variant lists', () => {
 });
 
 describe('baseContextWindowForVariant', () => {
-  it('reports 1M for all 1M variants (current-gen + legacy pinned) and 200k for haiku', () => {
+  it('reports 1M for all 1M variants (current-gen + legacy pinned) and 200k for haiku-4-5', () => {
     expect(baseContextWindowForVariant('opus')).toBe(1_000_000);
     expect(baseContextWindowForVariant('fable')).toBe(1_000_000);
     expect(baseContextWindowForVariant('sonnet')).toBe(1_000_000);
+    expect(baseContextWindowForVariant('sonnet-5')).toBe(1_000_000);
     // Legacy pinned variants are 1M too — single row, no redundant -1m duplicate.
     expect(baseContextWindowForVariant('opus-4-6')).toBe(1_000_000);
     expect(baseContextWindowForVariant('opus-4-7')).toBe(1_000_000);
     expect(baseContextWindowForVariant('sonnet-4-6')).toBe(1_000_000);
-    expect(baseContextWindowForVariant('haiku')).toBe(200_000);
+    expect(baseContextWindowForVariant('haiku')).toBe(1_000_000);
+    expect(baseContextWindowForVariant('haiku-4-5')).toBe(200_000);
   });
 });

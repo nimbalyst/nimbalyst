@@ -24,6 +24,7 @@ import {
   WidgetActionButton,
   WidgetBlock,
   WidgetFooter,
+  WidgetNoteRow,
   WidgetOptionList,
   WidgetOptionRow,
   WidgetStatusPill,
@@ -181,14 +182,23 @@ function parseAnswers(args: any, result: any): Record<string, string> {
   return {};
 }
 
-function parseCancelledResult(result: unknown): boolean {
-  if (!result) return false;
+interface CancelledState {
+  cancelled: boolean;
+  /** Why the prompt closed, e.g. `superseded` when the user sent a new message instead. */
+  reason?: string;
+}
+
+const NOT_CANCELLED: CancelledState = { cancelled: false };
+
+function parseCancelledResult(result: unknown): CancelledState {
+  if (!result) return NOT_CANCELLED;
 
   if (typeof result === 'string') {
     try {
       return parseCancelledResult(JSON.parse(result));
     } catch {
-      return result.toLowerCase().includes('cancelled') || result.toLowerCase().includes('canceled');
+      const lower = result.toLowerCase();
+      return { cancelled: lower.includes('cancelled') || lower.includes('canceled') };
     }
   }
 
@@ -196,34 +206,29 @@ function parseCancelledResult(result: unknown): boolean {
   if (Array.isArray(result)) {
     for (const item of result) {
       if (item && typeof item === 'object' && (item as any).type === 'text' && typeof (item as any).text === 'string') {
-        if (parseCancelledResult((item as any).text)) return true;
+        const nested = parseCancelledResult((item as any).text);
+        if (nested.cancelled) return nested;
       }
     }
-    return false;
+    return NOT_CANCELLED;
   }
 
   if (typeof result !== 'object') {
-    return false;
+    return NOT_CANCELLED;
   }
 
   const record = result as Record<string, unknown>;
   if (record.cancelled === true || record.canceled === true) {
-    return true;
+    return { cancelled: true, reason: typeof record.reason === 'string' ? record.reason : undefined };
   }
 
-  if (record.result !== undefined && parseCancelledResult(record.result)) {
-    return true;
+  for (const nestedValue of [record.result, record.content, record.text]) {
+    if (nestedValue === undefined) continue;
+    const nested = parseCancelledResult(nestedValue);
+    if (nested.cancelled) return nested;
   }
 
-  if (record.content !== undefined && parseCancelledResult(record.content)) {
-    return true;
-  }
-
-  if (record.text !== undefined && parseCancelledResult(record.text)) {
-    return true;
-  }
-
-  return false;
+  return NOT_CANCELLED;
 }
 
 // ============================================================
@@ -233,6 +238,7 @@ function parseCancelledResult(result: unknown): boolean {
 export const AskUserQuestionWidget: React.FC<CustomToolWidgetProps> = ({
   message,
   sessionId,
+  superseded,
 }) => {
   const toolCall = message.toolCall;
   const questionId = toolCall?.providerToolCallId || '';
@@ -258,11 +264,13 @@ export const AskUserQuestionWidget: React.FC<CustomToolWidgetProps> = ({
   const hasResult = rawResult !== undefined && rawResult !== null && rawResult !== '';
 
   // Check if cancelled
-  const isCancelled = useMemo(() => {
-    return parseCancelledResult(rawResult);
-  }, [rawResult]);
+  const cancelledState = useMemo(() => parseCancelledResult(rawResult), [rawResult]);
+  const isCancelled = cancelledState.cancelled;
+  // The user sent a new message instead of answering. Older transcripts have
+  // no durable result for this, so the transcript also passes `superseded`.
+  const isSkipped = cancelledState.reason === 'superseded' || (!hasResult && superseded === true);
 
-  const isCompleted = hasResult;
+  const isCompleted = hasResult || isSkipped;
   const isPending = !isCompleted;
 
   // Draft state lives in a jotai atomFamily keyed by questionId so it survives
@@ -434,9 +442,10 @@ export const AskUserQuestionWidget: React.FC<CustomToolWidgetProps> = ({
   }
 
   // Determine display result (local takes precedence while waiting)
-  const displayResult = localResult || (isCompleted ? { answers: parsedAnswers, cancelled: isCancelled } : null);
+  const displayResult = localResult || (isCompleted ? { answers: isSkipped ? {} : parsedAnswers, cancelled: isCancelled || isSkipped } : null);
   const displayAnswers = displayResult?.answers || {};
   const displayCancelled = displayResult?.cancelled || false;
+  const displaySkipped = !localResult && isSkipped;
 
   // Check if all questions have selections (for enabling submit button)
   const allAnswered = questions.every(q => {
@@ -447,20 +456,26 @@ export const AskUserQuestionWidget: React.FC<CustomToolWidgetProps> = ({
 
   // Show completed state
   if (displayResult || hasResponded) {
-    const statusText = displayCancelled ? 'Question Cancelled' : 'Questions Answered';
+    const statusText = displaySkipped
+      ? 'Question Skipped'
+      : displayCancelled ? 'Question Cancelled' : 'Questions Answered';
 
     return (
       <InteractiveWidgetCard
         rootClassName="ask-user-question-widget"
         testId="ask-user-question-widget"
-        state={displayCancelled ? 'cancelled' : 'completed'}
+        state={displaySkipped ? 'skipped' : displayCancelled ? 'cancelled' : 'completed'}
         tone="resolved"
       >
         <InteractiveWidgetHeader
           icon={<QuestionMarkIcon />}
           title={statusText}
           trailing={
-            displayCancelled ? (
+            displaySkipped ? (
+              <WidgetStatusPill tone="muted" testId="ask-user-question-skipped">
+                Skipped
+              </WidgetStatusPill>
+            ) : displayCancelled ? (
               <WidgetStatusPill tone="muted" testId="ask-user-question-cancelled">
                 <svg width="12" height="12" viewBox="0 0 12 12" fill="none" xmlns="http://www.w3.org/2000/svg">
                   <path d="M9 3L3 9M3 3l6 6" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
@@ -479,6 +494,11 @@ export const AskUserQuestionWidget: React.FC<CustomToolWidgetProps> = ({
         />
 
         <InteractiveWidgetBody>
+          {displaySkipped && (
+            <WidgetNoteRow rootClassName="ask-user-question-skipped-note" testId="ask-user-question-skipped-note">
+              You sent a new message instead of answering.
+            </WidgetNoteRow>
+          )}
           {questions.map((question, qIndex) => {
             const answer = displayAnswers[question.question];
 

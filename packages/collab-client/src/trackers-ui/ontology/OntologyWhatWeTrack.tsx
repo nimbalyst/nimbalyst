@@ -7,7 +7,7 @@
  */
 import type { KeyboardEvent } from 'react';
 import { formatCount, type DomainCategory, type DomainGap, type DomainModel } from './ontologyDomain';
-import { OntologyNeighborhood } from './OntologyConceptMap';
+import { OntologyNeighborhood } from './OntologyNeighborhood';
 import {
   CategoryLines,
   categoryName,

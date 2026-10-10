@@ -33,6 +33,16 @@ export interface SavedViewDefinition {
     sortBy: SortColumn;
     /** Flat list/table sort direction. */
     sortDirection: SortDirection;
+    /** Ordered field sorts for placed views; empty uses the legacy single sort. */
+    sortColumns?: Array<{
+        field: string;
+        direction: SortDirection;
+    }>;
+    /** Explicit timeline dates; absent preserves automatic date discovery. */
+    timelineFields?: {
+        start?: string;
+        end?: string;
+    };
     /** Genuine-open lookback in days; null means any time. */
     recentlyViewedDays: 7 | 30 | 90 | null;
     /**
@@ -147,6 +157,11 @@ export declare function legacyFilterChipsToClauses(filters: readonly TrackerFilt
  * `archived` is handled by the caller because it selects the input item set.
  */
 export declare function filterTrackerItems(items: TrackerRecord[], def: TrackerItemFilterDefinition, ctx?: FilterContext): TrackerRecord[];
+/**
+ * The records a view starts from: archived ones only when it asks for them
+ * (the Archived filter, or a column filter on `archived`), otherwise none.
+ */
+export declare function selectArchivedForView(items: readonly TrackerRecord[], def: TrackerItemFilterDefinition): TrackerRecord[];
 /**
  * Count filtered records within a sidebar type or folder scope. The type scope
  * is applied before the row filters so `recently-updated` matches the selected

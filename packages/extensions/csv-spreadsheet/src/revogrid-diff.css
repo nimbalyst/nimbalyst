@@ -1,0 +1,94 @@
+/**
+ * Diff mode (AI edit review) and collaboration presence styles for the grid.
+ * Loaded after revogrid-cells.css (see index.tsx).
+ */
+
+/* ========================================
+   Diff Mode Styles (AI Edit Review)
+   ======================================== */
+
+/* Diff colors use the Nimbalyst diff variables */
+.spreadsheet-editor revo-grid .cell-diff-added {
+  background-color: var(--nim-diff-add-bg) !important;
+  color: var(--nim-success);
+}
+
+.spreadsheet-editor revo-grid .cell-diff-modified {
+  background-color: var(--nim-highlight-bg) !important;
+  color: var(--nim-warning);
+}
+
+.spreadsheet-editor revo-grid .cell-diff-deleted {
+  background-color: var(--nim-diff-remove-bg) !important;
+  color: var(--nim-error);
+  text-decoration: line-through;
+}
+
+/* Row-level diff styling for phantom (deleted) rows */
+.spreadsheet-editor revo-grid .row-diff-deleted {
+  background-color: var(--nim-diff-remove-bg) !important;
+  opacity: 0.7;
+  pointer-events: none;
+}
+
+.spreadsheet-editor revo-grid .row-diff-deleted revogr-cell {
+  text-decoration: line-through;
+  color: var(--nim-error);
+}
+
+/* Row-level diff styling for added rows */
+.spreadsheet-editor revo-grid .row-diff-added {
+  background-color: var(--nim-diff-add-bg) !important;
+}
+
+/* Tooltip for previous value - using native title attribute */
+.spreadsheet-editor revo-grid .cell-diff-modified[title],
+.spreadsheet-editor revo-grid .cell-diff-deleted[title] {
+  cursor: help;
+}
+
+/* -------------------------------------------------------------------------
+ * Collaboration presence overlay
+ *
+ * Absolutely-positioned layer inside the grid container (`.relative`). Strictly
+ * non-interactive so it never intercepts clicks/edits on the grid beneath.
+ * Per-collaborator color is supplied inline via `--csv-presence-color`.
+ * ------------------------------------------------------------------------- */
+.csv-presence-overlay {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  z-index: 5;
+}
+
+.csv-presence-cell {
+  position: absolute;
+  box-sizing: border-box;
+  border: 2px solid var(--csv-presence-color, #888);
+  border-radius: 2px;
+  pointer-events: none;
+}
+
+/* Actively-editing cell: subtle tint + emphasis to distinguish from a plain
+ * selection box. color-mix keeps it in the collaborator's hue. */
+.csv-presence-cell[data-editing] {
+  background-color: color-mix(in srgb, var(--csv-presence-color, #888) 12%, transparent);
+}
+
+.csv-presence-label {
+  position: absolute;
+  top: -1.35em;
+  left: -2px;
+  padding: 0 5px;
+  font-size: 11px;
+  line-height: 1.3;
+  font-weight: 600;
+  color: #fff;
+  white-space: nowrap;
+  border-radius: 3px 3px 3px 0;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}

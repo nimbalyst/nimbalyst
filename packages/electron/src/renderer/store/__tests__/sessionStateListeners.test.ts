@@ -41,6 +41,7 @@ import {
   workstreamStatesLoadedAtom,
 } from '../atoms/workstreamState';
 import { TranscriptStreamAccumulator } from '../transcriptStreamAccumulator';
+import { sessionViewRetention } from '../sessionViewRetention';
 import { errorNotificationService } from '../../services/ErrorNotificationService';
 
 function seedRegistry(entries: Array<Partial<SessionMeta> & { id: string }>): void {
@@ -874,9 +875,11 @@ describe('regression: streaming after a pending prompt', () => {
 describe('workstream sort: child activity bubbles to parent', () => {
   it('session:started for a child bumps the parent workstream\'s turn activity', () => {
     const parentId = uniqueSessionId('ws-parent');
+    const rootId = uniqueSessionId('ws-root');
     const childId = uniqueSessionId('ws-child');
     seedRegistry([
-      { id: parentId, sessionType: 'workstream', childCount: 1 },
+      { id: rootId, childCount: 1 },
+      { id: parentId, parentSessionId: rootId, childCount: 1 },
       { id: childId, parentSessionId: parentId },
     ]);
 
@@ -891,6 +894,7 @@ describe('workstream sort: child activity bubbles to parent', () => {
     const turnsForWs = store.get(globalSessionTurnActivityAtom).get(WS);
     expect(turnsForWs?.get(childId)).toBe(5_000);
     expect(turnsForWs?.get(parentId)).toBe(5_000);
+    expect(turnsForWs?.get(rootId)).toBe(5_000);
   });
 
   it('ai:message-logged for a child bumps only the child\'s relative-time label, not turn-activity', () => {
@@ -1048,6 +1052,8 @@ describe('closed project transcript retention', () => {
     const apply = vi.spyOn(TranscriptStreamAccumulator.prototype, 'apply');
     const workspacePath = '/ws/cache-cleanup';
     const ids = ['idle', 'running', 'other'].map(uniqueSessionId);
+    // The open project's session is on screen; unviewed ones are evicted.
+    const releaseOther = sessionViewRetention.acquire(ids[2]);
     try {
       for (const [index, sessionId] of ids.entries()) {
         store.set(sessionStoreAtom(sessionId), { id: sessionId, workspacePath: index === 2 ? '/other' : workspacePath, messages: [] } as any);
@@ -1065,6 +1071,7 @@ describe('closed project transcript retention', () => {
       expect(accumulator.hasPendingFlush(ids[2])).toBe(true);
     } finally {
       apply.mockRestore();
+      releaseOther();
       store.set(setSessionWorkspaceOpenAtom, { workspacePath, isOpen: true });
       for (const id of ids) store.set(sessionStoreAtom(id), null);
     }

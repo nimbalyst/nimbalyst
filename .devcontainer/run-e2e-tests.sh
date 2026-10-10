@@ -26,7 +26,7 @@ cd "$(dirname "$0")/.."
 # Build the worker before starting dev server (required for Electron to work)
 echo "Building worker..."
 cd packages/electron
-npm run build:worker
+pnpm run build:worker
 cd ../..
 
 # Start vite dev server for renderer only
@@ -35,7 +35,7 @@ cd ../..
 # 2. The main and preload are already built by post-create.sh
 # Playwright launches Electron separately with --no-sandbox flag
 echo "Starting Vite dev server for renderer..."
-npx vite --config .devcontainer/e2e-vite.config.ts > /tmp/vite-e2e.log 2>&1 &
+pnpm exec vite --config .devcontainer/e2e-vite.config.ts > /tmp/vite-e2e.log 2>&1 &
 DEV_PID=$!
 
 # Wait for dev server to be accessible (try both IPv4 and IPv6)
@@ -62,9 +62,9 @@ done
 echo ""
 echo "Running E2E tests..."
 if [ -n "$1" ]; then
-    npx playwright test --workers=1 "$@"
+    pnpm exec playwright test --workers=1 "$@"
 else
-    npx playwright test --workers=1
+    pnpm exec playwright test --workers=1
 fi
 TEST_EXIT=$?
 

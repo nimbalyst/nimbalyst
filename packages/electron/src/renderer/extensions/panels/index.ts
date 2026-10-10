@@ -15,6 +15,8 @@ export {
 
 export { createPanelHost } from './PanelHostImpl';
 
+export { togglePanelPane, useFullscreenPanelPaneControls } from './panelPanes';
+
 export { PanelContainer } from './PanelContainer';
 
 export { usePanels } from './usePanels';

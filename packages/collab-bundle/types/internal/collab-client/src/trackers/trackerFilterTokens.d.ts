@@ -4,7 +4,7 @@
  * token remains ordinary search text.
  */
 import { type TrackerFieldFilter, type TrackerFilterOp } from '../../../runtime/src/plugins/TrackerPlugin/models/trackerFilters';
-import type { FieldType } from '@nimbalyst/tracker-schema';
+import type { FieldType } from '../../../tracker-schema/src/browser';
 /**
  * The shape the omnibox needs, kept structural so headless callers do not pull
  * in a React component for a type.

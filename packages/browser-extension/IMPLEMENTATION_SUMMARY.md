@@ -29,7 +29,7 @@ packages/browser-extension/
 │   └── README.md                  # Icon placeholder instructions
 ├── dist/                          # Built extension (generated)
 ├── manifest.json                  # Chrome extension manifest (v3)
-├── package.json                   # npm package configuration
+├── package.json                   # package configuration
 ├── build.js                       # esbuild build script
 ├── tsconfig.json                  # TypeScript configuration
 ├── README.md                      # User documentation
@@ -196,8 +196,8 @@ See `DEVELOPMENT.md` for detailed testing checklist.
 1. **Build the extension**:
    ```bash
    cd packages/browser-extension
-   npm install
-   npm run build
+   pnpm install
+   pnpm run build
    ```
 
 2. **Load in Chrome**:

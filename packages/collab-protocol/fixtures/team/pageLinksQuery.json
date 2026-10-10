@@ -1,0 +1,10 @@
+{
+  "type": "pageLinksQuery",
+  "requestId": "links-1",
+  "projectId": "project-1",
+  "from": { "kind": "item", "itemId": "item-42" },
+  "to": [
+    { "kind": "item", "ref": "item-42" },
+    { "kind": "item", "ref": "NIM-42" }
+  ]
+}

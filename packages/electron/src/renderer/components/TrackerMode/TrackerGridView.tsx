@@ -70,6 +70,7 @@ import {
   type TrackerFilterField,
 } from '@nimbalyst/collab-client/trackers-ui';
 import { errorNotificationService } from '../../services/ErrorNotificationService';
+import { confirmTrackerItemDelete } from './confirmTrackerItemDelete';
 import '@nimbalyst/collab-client/trackers-ui/grid.css';
 
 const ROW_GROUP_LABEL = '__trackerGroupLabel';
@@ -263,6 +264,7 @@ export function TrackerGridView({
     activeTypeFilter,
     onItemSelect,
     onDeleteItems,
+    confirmDelete: confirmTrackerItemDelete,
     onArchiveItems: onArchiveItems ? archiveThroughRecorder : undefined,
     onSwitchToFilesMode,
     resolveRecordById,
@@ -974,6 +976,7 @@ export function TrackerGridView({
         onLaunchWorktree={onLaunchWorktree}
         onArchiveItems={onArchiveItems ? archiveWithUndo : undefined}
         onDeleteItems={onDeleteItems}
+        confirmDelete={confirmTrackerItemDelete}
         closeContextMenu={closeContextMenu}
         clearSelection={() => setSelectedIds(new Set())}
       />

@@ -41,6 +41,7 @@ import { logger } from "../utils/logger";
 import { getWorkspaceState } from "../utils/store";
 import { resolveCollabDocumentType } from "./collabDocumentTypeResolver";
 import { setLocalOriginTeamResolverForTests } from "../services/collabLocalOriginTeam";
+import { setBodyRoomIdentityForTests } from "../services/MainBodyDocService";
 import {
   clearCollabAssetSender,
   registerCollabAssetDocument,
@@ -128,6 +129,17 @@ export function registerCollabTestIdentityHandlers(): void {
     teamProjectId: null,
     gitRemoteHash: null,
   }));
+
+  // Team tracker item bodies live in `tracker-content/<item>` rooms that main
+  // opens itself (MainBodyDocService), resolved through the same Stytch-gated
+  // team discovery. Give them this identity so a harness team item can publish.
+  setBodyRoomIdentityForTests({
+    orgId: identity.orgId,
+    serverUrl: identity.serverUrl,
+    teamMemberId: identity.teamMemberId,
+    getJwt: async () => TEST_BRIDGE_JWT,
+    urlExtraQuery: identity.urlExtraQuery,
+  });
 
   // App's Org/Shared mode guard resolves the active workspace through this
   // channel, independently of document-sync:resolve-index-config. Without the

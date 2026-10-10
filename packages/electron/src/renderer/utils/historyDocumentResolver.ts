@@ -1,4 +1,5 @@
 import type { ContentMode } from '../types/WindowModeTypes';
+import { parsePersonalPageUri, personalPageHistoryKey } from '../../shared/personalPageUri';
 
 interface HistoryDocumentPaths {
   activeMode: ContentMode;
@@ -13,6 +14,9 @@ export function resolveHistoryDocumentPath({
   collabDocumentPath,
 }: HistoryDocumentPaths): string | null {
   if (activeMode === 'collab') {
+    // A Personal page tab (`personal://<id>`) keeps its history under its document.
+    const personal = collabDocumentPath ? parsePersonalPageUri(collabDocumentPath) : null;
+    if (personal?.kind === 'page') return personalPageHistoryKey(personal.documentId);
     return collabDocumentPath ?? null;
   }
 

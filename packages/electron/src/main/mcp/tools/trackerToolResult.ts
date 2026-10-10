@@ -9,6 +9,7 @@ import {
   type IssueKeyStatus,
 } from '../../../shared/localIssueKey';
 import { TrackerSchemaChangeBlockedError } from '../../services/tracker/trackerSchemaChangeGuard';
+import type { TrackerPayloadTooLargeError } from '@nimbalyst/tracker-engine';
 
 export type McpToolResult = {
   content: Array<{ type: string; text?: string }>;
@@ -57,6 +58,22 @@ export function destructiveSchemaChangeToolResult(error: TrackerSchemaChangeBloc
         }),
       },
     ],
+    isError: true,
+  };
+}
+
+/**
+ * An agent write refused because the shared item would outgrow its team room's
+ * per-item limit. The refusal happens before anything is saved, so the agent
+ * can shorten the write and retry.
+ */
+export function tooLargeToShareToolResult(tool: string, error: TrackerPayloadTooLargeError): McpToolResult {
+  return {
+    content: [{
+      type: 'text',
+      text: `${tool} refused, nothing was saved: the item would be too large to share with the team (${error.bytes} bytes, limit ${error.limitBytes}), so teammates could never receive it. ` +
+        'Shorten the largest field or comment. Long prose belongs in the description, which is stored separately and does not count toward this limit.',
+    }],
     isError: true,
   };
 }

@@ -68,7 +68,7 @@ fi
 
 ### Step 3: Create Unique Container
 
-**CRITICAL: Always use `create-container.sh` to create the container.** This script dynamically discovers all workspace `node_modules` directories and isolates them with anonymous Docker volumes. Without this, `npm ci` inside Linux overwrites darwin-arm64 binaries on the macOS host, breaking esbuild/electron. Never manually write a `docker run` command.
+**CRITICAL: Always use `create-container.sh` to create the container.** This script dynamically discovers all workspace `node_modules` directories and isolates them with anonymous Docker volumes. Without this, `pnpm install` inside Linux overwrites darwin-arm64 binaries on the macOS host, breaking esbuild/electron. Never manually write a `docker run` command.
 
 ```bash
 CONTAINER_NAME="nimbalyst-e2e-$(basename "$(pwd)")-$(date +%s)"
@@ -78,12 +78,12 @@ CONTAINER_NAME=$(bash .devcontainer/create-container.sh "${CONTAINER_NAME}")
 ### Step 4: Run Container Setup
 
 ```bash
-echo "Running container setup (npm ci, build, etc.)..."
+echo "Running container setup (pnpm install, build, etc.)..."
 docker exec -w /workspaces/nimbalyst "${CONTAINER_NAME}" bash .devcontainer/post-create.sh
 ```
 
 This takes several minutes as it:
-- Installs all npm dependencies
+- Installs all dependencies with pnpm
 - Builds runtime, extension-sdk, and extensions
 - Builds the Electron main/preload
 - Installs Playwright browsers

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildClaudeCodeSystemPrompt, buildMetaAgentSystemPrompt, buildDevAgentSystemPrompt } from '../prompt';
+import { appendSessionDirective, buildClaudeCodeSystemPrompt, buildMetaAgentSystemPrompt, buildDevAgentSystemPrompt } from '../prompt';
 
 describe('buildClaudeCodeSystemPrompt', () => {
   it('includes interactive input guidance for codex-style tool references', () => {
@@ -121,6 +121,21 @@ describe('buildClaudeCodeSystemPrompt', () => {
       hasOutOfBandNaming: true,
     });
     expect(typical.length).toBeLessThan(6500);
+  });
+
+  it('appends a session directive last, and a blank one changes nothing', () => {
+    const base = buildClaudeCodeSystemPrompt({ hasSessionNaming: true });
+    expect(buildClaudeCodeSystemPrompt({ hasSessionNaming: true, sessionDirective: '  \n' })).toBe(base);
+
+    const directed = buildClaudeCodeSystemPrompt({ hasSessionNaming: true, sessionDirective: 'Only triage issues.' });
+    expect(directed.endsWith('Only triage issues.\n\n</addendum>\n')).toBe(true);
+    expect(directed.replace('\nOnly triage issues.\n', '')).toBe(base);
+
+    const meta = buildMetaAgentSystemPrompt('claude', 'default', { provider: 'claude-code' });
+    const metaDirected = buildMetaAgentSystemPrompt('claude', 'default', { provider: 'claude-code', sessionDirective: 'Only triage issues.' });
+    expect(metaDirected).toBe(`${meta}\n\nOnly triage issues.`);
+    // Tool-loop providers may be handed no persona at all.
+    expect(appendSessionDirective('', ' Only triage issues. ')).toBe('Only triage issues.');
   });
 });
 

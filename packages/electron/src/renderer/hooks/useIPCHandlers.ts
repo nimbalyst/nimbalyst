@@ -19,26 +19,10 @@ import {
 } from '@nimbalyst/runtime/editor';
 import { canvasWorkingSetRegistry } from '@nimbalyst/runtime/canvas/canvasPresence';
 import { store } from '@nimbalyst/runtime/store';
-import type { CollabScope } from '@nimbalyst/collab-client/core';
 import { DocumentModelRegistry } from '../services/document-model/DocumentModelRegistry';
 import { aiApi } from '../services/aiApi';
 import { getFileName } from '../utils/pathUtils';
 import { isCollabUri } from '@nimbalyst/collab-protocol';
-import {
-  updateSharedDocumentTitle,
-  removeSharedDocument,
-  moveSharedDocument,
-  createSharedFolder,
-  renameSharedFolder,
-  moveSharedFolder,
-  removeSharedFolder,
-  collectFolderSubtree,
-  sharedFoldersAtom,
-  allSharedDocumentsAtom,
-  activeCollabScopeAtom,
-} from '../store/atoms/collabDocuments';
-import { getCollaborativeDocumentTypeCatalog } from '../services/CollaborativeDocumentTypeCatalog';
-import { createCollaborativeDocument } from '../services/collaborativeDocumentCreationOrchestrator';
 import type { ContentMode } from '../types/WindowModeTypes';
 import { dialogRef } from '../contexts/DialogContext';
 import { DIALOG_IDS } from '../dialogs';
@@ -53,24 +37,11 @@ import { dispatchTrackerFocusSearch } from '@nimbalyst/collab-client/trackers-ui
 import { acquireHeadlessCollabCommentController } from '../services/HeadlessCollabCommentController';
 import { HeadlessCollabDocumentError } from '../services/HeadlessCollabDocument';
 import { applyAgentDiff } from '../services/agentDocumentAccess';
-import {
-  trackDocumentAction,
-  trackFolderCreated,
-  trackFolderDeleted,
-  trackFolderMoved,
-  trackFolderRenamed,
-} from '../utils/collabIndexAnalytics';
 import { registerMcpCollabReadHandlers } from '../services/mcpCollabReadHandlers';
-import { resolveSharedFolderPath } from '../services/sharedFolderPath';
+import { registerPageTreeToolHandlers } from '../services/pageTreeTools/pageTreeToolHandlers';
 
 // Tracker field updates now go through the generic trackerStatus frontmatter format.
 // No hardcoded plan-specific field list needed.
-
-function requireActiveCollabScope(): CollabScope {
-  const scope = store.get(activeCollabScopeAtom);
-  if (!scope) throw new Error('No active collaboration scope is available.');
-  return scope;
-}
 
 function mergeFrontmatterData(
   existing: FrontmatterData | undefined,
@@ -559,11 +530,12 @@ export function useIPCHandlers(props: UseIPCHandlersProps) {
 
           if (window.electronAPI.sendMcpApplyDiffResult) {
             // IPC can't carry undefined values, so only include what we have.
-            const resultToSend: { success: boolean; error?: string; code?: string } = {
+            const resultToSend: { success: boolean; error?: string; code?: string; title?: string } = {
               success: finalResult.success ?? false
             };
             if (finalResult.error) resultToSend.error = finalResult.error;
             if (finalResult.code) resultToSend.code = finalResult.code;
+            if (finalResult.title) resultToSend.title = finalResult.title;
             window.electronAPI.sendMcpApplyDiffResult(resultChannel, resultToSend);
           }
 
@@ -810,179 +782,11 @@ export function useIPCHandlers(props: UseIPCHandlersProps) {
       );
     }
 
-    // Shared-index (first-class shared folders + documents) MCP tools. Each
-    // routes through the SAME renderer functions a person uses so the AI's
-    // changes sync to the team identically.
+    // Pages MCP tools (Team and Personal page trees). Each routes through the
+    // same planner and docs session a person's drag and drop uses.
     cleanupFns.push(...registerMcpCollabReadHandlers());
 
-    if (window.electronAPI.onMcpCreateSharedDoc) {
-      cleanupFns.push(window.electronAPI.onMcpCreateSharedDoc(async ({ title, documentType, parentFolderId, folderPath, initialContent, resultChannel }) => {
-        try {
-          const scope = requireActiveCollabScope();
-          // folderPath (by name, creates missing folders) wins over an explicit
-          // parentFolderId when both are supplied.
-          const targetParentId = folderPath !== undefined
-            ? await resolveSharedFolderPath(scope, folderPath)
-            : (parentFolderId ?? null);
-
-          const requestedDocumentType = documentType || 'markdown';
-          const catalog = getCollaborativeDocumentTypeCatalog();
-          const fileExtension = catalog.inferFileExtension(requestedDocumentType, title);
-          const resolution = catalog.resolveMetadata(requestedDocumentType, fileExtension);
-          if (resolution.state !== 'ready') throw new Error(resolution.reason);
-
-          const document = await createCollaborativeDocument({
-            scope,
-            descriptor: resolution.descriptor,
-            requestedName: title,
-            parentFolderId: targetParentId,
-            sourceContent: initialContent ?? '',
-            analyticsSource: 'agent_tool',
-            analyticsActorType: 'agent',
-          });
-
-          window.electronAPI.sendMcpCollabIndexResult(resultChannel, {
-            success: true,
-            documentId: document.documentId,
-          });
-        } catch (error) {
-          window.electronAPI.sendMcpCollabIndexResult(resultChannel, {
-            success: false,
-            error: error instanceof Error ? error.message : 'Unknown error creating shared document',
-          });
-        }
-      }));
-    }
-
-    if (window.electronAPI.onMcpCreateSharedFolder) {
-      cleanupFns.push(window.electronAPI.onMcpCreateSharedFolder(async ({ name, parentFolderId, folderPath, resultChannel }) => {
-        try {
-          const scope = requireActiveCollabScope();
-          const targetParentId = folderPath !== undefined
-            ? await resolveSharedFolderPath(scope, folderPath)
-            : (parentFolderId ?? null);
-          const folderId = await createSharedFolder(scope, name, targetParentId);
-          trackFolderCreated({
-            actorType: 'agent',
-            source: 'agent_tool',
-            nested: targetParentId !== null,
-          });
-          window.electronAPI.sendMcpCollabIndexResult(resultChannel, { success: true, folderId });
-        } catch (error) {
-          window.electronAPI.sendMcpCollabIndexResult(resultChannel, {
-            success: false,
-            error: error instanceof Error ? error.message : 'Unknown error creating shared folder',
-          });
-        }
-      }));
-    }
-
-    if (window.electronAPI.onMcpMoveSharedItem) {
-      cleanupFns.push(window.electronAPI.onMcpMoveSharedItem(async ({ itemId, kind, newParentFolderId, folderPath, resultChannel }) => {
-        try {
-          const scope = requireActiveCollabScope();
-          const targetParentId = folderPath !== undefined
-            ? await resolveSharedFolderPath(scope, folderPath)
-            : (newParentFolderId ?? null);
-          if (kind === 'doc') {
-            const movedType = store.get(allSharedDocumentsAtom)
-              .find(doc => doc.documentId === itemId)?.documentType;
-            moveSharedDocument(scope, itemId, targetParentId);
-            trackDocumentAction({
-              action: 'moved',
-              actorType: 'agent',
-              documentType: movedType,
-              entryPoint: 'agent_tool',
-            });
-          } else {
-            moveSharedFolder(scope, itemId, targetParentId);
-            trackFolderMoved({
-              actorType: 'agent',
-              source: 'agent_tool',
-              toRoot: targetParentId === null,
-            });
-          }
-          window.electronAPI.sendMcpCollabIndexResult(resultChannel, { success: true });
-        } catch (error) {
-          window.electronAPI.sendMcpCollabIndexResult(resultChannel, {
-            success: false,
-            error: error instanceof Error ? error.message : 'Unknown error moving shared item',
-          });
-        }
-      }));
-    }
-
-    if (window.electronAPI.onMcpRenameSharedItem) {
-      cleanupFns.push(window.electronAPI.onMcpRenameSharedItem(async ({ itemId, kind, newName, resultChannel }) => {
-        try {
-          const scope = requireActiveCollabScope();
-          if (kind === 'doc') {
-            const renamedType = store.get(allSharedDocumentsAtom)
-              .find(doc => doc.documentId === itemId)?.documentType;
-            await updateSharedDocumentTitle(scope, itemId, newName);
-            trackDocumentAction({
-              action: 'renamed',
-              actorType: 'agent',
-              documentType: renamedType,
-              entryPoint: 'agent_tool',
-            });
-          } else {
-            await renameSharedFolder(scope, itemId, newName);
-            trackFolderRenamed({
-              actorType: 'agent',
-              source: 'agent_tool',
-            });
-          }
-          window.electronAPI.sendMcpCollabIndexResult(resultChannel, { success: true });
-        } catch (error) {
-          window.electronAPI.sendMcpCollabIndexResult(resultChannel, {
-            success: false,
-            error: error instanceof Error ? error.message : 'Unknown error renaming shared item',
-          });
-        }
-      }));
-    }
-
-    if (window.electronAPI.onMcpDeleteSharedItem) {
-      cleanupFns.push(window.electronAPI.onMcpDeleteSharedItem(async ({ itemId, kind, resultChannel }) => {
-        try {
-          const scope = requireActiveCollabScope();
-          if (kind === 'doc') {
-            const trashedType = store.get(allSharedDocumentsAtom)
-              .find(doc => doc.documentId === itemId)?.documentType;
-            removeSharedDocument(scope, itemId);
-            trackDocumentAction({
-              action: 'trashed',
-              actorType: 'agent',
-              documentType: trashedType,
-              entryPoint: 'agent_tool',
-            });
-            window.electronAPI.sendMcpCollabIndexResult(resultChannel, { success: true });
-          } else {
-            // Count the subtree before removal so we can report what was pruned.
-            // Mirrors the sidebar's count so agent and human deletions of the
-            // same folder report the same buckets.
-            const subtreeFolderIds = new Set(collectFolderSubtree(store.get(sharedFoldersAtom), itemId));
-            const removedCount = subtreeFolderIds.size;
-            const documentCount = store.get(allSharedDocumentsAtom)
-              .filter(doc => doc.parentFolderId && subtreeFolderIds.has(doc.parentFolderId)).length;
-            removeSharedFolder(scope, itemId);
-            trackFolderDeleted({
-              actorType: 'agent',
-              source: 'agent_tool',
-              documentCount,
-              subfolderCount: Math.max(0, removedCount - 1),
-            });
-            window.electronAPI.sendMcpCollabIndexResult(resultChannel, { success: true, removedCount });
-          }
-        } catch (error) {
-          window.electronAPI.sendMcpCollabIndexResult(resultChannel, {
-            success: false,
-            error: error instanceof Error ? error.message : 'Unknown error deleting shared item',
-          });
-        }
-      }));
-    }
+    cleanupFns.push(...registerPageTreeToolHandlers());
 
     if (window.electronAPI.onMcpStreamContent) {
       // console.log('[MCP] Registering onMcpStreamContent handler');

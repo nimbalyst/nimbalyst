@@ -1,5 +1,5 @@
 import type { ElementNode, LexicalNode, SerializedLexicalNode } from 'lexical';
-import { $isDecisionNode } from '../../DecisionPlugin/DecisionNode';
+import { $isDecisionNode } from '../../DecisionPlugin/DecisionNodeCore';
 import type {
   DiffHandlerContext,
   DiffHandlerResult,

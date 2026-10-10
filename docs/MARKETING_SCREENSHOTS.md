@@ -47,12 +47,12 @@ nvm install 22
 ```bash
    cd ~/sources/nimbalyst    # or wherever you cloned the repo
    git pull
-   npm install
+   pnpm install
 ```
 
 3. **Start the dev server:**
 ```bash
-   cd packages/electron && npm run dev
+   cd packages/electron && pnpm run dev
 ```
    Wait until you see "ready in Xms" before proceeding. A dev-mode Nimbalyst window will open automatically.
 
@@ -82,18 +82,18 @@ nvm install 22
 Requires the dev server on port 5273:
 
 ```bash
-cd packages/electron && npm run dev    # in one terminal
+cd packages/electron && pnpm run dev    # in one terminal
 
 # Capture everything (31 tests, ~4 minutes)
-npm run marketing:screenshots
+pnpm run marketing:screenshots
 
 # Capture by category
-npm run marketing:screenshots:grep -- "hero-"
-npm run marketing:screenshots:grep -- "editor-"
-npm run marketing:screenshots:grep -- "ai-"
-npm run marketing:screenshots:grep -- "settings-"
-npm run marketing:screenshots:grep -- "feature-"
-npm run marketing:screenshots:grep -- "video-"
+pnpm run marketing:screenshots:grep "hero-"
+pnpm run marketing:screenshots:grep "editor-"
+pnpm run marketing:screenshots:grep "ai-"
+pnpm run marketing:screenshots:grep "settings-"
+pnpm run marketing:screenshots:grep "feature-"
+pnpm run marketing:screenshots:grep "video-"
 
 # Or use the shell script
 bash marketing/take-screenshots.sh
@@ -228,7 +228,7 @@ Injects AI session data via `test:insert-session` and `test:insert-message` IPC 
 1. Choose the appropriate spec file (or create a new one)
 2. Add a test that sets up the desired UI state
 3. Call `captureScreenshotBothThemes(electronApp, page, 'my-screenshot-name')`
-4. Run with `npm run marketing:screenshots:grep -- "my-screenshot"` to verify
+4. Run with `pnpm run marketing:screenshots:grep "my-screenshot"` to verify
 5. Update this doc's output inventory
 
 ## Adding New Videos
@@ -236,5 +236,5 @@ Injects AI session data via `test:insert-session` and `test:insert-message` IPC 
 1. Add to `video-hero.spec.ts` or `video-loops.spec.ts` (or create a new spec)
 2. Use `injectCursor` + `moveTo`/`moveAndClick` for choreography
 3. For a new theme variant, use a separate `test.describe` block with its own `launchMarketingApp({ recordVideo: true, theme: '...' })`
-4. Run with `npm run marketing:screenshots:grep -- "my-video"` to verify
+4. Run with `pnpm run marketing:screenshots:grep "my-video"` to verify
 5. Update `process-videos.sh` if adding new named output files

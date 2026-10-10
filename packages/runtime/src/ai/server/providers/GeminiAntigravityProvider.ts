@@ -37,6 +37,7 @@
  */
 
 import { BaseAgentProvider } from './BaseAgentProvider';
+import { appendSessionDirective } from '../../prompt';
 import {
   AntigravityServerManager,
   AntigravityVersionGateError,
@@ -183,6 +184,10 @@ export class GeminiAntigravityProvider extends BaseAgentProvider {
       return;
     }
 
+    // The host hands a tool-loop provider its whole system prompt (persona) and
+    // does not include the session directive; it is appended here, frozen.
+    const turnSystemPrompt = appendSessionDirective(systemPrompt ?? '', await this.getSessionDirective(sessionId));
+
     const state = this.resolveSession(sessionId, workspacePath, documentContext);
     const abortController = new AbortController();
     state.abortController = abortController;
@@ -222,7 +227,7 @@ export class GeminiAntigravityProvider extends BaseAgentProvider {
     try {
       for await (const step of state.toolLoop.run(
         message,
-        systemPrompt ?? '',
+        turnSystemPrompt,
         (tools ?? []) as Array<{ type: 'function'; function: { name: string } }>,
         (name, args) => this.executeTool(state, name, args),
         undefined,

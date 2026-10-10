@@ -8,6 +8,23 @@ import android.provider.Settings
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
+import com.nimbalyst.app.R
+import com.nimbalyst.app.sync.DeviceInfo
+import com.nimbalyst.app.transcript.TranscriptExternalLinks
+import com.nimbalyst.app.ui.navigation.credentialsForScannedPairing
+import com.nimbalyst.app.ui.theme.NimbalystColors
+import com.nimbalyst.app.utils.RelativeTimestamp
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -70,6 +87,8 @@ fun SettingsScreen(
     val syncState by app.syncManager.state.collectAsState()
     val connectedDevices by app.syncManager.connectedDevices.collectAsState()
     val notificationState by app.notificationManager.state.collectAsState()
+    val defaultModel by app.syncManager.desktopDefaultModel.collectAsState()
+    val availableModels by app.syncManager.availableModels.collectAsState()
     val coroutineScope = rememberCoroutineScope()
     val notificationPermissionLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.RequestPermission()
@@ -109,72 +128,31 @@ fun SettingsScreen(
             }
         )
 
+        ConnectionSection(
+            isConnected = syncState.indexConnected,
+            serverUrl = pairingState.credentials?.serverUrl,
+            devices = connectedDevices.filter { it.inventoryHidden != true }
+        )
+
         // Account section
-        Card(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 8.dp)
-        ) {
-            Column(
-                modifier = Modifier.padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Text(
-                    text = "Account",
-                    style = MaterialTheme.typography.titleMedium
-                )
-
-                pairingState.credentials?.let { credentials ->
-                    if (!credentials.authEmail.isNullOrBlank()) {
-                        Text(
-                            text = credentials.authEmail!!,
-                            style = MaterialTheme.typography.bodyLarge
-                        )
-                    }
-                    Text(
-                        text = "Server: ${credentials.serverUrl}",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-
-                Text(
-                    text = "Sync: ${syncState.statusLabel}",
-                    style = MaterialTheme.typography.bodyMedium
-                )
-                syncState.lastError?.let { error ->
-                    Text(
-                        text = error,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.error
-                    )
-                }
+        pairingState.credentials?.authEmail?.takeIf { it.isNotBlank() }?.let { email ->
+            SettingsCard(title = stringResource(R.string.settings_account)) {
+                Text(text = email, style = MaterialTheme.typography.bodyLarge)
             }
         }
 
-        // Connected devices section
-        if (connectedDevices.isNotEmpty()) {
-            Card(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 8.dp)
-            ) {
-                Column(
-                    modifier = Modifier.padding(16.dp),
-                    verticalArrangement = Arrangement.spacedBy(4.dp)
-                ) {
-                    Text(
-                        text = "Connected Devices",
-                        style = MaterialTheme.typography.titleMedium
-                    )
-                    connectedDevices.forEach { device ->
-                        Text(
-                            text = "${device.name} (${device.platform})",
-                            style = MaterialTheme.typography.bodyMedium
-                        )
-                    }
-                }
-            }
+        // Default model for new sessions, as chosen on the desktop app.
+        SettingsCard(title = stringResource(R.string.settings_default_model)) {
+            Text(
+                text = defaultModel?.let { id -> availableModels.firstOrNull { it.id == id }?.name ?: id }
+                    ?: stringResource(R.string.settings_default_model_unset),
+                style = MaterialTheme.typography.bodyMedium
+            )
+            Text(
+                text = stringResource(R.string.settings_default_model_detail),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
         }
 
         // Notifications section
@@ -288,6 +266,14 @@ fun SettingsScreen(
                             if (enabled) AnalyticsManager.optIn() else AnalyticsManager.optOut()
                         }
                     )
+                }
+                TextButton(
+                    onClick = {
+                        TranscriptExternalLinks.open(context, PRIVACY_POLICY_URL)
+                    },
+                    contentPadding = PaddingValues(0.dp)
+                ) {
+                    Text(stringResource(R.string.settings_privacy_policy), color = NimbalystColors.primary)
                 }
             }
         }
@@ -461,18 +447,9 @@ fun SettingsScreen(
                                 devMessage = "Invalid QR payload."
                             } else {
                                 AnalyticsManager.setDistinctIdFromPairing(parsed.analyticsId)
-                                val existing = pairingState.credentials
-                                if (existing != null) {
-                                    app.pairingStore.savePairing(
-                                        existing.copy(
-                                            serverUrl = parsed.serverUrl,
-                                            encryptionSeed = parsed.seed,
-                                            pairedUserId = parsed.userId,
-                                            personalOrgId = parsed.personalOrgId,
-                                            personalUserId = parsed.personalUserId
-                                        )
-                                    )
-                                }
+                                app.pairingStore.savePairing(
+                                    credentialsForScannedPairing(pairingState.credentials, parsed)
+                                )
                                 devMessage = "Imported pairing payload."
                             }
                         },
@@ -496,7 +473,10 @@ fun SettingsScreen(
                                     devMessage = "Invalid pairing QR code."
                                 } else {
                                     AnalyticsManager.setDistinctIdFromPairing(parsed.analyticsId)
-                                    devMessage = "Scanned pairing payload."
+                                    app.pairingStore.savePairing(
+                                        credentialsForScannedPairing(pairingState.credentials, parsed)
+                                    )
+                                    devMessage = "Imported scanned pairing payload."
                                     showQrScanner = false
                                 }
                             },
@@ -517,6 +497,95 @@ fun SettingsScreen(
 
         Spacer(modifier = Modifier.height(32.dp))
     }
+}
+
+private const val PRIVACY_POLICY_URL = "https://nimbalyst.com/privacy-policy"
+
+@Composable
+private fun SettingsCard(title: String, content: @Composable ColumnScope.() -> Unit) {
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 8.dp)
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Text(text = title, style = MaterialTheme.typography.titleMedium)
+            content()
+        }
+    }
+}
+
+/** Mirrors the iOS Connection section: status, server, and the account's devices. */
+@Composable
+private fun ConnectionSection(isConnected: Boolean, serverUrl: String?, devices: List<DeviceInfo>) {
+    SettingsCard(title = stringResource(R.string.settings_connection)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(stringResource(R.string.settings_status), modifier = Modifier.weight(1f))
+            StatusDot(if (isConnected) NimbalystColors.success else NimbalystColors.textDisabled)
+            Text(
+                text = stringResource(if (isConnected) R.string.settings_connected else R.string.settings_disconnected),
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(start = 6.dp)
+            )
+        }
+        serverUrl?.let { url ->
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(stringResource(R.string.settings_server), modifier = Modifier.padding(end = 16.dp))
+                Text(
+                    text = url,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    textAlign = TextAlign.End,
+                    modifier = Modifier.weight(1f)
+                )
+            }
+        }
+        if (devices.isNotEmpty()) {
+            HorizontalDivider()
+            Text(
+                text = stringResource(R.string.settings_devices, devices.size),
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            devices.forEach { device ->
+                val online = device.isOnline != false
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    StatusDot(if (online) NimbalystColors.success else NimbalystColors.textDisabled)
+                    Column(modifier = Modifier.padding(start = 10.dp).weight(1f)) {
+                        Text(device.name, style = MaterialTheme.typography.bodyMedium)
+                        Text(
+                            text = if (online) {
+                                device.platform
+                            } else {
+                                stringResource(
+                                    R.string.settings_device_last_seen,
+                                    device.platform,
+                                    device.lastSeenAt?.let { RelativeTimestamp.format(it) }
+                                        ?: stringResource(R.string.settings_device_offline)
+                                )
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun StatusDot(color: Color) {
+    Box(
+        modifier = Modifier
+            .size(8.dp)
+            .clip(CircleShape)
+            .background(color)
+    )
 }
 
 private fun notificationStatusText(

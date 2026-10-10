@@ -11,6 +11,7 @@ import { getFileType, type EditorType } from '../../utils/fileTypeDetector';
 import { getFileName } from '../../utils/pathUtils';
 import { getRelativeTimeString } from '../../utils/dateFormatting';
 import { nimAssetUrl } from '../../utils/assetUrl';
+import { requestConfirmation } from '../../dialogs/requestConfirmation';
 
 interface HistoryDialogProps {
   isOpen: boolean;
@@ -387,7 +388,13 @@ export function HistoryDialog({ isOpen, onClose, filePath, onRestore, theme = 'l
   };
 
   const handleDelete = async (snapshotId: string, timestamp: string) => {
-    if (window.confirm('Are you sure you want to delete this snapshot?')) {
+    const confirmed = await requestConfirmation({
+      title: 'Delete snapshot?',
+      message: 'Are you sure you want to delete this snapshot?',
+      confirmLabel: 'Delete',
+      destructive: true,
+    });
+    if (confirmed) {
       await deleteSnapshot(timestamp);
       // Remove from selections if selected
       const newSelections = selectedVersions.filter(v => v.snapshotId !== snapshotId);

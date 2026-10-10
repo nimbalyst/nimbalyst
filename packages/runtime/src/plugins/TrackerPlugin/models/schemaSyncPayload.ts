@@ -22,7 +22,9 @@
 import type { DerivedTrackerTypeDeclaration, TrackerDataModel } from '@nimbalyst/tracker-schema';
 import {
   isTrackerSchemaPatch,
+  validateLabelRegistry,
   validatePredicateRegistry,
+  type LabelRegistry,
   type PredicateDefinition,
   type TrackerSchemaPatch,
 } from '@nimbalyst/tracker-schema';
@@ -78,6 +80,25 @@ export interface TrackerPredicateRegistryPayload {
   predicates: PredicateDefinition[];
 }
 
+/**
+ * Reserved `schemaType` carrying the project's LABEL REGISTRY
+ * (`.nimbalyst/labels.yaml`: labels, field-stored properties, and claim
+ * property extensions). Same reasoning as `__predicates__` above, and the same
+ * old-client tolerance: no top-level `type` + `fields[]`, so a client that
+ * predates labels drops the envelope.
+ */
+export const TRACKER_LABEL_REGISTRY_SCHEMA_TYPE = '__labels__';
+
+/** Discriminator for a label-registry payload. */
+export const TRACKER_LABEL_REGISTRY_PAYLOAD = 'trackerLabelRegistry';
+
+export interface TrackerLabelRegistryPayload {
+  payloadKind: typeof TRACKER_LABEL_REGISTRY_PAYLOAD;
+  /** Bumped only if the registry grammar itself changes. */
+  version: 1;
+  registry: LabelRegistry;
+}
+
 export interface TrackerSchemaPatchPayload {
   payloadKind: typeof TRACKER_SCHEMA_PATCH_PAYLOAD;
   /** Bumped only if the delta grammar itself changes. */
@@ -88,7 +109,8 @@ export interface TrackerSchemaPatchPayload {
 export type DecodedTrackerSchemaPayload =
   | { kind: 'patch'; patch: TrackerSchemaPatch }
   | { kind: 'model'; model: TrackerDataModel; declared?: DerivedTrackerTypeDeclaration }
-  | { kind: 'predicates'; predicates: PredicateDefinition[] };
+  | { kind: 'predicates'; predicates: PredicateDefinition[] }
+  | { kind: 'labels'; registry: LabelRegistry };
 
 /**
  * Serialize a full model, optionally with the declared form of a derived type
@@ -111,6 +133,20 @@ export function encodeTrackerPredicateRegistryPayload(
     payloadKind: TRACKER_PREDICATE_REGISTRY_PAYLOAD,
     version: 1,
     predicates: [...predicates],
+  };
+  return JSON.stringify(payload);
+}
+
+/** Serialize the project's label registry for the reserved schema type. */
+export function encodeTrackerLabelRegistryPayload(registry: LabelRegistry): string {
+  const payload: TrackerLabelRegistryPayload = {
+    payloadKind: TRACKER_LABEL_REGISTRY_PAYLOAD,
+    version: 1,
+    registry: {
+      labels: [...registry.labels],
+      properties: [...registry.properties],
+      claimProperties: { ...registry.claimProperties },
+    },
   };
   return JSON.stringify(payload);
 }
@@ -155,6 +191,16 @@ export function decodeTrackerSchemaPayload(
     const result = validatePredicateRegistry(candidate.predicates);
     if (!result.valid) return null;
     return { kind: 'predicates', predicates: result.predicates };
+  }
+
+  if (candidate.payloadKind === TRACKER_LABEL_REGISTRY_PAYLOAD) {
+    if (type !== TRACKER_LABEL_REGISTRY_SCHEMA_TYPE) return null;
+    // Structural validation only: references into the predicate registry are
+    // not checked here, because the two registries arrive on separate rows in
+    // whatever order and a label naming a not-yet-arrived predicate is fine.
+    const result = validateLabelRegistry(candidate.registry);
+    if (!result.valid) return null;
+    return { kind: 'labels', registry: result.registry };
   }
 
   if (candidate.payloadKind === TRACKER_SCHEMA_PATCH_PAYLOAD) {

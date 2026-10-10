@@ -1,0 +1,6 @@
+{
+  "type": "fileContentPushAck",
+  "requestId": "batch-1",
+  "stored": ["sync-a"],
+  "rejected": [{ "syncId": "sync-big", "code": "file_too_large", "message": "Encrypted file is 2500000 bytes; the limit is 2031616" }]
+}

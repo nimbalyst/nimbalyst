@@ -11,7 +11,7 @@ import type {NodeStructureValidator} from '../core/NodeStructureValidator';
 import type {ElementNode, LexicalNode} from 'lexical';
 import type {SerializedLexicalNode} from 'lexical';
 import {$isElementNode} from 'lexical';
-import {$isCodeNode} from '@lexical/code';
+import {$isCodeNode} from '@lexical/code-core';
 import {$setDiffState, $clearDiffState, $getDiffState} from '../core/DiffState';
 import {createNodeFromSerialized} from '../core/createNodeFromSerialized';
 

@@ -1,8 +1,8 @@
 /**
  * The knowledge graph's reading of a tracker room: `entity` pages with a
  * `kind`, `claim` statements between them, the market tree, dated facts, and
- * the content problems a reader can act on (stale facts, products with no
- * market or maker, duplicates).
+ * likely duplicates. `ontologyContentHealth.ts` turns these into the content
+ * problems a reader can act on.
  *
  * The vocabulary is the knowledge ontology's shared contract (r1 + r2):
  * `in-market`, `made-by`, `competes-with`, fact predicates carrying `asOf` and
@@ -113,9 +113,15 @@ export interface MarketNode<T extends OntologyRecordLike = OntologyRecordLike> {
   overfull: boolean;
 }
 
-/** `kind: market` entities as a tree by `parent`; a market whose parent is not a market is a root. */
-export function buildMarketTree<T extends OntologyRecordLike>(graph: KnowledgeGraph<T>): Array<MarketNode<T>> {
-  const markets = graph.entities.filter((entity) => entityKind(entity) === 'market');
+/**
+ * Market pages as a tree by `parent`; a market whose parent is not a market is
+ * a root. `isMarket` reads the `market-node` role once there is a registry.
+ */
+export function buildMarketTree<T extends OntologyRecordLike>(
+  graph: KnowledgeGraph<T>,
+  isMarket: (record: T) => boolean = (record) => entityKind(record) === 'market',
+): Array<MarketNode<T>> {
+  const markets = graph.entities.filter(isMarket);
   const marketIds = new Set(markets.map((market) => market.id));
   const children = new Map<string, T[]>();
   const roots: T[] = [];
@@ -197,12 +203,21 @@ export interface FactValue<T extends OntologyRecordLike = OntologyRecordLike> {
   state: 'current' | 'stale' | 'undated';
 }
 
-/** The current value of every fact: per subject and predicate, the asserted claim with the latest `asOf`. */
-export function currentFacts<T extends OntologyRecordLike>(graph: KnowledgeGraph<T>, now: number, days = STALE_FACT_DAYS): Array<FactValue<T>> {
+/**
+ * The current value of every fact: per subject and predicate, the asserted
+ * claim with the latest `asOf`. Facts are the predicates labels put in a fact
+ * box (`factPredicates`).
+ */
+export function currentFacts<T extends OntologyRecordLike>(
+  graph: KnowledgeGraph<T>,
+  now: number,
+  days = STALE_FACT_DAYS,
+  factPredicates: ReadonlySet<string> = FACT_PREDICATES,
+): Array<FactValue<T>> {
   const current = new Map<string, { value: FactValue<T>; sortKey: number }>();
   for (const claim of graph.claims) {
     const predicate = claimPredicate(claim);
-    if (!predicate || !FACT_PREDICATES.has(predicate)) continue;
+    if (!predicate || !factPredicates.has(predicate)) continue;
     const status = ontologyFieldValue(claim, 'status');
     if (status !== undefined && status !== 'asserted') continue;
     const subject = graph.byId.get(recordRefs(claim, 'subject')[0] ?? '');
@@ -233,7 +248,7 @@ export function currentFacts<T extends OntologyRecordLike>(graph: KnowledgeGraph
 // Content health
 // ---------------------------------------------------------------------------
 
-export type ContentHealthCheck = 'stale-facts' | 'missing-market' | 'missing-maker' | 'missing-competes-with' | 'duplicates';
+export type ContentHealthCheck = 'stale-facts' | 'unmet-expects' | 'range-violation' | 'unknown-label' | 'duplicates';
 
 export interface HealthItem<T extends OntologyRecordLike = OntologyRecordLike> {
   /** Stable across renders and sessions: an Improve request and its proposal carry it. */
@@ -250,6 +265,10 @@ export interface HealthItem<T extends OntologyRecordLike = OntologyRecordLike> {
   items: T[];
   /** Ids of `items`, in order: what a search or filter over the affected items takes. */
   itemIds: string[];
+  /** Labels the problem is about, so a type page can show its own. */
+  labelIds?: string[];
+  /** `info` reports are observations, not problems to fix. */
+  severity?: 'info';
   /** Duplicates only: the records that look like one thing, the one to keep first. */
   groups?: T[][];
   /** Ids of `groups`, in the same shape. */
@@ -277,10 +296,18 @@ function namesOf(record: OntologyRecordLike): string[] {
     .filter((name) => name.length >= 2);
 }
 
-/** Live records whose title or an alias matches another's, across entity and competitor items. */
-export function findDuplicateGroups<T extends OntologyRecordLike>(graph: KnowledgeGraph<T>): T[][] {
+/**
+ * Live records whose title or an alias matches another's, across entity and
+ * competitor items. Structure pages (areas, home) are navigation and never
+ * count; `isStructure` says which those are (by label role once there is a
+ * registry).
+ */
+export function findDuplicateGroups<T extends OntologyRecordLike>(
+  graph: KnowledgeGraph<T>,
+  isStructure: (record: T) => boolean = (record) => STRUCTURE_KINDS.has(entityKind(record)),
+): T[][] {
   const candidates = graph.live.filter((record) => DUPLICATE_TYPES.has(record.primaryType)
-    && !(record.primaryType === ENTITY_TYPE && STRUCTURE_KINDS.has(entityKind(record))));
+    && !(record.primaryType === ENTITY_TYPE && isStructure(record)));
   const parent = new Map<string, string>(candidates.map((record) => [record.id, record.id]));
   const find = (id: string): string => {
     let root = id;
@@ -305,74 +332,6 @@ export function findDuplicateGroups<T extends OntologyRecordLike>(graph: Knowled
     .sort((a, b) => byTitle(a[0]!, b[0]!));
 }
 
-function hasClaim(graph: KnowledgeGraph, id: string, predicate: string, ends: 'subject' | 'either'): boolean {
-  const asSubject = (graph.claimsBySubject.get(id) ?? []).some((claim) => claimPredicate(claim) === predicate);
-  if (asSubject || ends === 'subject') return asSubject;
-  return (graph.claimsByObject.get(id) ?? []).some((claim) => claimPredicate(claim) === predicate);
-}
-
 export function plural(count: number, one: string, many = `${one}s`): string {
   return `${count} ${count === 1 ? one : many}`;
-}
-
-export interface ContentHealthOptions {
-  now: number;
-  /** Stale threshold in days after the end of a fact's period. Default 90. */
-  staleDays?: number;
-  /** Include products with no `competes-with` claim. The wiki home leaves it out; the inspector includes it. */
-  includeCompetesWith?: boolean;
-}
-
-/**
- * Problems with the graph's content, each with a count and the items it is
- * about: stale or undated facts, products with no market or maker, and likely
- * duplicates. Checks with nothing to report are omitted. Returns nothing when
- * the room has no knowledge types.
- */
-export function computeContentHealth<T extends OntologyRecordLike>(
-  records: readonly T[] | KnowledgeGraph<T>,
-  options: ContentHealthOptions,
-): Array<HealthItem<T>> {
-  const graph = Array.isArray(records) ? buildKnowledgeGraph(records as readonly T[]) : records as KnowledgeGraph<T>;
-  const items: Array<HealthDraft<T>> = [];
-
-  const facts = currentFacts(graph, options.now, options.staleDays ?? STALE_FACT_DAYS).filter((fact) => fact.state !== 'current');
-  if (facts.length) {
-    const undated = facts.filter((fact) => fact.state === 'undated').length;
-    items.push({
-      id: 'stale-facts',
-      check: 'stale-facts',
-      title: `${plural(facts.length, 'fact')} out of date`,
-      detail: `${plural(facts.length - undated, 'current value')} past ${options.staleDays ?? STALE_FACT_DAYS} days after its as-of period${undated ? `, ${undated} with no as-of date` : ''}. Research a newer value and cite it.`,
-      count: facts.length,
-      items: [...new Map(facts.map((fact) => [fact.subject.id, fact.subject])).values()],
-    });
-  }
-
-  const products = graph.entities.filter((entity) => entityKind(entity) === 'product').sort(byTitle);
-  const missing: Array<[ContentHealthCheck, string, string, (page: T) => boolean]> = [
-    ['missing-market', 'with no market', 'Add an in-market claim to a market page.', (page) => !hasClaim(graph, page.id, 'in-market', 'subject')],
-    ['missing-maker', 'with no maker', 'Add a made-by claim to the organization that builds it.', (page) => !hasClaim(graph, page.id, 'made-by', 'subject')],
-  ];
-  if (options.includeCompetesWith) {
-    missing.push(['missing-competes-with', 'with no competes-with', 'Say who it competes with, in which market, and how much of a threat it is.', (page) => !hasClaim(graph, page.id, 'competes-with', 'either')]);
-  }
-  for (const [check, suffix, detail, test] of missing) {
-    const pages = products.filter(test);
-    if (pages.length) items.push({ id: check, check, title: `${plural(pages.length, 'product')} ${suffix}`, detail, count: pages.length, items: pages });
-  }
-
-  const duplicates = findDuplicateGroups(graph);
-  if (duplicates.length) {
-    items.push({
-      id: 'duplicates',
-      check: 'duplicates',
-      title: plural(duplicates.length, 'likely duplicate'),
-      detail: 'Items whose title or alias matches another, including competitor tracker items that repeat a wiki page.',
-      count: duplicates.length,
-      items: duplicates.flat(),
-      groups: duplicates,
-    });
-  }
-  return items.map(withHealthIds);
 }

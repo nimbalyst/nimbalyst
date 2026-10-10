@@ -13,7 +13,7 @@ export interface Tab {
   isVirtual?: boolean;
   isProcessing?: boolean; // Session is actively processing AI response
   hasUnread?: boolean; // Session has unread AI response
-  kind?: 'file' | 'tracker'; // Resource kind; 'tracker' tabs render a tracker item
+  kind?: 'file' | 'tracker' | 'type' | 'personal-page'; // Resource kind; 'tracker' tabs render a tracker item, 'type' a type page, 'personal-page' a local personal page
   trackerItemId?: string; // For tracker tabs: the tracker item id
   // NOTE: hasUnacceptedChanges removed - now subscribed via Jotai atom in TabDirtyIndicator
 }
@@ -27,6 +27,7 @@ interface TabManagerProps {
   onToggleAIChat?: () => void; // Toggle AI Chat panel
   isAIChatCollapsed?: boolean; // Whether AI Chat is collapsed
   onTabDoubleClick?: (tabId: string) => void; // Double-click a tab (e.g. maximize editor)
+  tabBarLeading?: React.ReactNode; // Controls before the tabs (Pages' Back/Forward)
   children: React.ReactNode;
 }
 
@@ -38,6 +39,7 @@ export const TabManager: React.FC<TabManagerProps> = ({
   onToggleAIChat,
   isAIChatCollapsed,
   onTabDoubleClick,
+  tabBarLeading,
   children
 }) => {
   // if (import.meta.env.DEV) console.log('[TabManager] render');
@@ -60,6 +62,7 @@ export const TabManager: React.FC<TabManagerProps> = ({
           onToggleAIChat={onToggleAIChat}
           isAIChatCollapsed={isAIChatCollapsed}
           onTabDoubleClick={onTabDoubleClick}
+          leading={tabBarLeading}
         />
       )}
       <div className="tab-content flex-1 overflow-hidden relative">

@@ -127,6 +127,9 @@ class SyncCollabIntegrationTest {
         db = Room.inMemoryDatabaseBuilder(context, NimbalystDatabase::class.java)
             .allowMainThreadQueries()
             .build()
+        // Open now: a lazy open on Room's IO thread racing tearDown's close()
+        // deadlocks on the open helper's lock.
+        db.openHelper.writableDatabase
         repository = NimbalystRepository(db)
 
         // Real collaborators. NotificationManager stays inert here (no Firebase

@@ -32,7 +32,9 @@ export function SharedDocumentLinkActions({ deepLink, target, onClose }: {
     if (!browserUrl) return;
     onClose();
     try {
-      await window.electronAPI.openExternal(browserUrl);
+      // Not openExternal: it routes console links back into the app, which
+      // just reopens this document.
+      await window.electronAPI.openInBrowser(browserUrl);
     } catch (error) {
       console.error('[SharedDocumentLinkActions] Failed to open browser:', error);
     }

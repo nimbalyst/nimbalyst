@@ -1,3 +1,4 @@
+import { selectSessionActionAtom } from '../actions/sessionHistoryActions';
 /**
  * Centralized IPC listeners for tray navigation events
  *
@@ -11,13 +12,9 @@ import { atom } from 'jotai';
 import { store } from '../index';
 import {
   sessionLastReadAtom,
-  sessionRegistryAtom,
-  sessionStoreAtom,
   sessionUnreadAtom,
-  setSelectedWorkstreamAtom,
 } from '../atoms/sessions';
 import { clearSessionUnreadAtom } from '../atoms/sessionActivity';
-import { workstreamStateAtom, setWorkstreamActiveChildAtom, setWorktreeActiveSessionAtom } from '../atoms/workstreamState';
 import { setWindowModeAtom } from '../atoms/windowMode';
 import { syncConfigAtom, type SyncConfig } from '../atoms/appSettings';
 
@@ -45,62 +42,7 @@ export function initTrayListeners(): () => void {
     // onWorkstreamSelectedCallbackAtom when setSelectedWorkstreamAtom fires)
     store.set(setWindowModeAtom, 'agent');
 
-    // Look up the session in the registry
-    const registry = store.get(sessionRegistryAtom);
-    const sessionMeta = registry.get(sessionId);
-
-    if (sessionMeta?.parentSessionId) {
-      // Child session -- redirect to the parent workstream
-      if (sessionMeta.worktreeId) {
-        // Worktree child: select directly as worktree
-        const state = store.get(workstreamStateAtom(sessionId));
-        if (state.type !== 'worktree') {
-          store.set(workstreamStateAtom(sessionId), {
-            type: 'worktree',
-            worktreeId: sessionMeta.worktreeId,
-          });
-        }
-        store.set(setWorktreeActiveSessionAtom, {
-          worktreeId: sessionMeta.worktreeId,
-          sessionId,
-        });
-        store.set(setSelectedWorkstreamAtom, {
-          workspacePath,
-          selection: { type: 'worktree', id: sessionId },
-        });
-      } else {
-        // Regular child: select the parent workstream and set this child as active
-        store.set(setWorkstreamActiveChildAtom, {
-          workstreamId: sessionMeta.parentSessionId,
-          childId: sessionId,
-        });
-        store.set(setSelectedWorkstreamAtom, {
-          workspacePath,
-          selection: { type: 'workstream', id: sessionMeta.parentSessionId },
-        });
-      }
-      return;
-    }
-
-    // Root session -- determine type from workstream state
-    const state = store.get(workstreamStateAtom(sessionId));
-    const type = state.type === 'worktree' ? 'worktree'
-      : state.type === 'workstream' ? 'workstream'
-      : 'session';
-
-    // Track active session for worktree
-    const sessionData = store.get(sessionStoreAtom(sessionId));
-    if (sessionData?.worktreeId) {
-      store.set(setWorktreeActiveSessionAtom, {
-        worktreeId: sessionData.worktreeId,
-        sessionId,
-      });
-    }
-
-    store.set(setSelectedWorkstreamAtom, {
-      workspacePath,
-      selection: { type, id: sessionId },
-    });
+    void store.set(selectSessionActionAtom, sessionId);
   };
 
   cleanups.push(

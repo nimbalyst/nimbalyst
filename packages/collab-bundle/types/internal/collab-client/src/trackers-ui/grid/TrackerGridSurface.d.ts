@@ -23,7 +23,8 @@ import { type TypeColumnConfig } from '../../../../runtime/src/plugins/TrackerPl
 import { type TrackerFilterSet, type TrackerRelationshipLabelResolver } from '../../../../runtime/src/plugins/TrackerPlugin/models/index';
 import { type SortColumn, type SortDirection } from '../../trackers/index';
 import './trackerGrid.css';
-export interface TrackerGridSurfaceProps {
+import { type GridViewSettings } from './useGridViewSettings';
+export interface TrackerGridSurfaceProps extends GridViewSettings {
     rows: TrackerRecord[];
     /** `'all'` for a mixed-type grid; a tracker type resolves one schema. */
     trackerType: string;
@@ -65,9 +66,20 @@ export interface TrackerGridSurfaceProps {
     }) => void;
     /** False until the first snapshot resolves. */
     loaded: boolean;
+    /** Read-only columns the host computes per row (a type page's Where), after the field columns unless placed with `after`. */
+    derivedColumns?: readonly TrackerGridDerivedColumn[];
+}
+export interface TrackerGridDerivedColumn {
+    /** Row key; must not collide with a field column id. */
+    id: string;
+    label: string;
+    width?: number;
+    /** Field column id to sit right after; appended when that column is not shown. */
+    after?: string;
+    value: (row: TrackerRecord) => string;
 }
 export interface TrackerGridUpdateEntry {
     itemId: string;
     updates: Record<string, unknown>;
 }
-export declare function TrackerGridSurface({ rows, trackerType, columnConfig, sortBy, sortDirection, columnFilters, onColumnFiltersChange, resolveRelationshipLabel, isRowEditable, onItemsUpdate, selectedItemId, onOpenItem, onRowContextMenu, loaded, }: TrackerGridSurfaceProps): React.JSX.Element;
+export declare function TrackerGridSurface({ rows, trackerType, columnConfig, sortBy, sortDirection, sortColumns, onSortChange, onWidthsChange, columnFilters, onColumnFiltersChange, resolveRelationshipLabel, isRowEditable, onItemsUpdate, selectedItemId, onOpenItem, onRowContextMenu, loaded, derivedColumns, }: TrackerGridSurfaceProps): React.JSX.Element;

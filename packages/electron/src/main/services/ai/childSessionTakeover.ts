@@ -1,14 +1,16 @@
 import type { SessionData } from '@nimbalyst/runtime/ai/server/types';
-import { AISessionsRepository } from '@nimbalyst/runtime';
+import { AISessionsRepository } from '@nimbalyst/runtime/storage/repositories/AISessionsRepository';
 import { deletePendingChildUpdates } from './pendingChildUpdates';
+import { isParentNotificationSuppressed } from '../extensionSessions/sessionOwnership';
 
 export async function disableParentNotificationsAfterDirectTakeover(session: SessionData): Promise<void> {
   if (!session.createdBySessionId) {
     return;
   }
 
-  const metadata = (session.metadata as Record<string, unknown> | undefined) ?? {};
-  if (metadata.notifyParent === false) {
+  // Already opted out, or the owning extension receives this child's settles
+  // instead of the parent: there is no parent update to turn off.
+  if (isParentNotificationSuppressed(session.metadata)) {
     return;
   }
 

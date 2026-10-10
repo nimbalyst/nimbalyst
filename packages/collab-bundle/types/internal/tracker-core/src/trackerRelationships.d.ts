@@ -15,8 +15,6 @@ export interface TrackerRelationshipValue {
     revisionId?: string;
     /** Room-assigned display number for `revisionId`. Advisory; never resolves. */
     serverRevision?: number;
-    /** Qualifier values, when the owning field declares a `predicate` (4.1). */
-    qualifiers?: Record<string, unknown>;
 }
 export declare function isRelationshipField(def: Pick<TrackerFieldDefinition, "type">): boolean;
 export declare function normalizeRelationshipValue(raw: unknown): TrackerRelationshipValue[];

@@ -3,6 +3,9 @@ import { warnIfUnpublished } from '@nimbalyst/runtime/sync/pushOutcome';
 import type { SessionChange } from '@nimbalyst/runtime/sync/types';
 import { sessionInbox } from './sessionInboxService';
 import { codexQuestionTurns } from './codexQuestionTurns';
+import { supersedeOpenQuestions } from './supersedeOpenQuestions';
+import { beginTurnSetup, TurnSetupCancelledError } from './turnSetupStages';
+import { canDispatchIntoDrain } from './drainFollowUp';
 /**
  * Streaming message handler for AIService.
  *
@@ -24,13 +27,10 @@ import {
   ModelRegistry,
   isAgentProvider,
   onAgentMessageBatch,
-  buildMetaAgentSystemPrompt,
-  buildDevAgentSystemPrompt,
   type AIProvider,
   type SessionManager,
 } from '@nimbalyst/runtime/ai/server';
 import {
-  type AIModel,
   type Message,
   type AIProviderType,
   type SessionData,
@@ -48,48 +48,18 @@ import type { RawDocumentContext } from '@nimbalyst/runtime/ai/services/types';
 import type { DocumentContextService } from '@nimbalyst/runtime/ai/services/DocumentContextService';
 import { AISessionsRepository } from '@nimbalyst/runtime/storage/repositories/AISessionsRepository';
 import { resolveClaudeCodeParentContextWindow } from '@nimbalyst/runtime/ai/modelConstants';
+import { accumulateClaudeCodeTurnUsage, accumulateProviderTurnUsage } from './tokenUsageAccumulation';
+import { provisionalTitleForFirstMessage } from './provisionalSessionTitle';
 import {
   buildMcpSessionStatusSnapshot,
   type McpSessionStatusInput,
 } from '@nimbalyst/runtime/types/MCPServerConfig';
 import { toolRegistry } from './tools';
 import type { DriveReason } from './QueueDriveService';
-import { resolveExtensionAgentRef, usesHostSuppliedToolLoop } from './providerResolution';
+import { resolveExtensionAgentRef } from './providerResolution';
+import { resolveToolLoopTurnConfig } from './toolLoopTurnConfig';
 import { resolveProviderAuthRequirement } from './providerAuthRequirement';
-import { getAgentProviderRegistry } from '../../extensions/AgentProviderRegistry';
-
-/**
- * Resolve the human-readable model name (e.g. "Gemini 3.5 Flash (High)") for a
- * tool-loop agent provider, so the system prompt can tell the model its real
- * name instead of the raw internal id.
- *
- * Two sources because there are two kinds of tool-loop provider: an extension
- * declares its models in its manifest, while a built-in one publishes them
- * through `ModelRegistry`. Returns undefined for anything else — an
- * MCP-discovering provider builds its own prompt.
- */
-function resolveToolLoopModelDisplayName(
-  provider: string,
-  model: string | null | undefined,
-): string | undefined {
-  if (!model) return undefined;
-  try {
-    const entry = getAgentProviderRegistry().findByContributionId(provider);
-    if (entry) {
-      const match = entry.contribution.models?.find(
-        (m) => m.id === model || m.id.endsWith(`:${model}`),
-      );
-      return match?.name;
-    }
-    // Built-in: read the cached catalog only. A network/subprocess fetch here
-    // would sit on the hot path of every turn just to prettify a prompt line;
-    // an unpopulated cache degrades to the raw id, which is cosmetic.
-    const cached = ModelRegistry.getCachedModels(provider as AIProviderType);
-    return cached?.find((m: AIModel) => m.id === model || m.id.endsWith(`:${model}`))?.name;
-  } catch {
-    return undefined;
-  }
-}
+import { isWikiSkillAvailable } from './wikiSkillAvailability';
 
 /**
  * Read the OpenCode session role the user picked, from session metadata.
@@ -124,15 +94,13 @@ import { addGitignoreBypass } from '../../file/WorkspaceEventBus';
 import { getSyncProvider, isDesktopTrulyAway } from '../SyncManager';
 import { requestMobilePush } from './mobilePushRequest';
 import { createAskUserQuestionListeners } from './askUserQuestionListeners';
+import { createTeammateIdleWakeListener } from './teammateIdleWake';
 // The per-session pending-prompt bit is derived from the set of prompts still
 // open, so one prompt settling cannot clear the indicator for another that is
 // still waiting on the user. Refs #1549.
 import { openPrompt, resolvePrompt, hasOpenPrompts } from './openPromptRegistry';
 import { getAgentWorkflowService } from '../AgentWorkflowService';
 import { repairOrphanedSessionMetaCall } from './repairOrphanedSessionMetaCall';
-import { getMetaAgentOpenAITools } from '../../mcp/metaAgentServer';
-import { getDevAgentOpenAITools, resolveDevToolScope } from '../../mcp/devAgentTools';
-import { MetaAgentService } from '../MetaAgentService';
 import {
   shouldShowCommunityPopup,
   markCommunityPopupShown,
@@ -543,10 +511,10 @@ export class MessageStreamingHandler {
     await this.svc.sessionManager.addMessage(userMessage, session.id);
     // logger.main.info(`[AIService] User message added successfully to session ${session.id}`);
 
-    // Update session title if this is the first user message
-    if (session.messages.length === 0 || (session.messages.length === 1 && session.messages[0].type === 'user_message')) {
-      // Generate a provisional title from the first message without locking out auto-naming
-      const title = message.length > 100 ? message.substring(0, 97) + '...' : message;
+    // Provisional title from the first user message, unless the session was named at creation
+    const title = provisionalTitleForFirstMessage(session, message);
+    if (title !== null) {
+      // Without locking out auto-naming
       await this.svc.sessionManager.updateSessionTitle(session.id, title, {
         force: true,
         markAsNamed: false,
@@ -1111,58 +1079,31 @@ export class MessageStreamingHandler {
     };
     this.installListener(provider, 'session:providerSessionReceived', onProviderSessionReceived);
 
-    // Listen for teammate messages when the lead is idle (no active query).
-    // When the lead is active, messages are delivered via interrupt + streamInput
-    // inside ClaudeCodeProvider.sendMessage(). This handler covers the idle case
-    // by triggering a new sendMessage call with the teammate's message.
-    const onTeammateMessageWhileIdle = async (data: {
-      sessionId: string;
-      message: string;
-    }) => {
-      if (!data.sessionId) {
-        logger.main.warn('[AIService] teammate:messageWhileIdle with no sessionId');
-        return;
-      }
-      // Guard: don't trigger sendMessage if session was already ended
-      // (e.g., all teammates completed between message queue and this handler)
-      const sessionStateManager = getSessionStateManager();
-      if (!sessionStateManager.isSessionActive(data.sessionId)) {
-        logger.main.info(`[AIService] Ignoring teammate message for ended session ${data.sessionId}`);
-        return;
-      }
-      logger.main.info(`[AIService] Teammate message while lead idle, triggering sendMessage for session ${data.sessionId}`);
-      try {
-        // Ensure the session is marked as running so the UI shows the stop button.
-        // sendMessageHandler also calls startSession, but there can be a gap between
-        // the setImmediate and when that runs. Re-calling startSession is safe (idempotent).
-        await sessionStateManager.startSession({
-          sessionId: data.sessionId,
-          workspacePath: effectiveWorkspacePath,
-        });
-
-        const targetWindow = findWindowByWorkspace(effectiveWorkspacePath);
-        if (targetWindow && !targetWindow.isDestroyed()) {
-          // Create a mock event and call sendMessage directly
-          const mockEvent = {
-            sender: targetWindow.webContents,
-            senderFrame: targetWindow.webContents.mainFrame,
-          } as Electron.IpcMainInvokeEvent;
-
-          if (this.svc.sendMessageHandler) {
-            // Fire-and-forget: sendMessage will stream results to the renderer
-            setImmediate(async () => {
-              try {
-                await this.svc.sendMessageHandler!(mockEvent, data.message, {} as any, data.sessionId, effectiveWorkspacePath);
-              } catch (err) {
-                logger.main.error('[AIService] Failed to process teammate message while idle:', err);
-              }
-            });
-          }
+    // Wake the lead when a teammate message or finished background task
+    // arrives after its turn ended. See teammateIdleWake.ts.
+    const sessionStateManagerForWake = getSessionStateManager();
+    const onTeammateMessageWhileIdle = createTeammateIdleWakeListener({
+      isSessionActive: (id) => sessionStateManagerForWake.isSessionActive(id),
+      startSession: (options) => sessionStateManagerForWake.startSession(options),
+      endSession: (id) => sessionStateManagerForWake.endSession(id),
+      turnWorkspacePath: () => effectiveWorkspacePath,
+      resolveOwnerWorkspacePath: getWorkspacePathForSession,
+      findWindow: (wakePath) => findWindowByWorkspace(wakePath),
+      sendMessage: async (targetWindow, message, wakeSessionId, wakePath) => {
+        if (!this.svc.sendMessageHandler) {
+          throw new Error('sendMessageHandler is not registered');
         }
-      } catch (error) {
-        logger.main.error('[AIService] Failed to handle teammate message while idle:', error);
-      }
-    };
+        const mockEvent = {
+          sender: targetWindow.webContents,
+          senderFrame: targetWindow.webContents.mainFrame,
+        } as Electron.IpcMainInvokeEvent;
+        return this.svc.sendMessageHandler(mockEvent, message, {} as any, wakeSessionId, wakePath);
+      },
+      defer: (fn) => { setImmediate(fn); },
+      logInfo: (message) => logger.main.info(message),
+      logWarn: (message) => logger.main.warn(message),
+      logError: (message, error) => logger.main.error(`${message}:`, error),
+    });
     this.installListener(provider, 'teammate:messageWhileIdle', onTeammateMessageWhileIdle);
 
     // Listen for all teammates completing. When the lead finished but teammates
@@ -1322,10 +1263,12 @@ export class MessageStreamingHandler {
 
     let inboxTurn: ReturnType<typeof sessionInbox.current>;
     let questionTurn: ReturnType<typeof codexQuestionTurns.current>;
+    const setup = beginTurnSetup(session.id, { submissionId: (documentContext as any)?.submissionId });
     try {
       inboxTurn = ['claude-code', 'openai-codex'].includes(session.provider)
-        ? await sessionInbox.begin(session.id, session.workspacePath ?? workspacePath) : undefined;
+        ? await setup.stage('inbox', () => sessionInbox.begin(session.id, session.workspacePath ?? workspacePath)) : undefined;
       questionTurn = session.provider === 'openai-codex' ? codexQuestionTurns.begin(session.id) : undefined;
+      await setup.stage('supersede-questions', () => supersedeOpenQuestions({ sessionId: session.id, provider: session.provider, context: documentContext }));
       let fullResponse = '';
       let lastTextSection = '';  // Track text after the last tool call (for notifications)
       let prevTextSection = '';  // Previous non-empty text section (fallback if last section is empty)
@@ -1365,8 +1308,8 @@ export class MessageStreamingHandler {
 
       if (isClaudeCode) {
         // Refresh provider config every turn so auth/key changes in settings apply immediately.
-        const refreshedConfig = await this.svc.buildClaudeCodeRuntimeConfig(session, effectiveWorkspacePath);
-        await provider.initialize(refreshedConfig);
+        const refreshedConfig = await setup.stage('runtime-config', () => this.svc.buildClaudeCodeRuntimeConfig(session, effectiveWorkspacePath));
+        await setup.stage('initialize', () => provider.initialize(refreshedConfig));
 
         //   messageLength: message.length,
         //   hasContext: !!documentContext,
@@ -1402,11 +1345,11 @@ export class MessageStreamingHandler {
         if (turnAgentRole) {
           turnConfig.agentRole = turnAgentRole;
         }
-        await provider.initialize(turnConfig);
+        await setup.stage('initialize', () => provider.initialize(turnConfig));
       }
 
       // Attach @ mentioned files for non-agent providers
-      const { enhancedMessage, attachedFiles } = await attachMentionedFiles(message, workspacePath, provider);
+      const { enhancedMessage, attachedFiles } = await setup.stage('mentions', () => attachMentionedFiles(message, workspacePath, provider));
       const messageToSend = enhancedMessage;
 
       if (attachedFiles.length > 0) {
@@ -1433,7 +1376,8 @@ export class MessageStreamingHandler {
         rawContext,
         session.id,
         session.provider as AIProviderType,
-        undefined // No mode transition for now - will be added when integrating with SessionTranscript
+        undefined, // No mode transition for now - will be added when integrating with SessionTranscript
+        { wikiSkillAvailable: isWikiSkillAvailable() }
       );
 
       // Merge prepared document context with session metadata
@@ -1526,93 +1470,27 @@ export class MessageStreamingHandler {
         && effectiveWorkspacePath
       ) {
         try {
-          await this.svc.hooklessWatcher.ensureForSession(session.id, effectiveWorkspacePath, {
+          await setup.stage('file-watcher', () => this.svc.hooklessWatcher.ensureForSession(session.id, effectiveWorkspacePath, {
             attributionMode: workspaceFileAttributionMode,
-          });
+          }));
         } catch (watcherError) {
+          if (watcherError instanceof TurnSetupCancelledError) throw watcherError;
           logger.main.error('[AIService] Failed to start Codex file cache:', watcherError);
         }
       }
 
       if (session.provider === 'openai-codex' && effectiveWorkspacePath) {
         try {
-          await getAgentWorkflowService(effectiveWorkspacePath).ensureCodexExports();
+          await setup.stage('codex-exports', () => getAgentWorkflowService(effectiveWorkspacePath).ensureCodexExports());
         } catch (workflowError) {
+          if (workflowError instanceof TurnSetupCancelledError) throw workflowError;
           logger.main.error('[AIService] Failed to sync Codex workflow exports:', workflowError);
         }
       }
 
-      // Tools for providers whose tool loop the host feeds (Gemini, and any
-      // extension agent). MCP-discovering providers (claude-code, openai-codex)
-      // find these same tools over the SSE MCP server, so they are threaded
-      // nothing and their sendMessage call shape is unchanged. Gated on the
-      // meta-agent server being up plus a session + workspace, mirroring
-      // McpConfigService parity.
-      const isToolLoopSession = usesHostSuppliedToolLoop(session.provider);
-      // Only a meta-agent session may receive spawn tools. A standard
-      // child session (created agentRole='standard' by MetaAgentService) must
-      // NOT get spawn tools, otherwise it can spawn grandchildren and trigger
-      // exponential recursion. This mirrors claude-code/openai-codex, where only
-      // a button-created meta-agent gets the spawn tools over the SSE MCP server
-      // and its standard children cannot spawn. Gate tools and persona on the
-      // SAME condition so they stay in lockstep.
-      const isMetaAgentToolLoopSession =
-        isToolLoopSession && session.agentRole === 'meta-agent';
-      // A standard (non-meta-agent) session gets the workspace dev toolset so
-      // the model can investigate and edit through the SAME simulated tool
-      // loop. This mirrors the MCP-discovering providers: a standard session
-      // has file tools, only a meta-agent session has orchestration tools.
-      // These dispatch host-side and need no MetaAgentService port.
-      const isStandardToolLoopSession =
-        isToolLoopSession && session.agentRole !== 'meta-agent';
-      const toolLoopTools =
-        isMetaAgentToolLoopSession &&
-        MetaAgentService.getInstance().getPort() !== null &&
-        session.id &&
-        effectiveWorkspacePath
-          ? getMetaAgentOpenAITools()
-          : isStandardToolLoopSession && session.id && effectiveWorkspacePath
-            ? getDevAgentOpenAITools(
-                resolveDevToolScope((session.metadata as Record<string, unknown> | undefined)?.toolScope),
-              )
-            : undefined;
+      const { isToolLoopSession, toolLoopTools, toolLoopSystemPrompt } = resolveToolLoopTurnConfig(session, effectiveWorkspacePath);
 
-      // Meta-agent persona for tool-loop providers. The MCP-discovering
-      // providers build this same persona internally over their SDK system
-      // prompt; a tool-loop provider has no equivalent, so without this it
-      // receives ONLY tool schemas and replies as a generic chat assistant
-      // ("how would you like to proceed?") instead of proactively setting
-      // session meta, surveying worktrees/sessions, and spawning child
-      // sessions. We reuse the SAME buildMetaAgentSystemPrompt source (no
-      // duplicated persona text), gated strictly on agentRole === 'meta-agent'
-      // so a normal Gemini chat session is unaffected. 'codex' tool-reference
-      // style renders plain tool names, matching how a tool loop presents tools
-      // in its JSON envelope (no `mcp__` SDK prefix).
-      // Workflow preset for the meta-agent persona. Read from session metadata
-      // (validated) with a 'default' fallback, mirroring how effortLevel is read
-      // above. Behavior is byte-identical until something writes
-      // metadata.workflowPreset (e.g. via update_session_meta); the 'research'
-      // and 'implement-review-test' presets become selectable once it does.
-      const rawWorkflowPreset = (session.metadata as Record<string, unknown> | undefined)?.workflowPreset;
-      const extensionWorkflowPreset =
-        rawWorkflowPreset === 'research' || rawWorkflowPreset === 'implement-review-test'
-          ? rawWorkflowPreset
-          : 'default';
-      const toolLoopSystemPrompt =
-        isMetaAgentToolLoopSession
-          ? buildMetaAgentSystemPrompt('codex', extensionWorkflowPreset, {
-              provider: session.provider,
-              model: session.model ?? undefined,
-              modelDisplayName: resolveToolLoopModelDisplayName(session.provider, session.model),
-            })
-          : isStandardToolLoopSession && session.id && effectiveWorkspacePath
-            ? buildDevAgentSystemPrompt({
-                provider: session.provider,
-                model: session.model ?? undefined,
-                modelDisplayName: resolveToolLoopModelDisplayName(session.provider, session.model),
-              })
-            : undefined;
-
+      setup.finish();
       for await (const chunk of provider.sendMessage(messageToSend, contextWithSession, session.id, sessionMessages, effectiveWorkspacePath, attachments, toolLoopTools, toolLoopSystemPrompt)) {
         if (!chunk) continue;
         chunkCount++;
@@ -2465,25 +2343,6 @@ export class MessageStreamingHandler {
             // For claude-code: use modelUsage for cumulative tokens and contextWindow
             // For other providers: use tokenUsage from chunk.usage
             if (session.provider === 'claude-code' && modelUsage) {
-              // For claude-code, accumulate tokens from modelUsage (SDK provides per-model breakdown)
-              const currentUsage = session.tokenUsage ?? {
-                inputTokens: 0,
-                outputTokens: 0,
-                totalTokens: 0
-              };
-
-              // Cumulative input/output come from result.usage (chunk.usage), which Anthropic
-              // deduplicates by message.id. Do NOT sum modelUsage tokens for these -- the SDK
-              // over-counts them from duplicated assistant events (each message is emitted 2-3x,
-              // one event per content block), inflating the tooltip totals. See NIM-689.
-              // Cost still derives from modelUsage (the only per-model cost source; not displayed).
-              const newInputTokens = tokenUsage?.input_tokens || 0;
-              const newOutputTokens = tokenUsage?.output_tokens || 0;
-              let newCostUSD = 0;
-              for (const modelName of Object.keys(modelUsage)) {
-                newCostUSD += modelUsage[modelName].costUSD || 0;
-              }
-
               // Prefer the REAL per-model context window the CLI reports in
               // modelUsage — the registry value is only a static seed and was
               // wrong for models that changed window across CLI versions (the
@@ -2493,28 +2352,14 @@ export class MessageStreamingHandler {
               // the PARENT model's window by matching the session's family.
               // Fall back to the registry seed before the first result arrives.
               const reportedContextWindow = resolveClaudeCodeParentContextWindow(sessionModelId, modelUsage);
-              const contextWindowForDisplay = reportedContextWindow || selectedModelContextWindow || currentUsage.contextWindow;
-
-              const updatedUsage: NonNullable<SessionData['tokenUsage']> = {
-                inputTokens: currentUsage.inputTokens + newInputTokens,
-                outputTokens: currentUsage.outputTokens + newOutputTokens,
-                totalTokens: currentUsage.totalTokens + newInputTokens + newOutputTokens,
-                costUSD: (currentUsage.costUSD || 0) + newCostUSD,
-                // Both figures go, not just the fill. The meter falls back to
-                // cumulative `totalTokens` over whatever denominator survives,
-                // so clearing the fill alone turns a stale 90% into a confident
-                // 600%. With no denominator it reports plain token totals and
-                // claims nothing about context until a turn measures it.
-                contextWindow: contextCompacted ? undefined : contextWindowForDisplay,
-                // contextFillTokens = input + cacheRead + cacheCreation from last assistant message
-                // This is the actual context fill, not cumulative - updates correctly after compaction
-                // After compaction, clear stale currentContext (next real turn will set accurate value)
-                currentContext: contextCompacted
-                  ? undefined
-                  : (contextFillTokens !== undefined && contextWindowForDisplay)
-                    ? { tokens: contextFillTokens, contextWindow: contextWindowForDisplay }
-                    : currentUsage.currentContext,
-              };
+              const contextWindowForDisplay = reportedContextWindow || selectedModelContextWindow || session.tokenUsage?.contextWindow;
+              const updatedUsage = accumulateClaudeCodeTurnUsage(session.tokenUsage, {
+                usage: tokenUsage,
+                modelUsage,
+                contextFillTokens,
+                contextCompacted,
+                contextWindow: contextWindowForDisplay,
+              });
 
               await this.svc.sessionManager.updateSessionTokenUsage(session.id, updatedUsage);
 
@@ -2549,101 +2394,29 @@ export class MessageStreamingHandler {
               session.tokenUsage = updatedUsage;
             } else if (tokenUsage && session.provider !== 'claude-code') {
               // For non-claude-code providers, use tokenUsage from chunk
-              const currentUsage = session.tokenUsage ?? {
-                inputTokens: 0,
-                outputTokens: 0,
-                totalTokens: 0
-              };
-
-              // Calculate new tokens for this message
-              const newInputTokens = (tokenUsage.input_tokens || 0);
-              const newOutputTokens = tokenUsage.output_tokens || 0;
-              const newTotalTokens = newInputTokens + newOutputTokens;
               const isCodexProvider = session.provider === 'openai-codex';
               const reportsCurrentContext = agentCapabilitiesForProviderType(
                 session.provider,
               ).contextReporting === 'context-window';
               const codexInitData = isCodexProvider ? (provider as any).getInitData?.() : null;
-              const isResumedCodexThread = codexInitData?.isResumedThread === true;
 
               // #914: only providers measured to report both a live fill and
               // denominator may populate currentContext. A catalog window by
               // itself cannot turn cumulative token spend into a percentage.
               const reportedContextWindow = reportsCurrentContext
-                ? (contextWindowFromChunk || selectedModelContextWindow || currentUsage.contextWindow)
+                ? (contextWindowFromChunk || selectedModelContextWindow || session.tokenUsage?.contextWindow)
                 : undefined;
-              const storedContextWindow = reportedContextWindow || currentUsage.contextWindow;
 
-              // Codex SDK turn.completed usage is cumulative for the provider thread.
-              // Convert to per-session deltas using the last seen cumulative snapshot.
-              let nextInputTokens = currentUsage.inputTokens + newInputTokens;
-              let nextOutputTokens = currentUsage.outputTokens + newOutputTokens;
-              let nextTotalTokens = currentUsage.totalTokens + newTotalTokens;
-              let providerCumulativeInputTokens = currentUsage.providerCumulativeInputTokens;
-              let providerCumulativeOutputTokens = currentUsage.providerCumulativeOutputTokens;
-
-              if (isCodexProvider) {
-                const cumulativeInput = tokenUsage.input_tokens ?? 0;
-                const cumulativeOutput = tokenUsage.output_tokens ?? 0;
-
-                const previousCumulativeInput =
-                  typeof currentUsage.providerCumulativeInputTokens === 'number'
-                    ? currentUsage.providerCumulativeInputTokens
-                    : currentUsage.inputTokens > 0
-                      ? currentUsage.inputTokens
-                      : undefined;
-                const previousCumulativeOutput =
-                  typeof currentUsage.providerCumulativeOutputTokens === 'number'
-                    ? currentUsage.providerCumulativeOutputTokens
-                    : currentUsage.outputTokens > 0
-                      ? currentUsage.outputTokens
-                      : undefined;
-
-                const hasPreviousCumulative =
-                  typeof previousCumulativeInput === 'number' &&
-                  typeof previousCumulativeOutput === 'number';
-
-                const deltaInput = hasPreviousCumulative
-                  ? Math.max(cumulativeInput - previousCumulativeInput, 0)
-                  : (isResumedCodexThread ? 0 : cumulativeInput);
-                const deltaOutput = hasPreviousCumulative
-                  ? Math.max(cumulativeOutput - previousCumulativeOutput, 0)
-                  : (isResumedCodexThread ? 0 : cumulativeOutput);
-
-                nextInputTokens = currentUsage.inputTokens + deltaInput;
-                nextOutputTokens = currentUsage.outputTokens + deltaOutput;
-                nextTotalTokens = currentUsage.totalTokens + deltaInput + deltaOutput;
-                providerCumulativeInputTokens = cumulativeInput;
-                providerCumulativeOutputTokens = cumulativeOutput;
-              }
-
-              const updatedUsage: NonNullable<SessionData['tokenUsage']> = {
-                inputTokens: nextInputTokens,
-                outputTokens: nextOutputTokens,
-                totalTokens: isCodexProvider
-                  ? nextTotalTokens
-                  : currentUsage.totalTokens + newTotalTokens,
-                ...(isCodexProvider ? {
-                  providerCumulativeInputTokens,
-                  providerCumulativeOutputTokens,
-                } : {}),
-                // A compaction just replaced the conversation with a summary, so
-                // every fill figure in hand describes context that no longer
-                // exists -- including the one this chunk reports, which is read
-                // off the last assistant message from before the boundary. The
-                // denominator goes with it: the meter otherwise falls back to
-                // cumulative spend over the window and reports a confident,
-                // wrong percentage. Report nothing until a turn measures the new
-                // context. Codex and OpenCode reach this branch.
-                contextWindow: contextCompacted ? undefined : storedContextWindow,
-                currentContext: contextCompacted
-                  ? undefined
-                  : reportsCurrentContext
-                    ? (contextFillTokens !== undefined && reportedContextWindow
-                      ? { tokens: contextFillTokens, contextWindow: reportedContextWindow }
-                      : currentUsage.currentContext)
-                    : currentUsage.currentContext,
-              };
+              const updatedUsage = accumulateProviderTurnUsage(session.tokenUsage, {
+                usage: tokenUsage,
+                // Codex SDK turn.completed usage is cumulative for the provider thread.
+                threadCumulative: isCodexProvider,
+                isResumedThread: codexInitData?.isResumedThread === true,
+                reportsCurrentContext,
+                reportedContextWindow,
+                contextFillTokens,
+                contextCompacted,
+              });
 
               await this.svc.sessionManager.updateSessionTokenUsage(session.id, updatedUsage);
 
@@ -2819,6 +2592,10 @@ export class MessageStreamingHandler {
                 // and wakes on the endSession below.
                 this.svc.requestQueueDrive(session.id, workspacePath, 'fifo-continuation');
               }
+            } else if (willResume && !hasTeammates && canDispatchIntoDrain(session.id)) {
+              // Answered, but a background task keeps the turn draining: a prompt
+              // queued earlier goes onto the live query instead of waiting for it.
+              this.svc.requestQueueDrive(session.id, workspacePath, 'drain-follow-up');
             }
             if (hasTeammates || willResume || queuedChainAlreadyActive || queuedContinuationScheduled) {
               const reason = hasTeammates

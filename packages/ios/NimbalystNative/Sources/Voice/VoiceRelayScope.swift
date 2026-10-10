@@ -11,6 +11,16 @@ struct VoiceRelayScope: Codable, Equatable, Sendable {
     let announcingDeviceId: String
 }
 
+extension Session {
+    /// Only phone-created sessions are host-stamped; a session started on the desktop
+    /// itself has no hostDeviceId and the session list shows it under the selected
+    /// desktop. Voice must accept the same set. The desktop re-checks against its own DB.
+    func isVoiceAvailable(onHost host: String?, projectId project: String?) -> Bool {
+        guard let host, projectId == project else { return false }
+        return hostDeviceId == nil || hostDeviceId == host
+    }
+}
+
 struct VoiceRelayRequest: Codable {
     let scope: VoiceRelayScope
     let tool: String

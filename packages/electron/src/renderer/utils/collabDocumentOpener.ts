@@ -18,6 +18,7 @@ import {
   normalizeCollabPath,
   UNRESOLVED_SHARED_DOCUMENT_NAME,
 } from '../components/CollabMode/collabTree';
+import { pageDisplayName } from '@nimbalyst/collab-client/docs';
 import { toStableAnalyticsCategory } from '../../shared/analytics/teamAnalytics';
 import { trackTeamAnalyticsEvent } from './teamAnalytics';
 import type { CollabOpenSource, CollabScope } from '@nimbalyst/collab-client/core';
@@ -110,7 +111,8 @@ export function updateCollabConfigDisplayMetadata(
   const config = getCollabConfig(scope, uri);
   if (!config) return;
 
-  const resolvedTitle = getSharedDocumentDisplayName(metadata.title, config.documentId);
+  // A page reads like its tree row: bare name, no ".md".
+  const resolvedTitle = pageDisplayName(getSharedDocumentDisplayName(metadata.title, config.documentId), config.documentType ?? 'markdown');
   if (resolvedTitle !== UNRESOLVED_SHARED_DOCUMENT_NAME) {
     config.title = resolvedTitle;
   }
@@ -209,10 +211,10 @@ export function openCollabDocument(options: CollabDocumentConfig & {
   try {
     // Add the tab with its display name in the same store transaction. Content
     // is empty because CollaborationPlugin hydrates from Y.Doc.
-    const displayName = getSharedDocumentDisplayName(
+    const displayName = pageDisplayName(getSharedDocumentDisplayName(
       config.displayPath || config.title,
       config.documentId,
-    );
+    ), config.documentType ?? 'markdown');
     const tabId = isPinned === undefined
       ? addTab(uri, '', true, displayName)
       : addTab(uri, '', true, displayName, { isPinned });
@@ -490,7 +492,7 @@ export async function openCollabDocumentViaIPC(options: {
     scope: options.scope,
     orgId,
     documentId,
-    title: getSharedDocumentDisplayName(options.title || title, documentId),
+    title: pageDisplayName(getSharedDocumentDisplayName(options.title || title, documentId), documentType),
     displayPath: options.displayPath || (
       options.title && options.title !== documentId ? options.title : undefined
     ),

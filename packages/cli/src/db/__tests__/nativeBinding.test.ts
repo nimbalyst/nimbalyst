@@ -5,7 +5,7 @@
  * so "it failed with a message naming the path" is the behaviour under test,
  * not an incidental detail of it.
  */
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { cpSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
@@ -109,5 +109,52 @@ describe('NIMBALYST_BETTER_SQLITE3_NATIVE', () => {
     expect(() => openDatabase(path.join(scratch(), 'x.db'))).toThrow(
       /NIMBALYST_BETTER_SQLITE3_NATIVE points at a file that does not exist/,
     );
+  });
+});
+
+describe('npm channel without better-sqlite3 installed', () => {
+  // It is an optional dependency, so its absence is a supported install. The
+  // loader is mocked rather than the package uninstalled: the resolution of
+  // exactly 'better-sqlite3' fails the way Node fails it.
+  beforeEach(() => {
+    vi.resetModules();
+    vi.doMock('node:module', async (importOriginal) => {
+      const actual = await importOriginal<typeof import('node:module')>();
+      const missing = () => Object.assign(new Error("Cannot find module 'better-sqlite3'"), { code: 'MODULE_NOT_FOUND' });
+      const createRequire = (url: string | URL) => {
+        const real = actual.createRequire(url);
+        const fake = ((id: string) => {
+          if (id === 'better-sqlite3') throw missing();
+          return real(id);
+        }) as NodeJS.Require;
+        fake.resolve = ((id: string, options?: { paths?: string[] }) => {
+          if (id === 'better-sqlite3') throw missing();
+          return real.resolve(id, options);
+        }) as NodeJS.RequireResolve;
+        return fake;
+      };
+      return { ...actual, createRequire, default: { ...actual, createRequire } };
+    });
+  });
+
+  afterEach(() => {
+    vi.doUnmock('node:module');
+    vi.resetModules();
+  });
+
+  it('says the package is optional and what to do, when a command needs the database', async () => {
+    const { loadSqliteCtor } = await import('../nativeBinding.js');
+    expect(() => loadSqliteCtor()).toThrow(/better-sqlite3 is not installed[\s\S]*optional dependency of @nimbalyst\/cli/);
+  });
+
+  it('still runs commands that do not open the database', async () => {
+    const write = vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+    try {
+      const { main } = await import('../../index.js');
+      expect(await main(['--help'])).toBe(0);
+      expect(String(write.mock.calls[0]?.[0])).toContain('nim <noun> <verb>');
+    } finally {
+      write.mockRestore();
+    }
   });
 });

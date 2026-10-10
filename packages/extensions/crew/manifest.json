@@ -1,0 +1,60 @@
+{
+  "id": "com.nimbalyst.crew",
+  "name": "Crew (Alpha)",
+  "version": "0.1.0",
+  "description": "Long-running agent crew members with a job, a schedule, a journal, and a way to reach you. Each member works in shifts inside its own sessions.",
+  "author": "Nimbalyst",
+  "main": "dist/index.js",
+  "styles": "dist/index.css",
+  "apiVersion": "1.0.0",
+  "defaultEnabled": false,
+  "permissions": {
+    "filesystem": true,
+    "ai": true
+  },
+  "contributions": {
+    "backendModules": [
+      {
+        "id": "crew-runtime",
+        "entry": "dist/backend.js",
+        "runtime": "utility-process",
+        "permissions": ["ai-sessions", "mcp-server-register"],
+        "enablement": {
+          "default": "disabled",
+          "promptOn": "firstUse",
+          "purpose": "Run crew members on their schedules: start and continue their sessions, read their token usage, and notify you when they flag something."
+        }
+      }
+    ],
+    "panels": [
+      {
+        "id": "crew",
+        "title": "Crew",
+        "icon": "groups",
+        "placement": "fullscreen",
+        "order": 50,
+        "component": "CrewPanel",
+        "tooltip": "Open the crew: members, their desks, schedules, and what they flagged."
+      }
+    ],
+    "claudePlugin": {
+      "path": "claude-plugin",
+      "displayName": "Crew",
+      "description": "Design and hire crew members from an agent session",
+      "enabledByDefault": true,
+      "commands": [
+        {
+          "name": "hire",
+          "description": "Design and hire a new crew member by describing the job"
+        }
+      ]
+    }
+  },
+  "marketplace": {
+    "categories": ["ai-tools"],
+    "tags": ["agents", "crew", "schedules", "automation", "alpha"],
+    "icon": "groups",
+    "featured": false,
+    "tagline": "Named agents with a job, a schedule, and a memory (alpha)"
+  }
+}

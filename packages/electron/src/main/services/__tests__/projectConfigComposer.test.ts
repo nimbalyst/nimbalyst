@@ -75,7 +75,21 @@ describe('hasPublishableConfig', () => {
     ).toBe(true);
   });
 
-  it('does not publish when both slices are empty even with a git remote hash', () => {
+  it('publishes a project whose only config is its Local wiki, and omits the key without one', () => {
+    const empty = { commands: [], lastCommandsUpdate: 0, actions: [], lastActionsUpdate: 0 };
+    const wikiOnly = composeProjectConfig({ ...empty, localWiki: { folder: 'nimbalyst-local/wiki' } });
+    expect(wikiOnly.localWiki).toEqual({ folder: 'nimbalyst-local/wiki' });
+    expect(hasPublishableConfig(wikiOnly)).toBe(true);
+    expect('localWiki' in composeProjectConfig({ ...empty, commands: [command] })).toBe(false);
+  });
+
+  it('publishes an emptied project so the phone drops its old wiki, commands and actions', () => {
+    // The server keeps the stored blob when the message omits it, so skipping an
+    // empty config left a removed wiki on the phone forever.
+    expect(hasPublishableConfig(composeProjectConfig({ commands: [], lastCommandsUpdate: 100, actions: [], lastActionsUpdate: 0 }))).toBe(true);
+  });
+
+  it('does not publish an unstamped empty config even with a git remote hash', () => {
     // gitRemoteHash rides its own plaintext field and does not need the blob.
     expect(
       hasPublishableConfig(

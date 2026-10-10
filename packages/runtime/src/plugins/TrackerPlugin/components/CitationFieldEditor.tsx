@@ -25,6 +25,7 @@ import {
   useInteractions,
   useRole,
 } from '@floating-ui/react';
+import { windowControlsClearance } from '../../../ui/floating/windowControlsClearance';
 import type { CitationFieldValue, FieldDefinition } from '@nimbalyst/tracker-schema';
 import { MaterialSymbol } from '../../../ui/icons/MaterialSymbol';
 import { CitationInspector, type CitationInspectorHost } from './CitationInspector';
@@ -69,7 +70,7 @@ const CitationChip: React.FC<{
     onOpenChange: setOpen,
     placement: 'bottom-start',
     whileElementsMounted: autoUpdate,
-    middleware: [offset(5), flip({ padding: 8 }), shift({ padding: 8 })],
+    middleware: [offset(5), flip({ padding: 8 }), shift({ padding: 8 }), windowControlsClearance()],
   });
   const dismiss = useDismiss(floating.context);
   const role = useRole(floating.context, { role: 'dialog' });

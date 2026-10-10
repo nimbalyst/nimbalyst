@@ -24,7 +24,7 @@
  * a silently-substituted render would say the evidence moved.
  */
 import React from 'react';
-import { type CitationFieldValue } from '@nimbalyst/tracker-schema';
+import { type CitationFieldValue } from '../../../../../tracker-schema/src/browser';
 /** A tracker item as the inspector needs it, with no dependency on the host's item type. */
 export interface CitationInspectorItem {
     itemId: string;

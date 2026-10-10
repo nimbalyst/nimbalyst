@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { getFolderContents, listFolderFilesRecursive } from '../FileTree';
 import * as fs from 'fs';
@@ -13,6 +14,16 @@ describe('FileTree All Files Mode', () => {
 
     afterEach(() => {
         fs.rmSync(tempDir, { recursive: true, force: true });
+    });
+
+    it('discards a scan cancelled while directory I/O is pending', async () => {
+        fs.mkdirSync(path.join(tempDir, 'nested'));
+        fs.writeFileSync(path.join(tempDir, 'nested', 'document.md'), '# test');
+        const controller = new AbortController();
+        const scan = getFolderContents(tempDir, 0, controller.signal);
+        controller.abort();
+        expect(await scan).toEqual([]);
+        expect((await getFolderContents(tempDir))[0].children).toHaveLength(1);
     });
 
     it('should return all folders including those without known file extensions', async () => {

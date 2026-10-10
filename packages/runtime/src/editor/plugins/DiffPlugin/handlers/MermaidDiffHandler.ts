@@ -12,7 +12,7 @@ import type {ElementNode, LexicalNode} from 'lexical';
 import type {SerializedLexicalNode} from 'lexical';
 import {$setDiffState, $clearDiffState, $getDiffState} from '../core/DiffState';
 import {createNodeFromSerialized} from '../core/createNodeFromSerialized';
-import {$isMermaidNode} from '../../MermaidPlugin/MermaidNode';
+import {$isMermaidNode} from '../../MermaidPlugin/MermaidNodeCore';
 
 /**
  * Handler for mermaid diagram diffs.

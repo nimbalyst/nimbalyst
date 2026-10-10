@@ -40,6 +40,7 @@ import {
   classifyEntry,
   expandWorkspaceGlobs,
   normalizeStagedPath,
+  parseWorkspacePackages,
 } from './buildContextAllowlist.mjs';
 
 /**
@@ -257,8 +258,8 @@ export function stageBuildContext({ repoRoot = REPO_ROOT, outDir }) {
   }
 
   function workspaceManifests() {
-    const rootPkg = JSON.parse(readFileSync(path.join(repoRoot, 'package.json'), 'utf8'));
-    const dirs = expandWorkspaceGlobs(rootPkg.workspaces ?? [], (parent) => {
+    const globs = parseWorkspacePackages(readFileSync(path.join(repoRoot, 'pnpm-workspace.yaml'), 'utf8'));
+    const dirs = expandWorkspaceGlobs(globs, (parent) => {
       const abs = path.join(repoRoot, parent);
       if (!existsSync(abs)) return [];
       return readdirSync(abs, { withFileTypes: true })

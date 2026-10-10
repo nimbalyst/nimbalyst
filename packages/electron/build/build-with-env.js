@@ -50,7 +50,7 @@ if (targetPlatform === process.platform && targetArch === process.arch) {
   } catch {
     console.error(
       'Native runtime verification failed -- the pinned Electron cannot load better-sqlite3 ' +
-      'and/or node-pty. Fix the install (npm run postinstall in packages/electron) before building; ' +
+      'and/or node-pty. Fix the install (pnpm install, or pnpm run postinstall in packages/electron) before building; ' +
       'shipping this would produce an app that cannot open its database or start a terminal.',
     );
     process.exit(1);
@@ -74,7 +74,7 @@ if (skipNotarize) {
 }
 
 // Run electron-builder with the loaded environment
-const electronBuilder = spawn('npx', ['electron-builder', ...args], {
+const electronBuilder = spawn('pnpm', ['exec', 'electron-builder', ...args], {
   stdio: 'inherit',
   env: process.env,
   shell: true

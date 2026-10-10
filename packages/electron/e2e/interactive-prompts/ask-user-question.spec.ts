@@ -215,6 +215,41 @@ test.describe('AskUserQuestion Widget', () => {
     await expect(widget.locator('[data-testid="ask-user-question-cancelled"]')).toBeVisible();
   });
 
+  test('shows skipped state when the user sent a new message instead of answering', async () => {
+    const sessionId = await createTestSession(page, workspacePath, {
+      title: 'Test AskUserQuestion Skipped'
+    });
+
+    await insertUserPrompt(page, sessionId, 'Help me pick');
+    await insertPendingAskUserQuestion(page, sessionId, [{
+      question: 'Which color?',
+      header: 'Color',
+      options: [
+        { label: 'Red', description: 'Warm' },
+        { label: 'Blue', description: 'Cool' }
+      ],
+      multiSelect: false
+    }]);
+    // The user starts a new turn instead of answering. No result row is
+    // written, like a transcript recorded before questions were superseded.
+    await insertUserPrompt(page, sessionId, 'Never mind, do something else');
+
+    await page.waitForTimeout(1000);
+    const sessionItem = page.locator(`#session-list-item-${sessionId}`);
+    await expect(sessionItem).toBeVisible({ timeout: TEST_TIMEOUTS.MEDIUM });
+    await sessionItem.click();
+    await page.waitForTimeout(1000);
+
+    const widget = page.locator(INTERACTIVE_PROMPT_SELECTORS.askUserQuestionWidget);
+    await expect(widget).toBeVisible({ timeout: TEST_TIMEOUTS.VERY_LONG });
+    await expect(widget).toHaveAttribute('data-state', 'skipped');
+    await expect(widget.locator('[data-testid="ask-user-question-skipped"]')).toBeVisible();
+    await expect(widget.locator('text=Which color?')).toBeVisible();
+    await expect(widget.locator(INTERACTIVE_PROMPT_SELECTORS.askUserQuestionOption)).toHaveCount(0);
+    await expect(widget.locator(INTERACTIVE_PROMPT_SELECTORS.askUserQuestionSubmitButton)).toHaveCount(0);
+    await expect(page.getByLabel('Jump to question')).toHaveCount(0);
+  });
+
   test('multi-select question allows multiple selections', async () => {
     // Create a new test session
     const sessionId = await createTestSession(page, workspacePath, {
@@ -316,17 +351,22 @@ test.describe('AskUserQuestion Widget', () => {
     await expect(options).toHaveCount(3);
     await expect(widget.locator('text=Postgres')).toBeVisible();
 
-    // Switch to Files mode. ChatSidebar's init effect will pick up the most
-    // recent chat session (this one) and mount its own SessionTranscript for
-    // the same sessionId -- the dual-panel scenario that triggers the bug.
+    // Switch to Files mode and open the same session in its chat sidebar so a
+    // second SessionTranscript mounts for this sessionId -- the dual-panel
+    // scenario that triggers the bug. The sidebar picks its session once, at
+    // launch, before this session exists, so select it explicitly.
     await switchToFilesMode(page);
     await page.waitForTimeout(1000);
+
+    const chatSidebar = page.locator(PLAYWRIGHT_TEST_SELECTORS.aiChatPanel);
+    await expect(chatSidebar).toBeVisible({ timeout: TEST_TIMEOUTS.MEDIUM });
+    await chatSidebar.locator('.session-dropdown-trigger').click();
+    await page.locator('.session-dropdown-item .session-info', { hasText: 'Test AskUserQuestion ModeSwitch' }).click();
+    await expect(chatSidebar).toHaveAttribute('data-session-id', sessionId);
 
     // The widget should also render inside the Files-mode chat sidebar. This
     // confirms we have the same session loaded in both panels, i.e. we are
     // actually exercising the regression scenario and not just a mode switch.
-    const chatSidebar = page.locator(PLAYWRIGHT_TEST_SELECTORS.aiChatPanel);
-    await expect(chatSidebar).toBeVisible({ timeout: TEST_TIMEOUTS.MEDIUM });
     const sidebarWidget = chatSidebar.locator(INTERACTIVE_PROMPT_SELECTORS.askUserQuestionWidget);
     await expect(sidebarWidget).toBeVisible({ timeout: TEST_TIMEOUTS.LONG });
     await expect(sidebarWidget.locator(INTERACTIVE_PROMPT_SELECTORS.askUserQuestionOption))

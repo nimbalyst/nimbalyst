@@ -36,11 +36,19 @@ import { createNodeDecoratorSlot } from '../../nodes/nodeDecoratorSlot';
 import { parseEmbedAttrs, serializeEmbedAttrs } from './embedAttrs';
 
 export type EmbedAttrs = Record<string, string>;
+export const PLACED_VIEW_ATTR_KEYS = ['mode', 'cols', 'sort', 'filter', 'group', 'scope', 'w', 'ordering', 'hide', 'start', 'end', 'x', 'y', 'xl', 'yl', 'q', 'pin', 'height', 'width'] as const;
+
 
 export interface EmbeddedFilePayload {
   src: string;
   label: string;
   attrs?: EmbedAttrs;
+  /**
+   * The link title exactly as written, for web link previews. When set, it is
+   * the source of truth: `attrs` is parsed from it and export writes it back
+   * verbatim. File embeds leave it null and keep the attribute-map export.
+   */
+  title?: string | null;
   key?: NodeKey;
 }
 
@@ -49,6 +57,7 @@ export type SerializedEmbeddedFileNode = Spread<
     src: string;
     label: string;
     attrs: EmbedAttrs;
+    title?: string;
   },
   SerializedLexicalNode
 >;
@@ -59,12 +68,18 @@ export class EmbeddedFileNode extends DecoratorNode<JSX.Element | null> {
   __src: string;
   __label: string;
   __attrs: EmbedAttrs;
+  __title: string | null;
+  // Separate primitive Yjs properties let independent settings merge. Null
+  // uses the original markdown value; an empty string explicitly removes it.
+  [key: `__view_${string}`]: string | null;
 
-  constructor(src: string, label: string, attrs: EmbedAttrs, key?: NodeKey) {
+  constructor(src: string, label: string, attrs: EmbedAttrs, key?: NodeKey, title: string | null = null) {
     super(key);
     this.__src = src;
     this.__label = label;
-    this.__attrs = attrs;
+    this.__attrs = title === null ? attrs : parseEmbedAttrs(title);
+    this.__title = title;
+    for (const key of PLACED_VIEW_ATTR_KEYS) this[`__view_${key}`] = null;
   }
 
   static getType(): string {
@@ -72,12 +87,15 @@ export class EmbeddedFileNode extends DecoratorNode<JSX.Element | null> {
   }
 
   static clone(node: EmbeddedFileNode): EmbeddedFileNode {
-    return new EmbeddedFileNode(
+    const clone = new EmbeddedFileNode(
       node.__src,
       node.__label,
       { ...node.__attrs },
       node.__key,
+      node.__title,
     );
+    for (const key of PLACED_VIEW_ATTR_KEYS) clone[`__view_${key}`] = node[`__view_${key}`];
+    return clone;
   }
 
   static importJSON(
@@ -87,6 +105,7 @@ export class EmbeddedFileNode extends DecoratorNode<JSX.Element | null> {
       src: serializedNode.src,
       label: serializedNode.label,
       attrs: serializedNode.attrs ?? {},
+      title: serializedNode.title ?? null,
     });
   }
 
@@ -96,7 +115,8 @@ export class EmbeddedFileNode extends DecoratorNode<JSX.Element | null> {
       version: 1,
       src: this.__src,
       label: this.__label,
-      attrs: { ...this.__attrs },
+      attrs: this.getAttrs(),
+      ...(this.getLatest().__title !== null ? { title: this.getLatest().__title as string } : {}),
     };
   }
 
@@ -122,7 +142,7 @@ export class EmbeddedFileNode extends DecoratorNode<JSX.Element | null> {
     a.href = this.__src;
     a.textContent = this.__label || this.__src;
     a.setAttribute('data-lexical-embedded-file', 'true');
-    const title = serializeEmbedAttrs(this.__attrs);
+    const title = this.getTitle() ?? serializeEmbedAttrs(this.getAttrs());
     if (title) {
       a.title = title;
     }
@@ -161,8 +181,28 @@ export class EmbeddedFileNode extends DecoratorNode<JSX.Element | null> {
     return this.__label;
   }
 
+  /** The verbatim link title, or null for embeds whose title is the attribute map. */
+  getTitle(): string | null {
+    return this.getLatest().__title;
+  }
+
+  /** Replace the verbatim title; the attribute map follows it. */
+  setTitle(title: string): void {
+    const writable = this.getWritable();
+    writable.__title = title;
+    writable.__attrs = parseEmbedAttrs(title);
+    for (const key of PLACED_VIEW_ATTR_KEYS) writable[`__view_${key}`] = null;
+  }
+
   getAttrs(): EmbedAttrs {
-    return { ...this.__attrs };
+    const latest = this.getLatest();
+    const attrs = { ...latest.__attrs };
+    for (const key of PLACED_VIEW_ATTR_KEYS) {
+      const value = latest[`__view_${key}`];
+      if (value === '') delete attrs[key];
+      else if (typeof value === 'string') attrs[key] = value;
+    }
+    return attrs;
   }
 
   setSrc(src: string): void {
@@ -178,6 +218,17 @@ export class EmbeddedFileNode extends DecoratorNode<JSX.Element | null> {
   setAttrs(attrs: EmbedAttrs): void {
     const writable = this.getWritable();
     writable.__attrs = { ...attrs };
+    writable.__title = null;
+    for (const key of PLACED_VIEW_ATTR_KEYS) writable[`__view_${key}`] = null;
+  }
+
+  /** Merge one settings gesture into the current node, preserving other keys. */
+  patchViewAttrs(patch: Readonly<Record<string, string | null>>): void {
+    const current = this.getAttrs();
+    for (const [key, value] of Object.entries(patch)) {
+      if (!(PLACED_VIEW_ATTR_KEYS as readonly string[]).includes(key)) throw new Error(`Unknown view setting: ${key}`);
+      if ((current[key] ?? null) !== (value || null)) this.getWritable()[`__view_${key}`] = value ?? '';
+    }
   }
 
   decorate(editor: LexicalEditor, config: EditorConfig): JSX.Element | null {
@@ -212,6 +263,7 @@ export function $createEmbeddedFileNode(
       payload.label,
       payload.attrs ?? {},
       payload.key,
+      payload.title ?? null,
     ),
   );
 }

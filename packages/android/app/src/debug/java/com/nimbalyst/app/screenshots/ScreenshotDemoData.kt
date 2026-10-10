@@ -8,6 +8,8 @@ import com.nimbalyst.app.data.ProjectEntity
 import com.nimbalyst.app.data.SessionEntity
 import com.nimbalyst.app.pairing.PairingCredentials
 import com.nimbalyst.app.sync.DeviceInfo
+import com.nimbalyst.app.sync.SyncedAvailableModel
+import com.nimbalyst.app.ui.sessionlist.SessionListGrouping
 
 /**
  * Realistic demo content for Play Store screenshots. Mirrors the iOS
@@ -37,36 +39,121 @@ object ScreenshotDemoData {
         ProjectEntity(id = "/Users/demo/sources/mobile-app", name = "mobile-app", sortOrder = 3),
     )
 
+    const val WORKSTREAM_ID = "ws-dark-mode"
+    const val ORCHESTRATOR_ID = "meta-tablet"
+
     fun sessions(now: Long): List<SessionEntity> = listOf(
+        // A meta agent orchestrating three workers, nested under it in the list.
+        session(
+            id = ORCHESTRATOR_ID,
+            projectId = SHOWCASE_PROJECT_ID,
+            title = "Tablet layout",
+            model = "claude-opus-5-5",
+            updatedAt = now - 2 * MINUTE,
+            agentRole = SessionListGrouping.META_AGENT_ROLE,
+            isExecuting = true
+        ),
+        session(
+            id = "sess-meta-1",
+            projectId = SHOWCASE_PROJECT_ID,
+            title = "Two-pane navigation at 700dp",
+            model = "claude-sonnet-5-5",
+            updatedAt = now - MINUTE,
+            parentSessionId = ORCHESTRATOR_ID,
+            createdBySessionId = ORCHESTRATOR_ID,
+            isExecuting = true,
+            phase = "implementing"
+        ),
+        session(
+            id = "sess-meta-2",
+            projectId = SHOWCASE_PROJECT_ID,
+            title = "Keep selection across rotation",
+            model = "claude-sonnet-5-5",
+            updatedAt = now - 20 * MINUTE,
+            parentSessionId = ORCHESTRATOR_ID,
+            createdBySessionId = ORCHESTRATOR_ID,
+            unread = true,
+            phase = "validating"
+        ),
+        session(
+            id = "sess-meta-3",
+            projectId = SHOWCASE_PROJECT_ID,
+            title = "Tablet list and detail polish",
+            model = "claude-sonnet-5-5",
+            updatedAt = now - 45 * MINUTE,
+            parentSessionId = ORCHESTRATOR_ID,
+            createdBySessionId = ORCHESTRATOR_ID,
+            phase = "complete"
+        ),
+        // A workstream container holding the showcase session and two siblings.
+        session(
+            id = WORKSTREAM_ID,
+            projectId = SHOWCASE_PROJECT_ID,
+            title = "Dark mode",
+            model = "claude-sonnet-5-5",
+            updatedAt = now - 3 * HOUR,
+            sessionType = SessionListGrouping.WORKSTREAM_TYPE
+        ),
         session(
             id = SHOWCASE_SESSION_ID,
             projectId = SHOWCASE_PROJECT_ID,
             title = "Implement dark mode theme switching",
-            model = "claude-sonnet-4-5-20250929",
+            model = "claude-sonnet-5-5",
             updatedAt = now - 12 * MINUTE,
-            unread = true
+            parentSessionId = WORKSTREAM_ID,
+            unread = true,
+            phase = "implementing"
+        ),
+        session(
+            id = "sess-dark-2",
+            projectId = SHOWCASE_PROJECT_ID,
+            title = "Theme toggle in settings",
+            model = "claude-sonnet-5-5",
+            updatedAt = now - 35 * MINUTE,
+            parentSessionId = WORKSTREAM_ID,
+            phase = "validating"
+        ),
+        session(
+            id = "sess-dark-3",
+            projectId = SHOWCASE_PROJECT_ID,
+            title = "Contrast audit for the dark palette",
+            model = "claude-opus-5-5",
+            updatedAt = now - 50 * MINUTE,
+            parentSessionId = WORKSTREAM_ID,
+            phase = "planning"
         ),
         session(
             id = "sess-nim-2",
             projectId = SHOWCASE_PROJECT_ID,
             title = "Fix authentication token refresh",
-            model = "claude-sonnet-4-5-20250929",
+            model = "claude-sonnet-5-5",
             updatedAt = now - 3 * MINUTE,
             unread = true,
-            isExecuting = true
+            // Waiting on a queued prompt: the orange clock, next to the running spinners above.
+            hasQueuedPrompts = true
         ),
+        // Two sessions sharing a git worktree.
         session(
             id = "sess-nim-3",
             projectId = SHOWCASE_PROJECT_ID,
-            title = "Add search to session history",
-            model = "claude-sonnet-4-5-20250929",
-            updatedAt = now - 40 * MINUTE
+            title = "Session search",
+            model = "claude-sonnet-5-5",
+            updatedAt = now - 40 * MINUTE,
+            worktreeId = "wt-session-search"
+        ),
+        session(
+            id = "sess-nim-3b",
+            projectId = SHOWCASE_PROJECT_ID,
+            title = "Highlight matches in search results",
+            model = "claude-sonnet-5-5",
+            updatedAt = now - 30 * MINUTE,
+            worktreeId = "wt-session-search"
         ),
         session(
             id = "sess-nim-4",
             projectId = SHOWCASE_PROJECT_ID,
             title = "Refactor database migrations",
-            model = "claude-opus-4-6",
+            model = "claude-opus-5-5",
             updatedAt = now - 2 * HOUR,
             phase = "validating"
         ),
@@ -74,7 +161,7 @@ object ScreenshotDemoData {
             id = "sess-nim-5",
             projectId = SHOWCASE_PROJECT_ID,
             title = "Write unit tests for the sync protocol",
-            model = "claude-sonnet-4-5-20250929",
+            model = "claude-sonnet-5-5",
             mode = "planning",
             updatedAt = now - 5 * HOUR,
             phase = "planning"
@@ -83,28 +170,28 @@ object ScreenshotDemoData {
             id = "sess-nim-6",
             projectId = SHOWCASE_PROJECT_ID,
             title = "Update README documentation",
-            model = "claude-sonnet-4-5-20250929",
+            model = "claude-sonnet-5-5",
             updatedAt = now - DAY - 3 * HOUR
         ),
         session(
             id = "sess-nim-7",
             projectId = SHOWCASE_PROJECT_ID,
             title = "Design extension API architecture",
-            model = "claude-opus-4-6",
+            model = "claude-opus-5-5",
             updatedAt = now - 2 * DAY
         ),
         session(
             id = "sess-nim-8",
             projectId = SHOWCASE_PROJECT_ID,
             title = "Performance tuning for the file watcher",
-            model = "claude-sonnet-4-5-20250929",
+            model = "claude-sonnet-5-5",
             updatedAt = now - 6 * DAY
         ),
         session(
             id = "sess-api-1",
             projectId = "/Users/demo/sources/api-server",
             title = "Add rate limiting middleware",
-            model = "claude-sonnet-4-5-20250929",
+            model = "claude-sonnet-5-5",
             updatedAt = now - 26 * MINUTE,
             unread = true
         ),
@@ -112,42 +199,42 @@ object ScreenshotDemoData {
             id = "sess-api-2",
             projectId = "/Users/demo/sources/api-server",
             title = "Implement WebSocket authentication",
-            model = "claude-sonnet-4-5-20250929",
+            model = "claude-sonnet-5-5",
             updatedAt = now - 4 * HOUR
         ),
         session(
             id = "sess-api-3",
             projectId = "/Users/demo/sources/api-server",
             title = "Database connection pooling setup",
-            model = "claude-opus-4-6",
+            model = "claude-opus-5-5",
             updatedAt = now - DAY
         ),
         session(
             id = "sess-ds-1",
             projectId = "/Users/demo/sources/design-system",
             title = "Token pipeline for color primitives",
-            model = "claude-sonnet-4-5-20250929",
+            model = "claude-sonnet-5-5",
             updatedAt = now - 55 * MINUTE
         ),
         session(
             id = "sess-ds-2",
             projectId = "/Users/demo/sources/design-system",
             title = "Audit button variants for contrast",
-            model = "claude-sonnet-4-5-20250929",
+            model = "claude-sonnet-5-5",
             updatedAt = now - 3 * DAY
         ),
         session(
             id = "sess-mob-1",
             projectId = "/Users/demo/sources/mobile-app",
             title = "Offline queue for pending prompts",
-            model = "claude-sonnet-4-5-20250929",
+            model = "claude-sonnet-5-5",
             updatedAt = now - 90 * MINUTE
         ),
         session(
             id = "sess-mob-2",
             projectId = "/Users/demo/sources/mobile-app",
             title = "Push notification deep links",
-            model = "claude-sonnet-4-5-20250929",
+            model = "claude-sonnet-5-5",
             updatedAt = now - 2 * DAY - 4 * HOUR
         ),
     )
@@ -270,8 +357,90 @@ object ScreenshotDemoData {
             connectedAt = now - 3 * HOUR,
             lastActiveAt = now - MINUTE,
             isFocused = true
+        ),
+        // Fills out the computer picker: a headless machine and an offline desktop.
+        DeviceInfo(
+            deviceId = "device-demo-sandbox",
+            name = "Cloud sandbox",
+            type = "headless",
+            platform = "linux",
+            appVersion = "1.0.0",
+            connectedAt = now - 5 * HOUR,
+            lastActiveAt = now - 2 * MINUTE,
+            isOnline = true
+        ),
+        DeviceInfo(
+            deviceId = "device-demo-studio",
+            name = "Studio iMac",
+            type = "desktop",
+            platform = "desktop",
+            appVersion = "1.0.0",
+            connectedAt = now - 2 * DAY,
+            lastActiveAt = now - DAY,
+            isOnline = false,
+            lastSeenAt = now - DAY
         )
     )
+
+    /** What the desktop publishes for the new-session model picker. */
+    fun availableModels(): List<SyncedAvailableModel> = listOf(
+        SyncedAvailableModel("claude-code:opus", "Claude Opus 5.5", "claude-code"),
+        SyncedAvailableModel("claude-code:fable", "Claude Fable 5.1", "claude-code"),
+        SyncedAvailableModel("claude-code:sonnet", "Claude Sonnet 5.5", "claude-code"),
+        SyncedAvailableModel("claude-code:haiku", "Claude Haiku 5.5", "claude-code"),
+        SyncedAvailableModel("openai-codex:gpt-5.6-sol", "GPT-5.6 Sol", "openai-codex"),
+        SyncedAvailableModel("claude:claude-sonnet-5-5", "Claude Sonnet 5.5", "claude"),
+        SyncedAvailableModel("openai:gpt-5.5", "GPT-5.5", "openai"),
+    )
+
+    const val DEFAULT_MODEL_ID = "claude-code:opus"
+
+    /** Path of the file the "document" screen opens. */
+    const val SHOWCASE_DOCUMENT_PATH = "plans/dark-mode.md"
+
+    /** Directories the Files tab shows expanded (their tree paths are the expansion keys). */
+    val EXPANDED_DOCUMENT_DIRS = setOf("plans", "docs")
+
+    data class DemoDocument(val syncId: String, val relativePath: String, val markdown: String, val modifiedAgo: Long)
+
+    fun documents(): List<DemoDocument> = listOf(
+        DemoDocument("doc-readme", "README.md", "# Nimbalyst\n\nAn AI-native workspace for docs, code, and agent sessions.\n", 2 * DAY),
+        DemoDocument("doc-changelog", "CHANGELOG.md", "# Changelog\n\n## Unreleased\n\n- Tablet layout with list and detail side by side\n", 3 * HOUR),
+        DemoDocument("doc-arch", "docs/architecture.md", "# Architecture\n\nThe desktop app owns sessions; phones mirror them over encrypted sync.\n", 4 * DAY),
+        DemoDocument("doc-sync", "docs/sync-protocol.md", "# Sync protocol\n\nEvery message is encrypted on the device before it is sent.\n", 6 * DAY),
+        DemoDocument("doc-onboard", "docs/onboarding.md", "# Onboarding\n\nPair a phone by scanning the QR code in desktop settings.\n", 5 * DAY),
+        DemoDocument("doc-dark", SHOWCASE_DOCUMENT_PATH, DARK_MODE_PLAN, 12 * MINUTE),
+        DemoDocument("doc-tablet", "plans/tablet-layout.md", "# Tablet layout\n\nList and detail sit side by side from 700dp.\n", 2 * HOUR),
+        DemoDocument("doc-search", "plans/session-search.md", "# Session search\n\nSearch titles locally, then fill in from history.\n", DAY),
+        DemoDocument("doc-release", "notes/release-checklist.md", "# Release checklist\n\n- [ ] Screenshots\n- [ ] Changelog\n", 2 * DAY),
+        DemoDocument("doc-standup", "notes/standup.md", "# Standup\n\n- Dark mode in review\n", 5 * HOUR),
+    )
+
+    private val DARK_MODE_PLAN = """
+        # Dark mode theme switching
+
+        Let people pick **Light**, **Dark**, or **System**, and apply the choice instantly without a restart.
+
+        ## Goals
+
+        - Persist the preference so it survives process death
+        - Recolor every screen in a single recomposition
+        - Follow the device setting when *System* is selected
+
+        ## Plan
+
+        - [x] Add `ThemeController` backed by DataStore
+        - [x] Expose the mode as a `StateFlow`
+        - [ ] Add the toggle to Settings
+        - [ ] Contrast audit for the dark palette
+
+        ## Open questions
+
+        1. Should the transcript follow the app theme or the system theme?
+        2. Do we need a per-project override?
+
+        > Ship behind no flag: the default stays *System*, so nobody sees a change until they opt in.
+    """.trimIndent()
 
     private fun session(
         id: String,
@@ -283,6 +452,12 @@ object ScreenshotDemoData {
         phase: String? = null,
         unread: Boolean = false,
         isExecuting: Boolean = false,
+        hasQueuedPrompts: Boolean = false,
+        sessionType: String? = null,
+        parentSessionId: String? = null,
+        worktreeId: String? = null,
+        agentRole: String? = null,
+        createdBySessionId: String? = null,
     ): SessionEntity = SessionEntity(
         id = id,
         projectId = projectId,
@@ -292,6 +467,12 @@ object ScreenshotDemoData {
         mode = mode,
         phase = phase,
         isExecuting = isExecuting,
+        hasQueuedPrompts = hasQueuedPrompts,
+        sessionType = sessionType,
+        parentSessionId = parentSessionId,
+        worktreeId = worktreeId,
+        agentRole = agentRole,
+        createdBySessionId = createdBySessionId,
         createdAt = updatedAt - HOUR,
         updatedAt = updatedAt,
         lastMessageAt = updatedAt,

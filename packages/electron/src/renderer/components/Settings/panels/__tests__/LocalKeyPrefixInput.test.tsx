@@ -2,8 +2,16 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { LocalKeyPrefixInput, type LocalKeyPrefixConfig } from '../LocalKeyPrefixInput';
+import { requestConfirmation } from '../../../../dialogs/requestConfirmation';
 
-afterEach(cleanup);
+vi.mock('../../../../dialogs/requestConfirmation', () => ({ requestConfirmation: vi.fn() }));
+
+const confirm = vi.mocked(requestConfirmation);
+
+afterEach(() => {
+  cleanup();
+  confirm.mockReset();
+});
 
 function config(overrides: Partial<LocalKeyPrefixConfig> = {}): LocalKeyPrefixConfig {
   return {
@@ -47,7 +55,7 @@ describe('LocalKeyPrefixInput', () => {
    */
   it('confirms before renaming numbers that have already been issued', async () => {
     const onChange = vi.fn(async (prefix: string) => config({ prefix, hasIssuedNumbers: true }));
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    confirm.mockResolvedValue(true);
     render(
       <LocalKeyPrefixInput config={config({ hasIssuedNumbers: true })} teamPrefix="NIM" onChange={onChange} />,
     );
@@ -57,14 +65,15 @@ describe('LocalKeyPrefixInput', () => {
     fireEvent.change(input, { target: { value: 'NIC' } });
     fireEvent.blur(input);
 
-    expect(confirm).toHaveBeenCalledWith(expect.stringContaining('LOC. to NIC.'));
+    expect(confirm).toHaveBeenCalledWith(expect.objectContaining({
+      message: expect.stringContaining('LOC. to NIC.'),
+    }));
     await waitFor(() => expect(onChange).toHaveBeenCalledWith('NIC'));
-    confirm.mockRestore();
   });
 
-  it('leaves the prefix alone when the confirmation is declined', () => {
+  it('leaves the prefix alone when the confirmation is declined', async () => {
     const onChange = vi.fn();
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(false);
+    confirm.mockResolvedValue(false);
     render(
       <LocalKeyPrefixInput config={config({ hasIssuedNumbers: true })} teamPrefix="NIM" onChange={onChange} />,
     );
@@ -73,14 +82,12 @@ describe('LocalKeyPrefixInput', () => {
     fireEvent.change(input, { target: { value: 'NIC' } });
     fireEvent.blur(input);
 
+    await waitFor(() => expect((input as HTMLInputElement).value).toBe('LOC'));
     expect(onChange).not.toHaveBeenCalled();
-    expect((input as HTMLInputElement).value).toBe('LOC');
-    confirm.mockRestore();
   });
 
   it('does not confirm when no number has been issued yet', async () => {
     const onChange = vi.fn(async (prefix: string) => config({ prefix }));
-    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true);
     render(<LocalKeyPrefixInput config={config()} teamPrefix="NIM" onChange={onChange} />);
 
     fireEvent.change(screen.getByLabelText('Local tracker number prefix'), { target: { value: 'NIC' } });
@@ -88,7 +95,6 @@ describe('LocalKeyPrefixInput', () => {
 
     await waitFor(() => expect(onChange).toHaveBeenCalledWith('NIC'));
     expect(confirm).not.toHaveBeenCalled();
-    confirm.mockRestore();
   });
 
   it('keeps invalid prefixes local instead of invoking the settings API', () => {

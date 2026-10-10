@@ -148,7 +148,7 @@ function RequestPanel({ target, context, onClose, onOpenItem, onCreated }: {
         </div>
       </div>
       <div className="ontology-drawer-note">
-        Nothing changes until you apply. An agent with the knowledge skill drafts the changes; you accept or reject each one here. Rejected changes are remembered so they are not suggested again.
+        Nothing changes until you apply. An agent with the wiki skills (/wiki:update) drafts the changes; you accept or reject each one here. Rejected changes are remembered so they are not suggested again.
       </div>
       <div className="ontology-drawer-foot">
         <span className="ontology-drawer-status">{context ? '' : READ_ONLY}</span>
@@ -227,7 +227,7 @@ function ProposalPanel({ proposal, graph, env, context, onClose, onOpenItem }: {
         {parsed.changes.length === 0 && (
           <div className="ontology-request">
             <strong>Waiting for an agent to draft changes.</strong>
-            <div>In a Nimbalyst agent session with the knowledge skill, ask it to draft the pending ontology proposals.</div>
+            <div>In a Nimbalyst agent session with the wiki skills, run /wiki:update and ask it to draft the pending ontology proposals.</div>
             {request && <pre>{request}</pre>}
           </div>
         )}

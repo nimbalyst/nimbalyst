@@ -8,6 +8,11 @@ import { getAttachedFolders } from '../utils/store';
 export const windows = new Map<number, BrowserWindow>();
 export const windowStates = new Map<number, WindowState>();
 
+/** Workspace/document windows registered by WindowManager, including hidden ones. */
+export function getProjectWindows(): BrowserWindow[] {
+    return [...windows.values()].filter(window => !window.isDestroyed());
+}
+
 /**
  * The visible workspace path for a window. Falls back to the create-time
  * `workspacePath` when the rail is off.

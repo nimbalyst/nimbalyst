@@ -230,6 +230,13 @@ describe('updateTrackerItemsCache — query frequency', () => {
     expect(mockQuery).toHaveBeenCalledTimes(1);
   });
 
+  it('never projects inline markers from a throwaway file under temptests/', async () => {
+    await fs.mkdir(path.join(tempDir, 'temptests', 'r3'), { recursive: true });
+    await fs.writeFile(path.join(tempDir, 'temptests', 'r3', 'fixture.md'), 'Fixture #bug[id:b-1 status:to-do]\n', 'utf-8');
+    await (service as any).updateTrackerItemsCache('temptests/r3/fixture.md');
+    expect(mockQuery).not.toHaveBeenCalled();
+  });
+
   it('never caches a file that owns rows, so orphans are still reconciled', async () => {
     mockQuery.mockResolvedValue({
       rows: [{ id: 'bug-1', type: 'bug', line_number: 1, title: 't', data: '{}', updated: null }],

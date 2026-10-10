@@ -14,6 +14,12 @@ import {
 } from "../services/ai/gitCommitProposalPromptUtils";
 import { setSessionPendingPrompt } from "../services/ai/pendingPromptPersistence";
 import { deliverCodexQuestionAnswer } from "../services/ai/codexQuestionDelivery";
+import { isInteractivePromptClosed } from "../services/ai/questionTerminalResultLookup";
+import { settleOrphanedRequestUserInput } from "../services/ai/requestUserInputOrphanedAnswer";
+import {
+  getRequestUserInputFallbackResponseChannel,
+  getRequestUserInputResponseChannel,
+} from "../mcp/tools/interactivePromptFallback";
 
 export function registerSessionPromptResponseHandler(): void {
   /**
@@ -57,6 +63,15 @@ export function registerSessionPromptResponseHandler(): void {
             });
           }
           return result;
+        }
+        // A form closed by a newer user turn (or already answered) must not be
+        // answered again, and must never reach the session fallback channel
+        // where it could settle a newer form with these answers.
+        if (
+          promptType === "request_user_input_request" &&
+          (await isInteractivePromptClosed(sessionId, promptId))
+        ) {
+          return { success: false, error: "This form is already closed." };
         }
         const { database } = await import("../database/PGLiteDatabaseWorker");
         const timestamp = Date.now();
@@ -269,10 +284,6 @@ export function registerSessionPromptResponseHandler(): void {
         // durable fallback for cases where the MCP transport drops.)
         if (promptType === "request_user_input_request") {
           const { ipcMain } = await import("electron");
-          const {
-            getRequestUserInputResponseChannel,
-            getRequestUserInputFallbackResponseChannel,
-          } = await import("../mcp/tools/interactiveToolHandlers");
           const waiterPromptIds = requestUserInputTargets?.waiterPromptIds ?? [
             canonicalPromptId,
           ];
@@ -312,9 +323,17 @@ export function registerSessionPromptResponseHandler(): void {
             console.warn(
               `[SessionHandlers] No MCP waiter for RequestUserInput on channels: ${waiterPromptIds.join(
                 ", "
-              )}. ` +
-                `Response was persisted to DB; the handler may have already resolved or the subprocess exited.`
+              )}. Closing the form and resuming the session with the answers.`
             );
+            await settleOrphanedRequestUserInput({
+              event,
+              sessionId,
+              promptId: canonicalPromptId,
+              answers: response.answers || {},
+              cancelled: response.cancelled === true,
+              respondedBy,
+              session: await AISessionsRepository.get(sessionId),
+            });
           }
           event.sender.send("ai:requestUserInputResolved", {
             sessionId,

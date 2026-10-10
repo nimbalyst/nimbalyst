@@ -3,8 +3,8 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 
 // Installs the repo git hooks by pointing core.hooksPath at .githooks.
-// Runs standalone (`npm run hooks:install`) and automatically via the
-// `prepare` lifecycle on `npm install`. It must NEVER fail the install:
+// Runs standalone (`pnpm run hooks:install`) and automatically via the
+// `prepare` lifecycle on `pnpm install`. It must NEVER fail the install:
 // in CI checkouts, published tarballs, or any non-git context it warns
 // and exits 0 rather than throwing.
 

@@ -13,6 +13,7 @@
 import React from 'react';
 import { DEFAULT_TRACKER_TYPE_COLORS } from '@nimbalyst/tracker-schema';
 import type { CustomToolWidgetProps } from './index';
+import { PageUpdateLine } from './PageUpdateWidget';
 
 // ---------- Types ----------
 
@@ -815,7 +816,21 @@ const FallbackView: React.FC<{ toolName: string; resultText: string | null; args
 
 // ---------- Main widget ----------
 
-export const TrackerToolWidget: React.FC<CustomToolWidgetProps> = ({ message }) => {
+/**
+ * A body change is an edit to the typed page, so it gets the same one-line
+ * "Updated <page>" entry as any other agent page edit, below the field changes.
+ */
+const UpdatedWithBodyView: React.FC<{ data: StructuredUpdated; sessionId: string }> = ({ data, sessionId }) => {
+  const { description: _body, ...fieldChanges } = data.changes;
+  return (
+    <>
+      {Object.keys(fieldChanges).length > 0 && <UpdatedView data={{ ...data, changes: fieldChanges }} />}
+      <PageUpdateLine sessionId={sessionId} uri={`tracker://${data.id}`} title={data.title} state="done" />
+    </>
+  );
+};
+
+export const TrackerToolWidget: React.FC<CustomToolWidgetProps> = ({ message, sessionId }) => {
   const tool = message.toolCall;
   if (!tool) return null;
 
@@ -830,7 +845,9 @@ export const TrackerToolWidget: React.FC<CustomToolWidgetProps> = ({ message }) 
       case 'created':
         return <CreatedView data={structured} />;
       case 'updated':
-        return <UpdatedView data={structured} />;
+        return structured.changes.description
+          ? <UpdatedWithBodyView data={structured} sessionId={sessionId} />
+          : <UpdatedView data={structured} />;
       case 'listed':
         return <ListedView data={structured} />;
       case 'retrieved':

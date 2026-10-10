@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import type { TrimmedRows } from '../../types';
 import { createRowIndexMapping, logicalRowForGridRow, logicalToVisible, visibleToLogical } from '../rowIndexMapping';
 import { snapRowsToVisible } from '../visibleRange';
+import { createSpreadsheetFilterEngine } from '../filterEngine';
 
 interface MappingCase {
   name: string;
@@ -85,5 +86,19 @@ describe('logicalRowForGridRow', () => {
     expect(logicalRowForGridRow(unfiltered, 0, false, 1)).toBe(1);
     // Past the end of the mapping, fall back rather than resolving a wrong row.
     expect(logicalRowForGridRow(unfiltered, 99, false, 1)).toBe(100);
+  });
+
+  it('trims hidden rows together with filtered rows, and unhiding keeps filtered rows out', async () => {
+    let hidden: number[] = [0];
+    const target = { addTrimmed: async () => undefined };
+    const rows = [{ A: 'keep' }, { A: 'drop' }, { A: 'keep' }];
+    const engine = createSpreadsheetFilterEngine(target, () => rows, () => hidden);
+    const filtered = await engine.setColumnFilter(0, { kind: 'text', operator: 'equals', value: 'keep' });
+    expect(filtered.trimmedRows).toEqual({ 0: true, 1: true });
+    const mapping = createRowIndexMapping({ rowCount: 4, headerRowCount: 1, trimmedRows: filtered.trimmedRows });
+    expect(mapping.logicalRows).toEqual([0, 3]);
+
+    hidden = [];
+    expect((await engine.refresh()).trimmedRows).toEqual({ 1: true });
   });
 });

@@ -3,9 +3,10 @@
  *
  * There are two, and they load the binding from different places:
  *
- * - **npm** (`npm i -g @nimbalyst/cli`): better-sqlite3 is an ordinary
- *   dependency and `npm install` puts a loadable copy next to us. Nothing
- *   special is needed.
+ * - **npm** (`npm i -g @nimbalyst/cli`): better-sqlite3 is an optional
+ *   dependency and `npm install` usually puts a loadable copy next to us. When
+ *   it could not, only the commands that open the database fail, with a message
+ *   saying so (see `assertInstalled`).
  * - **bundled**: `nim` ships inside the Nimbalyst app and has no node_modules
  *   of its own. It loads the copy the app already carries at
  *   `<Resources>/node_modules/better-sqlite3`, which is per-target (afterPack
@@ -172,7 +173,30 @@ function loadBundled(resourcesDir: string, nativeBinding: string | undefined): S
   );
 }
 
+/**
+ * better-sqlite3 is an OPTIONAL dependency on the npm channel: a host where its
+ * prebuild fails to install still gets a working `nim` for everything that does
+ * not read the app database (help, `nim wiki`, `nim mcp`). That only holds while
+ * nothing imports it at module load -- type-only imports elsewhere, the require
+ * here -- so this is where an absent package surfaces, and it should say that
+ * the package is optional rather than look like a broken install.
+ */
+function assertInstalled(): void {
+  try {
+    require.resolve('better-sqlite3');
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException)?.code !== 'MODULE_NOT_FOUND') throw err;
+    throw new Error(
+      `better-sqlite3 is not installed, and this command reads the Nimbalyst database directly.\n` +
+        `  resolved from: ${nodePath.dirname(fileURLToPath(import.meta.url))}\n` +
+        `It is an optional dependency of @nimbalyst/cli and its install was skipped or failed on this machine.\n` +
+        `Start the Nimbalyst app so nim can use it instead, or reinstall with \`npm i -g @nimbalyst/cli --include=optional\`.`,
+    );
+  }
+}
+
 function loadFromNodeModules(nativeBinding: string | undefined): SqliteCtor {
+  assertInstalled();
   return loadFrom(
     'better-sqlite3',
     nativeBinding,

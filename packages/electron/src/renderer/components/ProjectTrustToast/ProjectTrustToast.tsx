@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useAtomValue } from 'jotai';
 import { usePostHog } from 'posthog-js/react';
 import { permissionsChangedVersionAtom } from '../../store/atoms/permissions';
+import { requestConfirmation } from '../../dialogs/requestConfirmation';
 import {
   DEFAULT_PROJECT_TRUST_CHOICE,
   PROJECT_TRUST_CHOICE_DESCRIPTIONS,
@@ -237,9 +238,12 @@ export const ProjectTrustToast: React.FC<ProjectTrustToastProps> = ({
   const handleDontTrust = useCallback(async () => {
     if (!workspacePath || isSubmitting) return;
 
-    const confirmed = window.confirm(
-      `Stop trusting "${projectName}"?\n\nThe AI agent won't run any tools in this workspace until you trust it again.`
-    );
+    const confirmed = await requestConfirmation({
+      title: 'Stop trusting project',
+      message: `Stop trusting "${projectName}"?\n\nThe AI agent won't run any tools in this workspace until you trust it again.`,
+      confirmLabel: 'Stop trusting',
+      destructive: true,
+    });
     if (!confirmed) {
       return;
     }

@@ -12,7 +12,7 @@
  * Pure and host-agnostic, like the rest of this directory: desktop settings and
  * the web console's Tracker setup screen render the same model.
  */
-import type { TrackerDataModel } from '@nimbalyst/tracker-schema';
+import type { TrackerDataModel } from '../../../../tracker-schema/src/browser';
 import { type OntologyInput, type TypeSummary } from './ontologyAnalysis';
 import { type DomainGroupId } from './ontologyDomainVocabulary';
 import { type FactValue, type HealthItem, type KnowledgeGraph, type MarketNode } from './ontologyKnowledge';

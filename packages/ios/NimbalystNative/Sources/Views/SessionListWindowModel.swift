@@ -50,6 +50,8 @@ final class SessionListWindowModel: ObservableObject {
     private var previousWorkstreamCursors: [SessionListChildCursor?] = []
     @Published private(set) var facets = SessionListFacets(hasArchived: false, hasPhaseData: false)
     @Published private(set) var state: IndexLoadState = .loading
+    /// Why the local list query failed; nil unless `state` is `.failed` locally.
+    @Published private(set) var failure: SessionListLoadFailure?
     @Published private(set) var isEmpty = true
     @Published private(set) var hasMore = false
     /// More running / queued / pinned rows exist than the exception lane is showing.
@@ -309,6 +311,12 @@ final class SessionListWindowModel: ObservableObject {
         )
     }
 
+    private func fail(_ failure: SessionListLoadFailure) {
+        state = .failed
+        self.failure = failure
+        AnalyticsManager.shared.capture("mobile_session_load_error", properties: failure.analyticsProperties)
+    }
+
     private func restartObservation() {
         observationGeneration &+= 1
         let generation = observationGeneration
@@ -318,11 +326,12 @@ final class SessionListWindowModel: ObservableObject {
             return
         }
         state = .loading
+        failure = nil
         cancellable = database.sessionListWindowObservation(request).start(
             in: database.writer,
             onError: { [weak self] error in
                 guard let self, self.observationGeneration == generation else { return }
-                self.state = .failed
+                self.fail(SessionListLoadFailure(stage: .query, error: error))
                 print("Session list window error: \(error)")
             },
             onChange: { [weak self] snapshot in
@@ -361,7 +370,9 @@ final class SessionListWindowModel: ObservableObject {
         renderedItemCount = merged.count
         metaAgentItems = merged.filter { $0.group.kind == .metaAgent }
         sections = Self.sections(for: merged.filter { $0.group.kind != .metaAgent })
-        children = snapshot.children
+        // A projection refresh can replace a live snapshot with identical tree
+        // rows. Do not republish every expanded subtree in that handoff.
+        if children != snapshot.children { children = snapshot.children }
         childrenHaveMore = snapshot.childrenHaveMore
         workstreamParents = snapshot.workstreamParents
         workstreamParentsHaveMore = snapshot.workstreamParentsHaveMore
@@ -371,6 +382,7 @@ final class SessionListWindowModel: ObservableObject {
         nextExceptionCursor = snapshot.nextExceptionCursor
         isEmpty = snapshot.isEmpty
         state = .loaded
+        failure = nil
 
         applyPersistedExpansion(to: merged)
     }
@@ -401,7 +413,7 @@ final class SessionListWindowModel: ObservableObject {
                     guard self.projectionGeneration == generation else { return }
                     self.projectionRefreshRequested = false
                     if !Task.isCancelled {
-                        self.state = .failed
+                        self.fail(SessionListLoadFailure(stage: .projection, error: error))
                         print("Session list projection refresh failed: \(error)")
                     }
                     return
@@ -416,9 +428,9 @@ final class SessionListWindowModel: ObservableObject {
         var added = false
         for item in items where item.group.childCount > 0 && expandedGroups[item.group.key] == nil {
             guard restoredExpansionKeys.insert(item.group.key).inserted else { continue }
-            let shouldExpand = item.group.kind == .metaAgent
-                ? !persistedCollapsedKeys.contains(item.group.key)
-                : persistedExpandedKeys.contains(item.group.key)
+            let needsAttention = item.group.status != .idle
+            let shouldExpand = !persistedCollapsedKeys.contains(item.group.key)
+                && (needsAttention || persistedExpandedKeys.contains(item.group.key))
             if shouldExpand {
                 expandedGroups[item.group.key] = SessionListChildWindow(limit: Self.childPageSize)
                 expansionOrder.append(item.group.key)

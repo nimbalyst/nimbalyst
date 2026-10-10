@@ -1,8 +1,7 @@
 ---
-description: Prepare and execute an iOS release (patch/minor/major)
+description: Prepare and execute an iOS release of the version already in Info.plist
 ---
-**Arguments**: `{{arg1}}`
-- First word: release type (patch, minor, major)
+Takes no arguments. The version being released is whatever `CFBundleShortVersionString` already holds in `packages/ios/NimbalystApp/Sources/Info.plist`. After a release is accepted in the App Store the user moves the plist to the next expected version by hand, which is what TestFlight builds carry until it ships. Do NOT bump or ask for patch/minor/major; the script only increments the build number.
 
 Prepare an iOS release following this workflow:
 
@@ -49,13 +48,13 @@ Before running the release script, reconcile the iOS release's notable Added/Cha
 4. **Show BOTH versions to user**:
   - Display the developer changelog (what will go in IOS_CHANGELOG.md)
   - Display the App Store "What's New" text separately
-  - Show the current iOS version and what it will be bumped to
+  - Show the version in Info.plist that will be released and the build number it will move to
   - Ask for approval before proceeding
 
 5. **Execute iOS release** (after user approval):
-  - Run `./scripts/ios-release.sh [type]`
+  - Run `./scripts/ios-release.sh`
   - The script will:
-    - Bump version in Info.plist (CFBundleShortVersionString)
+    - Keep the version in Info.plist as is (CFBundleShortVersionString)
     - Increment build number in Info.plist (CFBundleVersion)
     - Move [Unreleased] notes to a new versioned section in IOS_CHANGELOG.md
     - Create commit with release notes
@@ -73,7 +72,6 @@ Before running the release script, reconcile the iOS release's notable Added/Cha
 
 7. **Done**: Show the App Store "What's New" text for easy copy-paste into App Store Connect.
 
-Valid release types: patch, minor, major
 
 Example IOS_CHANGELOG.md format:
 ```markdown

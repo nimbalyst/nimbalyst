@@ -69,6 +69,7 @@ When the user types `/design [description]`:
 5. Set `created` to today's date, `updated` to current timestamp
 6. Create file in `nimbalyst-local/plans/` with proper frontmatter
 7. Include relevant sections based on plan type
+8. Put an `## Implementation checklist` right under the intro: one `- [ ]` per phase, sub-items for concrete deliverables. `/implement` ticks these as work lands.
 
 ## Refining the Design with the User
 

@@ -6,6 +6,7 @@ import { ProviderConfig, Model } from '../../Settings/SettingsView';
 import { hiddenGutterItemsAtom, toggleGutterItemHiddenAtom } from '../../../store/atoms/appSettings';
 import { SettingsToggle, ToggleSwitch } from '../SettingsToggle';
 import { AlphaBadge, SETTINGS_ALPHA_TOOLTIP } from '../../common/AlphaBadge';
+import { errorNotificationService } from '../../../services/ErrorNotificationService';
 
 /** Props for the sibling Claude Code CLI subsection. */
 interface ClaudeCliBundle {
@@ -201,7 +202,7 @@ export function ClaudeCodePanel({
     } catch (error) {
       console.error('Failed to save env vars:', error);
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-      alert(`Failed to save environment variables: ${errorMessage}`);
+      errorNotificationService.showError('Failed to save environment variables', `Failed to save environment variables: ${errorMessage}`);
     }
   }, []);
 
@@ -349,10 +350,14 @@ export function ClaudeCodePanel({
     try {
       const result = await window.electronAPI.invoke('claude-code:login', loginCwd);
       if (result.success) {
-        alert(result.message || 'Login initiated! Please complete authentication in the Terminal window (you may have to type /login to complete the process), then click "Refresh Status" to verify.');
+        errorNotificationService.showInfo(
+          'Claude Code login',
+          result.message || 'Login initiated! Please complete authentication in the Terminal window (you may have to type /login to complete the process), then click "Refresh Status" to verify.',
+          { duration: 0 },
+        );
       }
     } catch (error: any) {
-      alert(`Login failed: ${error.message || 'Unknown error'}`);
+      errorNotificationService.showError('Login failed', `Login failed: ${error.message || 'Unknown error'}`);
     } finally {
       setIsLoggingIn(false);
     }
@@ -362,10 +367,14 @@ export function ClaudeCodePanel({
     try {
       const result = await window.electronAPI.invoke('claude-code:logout');
       if (result.success) {
-        alert(result.message || 'Logout initiated! Please wait for the Terminal window to complete, then click "Refresh Status" to verify.');
+        errorNotificationService.showInfo(
+          'Claude Code logout',
+          result.message || 'Logout initiated! Please wait for the Terminal window to complete, then click "Refresh Status" to verify.',
+          { duration: 0 },
+        );
       }
     } catch (error: any) {
-      alert(`Logout failed: ${error.message || 'Unknown error'}`);
+      errorNotificationService.showError('Logout failed', `Logout failed: ${error.message || 'Unknown error'}`);
     }
   };
 

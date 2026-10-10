@@ -212,6 +212,32 @@ export function safeHandle(
 }
 
 /**
+ * Fire-and-forget listeners have no caller to reject to, so a throw (or a
+ * rejected promise from an async listener) escapes to Electron, which shows
+ * the native "JavaScript error in the main process" dialog. Log it with the
+ * channel instead and never rethrow. `safeHandle` is deliberately not wrapped:
+ * invoke errors must still reject to the renderer.
+ */
+function containListenerErrors(
+  channel: string,
+  handler: (event: Electron.IpcMainEvent, ...args: any[]) => unknown,
+): (event: Electron.IpcMainEvent, ...args: any[]) => void {
+  const logError = (error: unknown) => {
+    console.error(`[IPC] Listener for ${channel} threw:`, error);
+  };
+  return (event, ...args) => {
+    try {
+      const result = handler(event, ...args);
+      if (result && typeof (result as Promise<unknown>).then === 'function') {
+        (result as Promise<unknown>).then(undefined, logError);
+      }
+    } catch (error) {
+      logError(error);
+    }
+  };
+}
+
+/**
  * Safe ipcMain.on() - prevents duplicate registration of the same handler
  *
  * Use this instead of ipcMain.on() for all event-style handlers.
@@ -240,7 +266,7 @@ export function safeOn(
     return;
   }
   handlers.add(handler);
-  ipcMain.on(channel, handler);
+  ipcMain.on(channel, containListenerErrors(channel, handler));
 }
 
 /**
@@ -270,9 +296,10 @@ export function safeOnce(
   handlers.add(handler);
 
   // Wrap to remove from our tracking when the handler fires
+  const contained = containListenerErrors(channel, handler);
   const wrappedHandler = (event: Electron.IpcMainEvent, ...args: any[]) => {
     handlers.delete(handler);
-    handler(event, ...args);
+    contained(event, ...args);
   };
   ipcMain.once(channel, wrappedHandler);
 }

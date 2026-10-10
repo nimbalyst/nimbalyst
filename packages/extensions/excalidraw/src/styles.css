@@ -23,3 +23,11 @@
 .excalidraw-editor .excalidraw {
   flex: 1;
 }
+
+/* Unselected inline embed (EmbedFrame marks its root with data-embed-selected):
+   a static preview, so no menu or bottom chrome until the user selects it */
+[data-embed-selected='false'] .excalidraw-editor .main-menu-trigger,
+[data-embed-selected='false'] .excalidraw-editor .App-bottom-bar,
+[data-embed-selected='false'] .excalidraw-editor .layer-ui__wrapper__footer {
+  display: none;
+}

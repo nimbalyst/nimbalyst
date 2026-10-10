@@ -42,8 +42,8 @@ If Method 1 doesn't work or Dev Tools isn't available.
 2. Build:
    ```bash
    cd rtl-support
-   npm install
-   npm run build
+   pnpm install
+   pnpm run build
    ```
    After build, a `dist/` folder is created.
 
@@ -86,7 +86,7 @@ If you don't want Node.js or source on the target system, copy only the build ou
 1. On the **developer machine**, build:
    ```bash
    cd rtl-support
-   npm run build
+   pnpm run build
    ```
 
 2. Create a folder with this structure:
@@ -129,7 +129,7 @@ typeof window.nimbalystRtlSupport
 | Method | Update |
 |--------|--------|
 | Method 1 (devInstall) | Replace source, then `extension_reload(extensionId, path)` |
-| Method 2 (manual) | `npm run build` again, replace `dist/`, restart Nimbalyst |
+| Method 2 (manual) | `pnpm run build` again, replace `dist/`, restart Nimbalyst |
 | Method 3 (pre-built) | Replace `dist/`, restart Nimbalyst |
 
 ---

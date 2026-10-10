@@ -489,6 +489,38 @@ describe('PGLiteSessionStore.updateMetadata defense-in-depth', () => {
   });
 });
 
+describe('PGLiteSessionStore.updateMetadata concurrent writes', () => {
+  it('keeps both keys when two updates read before either writes', async () => {
+    // A question's hasPendingPrompt vanished when a token-usage write overlapped it:
+    // both read the same blob, and the second whole-blob write dropped the first key.
+    let row: Record<string, unknown> = { phase: 'planning' };
+    let reads = 0;
+    let releaseReads!: () => void;
+    const bothRead = new Promise<void>(resolve => { releaseReads = resolve; });
+    const db = {
+      query: vi.fn(async (sql: string, values: unknown[] = []) => {
+        if (/^SELECT metadata FROM ai_sessions/.test(sql)) {
+          const snapshot = JSON.stringify(row);
+          if (++reads === 2) releaseReads();
+          await bothRead;
+          return { rows: [{ metadata: snapshot }] };
+        }
+        const merge = sql.match(/metadata = COALESCE\(metadata, '\{\}'::jsonb\) \|\| \$(\d+)::jsonb/);
+        const replace = sql.match(/metadata = \$(\d+)/);
+        if (merge) row = { ...row, ...JSON.parse(values[Number(merge[1]) - 1] as string) };
+        else if (replace) row = JSON.parse(values[Number(replace[1]) - 1] as string);
+        return { rows: [] };
+      }),
+    };
+    const store = createPGLiteSessionStore(db as any);
+    await Promise.all([
+      store.updateMetadata('s1', { metadata: { hasPendingPrompt: true } }),
+      store.updateMetadata('s1', { metadata: { tokenUsage: { totalTokens: 5 } } }),
+    ]);
+    expect(row).toMatchObject({ phase: 'planning', hasPendingPrompt: true, tokenUsage: { totalTokens: 5 } });
+  });
+});
+
 describe('PGLiteSessionStore.updateMetadata nullable column clears', () => {
   // NIM-2308 / GH #1098: an expired Claude Code session could never be
   // recovered because the "clear the dead provider session id" write was a

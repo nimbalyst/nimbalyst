@@ -222,16 +222,16 @@ All test runs automatically record WebM videos to `e2e_test_output/videos/`. To 
 
 ```bash
 # Run specific test file
-npx playwright test e2e/editor/my-test.spec.ts
+pnpm exec playwright test e2e/editor/my-test.spec.ts
 
 # Run with UI for debugging
-npx playwright test e2e/editor/my-test.spec.ts --ui
+pnpm exec playwright test e2e/editor/my-test.spec.ts --ui
 
 # Run in headed mode
-npx playwright test e2e/editor/my-test.spec.ts --headed
+pnpm exec playwright test e2e/editor/my-test.spec.ts --headed
 
 # Run specific test by line
-npx playwright test e2e/editor/my-test.spec.ts:55
+pnpm exec playwright test e2e/editor/my-test.spec.ts:55
 ```
 
 NEVER use parallel execution. NEVER use unnecessarily long timeouts when running tests.

@@ -31,6 +31,17 @@ function fixture() {
 
 afterEach(() => vi.useRealTimers());
 describe('remote desktop mirrors', () => {
+  it('counts descendants recursively without crossing workspace or host boundaries', async () => {
+    const f = fixture();
+    f.provider.fetchIndex.mockResolvedValue({ sessions: [f.entry,
+      { ...f.entry, sessionId: 'child', parentSessionId: 'remote' },
+      { ...f.entry, sessionId: 'leaf', parentSessionId: 'child' },
+      { ...f.entry, sessionId: 'foreign', parentSessionId: 'remote', hostDeviceId: 'sandbox-2' },
+    ], projects: [] } as any);
+    const rows = await f.mirror.list('/repo', []);
+    expect(rows.find(row => row.id === 'remote')).toMatchObject({ childCount: 1, descendantCount: 2 });
+    expect(rows.find(row => row.id === 'child')).toMatchObject({ childCount: 1, descendantCount: 1 });
+  });
   it.each([true, false])('logs the provider reason and retains the user-facing queue failure (retryable=%s)', async (retryable) => {
     const f = fixture();
     const warn = vi.spyOn(logger.main, 'warn').mockImplementation(() => {});

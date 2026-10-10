@@ -1,0 +1,35 @@
+{
+  "type": "itemPlacementIndexSyncResponse",
+  "placements": [
+    {
+      "itemId": "NIM-42",
+      "projectId": "project-1",
+      "parentId": "page-1",
+      "parentKind": "page",
+      "sortOrder": 2,
+      "createdBy": "member-1",
+      "createdAt": 1790000000000,
+      "updatedAt": 1790000001000
+    },
+    {
+      "itemId": "NIM-43",
+      "projectId": "project-1",
+      "parentId": null,
+      "parentKind": "page",
+      "sortOrder": 0,
+      "createdBy": "member-1",
+      "createdAt": 1790000000000,
+      "updatedAt": 1790000001000
+    },
+    {
+      "itemId": "NIM-44",
+      "projectId": "project-1",
+      "parentId": "NIM-42",
+      "parentKind": "item",
+      "sortOrder": 1,
+      "createdBy": "member-1",
+      "createdAt": 1790000000000,
+      "updatedAt": 1790000001000
+    }
+  ]
+}

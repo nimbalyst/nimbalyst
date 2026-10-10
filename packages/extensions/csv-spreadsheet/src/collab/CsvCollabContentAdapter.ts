@@ -24,7 +24,9 @@ function decodeSource(source: string | Uint8Array): string {
 
 export const CsvCollabContentAdapter: CollabContentAdapter = {
   documentType: 'csv',
-  fileExtensions: ['.csv'],
+  // The Y.Text carries the file verbatim, tabs included; the editor resolves
+  // the delimiter from that text on every load, so TSV needs no separate type.
+  fileExtensions: ['.csv', '.tsv'],
   mimeType: 'text/csv',
   layoutVersion: 1,
 

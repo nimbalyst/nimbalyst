@@ -6,6 +6,7 @@ import type { RawMessage } from '@nimbalyst/runtime/ai/server/transcript/Transcr
 import type { ChatAttachment, SessionData } from '@nimbalyst/runtime/ai/server/types';
 import type { SessionMeta } from '@nimbalyst/runtime/ai/adapters/sessionStore';
 import type { DeviceInfo, SyncProvider } from '@nimbalyst/runtime/sync/types';
+import { isSessionConnectionRefused } from '@nimbalyst/runtime/sync/SyncedSessionStore';
 
 type IndexEntry = NonNullable<Awaited<ReturnType<NonNullable<SyncProvider['fetchIndex']>>>>['sessions'][number];
 import type { RemoteSessionSnapshot } from '../../../shared/remoteSessions';
@@ -120,8 +121,21 @@ export class RemoteSessionMirror {
     const provider = this.provider;
     const remote: SessionMeta[] = [];
     const childCounts = new Map<string, number>();
+    const descendantCounts = new Map<string, number>();
     for (const child of this.entries.values()) {
-      if (child.parentSessionId) childCounts.set(`${child.hostDeviceId}:${child.parentSessionId}`, (childCounts.get(`${child.hostDeviceId}:${child.parentSessionId}`) ?? 0) + 1);
+      let parentId = child.parentSessionId;
+      const seen = new Set([child.sessionId]);
+      let direct = true;
+      while (parentId && !seen.has(parentId)) {
+        seen.add(parentId);
+        const parent = this.entries.get(parentId);
+        if (!parent || parent.projectId !== child.projectId || parent.hostDeviceId !== child.hostDeviceId) break;
+        const key = `${child.hostDeviceId}:${parentId}`;
+        if (direct) childCounts.set(key, (childCounts.get(key) ?? 0) + 1);
+        descendantCounts.set(key, (descendantCounts.get(key) ?? 0) + 1);
+        direct = false;
+        parentId = parent.parentSessionId;
+      }
     }
     for (const entry of this.entries.values()) {
       if (entry.projectId !== workspacePath || ids.has(entry.sessionId)) continue;
@@ -132,6 +146,8 @@ export class RemoteSessionMirror {
         model: entry.model, sessionType: entry.sessionType === 'workstream' ? 'workstream' : entry.sessionType === 'blitz' ? 'blitz' : 'session', mode: entry.mode ?? 'agent',
         workspaceId: workspacePath, worktreeId: null, parentSessionId: entry.parentSessionId ?? null,
         childCount: childCounts.get(`${entry.hostDeviceId}:${entry.sessionId}`) ?? 0, uncommittedCount: 0, createdAt: entry.createdAt, updatedAt: entry.updatedAt,
+        descendantCount: descendantCounts.get(`${entry.hostDeviceId}:${entry.sessionId}`) ?? 0,
+        createdBySessionId: entry.createdBySessionId ?? null,
         messageCount: entry.messageCount, isArchived: !!entry.isArchived, isPinned: !!entry.isPinned,
         remoteHostDeviceId: entry.hostDeviceId,
       });
@@ -278,7 +294,8 @@ export class RemoteSessionMirror {
     if (attachments.length && (!this.encryptionKey || !this.deps.encryptAttachments)) throw new Error("Attachment encryption is not ready. Keep the draft and retry.");
     // Empty session rooms can expire while a draft is open. Queue delivery uses
     // the index connection; reattach the existing observer before starting work.
-    if (this.observations.has(id) && !provider.getStatus(id).connected) await provider.connect(id);
+    // With every room socket busy the observer stays detached, but the prompt can still go out.
+    if (this.observations.has(id) && !provider.getStatus(id).connected) await provider.connect(id).catch(error => { if (!isSessionConnectionRefused(error)) throw error; });
     if (provider !== this.provider) throw new Error('Session sync changed. Keep the draft and retry.');
     const preparedPrompt = this.deps.preparePrompt ? await this.deps.preparePrompt(prompt, workspace) : prompt;
     const encrypted = attachments.length ? await this.deps.encryptAttachments!(attachments, workspace, this.encryptionKey!) : [];

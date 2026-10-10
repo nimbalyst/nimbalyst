@@ -30,6 +30,8 @@ interface CollabDocsUIContextValue {
     session: CollabDocsSession;
     controller: CollabDocsUIController;
 }
+/** Exported for this package's own hooks (`useCollabPagesState`); hosts use `useCollabDocsUI`. */
+export declare const CollabDocsUIContext: React.Context<CollabDocsUIContextValue | null>;
 export interface CollabDocsUIProviderProps {
     session: CollabDocsSession;
     controller?: CollabDocsUIController;

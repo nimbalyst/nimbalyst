@@ -47,4 +47,15 @@ class PairingModelsTest {
             refreshed.sanitizedForServerChange(authenticated)
         )
     }
+
+    /**
+     * The desktop derives the key from PBKDF2(seed, "nimbalyst:<personalUserId>").
+     * The auth user id is a different Stytch member in a team org, so keys
+     * derived from it cannot read anything.
+     */
+    @Test
+    fun `the crypto identity prefers the pairing QR's personal user id`() {
+        assertEquals("personal-user", authenticated.cryptoUserId)
+        assertEquals("auth-user", authenticated.copy(personalUserId = null).cryptoUserId)
+    }
 }

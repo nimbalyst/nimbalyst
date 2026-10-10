@@ -22,6 +22,22 @@ interface SessionDao {
     @Query("DELETE FROM sessions WHERE id = :sessionId")
     suspend fun deleteById(sessionId: String)
 
+    @Query("SELECT * FROM sessions WHERE id IN (:sessionIds)")
+    suspend fun getByIds(sessionIds: List<String>): List<SessionEntity>
+
+    /** Sessions holding nothing only this device has: no unsent draft, no undelivered local prompt. */
+    @Query(
+        """
+        SELECT s.id FROM sessions s
+        WHERE (s.draftInput IS NULL OR s.draftInput = '')
+        AND NOT EXISTS (SELECT 1 FROM queued_prompts q WHERE q.sessionId = s.id AND q.source IS NULL AND q.sentAt IS NULL)
+        """
+    )
+    suspend fun idsWithoutLocalWork(): List<String>
+
+    @Query("DELETE FROM sessions WHERE id IN (:sessionIds)")
+    suspend fun deleteByIds(sessionIds: List<String>)
+
     @Query(
         """
         UPDATE sessions
@@ -54,6 +70,15 @@ interface SessionDao {
 
     @Query("UPDATE sessions SET draftInput = :draftInput, draftUpdatedAt = :draftUpdatedAt WHERE id = :sessionId")
     suspend fun updateDraftInput(sessionId: String, draftInput: String?, draftUpdatedAt: Long)
+
+    @Query("UPDATE sessions SET clientMetadataJson = :clientMetadataJson WHERE id = :sessionId")
+    suspend fun updateClientMetadata(sessionId: String, clientMetadataJson: String)
+
+    @Query("UPDATE sessions SET isArchived = :isArchived WHERE id = :sessionId")
+    suspend fun updateArchived(sessionId: String, isArchived: Boolean)
+
+    @Query("UPDATE sessions SET parentSessionId = :parentSessionId WHERE id = :sessionId")
+    suspend fun updateParent(sessionId: String, parentSessionId: String?)
 
     @Upsert
     suspend fun upsertAll(sessions: List<SessionEntity>)

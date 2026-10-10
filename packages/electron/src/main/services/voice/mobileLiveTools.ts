@@ -4,7 +4,8 @@ import { AISessionsRepository } from '@nimbalyst/runtime/storage/repositories/AI
 import Store from '../../utils/privateSettingsStore';
 import { isSessionInWorkspace } from './voiceIpcAuthorization';
 import { handleMobileVoiceToolCall } from './mobileVoiceToolHandler';
-import { MobileLiveActions, type MobileLiveRequest, type MobileLiveResult } from './mobileLiveRelay';
+import { appendMobileVoiceLog } from './mobileVoiceLog';
+import { isSessionOwnedByScopedHost, MobileLiveActions, type MobileLiveRequest, type MobileLiveResult } from './mobileLiveRelay';
 
 // Account/host is part of each key. Only opaque action identities are retained.
 let reservations: Store<Record<string, string[]>> | undefined;
@@ -24,12 +25,14 @@ export async function handleMobileLiveTool(request: MobileLiveRequest): Promise<
   const { scope, tool } = request;
   if (scope.sessionId) {
     const session = await AISessionsRepository.get(scope.sessionId);
-    if (!isSessionInWorkspace(session, scope.projectId) || session?.metadata?.hostDeviceId !== scope.hostDeviceId) {
+    if (!isSessionInWorkspace(session, scope.projectId) || !isSessionOwnedByScopedHost(session?.metadata, scope.hostDeviceId)) {
       return { success: false, error: 'The session is not owned by this computer in this workspace.' };
     }
   }
   if (['voice_events', 'voice_event_claim', 'voice_event_presented'].includes(tool)) return handleMobileVoiceEvent(request);
-  if (tool === 'capabilities') return { success: true, result: JSON.stringify({ version: 1, targetedTools: true, voiceApprovals: true, promptAnswersVersion: 1 }) };
+  if (tool === 'capabilities') return { success: true, result: JSON.stringify({ version: 1, targetedTools: true, voiceApprovals: true, promptAnswersVersion: 1, voiceLog: 1 }) };
+  // Idempotent by entry id, so retries are safe without an action reservation.
+  if (tool === 'voice_log') return appendMobileVoiceLog(request);
   if (['voice_prompt_prepare', 'voice_prompt_presented', 'voice_prompt_answer', 'voice_prompt_status'].includes(tool)) return handleMobileVoicePrompt(request);
   // Ungated legacy answers are never an alternative to the versioned prompt contract.
   if (tool === 'answer_prompt') return { success: false, error: 'Use the question or approval card in the app.' };

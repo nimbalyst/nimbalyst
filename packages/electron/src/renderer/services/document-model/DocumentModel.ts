@@ -1394,14 +1394,23 @@ export class DocumentModel {
    * that never acknowledged it wedged the session in `applying` for good and every
    * later write queued behind it forever (NIM-5359, finding 6).
    */
-  private armApplyWatchdog(generation: number): void {
+  private armApplyWatchdog(generation: number, graceUsed = false): void {
     this.clearApplyWatchdog();
     const bound = this.options.diffApplyWatchdogMs;
     if (bound <= 0) return;
+    const armedAt = Date.now();
     this.applyWatchdogTimer = setTimeout(() => {
       this.applyWatchdogTimer = null;
       if (this.disposed) return;
       if (this.presentedGeneration !== generation) return;
+      // Firing a full bound late means the thread was blocked, most likely by
+      // the presenter's own synchronous diff (#1606). Its report is queued right
+      // behind this callback; recovering now would discard the diff it just
+      // rendered and replay it. Give it one more window.
+      if (!graceUsed && Date.now() - armedAt >= 2 * bound) {
+        this.armApplyWatchdog(generation, true);
+        return;
+      }
       console.warn(
         `[DocumentModel] Diff generation ${generation} for ${this.filePath} went unacknowledged by ` +
           `${[...this.pendingRecipients].join(', ') || 'every recipient'}; recovering from disk`,

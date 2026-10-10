@@ -3,9 +3,6 @@ import { describe, expect, it } from 'vitest';
 
 import { createIndexSendChannel, IndexSendError, throwIfUnsent, type IndexSocketLike } from '../indexSendChannel';
 
-/** One poll interval plus scheduling jitter, the most the wait may overshoot. */
-const POLL_SLACK_MS = 60;
-
 const OPEN = 1;
 const CONNECTING = 0;
 const CLOSED = 3;
@@ -23,10 +20,11 @@ class FakeSocket implements IndexSocketLike {
 }
 
 /** A provider-shaped harness: one live socket, a generation bumped on reconnect. */
-function harness(initial: FakeSocket | null) {
-  const state = { socket: initial, generation: 0, connected: initial?.readyState === OPEN };
+function harness(initial: FakeSocket | null, now?: () => number) {
+  const state = { socket: initial, generation: 0, connected: initial?.readyState === OPEN, socketReads: 0 };
   const channel = createIndexSendChannel({
-    getSocket: () => state.socket,
+    now,
+    getSocket: () => { state.socketReads++; return state.socket; },
     getGeneration: () => state.generation,
     isConnected: () => state.connected,
     connect: async () => { state.connected = state.socket?.readyState === OPEN; },
@@ -121,24 +119,23 @@ describe('index send channel', () => {
    * R-C1-6: the budget is elapsed time, not timer executions. A stalled event
    * loop used to stretch the wait -- every late callback still counted as one
    * more tick of headroom -- so a 250ms stall inside a 200ms budget kept
-   * polling after it. Real timers, deliberately: the defect only shows when
-   * callbacks actually run late.
+   * polling after it. The clock is injected rather than measured: a wall-clock
+   * bound failed whenever the whole suite ran on a loaded machine.
    */
   it('does not extend the open-wait past the budget when the event loop stalls', async () => {
-    const { channel } = harness(null);
-    const startedAt = performance.now();
+    let clock = 0;
+    const { channel, state } = harness(null, () => clock);
 
     const sending = channel.send('create session response', () => '{}', { openTimeoutMs: 200 });
-    // Block the loop well past the budget, the way a long synchronous task does.
-    const stallUntil = performance.now() + 250;
-    while (performance.now() < stallUntil) { /* burn the event loop */ }
+    // A long synchronous task: the clock passes the budget before any poll runs.
+    clock = 250;
+    const readsBeforeWait = state.socketReads;
 
     const outcome = await sending;
-    const elapsed = performance.now() - startedAt;
 
     expect(outcome.sent).toBe(false);
-    // The stall itself is unavoidable; what must not happen is waiting on past it.
-    expect(elapsed).toBeLessThan(250 + POLL_SLACK_MS);
+    // Counting ticks instead of elapsed time polls ~20 more times (200ms / 10ms).
+    expect(state.socketReads - readsBeforeWait).toBeLessThanOrEqual(2);
   });
 
   it('reports a retryable outcome when the connection never comes up', async () => {

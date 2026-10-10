@@ -42,12 +42,12 @@ on:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-  # Make npm resilient to transient registry socket drops (ECONNRESET): retry
-  # individual failed requests instead of aborting the whole `npm ci`.
-  npm_config_fetch_retries: '5'
-  npm_config_fetch_retry_mintimeout: '20000'
-  npm_config_fetch_retry_maxtimeout: '120000'
-  npm_config_fetch_timeout: '300000'
+  # Make pnpm resilient to transient registry socket drops (ECONNRESET): retry
+  # individual failed requests instead of aborting the whole install.
+  pnpm_config_fetch_retries: '5'
+  pnpm_config_fetch_retry_mintimeout: '20000'
+  pnpm_config_fetch_retry_maxtimeout: '120000'
+  pnpm_config_fetch_timeout: '300000'
 
 # Minimum for the workflow as a whole. Only the `release` job needs to write,
 # and it grants itself `contents: write` at job scope.
@@ -115,76 +115,63 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
+      # Reads the version from `packageManager` in the root package.json.
+      - name: Setup pnpm
+        uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+
       - name: Setup Node.js
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: '24'
-          cache: 'npm'
-          cache-dependency-path: '**/package-lock.json'
+          cache: 'pnpm'
+          cache-dependency-path: 'pnpm-lock.yaml'
 
-      - name: Upgrade npm to 11.x
-        run: npm install -g npm@11
-
+      # Cross-compiling (macOS x64 on the arm64 runner): pnpm-lock.yaml records
+      # every platform's optional native packages (claude-agent-sdk-<os>-<cpu>,
+      # @openai/codex-<os>-<cpu>, codex-acp-<os>-<cpu>, @img/sharp-*, ...), but
+      # an install only materializes the host's. `--cpu current,<target>` keeps
+      # the host packages the build tools run on and adds the target's from
+      # the lockfile. nodeLinker: hoisted lands them in root node_modules/,
+      # where the mac extraResources entries and validate-extra-resources.js
+      # look. They come from the lockfile, so no later install can prune them
+      # as extraneous (what dropped the Intel binary from v0.57.40/v0.57.41
+      # when they were staged with `npm install --no-save`). afterPack.js
+      # prunes the non-target claude-agent-sdk packages from the packaged app.
+      #
+      # Windows ARM64: workerd (transitive via wrangler, used only by the
+      # Cloudflare Workers packages) has no Windows ARM64 build and its
+      # postinstall throws "Unsupported platform". The Electron build does not
+      # need it, so `--allow-build=!workerd` denies that one script. An explicit
+      # deny does not trip strictDepBuilds, and every other lifecycle script
+      # still runs: the Electron download, @vscode/ripgrep's rg.exe download,
+      # the Electron workspace's install-app-deps, and the root `prepare`. pnpm
+      # records the deny in pnpm-workspace.yaml; that edit stays on the runner.
       - name: Install dependencies
         shell: bash
         env:
           # @vscode/ripgrep postinstall downloads rg from ripgrep-prebuilt
           # GitHub releases; without auth, CI runners hit 403 rate limits.
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CROSS_ARCH: ${{ (matrix.arch == 'x64' && runner.arch == 'ARM64') || (matrix.arch == 'arm64' && runner.arch == 'X64') }}
         run: |
-          if [ "${{ matrix.platform }}" == "win" ] && [ "${{ matrix.arch }}" == "arm64" ]; then
-            # workerd (transitive via wrangler, used only by collabv3 and
-            # marketplace Cloudflare Workers packages) has no Windows ARM64
-            # prebuild and its postinstall throws "Unsupported platform".
-            # The Electron build doesn't need workerd, so install with
-            # --ignore-scripts and then re-run only the Electron workspace's
-            # postinstall (electron-builder install-app-deps -> rebuilds
-            # node-pty for ARM64).
-            npm ci --ignore-scripts
-            npm run --workspace=@nimbalyst/electron postinstall
-
-            # --ignore-scripts also skipped @vscode/ripgrep's postinstall,
-            # which is the only non-native-module postinstall we rely on:
-            # it downloads rg.exe from ripgrep-prebuilt GitHub releases
-            # into node_modules/@vscode/ripgrep/bin/. Without this the
-            # packaged app ships an empty bin/ directory and search/quick-
-            # open silently fall back to (missing) system rg. Run it here
-            # so ARM64 gets the same binary the x64 path gets for free.
-            if [ -f "packages/electron/node_modules/@vscode/ripgrep/lib/postinstall.js" ]; then
-              RG_POSTINSTALL="packages/electron/node_modules/@vscode/ripgrep/lib/postinstall.js"
-            elif [ -f "node_modules/@vscode/ripgrep/lib/postinstall.js" ]; then
-              RG_POSTINSTALL="node_modules/@vscode/ripgrep/lib/postinstall.js"
-            else
-              echo "::error::Cannot find @vscode/ripgrep/lib/postinstall.js"
-              exit 1
-            fi
-            echo "Running ripgrep postinstall at ${RG_POSTINSTALL}"
-            node "${RG_POSTINSTALL}" --force
-
-            RG_DIR=$(dirname "$(dirname "${RG_POSTINSTALL}")")
-            RG_EXPECTED="${RG_DIR}/bin/rg.exe"
-            if [ ! -f "${RG_EXPECTED}" ]; then
-              echo "::error::ripgrep binary not found at ${RG_EXPECTED}"
-              ls -la "${RG_DIR}/bin/" || true
-              exit 1
-            fi
-            echo "Verified: ${RG_EXPECTED} exists"
-          else
-            npm ci
+          INSTALL_ARGS=(--frozen-lockfile)
+          if [ "$CROSS_ARCH" == "true" ]; then
+            INSTALL_ARGS+=(--cpu "current,${{ matrix.arch }}")
           fi
+          if [ "${{ matrix.platform }}" == "win" ] && [ "${{ matrix.arch }}" == "arm64" ]; then
+            INSTALL_ARGS+=('--allow-build=!workerd')
+          fi
+          echo "pnpm install ${INSTALL_ARGS[*]}"
+          pnpm install "${INSTALL_ARGS[@]}"
 
-      # When cross-compiling (e.g. macOS x64 on arm64 runner), npm only
-      # installs optional native binaries for the host architecture. We need
-      # the target arch binaries in node_modules/ so electron-builder's
-      # extraResources entries can copy them into the packaged app.
+      # The target-arch packages came from the lockfile in the install step
+      # (`--cpu current,<target>`). Fail here, before the long build, if one
+      # did not land where the mac extraResources entries copy from.
       #
-      # electron-builder's `files` patterns only include packages that are
-      # in the npm dependency tree (lock file). Since we install with
-      # --no-save, the cross-arch binary isn't in the tree and `files`
-      # globs silently skip it. We use `extraResources` instead, which
-      # copies from the filesystem path directly -- no lock file needed.
-      # The binary goes to root node_modules/ (where npm naturally puts it).
-      - name: Install cross-arch native binaries
+      # @vscode/ripgrep is different: it ships a single rg binary that its
+      # postinstall downloads for the host arch. Re-run that postinstall with
+      # npm_config_arch set to the target and --force to overwrite it.
+      - name: Stage cross-arch native binaries
         if: (matrix.arch == 'x64' && runner.arch == 'ARM64') || (matrix.arch == 'arm64' && runner.arch == 'X64')
         shell: bash
         env:
@@ -201,75 +188,10 @@ jobs:
             linux) NPM_PLATFORM="linux" ;;
           esac
 
-          echo "Cross-compiling for ${NPM_PLATFORM}-${TARGET_ARCH}, installing target-arch native binaries..."
+          echo "Cross-compiling for ${NPM_PLATFORM}-${TARGET_ARCH}"
 
-          # Claude Agent SDK native binary
-          # Resolve SDK version from wherever npm hoisted it. The exports
-          # field blocks require.resolve('./package.json'), so probe known
-          # locations and use an absolute require() which bypasses exports.
-          if [ -f "packages/electron/node_modules/@anthropic-ai/claude-agent-sdk/package.json" ]; then
-            CLAUDE_PKG_JSON="packages/electron/node_modules/@anthropic-ai/claude-agent-sdk/package.json"
-          elif [ -f "node_modules/@anthropic-ai/claude-agent-sdk/package.json" ]; then
-            CLAUDE_PKG_JSON="node_modules/@anthropic-ai/claude-agent-sdk/package.json"
-          else
-            echo "::error::Cannot find @anthropic-ai/claude-agent-sdk package.json"
-            exit 1
-          fi
-          CLAUDE_SDK_VERSION=$(node -p "require(require('path').resolve('${CLAUDE_PKG_JSON}')).version")
-          CLAUDE_PKG="@anthropic-ai/claude-agent-sdk-${NPM_PLATFORM}-${TARGET_ARCH}@${CLAUDE_SDK_VERSION}"
+          # claude-agent-sdk keeps its native binary at the package root.
           BINARY_NAME=$( [ "$NPM_PLATFORM" = "win32" ] && echo "claude.exe" || echo "claude" )
-
-          # OpenAI Codex native binary version (resolved now so we can install
-          # it in the same `npm install` as the SDK binary -- see below).
-          if [ -f "packages/electron/node_modules/@openai/codex/package.json" ]; then
-            CODEX_PKG_JSON="packages/electron/node_modules/@openai/codex/package.json"
-          elif [ -f "node_modules/@openai/codex/package.json" ]; then
-            CODEX_PKG_JSON="node_modules/@openai/codex/package.json"
-          else
-            CODEX_PKG_JSON=""
-          fi
-          if [ -n "$CODEX_PKG_JSON" ]; then
-            CODEX_SPEC=$(node -p "require(require('path').resolve('${CODEX_PKG_JSON}')).optionalDependencies?.['@openai/codex-${NPM_PLATFORM}-${TARGET_ARCH}'] || ''")
-          else
-            CODEX_SPEC=""
-          fi
-
-          # Codex ACP native binary version (same pattern as @openai/codex).
-          if [ -f "packages/electron/node_modules/@zed-industries/codex-acp/package.json" ]; then
-            CODEX_ACP_PKG_JSON="packages/electron/node_modules/@zed-industries/codex-acp/package.json"
-          elif [ -f "node_modules/@zed-industries/codex-acp/package.json" ]; then
-            CODEX_ACP_PKG_JSON="node_modules/@zed-industries/codex-acp/package.json"
-          else
-            CODEX_ACP_PKG_JSON=""
-          fi
-          if [ -n "$CODEX_ACP_PKG_JSON" ]; then
-            CODEX_ACP_SPEC=$(node -p "require(require('path').resolve('${CODEX_ACP_PKG_JSON}')).optionalDependencies?.['@zed-industries/codex-acp-${NPM_PLATFORM}-${TARGET_ARCH}'] || ''")
-          else
-            CODEX_ACP_SPEC=""
-          fi
-
-          # Install all cross-arch native binaries in a SINGLE npm invocation.
-          # Running separate `npm install --no-save` calls causes npm to prune
-          # the previously-installed cross-arch dep as "extraneous" (it's not
-          # in package.json, and --no-save keeps it that way), so the second
-          # install reports "added 1 package, removed 1 package" and leaves
-          # only the most recent one on disk. Root cause of v0.57.40/v0.57.41
-          # failing to ship the Intel Mac build.
-          INSTALL_ARGS=("${CLAUDE_PKG}")
-          echo "Installing ${CLAUDE_PKG}"
-          if [ -n "$CODEX_SPEC" ]; then
-            CODEX_PKG="@openai/codex-${NPM_PLATFORM}-${TARGET_ARCH}@${CODEX_SPEC}"
-            INSTALL_ARGS+=("${CODEX_PKG}")
-            echo "Installing ${CODEX_PKG}"
-          fi
-          if [ -n "$CODEX_ACP_SPEC" ]; then
-            CODEX_ACP_PKG="@zed-industries/codex-acp-${NPM_PLATFORM}-${TARGET_ARCH}@${CODEX_ACP_SPEC}"
-            INSTALL_ARGS+=("${CODEX_ACP_PKG}")
-            echo "Installing ${CODEX_ACP_PKG}"
-          fi
-          npm install --no-save --force "${INSTALL_ARGS[@]}"
-
-          # Verify binary exists where extraResources will look for it
           EXPECTED="node_modules/@anthropic-ai/claude-agent-sdk-${NPM_PLATFORM}-${TARGET_ARCH}/${BINARY_NAME}"
           if [ ! -f "${EXPECTED}" ]; then
             echo "::error::Cross-arch binary not found at ${EXPECTED}"
@@ -278,23 +200,26 @@ jobs:
           fi
           echo "Verified: ${EXPECTED} exists"
 
-          # @vscode/ripgrep bundles a single rg binary downloaded by its
-          # postinstall script using the host arch. For cross-compile we
-          # re-run postinstall with npm_config_arch set to the target arch
-          # and --force to overwrite the host-arch binary.
-          if [ -f "packages/electron/node_modules/@vscode/ripgrep/lib/postinstall.js" ]; then
-            RG_POSTINSTALL="packages/electron/node_modules/@vscode/ripgrep/lib/postinstall.js"
-          elif [ -f "node_modules/@vscode/ripgrep/lib/postinstall.js" ]; then
-            RG_POSTINSTALL="node_modules/@vscode/ripgrep/lib/postinstall.js"
-          else
-            echo "::error::Cannot find @vscode/ripgrep/lib/postinstall.js"
+          # validate-extra-resources.js checks the binaries inside these during
+          # the build; here we only need the target package to be present.
+          for PKG in "@openai/codex-${NPM_PLATFORM}-${TARGET_ARCH}" "@zed-industries/codex-acp-${NPM_PLATFORM}-${TARGET_ARCH}"; do
+            if [ ! -d "node_modules/${PKG}" ]; then
+              echo "::error::Cross-arch package not found at node_modules/${PKG}"
+              ls -la "node_modules/$(dirname "${PKG}")/" || true
+              exit 1
+            fi
+            echo "Verified: node_modules/${PKG} exists"
+          done
+
+          RG_DIR="node_modules/@vscode/ripgrep"
+          if [ ! -f "${RG_DIR}/lib/postinstall.js" ]; then
+            echo "::error::Cannot find ${RG_DIR}/lib/postinstall.js"
             exit 1
           fi
-          echo "Re-downloading ripgrep for ${TARGET_ARCH} via ${RG_POSTINSTALL}"
-          npm_config_arch="${TARGET_ARCH}" node "${RG_POSTINSTALL}" --force
+          echo "Re-downloading ripgrep for ${TARGET_ARCH}"
+          npm_config_arch="${TARGET_ARCH}" node "${RG_DIR}/lib/postinstall.js" --force
 
           RG_BINARY_NAME=$( [ "$NPM_PLATFORM" = "win32" ] && echo "rg.exe" || echo "rg" )
-          RG_DIR=$(dirname "$(dirname "${RG_POSTINSTALL}")")
           RG_EXPECTED="${RG_DIR}/bin/${RG_BINARY_NAME}"
           if [ ! -f "${RG_EXPECTED}" ]; then
             echo "::error::Cross-arch ripgrep binary not found at ${RG_EXPECTED}"
@@ -304,20 +229,20 @@ jobs:
           echo "Verified: ${RG_EXPECTED} exists"
 
       # The tracker packages publish only built `dist`, and the runtime imports
-      # them. The root `prepare` script builds them on a plain `npm ci`, but the
-      # Windows ARM64 path installs with --ignore-scripts, so build them
-      # explicitly here or the runtime build fails with: Failed to resolve
-      # entry for package "@nimbalyst/tracker-schema".
+      # them. The root `prepare` script already builds them during install;
+      # building here keeps the runtime build from depending on that lifecycle
+      # side effect, which would otherwise fail with: Failed to resolve entry
+      # for package "@nimbalyst/tracker-schema".
       - name: Build tracker packages
         env:
           NODE_ENV: production
-        run: npm run build:tracker-packages
+        run: pnpm run build:tracker-packages
 
       - name: Build extension-sdk
         working-directory: packages/extension-sdk
         env:
           NODE_ENV: production
-        run: npm run build
+        run: pnpm run build
 
       - name: Build runtime package (for theme assets)
         working-directory: packages/runtime
@@ -326,23 +251,18 @@ jobs:
           # 2GB default OOMs on the GitHub-hosted mac runner; mirror the
           # electron build script's bump.
           NODE_OPTIONS: --max-old-space-size=8192
-        run: npm run build
+        run: pnpm run build
 
+      # bash, not the Windows default pwsh, so a failure in an earlier line
+      # fails the step instead of being masked by the last line's exit code.
       - name: Build extensions
+        shell: bash
         env:
           NODE_ENV: production
         run: |
-          # Build datamodellm extension
-          cd packages/extensions/datamodellm
-          npm run build
-          cd ../../..
-          # Build pdf-viewer extension
-          cd packages/extensions/pdf-viewer
-          npm run build
-          cd ../../..
-          # Build csv-spreadsheet extension
-          cd packages/extensions/csv-spreadsheet
-          npm run build
+          pnpm --dir packages/extensions/datamodellm run build
+          pnpm --dir packages/extensions/pdf-viewer run build
+          pnpm --dir packages/extensions/csv-spreadsheet run build
 
       # macOS specific setup
       - name: Import macOS certificates
@@ -468,7 +388,10 @@ jobs:
         run: |
           ELECTRON_VERSION=$(node -p "require('./packages/electron/package.json').devDependencies.electron")
           echo "Rebuilding node-pty from source against Electron ${ELECTRON_VERSION}"
-          npx --yes @electron/rebuild \
+          # @electron/rebuild is installed (via electron-builder) and hoisted,
+          # so its `electron-rebuild` bin is in root node_modules/.bin, and
+          # nodeLinker: hoisted keeps node-pty at root node_modules/node-pty.
+          pnpm exec electron-rebuild \
             --force \
             --module-dir node_modules/node-pty \
             --types prod \
@@ -545,14 +468,17 @@ jobs:
               unset CSC_NAME CSC_LINK CSC_KEY_PASSWORD
               export CSC_IDENTITY_AUTO_DISCOVERY=false
             fi
+            # pnpm passes everything after the script name to the script; no
+            # `--` separator (pnpm would forward a literal `--`, and yargs
+            # would then read the flags after it as positionals).
             if [ "${{ github.ref_type }}" == "tag" ] || [ "${{ inputs.release }}" == "true" ]; then
-              npm run build:mac:notarized -- --${{ matrix.arch }} --mac dmg zip --publish never
+              pnpm run build:mac:notarized --${{ matrix.arch }} --mac dmg zip --publish never
             else
               # No --publish here: build:mac:local already passes it. Repeating
               # the flag makes yargs parse it as ["never","never"], which no
               # longer equals "never", so electron-builder falls back to
               # publishing and fails on a missing GH_TOKEN (run 32302395111).
-              npm run build:mac:local -- --${{ matrix.arch }} --mac dmg zip
+              pnpm run build:mac:local --${{ matrix.arch }} --mac dmg zip
             fi
           elif [ "${{ matrix.platform }}" == "win" ]; then
             unset CSC_NAME CSC_LINK CSC_KEY_PASSWORD
@@ -561,12 +487,12 @@ jobs:
               unset DIGICERT_KEYPAIR_ALIAS
             fi
             if [ "${{ matrix.arch }}" == "arm64" ]; then
-              npm run build:win:arm64 -- --publish never
+              pnpm run build:win:arm64 --publish never
             else
-              npm run build:win -- --publish never
+              pnpm run build:win --publish never
             fi
           else
-            npm run build:linux -- --publish never
+            pnpm run build:linux --publish never
           fi
         shell: bash
 

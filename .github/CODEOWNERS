@@ -6,7 +6,8 @@
 #
 # What is listed here is every path whose contents execute inside a job that
 # holds signing or publishing credentials. The signed release build runs
-# `npm ci` (which applies `patches/` via the root `postinstall`) and then runs
+# `pnpm install` (which applies `patches/` and runs the dependency build
+# scripts that pnpm-workspace.yaml allows) and then runs
 # the electron-builder hooks with Apple notarization and DigiCert credentials in
 # the environment. A change to any of those paths can therefore reach those
 # credentials on the next tagged release, regardless of who wrote it.
@@ -42,10 +43,13 @@
 # credentials in the environment.
 /packages/electron/build/ @ghinkle
 
-# Applied by patch-package from the root postinstall during `npm ci`.
+# Applied by pnpm (patchedDependencies) during `pnpm install`.
 /patches/                 @ghinkle
 
-# Define what `npm ci` installs and executes inside the credentialed job.
+# Define what `pnpm install` installs and executes inside the credentialed job.
+# pnpm-workspace.yaml carries overrides, patchedDependencies, and allowBuilds
+# (which dependencies may run install scripts).
 /package.json             @ghinkle
-/package-lock.json        @ghinkle
+/pnpm-lock.yaml           @ghinkle
+/pnpm-workspace.yaml      @ghinkle
 /packages/electron/package.json @ghinkle

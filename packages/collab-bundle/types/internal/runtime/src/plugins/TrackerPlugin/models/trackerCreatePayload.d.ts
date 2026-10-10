@@ -11,7 +11,7 @@
  * Pure: no `window`, no IPC, no clock unless you let it default. `generateId`
  * and `now` are injectable so the result is assertable in tests.
  */
-import { type TrackerDataModelRegistry, type TrackerSharing } from '@nimbalyst/tracker-schema';
+import { type TrackerDataModelRegistry, type TrackerSharing } from '../../../../../tracker-schema/src/browser';
 export interface TrackerValidationIssue {
     field: string;
     message: string;

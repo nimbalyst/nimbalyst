@@ -31,7 +31,7 @@ Publishing slash commands, action prompts, project files, or any other slice mus
 
 ### A wire field lands on both sides plus the fixture, in one commit
 
-- Wire types are hand-mirrored between `packages/collab-protocol` / `packages/runtime/src/sync/types.ts` and `SyncProtocol.swift`. The golden fixtures in `packages/collab-protocol/fixtures/` are the executable contract: a field added to a TypeScript type without the fixture fails the runtime test, and a fixture field the Swift type does not decode fails the Swift test.
+- Wire types are hand-mirrored between `packages/collab-protocol` / `packages/runtime/src/sync/types.ts`, `SyncProtocol.swift`, and Android's `sync/*Protocol.kt`. The golden fixtures in `packages/collab-protocol/fixtures/` are the executable contract: a field added to a TypeScript type without the fixture fails the runtime test, a fixture field the Swift type does not decode fails the Swift test, and a mobile fixture field the Kotlin type drops fails Android's `WireFixtureTest`, so a wire field lands on desktop, iOS and Android plus the fixture in one commit.
 - Adding an inbound field on iOS without the outbound counterpart (or the reverse) is the shape of the `updateSessionParent` bug: a local write with a comment promising propagation that never happens.
 
 ### Failing test first, then fix, then keep the file smaller

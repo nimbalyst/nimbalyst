@@ -144,8 +144,8 @@ describe('expanded workstream title reconciliation (NIM-420)', () => {
     const view = renderExpandedChild();
 
     screen.getByText('Loaded child title');
-    screen.getByText(parentTitle);
-    expect(document.querySelectorAll('.workstream-session-item')).toHaveLength(1);
+    expect(screen.queryByText(parentTitle)).toBeNull();
+    expect(document.querySelectorAll('.session-list-item')).toHaveLength(1);
 
     act(() => {
       handlers.get('session:title-updated')?.({
@@ -174,8 +174,8 @@ describe('expanded workstream title reconciliation (NIM-420)', () => {
     });
 
     screen.getByText('Second external rename');
-    screen.getByText(parentTitle);
-    expect(document.querySelectorAll('.workstream-session-item')).toHaveLength(1);
+    expect(screen.queryByText(parentTitle)).toBeNull();
+    expect(document.querySelectorAll('.session-list-item')).toHaveLength(1);
     expectNoChildRefetch();
 
     view.rerender(
@@ -194,7 +194,7 @@ describe('expanded workstream title reconciliation (NIM-420)', () => {
         />
       </Provider>
     );
-    expect(document.querySelectorAll('.workstream-session-item')).toHaveLength(0);
+    expect(document.querySelectorAll('.session-list-item')).toHaveLength(1);
 
     view.rerender(
       <Provider store={store}>
@@ -213,7 +213,7 @@ describe('expanded workstream title reconciliation (NIM-420)', () => {
       </Provider>
     );
     screen.getByText('Second external rename');
-    screen.getByText(parentTitle);
+    expect(screen.queryByText(parentTitle)).toBeNull();
 
     // A full session-view refresh reconstructs the structural cache from the
     // latest database metadata. This was the observed pre-fix recovery path.

@@ -11,6 +11,7 @@ const fs = require('fs');
 const { spawnSync } = require('child_process');
 const { relocateClaudeRuntime } = require('./claude-runtime.js');
 const { validatePackagedTutorialProject } = require('./validate-extra-resources.js');
+const { findUnresolvedDependencies } = require('./packaged-dependency-check.js');
 
 exports.default = async function(context) {
   const { appOutDir, packager } = context;
@@ -139,6 +140,25 @@ exports.default = async function(context) {
       `The build cannot continue -- shipping it would produce a broken release. See output above.`,
     );
   }
+
+  // Every module in app.asar must find the dependencies it declares. The SDK
+  // and native-binary checks above do not load the electron-store chain, so a
+  // collector packaging the wrong version of a transitive dep passed them.
+  // Required here, not at module load: the Windows ARM64 signing job loads this
+  // config through npx without installing dependencies.
+  const asar = require('@electron/asar');
+  const appAsar = path.join(resourcesDir, 'app.asar');
+  const unresolved = findUnresolvedDependencies(asar.listPackage(appAsar), (file) => {
+    try {
+      return JSON.parse(asar.extractFile(appAsar, file.replace(/^[\\/]/, '')).toString('utf8'));
+    } catch {
+      return null;
+    }
+  });
+  if (unresolved.length > 0) {
+    throw new Error(`AfterPack: packaged modules cannot resolve their dependencies:\n  ${unresolved.join('\n  ')}`);
+  }
+  console.log('AfterPack: every packaged module resolves its declared dependencies');
 
   // Validate that the built-in extensions actually landed in the packaged
   // tree. electron-builder's extraResources copy of packages/extensions is

@@ -12,7 +12,7 @@
 # Re-signing ad-hoc with a proper bundle seal fixes it. Only affects local dev;
 # packaged builds get a real Developer ID signature and are unaffected.
 #
-# Run this after any `npm install` that reinstalls or upgrades `electron`.
+# Run this after any `pnpm install` that reinstalls or upgrades `electron`.
 # The dev app must be stopped -- rewriting the Mach-O under a running process
 # can crash it.
 
@@ -26,7 +26,7 @@ if [[ "$(uname)" != "Darwin" ]]; then
 fi
 
 if [[ ! -d "$APP" ]]; then
-  echo "resign-dev-electron: $APP not found -- run npm install first." >&2
+  echo "resign-dev-electron: $APP not found -- run pnpm install first." >&2
   exit 1
 fi
 
@@ -38,7 +38,7 @@ fi
 # -ww keeps ps from truncating argv to the terminal width.
 RUNNING="$(ps -Awwo args= | awk -v exe="$APP/Contents/MacOS/Electron" 'index($0, exe) == 1' || true)"
 if [[ -n "$RUNNING" ]]; then
-  echo "resign-dev-electron: the dev app is running. Quit it (Ctrl+C on npm run dev) and re-run." >&2
+  echo "resign-dev-electron: the dev app is running. Quit it (Ctrl+C on pnpm run dev) and re-run." >&2
   exit 1
 fi
 

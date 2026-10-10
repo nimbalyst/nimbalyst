@@ -30,16 +30,16 @@ Central configuration and utilities:
 
 ```bash
 # Run all e2e tests
-npm run test:e2e
+pnpm run test:e2e
 
 # Run specific test file
-npm run test:e2e core/app-startup.spec.ts
+pnpm run test:e2e core/app-startup.spec.ts
 
 # Run specific directory
-npm run test:e2e tabs/
+pnpm run test:e2e tabs/
 
 # Run with UI
-npm run test:e2e:ui
+pnpm run test:e2e:ui
 ```
 
 ## Test Rules

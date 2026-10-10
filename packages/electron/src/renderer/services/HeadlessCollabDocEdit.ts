@@ -36,6 +36,11 @@ import {
   type HeadlessCollabDocumentOptions,
 } from './HeadlessCollabDocument';
 import { applyMarkdownReplacementsToYDoc } from './headlessMarkdownEdit';
+import {
+  hasRecentAgentEditRevision,
+  recordRevisionBeforeAgentEdit,
+  revisionSourceFromAcquisition,
+} from './collabAgentEditRevision';
 import { pickCursorColor } from '../components/TabEditor/collabCursorColor';
 
 const SERVER_ACK_TIMEOUT_MS = 5_000;
@@ -123,6 +128,11 @@ export async function applyHeadlessCollabDocEdit(
 
     const codec = requireCollabCodec(acquisition.documentType);
     if (LEXICAL_BACKED_DOCUMENT_TYPES.has(acquisition.documentType)) {
+      // The edit lands as final text, so history is the undo.
+      if (!hasRecentAgentEditRevision(documentUri)) {
+        const source = revisionSourceFromAcquisition(acquisition);
+        if (source) await recordRevisionBeforeAgentEdit(documentUri, source);
+      }
       applyMarkdownReplacementsToYDoc(acquisition.yDoc, replacements);
     } else {
       const original = projectCollabDocContent(codec, acquisition.yDoc);

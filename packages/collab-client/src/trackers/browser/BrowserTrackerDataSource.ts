@@ -9,7 +9,7 @@ import {
   IndexedDbTrackerPersistence,
   type StoredTrackerItem,
 } from '@nimbalyst/tracker-engine';
-import { projectLabelsToValues } from '@nimbalyst/tracker-engine';
+import { applyLabelDiff, projectLabelsToValues } from '@nimbalyst/tracker-engine';
 import {
   buildTrackerRoomId,
   type TrackerItemPayload,
@@ -225,12 +225,23 @@ function createPayload(
   };
 }
 
-function updatePayload(
+/**
+ * `labels` is the item's add-wins label set, not a field: reads project it
+ * from `payload.labels` over whatever `fields.labels` says, so an update must
+ * diff into the set or it is lost on the next read.
+ */
+export function updatePayload(
   payload: TrackerItemPayload,
   updates: Record<string, unknown>,
   currentUser: TrackerIdentity,
 ): TrackerItemPayload {
   const fields = { ...payload.fields, ...updates };
+  let labels = payload.labels;
+  if ('labels' in updates) {
+    const next = updates.labels;
+    labels = applyLabelDiff(payload.labels, Array.isArray(next) ? next.filter((value): value is string => typeof value === 'string') : []);
+    delete fields.labels;
+  }
   const primaryType = typeof updates.type === 'string'
     ? updates.type
     : typeof updates.primaryType === 'string'
@@ -245,6 +256,7 @@ function updatePayload(
     archived,
     bodyVersion,
     fields,
+    labels,
     system: {
       ...payload.system,
       lastModifiedBy: currentUser,
@@ -386,6 +398,11 @@ export class BrowserTrackerDataSource implements TrackerDataSource {
 
   status(): TrackerSyncState {
     return this.syncState;
+  }
+
+  /** Push the schema lane now; before bootstrap finishes, the bootstrap pushes it. */
+  flushSchemas(): Promise<void> {
+    return this.engine.flushSchemas();
   }
 
   /**

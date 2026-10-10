@@ -1,22 +1,10 @@
 import type { SessionSyncStatus } from '../../shared/sessionSyncStatus';
 import { directoryDeviceId } from './sync/directoryDeviceIdentity';
 import { remoteSessions } from './ai/remoteSessions';
+import { registerSessionHierarchyPublication } from './sync/sessionHierarchyPublication';
 import Store from '../utils/privateSettingsStore';
 import { getProviderCredentials, subscribeProviderCredentialChanges } from './credentials/providerCredentials';
-/**
- * SyncManager - Manages optional session sync.
- *
- * This service is responsible for:
- * - Reading sync configuration from app settings
- * - Creating and managing the SyncProvider instance
- * - Wrapping the session store with sync capabilities when enabled
- *
- * Supports two sync backends:
- * - CollabV3 (recommended): Simple append-only protocol with DO SQLite storage
- * - Y.js (legacy): CRDT-based sync with D1 BLOB storage
- *
- * The sync feature is completely optional. If not configured, nothing happens.
- */
+/** Manages optional personal sync, provider lifecycle, and session-store wrapping. */
 
 import type { SessionStore } from '@nimbalyst/runtime';
 import { asPersonalMemberId } from '@nimbalyst/runtime';
@@ -37,6 +25,7 @@ import { windowStates } from '../window/WindowManager';
 import { createProjectConfigSync } from './sync/projectConfigSync';
 import { projectConfigSources } from './sync/projectConfigSources';
 import { nextMobileSettingsVersion } from './sync/mobileSettingsVersion';
+import { createMobileJoinDetector } from './sync/mobileJoinDetector';
 import { resolveProjectPath } from '../utils/workspaceDetection';
 import { selectSessionsForIndexSync } from './sync/selectSessionsForIndexSync';
 import { setSleepPreventionMode, setSyncConnected, shutdownSleepPrevention, type PreventSleepMode } from './PowerSaveService';
@@ -124,6 +113,7 @@ const statusListeners = new Set<SyncStatusListener>();
 
 let personalSyncGateUnsubscribe: (() => void) | null = null;
 let indexReadyUnsubscribe: (() => void) | null = null;
+let hierarchySyncUnsubscribe: (() => void) | null = null;
 
 export function getSyncStatusSnapshot(): SessionSyncStatus {
   return {
@@ -547,8 +537,7 @@ export async function initializeSync(baseStore: SessionStore): Promise<SessionSt
     });
     logger.main.info('[SyncManager] Created CollabV3 sync provider with device:', initialDeviceInfo.name);
 
-    // Create message sync handler
-    const messageSyncHandler = createMessageSyncHandler(provider);
+    const messageSyncHandler = createMessageSyncHandler(provider, { outbox: {} });
 
     // Keep the Stytch session token alive while sync is active.
     // The WebSocket only refreshes JWT on reconnect, so if it stays connected
@@ -570,6 +559,8 @@ export async function initializeSync(baseStore: SessionStore): Promise<SessionSt
 
     // Store state
     state.provider = provider;
+    hierarchySyncUnsubscribe?.();
+    hierarchySyncUnsubscribe = registerSessionHierarchyPublication(provider);
     remoteSessions.setProvider(provider, encryptionKey);
     state.config = config;
     state.messageSyncHandler = messageSyncHandler;
@@ -730,38 +721,30 @@ export async function initializeSync(baseStore: SessionStore): Promise<SessionSt
     }, 3000); // Wait a bit for index connection to be established
 
     // Sync settings whenever a mobile device connects (joins or reconnects)
-    // Track which mobile devices are currently connected so we can detect when one joins
-    let previousMobileDeviceIds = new Set<string>();
+    const mobileJoins = createMobileJoinDetector();
     let isFirstCallback = true;
     if (provider.onDeviceStatusChange) {
       provider.onDeviceStatusChange((devices) => {
-        const mobileDevices = devices.filter(d => d.type === 'mobile');
-        const currentMobileIds = new Set(mobileDevices.map(d => d.deviceId));
-
-        // Check for mobile devices that just connected (weren't in the previous set)
-        for (const device of mobileDevices) {
-          if (!previousMobileDeviceIds.has(device.deviceId)) {
-            logger.main.info(`[SyncManager] Mobile device connected: ${device.name}, syncing settings...`);
-            // On first callback, add a small delay to ensure WebSocket is fully ready
-            // This handles the case where mobile connected before desktop registered the listener
-            const delay = isFirstCallback ? 1000 : 0;
-            setTimeout(async () => {
-              // Sync settings to the mobile device
-              if (state.provider !== provider) return;
-              try {
-                const results = await Promise.allSettled([syncSettingsToMobile(), projectConfigSync.refresh()]);
-                const operations = ['settings', 'project config'];
-                results.forEach((result, index) => {
-                  if (result.status === 'rejected') logger.main.warn(`[SyncManager] Failed to refresh mobile device ${operations[index]}:`, result.reason);
-                });
-              } catch (error) {
-                logger.main.warn('[SyncManager] Failed to refresh mobile device settings or project config:', error);
-              }
-            }, delay);
-          }
+        for (const device of mobileJoins(devices)) {
+          logger.main.info(`[SyncManager] Mobile device connected: ${device.name}, syncing settings...`);
+          // On first callback, add a small delay to ensure WebSocket is fully ready
+          // This handles the case where mobile connected before desktop registered the listener
+          const delay = isFirstCallback ? 1000 : 0;
+          setTimeout(async () => {
+            // Sync settings to the mobile device
+            if (state.provider !== provider) return;
+            try {
+              const results = await Promise.allSettled([syncSettingsToMobile(), projectConfigSync.refresh()]);
+              const operations = ['settings', 'project config'];
+              results.forEach((result, index) => {
+                if (result.status === 'rejected') logger.main.warn(`[SyncManager] Failed to refresh mobile device ${operations[index]}:`, result.reason);
+              });
+            } catch (error) {
+              logger.main.warn('[SyncManager] Failed to refresh mobile device settings or project config:', error);
+            }
+          }, delay);
         }
 
-        previousMobileDeviceIds = currentMobileIds;
         isFirstCallback = false;
       });
     }
@@ -913,9 +896,12 @@ export function shutdownSync(): void {
     personalSyncGateUnsubscribe = null;
     indexReadyUnsubscribe?.();
     indexReadyUnsubscribe = null;
+    hierarchySyncUnsubscribe?.();
+    hierarchySyncUnsubscribe = null;
     state.provider.disconnectAll();
     state.provider = null;
     state.config = null;
+    state.messageSyncHandler?.dispose();
     state.messageSyncHandler = null;
     updateSyncStatus({ connected: false, syncing: false, error: null, skippedRowCount: 0, personalSyncWriteGate: null });
   }

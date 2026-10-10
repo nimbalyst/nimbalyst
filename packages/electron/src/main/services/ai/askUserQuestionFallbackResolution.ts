@@ -40,32 +40,48 @@ export function hasTerminalizedAskUserQuestion(sessionId: string, questionId: st
   return terminalizedQuestionIdsBySession.get(sessionId)?.has(questionId) === true;
 }
 
-/** Drop a session's terminalized ids (session deleted / cleaned up). */
-export function clearTerminalizedAskUserQuestions(sessionId: string): void {
-  terminalizedQuestionIdsBySession.delete(sessionId);
-}
-
 /**
- * Persist the terminal `nimbalyst_tool_result` for an AskUserQuestion that no
- * live handler picked up, so the widget completes durably instead of resurrecting
- * on the next remount.
+ * Record a question whose terminal row a live waiter wrote itself, so the
+ * no-live-handler answer path refuses a late click on it too.
  */
-export async function persistAskUserQuestionTerminalResult(args: {
-  sessionId: string;
-  questionId: string;
-  answers: Record<string, string>;
-  cancelled: boolean;
-  respondedBy?: 'desktop' | 'mobile';
-}): Promise<void> {
-  const { sessionId, questionId, answers, cancelled } = args;
-  const respondedBy = args.respondedBy ?? 'desktop';
-
+export function markInteractivePromptTerminalized(sessionId: string, questionId: string): void {
   let ids = terminalizedQuestionIdsBySession.get(sessionId);
   if (!ids) {
     ids = new Set<string>();
     terminalizedQuestionIdsBySession.set(sessionId, ids);
   }
   ids.add(questionId);
+}
+
+/** Drop a session's terminalized ids (session deleted / cleaned up). */
+export function clearTerminalizedAskUserQuestions(sessionId: string): void {
+  terminalizedQuestionIdsBySession.delete(sessionId);
+}
+
+/**
+ * Persist the terminal `nimbalyst_tool_result` for a question prompt
+ * (AskUserQuestion, PromptForUserInput) that no live handler picked up, so the
+ * widget completes durably instead of resurrecting on the next remount.
+ *
+ * The id is recorded synchronously, before the write, so a caller that settles
+ * a live waiter can tell straight after the emit whether the waiter wrote the
+ * row itself.
+ */
+export async function persistInteractivePromptTerminalResult(args: {
+  sessionId: string;
+  questionId: string;
+  answers: Record<string, unknown>;
+  cancelled: boolean;
+  respondedBy?: 'desktop' | 'mobile';
+  /** Why a cancelled prompt closed; `superseded` renders as "Question Skipped". */
+  reason?: 'superseded';
+  /** Raw-log source; defaults to the Claude row the question paths share. */
+  source?: string;
+}): Promise<void> {
+  const { sessionId, questionId, answers, cancelled, reason } = args;
+  const respondedBy = args.respondedBy ?? 'desktop';
+
+  markInteractivePromptTerminalized(sessionId, questionId);
 
   await persistInteractivePromptToolResult({
     sessionId,
@@ -73,9 +89,11 @@ export async function persistAskUserQuestionTerminalResult(args: {
     result: {
       answers: cancelled ? {} : answers,
       cancelled,
+      ...(reason ? { reason } : {}),
       respondedBy,
       respondedAt: Date.now(),
     },
     isError: cancelled,
+    ...(args.source ? { source: args.source } : {}),
   });
 }

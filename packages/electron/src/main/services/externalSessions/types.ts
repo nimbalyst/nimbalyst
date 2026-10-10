@@ -59,12 +59,28 @@ export interface ExternalDiscoveryPage {
   hasMore: boolean;
 }
 
+export interface ExternalFileStamp {
+  inode: number;
+  size: number;
+  mtimeMs: number;
+}
+
+export interface ExternalDiscoverOptions {
+  /** Consulted before any header read. Return true to leave out a file the caller
+   * already settled at this stamp. Sources whose metadata lives outside the log
+   * (e.g. an external title index) must not honor it. */
+  skipUnchanged?: (filePath: string, stamp: ExternalFileStamp) => boolean;
+}
+
 export interface ExternalSessionSource {
   readonly providerId: ExternalProviderId;
   /** Includes ancestors needed to observe date rollover / late sidecar creation. */
   watchRoots(workspaces: string[]): string[];
   /** Bounded discovery page. Repeated calls cycle through candidates; scope is required. */
-  discover(workspacePath: string): Promise<ExternalSessionRef[]>;
+  discover(
+    workspacePath: string,
+    options?: ExternalDiscoverOptions
+  ): Promise<ExternalSessionRef[]>;
   /** Resolve a watcher event directly. Null incomplete headers remain retryable; only validated foreign cwd is cached. */
   identify(
     filePath: string,

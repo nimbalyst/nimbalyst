@@ -1,12 +1,15 @@
+import { SessionSpawnerLink } from './SessionSpawnerLink';
 import { SessionProviderIcon } from './SessionProviderIcon';
 import React, { useState, useCallback, useEffect, useRef, useMemo, memo } from 'react';
-import { atom, useAtomValue, useSetAtom } from 'jotai';
+import { atom, useAtomValue } from 'jotai';
 import { MaterialSymbol } from '@nimbalyst/runtime/ui/icons/MaterialSymbol';
+import { useSessionTreeMove } from './useSessionTreeMove';
+import { SessionMovePicker } from './SessionMovePicker';
 import { WorktreeIcon } from '../common/WorktreeIcon';
 import { ProviderIcon } from '@nimbalyst/runtime/ui/icons/ProviderIcons';
 import { getRelativeTimeString } from '../../utils/dateFormatting';
-import { sessionOrChildProcessingAtom, sessionUnreadAtom, sessionPendingPromptAtom, sessionHasPendingInteractivePromptAtom, reparentSessionAtom, refreshSessionListAtom, sessionShareAtom, sessionWakeupAtom, sessionLastActivityAtom } from '../../store';
-import { convertToWorkstreamAtom, sessionRegistryAtom } from '../../store/atoms/sessions';
+import { sessionOrChildProcessingAtom, sessionUnreadAtom, sessionPendingPromptAtom, sessionHasPendingInteractivePromptAtom, sessionShareAtom, sessionWakeupAtom, sessionLastActivityAtom } from '../../store';
+import { sessionRegistryAtom } from '../../store/atoms/sessions';
 import { SessionContextMenu } from './SessionContextMenu';
 import { FullTitleTooltip } from './FullTitleTooltip';
 import { settingAtom } from '../../store/atoms/settingAtomFamily';
@@ -147,6 +150,12 @@ const SessionPhaseBadge = memo<{ phase: string }>(({ phase }) => {
 
 interface SessionListItemProps {
   id: string;
+  treeContext?: boolean;
+  treeLeading?: React.ReactNode;
+  /** Inline summary shown on the metadata line (or the title line when compact). */
+  treeDetails?: React.ReactNode;
+  /** Single-line row: title, inline summary and time. */
+  compact?: boolean;
   title: string;
   createdAt: number;
   updatedAt?: number;
@@ -187,6 +196,10 @@ interface SessionListItemProps {
 // name instead of "Memo <- SessionHistory". See docs/RENDER_PERFORMANCE.md.
 export const SessionListItem = memo<SessionListItemProps>(function SessionListItem({
   id,
+  treeContext,
+  treeLeading,
+  treeDetails,
+  compact,
   title,
   createdAt,
   updatedAt,
@@ -219,19 +232,13 @@ export const SessionListItem = memo<SessionListItemProps>(function SessionListIt
   branchedAt,
   phase,
 }) {
-  const [isHovering, setIsHovering] = useState(false);
   const [showContextMenu, setShowContextMenu] = useState(false);
   const [contextMenuPosition, setContextMenuPosition] = useState({ x: 0, y: 0 });
   const [isRenaming, setIsRenaming] = useState(false);
   const [renameValue, setRenameValue] = useState('');
-  const [isDragging, setIsDragging] = useState(false);
-  const [isValidDropTarget, setIsValidDropTarget] = useState(false);
   const renameInputRef = useRef<HTMLInputElement>(null);
-
-  // Atom setters for drag-drop
-  const reparentSession = useSetAtom(reparentSessionAtom);
-  const convertToWorkstream = useSetAtom(convertToWorkstreamAtom);
-  const refreshSessionList = useSetAtom(refreshSessionListAtom);
+  const [showMovePicker, setShowMovePicker] = useState(false);
+  const { move, isDragging, isDraggable, hint, onDragStart: handleDragStart, onDragEnd: handleDragEnd, onDragOver: handleDragOver, onDragLeave: handleDragLeave, onDrop: handleDrop } = useSessionTreeMove(id, projectPath);
 
   // Share state (for the share icon indicator in the list item)
   const shareInfo = useAtomValue(sessionShareAtom(id));
@@ -241,30 +248,7 @@ export const SessionListItem = memo<SessionListItemProps>(function SessionListIt
   const hasPendingPromptAtom = useAtomValue(sessionPendingPromptAtom(id));
   const isAwaitingInput = hasInteractivePrompt || hasPendingPromptAtom;
 
-  // Determine if this session can be dragged
-  // Can drag if: (1) Has a parent (is a child session), OR (2) Is an orphan (no parent, no children)
-  // Worktree sessions cannot be dragged - they are tied to their git worktree
-  const isDraggable = !isWorktreeSession && (parentSessionId !== null || !isWorkstream);
-
-  // Determine if this session can accept drops
-  // Workstreams and standalone root sessions can be drop targets (dropping creates a workstream)
-  // Worktree sessions/workstreams cannot accept drops - they are tied to their git worktree
-  const isDropTarget = !isWorktreeSession && (isWorkstream || parentSessionId === null);
-
-  const handleRemoveFromWorkstream = useCallback(async () => {
-    if (!parentSessionId || !projectPath) return;
-
-    const success = await reparentSession({
-      sessionId: id,
-      oldParentId: parentSessionId,
-      newParentId: null,
-      workspacePath: projectPath,
-    });
-
-    if (success) {
-      await refreshSessionList();
-    }
-  }, [id, parentSessionId, projectPath, reparentSession, refreshSessionList]);
+  const handleRemoveFromWorkstream = useCallback(() => { void move(id, null); }, [move, id]);
 
   const handleContextMenu = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
@@ -295,137 +279,6 @@ export const SessionListItem = memo<SessionListItemProps>(function SessionListIt
       setIsRenaming(false);
     }
   };
-
-  // Drag-and-drop handlers
-  const handleDragStart = useCallback((e: React.DragEvent) => {
-    if (!isDraggable || !projectPath) {
-      e.preventDefault();
-      return;
-    }
-
-    const dragData = {
-      sessionId: id,
-      parentId: parentSessionId,
-      workspacePath: projectPath,
-      isWorktreeSession,
-    };
-
-    e.dataTransfer.setData('application/x-nimbalyst-session', JSON.stringify(dragData));
-    e.dataTransfer.effectAllowed = 'move';
-    setIsDragging(true);
-  }, [isDraggable, id, parentSessionId, projectPath, isWorktreeSession]);
-
-  const handleDragEnd = useCallback((e: React.DragEvent) => {
-    setIsDragging(false);
-  }, []);
-
-  const handleDragOver = useCallback((e: React.DragEvent) => {
-    if (!isDropTarget) return;
-
-    // Check if dragging a session
-    const hasSessionData = e.dataTransfer.types.includes('application/x-nimbalyst-session');
-    if (!hasSessionData) return;
-
-    e.preventDefault();
-    e.dataTransfer.dropEffect = 'move';
-    setIsValidDropTarget(true);
-  }, [isDropTarget]);
-
-  const handleDragLeave = useCallback((e: React.DragEvent) => {
-    // Only clear drop target if actually leaving the element
-    // (not when entering a child element)
-    const relatedTarget = e.relatedTarget as HTMLElement;
-    if (!e.currentTarget.contains(relatedTarget)) {
-      setIsValidDropTarget(false);
-    }
-  }, []);
-
-  const handleDrop = useCallback(async (e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setIsValidDropTarget(false);
-
-    const dataStr = e.dataTransfer.getData('application/x-nimbalyst-session');
-    if (!dataStr || !projectPath) return;
-
-    try {
-      const { sessionId, parentId, workspacePath, isWorktreeSession: draggedIsWorktree } = JSON.parse(dataStr);
-
-      // Validate worktree sessions cannot be moved
-      if (draggedIsWorktree) {
-        console.error('[SessionListItem] Cannot move worktree sessions');
-        return;
-      }
-
-      // Validate same workspace
-      if (workspacePath !== projectPath) {
-        console.error('[SessionListItem] Cannot move session between workspaces');
-        return;
-      }
-
-      // Validate not dropping on self
-      if (sessionId === id) {
-        // console.error('[SessionListItem] Cannot drop session on itself');
-        return;
-      }
-
-      // Validate not dropping on current parent (no-op)
-      if (parentId === id) {
-        // console.log('[SessionListItem] Session already belongs to this workstream');
-        return;
-      }
-
-      let targetParentId = id;
-
-      if (!isWorkstream) {
-        // Drop target is a standalone session, not a workstream.
-        // Convert it to a workstream first (without creating a sibling - the dragged session fills that role),
-        // then reparent the dragged session into the new workstream parent.
-        // console.log(`[SessionListItem] Converting session ${id} to workstream before reparenting`);
-        const result = await convertToWorkstream({
-          sessionId: id,
-          workspacePath: projectPath,
-          skipSiblingCreation: true,
-        });
-
-        if (!result) {
-          console.error('[SessionListItem] Failed to convert drop target to workstream');
-          return;
-        }
-
-        // The dragged session should be reparented under the new workstream parent
-        targetParentId = result.parentId;
-      }
-
-      // Execute reparent into the (possibly new) workstream parent
-      // console.log(`[SessionListItem] Reparenting session ${sessionId} from ${parentId} to ${targetParentId}`);
-      const success = await reparentSession({
-        sessionId,
-        oldParentId: parentId,
-        newParentId: targetParentId,
-        workspacePath: projectPath,
-      });
-
-      if (success) {
-        // Refresh session list to ensure consistency
-        await refreshSessionList();
-
-        // Track analytics
-        if (window.electronAPI) {
-          await window.electronAPI.invoke('analytics:track', {
-            event: 'session_reparented',
-            properties: {
-              had_previous_parent: parentId !== null,
-              created_workstream: !isWorkstream,
-              workspace_path: projectPath,
-            },
-          });
-        }
-      }
-    } catch (error) {
-      console.error('[SessionListItem] Failed to handle drop:', error);
-    }
-  }, [projectPath, id, isWorkstream, reparentSession, convertToWorkstream, refreshSessionList]);
 
   // Auto-focus and select text when rename input appears
   useEffect(() => {
@@ -481,7 +334,7 @@ export const SessionListItem = memo<SessionListItemProps>(function SessionListIt
         id={"session-list-item-" + id}
       data-testid={isWorktreeSession ? 'worktree-session-item' : isWorkstream ? 'workstream-session-item' : 'session-list-item'}
       data-session-type={isWorktreeSession ? 'worktree' : isWorkstream ? 'workstream' : 'session'}
-      className={`session-list-item relative flex items-start gap-2.5 py-1 px-3 pl-8 cursor-pointer rounded mx-2 transition-[background-color,opacity] duration-150 select-none
+      className={`session-list-item relative flex ${compact ? 'compact items-center py-0.5' : 'items-start py-1'} gap-2.5 pr-3 pl-7 cursor-pointer rounded mr-2 transition-[background-color,opacity] duration-150 select-none
         hover:bg-[var(--nim-bg-hover)]
         focus:outline-2 focus:outline-[var(--nim-border-focus)] focus:-outline-offset-2
         ${isActive ? 'active bg-[var(--nim-bg-selected)]' : ''}
@@ -490,14 +343,13 @@ export const SessionListItem = memo<SessionListItemProps>(function SessionListIt
         ${isSelected ? 'selected bg-[var(--nim-bg-selected)]' : ''}
         ${isPinned ? 'pinned' : ''}
         ${isDragging ? 'dragging opacity-50 cursor-grabbing' : ''}
-        ${isValidDropTarget ? 'drop-target-valid bg-[rgba(83,89,93,0.4)] border-2 border-dashed border-[var(--nim-primary)]' : ''}
+        ${hint?.valid ? 'drop-target-valid bg-[rgba(83,89,93,0.4)] border-2 border-dashed border-[var(--nim-primary)]' : ''}
+        ${hint?.between && hint.valid ? 'border-t-2 border-[var(--nim-primary)]' : ''}
         ${isDraggable ? 'cursor-grab' : ''}
         ${isAwaitingInput && !isActive ? 'bg-[rgba(251,191,36,0.08)]' : ''}
       `}
-      style={isAwaitingInput ? { borderLeft: '2px solid var(--nim-warning)' } : undefined}
+      style={{ ...(isAwaitingInput ? { borderLeft: '2px solid var(--nim-warning)' } : {}), ...(treeContext ? { paddingLeft: 4, marginLeft: 0 } : {}), ...(hint && !hint.valid ? { cursor: 'not-allowed' } : {}) }}
       onClick={onClick}
-      onMouseEnter={() => setIsHovering(true)}
-      onMouseLeave={() => setIsHovering(false)}
       onContextMenu={handleContextMenu}
       draggable={isDraggable}
       onDragStart={handleDragStart}
@@ -508,6 +360,7 @@ export const SessionListItem = memo<SessionListItemProps>(function SessionListIt
       role="button"
       tabIndex={0}
       onKeyDown={(e) => {
+        if (e.target !== e.currentTarget) return;
         if (e.key === 'Enter' || e.key === ' ') {
           e.preventDefault();
           onClick(e as unknown as React.MouseEvent);
@@ -516,7 +369,8 @@ export const SessionListItem = memo<SessionListItemProps>(function SessionListIt
       aria-label={`Session: ${displayTitle}, ${timestampLabel} ${relativeTime}${isLoaded ? ' (loaded in tab)' : ''}${isArchived ? ' (archived)' : ''}`}
       aria-current={isActive ? 'page' : undefined}
     >
-      <div className={`session-list-item-icon shrink-0 mt-0.5 text-[var(--nim-text-muted)] flex items-center relative ${isActive ? '[&]:text-[var(--nim-primary)] [&_svg]:text-[var(--nim-primary)]' : '[&_svg]:text-[var(--nim-text-muted)]'} ${isWorkstream ? 'workstream-icon' : ''} ${isWorktreeSession ? 'worktree-icon' : ''}`}>
+      {treeLeading}
+      <div className={`session-list-item-icon shrink-0 ${compact ? "" : "mt-0.5"} text-[var(--nim-text-muted)] flex items-center relative ${isActive ? '[&]:text-[var(--nim-primary)] [&_svg]:text-[var(--nim-primary)]' : '[&_svg]:text-[var(--nim-text-muted)]'} ${isWorkstream ? 'workstream-icon' : ''} ${isWorktreeSession ? 'worktree-icon' : ''}`}>
         {sessionType === 'voice' ? (
           // Voice session: OpenAI icon with mic badge
           <div className="relative">
@@ -528,9 +382,9 @@ export const SessionListItem = memo<SessionListItemProps>(function SessionListIt
               fill
             />
           </div>
-        ) : isWorktreeSession ? (
+        ) : isWorktreeSession && !treeContext ? (
           <WorktreeIcon size={16} />
-        ) : isWorkstream ? (
+        ) : isWorkstream && !treeContext ? (
           <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
             <circle cx="8" cy="4" r="1.5" fill="currentColor"/>
             <circle cx="4" cy="12" r="1.5" fill="currentColor"/>
@@ -539,7 +393,7 @@ export const SessionListItem = memo<SessionListItemProps>(function SessionListIt
             <line x1="8.5" y1="5.2" x2="11.5" y2="10.8" stroke="currentColor" strokeWidth="1" strokeLinecap="round"/>
           </svg>
         ) : (
-          <SessionProviderIcon sessionId={id} provider={provider} size={16} isActive={isActive} />
+          <SessionProviderIcon sessionId={id} provider={provider} size={16} isActive={isActive} hideLaunchCount={treeContext} />
         )}
       </div>
       {isPinned && (
@@ -563,6 +417,18 @@ export const SessionListItem = memo<SessionListItemProps>(function SessionListIt
             onBlur={handleRenameSubmit}
             onClick={(e) => e.stopPropagation()}
           />
+        ) : compact ? (
+          <div className="session-list-item-compact-line flex items-center gap-1.5 min-w-0">
+            <FullTitleTooltip
+              label={displayTitle}
+              className={`session-list-item-title block flex-1 min-w-0 text-[0.8125rem] text-[var(--nim-text)] font-medium overflow-hidden text-ellipsis whitespace-nowrap transition-colors duration-150 ${isActive ? 'font-semibold' : ''} ${isArchived ? 'text-[var(--nim-text-faint)]' : ''}`}
+            >
+              {displayTitle}
+            </FullTitleTooltip>
+            {treeDetails}
+            <span className="session-list-item-datetime shrink-0 text-[0.6875rem] text-[var(--nim-text-faint)] whitespace-nowrap" title={fullDateTime}>{relativeTime}</span>
+            {hint && <span className="session-tree-drop-hint text-xs text-[var(--nim-primary)]" role="status">{hint.label}</span>}
+          </div>
         ) : (
           <>
             <FullTitleTooltip
@@ -576,7 +442,10 @@ export const SessionListItem = memo<SessionListItemProps>(function SessionListIt
               {displayModel && <span className="session-list-item-model overflow-hidden text-ellipsis whitespace-nowrap">{displayModel}</span>}
               {phase && <SessionPhaseBadge phase={phase} />}
               <SessionExternalMarker sessionId={id} />
+              {treeDetails}
             </div>
+            <SessionSpawnerLink sessionId={id} />
+            {hint && <div className="session-tree-drop-hint text-xs text-[var(--nim-primary)]" role="status">{hint.label}</div>}
           </>
         )}
       </div>
@@ -587,28 +456,10 @@ export const SessionListItem = memo<SessionListItemProps>(function SessionListIt
           </span>
         )}
         <SessionStatusIndicator sessionId={id} messageCount={messageCount} />
-        {/*{(onArchive || onUnarchive) && (*/}
-        {/*  <button*/}
-        {/*    className={`session-list-item-archive shrink-0 flex items-center justify-center w-5 h-5 p-0 bg-transparent border-none rounded text-[var(--nim-text-faint)] cursor-pointer transition-all duration-150 focus:outline-2 focus:outline-[var(--nim-border-focus)] focus:outline-offset-1*/}
-        {/*      ${isHovering ? 'visible opacity-70 pointer-events-auto hover:bg-[var(--nim-bg-tertiary)] hover:text-[var(--nim-text)] hover:opacity-100' : 'opacity-0 pointer-events-none'}*/}
-        {/*      disabled:cursor-default disabled:opacity-0 disabled:pointer-events-none*/}
-        {/*    `}*/}
-        {/*    onClick={(e) => {*/}
-        {/*      e.stopPropagation();*/}
-        {/*      if (isArchived && onUnarchive) onUnarchive();*/}
-        {/*      else if (!isArchived && onArchive) onArchive();*/}
-        {/*    }}*/}
-        {/*    aria-label={isArchived ? `Unarchive ${isWorkstream ? 'workstream' : isWorktreeSession ? 'worktree' : 'session'}` : `Archive ${isWorkstream ? 'workstream' : isWorktreeSession ? 'worktree' : 'session'}`}*/}
-        {/*    title={isArchived ? `Unarchive ${isWorkstream ? 'workstream' : isWorktreeSession ? 'worktree' : 'session'}` : `Archive ${isWorkstream ? 'workstream' : isWorktreeSession ? 'worktree' : 'session'}`}*/}
-        {/*  >*/}
-        {/*    {isArchived ? (*/}
-        {/*      <MaterialSymbol icon="unarchive" size={14} />*/}
-        {/*    ) : (*/}
-        {/*      <MaterialSymbol icon="archive" size={14} />*/}
-        {/*    )}*/}
-        {/*  </button>*/}
-        {/*)}*/}
+
       </div>
+
+      {showMovePicker && <SessionMovePicker sessionId={id} onMove={(parentId) => move(id, parentId)} onClose={() => setShowMovePicker(false)} />}
 
       {/* Context Menu */}
       {showContextMenu && (
@@ -626,7 +477,8 @@ export const SessionListItem = memo<SessionListItemProps>(function SessionListIt
           onRename={onRename ? () => { setRenameValue(title); setIsRenaming(true); } : undefined}
           onPinToggle={onPinToggle}
           onBranch={onBranch}
-          onRemoveFromWorkstream={parentSessionId && !isWorktreeSession ? handleRemoveFromWorkstream : undefined}
+          onRemoveFromWorkstream={parentSessionId ? handleRemoveFromWorkstream : undefined}
+          onMoveUnder={isDraggable ? () => setShowMovePicker(true) : undefined}
           onArchive={onArchive}
           onUnarchive={onUnarchive}
           onDelete={onDelete}
@@ -637,6 +489,10 @@ export const SessionListItem = memo<SessionListItemProps>(function SessionListIt
   );
 }, (prev, next) => {
   return (
+    prev.treeContext === next.treeContext &&
+    prev.treeLeading === next.treeLeading &&
+    prev.treeDetails === next.treeDetails &&
+    prev.compact === next.compact &&
     prev.id === next.id &&
     prev.title === next.title &&
     prev.createdAt === next.createdAt &&

@@ -1,92 +1,56 @@
 # Session Hierarchy
 
-Authoritative rules for how `ai_sessions` rows nest. Read this before touching any
-code that creates a session, parents one session under another, or groups sessions
-for display.
+`ai_sessions.parent_session_id` stores the session tree. Ordinary sessions may have children at any level, up to eight edges from the root (root depth zero). `created_by_session_id` stores the manager that receives completion reports and owns the session in `list_spawned_sessions`. Conversation branches continue to use `branched_from_session_id` independently.
 
-## The two-layer invariant
+## Containers and roles
 
-**Sessions nest at most one level deep.** A session is either a root or a child of
-a root — never a grandchild. Equivalent statements:
+| Role | `session_type` | `parent_session_id` | `worktree_id` |
+| --- | --- | --- | --- |
+| Workspace tree root | `session` | `NULL` | `NULL` |
+| Workspace tree node | `session` | Immediate parent | `NULL` |
+| Worktree tree root | `session` | `NULL` | Worktree ID |
+| Worktree tree node | `session` | Immediate parent | Same worktree ID as parent |
+| User-created grouping wrapper | `workstream` | `NULL` | `NULL` |
+| Blitz container | `blitz` | `NULL` | `NULL` |
 
-- `parent_session_id` of a row's parent **must** be `NULL`.
-- A `session_type='workstream'` row **must not** itself have a `parent_session_id`.
-- Three layers (workstream → workstream → session, or worktree → workstream → session)
-  is a bug, not a feature.
+A worktree remains the checkout container. It may contain multiple tree roots, each with descendants carrying the same worktree ID. Spawning inside a worktree does not create a workstream wrapper. Workstream and Blitz rows remain roots and cannot belong to worktrees. Blitz retains its existing special placement: its direct workers may point to the Blitz root while running in separate worktrees. Ordinary edges within each worker's tree still obey the same-worktree rule.
 
-## Roles
+## Placement and management
 
-Three structural roles exist; they're determined by the combination of
-`session_type`, `parent_session_id`, and `worktree_id`:
+`spawn_session`, `create_session`, and action launches parent a same-container child directly to the caller and set its manager to that caller. An explicit new or different worktree keeps the caller as manager and creates a tree root. `isolated: true` also creates a root while retaining its manager. No spawn creates or promotes a wrapper row, and no spawn changes the caller's agent role.
 
-| Role | `session_type` | `parent_session_id` | `worktree_id` | Notes |
-| --- | --- | --- | --- | --- |
-| Standalone session | `'session'` | `NULL` | `NULL` | A solo session in the workspace root. |
-| Workstream parent | `'workstream'` | `NULL` | `NULL` | Empty container that groups children. **Never** has `worktree_id`. |
-| Workstream child | `'session'` | parent's id | `NULL` | Real session belonging to a workstream group. |
-| Worktree-resident session | `'session'` | `NULL` | worktree id | Real session inside a worktree. Flat sibling of every other session in the same worktree. |
-| Blitz parent | `'blitz'` | `NULL` | `NULL` | Group container for blitz worktrees (one blitz spawns N worktrees). |
+Moving a session under another session changes both its immediate parent and manager. Moving to top level clears both, while retaining its worktree container. Moving between workspace trees is allowed; moving between different worktrees is rejected. The moved subtree retains its internal edges. A move must not introduce a cycle, nest a wrapper, or put any descendant beyond depth eight. The old and new managers receive queued reports, which do not interrupt a running turn. Drag-acquired sessions appear in the new manager's roster and count toward its running-session limit; they do not count against its lifetime spawn limit unless that manager originally spawned them.
 
-Anything outside these shapes is wrong. In particular:
+`sessionHierarchy.ts` validates the entire moved subtree against the proposed parent's ancestor chain. All storage hierarchy writers share a serialized lane, so two concurrent moves cannot each validate against the other's old edges. Local optimistic guards reject a move if the parent or manager changed since its snapshot was read. Remote freshness callbacks are checked inside that lane and immediately before SQL. Each local parent or manager change, including migration, records a durable `metadata.hierarchySyncIntent` revision in the same write; deletion records intent for each lifted or unmanaged row. A stale remote snapshot cannot overwrite an unacknowledged local intent. The base store is authoritative for desktop IPC and incoming phone moves alike.
 
-- ❌ `session_type='workstream'` **and** `worktree_id IS NOT NULL` — see "A worktree is the workstream" below.
-- ❌ `parent_session_id IS NOT NULL` **and** `worktree_id IS NOT NULL` — children inherit the worktree via the parent's grouping; setting both produces double-counting in `worktreeGroupsData`.
-- ❌ A `session_type='workstream'` row whose parent is itself a workstream.
+Agent spawning reserves per-manager capacity before side effects and counts pending launches while excluding their already-inserted rows from durable counts. Reservations remain held through initial queueing/start and are released on success or failure. Durable pending or executing prompts continue to count toward the four-session limit after release, including deferred launches and recovery after restart. Phone child creation resolves its parent first and inserts inherited worktree, parent, and manager together.
 
-## A worktree IS the workstream
+## Read and mutation contracts
 
-The `worktrees` table row is the container for every session attached to that
-worktree. There is no separate `session_type='workstream'` row representing the
-worktree — the worktree row plays that role.
+- `sessions:list` retains `childCount` as a direct count and adds `descendantCount`. Header activity includes every descendant's latest activity.
+- `sessions:list-children(parentSessionId, workspacePath, { includeArchived? })` returns the whole flat descendant list. Each row includes its immediate `parentSessionId`, `createdBySessionId`, relative `depth` (first child is one), direct `childCount`, and `descendantCount`. Fetching an expanded root requires one recursive SQL query.
+- `sessions:create-child` inherits the parent's worktree and sets parent and manager in the insert. Explicit mismatched worktree placement is rejected.
+- `sessions:set-parent({ sessionId, newParentId, workspacePath, restoreManagerId? })` applies the authoritative guard and returns `{ success, previousParentId, previousManagerId }`, or `{ success: false, error }`. A one-level undo sends the previous parent plus `restoreManagerId: previousManagerId`. The returned snapshot is guarded against concurrent writes.
+- `SessionStore.listPendingHierarchyIntents()` lists durable local intent; `acknowledgeHierarchyIntent(id, revision, parent, manager)` clears only a matching intent and current row. `applyRemoteHierarchySnapshot(rows, isCurrent)` validates the final combined graph and applies all accepted placements in one transaction, permitting parent reversals that would fail as intermediate single-row writes. Matched server echoes with explicit parent and manager fields clear local intent; divergent pending rows remain authoritative. Remote changes emit `HierarchyMove.source = "remote"` for queued manager reports while sync callers suppress automatic echoes.
+- Archive and restore apply to the entire subtree in a transaction. Publication sends the state of every affected row to personal sync.
+- Deletion lifts direct children to the deleted row's own parent in the same transaction as the delete. Children managed by the deleted row inherit the surviving parent as manager; other manager edges remain intact. Lifted rows are republished.
+- Overview and edited-file tools find the caller's tree root and include its entire subtree, including files edited by the root itself.
 
-Concretely: every session inside a worktree is a flat sibling of every other
-session in that worktree. They all carry the same `worktree_id` and have
-`parent_session_id = NULL`. The left pane's `worktreeGroupsData` (in
-`SessionHistory.tsx`) groups them on `worktree_id` alone — that's how they show
-up under one "worktree" group entry.
+Remote mirror rows also expose direct and recursive counts, with traversal constrained to the same host and workspace. Incoming phone parent changes go through the desktop store, which assigns the new manager, queues manager reports, and republishes the accepted placement. Rejected moves republish the existing authoritative parent and manager. Canonical publication includes both `parentSessionId` and `createdBySessionId`, using explicit null to clear either relationship. Absent fields mean no update. Verified bootstrap and late listener registration also replay hierarchy rows, so offline phone moves receive the same validation. The authority subscribes to complete server-only snapshots through `onHierarchySnapshot(callback)`; ordinary list listeners remain quiet on bootstrap. Decisions and their echoes are serialized per session and reject superseded snapshots. Unpublished canonical rows are retained by ID and retried from current durable state on a timer, index readiness, and reconnect; no new synced hierarchy field is required.
 
-Creating a `session_type='workstream'` row for a worktree (with or without
-`worktree_id` set on the row, with or without children parented under it) is
-**always wrong**. It produces a forbidden third layer and the workstream's
-children disappear from the left pane (they get filtered out of `sessionListRootAtom`
-by `parent_session_id IS NOT NULL` but never re-surface via worktree grouping
-because the worktree group only sees root rows).
+## Migration and recovery
 
-## Code paths that enforce this
+`sessionTreeMigration.ts` runs once after the app becomes usable, through the common database adapter on both PGLite and better-sqlite3. It processes creator ancestors before descendants, moves eligible same-container parent pointers to their managers, and skips cycles, over-depth placements, wrapper rows, user-reassigned rows, and explicitly isolated rows. Wrapper rows are retained. No session row is deleted by this migration.
 
-These are the points where the invariant is currently maintained. Any new
-session-creation path you add must respect the same rules.
+Each changed row stores its old parent, including a null parent, in `metadata.preTreeParentSessionId` and records `metadata.sessionTreeMigrationVersion = 1`. The same update records durable `hierarchySyncIntent` for the new parent and manager. Updates merge these keys, preserving concurrent metadata changes. A database marker in `session_tree_migrations` prevents repeat runs. If interrupted between batches, backups prevent already-migrated rows from being rewritten on retry and reconstruct their original containers for descendants not yet moved. Nullable provenance uses explicit JSON-set semantics on SQLite so a null backup or original spawner remains present. The stored backup is the recovery source; restoration must use the authoritative mutation path and its guards.
 
-| Location | Enforces |
-| --- | --- |
-| `packages/electron/src/main/services/MetaAgentService.ts` → `resolveOrCreateWorkstream` | If `parent.worktreeId` is set, returns `workstreamId: null` immediately — never wraps the parent in a workstream container. The new child becomes a flat sibling in the worktree. |
-| `packages/electron/src/renderer/store/atoms/sessions.ts` → `convertToWorkstreamAtom` | Refuses to convert a session that already has `worktreeId`. Also never sets `worktreeId` on the workstream row it creates. |
-| `packages/electron/src/main/database/worker.js` | One-time migration deletes accidental worktree-attached workstream rows (guarded by `NOT EXISTS (… ai_agent_messages …)` so user content is never lost). Children auto-unparent via `parent_session_id`'s `ON DELETE SET NULL`. |
+Legacy PGLite startup conversion only changes legacy interaction-mode session types. It must never turn a real session into a wrapper merely because it has children, or delete an empty tree parent in a worktree.
 
-## Rules of thumb for new code
+## Relevant implementation
 
-1. **Adding a new "create session" path?** Decide which role you're creating
-   (standalone, workstream child, or worktree-resident) and set the three fields
-   to match the table above. Do not invent a fourth shape.
-2. **Adding a new "spawn from existing session" path?** Mirror
-   `resolveOrCreateWorkstream`: if the source is in a worktree, the new session
-   is a flat sibling in that worktree (no workstream involved). Otherwise, route
-   through the workstream parent if one exists or create one.
-3. **Adding a new grouping derivation in the renderer?** Don't assume that
-   workstream parents and worktrees are disjoint roots — they are, but verify
-   that your derivation doesn't double-count a worktree-resident session under
-   both its worktree group and some other grouping.
-4. **Got a "session has no parent but I expected one" bug?** First check the
-   table above. If the missing-parent case isn't represented there, you've
-   either found a bug in this doc or you're trying to invent a fourth shape.
-
-## Why this matters
-
-When the invariant breaks, the left pane silently swallows sessions:
-
-- `sessionListRootAtom` filters out anything with `parent_session_id` set.
-- `worktreeGroupsData` only sees root rows, so children of a worktree-attached
-  workstream (the forbidden third layer) disappear from both groupings.
-- The user sees their worktree as "containing 4 sessions" when 10 exist.
-
-Both bugs that motivated this doc had exactly this signature.
+- [Hierarchy rules and recursive reads](../packages/electron/src/main/services/sessionHierarchy.ts)
+- [Session store](../packages/electron/src/main/services/PGLiteSessionStore.ts)
+- [IPC handlers](../packages/electron/src/main/ipc/SessionHandlers.ts)
+- [Spawn and manager reports](../packages/electron/src/main/services/MetaAgentService.ts)
+- [Migration](../packages/electron/src/main/services/sessionTreeMigration.ts)
+- [Phone move authority](../packages/electron/src/main/services/ai/mobileSessionHierarchy.ts)

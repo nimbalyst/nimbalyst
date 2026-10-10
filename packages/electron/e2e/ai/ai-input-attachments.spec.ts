@@ -206,12 +206,6 @@ test.describe('Image Attachments', () => {
     const chatInput = page.locator(PLAYWRIGHT_TEST_SELECTORS.agentChatInput);
     await expect(chatInput).toBeVisible();
 
-    let alertMessage = '';
-    page.once('dialog', async dialog => {
-      alertMessage = dialog.message();
-      await dialog.accept();
-    });
-
     // Create oversized file in browser context to avoid serializing 21MB through Playwright
     // The max image size is 20MB in AttachmentService
     const dataTransfer = await page.evaluateHandle(() => {
@@ -223,9 +217,8 @@ test.describe('Image Attachments', () => {
     });
 
     await chatInput.dispatchEvent('drop', { dataTransfer });
-    await page.waitForTimeout(1000);
 
-    expect(alertMessage).toContain('File too large');
+    await expect(page.locator('.error-toast-message', { hasText: 'File too large' })).toBeVisible({ timeout: 2000 });
   });
 
   test('should support paste from clipboard', async () => {

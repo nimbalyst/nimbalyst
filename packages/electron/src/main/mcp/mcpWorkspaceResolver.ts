@@ -417,7 +417,7 @@ export async function getAvailableExtensionTools(
           filePath: {
             type: "string",
             description:
-              "Absolute path to the file to operate on.",
+              "Absolute path to the file to operate on, or a Team page's uri (collab://...) from createSharedDoc, importFileToPages or listPages to edit that shared page.",
           },
         },
         required: [...(tool.inputSchema.required || []), "filePath"],

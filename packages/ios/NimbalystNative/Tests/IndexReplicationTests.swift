@@ -109,6 +109,27 @@ final class IndexReplicationTests: XCTestCase {
 
     // MARK: - Revisions and tombstones
 
+    func testCanonicalTreeDetachSurvivesOlderPageReplay() throws {
+        let db = try DatabaseManager()
+        let store = IndexReplicationStore()
+        var attached = try sessionPayload("child")
+        attached["parentSessionId"] = "manager"
+        attached["createdBySessionId"] = "manager"
+        let oldPage = try validated(response(entries: [change(entity: "session", id: "child", revision: 1,
+                                                               session: attached)], cursor: 1))
+        try apply(oldPage, store: store, database: db)
+        var detached = attached
+        detached["parentSessionId"] = NSNull()
+        detached["createdBySessionId"] = NSNull()
+        try apply(validated(response(entries: [change(entity: "session", id: "child", revision: 2,
+                                                     session: detached)], cursor: 2)), store: store, database: db)
+        XCTAssertNil(try db.session(byId: "child")?.parentSessionId)
+        XCTAssertNil(try db.session(byId: "child")?.createdBySessionId)
+        try apply(oldPage, store: store, database: db)
+        XCTAssertNil(try db.session(byId: "child")?.parentSessionId, "An old page must not reattach a detached subtree")
+        XCTAssertNil(try db.session(byId: "child")?.createdBySessionId)
+    }
+
     func testFractionalFileTimestampDoesNotBlockSessionSearchOrBootstrapCompletion() throws {
         let db = try DatabaseManager()
         let store = IndexReplicationStore()

@@ -142,8 +142,20 @@ export async function initWindowMode(workspacePath: string): Promise<void> {
         ? workspaceState.activeMode as ContentMode
         : 'files';
       // A deep link may have selected a mode while the saved state was loading.
-      const restoredMode = initializedModes.get(workspacePath) ?? savedMode;
+      const deepLinkMode = initializedModes.get(workspacePath);
+      const restoredMode = deepLinkMode ?? savedMode;
       initializedModes.set(workspacePath, restoredMode);
+
+      // A saved mode that no longer exists (the removed Wiki mode) is replaced
+      // on disk too: main reads the persisted mode for Cmd+N, so leaving it
+      // would make that shortcut do nothing until the user switched modes.
+      // A deep-link mode already persists itself through setWindowModeAtom.
+      const savedModeIsStale = typeof workspaceState?.activeMode === 'string' && savedMode !== workspaceState.activeMode;
+      if (savedModeIsStale && !deepLinkMode) {
+        window.electronAPI.invoke('workspace:update-state', workspacePath, { activeMode: savedMode }).catch((err: unknown) => {
+          console.error('[windowMode] Failed to persist fallback mode:', err);
+        });
+      }
 
       // Only the workspace that is still active may publish into the global
       // compatibility atom. Late responses remain cached for their own path.

@@ -237,6 +237,37 @@ describe('collaborative embed markdown upgrade', () => {
     }
   });
 
+  // The browser editor registers no file type, so the full-tree rescan never
+  // runs there; a placed view needs no type and must still upgrade.
+  it('upgrades a collab-hydrated placed view with no embeddable type registered', async () => {
+    setEmbeddableExtensions([]);
+    const sharedDoc = new YDoc();
+    MarkdownCollabContentAdapter.seedFromFile(
+      sharedDoc,
+      'Intro\n\n[Competitors](nimbalyst://view/type/competitor "mode=2x2 x=devFirst y=realtime")',
+    );
+    const editor = buildCollabEditor();
+    const editorDoc = new YDoc();
+    const unmount = mountCollabBinding(editor, editorDoc);
+
+    try {
+      applyUpdate(editorDoc, encodeStateAsUpdate(sharedDoc));
+      await vi.waitFor(
+        () => {
+          editor.getEditorState().read(() => {
+            const node = $getRoot().getLastChild();
+            expect($isEmbeddedFileNode(node)).toBe(true);
+            if ($isEmbeddedFileNode(node)) expect(node.getAttrs()).toEqual({ mode: '2x2', x: 'devFirst', y: 'realtime' });
+          });
+        },
+        { timeout: 2000 },
+      );
+    } finally {
+      unmount();
+      editor.dispose();
+    }
+  });
+
   // Startup ordering: a restored tab can hydrate before the extension host has
   // registered any embeddable type, so the collab rescan is skipped (nothing
   // could upgrade yet). Registration afterwards has to pick the link up.

@@ -236,6 +236,96 @@ describe('queuedPromptDispatcher', () => {
     });
   });
 
+  // NIM-7428: a turn that ends with settled background work wakes the session
+  // with a turn the chain does not own. Settling the chain then ended a running
+  // session and woke the parent mid-turn; continuing it sent a second prompt that
+  // aborted the wake turn and dropped the task results it carried.
+  it('leaves the session to a wake turn the lead started instead of settling or continuing', async () => {
+    vi.useFakeTimers();
+    const claimedPrompt: ClaimedQueuedPrompt = { id: 'prompt-1', prompt: 'continue', attachments: null, documentContext: null };
+    const queueStore: QueuedPromptStoreLike = {
+      listPending: vi.fn(async () => [claimedPrompt]),
+      claim: vi.fn(async () => claimedPrompt),
+      complete: vi.fn(async () => {}),
+      fail: vi.fn(async () => {}),
+    };
+    const processingSet = new SessionProcessingGuard();
+    const targetWindow = {
+      isDestroyed: () => false,
+      webContents: { send: vi.fn(), mainFrame: {} },
+    } as unknown as Electron.BrowserWindow;
+    const continueQueuedPromptChain = vi.fn(async () => {});
+    const onChainSettled = vi.fn(async () => {});
+    const onAfterSettled = vi.fn(async () => {});
+
+    await tryClaimAndDispatchNextQueuedPrompt({
+      continueQueuedPromptChain,
+      logError: vi.fn(),
+      logInfo: vi.fn(),
+      onAfterSettled,
+      onChainSettled,
+      onPromptClaimed: () => {},
+      processingSet,
+      queueStore,
+      sendMessageHandler: vi.fn(async () => ({ content: 'ok' })),
+      sessionId: 'session-1',
+      source: 'test queue',
+      startSession: vi.fn(async () => {}),
+      targetWindow,
+      workspacePath: '/workspace/project',
+      isLeadTurnPending: () => true,
+    });
+    await vi.runAllTimersAsync();
+
+    expect(queueStore.complete).toHaveBeenCalledWith('prompt-1');
+    expect(processingSet.has('session-1')).toBe(false);
+    expect(continueQueuedPromptChain).not.toHaveBeenCalled();
+    expect(onChainSettled).not.toHaveBeenCalled();
+    expect(onAfterSettled).not.toHaveBeenCalled();
+  });
+
+  it('dispatches past the guard a draining turn holds, only when its live query can take the prompt', async () => {
+    vi.useFakeTimers();
+    const claimedPrompt = { id: 'prompt-1', sessionId: 'session-1', prompt: 'follow up', status: 'executing' } as never;
+    const queueStore: QueuedPromptStoreLike = {
+      listPending: vi.fn(async () => [claimedPrompt]),
+      claim: vi.fn(async () => claimedPrompt),
+      complete: vi.fn(async () => {}),
+      fail: vi.fn(async () => {}),
+    };
+    const processingSet = new SessionProcessingGuard();
+    const drainingTurnToken = processingSet.acquire('session-1');
+    const targetWindow = {
+      isDestroyed: () => false,
+      webContents: { send: vi.fn(), mainFrame: {} },
+    } as unknown as Electron.BrowserWindow;
+    const sendMessageHandler = vi.fn(async () => ({ content: 'ok' }));
+    const dispatch = (canBypassChainGuard: () => boolean) => tryClaimAndDispatchNextQueuedPrompt({
+      continueQueuedPromptChain: vi.fn(async () => {}),
+      logError: vi.fn(),
+      logInfo: vi.fn(),
+      onPromptClaimed: () => {},
+      processingSet,
+      queueStore,
+      sendMessageHandler,
+      sessionId: 'session-1',
+      source: 'test queue',
+      startSession: vi.fn(async () => {}),
+      targetWindow,
+      workspacePath: '/workspace/project',
+      canBypassChainGuard,
+    });
+
+    expect(await dispatch(() => false)).toBe(false);
+    expect(await dispatch(() => true)).toBe(true);
+    await vi.runAllTimersAsync();
+
+    expect(sendMessageHandler).toHaveBeenCalledOnce();
+    // The draining turn's later release must not drop the follow-up's guard.
+    expect(processingSet.releaseIfOwner('session-1', drainingTurnToken)).toBe(false);
+    vi.useRealTimers();
+  });
+
   it('dispatches once to a replacement window when the original window is destroyed', async () => {
     vi.useFakeTimers();
 

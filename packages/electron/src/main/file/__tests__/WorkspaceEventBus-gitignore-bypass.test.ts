@@ -145,6 +145,7 @@ import {
   hasGitignoreBypass,
   resetBus,
   setGitignoreChangeHandler,
+  drainWorkspaceEvents,
 } from '../WorkspaceEventBus';
 import type { WorkspaceEventListener } from '../WorkspaceEventBus';
 
@@ -262,13 +263,17 @@ describe('WorkspaceEventBus gitignore bypass', () => {
       await subscribe(WORKSPACE, 'test-sub', listener);
 
       fireWatchEvent('change', 'temp/bundle.js');
+      await drainWorkspaceEvents(WORKSPACE);
       expect(listener.onChange).toHaveBeenLastCalledWith(
         `${WORKSPACE}/temp/bundle.js`,
         undefined,
       );
 
       fireWatchEvent('change', '.gitignore');
+      // Native delivery can yield after its 4ms budget, including under suite load.
+      await drainWorkspaceEvents(WORKSPACE);
       fireWatchEvent('change', 'temp/bundle.js');
+      await drainWorkspaceEvents(WORKSPACE);
 
       expect(onGitignoreChange).toHaveBeenCalledWith(WORKSPACE);
       expect(listener.changes.filter((change) => change.path.endsWith('temp/bundle.js'))).toHaveLength(1);

@@ -4,6 +4,7 @@ import { extractTriggerMatch, getSlashTypeaheadScope, insertAtTrigger, type Slas
 import { buildSlashCommandOptions, fetchSlashCommandEntries, type SlashCommandEntry } from '../Typeahead/slashCommandAutocomplete';
 import type { ChatAttachment } from '@nimbalyst/runtime';
 import { AttachmentPreviewList } from './AttachmentPreviewList';
+import { errorNotificationService } from '../../services/ErrorNotificationService';
 
 interface AgenticInputProps {
   value: string;
@@ -288,7 +289,7 @@ export function AgenticInput({
 
       if (!validation.valid) {
         console.error('[AgenticInput] File validation failed:', validation.error);
-        alert(validation.error || 'Invalid file');
+        errorNotificationService.showError('Attachment Rejected', validation.error || 'Invalid file');
         return;
       }
 
@@ -318,13 +319,13 @@ export function AgenticInput({
         onChange(value + (value ? ' ' : '') + reference);
       } else {
         console.error('[AgenticInput] Failed to save attachment:', result.error);
-        alert(result.error || 'Failed to save attachment');
+        errorNotificationService.showError('Attachment Failed', result.error || 'Failed to save attachment');
       }
     } catch (error) {
       // Remove from processing state on error
       setProcessingAttachments(prev => prev.filter(p => p.id !== processingId));
       console.error('[AgenticInput] Error handling file attachment:', error);
-      alert('Failed to attach file');
+      errorNotificationService.showError('Attachment Failed', 'Failed to attach file');
     }
   }, [onAttachmentAdd, sessionId, value, onChange]);
 

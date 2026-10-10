@@ -473,6 +473,11 @@ export class ClaudeCodeTranscriptAdapter {
       case 'compact_boundary':
         items.push({ kind: 'system_compact', preTokens: chunk.compact_metadata?.pre_tokens || 'unknown' });
         break;
+      case 'informational':
+        // SDK 0.3.283+ banner (hook feedback, CLI warnings). ClaudeCodeRawParser
+        // renders it from the raw log; the default branch below would stream
+        // its `content` as assistant text.
+        break;
       default: {
         // Other system subtypes may carry displayable text
         const text = chunk.message || chunk.text || chunk.content;

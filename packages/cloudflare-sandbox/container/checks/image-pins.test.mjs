@@ -135,14 +135,15 @@ function makeFixtureRepo(root) {
     mkdirSync(path.dirname(abs), { recursive: true });
     writeFileSync(abs, contents);
   };
-  write('package.json', JSON.stringify({ name: 'fixture', workspaces: ['packages/node', 'packages/collab-protocol'] }));
-  write('package-lock.json', '{}');
+  write('package.json', JSON.stringify({ name: 'fixture' }));
+  write('pnpm-workspace.yaml', 'packages:\n  - packages/node\n  - packages/collab-protocol\n');
+  write('pnpm-lock.yaml', "lockfileVersion: '9.0'\n");
   // `packages/tracker-core/tsconfig.json` extends this. Its absence is what
   // broke the first real image build.
   write('tsconfig.json', '{"compilerOptions":{"target":"ES2020"}}');
   write('scripts/install-git-hooks.mjs', '// noop\n');
   write('patches/example.patch', 'diff\n');
-  for (const pkg of ['node', 'runtime', 'extension-sdk', 'tracker-core', 'collab-protocol', 'collab-adapters']) {
+  for (const pkg of ['node', 'runtime', 'extension-sdk', 'tracker-core', 'tracker-schema', 'tracker-engine', 'collab-protocol', 'collab-adapters']) {
     write(`packages/${pkg}/package.json`, JSON.stringify({ name: `@fixture/${pkg}` }));
     write(`packages/${pkg}/tsconfig.json`, '{}');
     write(`packages/${pkg}/src/index.ts`, 'export const ok = true;\n');

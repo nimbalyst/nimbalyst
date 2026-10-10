@@ -50,6 +50,7 @@ import {
   CLAUDE_CODE_SAFE_FALLBACK_MODEL,
   baseContextWindowForVariant,
 } from '../../modelConstants';
+import { withClaudeCustomModels } from '../../claudeCustomModels';
 import type { InterruptTurnResult } from '../AIProvider';
 import { isBedrockToolSearchError } from '../utils/errorDetection';
 import { AgentMessagesRepository } from '../../../storage/repositories/AgentMessagesRepository';
@@ -94,6 +95,8 @@ import {
   resolveImmediateToolDecision as resolveImmediateToolDecisionHelper,
 } from './claudeCode/immediateToolDecision';
 import {
+  authorizeCompoundBashCommand,
+  createCompoundPartPreApprovalCheck,
   handleToolPermissionFallback as handleToolPermissionFallbackHelper,
   handleToolPermissionWithService as handleToolPermissionWithServiceHelper,
   type ToolPermissionOptions,
@@ -123,6 +126,9 @@ import {
   type DrainExitCause,
   type TaskTerminalNotification,
 } from './claudeCode/subagentDrain';
+import { awaitDrainHandoff, canAdoptDrainingQuery, DrainHandoff, type AdoptedQuery } from './claudeCode/drainHandoff';
+import { injectPendingTeammateMessages } from './claudeCode/teammateInjection';
+import { hydrateTaskListItems, persistCurrentTodos, stopStaleRunningTasks } from './claudeCode/sessionMetadataWrites';
 import { applySystemTaskChunk, recordBackgroundEvidence, type TrackedSystemTask } from './claudeCode/systemTaskChunks';
 import {
   raceNextChunkWithStallWatchdog,
@@ -137,7 +143,8 @@ import {
 import { normalizeStructuredContextUsage } from '../utils/contextUsage';
 import { createTurnState } from './claudeCode/turnState';
 import { buildTurnQuery, prepareTurnAttachments, resolveTurnPaths } from './claudeCode/turnPrologue';
-import { finishTurn, handleTurnError, type TurnEpilogueHost } from './claudeCode/turnEpilogue';
+import { buildTurnCompleteUsage, finishTurn, handleTurnError, type TurnEpilogueHost } from './claudeCode/turnEpilogue';
+import { fromDbBoolean } from '../../../core/dbBoolean';
 import { applyTaskListMutation, sortTaskList, type TaskListItem } from './claudeCode/taskListReconstruct';
 
 
@@ -199,6 +206,9 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
   // turn 2, because adding the section later is the same cache miss.
   private gitContextFrozen = false;
   private frozenGitContext: string | undefined = undefined;
+  // `metadata.sessionDirective`, frozen by BaseAgentProvider.getSessionDirective
+  // and copied here because buildSystemPrompt is synchronous.
+  private frozenSessionDirective: string | undefined = undefined;
 
   private markMessagesAsHidden: boolean = false; // Flag to mark next messages as hidden
   private helperMethod: 'native' | 'custom' = 'native';
@@ -254,6 +264,10 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
   // so finalizeBackgroundDrain() can tell a user stop / supersede (no continuation)
   // apart from an unexpected sub-agent death (auto-continue). Reset each turn.
   private drainExitCause: DrainExitCause = 'resolved';
+  // A follow-up turn asking this draining turn for its live query. See drainHandoff.ts.
+  private drainHandoff: DrainHandoff<Query, AgentToolHooks | null> | null = null;
+  // Model the live query was spawned with; a follow-up on another model needs its own process.
+  private liveQueryModelVariant: string | null = null;
 
   // Teammate management: spawning, messaging, lifecycle, config I/O
   private teammateManager: TeammateManager;
@@ -446,7 +460,6 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
       logAgentMessage: this.logAgentMessage.bind(this),
       logSecurity: this.logSecurity.bind(this),
       trustChecker: BaseAgentProvider.trustChecker || undefined,
-      patternChecker: ClaudeCodeDeps.claudeSettingsPatternChecker || undefined,
       patternSaver: ClaudeCodeDeps.claudeSettingsPatternSaver || undefined,
       getCurrentMode: () => this.currentMode,
       setCurrentMode: (mode) => { this.currentMode = mode; },
@@ -581,8 +594,6 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
     return resolveClaudeCodeModelVariant(this.config.model, CLAUDE_CODE_SAFE_FALLBACK_MODEL);
   }
 
-
-
   /**
    * The provider surface both epilogue paths share (see turnEpilogue.ts).
    * Built fresh per use so it always reads the current `toolHooksService`,
@@ -636,22 +647,35 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
     // throws to the caller rather than becoming an error chunk.
     const prepared = await prepareTurnAttachments({ sessionId, workspacePath, attachments });
 
-    // Abort any existing request before starting a new one
-    if (this.abortController) {
-      this.abortController.abort();
+    // A follow-up while a background task keeps the previous turn draining
+    // adopts that live query; aborting it would kill the task with the process.
+    const adopted = this.canAcceptFollowUpDuringDrain() && this.liveQueryModelVariant === this.resolveModelVariant()
+      ? await this.takeOverDrainingQuery()
+      : null;
+
+    if (adopted) {
+      // The live process was spawned with this controller and these hooks.
+      this.abortController = adopted.abortController ?? new AbortController();
+      this.toolHooksService = adopted.toolHooksService
+        ?? this.createToolHooksService(workspacePath!, sessionId, paths.permissionsPath, false);
+    } else {
+      // Abort any existing request before starting a new one
+      if (this.abortController) {
+        this.abortController.abort();
+      }
+
+      // Create abort controller for this request
+      this.abortController = new AbortController();
+
+      // Create tool hooks service for this turn
+      // This service manages pre/post hooks, file tagging, and snapshot creation
+      this.toolHooksService = this.createToolHooksService(
+        workspacePath!,
+        sessionId,
+        paths.permissionsPath,
+        false
+      );
     }
-
-    // Create abort controller for this request
-    this.abortController = new AbortController();
-
-    // Create tool hooks service for this turn
-    // This service manages pre/post hooks, file tagging, and snapshot creation
-    this.toolHooksService = this.createToolHooksService(
-      workspacePath!,
-      sessionId,
-      paths.permissionsPath,
-      false
-    );
 
     // Clear edited files tracker for new turn
     this.toolHooksService.clearEditedFiles();
@@ -664,6 +688,7 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
       const {
         options,
         promptInput,
+        promptController: builtPromptController,
         transcriptAdapter,
         queryStartTime,
       } = await buildTurnQuery(
@@ -671,6 +696,7 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
           getAgentRole: (sid) => this.getAgentRole(sid),
           getWorkflowPreset: (sid) => this.getWorkflowPreset(sid),
           ensureGitContext: (wp) => this.ensureGitContext(wp),
+          ensureSessionDirective: async (sid) => { this.frozenSessionDirective = await this.getSessionDirective(sid); },
           buildSystemPrompt: (dc, teams, meta, preset) => this.buildSystemPrompt(dc, teams, meta, preset),
           emit: (event, payload) => { this.emit(event, payload); },
           withPromptProvenanceMetadata: (dc) => this.withPromptProvenanceMetadata(dc),
@@ -687,7 +713,7 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
           metaAgentAllowedTools: BaseAgentProvider.META_AGENT_ALLOWED_TOOLS,
           publishSdkResult: (result) => {
             this.helperMethod = result.helperMethod;
-            this.promptController = result.promptController;
+            this.promptController = adopted ? adopted.promptController : result.promptController;
           },
         },
         state,
@@ -696,10 +722,13 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
 
       const queryCallStart = Date.now();
 
-      const leadQuery: AsyncIterable<any> = query({
-        prompt: promptInput as any,
-        options
-      });
+      const leadQuery: AsyncIterable<any> = adopted
+        ? await this.deliverToAdoptedQuery(adopted, promptInput, builtPromptController)
+        : query({
+          prompt: promptInput as any,
+          options
+        });
+      if (!adopted) this.liveQueryModelVariant = this.resolveModelVariant();
 
       this.leadQuery = leadQuery as unknown as Query;
       ClaudeCodeProvider.streamingInstances.add(this);
@@ -806,7 +835,10 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
       try {
         // Use manual iteration with Promise.race so interruptWithMessage() can
         // break the loop immediately without waiting for the SDK subprocess.
-        const iterator = (queryIterator as AsyncIterable<any>)[Symbol.asyncIterator]();
+        const iterator = adopted
+          ? adopted.iterator as AsyncIterator<any>
+          : (queryIterator as AsyncIterable<any>)[Symbol.asyncIterator]();
+        let carriedNext = adopted?.pendingNext ?? null;
         let interruptPromise = new Promise<'interrupted'>(resolve => {
           this.interruptResolve = () => resolve('interrupted');
         });
@@ -817,6 +849,7 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
             this.drainExitCause = 'aborted';
             break;
           }
+          if (this.handOffIfRequested(state.completeEmitted, iterator, null)) break;
 
           // Race the next chunk against the interrupt signal and, when armed, a
           // stall watchdog. The watchdog is only armed while the MODEL is
@@ -834,7 +867,8 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
             hasRunningTasks: this.hasRunningTasks(),
             hasPendingUserInteraction: this.hasPendingUserInteraction(),
           });
-          const nextPromise = iterator.next();
+          const nextPromise = carriedNext ?? iterator.next();
+          carriedNext = null;
           const raceResult = await raceNextChunkWithStallWatchdog<any>({
             nextPromise,
             interruptPromise,
@@ -843,6 +877,7 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
           });
 
           if (raceResult.kind === 'interrupted') {
+            if (this.handOffIfRequested(state.completeEmitted, iterator, nextPromise)) break;
             console.log('[CLAUDE-CODE] Interrupt signal received, breaking streaming loop');
             this.drainExitCause = 'interrupted';
             break;
@@ -1375,20 +1410,7 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
               await this.toolHooksService.createTurnEndSnapshots();
             }
 
-            // Prefer result.usage (deduplicated by Anthropic via message.id). The SDK's
-            // modelUsage aggregate over-counts: the agent stream emits each assistant
-            // message 2-3x (one event per content block) and modelUsage sums the dupes,
-            // inflating cumulative input/output. Fall back to the modelUsage sum only when
-            // result.usage is missing. See NIM-689.
-            let totalInputTokens = state.usageData?.input_tokens || 0;
-            let totalOutputTokens = state.usageData?.output_tokens || 0;
-            if (!state.usageData && state.modelUsageData) {
-              for (const modelName of Object.keys(state.modelUsageData)) {
-                const modelStats = state.modelUsageData[modelName];
-                totalInputTokens += modelStats.inputTokens || 0;
-                totalOutputTokens += modelStats.outputTokens || 0;
-              }
-            }
+            const turnUsage = buildTurnCompleteUsage(state);
 
             const lastMessageContextTokens = state.lastAssistantUsage
               ? (state.lastAssistantUsage.input_tokens || 0)
@@ -1421,15 +1443,7 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
             yield {
               type: 'complete',
               isComplete: true,
-              ...(state.usageData || state.modelUsageData ? {
-                usage: {
-                  input_tokens: totalInputTokens,
-                  output_tokens: totalOutputTokens,
-                  cache_read_input_tokens: state.usageData?.cache_read_input_tokens || 0,
-                  cache_creation_input_tokens: state.usageData?.cache_creation_input_tokens || 0,
-                  total_tokens: totalInputTokens + totalOutputTokens
-                }
-              } : {}),
+              ...(turnUsage ? { usage: turnUsage } : {}),
               ...(state.modelUsageData ? { modelUsage: state.modelUsageData } : {}),
               ...(lastMessageContextTokens !== undefined ? { contextFillTokens: lastMessageContextTokens } : {}),
               ...(state.structuredContextUsage ? { contextReport: state.structuredContextUsage } : {}),
@@ -1494,97 +1508,17 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
       }
 
       // ── Process queued teammate messages via streamInput ──────────────
-      // After the main loop exits naturally, drain any pending teammate-to-lead
-      // messages. Each is injected as a new user turn on the existing query via
-      // streamInput. Skip if the query was interrupted — after interrupt() the
-      // transport is dead and streamInput will always fail. Messages stay queued
-      // for the finally block to re-trigger via a fresh sendMessage.
-      while (this.teammateManager.hasPendingTeammateMessages() && this.leadQuery && !this.wasInterrupted) {
-        const nextMsg = this.teammateManager.drainNextTeammateMessage();
-        if (!nextMsg) break;
-
-        const formattedMessage = `[Teammate message from "${nextMsg.teammateName}"]\n\n${nextMsg.content}`;
-        console.log(`[CLAUDE-CODE] Processing queued teammate message via streamInput: "${nextMsg.summary}"`);
-
-        // Log the injected user message to the DB so the conversation is complete.
-        // Uses non-blocking since we're mid-turn and don't need to await persistence.
-        if (sessionId) {
-          this.logAgentMessageNonBlocking(
-            sessionId, 'claude-code', 'input',
-            JSON.stringify({ prompt: formattedMessage }),
-            { messageType: 'teammate_message_injected', teammateName: nextMsg.teammateName }
-          );
-        }
-
-        try {
-          await this.leadQuery.streamInput(
-            this.teammateManager.createInjectedUserMessageStream(formattedMessage)
-          );
-        } catch (streamErr) {
-          console.warn('[CLAUDE-CODE] streamInput failed for teammate message:', streamErr);
-          // Lead transport is dead. Re-queue the message so the finally block
-          // can re-trigger delivery via a fresh sendMessage call.
-          this.teammateManager.requeueTeammateMessage(nextMsg);
-          this.transportDied = true;
-          break;
-        }
-
-        // Consume output from the new turn (same chunk processing)
-        try {
-          for await (const rawChunk of (this.leadQuery as AsyncIterable<any>)) {
-            if (this.abortController?.signal.aborted) {
-              console.log('[CLAUDE-CODE] Abort signal detected during teammate message processing');
-              break;
-            }
-            const chunk = typeof rawChunk === 'string' ? rawChunk : rawChunk;
-
-            if (typeof chunk === 'string') {
-              state.fullContent += chunk;
-              yield { type: 'text', content: chunk };
-            } else if (chunk && typeof chunk === 'object') {
-              if (chunk.type === 'result') {
-                if (chunk.usage) {
-                  state.usageData = {
-                    ...(state.usageData || {}),
-                    input_tokens: (state.usageData?.input_tokens || 0) + (chunk.usage.input_tokens || 0),
-                    output_tokens: (state.usageData?.output_tokens || 0) + (chunk.usage.output_tokens || 0),
-                  };
-                }
-              } else if (chunk.type === 'assistant' && chunk.message?.content) {
-                for (const block of chunk.message.content) {
-                  if (block.type === 'text' && block.text) {
-                    state.fullContent += block.text;
-                    yield { type: 'text', content: block.text };
-                  } else if (block.type === 'tool_use') {
-                    state.toolCallCount++;
-                    if (sessionId) {
-                      this.logAgentMessageNonBlocking(
-                        sessionId, 'claude-code', 'output',
-                        JSON.stringify(block),
-                        { messageType: 'tool_use', toolName: block.name }
-                      );
-                    }
-                  } else if (block.type === 'tool_result') {
-                    if (sessionId) {
-                      this.logAgentMessageNonBlocking(
-                        sessionId, 'claude-code', 'output',
-                        JSON.stringify(block),
-                        { messageType: 'tool_result' }
-                      );
-                    }
-                  }
-                }
-              }
-            }
-          }
-        } catch (iterError) {
-          const errMessage = (iterError as Error).message || '';
-          const isAbort = (iterError as any).name === 'AbortError' || errMessage.includes('aborted');
-          if (!isAbort) {
-            console.error('[CLAUDE-CODE] Error during teammate message iteration:', iterError);
-          }
-          throw iterError;
-        }
+      // A turn that handed its query to a follow-up has nothing left to deliver.
+      // Cast: handOffIfRequested() assigns 'handoff' out of the narrower's sight.
+      if ((this.drainExitCause as DrainExitCause) !== 'handoff') {
+        yield* injectPendingTeammateMessages({
+          teammateManager: this.teammateManager,
+          getLeadQuery: () => this.leadQuery as any,
+          wasInterrupted: () => this.wasInterrupted,
+          isAborted: () => !!this.abortController?.signal.aborted,
+          markTransportDied: () => { this.transportDied = true; },
+          logAgentMessageNonBlocking: (...args) => this.logAgentMessageNonBlocking(...args),
+        }, state, sessionId);
       }
 
       // Slash-command-produced-nothing check and the terminal `complete`
@@ -1619,55 +1553,66 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
         return;
       }
     } finally {
-      // Don't stop MCP health checks or clear mcpQuery between turns -
-      // the SDK subprocess stays alive for session resume, so MCP operations
-      // (health checks, reconnect) should keep working between turns.
-      // They are cleaned up in abort() and when the provider is destroyed.
-      // Kept for finalizeBackgroundDrain: after a drain, the subprocess must be
-      // closed (not just stdin-ended) or it runs a doomed continuation turn
-      // against the torn-down control channel and leaks. NIM-1470.
-      const queryForDrainCleanup = this.leadQuery;
-      this.leadQuery = null;
-      ClaudeCodeProvider.streamingInstances.delete(this);
-      this.abortController = null;
-      this.wasInterrupted = false;
-      this.interruptResolve = null;
-      // End the persistent prompt stream so the SDK's streamInput generator
-      // returns and closes the binary's stdin pipe cleanly. Safety net for
-      // turns where the grace timer never armed (no result chunk received,
-      // e.g. error path) or the controller is still open for some reason.
-      // Idempotent inside the controller. Also clear the grace timer so it
-      // can't fire after we're gone.
-      if (this.promptEndTimer) {
-        clearTimeout(this.promptEndTimer);
-        this.promptEndTimer = null;
+      if (this.drainExitCause === 'handoff' && this.drainHandoff && !this.drainHandoff.cancelled) {
+        this.releaseToFollowUpTurn(this.drainHandoff, sessionId);
+      } else {
+        // A handoff the follow-up gave up on is a supersede: the follow-up
+        // starts its own query and aborts this one.
+        if (this.drainExitCause === 'handoff') this.drainExitCause = 'aborted';
+        this.endTurn(sessionId, hideMessages);
       }
-      if (this.promptController) {
-        this.promptController.end('sendMessage-finally');
-        this.promptController = null;
-      }
-
-      // Finalize any deferred background sub-agent drain. Runs here — AFTER
-      // leadQuery is nulled and the prompt controller is ended — so the
-      // subagents:drainSettled handler's isLeadBusy() check reads false and can
-      // actually release the deferred session. Reads drainExitCause /
-      // drainingBackgroundTasks, so reset those only afterward. NIM-1344 / #732.
-      this.finalizeBackgroundDrain(sessionId, queryForDrainCleanup);
-      this.drainingBackgroundTasks = false;
-      this.publishBackgroundWait(sessionId);
-      this.drainExitCause = 'resolved';
-      this.drainTerminalNotifications = [];
-      this.drainGraceExpired = false;
-      this.settledBackgroundTasksThisTurn = false;
-
-      // Note: markMessagesAsHidden is reset at the START of sendMessage to prevent race conditions
-
-      this.handlePostLeadTurnTeammateState(sessionId, hideMessages);
-      this.emitPreparedStreamClosedContinuation(sessionId);
-      this.finishStreamClosedTurnState();
-
-      this.transportDied = false;
     }
+  }
+
+  private endTurn(sessionId: string | undefined, hideMessages: boolean): void {
+    // Don't stop MCP health checks or clear mcpQuery between turns -
+    // the SDK subprocess stays alive for session resume, so MCP operations
+    // (health checks, reconnect) should keep working between turns.
+    // They are cleaned up in abort() and when the provider is destroyed.
+    // Kept for finalizeBackgroundDrain: after a drain, the subprocess must be
+    // closed (not just stdin-ended) or it runs a doomed continuation turn
+    // against the torn-down control channel and leaks. NIM-1470.
+    const queryForDrainCleanup = this.leadQuery;
+    this.leadQuery = null;
+    ClaudeCodeProvider.streamingInstances.delete(this);
+    this.abortController = null;
+    this.wasInterrupted = false;
+    this.interruptResolve = null;
+    // End the persistent prompt stream so the SDK's streamInput generator
+    // returns and closes the binary's stdin pipe cleanly. Safety net for
+    // turns where the grace timer never armed (no result chunk received,
+    // e.g. error path) or the controller is still open for some reason.
+    // Idempotent inside the controller. Also clear the grace timer so it
+    // can't fire after we're gone.
+    if (this.promptEndTimer) {
+      clearTimeout(this.promptEndTimer);
+      this.promptEndTimer = null;
+    }
+    if (this.promptController) {
+      this.promptController.end('sendMessage-finally');
+      this.promptController = null;
+    }
+
+    // Finalize any deferred background sub-agent drain. Runs here — AFTER
+    // leadQuery is nulled and the prompt controller is ended — so the
+    // subagents:drainSettled handler's isLeadBusy() check reads false and can
+    // actually release the deferred session. Reads drainExitCause /
+    // drainingBackgroundTasks, so reset those only afterward. NIM-1344 / #732.
+    this.finalizeBackgroundDrain(sessionId, queryForDrainCleanup);
+    this.drainingBackgroundTasks = false;
+    this.publishBackgroundWait(sessionId);
+    this.drainExitCause = 'resolved';
+    this.drainTerminalNotifications = [];
+    this.drainGraceExpired = false;
+    this.settledBackgroundTasksThisTurn = false;
+
+    // Note: markMessagesAsHidden is reset at the START of sendMessage to prevent race conditions
+
+    this.handlePostLeadTurnTeammateState(sessionId, hideMessages);
+    this.emitPreparedStreamClosedContinuation(sessionId);
+    this.finishStreamClosedTurnState();
+
+    this.transportDied = false;
   }
 
   abort(): void {
@@ -1779,7 +1724,8 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
       const { AISessionsRepository } = await import('../../../storage/repositories/AISessionsRepository');
       const session = await AISessionsRepository.get(sessionId);
       if (!session) return;
-      if ((session as any).hasBeenNamed === true) return;
+      // Raw store row: SQLite returns the flag as 0/1.
+      if (fromDbBoolean(session.hasBeenNamed)) return;
 
       // Default phase fallback — only if the metadata tool or a prior turn has
       // not set a phase. Tags remain owned by the required metadata-tool call;
@@ -2165,6 +2111,106 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
       || this.hasRunningTasks();
   }
 
+  /** A follow-up can go onto this draining turn's live query (drainHandoff.ts); the host dispatches on it. */
+  public canAcceptFollowUpDuringDrain(): boolean {
+    return canAdoptDrainingQuery({
+      hasLeadQuery: this.leadQuery !== null,
+      draining: this.drainingBackgroundTasks,
+      promptStreamOpen: !!this.promptController && !this.promptController.isEnded(),
+      hasRunningTasks: this.hasRunningTasks(),
+      terminalNotificationCount: this.drainTerminalNotifications.length,
+      settledThisTurn: this.settledBackgroundTasksThisTurn,
+      graceExpired: this.drainGraceExpired,
+      wasInterrupted: this.wasInterrupted,
+      hasPendingUserInteraction: this.hasPendingUserInteraction(),
+      hasTeammateWork: this.teammateIdleMessagePending
+        || this.teammateManager.hasPendingTeammateMessages()
+        || this.teammateManager.hasActiveTeammates(),
+      // `streamClosedContinuationPrepared` only records that the check ran.
+      hasPendingContinuation: this.streamClosedContinuationMessagePending !== null,
+      handoffInProgress: this.drainHandoff !== null,
+    });
+  }
+
+  /** Asks the draining turn to stop iterating and waits for its live query. */
+  private async takeOverDrainingQuery(): Promise<AdoptedQuery<Query, AgentToolHooks | null> | null> {
+    const handoff = new DrainHandoff<Query, AgentToolHooks | null>();
+    this.drainHandoff = handoff;
+    // Wakes the draining loop, which is parked on a chunk that may not come
+    // for minutes (a backgrounded shell streams nothing while it runs).
+    this.interruptResolve?.();
+    this.interruptResolve = null;
+    const adopted = await awaitDrainHandoff(handoff);
+    if (this.drainHandoff === handoff) this.drainHandoff = null;
+    if (!adopted) {
+      console.warn('[CLAUDE-CODE] DRAIN_HANDOFF: draining turn did not release its query in time; starting a new query (background tasks will stop)');
+      return null;
+    }
+    console.log('[CLAUDE-CODE] DRAIN_HANDOFF: follow-up adopted the live query; background tasks keep running');
+    return adopted;
+  }
+
+  /** At each loop boundary: records what an adopting turn needs and says whether to stop. */
+  private handOffIfRequested(
+    completeEmitted: boolean,
+    iterator: AsyncIterator<unknown>,
+    pendingNext: Promise<IteratorResult<unknown>> | null,
+  ): boolean {
+    const handoff = this.drainHandoff;
+    if (!handoff || handoff.cancelled || !completeEmitted || !this.drainingBackgroundTasks) return false;
+    handoff.carry = { iterator, pendingNext };
+    this.drainExitCause = 'handoff';
+    return true;
+  }
+
+  /** Teardown for a turn whose query was adopted: nothing is ended, closed or reaped. */
+  private releaseToFollowUpTurn(handoff: DrainHandoff<Query, AgentToolHooks | null>, sessionId: string | undefined): void {
+    if (this.promptEndTimer) {
+      clearTimeout(this.promptEndTimer);
+      this.promptEndTimer = null;
+    }
+    const adopted: AdoptedQuery<Query, AgentToolHooks | null> = {
+      query: this.leadQuery!,
+      iterator: handoff.carry!.iterator,
+      pendingNext: handoff.carry!.pendingNext,
+      promptController: this.promptController!,
+      abortController: this.abortController,
+      toolHooksService: this.toolHooksService,
+    };
+    this.leadQuery = null;
+    ClaudeCodeProvider.streamingInstances.delete(this);
+    this.wasInterrupted = false;
+    this.interruptResolve = null;
+    this.drainingBackgroundTasks = false;
+    this.publishBackgroundWait(sessionId);
+    this.drainExitCause = 'resolved';
+    this.drainGraceExpired = false;
+    this.settledBackgroundTasksThisTurn = false;
+    this.transportDied = false;
+    handoff.release(adopted);
+  }
+
+  /** Pushes onto the open prompt stream: a finite streamInput() closes stdin when it ends, killing the tasks. */
+  private async deliverToAdoptedQuery(
+    adopted: AdoptedQuery<Query, AgentToolHooks | null>,
+    promptInput: AsyncIterable<any>,
+    builtPromptController: PromptStreamController,
+  ): Promise<AsyncIterable<any>> {
+    const { value: followUp } = await promptInput[Symbol.asyncIterator]().next();
+    builtPromptController.end('adopted-live-query');
+    if (!followUp || !adopted.promptController.push(followUp)) {
+      throw new Error('Claude Code closed its input before the follow-up could be delivered. Send it again.');
+    }
+    if (typeof adopted.query.setPermissionMode === 'function') {
+      try {
+        await adopted.query.setPermissionMode(resolvePermissionMode(this.currentMode));
+      } catch (error) {
+        console.warn('[CLAUDE-CODE] DRAIN_HANDOFF: could not apply the follow-up turn\'s permission mode:', error);
+      }
+    }
+    return adopted.query as unknown as AsyncIterable<any>;
+  }
+
   /**
    * Process teammate-related side-effects after a tool_result is received.
    * Called from both chunk-processing paths to avoid duplication.
@@ -2178,45 +2224,14 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
   ): Generator<StreamChunk> {
     // Clean up stale "running" tasks from previous sessions/restarts
     if (sessionId && this.activeTasks.size === 0) {
-      (async () => {
-        try {
-          const { AISessionsRepository } = await import('../../../storage/repositories/AISessionsRepository');
-          const currentSession = await AISessionsRepository.get(sessionId);
-          const tasks = currentSession?.metadata?.currentTasks;
-          if (Array.isArray(tasks) && tasks.some((t: any) => t.status === 'running')) {
-            const cleaned = tasks.map((t: any) =>
-              t.status === 'running' ? { ...t, status: 'stopped' } : t
-            );
-            await AISessionsRepository.updateMetadata(sessionId, {
-              metadata: { ...currentSession?.metadata, currentTasks: cleaned }
-            });
-            this.emit('message:logged', { sessionId, direction: 'output' });
-            // console.log(`[CLAUDE-CODE] Cleaned up ${tasks.filter((t: any) => t.status === 'running').length} stale running tasks`);
-          }
-        } catch {
-          // Non-critical cleanup
-        }
-      })();
+      void stopStaleRunningTasks(sessionId, () => this.emit('message:logged', { sessionId, direction: 'output' }));
     }
 
     // Hydrate the in-memory task-list map from persisted metadata so TaskUpdate
     // deltas in a resumed session merge onto the existing board instead of
     // creating stubs (the map is per-provider-instance and starts empty).
     if (sessionId && this.taskListItems.size === 0) {
-      (async () => {
-        try {
-          const { AISessionsRepository } = await import('../../../storage/repositories/AISessionsRepository');
-          const currentSession = await AISessionsRepository.get(sessionId);
-          const persisted = currentSession?.metadata?.currentTaskList;
-          if (Array.isArray(persisted)) {
-            for (const item of persisted as TaskListItem[]) {
-              if (item && typeof item.id === 'string') this.taskListItems.set(item.id, item);
-            }
-          }
-        } catch {
-          // Non-critical hydration
-        }
-      })();
+      void hydrateTaskListItems(sessionId, this.taskListItems);
     }
 
     if (chunk.slash_commands && Array.isArray(chunk.slash_commands)) {
@@ -2454,41 +2469,8 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
   }
 
   private async emitTodoUpdate(sessionId: string | undefined, todos: any[]): Promise<void> {
-
-    if (!sessionId) {
-      return;
-    }
-
-    try {
-      // Update session metadata with the current todos
-      // This will trigger session reloads which will update the UI
-
-      // Import AISessionsRepository dynamically
-      const { AISessionsRepository } = await import('../../../storage/repositories/AISessionsRepository');
-
-      // Get current session to merge metadata
-      const currentSession = await AISessionsRepository.get(sessionId);
-
-      const currentMetadata = currentSession?.metadata || {};
-
-      await AISessionsRepository.updateMetadata(sessionId, {
-        metadata: {
-          ...currentMetadata,
-          currentTodos: todos
-        }
-      });
-
-
-      // Emit message:logged event to trigger UI reload
-      // This will cause the AgenticPanel to reload the session and pick up the new todos
-      this.emit('message:logged', {
-        sessionId,
-        direction: 'output'
-      });
-    } catch (error) {
-      console.error('[CLAUDE-CODE] Failed to update session metadata with todos:', error);
-      console.error('[CLAUDE-CODE] Error stack:', error instanceof Error ? error.stack : 'No stack trace');
-    }
+    if (!sessionId) return;
+    await persistCurrentTodos(sessionId, todos, () => this.emit('message:logged', { sessionId, direction: 'output' }));
   }
 
   private async emitTaskUpdate(sessionId: string | undefined): Promise<void> {
@@ -3221,6 +3203,24 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
 
     let canUseToolCallCount = 0;
 
+    const promptForTool = (
+      toolName: string,
+      input: any,
+      options: ToolPermissionOptions,
+      warnings?: string[]
+    ) => (this.permissionService && sessionId && workspacePath)
+      ? this.handleToolPermissionWithService(
+          toolName,
+          input,
+          options,
+          sessionId,
+          workspacePath,
+          permissionsPath,
+          teammateName,
+          warnings
+        )
+      : this.handleToolPermissionFallback(toolName, input, options, sessionId, workspacePath, warnings);
+
     return async (
       toolName: string,
       input: any,
@@ -3240,20 +3240,28 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
           sessionId,
           pathForTrust
         );
+        // In Auto mode the SDK classifier escalated this call, so the user
+        // decides on the command as a whole rather than part by part.
+        const compoundDecision = !immediateDecision && toolName === 'Bash' && this.currentMode !== 'auto'
+          ? await authorizeCompoundBashCommand(
+              {
+                isPartPreApproved: createCompoundPartPreApprovalCheck(
+                  () => [this.permissions.sessionApprovedPatterns, this.permissionService?.getSessionApprovedPatterns()],
+                  ClaudeCodeDeps.claudeSettingsPatternChecker ?? undefined,
+                  workspacePath
+                ),
+                authorizePart: (partInput, warnings) => promptForTool(toolName, partInput, options, warnings),
+                logSecurity: (message, data) => this.logSecurity(message, data),
+              },
+              input
+            )
+          : null;
         if (immediateDecision) {
           result = immediateDecision;
-        } else if (this.permissionService && sessionId && workspacePath) {
-          result = await this.handleToolPermissionWithService(
-            toolName,
-            input,
-            options,
-            sessionId,
-            workspacePath,
-            permissionsPath,
-            teammateName
-          );
+        } else if (compoundDecision) {
+          result = compoundDecision;
         } else {
-          result = await this.handleToolPermissionFallback(toolName, input, options, sessionId, workspacePath);
+          result = await promptForTool(toolName, input, options);
         }
       } catch (error) {
         console.error(`[canUseTool] #${callNum} EXCEPTION tool="${toolName}" after ${Date.now() - callStart}ms:`, error);
@@ -3313,7 +3321,8 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
     sessionId: string,
     workspacePath: string,
     permissionsPath: string | undefined,
-    teammateName: string | undefined
+    teammateName: string | undefined,
+    warnings?: string[]
   ): Promise<{ behavior: 'allow' | 'deny'; updatedInput?: any; message?: string }> {
     return handleToolPermissionWithServiceHelper(
       {
@@ -3329,7 +3338,8 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
         sessionId,
         workspacePath,
         permissionsPath,
-        teammateName
+        teammateName,
+        warnings
       }
     );
   }
@@ -3339,7 +3349,8 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
     input: any,
     options: ToolPermissionOptions,
     sessionId: string | undefined,
-    workspacePath: string | undefined
+    workspacePath: string | undefined,
+    warnings?: string[]
   ): Promise<{ behavior: 'allow' | 'deny'; updatedInput?: any; message?: string }> {
     return handleToolPermissionFallbackHelper(
       {
@@ -3361,6 +3372,7 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
         options,
         sessionId,
         workspacePath,
+        warnings,
       }
     );
   }
@@ -3430,6 +3442,7 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
       return buildMetaAgentSystemPrompt('claude', workflowPreset, {
         provider: 'claude-code',
         model: this.config.model ?? undefined,
+        sessionDirective: this.frozenSessionDirective,
       });
     }
 
@@ -3476,6 +3489,7 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
       hasOutOfBandNaming: alreadyNamedOutOfBand,
       worktreePath,
       gitContext: this.frozenGitContext,
+      sessionDirective: this.frozenSessionDirective,
       isVoiceMode,
       voiceModeCodingAgentPrompt,
       enableAgentTeams,
@@ -3490,7 +3504,7 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
    * Get Claude Code models.
    * Returns standard models plus Sonnet 1M variant (access controlled by Anthropic).
    */
-  static async getModels(): Promise<AIModel[]> {
+  static async getModels(workspacePath?: string): Promise<AIModel[]> {
     const models: AIModel[] = [];
 
     // Add models in desired order
@@ -3521,7 +3535,8 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
 
     }
 
-    return models;
+    // User-defined gateway models from Claude settings `modelPicker`.
+    return withClaudeCustomModels('claude-code', models, workspacePath);
   }
 
   /**

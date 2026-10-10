@@ -5,6 +5,7 @@ import type { ThemeManifest } from '@nimbalyst/extension-sdk';
 import { useTheme } from '../../../hooks/useTheme';
 import { pendingThemeFallbackAtom } from '../../../store/atoms/themeFallback';
 import { themeListChangedVersionAtom } from '../../../store/atoms/themeList';
+import { requestConfirmation } from '../../../dialogs/requestConfirmation';
 
 interface ThemesPanelProps {
   scope: 'user' | 'organization' | 'project';
@@ -99,7 +100,12 @@ export const ThemesPanel: React.FC<ThemesPanelProps> = ({ scope, workspacePath }
       return;
     }
 
-    const confirmed = confirm(`Are you sure you want to uninstall "${theme.name}"?`);
+    const confirmed = await requestConfirmation({
+      title: 'Uninstall theme?',
+      message: `Are you sure you want to uninstall "${theme.name}"?`,
+      confirmLabel: 'Uninstall',
+      destructive: true,
+    });
     if (!confirmed) return;
 
     try {

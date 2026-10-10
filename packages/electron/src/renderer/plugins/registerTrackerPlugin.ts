@@ -21,6 +21,7 @@ import type { ComponentType } from 'react';
 import * as path from 'path';
 import { getDocumentService } from '../services/RendererDocumentService';
 import { applySchemasToRegistry } from './trackerSchemaRegistryUtils';
+import { initTrackerVocabularyListeners } from '../store/listeners/trackerVocabularyListeners';
 
 const SOURCE = 'tracker';
 
@@ -36,9 +37,11 @@ export async function registerTrackerPlugin(workspacePath?: string | null): Prom
     try {
       const schemas = await api.trackerSchema.getAll();
       applySchemasToRegistry(schemas ?? []);
-      api.trackerSchema.onChanged?.((updatedSchemas) => {
-        applySchemasToRegistry(updatedSchemas ?? []);
-      });
+      // The bootstrap runs before any workspace is known, so it cannot fetch
+      // the vocabulary itself; the listener loads it once
+      // `activeWorkspacePathAtom` is set, and reloads it on a project switch
+      // and on every schema change.
+      initTrackerVocabularyListeners({ applySchemas: applySchemasToRegistry });
     } catch {
       loadBuiltinTrackers();
     }

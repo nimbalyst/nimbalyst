@@ -49,7 +49,8 @@ export type ExtensionPermissionId =
   | 'nimbalyst-database-read'
   | 'nimbalyst-database-write'
   | 'secrets-read'
-  | 'mcp-server-register';
+  | 'mcp-server-register'
+  | 'ai-sessions';
 
 /**
  * Backend module runtime. The privileged host loads the module in one of two

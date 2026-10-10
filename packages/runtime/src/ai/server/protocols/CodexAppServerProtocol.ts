@@ -265,7 +265,7 @@ export class CodexAppServerProtocol implements AgentProtocol {
       for (const r of w) r(undefined);
     };
 
-    let usage: { input_tokens: number; output_tokens: number; total_tokens: number } | undefined;
+    let usage: CodexUsage | undefined;
     let contextFillTokens: number | undefined;
     let contextWindow: number | undefined;
     let fullText = '';
@@ -791,7 +791,7 @@ export class CodexAppServerProtocol implements AgentProtocol {
     push: (entry: { kind: 'event'; event: ProtocolEvent } | { kind: 'end' } | { kind: 'fail'; error: Error }) => void,
     raw: AppServerSessionRaw,
     appendText: (delta: string) => void,
-    setUsage: (u: { input_tokens: number; output_tokens: number; total_tokens: number }) => void,
+    setUsage: (u: CodexUsage) => void,
     setContext: (c: { contextFillTokens?: number; contextWindow?: number }) => void,
   ): void {
     const params = paramsUnknown as Record<string, unknown> | undefined;
@@ -1281,13 +1281,28 @@ function appendStderrTail(msg: string, raw: { stderrTail: string[] }): string {
   return tail ? `${msg}\nstderr tail: ${tail}` : msg;
 }
 
-function normalizeUsage(u: TokenUsage | undefined): { input_tokens: number; output_tokens: number; total_tokens: number } | undefined {
+type CodexUsage = NonNullable<ProtocolEvent['usage']>;
+
+/**
+ * Codex (like OpenAI) counts cached input INSIDE input_tokens, and reports no
+ * cache writes. Split the cached part out so the event follows the host's
+ * usage shape (input_tokens uncached, cache reads separate). total_tokens is
+ * left as reported, cache included.
+ */
+function normalizeUsage(u: TokenUsage | undefined): CodexUsage | undefined {
   if (!u) return undefined;
   const input = u.input_tokens ?? u.inputTokens ?? 0;
   const output = u.output_tokens ?? u.outputTokens ?? 0;
   const total = u.total_tokens ?? u.totalTokens ?? input + output;
   if (input === 0 && output === 0 && total === 0) return undefined;
-  return { input_tokens: input, output_tokens: output, total_tokens: total };
+  const cached = Math.min(Math.max(u.cached_input_tokens ?? u.cachedInputTokens ?? 0, 0), input);
+  return {
+    input_tokens: input - cached,
+    output_tokens: output,
+    total_tokens: total,
+    cache_read_input_tokens: cached,
+    cache_creation_input_tokens: 0,
+  };
 }
 
 /**

@@ -1,3 +1,6 @@
+import { sessionListMetadata } from '../atoms/sessionListMetadata';
+import { sessionTreeRootId } from '../../components/AgenticCoding/sessionTreeModel';
+import { sessionArchiveSubtreeIds } from '../../components/AgenticCoding/sessionArchiveSelection';
 import {selectedMachineAtom, machineSessionSelectionsAtom} from '../atoms/remoteMachines';
 /**
  * Action atoms for SessionHistory.
@@ -138,65 +141,10 @@ export const openSessionInTabActionAtom = atom(null, async (get, set, sessionId:
     const result = await window.electronAPI.invoke('sessions:list', workspacePath, { includeArchived: false });
     if (!result.success) throw new Error('Failed to load session list');
 
-    const sessionListItem = result.sessions.find((s: any) => s.id === sessionId);
-
-    const registry = get(sessionRegistryAtom);
-    set(selectedMachineAtom(workspacePath), sessionListItem?.remoteHostDeviceId ?? "");
-    set(machineSessionSelectionsAtom(workspacePath), previous => ({...previous, [sessionListItem?.remoteHostDeviceId ?? ""]: sessionId}));
-    if (sessionListItem && !registry.has(sessionId)) {
-      set(addSessionFullAtom, {
-        id: sessionListItem.id,
-        remoteHostDeviceId: sessionListItem.remoteHostDeviceId,
-        title: sessionListItem.title || 'Untitled Session',
-        createdAt: sessionListItem.createdAt,
-        updatedAt: sessionListItem.updatedAt,
-        provider: sessionListItem.provider || 'claude-code',
-        model: sessionListItem.model,
-        sessionType: sessionListItem.sessionType || 'session',
-        messageCount: sessionListItem.messageCount || 0,
-        workspaceId: workspacePath,
-        isArchived: sessionListItem.isArchived || false,
-        isPinned: sessionListItem.isPinned || false,
-        worktreeId: sessionListItem.worktreeId || null,
-        parentSessionId: sessionListItem.parentSessionId || null,
-        childCount: sessionListItem.childCount || 0,
-        uncommittedCount: sessionListItem.uncommittedCount || 0,
-      });
-      if (sessionListItem.worktreeId) {
-        set(workstreamStateAtom(sessionId), {
-          type: 'worktree',
-          worktreeId: sessionListItem.worktreeId,
-        });
-      }
-    }
-
-    if (sessionListItem?.parentSessionId) {
-      await set(loadSessionChildrenAtom, {
-        parentSessionId: sessionListItem.parentSessionId,
-        workspacePath,
-      });
-      set(setActiveSessionInWorkstreamAtom, {
-        workstreamId: sessionListItem.parentSessionId,
-        sessionId,
-      });
-      const parentState = get(workstreamStateAtom(sessionListItem.parentSessionId));
-      const parentType = parentState.type === 'worktree' ? 'worktree'
-        : parentState.type === 'workstream' ? 'workstream'
-        : 'session';
-      set(setSelectedWorkstreamAtom, {
-        workspacePath,
-        selection: { type: parentType, id: sessionListItem.parentSessionId },
-      });
-    } else {
-      const state = get(workstreamStateAtom(sessionId));
-      const type = state.type === 'worktree' ? 'worktree'
-        : state.type === 'workstream' ? 'workstream'
-        : 'session';
-      set(setSelectedWorkstreamAtom, {
-        workspacePath,
-        selection: { type, id: sessionId },
-      });
-    }
+    const registry = new Map(get(sessionRegistryAtom));
+    for (const row of result.sessions) registry.set(row.id, sessionListMetadata(row, workspacePath));
+    set(sessionRegistryAtom, registry);
+    await set(selectSessionActionAtom, sessionId);
   } catch (error) {
     console.error('[sessionHistoryActions] Failed to open session:', error);
     set(setSelectedWorkstreamAtom, {
@@ -216,7 +164,8 @@ export const openSessionInTabActionAtom = atom(null, async (get, set, sessionId:
 export const selectChildSessionActionAtom = atom(
   null,
   async (get, set, payload: { childSessionId: string; parentId: string; parentType: 'workstream' | 'worktree' }) => {
-    const { childSessionId, parentId, parentType } = payload;
+    const { childSessionId, parentType } = payload;
+    const parentId = parentType === 'workstream' ? sessionTreeRootId(payload.parentId, get(sessionRegistryAtom)) : payload.parentId;
     const workspacePath = getWorkspacePath(get);
     if (!workspacePath) return;
 
@@ -229,8 +178,7 @@ export const selectChildSessionActionAtom = atom(
       });
     } else {
       await set(loadSessionChildrenAtom, { parentSessionId: parentId, workspacePath });
-      set(setWorkstreamActiveChildAtom, { workstreamId: parentId, childId: childSessionId });
-      set(markSessionReadAtom, childSessionId);
+      set(setActiveSessionInWorkstreamAtom, { workstreamId: parentId, sessionId: childSessionId });
       set(setSelectedWorkstreamAtom, {
         workspacePath,
         selection: { type: parentType, id: parentId },
@@ -252,32 +200,18 @@ export const selectSessionActionAtom = atom(null, async (get, set, sessionId: st
   set(selectedMachineAtom(workspacePath), host);
   set(machineSessionSelectionsAtom(workspacePath), previous => ({...previous, [host]: sessionId}));
 
-  if (sessionMeta?.parentSessionId) {
-    if (sessionMeta.worktreeId) {
-      const state = get(workstreamStateAtom(sessionId));
-      if (state.type !== 'worktree') {
-        set(workstreamStateAtom(sessionId), {
-          type: 'worktree',
-          worktreeId: sessionMeta.worktreeId,
-        });
-      }
-      set(setWorktreeActiveSessionAtom, {
-        worktreeId: sessionMeta.worktreeId,
-        sessionId,
-      });
-      set(setSelectedWorkstreamAtom, {
-        workspacePath,
-        selection: { type: 'worktree', id: sessionId },
-      });
-      return;
-    }
-
-    await set(selectChildSessionActionAtom, {
-      childSessionId: sessionId,
-      parentId: sessionMeta.parentSessionId,
-      parentType: 'workstream',
-    });
+  if (sessionMeta?.worktreeId) {
+    set(setWorktreeActiveSessionAtom, { worktreeId: sessionMeta.worktreeId, sessionId });
+    if (!(sessionMeta.childCount ?? 0)) set(workstreamStateAtom(sessionId), {type: 'worktree', worktreeId: sessionMeta.worktreeId});
+  }
+  const rootId = sessionTreeRootId(sessionId, registry);
+  if (rootId !== sessionId) {
+    await set(selectChildSessionActionAtom, { childSessionId: sessionId, parentId: rootId, parentType: 'workstream' });
     return;
+  }
+  if ((sessionMeta?.childCount ?? 0) > 0 && sessionMeta?.sessionType !== 'blitz') {
+    await set(loadSessionChildrenAtom, { parentSessionId: sessionId, workspacePath });
+    if (sessionMeta?.sessionType !== 'workstream') set(setActiveSessionInWorkstreamAtom, {workstreamId: sessionId, sessionId});
   }
 
   const state = get(workstreamStateAtom(sessionId));
@@ -334,9 +268,10 @@ export const archiveSessionActionAtom = atom(null, async (get, set, sessionId: s
   try {
     const result = await window.electronAPI.invoke('sessions:update-metadata', sessionId, { isArchived: true });
     if (result.success) {
-      set(updateSessionStoreAtom, { sessionId, updates: { isArchived: true } });
+      const archivedIds = sessionArchiveSubtreeIds(get(sessionRegistryAtom), [sessionId]);
+      archivedIds.forEach(id => set(updateSessionStoreAtom, { sessionId: id, updates: { isArchived: true } }));
       const selected = get(selectedWorkstreamAtom(workspacePath));
-      if (selected?.id === sessionId) {
+      if (selected && archivedIds.includes(selected.id)) {
         set(setSelectedWorkstreamAtom, { workspacePath, selection: null });
       }
     } else {

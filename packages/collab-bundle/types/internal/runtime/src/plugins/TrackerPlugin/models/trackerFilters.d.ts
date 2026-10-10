@@ -9,7 +9,7 @@
  * equally to a `TrackerRecord` (schema `fields` bag) and to the flattened item
  * shape the MCP tools hand back.
  */
-import type { FieldType } from '@nimbalyst/tracker-schema';
+import type { FieldType } from '../../../../../tracker-schema/src/browser';
 /**
  * Comparison operators.
  *

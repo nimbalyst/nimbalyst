@@ -22,6 +22,7 @@ interface Row {
   local_key: string | null;
   created: string;
   deleted_at: string | null;
+  type?: string;
 }
 
 /**
@@ -34,12 +35,12 @@ function fakeDb(rows: Row[]) {
     queries: 0,
     async query<T = unknown>(sql: string, params: unknown[] = []): Promise<{ rows: T[] }> {
       this.queries += 1;
-      if (sql.includes('SELECT id FROM tracker_items')) {
+      if (sql.includes('SELECT id, type FROM tracker_items')) {
         const [workspace] = params as [string];
         const matching = rows
           .filter((r) => r.workspace === workspace && r.local_key === null && r.deleted_at === null)
           .sort((a, b) => a.created.localeCompare(b.created) || a.id.localeCompare(b.id));
-        return { rows: matching.map((r) => ({ id: r.id })) as T[] };
+        return { rows: matching.map((r) => ({ id: r.id, type: r.type ?? 'task' })) as T[] };
       }
       if (sql.includes('SELECT id, local_key FROM tracker_items') && sql.includes('local_key IS NOT NULL')) {
         const [workspace] = params as [string];
@@ -102,6 +103,8 @@ function fakeStore(seed: Record<string, { prefix?: string; counter?: number }> =
         .filter((prefix): prefix is string => Boolean(prefix)),
   };
 }
+
+const everyType = () => true;
 
 function row(id: string, workspace: string, created: string): Row {
   return { id, workspace, local_key: null, created, deleted_at: null };
@@ -175,7 +178,7 @@ describe('assignMissingLocalKeys', () => {
     ]);
     const store = fakeStore();
 
-    expect(await assignMissingLocalKeys(db, store, '/src/app')).toBe(2);
+    expect(await assignMissingLocalKeys(db, store, '/src/app', everyType)).toBe(2);
     expect(db.rows.find((r) => r.id === 'a')?.local_key).toBe('APP.1');
     expect(db.rows.find((r) => r.id === 'b')?.local_key).toBe('APP.2');
   });
@@ -188,11 +191,11 @@ describe('assignMissingLocalKeys', () => {
   it('never reissues a number after its items are gone', async () => {
     const db = fakeDb([row('a', '/src/app', '2026-08-01'), row('b', '/src/app', '2026-08-02')]);
     const store = fakeStore();
-    await assignMissingLocalKeys(db, store, '/src/app');
+    await assignMissingLocalKeys(db, store, '/src/app', everyType);
 
     db.rows.length = 0;
     db.rows.push(row('c', '/src/app', '2026-08-03'));
-    await assignMissingLocalKeys(db, store, '/src/app');
+    await assignMissingLocalKeys(db, store, '/src/app', everyType);
 
     expect(db.rows.find((r) => r.id === 'c')?.local_key).toBe('APP.3');
   });
@@ -200,29 +203,45 @@ describe('assignMissingLocalKeys', () => {
   it('spends rather than reissues a number when a write is lost', async () => {
     const db = fakeDb([row('a', '/src/app', '2026-08-01')]);
     const store = fakeStore();
-    await assignMissingLocalKeys(db, store, '/src/app');
+    await assignMissingLocalKeys(db, store, '/src/app', everyType);
 
     // Simulate the row write being lost after the counter advanced.
     db.rows[0].local_key = null;
-    await assignMissingLocalKeys(db, store, '/src/app');
+    await assignMissingLocalKeys(db, store, '/src/app', everyType);
 
     expect(db.rows[0].local_key).toBe('APP.2');
+  });
+
+  // Local numbers are opt-in per type. A sweep that ignored the type would
+  // quietly hand every new item a number again on the next workspace open.
+  it('numbers only types that opt in, and keeps numbers already issued', async () => {
+    const db = fakeDb([
+      { ...row('kept', '/src/app', '2026-08-01'), type: 'note', local_key: 'APP.1' },
+      { ...row('plain', '/src/app', '2026-08-02'), type: 'note' },
+      { ...row('opted', '/src/app', '2026-08-03'), type: 'bug' },
+    ]);
+    const store = fakeStore({ '/src/app': { prefix: 'APP', counter: 1 } });
+
+    expect(await assignMissingLocalKeys(db, store, '/src/app', (type) => type === 'bug')).toBe(1);
+    expect(db.rows.find((r) => r.id === 'plain')?.local_key).toBeNull();
+    expect(db.rows.find((r) => r.id === 'opted')?.local_key).toBe('APP.2');
+    expect(db.rows.find((r) => r.id === 'kept')?.local_key).toBe('APP.1');
   });
 
   it('is a no-op on a second pass', async () => {
     const db = fakeDb([row('a', '/src/app', '2026-08-01')]);
     const store = fakeStore();
 
-    expect(await assignMissingLocalKeys(db, store, '/src/app')).toBe(1);
-    expect(await assignMissingLocalKeys(db, store, '/src/app')).toBe(0);
+    expect(await assignMissingLocalKeys(db, store, '/src/app', everyType)).toBe(1);
+    expect(await assignMissingLocalKeys(db, store, '/src/app', everyType)).toBe(0);
   });
 
   it('numbers each project from its own counter', async () => {
     const db = fakeDb([row('a', '/src/app', '2026-08-01'), row('b', '/src/site', '2026-08-01')]);
     const store = fakeStore();
 
-    await assignMissingLocalKeys(db, store, '/src/app');
-    await assignMissingLocalKeys(db, store, '/src/site');
+    await assignMissingLocalKeys(db, store, '/src/app', everyType);
+    await assignMissingLocalKeys(db, store, '/src/site', everyType);
 
     expect(db.rows.find((r) => r.id === 'a')?.local_key).toBe('APP.1');
     expect(db.rows.find((r) => r.id === 'b')?.local_key).toBe('SIT.1');
@@ -242,7 +261,7 @@ describe('assignMissingLocalKeys', () => {
     const store = fakeStore({ '/src/app': { prefix: 'APP', counter: 0 } });
     const queriesBefore = db.queries;
 
-    expect(await assignMissingLocalKeys(db, store, '/src/app')).toBe(500);
+    expect(await assignMissingLocalKeys(db, store, '/src/app', everyType)).toBe(500);
 
     // A per-row implementation spends 500 writes and 1500 queries here.
     expect(store.writes).toBeLessThanOrEqual(10);
@@ -281,7 +300,7 @@ describe('reassignLocalKeyPrefix', () => {
   it('rewrites every existing number and keeps the counter', async () => {
     const db = fakeDb([row('a', '/src/app', '2026-08-01'), row('b', '/src/app', '2026-08-02')]);
     const store = fakeStore();
-    await assignMissingLocalKeys(db, store, '/src/app');
+    await assignMissingLocalKeys(db, store, '/src/app', everyType);
 
     expect(await reassignLocalKeyPrefix(db, store, '/src/app', 'NIC')).toMatchObject({
       prefix: 'NIC',
@@ -298,11 +317,11 @@ describe('reassignLocalKeyPrefix', () => {
   it('numbers issued after the move continue the same sequence', async () => {
     const db = fakeDb([row('a', '/src/app', '2026-08-01')]);
     const store = fakeStore();
-    await assignMissingLocalKeys(db, store, '/src/app');
+    await assignMissingLocalKeys(db, store, '/src/app', everyType);
     await reassignLocalKeyPrefix(db, store, '/src/app', 'NIC');
 
     db.rows.push(row('b', '/src/app', '2026-08-02'));
-    await assignMissingLocalKeys(db, store, '/src/app');
+    await assignMissingLocalKeys(db, store, '/src/app', everyType);
 
     expect(db.rows.find((r) => r.id === 'b')?.local_key).toBe('NIC.2');
   });
@@ -310,7 +329,7 @@ describe('reassignLocalKeyPrefix', () => {
   it('applies the same validation as choosing a prefix before allocation', async () => {
     const db = fakeDb([row('a', '/src/app', '2026-08-01')]);
     const store = fakeStore({ '/src/other': { prefix: 'ONE', counter: 3 } });
-    await assignMissingLocalKeys(db, store, '/src/app');
+    await assignMissingLocalKeys(db, store, '/src/app', everyType);
 
     await expect(reassignLocalKeyPrefix(db, store, '/src/app', '1x')).rejects.toThrow('2-5 uppercase letters');
     await expect(reassignLocalKeyPrefix(db, store, '/src/app', 'ONE')).rejects.toThrow('already used');
@@ -322,7 +341,7 @@ describe('resolveRowByLocalKey', () => {
   it('resolves only inside the project that issued the number', async () => {
     const db = fakeDb([row('a', '/src/app', '2026-08-01')]);
     const store = fakeStore();
-    await assignMissingLocalKeys(db, store, '/src/app');
+    await assignMissingLocalKeys(db, store, '/src/app', everyType);
 
     expect(await resolveRowByLocalKey(db, 'APP.1', '/src/app')).toMatchObject({ id: 'a' });
     expect(await resolveRowByLocalKey(db, 'APP.1', '/src/site')).toBeNull();

@@ -1,0 +1,5 @@
+{
+  "type": "itemPlacementRemove",
+  "itemId": "NIM-42",
+  "projectId": "project-1"
+}

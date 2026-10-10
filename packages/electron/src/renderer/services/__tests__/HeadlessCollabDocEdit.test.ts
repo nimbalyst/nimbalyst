@@ -19,6 +19,7 @@ const host = vi.hoisted(() => ({
   getDocuments: vi.fn(),
   getTeamProvider: vi.fn(),
   applyMarkdown: vi.fn(),
+  createRevision: vi.fn(),
 }));
 
 vi.mock('../../store/atoms/collabDocuments', () => ({
@@ -44,7 +45,16 @@ vi.mock('../headlessMarkdownEdit', () => ({
   applyMarkdownReplacementsToYDoc: host.applyMarkdown,
 }));
 
+vi.mock('@nimbalyst/runtime/sync/collabHistoryClient', () => ({
+  CollabHistoryClient: class {
+    createRevision(input: unknown) {
+      return host.createRevision(input);
+    }
+  },
+}));
+
 import { applyHeadlessCollabDocEdit } from '../HeadlessCollabDocEdit';
+import { resetAgentEditRevisionBursts } from '../collabAgentEditRevision';
 
 const DOCUMENT_URI = 'collab://org:org-1:doc:doc-1';
 const WORKSPACE_PATH = '/workspace';
@@ -76,6 +86,8 @@ function stubRoom(options: {
   synced?: boolean;
   undecoded?: boolean;
   acked?: boolean;
+  /** Give the provider what it needs to reach the room's version history. */
+  history?: boolean;
 } = {}) {
   const yDoc = new Y.Doc();
   yDoc.getText('body').insert(0, BODY);
@@ -96,7 +108,13 @@ function stubRoom(options: {
   host.acquire.mockResolvedValue({
     release,
     resource: {
-      config: { orgId: 'org-1', teamMemberId: 'member-1' },
+      config: {
+        orgId: 'org-1',
+        teamMemberId: 'member-1',
+        ...(options.history
+          ? { documentId: 'doc-1', serverUrl: 'wss://sync.test', getJwt: async () => 'jwt' }
+          : {}),
+      },
       replica: { getOutboxState: () => 'clean' },
       syncProvider: {
         getYDoc: () => yDoc,
@@ -106,6 +124,7 @@ function stubRoom(options: {
         flushWithAck,
         sendAwareness,
         sendAwarenessDeparture,
+        ...(options.history ? { getLastSeq: () => 42 } : {}),
       },
     },
   });
@@ -118,6 +137,8 @@ describe('applyHeadlessCollabDocEdit', () => {
   beforeEach(() => {
     host.acquire.mockReset();
     host.applyMarkdown.mockReset();
+    host.createRevision.mockReset();
+    resetAgentEditRevisionBursts();
     host.getTeamProvider.mockReturnValue(undefined);
     registerCollabContentAdapter(CODEC_ONLY_TYPE);
     registerCollabContentAdapter(MARKDOWN_CODEC);
@@ -218,5 +239,39 @@ describe('applyHeadlessCollabDocEdit', () => {
 
     expect(sendAwarenessDeparture).toHaveBeenCalledTimes(1);
     expect(release).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * An agent edit to a shared document lands as final text, so the version
+   * history is the undo. Its own auto snapshots only fire after idle time with a
+   * tab open, so the edit path records the state it is about to replace.
+   */
+  it('records the pre-edit markdown as a revision before the first edit of a burst', async () => {
+    stubRoom({ documentType: 'markdown', history: true });
+    const order: string[] = [];
+    host.createRevision.mockImplementation(async (input: { plaintext: Uint8Array }) => {
+      order.push(`revision:${new TextDecoder().decode(input.plaintext)}`);
+      return {};
+    });
+    host.applyMarkdown.mockImplementation(() => order.push('edit'));
+
+    await applyHeadlessCollabDocEdit(DOCUMENT_URI, WORKSPACE_PATH, EDIT);
+    await applyHeadlessCollabDocEdit(DOCUMENT_URI, WORKSPACE_PATH, EDIT);
+
+    expect(order).toEqual([`revision:${BODY}`, 'edit', 'edit']);
+    expect(host.createRevision).toHaveBeenCalledWith(
+      expect.objectContaining({ revisionKind: 'auto', contentFormat: 'markdown', basisSequence: 42 })
+    );
+  });
+
+  it('still applies the edit when the history server refuses the revision', async () => {
+    stubRoom({ documentType: 'markdown', history: true });
+    host.createRevision.mockRejectedValue(new Error('503'));
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await applyHeadlessCollabDocEdit(DOCUMENT_URI, WORKSPACE_PATH, EDIT);
+
+    expect(host.applyMarkdown).toHaveBeenCalledTimes(1);
+    warn.mockRestore();
   });
 });

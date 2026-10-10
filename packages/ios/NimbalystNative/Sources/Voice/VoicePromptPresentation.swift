@@ -10,7 +10,7 @@ struct PreparedVoicePrompt: Codable, Equatable {
     let ttlMs: Int
 }
 
-/// Source identity survives screen changes; incomplete playback never arms an answer.
+/// Source identity survives screen changes; only the user's speech after presentation becomes the answer.
 struct VoicePromptPresentation {
     let prompt: PreparedVoicePrompt
     let generation: UUID
@@ -33,44 +33,3 @@ struct VoicePromptPresentation {
     }
 }
 
-#if os(iOS)
-import AVFoundation
-
-@MainActor
-protocol VoicePromptSpeaker: AnyObject {
-    func speak(_ text: String, language: String?, completion: @escaping (Bool) -> Void)
-    func stop()
-}
-
-/// Native speech has a bounded utterance and an actual didFinish boundary. Live
-/// audio/transcript deltas do not have a turn-done event and cannot grant this receipt.
-@MainActor
-final class NativeVoicePromptSpeaker: NSObject, VoicePromptSpeaker, @preconcurrency AVSpeechSynthesizerDelegate {
-    private let synthesizer = AVSpeechSynthesizer()
-    private var utterance: AVSpeechUtterance?
-    private var completion: ((Bool) -> Void)?
-    override init() { super.init(); synthesizer.delegate = self; synthesizer.usesApplicationAudioSession = true }
-    func speak(_ text: String, language: String?, completion: @escaping (Bool) -> Void) {
-        stop()
-        let utterance = AVSpeechUtterance(string: text)
-        let code = language == "English" ? "en-US" : language
-        utterance.voice = AVSpeechSynthesisVoice(language: code)
-        self.utterance = utterance
-        self.completion = completion
-        synthesizer.speak(utterance)
-    }
-    func stop() {
-        completion = nil
-        utterance = nil
-        synthesizer.stopSpeaking(at: .immediate)
-    }
-    func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) { finish(utterance, played: true) }
-    func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) { finish(utterance, played: false) }
-    private func finish(_ utterance: AVSpeechUtterance, played: Bool) {
-        guard self.utterance === utterance else { return }
-        let completion = self.completion
-        self.completion = nil; self.utterance = nil
-        completion?(played)
-    }
-}
-#endif

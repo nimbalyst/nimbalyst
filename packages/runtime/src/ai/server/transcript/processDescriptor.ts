@@ -10,6 +10,26 @@
 import type { TranscriptWriter } from './TranscriptWriter';
 import type { ITranscriptEventStore, TranscriptEvent } from './types';
 import type { CanonicalEventDescriptor } from './parsers/IRawMessageParser';
+import type { RawMessage } from './TranscriptTransformer';
+
+const PROMPT_ACTORS = new Set(['human', 'agent', 'system']);
+
+/**
+ * Copy who sent a prompt from its raw row onto the user_message descriptors it
+ * produced. Done here rather than in each parser so every provider carries it:
+ * the transcript uses it to tell a human turn from an agent send or the answer
+ * auto-resume, which must not close open questions.
+ */
+export function stampPromptSource(desc: CanonicalEventDescriptor, msg: Pick<RawMessage, 'metadata'>): CanonicalEventDescriptor {
+  if (desc.type !== 'user_message' || !msg.metadata) return desc;
+  const actor = (msg.metadata.promptProvenance as { actor?: unknown } | undefined)?.actor;
+  if (typeof actor === 'string' && PROMPT_ACTORS.has(actor)) {
+    desc.promptActor = actor as 'human' | 'agent' | 'system';
+  }
+  const origin = msg.metadata.promptOrigin;
+  if (typeof origin === 'string' && origin) desc.promptOrigin = origin;
+  return desc;
+}
 
 function isActiveToolCallEvent(event: TranscriptEvent): boolean {
   const payload = event.payload as Record<string, unknown>;
@@ -54,6 +74,8 @@ export async function processDescriptor(
         mode: desc.mode,
         attachments: desc.attachments,
         createdAt: desc.createdAt,
+        promptActor: desc.promptActor,
+        promptOrigin: desc.promptOrigin,
       });
     }
 

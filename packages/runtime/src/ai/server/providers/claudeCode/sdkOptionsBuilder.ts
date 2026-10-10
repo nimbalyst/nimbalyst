@@ -21,6 +21,7 @@ import { CLAUDE_TASK_TOOLS, createClaudeSystemPrompt } from './sdkCompatibility'
 import { resolveClaudeAgentCliPath } from './cliPathResolver';
 import { hasEnterpriseManagedMcpConfig } from './enterpriseMcpConfig';
 import { canDisableClaudeThinking } from '../../../modelConstants';
+import { behavesAsVariantForModelId } from '../../../claudeCustomModels';
 import { type ThinkingMode } from '../../effortLevels';
 
 type SessionMode = 'planning' | 'agent' | 'auto' | undefined;
@@ -95,6 +96,12 @@ export interface BuildSdkOptionsParams {
 export interface PromptStreamController {
   end(reason: string): void;
   isEnded(): boolean;
+  /**
+   * Deliver another user message on the same open stream. Returns false once
+   * the stream has ended. Used to hand a follow-up to a query that a
+   * background shell is keeping alive (see ClaudeCodeProvider drain handoff).
+   */
+  push(message: SDKUserMessage): boolean;
 }
 
 export interface BuildSdkOptionsResult {
@@ -108,13 +115,13 @@ export function createPersistentPromptStream(
   initialMessage: SDKUserMessage,
 ): { iterable: AsyncIterable<SDKUserMessage>; controller: PromptStreamController } {
   let ended = false;
-  let endResolve: (() => void) | null = null;
-  const endPromise = new Promise<void>((resolve) => {
-    endResolve = () => {
-      ended = true;
-      resolve();
-    };
-  });
+  const pushed: SDKUserMessage[] = [];
+  let wake: (() => void) | null = null;
+  const signal = () => {
+    const resolve = wake;
+    wake = null;
+    resolve?.();
+  };
 
   async function* generator(): AsyncGenerator<SDKUserMessage> {
     yield initialMessage;
@@ -123,19 +130,32 @@ export function createPersistentPromptStream(
     // ClaudeCodeProvider arms a grace-period timer on the first `result`
     // chunk and calls controller.end() to release us; safety nets in
     // sendMessage's finally block and abort() ensure we always exit.
-    await endPromise;
+    while (true) {
+      if (pushed.length > 0) {
+        yield pushed.shift()!;
+        continue;
+      }
+      if (ended) return;
+      await new Promise<void>((resolve) => { wake = resolve; });
+    }
   }
 
   return {
     iterable: generator(),
     controller: {
-      end: (reason: string) => {
-        if (!ended && endResolve) {
-          // console.log(`[CLAUDE-CODE] PromptStreamController.end(reason="${reason}")`);
-          endResolve();
-        }
+      end: (_reason: string) => {
+        if (ended) return;
+        // console.log(`[CLAUDE-CODE] PromptStreamController.end(reason="${_reason}")`);
+        ended = true;
+        signal();
       },
       isEnded: () => ended,
+      push: (message: SDKUserMessage) => {
+        if (ended) return false;
+        pushed.push(message);
+        signal();
+        return true;
+      },
     },
   };
 }
@@ -325,7 +345,8 @@ export async function buildSdkOptions(
   }
 
   if (config.thinkingMode === 'disabled') {
-    if (canDisableClaudeThinking(resolvedModel)) {
+    // A custom gateway model is judged by the model it behaves as.
+    if (canDisableClaudeThinking(behavesAsVariantForModelId(config.model) ?? resolvedModel)) {
       options.thinking = { type: 'disabled' as const };
     } else {
       console.warn(`[CLAUDE-CODE] Extended thinking cannot be disabled for model "${resolvedModel}"; omitting SDK thinking option.`);

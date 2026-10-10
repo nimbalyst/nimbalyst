@@ -86,6 +86,18 @@ export function shouldExcludePath(fullPath: string): boolean {
 }
 
 /**
+ * Folders whose markdown is never projected into the tracker (frontmatter or
+ * inline `#type[...]`). `temptests/` holds throwaway test files; projecting
+ * them put fixtures into team trackers. Deliberately separate from
+ * EXCLUDED_DIRS, which also hides folders from the Files tree and search.
+ */
+const TRACKER_PROJECTION_EXCLUDED_DIRS = new Set(['temptests']);
+
+export function isExcludedFromTrackerProjection(relativePath: string): boolean {
+  return relativePath.split(/[/\\]/).some(part => TRACKER_PROJECTION_EXCLUDED_DIRS.has(part));
+}
+
+/**
  * Check if a path component contains an excluded directory
  * Useful for checking full paths to ensure no part of the path contains excluded dirs
  */

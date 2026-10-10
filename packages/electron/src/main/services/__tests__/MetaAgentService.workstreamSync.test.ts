@@ -1,9 +1,11 @@
+// @vitest-environment node
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('@nimbalyst/runtime/storage/repositories/AISessionsRepository', () => ({
   AISessionsRepository: {
     create: vi.fn(),
     updateMetadata: vi.fn(),
+    get: vi.fn(),
   },
 }));
 vi.mock('@nimbalyst/runtime/storage/repositories/AgentMessagesRepository', () => ({
@@ -23,7 +25,11 @@ vi.mock('@nimbalyst/runtime/ai/server', () => ({
 }));
 
 vi.mock('@nimbalyst/runtime/ai/server/types', () => ({
-  ModelIdentifier: {},
+  ModelIdentifier: {
+    parse: (id: string) => ({ provider: id.split(':')[0], model: id.split(':')[1] }),
+    tryParse: (id: string) => ({ provider: id.split(':')[0], model: id.split(':')[1] }),
+    getDefaultModelId: (provider: string) => `${provider}:default`,
+  },
 }));
 
 vi.mock('@nimbalyst/runtime/ai/server/SessionStateManager', () => ({
@@ -44,7 +50,7 @@ vi.mock('../../utils/store', () => ({ getDefaultAIModel: () => null }));
 vi.mock('../../utils/timestampUtils', () => ({ toMillis: (v: unknown) => v }));
 vi.mock('../WorktreeStore', () => ({ createWorktreeStore: vi.fn() }));
 vi.mock('../GitWorktreeService', () => ({ GitWorktreeService: class {} }));
-vi.mock('../../database/PGLiteDatabaseWorker', () => ({ database: { query: vi.fn() } }));
+vi.mock('../../database/PGLiteDatabaseWorker', () => ({ database: { query: vi.fn().mockResolvedValue({ rows: [{ in_flight: '0', total: '0' }] }) } }));
 vi.mock('../../database/initialize', () => ({ getDatabase: () => null }));
 vi.mock('../../file/GitRefWatcher', () => ({ gitRefWatcher: {} }));
 vi.mock('./ai/AIService', () => ({ AIService: class {} }));
@@ -65,88 +71,28 @@ vi.mock('../ai/claudeCliLauncherSingleton', () => ({
 import { AISessionsRepository } from '@nimbalyst/runtime/storage/repositories/AISessionsRepository';
 import { MetaAgentService } from '../MetaAgentService';
 
-describe('MetaAgentService.resolveOrCreateWorkstream', () => {
+describe('MetaAgentService tree spawn placement', () => {
   beforeEach(() => {
     vi.mocked(AISessionsRepository.create).mockReset();
     vi.mocked(AISessionsRepository.updateMetadata).mockReset();
+    vi.mocked(AISessionsRepository.get).mockReset();
     mockPushChange.mockReset();
   });
 
-  // After the Option B refactor, MetaAgentService no longer pushes to sync
-  // directly. AISessionsRepository.create() and updateMetadata() flow through
-  // SyncedSessionStore, which is the single push path. These tests therefore
-  // assert on the repository calls -- the SyncedSessionStore unit tests cover
-  // that those calls reach the wire.
-
-  it('promotes a standalone session: creates a workstream container and reparents the child', async () => {
+  it.each([
+    { id: 'standalone', parentSessionId: null, worktreeId: null },
+    { id: 'nested', parentSessionId: 'outer', worktreeId: null },
+    { id: 'worktree-node', parentSessionId: 'outer', worktreeId: 'wt' },
+  ])('create_session from $id uses the caller as parent and keeps its container', async parent => {
     const service = MetaAgentService.getInstance();
-    const parent = {
-      id: 'parent-session-id',
-      title: 'My session',
-      provider: 'claude-code',
-      model: 'claude-code:opus',
-      sessionType: 'session',
-      parentSessionId: null,
-      worktreeId: null,
-    };
-
-    const result = await (service as any).resolveOrCreateWorkstream(parent, '/workspace/path');
-
-    expect(result.promotedParent).toBe(true);
-    expect(result.workstreamId).toBeTruthy();
-
-    // The workstream container is created with sessionType='workstream' --
-    // SyncedSessionStore.create() picks that up via SYNC_RELEVANT_FIELDS and
-    // forwards it on the metadata_updated push.
+    (service as any).aiService = { queuePromptForSession: vi.fn() };
+    vi.mocked(AISessionsRepository.get).mockResolvedValue({ ...parent, workspacePath: '/workspace/path', provider: 'claude-code', model: 'claude-code:opus' } as any);
+    await (service as any).createChildSession(parent.id, '/workspace/path', {});
+    expect(AISessionsRepository.create).toHaveBeenCalledTimes(1);
     expect(AISessionsRepository.create).toHaveBeenCalledWith(expect.objectContaining({
-      id: result.workstreamId,
-      provider: 'claude-code',
-      sessionType: 'workstream',
-      title: 'My session',
-      workspaceId: '/workspace/path',
+      parentSessionId: parent.id, createdBySessionId: parent.id, worktreeId: parent.worktreeId ?? undefined,
     }));
-
-    // The child gets reparented under the new workstream. updateMetadata
-    // routes the parentSessionId change through SyncedSessionStore.
-    expect(AISessionsRepository.updateMetadata).toHaveBeenCalledWith(
-      'parent-session-id',
-      expect.objectContaining({ parentSessionId: result.workstreamId }),
-    );
-
-    // No direct sync push from MetaAgentService anymore.
-    expect(mockPushChange).not.toHaveBeenCalled();
-  });
-
-  it('does nothing when the parent is in a worktree (workstream creation is skipped)', async () => {
-    const service = MetaAgentService.getInstance();
-    const parent = {
-      id: 'worktree-resident-session',
-      title: 'In a worktree',
-      provider: 'claude-code',
-      worktreeId: 'some-worktree-id',
-    };
-
-    const result = await (service as any).resolveOrCreateWorkstream(parent, '/workspace/path');
-
-    expect(result).toEqual({ workstreamId: null, promotedParent: false });
-    expect(AISessionsRepository.create).not.toHaveBeenCalled();
-    expect(mockPushChange).not.toHaveBeenCalled();
-  });
-
-  it('does nothing when the parent is already in a workstream', async () => {
-    const service = MetaAgentService.getInstance();
-    const parent = {
-      id: 'child-in-existing-workstream',
-      title: 'Already nested',
-      provider: 'claude-code',
-      parentSessionId: 'existing-workstream-id',
-    };
-
-    const result = await (service as any).resolveOrCreateWorkstream(parent, '/workspace/path');
-
-    expect(result.workstreamId).toBe('existing-workstream-id');
-    expect(result.promotedParent).toBe(false);
-    expect(AISessionsRepository.create).not.toHaveBeenCalled();
+    expect(AISessionsRepository.updateMetadata).not.toHaveBeenCalled();
     expect(mockPushChange).not.toHaveBeenCalled();
   });
 });

@@ -24,6 +24,7 @@ import {
 } from "./jsonlReader";
 import type {
   ExternalCursor,
+  ExternalDiscoverOptions,
   ExternalReadOptions,
   ExternalDiscoveryPage,
   ExternalReadResult,
@@ -127,9 +128,13 @@ export class ClaudeCodeSource implements ExternalSessionSource {
     return null;
   }
 
-  async discover(workspacePath: string): Promise<ExternalSessionRef[]> {
+  async discover(
+    workspacePath: string,
+    options: ExternalDiscoverOptions = {}
+  ): Promise<ExternalSessionRef[]> {
     if (!path.isAbsolute(workspacePath)) return [];
-    return (await this.scanPage(workspacePath, false)).sessions;
+    return (await this.scanPage(workspacePath, false, options.skipUnchanged))
+      .sessions;
   }
 
   discoverPage(workspacePath?: string): Promise<ExternalDiscoveryPage> {
@@ -138,7 +143,8 @@ export class ClaudeCodeSource implements ExternalSessionSource {
 
   private async scanPage(
     workspacePath: string | undefined,
-    manual: boolean
+    manual: boolean,
+    skipUnchanged?: ExternalDiscoverOptions["skipUnchanged"]
   ): Promise<ExternalDiscoveryPage> {
     if (workspacePath !== undefined && !path.isAbsolute(workspacePath))
       return { sessions: [], hasMore: false };
@@ -161,6 +167,18 @@ export class ClaudeCodeSource implements ExternalSessionSource {
     const sessions: ExternalSessionRef[] = [];
     for (const file of page.paths) {
       try {
+        if (skipUnchanged) {
+          // Titles live in the log itself, so an unchanged stamp means nothing new.
+          const stat = await fs.stat(file);
+          if (
+            skipUnchanged(file, {
+              inode: stat.ino,
+              size: stat.size,
+              mtimeMs: stat.mtimeMs,
+            })
+          )
+            continue;
+        }
         const ref = await this.inspect(file, workspacePath, {
           includeFinalLine: manual,
         });
@@ -231,8 +249,7 @@ export class ClaudeCodeSource implements ExternalSessionSource {
       if (
         delta.entries.some(
           ({ value: e }) =>
-            (e.cwd !== undefined &&
-              !validWorkspace(e.cwd, cached.workspacePath)) ||
+            !recordedCwd(e.cwd) ||
             (e.sessionId !== undefined && e.sessionId !== externalId) ||
             (parentToolUseId
               ? e.agentId !== undefined && e.agentId !== parentToolUseId
@@ -268,8 +285,13 @@ export class ClaudeCodeSource implements ExternalSessionSource {
       ),
     });
     const entries = head.entries.map((e) => e.value);
-    const explicitCwd = entries.find((e) => e.cwd !== undefined)?.cwd;
-    const cwd = explicitCwd === undefined ? parent?.workspacePath : explicitCwd;
+    // Claude Code stamps each entry with the agent shell's current directory,
+    // which follows every `cd`. Only the launch cwd (the first one recorded, and
+    // the one the project directory encodes) scopes the session; a sidecar
+    // belongs to its verified parent wherever the parent's shell had moved.
+    const cwd = parent
+      ? parent.workspacePath
+      : entries.find((e) => e.cwd !== undefined)?.cwd;
     if (
       typeof cwd !== "string" ||
       !path.isAbsolute(cwd) ||
@@ -278,9 +300,7 @@ export class ClaudeCodeSource implements ExternalSessionSource {
       return null;
     if (workspacePath !== undefined && !validWorkspace(cwd, workspacePath))
       return null;
-    if (parent && !validWorkspace(cwd, parent.workspacePath)) return null;
-    if (entries.some((e) => e.cwd !== undefined && !validWorkspace(e.cwd, cwd)))
-      return null;
+    if (entries.some((e) => !recordedCwd(e.cwd))) return null;
     if (
       entries.some(
         (e) => e.sessionId !== undefined && e.sessionId !== externalId
@@ -358,13 +378,8 @@ export class ClaudeCodeSource implements ExternalSessionSource {
     );
     for (const record of page.entries) {
       const entry = record.value as ClaudeCodeEntry;
-      if (
-        entry.cwd !== undefined &&
-        !validWorkspace(entry.cwd, ref.workspacePath)
-      )
-        throw new Error(
-          "External Claude session cwd changed outside its workspace"
-        );
+      if (!recordedCwd(entry.cwd))
+        throw new Error("External Claude session cwd is malformed");
       if (entry.sessionId !== undefined && entry.sessionId !== ref.externalId)
         throw new Error("External Claude session identity changed");
       if (
@@ -455,6 +470,13 @@ export class ClaudeCodeSource implements ExternalSessionSource {
     this.titles.clear();
     return this.discovery.dispose();
   }
+}
+
+/** A per-entry cwd may be absent or anywhere absolute; it never rescopes the session. */
+function recordedCwd(value: unknown): boolean {
+  return (
+    value === undefined || (typeof value === "string" && path.isAbsolute(value))
+  );
 }
 
 function validTime(value: unknown): number | undefined {

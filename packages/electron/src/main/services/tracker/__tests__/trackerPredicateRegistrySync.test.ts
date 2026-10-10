@@ -30,11 +30,18 @@ import {
   TrackerSyncEngine,
   type TrackerSchemaSyncHooks,
 } from '@nimbalyst/tracker-engine';
-import type { PredicateDefinition } from '@nimbalyst/tracker-schema';
+import type { LabelRegistry, PredicateDefinition } from '@nimbalyst/tracker-schema';
 import {
   decodeTrackerSchemaPayload,
+  encodeTrackerLabelRegistryPayload,
+  TRACKER_LABEL_REGISTRY_SCHEMA_TYPE,
   TRACKER_PREDICATE_REGISTRY_SCHEMA_TYPE,
 } from '@nimbalyst/runtime/plugins/TrackerPlugin/models/schemaSyncPayload';
+import { canonicalLabelRegistryJson } from '@nimbalyst/runtime/plugins/TrackerPlugin/models/labelRegistryMerge';
+import {
+  canonicalPredicateRegistryJson,
+  mergePredicateRegistries,
+} from '@nimbalyst/runtime/plugins/TrackerPlugin/models/predicateRegistryMerge';
 import { createFakeServer, type FakeTrackerRoom } from '../../../../../../tracker-engine/src/__tests__/fakeTrackerServer';
 import {
   readWorkspacePredicateRegistry,
@@ -42,8 +49,15 @@ import {
 } from '../trackerPredicateRegistryFile';
 import {
   createInMemoryPredicateRegistrySyncStateStore,
+  listUnsyncedPredicateRegistry,
   type PredicateRegistrySyncStateStore,
 } from '../trackerPredicateRegistrySync';
+import { readWorkspaceLabelRegistry, writeWorkspaceLabelRegistry } from '../trackerLabelRegistryFile';
+import {
+  applyRemoteLabelRegistry,
+  createInMemoryLabelRegistrySyncStateStore,
+  listUnsyncedLabelRegistry,
+} from '../trackerLabelRegistrySync';
 import { composeTrackerSchemaSyncHooks } from '../trackerSchemaSyncHooks';
 import { registerTrackerSchemaFlushHandler } from '../trackerSchemaFlush';
 
@@ -83,6 +97,7 @@ interface Peer {
   engine: TrackerSyncEngine;
   state: PredicateRegistrySyncStateStore;
   applied: PredicateDefinition[][];
+  appliedLabels: LabelRegistry[];
 }
 
 function predicatesRow(room: FakeTrackerRoom) {
@@ -109,6 +124,7 @@ describe('predicate registry on the team schema lane (NIM-6653)', () => {
     fs.mkdirSync(workspacePath, { recursive: true });
     const state = createInMemoryPredicateRegistrySyncStateStore();
     const applied: PredicateDefinition[][] = [];
+    const appliedLabels: LabelRegistry[] = [];
     const engine = new TrackerSyncEngine({
       serverUrl: 'ws://fake',
       orgId: 'test-org',
@@ -118,11 +134,14 @@ describe('predicate registry on the team schema lane (NIM-6653)', () => {
       schemaSync: composeTrackerSchemaSyncHooks(workspacePath, noTypeDefs, {
         state,
         onApplied: (_ws, predicates) => { applied.push(predicates); },
+      }, {
+        state: createInMemoryLabelRegistrySyncStateStore(),
+        onApplied: (_ws, registry) => { appliedLabels.push(registry); },
       }),
       getJwt: async () => asTeamJwt('fake-jwt'),
       createWebSocket: () => server.connect(),
     });
-    const peer = { workspacePath, engine, state, applied };
+    const peer = { workspacePath, engine, state, applied, appliedLabels };
     peers.push(peer);
     await engine.connect();
     await waitUntil(() => engine.getStatus() === 'connected');
@@ -155,6 +174,33 @@ describe('predicate registry on the team schema lane (NIM-6653)', () => {
     await a.engine.flushSchemas();
     expect(server.room.receivedSchemaMutations
       .filter(m => m.schemaType === TRACKER_PREDICATE_REGISTRY_SCHEMA_TYPE)).toHaveLength(1);
+  });
+
+  it('publishes labels.yaml under __labels__, and two peers\' concurrent additions both survive', async () => {
+    const server = createFakeServer();
+    const a = await connectPeer('a', server);
+    const b = await connectPeer('b', server);
+    unregister.push(registerTrackerSchemaFlushHandler((ws) =>
+      peers.find(p => p.workspacePath === ws)?.engine.flushSchemas()));
+    const labelsRow = () => server.room.getStoredSchemas().find(s => s.schemaType === TRACKER_LABEL_REGISTRY_SCHEMA_TYPE);
+
+    const base: LabelRegistry = { labels: [{ id: 'capability', label: 'Capability' }], properties: [], claimProperties: {} };
+    await writeWorkspaceLabelRegistry(a.workspacePath, base);
+    await waitUntil(() => b.appliedLabels.length > 0);
+    expect(readWorkspaceLabelRegistry(b.workspacePath)).toEqual(base);
+
+    // Each peer adds a different label before seeing the other's.
+    await writeWorkspaceLabelRegistry(a.workspacePath, { ...base, labels: [...base.labels, { id: 'feature', label: 'Feature' }] });
+    await writeWorkspaceLabelRegistry(b.workspacePath, { ...base, labels: [...base.labels, { id: 'topic', label: 'Topic' }] });
+
+    const ids = (registry: LabelRegistry | null) => (registry?.labels ?? []).map(l => l.id).sort();
+    await waitUntil(() => {
+      const row = labelsRow();
+      const decoded = row?.encryptedPayload ? decodeTrackerSchemaPayload(row.schemaType, row.encryptedPayload) : null;
+      return decoded?.kind === 'labels' && ids(decoded.registry).join() === 'capability,feature,topic';
+    }, 4000);
+    await waitUntil(() => ids(readWorkspaceLabelRegistry(a.workspacePath)).join() === 'capability,feature,topic'
+      && ids(readWorkspaceLabelRegistry(b.workspacePath)).join() === 'capability,feature,topic', 4000);
   });
 
   it('gives a peer with no predicates.yaml the room\'s registry when it connects', async () => {
@@ -195,7 +241,7 @@ describe('predicate registry on the team schema lane (NIM-6653)', () => {
       getJwt: async () => asTeamJwt('fake-jwt'),
       createWebSocket: () => server.connect(),
     });
-    peers.push({ workspacePath: path.join(tmp, 'seeder'), engine: seeder, state: createInMemoryPredicateRegistrySyncStateStore(), applied: [] });
+    peers.push({ workspacePath: path.join(tmp, 'seeder'), engine: seeder, state: createInMemoryPredicateRegistrySyncStateStore(), applied: [], appliedLabels: [] });
     await seeder.connect();
     await waitUntil(() => predicatesRow(server.room) !== undefined && seed.length === 0);
 
@@ -254,5 +300,89 @@ describe('predicate registry on the team schema lane (NIM-6653)', () => {
       return decoded?.kind === 'predicates' && decoded.predicates.length === 2;
     });
     expect(readWorkspacePredicateRegistry(cPath)?.map(p => p.id).sort()).toEqual(['competes-with', 'works-at']);
+  });
+});
+
+describe('vocabulary lanes, one peer at a time', () => {
+  let workspacePath: string;
+  beforeEach(() => { workspacePath = fs.mkdtempSync(path.join(os.tmpdir(), 'nim-vocab-lane-')); });
+  afterEach(() => { fs.rmSync(workspacePath, { recursive: true, force: true }); });
+
+  const registry = (labels: LabelRegistry['labels']): LabelRegistry => ({ labels, properties: [], claimProperties: {} });
+  const labelsDef = (value: LabelRegistry, syncId: number) => ({
+    type: TRACKER_LABEL_REGISTRY_SCHEMA_TYPE,
+    model: encodeTrackerLabelRegistryPayload(value),
+    syncId,
+  });
+
+  it('never installs an invalid label registry when two valid edits meet; the room wins', async () => {
+    const base = registry([{ id: 'a', label: 'A' }, { id: 'b', label: 'B' }]);
+    const state = createInMemoryLabelRegistrySyncStateStore();
+    state.set(workspacePath, { syncId: 1, baseline: canonicalLabelRegistryJson(base), pushed: null, rejected: null });
+    const local = registry([{ id: 'a', label: 'A', broader: ['b'] }, { id: 'b', label: 'B' }]);
+    await writeWorkspaceLabelRegistry(workspacePath, local);
+    const remote = registry([{ id: 'a', label: 'A' }, { id: 'b', label: 'B', broader: ['a'] }]);
+    const installed: LabelRegistry[] = [];
+
+    const result = await applyRemoteLabelRegistry(workspacePath, labelsDef(remote, 2), {
+      state,
+      onApplied: (_ws, applied) => { installed.push(applied); },
+    });
+
+    expect(result).toEqual({ applied: true, deleted: false });
+    // The file still reads, so the next delivery and the next push both work.
+    expect(canonicalLabelRegistryJson(readWorkspaceLabelRegistry(workspacePath)!)).toBe(canonicalLabelRegistryJson(remote));
+    expect(installed.map(canonicalLabelRegistryJson)).toEqual([canonicalLabelRegistryJson(remote)]);
+    expect(listUnsyncedLabelRegistry(workspacePath, { state })).toEqual([]);
+  });
+
+  it('keeps a push offered mid-apply, so its own ack is not read as a deletion', async () => {
+    const base = registry([{ id: 'capability', label: 'Capability' }]);
+    const withTopic = registry([...base.labels, { id: 'topic', label: 'Topic' }]);
+    const state = createInMemoryLabelRegistrySyncStateStore();
+    state.set(workspacePath, { syncId: 1, baseline: canonicalLabelRegistryJson(base), pushed: null, rejected: null });
+    await writeWorkspaceLabelRegistry(workspacePath, withTopic);
+
+    // The flush reads the file while the teammate's registry is being written.
+    const applying = applyRemoteLabelRegistry(workspacePath,
+      labelsDef(registry([...base.labels, { id: 'feature', label: 'Feature' }]), 2), { state });
+    expect(listUnsyncedLabelRegistry(workspacePath, { state })).toHaveLength(1);
+    await applying;
+
+    await applyRemoteLabelRegistry(workspacePath, labelsDef(withTopic, 3), { state });
+    expect(readWorkspaceLabelRegistry(workspacePath)!.labels.map(l => l.id).sort()).toEqual(['capability', 'feature', 'topic']);
+  });
+
+  it('publishes a registry emptied on purpose, but never a missing file', async () => {
+    const base = registry([{ id: 'feature', label: 'Feature' }]);
+    const state = createInMemoryLabelRegistrySyncStateStore();
+    state.set(workspacePath, { syncId: 1, baseline: canonicalLabelRegistryJson(base), pushed: null, rejected: null });
+    expect(listUnsyncedLabelRegistry(workspacePath, { state })).toEqual([]);
+
+    await writeWorkspaceLabelRegistry(workspacePath, registry([]));
+    const [change] = listUnsyncedLabelRegistry(workspacePath, { state });
+    expect(change && decodeTrackerSchemaPayload(change.type, change.model!)).toEqual({ kind: 'labels', registry: registry([]) });
+
+    // A peer that never held a non-empty room registry has nothing to clear.
+    const fresh = createInMemoryLabelRegistrySyncStateStore();
+    expect(listUnsyncedLabelRegistry(workspacePath, { state: fresh })).toEqual([]);
+  });
+
+  it('publishes a predicate registry emptied on purpose, but never a missing file', async () => {
+    const state = createInMemoryPredicateRegistrySyncStateStore();
+    state.set(workspacePath, { syncId: 1, baseline: canonicalPredicateRegistryJson([worksAt]), pushed: null, rejected: null });
+    expect(listUnsyncedPredicateRegistry(workspacePath, { state })).toEqual([]);
+
+    await writeWorkspacePredicateRegistry(workspacePath, []);
+    const [change] = listUnsyncedPredicateRegistry(workspacePath, { state });
+    expect(change && decodeTrackerSchemaPayload(change.type, change.model!)).toEqual({ kind: 'predicates', predicates: [] });
+  });
+
+  it('lets the room delete a predicate this peer edited instead of republishing the edit', () => {
+    const edited = { ...worksAt, label: 'is employed at' };
+    const result = mergePredicateRegistries({ baseline: [worksAt, competesWith], local: [edited, competesWith], remote: [competesWith] });
+    expect(result.merged).toEqual([competesWith]);
+    expect(result.keptLocal).toEqual([]);
+    expect(result.overriddenLocal).toEqual(['works-at']);
   });
 });

@@ -45,7 +45,7 @@ export const codexQuestionRecoveryId = (
     .update(JSON.stringify([sessionId, questionId]))
     .digest("hex")}`;
 
-async function hasAnswer(
+export async function hasAnswer(
   sessionId: string,
   questionId: string
 ): Promise<boolean> {

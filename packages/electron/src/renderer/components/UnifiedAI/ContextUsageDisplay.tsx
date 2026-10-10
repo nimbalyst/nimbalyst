@@ -18,8 +18,12 @@ const CATEGORY_COLORS = [
 
 interface ContextUsageDisplayProps {
   provider?: string | null;
-  inputTokens: number;       // Cumulative input tokens (for tooltip breakdown)
+  inputTokens: number;       // Cumulative uncached input tokens (for tooltip breakdown)
   outputTokens: number;      // Cumulative output tokens (for tooltip breakdown)
+  // Cumulative prompt-cache reads/writes, disjoint from inputTokens. 0 when the
+  // provider reports no split (see tokenUsageAccumulation.ts).
+  cacheReadInputTokens?: number;
+  cacheCreationInputTokens?: number;
   totalTokens: number;       // Cumulative total tokens (fallback if no currentContext)
   contextWindow: number;     // Context window size (legacy, use currentContext)
   categories?: TokenUsageCategory[];  // Categories (legacy, use currentContext)
@@ -49,6 +53,8 @@ export function ContextUsageDisplay({
   provider,
   inputTokens,
   outputTokens,
+  cacheReadInputTokens = 0,
+  cacheCreationInputTokens = 0,
   totalTokens,
   contextWindow,
   categories,
@@ -66,6 +72,19 @@ export function ContextUsageDisplay({
   // Check what data we have
   const hasTokenData = displayTokens > 0 || totalTokens > 0;
   const hasContextWindow = contextReporting === 'context-window' && displayContextWindow > 0;
+  // `totalTokens` means different things per provider (Codex counts cached
+  // input in it, Claude Code does not), so with a cache split the tooltip's
+  // total is the sum of the rows above it.
+  const hasCacheSplit = cacheReadInputTokens > 0 || cacheCreationInputTokens > 0;
+  const ioRows: Array<[string, number]> = [
+    [hasCacheSplit ? 'Input (uncached)' : 'Input', inputTokens],
+    ...(cacheReadInputTokens > 0 ? [['Cache read', cacheReadInputTokens] as [string, number]] : []),
+    ...(cacheCreationInputTokens > 0 ? [['Cache write', cacheCreationInputTokens] as [string, number]] : []),
+    ['Output', outputTokens],
+  ];
+  const ioTotal = hasCacheSplit
+    ? inputTokens + outputTokens + cacheReadInputTokens + cacheCreationInputTokens
+    : totalTokens;
   const [tooltipVisible, setTooltipVisible] = useState(false);
   const [helpExpanded, setHelpExpanded] = useState(false);
   const [toolBaselineTokens, setToolBaselineTokens] = useState<number | null>(null);
@@ -302,7 +321,7 @@ export function ContextUsageDisplay({
           )}
 
           {/* Show input/output breakdown if available. These rows are the
-              CUMULATIVE session spend (uncached input + output summed across
+              CUMULATIVE session spend (input, cache, and output summed across
               turns), a different quantity from the header-right total, which
               is the CURRENT context-window fill (input + cache reads + cache
               creation of the last turn). Label them when both are visible so
@@ -315,17 +334,15 @@ export function ContextUsageDisplay({
                   Session totals (cumulative)
                 </div>
               )}
-              <div className="tooltip-io-row flex justify-between text-[11px]">
-                <span className="tooltip-io-label text-[var(--nim-text-muted)]">Input:</span>
-                <span className="tooltip-io-value text-[var(--nim-text)] tabular-nums">{inputTokens.toLocaleString()}</span>
-              </div>
-              <div className="tooltip-io-row flex justify-between text-[11px]">
-                <span className="tooltip-io-label text-[var(--nim-text-muted)]">Output:</span>
-                <span className="tooltip-io-value text-[var(--nim-text)] tabular-nums">{outputTokens.toLocaleString()}</span>
-              </div>
+              {ioRows.map(([label, value]) => (
+                <div key={label} className="tooltip-io-row flex justify-between text-[11px]">
+                  <span className="tooltip-io-label text-[var(--nim-text-muted)]">{label}:</span>
+                  <span className="tooltip-io-value text-[var(--nim-text)] tabular-nums">{value.toLocaleString()}</span>
+                </div>
+              ))}
               <div className="tooltip-io-row tooltip-io-total flex justify-between text-[11px] font-semibold pt-1 border-t border-[var(--nim-border)] mt-1">
                 <span className="tooltip-io-label text-[var(--nim-text-muted)]">Total:</span>
-                <span className="tooltip-io-value text-[var(--nim-text)] tabular-nums">{totalTokens.toLocaleString()}</span>
+                <span className="tooltip-io-value text-[var(--nim-text)] tabular-nums">{ioTotal.toLocaleString()}</span>
               </div>
             </div>
           )}

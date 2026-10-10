@@ -17,6 +17,7 @@ import {
   expandWorkspaceGlobs,
   isSecretFileName,
   normalizeStagedPath,
+  parseWorkspacePackages,
 } from '../buildContextAllowlist.mjs';
 
 describe('build context allowlist', () => {
@@ -43,7 +44,13 @@ describe('build context allowlist', () => {
     expect(normalizeStagedPath('packages/node/src')).toBe('packages/node/src');
   });
 
-  it('expands the workspace globs npm validates the lockfile against', () => {
+  it('reads only the packages list from pnpm-workspace.yaml', () => {
+    const yaml = "# header\npackages:\n  - packages/runtime\n\n  # note\n  - 'packages/extensions/*' # trailing\nnodeLinker: hoisted\n";
+    expect(parseWorkspacePackages(yaml)).toEqual(['packages/runtime', 'packages/extensions/*']);
+    expect(() => parseWorkspacePackages('packages:\n  - "!packages/x"\n')).toThrow(/negated/);
+  });
+
+  it('expands the workspace globs pnpm validates the lockfile against', () => {
     const listed = expandWorkspaceGlobs(
       ['packages/runtime', 'packages/extensions/*'],
       (parent) => (parent === 'packages/extensions' ? ['nimbalyst-memory', 'nimbalyst-slides'] : []),

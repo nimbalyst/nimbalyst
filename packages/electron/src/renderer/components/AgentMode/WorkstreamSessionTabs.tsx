@@ -25,8 +25,6 @@ import {
   createChildSessionAtom,
 } from '../../store';
 import { defaultAgentModelAtom } from '../../store/atoms/appSettings';
-import { convertToWorkstreamAtom } from '../../store/atoms/sessions';
-import { workstreamHasChildrenAtom } from '../../store/atoms/workstreamState';
 import { SessionContextMenu } from '../AgenticCoding/SessionContextMenu';
 import type { SerializableDocumentContext } from '../../hooks/useDocumentContext';
 
@@ -291,41 +289,13 @@ export const WorkstreamSessionTabs: React.FC<WorkstreamSessionTabsProps> = React
   getDocumentContext,
   collapseTranscript = false,
 }) => {
-  const hasChildren = useAtomValue(workstreamHasChildrenAtom(workstreamId));
   const createChildSession = useSetAtom(createChildSessionAtom);
-  const convertToWorkstream = useSetAtom(convertToWorkstreamAtom);
   const defaultModel = useAtomValue(defaultAgentModelAtom);
 
   // Handle creating a new child session
   const handleNewSession = useCallback(async () => {
-    // If this is a worktree, use the callback to add a session to it
-    if (worktreeId && onAddSessionToWorktree) {
-      await onAddSessionToWorktree(worktreeId);
-      return;
-    }
-
-    // Resolve the actual parent ID - if workstreamId is a child session, use its parent
-    const registry = store.get(sessionRegistryAtom);
-    const sessionMeta = registry.get(workstreamId);
-    const resolvedParentId = sessionMeta?.parentSessionId || workstreamId;
-
-    // Regular workstream logic
-    if (hasChildren || resolvedParentId !== workstreamId) {
-      // Already a workstream (has children, or we resolved to a parent) - create a child
-      await createChildSession({
-        parentSessionId: resolvedParentId,
-        workspacePath,
-        model: defaultModel,
-      });
-    } else {
-      // Single session - convert to workstream first
-      await convertToWorkstream({
-        sessionId: workstreamId,
-        workspacePath,
-        model: defaultModel,
-      });
-    }
-  }, [workstreamId, workspacePath, hasChildren, worktreeId, onAddSessionToWorktree, createChildSession, convertToWorkstream, defaultModel]);
+    await createChildSession({ parentSessionId: workstreamId, workspacePath, model: defaultModel });
+  }, [workstreamId, workspacePath, createChildSession, defaultModel]);
 
   if (!activeSessionId) {
     return (

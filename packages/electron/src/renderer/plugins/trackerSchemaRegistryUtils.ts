@@ -1,7 +1,12 @@
 import { globalRegistry, loadBuiltinTrackers } from '@nimbalyst/runtime';
 
-export function applySchemasToRegistry(schemas: unknown[]): void {
-  globalRegistry.clearWorkspaceSchemas();
+/**
+ * Replace the workspace's schemas in the registry. `keepVocabulary` is for a
+ * reload of the same workspace: the label and predicate registries stay in
+ * force until the caller swaps in the fresh copy.
+ */
+export function applySchemasToRegistry(schemas: unknown[], options: { keepVocabulary?: boolean } = {}): void {
+  globalRegistry.clearWorkspaceSchemas(options);
 
   if (!schemas.length) {
     loadBuiltinTrackers();

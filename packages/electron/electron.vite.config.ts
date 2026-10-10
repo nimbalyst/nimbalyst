@@ -1,15 +1,17 @@
 import { resolve } from 'path'
+import { createRequire } from 'node:module'
 import { defineConfig } from 'electron-vite'
 import react from '@vitejs/plugin-react'
 import viteNimbalystPlugin from '../shared/viteNimbalystPlugin.ts'
 import { viteStaticCopy } from 'vite-plugin-static-copy'
-import { nodePolyfills } from 'vite-plugin-node-polyfills'
+import inject from '@rollup/plugin-inject'
 import fs from 'fs'
 import { findMainBundleGraphViolations } from '../../scripts/main-bundle-graph-policy.mjs'
 import {
   findRequireCacheSelfEviction,
   stripRequireCacheSelfEviction,
 } from '../../scripts/main-bundle-require-policy.mjs'
+import dedupeWatcherAddsPlugin from './scripts/dedupeWatcherAddsPlugin.mjs'
 
 // Plugin to optimize Shiki language imports
 const optimizeShikiPlugin = () => {
@@ -119,7 +121,23 @@ const trackerSchemaSrcDir = resolve(__dirname, '../tracker-schema/src');
 const trackerEngineSrcDir = resolve(__dirname, '../tracker-engine/src');
 const trackerCoreSrcDir = resolve(__dirname, '../tracker-core/src');
 const collabProtocolSrcDir = resolve(__dirname, '../collab-protocol/src');
+const localWikiEntry = resolve(__dirname, '../local-wiki/src/index.ts');
 const runtimeSrcDir = resolve(__dirname, '../runtime/src');
+const configRequire = createRequire(resolve(__dirname, 'package.json'));
+
+// Locates a file inside an installed package the way Node would from this
+// package, bypassing the package's `exports` map (several of these do not
+// export the asset we copy). Throws so a missing asset fails the build instead
+// of shipping an app without it.
+function installedPackageFile(pkg: string, file: string): string {
+  for (const dir of configRequire.resolve.paths(pkg) ?? []) {
+    const candidate = resolve(dir, pkg, file);
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  throw new Error(`[electron.vite.config] ${pkg}/${file} is not installed`);
+}
+const browserPath = configRequire.resolve('path-browserify/index.js');
+const browserProcess = configRequire.resolve('process/browser.js');
 const runtimeDistDir = resolve(__dirname, '../runtime/dist');
 const runtimeElectronMainEntry = resolve(runtimeSrcDir, 'electronMain.ts');
 const extensionSdkSrcDir = resolve(__dirname, '../extension-sdk/src');
@@ -318,6 +336,8 @@ const config = {
         { find: '@nimbalyst/tracker-schema', replacement: trackerSchemaSrcDir },
         { find: '@nimbalyst/tracker-engine', replacement: trackerEngineSrcDir },
         { find: '@nimbalyst/collab-protocol', replacement: collabProtocolSrcDir },
+        // The Local wiki library, from source like the other workspace packages.
+        { find: /^@nimbalyst\/local-wiki$/, replacement: localWikiEntry },
         // The public SDK barrel includes renderer hooks which import the public
         // runtime barrel. Main only needs validation and protocol helpers.
         { find: /^@nimbalyst\/extension-sdk$/, replacement: extensionSdkElectronMainEntry },
@@ -394,18 +414,7 @@ const config = {
       '__CLAUDE_AGENT_SDK_VERSION__': JSON.stringify(claudeAgentSdkVersion),
     },
     plugins: [
-      // Process polyfill for packaged builds - handles dependencies that access process globals.
-      // Must be first so transforms run before other plugins.
-      // Only polyfills in production builds; dev mode works fine with Vite's built-in handling.
-      nodePolyfills({
-        globals: {
-          Buffer: false,
-          global: false,
-          process: 'build',
-        },
-        include: [],
-        protocolImports: false,
-      }),
+      dedupeWatcherAddsPlugin(),
       // The Anthropic SDK's agent-toolset (server-side file tools, added in
       // @anthropic-ai/sdk 0.100.x) is dragged into the renderer bundle via the
       // runtime barrel (ai/models.ts value-imports the SDK for the model
@@ -494,15 +503,11 @@ const config = {
           targets.push({ src: toPosix(resolve(onboardingDir, '*')), dest: 'onboarding', overwrite: true });
         }
         // Copy es-module-shims for extension loading (enables dynamic import maps)
-        const esModuleShims = resolve(__dirname, '../../node_modules/es-module-shims/dist/es-module-shims.js');
-        if (fs.existsSync(esModuleShims)) {
-          targets.push({ src: toPosix(esModuleShims), dest: '', overwrite: true });
-        }
+        const esModuleShims = installedPackageFile('es-module-shims', 'dist/es-module-shims.js');
+        targets.push({ src: toPosix(esModuleShims), dest: '', overwrite: true });
         // Copy ghostty-web WASM file for terminal emulation
-        const ghosttyWasm = resolve(__dirname, '../../node_modules/ghostty-web/ghostty-vt.wasm');
-        if (fs.existsSync(ghosttyWasm)) {
-          targets.push({ src: toPosix(ghosttyWasm), dest: '', overwrite: true });
-        }
+        const ghosttyWasm = installedPackageFile('ghostty-web', 'ghostty-vt.wasm');
+        targets.push({ src: toPosix(ghosttyWasm), dest: '', overwrite: true });
         // Copy prismjs core so index.html can load it as a classic <script>
         // BEFORE any ESM module evaluates. Vite/esbuild's prebundling of
         // @lexical/code (which transitively imports @lexical/code-prism) ends
@@ -510,10 +515,8 @@ const config = {
         // before prismjs main, which the language files need to have set
         // `window.Prism`. Loading prismjs as a classic script in the HTML
         // sidesteps the reorder.
-        const prismCore = resolve(__dirname, '../../node_modules/prismjs/prism.js');
-        if (fs.existsSync(prismCore)) {
-          targets.push({ src: toPosix(prismCore), dest: '', overwrite: true });
-        }
+        const prismCore = installedPackageFile('prismjs', 'prism.js');
+        targets.push({ src: toPosix(prismCore), dest: '', overwrite: true });
         return viteStaticCopy({ targets });
       })()
     ].filter(Boolean),
@@ -542,6 +545,8 @@ const config = {
       target: 'chrome109',
       sourcemap: isDev,
       rollupOptions: {
+        // Rollup options also reach worker builds; inject only the free identifier.
+        plugins: [inject({ process: browserProcess })],
         input: {
           index: resolve(__dirname, 'src/renderer/index.html'),
           island: resolve(__dirname, 'src/renderer/island.html'),
@@ -550,6 +555,8 @@ const config = {
     },
     resolve: {
       alias: [
+        { find: /^path$/, replacement: browserPath },
+        { find: /^process$/, replacement: browserProcess },
         // Ensure renderer also points runtime imports at source
         { find: '@nimbalyst/runtime', replacement: runtimeSrcDir },
         { find: '@nimbalyst/tracker-core', replacement: trackerCoreSrcDir },
@@ -732,6 +739,11 @@ const config = {
         'refractor',
         'remark-gfm',
         'uuid',
+        // Chart blocks import these dynamically on first mount.
+        'vega',
+        'vega-embed',
+        'vega-interpreter',
+        'vega-lite',
         'virtua',
         'y-monaco',
         'y-protocols/awareness',

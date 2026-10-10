@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import { requestConfirmation } from '../dialogs/requestConfirmation';
 import { errorNotificationService } from '../services/ErrorNotificationService';
 import { DocumentModelRegistry } from '../services/document-model/DocumentModelRegistry';
 import { getTeamSyncProviderForScopeKey } from '../store/atoms/collabDocuments';
@@ -96,6 +97,15 @@ function buildConflictPrompt(result: ReuploadResult, workspacePath: string): str
   const context = describeSharedChange(result, workspacePath);
   const action = 'Your push will overwrite the shared document with the current local file. Continue?';
   return [context, kind, action].filter(Boolean).join(' ');
+}
+
+function confirmOverwriteShared(message: string): Promise<boolean> {
+  return requestConfirmation({
+    title: 'Overwrite shared document?',
+    message,
+    confirmLabel: 'Overwrite',
+    destructive: true,
+  });
 }
 
 function buildPullConflictPrompt(result: PullResult, workspacePath: string): string {
@@ -315,7 +325,13 @@ export function useCollabLocalOrigin(
     if (!workspacePath || !documentId || !window.electronAPI?.documentSync?.clearLocalOrigin) {
       return false;
     }
-    if (!window.confirm('Clear the local source link for this shared document?')) {
+    const confirmed = await requestConfirmation({
+      title: 'Clear local source?',
+      message: 'Clear the local source link for this shared document?',
+      confirmLabel: 'Clear',
+      destructive: true,
+    });
+    if (!confirmed) {
       return false;
     }
 
@@ -354,7 +370,7 @@ export function useCollabLocalOrigin(
       });
 
       if (result.status === 'conflict') {
-        const confirmed = window.confirm(buildConflictPrompt(result, workspacePath));
+        const confirmed = await confirmOverwriteShared(buildConflictPrompt(result, workspacePath));
         if (!confirmed) return false;
         result = await window.electronAPI.documentSync.reuploadLocalOrigin({
           workspacePath,
@@ -370,7 +386,7 @@ export function useCollabLocalOrigin(
       if (result.status === 'unsupported' && documentId) {
         let rendererResult = await tryRendererHeadlessReupload(workspacePath, documentId, result);
         if (rendererResult.status === 'conflict') {
-          const confirmed = window.confirm(buildConflictPrompt(rendererResult.result, workspacePath));
+          const confirmed = await confirmOverwriteShared(buildConflictPrompt(rendererResult.result, workspacePath));
           if (!confirmed) return false;
           rendererResult = await tryRendererHeadlessReupload(workspacePath, documentId, result, true);
         }
@@ -519,7 +535,12 @@ export function useLocalFileSharedDocLink(
       });
 
       while (result.status === 'conflict') {
-        const confirmed = window.confirm(buildPullConflictPrompt(result, workspacePath));
+        const confirmed = await requestConfirmation({
+          title: 'Overwrite local file?',
+          message: buildPullConflictPrompt(result, workspacePath),
+          confirmLabel: 'Overwrite',
+          destructive: true,
+        });
         if (!confirmed) return false;
         if (!result.conflictToken) {
           errorNotificationService.showError(
@@ -589,7 +610,7 @@ export function useLocalFileSharedDocLink(
       });
 
       if (result.status === 'conflict') {
-        const confirmed = window.confirm(buildConflictPrompt(result, workspacePath));
+        const confirmed = await confirmOverwriteShared(buildConflictPrompt(result, workspacePath));
         if (!confirmed) return false;
         result = await window.electronAPI.documentSync.reuploadLocalOrigin({
           workspacePath,
@@ -605,7 +626,7 @@ export function useLocalFileSharedDocLink(
       if (result.status === 'unsupported') {
         let rendererResult = await tryRendererHeadlessReupload(workspacePath, binding.documentId, result);
         if (rendererResult.status === 'conflict') {
-          const confirmed = window.confirm(buildConflictPrompt(rendererResult.result, workspacePath));
+          const confirmed = await confirmOverwriteShared(buildConflictPrompt(rendererResult.result, workspacePath));
           if (!confirmed) return false;
           rendererResult = await tryRendererHeadlessReupload(workspacePath, binding.documentId, result, true);
         }

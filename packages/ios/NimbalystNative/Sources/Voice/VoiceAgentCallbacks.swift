@@ -49,7 +49,6 @@ extension VoiceAgent {
 
         client.onAudioDelta = { [weak self] base64Audio in
             guard let self, self.connectionGeneration.accepts(epoch), !self.audioRoutes.blocksAudio, self.state != .idle, self.state != .disconnected else { return }
-            guard !self.readingPrompt else { return }
             if self.state != .speaking {
                 self.state = .speaking
                 self.cancelIdleTimer()
@@ -74,14 +73,12 @@ extension VoiceAgent {
 
         audioPipeline.onAudioCaptured = { [weak self] base64Audio in
             guard let self, self.connectionGeneration.accepts(epoch), self.state != .idle, self.state != .disconnected, !self.audioRoutes.blocksAudio else { return }
-            guard !self.readingPrompt else { return }
             self.voiceClient?.sendAudio(base64Audio)
         }
 
         audioPipeline.onPlaybackFinished = { [weak self] in
             guard let self, self.connectionGeneration.accepts(epoch), !self.audioRoutes.blocksAudio, self.state != .idle, self.state != .disconnected else { return }
             guard self.state != .idle, self.state != .disconnected else { return }
-            guard !self.readingPrompt else { return }
             self.bargeInPolicy.notePlaybackStopped()
             self.voiceClient?.playbackChanged(active: false)
             self.state = .listening
@@ -151,6 +148,7 @@ extension VoiceAgent {
                 self.toolScopes[dispatchId] = VoiceRelayScope(version: 1, hostDeviceId: host, projectId: project, sessionId: targetSession,
                     voiceGeneration: epoch.uuidString, actionId: dispatchId, announcingDeviceId: WebSocketClient.deviceId)
             }
+            self.withConversationLog { $0.toolStarted(callId: dispatchId, name: name, arguments: arguments) }
             self.currentToolCall = ActiveToolCall(name: name, callId: callId)
             self.handleToolCall(name: name, arguments: arguments, callId: dispatchId)
         }
@@ -168,6 +166,7 @@ extension VoiceAgent {
             guard let self, self.connectionGeneration.accepts(epoch) else { return }
             self.connectionError = message
             self.logger.error("Voice error [\(type)]: \(message)")
+            self.logVoiceSystem("Voice error [\(type)]: \(message)")
         }
     }
 

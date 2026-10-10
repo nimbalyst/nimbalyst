@@ -28,6 +28,16 @@ const documents: SharedDocument[] = [
     updatedAt: 10,
     parentFolderId: 'folder-engineering',
   },
+  {
+    documentId: 'doc-bare-child',
+    teamProjectId: 'project-primary',
+    title: 'Child',
+    documentType: 'markdown',
+    createdBy: 'member-self',
+    createdAt: 1,
+    updatedAt: 11,
+    parentFolderId: 'folder-engineering',
+  },
 ] as unknown as SharedDocument[];
 
 const documentTypes = [] as const;
@@ -64,6 +74,7 @@ function renderList(props: React.ComponentProps<typeof SharedDocsListView>) {
       pendingFolder: atom(null),
       unreadDocument: () => notUnread,
     },
+    isPageTree: () => false,
     trashDocument: vi.fn(),
     removeFolder: vi.fn(),
     moveDocument: vi.fn(),
@@ -104,17 +115,48 @@ describe('row context menu', () => {
     fireEvent.click(document.querySelector('[data-folder-option="folder-marketing"]')!);
     fireEvent.click(document.querySelector('.shared-docs-move-confirm')!);
     expect(session.moveDocument).toHaveBeenCalledWith('doc-in-engineering', 'folder-marketing');
+    // A move stores the bare name; the parent is the page's position.
     await vi.waitFor(() => {
-      expect(session.updateDocumentTitle).toHaveBeenCalledWith('doc-in-engineering', 'Marketing/Sync protocol notes.md');
+      expect(session.updateDocumentTitle).toHaveBeenCalledWith('doc-in-engineering', 'Sync protocol notes');
     });
   });
 
-  it('deletes a folder from its row after the descendant-count confirmation', async () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(true);
+  it('moves a nested page with a bare title to root, and renames to a bare name', async () => {
+    const { container, session } = renderList({ folderId: 'folder-engineering', onSelectFolder: () => undefined });
+    const row = container.querySelector('[data-document-id="doc-bare-child"]')!;
+
+    fireEvent.contextMenu(row);
+    fireEvent.click(await screen.findByText('Move to…'));
+    fireEvent.click(document.querySelector('[data-folder-option="root"]')!);
+    fireEvent.click(document.querySelector('.shared-docs-move-confirm')!);
+    expect(session.moveDocument).toHaveBeenCalledWith('doc-bare-child', null);
+    expect(session.updateDocumentTitle).not.toHaveBeenCalled();
+
+    fireEvent.contextMenu(row);
+    fireEvent.click(await screen.findByText('Rename'));
+    const input = await screen.findByDisplayValue('Child');
+    fireEvent.change(input, { target: { value: 'Renamed child' } });
+    fireEvent.click(screen.getAllByText('Rename').at(-1)!);
+    await vi.waitFor(() => expect(session.updateDocumentTitle).toHaveBeenCalledWith('doc-bare-child', 'Renamed child'));
+  });
+
+  it('deletes a folder from its row only after the in-app descendant-count confirmation', async () => {
+    const confirmSpy = vi.spyOn(window, 'confirm');
     const { container, session } = renderList({ onSelectFolder: () => undefined });
-    fireEvent.contextMenu(container.querySelector('[data-folder-id="folder-engineering"]')!);
+    const row = container.querySelector('[data-folder-id="folder-engineering"]')!;
+
+    fireEvent.contextMenu(row);
     fireEvent.click(await screen.findByText('Delete'));
-    expect(window.confirm).toHaveBeenCalledWith(expect.stringContaining('1 document'));
-    expect(session.removeFolder).toHaveBeenCalledWith('folder-engineering');
+    const dialog = await screen.findByTestId('collab-confirm-dialog');
+    expect(dialog.textContent).toContain('2 documents');
+    fireEvent.keyDown(dialog, { key: 'Escape' });
+    await vi.waitFor(() => expect(screen.queryByTestId('collab-confirm-dialog')).toBeNull());
+    expect(session.removeFolder).not.toHaveBeenCalled();
+
+    fireEvent.contextMenu(row);
+    fireEvent.click(await screen.findByText('Delete'));
+    fireEvent.click((await screen.findByTestId('collab-confirm-dialog')).querySelector('.collab-confirm-accept')!);
+    await vi.waitFor(() => expect(session.removeFolder).toHaveBeenCalledWith('folder-engineering'));
+    expect(confirmSpy).not.toHaveBeenCalled();
   });
 });

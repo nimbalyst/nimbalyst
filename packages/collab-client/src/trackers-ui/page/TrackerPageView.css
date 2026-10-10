@@ -1,0 +1,57 @@
+/**
+ * A typed page reads as a document tab: the header, Links and notices line up
+ * with the editor's text column (the editor's own horizontal padding), and the
+ * body grows with its content so the page scrolls as one column.
+ */
+
+.tracker-page-view-header,
+.tracker-page-view-gutter,
+.tracker-page-view-links {
+  padding-left: 46px;
+  padding-right: 46px;
+}
+
+.tracker-page-view-header {
+  padding-top: 20px;
+}
+
+.tracker-page-view-links {
+  padding-top: 12px;
+  padding-bottom: 48px;
+}
+
+.tracker-page-view-links .tracker-links-section {
+  border-top: 1px solid var(--nim-border);
+  padding-top: 12px;
+}
+
+/* The editor reserves 400px below the last line for a tab that is all body;
+   here the Links section follows the body, so keep a normal gap. */
+.tracker-page-view-body .ContentEditable__root {
+  padding-bottom: 24px;
+  min-height: 120px;
+}
+
+/* Matches the editor's own narrow-window padding. */
+@media (max-width: 1025px) {
+  .tracker-page-view-header,
+  .tracker-page-view-gutter,
+  .tracker-page-view-links {
+    padding-left: 8px;
+    padding-right: 8px;
+  }
+}
+
+/* Named definitions are edited by the type page tabs; Markdown keeps their fences. */
+.type-page-prose [data-named-page-view],
+.type-page-tab-prose [data-named-page-view] { display: none; }
+
+.tracker-page-view-header--bar {
+  padding-top: 36px;
+}
+
+/* A body that opens with the page title as a heading: the header already
+   shows the title, so the repeated heading is hidden, not removed. */
+.ContentEditable__root[data-title-heading='hidden'] > h1:first-child {
+  display: none;
+}

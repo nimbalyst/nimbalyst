@@ -953,8 +953,7 @@ test('source mode blocks saving during a pending review and replays the latest g
   // Leaving source mode reloads from disk, so those unsaved bytes exist nowhere
   // else. They may not be destroyed on the user's behalf: the toggle asks, and
   // declining keeps both the buffer and source mode exactly as they are
-  // (NIM-5359, finding 3). Playwright auto-dismisses a dialog with no listener,
-  // which is the "Cancel" case.
+  // (NIM-5359, finding 3).
   const exitSourceMode = async () => {
     await tabEditor.locator('button[title="More actions"]').click();
     await page.waitForTimeout(150);
@@ -963,6 +962,7 @@ test('source mode blocks saving during a pending review and replays the latest g
   };
 
   await exitSourceMode();
+  await page.locator('.confirm-dialog-button-cancel').click();
   await page.waitForTimeout(500);
   await expect(page.locator('.monaco-markdown-toolbar')).toBeVisible();
   expect(await readSourceBuffer()).toContain('typed in source mode');
@@ -971,8 +971,8 @@ test('source mode blocks saving during a pending review and replays the latest g
   // completes: the rich editor re-registers as a presenter and the model
   // immediately publishes the LATEST generation, not the one that was live when
   // source mode was entered.
-  page.once('dialog', (dialog) => { void dialog.accept(); });
   await exitSourceMode();
+  await page.locator('.confirm-dialog-button-confirm').click();
   await expect(page.locator(PLAYWRIGHT_TEST_SELECTORS.unifiedDiffHeader)).toBeVisible({ timeout: 5000 });
 
   const editorText = (await page.locator(ACTIVE_EDITOR_SELECTOR).textContent()) ?? '';

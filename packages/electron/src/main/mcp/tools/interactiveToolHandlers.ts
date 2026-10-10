@@ -36,9 +36,12 @@ import { getPermissionService } from "../../services/PermissionService";
 import { SessionCommitService } from "../../services/SessionCommitService";
 import { resolveGitCommitProposalTarget } from "../../services/gitCommitProposalTarget";
 import { findFreshInteractiveResponse } from "./interactiveResponsePolling";
+import { isInteractivePromptClosed } from "../../services/ai/questionTerminalResultLookup";
 import {
   clearPendingInteractiveWaiter,
   countPendingInteractiveWaiters,
+  getRequestUserInputFallbackResponseChannel,
+  getRequestUserInputResponseChannel,
   notePendingInteractiveWaiter,
   shouldSettleFromSessionFallback,
 } from "./interactivePromptFallback";
@@ -51,6 +54,7 @@ import {
   type InteractivePromptCallExtra,
 } from "./interactivePromptKeepalive";
 import {
+  settleReasonFromResponse,
   shouldTerminalizePrompt,
   type InteractivePromptSettleReason,
 } from "./interactivePromptAbandonment";
@@ -1138,18 +1142,10 @@ Prefer this tool over AskUserQuestion when input is richer than a flat list of o
   };
 }
 
-export function getRequestUserInputResponseChannel(
-  sessionId: string,
-  promptId: string,
-): string {
-  return `request-user-input-response:${sessionId || "unknown"}:${promptId}`;
-}
-
-export function getRequestUserInputFallbackResponseChannel(
-  sessionId: string,
-): string {
-  return `request-user-input-response:${sessionId || "unknown"}:__fallback__`;
-}
+export {
+  getRequestUserInputFallbackResponseChannel,
+  getRequestUserInputResponseChannel,
+} from "./interactivePromptFallback";
 
 export async function handleRequestUserInput(
   args: any,
@@ -1407,6 +1403,7 @@ export async function handleRequestUserInput(
               result: JSON.stringify({
                 cancelled,
                 answers: cancelled ? {} : answers,
+                ...(reason === 'superseded' ? { reason } : {}),
                 respondedBy,
                 respondedAt,
               }),
@@ -1425,6 +1422,7 @@ export async function handleRequestUserInput(
               type: "text",
               text: JSON.stringify({
                 cancelled: true,
+                ...(reason === 'superseded' ? { reason } : {}),
                 respondedBy,
                 respondedAt,
               }),
@@ -1456,10 +1454,11 @@ export async function handleRequestUserInput(
         answers?: Record<string, unknown>;
         cancelled?: boolean;
         respondedBy?: "desktop" | "mobile";
+        reason?: string;
       },
-    ) => settle(result, "ipc");
+    ) => settle(result, "ipc", settleReasonFromResponse(result));
 
-    const onFallbackResponse = (
+    const onFallbackResponse = async (
       _event: unknown,
       result: {
         promptId?: string;
@@ -1467,6 +1466,7 @@ export async function handleRequestUserInput(
         answers?: Record<string, unknown>;
         cancelled?: boolean;
         respondedBy?: "desktop" | "mobile";
+        reason?: string;
       },
     ) => {
       const responsePromptIds = [
@@ -1488,7 +1488,15 @@ export async function handleRequestUserInput(
       ) {
         return;
       }
-      settle(result, "ipc-fallback");
+      // The fallback accepts an unrelated id when this is the sole waiter, so an
+      // answer from a closed (e.g. superseded) form would settle this newer one.
+      for (const id of responsePromptIds) {
+        if (await isInteractivePromptClosed(sessionKey, id)) {
+          console.warn(`[MCP Server] PromptForUserInput ignored fallback answer for closed prompt ${id}`);
+          return;
+        }
+      }
+      settle(result, "ipc-fallback", settleReasonFromResponse(result));
     };
 
     ipcMain.on(responseChannel, onResponse);

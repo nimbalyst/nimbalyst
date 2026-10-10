@@ -139,9 +139,9 @@ test("opening a large shared CSV retains every pinned and offscreen row on both 
     await a
       .locator(S.fileTreeItem, { hasText: filename })
       .click({ button: "right" });
-    await a.getByText("Share to Team", { exact: true }).click();
-    const dialog = a.getByRole("dialog", { name: "Share to Team" });
-    await dialog.getByRole("button", { name: /Share to Team$/ }).click();
+    await a.getByText("Copy to Wiki...", { exact: true }).click();
+    const dialog = a.getByRole("dialog", { name: "Copy to Wiki" });
+    await dialog.getByRole("button", { name: /Copy to Team$/ }).click();
     await expect(dialog).toBeHidden({ timeout: 20000 });
     await harness.openSharedMode("A");
     await a

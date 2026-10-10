@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="documents_search_placeholder">Search files</string>
+    <string name="documents_clear_search">Clear search</string>
+    <string name="documents_loading">Loading files…</string>
+    <string name="documents_connecting">Connecting file sync…</string>
+    <string name="documents_syncing">Syncing files…</string>
+    <string name="documents_syncing_received">Syncing files… %1$d received</string>
+    <plurals name="documents_file_count">
+        <item quantity="one">%1$d file</item>
+        <item quantity="other">%1$d files</item>
+    </plurals>
+    <string name="documents_empty_title">No Documents</string>
+    <string name="documents_empty_detail">Markdown files will appear here once synced from the desktop app.</string>
+    <string name="documents_no_matches">No files match \"%1$s\"</string>
+    <string name="documents_retry">Retry</string>
+    <string name="documents_folder_expand">Expand folder</string>
+    <string name="documents_folder_collapse">Collapse folder</string>
+
+    <string name="document_editor_back">Back</string>
+    <string name="document_editor_loading">Loading editor…</string>
+    <string name="document_editor_error_title">Editor Error</string>
+    <string name="document_editor_copy">Copy</string>
+    <string name="document_editor_dismiss">Dismiss</string>
+    <string name="document_editor_format">Format</string>
+    <string name="document_editor_bold">Bold</string>
+    <string name="document_editor_italic">Italic</string>
+    <string name="document_editor_code">Code</string>
+    <string name="document_editor_strikethrough">Strikethrough</string>
+    <string name="document_editor_save">Save</string>
+    <string name="document_editor_unsaved">Unsaved changes</string>
+    <string name="document_editor_queued">Saved on this device. It will sync when file sync reconnects.</string>
+    <string name="document_editor_missing">This file is no longer synced to this device.</string>
+    <string name="document_editor_decrypt_failed">This file could not be decrypted on this device.</string>
+    <string name="document_save_failed_title">Changes to %1$s are not saved</string>
+    <string name="document_save_failed_copy">Copy text</string>
+    <string name="document_save_failed_discard">Discard</string>
+
+    <string name="open_file_syncing">Syncing this file…</string>
+    <string name="open_file_not_synced">This file is not synced to this device</string>
+    <string name="open_file_outside_project">This file is on your computer and not available on this device</string>
+    <string name="open_file_close">Close</string>
+</resources>

@@ -35,6 +35,7 @@ import { useAtomValue, useSetAtom } from 'jotai';
 import { MarkdownEditor, MonacoEditor, DocumentPathProvider } from '@nimbalyst/runtime';
 import { $convertFromEnhancedMarkdownString, getEditorTransformers, type CommentsConfig } from '@nimbalyst/runtime/editor';
 import {
+  getElectronCollabDocsSession,
   getTeamSyncProvider,
   getSharedDocumentsForScopeKey,
   sharedDocumentsAtom,
@@ -43,6 +44,7 @@ import {
 import { buildCollabUri } from '@nimbalyst/collab-protocol';
 import { FixedTabHeaderContainer, FixedTabHeaderRegistry } from '@nimbalyst/runtime/plugins/shared/fixedTabHeader';
 import { LexicalDiffHeaderAdapter } from '../UnifiedDiffHeader';
+import { PageInfoPanel } from '../PageInfo/PageInfoPanel';
 import { useDocumentDecisionsConfig } from './useDocumentDecisionsConfig';
 import { DecisionOutline } from '@nimbalyst/runtime/editor/plugins/DecisionPlugin/DecisionOutline';
 import { DocumentSyncProvider, CollabHistoryClient, LocalDocumentReplica } from '@nimbalyst/runtime/sync';
@@ -111,6 +113,8 @@ import {
   CollabRecoveryBanner,
   CollabRenderFailureBanner,
 } from './CollabDocumentHeaderMeta';
+import { CollabPlainPageHeader } from '../CollabMode/CollabPlainPageHeader';
+import { usePageMenuItems } from '../CollabMode/usePageMenuItems';
 import {
   getSharedDocumentDisplayPath,
   getSharedDocumentDisplayPathWithFallback,
@@ -975,6 +979,9 @@ export const CollaborativeTabEditor: React.FC<CollaborativeTabEditorProps> = ({
   ]);
 
   const markdownConfig = useMemo(() => ({
+    // A page's title and type row scroll with its body, as on a typed page.
+    documentHeader: <CollabPlainPageHeader scope={activeConfig.scope} documentId={activeConfig.documentId} />,
+    showCitationSourcesLine: false, // listed in Page info
     onUploadAsset: (file: File) => assetService.uploadFile(file),
     // NIM-1683: intentionally do NOT wire onAssetReferencesRemoved. Deleting an
     // asset the moment it leaves the *current* editor state is data-loss --
@@ -982,7 +989,7 @@ export const CollaborativeTabEditor: React.FC<CollaborativeTabEditorProps> = ({
     // `collab-asset://` URI. Asset lifetime is tied to document lifetime; the
     // server reclaims all of a doc's blobs only when the document itself is
     // deleted. Leaving this unset keeps the asset-GC extension idle.
-  }), [assetService]);
+  }), [assetService, activeConfig.scope, activeConfig.documentId]);
 
   // Create a minimal EditorHost for collaboration mode
   // Most operations are no-ops since content syncs via Y.Doc
@@ -1293,51 +1300,31 @@ export const CollaborativeTabEditor: React.FC<CollaborativeTabEditorProps> = ({
     }
   }, [activeConfig.fileExtension, activeConfig.title, fileName]);
 
+  const pageMenuItems = usePageMenuItems({
+    lane: 'team',
+    session: getElectronCollabDocsSession(activeConfig.scope),
+    page: (documentType === 'markdown' && sharedDocuments.find((document) => document.documentId === activeConfig.documentId)) || null,
+    canMoveAcross: true,
+  });
   const collabActionItems = useMemo(() => {
-    const actionDisabled = localOrigin.busyAction !== null;
+    const busy = localOrigin.busyAction !== null;
+    // Local-source actions only once a local file is linked; until then, only linking one.
+    const linked = localOrigin.binding;
+    const pageItems = pageMenuItems.map(({ label, icon, onSelect, destructive, dividerBefore }) => ({ label, icon, onClick: onSelect, destructive, dividerBefore }));
+    const treeItems = pageItems.filter((item) => !item.destructive);
     return [
-      ...(documentType === 'code' ? [{
-        label: 'Save a Copy',
-        icon: 'download',
-        disabled: !hasHydrated,
-        onClick: () => {
-          void handleSaveCodeCopy();
-        },
-      }] : []),
-      {
-        label: 'Open Local',
-        icon: 'folder_open',
-        disabled: !localOrigin.hasResolvedBinding || actionDisabled,
-        onClick: () => {
-          void localOrigin.openLocalSource();
-        },
-      },
-      {
-        label: 'Re-upload to Shared Doc',
-        icon: 'upload',
-        disabled: !localOrigin.binding || actionDisabled,
-        onClick: () => {
-          void handleReuploadFromLocal();
-        },
-      },
-      {
-        label: localOrigin.binding ? 'Relink Local Source' : 'Link Local Source',
-        icon: 'link',
-        disabled: actionDisabled,
-        onClick: () => {
-          void localOrigin.relinkLocalSource();
-        },
-      },
-      {
-        label: 'Clear Local Source',
-        icon: 'link_off',
-        disabled: !localOrigin.binding || actionDisabled,
-        onClick: () => {
-          void localOrigin.clearLocalSource();
-        },
-      },
+      // Trash stays last, after the local-source actions.
+      ...treeItems,
+      ...(documentType === 'code' ? [{ label: 'Save a Copy', icon: 'download', disabled: !hasHydrated, onClick: () => { void handleSaveCodeCopy(); } }] : []),
+      ...(linked ? [
+        { label: 'Open Local Source', icon: 'folder_open', dividerBefore: treeItems.length > 0, disabled: !localOrigin.hasResolvedBinding || busy, onClick: () => { void localOrigin.openLocalSource(); } },
+        { label: 'Update from Local Source', icon: 'upload', disabled: busy, onClick: () => { void handleReuploadFromLocal(); } },
+      ] : []),
+      { label: linked ? 'Relink Local Source' : 'Link Local Source', icon: 'link', dividerBefore: !linked && treeItems.length > 0, disabled: busy, onClick: () => { void localOrigin.relinkLocalSource(); } },
+      ...(linked ? [{ label: 'Clear Local Source', icon: 'link_off', disabled: busy, onClick: () => { void localOrigin.clearLocalSource(); } }] : []),
+      ...pageItems.filter((item) => item.destructive),
     ];
-  }, [documentType, handleSaveCodeCopy, hasHydrated, localOrigin, handleReuploadFromLocal]);
+  }, [documentType, handleSaveCodeCopy, hasHydrated, localOrigin, handleReuploadFromLocal, pageMenuItems]);
   const handleLexicalEditorReady = useCallback((editor: any) => {
     setLexicalEditor((prev: any) => (prev === editor ? prev : editor));
     lexicalEditorRef.current = editor ?? null;
@@ -1466,12 +1453,14 @@ export const CollaborativeTabEditor: React.FC<CollaborativeTabEditorProps> = ({
         isMarkdown={documentType === 'markdown'}
         lexicalEditor={documentType === 'markdown' ? (lexicalEditor ?? undefined) : undefined}
         breadcrumbContent={(
-          <CollabDocumentHeaderMeta filePath={filePath} displayPath={sharedDisplayPath} />
+          <CollabDocumentHeaderMeta filePath={filePath} displayPath={sharedDisplayPath} scope={activeConfig.scope} documentId={activeConfig.documentId} />
         )}
         showShareLinkButton={false}
         showSharedDocButton={false}
         showHistoryAction={true}
+        showPageInfoAction={documentType === 'markdown'}
         showCommonFileActions={false}
+        showDocumentTypeAction={false}
         sharedDocumentLinkTarget={{
           documentId: activeConfig.documentId,
           orgId: activeConfig.orgId,
@@ -1511,23 +1500,27 @@ export const CollaborativeTabEditor: React.FC<CollaborativeTabEditorProps> = ({
               editor={lexicalEditor ?? undefined}
             />
             <DecisionOutline editor={lexicalEditor} />
-            {/* Accept/reject bar when an AI edit is pending review. Mirrors
-                the TabEditor markdown branch. */}
+            {/* Agent edits land in shared documents as final text; this bar
+                only shows for pending diffs older builds wrote into the room. */}
             <LexicalDiffHeaderAdapter
               editor={lexicalEditor ?? undefined}
               filePath={filePath}
               fileName={fileName}
             />
-            <div style={{ flex: 1, overflow: 'hidden' }}>
-              <MarkdownEditor
-                host={editorHost}
-                config={markdownConfig}
-                onGetContent={handleGetContentReady}
-                onEditorReady={handleLexicalEditorReady}
-                collaborationConfig={collaborationMemoConfig}
-                commentsConfig={commentsMemoConfig}
-                decisionsConfig={decisionsMemoConfig}
-              />
+            <div className="flex min-h-0 flex-1">
+              <div style={{ flex: 1, minWidth: 0, overflow: 'hidden' }}>
+                <MarkdownEditor
+                  host={editorHost}
+                  config={markdownConfig}
+                  onGetContent={handleGetContentReady}
+                  onEditorReady={handleLexicalEditorReady}
+                  collaborationConfig={collaborationMemoConfig}
+                  commentsConfig={commentsMemoConfig}
+                  decisionsConfig={decisionsMemoConfig}
+                />
+              </div>
+              {/* A shared page has no frontmatter: Page info lists its sources. */}
+              <PageInfoPanel editor={lexicalEditor ?? null} />
             </div>
           </DocumentPathProvider>
         ) : documentType === 'code' && syncProviderRef.current ? (

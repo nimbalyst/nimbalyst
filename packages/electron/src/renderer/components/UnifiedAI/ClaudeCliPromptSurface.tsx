@@ -5,6 +5,7 @@ import {
   getCustomToolWidget,
   ToolWidgetErrorBoundary,
 } from '@nimbalyst/runtime/ui/AgentTranscript/components/CustomToolWidgets';
+import { isQuestionTool, partitionUnansweredQuestions } from '@nimbalyst/runtime/ai/server/interactivePromptTools';
 
 export interface ClaudeCliPromptSurfaceProps {
   sessionId: string;
@@ -24,8 +25,9 @@ export interface ClaudeCliPromptSurfaceProps {
  * answer back is already registered for every session in `SessionTranscript`.
  *
  * It reuses the exact widget dispatch (`getCustomToolWidget`) and the exact
- * pending-prompt predicate (`isInteractivePromptTool` + missing `result`) the
- * transcript uses, so behavior matches the SDK path. When nothing is pending it
+ * pending-prompt rule the transcript uses (`isInteractivePromptTool` + missing
+ * `result`, nothing before the last user message, and only open questions), so
+ * behavior matches the SDK path. When nothing is pending it
  * renders nothing and the terminal gets the full height.
  */
 const readFile = async (
@@ -47,16 +49,24 @@ export const ClaudeCliPromptSurface: React.FC<ClaudeCliPromptSurfaceProps> = ({
 }) => {
   const messages = useAtomValue(sessionMessagesAtom(sessionId));
 
-  const pendingPrompts = useMemo(
-    () =>
-      messages.filter(
-        (m) =>
-          !!m.toolCall?.toolName &&
-          isInteractivePromptTool(m.toolCall.toolName) &&
-          !m.toolCall.result
-      ),
-    [messages]
-  );
+  const pendingPrompts = useMemo(() => {
+    // A prompt the user moved past by sending a new message can never be
+    // answered, so only prompts after the last user message are pending.
+    let lastUserIndex = -1;
+    for (let i = messages.length - 1; i >= 0; i--) {
+      if (messages[i].type === 'user_message') {
+        lastUserIndex = i;
+        break;
+      }
+    }
+    const openQuestionIndices = new Set(partitionUnansweredQuestions(messages).open.map((q) => q.index));
+    return messages.filter((m, index) => {
+      const toolName = m.toolCall?.toolName;
+      if (index <= lastUserIndex || !toolName || !isInteractivePromptTool(toolName) || m.toolCall!.result) return false;
+      // Questions also need last-occurrence-wins handling of provider echoes.
+      return !isQuestionTool(toolName) || openQuestionIndices.has(index);
+    });
+  }, [messages]);
 
   if (pendingPrompts.length === 0) return null;
 

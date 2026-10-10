@@ -9,6 +9,7 @@ import { getCurrentIdentity } from '../services/TrackerIdentityService';
 import { getSyncProvider } from '../services/SyncManager';
 import { resolveTrackerProjectScope } from '../services/TrackerProjectScope';
 import { safeHandle } from '../utils/ipcRegistry';
+import { isLocalWikiItemId } from '../services/localWiki/localWikiItemIds';
 
 const logger = log.scope('TrackerPersonalStateHandlers');
 
@@ -91,6 +92,8 @@ export function registerTrackerPersonalStateHandlers(): void {
     if (!workspacePath || !input?.itemId || !Number.isFinite(input.favoriteUpdatedAt)) {
       return { success: false, error: 'workspacePath, itemId and favoriteUpdatedAt required' };
     }
+    // A Local wiki item is a file: no per-item rows, and nothing for personal sync.
+    if (isLocalWikiItemId(input.itemId)) return { success: true, data: null };
     try {
       const projectScope = await resolveTrackerProjectScope(workspacePath);
       const row = await getStore().setFavorite({
@@ -112,6 +115,8 @@ export function registerTrackerPersonalStateHandlers(): void {
     if (!workspacePath || !input?.itemId || !Number.isFinite(input.lastOpenedAt)) {
       return { success: false, error: 'workspacePath, itemId and lastOpenedAt required' };
     }
+    // A Local wiki item is a file: no per-item rows, and nothing for personal sync.
+    if (isLocalWikiItemId(input.itemId)) return { success: true, data: null };
     try {
       const projectScope = await resolveTrackerProjectScope(workspacePath);
       const row = await getStore().recordOpened({
@@ -137,6 +142,8 @@ export function registerTrackerPersonalStateHandlers(): void {
     if (!workspacePath || !input?.itemId) {
       return { success: false, error: 'workspacePath and itemId required' };
     }
+    // A Local wiki item is a file: no per-item rows, and nothing for personal sync.
+    if (isLocalWikiItemId(input.itemId)) return { success: true, data: null };
     if (input.snoozedUntil !== null && !Number.isFinite(input.snoozedUntil)) {
       return { success: false, error: 'snoozedUntil must be a timestamp or null' };
     }

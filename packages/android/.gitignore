@@ -3,6 +3,7 @@ build/
 local.properties
 app/build/
 dist-transcript/
+dist-editor/
 node_modules/
 
 # Signing material and local Firebase config -- never commit these.

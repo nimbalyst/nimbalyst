@@ -26,6 +26,17 @@ const BOOLEAN_FLAGS = new Set([
   'link-session',
   'overwrite',
   'bind',
+  'under-type',
+  'include-closed',
+  'confirm-destructive',
+  'archive',
+  'unarchive',
+  'create',
+  'root',
+  'local',
+  'team',
+  'open',
+  'no-open',
   'help',
   'h',
   'version',
@@ -40,7 +51,7 @@ const BOOLEAN_FLAGS = new Set([
 const VALUE_OR_BOOLEAN_FLAGS = new Set(['version']);
 
 /** Flags that may be repeated; their values accumulate into an array. */
-const REPEATABLE_FLAGS = new Set(['where', 'tag', 'field', 'unset', 'column', 'label', 'type-tag']);
+const REPEATABLE_FLAGS = new Set(['where', 'tag', 'field', 'unset', 'column', 'label', 'type-tag', 'old', 'new', 'page', 'remove-predicate']);
 
 const ALIASES: Record<string, string> = {
   q: 'quiet',

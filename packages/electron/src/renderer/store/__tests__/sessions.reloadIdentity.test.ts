@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { afterEach, describe, it, expect, vi } from 'vitest';
 import type { SessionData, TranscriptViewMessage } from '@nimbalyst/runtime/ai/server/types';
-import { loadSessionDataAtom, reloadSessionDataAtom, sessionStoreAtom, preserveReloadIdentity, sessionRegistryAtom, sessionListRootAtom, sessionListWorkspaceAtom } from '../atoms/sessions';
+import { loadSessionDataAtom, reloadSessionDataAtom, sessionStoreAtom, preserveReloadIdentity, sessionRegistryAtom, sessionListRootAtom, sessionListWorkspaceAtom, updateSessionStoreAtom } from '../atoms/sessions';
 import {createStore} from 'jotai';
 import {selectedMachineAtom} from '../atoms/remoteMachines';
 import { TranscriptProjector } from '@nimbalyst/runtime/ai/server/transcript/TranscriptProjector';
@@ -114,6 +114,24 @@ describe('machine-scoped session lists', () => {
   });
 });
 
+describe('updateSessionStoreAtom registry identity', () => {
+  // Token usage arrives every assistant step; a new registry Map repaints the
+  // session list and every session reference in open transcripts.
+  it('keeps the registry Map for updates with no registry fields', () => {
+    const store = createStore();
+    store.set(sessionStoreAtom('session-1'), makeSession());
+    store.set(sessionRegistryAtom, new Map([['session-1', {id: 'session-1', createdAt: 1, updatedAt: 2}]]) as any);
+    const registry = store.get(sessionRegistryAtom);
+
+    store.set(updateSessionStoreAtom, {sessionId: 'session-1', updates: {tokenUsage: {inputTokens: 1, outputTokens: 2, totalTokens: 3}}});
+    expect(store.get(sessionRegistryAtom)).toBe(registry);
+    expect(store.get(sessionStoreAtom('session-1'))?.tokenUsage?.totalTokens).toBe(3);
+
+    store.set(updateSessionStoreAtom, {sessionId: 'session-1', updates: {title: 'Renamed'}});
+    expect(store.get(sessionRegistryAtom).get('session-1')?.title).toBe('Renamed');
+  });
+});
+
 
 describe('canonical generation load/reload reconciliation', () => {
   afterEach(() => vi.unstubAllGlobals());
@@ -183,18 +201,31 @@ describe('canonical generation load/reload reconciliation', () => {
         acknowledged: false,
       },
       {
-        variant: 'five-second boundary',
+        // #1620: slow turn setup saves the prompt long after send.
+        variant: 'saved long after send',
         saved: 'Repeat request\n<NIMBALYST_SYSTEM_MESSAGE>Context</NIMBALYST_SYSTEM_MESSAGE>',
         optimistic: 'Repeat request',
-        age: 5000,
+        age: 8000,
+        acknowledged: true,
+      },
+      {
+        variant: 'saved before send',
+        saved: 'Repeat request',
+        optimistic: 'Repeat request',
+        age: 294,
+        sentAt: 1000,
         acknowledged: false,
       },
     ])(
       `${name} acknowledges context-normalized input: $variant`,
-      async ({ variant, saved, optimistic, age, acknowledged }) => {
+      async ({ variant, saved, optimistic, age, sentAt = 0, acknowledged }) => {
         const store = createStore();
         const id = `optimistic-context-${name}-${variant}`;
-        const pendingInput = { ...makeMessage(-4, optimistic), type: 'user_message' as const };
+        const pendingInput = {
+          ...makeMessage(-4, optimistic),
+          type: 'user_message' as const,
+          createdAt: new Date(sentAt),
+        };
         const canonical = {
           ...message(7369, 241, 99, saved),
           type: 'user_message' as const,

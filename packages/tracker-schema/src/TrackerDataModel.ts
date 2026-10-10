@@ -15,9 +15,21 @@ import { validateCitationLocator, validateCitationLocatorList } from './citation
 import {
   isSubjectKindAllowed,
   predicateValueShapeAcceptsFieldType,
-  validatePredicateQualifiers,
   type PredicateDefinition,
 } from './predicateRegistry.js';
+import {
+  effectiveProperties as resolveEffectiveProperties,
+  emptyLabelRegistry,
+  isLabelRegistryEmpty,
+  labelDescendants as resolveLabelDescendants,
+  resolveLabels as resolveItemLabels,
+  tableColumns as resolveTableColumns,
+  validateFieldPropertyValue,
+  validateLabelRefValue,
+  type EffectiveProperty,
+  type LabeledItem,
+  type LabelRegistry,
+} from './labelRegistry.js';
 
 export type FieldType =
   | 'string'
@@ -52,6 +64,13 @@ export type FieldType =
    * statement that validated and meant nothing.
    */
   | 'predicate-ref'
+  /**
+   * Label ids from the project's label registry (`labelRegistry.ts`), carried
+   * as data like `predicate-ref`. Multi-valued; an unknown label is a warning,
+   * never a rejection, because an agent may apply a label that is still a
+   * pending proposal.
+   */
+  | 'label-ref'
   | 'array'
   | 'object';
 
@@ -126,9 +145,10 @@ export interface FieldDefinition {
   relationshipTypeKey?: string;
   /**
    * Predicate id from the project's registry (knowledge-scopes contract 4.1).
-   * Present makes this field's values STATEMENTS: each one is validated against
-   * the predicate's qualifier declarations at write time, and the field's type
-   * must be able to carry the predicate's value shape.
+   * Present makes this field's values STATEMENTS: the field's type must be able
+   * to carry the predicate's value shape, and the owning type must be one of
+   * its subject kinds. A statement is just the named relation; it carries no
+   * qualifiers.
    *
    * Distinct from `relationshipTypeKey` on purpose. That key is a display and
    * behavior hint resolved against a hardcoded vocabulary and never validated;
@@ -184,24 +204,6 @@ export interface TrackerRelationshipValue {
   revisionId?: string;
   /** Room-assigned display number for `revisionId`. Advisory; never resolves. */
   serverRevision?: number;
-  /**
-   * Qualifier values for this statement, when the owning field declares a
-   * `predicate` (contract 4.1): "integrates with Notion VIA the webhook
-   * connector, FOR these operations".
-   *
-   * Deliberately on the relationship value rather than in a parallel structure
-   * beside it. Qualifiers describe ONE edge, and relationship values are
-   * already an add-wins set keyed by `itemId` that syncs on the metadata
-   * socket; a second store would have to reproduce that set's semantics and
-   * would drift from it the first time an edge was added on one device and
-   * removed on another.
-   *
-   * Deliberately NOT inside `metadata` either. `metadata` is an undifferentiated
-   * bag that `deriveRelationshipEdges` copies verbatim into the relationship
-   * index, so hiding qualifiers in it would change what that index stores as a
-   * side effect of declaring a predicate.
-   */
-  qualifiers?: Record<string, unknown>;
 }
 
 /** What a citation says about the claim it is attached to (contract 4.4). */
@@ -311,6 +313,19 @@ export interface TrackerDataModel {
    * Read-only is the only behavioral consequence.
    */
   archived?: boolean;
+  /**
+   * Give items of this type machine-private local numbers (`NIM.75`). Off
+   * unless the type opts in. Team issue keys (`NIM-123`) are unaffected, and a
+   * number already issued stays readable and resolvable after opting out.
+   */
+  localNumbers?: boolean;
+  /**
+   * Where the type's items live in a Local wiki (`@nimbalyst/local-wiki`
+   * FORMAT.md): one markdown page per item, or one CSV for the type. Only a
+   * type that declares it is a wiki type; without it the items stay in the app
+   * database. Kept as written so the `nim` CLI and the app agree.
+   */
+  storage?: 'pages' | 'table';
   /** If false, items of this type cannot be created via tracker_create. Defaults to true. */
   creatable?: boolean;
   /**
@@ -405,8 +420,8 @@ export class TrackerDataModelRegistry {
   /**
    * The project's predicate registry (contract 4.1), the sibling schema
    * artifact to the type definitions above. It lives here rather than in its
-   * own singleton for one reason: `validate()` is where a statement's
-   * qualifiers are checked, and it already has the model in hand. Splitting the
+   * own singleton for one reason: `validate()` is where a statement-bearing
+   * field is checked against its predicate, and it already has the model in hand. Splitting the
    * two would mean every write path had to thread a second registry through to
    * the place that needs both.
    *
@@ -418,6 +433,12 @@ export class TrackerDataModelRegistry {
    */
   private predicates: Map<string, PredicateDefinition> = new Map();
   private workspacePredicateLayers: Map<string, Map<string, PredicateDefinition>> = new Map();
+  /**
+   * The project's label registry (`.nimbalyst/labels.yaml`), layered exactly
+   * like predicates and for the same reason. Replaced whole on publish.
+   */
+  private labelRegistry: LabelRegistry = emptyLabelRegistry();
+  private workspaceLabelLayers: Map<string, LabelRegistry> = new Map();
 
   register(model: TrackerDataModel | DerivedTrackerTypeDeclaration, builtin = false): void {
     if (isDerivedTrackerTypeDeclaration(model)) {
@@ -519,15 +540,23 @@ export class TrackerDataModelRegistry {
    * Remove all workspace-specific (non-builtin) schemas.
    * Call this on workspace switch to prevent schemas from workspace A
    * leaking into workspace B.
+   *
+   * `keepVocabulary` is for reloading the SAME workspace's schemas: the label
+   * and predicate registries stay in force, so no listener ever observes them
+   * empty, and the caller replaces them whole once the fresh copy arrives.
    */
-  clearWorkspaceSchemas(): void {
+  clearWorkspaceSchemas(options: { keepVocabulary?: boolean } = {}): void {
     let changed = false;
-    // Every predicate is workspace-provided -- there are no builtins -- so the
-    // whole registry goes. Leaving it would let workspace A's verbs validate
-    // workspace B's statements, which is the #1035 leak in a second artifact.
-    if (this.predicates.size > 0) {
-      this.predicates = new Map();
-      changed = true;
+    if (!options.keepVocabulary) {
+      // Every predicate is workspace-provided -- there are no builtins -- so the
+      // whole registry goes. Leaving it would let workspace A's verbs validate
+      // workspace B's statements, which is the #1035 leak in a second artifact.
+      if (this.predicates.size > 0) {
+        this.predicates = new Map();
+        changed = true;
+      }
+      if (!isLabelRegistryEmpty(this.labelRegistry)) changed = true;
+      this.labelRegistry = emptyLabelRegistry();
     }
     for (const type of Array.from(this.models.keys())) {
       if (this.builtinTypes.has(type)) {
@@ -574,6 +603,7 @@ export class TrackerDataModelRegistry {
     if (workspacePath) {
       this.workspaceLayers.delete(workspacePath);
       this.workspacePredicateLayers.delete(workspacePath);
+      this.workspaceLabelLayers.delete(workspacePath);
     }
   }
 
@@ -601,6 +631,7 @@ export class TrackerDataModelRegistry {
   clearWorkspaceLayer(workspacePath: string): void {
     this.workspaceLayers.delete(workspacePath);
     this.workspacePredicateLayers.delete(workspacePath);
+    this.workspaceLabelLayers.delete(workspacePath);
   }
 
   // -------------------------------------------------------------------------
@@ -661,6 +692,67 @@ export class TrackerDataModelRegistry {
     }
     return this.workspacePredicateLayers.get(workspacePath)?.get(id);
   }
+
+  // -------------------------------------------------------------------------
+  // Label registry (see labelRegistry.ts)
+  // -------------------------------------------------------------------------
+
+  /** Replace the active view's label registry. */
+  setLabels(registry: LabelRegistry): void {
+    this.labelRegistry = registry;
+    this.listeners.forEach(fn => fn());
+  }
+
+  /** Replace the cached label registry for a NON-active workspace. No notification. */
+  setWorkspaceLabelLayer(workspacePath: string, registry: LabelRegistry): void {
+    this.workspaceLabelLayers.set(workspacePath, registry);
+  }
+
+  /** The label registry a read should resolve against (scoped like predicates). */
+  getLabelRegistry(): LabelRegistry {
+    if (!this.activeWorkspace) return this.labelRegistry;
+    const scope = this.scopeProvider?.();
+    if (!scope || scope === this.activeWorkspace) return this.labelRegistry;
+    return this.workspaceLabelLayers.get(scope) ?? EMPTY_LABEL_REGISTRY;
+  }
+
+  getLabelRegistryForWorkspace(workspacePath: string | null | undefined): LabelRegistry {
+    if (!workspacePath || !this.activeWorkspace || workspacePath === this.activeWorkspace) return this.labelRegistry;
+    return this.workspaceLabelLayers.get(workspacePath) ?? EMPTY_LABEL_REGISTRY;
+  }
+
+  /**
+   * Whether items of this type carry labels: the type declares a `label-ref`
+   * field. Everything else (a bug whose free-form tags live in a `labels`
+   * array, a type with its own `kind`) gets no label fields, no label value
+   * checks, and no unknown-label warnings. Rendering and validation gate
+   * {@link resolveLabels} and {@link effectiveProperties} on this.
+   */
+  acceptsLabels(trackerType: string): boolean {
+    const model = this.get(trackerType);
+    return model ? carriesLabels(model) : false;
+  }
+
+  /** Item labels plus legacy `kind`, closed under `broader`. */
+  resolveLabels(item: LabeledItem): string[] {
+    return resolveItemLabels(this.getLabelRegistry(), item);
+  }
+
+  /** Union of properties over the item's effective labels, own labels first. */
+  effectiveProperties(item: LabeledItem): EffectiveProperty[] {
+    return resolveEffectiveProperties(this.getLabelRegistry(), item, { isPredicate: this.isPredicate });
+  }
+
+  labelDescendants(labelId: string): string[] {
+    return resolveLabelDescendants(this.getLabelRegistry(), labelId);
+  }
+
+  /** Instance-table columns: the label's properties, then its ancestors'. */
+  tableColumns(labelId: string): EffectiveProperty[] {
+    return resolveTableColumns(this.getLabelRegistry(), labelId, { isPredicate: this.isPredicate });
+  }
+
+  private isPredicate = (id: string): boolean => this.scopedPredicates().has(id);
 
   /** The `extends` base of a type, for predicate subject-kind resolution. */
   private baseOf = (type: string): string | undefined => this.get(type)?.extends;
@@ -908,6 +1000,13 @@ export class TrackerDataModelRegistry {
           }
           break;
         }
+
+        case 'label-ref': {
+          const result = validateLabelRefValue(this.getLabelRegistry(), value);
+          for (const found of result.errors) errors.push({ field: field.name, message: `Field '${field.name}': ${found.message}`, code: found.code });
+          for (const found of result.warnings) warnings.push({ field: field.name, message: `Field '${field.name}': ${found.message}`, code: found.code });
+          break;
+        }
       }
 
       // Declared object shapes validate after the type check, so a `governs`
@@ -929,9 +1028,11 @@ export class TrackerDataModelRegistry {
       }
 
       if (field.predicate) {
-        this.validatePredicateField(model, field, value, errors);
+        this.validatePredicateField(model, field, errors);
       }
     }
+
+    if (carriesLabels(model)) checkFieldProperties(this.getLabelRegistry(), model, data, warnings);
 
     return {
       valid: errors.length === 0,
@@ -942,15 +1043,11 @@ export class TrackerDataModelRegistry {
 
   /**
    * Validate one statement-bearing field against the project's predicate
-   * registry (contract 4.1, and the section 7 gate that a predicate with
-   * required qualifiers rejects a statement missing them identically on every
-   * surface).
+   * registry (contract 4.1).
    *
-   * Three checks, in the order they answer "whose fault is this":
+   * Two checks, in the order they answer "whose fault is this":
    *
-   *  1. The predicate exists. If it does not, nothing below is knowable, and
-   *     validating the qualifiers against an absent contract would accept
-   *     anything.
+   *  1. The predicate exists. If it does not, nothing below is knowable.
    *  2. The registry still agrees with the field DECLARATION -- value shape and
    *     subject kind. These are schema properties, not data properties, so they
    *     are reported ONCE for the field rather than per entry, and they are
@@ -958,12 +1055,10 @@ export class TrackerDataModelRegistry {
    *     move under a field that was valid when it was written. That is exactly
    *     the destructive case `trackerPredicateRegistryChangeClassifier` exists
    *     to gate, and this is what the gate protects.
-   *  3. Each entry's qualifier bag.
    */
   private validatePredicateField(
     model: TrackerDataModel,
     field: FieldDefinition,
-    value: unknown,
     errors: ValidationIssue[],
   ): void {
     const predicateId = field.predicate as string;
@@ -992,30 +1087,44 @@ export class TrackerDataModelRegistry {
         message: `Predicate '${predicateId}' accepts subjects of ${predicate.subjectKinds.join(', ')}, not '${model.type}'`,
         code: 'PREDICATE_SUBJECT_KIND_NOT_ALLOWED',
       });
-      return;
     }
-
-    // Only `entity` reaches here today (the shape check above rejects the rest
-    // on a relationship field), so every entry is a relationship value whose
-    // qualifier bag rides on the value itself. When the `claim` kind lands with
-    // its own `value`/`qualifiers` fields, this is where the other shapes join.
-    const entries = Array.isArray(value) ? value : [value];
-    entries.forEach((entry, index) => {
-      if (!entry || typeof entry !== 'object') return;
-      const qualifiers = (entry as TrackerRelationshipValue).qualifiers;
-      const result = validatePredicateQualifiers(predicate, qualifiers);
-      for (const qualifierIssue of result.issues) {
-        errors.push({
-          field: Array.isArray(value)
-            ? `${field.name}[${index}].qualifiers${qualifierIssue.path ? `.${qualifierIssue.path}` : ''}`
-            : `${field.name}.qualifiers${qualifierIssue.path ? `.${qualifierIssue.path}` : ''}`,
-          message: `Field '${field.name}': ${qualifierIssue.message}`,
-          code: qualifierIssue.code,
-        });
-      }
-    });
   }
 }
+
+/**
+ * Field-stored label properties are checked against their declaration as
+ * WARNINGS only, on a type that carries labels. They live in
+ * `customFields[<id>]` (or flat in a write payload), and properties are
+ * global, so any declared id present is checked whatever the item's labels are.
+ */
+function checkFieldProperties(
+  registry: LabelRegistry,
+  model: TrackerDataModel,
+  data: Record<string, any>,
+  warnings: ValidationIssue[],
+): void {
+  if (registry.properties.length === 0) return;
+  const custom = data.customFields && typeof data.customFields === 'object' ? data.customFields : {};
+  for (const property of registry.properties) {
+    const flat = model.fields.some(f => f.name === property.id) ? undefined : data[property.id];
+    const value = custom[property.id] ?? flat;
+    if (value === undefined || value === null) continue;
+    for (const found of validateFieldPropertyValue(property, value)) {
+      warnings.push({
+        field: found.path ? `${property.id}.${found.path}` : property.id,
+        message: found.message,
+        code: found.code,
+      });
+    }
+  }
+}
+
+function carriesLabels(model: TrackerDataModel): boolean {
+  return model.fields.some(field => field.type === 'label-ref');
+}
+
+/** Same, for the label registry. */
+const EMPTY_LABEL_REGISTRY: LabelRegistry = emptyLabelRegistry();
 
 /** Shared empty layer for a scoped read against a workspace we know nothing about. */
 const EMPTY_LAYER: ReadonlyMap<string, TrackerDataModel> = new Map();
@@ -1048,8 +1157,13 @@ export function ensureTagsSupport(model: TrackerDataModel): TrackerDataModel {
   if (model.supportsTags === false) return model;
   // If the schema already declares a tags role, the author has explicitly
   // chosen where tags live (possibly under a different field name like
-  // `labels`). Respect that completely and don't inject anything.
-  if (model.roles?.tags != null) return model;
+  // `labels`). Respect that completely and don't inject anything -- except
+  // when the role names the default `tags` field the type never declared, which
+  // would otherwise make adding `roles: {tags: tags}` drop the injected field.
+  if (model.roles?.tags != null) {
+    if (model.roles.tags !== 'tags' || model.fields.some(f => f.name === 'tags')) return model;
+    return { ...model, fields: [...model.fields, TAGS_FIELD] };
+  }
 
   const hasTagsField = model.fields.some(f => f.name === 'tags');
   const fields = hasTagsField ? model.fields : [...model.fields, TAGS_FIELD];

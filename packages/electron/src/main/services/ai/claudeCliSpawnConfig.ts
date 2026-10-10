@@ -19,6 +19,7 @@
 
 import { ModelIdentifier } from '@nimbalyst/runtime/ai/server/types';
 import { normalizeClaudeCodeVariant, CLAUDE_CODE_PINNED_SDK_MODELS } from '@nimbalyst/runtime/ai/modelConstants';
+import { claudeCustomModelName } from '@nimbalyst/runtime/ai/claudeCustomModels';
 
 /**
  * Resolve a Nimbalyst model id to the alias the genuine `claude` CLI accepts for
@@ -43,6 +44,9 @@ export function resolveClaudeCliModelArg(model: string | undefined): string | un
 
   // Combined "provider:variant" id → take the variant part; bare value → itself.
   const parsed = ModelIdentifier.tryParse(trimmed);
+  // Custom gateway models (`claude-code-cli:custom/Fast`) go to `--model` verbatim.
+  const customModel = parsed?.customClaudeModel ?? claudeCustomModelName(trimmed);
+  if (customModel) return customModel;
   const isExtended = parsed ? parsed.isExtendedContext : /-1m$/i.test(trimmed);
   const variantInput = parsed ? parsed.baseVariant : trimmed.toLowerCase().replace(/-1m$/, '');
 
@@ -54,8 +58,10 @@ export function resolveClaudeCliModelArg(model: string | undefined): string | un
   }
 
   // Unknown format: a bare full model name is fine to pass through; a non-claude
-  // combined id (e.g. `openai:gpt-5`) must never reach `claude --model`.
-  return parsed ? undefined : trimmed;
+  // combined id (e.g. `openai:gpt-5`) or an unparseable Claude id still carrying
+  // its provider prefix must never reach `claude --model`.
+  if (parsed || /^claude-code(?:-cli)?:/.test(trimmed)) return undefined;
+  return trimmed;
 }
 
 export interface ClaudeCliSpawnInput {

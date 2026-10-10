@@ -61,6 +61,7 @@ vi.mock('fs/promises', () => ({
 
 vi.mock('../../utils/store', () => ({
   getWorkspaceState: (workspacePath: string) => workspaceStates.get(workspacePath) ?? {},
+  getWorkspaceStateField: (workspacePath: string, field: string) => (workspaceStates.get(workspacePath) as any)?.[field],
   updateWorkspaceState: (workspacePath: string, updater: (state: any) => void) => {
     const state = workspaceStates.get(workspacePath) ?? {};
     updater(state);
@@ -127,7 +128,12 @@ import {
   listTeams,
   registerTeamHandlers,
 } from '../TeamService';
-import { refreshPersonalSessionForAccount } from '../StytchAuthService';
+import {
+  getPersonalSessionJwtForAccount,
+  getSessionTokenForAccount,
+  refreshPersonalSessionForAccount,
+} from '../StytchAuthService';
+import { logger } from '../../utils/logger';
 import { getJwtExp } from '../jwtOrg';
 import {
   inspectProjectFolder,
@@ -581,6 +587,44 @@ describe('listTeams TTL cache + invalidation (RC4)', () => {
     expect(fetchMock.mock.calls[0]?.[1]).toEqual(expect.objectContaining({
       headers: expect.objectContaining({ Authorization: 'Bearer fresh-personal-jwt' }),
     }));
+  });
+
+  // Launch with a team-exchanged primary session: signed in, but no personal
+  // JWT until the first personal-org exchange. Every lookup in that gap used to
+  // fail as "not signed in" -- 63 error lines per startup.
+  it('mints a missing personal JWT for a startup burst instead of failing every lookup', async () => {
+    vi.mocked(getPersonalSessionJwtForAccount).mockReturnValueOnce(null as never);
+    vi.mocked(refreshPersonalSessionForAccount).mockResolvedValueOnce('fresh-personal-jwt' as never);
+    const handler = handlers.get('team:find-for-workspace')!;
+
+    const results = await Promise.all(
+      ['/workspace/one', '/workspace/two', '/workspace/three'].map((path) => handler(null, path)),
+    );
+
+    for (const result of results) {
+      expect(result).toEqual({ success: true, team: expect.objectContaining({ orgId: 'org-1' }), complete: true });
+    }
+    expect(refreshPersonalSessionForAccount).toHaveBeenCalledTimes(1);
+    expect(apiTeamsFetchCallCount()).toBe(1);
+    expect(fetchMock.mock.calls[0]?.[1]).toEqual(expect.objectContaining({
+      headers: expect.objectContaining({ Authorization: 'Bearer fresh-personal-jwt' }),
+    }));
+  });
+
+  it('reports a signed-out account as incomplete without a refresh or a pending-invite error', async () => {
+    vi.mocked(getPersonalSessionJwtForAccount).mockReturnValue(null as never);
+    vi.mocked(getSessionTokenForAccount).mockReturnValue(null as never);
+    try {
+      const result = await handlers.get('team:find-for-workspace')!(null, '/workspace/one');
+
+      expect(result).toEqual({ success: true, team: null, complete: false });
+      expect(refreshPersonalSessionForAccount).not.toHaveBeenCalled();
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(vi.mocked(logger.main.error).mock.calls.flat().join(' ')).not.toContain('findPendingInviteForWorkspace');
+    } finally {
+      vi.mocked(getPersonalSessionJwtForAccount).mockReturnValue('personal-jwt' as never);
+      vi.mocked(getSessionTokenForAccount).mockReturnValue('session-token' as never);
+    }
   });
 });
 

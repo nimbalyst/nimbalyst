@@ -14,6 +14,8 @@ import { CodexUsageIndicator } from '../CodexUsageIndicator';
 import { GeminiUsageIndicator } from '../GeminiUsageIndicator';
 import { VoiceModeButton } from '../UnifiedAI/VoiceModeButton';
 import { useExtensionGutterButtons, useExtensionBottomPanelButtons } from '../../extensions/panels/usePanels';
+import { PanelGutterBadgeBubble } from '../../extensions/panels/PanelGutterBadgeBubble';
+import { togglePanelPane } from '../../extensions/panels/panelPanes';
 import { openOrganizationSurface } from './openOrganizationSurface';
 import { HelpTooltip } from '../../help';
 import {
@@ -28,7 +30,7 @@ import {
   setGutterSectionOrderAtom,
   resetGutterCustomizationAtom,
 } from '../../store/atoms/appSettings';
-import { workspaceHasTeamAtom } from '../../store/atoms/collabDocuments';
+import { pagesAvailableAtom } from '../../store/atoms/collabDocuments';
 import { stytchIsSignedInAtom } from '../../store/atoms/stytchAuth';
 import { personalAccountsAtom } from '../../store/atoms/settingsDomains';
 import { orgInboxUnreadCountAtomFamily } from '../../store/atoms/teamInbox';
@@ -96,6 +98,12 @@ interface NavigationGutterProps {
 }
 
 // Shared nav-button styling. `active` swaps the filled/primary look.
+/**
+ * Org mode is unfinished, so its gutter button is hidden. The mode itself, its
+ * shortcut and the menu item still work. Flip this to bring the button back.
+ */
+export const ORG_MODE_GUTTER_BUTTON_ENABLED = false;
+
 const NAV_BTN_BASE =
   'nav-button group relative w-9 h-9 flex items-center justify-center border-none rounded-md cursor-pointer transition-all duration-150 p-0 active:scale-95 focus-visible:outline-2 focus-visible:outline-[var(--nim-primary)] focus-visible:outline-offset-2';
 const navBtnClass = (active: boolean): string =>
@@ -174,8 +182,9 @@ export const NavigationGutter: React.FC<NavigationGutterProps> = ({
   // Check if terminal feature is available (developer mode + feature enabled)
   const isTerminalAvailable = useAtomValue(terminalFeatureAvailableAtom);
 
-  // Show the collab mode button whenever the workspace has an active team.
-  const hasTeam = useAtomValue(workspaceHasTeamAtom);
+  // Pages has a Personal section that needs no team, so it shows whenever a
+  // workspace is open.
+  const pagesAvailable = useAtomValue(pagesAvailableAtom);
 
   // Only show the PR review button when the active workspace has a GitHub
   // remote (detected by pullRequestListeners). Guard on workspacePath so a
@@ -281,6 +290,9 @@ export const NavigationGutter: React.FC<NavigationGutterProps> = ({
       <button
         className={navBtnClass(isActive)}
         onClick={() => {
+          // Like a built-in mode, a fullscreen panel that declared a left pane
+          // collapses it on re-click rather than closing.
+          if (isActive && panel.placement === 'fullscreen' && togglePanelPane(panel.id, 'left')) return;
           const newPanelId = isActive ? null : panel.id;
           // Sidebar panels work alongside files mode.
           if (panel.placement === 'sidebar' && newPanelId && contentMode !== 'files') {
@@ -303,6 +315,7 @@ export const NavigationGutter: React.FC<NavigationGutterProps> = ({
         {panel.isAlpha && (
           <AlphaBadge size="dot" className="absolute top-0 right-0.5 pointer-events-none" />
         )}
+        <PanelGutterBadgeBubble panelId={panel.id} />
       </button>
     );
   };
@@ -364,9 +377,9 @@ export const NavigationGutter: React.FC<NavigationGutterProps> = ({
       }),
     },
     {
-      id: 'tracker', section: 'modes', icon: 'assignment', label: 'Tracker', hideable: true,
+      id: 'tracker', section: 'modes', icon: 'database', label: 'Tracker', hideable: true,
       render: () => renderModeButton({
-        icon: 'assignment',
+        icon: 'database',
         label: `Tracker (${getShortcutDisplay(KeyboardShortcuts.view.trackerMode)})`,
         contentMode: 'tracker', testId: 'tracker-mode-button',
         onReclick: () => onToggleTrackerCollapsed?.(),
@@ -380,12 +393,11 @@ export const NavigationGutter: React.FC<NavigationGutterProps> = ({
         contentMode: 'pr-review', testId: 'pr-review-mode-button',
       }),
     }] : []),
-    ...(hasTeam ? [{
-      id: 'collab', section: 'modes' as GutterSection, icon: 'description', label: 'Shared Docs', hideable: true,
+    ...(pagesAvailable ? [{
+      id: 'collab', section: 'modes' as GutterSection, icon: 'public', label: 'Wiki', hideable: true,
       render: () => renderModeButton({
-        icon: 'description',
-        badgeIcon: 'groups',
-        label: `Shared Docs (${getShortcutDisplay(KeyboardShortcuts.view.collabMode)})`,
+        icon: 'public',
+        label: `Wiki (${getShortcutDisplay(KeyboardShortcuts.view.collabMode)})`,
         contentMode: 'collab', testId: 'collab-mode-button',
         onReclick: () => onToggleCollabCollapsed?.(),
         decoration: <AlphaBadge size="dot" className="absolute top-0 right-0.5 pointer-events-none" />,
@@ -393,7 +405,7 @@ export const NavigationGutter: React.FC<NavigationGutterProps> = ({
     }] : []),
     // Org mode is gated on the project actually belonging to an organization,
     // the same rule Shared Docs uses. Without one there is no inbox to show.
-    ...(projectOrg ? [{
+    ...(ORG_MODE_GUTTER_BUTTON_ENABLED && projectOrg ? [{
       id: 'org', section: 'modes' as GutterSection, icon: 'forum', label: 'Organization', hideable: true,
       render: () => renderModeButton({
         icon: 'forum',

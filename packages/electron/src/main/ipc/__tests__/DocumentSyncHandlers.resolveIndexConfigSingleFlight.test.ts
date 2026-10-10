@@ -314,6 +314,19 @@ describe('document-sync:resolve-index-config lookup completeness', () => {
       error: 'No team found for this workspace.',
     });
   });
+
+  // Pages show one project, so the scope needs one; fill it only when the
+  // registry leaves no doubt which project the team's is.
+  it('fills a missing project from a one-project registry, and only then', async () => {
+    const project = (teamProjectId: string) => ({ projectId: `p-${teamProjectId}`, teamProjectId, gitRemoteHash: null, slug: null, name: null });
+    const resolveConfig = () => handlers.get('document-sync:resolve-index-config')!(null, { workspacePath: '/workspace/one' });
+
+    resolveTeamForWorkspaceMock.mockResolvedValue({ team: { orgId: 'org-1', teamProjectId: null, projects: [project('tp-1')] }, complete: true });
+    expect((await resolveConfig()).config.teamProjectId).toBe('tp-1');
+
+    resolveTeamForWorkspaceMock.mockResolvedValue({ team: { orgId: 'org-1', teamProjectId: null, projects: [project('tp-1'), project('tp-2')] }, complete: true });
+    expect((await resolveConfig()).config.teamProjectId).toBeNull();
+  });
 });
 
 describe('document-sync:resolve-index-config single-flight (RC4)', () => {

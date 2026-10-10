@@ -137,6 +137,71 @@ describe('CollabV3 index publication gate', () => {
     vi.useRealTimers();
   });
 
+  it('publishes explicit parent and manager nulls through bulk and live detach paths', async () => {
+    const { provider, indexSocket } = await createConnectedProvider();
+    try {
+      await publishBatch(provider, [baseSession({ parentSessionId: 'root', createdBySessionId: 'root' })]);
+      await provider.pushChange('session-1', { type: 'metadata_updated', metadata: { parentSessionId: null, createdBySessionId: null } });
+      expect(indexPackets(indexSocket).at(-1)?.session).toMatchObject({ parentSessionId: null, createdBySessionId: null });
+      await publishBatch(provider, [baseSession({ parentSessionId: null, createdBySessionId: null })]);
+      expect(provider.getCachedIndexEntry?.('session-1')).toMatchObject({ parentSessionId: null, createdBySessionId: null });
+    } finally { provider.disconnectAll(); }
+  });
+
+  it('exposes only authoritative incoming rows to hierarchy subscribers, including late subscribers', async () => {
+    const { provider, indexSocket } = await createConnectedProvider();
+    try {
+      await publishBatch(provider, [baseSession({ parentSessionId: 'A', createdBySessionId: 'A' })]);
+      const sent = indexPackets(indexSocket).at(-1)!;
+      const row = sent.session ?? sent.sessions[0];
+      const seen = vi.fn();
+      provider.onHierarchySnapshot?.(seen);
+      indexSocket.receive({type: 'indexBroadcast', session: row});
+      await vi.waitFor(() => expect(seen.mock.calls.at(-1)?.[0]).toEqual([
+        expect.objectContaining({sessionId: 'session-1', parentSessionId: 'A'}),
+      ]));
+      const count = seen.mock.calls.length;
+      await provider.pushChange('session-1', {type: 'metadata_updated', metadata: {parentSessionId: 'B', createdBySessionId: 'B'}});
+      expect(provider.getCachedIndexEntry?.('session-1')?.parentSessionId).toBe('B');
+      expect(seen).toHaveBeenCalledTimes(count);
+      const late = vi.fn();
+      provider.onHierarchySnapshot?.(late);
+      await vi.waitFor(() => expect(late.mock.calls[0]?.[0]).toEqual([
+        expect.objectContaining({parentSessionId: 'A'}),
+      ]));
+    } finally { provider.disconnectAll(); }
+  });
+
+  it.each([1, 2])('does not let superseded canonical hierarchy overwrite a newer cache during encryption stage %s', async (heldCall) => {
+    const { provider, indexSocket } = await createConnectedProvider();
+    let release = () => {};
+    let restoreEncrypt = () => {};
+    try {
+      await publishBatch(provider, [baseSession({parentSessionId: null})]);
+      const sent = indexPackets(indexSocket).at(-1)!;
+      const row = sent.session ?? sent.sessions[0];
+      const held = new Promise<void>(resolve => { release = resolve; });
+      const encrypt = crypto.subtle.encrypt.bind(crypto.subtle);
+      let calls = 0;
+      const spy = vi.spyOn(crypto.subtle, 'encrypt').mockImplementation(async (...args: any[]) => {
+        if (++calls === heldCall) await held;
+        return encrypt(args[0], args[1], args[2]);
+      });
+      restoreEncrypt = () => { spy.mockRestore(); };
+      let current = true;
+      const publishing = provider.pushChange('session-1', {type: 'metadata_updated', metadata: {parentSessionId: 'A', createdBySessionId: 'A'}}, {isCurrent: () => current});
+      await vi.waitFor(() => expect(calls).toBeGreaterThanOrEqual(heldCall));
+      indexSocket.receive({type: 'indexBroadcast', session: {...row, parentSessionId: 'B', createdBySessionId: 'B'}});
+      await vi.waitFor(() => expect(provider.getCachedIndexEntry?.('session-1')?.parentSessionId).toBe('B'));
+      current = false;
+      const before = indexPackets(indexSocket).length;
+      release();
+      expect(await publishing).toMatchObject({published: false, retryable: false});
+      expect(indexPackets(indexSocket)).toHaveLength(before);
+      expect(provider.getCachedIndexEntry?.('session-1')?.parentSessionId).toBe('B');
+    } finally { release(); restoreEncrypt(); provider.disconnectAll(); }
+  });
+
   it('publishes cold-start mobile commands through the encrypted index transport without a renderer', async () => {
     const { provider, indexSocket, encryptionKey } = await createConnectedProvider();
     try {

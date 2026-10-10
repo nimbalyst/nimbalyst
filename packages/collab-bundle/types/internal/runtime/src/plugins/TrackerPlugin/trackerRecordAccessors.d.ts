@@ -6,7 +6,7 @@
  */
 import type { TrackerRecord } from '../../core/TrackerRecord';
 import type { TrackerIdentity } from '../../core/DocumentService';
-import type { TrackerSchemaRole, FieldDefinition } from '@nimbalyst/tracker-schema';
+import type { TrackerSchemaRole, FieldDefinition } from '../../../../tracker-schema/src/browser';
 /**
  * Resolve the field name for a role given a tracker type.
  * Uses explicit role mapping first, falls back to conventional defaults.

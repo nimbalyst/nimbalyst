@@ -5,12 +5,8 @@ import os
 @MainActor
 extension VoiceAgent {
     func sendToolResult(callId: String, output: String) {
-        if promptReadoutCallId == callId {
-            promptReadoutCallId = nil
-            readingPrompt = false
-            if let error = parseArguments(output)["error"] as? String { announcementStatus = error }
-        }
         toolScopes.removeValue(forKey: callId)
+        withConversationLog { $0.toolCompleted(callId: callId, output: output) }
         toolResults.finish(callId, output: output)
     }
 
@@ -20,7 +16,7 @@ extension VoiceAgent {
         let args = parseArguments(arguments)
         if effectiveEngine == .live, let sessionId = args["session_id"] as? String,
            let session = try? database?.session(byId: sessionId),
-           session.projectId != resolveProjectId() || session.hostDeviceId != toolScopes[callId]?.hostDeviceId {
+           !session.isVoiceAvailable(onHost: toolScopes[callId]?.hostDeviceId, projectId: resolveProjectId()) {
             sendToolResult(callId: callId, output: Self.encodeArgs(["success": false, "error": "Session belongs to another computer or project."]))
             return
         }
@@ -241,7 +237,7 @@ extension VoiceAgent {
 
         do {
             let sessions = try database.sessions(forProject: projectId).filter {
-                effectiveEngine != .live || $0.hostDeviceId == toolScopes[callId]?.hostDeviceId
+                effectiveEngine != .live || $0.isVoiceAvailable(onHost: toolScopes[callId]?.hostDeviceId, projectId: projectId)
             }
             let sessionList = sessions.map { session -> [String: Any] in
                 var info: [String: Any] = [
@@ -282,8 +278,8 @@ extension VoiceAgent {
         }
 
         if effectiveEngine == .live {
-            guard let session = try? database?.session(byId: sessionId), session.projectId == resolveProjectId(),
-                  session.hostDeviceId == selectedHostDeviceId else {
+            guard let session = try? database?.session(byId: sessionId),
+                  session.isVoiceAvailable(onHost: selectedHostDeviceId, projectId: resolveProjectId()) else {
                 sendToolResult(callId: callId, output: Self.encodeArgs(["success": false, "error": "Session is not available on the selected computer in this project."]))
                 return
             }
@@ -330,7 +326,10 @@ extension VoiceAgent {
                 )
                 guard self.toolResults.contains(callId) else { return }
                 if outcome.success, let result = outcome.result, !result.isEmpty {
-                    let payload: [String: Any] = ["success": true, "source": "desktop", "session_id": sessionId, "summary": result, "pending_prompt_available": true]
+                    // Only the desktop knows whether a waiter is still live; it adds this section only then.
+                    // A hard-coded true here let the agent announce a question nothing could answer.
+                    let waiting = result.contains("This session is waiting for your input:")
+                    let payload: [String: Any] = ["success": true, "source": "desktop", "session_id": sessionId, "summary": result, "waiting_for_input": waiting]
                     self.sendToolResult(callId: callId, output: Self.encodeArgs(payload))
                     return
                 }
@@ -378,7 +377,7 @@ extension VoiceAgent {
                 "source": "local_cache",
                 "session_id": sessionId,
                 "updated_at": session.updatedAt,
-                "pending_prompt_available": false,
+                "waiting_for_input": "unknown",
                 "limitation": "Offline cached summary; pending questions and approvals are unknown. Do not infer that no question is waiting.",
                 "title": session.titleDecrypted ?? "Untitled",
                 "provider": session.provider ?? "unknown",

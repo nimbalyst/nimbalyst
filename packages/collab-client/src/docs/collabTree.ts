@@ -1,4 +1,12 @@
-import type { SharedDocument, SharedFolder } from './types';
+import {
+  TYPE_PAGE_DOCUMENT_PREFIX,
+  type SharedDocument,
+  type SharedFolder,
+  type SharedItemPlacement,
+  type SharedTypePlacement,
+} from './types';
+
+export { TYPE_PAGE_DOCUMENT_PREFIX } from './types';
 
 export interface CollabTreeFolderNode {
   id: string;
@@ -23,9 +31,81 @@ export interface CollabTreeDocumentNode {
   path: string;
   name: string;
   document: SharedDocument;
+  /** Child pages, types and placed items; only in a page tree. */
+  children?: CollabTreeNode[];
 }
 
-export type CollabTreeNode = CollabTreeFolderNode | CollabTreeDocumentNode;
+/**
+ * A tracker type placed in the tree. Its children are the type's items, after
+ * any placed subtypes (types that `extends` it).
+ */
+export interface CollabTreeTypeNode {
+  id: string;
+  type: 'type';
+  typeId: string;
+  path: string;
+  name: string;
+  /** Number of items of this type (in a page tree, and of every type that extends it). */
+  count: number;
+  placement: SharedTypePlacement;
+  /** Why the type's file did not load; the type is shown so the user can fix it. */
+  error?: string;
+  children: Array<CollabTreeTypeNode | CollabTreeItemNode>;
+}
+
+export interface CollabTreeItemNode {
+  id: string;
+  type: 'item';
+  itemId: string;
+  typeId: string;
+  path: string;
+  name: string;
+  /** Singular type name shown faintly beside the row (page tree only). */
+  typeLabel?: string;
+  /** Why the item's type did not load (see `CollabTreeTypeNode.error`). */
+  typeError?: string;
+  /** True when the item has a tree placement of its own. */
+  placed?: boolean;
+  /** A placed item's placement order among its siblings. */
+  sortOrder?: number;
+  /** Child pages, types and typed pages; only in a page tree. */
+  children?: CollabTreeNode[];
+}
+
+export type CollabTreeNode =
+  | CollabTreeFolderNode
+  | CollabTreeDocumentNode
+  | CollabTreeTypeNode
+  | CollabTreeItemNode;
+
+/**
+ * Host-supplied answers about tracker types and items. The tree stays pure: it
+ * never reads a registry or a store itself.
+ */
+export interface CollabTypeTreeResolver {
+  /** Display name of a type, or null when the type is unknown here. */
+  typeName(typeId: string): string | null;
+  /** Singular display name ("Module" for "Modules"); falls back to `typeName`. */
+  typeLabel?(typeId: string): string | null;
+  /** The type this one `extends`, if any. */
+  typeExtends?(typeId: string): string | null;
+  /** Why a type's file did not load; null for a type that loaded. */
+  typeError?(typeId: string): string | null;
+  /** Items of a type, in display order. */
+  itemsOfType(typeId: string): Array<{ itemId: string; title: string; sortKey?: string | number }>;
+  /** One item by id, for an item placed outside its type; null when unknown here. */
+  item?(itemId: string): { itemId: string; title: string; typeId: string } | null;
+  /**
+   * Types a user may place, for the "Place type..." menu. `creatable: false`
+   * marks a type that holds no new pages, which "Set type" does not offer.
+   */
+  listedTypes?(): Array<{ typeId: string; name: string; icon?: string; creatable?: boolean }>;
+}
+
+export interface CollabTypePlacementInput {
+  placements: SharedTypePlacement[];
+  resolver: CollabTypeTreeResolver;
+}
 
 export interface CollabFolderOption {
   folderId: string | null;
@@ -271,9 +351,172 @@ export function getSharedDocumentDisplayPathWithFallback(
   return getSharedDocumentDisplayPath(document, folders);
 }
 
+const TREE_NODE_RANK: Record<CollabTreeNode['type'], number> = {
+  folder: 0,
+  type: 1,
+  document: 2,
+  item: 3,
+};
+
+const treeNodeRank = (node: CollabTreeNode): number => TREE_NODE_RANK[node.type];
+
+/** @internal Shared with `collabPageTree.ts`. */
+export const compareTypeNodes = (left: CollabTreeTypeNode, right: CollabTreeTypeNode): number =>
+  (left.placement.sortOrder - right.placement.sortOrder)
+  || left.name.localeCompare(right.name, undefined, { numeric: true, sensitivity: 'base' })
+  || left.typeId.localeCompare(right.typeId);
+
+/**
+ * Folders, then placed types (by sortOrder), then documents (by name), then
+ * placed typed pages (by sortOrder): the order of a group nobody reordered.
+ * @internal Shared with `collabPageTree.ts`.
+ */
+export function compareTreeNodes(left: CollabTreeNode, right: CollabTreeNode): number {
+  const rank = treeNodeRank(left) - treeNodeRank(right);
+  if (rank !== 0) return rank;
+  if (left.type === 'type' && right.type === 'type') return compareTypeNodes(left, right);
+  if (left.type === 'item' && right.type === 'item') {
+    const order = (left.sortOrder ?? 0) - (right.sortOrder ?? 0);
+    if (order !== 0) return order;
+  }
+  return left.name.localeCompare(right.name, undefined, {
+    numeric: true,
+    sensitivity: 'base',
+  });
+}
+
+/** @internal Shared with `collabPageTree.ts`. */
+export function sortTreeNodes(nodes: CollabTreeNode[]): CollabTreeNode[] {
+  nodes.sort(compareTreeNodes);
+  // A type node's children keep their built order: subtypes, then items in
+  // the resolver's order.
+  for (const node of nodes) {
+    if (node.type === 'folder') sortTreeNodes(node.children);
+    else if (node.type === 'document' && node.children) sortTreeNodes(node.children);
+  }
+  return nodes;
+}
+
+/**
+ * Build type nodes from placements and attach them under their folder (or
+ * root). A type whose `extends` chain reaches another placed type nests inside
+ * that type's node instead. Placements the resolver cannot name are skipped.
+ */
+export type CollabTreeContainer = { path: string; children: CollabTreeNode[] };
+
+/**
+ * One node per resolvable placement, and the placed base each one nests in
+ * (null when it sits by its own placement). A corrupt `extends` cycle between
+ * placed types is broken by placing the node normally.
+ * @internal Shared with `collabPageTree.ts`.
+ */
+export function createTypeNodes(
+  placements: SharedTypePlacement[],
+  resolver: CollabTypeTreeResolver,
+): { nodes: Map<string, CollabTreeTypeNode>; parentType: Map<string, string | null> } {
+  const nodes = new Map<string, CollabTreeTypeNode>();
+  for (const placement of placements) {
+    if (nodes.has(placement.typeId)) continue;
+    const name = resolver.typeName(placement.typeId);
+    if (!name) continue;
+    const error = resolver.typeError?.(placement.typeId);
+    nodes.set(placement.typeId, {
+      id: `type:${placement.typeId}`,
+      type: 'type',
+      typeId: placement.typeId,
+      path: '',
+      name,
+      count: resolver.itemsOfType(placement.typeId).length,
+      placement,
+      children: [],
+      ...(error ? { error } : {}),
+    });
+  }
+
+  const nearestPlacedBase = (typeId: string): string | null => {
+    const seen = new Set([typeId]);
+    let current = resolver.typeExtends?.(typeId) ?? null;
+    while (current && !seen.has(current)) {
+      if (nodes.has(current)) return current;
+      seen.add(current);
+      current = resolver.typeExtends?.(current) ?? null;
+    }
+    return null;
+  };
+  const parentType = new Map<string, string | null>();
+  for (const typeId of nodes.keys()) parentType.set(typeId, nearestPlacedBase(typeId));
+  // Corrupt `extends` cycles between placed types would hide every node in
+  // the cycle; break them by placing the node normally.
+  for (const typeId of nodes.keys()) {
+    const seen = new Set<string>([typeId]);
+    let current = parentType.get(typeId) ?? null;
+    while (current) {
+      if (seen.has(current)) {
+        parentType.set(typeId, null);
+        break;
+      }
+      seen.add(current);
+      current = parentType.get(current) ?? null;
+    }
+  }
+  return { nodes, parentType };
+}
+
+/** @internal Shared with `collabPageTree.ts`. */
+export function attachTypeNodes(
+  roots: CollabTreeNode[],
+  folderNodeById: (folderId: string) => CollabTreeContainer | undefined,
+  input: CollabTypePlacementInput | undefined,
+): void {
+  if (!input || input.placements.length === 0) return;
+  const { resolver } = input;
+  const { nodes, parentType } = createTypeNodes(input.placements, resolver);
+
+  const subtypes = new Map<string, CollabTreeTypeNode[]>();
+  for (const node of nodes.values()) {
+    const base = parentType.get(node.typeId);
+    if (base) {
+      const list = subtypes.get(base) ?? [];
+      list.push(node);
+      subtypes.set(base, list);
+      continue;
+    }
+    const folderId = node.placement.parentFolderId;
+    const folder = folderId ? folderNodeById(folderId) : undefined;
+    if (folder) folder.children.push(node);
+    else roots.push(node);
+  }
+
+  const finalize = (node: CollabTreeTypeNode, parentPath: string) => {
+    node.path = joinCollabPath(parentPath, node.name);
+    const nested = (subtypes.get(node.typeId) ?? []).sort(compareTypeNodes);
+    for (const child of nested) finalize(child, node.path);
+    const items: CollabTreeItemNode[] = resolver.itemsOfType(node.typeId).map((item) => {
+      const name = item.title || item.itemId;
+      return {
+        id: `item:${item.itemId}`,
+        type: 'item',
+        itemId: item.itemId,
+        typeId: node.typeId,
+        path: joinCollabPath(node.path, name),
+        name,
+        ...(node.error ? { typeError: node.error } : {}),
+      };
+    });
+    node.children = [...nested, ...items];
+  };
+  for (const node of nodes.values()) {
+    if (parentType.get(node.typeId)) continue;
+    const folderId = node.placement.parentFolderId;
+    const folder = folderId ? folderNodeById(folderId) : undefined;
+    finalize(node, folder ? folder.path : '');
+  }
+}
+
 export function buildCollabTree(
   documents: SharedDocument[],
-  customFolders: string[]
+  customFolders: string[],
+  typePlacements?: CollabTypePlacementInput,
 ): CollabTreeNode[] {
   const folderMap = new Map<string, CollabTreeFolderNode>();
   const roots: CollabTreeNode[] = [];
@@ -332,27 +575,10 @@ export function buildCollabTree(
     pushToParent(documentNode, parentPath);
   }
 
-  const sortNodes = (nodes: CollabTreeNode[]): CollabTreeNode[] => {
-    nodes.sort((left, right) => {
-      if (left.type !== right.type) {
-        return left.type === 'folder' ? -1 : 1;
-      }
-      return left.name.localeCompare(right.name, undefined, {
-        numeric: true,
-        sensitivity: 'base',
-      });
-    });
+  // Legacy folders have no folder id, so every placed type sits at root.
+  attachTypeNodes(roots, () => undefined, typePlacements);
 
-    for (const node of nodes) {
-      if (node.type === 'folder') {
-        sortNodes(node.children);
-      }
-    }
-
-    return nodes;
-  };
-
-  return sortNodes(roots);
+  return sortTreeNodes(roots);
 }
 
 /**
@@ -369,6 +595,7 @@ export function buildCollabTree(
 export function buildCollabTreeFromFolders(
   documents: SharedDocument[],
   folders: SharedFolder[],
+  typePlacements?: CollabTypePlacementInput,
 ): CollabTreeNode[] {
   const foldersById = new Map(folders.map(f => [f.folderId, f]));
   const nodesById = new Map<string, CollabTreeFolderNode>();
@@ -432,23 +659,9 @@ export function buildCollabTreeFromFolders(
     else roots.push(documentNode);
   }
 
-  const sortNodes = (nodes: CollabTreeNode[]): CollabTreeNode[] => {
-    nodes.sort((left, right) => {
-      if (left.type !== right.type) {
-        return left.type === 'folder' ? -1 : 1;
-      }
-      return left.name.localeCompare(right.name, undefined, {
-        numeric: true,
-        sensitivity: 'base',
-      });
-    });
-    for (const node of nodes) {
-      if (node.type === 'folder') sortNodes(node.children);
-    }
-    return nodes;
-  };
+  attachTypeNodes(roots, (folderId) => nodesById.get(folderId), typePlacements);
 
-  return sortNodes(roots);
+  return sortTreeNodes(roots);
 }
 
 /**
@@ -510,16 +723,17 @@ export function computeLegacyFolderRenameUpdates(
 export function buildCollabTreeAdaptive(
   documents: SharedDocument[],
   folders: SharedFolder[],
+  typePlacements?: CollabTypePlacementInput,
 ): CollabTreeNode[] {
   if (folders.length === 0) {
     const hasPathInTitle = documents.some(
       doc => !doc.parentFolderId && getCollabParentPath(getCollabDocumentPath(doc)) !== null,
     );
     if (hasPathInTitle) {
-      return buildCollabTree(documents, []);
+      return buildCollabTree(documents, [], typePlacements);
     }
   }
-  return buildCollabTreeFromFolders(documents, folders);
+  return buildCollabTreeFromFolders(documents, folders, typePlacements);
 }
 
 /**
@@ -530,7 +744,8 @@ export function buildCollabTreeAdaptive(
  */
 export function pruneEmptyFolders(nodes: CollabTreeNode[]): CollabTreeNode[] {
   const prune = (node: CollabTreeNode): CollabTreeNode | null => {
-    if (node.type === 'document') return node;
+    // Type nodes are content in their own right, even with no items yet.
+    if (node.type !== 'folder') return node;
     const children = node.children
       .map(prune)
       .filter((c): c is CollabTreeNode => c !== null);
@@ -552,7 +767,7 @@ export function filterCollabTree(nodes: CollabTreeNode[], query: string): Collab
   };
 
   const filterNode = (node: CollabTreeNode): CollabTreeNode | null => {
-    if (node.type === 'document') {
+    if ((node.type === 'item' || node.type === 'document') && !node.children?.length) {
       return nodeMatchesQuery(node) ? node : null;
     }
 
@@ -560,7 +775,15 @@ export function filterCollabTree(nodes: CollabTreeNode[], query: string): Collab
       return node;
     }
 
-    const filteredChildren = node.children
+    if (node.type === 'type') {
+      const filteredChildren = node.children
+        .map(filterNode)
+        .filter((child): child is CollabTreeTypeNode | CollabTreeItemNode =>
+          child !== null && (child.type === 'type' || child.type === 'item'));
+      return filteredChildren.length === 0 ? null : { ...node, children: filteredChildren };
+    }
+
+    const filteredChildren = (node.children ?? [])
       .map(filterNode)
       .filter((child): child is CollabTreeNode => child !== null);
 
@@ -577,4 +800,90 @@ export function filterCollabTree(nodes: CollabTreeNode[], query: string): Collab
   return nodes
     .map(filterNode)
     .filter((node): node is CollabTreeNode => node !== null);
+}
+
+/**
+ * A page's name wherever it shows (tree rows, tabs, crumbs, pickers). New
+ * pages store the bare name; an older title may still carry its folder path
+ * and, for markdown, ".md" ("Specs/Architecture.md" reads "Architecture").
+ * Display only: nothing rewrites stored titles. Other document types keep
+ * their extension.
+ */
+export function pageDisplayName(title: string, documentType: string | undefined): string {
+  const name = getCollabNodeName(title) || title;
+  return documentType === 'markdown' && /.\.md$/i.test(name) ? name.slice(0, -3) : name;
+}
+
+export const isTypePageDocumentId = (documentId: string): boolean =>
+  documentId.startsWith(TYPE_PAGE_DOCUMENT_PREFIX);
+
+/**
+ * Every page as a folder-shaped row, for a page tree. Paths, crumbs, pickers
+ * and the create flow resolve a parent through the folder list; in a page tree
+ * any page can be a parent, so each one stands in as a folder with its own id.
+ * Type-page documents are excluded: the type node stands for them.
+ */
+export function projectPagesAsFolders(documents: SharedDocument[]): SharedFolder[] {
+  return documents
+    .filter((document) => document.trashedAt == null && !isTypePageDocumentId(document.documentId))
+    .map((document) => ({
+      folderId: document.documentId,
+      parentFolderId: document.parentFolderId ?? null,
+      ...(document.parentKind === 'item' ? { parentKind: 'item' as const } : {}),
+      name: pageDisplayName(document.title, document.documentType) || UNRESOLVED_SHARED_DOCUMENT_NAME,
+      sortOrder: 0,
+      createdBy: document.createdBy,
+      createdAt: document.createdAt,
+      // Not `updatedAt`: a body edit is not a change to the page as a parent.
+      updatedAt: document.createdAt,
+      ...(document.decryptFailed ? { decryptFailed: true } : {}),
+    }));
+}
+
+/** A page and every page below it, root first. Tolerates parent cycles. */
+export function collectPageSubtree(documents: SharedDocument[], pageId: string): string[] {
+  return collectFolderSubtree(projectPagesAsFolders(documents), pageId);
+}
+
+export interface CollabPageRemovalPlan {
+  /** The page, its descendant pages and the prose of types placed among them. */
+  removedIds: string[];
+  /** Everything removed except the page itself, for the confirmation. */
+  childCount: number;
+  /**
+   * Type-page prose sitting in the subtree whose type is placed outside it:
+   * moved to the type's parent (or root) before the removal, never deleted.
+   */
+  relocate: Array<{ documentId: string; parentId: string | null }>;
+}
+
+/**
+ * What removing a page takes with it. A `type-page:<typeId>` document belongs
+ * to its type, not to the page it happens to sit under: it goes with the
+ * subtree only when the type itself is placed inside it.
+ */
+export function planPageRemoval(
+  documents: SharedDocument[],
+  typePlacements: SharedTypePlacement[],
+  pageId: string,
+): CollabPageRemovalPlan {
+  // Trashed pages count too: the store removes every descendant document.
+  const all = documents.map((document) => ({ ...document, trashedAt: null }));
+  const pages = new Set(collectPageSubtree(all, pageId));
+  const existingPages = new Set(projectPagesAsFolders(all).map((page) => page.folderId));
+  const removedIds = [...pages];
+  const relocate: CollabPageRemovalPlan['relocate'] = [];
+  for (const document of all) {
+    if (!isTypePageDocumentId(document.documentId)) continue;
+    if (!document.parentFolderId || !pages.has(document.parentFolderId)) continue;
+    const typeId = document.documentId.slice(TYPE_PAGE_DOCUMENT_PREFIX.length);
+    const placementParent = typePlacements.find((placement) => placement.typeId === typeId)?.parentFolderId ?? null;
+    if (placementParent && pages.has(placementParent)) {
+      removedIds.push(document.documentId);
+    } else {
+      const parentId = placementParent && existingPages.has(placementParent) ? placementParent : null;
+      relocate.push({ documentId: document.documentId, parentId });
+    }
+  }
+  return { removedIds, childCount: removedIds.length - 1, relocate };
 }

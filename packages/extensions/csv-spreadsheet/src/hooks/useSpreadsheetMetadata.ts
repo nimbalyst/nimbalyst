@@ -1,15 +1,17 @@
 /**
  * Hook for spreadsheet metadata management (headers, frozen columns, formats)
  *
- * This hook manages ONLY metadata - cell data is owned by RevoGrid.
- * Use gridOperations for cell data operations.
+ * Cell data lives in RevoGrid. Every change to either goes through a command
+ * (gridOperations / the command executor), which writes metadata through
+ * `replaceMetadata` in the same step as the grid.
  */
 
-import { useState, useCallback, useRef, useMemo } from 'react';
-import type { SortConfig, ColumnFormat, CSVMetadata, CellStyleRanges } from '../types';
-import { parseCSV, serializeMetadata } from '../utils/csvParser';
+import { useState, useCallback, useRef } from 'react';
+import type { SortConfig, ColumnFormat, CellStyleRanges } from '../types';
+import { DEFAULT_FILE_LAYOUT, detectFileLayout, parseCSV, resolveFileDelimiter, type CsvFileLayout } from '../utils/csvParser';
+import { EMPTY_FORMATTING, formattingFromFile, pickFormatting, type SheetFormatting } from '../sheetMeta/formatting';
 
-export interface SpreadsheetMetadata {
+export interface SpreadsheetMetadata extends SheetFormatting {
   headerRowCount: number;
   frozenColumnCount: number;
   columnFormats: Record<number, ColumnFormat>;
@@ -30,9 +32,19 @@ export interface UseSpreadsheetMetadataResult {
   sortConfig: SortConfig | null;
   isDirty: boolean;
 
-  // Initial data for grid (only used on first render)
-  initialSource: Record<string, string | number>[];
-  initialPinnedTop: Record<string, string | number>[];
+  /** The delimiter saves must use; current even before React re-renders. */
+  getDelimiter: () => ',' | '\t';
+  /** Line endings, final newline and metadata-line presence of the loaded file. */
+  getFileLayout: () => CsvFileLayout;
+
+  /**
+   * Current metadata, synchronously. `metadata` is a render behind any change
+   * made in this tick; commands read and write through this pair so a grid
+   * change and its metadata change land together.
+   */
+  getMetadata: () => SpreadsheetMetadata;
+  /** Replace the structural metadata (a command's result). Remote changes do not mark dirty. */
+  replaceMetadata: (next: Omit<SpreadsheetMetadata, 'hasHeaders'>, origin: 'user' | 'agent' | 'remote') => void;
 
   /**
    * Adopt metadata a collaborator changed. Deliberately does not mark dirty:
@@ -42,13 +54,7 @@ export interface UseSpreadsheetMetadataResult {
    */
   applyRemoteMetadata: (patch: Partial<SpreadsheetMetadata>) => void;
 
-  // Metadata mutations
-  setHeaderRowCount: (count: number) => void;
-  setFrozenColumnCount: (count: number) => void;
-  setColumnFormat: (columnIndex: number, format: ColumnFormat | null) => void;
-  setCellStyles: (ranges: CellStyleRanges) => void;
-  setColumnWidth: (columnIndex: number, width: number) => void;
-  setColumnCount: (count: number) => void;
+  // Metadata changes go through commands (`replaceMetadata`); sort is view state.
   setSortConfig: (config: SortConfig | null) => void;
 
   // State management
@@ -60,171 +66,50 @@ export interface UseSpreadsheetMetadataResult {
   updateDiskContent: (content: string) => void;
 
   // Parse new content (for file reload)
-  loadFromCSV: (content: string) => {
-    source: Record<string, string | number>[];
-    pinnedTop: Record<string, string | number>[];
-  };
-
-  // Serialize metadata for saving (combined with CSV content from grid)
-  serializeMetadataForSave: () => string;
+  loadFromCSV: (content: string) => void;
 }
+
+const EMPTY_METADATA: SpreadsheetMetadata = {
+  headerRowCount: 0,
+  frozenColumnCount: 0,
+  columnFormats: {},
+  columnWidths: {},
+  cellStyles: {},
+  columnCount: 5,
+  hasHeaders: false,
+  ...EMPTY_FORMATTING,
+};
 
 /**
- * Convert parsed CSV rows to RevoGrid source format
+ * Content arrives later through `loadFromCSV`; the hook starts empty. The
+ * file path only decides the delimiter of a file whose content cannot.
  */
-function toGridSource(
-  rows: { raw: string; computed: string | number | null; error?: string }[][],
-  headerRowCount: number,
-  bufferRows: number = 20,
-  bufferCols: number = 20
-): { source: Record<string, string | number>[]; pinnedTop: Record<string, string | number>[] } {
-  const columnCount = rows[0]?.length ?? 0;
-  const displayColumnCount = columnCount + bufferCols;
-
-  // Helper to convert column index to letter
-  function columnIndexToLetter(index: number): string {
-    let letter = '';
-    let n = index;
-    while (n >= 0) {
-      letter = String.fromCharCode((n % 26) + 65) + letter;
-      n = Math.floor(n / 26) - 1;
-    }
-    return letter;
-  }
-
-  // Pinned (header) rows
-  const pinnedTop: Record<string, string | number>[] = [];
-  for (let rowIndex = 0; rowIndex < headerRowCount && rowIndex < rows.length; rowIndex++) {
-    const rowData: Record<string, string | number> = {};
-    const row = rows[rowIndex];
-    for (let c = 0; c < displayColumnCount; c++) {
-      const colKey = columnIndexToLetter(c);
-      const cell = row?.[c];
-      if (cell?.error) {
-        rowData[colKey] = cell.error;
-      } else if (cell?.computed !== null && cell?.computed !== undefined) {
-        rowData[colKey] = cell.computed;
-      } else {
-        rowData[colKey] = cell?.raw || '';
-      }
-    }
-    rowData._rowClass = 'header-row';
-    pinnedTop.push(rowData);
-  }
-
-  // Regular (data) rows
-  const dataRows = rows.slice(headerRowCount);
-  const displayRowCount = dataRows.length + bufferRows;
-  const source: Record<string, string | number>[] = [];
-
-  for (let rowIndex = 0; rowIndex < displayRowCount; rowIndex++) {
-    const rowData: Record<string, string | number> = {};
-    const row = dataRows[rowIndex];
-    for (let c = 0; c < displayColumnCount; c++) {
-      const colKey = columnIndexToLetter(c);
-      const cell = row?.[c];
-      if (cell?.error) {
-        rowData[colKey] = cell.error;
-      } else if (cell?.computed !== null && cell?.computed !== undefined) {
-        rowData[colKey] = cell.computed;
-      } else {
-        rowData[colKey] = cell?.raw || '';
-      }
-    }
-    source.push(rowData);
-  }
-
-  return { source, pinnedTop };
-}
-
-/**
- * Create empty grid data for new files
- */
-function createEmptyGridData(
-  rowCount: number = 10,
-  columnCount: number = 5,
-  bufferRows: number = 20,
-  bufferCols: number = 20
-): { source: Record<string, string | number>[]; pinnedTop: Record<string, string | number>[] } {
-  const displayColumnCount = columnCount + bufferCols;
-  const displayRowCount = rowCount + bufferRows;
-
-  function columnIndexToLetter(index: number): string {
-    let letter = '';
-    let n = index;
-    while (n >= 0) {
-      letter = String.fromCharCode((n % 26) + 65) + letter;
-      n = Math.floor(n / 26) - 1;
-    }
-    return letter;
-  }
-
-  const source: Record<string, string | number>[] = [];
-  for (let r = 0; r < displayRowCount; r++) {
-    const rowData: Record<string, string | number> = {};
-    for (let c = 0; c < displayColumnCount; c++) {
-      rowData[columnIndexToLetter(c)] = '';
-    }
-    source.push(rowData);
-  }
-
-  return { source, pinnedTop: [] };
-}
-
 export function useSpreadsheetMetadata(
-  initialContent: string,
-  _filePath: string,
+  filePath: string,
   options: UseSpreadsheetMetadataOptions = {}
 ): UseSpreadsheetMetadataResult {
   const { onDirtyChange } = options;
 
-  // Parse initial content
-  const initialParsed = useMemo(() => {
-    if (!initialContent) {
-      return {
-        metadata: {
-          headerRowCount: 0,
-          frozenColumnCount: 0,
-          columnFormats: {} as Record<number, ColumnFormat>,
-          columnWidths: {} as Record<number, number>,
-          cellStyles: {} as CellStyleRanges,
-          columnCount: 5,
-          hasHeaders: false,
-        },
-        delimiter: ',' as const,
-        gridData: createEmptyGridData(),
-      };
-    }
-
-    const { data, delimiter, metadata: csvMetadata } = parseCSV(initialContent);
-    const gridData = toGridSource(data.rows, data.headerRowCount);
-
-    return {
-      metadata: {
-        headerRowCount: data.headerRowCount,
-        frozenColumnCount: data.frozenColumnCount,
-        columnFormats: data.columnFormats,
-        columnWidths: csvMetadata?.columnWidths ?? {},
-        cellStyles: data.cellStyles,
-        columnCount: data.columnCount,
-        hasHeaders: data.hasHeaders,
-      },
-      delimiter,
-      gridData,
-    };
-  }, []); // Only run once on mount
-
-  // Metadata state
-  const [metadata, setMetadata] = useState<SpreadsheetMetadata>(initialParsed.metadata);
-  const [delimiter] = useState<',' | '\t'>(initialParsed.delimiter);
+  // Metadata state. Every write goes through `setMetadata`, which updates the
+  // ref first so `getMetadata()` never lags a render behind.
+  const [metadata, setMetadataState] = useState<SpreadsheetMetadata>(EMPTY_METADATA);
+  const metadataRef = useRef<SpreadsheetMetadata>(EMPTY_METADATA);
+  const setMetadata = useCallback((update: SpreadsheetMetadata | ((prev: SpreadsheetMetadata) => SpreadsheetMetadata)) => {
+    const next = typeof update === 'function' ? update(metadataRef.current) : update;
+    metadataRef.current = next;
+    setMetadataState(next);
+  }, []);
+  // State for consumers that render it; the ref is what serialization reads,
+  // so a save issued before React commits a reload still uses the new file's
+  // delimiter.
+  const [delimiter, setDelimiter] = useState<',' | '\t'>(() => resolveFileDelimiter('', filePath));
+  const delimiterRef = useRef(delimiter);
+  const layoutRef = useRef<CsvFileLayout>(DEFAULT_FILE_LAYOUT);
   const [sortConfig, setSortConfig] = useState<SortConfig | null>(null);
   const [isDirty, setIsDirty] = useState(false);
 
-  // Initial grid data (only used on first render)
-  const initialGridDataRef = useRef(initialParsed.gridData);
-
   // Track disk content for change detection
-  const lastKnownDiskContentRef = useRef<string>(initialContent);
+  const lastKnownDiskContentRef = useRef<string>('');
 
   // Dirty state management
   const markDirty = useCallback(() => {
@@ -239,51 +124,6 @@ export function useSpreadsheetMetadata(
     onDirtyChange?.(false);
   }, [onDirtyChange]);
 
-  // Metadata mutations
-  const setHeaderRowCount = useCallback((count: number) => {
-    setMetadata(prev => ({
-      ...prev,
-      headerRowCount: Math.max(0, count),
-      hasHeaders: count > 0,
-    }));
-    markDirty();
-  }, [markDirty]);
-
-  const setFrozenColumnCount = useCallback((count: number) => {
-    setMetadata(prev => ({
-      ...prev,
-      frozenColumnCount: Math.max(0, Math.min(count, prev.columnCount)),
-    }));
-    markDirty();
-  }, [markDirty]);
-
-  const setColumnFormat = useCallback((columnIndex: number, format: ColumnFormat | null) => {
-    setMetadata(prev => {
-      const newFormats = { ...prev.columnFormats };
-      if (format === null) {
-        delete newFormats[columnIndex];
-      } else {
-        newFormats[columnIndex] = format;
-      }
-      return { ...prev, columnFormats: newFormats };
-    });
-    markDirty();
-  }, [markDirty]);
-
-  const setCellStyles = useCallback((ranges: CellStyleRanges) => {
-    setMetadata(prev => ({ ...prev, cellStyles: ranges }));
-    markDirty();
-  }, [markDirty]);
-
-  const setColumnWidth = useCallback((columnIndex: number, width: number) => {
-    setMetadata(prev => {
-      const newWidths = { ...prev.columnWidths };
-      newWidths[columnIndex] = width;
-      return { ...prev, columnWidths: newWidths };
-    });
-    markDirty();
-  }, [markDirty]);
-
   const applyRemoteMetadata = useCallback((patch: Partial<SpreadsheetMetadata>) => {
     setMetadata(prev => {
       const next = { ...prev, ...patch };
@@ -291,13 +131,6 @@ export function useSpreadsheetMetadata(
       if (patch.headerRowCount !== undefined) next.hasHeaders = patch.headerRowCount > 0;
       return next;
     });
-  }, []);
-
-  const setColumnCount = useCallback((count: number) => {
-    setMetadata(prev => ({
-      ...prev,
-      columnCount: Math.max(1, count),
-    }));
   }, []);
 
   // Disk content tracking
@@ -312,7 +145,6 @@ export function useSpreadsheetMetadata(
   // Load new content (for file reload)
   const loadFromCSV = useCallback((content: string) => {
     const { data, metadata: csvMetadata } = parseCSV(content);
-    const gridData = toGridSource(data.rows, data.headerRowCount);
 
     setMetadata({
       headerRowCount: data.headerRowCount,
@@ -322,51 +154,53 @@ export function useSpreadsheetMetadata(
       cellStyles: data.cellStyles,
       columnCount: data.columnCount,
       hasHeaders: data.hasHeaders,
+      ...formattingFromFile(csvMetadata),
     });
+    const nextDelimiter = resolveFileDelimiter(content, filePath);
+    delimiterRef.current = nextDelimiter;
+    layoutRef.current = detectFileLayout(content);
+    setDelimiter(nextDelimiter);
 
     setSortConfig(null);
     setIsDirty(false);
     lastKnownDiskContentRef.current = content;
+  }, [filePath]);
 
-    return gridData;
-  }, []);
-
-  // Serialize metadata for saving
-  const serializeMetadataForSave = useCallback((): string => {
-    const hasColumnFormats = Object.keys(metadata.columnFormats).length > 0;
-    const hasColumnWidths = Object.keys(metadata.columnWidths).length > 0;
-    const hasCellStyles = Object.keys(metadata.cellStyles).length > 0;
-    const csvMetadata: CSVMetadata = {
-      hasHeaders: metadata.hasHeaders,
-      headerRowCount: metadata.headerRowCount,
-      frozenColumnCount: metadata.frozenColumnCount,
-      ...(hasColumnFormats ? { columnFormats: metadata.columnFormats } : {}),
-      ...(hasColumnWidths ? { columnWidths: metadata.columnWidths } : {}),
-      ...(hasCellStyles ? { cellStyles: metadata.cellStyles } : {}),
-    };
-    return serializeMetadata(csvMetadata);
-  }, [metadata]);
+  const getDelimiter = useCallback(() => delimiterRef.current, []);
+  const getFileLayout = useCallback(() => layoutRef.current, []);
+  const getMetadata = useCallback(() => metadataRef.current, []);
+  const replaceMetadata = useCallback((
+    next: Omit<SpreadsheetMetadata, 'hasHeaders'>,
+    origin: 'user' | 'agent' | 'remote',
+  ) => {
+    setMetadata({
+      headerRowCount: next.headerRowCount,
+      frozenColumnCount: next.frozenColumnCount,
+      columnFormats: next.columnFormats,
+      columnWidths: next.columnWidths,
+      cellStyles: next.cellStyles,
+      columnCount: next.columnCount,
+      hasHeaders: next.headerRowCount > 0,
+      ...pickFormatting(next),
+    });
+    if (origin !== 'remote') markDirty();
+  }, [setMetadata, markDirty]);
 
   return {
     metadata,
     delimiter,
+    getDelimiter,
+    getFileLayout,
+    getMetadata,
+    replaceMetadata,
     sortConfig,
     isDirty,
-    initialSource: initialGridDataRef.current.source,
-    initialPinnedTop: initialGridDataRef.current.pinnedTop,
     applyRemoteMetadata,
-    setHeaderRowCount,
-    setFrozenColumnCount,
-    setColumnFormat,
-    setCellStyles,
-    setColumnWidth,
-    setColumnCount,
     setSortConfig,
     markDirty,
     markClean,
     contentMatchesDisk,
     updateDiskContent,
     loadFromCSV,
-    serializeMetadataForSave,
   };
 }

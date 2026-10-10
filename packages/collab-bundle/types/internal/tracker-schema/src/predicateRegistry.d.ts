@@ -1,9 +1,9 @@
 /**
  * Predicate registry (knowledge-scopes contract 4.1).
  *
- * A predicate is the verb in a statement: `product --integrates-with--> product`,
- * qualified by "via which connector", "which operations", "tested against which
- * client version". The registry is the declaration of those verbs, and it is a
+ * A predicate is the verb in a statement: `product --integrates-with--> product`.
+ * A relation is just that: a named predicate with an inverse label, carrying no
+ * qualifiers. The registry is the declaration of those verbs, and it is a
  * SCHEMA ARTIFACT, not project configuration. Per decision 12 the room owns it
  * and publishes it to every client exactly like a type definition;
  * `.nimbalyst/predicates.yaml` is a local copy, never the distribution
@@ -11,10 +11,8 @@
  * type definitions already ride.
  *
  * This module is pure: plain objects in, issues out. It is reachable from
- * desktop, the web console, the collab server (which depends on this package
- * for C3/C4/C5), and both MCP surfaces, which is the whole point -- section 7
- * requires that "a predicate with required qualifiers rejects a claim missing
- * them" report the SAME code on all four.
+ * desktop, the web console, the collab server, and both MCP surfaces, so a bad
+ * declaration reports the SAME code on all of them.
  *
  * Three properties shape this file, and they are the same three that shape
  * `./citationLocator.ts` for the same reasons.
@@ -22,16 +20,14 @@
  * **Stable codes.** Every failure carries a `PREDICATE_*` code and a property
  * path. A message is for a person; a code is what a caller may branch on.
  *
- * **Strict in both directions.** An unknown qualifier, an unknown property on a
- * predicate declaration, and an unknown qualifier type are all rejections. The
- * concrete failure a tolerant reader produces here: `operation` for
- * `operations` is dropped, the required qualifier reads as missing, and the
- * author is told to supply a qualifier they believe they just supplied. Worse,
- * with `required` absent it is accepted and the statement claims a precision
- * nobody wrote.
+ * **Tolerant on declarations.** An unknown KEY on a predicate declaration is a
+ * warning: a later release adds keys (`objectKinds`) to this file, and a
+ * client that rejected them would drop the whole registry and every field's
+ * contract with it. The key is kept, not stripped. A `qualifiers` key left over
+ * from an earlier registry lands here too.
  *
- * **Every issue in one pass.** A form or an MCP caller fixes a value in one
- * round trip rather than one per property.
+ * **Every issue in one pass.** A form or an MCP caller fixes a declaration in
+ * one round trip rather than one per property.
  *
  * What this module does NOT do: resolve a relationship target, read items, or
  * decide whether a registry change is safe. That last one is
@@ -48,26 +44,6 @@ export declare const PREDICATE_VALUE_SHAPES: readonly PredicateValueShape[];
 /** `symmetric` reads the same both ways (`relates-to`); `directed` does not. */
 export type PredicateDirection = 'directed' | 'symmetric';
 export declare const PREDICATE_DIRECTIONS: readonly PredicateDirection[];
-export type PredicateQualifierType = 'string' | 'number' | 'boolean' | 'date' | 'select' | 'relationship' | 'array';
-export declare const PREDICATE_QUALIFIER_TYPES: readonly PredicateQualifierType[];
-/** Item types an `array` qualifier may hold. Nested objects are deliberately absent. */
-export type PredicateQualifierItemType = 'string' | 'number' | 'boolean';
-export declare const PREDICATE_QUALIFIER_ITEM_TYPES: readonly PredicateQualifierItemType[];
-export interface PredicateQualifierDefinition {
-    type: PredicateQualifierType;
-    /** Absent means optional. A qualifier becoming required is a destructive change. */
-    required?: boolean;
-    /** For `array`. Absent accepts any of {@link PREDICATE_QUALIFIER_ITEM_TYPES}. */
-    itemType?: PredicateQualifierItemType;
-    /** For `select`. Values, not labels: a qualifier is data, not presentation. */
-    options?: string[];
-    /** For `relationship`. Allowed target tracker types, or `'*'` for any. */
-    targetTrackerTypes?: string[] | '*';
-    /** Presentation only; never affects validation or change classification. */
-    label?: string;
-    /** Presentation only. */
-    description?: string;
-}
 export interface PredicateDefinition {
     id: string;
     label: string;
@@ -80,13 +56,19 @@ export interface PredicateDefinition {
      * domain-specific schemas narrow the kinds that extend it.
      */
     subjectKinds: string[];
+    /**
+     * Tracker types that may be the object of an `entity` statement, resolved
+     * through `extends` like {@link subjectKinds}. Absent or `['*']` accepts any
+     * type. This is what lets a link hover card offer only the relations that
+     * make sense between two pages' types.
+     */
+    objectKinds?: string[];
     valueShape: PredicateValueShape;
     direction: PredicateDirection;
     /** Advisory for traversal; nothing in this package walks a transitive closure. */
     transitive?: boolean;
-    qualifiers?: Record<string, PredicateQualifierDefinition>;
 }
-export type PredicateErrorCode = 'PREDICATE_NOT_AN_OBJECT' | 'PREDICATE_MISSING_FIELD' | 'PREDICATE_INVALID_FIELD' | 'PREDICATE_UNKNOWN_FIELD' | 'PREDICATE_DUPLICATE_ID' | 'PREDICATE_REGISTRY_NOT_AN_ARRAY' | 'PREDICATE_UNKNOWN' | 'PREDICATE_VALUE_SHAPE_MISMATCH' | 'PREDICATE_SUBJECT_KIND_NOT_ALLOWED' | 'PREDICATE_QUALIFIERS_NOT_AN_OBJECT' | 'PREDICATE_QUALIFIER_REQUIRED' | 'PREDICATE_QUALIFIER_UNKNOWN' | 'PREDICATE_QUALIFIER_INVALID_TYPE' | 'PREDICATE_QUALIFIER_INVALID_OPTION';
+export type PredicateErrorCode = 'PREDICATE_NOT_AN_OBJECT' | 'PREDICATE_MISSING_FIELD' | 'PREDICATE_INVALID_FIELD' | 'PREDICATE_UNKNOWN_FIELD' | 'PREDICATE_DUPLICATE_ID' | 'PREDICATE_REGISTRY_NOT_AN_ARRAY' | 'PREDICATE_UNKNOWN' | 'PREDICATE_VALUE_SHAPE_MISMATCH' | 'PREDICATE_SUBJECT_KIND_NOT_ALLOWED';
 export interface PredicateIssue {
     code: PredicateErrorCode;
     /** The offending property, or `''` when the subject as a whole is at fault. */
@@ -97,26 +79,29 @@ export type PredicateDefinitionValidation = {
     valid: true;
     predicate: PredicateDefinition;
     issues: [];
+    warnings?: PredicateIssue[];
 } | {
     valid: false;
     predicate: null;
     issues: PredicateIssue[];
+    warnings?: PredicateIssue[];
 };
 /**
  * Validate one predicate declaration. Returns the narrowed definition on
  * success and every issue on failure, never a partially-accepted value: a
- * predicate missing half its qualifier declarations validates writes against a
- * contract nobody authored.
+ * half-valid predicate types fields against a contract nobody authored.
  */
 export declare function validatePredicateDefinition(value: unknown): PredicateDefinitionValidation;
 export type PredicateRegistryValidation = {
     valid: true;
     predicates: PredicateDefinition[];
     issues: [];
+    warnings?: PredicateIssue[];
 } | {
     valid: false;
     predicates: null;
     issues: PredicateIssue[];
+    warnings?: PredicateIssue[];
 };
 /**
  * Validate a whole registry. Entry issues are prefixed with the index, and a
@@ -145,21 +130,6 @@ export declare function isSubjectKindAllowed(subjectKinds: readonly string[], ty
  * predicate, and leaving the mapping implicit is how the two halves drift.
  */
 export declare function predicateValueShapeAcceptsFieldType(valueShape: PredicateValueShape, fieldType: string): boolean;
-export type PredicateQualifiersValidation = {
-    valid: true;
-    issues: [];
-} | {
-    valid: false;
-    issues: PredicateIssue[];
-};
-/**
- * Validate the qualifier bag on one statement against its predicate.
- *
- * `undefined` is treated as an empty bag rather than as "skip": a predicate
- * with a required qualifier must reject a statement that omits the bag
- * entirely, which is the acceptance gate in section 7 verbatim.
- */
-export declare function validatePredicateQualifiers(predicate: PredicateDefinition, value: unknown): PredicateQualifiersValidation;
 export interface PredicateFieldDeclarationContext {
     /** Tracker type declaring the field: the subject of every statement it holds. */
     ownerType: string;
@@ -172,11 +142,9 @@ export interface PredicateFieldDeclarationContext {
  * Validate a field's `predicate:` against the registry, at the moment the type
  * is declared rather than at the moment an item is written.
  *
- * This is deliberately separate from qualifier validation. A value-shape or
- * subject-kind mismatch is a defect in the SCHEMA, and reporting it on every
- * item write would point the author at data that is fine. `tracker_define_type`
- * and the schema editor call this; the write path calls
- * {@link validatePredicateQualifiers}.
+ * A value-shape or subject-kind mismatch is a defect in the SCHEMA, and
+ * reporting it on every item write would point the author at data that is
+ * fine. `tracker_define_type` and the schema editor call this.
  */
 export declare function validatePredicateFieldDeclaration(predicateId: string, predicate: PredicateDefinition | undefined, context: PredicateFieldDeclarationContext): PredicateIssue[];
 /** The subset of a tracker type this check needs, so it stays free of the model. */

@@ -714,7 +714,7 @@ const Lightbox: React.FC<{
       isOpen={true}
       onClose={onClose}
       ariaLabel="Image lightbox"
-      contentClassName="h-[92vh] w-[96vw] max-w-[1400px] overflow-hidden rounded-lg border border-nim bg-nim"
+      contentClassName="h-[92dvh] w-[96vw] max-w-[1400px] overflow-hidden rounded-lg border border-nim bg-nim"
     >
       <ZoomableImageSurface
         src={localAssetUrl(images[selectedIndex].image!.path)}

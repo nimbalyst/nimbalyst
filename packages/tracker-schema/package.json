@@ -11,6 +11,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./labelRegistryAuthoring": {
+      "types": "./dist/labelRegistryAuthoring.d.ts",
+      "import": "./dist/labelRegistryAuthoring.js"
     }
   },
   "files": [
@@ -23,14 +27,14 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "prepublishOnly": "npm run build"
+    "prepublishOnly": "pnpm run build"
   },
   "devDependencies": {
     "@types/js-yaml": "^4.0.9",
     "typescript": "^5.0.0"
   },
   "dependencies": {
-    "@nimbalyst/tracker-core": "0.1.0",
-    "js-yaml": "^4.1.0"
+    "@nimbalyst/tracker-core": "workspace:*",
+    "js-yaml": "^4.3.2"
   }
 }

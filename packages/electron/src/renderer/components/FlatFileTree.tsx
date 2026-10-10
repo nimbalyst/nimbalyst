@@ -24,6 +24,7 @@ import {
 import { detachWorkspaceFolder } from '../store/actions/workspaceFolders';
 import { dialogRef } from '../contexts/DialogContext';
 import { DIALOG_IDS } from '../dialogs/registry';
+import { requestConfirmation } from '../dialogs/requestConfirmation';
 
 interface FlatFileTreeProps {
   items: RendererFileTreeItem[];
@@ -872,7 +873,13 @@ export function FlatFileTree({
           ? `Are you sure you want to delete ${paths.length} items?`
           : `Are you sure you want to delete "${paths[paths.length - 1].split('/').pop()}"?`;
 
-        if (!window.confirm(confirmMessage)) return;
+        const confirmed = await requestConfirmation({
+          title: paths.length > 1 ? 'Delete items?' : 'Delete item?',
+          message: confirmMessage,
+          confirmLabel: 'Delete',
+          destructive: true,
+        });
+        if (!confirmed) return;
 
         for (const path of paths) {
           const result = await window.electronAPI.deleteFile(path);

@@ -103,11 +103,22 @@ export const DisplayOptionsColumnList: React.FC<DisplayOptionsColumnListProps> =
               } ${draggedId === col.id ? 'opacity-50' : ''}`}
             >
               {col.id !== 'title' && (
-                <span className="material-symbols-outlined text-[14px] text-[var(--nim-text-faint)] cursor-grab">drag_indicator</span>
+                <button type="button" aria-label={`Reorder ${col.label}`} title="Drag or use the arrow keys to reorder" className="text-[var(--nim-text-faint)] cursor-grab" onKeyDown={event => {
+                  if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return;
+                  event.preventDefault();
+                  const visible = [...config.visibleColumns];
+                  const from = visible.indexOf(col.id);
+                  const to = from + (event.key === 'ArrowUp' ? -1 : 1);
+                  if (to < 0 || to >= visible.length) return;
+                  [visible[from], visible[to]] = [visible[to], visible[from]];
+                  onConfigChange({ ...config, visibleColumns: visible });
+                }}><span className="material-symbols-outlined text-[14px]" aria-hidden>drag_indicator</span></button>
               )}
               <span className="flex-1 text-[var(--nim-text)]">{col.label}</span>
               {col.id !== 'title' && (
                 <button
+                  type="button"
+                  aria-label={`Hide ${col.label}`}
                   onClick={() => toggleColumn(col.id)}
                   className="text-[var(--nim-text-faint)] hover:text-[var(--nim-text)] transition-colors"
                   title="Hide column"
@@ -126,15 +137,17 @@ export const DisplayOptionsColumnList: React.FC<DisplayOptionsColumnListProps> =
           <span className="text-[11px] font-medium text-[var(--nim-text-faint)] uppercase tracking-wide">Hidden</span>
           <div className="mt-1.5 space-y-0.5">
             {hiddenColumns.map(col => (
-              <div
+              <button
                 key={col.id}
-                className="flex items-center gap-2 px-1.5 py-1 rounded text-xs hover:bg-[var(--nim-bg-hover)] cursor-pointer"
+                type="button"
+                aria-label={`Show ${col.label}`}
+                className="flex w-full items-center gap-2 px-1.5 py-1 rounded text-left text-xs hover:bg-[var(--nim-bg-hover)] cursor-pointer"
                 onClick={() => toggleColumn(col.id)}
               >
                 <span className="material-symbols-outlined text-[14px] text-[var(--nim-text-faint)]">visibility_off</span>
                 <span className="flex-1 text-[var(--nim-text-faint)]">{col.label}</span>
                 <span className="text-[10px] text-[var(--nim-primary)]">Show</span>
-              </div>
+              </button>
             ))}
           </div>
         </div>

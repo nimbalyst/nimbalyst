@@ -393,7 +393,7 @@ export {
   isTrackerResourceId,
   fileResource,
   trackerResource,
-  convertToWorkstreamAtom,
+  transferSessionStateToWrapperAtom,
   cleanupWorkstreamAtom,
   initWorkstreamState,
   loadWorkstreamStates,

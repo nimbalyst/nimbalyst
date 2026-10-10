@@ -10,6 +10,7 @@ const REJECTION_EXPLANATIONS: Record<TrackerMutationRejection['code'], string> =
   legacy_encryption_retired: 'This team must be migrated before tracker changes can be accepted.',
   issueKeyPrefixConflict: 'The tracker key prefix conflicts with another project in this team.',
   adminRequired: 'This change requires a team administrator.',
+  schemaExists: 'Someone else already created a type with this name.',
 };
 
 export function formatTrackerMutationRejection(rejection: TrackerMutationRejection): string {

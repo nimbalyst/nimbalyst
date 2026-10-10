@@ -50,7 +50,10 @@ let loggedErrors: string[];
 let liveDoc: Y.Doc;
 let exportedBody = '';
 
-vi.mock('ws', () => ({ default: class {} }));
+/** Configs every headless peer was built with, oldest first. */
+let providerConfigs: Array<Record<string, any>>;
+
+vi.mock('ws', () => ({ default: class { constructor(readonly url: string) {} } }));
 
 vi.mock('electron', () => ({ ipcMain }));
 
@@ -59,6 +62,7 @@ vi.mock('@nimbalyst/runtime/sync', () => ({
     private readonly config: Record<string, any>;
     constructor(config: Record<string, any>) {
       this.config = config;
+      providerConfigs.push(config);
     }
     async connect(): Promise<void> {
       if (providerConnects) this.config.onStatusChange?.('connected');
@@ -158,6 +162,7 @@ beforeEach(() => {
   windowStates.clear();
   sentToRenderer = [];
   headlessWrites = [];
+  providerConfigs = [];
   loggedErrors = [];
   rendererBehavior = 'applied';
   rendererAcks = true;
@@ -333,5 +338,38 @@ describe('MainBodyDocService server acknowledgment', () => {
     windowStates.set(1, { workspacePath: WORKSPACE });
 
     expect(await runWrite('bug_renderer_legacy_shape')).toBe(false);
+  });
+});
+
+describe('MainBodyDocService E2E harness identity', () => {
+  it('opens body rooms on the harness worker with its team identity instead of team discovery', async () => {
+    const { setBodyRoomIdentityForTests, ensureHeadlessBodyRoom } = await loadService();
+    const { findTeamForWorkspace } = await import('../TeamService');
+    vi.mocked(findTeamForWorkspace).mockClear();
+    setBodyRoomIdentityForTests({
+      orgId: 'e2e-org',
+      serverUrl: 'ws://127.0.0.1:8797',
+      teamMemberId: 'e2e-user-a' as any,
+      getJwt: async () => 'bridge-jwt' as any,
+      urlExtraQuery: 'test_user_id=e2e-user-a&test_org_id=e2e-org',
+    });
+
+    const opened = ensureHeadlessBodyRoom(WORKSPACE, 'harness_item');
+    await vi.advanceTimersByTimeAsync(1000);
+    await opened;
+
+    expect(findTeamForWorkspace).not.toHaveBeenCalled();
+    const [config] = providerConfigs;
+    expect(config).toMatchObject({
+      orgId: 'e2e-org',
+      serverUrl: 'ws://127.0.0.1:8797',
+      teamMemberId: 'e2e-user-a',
+      documentId: 'tracker-content/harness_item',
+    });
+    expect(await config.getJwt()).toBe('bridge-jwt');
+    const socket = config.createWebSocket('ws://127.0.0.1:8797/sync/room?token=bridge-jwt');
+    expect(new URL(socket.url).searchParams.get('test_user_id')).toBe('e2e-user-a');
+    expect(new URL(socket.url).searchParams.get('test_org_id')).toBe('e2e-org');
+    expect(new URL(socket.url).searchParams.get('token')).toBe('bridge-jwt');
   });
 });

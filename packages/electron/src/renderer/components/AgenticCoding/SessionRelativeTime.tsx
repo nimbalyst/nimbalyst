@@ -1,4 +1,4 @@
-import React, { memo } from 'react';
+import React, { memo, useEffect, useState } from 'react';
 import { useAtomValue } from 'jotai';
 import { sessionLastActivityAtom } from '../../store';
 import { getRelativeTimeString } from '../../utils/dateFormatting';
@@ -20,6 +20,16 @@ export const SessionRelativeTime = memo<SessionRelativeTimeProps>(({
 }) => {
   const liveActivity = useAtomValue(sessionLastActivityAtom(sessionId));
   const timestamp = liveActivity > 0 ? liveActivity : fallbackTimestamp;
+
+  // A quiet session still ages, so re-render once a minute (the finest
+  // granularity getRelativeTimeString renders). Without this the label froze
+  // at its last render, e.g. "Just now" long after the turn ended (#1200).
+  const [, setTick] = useState(0);
+  useEffect(() => {
+    const timer = setInterval(() => setTick((t) => t + 1), 60_000);
+    return () => clearInterval(timer);
+  }, []);
+
   return <>{getRelativeTimeString(timestamp)}</>;
 });
 

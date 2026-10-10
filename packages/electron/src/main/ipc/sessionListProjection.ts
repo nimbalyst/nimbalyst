@@ -47,6 +47,7 @@ export function projectSessionList(
       worktreeId: entry.worktreeId, // Include worktreeId from repository
       parentSessionId: entry.parentSessionId || null, // Hierarchical workstream support
       childCount: entry.childCount || 0, // Number of child sessions
+      descendantCount: entry.descendantCount || 0,
       uncommittedCount, // Number of uncommitted files
       hasUnread: entry.hasUnread || false, // Unread state from metadata
       hasPendingInteractivePrompt:

@@ -1,7 +1,8 @@
 // @vitest-environment node
 
 import { describe, expect, it } from 'vitest';
-import type { FieldDefinition, TrackerDataModel } from '../TrackerDataModel';
+import { ensureTagsSupport, type FieldDefinition, type TrackerDataModel } from '../TrackerDataModel';
+import { parseTrackerYAML } from '../YAMLParser';
 import {
   calculateTrackerSchemaBlastRadius,
   classifyTrackerSchemaChanges,
@@ -133,6 +134,36 @@ describe('classifyTrackerSchemaChanges', () => {
     expect(destructiveTrackerSchemaChanges(result.changes)).toContainEqual(
       expect.objectContaining({ kind }),
     );
+  });
+
+  // Normalized the way the write gate compares (YAML round trip plus the tags
+  // injection `register` applies), since that is where the spurious removals hide.
+  it.each([
+    { name: 'roles', extra: 'roles:\n  title: title\n  workflowStatus: status\n  tags: tags\n' },
+    { name: 'roles without tags', extra: 'roles:\n  title: title\n  workflowStatus: status\n' },
+    { name: 'tableView', extra: 'tableView:\n  defaultColumns: [title, status]\n' },
+  ])('does not treat adding $name to a type as destructive', ({ extra }) => {
+    const base = [
+      'type: bug', 'displayName: Bug', 'displayNamePlural: Bugs', 'icon: bug_report', "color: '#f00'",
+      'modes:\n  inline: true', 'idPrefix: BUG', 'fields:',
+      '  - name: title\n    type: string',
+      '  - name: status\n    type: select\n    options: [open, closed]',
+    ].join('\n') + '\n';
+    const previous = ensureTagsSupport(parseTrackerYAML(base));
+    const next = ensureTagsSupport(parseTrackerYAML(base + extra));
+
+    const result = classifyTrackerSchemaChanges(previous, next);
+
+    expect(destructiveTrackerSchemaChanges(result.changes)).toEqual([]);
+  });
+
+  it('still treats moving the workflow status role to another field as destructive', () => {
+    const stage: FieldDefinition = { ...statusField, name: 'stage' };
+    const result = classifyTrackerSchemaChanges(
+      model([titleField, statusField, stage], { workflowStatus: 'status' }),
+      model([titleField, statusField, stage], { workflowStatus: 'stage' }),
+    );
+    expect(result.classification).toBe('destructive');
   });
 
   it('surfaces a remove-plus-add as a rename candidate without treating it as a rename', () => {

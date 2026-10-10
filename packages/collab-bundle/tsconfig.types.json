@@ -16,6 +16,7 @@
     "src/trackers-ui.ts",
     "src/quick-open.ts",
     "src/inbox.ts",
+    "src/pages.ts",
     "src/editor/hostTypes.ts"
   ],
   "exclude": [

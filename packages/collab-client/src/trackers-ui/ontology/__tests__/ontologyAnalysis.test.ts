@@ -2,7 +2,12 @@
 import { expect, test } from 'vitest';
 import type { FieldDefinition, PredicateDefinition, TrackerDataModel } from '@nimbalyst/tracker-schema';
 import { analyzeOntology } from '../ontologyAnalysis';
-import { computeContentHealth, factStaleAt, type MarketNode } from '../ontologyKnowledge';
+import { factStaleAt, type MarketNode } from '../ontologyKnowledge';
+import { computeContentHealth } from '../ontologyContentHealth';
+import yaml from 'js-yaml';
+import coreLabelsYaml from './fixtures/core-labels.yaml?raw';
+import marketLabelsYaml from './fixtures/market-labels.yaml?raw';
+import type { LabelDefinition, LabelRegistry } from '@nimbalyst/tracker-schema';
 import { buildDomainModel } from '../ontologyDomain';
 import { proposalRequestFor } from '../ontologyProposals';
 import { domainFixture, knowledgeFixture, NOW, rec, claim } from './ontologyFixture';
@@ -85,9 +90,9 @@ test('every tracker type gets counts, fill rates and relationship edges; kinds s
     'broken-links',
     'undeclared-predicates',
     'stale-facts',
-    'missing-market',
-    'missing-maker',
-    'missing-competes-with',
+    // No label registry: the kind stand-in's product label expects a market and a maker.
+    'unmet-expects:product:in-market',
+    'unmet-expects:product:made-by',
     'duplicates',
   ]);
   expect(health.get('broken-links')).toEqual(['B1']);
@@ -120,8 +125,8 @@ test('a month or year fact goes stale 90 days after the end of its period; conte
   expect(health.map((item) => [item.id, item.count, item.itemIds])).toEqual([
     // Anysphere revenue (day, Mar 2026) is stale; its headcount (month, Jun 2026) is not; Zed's pricing is undated.
     ['stale-facts', 3, ['Anysphere', 'Cursor', 'Zed']],
-    ['missing-market', 2, ['Nimbalyst', 'Notion']],
-    ['missing-maker', 3, ['Nimbalyst', 'Notion', 'Zed']],
+    ['unmet-expects:product:in-market', 2, ['Nimbalyst', 'Notion']],
+    ['unmet-expects:product:made-by', 3, ['Nimbalyst', 'Notion', 'Zed']],
     // The live competitor item repeats Notion; the archived one does not count.
     ['duplicates', 1, ['Notion', 'NIM-1374']],
   ]);
@@ -206,4 +211,61 @@ test('gaps are phrased in the domain, sit with their category, and each can beco
     'customers>personas:missing', 'people>customers:recorded', 'people>personas:missing',
     'bugs>areas:recorded', 'decisions>areas:weak',
   ]);
+});
+
+test('label health: expectations come from label data, ranges and cycles are reported, nothing is hard-coded to products', () => {
+  const labels = {
+    labels: [
+      { id: 'area', label: 'Area', role: 'structure' as const },
+      { id: 'market', label: 'Market', role: 'market-node' as const },
+      { id: 'organization', label: 'Organization' },
+      // No expectations on product any more: the old missing-market report must not appear.
+      { id: 'product', label: 'Product', properties: ['in-market', 'made-by'] },
+      { id: 'feature', label: 'Feature', properties: ['owner'], expects: [{ property: 'part-of', min: 1 }, { property: 'owner', min: 1 }] },
+      { id: 'loop-a', label: 'Loop A', broader: ['loop-b'] },
+      { id: 'loop-b', label: 'Loop B', broader: ['loop-a'] },
+    ],
+    properties: [{ id: 'owner', label: 'Owner', type: 'string' as const }],
+    claimProperties: { 'in-market': { range: ['market'] }, 'part-of': { range: ['feature'] } },
+  };
+  const records = [
+    ...knowledgeFixture(),
+    rec('Search', 'entity', { labels: ['feature'], owner: 'core' }),
+    rec('Undo', 'entity', { labels: ['feature'] }),
+    claim('p1', 'Search', 'part-of', 'Undo'),
+    // A product placed in an organization, not a market.
+    claim('bad', 'Zed', 'in-market', 'Anysphere'),
+  ];
+  const content = computeContentHealth(records, { now: NOW, labels });
+  // No label puts a fact in a fact box, so no fact can be stale; `concept` is no longer declared.
+  expect(content.map((item) => [item.id, item.itemIds])).toEqual([
+    ['unmet-expects:feature:part-of', ['Undo']],
+    ['unmet-expects:feature:owner', ['Undo']],
+    ['range-violation:in-market', ['bad']],
+    ['unknown-label:concept', ['Blog strategy', 'Pricing']],
+    ['duplicates', ['Notion', 'NIM-1374']],
+  ]);
+  expect(content.find((item) => item.id === 'range-violation:in-market')!.labelIds).toEqual(['product', 'market']);
+
+  const view = analyzeOntology({ types: TYPES, predicates: PREDICATES, labels, records, now: NOW });
+  const ids = view.health.map((item) => item.id);
+  expect(ids).toContain('label-cycle:loop-a+loop-b');
+  expect(ids).toContain('off-label-claim:headcount');
+  expect(ids).not.toContain('unmet-expects:product:in-market');
+});
+
+test('the core and market packs, as data, reproduce the kind stand-in\'s product reports and keep competes-with off', () => {
+  const [core, market] = [coreLabelsYaml, marketLabelsYaml].map((text) => yaml.load(text) as Partial<LabelRegistry>);
+  // wiki setup unions a re-declared label's properties, factBox and expects; the market pack's organization is a superset.
+  const marketIds = new Set((market.labels ?? []).map((label: LabelDefinition) => label.id));
+  const labels: LabelRegistry = {
+    labels: [...(core.labels ?? []).filter((label) => !marketIds.has(label.id)), ...(market.labels ?? [])],
+    properties: [...(core.properties ?? []), ...(market.properties ?? [])],
+    claimProperties: { ...core.claimProperties, ...market.claimProperties },
+  };
+  const packed = computeContentHealth(knowledgeFixture(), { now: NOW, labels }).map((item) => [item.id, item.itemIds]);
+  const standIn = computeContentHealth(knowledgeFixture(), { now: NOW }).map((item) => [item.id, item.itemIds]);
+  expect(packed.filter(([id]) => String(id).startsWith('unmet-expects:'))).toEqual(standIn.filter(([id]) => String(id).startsWith('unmet-expects:')));
+  expect(packed.map(([id]) => id)).not.toContain('unmet-expects:product:competes-with');
+  expect(packed.find(([id]) => id === 'stale-facts')).toEqual(standIn.find(([id]) => id === 'stale-facts'));
 });

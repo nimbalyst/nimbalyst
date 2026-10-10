@@ -64,6 +64,13 @@ const CATALOG: readonly PermissionDescriptor[] = [
     description: 'Read stored credentials, API keys, and other secrets.',
     risk: 'high',
   },
+  {
+    id: 'ai-sessions',
+    label: 'Run AI sessions',
+    description:
+      "Start AI agent sessions in this project, send them prompts, and read their results and token usage. Sessions run under the project's permission mode.",
+    risk: 'high',
+  },
 ] as const;
 
 const CATALOG_BY_ID: Map<ExtensionPermissionId, PermissionDescriptor> = new Map(

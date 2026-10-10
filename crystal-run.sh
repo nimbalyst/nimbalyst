@@ -225,9 +225,9 @@ fi
 detect_worktree
 
 # Install dependencies if node_modules doesn't exist
-needs_npm_install=false
+needs_install=false
 if [ ! -d "node_modules" ]; then
-  needs_npm_install=true
+  needs_install=true
 fi
 
 # Determine what needs to be built
@@ -358,9 +358,9 @@ fi
 echo ""
 
 # Execute build plan
-if [ "$needs_npm_install" = true ]; then
+if [ "$needs_install" = true ]; then
   echo "Installing dependencies..."
-  npm install
+  pnpm install
 fi
 
 # Handle runtime
@@ -369,7 +369,7 @@ if [ "$copy_runtime_from_main" = true ]; then
 elif [ "$build_runtime" = true ]; then
   echo "Building runtime package..."
   cd packages/runtime
-  npm run build
+  pnpm run build
   cd ../..
   save_build_hash "packages/runtime"
 fi
@@ -380,7 +380,7 @@ if [ "$copy_extension_sdk_from_main" = true ]; then
 elif [ "$build_extension_sdk" = true ]; then
   echo "Building extension-sdk package..."
   cd packages/extension-sdk
-  npm run build
+  pnpm run build
   cd ../..
   save_build_hash "packages/extension-sdk"
 fi
@@ -400,7 +400,7 @@ if [ "$build_extensions" = true ]; then
     ext_name=$(basename "$ext_dir")
     if needs_rebuild "$ext_dir"; then
       echo "  Building $ext_name..."
-      (cd "$ext_dir" && npm run build)
+      (cd "$ext_dir" && pnpm run build)
       save_build_hash "$ext_dir"
     else
       echo "  $ext_name: skip (up-to-date)"
@@ -434,16 +434,16 @@ fi
 if [ "$USE_PRODUCTION_DB" = true ]; then
   echo "Starting Nimbalyst on port $DEV_PORT with PRODUCTION database..."
   echo "WARNING: Changes will affect your real data!"
-  VITE_PORT=$DEV_PORT npm run dev:loop
+  VITE_PORT=$DEV_PORT pnpm run dev:loop
 elif [ -n "$NIMBALYST_USER_DATA" ]; then
   echo "Starting Nimbalyst on port $DEV_PORT with worktree-isolated user data..."
   echo "  userData: $NIMBALYST_USER_DATA"
   echo "Use /restart in AI chat to restart the app."
-  NIMBALYST_USER_DATA_DIR="$NIMBALYST_USER_DATA" VITE_PORT=$DEV_PORT npm run dev:loop
+  NIMBALYST_USER_DATA_DIR="$NIMBALYST_USER_DATA" VITE_PORT=$DEV_PORT pnpm run dev:loop
 else
   echo "Starting Nimbalyst on port $DEV_PORT with isolated user data..."
   echo "Use /restart in AI chat to restart the app."
-  VITE_PORT=$DEV_PORT RUN_ONE_DEV_MODE=true npm run dev:loop
+  VITE_PORT=$DEV_PORT RUN_ONE_DEV_MODE=true pnpm run dev:loop
 fi
 
 echo "Nimbalyst has been launched!"

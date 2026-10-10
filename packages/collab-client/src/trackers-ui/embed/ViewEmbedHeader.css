@@ -1,0 +1,12 @@
+.tracker-saved-view-embed-head,
+.placed-view-quadrant-head {
+  container: placed-view-header / inline-size;
+}
+
+@container placed-view-header (max-width: 480px) {
+  .placed-view-query { display: none; }
+}
+
+@container placed-view-header (max-width: 380px) {
+  .placed-view-live { display: none; }
+}

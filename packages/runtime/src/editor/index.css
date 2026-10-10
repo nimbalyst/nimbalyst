@@ -677,123 +677,8 @@ i.page-break,
   background-image: url(images/icons/scissors.svg);
 }
 
-.link-editor .button.active,
 .nimbalyst-editor .toolbar .button.active {
   background-color: rgb(223, 232, 250);
-}
-
-.link-editor .link-input {
-  display: block;
-  width: calc(100% - 75px);
-  box-sizing: border-box;
-  margin: 12px 12px;
-  padding: 8px 12px;
-  border-radius: 15px;
-  background-color: var(--nim-bg-tertiary);
-  font-size: 15px;
-  color: var(--nim-text);
-  border: 0;
-  outline: 0;
-  position: relative;
-  font-family: inherit;
-}
-
-.link-editor .link-view {
-  display: block;
-  width: calc(100% - 24px);
-  margin: 8px 12px;
-  padding: 8px 12px;
-  border-radius: 15px;
-  font-size: 15px;
-  color: var(--nim-text);
-  border: 0;
-  outline: 0;
-  position: relative;
-  font-family: inherit;
-}
-
-.link-editor .link-view a {
-  display: block;
-  word-break: break-word;
-  width: calc(100% - 33px);
-}
-
-.link-editor div.link-edit,
-.link-editor div.link-trash,
-.link-editor div.link-cancel,
-.link-editor div.link-confirm {
-  width: 35px;
-  vertical-align: -0.25em;
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  cursor: pointer;
-  background-color: var(--nim-text-muted);
-  -webkit-mask-size: 16px;
-  mask-size: 16px;
-  -webkit-mask-position: center;
-  mask-position: center;
-  -webkit-mask-repeat: no-repeat;
-  mask-repeat: no-repeat;
-}
-
-.link-editor div.link-edit:hover,
-.link-editor div.link-trash:hover,
-.link-editor div.link-cancel:hover,
-.link-editor div.link-confirm:hover {
-  background-color: var(--nim-text);
-}
-
-.link-editor div.link-edit {
-  -webkit-mask-image: url(images/icons/pencil-fill.svg);
-  mask-image: url(images/icons/pencil-fill.svg);
-  right: 30px;
-}
-
-.link-editor div.link-trash {
-  -webkit-mask-image: url(images/icons/trash.svg);
-  mask-image: url(images/icons/trash.svg);
-  right: 0;
-}
-
-.link-editor div.link-cancel {
-  -webkit-mask-image: url(images/icons/close.svg);
-  mask-image: url(images/icons/close.svg);
-  margin-right: 28px;
-  right: 0;
-}
-
-.link-editor div.link-confirm {
-  -webkit-mask-image: url(images/icons/success-alt.svg);
-  mask-image: url(images/icons/success-alt.svg);
-  margin-right: 2px;
-  right: 0;
-}
-
-.link-editor .link-input a {
-  color: rgb(33, 111, 219);
-  text-decoration: underline;
-  white-space: nowrap;
-  overflow: hidden;
-  margin-right: 30px;
-  text-overflow: ellipsis;
-}
-
-.link-editor .link-input a:hover {
-  text-decoration: underline;
-}
-
-.link-editor .font-size-wrapper,
-.link-editor .font-family-wrapper {
-  display: flex;
-  margin: 0 4px;
-}
-
-.link-editor select {
-  padding: 6px;
-  border: none;
-  background-color: rgba(0, 0, 0, 0.075);
-  border-radius: 4px;
 }
 
 .mention:focus {
@@ -1165,7 +1050,11 @@ i.page-break,
   background-color: color-mix(in srgb, var(--nim-primary) 10%, transparent);
 }
 
-.editor-shell .editor-image .image-resizer {
+.block-resizer-wrapper--resizing {
+  touch-action: none;
+}
+
+.editor-shell .block-resizer {
   display: block;
   width: 7px;
   height: 7px;
@@ -1174,52 +1063,75 @@ i.page-break,
   border: 1px solid var(--nim-bg);
 }
 
-.editor-shell .editor-image .image-resizer.image-resizer-n {
+.editor-shell .block-resizer.block-resizer-n {
   top: -6px;
   left: 48%;
   cursor: n-resize;
 }
 
-.editor-shell .editor-image .image-resizer.image-resizer-ne {
+.editor-shell .block-resizer.block-resizer-ne {
   top: -6px;
   right: -6px;
   cursor: ne-resize;
 }
 
-.editor-shell .editor-image .image-resizer.image-resizer-e {
+.editor-shell .block-resizer.block-resizer-e {
   bottom: 48%;
   right: -6px;
   cursor: e-resize;
 }
 
-.editor-shell .editor-image .image-resizer.image-resizer-se {
+.editor-shell .block-resizer.block-resizer-se {
   bottom: -2px;
   right: -6px;
   cursor: nwse-resize;
 }
 
-.editor-shell .editor-image .image-resizer.image-resizer-s {
+.editor-shell .block-resizer.block-resizer-s {
   bottom: -2px;
   left: 48%;
   cursor: s-resize;
 }
 
-.editor-shell .editor-image .image-resizer.image-resizer-sw {
+.editor-shell .block-resizer.block-resizer-sw {
   bottom: -2px;
   left: -6px;
   cursor: sw-resize;
 }
 
-.editor-shell .editor-image .image-resizer.image-resizer-w {
+.editor-shell .block-resizer.block-resizer-w {
   bottom: 48%;
   left: -6px;
   cursor: w-resize;
 }
 
-.editor-shell .editor-image .image-resizer.image-resizer-nw {
+.editor-shell .block-resizer.block-resizer-nw {
   top: -6px;
   left: -6px;
   cursor: nw-resize;
+}
+
+/* The single bottom-right grip (`handles="corner"`): a triangle of diagonal
+   lines inside the block's corner, stronger on hover and while dragging. */
+.block-resizer-grip {
+  position: absolute;
+  right: 2px;
+  bottom: 2px;
+  z-index: 2;
+  width: 12px;
+  height: 12px;
+  cursor: nwse-resize;
+  touch-action: none;
+  color: var(--nim-text-faint);
+  background:
+    linear-gradient(135deg, transparent 0 45%, currentColor 45% 52%, transparent 52% 70%, currentColor 70% 77%, transparent 77%);
+  opacity: 0.7;
+}
+
+.block-resizer-grip:hover,
+.block-resizer-wrapper--resizing .block-resizer-grip {
+  color: var(--nim-primary);
+  opacity: 1;
 }
 
 .editor-shell span.inline-editor-image {

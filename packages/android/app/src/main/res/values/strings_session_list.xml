@@ -1,0 +1,116 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Workspace layout -->
+    <string name="workspace_no_selection">Select a session</string>
+
+    <!-- Session list -->
+    <string name="session_list_projects">Projects</string>
+    <string name="session_list_create">Create</string>
+    <string name="session_list_new_session">New Session</string>
+    <string name="session_list_tab_sessions">Sessions</string>
+    <string name="session_list_tab_files">Files</string>
+    <string name="session_list_search_placeholder">Search sessions</string>
+    <string name="session_list_clear_search">Clear search</string>
+    <string name="session_list_show_archived">Show archived sessions</string>
+    <string name="session_list_hide_archived">Hide archived sessions</string>
+    <string name="session_list_phase_all">All</string>
+    <string name="session_list_phase_active">Active</string>
+    <string name="session_list_phase_planning">Planning</string>
+    <string name="session_list_phase_done">Done</string>
+    <string name="session_list_section_pinned">Pinned</string>
+    <string name="session_list_period_today">Today</string>
+    <string name="session_list_period_yesterday">Yesterday</string>
+    <string name="session_list_period_this_week">This Week</string>
+    <string name="session_list_period_last_week">Last Week</string>
+    <string name="session_list_period_this_month">This Month</string>
+    <string name="session_list_period_older">Older</string>
+    <string name="session_list_empty">No sessions yet. Start a session from the desktop app, or tap + to create one.</string>
+    <string name="session_list_no_matches">No sessions match this search.</string>
+    <string name="session_list_search_still_checking">Still checking available sessions for matches.</string>
+    <string name="session_list_history_syncing">Still syncing available sessions</string>
+    <string name="session_list_history_failed">Couldn\'t check available sessions. Pull down to retry.</string>
+    <string name="session_list_history_legacy">Showing cached history. Full history sync needs a server update.</string>
+    <string name="session_list_untitled_session">Untitled Session</string>
+    <string name="session_list_workstream">Workstream</string>
+    <string name="session_list_worktree">Worktree</string>
+    <string name="session_list_expand">Expand</string>
+    <string name="session_list_collapse">Collapse</string>
+    <string name="session_list_pinned_indicator">Pinned</string>
+    <string name="session_list_queued_indicator">Prompt queued</string>
+    <string name="session_list_archived_indicator">Archived</string>
+    <string name="session_list_status_waiting">Waiting for input</string>
+
+    <!-- Pending session (notification taps) -->
+    <string name="pending_session_opening">Opening session…</string>
+    <string name="pending_session_still_syncing">Still Syncing</string>
+    <string name="pending_session_still_syncing_detail">This session hasn\'t reached this device yet. It will open as soon as it arrives.</string>
+    <string name="pending_session_retry">Retry Sync</string>
+
+    <!-- Push opt-in -->
+    <string name="push_opt_in_title">Turn on notifications?</string>
+    <string name="push_opt_in_message">Get notified when a session finishes or needs your input. You can change this later in Settings.</string>
+    <string name="push_opt_in_enable">Turn On</string>
+    <string name="push_opt_in_not_now">Not Now</string>
+
+    <!-- Deep links -->
+    <string name="deep_link_invalid_session">Invalid session link.</string>
+    <string name="deep_link_auth_updated">Authentication updated for %1$s.</string>
+    <string name="deep_link_paired_account">paired account</string>
+
+    <!-- Settings -->
+    <string name="settings_connection">Connection</string>
+    <string name="settings_status">Status</string>
+    <string name="settings_connected">Connected</string>
+    <string name="settings_disconnected">Disconnected</string>
+    <string name="settings_server">Server</string>
+    <string name="settings_devices">Devices (%1$d)</string>
+    <string name="settings_device_last_seen">%1$s · last seen %2$s</string>
+    <string name="settings_device_offline">offline</string>
+    <string name="settings_account">Account</string>
+    <string name="settings_default_model">Default Model</string>
+    <string name="settings_default_model_unset">Not synced yet</string>
+    <string name="settings_default_model_detail">New sessions use the default model chosen in the desktop app.</string>
+    <string name="settings_privacy_policy">Privacy Policy</string>
+    <!-- Session creation -->
+    <string name="session_list_new_worktree">New Worktree</string>
+    <string name="session_list_new_workstream">New Workstream</string>
+    <string name="session_list_new_meta_agent">New Meta Agent</string>
+    <string name="session_create_failed_title">Unable to Create Session</string>
+    <string name="session_create_failed_fallback">The desktop app did not create the session.</string>
+    <string name="session_create_failed_ok">OK</string>
+    <string name="model_picker_title">Model</string>
+    <string name="model_picker_agents">Agents</string>
+    <string name="model_picker_chat">Chat</string>
+    <string name="model_picker_create">Create</string>
+
+    <!-- Long-press actions -->
+    <string name="session_action_add_session">Add Session</string>
+    <string name="session_action_start_workstream">Start Workstream</string>
+    <string name="session_action_move_to_workstream">Move to Workstream</string>
+    <string name="session_action_archive">Archive</string>
+    <string name="session_action_unarchive">Unarchive</string>
+    <string name="session_action_archive_group">Archive Group</string>
+    <string name="session_action_unarchive_group">Unarchive Group</string>
+    <string name="session_action_delete">Delete</string>
+    <string name="session_action_delete_group">Delete Group</string>
+    <string name="session_action_cancel">Cancel</string>
+
+    <!-- Computer picker -->
+    <string name="computer_picker_label">Switch computer</string>
+    <string name="computer_picker_none">Choose a machine</string>
+    <string name="computer_picker_offline">%1$s · Offline</string>
+    <string name="computer_picker_remote_offline">Remote machine · Offline</string>
+
+    <!-- Sync status -->
+    <string name="sync_auth_degraded_title">Sync paused</string>
+    <string name="sync_auth_degraded_message">Your session may need a refresh.</string>
+    <string name="sync_auth_degraded_sign_in">Sign in again</string>
+    <string name="sync_reconnecting">Reconnecting…</string>
+    <string name="sync_error_transport">Sync interrupted</string>
+    <string name="sync_error_decrypt">A message could not be read</string>
+    <string name="sync_error_storage">Not saved on this device</string>
+    <string name="sync_error_presence">Computer list unavailable</string>
+    <string name="sync_error_request_timeout">No answer from your desktop</string>
+    <string name="sync_error_try_again">Try again</string>
+    <string name="sync_error_dismiss">Dismiss</string>
+</resources>
