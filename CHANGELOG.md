@@ -43,6 +43,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Quick Open, @ mentions, and content search find files in git repositories cloned inside a project, which the project's ignore rules used to hide (#1449).
 - An agent session in a worktree can read and edit folders attached to either the worktree or its project
 - Expanded deep folders stay visible and current when files change elsewhere, even when refreshes finish out of order
+- A session waiting on your answer is no longer interrupted when a background task finishes, so the question stays open and the results arrive once you have replied (#1557).
 
 ### Removed
 <!-- Removed features go here -->

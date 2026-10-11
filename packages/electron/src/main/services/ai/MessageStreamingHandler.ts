@@ -99,6 +99,12 @@ import { createTeammateIdleWakeListener } from './teammateIdleWake';
 // open, so one prompt settling cannot clear the indicator for another that is
 // still waiting on the user. Refs #1549.
 import { openPrompt, resolvePrompt, hasOpenPrompts } from './openPromptRegistry';
+import { isSessionBlockedOnUser, onSessionUnblocked } from './idleWakeSignals';
+import {
+  decideIdleWake,
+  deferIdleWakeMessage,
+  takeDeferredIdleWakeMessages,
+} from './idleWakeGating';
 import { getAgentWorkflowService } from '../AgentWorkflowService';
 import { repairOrphanedSessionMetaCall } from './repairOrphanedSessionMetaCall';
 import {
@@ -293,6 +299,10 @@ async function getWorkspacePathForSession(sessionId: string): Promise<string | n
 export class MessageStreamingHandler {
   private readonly svc: AIServiceInternal;
   private readonly unsubscribeBatchListener: () => void;
+  // Replaced on every handle() call, like the provider listeners below: handle()
+  // re-wires its subscriptions per ai:sendMessage, so a plain subscribe would add
+  // one more open-prompt listener per message sent.
+  private unsubscribePromptCleared?: () => void;
   // Per-provider map of event -> currently-installed listener. Used by
   // installListener so handle() can re-wire its own subscriptions on every
   // ai:sendMessage call without nuking listeners owned by other modules.
@@ -342,6 +352,8 @@ export class MessageStreamingHandler {
   /** Used by AIService teardown to unwire the singleton batch listener. */
   destroy(): void {
     this.unsubscribeBatchListener();
+    this.unsubscribePromptCleared?.();
+    this.unsubscribePromptCleared = undefined;
   }
 
   /**
@@ -1080,12 +1092,16 @@ export class MessageStreamingHandler {
     this.installListener(provider, 'session:providerSessionReceived', onProviderSessionReceived);
 
     // Wake the lead when a teammate message or finished background task
-    // arrives after its turn ended. See teammateIdleWake.ts.
+    // arrives after its turn ended. See teammateIdleWake.ts. A lead parked on
+    // an interactive prompt is blocked on the user, not idle, so its wake is
+    // held until the prompt clears (#1557).
     const sessionStateManagerForWake = getSessionStateManager();
     const onTeammateMessageWhileIdle = createTeammateIdleWakeListener({
       isSessionActive: (id) => sessionStateManagerForWake.isSessionActive(id),
       startSession: (options) => sessionStateManagerForWake.startSession(options),
       endSession: (id) => sessionStateManagerForWake.endSession(id),
+      isBlockedOnUser: (id) => isSessionBlockedOnUser(id),
+      holdForUser: (id, message) => deferIdleWakeMessage(id, message),
       turnWorkspacePath: () => effectiveWorkspacePath,
       resolveOwnerWorkspacePath: getWorkspacePathForSession,
       findWindow: (wakePath) => findWindowByWorkspace(wakePath),
@@ -1105,6 +1121,18 @@ export class MessageStreamingHandler {
       logError: (message, error) => logger.main.error(`${message}:`, error),
     });
     this.installListener(provider, 'teammate:messageWhileIdle', onTeammateMessageWhileIdle);
+
+    // Release what the listener held back, once the user has answered (or the
+    // prompt was abandoned). This subscription outlives the handle() call that
+    // installed it; the listener resolves the session's own workspace itself.
+    this.unsubscribePromptCleared?.();
+    this.unsubscribePromptCleared = onSessionUnblocked((sessionId) => {
+      const held = takeDeferredIdleWakeMessages(sessionId);
+      if (held.length === 0) return;
+      logger.main.info(`[AIService] Releasing ${held.length} held teammate message(s) for session ${sessionId}`);
+      // The listener resolves the session's own workspace and re-checks that it is still active.
+      void onTeammateMessageWhileIdle({ sessionId, message: held.join('\n\n') });
+    });
 
     // Listen for all teammates completing. When the lead finished but teammates
     // were still active, endSession was deferred. Now that all teammates are

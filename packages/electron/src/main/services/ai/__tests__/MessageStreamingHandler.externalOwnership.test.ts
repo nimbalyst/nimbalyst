@@ -157,6 +157,8 @@ vi.mock("../supersedeOpenQuestions", () => ({
 }));
 vi.mock("../pendingPromptPersistence", () => ({
   setSessionPendingPrompt: vi.fn(),
+  hasSessionPendingPrompt: vi.fn(() => false),
+  onPendingPromptCleared: vi.fn(() => () => {}),
 }));
 vi.mock("../sessionInboxService", () => ({
   sessionInbox: {
