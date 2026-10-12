@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { AgentToolHooks } from '../AgentToolHooks';
 import type { AgentToolHooksOptions } from '../AgentToolHooks';
 import { agentToolActivity } from '../../agentToolActivity';
+import { parseExitPlanModeDeferral, type ExitPlanModeResponse } from '../../../exitPlanModeDeferral';
 
 // Mock fs module
 vi.mock('fs', () => ({
@@ -527,6 +528,28 @@ describe('AgentToolHooks', () => {
           permissionDecision: 'allow',
         }
       });
+    });
+
+    it('records a plan handed to a new session so the plan card can show it', async () => {
+      const pending = new Map<string, { resolve: (value: ExitPlanModeResponse) => void; reject: (error: Error) => void }>();
+      const options = createMockOptions({
+        getCurrentMode: () => 'planning',
+        getPendingExitPlanModeConfirmations: () => pending as any,
+      });
+      const preToolHook = new AgentToolHooks(options).createPreToolUseHook();
+
+      const resultPromise = preToolHook(
+        { tool_name: 'ExitPlanMode', tool_input: { plan: 'p', planFilePath: 'plans/feature-plan.md' } },
+        'tool-use-exit-3',
+        { signal: new AbortController().signal }
+      );
+      await Promise.resolve();
+      const deferredTo = { kind: 'session' as const };
+      pending.get('tool-use-exit-3')!.resolve({ approved: false, deferredTo });
+
+      const result = await resultPromise;
+      expect(result.hookSpecificOutput.permissionDecision).toBe('deny');
+      expect(parseExitPlanModeDeferral(result.hookSpecificOutput.permissionDecisionReason)).toEqual(deferredTo);
     });
   });
 });

@@ -12,6 +12,7 @@ import React, { useState, useCallback, useMemo, useRef, useEffect } from 'react'
 import { useAtomValue } from 'jotai';
 import type { CustomToolWidgetProps } from './index';
 import { interactiveWidgetHostAtom } from '../../../../store/atoms/interactiveWidgetHost';
+import { parseExitPlanModeDeferral, type ExitPlanModeDeferral } from '../../../../ai/exitPlanModeDeferral';
 
 // ============================================================
 // Types
@@ -61,7 +62,7 @@ export const ExitPlanModeWidget: React.FC<CustomToolWidgetProps> = ({
   const [localResult, setLocalResult] = useState<{
     approved: boolean;
     feedback?: string;
-    startNewSession?: boolean;
+    deferredTo?: ExitPlanModeDeferral;
   } | null>(null);
   const feedbackInputRef = useRef<HTMLTextAreaElement>(null);
 
@@ -75,6 +76,12 @@ export const ExitPlanModeWidget: React.FC<CustomToolWidgetProps> = ({
   // Parse completed state from result
   const completedState = useMemo(() => {
     if (!isCompleted || !toolResult) return null;
+
+    // The plan went to another session
+    const deferredTo = parseExitPlanModeDeferral(toolResult);
+    if (deferredTo) {
+      return { type: 'deferred' as const, deferredTo };
+    }
 
     const resultLower = toolResult.toLowerCase();
 
@@ -105,6 +112,7 @@ export const ExitPlanModeWidget: React.FC<CustomToolWidgetProps> = ({
   // Determine display result (local takes precedence while waiting for tool to complete)
   const displayResult = localResult || (completedState ? {
     approved: completedState.type === 'approved',
+    deferredTo: completedState.type === 'deferred' ? completedState.deferredTo : undefined,
   } : null);
 
   // Handle approve
@@ -131,9 +139,9 @@ export const ExitPlanModeWidget: React.FC<CustomToolWidgetProps> = ({
     if (hasResponded || !isPending || !host) return;
 
     setIsSubmitting(true);
-    // Match the "Stop for now" end state in the original session while
-    // the replacement session opens with the implementation prompt.
-    setLocalResult({ approved: false, startNewSession: true });
+    // This session stops while the replacement session opens with the
+    // implementation prompt.
+    setLocalResult({ approved: false, deferredTo: { kind: 'session' } });
     setHasResponded(true);
 
     try {
@@ -230,37 +238,55 @@ export const ExitPlanModeWidget: React.FC<CustomToolWidgetProps> = ({
   // Show completed state
   if (displayResult || hasResponded) {
     const approved = displayResult?.approved ?? false;
+    const state = displayResult?.deferredTo ? 'deferred' : approved ? 'approved' : 'denied';
+    const view = {
+      approved: {
+        title: 'Exited Planning Mode',
+        badge: 'Approved',
+        border: 'border-nim-success',
+        tone: 'text-nim-success',
+        badgeTone: 'text-nim-success bg-[color-mix(in_srgb,var(--nim-success)_12%,transparent)]',
+        icon: 'M13 4L6 11L3 8',
+      },
+      deferred: {
+        title: 'Plan Handed Off',
+        badge: 'Deferred to new session',
+        border: 'border-nim',
+        tone: 'text-nim-primary',
+        badgeTone: 'text-nim-primary bg-[color-mix(in_srgb,var(--nim-primary)_12%,transparent)]',
+        icon: 'M3 8h10M9 4l4 4-4 4',
+      },
+      denied: {
+        title: 'Continued Planning',
+        badge: 'Denied',
+        border: 'border-nim',
+        tone: 'text-nim-muted',
+        badgeTone: 'text-nim-muted bg-nim-tertiary',
+        icon: 'M12 4L4 12M4 4l8 8',
+      },
+    }[state];
 
     return (
       <div
         data-testid="exit-plan-mode-widget"
-        data-state={approved ? 'approved' : 'denied'}
-        className={`exit-plan-mode-widget rounded-lg border overflow-hidden opacity-85 ${
-          approved ? 'bg-nim-secondary border-nim-success' : 'bg-nim-secondary border-nim'
-        }`}
+        data-state={state}
+        className={`exit-plan-mode-widget rounded-lg border overflow-hidden opacity-85 bg-nim-secondary ${view.border}`}
       >
         <div className="flex items-center gap-2 py-3 px-4 bg-nim-tertiary">
-          <div className={`w-5 h-5 shrink-0 ${approved ? 'text-nim-success' : 'text-nim-muted'}`}>
-            {approved ? (
-              <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" className="w-full h-full">
-                <path d="M13 4L6 11L3 8" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-              </svg>
-            ) : (
-              <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" className="w-full h-full">
-                <path d="M12 4L4 12M4 4l8 8" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
-              </svg>
-            )}
+          <div className={`w-5 h-5 shrink-0 ${view.tone}`}>
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" className="w-full h-full">
+              <path d={view.icon} stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/>
+            </svg>
           </div>
           <span className="text-sm font-semibold text-nim flex-1">
-            {approved ? 'Exited Planning Mode' : 'Continued Planning'}
+            {view.title}
           </span>
           <span
-            data-testid={approved ? 'exit-plan-mode-approved' : 'exit-plan-mode-denied'}
-            className={`flex items-center gap-1 text-xs font-medium py-1 px-2 rounded-full ${
-              approved ? 'text-nim-success bg-[color-mix(in_srgb,var(--nim-success)_12%,transparent)]' : 'text-nim-muted bg-nim-tertiary'
-            }`}
+            data-testid={`exit-plan-mode-${state}`}
+            title={view.badge}
+            className={`max-w-[60%] truncate text-xs font-medium py-1 px-2 rounded-full ${view.badgeTone}`}
           >
-            {approved ? 'Approved' : 'Denied'}
+            {view.badge}
           </span>
         </div>
         {planFilePath && (

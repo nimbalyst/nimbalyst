@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 <!-- Bug fixes go here -->
+- After you start a new session to implement a plan, the planning session's plan card says "Deferred to new session" instead of "Denied"
 
 ### Removed
 <!-- Removed features go here -->

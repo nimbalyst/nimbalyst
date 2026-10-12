@@ -17,6 +17,7 @@ import { hasOpenPrompts, isPromptOpen } from '../openPromptRegistry';
 import { sessionFallbackMayCarryAnswer } from '../../../mcp/tools/interactivePromptFallback';
 import { hasLiveInteractivePrompt } from '../../../mcp/tools/interactivePromptLiveness';
 import { type AIProviderType } from '@nimbalyst/runtime/ai/server/types';
+import type { ExitPlanModeResponse } from '@nimbalyst/runtime/ai/exitPlanModeDeferral';
 import { ipcMain } from 'electron';
 
 /**
@@ -37,7 +38,7 @@ export function registerInteractivePromptHandlers(ctx: AIServiceContext): void {
     sessionId => ctx.publishQueueStateToSync(sessionId),
   );
   // Handle ExitPlanMode confirmation response from renderer
-  safeHandle('ai:exitPlanModeConfirmResponse', async (event, requestId: string, sessionId: string, response: { approved: boolean; clearContext?: boolean; feedback?: string }) => {
+  safeHandle('ai:exitPlanModeConfirmResponse', async (event, requestId: string, sessionId: string, response: ExitPlanModeResponse) => {
     logger.main.info(`[AIService] ExitPlanMode confirmation response: requestId=${requestId}, approved=${response.approved}, clearContext=${response.clearContext}, hasFeedback=${!!response.feedback}`);
 
     // Use repository directly - we just need session metadata (provider type),
