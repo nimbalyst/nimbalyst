@@ -30,6 +30,7 @@ import {
 import { githubIssueListAtom } from '../../store/atoms/githubIssues';
 import { GithubPanelShell, type GithubPanelChatHandle } from './GithubPanelShell';
 import { GithubListSwitcher } from './GithubListSwitcher';
+import { PrRepoPicker } from './PrRepoPicker';
 import { usePullRequestPanel } from './usePullRequestPanel';
 import { useIssuePanel } from './issues/useIssuePanel';
 
@@ -114,8 +115,10 @@ export const PullRequestMode = forwardRef<PullRequestModeRef, PullRequestModePro
         isActive={isActive}
         onPanelStateChange={onPanelStateChange}
         placeholder={
-          <div className="pr-review-placeholder flex flex-1 items-center justify-center text-nim-muted text-sm">
-            No GitHub remote detected for {workspaceName}.
+          <div className="pr-review-placeholder flex flex-1 flex-col items-center justify-center gap-3 text-nim-muted text-sm">
+            {/* A repository without a GitHub remote must not strand the panel */}
+            <PrRepoPicker workspacePath={workspacePath} />
+            <span>No GitHub remote detected for {workspaceName}.</span>
           </div>
         }
       />
@@ -128,12 +131,15 @@ export const PullRequestMode = forwardRef<PullRequestModeRef, PullRequestModePro
       workspacePath={workspacePath}
       isActive={isActive}
       listHeader={
-        <GithubListSwitcher
-          active={activeList}
-          onChange={handleSwitchList}
-          prCount={prList.length}
-          issueCount={issueList.length}
-        />
+        <div className="pr-list-header flex items-center gap-2">
+          <PrRepoPicker workspacePath={workspacePath} />
+          <GithubListSwitcher
+            active={activeList}
+            onChange={handleSwitchList}
+            prCount={prList.length}
+            issueCount={issueList.length}
+          />
+        </div>
       }
       sidebar={slots.sidebar}
       list={slots.list}

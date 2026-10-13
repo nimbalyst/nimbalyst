@@ -20,7 +20,7 @@ export function registerGitStatusHandlers(): void {
   safeHandle('git:list-workspace-repos', async (_event, workspacePath: string) => {
     if (!workspacePath) throw new Error('workspacePath is required');
     try {
-      return { success: true, repos: listWorkspaceRepos(workspacePath) };
+      return { success: true, repos: await listWorkspaceRepos(workspacePath) };
     } catch (error) {
       console.error('[GitStatusHandlers] Failed to list workspace repos:', error);
       return {
@@ -94,7 +94,7 @@ export function registerGitStatusHandlers(): void {
       // Scan every repo, not every root: a container root holding several
       // checkouts is not itself a repo, so asking git about it returns nothing.
       const perRepo = await Promise.all(
-        listRepoScanPaths(workspacePath).map((repoPath) =>
+        (await listRepoScanPaths(workspacePath)).map((repoPath) =>
           gitStatusService.getUncommittedFiles(repoPath),
         ),
       );
@@ -185,7 +185,7 @@ export function registerGitStatusHandlers(): void {
       // no status badges at all. The result is keyed by absolute path, so the
       // merge is a plain object spread.
       const perRepo = await Promise.all(
-        listRepoScanPaths(workspacePath).map((repoPath) =>
+        (await listRepoScanPaths(workspacePath)).map((repoPath) =>
           gitStatusService.getAllFileStatuses(repoPath),
         ),
       );
@@ -253,7 +253,7 @@ export function registerGitStatusHandlers(): void {
         // root -- otherwise an attached repo's changes never reach the prompt.
         const collectAllStatuses = async () => {
           const perRepo = await Promise.all(
-            listRepoScanPaths(workspacePath).map((repoPath) =>
+            (await listRepoScanPaths(workspacePath)).map((repoPath) =>
               gitStatusService.getAllFileStatuses(repoPath),
             ),
           );

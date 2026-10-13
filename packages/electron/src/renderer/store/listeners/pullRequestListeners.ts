@@ -20,6 +20,7 @@ import {
   ghCliStatusAtom,
   prRemoteAtom,
   prListUpdatedAtom,
+  prSelectedRepoAtom,
 } from '../atoms/pullRequests';
 import { activeWorkspacePathAtom } from '../atoms/openProjects';
 import { getGhCliService } from '../../services/RendererGhCliService';
@@ -59,30 +60,66 @@ export function initPullRequestListeners(): () => void {
     }),
   );
 
+  // The repository the panel points at in this workspace, when one was chosen
+  const selectedRepoFor = (workspacePath: string): string | undefined => {
+    const selected = store.get(prSelectedRepoAtom);
+    return selected?.workspacePath === workspacePath ? selected.repoPath : undefined;
+  };
+
   // Detect the GitHub remote for a workspace and publish it to prRemoteAtom.
   const detectRemoteFor = async (workspacePath: string | null): Promise<void> => {
     if (!workspacePath) {
       store.set(prRemoteAtom, null);
       return;
     }
+    const repoPath = selectedRepoFor(workspacePath);
     try {
-      const result = await prService.detectRemote(workspacePath);
+      const result = await prService.detectRemote(workspacePath, repoPath);
       if (disposed) return;
-      // Guard against a stale resolve after the user switched projects.
-      if (store.get(activeWorkspacePathAtom) !== workspacePath) return;
-      store.set(prRemoteAtom, result ? { workspacePath, ...result } : null);
+      // Guard against a stale resolve after the user switched projects or repos.
+      if (store.get(activeWorkspacePathAtom) !== workspacePath || selectedRepoFor(workspacePath) !== repoPath) return;
+      store.set(prRemoteAtom, result ? { workspacePath, repoPath: repoPath ?? workspacePath, ...result } : null);
     } catch {
-      if (!disposed) store.set(prRemoteAtom, null);
+      if (disposed) return;
+      if (repoPath && selectedRepoFor(workspacePath) === repoPath) {
+        // A remembered repository that is no longer one of the workspace's:
+        // fall back to the root, which re-detects through the subscription
+        store.set(prSelectedRepoAtom, null);
+        return;
+      }
+      store.set(prRemoteAtom, null);
     }
   };
 
-  // Initial detection + re-detect on project switch.
-  void detectRemoteFor(store.get(activeWorkspacePathAtom));
+  // The remembered repository, then detection. Detection runs either way, so
+  // a workspace without one detects its root at once.
+  const activate = async (workspacePath: string | null): Promise<void> => {
+    if (workspacePath && !selectedRepoFor(workspacePath)) {
+      try {
+        const state = await window.electronAPI?.invoke?.('workspace:get-state', workspacePath);
+        if (disposed || store.get(activeWorkspacePathAtom) !== workspacePath) return;
+        if (typeof state?.prRepoPath === 'string' && state.prRepoPath !== workspacePath) {
+          store.set(prSelectedRepoAtom, { workspacePath, repoPath: state.prRepoPath });
+          return;
+        }
+      } catch {
+        // No remembered choice to read; detect the root
+      }
+    }
+    await detectRemoteFor(workspacePath);
+  };
+
+  // Initial detection + re-detect on project switch or a repository choice.
+  void activate(store.get(activeWorkspacePathAtom));
   const unsubscribeActivePath = store.sub(activeWorkspacePathAtom, () => {
     if (disposed) return;
-    void detectRemoteFor(store.get(activeWorkspacePathAtom));
+    void activate(store.get(activeWorkspacePathAtom));
   });
   cleanups.push(unsubscribeActivePath);
+  cleanups.push(store.sub(prSelectedRepoAtom, () => {
+    if (disposed) return;
+    void detectRemoteFor(store.get(activeWorkspacePathAtom));
+  }));
 
   return () => {
     disposed = true;
