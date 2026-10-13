@@ -7,6 +7,7 @@ import {
   isAtFalseTranscriptTop,
   isInteractiveWidgetTool,
   isTranscriptAtBottom,
+  nextTranscriptFollowState,
   parseUnifiedDiffToReplacements,
   shouldAutoScrollTranscript,
   stripMcpPrefix,
@@ -474,22 +475,23 @@ describe('transcript auto-scroll thresholds', () => {
     expect(isTranscriptAtBottom(50)).toBe(false);
   });
 
-  it('does not auto-scroll when the user already scrolled away past the bottom threshold', () => {
-    expect(shouldAutoScrollTranscript(false, 80)).toBe(false);
+  it('enters follow mode at the end and leaves it only when the reader scrolls up', () => {
+    expect(nextTranscriptFollowState(false, 0, true, false)).toBe(true);
+    expect(nextTranscriptFollowState(false, 30, false, false)).toBe(true);
+    expect(nextTranscriptFollowState(false, 80, false, false)).toBe(false);
+    // Dragging up a line (scrollbar, selection, touch) is the reader leaving,
+    // even inside the band, so the next streamed token must not pin them back.
+    expect(nextTranscriptFollowState(true, 20, true, true)).toBe(false);
+    // The list moving itself while rows measure is not: the end must not be lost.
+    expect(nextTranscriptFollowState(true, 600, true, false)).toBe(true);
   });
 
-  it('still auto-scrolls when the transcript was sticky before the new content arrived', () => {
-    expect(shouldAutoScrollTranscript(true, 200)).toBe(true);
-  });
-
-  it('suppresses auto-scroll while a transcript selection is active, even when sticky at the bottom', () => {
+  it('auto-scrolls only while following, and never during a transcript selection', () => {
     // The user is dragging a highlight in the transcript; a jump to the bottom
-    // would collapse it. Selection wins over the sticky-bottom pull.
-    expect(shouldAutoScrollTranscript(true, 0, true)).toBe(false);
-  });
-
-  it('resumes auto-scroll once the selection is released', () => {
-    expect(shouldAutoScrollTranscript(true, 0, false)).toBe(true);
+    // would collapse it. Selection wins over following.
+    expect(shouldAutoScrollTranscript(true, true)).toBe(false);
+    expect(shouldAutoScrollTranscript(true, false)).toBe(true);
+    expect(shouldAutoScrollTranscript(false, false)).toBe(false);
   });
 });
 
