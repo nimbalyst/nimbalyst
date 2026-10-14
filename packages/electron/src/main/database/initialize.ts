@@ -30,6 +30,7 @@ import { createSuperLoopStore } from '../services/SuperLoopStore';
 import { createWorktreeArchiveCleanup, recoverWorktreeArchivesOnStartup } from '../services/worktreeArchiveCleanup';
 import { archiveProgressManager } from '../services/ArchiveProgressManager';
 import { GitWorktreeService } from '../services/GitWorktreeService';
+import { listWorkspaceRepos } from '../services/workspaceRepos';
 import { timeStartupPhase } from '../utils/startupTiming';
 import { getDatabaseMaintenanceSettings } from '../utils/store';
 
@@ -437,7 +438,9 @@ export async function initializeDatabase(): Promise<SessionStore> {
       archiveQueue: archiveProgressManager,
       worktreeStore,
       cleanup: createWorktreeArchiveCleanup({
-        deleteWorktree: (worktreePath, repoPath) => gitWorktreeService.deleteWorktree(worktreePath, repoPath),
+        deleteWorktree: (worktreePath, repoPath, options) =>
+          gitWorktreeService.deleteWorktree(worktreePath, repoPath, options),
+        listKnownRepos: listWorkspaceRepos,
         worktreeStore,
         superLoopStore: createSuperLoopStore(database),
         archiveQueue: archiveProgressManager,
