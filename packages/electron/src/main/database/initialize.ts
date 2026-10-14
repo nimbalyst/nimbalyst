@@ -437,7 +437,8 @@ export async function initializeDatabase(): Promise<SessionStore> {
       archiveQueue: archiveProgressManager,
       worktreeStore,
       cleanup: createWorktreeArchiveCleanup({
-        deleteWorktree: (worktreePath, repoPath) => gitWorktreeService.deleteWorktree(worktreePath, repoPath),
+        deleteWorktree: (worktreePath, repoPath, options) =>
+          gitWorktreeService.deleteWorktree(worktreePath, repoPath, options),
         worktreeStore,
         superLoopStore: createSuperLoopStore(database),
         archiveQueue: archiveProgressManager,
