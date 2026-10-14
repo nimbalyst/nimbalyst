@@ -10,11 +10,13 @@
   "repository": "https://github.com/nimbalyst/nimbalyst-wiki",
   "license": "MIT",
   "keywords": [
-    "pages",
     "wiki",
-    "knowledge",
-    "team",
-    "local"
+    "knowledge-base",
+    "markdown",
+    "local-first",
+    "decisions",
+    "mcp",
+    "codex"
   ],
   "skills": "./skills/",
   "mcpServers": "./.codex-mcp.json",
