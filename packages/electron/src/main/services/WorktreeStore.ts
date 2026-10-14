@@ -472,6 +472,21 @@ export function createWorktreeStore(db: PGliteLike, ensureDbReady?: EnsureReadyF
 
       return names;
     },
+
+    /**
+     * Get every path a worktree row records, archived rows included: `create`
+     * refuses a second row with any of them, so a new worktree's folder must
+     * avoid them all.
+     */
+    async getAllPaths(): Promise<Set<string>> {
+      await ensureReady();
+
+      const { rows } = await db.query<{ path: string }>(
+        `SELECT path FROM worktrees`
+      );
+
+      return new Set(rows.map(row => row.path));
+    },
   };
 }
 

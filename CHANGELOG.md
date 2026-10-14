@@ -10,12 +10,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 <!-- New features go here -->
+- A worktree name you type in the new-worktree dialog becomes its branch exactly (`feat/x` gives `worktree/feat/x` in a `feat-x` folder), and invalid or clashing names are flagged instead of renamed.
 
 ### Changed
 <!-- Changes to existing functionality go here -->
 
 ### Fixed
 <!-- Bug fixes go here -->
+- Archiving or deleting a worktree no longer deletes a folder or branch its repository does not own (another repository's worktree, or a moved, copied, locked or nested checkout), and no longer prunes the repository's other worktrees.
 
 ### Removed
 <!-- Removed features go here -->
