@@ -457,16 +457,36 @@ export function isTranscriptAtBottom(distanceFromBottom: number): boolean {
   return distanceFromBottom < TRANSCRIPT_BOTTOM_THRESHOLD_PX;
 }
 
-export function shouldAutoScrollTranscript(
-  wasAtBottom: boolean,
+/** Keys that scroll a focused transcript up. */
+const SCROLL_UP_KEYS = new Set(['ArrowUp', 'PageUp', 'Home']);
+
+/**
+ * Follow mode after a scroll event. Reaching the end, or heading down into the
+ * bottom band, turns it on. Only the reader turns it off: dragging upward with
+ * the pointer held here (scrollbar, selection, touch), or the wheel and keys,
+ * which leave before their scroll lands. Scrolls the list makes on its own while
+ * rows measure must not end it, or the end is lost as rows settle.
+ */
+export function nextTranscriptFollowState(
+  isFollowing: boolean,
   distanceFromBottom: number,
+  movedUp: boolean,
+  pointerHeld: boolean
+): boolean {
+  if (distanceFromBottom <= 1) return true;
+  if (movedUp && pointerHeld) return false;
+  return isFollowing || (!movedUp && isTranscriptAtBottom(distanceFromBottom));
+}
+
+export function shouldAutoScrollTranscript(
+  isFollowing: boolean,
   hasActiveSelection = false
 ): boolean {
   // Never yank the viewport while the user is dragging a text selection in the
   // transcript — the jump collapses the highlight they are making, which is the
   // single most common "I can't copy from the chat" complaint during streaming.
   if (hasActiveSelection) return false;
-  return wasAtBottom || isTranscriptAtBottom(distanceFromBottom);
+  return isFollowing;
 }
 
 /**
@@ -550,6 +570,8 @@ export const RichTranscriptView = React.forwardRef<
   const isAtBottomRef = useRef(
     persistScrollState ? getSessionIsAtBottom(sessionId) : true
   );
+  const lastScrollOffsetRef = useRef(0);
+  const pointerHeldRef = useRef(false);
 
   // Desktop gets a wider buffer to reduce row churn near selection;
   // iOS WKWebView uses a smaller buffer for memory pressure.
@@ -561,6 +583,8 @@ export const RichTranscriptView = React.forwardRef<
   const { pendingQuestions, jumpToQuestion } = usePendingQuestionNavigation({
     messages, sessionId, vlistRef, scrollContainerRef, ready: isScrollReady && isContainerVisible,
   });
+  const hasPendingQuestionsRef = useRef(false);
+  hasPendingQuestionsRef.current = pendingQuestions.length > 0;
 
   const settings = propsSettings || defaultSettings;
   const previousRenderRef = useRef<{
@@ -591,6 +615,44 @@ export const RichTranscriptView = React.forwardRef<
   const getAtBottomState = useCallback(() => {
     return isAtBottomRef.current;
   }, []);
+
+  // Pin to the last pixel instead of scrollToIndex(last, 'end'): virtua re-aims
+  // an in-flight scrollToIndex at that row on every row resize and the reader's
+  // own scrolling does not cancel it, so while a turn streamed it kept dragging
+  // readers back to a row end that was no longer the end.
+  const scrollToEnd = useCallback(() => {
+    const scroller = scrollContainerRef.current?.querySelector<HTMLElement>('.rich-transcript-vlist');
+    if (!scroller) return;
+    scroller.scrollTop = scroller.scrollHeight;
+    lastScrollOffsetRef.current = scroller.scrollTop;
+  }, []);
+
+  // Keep the end in view while following, except while the reader holds the
+  // pointer here (scrollbar, selection, touch) or a question waits above.
+  const followEnd = useCallback(() => {
+    if (hasPendingQuestionsRef.current || pointerHeldRef.current) return;
+    if (shouldAutoScrollTranscript(getAtBottomState(), hasActiveTranscriptSelection(viewRootRef.current))) {
+      scrollToEnd();
+    }
+  }, [getAtBottomState, scrollToEnd]);
+
+  // The wheel and keys leave follow mode before their scroll lands, so a row
+  // resizing in the same frame cannot pin the reader back to the end.
+  const handleScrollIntent = useCallback((event: React.WheelEvent<HTMLDivElement> | React.KeyboardEvent<HTMLDivElement> | React.PointerEvent<HTMLDivElement>) => {
+    if (event.type === 'pointerdown') {
+      pointerHeldRef.current = true;
+      const release = () => { pointerHeldRef.current = false; };
+      window.addEventListener('pointerup', release, { once: true });
+      window.addEventListener('pointercancel', release, { once: true });
+      return;
+    }
+    const scrollsUp = 'deltaY' in event
+      ? event.deltaY < 0 && !event.ctrlKey
+      : 'key' in event && (SCROLL_UP_KEYS.has(event.key) || (event.key === ' ' && event.shiftKey)) &&
+        !(event.target as HTMLElement).closest('input, textarea, select, [contenteditable="true"]');
+    const scroller = event.currentTarget.querySelector<HTMLElement>('.rich-transcript-vlist');
+    if (scrollsUp && scroller && scroller.scrollTop > 0) setAtBottomState(false);
+  }, [setAtBottomState]);
 
   // Save VList cache when switching sessions or unmounting.
   // This lets returning to a session skip expensive re-measurement of all item sizes.
@@ -807,10 +869,11 @@ export const RichTranscriptView = React.forwardRef<
     return indices;
   }, [messages]);
 
-  // Expose scroll method via ref
+  // Expose scroll method via ref. Jumping elsewhere leaves follow mode.
   React.useImperativeHandle(ref, () => ({
     scrollToMessage: (index: number) => {
       if (!vlistRef.current) return;
+      setAtBottomState(false);
       vlistRef.current.scrollToIndex(index, { align: 'center' });
       // Highlight after scroll settles
       setTimeout(() => {
@@ -824,9 +887,10 @@ export const RichTranscriptView = React.forwardRef<
       }, 100);
     },
     scrollToTop: () => {
+      setAtBottomState(false);
       vlistRef.current?.scrollToIndex(0, { align: 'start' });
     }
-  }), []);
+  }), [setAtBottomState]);
 
   // Reset scroll-ready state when session changes or container hides
   useEffect(() => {
@@ -844,11 +908,12 @@ export const RichTranscriptView = React.forwardRef<
     }
 
     // Single RAF: wrapper is opacity:0 until scroll-ready, so intermediate state is invisible.
-    // With itemSize hint + cache, VList can estimate scroll position accurately on first try.
+    // Rows measured after this pin are followed by the resize observer below.
     let frame: number;
     frame = requestAnimationFrame(() => {
       if (pendingQuestions.length === 0) {
-        vlistRef.current?.scrollToIndex(messages.length - 1, { align: 'end' });
+        setAtBottomState(true);
+        scrollToEnd();
       }
       frame = requestAnimationFrame(() => {
         setIsScrollReady(true);
@@ -859,26 +924,23 @@ export const RichTranscriptView = React.forwardRef<
 
   // Auto-scroll to bottom when messages change (if user was at bottom)
   useEffect(() => {
-    if (pendingQuestions.length > 0) return;
-    const wasAtBottom = getAtBottomState();
-
-    const frame = requestAnimationFrame(() => {
-      if (!vlistRef.current) return;
-      const scrollSize = vlistRef.current.scrollSize;
-      const viewportSize = vlistRef.current.viewportSize;
-      const scrollOffset = vlistRef.current.scrollOffset;
-      const distanceFromBottom = scrollSize - scrollOffset - viewportSize;
-
-      const hasActiveSelection = hasActiveTranscriptSelection(viewRootRef.current);
-      if (shouldAutoScrollTranscript(wasAtBottom, distanceFromBottom, hasActiveSelection)) {
-        // Account for the "Thinking..." indicator which is an extra item after messages
-        const lastIndex = isWaitingForResponse ? messages.length : messages.length - 1;
-        vlistRef.current.scrollToIndex(lastIndex, { align: 'end' });
-        setAtBottomState(true);
-      }
-    });
+    const frame = requestAnimationFrame(followEnd);
     return () => cancelAnimationFrame(frame);
-  }, [getAtBottomState, messages, isWaitingForResponse, setAtBottomState, pendingQuestions.length]);
+  }, [followEnd, messages, isWaitingForResponse, pendingQuestions.length]);
+
+  // Rows keep growing after their message lands (streamed text, tool output,
+  // images decoding) without `messages` changing; keep the end in view while
+  // following. Observing the list content covers rows, the viewport covers the
+  // composer resizing the pane.
+  const hasTranscriptRows = messages.length > 0 || isWaitingForResponse;
+  useEffect(() => {
+    const scroller = scrollContainerRef.current?.querySelector<HTMLElement>('.rich-transcript-vlist');
+    if (!scroller) return;
+    const observer = new ResizeObserver(followEnd);
+    observer.observe(scroller);
+    if (scroller.firstElementChild) observer.observe(scroller.firstElementChild);
+    return () => observer.disconnect();
+  }, [sessionId, isContainerVisible, hasTranscriptRows, followEnd]);
 
   // Listen for routed search events from AgentWorkstreamPanel
   // Only respond if this session is the active one
@@ -916,11 +978,9 @@ export const RichTranscriptView = React.forwardRef<
   }, [sessionId, showSearchBar]);
 
   const scrollToBottom = useCallback(() => {
-    if (!vlistRef.current) return;
-    // Account for the "Thinking..." indicator which is an extra item after messages
-    const lastIndex = isWaitingForResponse ? messages.length : messages.length - 1;
-    vlistRef.current.scrollToIndex(lastIndex, { align: 'end' });
-  }, [messages.length, isWaitingForResponse]);
+    setAtBottomState(true);
+    scrollToEnd();
+  }, [scrollToEnd, setAtBottomState]);
 
   const toggleMessageCollapse = useCallback((index: number) => {
     setCollapsedMessages(prev => {
@@ -1053,6 +1113,7 @@ export const RichTranscriptView = React.forwardRef<
         containerRef={scrollContainerRef}
         onClose={() => setShowSearchBar(false)}
         onScrollToMessage={(index) => {
+          setAtBottomState(false);
           vlistRef.current?.scrollToIndex(index, { align: 'center' });
         }}
       />
@@ -1115,7 +1176,12 @@ export const RichTranscriptView = React.forwardRef<
                causing massive DOM bloat and style recalculation. */
             null
           ) : (
-            <div className={`rich-transcript-messages rich-transcript-messages-wrapper flex flex-col max-w-full overflow-x-hidden h-full ${isScrollReady ? 'scroll-ready' : ''}`}>
+            <div
+              className={`rich-transcript-messages rich-transcript-messages-wrapper flex flex-col max-w-full overflow-x-hidden h-full ${isScrollReady ? 'scroll-ready' : ''}`}
+              onWheel={handleScrollIntent}
+              onKeyDown={handleScrollIntent}
+              onPointerDown={handleScrollIntent}
+            >
               <VList
                   ref={vlistRef}
                   className="rich-transcript-vlist !h-full !w-full"
@@ -1142,9 +1208,10 @@ export const RichTranscriptView = React.forwardRef<
                       const scrollSize = vlistRef.current.scrollSize;
                       const viewportSize = vlistRef.current.viewportSize;
                       const distanceFromBottom = scrollSize - offset - viewportSize;
-                      const isAtBottom = isTranscriptAtBottom(distanceFromBottom);
+                      const movedUp = offset < lastScrollOffsetRef.current;
+                      lastScrollOffsetRef.current = offset;
                       // Update the per-session atom - this persists across component remounts
-                      setAtBottomState(isAtBottom);
+                      setAtBottomState(nextTranscriptFollowState(isAtBottomRef.current, distanceFromBottom, movedUp, pointerHeldRef.current));
                       if (scrollButtonRef.current) {
                         const show = distanceFromBottom > viewportSize;
                         scrollButtonRef.current.style.opacity = show ? '1' : '0';
@@ -1210,6 +1277,7 @@ export const RichTranscriptView = React.forwardRef<
             <button
               onClick={() => {
                 const targetIdx = pendingPermissionIndices[0];
+                setAtBottomState(false);
                 vlistRef.current?.scrollToIndex(targetIdx, { align: 'center' });
               }}
               className="pointer-events-auto flex items-center gap-2 px-4 py-2 bg-[var(--nim-primary)] text-white rounded-full shadow-lg text-sm font-medium cursor-pointer border-none transition-all hover:brightness-110"
