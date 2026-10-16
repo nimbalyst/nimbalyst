@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 <!-- Bug fixes go here -->
+- Fix commit prompts and stuck Thinking indicators after workspace windows change, including commit approval from nested Codex tool calls.
 
 ### Removed
 <!-- Removed features go here -->

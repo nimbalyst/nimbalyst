@@ -134,6 +134,10 @@ export class SessionStateManager extends EventEmitter {
     if (isStreaming !== undefined) {
       state.isStreaming = isStreaming;
     }
+    // Terminal activity must not be resurrected by running-session reconciliation.
+    if (status === 'idle' || status === 'error') {
+      state.isStreaming = false;
+    }
 
     // Update database
     if (status !== undefined) {

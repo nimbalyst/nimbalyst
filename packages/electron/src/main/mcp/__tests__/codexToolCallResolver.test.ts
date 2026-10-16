@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { AgentMessagesRepository } from "@nimbalyst/runtime";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -10,6 +11,9 @@ import {
   resolveRequestUserInputPromptTargets,
   resolveToolUseIdFromMcpRequest,
 } from "../tools/codexToolCallResolver";
+
+import { buildCodexToolLookupId } from "@nimbalyst/runtime/ai/server/toolLookupIds";
+import { resolveGitCommitProposalPromptIdFromRows } from "../../services/ai/gitCommitProposalPromptUtils";
 
 describe("codexToolCallResolver", () => {
   afterEach(() => {
@@ -42,6 +46,38 @@ describe("codexToolCallResolver", () => {
         },
       },
     })).toBe("call_direct");
+  });
+
+  it("correlates a nested Codex commit proposal with its exact transcript widget", async () => {
+    const request = {
+      id: 7,
+      params: { _meta: {
+        itemId: "ctc_commit",
+        callId: "exec_outer",
+        "x-codex-turn-metadata": { turn_id: "turn-1" },
+      } },
+    };
+    const id = await resolveToolUseIdFromMcpRequest(request, "session-1", "developer_git_commit_proposal");
+    expect(id).toBe("ctc_commit");
+    const rows = [{
+      content: JSON.stringify({ type: "git_commit_proposal", proposalId: id, toolUseId: id }),
+      created_at: new Date(),
+    }];
+    const widgetId = buildCodexToolLookupId("ctc_commit", 100, 0);
+    const unrelatedId = buildCodexToolLookupId("ctc_other", 100, 0);
+    expect(resolveGitCommitProposalPromptIdFromRows(widgetId, rows, [], false)).toBe(id);
+    expect(resolveGitCommitProposalPromptIdFromRows(unrelatedId, rows, [], false)).toBeNull();
+    expect(resolveGitCommitProposalPromptIdFromRows(widgetId, [rows[0], rows[0]], [], false)).toBeNull();
+  });
+
+  it("preserves provider ID precedence and rejects malformed item IDs", () => {
+    expect(extractToolUseIdFromMcpRequest({
+      id: 7,
+      params: { _meta: { "claudecode/toolUseId": "toolu_1", itemId: "ctc_1" } },
+    })).toBe("toolu_1");
+    for (const itemId of [undefined, null, "", 123, {}]) {
+      expect(extractToolUseIdFromMcpRequest({ id: 7, params: { _meta: { itemId } } })).toBe("7");
+    }
   });
 
   it("finds the raw call id for the matching turn and tool", () => {

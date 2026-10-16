@@ -35,6 +35,22 @@ export interface ExtensionToolDefinition {
 }
 const extensionToolsByWorkspace = new Map<string, ExtensionToolDefinition[]>();
 
+/** Drop stale registrations so callers can rediscover the current workspace window. */
+function liveRegisteredWorkspaceWindowId(workspacePath: string): number | undefined {
+  const windowId = workspaceToWindowMap.get(workspacePath);
+  if (windowId === undefined) {
+    return undefined;
+  }
+
+  const window = BrowserWindow.fromId(windowId);
+  if (window && !window.isDestroyed()) {
+    return windowId;
+  }
+
+  workspaceToWindowMap.delete(workspacePath);
+  return undefined;
+}
+
 /**
  * Find the window ID for a given workspace path, resolving worktree paths to their parent project.
  *
@@ -49,7 +65,7 @@ export async function findWindowIdForWorkspacePath(
   workspacePath: string
 ): Promise<number | null> {
   // First try direct lookup - this works for regular workspaces
-  let windowId = workspaceToWindowMap.get(workspacePath);
+  let windowId = liveRegisteredWorkspaceWindowId(workspacePath);
   if (windowId !== undefined) {
     return windowId;
   }
@@ -67,7 +83,7 @@ export async function findWindowIdForWorkspacePath(
   if (worktreeToProjectPathCache.has(workspacePath)) {
     const cachedProjectPath = worktreeToProjectPathCache.get(workspacePath);
     if (cachedProjectPath) {
-      windowId = workspaceToWindowMap.get(cachedProjectPath);
+      windowId = liveRegisteredWorkspaceWindowId(cachedProjectPath);
       if (windowId !== undefined) {
         return windowId;
       }
@@ -97,7 +113,7 @@ export async function findWindowIdForWorkspacePath(
         `[MCP Server] Resolved worktree path ${workspacePath} -> project path ${projectPath}`
       );
 
-      windowId = workspaceToWindowMap.get(projectPath);
+      windowId = liveRegisteredWorkspaceWindowId(projectPath);
       if (windowId !== undefined) {
         return windowId;
       }

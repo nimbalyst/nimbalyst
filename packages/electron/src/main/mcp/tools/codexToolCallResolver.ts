@@ -70,6 +70,8 @@ export function extractToolUseIdFromMcpRequest(request: unknown): string | undef
     requestMeta?.["toolUseId"],
     requestMeta?.["tool_use_id"],
     requestMeta?.["toolCallId"],
+    // Nested Codex MCP calls use itemId; callId identifies the outer exec call.
+    requestMeta?.["itemId"],
     typeof requestId === "string" || typeof requestId === "number"
       ? String(requestId)
       : undefined,

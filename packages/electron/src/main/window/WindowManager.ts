@@ -477,7 +477,7 @@ export function createWindow(
 
             // Clean up MCP workspace-to-window mapping
             import('../mcp/httpServer').then(({ unregisterWindow }) => {
-                unregisterWindow(windowId);
+                unregisterWindow(electronWindowId);
             }).catch(err => {
                 console.error('[MAIN] Error unregistering window from MCP:', err);
             });

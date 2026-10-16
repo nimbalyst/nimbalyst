@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { SessionStateManager } from '../SessionStateManager';
 import type { SessionStateEvent } from '../types/SessionState';
@@ -31,6 +32,34 @@ describe('SessionStateManager', () => {
     manager = new SessionStateManager();
     database = new FakeDatabaseWorker();
     manager.setDatabase(database);
+  });
+
+  it.each(['idle', 'error'] as const)('clears stale streaming on %s without losing the next turn', async (status) => {
+    await manager.startSession({ sessionId: 's', workspacePath: '/workspace' });
+    await manager.updateActivity({ sessionId: 's', status: 'running', isStreaming: true });
+    await manager.updateActivity({ sessionId: 's', status });
+    expect(manager.getRunningSessionIds()).not.toContain('s');
+    expect(manager.getSessionState('s')?.isStreaming).toBe(false);
+    await manager.updateActivity({ sessionId: 's', status: 'running', isStreaming: true });
+    expect(manager.getRunningSessionIds()).toContain('s');
+  });
+
+  it.each(['idle', 'error'] as const)('does not let a delayed %s write stop a resumed turn', async (status) => {
+    await manager.startSession({ sessionId: 's', workspacePath: '/workspace' });
+    await manager.updateActivity({ sessionId: 's', status: 'running', isStreaming: true });
+    let release!: () => void;
+    vi.spyOn(database, 'query').mockImplementationOnce(() => new Promise(resolve => {
+      release = () => resolve({ rows: [] });
+    }));
+    const listener = vi.fn();
+    manager.subscribe(listener);
+    const ending = manager.updateActivity({ sessionId: 's', status });
+    await manager.updateActivity({ sessionId: 's', status: 'running', isStreaming: true });
+    release();
+    await ending;
+    expect(manager.getRunningSessionIds()).toEqual(['s']);
+    expect(listener).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'session:completed' }));
+    expect(listener).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'session:error' }));
   });
 
   it('emits session:completed when ending an active session', async () => {

@@ -1,7 +1,10 @@
 // @vitest-environment node
 
 import { EventEmitter } from "events";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { getSessionStateManager } from "@nimbalyst/runtime/ai/server/SessionStateManager";
+import { BrowserWindow } from "electron";
+import { findWindowByWorkspace } from "../../../window/WindowManager";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   claim: vi.fn(),
@@ -265,10 +268,21 @@ function openCodeSession(overrides: Record<string, unknown> = {}) {
   };
 }
 
+async function useRealSessionStateManager() {
+  const { SessionStateManager } = await vi.importActual<
+    typeof import("@nimbalyst/runtime/ai/server/SessionStateManager")
+  >("@nimbalyst/runtime/ai/server/SessionStateManager");
+  const stateManager = new SessionStateManager();
+  vi.mocked(getSessionStateManager).mockReturnValue(stateManager);
+  return stateManager;
+}
+
 async function runTurn(options: {
   session: Record<string, unknown>;
   provider: RecordingProvider;
   sessionManager?: Record<string, unknown>;
+  sender?: { id: number; isDestroyed: () => boolean; send: ReturnType<typeof vi.fn> };
+  service?: Record<string, unknown>;
 }) {
   mocks.providerFactory.createProvider.mockReturnValue(options.provider);
 
@@ -300,11 +314,12 @@ async function runTurn(options: {
     tryDispatchNextQueuedPrompt: vi.fn(async () => false),
     requestQueueDrive: vi.fn(),
     createToolHandler: vi.fn(() => vi.fn()),
+    ...options.service,
   };
 
   await new MessageStreamingHandler(service as never).handle(
     {
-      sender: { id: 7, isDestroyed: vi.fn(() => false), send: vi.fn() },
+      sender: options.sender ?? { id: 7, isDestroyed: vi.fn(() => false), send: vi.fn() },
     } as never,
     "Prompt",
     undefined,
@@ -312,6 +327,12 @@ async function runTurn(options: {
     options.session.workspacePath as string
   );
 }
+
+afterEach(() => {
+  vi.mocked(getSessionStateManager).mockReturnValue(mocks.stateManager as never);
+  vi.mocked(findWindowByWorkspace).mockReturnValue(null);
+  vi.mocked(BrowserWindow.fromWebContents).mockReturnValue(null);
+});
 
 describe("MessageStreamingHandler external ownership", () => {
   beforeEach(() => {
@@ -361,5 +382,109 @@ describe("MessageStreamingHandler external ownership", () => {
     release();
     await running;
     expect(addMessage).toHaveBeenCalledOnce();
+  });
+});
+
+describe("MessageStreamingHandler window replacement", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mocks.providerFactory.getProvider.mockReturnValue(null);
+    mocks.claim.mockResolvedValue(undefined);
+  });
+
+  it.each([
+    ["complete", "live"],
+    ["error", "live"],
+    ["complete", "missing"],
+    ["error", "missing"],
+    ["complete", "destroyed"],
+    ["error", "destroyed"],
+  ] as const)("settles %s with a %s replacement window", async (outcome, windowState) => {
+    const stateManager = await useRealSessionStateManager();
+    let destroyed = false;
+    const sender = { id: 7, isDestroyed: () => destroyed, send: vi.fn() };
+    const replacement = windowState === "missing" ? null : {
+      id: 22,
+      isDestroyed: () => windowState === "destroyed",
+      webContents: { isDestroyed: () => false, send: vi.fn() },
+    };
+    vi.mocked(findWindowByWorkspace).mockReturnValue(replacement as never);
+    vi.mocked(BrowserWindow.fromWebContents).mockImplementation(() => {
+      if (destroyed) throw new TypeError("Object has been destroyed");
+      return null;
+    });
+    class ClosingProvider extends RecordingProvider {
+      async *sendMessage() {
+        yield { type: "text", content: "Response" };
+        expect(stateManager.getRunningSessionIds()).toContain("opencode-session");
+        destroyed = true;
+        if (outcome === "error") throw new Error("provider failed");
+        yield { type: "complete" };
+      }
+    }
+    const dispatch = vi.fn(async () => false);
+    const turn = runTurn({
+      session: openCodeSession(), provider: new ClosingProvider(), sender,
+      service: { tryDispatchNextQueuedPrompt: dispatch },
+    });
+    if (outcome === "error") await expect(turn).rejects.toThrow("provider failed");
+    else await turn;
+    expect(dispatch).toHaveBeenCalledWith(
+      "opencode-session", "/workspace", windowState === "live" ? replacement : null,
+      outcome === "error" ? "error-handler queue" : "completion-handler queue",
+    );
+    expect(stateManager.getRunningSessionIds()).toEqual([]);
+    expect(stateManager.isSessionActive("opencode-session")).toBe(false);
+  });
+
+  it.each(["complete", "error"] as const)("preserves a running queued continuation when the old turn emits %s", async (outcome) => {
+    const stateManager = await useRealSessionStateManager();
+    const processingQueue = new Set<string>();
+    class ContinuingProvider extends RecordingProvider {
+      async *sendMessage() {
+        yield { type: "text", content: "Response" };
+        processingQueue.add("opencode-session");
+        // The next turn now owns this session's state.
+        await stateManager.startSession({ sessionId: "opencode-session", workspacePath: "/workspace" });
+        await stateManager.updateActivity({ sessionId: "opencode-session", status: "running", isStreaming: true });
+        if (outcome === "error") throw new Error("old turn failed");
+        yield { type: "complete" };
+      }
+    }
+    const dispatch = vi.fn();
+    const turn = runTurn({
+      session: openCodeSession(), provider: new ContinuingProvider(),
+      service: { sessionsProcessingQueue: processingQueue, tryDispatchNextQueuedPrompt: dispatch },
+    });
+    if (outcome === "error") await expect(turn).rejects.toThrow("old turn failed");
+    else await turn;
+    expect(dispatch).not.toHaveBeenCalled();
+    expect(stateManager.getRunningSessionIds()).toEqual(["opencode-session"]);
+    expect(stateManager.getSessionState("opencode-session")?.status).toBe("running");
+  });
+
+  it.each(["queue", "teammates", "resume"] as const)("keeps %s work active after a provider error", async (continuation) => {
+    const stateManager = await useRealSessionStateManager();
+    class BackgroundProvider extends RecordingProvider {
+      hasActiveTeammates() { return continuation === "teammates"; }
+      willResumeAfterCompletion() { return continuation === "resume"; }
+      async *sendMessage() {
+        yield { type: "text", content: "Response" };
+        throw new Error("lead failed");
+      }
+    }
+    const dispatch = vi.fn(async () => {
+      await stateManager.startSession({ sessionId: "opencode-session", workspacePath: "/workspace" });
+      await stateManager.updateActivity({ sessionId: "opencode-session", status: "running", isStreaming: true });
+      return true;
+    });
+    await expect(runTurn({
+      session: openCodeSession({ provider: continuation === "queue" ? "opencode" : "claude-code" }),
+      provider: new BackgroundProvider(),
+      service: { tryDispatchNextQueuedPrompt: dispatch },
+    })).rejects.toThrow("lead failed");
+    expect(dispatch).toHaveBeenCalledTimes(continuation === "queue" ? 1 : 0);
+    expect(stateManager.getRunningSessionIds()).toEqual(["opencode-session"]);
+    expect(stateManager.getSessionState("opencode-session")?.status).toBe("running");
   });
 });

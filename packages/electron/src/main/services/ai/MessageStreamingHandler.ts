@@ -84,6 +84,7 @@ import { notificationService } from '../NotificationService';
 import { composeNotificationTitle } from '../../../shared/notificationTitle';
 import { logger } from '../../utils/logger';
 import { windowStates, findWindowByWorkspace } from '../../window/WindowManager';
+import { resolveStreamingWindow } from './resolveStreamingWindow';
 import { sessionFileTracker } from '../SessionFileTracker';
 import { codexEditWindowRegistry, shouldOpenCodexEditWindow } from '../CodexEditWindowRegistry';
 import { toolCallMatcher, unwrapShellCommand } from '../ToolCallMatcher';
@@ -1458,8 +1459,7 @@ export class MessageStreamingHandler {
         }, session.id);
 
         // Also register the workspace->window mapping so MCP tools can route to the correct window
-        const { BrowserWindow } = await import('electron');
-        const window = BrowserWindow.fromWebContents(event.sender);
+        const window = resolveStreamingWindow(workspacePath);
         if (window) {
           registerWorkspaceWindow(effectiveWorkspacePath, window.id);
         }
@@ -1752,8 +1752,8 @@ export class MessageStreamingHandler {
               // so we cannot guard on chunk.toolCall.arguments being truthy.
               if (effectiveWorkspacePath) {
                 try {
-                  // Get window from event sender to enable file watcher attachment
-                  const window = BrowserWindow.fromWebContents(event.sender);
+                  // Resolve the current workspace window for file watcher attachment
+                  const window = resolveStreamingWindow(workspacePath);
 
                   // Normalize Codex command_execution tool names to 'Bash' so the
                   // tracker's existing shell-command file extraction logic applies.
@@ -2170,8 +2170,8 @@ export class MessageStreamingHandler {
             // Also attach file watcher for the edited file
             if (documentContext?.filePath && effectiveWorkspacePath) {
               try {
-                // Get window from event sender to enable file watcher attachment
-                const window = BrowserWindow.fromWebContents(event.sender);
+                // Resolve the current workspace window for file watcher attachment
+                const window = resolveStreamingWindow(workspacePath);
                 await sessionFileTracker.trackToolExecution(
                   session.id,
                   effectiveWorkspacePath,
@@ -2556,7 +2556,7 @@ export class MessageStreamingHandler {
               queuedContinuationScheduled = await this.svc.tryDispatchNextQueuedPrompt(
                 session.id,
                 workspacePath,
-                BrowserWindow.fromWebContents(event.sender),
+                resolveStreamingWindow(workspacePath),
                 'completion-handler queue',
               );
               if (!queuedContinuationScheduled) {
@@ -2681,7 +2681,7 @@ export class MessageStreamingHandler {
               if (!hadError && toolCallCount > 0) {
                 const count = incrementCompletedSessionsWithTools();
                 if (count === 3 && shouldShowCommunityPopup() && !wasCommunityPopupShownThisLaunch()) {
-                  const senderWindow = BrowserWindow.fromWebContents(event.sender);
+                  const senderWindow = resolveStreamingWindow(workspacePath);
                   if (senderWindow && !senderWindow.isDestroyed()) {
                     setTimeout(() => {
                       if (senderWindow.isDestroyed() || wasCommunityPopupShownThisLaunch()) {
@@ -2859,11 +2859,6 @@ export class MessageStreamingHandler {
 
       // Mark session as error and end it
       if (session?.id) {
-        await stateManager.updateActivity({
-          sessionId: session.id,
-          status: 'error'
-        });
-
         // End the session to remove it from active sessions.
         // Skip if teammates are still active or lead is resuming - deferred to teammates:allCompleted.
         // NOTE: Use willResumeAfterCompletion() not isLeadBusy() — we're inside the
@@ -2877,10 +2872,13 @@ export class MessageStreamingHandler {
         const queuedChainAlreadyActiveOnError = this.svc.sessionsProcessingQueue.has(session.id);
         let queuedContinuationScheduledOnError = false;
         if (!hasTeammatesOnError && !willResumeOnError && !queuedChainAlreadyActiveOnError) {
+          // Only this turn is ending. A queued turn or background continuation
+          // owns the running state when any of the guards above is active.
+          await stateManager.updateActivity({ sessionId: session.id, status: 'error' });
           queuedContinuationScheduledOnError = await this.svc.tryDispatchNextQueuedPrompt(
             session.id,
             workspacePath,
-            BrowserWindow.fromWebContents(event.sender),
+            resolveStreamingWindow(workspacePath),
             'error-handler queue',
           );
         }
