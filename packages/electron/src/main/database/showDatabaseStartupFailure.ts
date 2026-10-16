@@ -1,4 +1,5 @@
-import { app, clipboard, dialog, shell } from "electron";
+import { app, clipboard, dialog } from "electron";
+import { systemShell } from "../utils/systemShell";
 import { logger } from "../utils/logger";
 import { database } from "./PGLiteDatabaseWorker";
 import { stopPeriodicBackupTimer } from "./initialize";
@@ -178,7 +179,7 @@ export async function showDatabaseStartupFailure(
         },
         reveal: (revealPath) => {
           try {
-            shell.showItemInFolder(revealPath);
+            systemShell.showItemInFolder(revealPath);
           } catch (revealErr) {
             logger.main.warn(
               "[Database] Could not reveal backup folder",

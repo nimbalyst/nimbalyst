@@ -1,4 +1,5 @@
-import { BrowserWindow, shell, nativeImage, app, powerMonitor } from 'electron';
+import { BrowserWindow, nativeImage, app, powerMonitor } from 'electron';
+import { systemShell } from '../utils/systemShell';
 import { safeHandle, safeOn } from '../utils/ipcRegistry';
 import { windowStates, windows, getWindowId } from '../window/WindowManager';
 import { syncRepresentedFilename, getWindowProjectPaths } from '../window/windowState';
@@ -69,7 +70,7 @@ export function registerWindowHandlers() {
     safeHandle('open-external', async (event, url: string) => {
         if (url && typeof url === 'string') {
             if (routeConsoleLink(url, event.sender)) return;
-            await shell.openExternal(url);
+            await systemShell.openExternal(url);
         }
     });
 
@@ -77,7 +78,7 @@ export function registerWindowHandlers() {
     // back into the app (that would reopen the doc the user is already on).
     safeHandle('open-in-browser', async (_event, url: string) => {
         if (typeof url === 'string' && /^https?:\/\//i.test(url)) {
-            await shell.openExternal(url);
+            await systemShell.openExternal(url);
         }
     });
 
@@ -90,7 +91,7 @@ export function registerWindowHandlers() {
             return { success: false, error: `Third-party notices file not found at: ${noticesPath}` };
         }
 
-        const result = await shell.openPath(noticesPath);
+        const result = await systemShell.openPath(noticesPath);
         if (result) {
             return { success: false, error: result };
         }
@@ -148,7 +149,7 @@ export function registerWindowHandlers() {
             if (imagePath.startsWith('data:')) {
                 const tempPath = await createTempFileFromDataURL(imagePath, workspacePathForEvent(event));
                 if (tempPath) {
-                    await shell.openPath(tempPath);
+                    await systemShell.openPath(tempPath);
                     return { success: true };
                 } else {
                     return { success: false, error: 'Failed to create temp file from data URL' };
@@ -167,7 +168,7 @@ export function registerWindowHandlers() {
             }
 
             // Open in default application
-            const result = await shell.openPath(filePath);
+            const result = await systemShell.openPath(filePath);
             if (result) {
                 // openPath returns an error string if it failed, empty string on success
                 return { success: false, error: result };

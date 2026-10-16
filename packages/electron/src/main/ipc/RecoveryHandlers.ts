@@ -29,7 +29,8 @@
  *   db:recovery:reveal            -> show an allowlisted copy in the file manager
  */
 
-import { dialog, shell } from 'electron';
+import { dialog } from 'electron';
+import { systemShell } from '../utils/systemShell';
 import * as fs from 'fs';
 import * as fsp from 'fs/promises';
 import * as path from 'path';
@@ -380,7 +381,7 @@ export function registerRecoveryHandlers(): void {
         if (![...corruptionBackupDirs, ...migratedDirs].includes(name)) {
           return { success: false, error: 'That is not a database copy on this computer.' };
         }
-        shell.showItemInFolder(path.join(userDataPath, name));
+        systemShell.showItemInFolder(path.join(userDataPath, name));
         return { success: true };
       } catch (err) {
         return { success: false, error: (err as Error).message };

@@ -1,4 +1,5 @@
 import { BrowserWindow, shell, clipboard, nativeImage } from 'electron';
+import { systemShell } from '../utils/systemShell';
 import { readFileSync, readdirSync, statSync, existsSync, promises as fsPromises } from 'fs';
 import { join, basename, dirname, extname } from 'path';
 import * as path from 'path';
@@ -977,7 +978,7 @@ export function registerWorkspaceHandlers() {
     safeHandle('open-in-default-app', async (event, filePath: string) => {
         try {
             // Open file in the OS default application
-            const result = await shell.openPath(filePath);
+            const result = await systemShell.openPath(filePath);
             if (result) {
                 // openPath returns an error string if it failed, empty string on success
                 return { success: false, error: result };
@@ -1025,7 +1026,7 @@ export function registerWorkspaceHandlers() {
     safeHandle('show-in-finder', async (event, filePath: string) => {
 
         try {
-            shell.showItemInFolder(filePath);
+            systemShell.showItemInFolder(filePath);
             return { success: true };
         } catch (error: any) {
             console.error('Error showing in finder:', error);

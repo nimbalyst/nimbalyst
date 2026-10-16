@@ -4,7 +4,8 @@
  * Handles OS-level notifications for AI/agent completion events.
  */
 
-import { Notification, BrowserWindow, app, ipcMain, shell } from 'electron';
+import { Notification, BrowserWindow, app, ipcMain } from 'electron';
+import { systemShell } from '../utils/systemShell';
 import { logger } from '../utils/logger';
 import { isOSNotificationsEnabled, isNotifyWhenFocusedEnabled, isSessionBlockedNotificationsEnabled } from '../utils/store';
 import {
@@ -344,7 +345,7 @@ class NotificationService {
       throw new Error('Opening notification settings is not supported on this platform');
     }
 
-    await shell.openExternal(target);
+    await systemShell.openExternal(target);
   }
 
   /**
