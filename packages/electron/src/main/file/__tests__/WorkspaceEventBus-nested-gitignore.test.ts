@@ -218,3 +218,85 @@ describe('WorkspaceEventBus nested-repo .gitignore (issue #207)', () => {
     unsubscribe(layout.workspace, 'sub-1');
   });
 });
+
+/**
+ * An umbrella repo that ignores the separate clones inside it. Its own rules
+ * stop at each clone's boundary, as in git: a clone's files follow the clone's
+ * `.gitignore`. The umbrella's own linked worktrees keep the umbrella's rules.
+ *
+ *   <workspace>/.git/                       (umbrella repo)
+ *   <workspace>/.gitignore                  ("/clone/", "/member/", "/build/", "/.claude/")
+ *   <workspace>/clone/.git/ + .gitignore    (separate clone, ignores "/dist")
+ *   <workspace>/member/.git                 (linked worktree of another repo)
+ *   <workspace>/build/out.js                (plain ignored output)
+ *   <workspace>/.claude/worktrees/agent/    (linked worktree of the umbrella)
+ */
+function buildUmbrellaLayout(): { workspace: string; cleanup: () => void } {
+  const baseDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nimbalyst-test-'));
+  const parent = path.join(baseDir, 'parent');
+  fs.mkdirSync(parent, { recursive: true });
+  const workspace = fs.mkdtempSync(path.join(parent, 'wsbus-umbrella-'));
+  const write = (rel: string, content = '') => {
+    fs.mkdirSync(path.dirname(path.join(workspace, rel)), { recursive: true });
+    fs.writeFileSync(path.join(workspace, rel), content);
+  };
+  const linkWorktree = (rel: string, gitDir: string) => {
+    fs.mkdirSync(gitDir, { recursive: true });
+    fs.writeFileSync(path.join(gitDir, 'commondir'), '../..\n');
+    write(`${rel}/.git`, `gitdir: ${gitDir}\n`);
+  };
+  fs.mkdirSync(path.join(workspace, '.git'), { recursive: true });
+  write('.gitignore', '/clone/\n/member/\n/build/\n/.claude/\n');
+  fs.mkdirSync(path.join(workspace, 'clone', '.git'), { recursive: true });
+  write('clone/.gitignore', '/dist\n');
+  write('clone/src/app.ts');
+  write('clone/dist/bundle.js');
+  write('build/out.js');
+  linkWorktree('member', path.join(baseDir, 'other-repo', '.git', 'worktrees', 'member'));
+  write('member/src/api.ts');
+  linkWorktree('.claude/worktrees/agent', path.join(workspace, '.git', 'worktrees', 'agent'));
+  write('.claude/worktrees/agent/src/agent.ts');
+  return { workspace, cleanup: () => fs.rmSync(baseDir, { recursive: true, force: true }) };
+}
+
+describe('WorkspaceEventBus umbrella repo with ignored clones', () => {
+  let layout: { workspace: string; cleanup: () => void };
+
+  beforeEach(() => {
+    mockWatcherCallbacks.length = 0;
+    mockFsWatch.mockClear();
+    resetBus();
+    layout = buildUmbrellaLayout();
+  });
+
+  afterEach(() => {
+    resetBus();
+    layout.cleanup();
+  });
+
+  it("delivers a clone's files and another repo's worktree, by their own rules", async () => {
+    const listener = createListener();
+    await subscribe(layout.workspace, 'sub-1', listener);
+
+    fireWatchEvent('change', 'clone/src/app.ts');
+    fireWatchEvent('change', 'member/src/api.ts');
+    fireWatchEvent('change', 'clone/dist/bundle.js');
+
+    expect(listener.changes.map((change) => change.path)).toEqual([
+      path.join(layout.workspace, 'clone/src/app.ts'),
+      path.join(layout.workspace, 'member/src/api.ts'),
+    ]);
+    unsubscribe(layout.workspace, 'sub-1');
+  });
+
+  it("keeps dropping the umbrella's ignored output and its own linked worktrees", async () => {
+    const listener = createListener();
+    await subscribe(layout.workspace, 'sub-1', listener);
+
+    fireWatchEvent('change', 'build/out.js');
+    fireWatchEvent('change', '.claude/worktrees/agent/src/agent.ts');
+
+    expect(listener.onChange).not.toHaveBeenCalled();
+    unsubscribe(layout.workspace, 'sub-1');
+  });
+});
