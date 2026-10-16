@@ -24,6 +24,7 @@ import type { editor as MonacoEditorType, Selection } from 'monaco-editor';
 // through the barrel.
 import type { Theme as ConfigTheme } from '../editor/EditorConfig';
 import { getMonacoTheme, getMonacoLanguage } from './monacoUtils';
+import { registerCompletions } from '../editor/completions/registerCompletions';
 import './MonacoCodeEditor.css';
 
 // CSS class for unfocused selection highlight
@@ -103,6 +104,10 @@ export const MonacoCodeEditor: React.FC<MonacoCodeEditorProps> = ({
   // Track selection decorations for unfocused state
   const selectionDecorationsRef = useRef<string[]>([]);
   const lastSelectionRef = useRef<Selection | null>(null);
+
+  // Hold the disposables returned by registerCompletions so we don't
+  // double-register when the editor is remounted on the same Monaco instance.
+  const completionDisposableRef = useRef<{ dispose: () => void } | null>(null);
 
   // Clear selection and decorations when tab becomes inactive
   useEffect(() => {
@@ -304,6 +309,10 @@ export const MonacoCodeEditor: React.FC<MonacoCodeEditorProps> = ({
     editorRef.current = editor;
     monacoRef.current = monaco;
 
+    // Register inline completion providers for SQL / Python / Markdown.
+    completionDisposableRef.current?.dispose();
+    completionDisposableRef.current = registerCompletions(monaco);
+
     // Disable TypeScript/JavaScript diagnostics globally
     try {
       monaco.languages.typescript.typescriptDefaults.setDiagnosticsOptions({
@@ -485,6 +494,9 @@ export const MonacoCodeEditor: React.FC<MonacoCodeEditorProps> = ({
           console.warn('[MonacoCodeEditor] Error clearing diff editor model on unmount:', error);
         }
       }
+      // Dispose completion providers so Monaco doesn't keep them alive.
+      completionDisposableRef.current?.dispose();
+      completionDisposableRef.current = null;
     };
   }, []);
 
