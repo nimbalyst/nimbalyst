@@ -218,6 +218,75 @@ export function resolveBrowserPartitionName(partition?: string): string {
   return normalized.startsWith('persist:') ? normalized : `browser-${normalized}`;
 }
 
+/**
+ * Input for agent tools goes through the Chrome DevTools Protocol instead of
+ * `webContents.sendInputEvent`. Electron documents that `sendInputEvent` needs
+ * the window to have OS focus; headless sessions live in a `focusable: false`
+ * host window and background tabs never have focus, so keystrokes were dropped
+ * and `el.focus()` fired no focus event (editors such as Lexical then ignore
+ * input). CDP input does not need window focus, and focus emulation makes the
+ * page behave as focused -- the same approach Playwright takes.
+ */
+type CdpParams = Record<string, unknown>;
+
+/** Bound on one batch of CDP input, so a native dialog cannot hang the agent. */
+const CDP_INPUT_TIMEOUT_MS = 10_000;
+
+/** `Input.dispatchKeyEvent` params that type `text`; `\n` (or `\r\n`) becomes Enter. */
+export function keyEventsForText(text: string): CdpParams[] {
+  const events: CdpParams[] = [];
+  for (const ch of text.replace(/\r\n?/g, '\n')) {
+    if (ch === '\n') {
+      const enter = { key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 };
+      events.push({ type: 'keyDown', ...enter, text: '\r', unmodifiedText: '\r' }, { type: 'keyUp', ...enter });
+    } else {
+      events.push({ type: 'keyDown', key: ch, text: ch, unmodifiedText: ch }, { type: 'keyUp', key: ch });
+    }
+  }
+  return events;
+}
+
+/**
+ * Select-all + Delete for the focused field. macOS performs editing through
+ * commands rather than key bindings, so they are passed explicitly there.
+ */
+export function clearEventsFor(platform: NodeJS.Platform): CdpParams[] {
+  const mac = platform === 'darwin';
+  const a = { key: 'a', code: 'KeyA', windowsVirtualKeyCode: 65, modifiers: mac ? 4 : 2 };
+  const del = { key: 'Delete', code: 'Delete', windowsVirtualKeyCode: 46 };
+  return [
+    { type: 'rawKeyDown', ...a, ...(mac ? { commands: ['selectAll'] } : {}) },
+    { type: 'keyUp', ...a },
+    { type: 'rawKeyDown', ...del, ...(mac ? { commands: ['deleteForward'] } : {}) },
+    { type: 'keyUp', ...del },
+  ];
+}
+
+/** `Input.dispatchMouseEvent` params for a left click at CSS pixel (x, y). */
+export function clickEvents(x: number, y: number): CdpParams[] {
+  return [
+    { type: 'mouseMoved', x, y },
+    { type: 'mousePressed', x, y, button: 'left', buttons: 1, clickCount: 1 },
+    { type: 'mouseReleased', x, y, button: 'left', buttons: 0, clickCount: 1 },
+  ];
+}
+
+/** Sends events in order; rejects if the page does not answer in time. */
+async function sendCdpInput(dbg: Electron.Debugger, method: string, events: CdpParams[]): Promise<void> {
+  let timer: NodeJS.Timeout | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () => reject(new Error(`${method} timed out after ${CDP_INPUT_TIMEOUT_MS / 1000}s (is a page dialog open?)`)),
+      CDP_INPUT_TIMEOUT_MS,
+    );
+  });
+  try {
+    await Promise.race([Promise.all(events.map((e) => dbg.sendCommand(method, e))), timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 export class BrowserSessionService extends EventEmitter {
   private static instance: BrowserSessionService | null = null;
 
@@ -543,6 +612,7 @@ export class BrowserSessionService extends EventEmitter {
    */
   public async evaluate(sessionId: string, script: string): Promise<unknown> {
     const entry = this.requireEntry(sessionId);
+    await this.cdpInput(entry); // focus() in the script then fires real focus events
     return await entry.view.webContents.executeJavaScript(script, true);
   }
 
@@ -595,6 +665,7 @@ export class BrowserSessionService extends EventEmitter {
     target: { selector?: string; index?: number; x?: number; y?: number },
   ): Promise<void> {
     const entry = this.requireEntry(sessionId);
+    const dbg = await this.cdpInput(entry);
     let point: { x: number; y: number } | null;
     if (typeof target.x === 'number' && typeof target.y === 'number') {
       point = { x: target.x, y: target.y };
@@ -607,6 +678,10 @@ export class BrowserSessionService extends EventEmitter {
     const wc = entry.view.webContents;
     const x = Math.round(point.x);
     const y = Math.round(point.y);
+    if (dbg) {
+      await sendCdpInput(dbg, 'Input.dispatchMouseEvent', clickEvents(x, y));
+      return;
+    }
     wc.sendInputEvent({ type: 'mouseMove', x, y });
     wc.sendInputEvent({ type: 'mouseDown', x, y, button: 'left', clickCount: 1 });
     wc.sendInputEvent({ type: 'mouseUp', x, y, button: 'left', clickCount: 1 });
@@ -623,6 +698,7 @@ export class BrowserSessionService extends EventEmitter {
   ): Promise<void> {
     const entry = this.requireEntry(sessionId);
     const wc = entry.view.webContents;
+    const dbg = await this.cdpInput(entry);
 
     if (args.selector !== undefined || typeof args.index === 'number') {
       const locator =
@@ -638,6 +714,8 @@ export class BrowserSessionService extends EventEmitter {
       if (!focused) {
         throw new Error('Type target not found');
       }
+    } else if (args.clear && dbg) {
+      await sendCdpInput(dbg, 'Input.dispatchKeyEvent', clearEventsFor(process.platform));
     } else if (args.clear) {
       // Clear the currently-focused field via select-all + delete.
       wc.sendInputEvent({ type: 'keyDown', keyCode: 'A', modifiers: ['control', 'meta'] });
@@ -646,6 +724,10 @@ export class BrowserSessionService extends EventEmitter {
       wc.sendInputEvent({ type: 'keyUp', keyCode: 'Delete' });
     }
 
+    if (dbg) {
+      await sendCdpInput(dbg, 'Input.dispatchKeyEvent', keyEventsForText(args.text));
+      return;
+    }
     for (const ch of args.text) {
       wc.sendInputEvent({ type: 'char', keyCode: ch });
     }
@@ -670,6 +752,25 @@ export class BrowserSessionService extends EventEmitter {
   }
 
   // ============ INTERNAL ============
+
+  /**
+   * Attach the debugger once per session and enable focus emulation (idempotent,
+   * survives navigation). Returns null when CDP is unavailable -- e.g. DevTools
+   * already claimed the debugger -- so callers fall back to `sendInputEvent`.
+   */
+  private async cdpInput(entry: SessionEntry): Promise<Electron.Debugger | null> {
+    const dbg = entry.view.webContents.debugger;
+    try {
+      if (!dbg.isAttached()) dbg.attach('1.3');
+      await sendCdpInput(dbg, 'Emulation.setFocusEmulationEnabled', [{ enabled: true }]);
+      return dbg;
+    } catch (err) {
+      logger.main.warn(
+        `[BrowserSessionService] CDP input unavailable for ${entry.sessionId}, using sendInputEvent: ${(err as Error)?.message}`,
+      );
+      return null;
+    }
+  }
 
   /**
    * Lazily create the shared off-screen host window for headless sessions.
