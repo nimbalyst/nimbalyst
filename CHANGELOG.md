@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 <!-- Bug fixes go here -->
+- The pull request panel no longer reports the GitHub CLI as signed out when `gh auth status` is slow to answer.
 
 ### Removed
 <!-- Removed features go here -->
