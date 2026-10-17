@@ -1,5 +1,5 @@
 import { getPatternDisplayName } from '../../types';
-import { buildToolDescription, generateToolPattern } from '../../permissions/toolPermissionHelpers';
+import { buildToolDescription, generateToolPattern, getCommandDescription } from '../../permissions/toolPermissionHelpers';
 import { constrainPermissionResponse, permissionPromptHints, type PermissionPromptHints } from '../../permissions/permissionPromptPolicy';
 import { hasShellChainingOperators, splitOnShellOperators, stripHeredocs } from '../../permissions/BashCommandAnalyzer';
 
@@ -167,6 +167,7 @@ export async function handleToolPermissionWithService(
           requestId,
           toolName,
           rawCommand: toolName === 'Bash' ? input?.command || '' : toolDescription,
+          description: getCommandDescription(toolName, input),
           pattern,
           patternDisplayName: patternDisplay,
           isDestructive,
@@ -283,6 +284,7 @@ export async function handleToolPermissionFallback(
           requestId,
           toolName,
           rawCommand,
+          description: getCommandDescription(toolName, input),
           pattern,
           patternDisplayName: patternDisplay,
           isDestructive,

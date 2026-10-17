@@ -24,6 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Commit proposals from Codex sessions no longer fail with "Cannot identify this exact commit proposal"
 - A Claude Code session no longer keeps showing "Waiting for your response" after you answer its question while it carries on working.
 - A prompt whose send failed, or a retried copy of it, no longer stays at the bottom of the transcript below later replies
+- In Claude Agent sessions, the prompt asking you to approve a shell command shows the agent's one-line description of what the command does above the command. In Claude Agent and Claude Code CLI sessions, the prompt for starting a sub-agent shows its task instead of just "Agent".
 
 ### Removed
 <!-- Removed features go here -->

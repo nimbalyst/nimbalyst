@@ -16,6 +16,7 @@
  *     requestId: 'tool-session-12345-abc',
  *     toolName: 'Bash',
  *     rawCommand: 'git status',
+ *     description: 'Show working tree status',   // Bash only, optional
  *     pattern: 'Bash(git status:*)',
  *     patternDisplayName: 'git status commands',
  *     isDestructive: false,
@@ -112,6 +113,7 @@ export const ToolPermissionWidget: React.FC<CustomToolWidgetProps> = ({
   const requestId = (args.requestId || toolCall.providerToolCallId || '') as string;
   const toolName = (args.toolName || '') as string;
   const rawCommand = unwrapShellCommand((args.rawCommand || '') as string);
+  const description = (args.description || '') as string;
   const pattern = (args.pattern || toolName) as string;
   const patternDisplayName = (args.patternDisplayName || getPatternDisplayName(pattern)) as string;
   const isDestructive = (args.isDestructive || false) as boolean;
@@ -330,7 +332,12 @@ export const ToolPermissionWidget: React.FC<CustomToolWidgetProps> = ({
           </span>
         </div>
 
-        <div className="p-3">
+        <div className="p-3 flex flex-col gap-2">
+          {description && (
+            <div data-testid="tool-permission-description" className="text-sm text-nim">
+              {description}
+            </div>
+          )}
           <div className="bg-nim-tertiary rounded p-2 max-h-[200px] overflow-x-auto">
             <code className="font-mono text-xs text-nim whitespace-pre-wrap break-all">
               {rawCommand || toolName}
@@ -453,6 +460,12 @@ export const ToolPermissionWidget: React.FC<CustomToolWidgetProps> = ({
                 <span>{warning}</span>
               </div>
             ))}
+          </div>
+        )}
+
+        {description && (
+          <div data-testid="tool-permission-description" className="text-sm text-nim">
+            {description}
           </div>
         )}
 

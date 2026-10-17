@@ -684,6 +684,46 @@ describe('ToolPermissionWidget', () => {
     expect(screen.getByText('This Session')).toBeDefined();
   });
 
+  it('shows the command description above the command, pending and resolved', () => {
+    const args = {
+      requestId: 'req-desc',
+      toolName: 'Bash',
+      rawCommand: 'mkdir -p out && cp -R dist out/',
+      description: 'Copy build output into out/',
+      pattern: 'Bash:compound:abc',
+    };
+    const expectDescriptionAboveCommand = () => {
+      const description = screen.getByTestId('tool-permission-description');
+      expect(description.textContent).toBe('Copy build output into out/');
+      const command = screen.getByText('mkdir -p out && cp -R dist out/');
+      expect(description.compareDocumentPosition(command) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+    };
+    const pendingView = render(
+      <Wrapper>
+        <ToolPermissionWidget
+          message={makeToolMessage('ToolPermission', args)}
+          isExpanded={false}
+          onToggle={() => {}}
+          sessionId="desc-session"
+        />
+      </Wrapper>
+    );
+    expectDescriptionAboveCommand();
+    pendingView.unmount();
+
+    render(
+      <Wrapper>
+        <ToolPermissionWidget
+          message={makeToolMessage('ToolPermission', args, JSON.stringify({ decision: 'allow', scope: 'once' }))}
+          isExpanded={false}
+          onToggle={() => {}}
+          sessionId="desc-session"
+        />
+      </Wrapper>
+    );
+    expectDescriptionAboveCommand();
+  });
+
   it('renders denied state from tool result', () => {
     const message = makeToolMessage(
       'ToolPermission',

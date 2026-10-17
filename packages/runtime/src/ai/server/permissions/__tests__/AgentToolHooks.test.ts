@@ -298,6 +298,66 @@ describe('AgentToolHooks', () => {
       expect(sessionApprovedPatterns.size).toBe(1);
     });
 
+    it('carries the Bash description to the ToolPermission widget', async () => {
+      const pending = new Map<string, any>();
+      const options = createMockOptions({
+        getCurrentMode: () => 'auto',
+        getPendingToolPermissions: () => pending,
+        getSessionApprovedPatterns: () => new Set<string>(),
+      });
+      const hooks = new AgentToolHooks(options);
+      const hook = hooks.createPermissionDeniedHook();
+
+      const resultPromise = hook(
+        {
+          tool_name: 'Bash',
+          tool_input: { command: 'git reset --hard HEAD~1', description: 'Drop the last commit' },
+          reason: 'destructive git op',
+        },
+        'tool-use-denied-5',
+        { signal: new AbortController().signal }
+      );
+
+      await Promise.resolve();
+      await Promise.resolve();
+
+      const persistedPayload = JSON.parse((options.logAgentMessage as any).mock.calls[0][3]);
+      expect(persistedPayload.input.description).toBe('Drop the last commit');
+
+      Array.from(pending.values())[0].resolve({ decision: 'deny', scope: 'once' });
+      await resultPromise;
+    });
+
+    it('shows what a sub-agent will do instead of the bare tool name', async () => {
+      const pending = new Map<string, any>();
+      const options = createMockOptions({
+        getCurrentMode: () => 'auto',
+        getPendingToolPermissions: () => pending,
+        getSessionApprovedPatterns: () => new Set<string>(),
+      });
+      const hooks = new AgentToolHooks(options);
+      const hook = hooks.createPermissionDeniedHook();
+
+      const resultPromise = hook(
+        {
+          tool_name: 'Agent',
+          tool_input: { description: 'Survey open issues', prompt: 'Search the tracker for duplicates of ...' },
+          reason: '[Modify Shared Resources]',
+        },
+        'tool-use-denied-6',
+        { signal: new AbortController().signal }
+      );
+
+      await Promise.resolve();
+      await Promise.resolve();
+
+      const persistedPayload = JSON.parse((options.logAgentMessage as any).mock.calls[0][3]);
+      expect(persistedPayload.input.rawCommand).toBe('Survey open issues');
+
+      Array.from(pending.values())[0].resolve({ decision: 'deny', scope: 'once' });
+      await resultPromise;
+    });
+
     it('returns no-op (denial stands) when the user denies the re-prompt', async () => {
       const pending = new Map<string, any>();
       const options = createMockOptions({
