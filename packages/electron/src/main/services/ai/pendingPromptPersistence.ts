@@ -50,6 +50,29 @@ export function resetPendingPromptTracking(): void {
   sessionsWithPendingPrompt.clear();
 }
 
+/** Is this one session currently blocked on an interactive prompt? */
+export function hasSessionPendingPrompt(sessionId: string): boolean {
+  return sessionsWithPendingPrompt.has(sessionId);
+}
+
+type PendingPromptClearedListener = (sessionId: string) => void;
+const clearedListeners = new Set<PendingPromptClearedListener>();
+
+/**
+ * Subscribe to "this session stopped being blocked on the user".
+ *
+ * This module is the single writer of the bit, and every prompt path writes
+ * it: provider-event prompts through `openPromptRegistry`, the MCP tool
+ * prompts directly. So this is the only place that sees the true -> false
+ * transition for all of them. Returns an unsubscribe function.
+ */
+export function onPendingPromptCleared(
+  listener: PendingPromptClearedListener,
+): () => void {
+  clearedListeners.add(listener);
+  return () => clearedListeners.delete(listener);
+}
+
 /**
  * `kind` is what the prompt is asking for: `approval` for a tool permission or
  * commit proposal (a tap), `decision` for a question, a plan, or a structured
@@ -112,6 +135,22 @@ export async function setSessionPendingPrompt(
 
   if (hasPendingPrompt && !wasAlreadyPending) {
     void notifyMobileOfBlockedSession(sessionId);
+  }
+
+  // Fire on the logical transition, not on the database write: work held back
+  // while this session was blocked must be released even if persisting the bit
+  // failed.
+  if (!hasPendingPrompt && wasAlreadyPending) {
+    for (const listener of clearedListeners) {
+      try {
+        listener(sessionId);
+      } catch (err) {
+        logger.main.warn(
+          `[pendingPromptPersistence] pending-prompt-cleared listener threw for session ${sessionId}:`,
+          err,
+        );
+      }
+    }
   }
 }
 
