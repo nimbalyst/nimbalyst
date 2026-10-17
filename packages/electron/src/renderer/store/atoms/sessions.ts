@@ -27,6 +27,7 @@ import { captureTranscriptMessages, reconcileTranscriptMessages } from '../trans
 import { sessionLaunchCountsAtom } from './sessionLaunchCounts';
 import { sessionListMetadata } from './sessionListMetadata';
 import { workstreamStateAtom, setWorkstreamActiveChildAtom } from './workstreamState';
+import { clearSessionUnreadAtom } from './sessionActivity';
 import { aiInputHistoryAtom } from './aiInputUndo';
 
 // SessionMeta is imported from @nimbalyst/runtime (canonical type).
@@ -2144,6 +2145,7 @@ export const markSessionReadAtom = atom(null, (get, set, sessionId: string) => {
   const now = Date.now();
   set(sessionUnreadAtom(sessionId), false);
   set(sessionLastReadAtom(sessionId), now);
+  set(clearSessionUnreadAtom, { sessionId });
 
   // Always push lastReadAt through sync for cross-device read state.
   // Even if this device didn't consider the session "unread", another device

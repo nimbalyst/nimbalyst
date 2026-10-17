@@ -47,6 +47,7 @@ import {
   sessionDraftLocalModifiedAtAtom,
   type PendingPrompt,
 } from './atoms/sessions';
+import { windowFocusedAtom } from './atoms/windowFocus';
 import { workstreamActiveChildAtom, workstreamStateAtom } from './atoms/workstreamState';
 import { triggerWorktreeRefreshAtom } from './atoms/gitOperations';
 import { activeWorkspacePathAtom, multiProjectModeAtom, openProjectsAtom } from './atoms/openProjects';
@@ -191,6 +192,16 @@ function ensureMultiProjectSubscribers(): void {
   multiProjectSubscribersInstalled = true;
   store.sub(multiProjectModeAtom, reconcileSessionStateSubscription);
   store.sub(openProjectsAtom, reconcileSessionStateSubscription);
+}
+
+/**
+ * The session the user is looking at in `workspacePath`: the selected
+ * workstream's active child, or the selected session itself.
+ */
+function getCurrentlyViewedSessionId(workspacePath: string): string | null {
+  const selectedWorkstream = store.get(selectedWorkstreamAtom(workspacePath));
+  if (!selectedWorkstream) return null;
+  return store.get(workstreamActiveChildAtom(selectedWorkstream.id)) || selectedWorkstream.id;
 }
 
 /**
@@ -628,21 +639,29 @@ export function initSessionStateListeners(): () => void {
     }
 
     // Mark as unread if this is an output message (agent response) and the session
-    // is not currently being viewed
+    // is not currently being viewed. A selected session only counts as viewed
+    // while this window is focused and its project is the one on screen (the
+    // multi-project rail hosts several projects in one window) -- otherwise a
+    // session left selected in the background never reports that it finished,
+    // and the read-sync below would also clear the tray hint main set on
+    // completion. Regaining focus or switching back to the project does not
+    // mark it read; selecting the session does.
     if (direction === 'output') {
-      const selectedWorkstream = store.get(selectedWorkstreamAtom(workspacePath));
+      const visibleWorkspacePath = store.get(activeWorkspacePathAtom);
+      const isOnScreen = store.get(windowFocusedAtom)
+        && (visibleWorkspacePath === null || visibleWorkspacePath === workspacePath);
+      const currentlyViewedSessionId = isOnScreen
+        ? getCurrentlyViewedSessionId(workspacePath)
+        : null;
 
-      // Determine the currently viewed session ID
-      // For a single session, it's the workstream ID itself
-      // For a workstream/worktree, it's the active child within it
-      let currentlyViewedSessionId: string | null = null;
-      if (selectedWorkstream) {
-        const activeChild = store.get(workstreamActiveChildAtom(selectedWorkstream.id));
-        currentlyViewedSessionId = activeChild || selectedWorkstream.id;
-      }
-
-      // If this message is for a session that's not currently viewed, mark it as unread
       if (sessionId !== currentlyViewedSessionId) {
+        // A read-sync scheduled while the session was still on screen must not
+        // clear this unread state after the fact.
+        const pendingReadTimer = readStateSyncTimers.get(sessionId);
+        if (pendingReadTimer) {
+          clearTimeout(pendingReadTimer);
+          readStateSyncTimers.delete(sessionId);
+        }
         store.set(sessionUnreadAtom(sessionId), true);
         store.set(markSessionUnreadAtom, { sessionId, workspacePath });
 

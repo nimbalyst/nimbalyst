@@ -24,6 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Commit proposals from Codex sessions no longer fail with "Cannot identify this exact commit proposal"
 - A Claude Code session no longer keeps showing "Waiting for your response" after you answer its question while it carries on working.
 - A prompt whose send failed, or a retried copy of it, no longer stays at the bottom of the transcript below later replies
+- A session that finishes while left selected in a project you switched away from, or in a window in the background, now shows as unread until you click it, instead of counting as already viewed.
 
 ### Removed
 <!-- Removed features go here -->
