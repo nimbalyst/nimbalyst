@@ -33,6 +33,13 @@ import * as path from 'path';
  */
 export const FIXTURE_AUTHOR = { name: 'Test User', email: 'test@example.com' } as const;
 
+/** Args that pin identity + disable signing on a single `git commit`. */
+export const FIXTURE_IDENTITY_ARGS: string[] = [
+  '-c', `user.name=${FIXTURE_AUTHOR.name}`,
+  '-c', `user.email=${FIXTURE_AUTHOR.email}`,
+  '-c', 'commit.gpgsign=false',
+];
+
 /**
  * A process env with every GIT_* variable stripped and repo discovery pinned
  * below the temp dir. Pass this to every spawn of the git binary.
