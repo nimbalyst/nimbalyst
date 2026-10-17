@@ -639,6 +639,12 @@ export async function initAgentModeLayout(
     store.set(activeWorkspacePathAtom, workspacePath);
   }
 
+  // A rail switch runs this restore while a notification click may already
+  // be selecting a session in the same project. If the selection moved while
+  // `workspace:get-state` was in flight, the persisted value is older than it
+  // and must not overwrite it.
+  const selectionBeforeLoad = store.get(selectedWorkstreamAtom(workspacePath));
+
   try {
     const workspaceState = await window.electronAPI.invoke(
       'workspace:get-state',
@@ -650,7 +656,10 @@ export async function initAgentModeLayout(
     const restoredLayout = mergeWithDefaults(persisted);
     store.set(agentModeLayoutAtomFamily(workspacePath), restoredLayout);
 
-    if (agenticState?.selectedWorkstream) {
+    if (
+      agenticState?.selectedWorkstream &&
+      store.get(selectedWorkstreamAtom(workspacePath)) === selectionBeforeLoad
+    ) {
       const selection = agenticState.selectedWorkstream as { type: WorkstreamType; id: string };
       store.set(selectedWorkstreamAtom(workspacePath), selection);
     }
