@@ -15,7 +15,7 @@ import {
   resolveGitDiffTarget,
 } from '../GitHandlers';
 import { GitOperationLogService } from '../../services/GitOperationLogService';
-import { assertGitSandbox, gitSandboxEnv } from '../../services/testSupport/gitTestSandbox';
+import { assertGitSandbox, createScratchRepo, gitSandboxEnv } from '../../services/testSupport/gitTestSandbox';
 
 const execFileAsync = promisify(execFile);
 
@@ -50,17 +50,9 @@ async function git(args: string[], cwd: string): Promise<void> {
   await execFileAsync('git', args, { cwd, env: gitSandboxEnv(testTempRoot) });
 }
 
-async function initScratchRepo(cwd: string): Promise<void> {
-  await git(['init', '-q'], cwd);
-  await git(['config', 'user.email', 'test@example.com'], cwd);
-  await git(['config', 'user.name', 'Test User'], cwd);
-  await git(['config', 'commit.gpgsign', 'false'], cwd);
-  assertGitSandbox(cwd, testTempRoot);
-}
-
 describe('working tree mutations', () => {
   it('does not expand a pathspec-magic filename while discarding changes', async () => {
-    await initScratchRepo(tmpRoot);
+    createScratchRepo({ at: tmpRoot });
     const magicPath = path.join(tmpRoot, ':(glob)**');
     const unrelatedPath = path.join(tmpRoot, 'unrelated.txt');
     await fs.writeFile(magicPath, 'baseline magic\n');
@@ -83,7 +75,7 @@ describe('working tree mutations', () => {
   });
 
   it('reports a staged rename as a deletion plus an addition', async () => {
-    await initScratchRepo(tmpRoot);
+    createScratchRepo({ at: tmpRoot });
     await fs.writeFile(path.join(tmpRoot, 'old.ts'), 'export const value = 1;\n');
     await git(['add', 'old.ts'], tmpRoot);
     await git(['commit', '-q', '-m', 'baseline'], tmpRoot);
@@ -225,7 +217,7 @@ describe('benign local Git operand semantics', () => {
     await mkdirp(source);
     await mkdirp(receiver);
     for (const repo of [source, receiver]) {
-      await initScratchRepo(repo);
+      createScratchRepo({ at: repo });
       await git(['branch', '-M', repo === source ? 'main' : 'receiver'], repo);
       await fs.writeFile(path.join(repo, 'baseline.txt'), 'baseline\n');
       await git(['add', 'baseline.txt'], repo);
