@@ -76,6 +76,22 @@ describe('decodeTextFileBuffer', () => {
     expect(content).not.toContain('�'); // no replacement char
   });
 
+  it('detects the encoding of a large non-UTF-8 buffer from its first 64 KB only', () => {
+    // chardet over a whole multi-MB file (e.g. an open video) blocked the main
+    // process for seconds. The 4 MB tail would sway full-buffer detection.
+    const head = Buffer.from('Le café est très bon, merci beaucoup. Où est la gare? '.repeat(1300), 'latin1');
+    const tail = Buffer.alloc(4 * 1024 * 1024);
+    for (let i = 0; i < tail.length; i += 2) {
+      tail[i] = 0x82;
+      tail[i + 1] = 0xa0 + ((i / 2) % 80);
+    }
+    const buf = Buffer.concat([head, tail]);
+    expect(chardet.detect(buf)).not.toMatch(/8859-1|1252/i);
+    const { content, encoding } = decodeTextFileBuffer(buf);
+    expect(encoding).toBe('latin1');
+    expect(content.length).toBe(buf.length);
+  });
+
   it('handles an empty buffer', () => {
     expect(decodeTextFileBuffer(Buffer.alloc(0))).toEqual({ content: '', encoding: 'utf8' });
   });

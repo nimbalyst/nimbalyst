@@ -33,6 +33,8 @@ export interface DecodedText {
   encoding: BufferEncoding;
 }
 
+const CHARDET_SAMPLE_BYTES = 64 * 1024;
+
 export function decodeTextFileBuffer(buffer: Buffer): DecodedText {
   // UTF-8 BOM -> strip it and decode as UTF-8.
   if (buffer.length >= 3 && buffer[0] === 0xef && buffer[1] === 0xbb && buffer[2] === 0xbf) {
@@ -55,8 +57,9 @@ export function decodeTextFileBuffer(buffer: Buffer): DecodedText {
     return { content: buffer.toString('utf8'), encoding: 'utf8' };
   }
 
-  // Genuinely not UTF-8 -> fall back to statistical detection.
-  const detected = chardet.detect(buffer);
+  // Genuinely not UTF-8 -> fall back to statistical detection. Sample the head:
+  // chardet over a whole multi-MB file blocks the main process for seconds.
+  const detected = chardet.detect(buffer.subarray(0, CHARDET_SAMPLE_BYTES));
   const encoding = (detected && CHARDET_TO_NODE[detected]) || 'utf8';
   return { content: buffer.toString(encoding), encoding };
 }
