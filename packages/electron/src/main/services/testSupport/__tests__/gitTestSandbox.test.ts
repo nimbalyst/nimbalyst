@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { afterEach, describe, expect, it } from 'vitest';
-import simpleGit from 'simple-git';
+import { createGit } from '../../gitClient';
 import { execFileSync } from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
@@ -14,7 +14,7 @@ describe('gitSandboxEnv', () => {
     try {
       const sandboxEnv = gitSandboxEnv(undefined, { pinConfigPaths: false });
       expect(sandboxEnv.SSH_ASKPASS).toBeUndefined();
-      await expect(simpleGit(os.tmpdir()).env(sandboxEnv).raw(['--version'])).resolves.toMatch(/^git version /);
+      await expect(createGit(os.tmpdir(), {}, sandboxEnv).raw(['--version'])).resolves.toMatch(/^git version /);
     } finally {
       if (previousAskPass === undefined) delete process.env.SSH_ASKPASS;
       else process.env.SSH_ASKPASS = previousAskPass;
