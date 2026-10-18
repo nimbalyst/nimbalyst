@@ -16,7 +16,7 @@ import { database } from '../database/PGLiteDatabaseWorker';
 
 export function createRawMessageStoreAdapter(): IRawMessageStore {
   return {
-    async getMessages(sessionId: string, afterId?: number): Promise<RawMessage[]> {
+    async getMessages(sessionId: string, afterId?: number, limit?: number): Promise<RawMessage[]> {
       if (!database.isInitialized()) {
         await database.initialize();
       }
@@ -36,6 +36,13 @@ export function createRawMessageStoreAdapter(): IRawMessageStore {
                WHERE session_id = $1
                ORDER BY id ASC`;
         params = [sessionId];
+      }
+
+      // The transformer pages through long sessions; one unbounded read of a
+      // big session exceeds the SQLite worker's 256 MB response limit.
+      if (limit != null) {
+        params.push(limit);
+        sql += `\n               LIMIT $${params.length}`;
       }
 
       const { rows } = await database.query<any>(sql, params);

@@ -50,9 +50,21 @@ export interface RawMessage {
 }
 
 export interface IRawMessageStore {
-  /** Get raw messages for a session, ordered by id, optionally starting after a given id */
-  getMessages(sessionId: string, afterId?: number): Promise<RawMessage[]>;
+  /**
+   * Get raw messages for a session, ordered by id, optionally starting after a
+   * given id. When `limit` is set, return at most that many rows.
+   */
+  getMessages(sessionId: string, afterId?: number, limit?: number): Promise<RawMessage[]>;
 }
+
+/**
+ * Rows per raw-log read. A session's raw log has no size bound (one real
+ * session reached 57k rows / ~170 MB of content), and the SQLite worker
+ * rejects any single response over 256 MB, so reading it in one query made
+ * the session impossible to open. The transformer reads every session one
+ * page at a time instead.
+ */
+export const RAW_MESSAGE_PAGE_SIZE = 500;
 
 export interface ISessionMetadataStore {
   getTransformStatus(sessionId: string): Promise<{
@@ -249,8 +261,8 @@ export class TranscriptTransformer {
       });
     }
 
-    const messages = await this.rawStore.getMessages(sessionId, afterId);
-    if (messages.length === 0) return [];
+    const firstPage = await this.readRawPage(sessionId, afterId);
+    if (firstPage.length === 0) return [];
 
     const writer = new TranscriptWriter(this.transcriptStore, provider);
     const parser = this.createParser(provider);
@@ -299,32 +311,36 @@ export class TranscriptTransformer {
 
     let lastRawMessageId = afterId;
 
-    for (const msg of messages) {
-      try {
-        const descriptors = await parser.parseMessage(msg, context);
-        for (const desc of descriptors) {
-          stampPromptSource(desc, msg);
-          const event = await this.processDescriptorWithNotify(
-            writer,
-            sessionId,
-            desc,
-            toolEventIds,
-            subagentEventIds,
-          );
-          if (event) writtenEvents.push(event);
+    for await (const page of this.rawPagesFrom(sessionId, firstPage)) {
+      for (const msg of page) {
+        try {
+          const descriptors = await parser.parseMessage(msg, context);
+          for (const desc of descriptors) {
+            stampPromptSource(desc, msg);
+            const event = await this.processDescriptorWithNotify(
+              writer,
+              sessionId,
+              desc,
+              toolEventIds,
+              subagentEventIds,
+            );
+            if (event) writtenEvents.push(event);
+          }
+        } catch {
+          // Skip unparseable messages -- the raw log is preserved
         }
-      } catch {
-        // Skip unparseable messages -- the raw log is preserved
+        lastRawMessageId = msg.id;
       }
-      lastRawMessageId = msg.id;
-    }
 
-    await this.metadataStore.updateTransformStatus(sessionId, {
-      transformVersion: TranscriptTransformer.CURRENT_VERSION,
-      lastRawMessageId,
-      lastTransformedAt: new Date(),
-      transformStatus: 'complete',
-    });
+      // Advance the watermark per page: this page's events are already
+      // written, so a failed read of the next page must not replay them.
+      await this.metadataStore.updateTransformStatus(sessionId, {
+        transformVersion: TranscriptTransformer.CURRENT_VERSION,
+        lastRawMessageId,
+        lastTransformedAt: new Date(),
+        transformStatus: 'complete',
+      });
+    }
 
     return writtenEvents;
   }
@@ -334,6 +350,9 @@ export class TranscriptTransformer {
   // ---------------------------------------------------------------------------
 
   private async transformFromBeginning(sessionId: string, provider: string): Promise<boolean> {
+    // Only advanced when events go straight to the real store; staged events
+    // are all discarded if the batch fails.
+    let watermark = 0;
     try {
       await this.metadataStore.updateTransformStatus(sessionId, {
         transformVersion: TranscriptTransformer.CURRENT_VERSION,
@@ -342,8 +361,8 @@ export class TranscriptTransformer {
         transformStatus: 'pending',
       });
 
-      const messages = await this.rawStore.getMessages(sessionId);
-      if (messages.length === 0) {
+      const firstPage = await this.readRawPage(sessionId);
+      if (firstPage.length === 0) {
         await this.metadataStore.updateTransformStatus(sessionId, {
           transformVersion: TranscriptTransformer.CURRENT_VERSION,
           lastRawMessageId: 0,
@@ -366,7 +385,7 @@ export class TranscriptTransformer {
       const realInsertEvents = this.transcriptStore.insertEvents?.bind(this.transcriptStore);
       if (realInsertEvents) {
         const staging = new InMemoryTranscriptEventStore();
-        result = await this.transformMessages(sessionId, messages, provider, false, staging);
+        result = await this.transformMessages(sessionId, this.rawPagesFrom(sessionId, firstPage), provider, false, staging);
         const staged = staging.getAllEvents();
         if (staged.length > 0) {
           // Split into "simple" events (no parentEventId) and "derived"
@@ -410,7 +429,14 @@ export class TranscriptTransformer {
           }
         }
       } else {
-        result = await this.transformMessages(sessionId, messages, provider);
+        result = await this.transformMessages(
+          sessionId,
+          this.rawPagesFrom(sessionId, firstPage),
+          provider,
+          false,
+          undefined,
+          (lastRawMessageId) => { watermark = lastRawMessageId; },
+        );
       }
 
       await this.metadataStore.updateTransformStatus(sessionId, {
@@ -424,7 +450,7 @@ export class TranscriptTransformer {
     } catch (err) {
       await this.metadataStore.updateTransformStatus(sessionId, {
         transformVersion: TranscriptTransformer.CURRENT_VERSION,
-        lastRawMessageId: 0,
+        lastRawMessageId: watermark,
         lastTransformedAt: new Date(),
         transformStatus: 'error',
       });
@@ -438,9 +464,10 @@ export class TranscriptTransformer {
     afterId?: number,
     alreadyComplete = false,
   ): Promise<boolean> {
+    let watermark = afterId ?? 0;
     try {
-      const messages = await this.rawStore.getMessages(sessionId, afterId);
-      if (messages.length === 0) {
+      const firstPage = await this.readRawPage(sessionId, afterId);
+      if (firstPage.length === 0) {
         if (!alreadyComplete) {
           await this.metadataStore.updateTransformStatus(sessionId, {
             transformVersion: TranscriptTransformer.CURRENT_VERSION,
@@ -452,7 +479,14 @@ export class TranscriptTransformer {
         return false;
       }
 
-      const result = await this.transformMessages(sessionId, messages, provider, true);
+      const result = await this.transformMessages(
+        sessionId,
+        this.rawPagesFrom(sessionId, firstPage),
+        provider,
+        true,
+        undefined,
+        (lastRawMessageId) => { watermark = lastRawMessageId; },
+      );
 
       await this.metadataStore.updateTransformStatus(sessionId, {
         transformVersion: TranscriptTransformer.CURRENT_VERSION,
@@ -465,11 +499,33 @@ export class TranscriptTransformer {
     } catch (err) {
       await this.metadataStore.updateTransformStatus(sessionId, {
         transformVersion: TranscriptTransformer.CURRENT_VERSION,
-        lastRawMessageId: afterId ?? 0,
+        lastRawMessageId: watermark,
         lastTransformedAt: new Date(),
         transformStatus: 'error',
       });
       throw err;
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Paged raw-log reads
+  // ---------------------------------------------------------------------------
+
+  private readRawPage(sessionId: string, afterId?: number): Promise<RawMessage[]> {
+    return this.rawStore.getMessages(sessionId, afterId, RAW_MESSAGE_PAGE_SIZE);
+  }
+
+  /**
+   * Yield `firstPage`, then each following page until a short one. A store
+   * that ignores `limit` returns everything at once, and the loop ends on the
+   * empty read after it.
+   */
+  private async *rawPagesFrom(sessionId: string, firstPage: RawMessage[]): AsyncGenerator<RawMessage[]> {
+    let page = firstPage;
+    while (page.length > 0) {
+      yield page;
+      if (page.length < RAW_MESSAGE_PAGE_SIZE) return;
+      page = await this.readRawPage(sessionId, page[page.length - 1].id);
     }
   }
 
@@ -513,10 +569,11 @@ export class TranscriptTransformer {
 
   private async transformMessages(
     sessionId: string,
-    messages: RawMessage[],
+    pages: AsyncIterable<RawMessage[]>,
     provider: string,
     isResume = false,
     writeStore?: ITranscriptEventStore,
+    onPageTransformed?: (lastRawMessageId: number) => void,
   ): Promise<{ lastRawMessageId: number; eventsWritten: number }> {
     // `writeStore` lets `transformFromBeginning` stage events into an
     // in-memory store so the entire batch can be flushed in one
@@ -555,27 +612,32 @@ export class TranscriptTransformer {
         targetStore.findActiveToolCallByRawProviderId(rawId, sessionId),
     };
 
-    for (const msg of messages) {
-      try {
-        const descriptors = await parser.parseMessage(msg, context);
-        for (const desc of descriptors) {
-          stampPromptSource(desc, msg);
-          const event = suppressNotify
-            ? await this.processDescriptor(writer, sessionId, desc, toolEventIds, subagentEventIds, targetStore)
-            : await this.processDescriptorWithNotify(
-                writer,
-                sessionId,
-                desc,
-                toolEventIds,
-                subagentEventIds,
-              );
-          if (event) eventsWritten++;
+    // One parser instance spans every page, so pagination never changes how
+    // messages parse.
+    for await (const page of pages) {
+      for (const msg of page) {
+        try {
+          const descriptors = await parser.parseMessage(msg, context);
+          for (const desc of descriptors) {
+            stampPromptSource(desc, msg);
+            const event = suppressNotify
+              ? await this.processDescriptor(writer, sessionId, desc, toolEventIds, subagentEventIds, targetStore)
+              : await this.processDescriptorWithNotify(
+                  writer,
+                  sessionId,
+                  desc,
+                  toolEventIds,
+                  subagentEventIds,
+                );
+            if (event) eventsWritten++;
+          }
+        } catch {
+          // Skip unparseable messages -- the raw log is preserved
         }
-      } catch {
-        // Skip unparseable messages -- the raw log is preserved
-      }
 
-      lastRawMessageId = msg.id;
+        lastRawMessageId = msg.id;
+      }
+      onPageTransformed?.(lastRawMessageId);
     }
 
     return { lastRawMessageId, eventsWritten };

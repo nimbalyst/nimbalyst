@@ -12,7 +12,7 @@
 import { describe, it, expect } from 'vitest';
 import { TranscriptRuntime } from '../TranscriptRuntime';
 import { InMemoryTranscriptEventStore } from '../InMemoryTranscriptEventStore';
-import type { IRawMessageStore, RawMessage } from '../TranscriptTransformer';
+import { RAW_MESSAGE_PAGE_SIZE, type IRawMessageStore, type RawMessage } from '../TranscriptTransformer';
 
 function makeRawStore(messages: RawMessage[]): IRawMessageStore {
   // Hold the live array so tests that push after construction see new rows.
@@ -194,6 +194,66 @@ describe('TranscriptRuntime', () => {
     expect(events).toHaveLength(toolCalls);
     expect(events.every((e) => e.payload.status === 'completed')).toBe(true);
     expect(elapsed).toBeLessThan(2000);
+  });
+
+  // The SQLite worker rejects any single response over 256 MB. Reading a whole
+  // raw log in one query left a 57k-row session stuck on "Session not found".
+  describe('paged raw-log reads', () => {
+    const prompts = (from: number, count: number) =>
+      Array.from({ length: count }, (_, i) => `prompt ${from + i}`);
+
+    function guardedStore(messages: RawMessage[], failReadAfterId?: { id: number | null }) {
+      const reads: number[] = [];
+      const store: IRawMessageStore = {
+        async getMessages(sessionId, afterId, limit) {
+          if (failReadAfterId && afterId === failReadAfterId.id) {
+            failReadAfterId.id = null;
+            throw new Error('database closed');
+          }
+          const rows = messages.filter((m) => m.sessionId === sessionId && m.id > (afterId ?? 0)).slice(0, limit);
+          // Stand-in for the worker's response size guard.
+          if (rows.length > RAW_MESSAGE_PAGE_SIZE) throw new Error('Query result is too large to return');
+          reads.push(rows.length);
+          return rows;
+        },
+      };
+      return { store, reads };
+    }
+
+    it('rebuilds and processes new messages one bounded page at a time', async () => {
+      const total = RAW_MESSAGE_PAGE_SIZE * 2 + 7;
+      const messages = prompts(1, total).map((text, i) => userInput(i + 1, 's1', text));
+      const { store, reads } = guardedStore(messages);
+      const runtime = new TranscriptRuntime(store);
+
+      const events = await runtime.getCanonicalEvents('s1', 'claude-code');
+      expect(events.map((e) => e.searchableText)).toEqual(prompts(1, total));
+      expect(reads).toEqual([RAW_MESSAGE_PAGE_SIZE, RAW_MESSAGE_PAGE_SIZE, 7]);
+
+      const added = RAW_MESSAGE_PAGE_SIZE + 3;
+      prompts(total + 1, added).forEach((text, i) => messages.push(userInput(total + i + 1, 's1', text)));
+      const newEvents = await runtime.processNewMessages('s1', 'claude-code');
+      expect(newEvents.map((e) => e.searchableText)).toEqual(prompts(total + 1, added));
+      expect(await runtime.processNewMessages('s1', 'claude-code')).toEqual([]);
+    });
+
+    it('resumes after the last finished page when a later page read fails', async () => {
+      const messages = [userInput(1, 's1', 'prompt 1')];
+      const failure = { id: null as number | null };
+      const { store } = guardedStore(messages, failure);
+      const runtime = new TranscriptRuntime(store);
+      await runtime.getCanonicalEvents('s1', 'claude-code');
+
+      const added = RAW_MESSAGE_PAGE_SIZE + 5;
+      prompts(2, added).forEach((text, i) => messages.push(userInput(i + 2, 's1', text)));
+      failure.id = 1 + RAW_MESSAGE_PAGE_SIZE;
+      await expect(runtime.processNewMessages('s1', 'claude-code')).rejects.toThrow('database closed');
+
+      const rest = await runtime.processNewMessages('s1', 'claude-code');
+      expect(rest.map((e) => e.searchableText)).toEqual(prompts(2 + RAW_MESSAGE_PAGE_SIZE, 5));
+      const all = await runtime.getCanonicalEvents('s1', 'claude-code');
+      expect(all.map((e) => e.searchableText)).toEqual(prompts(1, 1 + added));
+    });
   });
 });
 
