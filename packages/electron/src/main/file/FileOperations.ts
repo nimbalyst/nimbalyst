@@ -1,7 +1,7 @@
 import { BrowserWindow } from 'electron';
 import { basename } from 'path';
 import { writeFileAtomicSync } from './safeFileWrite';
-import { windowStates, getWindowId } from '../window/WindowManager';
+import { windowStates, getWindowId, findWindowByFilePath } from '../window/WindowManager';
 import { addToRecentItems } from '../utils/store';
 
 // Function to open a file in a window - sends open-document event to renderer
@@ -36,6 +36,19 @@ export function loadFileIntoWindow(window: BrowserWindow, filePath: string) {
     } catch (error) {
         console.error('[LOAD_FILE] Error loading file from OS:', error);
     }
+}
+
+// Re-send a file the OS asked for again to the window that last loaded it. state.filePath
+// is the last file loaded into a new tab in that window, not the active tab: switching or
+// closing tabs never updates it. The renderer selects the tab, or reopens it if it was closed.
+// Returns false when no window has loaded the file, so the caller routes it by workspace.
+export function reloadIntoWindowWithFile(filePath: string): boolean {
+    const existingWindow = findWindowByFilePath(filePath);
+    if (!existingWindow) {
+        return false;
+    }
+    loadFileIntoWindow(existingWindow, filePath);
+    return true;
 }
 
 // Save file. Atomic because a crash during a plain writeFileSync leaves the

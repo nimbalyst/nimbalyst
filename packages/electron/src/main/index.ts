@@ -19,12 +19,11 @@ import { appendFileSync, existsSync, renameSync, unlinkSync, writeFileSync } fro
 import {
     createWindow,
     documentServices,
-    findWindowByFilePath,
     findWindowByWorkspace,
     getMostRecentlyFocusedWorkspaceWindow,
 } from './window/WindowManager';
 import { beginStartupActivation, finishStartupWindowCreation } from './window/StartupActivation';
-import { loadFileIntoWindow } from './file/FileOperations';
+import { loadFileIntoWindow, reloadIntoWindowWithFile } from './file/FileOperations';
 import { createApplicationMenu } from './menu/ApplicationMenu';
 import { updateNativeTheme, updateWindowTitleBars } from './theme/ThemeManager';
 import { restoreSessionState, saveSessionState } from './session/SessionState';
@@ -1332,9 +1331,7 @@ app.on('open-file', (event, path) => {
 // Helper function to open a file with workspace detection
 async function openFileWithWorkspaceDetection(filePath: string): Promise<void> {
     // Check if file is already open in a window
-    const existingWindow = findWindowByFilePath(filePath);
-    if (existingWindow) {
-        // Window is already open - no need to focus, let macOS handle window ordering
+    if (reloadIntoWindowWithFile(filePath)) {
         return;
     }
 
