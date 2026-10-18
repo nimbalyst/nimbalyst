@@ -30,11 +30,14 @@ import {
 import { Gallery } from './Gallery';
 import { BottomBar } from './BottomBar';
 import { nanoBananaProvider } from '../providers/nanoBanana';
+import { minimaxImageProvider } from '../providers/minimax';
 
 import { DEFAULT_MODEL, type GeminiImageModel, type ReferenceImage } from '../types';
 
 // Storage keys (must match SettingsPanel)
 const GOOGLE_AI_KEY_STORAGE_KEY = 'google_ai_api_key';
+const MINIMAX_KEY_STORAGE_KEY = 'minimax_api_key';
+const SELECTED_PROVIDER_STORAGE_KEY = 'selected_provider';
 const SELECTED_MODEL_STORAGE_KEY = 'selected_model';
 
 /**
@@ -97,20 +100,21 @@ export const ImageProjectEditor = forwardRef<unknown, EditorHostProps>(
 
     // API key state
     const [apiKeyConfigured, setApiKeyConfigured] = useState(false);
+    const [activeProvider, setActiveProvider] = useState<'gemini' | 'minimax'>('gemini');
 
     // Load API key and model from extension storage on mount
     useEffect(() => {
       const loadSettings = async () => {
         try {
-          // Load API key
-          const apiKey = await host.storage.getSecret(GOOGLE_AI_KEY_STORAGE_KEY);
-          if (apiKey) {
-            nanoBananaProvider.setApiKey(apiKey);
-            setApiKeyConfigured(true);
-            console.log('[ImageGen] API key loaded from storage');
-          } else {
-            console.log('[ImageGen] No API key configured');
-          }
+          // Load provider credentials. A project can use either Google or MiniMax.
+          const googleKey = await host.storage.getSecret(GOOGLE_AI_KEY_STORAGE_KEY);
+          const minimaxKey = await host.storage.getSecret(MINIMAX_KEY_STORAGE_KEY);
+          if (googleKey) nanoBananaProvider.setApiKey(googleKey);
+          if (minimaxKey) minimaxImageProvider.setApiKey(minimaxKey);
+          const storedProvider = await host.storage.get(SELECTED_PROVIDER_STORAGE_KEY);
+          const provider = storedProvider === 'minimax' ? 'minimax' : 'gemini';
+          setActiveProvider(provider);
+          setApiKeyConfigured(provider === 'minimax' ? minimaxImageProvider.isConfigured() : nanoBananaProvider.isConfigured());
 
           // Load selected model
           const storedModel = await host.storage.get(SELECTED_MODEL_STORAGE_KEY);
@@ -327,6 +331,8 @@ export const ImageProjectEditor = forwardRef<unknown, EditorHostProps>(
       [getImagesFolderPath]
     );
 
+    const imageProvider = activeProvider === 'minimax' ? minimaxImageProvider : nanoBananaProvider;
+
     // Handle generation request (session-aware)
     const handleGenerate = useCallback(
       async (
@@ -339,7 +345,7 @@ export const ImageProjectEditor = forwardRef<unknown, EditorHostProps>(
         if (!project || !activeSession || isGenerating) return;
 
         // Check if API key is configured
-        if (!nanoBananaProvider.isConfigured()) {
+        if (!imageProvider.isConfigured()) {
           setGenerationError(
             'Google AI API key not configured. Please set your API key in the extension settings.'
           );
@@ -389,7 +395,7 @@ export const ImageProjectEditor = forwardRef<unknown, EditorHostProps>(
           }
 
           // Call the image generation API
-          const result = await nanoBananaProvider.generateImage({
+          const result = await imageProvider.generateImage({
             prompt,
             style,
             aspectRatio,
@@ -460,7 +466,7 @@ export const ImageProjectEditor = forwardRef<unknown, EditorHostProps>(
           setIsGenerating(false);
         }
       },
-      [project, activeSession, isGenerating, updateActiveSession, saveImageToDisk, buildConversationHistory]
+      [project, activeSession, isGenerating, activeProvider, updateActiveSession, saveImageToDisk, buildConversationHistory]
     );
 
     // Handle edit & retry from gallery
