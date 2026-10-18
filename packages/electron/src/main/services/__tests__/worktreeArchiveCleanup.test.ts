@@ -9,6 +9,7 @@ import { ArchiveProgressManager } from '../ArchiveProgressManager';
 import { createSuperLoopStore } from '../SuperLoopStore';
 import { createWorktreeStore } from '../WorktreeStore';
 import { createWorktreeArchiveCleanup, recoverWorktreeArchivesOnStartup } from '../worktreeArchiveCleanup';
+import { WorktreeRemovalRefusedError } from '../worktreeOwnership';
 
 const userData = vi.hoisted(() => ({ dir: '' }));
 vi.mock('electron', () => ({
@@ -20,12 +21,13 @@ describe('createWorktreeArchiveCleanup', () => {
   const worktree = {
     id: 'wt-1',
     path: '/proj_worktrees/feature',
+    branch: 'worktree/feature',
     projectPath: '/proj',
     sourceFolderPath: '/other/collab',
   };
 
   const makeDeps = () => ({
-    deleteWorktree: vi.fn(async (_worktreePath: string, _repoPath: string) => {}),
+    deleteWorktree: vi.fn(async (_worktreePath: string, _repoPath: string, _options: { expectedBranch?: string }) => {}),
     worktreeStore: { updateArchived: vi.fn(async (_id: string, _isArchived: boolean) => {}) },
     superLoopStore: {
       getLoopByWorktreeId: vi.fn(async () => ({ id: 'loop-1', isArchived: false }) as any),
@@ -41,9 +43,12 @@ describe('createWorktreeArchiveCleanup', () => {
 
     await createWorktreeArchiveCleanup(deps)(worktree, ['s-1']);
 
-    // `projectPath` is only the primary root; removing there leaves the real
-    // registration behind and runs `branch -D` in the wrong repository.
-    expect(deps.deleteWorktree).toHaveBeenCalledWith('/proj_worktrees/feature', '/other/collab');
+    // `projectPath` is only the primary root, which does not own an attached
+    // folder's worktree. The row's branch is the only one the removal may
+    // delete.
+    expect(deps.deleteWorktree).toHaveBeenCalledWith('/proj_worktrees/feature', '/other/collab', {
+      expectedBranch: 'worktree/feature',
+    });
     expect(deps.worktreeStore.updateArchived).toHaveBeenCalledWith('wt-1', true);
     expect(deps.superLoopStore.updateLoop).toHaveBeenCalledWith('loop-1', { isArchived: true });
     expect(deps.unarchiveSession).not.toHaveBeenCalled();
@@ -64,7 +69,7 @@ describe('createWorktreeArchiveCleanup', () => {
   it('keeps the sessions archived when the cleanup fails after the checkout is gone', async () => {
     const deps = makeDeps();
     // deleteWorktree's final git-list check can throw after the directory was
-    // already removed, for example for a locked worktree.
+    // already removed, when git still lists the worktree after unregistering it.
     deps.deleteWorktree.mockRejectedValueOnce(new Error('still in git worktree list'));
     deps.pathExists.mockImplementation((p) => p !== worktree.path);
 
@@ -72,6 +77,20 @@ describe('createWorktreeArchiveCleanup', () => {
       .rejects.toThrow('still in git worktree list');
 
     expect(deps.unarchiveSession).not.toHaveBeenCalled();
+  });
+
+  it('un-archives the sessions when the removal is refused, even with the checkout away from the disk', async () => {
+    // A locked worktree on an unmounted drive: the refusal deleted nothing,
+    // and the worktree still stands once the drive is back.
+    const deps = makeDeps();
+    deps.deleteWorktree.mockRejectedValueOnce(new WorktreeRemovalRefusedError('locked', 'Worktree is locked'));
+    deps.pathExists.mockReturnValue(false);
+
+    await expect(createWorktreeArchiveCleanup(deps)(worktree, ['s-1', 's-2']))
+      .rejects.toThrow('Worktree is locked');
+
+    expect(deps.unarchiveSession.mock.calls).toEqual([['s-1'], ['s-2']]);
+    expect(deps.worktreeStore.updateArchived).not.toHaveBeenCalled();
   });
 });
 
@@ -151,7 +170,7 @@ describe.each(['pglite', 'sqlite'] as const)('worktree archive recovery across l
     fs.rmSync(tmp, { recursive: true, force: true });
   });
 
-  async function removeCheckout(worktreePath: string, _repoPath: string) {
+  async function removeCheckout(worktreePath: string, _repoPath: string, _options: { expectedBranch?: string }) {
     fs.rmSync(worktreePath, { recursive: true, force: true });
   }
 
@@ -243,7 +262,9 @@ describe.each(['pglite', 'sqlite'] as const)('worktree archive recovery across l
     });
     // Even an already-removed checkout goes through the replay, which
     // unregisters it from the repo it was branched from.
-    expect(first.deleteWorktree).toHaveBeenCalledWith(worktreePath, sourceFolderPath);
+    expect(first.deleteWorktree).toHaveBeenCalledWith(worktreePath, sourceFolderPath, {
+      expectedBranch: 'worktree/feature',
+    });
     expect(fs.existsSync(worktreePath)).toBe(false);
 
     const second = await launch();
@@ -274,5 +295,25 @@ describe.each(['pglite', 'sqlite'] as const)('worktree archive recovery across l
     expect(second.result).toEqual({ consistency: [], recovered: 0, failed: 0 });
     expect(second.deleteWorktree).not.toHaveBeenCalled();
     expect((await snapshot()).archivedSessions).toEqual([]);
+  }, 30_000);
+
+  it('leaves a refused worktree whose checkout is away from the disk unarchived, also on the launch after', async () => {
+    // A locked worktree on an unmounted drive. With its sessions left
+    // archived, the next launch's consistency check would mark it archived
+    // although the refusal kept its checkout, registration and branch.
+    await seedInterruptedArchive(false);
+
+    const first = await launch(async () => {
+      throw new WorktreeRemovalRefusedError('locked', 'Worktree is locked');
+    });
+
+    expect(first.result).toEqual({ consistency: [], recovered: 1, failed: 0 });
+    expect(await snapshot()).toMatchObject({ archivedSessions: [], worktreeArchived: false, loopArchived: false });
+
+    const second = await launch();
+
+    expect(second.result).toEqual({ consistency: [], recovered: 0, failed: 0 });
+    expect(second.deleteWorktree).not.toHaveBeenCalled();
+    expect(await snapshot()).toMatchObject({ archivedSessions: [], worktreeArchived: false, loopArchived: false });
   }, 30_000);
 });

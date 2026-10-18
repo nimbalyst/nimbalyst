@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 <!-- New features go here -->
+- A worktree name you type in the new-worktree dialog becomes its branch exactly (`feat/x` gives `worktree/feat/x` in a `feat-x` folder), and invalid or clashing names are flagged instead of renamed.
 
 ### Changed
 <!-- Changes to existing functionality go here -->
@@ -24,6 +25,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Commit proposals from Codex sessions no longer fail with "Cannot identify this exact commit proposal"
 - A Claude Code session no longer keeps showing "Waiting for your response" after you answer its question while it carries on working.
 - A prompt whose send failed, or a retried copy of it, no longer stays at the bottom of the transcript below later replies
+- Archiving or deleting a worktree no longer deletes a folder or branch its repository does not own (another repository's worktree, or a moved, copied, locked or nested checkout), and no longer prunes the repository's other worktrees.
+- A worktree of a repository cloned inside the project is created next to the project instead of inside it, and the new-worktree dialog names the repository it branches from.
 
 ### Removed
 <!-- Removed features go here -->
