@@ -16,7 +16,7 @@ const execAsync = promisify(exec);
 const execFileAsync = promisify(execFile);
 import { windowStates, getWindowId, createWindow, markRecentlyDeleted, clearRecentlyDeleted } from '../window/WindowManager';
 // Aliased: this module has a local `windows` (BrowserWindow[]) further down.
-import { syncRepresentedFilename, windows as windowsById } from '../window/windowState';
+import { syncRepresentedFilename, resolveActiveWorkspacePath, windows as windowsById } from '../window/windowState';
 import { startFileWatcher, stopFileWatcher } from '../file/FileWatcher';
 import { getFolderContents, listFolderFilesRecursive } from '../utils/FileTree';
 import { decodeTextFileBuffer } from '../utils/textEncoding';
@@ -549,9 +549,10 @@ export function registerWorkspaceHandlers() {
             const windowId = getWindowId(window);
             if (windowId === null) return [];
 
-            const state = windowStates.get(windowId);
-            if (!state || !state.workspacePath) return [];
-            scope = state.workspacePath;
+            // Use the visible (side rail) project, matching where recents are recorded.
+            const activePath = resolveActiveWorkspacePath(windowStates.get(windowId));
+            if (!activePath) return [];
+            scope = activePath;
         }
 
         // Get recent files for this workspace from store
@@ -563,8 +564,9 @@ export function registerWorkspaceHandlers() {
             return [];
         }
 
-        // Filter to only existing files
-        return workspaceRecentFiles.filter(filePath => existsSync(filePath)).slice(0, 20);
+        // Filter to only existing files. No extra cut here: the store already
+        // caps the list, and the @-mention picker should show all of it (#303).
+        return workspaceRecentFiles.filter(filePath => existsSync(filePath));
     });
 
     // Add to workspace recent files
@@ -575,10 +577,13 @@ export function registerWorkspaceHandlers() {
         const windowId = getWindowId(window);
         if (windowId === null) return;
 
-        const state = windowStates.get(windowId);
-        if (!state || !state.workspacePath) return;
+        // Record under the project the user is looking at (the side rail's
+        // active project), not the one the window started with. The @-mention
+        // picker reads recents for the visible project (#303).
+        const activePath = resolveActiveWorkspacePath(windowStates.get(windowId));
+        if (!activePath) return;
 
-        addWorkspaceRecentFile(state.workspacePath, filePath);
+        addWorkspaceRecentFile(activePath, filePath);
     });
 
     // Get entire workspace state - no routing, no BS
