@@ -471,8 +471,9 @@ export function registerWorkspaceHandlers() {
             return [];
         }
 
-        // Filter to only existing files
-        return workspaceRecentFiles.filter(filePath => existsSync(filePath)).slice(0, 20);
+        // Filter to only existing files. No extra cut here: the store already
+        // caps the list, and the @-mention picker should show all of it (#303).
+        return workspaceRecentFiles.filter(filePath => existsSync(filePath));
     });
 
     // Add to workspace recent files

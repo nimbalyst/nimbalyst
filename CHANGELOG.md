@@ -422,6 +422,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Switching projects in one window no longer restarts the previous project's terminals inside the new project
 - Clicking a notification for a session in another open project opens that session, instead of the session that was open there before.
 - Choosing "Always" on one of several tool permission prompts that are waiting at once now approves the others too, instead of asking again
+- The @-mention file list in the chat box now shows all of a project's stored recent files (up to 50) instead of only the 20 most recent
 
 ### Removed
 <!-- Removed features go here -->
