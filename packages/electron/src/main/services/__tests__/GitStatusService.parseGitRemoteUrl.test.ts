@@ -1,29 +1,19 @@
 // @vitest-environment node
 
-import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { afterEach, describe, it, expect } from 'vitest';
 import { GitStatusService, parseGitRemoteUrl } from '../GitStatusService';
+import { createScratchRepo, type ScratchRepo } from '../testSupport/gitTestSandbox';
 
-const temporaryRepos: string[] = [];
+const temporaryRepos: ScratchRepo[] = [];
 
-function createRepository(): string {
-  const repo = mkdtempSync(join(tmpdir(), 'nim-github-remote-'));
+function createRepository(): ScratchRepo {
+  const repo = createScratchRepo();
   temporaryRepos.push(repo);
-  execFileSync('git', ['init', '--quiet', repo]);
   return repo;
 }
 
-function git(repo: string, ...args: string[]): void {
-  execFileSync('git', ['-C', repo, ...args]);
-}
-
 afterEach(() => {
-  for (const repo of temporaryRepos.splice(0)) {
-    rmSync(repo, { recursive: true, force: true });
-  }
+  for (const repo of temporaryRepos.splice(0)) repo.cleanup();
 });
 
 describe('parseGitRemoteUrl', () => {
@@ -79,14 +69,14 @@ describe('parseGitRemoteUrl', () => {
 describe('GitStatusService.parseGitHubRemote', () => {
   it('prefers the remote selected by gh over the tracking remote and origin', async () => {
     const repo = createRepository();
-    git(repo, 'remote', 'add', 'origin', 'https://github.com/contributor/project.git');
-    git(repo, 'remote', 'add', 'upstream', 'https://github.com/maintainer/project.git');
-    git(repo, 'remote', 'add', 'review', 'https://github.com/reviewer/project.git');
-    git(repo, 'symbolic-ref', 'HEAD', 'refs/heads/main');
-    git(repo, 'config', 'branch.main.remote', 'review');
-    git(repo, 'config', 'remote.upstream.gh-resolved', 'base');
+    repo.git('remote', 'add', 'origin', 'https://github.com/contributor/project.git');
+    repo.git('remote', 'add', 'upstream', 'https://github.com/maintainer/project.git');
+    repo.git('remote', 'add', 'review', 'https://github.com/reviewer/project.git');
+    repo.git('symbolic-ref', 'HEAD', 'refs/heads/main');
+    repo.git('config', 'branch.main.remote', 'review');
+    repo.git('config', 'remote.upstream.gh-resolved', 'base');
 
-    await expect(new GitStatusService().parseGitHubRemote(repo)).resolves.toEqual({
+    await expect(new GitStatusService().parseGitHubRemote(repo.path)).resolves.toEqual({
       host: 'github.com',
       remote: 'maintainer/project',
     });
@@ -94,12 +84,12 @@ describe('GitStatusService.parseGitHubRemote', () => {
 
   it('falls back to the current branch tracking remote', async () => {
     const repo = createRepository();
-    git(repo, 'remote', 'add', 'origin', 'https://github.com/contributor/project.git');
-    git(repo, 'remote', 'add', 'upstream', 'https://github.com/maintainer/project.git');
-    git(repo, 'symbolic-ref', 'HEAD', 'refs/heads/feature');
-    git(repo, 'config', 'branch.feature.remote', 'upstream');
+    repo.git('remote', 'add', 'origin', 'https://github.com/contributor/project.git');
+    repo.git('remote', 'add', 'upstream', 'https://github.com/maintainer/project.git');
+    repo.git('symbolic-ref', 'HEAD', 'refs/heads/feature');
+    repo.git('config', 'branch.feature.remote', 'upstream');
 
-    await expect(new GitStatusService().parseGitHubRemote(repo)).resolves.toEqual({
+    await expect(new GitStatusService().parseGitHubRemote(repo.path)).resolves.toEqual({
       host: 'github.com',
       remote: 'maintainer/project',
     });
@@ -107,9 +97,9 @@ describe('GitStatusService.parseGitHubRemote', () => {
 
   it('falls back to origin when no preferred remote is configured', async () => {
     const repo = createRepository();
-    git(repo, 'remote', 'add', 'origin', 'git@github.com:contributor/project.git');
+    repo.git('remote', 'add', 'origin', 'git@github.com:contributor/project.git');
 
-    await expect(new GitStatusService().parseGitHubRemote(repo)).resolves.toEqual({
+    await expect(new GitStatusService().parseGitHubRemote(repo.path)).resolves.toEqual({
       host: 'github.com',
       remote: 'contributor/project',
     });

@@ -4,25 +4,26 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { promises as fs } from 'fs';
 import os from 'os';
 import path from 'path';
-import { execFile } from 'child_process';
-import { promisify } from 'util';
 import { appendAttachmentGitignore, ATTACHMENT_GITIGNORE_ENTRY } from '../attachmentGitignore';
+import { createScratchRepo, type ScratchRepo } from '../../testSupport/gitTestSandbox';
 
-const execFileAsync = promisify(execFile);
 const fixtures: string[] = [];
+const repos: ScratchRepo[] = [];
 
 async function makeFixture(git = true): Promise<string> {
+  if (git) {
+    const repo = createScratchRepo();
+    repos.push(repo);
+    expect(await fs.realpath(path.normalize(repo.git('rev-parse', '--show-toplevel').trim()))).toBe(repo.path);
+    return repo.path;
+  }
   const fixture = await fs.mkdtemp(path.join(os.tmpdir(), 'attachment-gitignore-'));
   fixtures.push(fixture);
-  if (git) {
-    await execFileAsync('git', ['init', '-q', fixture]);
-    const { stdout } = await execFileAsync('git', ['-C', fixture, 'rev-parse', '--show-toplevel']);
-    expect(await fs.realpath(path.normalize(stdout.trim()))).toBe(await fs.realpath(fixture));
-  }
   return fixture;
 }
 
 afterEach(async () => {
+  for (const repo of repos.splice(0)) repo.cleanup();
   await Promise.all(fixtures.splice(0).map((fixture) => fs.rm(fixture, { recursive: true, force: true })));
 });
 

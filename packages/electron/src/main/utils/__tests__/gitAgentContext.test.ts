@@ -1,10 +1,10 @@
 // @vitest-environment node
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { execFileSync } from 'child_process';
 import { mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import path from 'path';
 import { getAgentGitContext } from '../gitAgentContext';
+import { createScratchRepo, type ScratchRepo } from '../../services/testSupport/gitTestSandbox';
 
 /**
  * #1177 — this snapshot replaces the CLI's suppressed git-status block. The part
@@ -13,22 +13,20 @@ import { getAgentGitContext } from '../gitAgentContext';
  * under os.tmpdir so nothing can be committed onto the branch under test.
  */
 describe('getAgentGitContext', () => {
+  let scratch: ScratchRepo;
   let repo: string;
 
   beforeAll(() => {
-    repo = mkdtempSync(path.join(tmpdir(), 'nim-gitctx-'));
-    const git = (...args: string[]) => execFileSync('git', args, { cwd: repo, stdio: 'pipe' });
-    git('init', '--initial-branch', 'master');
-    git('config', 'user.email', 'test@example.com');
-    git('config', 'user.name', 'Test');
+    scratch = createScratchRepo({ initialBranch: 'master' });
+    repo = scratch.path;
     writeFileSync(path.join(repo, 'a.txt'), 'a');
-    git('add', 'a.txt');
-    git('commit', '-m', 'initial commit');
-    git('checkout', '-b', 'feature/x');
+    scratch.git('add', 'a.txt');
+    scratch.git('commit', '-m', 'initial commit');
+    scratch.git('checkout', '-b', 'feature/x');
   });
 
   afterAll(() => {
-    rmSync(repo, { recursive: true, force: true });
+    scratch.cleanup();
   });
 
   it('states the current branch, the resolved main branch, and recent commits', async () => {
