@@ -9,6 +9,7 @@
  * pipeline (separate wiring step).
  */
 
+import { createHash } from 'node:crypto';
 import type { Database as SqliteDatabase } from 'better-sqlite3';
 
 export type QueryKind = 'read' | 'write' | 'migration';
@@ -116,6 +117,9 @@ interface ShapeBucket {
 }
 
 const HIST_KINDS: QueryKind[] = ['read', 'write', 'migration'];
+// Bound regex work separately from retained/indexed UTF-8 shape size.
+const SQL_NORMALIZATION_LENGTH_LIMIT = 16_384;
+const SHAPE_BYTE_LIMIT = 512;
 
 function emptyHistRow(): HistogramRow {
   return { lt1ms: 0, lt10ms: 0, lt100ms: 0, lt1s: 0, gt1s: 0 };
@@ -221,7 +225,16 @@ export class DatabaseInstrumentation {
 
     if (!sampled) return;
 
-    const shape = normalizeSql(opts.sql);
+    try {
+      this.recordSampledQuery(opts, isSlow);
+    } catch {
+      // Diagnostics must not replace an application query's result or error,
+      // including when normalization, hashing or the persistence logger fails.
+    }
+  }
+
+  private recordSampledQuery(opts: RecordedQuery, isSlow: boolean): void {
+    const shape = diagnosticShape(opts.sql);
     const callSite = opts.stack ? extractCallSite(opts.stack) : null;
     const now = Date.now();
 
@@ -239,7 +252,9 @@ export class DatabaseInstrumentation {
     // the rolling window.
     if (bucket.samples.length > 1000) bucket.samples.shift();
 
-    const table = extractPrimaryTable(opts.sql);
+    const table = opts.sql.length <= SQL_NORMALIZATION_LENGTH_LIMIT
+      ? extractPrimaryTable(opts.sql)
+      : null;
     if (table) {
       let t = this.tableStats.get(table);
       if (!t) {
@@ -268,19 +283,21 @@ export class DatabaseInstrumentation {
   }
 
   beginInFlight(sql: string, stack?: string): InFlightHandle {
-    const id = this.nextInFlightId++;
-    const entry: InFlightQuery = {
-      id,
-      shape: normalizeSql(sql),
-      startedAt: Date.now(),
-      callSite: stack ? extractCallSite(stack) : null,
-    };
-    this.inFlight.set(id, entry);
-    return {
-      end: () => {
-        this.inFlight.delete(id);
-      },
-    };
+    try {
+      const id = this.nextInFlightId++;
+      const entry: InFlightQuery = {
+        id,
+        shape: diagnosticShape(sql),
+        startedAt: Date.now(),
+        callSite: stack ? extractCallSite(stack) : null,
+      };
+      this.inFlight.set(id, entry);
+      return { end: () => { this.inFlight.delete(id); } };
+    } catch {
+      // This callback runs before the actual query. Losing instrumentation
+      // must not prevent that query from executing.
+      return { end: () => {} };
+    }
   }
 
   recordCoordinatorBatch(info: { batchSize: number; durationMs: number; fsynced: boolean }): void {
@@ -427,14 +444,14 @@ export class DatabaseInstrumentation {
       try {
         this.insertSlowStmt.run({
           shape,
-          sqlSample: opts.sql.length > 2000 ? opts.sql.slice(0, 2000) + '...' : opts.sql,
+          sqlSample: diagnosticSample(opts.sql),
           paramsSample: opts.params ? safeStringifyParams(opts.params) : null,
           durationMs: opts.durationMs,
           kind: opts.kind,
           rowsReturned: opts.rowsReturned ?? null,
           rowsAffected: opts.rowsAffected ?? null,
           callSite,
-          errorMessage: opts.error ? String(opts.error.message ?? opts.error) : null,
+          errorMessage: opts.error ? diagnosticSample(String(opts.error.message ?? opts.error)) : null,
         });
         // Cheap pruning -- only DELETE when we're plausibly over the cap.
         if (Math.random() < 0.01) {
@@ -449,6 +466,23 @@ export class DatabaseInstrumentation {
       this.log('warn', `[DBInstr] failed to persist slow query: ${(err as Error).message}`);
     }
   }
+}
+
+function diagnosticShape(sql: string): string {
+  // Check before any regex pass: a giant comment/literal can normalize down
+  // to a tiny shape while still making the normalizer expensive. Hashing the
+  // complete raw input remains linear, and intentionally forgoes literal
+  // grouping on this exceptional path rather than merging common prefixes.
+  if (sql.length > SQL_NORMALIZATION_LENGTH_LIMIT) {
+    return `oversized-sql:sha256:${createHash('sha256').update(sql).digest('hex')}`;
+  }
+  const shape = normalizeSql(sql);
+  if (Buffer.byteLength(shape, 'utf8') <= SHAPE_BYTE_LIMIT) return shape;
+  return `normalized-sql:sha256:${createHash('sha256').update(shape).digest('hex')}`;
+}
+
+function diagnosticSample(value: string): string {
+  return value.length > 2000 ? value.slice(0, 2000) + '...' : value;
 }
 
 /**

@@ -2,6 +2,7 @@ import { registerSessionPromptResponseHandler } from './sessionPromptResponseHan
 import { remoteSessions } from '../services/ai/remoteSessions';
 import { database } from '../database/PGLiteDatabaseWorker';
 import { projectSessionList, readSessionLaunchCounts } from './sessionListProjection';
+import { sessionUncommittedFileQuery } from './sessionUncommittedFileQuery';
 import { SessionManager, ProviderFactory } from '@nimbalyst/runtime/ai/server';
 import { AISessionsRepository, TranscriptMigrationRepository } from '@nimbalyst/runtime';
 import { TranscriptProjector } from '@nimbalyst/runtime/ai/server/transcript';
@@ -105,31 +106,9 @@ async function getSessionsForUncommittedFiles(
     if (inFlight) return inFlight;
 
     const queryPromise = (async () => {
-        const { database } = await import('../database/PGLiteDatabaseWorker');
-
-        // session_files historically stored paths in two forms (relative for
-        // older Edit/Write rows, absolute for Bash watcher and ApplyPatch).
-        // Look up by both so legacy rows still match. New rows are normalized
-        // by SessionFileTracker.
-        const candidatePaths: string[] = [];
-        for (const relativePath of uncommittedFiles) {
-            candidatePaths.push(relativePath);
-            candidatePaths.push(`${workspacePath}/${relativePath}`);
-        }
-
-        // Pick the most recent session per file_path. Rewritten from PG's
-        // `SELECT DISTINCT ON (file_path) ... ORDER BY file_path, timestamp DESC`
-        // to a window-function form that works under both PGLite and SQLite.
+        const query = sessionUncommittedFileQuery(workspacePath, uncommittedFiles, database.getEngine());
         const { rows } = await database.query<{ session_id: string; file_path: string }>(
-            `SELECT session_id, file_path FROM (
-               SELECT session_id, file_path,
-                      ROW_NUMBER() OVER (PARTITION BY file_path ORDER BY timestamp DESC) AS rn
-               FROM session_files
-               WHERE workspace_id = $1
-                 AND link_type = 'edited'
-                 AND file_path = ANY($2::text[])
-             ) ranked WHERE rn = 1`,
-            [workspacePath, candidatePaths]
+            query.sql, query.params
         );
 
         const fileToSession = new Map<string, string>();

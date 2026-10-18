@@ -1,15 +1,24 @@
+// @vitest-environment node
 /**
  * Pure-logic tests for DatabaseInstrumentation. No native binding; mock the
  * SQLite handle so this runs even when better-sqlite3 isn't installed.
  */
 
-import { describe, expect, it } from 'vitest';
+import { createHash } from 'node:crypto';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   DatabaseInstrumentation,
   extractCallSite,
   extractPrimaryTable,
   normalizeSql,
 } from '../DatabaseInstrumentation';
+
+vi.mock('node:crypto', async importOriginal => {
+  const original = await importOriginal<typeof import('node:crypto')>();
+  return { ...original, createHash: vi.fn(original.createHash) };
+});
+
+afterEach(() => vi.restoreAllMocks());
 
 describe('normalizeSql', () => {
   it('replaces numeric and string literals with ?', () => {
@@ -130,5 +139,93 @@ describe('DatabaseInstrumentation aggregation', () => {
     inst.reset();
     expect(inst.getSnapshot().byShape).toHaveLength(0);
     expect(inst.getSnapshot().totalQueries).toBe(0);
+  });
+});
+
+describe('bounded diagnostic shapes', () => {
+  function record(sql: string, inst = new DatabaseInstrumentation()) {
+    const handle = inst.beginInFlight(sql);
+    inst.recordQuery({ sql, kind: 'read', durationMs: 1 });
+    const snapshot = inst.getSnapshot();
+    expect(snapshot.inFlight[0].shape).toBe(snapshot.byShape[0].shape);
+    expect(Buffer.byteLength(snapshot.byShape[0].shape, 'utf8')).toBeLessThanOrEqual(512);
+    handle.end();
+    return snapshot.byShape[0].shape;
+  }
+
+  it('keeps a readable 512-byte shape and digests a 513-byte UTF-8 shape', () => {
+    const atLimit = 'select ' + 'é'.repeat(252) + 'x';
+    expect(Buffer.byteLength(atLimit, 'utf8')).toBe(512);
+    expect(record(atLimit)).toBe(atLimit);
+    expect(record(atLimit + 'x')).toMatch(/^normalized-sql:sha256:[0-9a-f]{64}$/);
+  });
+
+  it('groups long normalized equivalents while retaining differences after their shared prefix', () => {
+    const prefix = `SELECT ${'column_name, '.repeat(100)}`;
+    const inst = new DatabaseInstrumentation();
+    const first = record(prefix + 'tail_a FROM records WHERE id = 1', inst);
+    record(prefix + 'tail_a FROM records WHERE id = 2', inst);
+    const second = record(prefix + 'tail_b FROM records WHERE id = 2');
+    expect(first).not.toBe(second);
+    expect(inst.getSnapshot().byShape).toHaveLength(1);
+    expect(inst.getSnapshot().byShape[0].count).toBe(2);
+  });
+
+  it('skips regex normalization and table extraction for oversized raw SQL', () => {
+    const sql = `SELECT ${'column_name, '.repeat(110_000)}tail FROM reporting`;
+    const replace = String.prototype.replace;
+    vi.spyOn(String.prototype, 'replace').mockImplementation(function (
+      this: string, ...args: Parameters<typeof String.prototype.replace>
+    ) {
+      if (this.length > 16_384) throw new Error('unbounded diagnostic regex');
+      return Reflect.apply(replace, this, args);
+    });
+    expect(record(sql)).toMatch(/^oversized-sql:sha256:[0-9a-f]{64}$/);
+  });
+
+  it('hashes complete oversized input and deliberately keeps raw literal identity', () => {
+    const prefix = `SELECT * FROM reporting WHERE id IN (${'?,'.repeat(20_000)}`;
+    const a = record(prefix + '1)');
+    expect(record(prefix + '1)')).toBe(a);
+    expect(record(prefix + '2)')).not.toBe(a);
+    expect(a).toMatch(/^oversized-sql:sha256:[0-9a-f]{64}$/);
+  });
+
+  it('uses the raw work budget before a huge comment can normalize to a small shape', () => {
+    expect(record(`SELECT 1 /* ${'x'.repeat(16_384)} */`)).toMatch(/^oversized-sql:sha256:/);
+  });
+
+  it('normalizes at the raw work limit and hashes immediately beyond it', () => {
+    const prefix = 'SELECT 1 /*';
+    const sql = prefix + 'x'.repeat(16_384 - prefix.length - 2) + '*/';
+    expect(sql.length).toBe(16_384);
+    expect(record(sql)).toBe('select ?');
+    expect(record(sql + ' ')).toMatch(/^oversized-sql:sha256:/);
+  });
+
+  it('does not throw hash failures through either query callback', () => {
+    const inst = new DatabaseInstrumentation();
+    const sql = `SELECT ${'column_name, '.repeat(2000)}tail`;
+    vi.mocked(createHash).mockImplementationOnce(() => { throw new Error('hash unavailable'); });
+    expect(() => inst.beginInFlight(sql).end()).not.toThrow();
+    vi.mocked(createHash).mockImplementationOnce(() => { throw new Error('hash unavailable'); });
+    expect(() => inst.recordQuery({ sql, kind: 'read', durationMs: 1 })).not.toThrow();
+    expect(inst.getSnapshot()).toMatchObject({ totalQueries: 1, inFlight: [], byShape: [] });
+    expect(inst.getSnapshot().histogram.read.lt10ms).toBe(1);
+  });
+
+  it('does not throw normalizer failures through either query callback', () => {
+    const sql = 'SELECT diagnostic_failure';
+    const replace = String.prototype.replace;
+    vi.spyOn(String.prototype, 'replace').mockImplementation(function (
+      this: string, ...args: Parameters<typeof String.prototype.replace>
+    ) {
+      if (String(this) === sql) throw new Error('normalizer unavailable');
+      return Reflect.apply(replace, this, args);
+    });
+    const inst = new DatabaseInstrumentation();
+    expect(() => inst.beginInFlight(sql).end()).not.toThrow();
+    expect(() => inst.recordQuery({ sql, kind: 'read', durationMs: 1 })).not.toThrow();
+    expect(inst.getSnapshot().byShape).toEqual([]);
   });
 });
