@@ -58,6 +58,13 @@ describe('handleToolPermissionWithService', () => {
       assertZodCompliantAllow(result);
     });
 
+    it('carries the Bash description to the durable message', async () => {
+      const deps = createDeps();
+      const input = { command: 'mkdir -p out && cp -R dist out/', description: 'Copy build output into out/' };
+      await handleToolPermissionWithService(deps, createParams({ input }));
+      expect(JSON.parse(deps.logAgentMessage.mock.calls[0][1]).input.description).toBe('Copy build output into out/');
+    });
+
     it('deny decision includes message', async () => {
       const deps = createDeps({ requestToolPermission: vi.fn().mockResolvedValue({ decision: 'deny' }) });
       const result = await handleToolPermissionWithService(deps, createParams());
@@ -143,6 +150,20 @@ describe('handleToolPermissionFallback', () => {
 
       const result = await resultPromise;
       assertZodCompliantAllow(result);
+    });
+
+    it('carries the Bash description to the durable message', async () => {
+      const deps = createDeps();
+      const input = { command: 'mkdir -p out && cp -R dist out/', description: 'Copy build output into out/' };
+      const resultPromise = handleToolPermissionFallback(deps, createParams({ input }));
+
+      await vi.waitFor(() => {
+        expect(deps.permissions.pendingToolPermissions.size).toBe(1);
+      });
+      expect(JSON.parse(deps.logAgentMessage.mock.calls[0][1]).input.description).toBe('Copy build output into out/');
+      const [, pending] = [...deps.permissions.pendingToolPermissions.entries()][0];
+      pending.resolve({ decision: 'deny', scope: 'once' });
+      await resultPromise;
     });
 
     it('user deny response includes message', async () => {

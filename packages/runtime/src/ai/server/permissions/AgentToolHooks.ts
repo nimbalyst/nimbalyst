@@ -14,7 +14,7 @@
 import path from 'path';
 import fs from 'fs';
 import { parseBashForFileOps } from './BashCommandAnalyzer';
-import { generateToolPattern, buildToolDescription } from './toolPermissionHelpers';
+import { generateToolPattern, buildToolDescription, getCommandDescription } from './toolPermissionHelpers';
 import { getPatternDisplayName } from '../types';
 import type { TrustChecker } from '../providers/ProviderPermissionMixin';
 
@@ -374,6 +374,7 @@ export class AgentToolHooks {
               requestId,
               toolName,
               rawCommand,
+              description: getCommandDescription(toolName, toolInput),
               pattern,
               patternDisplayName: patternDisplay,
               isDestructive,
