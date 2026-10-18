@@ -76,6 +76,7 @@ import {
   sessionThinkingModeRawAtom,
   sessionOpenCodeRoleAtom,
   sessionLoadingAtom,
+  sessionLoadErrorAtom,
   sessionModeAtom,
   sessionModelAtom,
   sessionArchivedAtom,
@@ -410,6 +411,7 @@ const LocalSessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscrip
   const compactionSupport = agentCapabilitiesForProviderType(provider).compaction;
   const tokenUsage = useAtomValue(sessionTokenUsageAtom(sessionId));
   const isDataLoading = useAtomValue(sessionLoadingAtom(sessionId));
+  const loadError = useAtomValue(sessionLoadErrorAtom(sessionId));
   const chatShowToolCalls = useAtomValue(chatShowToolCallsAtom);
   const [aiMode, setAiMode] = useAtom(sessionModeAtom(sessionId));
   const [currentModel, setCurrentModel] = useAtom(sessionModelAtom(sessionId));
@@ -2506,6 +2508,26 @@ const LocalSessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscrip
 
   // Loading state
   if (!sessionData) {
+    if (!isDataLoading && loadError) {
+      return (
+        <div
+          className="session-load-error flex flex-1 flex-col items-center justify-center gap-3 p-6 text-center text-[var(--nim-text-muted)]"
+          data-session-id={sessionId}
+        >
+          <div className="session-load-error-title text-[var(--nim-text)]">Couldn't load this session</div>
+          <div className="session-load-error-detail max-w-[560px] break-words text-xs select-text">{loadError}</div>
+          <button
+            type="button"
+            className="session-load-error-retry nim-btn-secondary px-3 py-1.5 rounded text-sm"
+            onClick={() => {
+              if (workspacePath) loadSessionData({ sessionId, workspacePath });
+            }}
+          >
+            Try again
+          </button>
+        </div>
+      );
+    }
     return (
       <div
         style={{
