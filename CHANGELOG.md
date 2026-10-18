@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 <!-- Bug fixes go here -->
+- Very long sessions open again instead of showing "Session not found" once their history grew too large to load in one read
 
 ### Removed
 <!-- Removed features go here -->
