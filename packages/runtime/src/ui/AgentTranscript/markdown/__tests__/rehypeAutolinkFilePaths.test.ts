@@ -4,13 +4,14 @@ import { rehypeAutolinkFilePaths, __test } from '../rehypeAutolinkFilePaths';
 
 const { splitTextNode } = __test;
 
+/** The anchors that `splitTextNode` would build, in order. */
+function anchors(text: string): any[] {
+  return (splitTextNode(text) ?? []).filter((n: any) => n.type === 'element' && n.tagName === 'a');
+}
+
 /** Collect the file paths that `splitTextNode` would turn into anchors. */
 function linkedPaths(text: string): string[] {
-  const nodes = splitTextNode(text);
-  if (!nodes) return [];
-  return nodes
-    .filter((n: any) => n.type === 'element' && n.tagName === 'a')
-    .map((n: any) => n.properties.dataFilePath as string);
+  return anchors(text).map((n: any) => n.properties.dataFilePath as string);
 }
 
 describe('rehypeAutolinkFilePaths path detection', () => {
@@ -25,6 +26,7 @@ describe('rehypeAutolinkFilePaths path detection', () => {
       ['(see /Users/a/foo.ts)', ['/Users/a/foo.ts']],
       ['C:\\proj\\foo.ts', ['C:\\proj\\foo.ts']],
       ['C:/proj/foo.ts:10', ['C:/proj/foo.ts:10']],
+      ['~/x/y.md', ['~/x/y.md']],
       [
         'both a/b/one.ts and c/d/two.js here',
         ['a/b/one.ts', 'c/d/two.js'],
@@ -61,6 +63,54 @@ describe('rehypeAutolinkFilePaths path detection', () => {
       expect(linkedPaths('packages/electron/src/foo.ts')).toEqual([
         'packages/electron/src/foo.ts',
       ]);
+    });
+  });
+
+  /**
+   * Agents often write a file as `@docs/plan.md`, the same "@" shorthand people
+   * use to mention a file in a chat box. The "@" is not part of the real path,
+   * so clicking the link used to look for `<workspace>/@docs/plan.md`, which
+   * does not exist. The link must open `docs/plan.md` while the words on screen
+   * stay `@docs/plan.md`.
+   */
+  describe('a leading "@" on a path', () => {
+    it('opens the path without the "@" but still shows the "@"', () => {
+      const [anchor] = anchors('@docs/plan.md');
+      expect(anchor.properties.dataFilePath).toBe('docs/plan.md');
+      expect(anchor.children).toEqual([{ type: 'text', value: '@docs/plan.md' }]);
+    });
+
+    it('keeps a :line:col suffix after dropping the "@"', () => {
+      expect(linkedPaths('@docs/plan.md:42:7')).toEqual(['docs/plan.md:42:7']);
+    });
+
+    it('works in the middle of a sentence', () => {
+      expect(linkedPaths('Please read @docs/plan.md first.')).toEqual(['docs/plan.md']);
+    });
+
+    it('links "@~/x/y.md" as "~/x/y.md" (home-folder path)', () => {
+      const [anchor] = anchors('@~/x/y.md');
+      expect(anchor.properties.dataFilePath).toBe('~/x/y.md');
+      expect(anchor.children).toEqual([{ type: 'text', value: '@~/x/y.md' }]);
+    });
+
+    it('keeps an "@" that is not the first character (scoped package folders)', () => {
+      const [anchor] = anchors('node_modules/@types/node/index.d.ts');
+      expect(anchor.properties.dataFilePath).toBe('node_modules/@types/node/index.d.ts');
+      expect(anchor.children).toEqual([
+        { type: 'text', value: 'node_modules/@types/node/index.d.ts' },
+      ]);
+    });
+
+    // Chosen trade-off, recorded on purpose: a path that STARTS with a scoped
+    // package loses its "@" too. The chat box writes "@path" for files, and a
+    // workspace folder whose name starts with "@" is rare.
+    it('drops the "@" when the whole text starts with a scoped package', () => {
+      expect(linkedPaths('@types/node/index.d.ts')).toEqual(['types/node/index.d.ts']);
+    });
+
+    it('does not turn an email address into a file link', () => {
+      expect(linkedPaths('write to me@example.com today')).toEqual([]);
     });
   });
 

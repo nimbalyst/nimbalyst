@@ -62,6 +62,10 @@ const SKIP_TAGS = new Set(['a', 'pre']);
  * version numbers out. Segment characters are restricted to a path-safe
  * set so trailing sentence punctuation (`.`, `,`, `)`, `:`) is excluded.
  *
+ * A match may start with one "@" (`@docs/plan.md`, `@~/x/y.md`), the way a chat
+ * box points at a file. `makeAnchor` strips that one leading "@" from the link
+ * target; the text on screen keeps it.
+ *
  * The extension bound was 8, which silently truncated longer ones: the anchor
  * covered only the first 8 characters and its href pointed at a path that does
  * not exist (`foo.excalidraw` linked as `foo.excalidr`). That hit `.excalidraw`,
@@ -71,18 +75,24 @@ const SKIP_TAGS = new Set(['a', 'pre']);
  */
 const FILE_PATH_RE =
   // eslint-disable-next-line no-useless-escape
-  /(?<![\w@:./\\-])((?:[A-Za-z]:[\\/]|\\\\|~\/|\.\.?\/|\/)?(?:[\w.@-]+[\\/])+[\w.@-]+\.[A-Za-z0-9]{1,16})(:\d+(?::\d+)?)?/g;
+  /(?<![\w@:./\\-])(@?(?:[A-Za-z]:[\\/]|\\\\|~\/|\.\.?\/|\/)?(?:[\w.@-]+[\\/])+[\w.@-]+\.[A-Za-z0-9]{1,16})(:\d+(?::\d+)?)?/g;
 
 function makeAnchor(fullMatch: string): HastElement {
+  // `@docs/plan.md` is how a chat box points at a file. The "@" is not part of
+  // the real path, so the link drops ONE leading "@"; the shown text keeps it.
+  // An "@" further in (`node_modules/@types/...`) stays. Trade-off: a path that
+  // starts with a scoped package (`@types/node/index.d.ts`) loses its "@" too;
+  // a workspace folder whose name starts with "@" is rare.
+  const filePath = fullMatch.startsWith('@') ? fullMatch.slice(1) : fullMatch;
   return {
     type: 'element',
     tagName: 'a',
     properties: {
-      href: fullMatch,
-      // Marker read by the renderer's `a` override. Carries the raw match
-      // (path plus any :line:col suffix); the override strips the suffix
-      // before handing the path to onOpenFile.
-      dataFilePath: fullMatch,
+      href: filePath,
+      // Marker read by the renderer's `a` override. Carries the match without
+      // a leading "@" (path plus any :line:col suffix); the override strips the
+      // suffix before handing the path to onOpenFile.
+      dataFilePath: filePath,
     },
     children: [{ type: 'text', value: fullMatch }],
   };
