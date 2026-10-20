@@ -291,7 +291,9 @@ export class ClaudeProvider extends BaseAIProvider {
       systemPrompt.substring(0, 1000) + (systemPrompt.length > 1000 ? '...' : ''));
     console.log('💬 Messages:', apiMessages.map(m => ({
       role: m.role,
-      contentPreview: m.content?.substring(0, 100) + (m.content?.length > 100 ? '...' : '')
+      contentPreview: typeof m.content === 'string'
+        ? previewForLog(m.content, 100)
+        : `[${m.content?.length ?? 0} content blocks]`
     })));
     console.log('📄 Document Context:', {
       hasDocument: !!documentContext,

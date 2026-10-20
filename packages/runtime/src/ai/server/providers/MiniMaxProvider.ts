@@ -34,8 +34,8 @@ export interface MiniMaxEndpoint {
 }
 
 const MINIMAX_MODELS = [
+  { id: 'MiniMax-M3.1-Flash', contextWindow: 1000000 },
   { id: 'MiniMax-M3', contextWindow: 1000000 },
-  { id: 'MiniMax-M2.7', contextWindow: 204800 },
 ] as const;
 
 const FORWARDED_EVENTS = [
