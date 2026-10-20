@@ -55,6 +55,7 @@ import type { TextSelection } from './TextSelectionIndicator';
 import { type SerializableDocumentContext } from '../../hooks/useDocumentContext';
 import { serializeEditorContextItemsForIpc } from './editorContextSerialization';
 import { isClaudeCliTerminalSession } from './claudeCliInputRouting';
+import { pickPendingQuestionAnswer } from './pendingQuestionRouting';
 import { expandSessionMentions } from './sessionMentions';
 import { diffTreeGroupByDirectoryAtom, setDiffTreeGroupByDirectoryAtom } from '../../store/atoms/projectState';
 import { openSettingsCommandAtom } from '../../store/atoms/settingsNavigation';
@@ -1042,6 +1043,16 @@ const LocalSessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscrip
     setDraftAttachments(prev => prev.filter(a => a.id !== attachmentId));
   }, [setDraftAttachments]);
 
+  // Answers a waiting AskUserQuestion. Two callers share this one send: the
+  // question widget's own buttons (through the widget host below) and the chat
+  // box (handleSend), so both report the same analytics event.
+  const submitQuestionAnswer = useCallback(async (questionId: string, answers: Record<string, string>) => {
+    await window.electronAPI.invoke('claude-code:answer-question', { questionId, answers, sessionId });
+    posthog?.capture('ask_user_question_answered', {
+      numQuestions: Object.keys(answers).length,
+    });
+  }, [sessionId, posthog]);
+
   const handleQueue = useCallback(async (message: string) => {
     if (!message.trim() || isQueueing) return;
     setIsQueueing(true);
@@ -1200,6 +1211,30 @@ const LocalSessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscrip
     }
 
     if (isLoading) {
+      // A session that waits on an AskUserQuestion also counts as loading. If
+      // the typed text can answer that one question, send it as the answer
+      // instead of queueing it behind a question that would never resolve
+      // (upstream #366).
+      const questionAnswer = pickPendingQuestionAnswer(
+        store.get(sessionPendingPromptsAtom(sessionId)),
+        currentDraftInput,
+      );
+      if (questionAnswer) {
+        try {
+          await submitQuestionAnswer(questionAnswer.questionId, questionAnswer.answers);
+          // Clear the draft the same way the queue path does.
+          setLastSubmitAt(Date.now());
+          setDraftInput('');
+          setDraftAttachments([]);
+          clearAIInputHistory(sessionId);
+        } catch (error) {
+          // Keep the draft so the user can retry or edit it.
+          console.error('[SessionTranscript] Failed to answer pending question:', error);
+        }
+        blocked('answered_pending_question');
+        return;
+      }
+
       handleQueue(currentDraftInput.trim());
       blocked('queued_while_loading');
       return;
@@ -1373,7 +1408,7 @@ const LocalSessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscrip
       }
       setIsProcessing(false);
     }
-  }, [sessionId, sessionData, isLoading, getEffectiveDocumentContext, aiMode, workspacePath, setDraftInput, setDraftAttachments, setLastSubmitAt, resetHistory, updateSessionStore, handleQueue, setIsProcessing, messages, sessionHasMessages, startedCliSessionId, mode, onClearSession, onClearAgentSession, clearAIInputHistory, provider, recordClaudeActivity]);
+  }, [sessionId, sessionData, isLoading, getEffectiveDocumentContext, aiMode, workspacePath, setDraftInput, setDraftAttachments, setLastSubmitAt, resetHistory, updateSessionStore, handleQueue, submitQuestionAnswer, setIsProcessing, messages, sessionHasMessages, startedCliSessionId, mode, onClearSession, onClearAgentSession, clearAIInputHistory, provider, recordClaudeActivity]);
 
   // Launch a sibling session from a `launch: new-session` action prompt.
   // Builds the originating-session mention prefix here (in the renderer) so the
@@ -1807,12 +1842,7 @@ const LocalSessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscrip
       worktreeId,
 
       // AskUserQuestion operations
-      askUserQuestionSubmit: async (questionId: string, answers: Record<string, string>) => {
-        await window.electronAPI.invoke('claude-code:answer-question', { questionId, answers, sessionId });
-        posthog?.capture('ask_user_question_answered', {
-          numQuestions: Object.keys(answers).length,
-        });
-      },
+      askUserQuestionSubmit: submitQuestionAnswer,
       askUserQuestionCancel: async (questionId: string) => {
         await window.electronAPI.invoke('claude-code:cancel-question', { questionId, sessionId });
         posthog?.capture('ask_user_question_cancelled');

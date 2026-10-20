@@ -58,6 +58,8 @@ export const SEND_BLOCKED_REASONS = [
   'cli_submit_failed',
   'submission_record_failed',
   'queued_while_loading',
+  // The typed text answered a waiting AskUserQuestion instead of being queued
+  'answered_pending_question',
   'mode_switch_failed',
   'slash_command_only',
   'slash_command_clear',
