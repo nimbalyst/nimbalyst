@@ -1,6 +1,6 @@
 // @vitest-environment node
-import { describe, it, expect } from 'vitest';
-import { pickPendingQuestionAnswer } from '../pendingQuestionRouting';
+import { describe, it, expect, vi } from 'vitest';
+import { pickPendingQuestionAnswer, tryAnswerPendingQuestion } from '../pendingQuestionRouting';
 
 // Upstream #366: a reply typed in the chat box while the session waits on an
 // AskUserQuestion must answer that question instead of going to the queue.
@@ -87,5 +87,30 @@ describe('pickPendingQuestionAnswer', () => {
         'use the blue one',
       ),
     ).toBeNull();
+  });
+});
+
+// The chat box only clears the draft when the answer really went through.
+// Otherwise the caller queues the text, so the user's reply is never lost.
+describe('tryAnswerPendingQuestion', () => {
+  const pending = [questionPrompt([question('Which colour?')])];
+
+  it('sends the answer and reports true when the question accepts it', async () => {
+    const submit = vi.fn().mockResolvedValue(true);
+    await expect(tryAnswerPendingQuestion(pending, ' blue ', false, submit)).resolves.toBe(true);
+    expect(submit).toHaveBeenCalledWith('q-1', { 'Which colour?': 'blue' });
+  });
+
+  it('reports false when the question refuses the answer or the send throws', async () => {
+    await expect(tryAnswerPendingQuestion(pending, 'blue', false, vi.fn().mockResolvedValue(false))).resolves.toBe(false);
+    await expect(
+      tryAnswerPendingQuestion(pending, 'blue', false, vi.fn().mockRejectedValue(new Error('ipc down'))),
+    ).resolves.toBe(false);
+  });
+
+  it('does not send a draft with attachments, because the answer carries text only', async () => {
+    const submit = vi.fn().mockResolvedValue(true);
+    await expect(tryAnswerPendingQuestion(pending, 'blue', true, submit)).resolves.toBe(false);
+    expect(submit).not.toHaveBeenCalled();
   });
 });

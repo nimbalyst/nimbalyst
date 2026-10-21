@@ -59,3 +59,32 @@ export function pickPendingQuestionAnswer(
 
   return { questionId: prompt.promptId, answers: { [questionText]: answer } };
 }
+
+/**
+ * Try to send the typed text as the answer to the waiting question.
+ *
+ * Returns true only when the answer went through, so the caller can clear the
+ * draft. Returns false when the text cannot answer the question, when the
+ * draft has attachments (an answer carries text only), when the question
+ * refuses the answer (for example it was already answered), or when the send
+ * throws. On false the caller queues the text as before, so the reply is never
+ * lost.
+ *
+ * `submit` resolves to true when the main process accepted the answer.
+ */
+export async function tryAnswerPendingQuestion(
+  pendingPrompts: readonly PendingPromptLike[],
+  text: string,
+  hasAttachments: boolean,
+  submit: (questionId: string, answers: Record<string, string>) => Promise<boolean>,
+): Promise<boolean> {
+  if (hasAttachments) return false;
+  const answer = pickPendingQuestionAnswer(pendingPrompts, text);
+  if (!answer) return false;
+  try {
+    return await submit(answer.questionId, answer.answers);
+  } catch (error) {
+    console.error('[pendingQuestionRouting] Failed to answer pending question:', error);
+    return false;
+  }
+}
