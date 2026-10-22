@@ -1,5 +1,9 @@
 import React, { useCallback, useEffect, useState } from 'react';
-import { ProviderConfig } from '../../Settings/SettingsView';
+import type { ProviderConfig } from '../../Settings/SettingsView';
+import { useSetAtom } from 'jotai';
+import { useSettingState } from '../../../hooks/useSetting';
+import { setAvailableModelsAtom } from '../../../store/atoms/appSettings';
+import { GEMINI_MODEL_SETTINGS, isGeminiTierModel, type GeminiModelTier, type GeminiPickerModel } from '../../../../shared/geminiModelSelections';
 import { SettingsToggle } from '../SettingsToggle';
 import { AlphaBadge, SETTINGS_ALPHA_TOOLTIP } from '../../common/AlphaBadge';
 
@@ -30,13 +34,74 @@ type InstallStatus = 'checking' | 'installed' | 'not-installed';
 interface GeminiPanelProps {
   config: ProviderConfig;
   onToggle: (enabled: boolean) => void;
+  availableModels?: GeminiPickerModel[];
 }
 
 const ANTIGRAVITY_URL = 'https://antigravity.google';
 
-export function GeminiPanel({ config, onToggle }: GeminiPanelProps) {
+function GeminiModelChoice({ tier, models }: { tier: GeminiModelTier; models: GeminiPickerModel[] }) {
+  const [value, setValue] = useSettingState(GEMINI_MODEL_SETTINGS[tier]);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const options = models.filter(model => !model.unavailable && isGeminiTierModel(tier, model.id));
+  const unavailable = !!value && !options.some(model => model.id === value);
+  const label = tier[0].toUpperCase() + tier.slice(1);
+
+  return (
+    <div className="gemini-model-choice flex flex-col gap-1 mb-3">
+      <label htmlFor={`gemini-${tier}-model`} className="text-[13px] text-[var(--nim-text)]">{label}</label>
+      <select
+        id={`gemini-${tier}-model`}
+        value={value}
+        disabled={saving}
+        className="rounded border border-[var(--nim-border)] bg-[var(--nim-bg-secondary)] text-[var(--nim-text)] p-2 text-[13px]"
+        onChange={async event => {
+          const id = event.target.value;
+          setSaving(true);
+          setError(null);
+          try {
+            await setValue(id);
+          } catch (err) {
+            setError(err instanceof Error ? err.message : String(err));
+          } finally {
+            setSaving(false);
+          }
+        }}
+      >
+        <option value="">Choose a model</option>
+        {unavailable && <option value={value}>{value.replace(/^antigravity-gemini-agent:/, '')} (unavailable)</option>}
+        {options.map(model => <option key={model.id} value={model.id}>{model.name}</option>)}
+      </select>
+      {unavailable && <p className="text-xs text-[var(--nim-warning)]">Unavailable — selection kept. Discover models to check availability.</p>}
+      {error && <p role="alert" className="text-xs text-[var(--nim-error)]">{error}</p>}
+    </div>
+  );
+}
+
+export function GeminiPanel({ config, onToggle, availableModels = [] }: GeminiPanelProps) {
   const [status, setStatus] = useState<InstallStatus>('checking');
   const [installPath, setInstallPath] = useState<string | null>(null);
+  const [discoveredModels, setDiscoveredModels] = useState<GeminiPickerModel[] | null>(null);
+  const [discovering, setDiscovering] = useState(false);
+  const [discoveryError, setDiscoveryError] = useState<string | null>(null);
+  const updateAvailableModels = useSetAtom(setAvailableModelsAtom);
+  const models = discoveredModels ?? availableModels;
+
+  const discover = async () => {
+    setDiscovering(true);
+    setDiscoveryError(null);
+    try {
+      const response = await window.electronAPI.invoke('ai:discoverGeminiModels');
+      if (!response?.success) throw new Error(response?.error || 'Gemini discovery failed');
+      setDiscoveredModels(response.models);
+      updateAvailableModels({ providerId: 'antigravity-gemini-agent', models: response.models });
+      if (response.models.length === 0) setDiscoveryError('No usable Gemini models were reported for this account. Your saved choices are unchanged.');
+    } catch (err) {
+      setDiscoveryError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setDiscovering(false);
+    }
+  };
 
   const check = useCallback(async () => {
     setStatus('checking');
@@ -138,6 +203,16 @@ export function GeminiPanel({ config, onToggle }: GeminiPanelProps) {
 
       {config.enabled && (
         <>
+          <div className="gemini-model-selections provider-panel-section py-4 mb-4 border-b border-[var(--nim-border)]">
+            <h4 className="text-base font-semibold mb-3 text-[var(--nim-text)]">Models</h4>
+            <p className="text-[13px] text-[var(--nim-text-muted)] mb-3">Low uses Flash Lite, Medium uses 3.8 Flash, and High uses Pro. Choices are saved separately and are never replaced automatically.</p>
+            <button type="button" disabled={discovering} onClick={() => void discover()} className="rounded border border-[var(--nim-border)] bg-[var(--nim-surface)] text-[var(--nim-text)] px-3 py-2 text-sm mb-3">
+              {discovering ? 'Discovering...' : 'Discover models'}
+            </button>
+            <p className="text-xs text-[var(--nim-text-muted)] mb-3">Starts the Antigravity language server using your existing login.</p>
+            {(['low', 'medium', 'high'] as const).map(tier => <GeminiModelChoice key={tier} tier={tier} models={models} />)}
+            {discoveryError && <p role="alert" className="text-[13px] text-[var(--nim-warning)]">{discoveryError}</p>}
+          </div>
           <div className="provider-panel-section py-4 mb-4 border-b border-[var(--nim-border)]">
             <h4 className="provider-panel-section-title text-base font-semibold mb-3 text-[var(--nim-text)]">Authentication</h4>
             <p className="text-[13px] text-[var(--nim-text-muted)] mb-3 leading-relaxed">

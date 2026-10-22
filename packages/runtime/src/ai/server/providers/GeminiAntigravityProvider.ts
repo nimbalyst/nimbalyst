@@ -44,9 +44,9 @@ import {
 } from './geminiAntigravity/AntigravityServerManager';
 import { AntigravityToolLoopProtocol } from './geminiAntigravity/AntigravityToolLoopProtocol';
 import {
-  DEFAULT_GEMINI_MODEL_KEY,
   bareGeminiModelKey,
   discoverGeminiModels,
+  geminiLabelForModelKey,
 } from './geminiAntigravity/geminiAntigravityModels';
 import type { ProviderSessionData } from './ProviderSessionManager';
 import type {
@@ -92,6 +92,14 @@ export type GeminiToolExecutor = (args: GeminiToolExecutorArgs) => Promise<Gemin
 
 /** Server tuning the Electron main process reads out of settings. */
 export interface GeminiServerConfig {
+  defaultModel?: string;
+  /**
+   * The user's persisted Low/Medium/High model ids. Offered as the catalog
+   * while no language server is running (e.g. right after an app restart), so
+   * the picker shows the user's real choices instead of nothing -- without
+   * spawning the server just to fill a menu.
+   */
+  savedModelIds?: string[];
   overrideIdeVersion?: string;
   spawnPortCandidates?: number[];
 }
@@ -188,7 +196,13 @@ export class GeminiAntigravityProvider extends BaseAgentProvider {
     // does not include the session directive; it is appended here, frozen.
     const turnSystemPrompt = appendSessionDirective(systemPrompt ?? '', await this.getSessionDirective(sessionId));
 
-    const state = this.resolveSession(sessionId, workspacePath, documentContext);
+    let state: SessionState;
+    try {
+      state = this.resolveSession(sessionId, workspacePath, documentContext);
+    } catch (error) {
+      yield { type: 'error', error: error instanceof Error ? error.message : String(error) };
+      return;
+    }
     const abortController = new AbortController();
     state.abortController = abortController;
     this.abortController = abortController;
@@ -521,16 +535,35 @@ export class GeminiAntigravityProvider extends BaseAgentProvider {
   }
 
   static getDefaultModel(): string {
-    return `${GEMINI_ANTIGRAVITY_PROVIDER}:${DEFAULT_GEMINI_MODEL_KEY}`;
+    return this.serverConfigLoader?.().defaultModel ?? '';
+  }
+
+  /** Explicit user action; normal model reads never start the native server. */
+  static async discoverModels(): Promise<AIModel[]> {
+    const server = AntigravityServerManager.shared();
+    const config = this.serverConfigLoader?.();
+    if (config) server.configure(config);
+    await server.ensureRunning();
+    return this.getModels();
   }
 
   /**
    * The model catalog, discovered from the language server when it is already
-   * running and falling back to a short seed list otherwise. See
+   * running and returning no fabricated models otherwise. See
    * `geminiAntigravityModels.ts` for why discovery never spawns the server.
    */
   static async getModels(): Promise<AIModel[]> {
-    const models = await discoverGeminiModels(AntigravityServerManager.shared());
+    const server = AntigravityServerManager.shared();
+    if (!server.currentEndpoint()) {
+      const prefix = `${GEMINI_ANTIGRAVITY_PROVIDER}:`;
+      const saved = [...new Set(this.serverConfigLoader?.().savedModelIds ?? [])]
+        .filter((id) => typeof id === 'string' && id.startsWith(prefix) && id.length > prefix.length);
+      return saved.map((id) => {
+        const key = id.slice(prefix.length);
+        return { id, name: geminiLabelForModelKey(key) ?? key, provider: GEMINI_ANTIGRAVITY_PROVIDER };
+      });
+    }
+    const models = await discoverGeminiModels(server);
     return models.map((m) => ({
       id: `${GEMINI_ANTIGRAVITY_PROVIDER}:${m.key}`,
       name: m.displayName,

@@ -2198,7 +2198,12 @@ app.whenReady().then(async () => {
         overrideIdeVersion?: unknown;
         spawnPortCandidates?: unknown;
       }>)['antigravity-gemini-agent'] ?? {};
+      const savedModelIds = (['ai.gemini.lowModel', 'ai.gemini.mediumModel', 'ai.gemini.highModel'] as const)
+        .map((key) => getSettingsService().get(key))
+        .filter((id): id is string => typeof id === 'string' && id.length > 0);
       return {
+        defaultModel: getSettingsService().get('ai.gemini.mediumModel'),
+        savedModelIds,
         overrideIdeVersion: typeof settings.overrideIdeVersion === 'string'
           ? settings.overrideIdeVersion
           : undefined,

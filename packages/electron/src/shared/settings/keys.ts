@@ -20,6 +20,10 @@
  */
 
 import { z } from 'zod';
+import { isGeminiTierModel, type GeminiModelTier } from '../geminiModelSelections';
+
+const geminiSelectionSchema = (tier: GeminiModelTier) => z.string().max(512)
+  .refine(id => id === '' || isGeminiTierModel(tier, id), 'Choose a matching native Gemini model');
 
 // ---------- Reusable schemas ----------
 
@@ -189,6 +193,21 @@ export const SETTINGS_REGISTRY = {
     z.string(),
     { store: 'ai-settings', path: 'defaultProvider' },
     'claude-code',
+  ),
+  'ai.gemini.lowModel': setting(
+    geminiSelectionSchema('low'),
+    { store: 'ai-settings', path: 'geminiModelSelections.low' },
+    '',
+  ),
+  'ai.gemini.mediumModel': setting(
+    geminiSelectionSchema('medium'),
+    { store: 'ai-settings', path: 'geminiModelSelections.medium' },
+    '',
+  ),
+  'ai.gemini.highModel': setting(
+    geminiSelectionSchema('high'),
+    { store: 'ai-settings', path: 'geminiModelSelections.high' },
+    '',
   ),
   'ai.showToolCalls': setting(
     z.boolean(),

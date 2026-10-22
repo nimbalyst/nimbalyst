@@ -81,7 +81,8 @@ export class ModelRegistry {
     // Claude catalogs are a static list plus the user's Claude settings
     // `modelPicker`; re-reading those small files on every request is what lets
     // an edit show up without a restart or a file watcher.
-    const cacheMatchesRequest = cached?.apiKey === apiKey && !isClaudeCodeFamily(provider);
+    const cacheMatchesRequest = cached?.apiKey === apiKey && !isClaudeCodeFamily(provider)
+      && provider !== 'antigravity-gemini-agent';
 
     if (cached && cacheMatchesRequest) {
       if (Date.now() - cached.refreshedAt >= this.CACHE_DURATION) {
