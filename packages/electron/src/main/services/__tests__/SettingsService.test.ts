@@ -110,6 +110,44 @@ describe('SettingsService', () => {
     expect(svc.get('ai.provider.openai-codex')).toMatchObject({ enabled: true });
   });
 
+  it('persists independent Gemini selections across fresh service instances and unrelated provider saves', async () => {
+    const svc = (await import('../SettingsService')).getSettingsService();
+    expect(svc.get('ai.gemini.lowModel')).toBe('');
+    expect(svc.get('ai.gemini.mediumModel')).toBe('');
+    expect(svc.get('ai.gemini.highModel')).toBe('');
+    svc.set('ai.gemini.lowModel', 'antigravity-gemini-agent:gemini-3.5-flash-lite');
+    svc.set('ai.gemini.mediumModel', 'antigravity-gemini-agent:gemini-3.8-flash-tiered');
+    svc.set('ai.gemini.highModel', 'antigravity-gemini-agent:gemini-3.1-pro-high');
+    svc.set('ai.provider.antigravity-gemini-agent' as any, { enabled: true });
+    vi.resetModules();
+    const reloaded = (await import('../SettingsService')).getSettingsService();
+    expect(reloaded.getAll()).toMatchObject({
+      'ai.gemini.lowModel': 'antigravity-gemini-agent:gemini-3.5-flash-lite',
+      'ai.gemini.mediumModel': 'antigravity-gemini-agent:gemini-3.8-flash-tiered',
+      'ai.gemini.highModel': 'antigravity-gemini-agent:gemini-3.1-pro-high',
+    });
+    reloaded.set('ai.gemini.highModel', 'antigravity-gemini-agent:gemini-3.1-pro-low');
+    vi.resetModules();
+    const restarted = (await import('../SettingsService')).getSettingsService();
+    expect(restarted.get('ai.gemini.lowModel')).toBe('antigravity-gemini-agent:gemini-3.5-flash-lite');
+    expect(restarted.get('ai.gemini.mediumModel')).toBe('antigravity-gemini-agent:gemini-3.8-flash-tiered');
+    expect(restarted.get('ai.gemini.highModel')).toBe('antigravity-gemini-agent:gemini-3.1-pro-low');
+    expect(JSON.parse(fs.readFileSync(path.join(tmpDir, 'ai-settings.json'), 'utf8')).geminiModelSelections).toEqual({
+      low: 'antigravity-gemini-agent:gemini-3.5-flash-lite',
+      medium: 'antigravity-gemini-agent:gemini-3.8-flash-tiered',
+      high: 'antigravity-gemini-agent:gemini-3.1-pro-low',
+    });
+  });
+
+  it('rejects foreign, wrong-family, and Argon selections without replacing saved Gemini models', async () => {
+    const svc = (await import('../SettingsService')).getSettingsService();
+    svc.set('ai.gemini.mediumModel', 'antigravity-gemini-agent:gemini-3.8-flash-tiered');
+    for (const value of ['opencode:google/gemini-3.8-flash', 'antigravity-gemini-agent:argon-4', 'antigravity-gemini-agent:gemini-3.8-flash-image', 'antigravity-gemini-agent:gemini-3.1-pro-high', 'antigravity-gemini-agent:gemini-3.9-flash-tiered', null, {}]) {
+      expect(() => svc.set('ai.gemini.mediumModel', value as any)).toThrow(/schema validation failed/);
+    }
+    expect(svc.get('ai.gemini.mediumModel')).toBe('antigravity-gemini-agent:gemini-3.8-flash-tiered');
+  });
+
   it.each([undefined, null, 'true', 1, {}, []].map(value => [value]))('keeps external following off for absent or malformed saved value %j', async (value) => {
     const file = path.join(tmpDir, 'app-settings.json');
     const legacy = { developerMode: true, releaseChannel: 'alpha', externalSessionFollowEnabled: value };

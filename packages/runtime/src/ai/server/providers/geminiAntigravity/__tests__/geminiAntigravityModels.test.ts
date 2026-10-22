@@ -2,9 +2,12 @@
 import { describe, expect, it } from 'vitest';
 
 import {
-  DEFAULT_GEMINI_MODEL_KEY,
-  SEED_GEMINI_MODELS,
+  bareGeminiModelKey,
+  discoverGeminiModels,
+  geminiFamilyKey,
+  geminiVariantCandidates,
   isOfferedFlashModel,
+  selectGeminiFamilies,
   selectGeminiModels,
 } from '../geminiAntigravityModels';
 import type { AntigravityModelInfo } from '../AntigravityServerManager';
@@ -67,7 +70,7 @@ describe('selectGeminiModels', () => {
     ]);
   });
 
-  it('excludes unlabelled tiered slots and non-Google entries', () => {
+  it('offers a recognized unlabelled tiered slot without offering non-Google entries', () => {
     const catalog = catalogOf(['gemini-3.7-flash-tiered', '']);
     catalog.set('claude-something', model({
       key: 'claude-something',
@@ -76,7 +79,73 @@ describe('selectGeminiModels', () => {
       apiProvider: 'API_PROVIDER_ANTHROPIC',
     }));
 
-    expect(selectGeminiModels(catalog, new Set())).toEqual([]);
+    expect(selectGeminiModels(catalog, new Set())).toEqual([
+      { key: 'gemini-3.7-flash-tiered', displayName: 'Gemini 3.7 Flash (Tiered)' },
+    ]);
+  });
+
+  it('offers entitled Flash Lite, 3.8 Flash tiered, and Pro using real catalog keys', () => {
+    const catalog = catalogOf(
+      ['gemini-3.5-flash-lite', 'Gemini 3.5 Flash Lite'],
+      ['gemini-3.8-flash-tiered', ''],
+      ['gemini-3.1-pro-high', 'Gemini 3.1 Pro (High)'],
+      ['gemini-4-argon', 'Argon 4'],
+      ['gemini-3.1-flash-image', 'Gemini 3.1 Flash Image'],
+      ['experimental-unknown', ''],
+    );
+    expect(selectGeminiModels(catalog, new Set()).map(m => m.key).sort()).toEqual([
+      'gemini-3.1-pro-high', 'gemini-3.5-flash-lite', 'gemini-3.8-flash-tiered',
+    ]);
+    expect(selectGeminiModels(catalog, new Set(['MODEL_PLACEHOLDER_M1']))).toEqual([
+      { key: 'gemini-3.8-flash-tiered', displayName: 'Gemini 3.8 Flash (Tiered)' },
+    ]);
+  });
+
+  it('offers entitled Gemini 4 Argon tiers by their real labels (Antigravity 2.24.0)', () => {
+    const catalog = catalogOf(
+      ['gemini-4-argon-high', 'Gemini 4 Argon (High)'],
+      ['gemini-4-argon-low', 'Gemini 4 Argon (Low)'],
+      ['gemini-4-argon-medium', 'Gemini 4 Argon (Medium)'],
+      ['gemini-3.1-flash-image', 'Gemini 3.1 Flash Image'],
+    );
+    expect(selectGeminiModels(catalog, new Set()).map((m) => m.key)).toEqual([
+      'gemini-4-argon-high', 'gemini-4-argon-low', 'gemini-4-argon-medium',
+    ]);
+  });
+
+  it('groups variants into one entry per family like the Gemini app (Antigravity 2.24.0 catalog)', () => {
+    const catalog = catalogOf(
+      ['gemini-2.5-flash-lite', 'Gemini 3.5 Flash Lite'], // mislabelled legacy slot
+      ['gemini-3.1-flash-lite', 'Gemini 3.1 Flash Lite'],
+      ['gemini-3.5-flash-lite', 'Gemini 3.5 Flash Lite'],
+      ['gemini-3.7-flash-medium', 'Gemini 3.7 Flash (Medium)'],
+      ['gemini-3.8-flash-high', 'Gemini 3.8 Flash (High)'],
+      ['gemini-3.8-flash-low', 'Gemini 3.8 Flash (Low)'],
+      ['gemini-3.8-flash-medium', 'Gemini 3.8 Flash (Medium)'],
+      ['gemini-3.8-flash-tiered', ''],
+      ['gemini-4-argon-high', 'Gemini 4 Argon (High)'],
+      ['gemini-4-argon-medium', 'Gemini 4 Argon (Medium)'],
+      ['gemini-3.1-flash-image', 'Gemini 3.1 Flash Image'],
+    );
+    // Entitlement lists only the agent variants (as clientModelConfigs does);
+    // the newest Flash-Lite is offered anyway because GetModelResponse serves it.
+    const entitled = new Set([...catalog.values()]
+      .filter((m) => /flash-(high|low|medium)$|argon/.test(m.key))
+      .map((m) => m.enum));
+    expect(selectGeminiFamilies(catalog, entitled)).toEqual([
+      { key: 'gemini-3.5-flash-lite', displayName: 'Gemini 3.5 Flash-Lite' },
+      { key: 'gemini-3.8-flash', displayName: 'Gemini 3.8 Flash' },
+      { key: 'gemini-4-argon', displayName: 'Gemini 4 Argon' },
+    ]);
+  });
+
+  it('resolves a family to the thinking-level variant, and keeps explicit variants', () => {
+    expect(geminiVariantCandidates('gemini-3.8-flash', 'high')[0]).toBe('gemini-3.8-flash-high');
+    expect(geminiVariantCandidates('gemini-3.5-flash-lite', 'low').slice(0, 2))
+      .toEqual(['gemini-3.5-flash-lite-low', 'gemini-3.5-flash-lite']);
+    expect(geminiVariantCandidates('gemini-3.8-flash-medium', 'high')).toEqual(['gemini-3.8-flash-medium']);
+    expect(geminiVariantCandidates('gemini-3.8-flash-tiered', 'low')).toEqual(['gemini-3.8-flash-tiered']);
+    expect(geminiFamilyKey('gemini-4-argon-low')).toBe('gemini-4-argon');
   });
 
   it('still honours entitlement for a current generation', () => {
@@ -104,16 +173,31 @@ describe('isOfferedFlashModel', () => {
   });
 });
 
-describe('seed catalog', () => {
-  it('defaults to a key the seed actually offers', () => {
-    // A default absent from the catalog is the #1519 failure mode, so the two
-    // must not drift apart.
-    expect(SEED_GEMINI_MODELS.map((m) => m.key)).toContain(DEFAULT_GEMINI_MODEL_KEY);
+describe('discovery and explicit selection', () => {
+  it('does not invent models before discovery or after a successful empty catalog', async () => {
+    const server = {
+      currentEndpoint: () => null,
+      getAvailableModels: async () => new Map(),
+      getUserStatus: async () => ({}),
+    };
+    expect(await discoverGeminiModels(server as any)).toEqual([]);
+    expect(await discoverGeminiModels({ ...server, currentEndpoint: () => ({ port: 1 }) } as any)).toEqual([]);
   });
 
-  it('seeds only models the picker would accept from live discovery', () => {
-    for (const { displayName } of SEED_GEMINI_MODELS) {
-      expect(isOfferedFlashModel(displayName)).toBe(true);
+  it('surfaces a catalog transport error without substituting models', async () => {
+    const server = {
+      currentEndpoint: () => ({ port: 1 }),
+      getAvailableModels: async () => { throw new Error('Antigravity unreachable'); },
+      getUserStatus: async () => ({}),
+    };
+    await expect(discoverGeminiModels(server as any)).rejects.toThrow('Antigravity unreachable');
+  });
+
+  it('requires an explicit model and never turns a foreign provider into a Gemini selection', () => {
+    for (const value of [undefined, null, '', 'opencode:gemini-3.8-flash-tiered']) {
+      expect(() => bareGeminiModelKey(value)).toThrow();
     }
+    expect(bareGeminiModelKey('antigravity-gemini-agent:gemini-3.8-flash-tiered')).toBe('gemini-3.8-flash-tiered');
+    expect(bareGeminiModelKey('gemini-3.8-flash-tiered')).toBe('gemini-3.8-flash-tiered');
   });
 });

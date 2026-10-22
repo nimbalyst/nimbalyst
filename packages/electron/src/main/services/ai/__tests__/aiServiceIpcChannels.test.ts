@@ -21,6 +21,12 @@ const { registered, handlers, pushChange, getProvider } = vi.hoisted(() => ({
   registered: [] as string[], handlers: new Map<string, (...args: any[]) => any>(),
   pushChange: vi.fn(), getProvider: vi.fn(),
 }));
+const { discoverGeminiModels, clearModelCache } = vi.hoisted(() => ({
+  discoverGeminiModels: vi.fn(), clearModelCache: vi.fn(),
+}));
+vi.mock('@nimbalyst/runtime/ai/server/providers/GeminiAntigravityProvider', () => ({
+  GeminiAntigravityProvider: { discoverModels: discoverGeminiModels },
+}));
 vi.mock('electron', async () => ({
   app: (await import('../../../../../test-stubs/privateUserData')).testApp,
   BrowserWindow: { getAllWindows: () => [] },
@@ -50,7 +56,7 @@ vi.mock('@nimbalyst/runtime/ai/server', () => ({
   AIProvider: class {},
   GeminiAntigravityProvider: class {},
   OpenAICodexProvider: class {},
-  ModelRegistry: {},
+  ModelRegistry: { clearCache: clearModelCache },
   ProviderFactory: { getProvider },
   SessionManager: class {},
   isAskUserQuestionProvider: () => false,
@@ -156,6 +162,7 @@ const EXPECTED_CHANNELS: Record<string, string[]> = {
     'ai:testConnection',
   ],
   registerModelHandlers: [
+    'ai:discoverGeminiModels',
     'ai:getAllModels',
     'ai:clearModelCache',
     'ai:refreshSessionProvider',
@@ -206,12 +213,26 @@ describe('AIService IPC registrars', () => {
     });
   }
 
-  it('registers all 62 channels across the modules, with no duplicates', () => {
+  it('registers all 63 channels across the modules, with no duplicates', () => {
     for (const register of Object.values(REGISTRARS)) {
       register(stubContext);
     }
-    expect(registered).toHaveLength(62);
-    expect(new Set(registered).size).toBe(62);
+    expect(registered).toHaveLength(63);
+    expect(new Set(registered).size).toBe(63);
+  });
+
+  it('returns real native Gemini discovery and invalidates only its catalog', async () => {
+    const models = [{ id: 'antigravity-gemini-agent:gemini-3.8-flash-tiered', name: 'Gemini 3.8 Flash (Tiered)', provider: 'antigravity-gemini-agent' }];
+    discoverGeminiModels.mockResolvedValueOnce(models);
+    registerModelHandlers(stubContext);
+    expect(await handlers.get('ai:discoverGeminiModels')!()).toEqual({ success: true, models });
+    expect(clearModelCache).toHaveBeenCalledWith('antigravity-gemini-agent');
+  });
+
+  it('returns a native Gemini discovery error instead of a replacement catalog', async () => {
+    discoverGeminiModels.mockRejectedValueOnce(new Error('Antigravity signed out'));
+    registerModelHandlers(stubContext);
+    expect(await handlers.get('ai:discoverGeminiModels')!()).toEqual({ success: false, error: 'Antigravity signed out' });
   });
 });
 
