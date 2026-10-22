@@ -22,7 +22,12 @@ if (!config?.renderer) {
   process.exit(1);
 }
 
-const server = await createServer(config.renderer);
+// E2E runners pin the host: where `localhost` resolves to ::1 (Docker), a
+// client probing 127.0.0.1 would never reach the server.
+const host = process.env.NIMBALYST_RENDERER_HOST;
+const server = await createServer(
+  host ? { ...config.renderer, server: { ...config.renderer.server, host } } : config.renderer,
+);
 await server.listen();
 server.printUrls();
 
