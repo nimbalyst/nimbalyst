@@ -32,6 +32,7 @@ import {
   stopExtensionBackendModules,
   startWorkspaceBackendModules,
   syncEnabledBackendModulesOnStartup,
+  retryBackendModulesAwaitingTrust,
   type BackendModuleLifecycleDeps,
   type ResolvedBackendModules,
 } from '../backendModuleLifecycle';
@@ -141,6 +142,19 @@ describe('backendModuleLifecycle', () => {
       extensionId: EXT,
       workspacePath: '/ws/new',
     });
+  });
+
+  it('retryBackendModulesAwaitingTrust restarts only workspaces with a module awaiting trust', async () => {
+    const handles: ModuleHandle[] = [
+      { extensionId: EXT, moduleId: MOD, workspacePath: '/ws/a', state: { status: 'awaiting-trust' } },
+      { extensionId: EXT, moduleId: MOD, workspacePath: '/ws/b', state: { status: 'running', startedAt: 0, methods: [] } },
+    ];
+    const deps = makeDeps({ listModuleHandles: vi.fn(() => handles) });
+
+    await retryBackendModulesAwaitingTrust(deps);
+
+    expect(deps.startModule).toHaveBeenCalledTimes(1);
+    expect((deps.startModule as any).mock.calls[0][0].workspacePath).toBe('/ws/a');
   });
 
   it('syncEnabledBackendModulesOnStartup starts enabled extensions across all open workspaces', async () => {
