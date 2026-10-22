@@ -244,6 +244,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - On iPhone, iPad and Android, a Team tab opens a team project's Wiki and Trackers (alpha)
 - The CSV spreadsheet editor gains a formatting toolbar, conditional formatting, data validation, wrap text, freezing, a status bar, formula autocomplete with click-to-insert references, named ranges, spreadsheet-style keyboard shortcuts and paste from other spreadsheet apps, and undo for every edit; agents can edit sheets with A1-range tools, including files that aren't open
 - Reorder projects in the rail by dragging or using the context menu, or sort them by name, with the order saved across restarts.
+- Phase toggles in the agent mode session list hide or show sessions by phase, with Complete hidden by default.
 
 ### Changed
 <!-- Changes to existing functionality go here -->
