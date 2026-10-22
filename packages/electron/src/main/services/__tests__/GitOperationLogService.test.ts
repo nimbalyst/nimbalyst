@@ -413,6 +413,44 @@ describe("GitOperationLogService", () => {
     expect(describeGitConnectionFailure(["push"], "Connection to github.com closed by remote host.")).toMatch(/^git push lost its SSH connection/);
   });
 
+  it("stops a git command that outlives its time limit and reports the timeout", async () => {
+    // Only setTimeout/clearTimeout are faked so the journal's file writes still run.
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    try {
+      const service = new GitOperationLogService({ rootDir: tmpRoot });
+      const stopChild = vi.fn();
+      let spawned!: () => void;
+      const spawnedPromise = new Promise<void>((resolve) => { spawned = resolve; });
+      // A git child that never prints and never exits, like fetch against an unreachable remote.
+      vi.mocked(spawn).mockImplementationOnce(() => {
+        const child = Object.assign(new EventEmitter(), {
+          stdout: new PassThrough(),
+          stderr: new PassThrough(),
+          kill: stopChild,
+        });
+        spawned();
+        return child as unknown as ReturnType<typeof spawn>;
+      });
+
+      const pending = runGitCommandStreaming(service, workspacePath, ["fetch", "--", "origin"], { timeoutMs: 15_000 });
+      await spawnedPromise;
+      expect(stopChild).not.toHaveBeenCalled();
+
+      await vi.advanceTimersByTimeAsync(15_000);
+      const result = await pending;
+      const entry = (await service.list(workspacePath)).at(-1)!;
+
+      expect(stopChild).toHaveBeenCalledTimes(1);
+      expect(result.success).toBe(false);
+      expect(result.exitCode).toBe(-1);
+      expect(result.error).toBe("git fetch timed out after 15s");
+      expect(entry.status).toBe("error");
+      expect(entry.error).toBe(result.error);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("records SSH disconnects ahead of hook noise for exit codes and signals, without failing successful commands", async () => {
     const service = new GitOperationLogService({ rootDir: tmpRoot });
     for (const code of [255, null, 0]) {

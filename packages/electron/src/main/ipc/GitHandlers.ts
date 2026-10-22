@@ -51,6 +51,9 @@ import {
 import { isReadOnlyGitCommandLine } from '../services/gitCommandClassifier';
 import { validateGitCwd, validateGitOperand, validateGitOptions, validatedGitRebaseArgs } from '../services/gitOperandValidation';
 
+// A fetch against an unreachable remote can hang for over a minute; stop it after this long (#282).
+const FETCH_TIMEOUT_MS = 15_000;
+
 function isGitRepository(repoPath: string): boolean {
   try {
     return existsSync(join(repoPath, '.git'));
@@ -636,6 +639,7 @@ export function registerGitHandlers(): void {
           operationLog,
           repoPath,
           ['fetch', '--', options?.remote === undefined ? 'origin' : options.remote],
+          { timeoutMs: FETCH_TIMEOUT_MS },
         );
         return result.success ? { success: true } : { success: false, error: result.error };
       } catch (error) {

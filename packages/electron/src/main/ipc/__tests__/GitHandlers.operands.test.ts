@@ -141,9 +141,12 @@ describe('runtime input rejection before operations', () => {
   });
 });
 
-function expectArgv(args: string[]): void {
-  expect(boundary.streaming).toHaveBeenLastCalledWith(boundary.journal, '/fixture', args);
+function expectArgv(args: string[], ...extra: unknown[]): void {
+  expect(boundary.streaming).toHaveBeenLastCalledWith(boundary.journal, '/fixture', args, ...extra);
 }
+
+// git:fetch is the only handler that passes a time limit (#282).
+const FETCH_LIMIT = { timeoutMs: 15_000 };
 
 describe('exact argv and preserved behavior', () => {
   it('defaults only absent or undefined fields and preserves push precedence and ignored branch', async () => {
@@ -151,7 +154,7 @@ describe('exact argv and preserved behavior', () => {
       await invoke('git:push', '/fixture', options);
       expectArgv(['push', '--', 'origin', 'topic/日本語']);
       await invoke('git:fetch', '/fixture', options);
-      expectArgv(['fetch', '--', 'origin']);
+      expectArgv(['fetch', '--', 'origin'], FETCH_LIMIT);
     }
     for (const [options, flags] of [
       [{ branch: 'ignored', force: false, setUpstream: false }, []],
@@ -177,7 +180,7 @@ describe('exact argv and preserved behavior', () => {
       await invoke('git:push', '/fixture', { remote });
       expectArgv(['push', '--', remote, 'topic/日本語']);
       await invoke('git:fetch', '/fixture', { remote });
-      expectArgv(['fetch', '--', remote]);
+      expectArgv(['fetch', '--', remote], FETCH_LIMIT);
       await invoke('git:set-upstream', '/fixture', remote, 'explicit');
       expectArgv(['push', '--set-upstream', '--', remote, 'explicit']);
     }

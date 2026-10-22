@@ -709,7 +709,10 @@ export interface RunGitCommandResult {
 export async function runGitCommandStreaming(
   service: GitOperationLogService,
   workspacePath: string,
-  args: string[]
+  args: string[],
+  // timeoutMs: stop git and report a failure if it has not finished by then.
+  // Without it, git runs for as long as it likes (the old behavior).
+  options?: { timeoutMs?: number }
 ): Promise<RunGitCommandResult> {
   const entry = await service.start(workspacePath, args);
 
@@ -722,6 +725,7 @@ export async function runGitCommandStreaming(
     let stdout = "";
     let stderr = "";
     let settled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
 
     child.stdout.on("data", (data: Buffer | string) => {
       const chunk = sanitizeOutputText(data.toString());
@@ -737,6 +741,7 @@ export async function runGitCommandStreaming(
     const settle = async (exitCode: number, spawnError?: string) => {
       if (settled) return;
       settled = true;
+      if (timer) clearTimeout(timer);
       const success = exitCode === 0 && !spawnError;
       const connectionFailure = describeGitConnectionFailure(args, stderr);
       const error = success
@@ -774,6 +779,16 @@ export async function runGitCommandStreaming(
           : undefined
       );
     });
+
+    const timeoutMs = options?.timeoutMs;
+    if (timeoutMs !== undefined) {
+      timer = setTimeout(() => {
+        if (settled) return;
+        // Settle first so the "close" that follows the stop does not replace this message.
+        void settle(-1, `git ${args[0]} timed out after ${timeoutMs / 1000}s`);
+        child.kill();
+      }, timeoutMs);
+    }
   });
 }
 

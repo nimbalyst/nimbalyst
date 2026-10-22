@@ -26,6 +26,7 @@ import { requestConfirmation } from '../../dialogs/requestConfirmation';
 import { getTimeGroupKey, TimeGroupKey } from '../../utils/dateFormatting';
 import { getFileName } from '../../utils/pathUtils';
 import { saveSessionArchived } from '../../utils/saveSessionArchived';
+import { withSlowCheckNotice } from '../../utils/withSlowCheckNotice';
 import { KeyboardShortcuts, getShortcutDisplay } from '../../../shared/KeyboardShortcuts';
 import { MaterialSymbol } from '@nimbalyst/runtime/ui/icons/MaterialSymbol';
 import {
@@ -1559,35 +1560,40 @@ const SessionHistoryComponent: React.FC = () => {
     }
 
     // Fetch status for each worktree to check for warnings
-    const worktreeStatuses = await Promise.all(
-      allWorktreeIds.map(async worktreeId => {
-        const worktreeData = worktreeCache.get(worktreeId);
-        if (!worktreeData?.path) {
-          return { worktreeId, clean: true, hasUncommittedChanges: false, uncommittedFileCount: 0, hasUnmergedChanges: false, unmergedCommitCount: 0 };
-        }
-
-        try {
-          const result = await window.electronAPI.worktreeGetStatus(worktreeData.path, { fetchFirst: true });
-          if (result.success && result.status) {
-            const isMerged = result.status.isMerged ?? false;
-            const hasUncommitted = result.status.hasUncommittedChanges;
-            const hasUnmerged = !isMerged;
-            return {
-              worktreeId,
-              clean: !hasUncommitted && !hasUnmerged,
-              hasUncommittedChanges: hasUncommitted,
-              uncommittedFileCount: result.status.modifiedFileCount || 0,
-              hasUnmergedChanges: hasUnmerged,
-              unmergedCommitCount: result.status.uniqueCommitsAhead ?? result.status.commitsAhead ?? 0,
-            };
+    // One notice covers the whole batch if the checks run long (#282).
+    const worktreeStatuses = await withSlowCheckNotice(
+      Promise.all(
+        allWorktreeIds.map(async worktreeId => {
+          const worktreeData = worktreeCache.get(worktreeId);
+          if (!worktreeData?.path) {
+            return { worktreeId, clean: true, hasUncommittedChanges: false, uncommittedFileCount: 0, hasUnmergedChanges: false, unmergedCommitCount: 0 };
           }
-        } catch (error) {
-          console.error('[SessionHistory] Failed to get worktree status:', error);
-        }
 
-        // Conservative: treat as dirty on error so dialog shows
-        return { worktreeId, clean: false, hasUncommittedChanges: false, uncommittedFileCount: 0, hasUnmergedChanges: true, unmergedCommitCount: 0 };
-      })
+          try {
+            const result = await window.electronAPI.worktreeGetStatus(worktreeData.path, { fetchFirst: true });
+            if (result.success && result.status) {
+              const isMerged = result.status.isMerged ?? false;
+              const hasUncommitted = result.status.hasUncommittedChanges;
+              const hasUnmerged = !isMerged;
+              return {
+                worktreeId,
+                clean: !hasUncommitted && !hasUnmerged,
+                hasUncommittedChanges: hasUncommitted,
+                uncommittedFileCount: result.status.modifiedFileCount || 0,
+                hasUnmergedChanges: hasUnmerged,
+                unmergedCommitCount: result.status.uniqueCommitsAhead ?? result.status.commitsAhead ?? 0,
+              };
+            }
+          } catch (error) {
+            console.error('[SessionHistory] Failed to get worktree status:', error);
+          }
+
+          // Conservative: treat as dirty on error so dialog shows
+          return { worktreeId, clean: false, hasUncommittedChanges: false, uncommittedFileCount: 0, hasUnmergedChanges: true, unmergedCommitCount: 0 };
+        })
+      ),
+      'Checking for unsaved work',
+      `Checking ${allWorktreeIds.length} worktree${allWorktreeIds.length === 1 ? '' : 's'} before archiving...`,
     );
 
     const dirtyWorktrees = worktreeStatuses.filter(s => !s.clean);

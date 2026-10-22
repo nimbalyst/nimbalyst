@@ -33,6 +33,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 <!-- Bug fixes go here -->
+- The New Worktree dialog no longer spends over a minute refreshing remote branches when the remote can't be reached; the fetch now gives up after 15 seconds and the dialog shows the local branches
+- Archiving a worktree shows a "Checking for unsaved work" notice when that check takes more than a second, instead of nothing happening on screen
 - In Claude Agent sessions on Opus 5.5 and Fable 5, the short summary the model returns in place of text written between tool calls now shows as a visible line in the transcript instead of inside a collapsed Thinking box; the full original text is not returned by the API and still can't be shown
 - The background scan for Claude Code and Codex session files now waits before retrying a file that failed to import, starting at 1 minute and growing to 30, instead of retrying it on every pass; a file that changes on disk is still retried right away
 - Files deleted from a synced project, including a whole deleted folder or files deleted while Nimbalyst was closed, are now removed from document sync instead of being written back to disk on the next sync; a file edited on another device since is still restored

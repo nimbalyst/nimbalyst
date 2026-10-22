@@ -1,5 +1,6 @@
 import { useState, useCallback } from 'react';
 import { errorNotificationService } from '../services/ErrorNotificationService';
+import { withSlowCheckNotice } from '../utils/withSlowCheckNotice';
 
 export interface ArchiveWorktreeDialogState {
   worktreeId: string;
@@ -57,7 +58,12 @@ export function useArchiveWorktreeDialog(): UseArchiveWorktreeDialogResult {
     if (worktreePath) {
       try {
         // Fetch base branch from origin first to ensure remote refs are up-to-date
-        const result = await window.electronAPI.worktreeGetStatus(worktreePath, { fetchFirst: true });
+        // The fetch can take up to 15 s on a bad connection, so show a notice if it runs long (#282).
+        const result = await withSlowCheckNotice(
+          window.electronAPI.worktreeGetStatus(worktreePath, { fetchFirst: true }),
+          'Checking for unsaved work',
+          `Checking "${worktreeName}" before archiving...`,
+        );
         // console.log('[useArchiveWorktreeDialog] worktreeGetStatus result', result);
         if (result.success && result.status) {
           statusFetched = true;

@@ -57,8 +57,19 @@ export function ErrorToastContainer() {
       startDismissTimer(notification);
     });
 
+    // Remove a toast that other code dismissed through the service (#282).
+    const unsubscribeDismiss = errorNotificationService.addDismissListener((id) => {
+      const timer = timersRef.current.get(id);
+      if (timer) {
+        clearTimeout(timer);
+        timersRef.current.delete(id);
+      }
+      setNotifications(prev => prev.filter(n => n.id !== id));
+    });
+
     return () => {
       unsubscribe();
+      unsubscribeDismiss();
       // Clean up all timers on unmount
       timersRef.current.forEach(timer => clearTimeout(timer));
       timersRef.current.clear();
