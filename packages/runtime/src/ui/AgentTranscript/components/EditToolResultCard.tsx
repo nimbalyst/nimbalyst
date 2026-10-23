@@ -27,6 +27,12 @@ interface EditToolResultCardProps {
    * its custom editor registry; the runtime does not, so we ask.
    */
   canEmbedFile?: (filePath: string) => boolean;
+  /**
+   * When set, the card renders as a one-line row while closed and the full
+   * card while open; clicking either header toggles. Absent means always open
+   * with no toggle.
+   */
+  collapse?: { isExpanded: boolean; onToggle: () => void };
 }
 
 const resolveEditFilePath = (edit: any, toolMessage: TranscriptViewMessage): string | undefined => {
@@ -64,6 +70,7 @@ export const EditToolResultCard: React.FC<EditToolResultCardProps> = ({
   onOpenFile,
   renderEmbeddedFile,
   canEmbedFile,
+  collapse,
 }) => {
   const isEmbeddable = (filePath?: string) =>
     typeof filePath === 'string' && !!canEmbedFile?.(filePath);
@@ -108,15 +115,58 @@ export const EditToolResultCard: React.FC<EditToolResultCardProps> = ({
       ))
   ));
 
-  const handleOpenFile = () => {
+  // Stops propagation so opening the file does not also toggle a collapsible header.
+  const handleOpenFile = (e: React.SyntheticEvent) => {
+    e.stopPropagation();
     if (firstEditPath && onOpenFile) {
       onOpenFile(firstEditPath);
     }
   };
 
+  // The click that ends a drag-selection of header text must not close the card.
+  const handleHeaderClick = () => {
+    if (!collapse || window.getSelection()?.isCollapsed === false) return;
+    collapse.onToggle();
+  };
+
+  if (collapse && !collapse.isExpanded) {
+    const summary = prettyPath ? `${prettyPath}, ${editCountLabel}` : editCountLabel;
+    return (
+      <div className="rich-transcript-edit-row rounded border border-nim overflow-hidden bg-nim-secondary">
+        <button
+          type="button"
+          onClick={collapse.onToggle}
+          aria-expanded={false}
+          className="rich-transcript-edit-row__button w-full py-1 px-2 flex items-center gap-1.5 text-left border-none cursor-pointer text-sm bg-transparent"
+        >
+          <MaterialSymbol icon={allNewFiles ? 'note_add' : 'edit'} size={16} className="w-4 h-4 text-nim-primary shrink-0" />
+          <span className="rich-transcript-edit-row__name font-mono text-sm text-nim font-medium">{toolDisplayName}</span>
+          {/* Plain text, not a file link: the whole row must open the diff,
+              which matters on touch screens. The open card links the file. */}
+          <span className="rich-transcript-edit-row__summary flex-1 min-w-0 overflow-hidden text-ellipsis whitespace-nowrap text-nim-muted" title={firstEditPath}>{summary}</span>
+          {statusClass === 'success' && (
+            <MaterialSymbol icon="check_circle" size={16} className="rich-transcript-edit-row__status w-4 h-4 text-nim-success shrink-0" />
+          )}
+          {statusClass === 'error' && (
+            <MaterialSymbol icon="cancel" size={16} className="rich-transcript-edit-row__status w-4 h-4 text-nim-error shrink-0" />
+          )}
+          {statusClass === 'pending' && (
+            <span className="rich-transcript-edit-row__status rich-transcript-edit-row__status--pending flex items-center shrink-0 text-nim-muted" title="Pending" aria-label="Pending">
+              <MaterialSymbol icon="schedule" size={16} />
+            </span>
+          )}
+          <MaterialSymbol icon="chevron_right" size={16} className="w-3 h-3 text-nim-faint shrink-0" />
+        </button>
+      </div>
+    );
+  }
+
   return (
     <div className="rich-transcript-edit-card rounded bg-nim-secondary border border-nim p-2 flex flex-col gap-2">
-      <div className="rich-transcript-edit-card__header flex items-start gap-2">
+      <div
+        className={`rich-transcript-edit-card__header flex items-start gap-2 ${collapse ? 'cursor-pointer' : ''}`}
+        onClick={handleHeaderClick}
+      >
         <div className="rich-transcript-edit-card__icon w-5 h-5 text-nim-primary shrink-0 p-1 rounded-lg flex items-center justify-center" aria-hidden="true">
           <MaterialSymbol icon={allNewFiles ? "note_add" : "edit"} size={16} />
         </div>
@@ -159,6 +209,21 @@ export const EditToolResultCard: React.FC<EditToolResultCardProps> = ({
         <span className={`rich-transcript-edit-card__status rich-transcript-edit-card__status--${statusClass} text-[0.7rem] font-semibold py-0.5 px-2 rounded-full uppercase tracking-[0.02em] ${statusClass === 'success' ? 'text-nim-success' : statusClass === 'pending' ? 'text-nim-muted' : 'text-nim-error'}`}>
           {statusLabel}
         </span>
+        {collapse && (
+          <button
+            type="button"
+            className="rich-transcript-edit-card__collapse-button flex items-center justify-center w-5 h-5 p-0 border-none rounded bg-transparent text-nim-faint cursor-pointer shrink-0 hover:bg-nim-hover hover:text-nim"
+            onClick={(e) => {
+              e.stopPropagation();
+              collapse.onToggle();
+            }}
+            aria-expanded={true}
+            aria-label="Collapse edit"
+            title="Collapse"
+          >
+            <MaterialSymbol icon="expand_more" size={16} />
+          </button>
+        )}
       </div>
 
       {instruction && (

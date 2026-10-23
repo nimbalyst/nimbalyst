@@ -505,6 +505,12 @@ export const AgentTranscriptPanel = React.memo(
       return false;
     }
 
+    // Hosts rebuild initialSettings every render, so compare the value.
+    if (prevProps.initialSettings?.collapseEditCards !== nextProps.initialSettings?.collapseEditCards) {
+      logPanelMemoDiff(nextProps.sessionId, 'initialSettings.collapseEditCards');
+      return false;
+    }
+
     // Group by directory changed - must re-render
     if (prevProps.groupByDirectory !== nextProps.groupByDirectory) {
       logPanelMemoDiff(nextProps.sessionId, 'groupByDirectory', {

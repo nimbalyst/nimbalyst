@@ -16,7 +16,7 @@
  */
 
 import React from 'react';
-import { render, cleanup } from '@testing-library/react';
+import { render, cleanup, screen } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { AgentTranscriptPanel } from '../AgentTranscriptPanel';
 import type { FileEditSummary } from '../../types';
@@ -147,5 +147,63 @@ describe('AgentTranscriptPanel IPC discipline', () => {
 
     expect(container.textContent).toContain('a.ts');
     expect(container.textContent).toContain('b.ts');
+  });
+});
+
+describe('AgentTranscriptPanel settings', () => {
+  beforeEach(() => {
+    installFakeElectronAPI();
+    (globalThis as any).CSS = { ...(globalThis as any).CSS, highlights: new Map() };
+  });
+
+  afterEach(() => {
+    cleanup();
+    delete (window as any).electronAPI;
+  });
+
+  // The memo comparator skips most prop changes; a settings toggle in an idle
+  // session must still reach the transcript.
+  it('applies a changed collapseEditCards setting without any other prop change', () => {
+    const sessionData = {
+      ...makeSessionData('session-a'),
+      messages: [{
+        id: 1,
+        sequence: 1,
+        createdAt: new Date(1_784_648_445_000),
+        type: 'tool_call',
+        subagentId: null,
+        toolCall: {
+          toolName: 'file_change',
+          toolDisplayName: 'apply_patch',
+          status: 'completed',
+          description: null,
+          arguments: { changes: [{ path: '/tmp/workspace/src/a.ts', kind: 'update', diff: '@@ -1,1 +1,1 @@\n-const a = 1;\n+const a = 2;\n' }] },
+          targetFilePath: '/tmp/workspace/src/a.ts',
+          mcpServer: null,
+          mcpTool: null,
+          providerToolCallId: 'call-1',
+          progress: [],
+          result: 'Applied 1 file change(s)',
+        },
+      }],
+    } as unknown as SessionData;
+    const settings = (collapseEditCards: boolean) => ({
+      showToolCalls: true,
+      showThinking: true,
+      compactMode: false,
+      collapseTools: false,
+      showSessionInit: false,
+      collapseEditCards,
+    });
+
+    const { rerender } = render(
+      <AgentTranscriptPanel sessionId="session-a" sessionData={sessionData} initialSettings={settings(false)} />
+    );
+    expect(screen.getByText('const a = 2;')).toBeDefined();
+
+    rerender(
+      <AgentTranscriptPanel sessionId="session-a" sessionData={sessionData} initialSettings={settings(true)} />
+    );
+    expect(screen.queryByText('const a = 2;')).toBeNull();
   });
 });

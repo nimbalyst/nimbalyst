@@ -26,9 +26,10 @@ vi.mock('../AIInput', async () => {
       <button onClick={() => props.onLaunchActionInNewSession({id: 'review', label: 'Review', body: 'Review these changes', config: {launch: 'new-session', autoSubmit: false, foreground: false, worktree: false}})}>Action</button></div>;
   })};
 });
-vi.mock('@nimbalyst/runtime/ui/AgentTranscript/components/RichTranscriptView', () => ({ RichTranscriptView: () => <div /> }));
+vi.mock('@nimbalyst/runtime/ui/AgentTranscript/components/RichTranscriptView', () => ({ RichTranscriptView: ({settings}: {settings?: {collapseEditCards?: boolean}}) => <div data-testid="mock-rich-transcript" data-collapse-edit-cards={String(settings?.collapseEditCards)} /> }));
 import { RemoteSessionTranscript } from '../RemoteSessionTranscript';
 import {sessionDraftInputAtom, sessionDraftHydratedAtom} from '../../../store/atoms/sessions';
+import { settingAtom } from '../../../store/atoms/settingAtomFamily';
 afterEach(() => { cleanup(); vi.clearAllMocks(); });
 
 describe('remote session composer commands', () => {
@@ -72,5 +73,19 @@ describe('remote session composer commands', () => {
     await waitFor(() => expect(invoke).toHaveBeenCalledWith('ai:saveRemoteDraft', 'new-remote', '/repo', {text: 'Review these changes', attachments: []}));
     expect(invoke).toHaveBeenCalledWith('ai:createRemoteSession', '/repo', 'sandbox-1', expect.objectContaining({prompt: undefined}));
     view.unmount(); expect(mocks.release).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('remote session transcript settings', () => {
+  // The runtime default closes edit cards (for mobile), so the desktop view
+  // must pass the user's setting explicitly.
+  it('passes the collapse-file-edits setting to the transcript', async () => {
+    mocks.acquire.mockReturnValue(mocks.release);
+    (window as any).electronAPI = {invoke: vi.fn(async (channel: string) => channel === 'ai:loadRemoteDraft' ? {text: '', attachments: []} : channel === 'ai:remoteWorkspaceContext' ? {files: [], commands: []} : undefined)};
+    const state = createStore();
+    render(<Provider store={state}><RemoteSessionTranscript sessionId="remote" workspacePath="/repo" mode="agent" /></Provider>);
+    expect(screen.getByTestId('mock-rich-transcript').getAttribute('data-collapse-edit-cards')).toBe('false');
+    await act(async () => { await state.set(settingAtom('ai.collapseEditCards'), true); });
+    expect(screen.getByTestId('mock-rich-transcript').getAttribute('data-collapse-edit-cards')).toBe('true');
   });
 });

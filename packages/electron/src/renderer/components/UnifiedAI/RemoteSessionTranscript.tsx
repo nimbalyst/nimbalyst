@@ -3,6 +3,7 @@ import {
   useCallback,
   useEffect,
   useImperativeHandle,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -19,6 +20,7 @@ import {
   sessionDraftHydratedAtom,
   sessionDraftLocalModifiedAtAtom,
 } from "../../store/atoms/sessions";
+import { settingAtom } from "../../store/atoms/settingAtomFamily";
 import { SessionAIInput } from "./SessionAIInput";
 import type { SlashCommandEntry } from "../Typeahead/slashCommandAutocomplete";
 import type { AIInputRef } from "./AIInput";
@@ -36,6 +38,18 @@ export const RemoteSessionTranscript = forwardRef<
 >(({ sessionId, workspacePath }, ref) => {
   const snapshot = useAtomValue(remoteSessionSnapshotAtom(sessionId));
   const connectionError = useAtomValue(remoteSessionErrorAtom(sessionId));
+  const collapseEditCards = useAtomValue(settingAtom("ai.collapseEditCards"));
+  const transcriptSettings = useMemo(
+    () => ({
+      showToolCalls: true,
+      compactMode: false,
+      collapseTools: false,
+      showThinking: true,
+      showSessionInit: false,
+      collapseEditCards,
+    }),
+    [collapseEditCards],
+  );
   const [prompt, setPrompt] = useAtom(sessionDraftInputAtom(sessionId));
   const [attachments, setAttachments] = useAtom(
     sessionDraftAttachmentsAtom(sessionId)
@@ -275,6 +289,7 @@ export const RemoteSessionTranscript = forwardRef<
           provider={snapshot?.session.provider}
           isProcessing={snapshot?.executing}
           hideEmptyHelp
+          settings={transcriptSettings}
         />
       </div>
       {workspacePath && (

@@ -33,6 +33,8 @@ export interface TranscriptToolShared {
   canEmbedFile?: (filePath: string) => boolean;
   loadToolCallDiffs?: (toolCallItemId: string, toolCallTimestamp?: number) => Promise<ToolCallDiffLoadResult>;
   onToggleTool: (toolId: string) => void;
+  /** Edit cards start closed when true and open when false; the header toggles them either way. */
+  collapseEditCards?: boolean;
 }
 
 /**
@@ -60,8 +62,14 @@ export interface TranscriptToolCardProps {
 }
 
 /** The id `expandedTools` is keyed by. */
-export const getToolExpandId = (toolMsg: TranscriptViewMessage, toolIndex: number): string =>
-  toolMsg.toolCall?.providerToolCallId || toolMsg.toolCall?.toolName || `tool-${toolIndex}`;
+export const getToolExpandId = (toolMsg: TranscriptViewMessage, toolIndex: number): string => {
+  const call = toolMsg.toolCall;
+  if (call?.providerToolCallId) return call.providerToolCallId;
+  // Edit cards toggle on every surface, so id-less ones must not share the
+  // tool-name key: one click would open or close every Edit card at once.
+  if (isEditCardToolName(call?.toolName)) return `edit-message-${toolMsg.id}`;
+  return call?.toolName || `tool-${toolIndex}`;
+};
 
 const NO_EDITS: any[] = [];
 
@@ -87,6 +95,10 @@ export const isEditToolName = (name?: string): boolean => {
   if (normalized.endsWith(':edit')) return true;
   return false;
 };
+
+/** Tool names that can render as an EditToolResultCard, including Codex `file_change`. */
+export const isEditCardToolName = (name?: string): boolean =>
+  name === 'file_change' || isEditToolName(name);
 
 /** Formats provider-supplied sub-agent execution metadata without normalizing it. */
 export function formatSubagentAuditLabel(
@@ -584,7 +596,7 @@ export const TranscriptToolCard = React.memo(function TranscriptToolCard({
   // extension enable/disable must swap widgets without a session reload.
   useTranscriptToolWidgetRegistryVersion();
 
-  const { sessionId, workspacePath, readFile, onOpenFile, onOpenSession, renderEmbeddedFile, canEmbedFile, loadToolCallDiffs, onToggleTool } = shared;
+  const { sessionId, workspacePath, readFile, onOpenFile, onOpenSession, renderEmbeddedFile, canEmbedFile, loadToolCallDiffs, onToggleTool, collapseEditCards } = shared;
   const tool = toolMsg.toolCall;
   const toolId = getToolExpandId(toolMsg, toolIndex);
   const onToggle = useCallback(() => onToggleTool(toolId), [onToggleTool, toolId]);
@@ -664,6 +676,9 @@ export const TranscriptToolCard = React.memo(function TranscriptToolCard({
           onOpenFile={onOpenFile}
           renderEmbeddedFile={renderEmbeddedFile}
           canEmbedFile={canEmbedFile}
+          // `isExpanded` means "toggled away from the default", so for
+          // start-open edit cards it means the user closed the card.
+          collapse={{ isExpanded: collapseEditCards ? isExpanded : !isExpanded, onToggle }}
         />
       </div>
     );

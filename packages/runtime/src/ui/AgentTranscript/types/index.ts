@@ -18,6 +18,13 @@ export interface TranscriptSettings {
   compactMode: boolean;
   collapseTools: boolean;
   showSessionInit: boolean;
+  /**
+   * Edit/Write cards start as a closed one-line row; false starts them open.
+   * Either way the user can toggle each card. Mobile passes no settings, so it
+   * gets the closed default; desktop passes the user's `ai.collapseEditCards`
+   * setting.
+   */
+  collapseEditCards: boolean;
 }
 
 /**

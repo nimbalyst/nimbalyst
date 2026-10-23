@@ -411,6 +411,7 @@ const LocalSessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscrip
   const tokenUsage = useAtomValue(sessionTokenUsageAtom(sessionId));
   const isDataLoading = useAtomValue(sessionLoadingAtom(sessionId));
   const chatShowToolCalls = useAtomValue(chatShowToolCallsAtom);
+  const collapseEditCards = useAtomValue(settingAtom('ai.collapseEditCards'));
   const [aiMode, setAiMode] = useAtom(sessionModeAtom(sessionId));
   const [currentModel, setCurrentModel] = useAtom(sessionModelAtom(sessionId));
   const [isArchived, setIsArchived] = useAtom(sessionArchivedAtom(sessionId));
@@ -2573,7 +2574,8 @@ const LocalSessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscrip
               compactMode: false,
               collapseTools: false,
               showThinking: true,
-              showSessionInit: false
+              showSessionInit: false,
+              collapseEditCards,
             }}
             renderEmptyExtra={renderEmptyExtra}
             hideEmptyHelp={hideEmptyHelp}
