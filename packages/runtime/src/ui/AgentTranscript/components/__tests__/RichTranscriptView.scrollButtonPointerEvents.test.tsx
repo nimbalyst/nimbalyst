@@ -7,7 +7,7 @@
  * plus inline style), not on injected stylesheet text.
  */
 import React from 'react';
-import { act, render } from '@testing-library/react';
+import { act, fireEvent, render } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { RichTranscriptView } from '../RichTranscriptView';
 
@@ -24,7 +24,7 @@ vi.mock('virtua', async () => {
   return {
     VList: ReactModule.forwardRef(
       (
-        { children, onScroll }: { children: React.ReactNode; onScroll?: (offset: number) => void },
+        { children, onScroll, className }: { children: React.ReactNode; onScroll?: (offset: number) => void; className?: string },
         ref,
       ) => {
         vlistState.onScroll = onScroll ?? null;
@@ -38,7 +38,7 @@ vi.mock('virtua', async () => {
           scrollToIndex: vlistState.scrollToIndex,
           scrollTo: vi.fn(),
         }));
-        return <div>{ReactModule.Children.toArray(children)}</div>;
+        return <div className={className}>{ReactModule.Children.toArray(children)}</div>;
       },
     ),
   };
@@ -65,22 +65,46 @@ describe('RichTranscriptView scroll-to-bottom overlay', () => {
       <RichTranscriptView sessionId="stream-follow-contract" sessionStatus="running"
         messages={[{ ...message, text }]} provider="claude-code" persistScrollState={false} />
     );
-    const { rerender } = render(view(message.text));
-    vlistState.scrollToIndex.mockClear();
+    const { container, rerender } = render(view(message.text));
+    // Following pins the list to its last pixel (past the trailing waiting row).
+    const scroller = container.querySelector<HTMLElement>('.rich-transcript-vlist')!;
+    const pins: number[] = [];
+    Object.defineProperty(scroller, 'scrollHeight', { configurable: true, get: () => vlistState.scrollSize });
+    Object.defineProperty(scroller, 'scrollTop', {
+      configurable: true, get: () => vlistState.scrollOffset, set: (top: number) => { pins.push(top); },
+    });
+    const scrollTo = (offset: number) => act(() => { vlistState.scrollOffset = offset; vlistState.onScroll?.(offset); });
+    const stream = (() => { let text = message.text; return () => rerender(view(text += ' more')); })();
 
     // A same-row Markdown update can grow well beyond the near-bottom threshold.
-    rerender(view('First chunk\n\nMore streaming content'));
-    // A running session includes the trailing waiting indicator after this row.
-    expect(vlistState.scrollToIndex).toHaveBeenCalledWith(1, { align: 'end' });
-    vlistState.scrollToIndex.mockClear();
+    stream();
+    expect(pins).toEqual([vlistState.scrollSize]);
+    scrollTo(2700);
 
-    act(() => { vlistState.scrollOffset = 900; vlistState.onScroll?.(900); });
-    rerender(view('First chunk\n\nMore streaming content\n\nAnother chunk'));
-    expect(vlistState.scrollToIndex).not.toHaveBeenCalled();
+    // The reader wheels up to read.
+    fireEvent.wheel(scroller, { deltaY: -400 });
+    scrollTo(900);
+    stream();
+    expect(pins).toHaveLength(1);
 
-    act(() => { vlistState.scrollOffset = 2700; vlistState.onScroll?.(2700); });
-    rerender(view('First chunk\n\nMore streaming content\n\nAnother chunk\n\nFinal chunk'));
-    expect(vlistState.scrollToIndex).toHaveBeenCalledWith(1, { align: 'end' });
+    // Back at the end, following resumes.
+    scrollTo(2700);
+    stream();
+    expect(pins).toHaveLength(2);
+
+    // Dragging the scrollbar up a line stays inside the bottom band, but it is
+    // the reader leaving.
+    fireEvent.pointerDown(scroller);
+    scrollTo(2680);
+    fireEvent.pointerUp(window);
+    stream();
+    expect(pins).toHaveLength(2);
+
+    // So is a wheel turned upward, before the scroll it causes has landed.
+    scrollTo(2700);
+    fireEvent.wheel(scroller, { deltaY: -40 });
+    stream();
+    expect(pins).toHaveLength(2);
   });
 
   it('only ever makes the button interactive, never the full-width band', () => {
