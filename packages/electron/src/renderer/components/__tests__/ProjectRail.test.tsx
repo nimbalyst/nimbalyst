@@ -132,3 +132,18 @@ it('customizes an inactive project without switching or editing the active proje
   expect(store.get(openSettingsCommandAtom)?.destination).toEqual({ scope: 'project', category: 'project-appearance', target: { kind: 'workspace', workspacePath: projects[1].path } });
   expect(store.get(activeWorkspacePathAtom)).toBe(projects[0].path);
 });
+
+it('asks for a fresh window when "Open in new window" is chosen from the project menu', async () => {
+  const invoke = vi.fn().mockResolvedValue({ success: true });
+  vi.stubGlobal('electronAPI', { invoke });
+  const store = createStore();
+  const projects = [{ path: '/p/active', name: 'Active', openedAt: 0 }, { path: '/p/Other', name: 'Other', openedAt: 1 }];
+  store.set(multiProjectModeAtom, true);
+  store.set(openProjectsAtom, projects);
+  store.set(activeWorkspacePathAtom, projects[0].path);
+  const view = render(<Provider store={store}><ProjectRail /></Provider>);
+  fireEvent.contextMenu(view.getByRole('button', { name: 'Switch to project Other' }));
+  fireEvent.click(await view.findByText('Open in new window'));
+  await waitFor(() => expect(invoke).toHaveBeenCalledWith('workspace-manager:open-workspace', '/p/Other', { forceNewWindow: true }));
+  expect(store.get(openProjectsAtom)).toBe(projects);
+});

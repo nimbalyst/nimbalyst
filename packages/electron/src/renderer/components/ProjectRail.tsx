@@ -473,7 +473,7 @@ export function ProjectRail() {
   const handleOpenInNewWindow = useCallback(async (project: OpenProject) => {
     closeMenu();
     try {
-      await window.electronAPI?.invoke?.('workspace-manager:open-workspace', project.path);
+      await window.electronAPI?.invoke?.('workspace-manager:open-workspace', project.path, { forceNewWindow: true });
     } catch (err) {
       console.error('[ProjectRail] open-workspace failed:', err);
     }

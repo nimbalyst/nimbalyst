@@ -440,8 +440,9 @@ export function setupWorkspaceManagerHandlers() {
     return { success: false };
   });
 
-  // Open workspace (reuse existing window if already open)
-  safeHandle('workspace-manager:open-workspace', async (event, workspacePath: string) => {
+  // Open workspace (reuse existing window if already open, unless the caller
+  // asks for a fresh one with forceNewWindow)
+  safeHandle('workspace-manager:open-workspace', async (event, workspacePath: string, options?: { forceNewWindow?: boolean }) => {
     // Add to recent workspaces
     addToRecentItems('workspaces', workspacePath, basename(workspacePath));
 
@@ -449,7 +450,9 @@ export function setupWorkspaceManagerHandlers() {
     // to a different project since it was created, in which case focusing it
     // alone leaves the user looking at the wrong project (#1427) -- the reuse
     // helper sends the navigation message that actually switches it back.
-    const reuse = reuseExistingWorkspaceWindow(workspacePath);
+    // The rail's "Open in new window" asks for a fresh window even when this
+    // folder is already open in one, so it skips the reuse step.
+    const reuse = options?.forceNewWindow ? null : reuseExistingWorkspaceWindow(workspacePath);
     if (reuse) {
       // Close workspace manager after handing off to the existing workspace
       if (workspaceManagerWindow && !workspaceManagerWindow.isDestroyed()) {
