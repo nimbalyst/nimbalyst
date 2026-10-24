@@ -9,6 +9,7 @@
  */
 
 import { database as databaseWorker } from '../database/PGLiteDatabaseWorker';
+import { DELIVERABLE_PROMPT_SQL_Q } from './ai/automaticChildUpdates';
 
 /** Controllable "max parallel" limit: children currently running. */
 const MAX_IN_FLIGHT = 4;
@@ -61,7 +62,7 @@ export async function assertChildSpawnCapacity(workspaceId: string, metaSessionI
   const { rows } = await db.query<{ in_flight: string; total: string }>(
     `SELECT
          SUM(CASE WHEN status IN ('running', 'waiting_for_input')
-                   OR EXISTS (SELECT 1 FROM queued_prompts q WHERE q.session_id = ai_sessions.id AND q.status IN ('pending', 'executing'))
+                   OR EXISTS (SELECT 1 FROM queued_prompts q WHERE q.session_id = ai_sessions.id AND q.status IN ('pending', 'executing') AND ${DELIVERABLE_PROMPT_SQL_Q})
                   THEN 1 ELSE 0 END)::text AS in_flight,
          SUM(CASE WHEN CAST(metadata->>'managerReassignedByUser' AS TEXT) IN ('true', '1')
                    AND (metadata->>'originalSpawnerSessionId' IS NULL OR metadata->>'originalSpawnerSessionId' <> created_by_session_id)

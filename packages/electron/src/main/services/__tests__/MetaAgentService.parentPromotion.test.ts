@@ -1,4 +1,9 @@
+// @vitest-environment node
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+const { stateListeners } = vi.hoisted(() => ({
+  stateListeners: new Set<(event: { sessionId: string; type: string }) => void>(),
+}));
 
 // Mirrors the mock surface of MetaAgentService.providerInheritance.test.ts so we
 // can drive createChildSessionInternal hermetically and assert on the parent
@@ -44,7 +49,12 @@ vi.mock('@nimbalyst/runtime/ai/server/types', () => ({
 }));
 
 vi.mock('@nimbalyst/runtime/ai/server/SessionStateManager', () => ({
-  getSessionStateManager: () => ({ subscribe: vi.fn() }),
+  getSessionStateManager: () => ({
+    subscribe: vi.fn((listener: (event: { sessionId: string; type: string }) => void) => {
+      stateListeners.add(listener);
+      return () => stateListeners.delete(listener);
+    }),
+  }),
 }));
 
 vi.mock('../ai/providerResolution', () => ({
@@ -74,7 +84,7 @@ vi.mock('./ai/AIService', () => ({ AIService: class {} }));
 vi.mock('../../mcp/metaAgentServer', () => ({
   setMetaAgentToolFns: vi.fn(),
 }));
-vi.mock('../metaAgentNotificationSignature', () => ({ computeNotificationSignature: vi.fn() }));
+vi.mock('../extensionSessions/extensionSessionsService', () => ({ startExtensionSessionService: vi.fn() }));
 vi.mock('../metaAgentMessageText', () => ({
   extractMessageText: vi.fn(),
   extractUserPrompts: vi.fn(),
@@ -106,6 +116,7 @@ function promotedToMetaAgent(parentId: string): boolean {
 
 describe('MetaAgentService parent agent_role promotion (NIM-858)', () => {
   beforeEach(() => {
+    stateListeners.clear();
     vi.mocked(AISessionsRepository.create).mockReset();
     vi.mocked(AISessionsRepository.get).mockReset();
     vi.mocked(AISessionsRepository.updateMetadata).mockReset();
@@ -172,22 +183,48 @@ describe('MetaAgentService parent agent_role promotion (NIM-858)', () => {
     expect(fallback.parentSessionId).toBe('grandparent');
   });
 
-  it('reports nested orchestrator completion to its current manager', async () => {
+  it.each(['session:completed', 'session:error', 'session:waiting', 'session:interrupted'] as const)('keeps %s silent while preserving deliberate reports to the current manager', async type => {
     const service = MetaAgentService.getInstance();
-    const ai = { queuePromptForSession: vi.fn(), triggerQueuedPromptProcessingForSession: vi.fn() };
-    (service as any).aiService = ai;
-    (service as any).notificationSignatures.clear();
-    const { computeNotificationSignature } = await import('../metaAgentNotificationSignature');
-    vi.mocked(computeNotificationSignature).mockReturnValue('nested-completed');
+    const ai = {
+      queuePromptForSession: vi.fn(async () => ({ id: 'intentional-report', prompt: 'Intentional nested report' })),
+      triggerQueuedPromptProcessingForSession: vi.fn(),
+    };
     vi.mocked(AISessionsRepository.get).mockImplementation(async id => ({ ...STANDARD_PARENT, id,
-      agentRole: 'meta-agent', createdBySessionId: id === 'nested' ? 'manager' : null } as any));
+      agentRole: 'meta-agent', parentSessionId: 'display-container', createdBySessionId: id === 'nested' ? 'manager' : null } as any));
     vi.mocked(database.query).mockResolvedValue({ rows: [{ count: '0', status: 'running' }] } as any);
-    const result = vi.spyOn(service as any, 'buildSessionResultData').mockResolvedValue({ sessionId: 'nested', title: 'Nested', status: 'idle', recentMessages: [], editedFiles: [] });
+    const resultData = { sessionId: 'nested', title: 'Nested', status: 'idle', recentMessages: [], editedFiles: [],
+      pendingPrompt: type === 'session:waiting' ? { promptId: 'nested-plan', promptType: 'exit_plan_mode_request', content: {} } : null };
+    const result = vi.spyOn(service as any, 'buildSessionResultData').mockResolvedValue(resultData);
+    const plan = vi.spyOn(service as any, 'ensurePlanTrackerItem').mockResolvedValue(undefined);
     try {
-      await (service as any).handleChildSessionEvent('nested', 'session:completed');
-      expect(ai.queuePromptForSession).toHaveBeenCalledWith('manager', expect.any(String), undefined,
-        expect.objectContaining({ promptProvenance: expect.objectContaining({ messageKind: 'report', originSessionId: 'nested' }) }));
-    } finally { result.mockRestore(); }
+      await service.start(ai as any, vi.fn() as any);
+      expect(stateListeners.size).toBe(1);
+      for (const listener of stateListeners) listener({ sessionId: 'nested', type });
+      await new Promise(setImmediate);
+      expect(result).toHaveBeenCalledWith('nested', '/workspace/path', undefined, false);
+      if (type === 'session:waiting') {
+        expect(plan).toHaveBeenCalledWith('/workspace/path', 'nested', resultData);
+      } else {
+        expect(plan).not.toHaveBeenCalled();
+      }
+      expect(ai.queuePromptForSession).not.toHaveBeenCalled();
+      expect(ai.triggerQueuedPromptProcessingForSession).not.toHaveBeenCalled();
+      expect(AgentMessagesRepository.create).not.toHaveBeenCalled();
+
+      vi.mocked(database.query).mockResolvedValue({ rows: [{ count: '0', status: 'idle' }] } as any);
+      const receipt = JSON.parse(await (service as any).sendPromptToSession('nested', 'manager', '/workspace/path', 'Intentional nested report', false, 'report'));
+      expect(receipt).toMatchObject({ statusBeforeQueue: 'idle', processingTriggered: false });
+      expect(ai.queuePromptForSession).toHaveBeenCalledTimes(1);
+      expect(ai.queuePromptForSession).toHaveBeenCalledWith('manager', 'Intentional nested report', undefined, {
+        promptProvenance: { actor: 'agent', origin: 'session-orchestration', messageKind: 'report', originSessionId: 'nested' },
+      });
+      expect(ai.triggerQueuedPromptProcessingForSession).not.toHaveBeenCalled();
+    } finally {
+      await service.shutdown();
+      result.mockRestore();
+      plan.mockRestore();
+      expect(stateListeners.size).toBe(0);
+    }
   });
 
   it('reserves capacity before concurrent spawns can both consume the final lifetime slot', async () => {

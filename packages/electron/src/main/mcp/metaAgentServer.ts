@@ -174,7 +174,7 @@ const REPORTING_SCHEMA = {
   type: "string",
   enum: ["none", "final", "messages"],
   description:
-    "How the new session reports back to you. \"none\" (default): nothing, fire and forget. \"final\": you are notified when it completes, errors or needs input, and its final response is the report. \"messages\": as final, and it may also send material changes mid-run. Choose messages only when you will act on them before it finishes.",
+    "How the new session may message you deliberately. \"none\" (default): no reporting directive. \"messages\": request warranted material reports through send_prompt. Legacy \"final\" retains plan-review visibility without automatic reporting. Lifecycle events and final responses are never forwarded automatically.",
 };
 
 /**
@@ -250,7 +250,7 @@ export const META_AGENT_TOOL_DEFS: Array<{
   {
     name: "spawn_session",
     description:
-      "Spawn a new session from the calling session. By default the new session is a direct child of the caller in its existing session tree (sharing files-edited, tabs, and get_workstream_overview). The new session also inherits the caller's working directory: if the caller is running in a worktree, the spawned session runs in that same worktree (so its edits land where the user is looking). Pass isolated=true to instead create a top-level session with no parent and no workstream — use this when the new session should fix-and-commit work independently without polluting the caller's workstream. Pass besideCaller=true to place it beside the caller instead of under it (for handoffs to a successor). Pass useWorktree=true to give the spawned session its OWN new worktree as a top-level session, managed by the caller. Fire-and-forget by default; set reporting to be told the result. Use this for the /launch-new-session flow.",
+      "Spawn a new session from the calling session. By default the new session is a direct child of the caller in its existing session tree (sharing files-edited, tabs, and get_workstream_overview). The new session also inherits the caller's working directory: if the caller is running in a worktree, the spawned session runs in that same worktree (so its edits land where the user is looking). Pass isolated=true to instead create a top-level session with no parent and no workstream — use this when the new session should fix-and-commit work independently without polluting the caller's workstream. Pass besideCaller=true to place it beside the caller instead of under it (for handoffs to a successor). Pass useWorktree=true to give the spawned session its OWN new worktree as a top-level session, managed by the caller. No automatic lifecycle reports; use reporting=messages only for deliberate, warranted reports. Use this for the /launch-new-session flow.",
     inputSchema: {
       type: "object",
       properties: {
@@ -290,7 +290,7 @@ export const META_AGENT_TOOL_DEFS: Array<{
         },
         notifyOnComplete: {
           type: "boolean",
-          description: "Legacy form of reporting=\"final\"; ignored when reporting is set.",
+          description: "Legacy plan-review compatibility argument; automatic completion forwarding has been removed. Ignored when reporting is set.",
         },
         reporting: REPORTING_SCHEMA,
         effortLevel: {

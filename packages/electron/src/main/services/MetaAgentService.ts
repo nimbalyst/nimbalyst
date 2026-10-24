@@ -31,8 +31,6 @@ import { getDatabase } from '../database/initialize';
 import { gitRefWatcher } from '../file/GitRefWatcher';
 import { AIService } from './ai/AIService';
 import { setMetaAgentToolFns } from '../mcp/metaAgentServer';
-import { computeNotificationSignature } from './metaAgentNotificationSignature';
-import { deletePendingChildUpdates } from './ai/pendingChildUpdates';
 import { inheritedOwnership, isParentNotificationSuppressed } from './extensionSessions/sessionOwnership';
 import { childReportingMetadata, resolveChildReporting, type ChildReporting } from './childReporting';
 import { startExtensionSessionService } from './extensionSessions/extensionSessionsService';
@@ -206,7 +204,7 @@ export class MetaAgentService {
   private aiService: AIService | null = null;
   private sessionManager: SessionManager | null = null;
   private unsubscribeStateListener: (() => void) | null = null;
-  private notificationSignatures = new Map<string, string>();
+  private planReviewsInFlight = new Set<string>();
   private ipcHandlersRegistered = false;
   private showNotificationWithResult: ShowNotificationWithResult | null = null;
   private requestMobilePush: RequestMobilePush | null = null;
@@ -303,16 +301,9 @@ export class MetaAgentService {
       // server.
 
       this.unsubscribeStateListener = getSessionStateManager().subscribe((event) => {
-        // NIM-6 follow-up: dedup signatures only describe one turn; clear them
-        // when a child becomes active again so two distinct turns whose final
-        // text happens to match (e.g. "done", "ok") still each notify the
-        // parent.
-        if (event.type === 'session:started' || event.type === 'session:streaming') {
-          this.notificationSignatures.delete(event.sessionId);
-          return;
-        }
+        // Preserve the existing human plan-review surface without messaging or waking a parent.
         if (event.type === 'session:completed' || event.type === 'session:error' || event.type === 'session:waiting' || event.type === 'session:interrupted') {
-          void this.handleChildSessionEvent(event.sessionId, event.type);
+          void this.handleChildPlanReview(event.sessionId);
         }
       });
 
@@ -336,7 +327,6 @@ export class MetaAgentService {
     this.unsubscribeStateListener = null;
     this.hierarchyMoveUnsubscribe?.();
     this.hierarchyMoveUnsubscribe = null;
-    this.notificationSignatures.clear();
     this.showNotificationWithResult = null;
     // No standalone HTTP server to tear down (Phase 7); the injected toolFns are
     // process-lifetime singletons.
@@ -1234,198 +1224,26 @@ export class MetaAgentService {
     return sessions;
   }
 
-  private async handleChildSessionEvent(sessionId: string, eventType: 'session:completed' | 'session:error' | 'session:waiting' | 'session:interrupted'): Promise<void> {
+  private async handleChildPlanReview(sessionId: string): Promise<void> {
     try {
-      if (!this.aiService) {
-        return;
-      }
-
       const session = await AISessionsRepository.get(sessionId);
-      if (!session || !session.createdBySessionId || !session.workspacePath) {
-        return;
-      }
-
-      // Honor fire-and-forget (spawn_session writes notifyParent=false on the
-      // child for /launch-new-session-style hand-offs), and owners that route
-      // child settles to themselves (extensionSessionsService delivers those).
-      if (isParentNotificationSuppressed(session.metadata)) {
-        return;
-      }
-
-      const metaSession = await AISessionsRepository.get(session.createdBySessionId);
-      if (!metaSession?.workspacePath) {
-        return;
-      }
-
-      // NIM-6: session:completed fires on every turn idle, not only on terminal
-      // completion. If the child still has more prompts queued AFTER the one
-      // that just finished, this idle is a between-turn pause -- another
-      // session:completed will follow once the queue drains. Suppress it; the
-      // parent will be notified on the genuinely terminal idle (queue empty).
-      //
-      // The just-finished prompt is still in `executing` status at the moment
-      // session:completed fires (MessageStreamingHandler marks it `completed`
-      // only after endSession returns). So we count only `pending` rows --
-      // counting `executing` would include the current turn itself and
-      // suppress every notification, including the final terminal one.
-      //
-      // The other event types (error/waiting/interrupted) are always
-      // meaningful and pass through.
-      if (eventType === 'session:completed') {
-        const { rows: pendingRows } = await databaseWorker.query<{ count: string }>(
-          `SELECT COUNT(*)::text AS count FROM queued_prompts
-           WHERE session_id = $1 AND status = 'pending'`,
-          [sessionId]
-        );
-        const pendingCount = Number(pendingRows[0]?.count ?? '0');
-        if (pendingCount > 0) {
-          return;
-        }
-      }
-
-      const metaStatusRow = await this.getSessionStatusRow(metaSession.id, metaSession.workspacePath);
-      const metaStatus = (metaStatusRow?.status || 'idle') as SessionStatusValue;
-
+      if (!session?.createdBySessionId || !session.workspacePath) return;
+      // Preserve existing plan-review opt-outs and extension-owned decision routing.
+      if (isParentNotificationSuppressed(session.metadata)) return;
       const result = await this.buildSessionResultData(sessionId, session.workspacePath, undefined, false);
-
-      // NIM-6: real dedup gate. Drop notifications whose semantic content is
-      // identical to the last one delivered for this child. The previous code
-      // mixed in an always-incrementing counter, which made every signature
-      // unique and the dedup useless. The signature is reset on
-      // session:started/session:streaming (see start()), so it only collapses
-      // duplicates within a single child turn -- not across turns.
-      const signature = computeNotificationSignature(eventType, result);
-      if (this.notificationSignatures.get(sessionId) === signature) {
-        return;
-      }
-      this.notificationSignatures.set(sessionId, signature);
-
       if (result.pendingPrompt?.promptType === 'exit_plan_mode_request') {
-        await this.ensurePlanTrackerItem(session.workspacePath, sessionId, result);
-      }
-
-      const notification = this.buildNotificationMessage(eventType, result);
-
-      // Supersede rather than append. The signature dedup above only collapses
-      // duplicates within a single child turn (it resets on
-      // session:started/session:streaming), so a child that cycles
-      // idle -> running -> idle emits a fresh session:completed every cycle and
-      // the parent accumulates one row per cycle per child. Those rows are not
-      // independent facts: each is a snapshot of the same child, and the newest
-      // is the only one still true by the time the parent reads it. Dropping the
-      // stale pending row keeps the parent's queue proportional to the number of
-      // children rather than to the number of turns they take.
-      //
-      await deletePendingChildUpdates(session.createdBySessionId, session.id);
-
-      await this.aiService.queuePromptForSession(
-        session.createdBySessionId,
-        notification,
-        undefined,
-        {
-          promptProvenance: {
-            actor: 'agent',
-            origin: 'child-session-update',
-            messageKind: eventType === 'session:completed' ? 'report' : eventType === 'session:waiting' ? 'question' : 'error',
-            originSessionId: session.id,
-          },
-        },
-      );
-
-      // Do not auto-re-drive the parent when THIS child settle was an error.
-      // The [Child Session Update] notification above is still queued for
-      // visibility, but re-triggering the parent's queue on every error settle
-      // spins the meta-agent wakeup loop with no backoff (an antigravity 429
-      // child settles instantly into 'error' every cycle). Native children
-      // settle 'session:completed', so this gate is a no-op for them.
-      if (eventType !== 'session:error' && (metaStatus === 'idle' || metaStatus === 'interrupted' || metaStatus === 'error')) {
-        await this.aiService.triggerQueuedPromptProcessingForSession(metaSession.id, metaSession.workspacePath, 'meta-agent');
+        const key = `${sessionId}:${result.pendingPrompt.promptId}`;
+        if (this.planReviewsInFlight.has(key)) return;
+        this.planReviewsInFlight.add(key);
+        try {
+          await this.ensurePlanTrackerItem(session.workspacePath, sessionId, result);
+        } finally {
+          this.planReviewsInFlight.delete(key);
+        }
       }
     } catch (error) {
-      console.error(`[MetaAgentService] handleChildSessionEvent failed for session ${sessionId} (${eventType}):`, error);
+      console.error(`[MetaAgentService] child plan review failed for session ${sessionId}:`, error);
     }
-  }
-
-  private buildNotificationMessage(
-    eventType: 'session:completed' | 'session:error' | 'session:waiting' | 'session:interrupted',
-    result: SessionResultData
-  ): string {
-    const lines = [
-      '[Child Session Update]',
-      `Session: "${result.title}" (${result.sessionId})`,
-      `Status: ${result.status}`,
-      `Event: ${eventType}`,
-    ];
-
-    // The original task is deliberately not repeated here. This notification is
-    // only ever queued to the child's `createdBySessionId`, which is the session
-    // that wrote that prompt in the first place -- it is already in the parent's
-    // own transcript. Re-embedding up to 2,000 characters of it in every update
-    // was the largest part of each row, repeated once per child turn. The title
-    // and session id above are enough to identify the child; `get_session_result`
-    // returns the full prompt when a parent genuinely needs it.
-    if (result.recentMessages.length > 0) {
-      lines.push('Recent messages:');
-      for (const message of result.recentMessages) {
-        const label = message.direction === 'input' ? 'User' : 'Assistant';
-        lines.push(`- ${label}: ${message.text}`);
-      }
-    } else if (result.lastResponse) {
-      lines.push(`Last response: ${result.lastResponse}`);
-    }
-    if (result.editedFiles.length > 0) {
-      lines.push('Files modified:');
-      for (const filePath of result.editedFiles) {
-        lines.push(`- ${filePath}`);
-      }
-    }
-    if (result.toolScope === 'read' || result.toolScope === 'write') {
-      const denied = result.toolScope === 'read' ? 'write_file or run_command' : 'run_command';
-      lines.push(
-        `Tool scope: ${result.toolScope} (this child had NO ${denied}). Any claim it ran, built, or tested anything is false; "Files modified" above is the complete list of files it changed.`,
-      );
-    }
-    if (result.errorMessage) {
-      lines.push(`Error: ${result.errorMessage}`);
-    }
-    // Keep the actionable prompt last so the parent session cannot miss the
-    // question beneath ordinary recap or error text.
-    if (result.pendingPrompt) {
-      lines.push('');
-      lines.push(`ACTION REQUIRED: This session is blocked on an interactive prompt.`);
-      lines.push(`Use respond_to_prompt with these arguments:`);
-      lines.push(`  sessionId: "${result.sessionId}"`);
-      lines.push(`  promptId: "${result.pendingPrompt.promptId}"`);
-      lines.push(`  promptType: "${result.pendingPrompt.promptType}"`);
-
-      if (result.pendingPrompt.promptType === 'ask_user_question_request') {
-        const questions = result.pendingPrompt.content?.questions;
-        if (Array.isArray(questions)) {
-          lines.push('  Questions:');
-          for (const q of questions) {
-            const questionText = q.question || q.text || JSON.stringify(q);
-            lines.push(`    - ${questionText}`);
-            if (Array.isArray(q.options)) {
-              for (const opt of q.options) {
-                const label = typeof opt === 'string' ? opt : opt.label || opt.value || JSON.stringify(opt);
-                lines.push(`      * ${label}`);
-              }
-            }
-          }
-        }
-        lines.push(`  response format: { "answers": { "<question text>": "<your answer>" } }`);
-      } else if (result.pendingPrompt.promptType === 'permission_request') {
-        const toolName = result.pendingPrompt.content?.toolName || result.pendingPrompt.content?.request?.tool || 'unknown';
-        lines.push(`  Tool requesting permission: ${toolName}`);
-        lines.push(`  response: { "decision": "allow", "scope": "session" }`);
-      } else if (result.pendingPrompt.promptType === 'exit_plan_mode_request') {
-        if (result.pendingPrompt.content?.planFilePath) {
-          lines.push(`  Plan file: ${result.pendingPrompt.content.planFilePath}`);
-        }
-        lines.push(`  response: { "approved": true }`);
-      }
-    }
-    return lines.join('\n');
   }
 
   private async buildSessionResultData(

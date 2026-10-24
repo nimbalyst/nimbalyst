@@ -29,7 +29,7 @@ const PG_SCHEMA = `CREATE TABLE worktrees (id TEXT PRIMARY KEY, name TEXT, branc
     last_read_timestamp TIMESTAMPTZ, last_document_state JSONB
   );
   CREATE TABLE ai_agent_messages (id INTEGER, session_id TEXT, direction TEXT, hidden BOOLEAN);
-  CREATE TABLE queued_prompts (id TEXT PRIMARY KEY, session_id TEXT, prompt TEXT, status TEXT);`;
+  CREATE TABLE queued_prompts (id TEXT PRIMARY KEY, session_id TEXT, prompt TEXT, status TEXT, document_context JSONB);`;
 
 async function openBackend(backend: 'pglite' | 'sqlite') {
   const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'nim-session-tree-'));

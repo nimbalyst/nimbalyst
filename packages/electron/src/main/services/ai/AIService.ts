@@ -88,7 +88,6 @@ import {
 } from './QueueDriveService';
 import { createWorkspaceWindowResolver } from './resolveWorkspaceWindow';
 import { runQueueDriveAttempt } from './queueDriveAttempt';
-import { wakeParentAfterChildSettle } from './wakeParentAfterChildSettle';
 import { clearStuckRunningState } from './clearStuckRunningState';
 import { publishQueuedPromptsToSync } from './queuedPromptSyncPublisher';
 import { onWorkspaceWindowAvailable } from '../../window/workspaceWindowAvailability';
@@ -942,13 +941,6 @@ export class AIService {
     const { getQueuedPromptsStore } = await import('../RepositoryManager');
     const queueStore = getQueuedPromptsStore();
 
-    // Captures whether the just-settled child chain ended in 'error' so the
-    // meta-agent wakeup (onAfterSettled) can skip re-driving the parent for a
-    // dead child. endSession (in onChainSettled, which runs before onAfterSettled)
-    // evicts the child from the state manager, so its terminal status must be
-    // read in onChainSettled before that happens.
-    let settledChildErrored = false;
-
     return tryClaimAndDispatchNextQueuedPrompt({
       continueQueuedPromptChain: (nextSessionId, nextWorkspacePath, nextTargetWindow, nextSource) =>
         this.continueQueuedPromptChain(nextSessionId, nextWorkspacePath, nextTargetWindow, nextSource),
@@ -957,33 +949,12 @@ export class AIService {
       resolveLiveWindow: findWindowByWorkspace,
       canBypassChainGuard: () => canDispatchIntoDrain(sessionId),
       isLeadTurnPending: () => isLeadTurnPending(sessionId),
-      onAfterSettled: async () => {
-        try {
-          const { AISessionsRepository } = await import('@nimbalyst/runtime/storage/repositories/AISessionsRepository');
-          await wakeParentAfterChildSettle({
-            childSessionId: sessionId,
-            source,
-            settledChildErrored,
-            getSession: (id) => AISessionsRepository.get(id),
-            getSessionStatus: (id) => getSessionStateManager().getSessionState(id)?.status,
-            requestQueueDrive: (id, path) => this.requestQueueDrive(id, path, 'meta-agent'),
-            logInfo: (message) => logger.main.info(message),
-          });
-        } catch (metaErr) {
-          logger.main.error(`[AIService] ${source}: error checking meta-agent wakeup:`, metaErr);
-        }
-      },
       onChainSettled: async ({ sessionId: settledSessionId, source: settledSource }) => {
         // The completion handler in MessageStreamingHandler deferred endSession
         // because processingSet still contained this session while the inner
         // sendMessage was running. Now that the chain has fully drained, mark
         // the session idle and stop its file watcher.
         const stateManager = getSessionStateManager();
-        // Capture the child's terminal status BEFORE endSession evicts it from
-        // the state manager, so onAfterSettled can avoid waking the parent for a
-        // child that just failed. getSessionState reads the in-memory map, which
-        // endSession clears on the next line.
-        settledChildErrored = stateManager.getSessionState(settledSessionId)?.status === 'error';
         logger.main.info(`[AIService] ${settledSource}: chain settled for session ${settledSessionId}, ending session`);
         await stateManager.endSession(settledSessionId);
         this.hooklessWatcher.scheduleStop(settledSessionId, 500);

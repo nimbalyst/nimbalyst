@@ -6,6 +6,7 @@
  */
 
 import { toMillis } from '../utils/timestampUtils';
+import { DELIVERABLE_PROMPT_SQL } from './ai/automaticChildUpdates';
 import type {
   AgentWakePromptOrigin,
   PromptProvenance,
@@ -55,7 +56,7 @@ export interface QueuedPromptsStore {
   /** Get a specific queued prompt by ID */
   get(id: string): Promise<QueuedPrompt | null>;
 
-  /** List all queued prompts for a session */
+  /** List active deliverable rows by default; includeCompleted:true returns unfiltered audit history. */
   listForSession(sessionId: string, options?: { includeCompleted?: boolean }): Promise<QueuedPrompt[]>;
 
   /** List pending prompts for a session (ready to execute) */
@@ -259,7 +260,7 @@ export function createPGLiteQueuedPromptsStore(
 
       let query = `SELECT * FROM queued_prompts WHERE session_id = $1`;
       if (!includeCompleted) {
-        query += ` AND status NOT IN ('completed', 'failed')`;
+        query += ` AND status NOT IN ('completed', 'failed') AND ${DELIVERABLE_PROMPT_SQL}`;
       }
       query += ` ORDER BY created_at ASC, id ASC`;
 
@@ -272,7 +273,7 @@ export function createPGLiteQueuedPromptsStore(
 
       const { rows } = await db.query<any>(
         `SELECT * FROM queued_prompts
-         WHERE session_id = $1 AND status = 'pending'
+         WHERE session_id = $1 AND status = 'pending' AND ${DELIVERABLE_PROMPT_SQL}
          ORDER BY created_at ASC, id ASC`,
         [sessionId]
       );
@@ -284,7 +285,7 @@ export function createPGLiteQueuedPromptsStore(
       await ensureReady();
 
       const { rows } = await db.query<{ session_id: string }>(
-        `SELECT DISTINCT session_id FROM queued_prompts WHERE status = 'pending'`
+        `SELECT DISTINCT session_id FROM queued_prompts WHERE status = 'pending' AND ${DELIVERABLE_PROMPT_SQL}`
       );
 
       return rows.map((row) => row.session_id);
@@ -318,7 +319,7 @@ export function createPGLiteQueuedPromptsStore(
       const { rows } = await db.query<any>(
         `UPDATE queued_prompts
          SET status = 'executing', claimed_at = CURRENT_TIMESTAMP
-         WHERE id = $1 AND status = 'pending'
+         WHERE id = $1 AND status = 'pending' AND ${DELIVERABLE_PROMPT_SQL}
          RETURNING *`,
         [id]
       );

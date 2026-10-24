@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { DELIVERABLE_PROMPT_SQL } from "./automaticChildUpdates";
 import type { TransactionStatement } from "../../database/transactionStatements";
 
 export interface InboxDatabase {
@@ -150,7 +151,7 @@ export class SessionInbox {
       throw new Error("Inbox tool invocation already completed");
     const pending = await this.db.query<InboxRow>(
       `SELECT id, prompt, document_context, attachments, created_at FROM queued_prompts
-       WHERE session_id = $1 AND status = 'pending' ORDER BY created_at, id LIMIT $2`,
+       WHERE session_id = $1 AND status = 'pending' AND ${DELIVERABLE_PROMPT_SQL} ORDER BY created_at, id LIMIT $2`,
       [turn.sessionId, MAX_ROWS + 1]
     );
     const messages: Array<{
@@ -178,9 +179,7 @@ export class SessionInbox {
       if (
         provenance?.actor !== "agent" ||
         !provenance.originSessionId ||
-        !["session-orchestration", "child-session-update"].includes(
-          provenance.origin
-        ) ||
+        provenance.origin !== "session-orchestration" ||
         !["report", "status"].includes(kind)
       ) {
         boundary = "instruction-or-untyped-message";
@@ -238,10 +237,10 @@ export class SessionInbox {
         // Claim the exact original prefix, not a stale list. A competing drainer,
         // edit, or delete rolls back every claim and the raw receipt together.
         sql: `UPDATE queued_prompts SET status = 'executing', claimed_at = CURRENT_TIMESTAMP, document_context = $4
-              WHERE id = $1 AND session_id = $2 AND status = 'pending' AND prompt = $3
+              WHERE id = $1 AND session_id = $2 AND status = 'pending' AND ${DELIVERABLE_PROMPT_SQL} AND prompt = $3
                 AND document_context = $5
                 AND (attachments = $6 OR (attachments IS NULL AND $6 IS NULL))
-                AND id = (SELECT id FROM queued_prompts WHERE session_id = $2 AND status = 'pending' ORDER BY created_at, id LIMIT 1)
+                AND id = (SELECT id FROM queued_prompts WHERE session_id = $2 AND status = 'pending' AND ${DELIVERABLE_PROMPT_SQL} ORDER BY created_at, id LIMIT 1)
               RETURNING id`,
         params: [
           row.id,

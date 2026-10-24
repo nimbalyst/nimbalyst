@@ -101,7 +101,7 @@ Twelve built-in provider lanes, plus any agent an extension contributes. Every l
 - Nested session trees within a workspace or worktree, with collapsible orchestrators and subtree activity, unread, and uncommitted-file rollups
 - Workstream editor tabs (multi-file editing per session)
 - Workstream session tabs (switch between child sessions)
-- Agent-to-agent session spawning (`/launch-new-session`, `spawn_session`, and `create_session`) places workers beneath their caller and shares the tree's files, tabs, and overview; isolated sessions and workers launched into another worktree remain separate roots managed by their caller; each spawn chooses how the worker reports back (`reporting`: none by default, final response only, or mid-run messages)
+- Agent-to-agent session spawning (`/launch-new-session`, `spawn_session`, and `create_session`) places workers beneath their caller and shares the tree's files, tabs, and overview; isolated sessions and workers launched into another worktree remain separate roots managed by their caller; child lifecycle events and final responses are never forwarded or used to wake a parent; deliberate reports remain available through `send_prompt` (`reporting`: none by default, messages requests warranted reports, legacy final retains plan-review visibility without automatic reports)
 - Launching sessions can select a child session's reasoning effort, and coordinating sessions can interrupt a running session to deliver an instruction immediately
 
 ## Session Kanban Board

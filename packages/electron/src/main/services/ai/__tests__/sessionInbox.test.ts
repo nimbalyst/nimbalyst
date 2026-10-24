@@ -119,6 +119,32 @@ describe.each(["pglite", "sqlite"])("session inbox (%s)", (backend) => {
     };
   }
 
+  it("retains retired lifecycle rows without replaying them or blocking deliberate reports", async () => {
+    const f = await fixture();
+    const automatic = { promptProvenance: { actor: "agent", origin: "child-session-update", originSessionId: "child", messageKind: "report" } } as const;
+    await db.query("INSERT INTO ai_sessions(id,provider,status) VALUES ('auto-only','claude-code','idle')");
+    const store = createPGLiteQueuedPromptsStore(db);
+    await store.create({ id: `${f.sessionId}-00-auto`, sessionId: f.sessionId, prompt: "[Child Session Update]", documentContext: automatic });
+    await store.create({ id: `${f.sessionId}-00-only`, sessionId: "auto-only", prompt: "[Child Session Update]", documentContext: automatic });
+    await f.enqueue("01-report");
+    await f.enqueue("02-human", "instruction", "[Child Session Update] is a human quotation");
+    expect((await store.listPending(f.sessionId)).map(r => r.id)).toEqual([`${f.sessionId}-01-report`, `${f.sessionId}-02-human`]);
+    expect(await store.listSessionIdsWithPending()).toEqual([f.sessionId]);
+    expect(await store.claim(`${f.sessionId}-00-auto`)).toBeNull();
+    await db.query("UPDATE queued_prompts SET status='executing' WHERE id=$1", [`${f.sessionId}-00-only`]);
+    await store.rollbackAllExecuting();
+    expect(await store.listPending("auto-only")).toEqual([]);
+    expect(await store.listForSession("auto-only")).toEqual([]);
+    expect(await store.listForSession("auto-only", { includeCompleted: true })).toHaveLength(1);
+    expect((await store.listForSession(f.sessionId)).map(r => r.id)).toEqual([`${f.sessionId}-01-report`, `${f.sessionId}-02-human`]);
+    expect(await store.listForSession(f.sessionId, { includeCompleted: true })).toHaveLength(3);
+    const receipt = JSON.parse(await f.consume());
+    expect(receipt.messages.map((m: any) => m.text)).toEqual(["01-report"]);
+    expect((await store.get(`${f.sessionId}-00-auto`))?.status).toBe("pending");
+    expect((await store.get(`${f.sessionId}-02-human`))?.status).toBe("pending");
+    await f.inbox.end(f.turn, true);
+  });
+
   it("rolls back an entire guarded transaction after a competing claim", async () => {
     const f = await fixture();
     await f.enqueue("a");

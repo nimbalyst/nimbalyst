@@ -23,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 <!-- Removed features go here -->
+- Child sessions no longer send automatic lifecycle updates or wake their parent; deliberate messages and human plan approvals remain available.
 
 ## [0.82.1] - 2026-10-23
 

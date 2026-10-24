@@ -1,5 +1,6 @@
 // @vitest-environment node
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+const { stateListeners } = vi.hoisted(() => ({ stateListeners: new Set<(event: any) => void>() }));
 
 // Same hermetic mock surface as MetaAgentService.parentPromotion.test.ts.
 vi.mock('@nimbalyst/runtime/storage/repositories/AISessionsRepository', () => ({
@@ -43,7 +44,7 @@ vi.mock('@nimbalyst/runtime/ai/server/types', () => ({
 }));
 
 vi.mock('@nimbalyst/runtime/ai/server/SessionStateManager', () => ({
-  getSessionStateManager: () => ({ subscribe: vi.fn() }),
+  getSessionStateManager: () => ({ subscribe: vi.fn((listener) => { stateListeners.add(listener); return () => stateListeners.delete(listener); }) }),
 }));
 
 vi.mock('../ai/providerResolution', () => ({
@@ -73,7 +74,7 @@ vi.mock('./ai/AIService', () => ({ AIService: class {} }));
 vi.mock('../../mcp/metaAgentServer', () => ({
   setMetaAgentToolFns: vi.fn(),
 }));
-vi.mock('../metaAgentNotificationSignature', () => ({ computeNotificationSignature: vi.fn() }));
+vi.mock('../extensionSessions/extensionSessionsService', () => ({ startExtensionSessionService: vi.fn() }));
 vi.mock('../metaAgentMessageText', () => ({
   extractMessageText: vi.fn(),
   extractUserPrompts: vi.fn(),
@@ -149,14 +150,14 @@ describe('MetaAgentService session ownership', () => {
     expect(AISessionsRepository.create).not.toHaveBeenCalled();
   });
 
-  it('an unowned notify-on-complete spawn carries no owner and no notifyParent opt-out', async () => {
+  it('a legacy notify-on-complete spawn adds no automatic-report directive', async () => {
     const { svc } = service();
     vi.mocked(AISessionsRepository.get).mockResolvedValue({ ...OWNED_CALLER, metadata: {} } as any);
 
     await (svc as any).spawnSession('caller', '/workspace/path', { prompt: 'x', notifyOnComplete: true });
 
     const metadata = (vi.mocked(AISessionsRepository.create).mock.calls[0][0] as any).metadata;
-    expect(Object.keys(metadata)).toEqual(['sessionDirective']);
+    expect(metadata).toEqual({});
   });
 
   describe('child reporting', () => {
@@ -180,26 +181,38 @@ describe('MetaAgentService session ownership', () => {
       }
     });
 
-    it('final makes the final response the report and asks for no messages', async () => {
+    it('legacy final retains plan-review visibility without promising automatic delivery', async () => {
       const { metadata, prompt } = await childPrompt({ reporting: 'final' });
-      expect(metadata.notifyParent).toBeUndefined();
-      expect(prompt.slice(prompt.indexOf('Your final response'))).toMatchInlineSnapshot(`
-        "Your final response is delivered to the session that started you (caller) as your report. Do not send it status or acknowledgement messages.
-
-        </addendum>
-        "
-      `);
+      expect(metadata).toEqual({});
+      expect(prompt).toBe(buildClaudeCodeSystemPrompt({ hasSessionNaming: true }));
     });
 
     it('messages is the only setting that mentions send_prompt, and defers to the brief', async () => {
       const { metadata, prompt } = await childPrompt({ reporting: 'messages' });
       expect(metadata.notifyParent).toBeUndefined();
       expect(prompt.slice(prompt.indexOf('The session that started you'))).toMatchInlineSnapshot(`
-        "The session that started you (caller) asked for reports: send each material change once with send_prompt messageKind=report, unless your brief says otherwise. Your final response is delivered to it automatically.
+        "The session that started you (caller) asked for reports: send each material change once with send_prompt messageKind=report, unless your brief says otherwise. Send a final report deliberately only when warranted; no final response is forwarded automatically.
 
         </addendum>
         "
       `);
+    });
+
+    it.each([{ reporting: 'messages' }, { reporting: 'final' }, { notifyOnComplete: true }])('preserves plan-review visibility for %j', async (args) => {
+      const { metadata } = await childPrompt(args);
+      const { svc, aiService } = service();
+      const result = { sessionId: 'child', pendingPrompt: { promptId: 'plan-compat', promptType: 'exit_plan_mode_request', content: {} } };
+      vi.mocked(AISessionsRepository.get).mockResolvedValue({ id: 'child', createdBySessionId: 'caller', workspacePath: '/workspace/path', metadata } as any);
+      const resultSpy = vi.spyOn(svc as any, 'buildSessionResultData').mockResolvedValue(result);
+      const planSpy = vi.spyOn(svc as any, 'ensurePlanTrackerItem').mockResolvedValue(undefined);
+      vi.spyOn(svc as any, 'registerIpcHandlers').mockImplementation(() => {});
+      await svc.start(aiService as any, vi.fn() as any);
+      for (const listener of stateListeners) listener({ sessionId: 'child', type: 'session:waiting' });
+      await new Promise(setImmediate);
+      expect(planSpy).toHaveBeenCalledWith('/workspace/path', 'child', result);
+      expect(aiService.queuePromptForSession).not.toHaveBeenCalled();
+      expect(aiService.triggerQueuedPromptProcessingForSession).not.toHaveBeenCalled();
+      resultSpy.mockRestore(); planSpy.mockRestore();
     });
 
     it('rejects an unknown setting before creating anything', async () => {
@@ -225,22 +238,34 @@ describe('MetaAgentService session ownership', () => {
     expect(aiService.triggerQueuedPromptProcessingForSession).toHaveBeenCalledTimes(1);
   });
 
-  it('an owner-routed child settle queues no [Child Session Update] on the parent', async () => {
+  it('child lifecycle events never send parent traffic, while plan review stays visible', async () => {
     const { svc, aiService } = service();
-    vi.mocked(AISessionsRepository.get).mockResolvedValue({
-      id: 'child',
-      agentRole: 'standard',
-      createdBySessionId: 'caller',
-      workspacePath: '/workspace/path',
-      metadata: { sessionOwner: ROUTED_OWNER },
-    } as any);
-
-    for (const type of ['session:completed', 'session:waiting', 'session:error', 'session:interrupted']) {
-      await (svc as any).handleChildSessionEvent('child', type);
+    const pendingPrompt = { promptId: 'plan-1', promptType: 'exit_plan_mode_request', content: { planFilePath: '/synthetic/plan.md' } };
+    const result = { sessionId: 'child', pendingPrompt };
+    const resultSpy = vi.spyOn(svc as any, 'buildSessionResultData').mockResolvedValue(result);
+    const planSpy = vi.spyOn(svc as any, 'ensurePlanTrackerItem').mockResolvedValue(undefined);
+    vi.spyOn(svc as any, 'registerIpcHandlers').mockImplementation(() => {});
+    await svc.start(aiService as any, vi.fn() as any);
+    for (const metadata of [undefined, {}, { notifyParent: true }, { notifyParent: false }, { sessionDirective: 'Your final response is delivered automatically.' }]) {
+      vi.mocked(AISessionsRepository.get).mockResolvedValue({ id: 'child', createdBySessionId: 'caller', workspacePath: '/workspace/path', metadata } as any);
+      for (const type of ['session:completed', 'session:waiting', 'session:error', 'session:interrupted']) {
+        for (const listener of stateListeners) listener({ sessionId: 'child', type });
+        await new Promise(setImmediate);
+      }
     }
-
+    expect(planSpy).toHaveBeenCalledTimes(16);
+    expect(planSpy).toHaveBeenCalledWith('/workspace/path', 'child', result);
+    let finishReview!: () => void;
+    planSpy.mockImplementationOnce(() => new Promise<void>(resolve => { finishReview = resolve; }));
+    for (let i = 0; i < 2; i++) {
+      for (const listener of stateListeners) listener({ sessionId: 'child', type: 'session:waiting' });
+    }
+    await new Promise(setImmediate);
+    expect(planSpy).toHaveBeenCalledTimes(17);
+    finishReview();
+    await new Promise(setImmediate);
     expect(aiService.queuePromptForSession).not.toHaveBeenCalled();
     expect(aiService.triggerQueuedPromptProcessingForSession).not.toHaveBeenCalled();
-    expect(database.query).not.toHaveBeenCalled();
+    resultSpy.mockRestore(); planSpy.mockRestore();
   });
 });
