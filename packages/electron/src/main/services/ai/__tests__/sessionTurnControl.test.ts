@@ -249,7 +249,7 @@ describe('captured desktop turn interruption', () => {
     expect(() => beginSessionTurn(options.sessionId)).toThrow(TurnControlPendingError);
     const retry = await performTurnInterruption(options);
     expect(retry.success).toBe(false);
-    expect(retry.error).toContain('Stop again to retry');
+    expect(retry.error).toContain('Restart the app');
     expect(options.provider.abort).toHaveBeenCalledTimes(2);
     expect(options.sweep).not.toHaveBeenCalled();
     host.finish();
@@ -321,7 +321,7 @@ describe('captured desktop turn interruption', () => {
     await entered.promise;
     await vi.advanceTimersByTimeAsync(20);
     expect((await control).success).toBe(false);
-    expect((await performTurnInterruption({ ...options, mode: 'stop' })).error).toContain('Stop again to retry');
+    expect((await performTurnInterruption({ ...options, mode: 'stop' })).error).toContain('Restart the app');
     expect(options.provider.abort).toHaveBeenCalledTimes(2);
     expect(successor.cancelled).toBe(true);
     await expect(setup.stage('late-provider', async () => 1)).rejects.toThrow('back in the composer');

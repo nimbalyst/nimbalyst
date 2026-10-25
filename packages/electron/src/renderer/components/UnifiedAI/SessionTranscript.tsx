@@ -1346,14 +1346,7 @@ const LocalSessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscrip
         submissionId,
       };
 
-      const result = await window.electronAPI.invoke('ai:sendMessage', message, docContext, sessionId, workspacePath);
-      if (result?.queued) {
-        // Quarantined cleanup accepts input into the durable queue, without
-        // representing it as a sent provider turn in the transcript.
-        updateSessionStore({ sessionId, updates: { messages: store.get(sessionMessagesAtom(sessionId)).filter(item => item.id !== userMessage.id) } });
-        setIsProcessing(false);
-        void loadInitialQueuedPrompts(sessionId).catch(error => console.error('[SessionTranscript] Failed to refresh saved queue:', error));
-      }
+      await window.electronAPI.invoke('ai:sendMessage', message, docContext, sessionId, workspacePath);
 
       // Record activity for usage tracking (wake up polling if sleeping)
       if (provider?.startsWith('claude')) {

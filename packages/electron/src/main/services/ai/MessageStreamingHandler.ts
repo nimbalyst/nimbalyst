@@ -25,7 +25,6 @@ import { cancelUsageLimitResume, maybeScheduleUsageLimitResume } from './usageLi
 
 import { BrowserWindow } from 'electron';
 import * as path from 'path';
-import { randomUUID } from 'node:crypto';
 import {
   ProviderFactory,
   ModelRegistry,
@@ -188,7 +187,7 @@ export type SendMessageHandler = (
   documentContext?: DocumentContext,
   sessionId?: string,
   workspacePath?: string,
-) => Promise<{ content: string; queued?: boolean }>;
+) => Promise<{ content: string }>;
 
 /**
  * Structural view of the AIService members this handler needs. Keeping it
@@ -224,7 +223,6 @@ interface AIServiceInternal {
     source: string,
   ): Promise<boolean>;
   requestQueueDrive(sessionId: string, workspacePath: string, reason: DriveReason): void;
-  publishQueueStateToSync(sessionId: string): Promise<void>;
   runAutoContextCommand(
     session: SessionData,
     workspacePath: string,
@@ -381,31 +379,8 @@ export class MessageStreamingHandler {
     sessionId?: string,
     workspacePath?: string,
   ) => {
-    if (sessionId && !queued && isTurnRecoveryQuarantined(sessionId)) {
-      // A timeout cannot make a live cleanup write safe to race with another
-      // provider turn. Accept the input durably without entering that turn.
-      const { getQueuedPromptsStore } = await import('../RepositoryManager');
-      const { remoteSessions } = await import('./remoteSessions');
-      await remoteSessions.assertLocalExecution(sessionId);
-      const id = `local-${randomUUID()}`;
-      await getQueuedPromptsStore().create({
-        id, sessionId, prompt: message,
-        attachments: (documentContext as any)?.attachments,
-        documentContext,
-      });
-      // Persistence is the acceptance boundary. Notification or wake failure
-      // must not reject a saved input and make the composer offer it twice.
-      try { safeSend(event, 'ai:queuedPromptsReceived', { sessionId, promptCount: 1 }); }
-      catch (error) { logger.main.error('[AIService] Failed to notify quarantined input:', error); }
-      try {
-        void this.svc.publishQueueStateToSync(sessionId).catch(error => logger.main.error('[AIService] Failed to publish quarantined input:', error));
-      } catch (error) { logger.main.error('[AIService] Failed to publish quarantined input:', error); }
-      try { if (workspacePath) this.svc.requestQueueDrive(sessionId, workspacePath, 'renderer-trigger'); }
-      catch (error) { logger.main.error('[AIService] Failed to drive quarantined input:', error); }
-      return { content: '', queued: true };
-    }
     if (sessionId && !queued && isDirectTurnAdmissionBlocked(sessionId)) {
-      throw new TurnControlPendingError();
+      throw new TurnControlPendingError(isTurnRecoveryQuarantined(sessionId));
     }
     const turn = sessionId ? beginSessionTurn(sessionId) : undefined;
     try { return await this.handleTurn(event, message, documentContext, sessionId, workspacePath, turn); }

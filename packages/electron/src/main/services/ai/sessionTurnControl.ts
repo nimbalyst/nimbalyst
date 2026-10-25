@@ -3,9 +3,11 @@ import { cancelTurnSetup, hasActiveTurnSetup, TurnSetupCancelledError } from './
 import type { DriveOutcome } from './QueueDriveService';
 
 export class TurnControlPendingError extends TurnSetupCancelledError {
-  constructor() {
+  constructor(quarantined = false) {
     super();
-    this.message = 'Cancellation is still finishing. Your message is back in the composer. Stop again to retry; if this persists, reopen the session.';
+    this.message = quarantined
+      ? 'This session is recovering a stuck save. Your text and attachments are kept in the composer. Restart the app to clear recovery; queued text is preserved.'
+      : 'Cancellation is still finishing. Your message is back in the composer. Stop again to retry; if this persists, reopen the session.';
   }
 }
 
@@ -33,7 +35,7 @@ export function isDirectTurnAdmissionBlocked(sessionId: string): boolean {
 
 const recoveries = new Map<string, { finished: Promise<void> }>();
 
-/** Execution stays fenced, but fresh input can be stored in the existing queue. */
+/** A timed-out operation remains live until actual retirement or app restart. */
 export function isTurnRecoveryQuarantined(sessionId: string): boolean {
   return recoveries.has(sessionId);
 }
@@ -48,7 +50,7 @@ export function isTurnControlPending(sessionId: string): boolean {
 
 /** Registration and the control fence check are synchronous. */
 export function beginSessionTurn(sessionId: string): SessionTurn {
-  if (isTurnAdmissionBlocked(sessionId)) throw new TurnControlPendingError();
+  if (isTurnAdmissionBlocked(sessionId)) throw new TurnControlPendingError(isTurnRecoveryQuarantined(sessionId));
   let resolve!: () => void;
   const finished = new Promise<void>(done => { resolve = done; });
   const active = turns.get(sessionId) ?? new Set<SessionTurn>();
@@ -114,7 +116,7 @@ async function bounded<T>(work: Promise<T>, label: string, milliseconds: number)
   try {
     return await Promise.race([work, new Promise<never>((_, reject) => {
       timer = setTimeout(() => reject(new TurnControlTimeoutError(
-        `Cancellation timed out during ${label}. This session is quarantined until unfinished work retires. Your queued text is preserved; new input will be saved to the queue.`,
+        `Cancellation timed out during ${label}. This session is recovering a stuck save. Your queued text is preserved; rejected text and attachments stay in the composer. Restart the app to clear recovery.`,
       )), milliseconds);
     })]);
   } finally { if (timer !== undefined) clearTimeout(timer); }
@@ -132,7 +134,7 @@ export function performTurnInterruption(options: TurnControlOptions, progress: {
       }
     }
     catch (error) { options.logError(error); }
-    return Promise.resolve({ success: false, error: 'Cancellation is incomplete. Your message remains queued. Stop again to retry; if this persists, reopen the session.' });
+    return Promise.resolve({ success: false, error: new TurnControlPendingError(true).message });
   }
   if (postControlDrives.has(sessionId) && !(turns.get(sessionId)?.size)) {
     return Promise.resolve({ success: false, error: 'The previous queue drive is still starting. Your message remains queued.' });

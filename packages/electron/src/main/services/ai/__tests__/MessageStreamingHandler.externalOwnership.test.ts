@@ -241,6 +241,7 @@ import { TurnSetupCancelledError } from '../turnSetupStages';
 import { SessionProcessingGuard, tryClaimAndDispatchNextQueuedPrompt } from '../queuedPromptDispatcher';
 import { createPGLiteQueuedPromptsStore } from '../../PGLiteQueuedPromptsStore';
 import { SQLiteDatabase } from '../../../database/sqlite/SQLiteDatabase';
+import { mergeRestoredPromptIntoDraft } from '../../../../shared/restoredDraft';
 import { AIService } from '../AIService';
 import { registerTurnControlHandlers } from '../ipc/registerTurnControlHandlers';
 import { AISessionsRepository } from '@nimbalyst/runtime/storage/repositories/AISessionsRepository';
@@ -418,10 +419,7 @@ describe("MessageStreamingHandler external ownership", () => {
       } });
     } finally { actualRepository.AISessionsRepository.clearStore(); release(); await db.close(); fs.rmSync(dir, { recursive: true }); }
   });
-  it.each([
-    ['retireInbox', 'none'], ['sweep', 'none'], ['settle', 'none'],
-    ['sweep', 'notify'], ['sweep', 'publish'], ['sweep', 'drive'],
-  ] as const)('accepts new input while %s remains quarantined (post-save failure: %s)', async (stalledStep, sideEffect) => {
+  it.each(['retireInbox', 'sweep', 'settle'] as const)('rejects and restores input while %s remains visibly quarantined', async stalledStep => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nim-quarantined-input-'));
     const db = new SQLiteDatabase({ dbDir: dir, schemaDir: path.resolve(__dirname, '../../../database/sqlite/schemas') });
     await db.initialize();
@@ -450,16 +448,35 @@ describe("MessageStreamingHandler external ownership", () => {
           expect(stopped.success).toBe(false);
           expect(isTurnAdmissionBlocked('opencode-session')).toBe(true);
           const attachments = [{ id: 'attachment', name: 'keep.txt' }];
-          const fail = () => { throw new Error('post-save side effect failed'); };
-          if (sideEffect === 'notify') event.sender.send.mockImplementationOnce(fail);
-          if (sideEffect === 'publish') service.publishQueueStateToSync.mockImplementationOnce(fail);
-          if (sideEffect === 'drive') service.requestQueueDrive.mockImplementationOnce(fail);
-          await expect(handler.handle(event, 'Fresh input\n  original spacing', { attachments, inputType: 'user' } as any, 'opencode-session', '/workspace')).resolves.toMatchObject({ queued: true });
+          const text = 'Fresh input\n  original spacing';
+          const error = await handler.handle(event, text, { attachments, inputType: 'user' } as any, 'opencode-session', '/workspace').then(() => undefined, error => error);
+          expect(error).toBeInstanceOf(TurnSetupCancelledError);
+          expect(error.message).toMatch(/recovering a stuck save/i);
+          expect(error.message).toMatch(/text and attachments.*kept/i);
+          expect(error.message).toMatch(/restart the app/i);
+          // Execute the existing renderer catch body, rather than reproducing
+          // its restore algorithm or adding a second product path.
+          const transcript = fs.readFileSync(path.resolve(__dirname, '../../../../renderer/components/UnifiedAI/SessionTranscript.tsx'), 'utf8').replace(/\r\n/g, '\n');
+          const catchStart = transcript.indexOf("      console.error('[SessionTranscript] Failed to send message:', error);");
+          const catchEnd = transcript.indexOf('\n    }\n  }, [sessionId', catchStart);
+          expect(catchStart).toBeGreaterThan(0);
+          expect(catchEnd).toBeGreaterThan(catchStart);
+          let draft = 'Typed since submission';
+          let restoredAttachments: unknown[] = [];
+          const setProcessing = vi.fn();
+          const updateTranscript = vi.fn();
+          const restore = new Function('error', 'message', 'attachments', 'sessionId', 'messages', 'userMessage', 'makeOptimisticError', 'updateSessionStore', 'setDraftInput', 'setDraftAttachments', 'setIsProcessing', 'mergeRestoredPromptIntoDraft', transcript.slice(catchStart, catchEnd));
+          restore(error, text, attachments, 'opencode-session', [], {}, (message: string) => ({ message }), updateTranscript,
+            (update: (draft: string) => string) => { draft = update(draft); },
+            (update: (attachments: unknown[]) => unknown[]) => { restoredAttachments = update(restoredAttachments); },
+            setProcessing, mergeRestoredPromptIntoDraft);
+          expect(draft).toBe('Typed since submission\n\n' + text);
+          expect(restoredAttachments).toEqual(attachments);
+          expect(setProcessing).toHaveBeenCalledWith(false);
+          expect(updateTranscript).toHaveBeenCalledWith({ sessionId: 'opencode-session', updates: { messages: [{}, { message: `Error: ${error.message}` }] } });
           const pending = await queue.listPending('opencode-session');
-          expect(pending.map(row => row.prompt)).toEqual(['Original preserved text', 'Fresh input\n  original spacing']);
-          expect(pending[1].attachments).toEqual(attachments);
+          expect(pending.map(row => row.prompt)).toEqual(['Original preserved text']);
           expect(provider.requestConfigs).toHaveLength(0);
-          expect(event.sender.send).toHaveBeenCalledWith('ai:queuedPromptsReceived', expect.objectContaining({ sessionId: 'opencode-session' }));
         } finally {
           release();
           await vi.advanceTimersByTimeAsync(0);
