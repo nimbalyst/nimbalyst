@@ -369,6 +369,7 @@ describe("MessageStreamingHandler external ownership", () => {
       interruptCurrentTurn = vi.fn(async () => { release(); return { method: 'interrupt' as const }; });
       abort = vi.fn(() => release());
       async *sendMessage() {
+        for (const chunk of []) yield chunk;
         if (++calls === 1) { enter(); await parked; return; }
         await db.query("INSERT INTO ai_agent_messages(session_id, source, direction, content, created_at) VALUES ('opencode-session', 'test', 'input', $1, $2)", [text, new Date().toISOString()]);
       }
@@ -506,6 +507,7 @@ describe("MessageStreamingHandler external ownership", () => {
     const blocked = new Promise<void>(resolve => { release = resolve; });
     class ParkedProvider extends RecordingProvider {
       async *sendMessage() {
+        for (const chunk of []) yield chunk;
         entered();
         await blocked;
       }
@@ -632,6 +634,7 @@ describe("MessageStreamingHandler external ownership", () => {
     let deliveries = 0;
     class DurableProvider extends RecordingProvider {
       async *sendMessage() {
+        for (const chunk of []) yield chunk;
         deliveries++;
         await db.query("INSERT INTO ai_agent_messages(session_id, source, direction, content, created_at) VALUES ('opencode-session', 'test', 'input', $1, $2)", [text, new Date().toISOString()]);
       }
@@ -709,6 +712,7 @@ describe("MessageStreamingHandler external ownership", () => {
     let deliveries = 0;
     class DurableProvider extends RecordingProvider {
       async *sendMessage() {
+        for (const chunk of []) yield chunk;
         deliveries++;
         await db.query("INSERT INTO ai_agent_messages(session_id, source, direction, content, created_at) VALUES ('opencode-session', 'test', 'input', 'Saved once', $1)", [new Date().toISOString()]);
         enter();
