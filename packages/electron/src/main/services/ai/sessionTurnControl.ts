@@ -12,6 +12,7 @@ export class TurnControlPendingError extends TurnSetupCancelledError {
 export interface SessionTurn {
   cancelled: boolean;
   providerEntered?: boolean;
+  deliveryMayHaveStarted?: boolean;
   controlDecision?: Promise<boolean>;
   finished: Promise<void>;
   finish(): void;
@@ -31,6 +32,11 @@ export function isDirectTurnAdmissionBlocked(sessionId: string): boolean {
 }
 
 const recoveries = new Map<string, { finished: Promise<void> }>();
+
+/** Execution stays fenced, but fresh input can be stored in the existing queue. */
+export function isTurnRecoveryQuarantined(sessionId: string): boolean {
+  return recoveries.has(sessionId);
+}
 
 export function isTurnAdmissionBlocked(sessionId: string): boolean {
   return isTurnControlPending(sessionId) || recoveries.has(sessionId);
@@ -108,7 +114,7 @@ async function bounded<T>(work: Promise<T>, label: string, milliseconds: number)
   try {
     return await Promise.race([work, new Promise<never>((_, reject) => {
       timer = setTimeout(() => reject(new TurnControlTimeoutError(
-        `Cancellation timed out during ${label}. Your message remains queued. Stop again to retry; if this persists, reopen the session.`,
+        `Cancellation timed out during ${label}. This session is quarantined until unfinished work retires. Your queued text is preserved; new input will be saved to the queue.`,
       )), milliseconds);
     })]);
   } finally { if (timer !== undefined) clearTimeout(timer); }
