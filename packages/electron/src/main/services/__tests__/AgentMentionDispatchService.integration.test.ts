@@ -171,6 +171,7 @@ function memoryQueue(): QueuedPromptsStore {
       row.status = 'executing';
       return row;
     },
+    async releaseClaims() {},
     async complete(id) { const row = rows.get(id); if (row) row.status = 'completed'; },
     async fail(id, errorMessage) {
       const row = rows.get(id);

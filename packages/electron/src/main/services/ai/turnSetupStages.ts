@@ -18,6 +18,7 @@
 import { logger } from '../../utils/logger';
 
 export class TurnSetupCancelledError extends Error {
+  providerEntered = false;
   constructor() {
     super('Stopped before the agent started. Your message is back in the composer.');
     this.name = 'TurnSetupCancelledError';
@@ -36,6 +37,10 @@ const activeSetups = new Map<string, ActiveSetup>();
  * Marks the session's in-flight setup cancelled. Returns true when a setup
  * was in progress, so the caller knows the provider was never reached.
  */
+export function hasActiveTurnSetup(sessionId: string): boolean {
+  return activeSetups.has(sessionId);
+}
+
 export function cancelTurnSetup(sessionId: string): boolean {
   const setup = activeSetups.get(sessionId);
   if (!setup) return false;
