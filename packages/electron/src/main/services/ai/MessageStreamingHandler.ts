@@ -3,6 +3,7 @@ import { warnIfUnpublished } from '@nimbalyst/runtime/sync/pushOutcome';
 import type { SessionChange } from '@nimbalyst/runtime/sync/types';
 import { sessionInbox } from './sessionInboxService';
 import { codexQuestionTurns } from './codexQuestionTurns';
+import { awaitSessionTurnControl, beginSessionTurn, isDirectTurnAdmissionBlocked, TurnControlPendingError, type SessionTurn } from './sessionTurnControl';
 import { supersedeOpenQuestions } from './supersedeOpenQuestions';
 import { beginTurnSetup, TurnSetupCancelledError } from './turnSetupStages';
 import { canDispatchIntoDrain } from './drainFollowUp';
@@ -363,12 +364,43 @@ export class MessageStreamingHandler {
     installScopedProviderListener(this.providerListeners, provider, event, listener);
   }
 
-  handle: SendMessageHandler = async (
-    event,
+  handle: SendMessageHandler = (event, message, context, sessionId, workspacePath) =>
+    this.handleRegistered(false, event, message, context, sessionId, workspacePath);
+
+  /** Internal queue dispatcher entry; IPC always uses handle. */
+  handleQueued: SendMessageHandler = (event, message, context, sessionId, workspacePath) =>
+    this.handleRegistered(true, event, message, context, sessionId, workspacePath);
+
+  private handleRegistered = async (
+    queued: boolean,
+    event: Parameters<SendMessageHandler>[0],
     message: string,
     documentContext?: DocumentContext,
     sessionId?: string,
     workspacePath?: string,
+  ) => {
+    if (sessionId && !queued && (isDirectTurnAdmissionBlocked(sessionId) || this.svc.sessionsProcessingQueue.has(sessionId))) {
+      throw new TurnControlPendingError();
+    }
+    const turn = sessionId ? beginSessionTurn(sessionId) : undefined;
+    try { return await this.handleTurn(event, message, documentContext, sessionId, workspacePath, turn); }
+    catch (error) {
+      if (error instanceof TurnSetupCancelledError && turn?.providerEntered) {
+        error.providerEntered = true;
+        error.message = 'The turn stopped after provider delivery began. The saved input will not be queued again automatically.';
+      }
+      throw error;
+    }
+    finally { turn?.finish(); }
+  };
+
+  private handleTurn = async (
+    event: Parameters<SendMessageHandler>[0],
+    message: string,
+    documentContext?: DocumentContext,
+    sessionId?: string,
+    workspacePath?: string,
+    hostTurn?: SessionTurn,
   ) => {
     // Check for queued prompt deduplication - prevents duplicate execution from multiple renderer panels
     const queuedPromptId = (documentContext as any)?.queuedPromptId as string | undefined;
@@ -431,6 +463,7 @@ export class MessageStreamingHandler {
 
     const loadStartTime = Date.now();
     const session = await this.svc.sessionManager.loadSession(sessionId, workspacePath);
+    await awaitSessionTurnControl(hostTurn);
     perfLog.sessionLoadTime = Date.now() - loadStartTime;
 
     if (!session) {
@@ -532,6 +565,7 @@ export class MessageStreamingHandler {
     }
 
     // Get or create provider for this session
+    await awaitSessionTurnControl(hostTurn);
     const providerStartTime = Date.now();
     const isProviderClaudeCode = session.provider === 'claude-code';
 
@@ -1270,6 +1304,7 @@ export class MessageStreamingHandler {
     try {
       inboxTurn = ['claude-code', 'openai-codex'].includes(session.provider)
         ? await setup.stage('inbox', () => sessionInbox.begin(session.id, session.workspacePath ?? workspacePath)) : undefined;
+      await awaitSessionTurnControl(hostTurn);
       questionTurn = session.provider === 'openai-codex' ? codexQuestionTurns.begin(session.id) : undefined;
       await setup.stage('supersede-questions', () => supersedeOpenQuestions({ sessionId: session.id, provider: session.provider, context: documentContext }));
       let fullResponse = '';
@@ -1494,9 +1529,12 @@ export class MessageStreamingHandler {
 
       const { isToolLoopSession, toolLoopTools, toolLoopSystemPrompt } = resolveToolLoopTurnConfig(session, effectiveWorkspacePath);
 
+      await awaitSessionTurnControl(hostTurn);
       setup.finish();
       // Awaited so it can never cancel the resume this same turn schedules on its own limit error.
       await cancelUsageLimitResume(session.id).catch(error => logger.main.error('[AIService] Failed to cancel usage-limit resume:', error));
+      await awaitSessionTurnControl(hostTurn);
+      if (hostTurn) hostTurn.providerEntered = true;
       for await (const chunk of provider.sendMessage(messageToSend, contextWithSession, session.id, sessionMessages, effectiveWorkspacePath, attachments, toolLoopTools, toolLoopSystemPrompt)) {
         if (!chunk) continue;
         chunkCount++;

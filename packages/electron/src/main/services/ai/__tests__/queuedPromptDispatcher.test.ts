@@ -1,5 +1,8 @@
 // @vitest-environment node
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { randomUUID } from 'node:crypto';
+import { isTurnControlPending, performTurnInterruption } from '../sessionTurnControl';
+import { TurnSetupCancelledError } from '../turnSetupStages';
 import {
   SessionProcessingGuard,
   dispatchClaimedQueuedPrompt,
@@ -8,7 +11,215 @@ import {
   type QueuedPromptStoreLike,
 } from '../queuedPromptDispatcher';
 
+function lateHoldFixture(phase: string, agentRows = false) {
+  let held = phase === 'before';
+  const rows: ClaimedQueuedPrompt[] = ['p1', ...(agentRows ? ['p2'] : [])].map((id) => ({
+    id, prompt: id,
+    documentContext: agentRows ? { promptProvenance: { actor: 'agent' } } as any : null,
+  }));
+  const pending = new Set(rows.map((row) => row.id));
+  const executing = new Map<string, string>();
+  const queueStore = {
+    listPending: vi.fn(async (_sessionId: string) => {
+      if (phase === 'list') held = true;
+      return rows.filter((row) => pending.has(row.id));
+    }),
+    claim: vi.fn(async (id: string) => {
+      if (!pending.delete(id)) return null;
+      const claimToken = randomUUID();
+      executing.set(id, claimToken);
+      if (phase === `claim-${id}`) held = true;
+      return { ...rows.find((row) => row.id === id)!, claimToken };
+    }),
+    releaseClaims: vi.fn(async (claims: readonly { id: string; claimToken?: string }[]) => {
+      for (const { id, claimToken } of claims) {
+        if (claimToken && executing.get(id) === claimToken) {
+          executing.delete(id);
+          pending.add(id);
+        }
+      }
+    }),
+    complete: vi.fn(async (id: string) => { executing.delete(id); }),
+    fail: vi.fn(async () => {}),
+  };
+  const options = {
+    queueStore, processingSet: new SessionProcessingGuard(),
+    onDispatchDeferred: vi.fn(),
+    sendMessageHandler: vi.fn(async () => ({ content: 'ok' })),
+    startSession: vi.fn(async (_options: { sessionId: string; workspacePath: string }) => { if (phase === 'start') held = true; }),
+    continueQueuedPromptChain: vi.fn(async () => {}),
+    onPromptClaimed: vi.fn(), logInfo: vi.fn(), logError: vi.fn(),
+    sessionId: 's1', workspacePath: '/ws', source: 'queue-drive:meta-agent',
+    targetWindow: { isDestroyed: () => false, webContents: { mainFrame: {} } } as unknown as Electron.BrowserWindow,
+  };
+  return {
+    options, queueStore, pending, executing,
+    setHeld: () => { held = true; },
+    clearHeld: () => { held = false; phase = 'none'; },
+  };
+}
+
 describe('queuedPromptDispatcher', () => {
+  it('returns every scheduled undelivered claim when cancellation wins before handoff', async () => {
+    vi.useFakeTimers();
+    const fixture = lateHoldFixture('none', true);
+    expect(await tryClaimAndDispatchNextQueuedPrompt(fixture.options)).toBe(true);
+    const control = performTurnInterruption({
+      sessionId: 's1', mode: 'stop', guard: fixture.options.processingSet,
+      provider: { abort: vi.fn(), interruptCurrentTurn: vi.fn(async () => ({ method: 'abort' as const })) },
+      isCurrentProvider: () => true, retireInbox: async () => {}, sweep: async () => {},
+      settle: async () => {}, drive: async () => {}, logError: vi.fn(),
+    });
+    expect(isTurnControlPending('s1')).toBe(true);
+    await vi.runAllTimersAsync();
+    expect((await control).success).toBe(true);
+    expect(fixture.options.sendMessageHandler).not.toHaveBeenCalled();
+    expect(fixture.pending).toEqual(new Set(['p1', 'p2']));
+    expect(fixture.executing.size).toBe(0);
+    expect(fixture.queueStore.fail).not.toHaveBeenCalled();
+    expect(fixture.queueStore.complete).not.toHaveBeenCalled();
+    expect(await tryClaimAndDispatchNextQueuedPrompt(fixture.options)).toBe(true);
+    await vi.runAllTimersAsync();
+    expect(fixture.options.sendMessageHandler).toHaveBeenCalledOnce();
+    expect(fixture.queueStore.complete).toHaveBeenCalledTimes(2);
+  });
+
+  it('retains original claims when cancellation wins during registered host setup', async () => {
+    vi.useFakeTimers();
+    const fixture = lateHoldFixture('none', true);
+    fixture.options.sendMessageHandler.mockRejectedValueOnce(new TurnSetupCancelledError());
+    expect(await tryClaimAndDispatchNextQueuedPrompt(fixture.options)).toBe(true);
+    await vi.runAllTimersAsync();
+    expect(fixture.pending).toEqual(new Set(['p1', 'p2']));
+    expect(fixture.queueStore.fail).not.toHaveBeenCalled();
+    expect(fixture.queueStore.complete).not.toHaveBeenCalled();
+    expect(fixture.options.onDispatchDeferred).toHaveBeenCalledOnce();
+  });
+
+  it('does not wake or settle a replacement after displaced setup cancellation', async () => {
+    vi.useFakeTimers();
+    const fixture = lateHoldFixture('none');
+    fixture.options.sendMessageHandler.mockImplementationOnce(async () => {
+      fixture.options.processingSet.acquire('s1');
+      throw new TurnSetupCancelledError();
+    });
+    const onChainSettled = vi.fn(async () => {});
+    expect(await tryClaimAndDispatchNextQueuedPrompt({ ...fixture.options, onChainSettled })).toBe(true);
+    await vi.runAllTimersAsync();
+    expect(fixture.options.onDispatchDeferred).not.toHaveBeenCalled();
+    expect(fixture.options.continueQueuedPromptChain).not.toHaveBeenCalled();
+    expect(onChainSettled).not.toHaveBeenCalled();
+    expect(fixture.options.processingSet.has('s1')).toBe(true);
+  });
+
+  it('retains unsettled claims visibly when cancelled-setup rollback fails', async () => {
+    vi.useFakeTimers();
+    const fixture = lateHoldFixture('none');
+    fixture.options.sendMessageHandler.mockRejectedValueOnce(new TurnSetupCancelledError());
+    fixture.queueStore.releaseClaims.mockRejectedValue(new Error('storage unavailable'));
+    expect(await tryClaimAndDispatchNextQueuedPrompt(fixture.options)).toBe(true);
+    await vi.runAllTimersAsync();
+    expect(fixture.executing.size).toBe(1);
+    expect(fixture.queueStore.fail).not.toHaveBeenCalled();
+    expect(fixture.options.logError).toHaveBeenCalled();
+    expect(fixture.options.onDispatchDeferred).not.toHaveBeenCalled();
+    expect(fixture.options.processingSet.has('s1')).toBe(false);
+  });
+
+  it('does not settle or continue after its replacement already finished', async () => {
+    vi.useFakeTimers();
+    const fixture = lateHoldFixture('none');
+    fixture.options.sendMessageHandler.mockImplementationOnce(async () => {
+      const replacement = fixture.options.processingSet.acquire('s1');
+      fixture.options.processingSet.releaseIfOwner('s1', replacement);
+      return { content: 'ok' };
+    });
+    const onChainSettled = vi.fn(async () => {});
+    expect(await tryClaimAndDispatchNextQueuedPrompt({ ...fixture.options, onChainSettled })).toBe(true);
+    await vi.runAllTimersAsync();
+    expect(fixture.options.continueQueuedPromptChain).not.toHaveBeenCalled();
+    expect(onChainSettled).not.toHaveBeenCalled();
+  });
+
+  it('preserves already completed coalesced rows when a later settlement fails', async () => {
+    vi.useFakeTimers();
+    const fixture = lateHoldFixture('none', true);
+    // The first row succeeds; only the second row's failed completion is failed.
+    fixture.queueStore.complete.mockReset().mockResolvedValueOnce(undefined).mockRejectedValueOnce(new Error('storage unavailable'));
+    expect(await tryClaimAndDispatchNextQueuedPrompt(fixture.options)).toBe(true);
+    await vi.runAllTimersAsync();
+    expect(fixture.queueStore.fail).toHaveBeenCalledTimes(1);
+    expect(fixture.queueStore.fail).toHaveBeenCalledWith('p2', 'storage unavailable');
+  });
+
+  it('safely returns only undelivered claims if recording the missing-handler failure fails', async () => {
+    const fixture = lateHoldFixture('none');
+    fixture.queueStore.fail.mockRejectedValueOnce(new Error('storage unavailable'));
+    await expect(tryClaimAndDispatchNextQueuedPrompt({ ...fixture.options, sendMessageHandler: null })).rejects.toThrow('storage unavailable');
+    expect(fixture.queueStore.releaseClaims).toHaveBeenCalledOnce();
+    expect(fixture.pending.has('p1')).toBe(true);
+    expect(fixture.options.sendMessageHandler).not.toHaveBeenCalled();
+  });
+
+  it('fences an in-flight claim before it can acquire or deliver a row', async () => {
+    const fixture = lateHoldFixture('none');
+    let entered!: () => void;
+    let release!: () => void;
+    const enteredGate = new Promise<void>(resolve => { entered = resolve; });
+    const blocked = new Promise<void>(resolve => { release = resolve; });
+    const originalList = fixture.queueStore.listPending.getMockImplementation()!;
+    fixture.queueStore.listPending.mockImplementationOnce(async id => { entered(); await blocked; return originalList(id); });
+    const claiming = tryClaimAndDispatchNextQueuedPrompt(fixture.options);
+    await enteredGate;
+    const control = performTurnInterruption({
+      sessionId: 's1', mode: 'stop', guard: fixture.options.processingSet,
+      provider: { abort: vi.fn(), interruptCurrentTurn: vi.fn(async () => ({ method: 'abort' as const })) },
+      isCurrentProvider: () => true, retireInbox: async () => {}, sweep: async () => {},
+      settle: async () => {}, drive: async () => {}, logError: vi.fn(),
+    });
+    expect(isTurnControlPending('s1')).toBe(true);
+    release();
+    expect(await claiming).toBe(false);
+    expect((await control).success).toBe(true);
+    expect(fixture.queueStore.claim).not.toHaveBeenCalled();
+    expect(fixture.pending.has('p1')).toBe(true);
+  });
+
+  it('waits for old row settlement and chain cleanup before sweeping or admitting a successor', async () => {
+    vi.useFakeTimers();
+    const fixture = lateHoldFixture('none');
+    let enter!: () => void;
+    let releaseSend!: () => void;
+    let completing!: () => void;
+    let releaseComplete!: () => void;
+    const entered = new Promise<void>(resolve => { enter = resolve; });
+    const sent = new Promise<void>(resolve => { releaseSend = resolve; });
+    const completionStarted = new Promise<void>(resolve => { completing = resolve; });
+    const completed = new Promise<void>(resolve => { releaseComplete = resolve; });
+    const order: string[] = [];
+    fixture.options.sendMessageHandler.mockImplementationOnce(async () => { enter(); await sent; return { content: 'ok' }; });
+    fixture.queueStore.complete.mockImplementationOnce(async () => { completing(); await completed; order.push('row-settled'); });
+    expect(await tryClaimAndDispatchNextQueuedPrompt({ ...fixture.options, onChainSettled: async () => { order.push('chain-settled'); } })).toBe(true);
+    const timers = vi.runAllTimersAsync();
+    await entered;
+    const sweep = vi.fn(async () => { order.push('sweep'); });
+    const control = performTurnInterruption({
+      sessionId: 's1', mode: 'stop', guard: fixture.options.processingSet,
+      provider: { abort: vi.fn(), interruptCurrentTurn: vi.fn(async () => ({ method: 'abort' as const })) },
+      isCurrentProvider: () => true, retireInbox: async () => {}, sweep,
+      settle: async () => {}, drive: async () => {}, logError: vi.fn(),
+    });
+    releaseSend();
+    await completionStarted;
+    expect(sweep).not.toHaveBeenCalled();
+    expect(isTurnControlPending('s1')).toBe(true);
+    releaseComplete();
+    await timers;
+    expect((await control).success).toBe(true);
+    expect(order).toEqual(['row-settled', 'chain-settled', 'sweep']);
+  });
+
+
   afterEach(() => {
     vi.useRealTimers();
   });
@@ -24,6 +235,7 @@ describe('queuedPromptDispatcher', () => {
     const started = new Promise<void>((resolve) => { claimStarted = resolve; });
     const blocked = new Promise<void>((resolve) => { releaseClaim = resolve; });
     const queueStore: QueuedPromptStoreLike = {
+      releaseClaims: vi.fn(async () => {}),
       listPending: vi.fn(async () => [...pending]),
       claim: vi.fn(async (id) => {
         const row = pending.find((prompt) => prompt.id === id) ?? null;
@@ -86,6 +298,7 @@ describe('queuedPromptDispatcher', () => {
     };
 
     const queueStore: QueuedPromptStoreLike = {
+      releaseClaims: vi.fn(async () => {}),
       listPending: vi.fn(async () => [claimedPrompt]),
       claim: vi.fn(async () => claimedPrompt),
       complete: vi.fn(async () => {
@@ -132,7 +345,8 @@ describe('queuedPromptDispatcher', () => {
     });
 
     expect(processed).toBe(true);
-    expect(order).toEqual(['startSession', 'promptClaimed']);
+    // Announce only when the cancellable scheduled handoff actually starts.
+    expect(order).toEqual(['startSession']);
     expect(processingSet.has('session-1')).toBe(true);
 
     await vi.runAllTimersAsync();
@@ -166,6 +380,7 @@ describe('queuedPromptDispatcher', () => {
       const sent: string[] = [];
 
       const queueStore: QueuedPromptStoreLike = {
+      releaseClaims: vi.fn(async () => {}),
         listPending: vi.fn(async () => pending),
         claim: vi.fn(async (id: string) => pending.find((p) => p.id === id) ?? null),
         complete: vi.fn(async (id: string) => {
@@ -254,6 +469,7 @@ describe('queuedPromptDispatcher', () => {
     };
 
     const queueStore: QueuedPromptStoreLike = {
+      releaseClaims: vi.fn(async () => {}),
       listPending: vi.fn(async () => [claimedPrompt]),
       claim: vi.fn(async () => claimedPrompt),
       complete: vi.fn(async () => {}),
@@ -305,6 +521,7 @@ describe('queuedPromptDispatcher', () => {
     vi.useFakeTimers();
     const claimedPrompt: ClaimedQueuedPrompt = { id: 'prompt-1', prompt: 'continue', attachments: null, documentContext: null };
     const queueStore: QueuedPromptStoreLike = {
+      releaseClaims: vi.fn(async () => {}),
       listPending: vi.fn(async () => [claimedPrompt]),
       claim: vi.fn(async () => claimedPrompt),
       complete: vi.fn(async () => {}),
@@ -349,6 +566,7 @@ describe('queuedPromptDispatcher', () => {
     vi.useFakeTimers();
     const claimedPrompt = { id: 'prompt-1', sessionId: 'session-1', prompt: 'follow up', status: 'executing' } as never;
     const queueStore: QueuedPromptStoreLike = {
+      releaseClaims: vi.fn(async () => {}),
       listPending: vi.fn(async () => [claimedPrompt]),
       claim: vi.fn(async () => claimedPrompt),
       complete: vi.fn(async () => {}),
@@ -402,6 +620,7 @@ describe('queuedPromptDispatcher', () => {
     };
 
     const queueStore: QueuedPromptStoreLike = {
+      releaseClaims: vi.fn(async () => {}),
       listPending: vi.fn(async () => [claimedPrompt]),
       claim: vi.fn(async () => claimedPrompt),
       complete: vi.fn(async () => {}),
@@ -472,6 +691,7 @@ describe('queuedPromptDispatcher', () => {
     };
 
     const queueStore: QueuedPromptStoreLike = {
+      releaseClaims: vi.fn(async () => {}),
       listPending: vi.fn(async () => [claimedPrompt]),
       claim: vi.fn(async () => claimedPrompt),
       complete: vi.fn(async () => {}),
@@ -520,6 +740,7 @@ describe('queuedPromptDispatcher', () => {
     };
 
     const queueStore: QueuedPromptStoreLike = {
+      releaseClaims: vi.fn(async () => {}),
       listPending: vi.fn(async () => [claimedPrompt]),
       claim: vi.fn(async () => claimedPrompt),
       complete: vi.fn(async () => {}),
@@ -588,6 +809,7 @@ describe('queuedPromptDispatcher', () => {
 
     let pending: ClaimedQueuedPrompt[] = [displaced];
     const queueStore: QueuedPromptStoreLike = {
+      releaseClaims: vi.fn(async () => {}),
       listPending: vi.fn(async () => pending),
       claim: vi.fn(async (promptId: string) => {
         const found = pending.find((row) => row.id === promptId) ?? null;

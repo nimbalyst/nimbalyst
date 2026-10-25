@@ -134,6 +134,7 @@ import { buildPlanImplementationPrompt, resolvePlanFilePath } from '../../utils/
 import { resolveTranscriptClickPath } from '../../utils/resolveTranscriptClickPath';
 import { openAgentEditedPage } from '../../utils/agentEditedPage';
 import { saveSessionArchived } from '../../utils/saveSessionArchived';
+import { requestTurnControl } from './requestTurnControl';
 import { autoCommitEnabledAtom, setAutoCommitEnabledAtom } from '../../store/atoms/autoCommitAtoms';
 import { settingAtom } from '../../store/atoms/settingAtomFamily';
 import { diffPeekSizeAtom, setDiffPeekSizeAtom } from '../../store/atoms/diffPeekSizeAtoms';
@@ -1437,13 +1438,11 @@ const LocalSessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscrip
         return;
       }
 
-      await window.electronAPI.invoke('ai:cancelRequest', sessionId);
-      // Note: session:interrupted event will also set this to false via sessionStateListeners
-      setIsProcessing(false);
+      await requestTurnControl(sessionId, 'stop');
     } catch (error) {
       console.error('[SessionTranscript] Failed to cancel request:', error);
     }
-  }, [provider, sessionId, setIsProcessing, recordClaudeActivity]);
+  }, [provider, sessionId, recordClaudeActivity]);
 
   const handleFileClick = useCallback((filePath: string, location?: TranscriptFileLocation) => {
     const baseDir = sessionWorktreePath ?? workspacePath;
@@ -1564,21 +1563,12 @@ const LocalSessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscrip
 
   const handleSendNowQueuedPrompt = useCallback(async (_id: string, _prompt: string) => {
     try {
-      // Two-step send-now: (1) interrupt the current turn (graceful for
-      // Claude Code, hard abort for other providers via the BaseAIProvider
-      // default); (2) explicitly trigger queue processing. The natural
-      // completion-handler path also triggers it, and the server's
-      // sessionsProcessingQueue guard de-dupes, so this is safe to call.
-      // We don't rely on the isLoading auto-effect because session:completed
-      // may race or, in some edge cases, may not fire cleanly after abort.
-      await window.electronAPI.invoke('ai:interruptCurrentTurn', sessionId);
-      if (workspacePath) {
-        await window.electronAPI.invoke('ai:triggerQueueProcessing', sessionId, workspacePath, 'send-now');
-      }
+      // The main process owns retirement and the subsequent queue drive.
+      await requestTurnControl(sessionId, 'send-now');
     } catch (error) {
       console.error('[SessionTranscript] Failed to interrupt for send-now:', error);
     }
-  }, [sessionId, workspacePath]);
+  }, [sessionId]);
 
   const handleCloseAndArchive = useCallback(async () => {
     // The helper shows an error message itself if the save fails. Stop here so the screen never says "archived" when it was not saved.
