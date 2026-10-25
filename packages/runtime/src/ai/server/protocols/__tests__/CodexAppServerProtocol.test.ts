@@ -1225,8 +1225,10 @@ describe('CodexAppServerProtocol', () => {
     protocol.cleanupSession(session);
   });
 
-  it('retires an aborted pending start without killing shared child threads or racing its successor', async () => {
+  it.each([false, true])('retires an aborted pending start without killing shared child threads or racing its successor (late interrupt error: %s)', async lateInterruptError => {
+    const recoveryError = vi.fn();
     const protocol = new CodexAppServerProtocol();
+    protocol.setCancellationRecoveryErrorListener(recoveryError);
     const creating = protocol.createSession({ workspacePath: '/tmp/ws' });
     const init = await nextWrittenMatching(child, 'initialize');
     child.emitLine({ id: init.id, result: { codexHome: '/fake', platformFamily: 'unix', platformOs: 'macos', userAgent: 'fake/0' } });
@@ -1237,7 +1239,7 @@ describe('CodexAppServerProtocol', () => {
     const events: ProtocolEvent[] = [];
     let settled = false;
     const old = (async () => {
-      for await (const event of protocol.sendMessage(session, { content: 'old input', abortSignal: controller.signal })) events.push(event);
+      for await (const event of protocol.sendMessage(session, { content: 'old input', sessionId: 'owner-session', abortSignal: controller.signal })) events.push(event);
     })().finally(() => { settled = true; });
     let next: Promise<void> | undefined;
     const nextEvents: ProtocolEvent[] = [];
@@ -1257,7 +1259,7 @@ describe('CodexAppServerProtocol', () => {
       let waitingSettled = false;
       const stoppedWaiter = (async () => {
         for await (const event of protocol.sendMessage(session, { content: 'cancel this waiter', abortSignal: waitingController.signal })) nextEvents.push(event);
-      })().finally(() => { waitingSettled = true; });
+      })().catch(error => { expect(error).toBeInstanceOf(CodexStartRecoveryPendingError); }).finally(() => { waitingSettled = true; });
       await new Promise(resolve => setTimeout(resolve, 10));
       waitingController.abort();
       await vi.waitFor(() => expect(waitingSettled).toBe(true), { timeout: 100 });
@@ -1277,7 +1279,7 @@ describe('CodexAppServerProtocol', () => {
       expect(interrupt.params).toEqual({ threadId: 'prestream-root', turnId: 'cancelled-old-turn' });
       expect(turnStarts()).toHaveLength(1);
       oldNativeRunning = false;
-      child.emitLine({ id: interrupt.id, result: {} });
+      if (!lateInterruptError) child.emitLine({ id: interrupt.id, result: {} });
       await new Promise(resolve => setTimeout(resolve, 20));
       expect(turnStarts()).toHaveLength(1);
       // Interrupt acknowledgement and foreign completion are not retirement.
@@ -1286,6 +1288,7 @@ describe('CodexAppServerProtocol', () => {
       expect(turnStarts()).toHaveLength(1);
       child.emitLine({ method: 'turn/completed', params: { threadId: 'prestream-root', turn: { id: 'cancelled-old-turn', status: 'interrupted' } } });
       await vi.waitFor(() => expect(turnStarts()).toHaveLength(2));
+      if (lateInterruptError) child.emitLine({ id: interrupt.id, error: { code: -1, message: 'Already completed' } });
       expect(oldNativeRunning).toBe(false);
       child.emitLine({ id: turnStarts()[1].id, result: { turn: { id: 'successor-turn' } } });
       child.emitLine({ method: 'turn/completed', params: { threadId: 'prestream-root', turn: { id: 'cancelled-old-turn', status: 'interrupted' } } });
@@ -1293,6 +1296,7 @@ describe('CodexAppServerProtocol', () => {
       await next;
       expect(nextEvents.filter(event => event.type === 'complete')).toHaveLength(1);
       expect(child.killed).toBe(false);
+      expect(recoveryError).not.toHaveBeenCalled();
       expect(child.writtenLines.filter((line: any) => line.method === 'turn/interrupt')).toHaveLength(1);
     } finally {
       unsubscribeSibling();

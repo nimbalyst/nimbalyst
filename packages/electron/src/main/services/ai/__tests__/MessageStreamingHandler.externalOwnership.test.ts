@@ -19,7 +19,7 @@ const mocks = vi.hoisted(() => ({
   },
   stateManager: {
     startSession: vi.fn(),
-    updateActivity: vi.fn(),
+    updateActivity: vi.fn(async () => {}),
     endSession: vi.fn(),
     isSessionActive: vi.fn(() => false),
     // No follow-up adopted the turn's query: the not-executing publish proceeds.
@@ -359,7 +359,11 @@ function expectExistingComposerRestores(error: Error, text: string, attachments:
 }
 
 describe("MessageStreamingHandler external ownership", () => {
-  it.each([false, true])('pre-stream Stop retires real Codex host/question without killing its child (interrupt failure: %s)', async interruptFails => {
+  it.each(['success', 'interrupt-failure', 'missing-id', 'second-stop', 'interrupt-failure-no-queue', 'missing-id-no-queue'])('pre-stream Stop retires real Codex host/question without killing its child (%s)', async scenario => {
+    const interruptFails = scenario.startsWith('interrupt-failure');
+    const missingId = scenario.startsWith('missing-id');
+    const secondStop = scenario === 'second-stop';
+    const noQueue = scenario.endsWith('no-queue');
     const { OpenAICodexProvider: CodexProvider } = await import('@nimbalyst/runtime/ai/server/providers/OpenAICodexProvider');
     const { CodexAppServerProtocol } = await import('@nimbalyst/runtime/ai/server/protocols/CodexAppServerProtocol');
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nim-codex-prestream-'));
@@ -378,6 +382,8 @@ describe("MessageStreamingHandler external ownership", () => {
     const nativeInputs: string[] = [];
     const terminate = vi.fn();
     const protocol = new CodexAppServerProtocol({ terminateProcessTreeOverride: terminate });
+    const sends = vi.spyOn(protocol, 'sendMessage');
+    const recoveryListener = vi.spyOn(protocol, 'setCancellationRecoveryErrorListener');
     const listeners = new Set<(method: string, params: unknown) => void>();
     const complete = (id: string) => { for (const listener of listeners) listener('turn/completed', { threadId: 'codex-prestream-thread', turn: { id, status: 'completed' } }); };
     const request = vi.fn(async (method: string, params: any) => {
@@ -430,6 +436,7 @@ describe("MessageStreamingHandler external ownership", () => {
               sessionId: 'opencode-session', mode: 'stop', provider, isCurrentProvider: () => true, guard,
               retireInbox: async () => {}, sweep: async () => {}, settle: async () => {},
               drive: async () => {
+                if (noQueue) return;
                 successor = await tryClaimAndDispatchNextQueuedPrompt({ queueStore: queue, processingSet: guard,
                   sendMessageHandler: handler.handleQueued, continueQueuedPromptChain: async () => {},
                   logError: vi.fn(), logInfo: vi.fn(), onPromptClaimed: vi.fn(), startSession: async () => {},
@@ -439,16 +446,58 @@ describe("MessageStreamingHandler external ownership", () => {
             expect(stopped).toMatchObject({ success: true });
             await old;
             expect(question?.active).toBe(false);
-            expect(successor).toBe(true);
+            expect(successor).toBe(!noQueue);
             expect(starts).toBe(1);
             expect(nativeRunning).toBe(true);
             expect(terminate).not.toHaveBeenCalled();
-            release({ turn: { id: 'cancelled-turn' } });
+            if (secondStop) {
+              await vi.waitFor(() => expect(sends).toHaveBeenCalledTimes(2));
+              expect((await queue.get('prestream-next'))?.status).toBe('executing');
+              const stoppedAgain = await performTurnInterruption({
+                sessionId: 'opencode-session', mode: 'stop', provider, isCurrentProvider: () => true, guard,
+                retireInbox: async () => {}, sweep: async () => {}, settle: async () => {},
+                drive: async () => {}, logError: vi.fn(), timeouts: { stageMs: 100 },
+              });
+              expect(stoppedAgain).toMatchObject({ success: true });
+              await vi.waitFor(async () => expect((await queue.get('prestream-next'))?.status).toBe('failed'));
+              expect((await queue.get('prestream-next'))?.prompt).toBe(queuedText);
+              expect((await queue.listPending('opencode-session'))).toEqual([]);
+              expect(nativeInputs.filter(input => input.includes(queuedText))).toEqual([]);
+              expect(starts).toBe(1);
+              expect(guard.has('opencode-session')).toBe(false);
+              expect(terminate).not.toHaveBeenCalled();
+              return;
+            }
+            event.sender.send.mockClear();
+            mocks.stateManager.updateActivity.mockClear();
+            release(missingId ? { turn: {} } : { turn: { id: 'cancelled-turn' } });
+            if (interruptFails || missingId) {
+              // The late failure is visible without another send or a waiting
+              // queued host. Native work may still be live: no false Stop claim.
+              await vi.waitFor(() => expect(event.sender.send).toHaveBeenCalledWith('ai:error', expect.objectContaining({
+                sessionId: 'opencode-session', message: expect.stringContaining('Restart the app'),
+              })));
+              const errors = event.sender.send.mock.calls.filter(([channel, data]: any[]) => channel === 'ai:error' && data.message.startsWith('Codex could not confirm'));
+              expect(errors).toHaveLength(1);
+              expect(mocks.stateManager.updateActivity).toHaveBeenCalledWith({ sessionId: 'opencode-session', status: 'error' });
+              expect(nativeRunning).toBe(true);
+              if (noQueue) {
+                expect((await queue.get('prestream-next'))?.status).toBe('pending');
+                expect((await queue.get('prestream-next'))?.prompt).toBe(queuedText);
+                const sentBeforeForeign = event.sender.send.mock.calls.length;
+                provider.emit('session:recovery-error', { sessionId: 'foreign-session', message: 'wrong session' });
+                expect(event.sender.send.mock.calls).toHaveLength(sentBeforeForeign);
+                expect(sends).toHaveBeenCalledTimes(1);
+                expect(starts).toBe(1);
+                expect(terminate).not.toHaveBeenCalled();
+                return;
+              }
+            }
             await vi.waitFor(async () => {
               const row = await queue.get('prestream-next');
-              expect(row?.status, JSON.stringify(row)).toBe(interruptFails ? 'failed' : 'completed');
+              expect(row?.status, JSON.stringify(row)).toBe(interruptFails || missingId ? 'failed' : 'completed');
             });
-            if (interruptFails) {
+            if (interruptFails || missingId) {
               expect((await queue.get('prestream-next'))?.prompt).toBe(queuedText);
               for (let attempt = 0; attempt < 3; attempt++) {
                 const text = 'Keep this composer input';
@@ -458,8 +507,8 @@ describe("MessageStreamingHandler external ownership", () => {
                 expectExistingComposerRestores(error, text, attachments);
               }
             }
-            expect(starts).toBe(interruptFails ? 1 : 2);
-            expect(nativeInputs.filter(input => input.includes(queuedText))).toHaveLength(interruptFails ? 0 : 1);
+            expect(starts).toBe(interruptFails || missingId ? 1 : 2);
+            expect(nativeInputs.filter(input => input.includes(queuedText))).toHaveLength(interruptFails || missingId ? 0 : 1);
             expect(create).toHaveBeenCalledTimes(1);
             expect(terminate).not.toHaveBeenCalled();
           } finally {
@@ -472,6 +521,7 @@ describe("MessageStreamingHandler external ownership", () => {
       });
     } finally {
       provider.destroy();
+      expect(recoveryListener).toHaveBeenLastCalledWith();
       mocks.providerFactory.getProvider.mockReset();
       await db.close();
       fs.rmSync(dir, { recursive: true });
