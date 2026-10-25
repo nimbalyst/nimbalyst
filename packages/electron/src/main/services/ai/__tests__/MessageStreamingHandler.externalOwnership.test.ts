@@ -359,6 +359,142 @@ function expectExistingComposerRestores(error: Error, text: string, attachments:
 }
 
 describe("MessageStreamingHandler external ownership", () => {
+  it.each(['role-read', 'workflow-read', 'directive-read', 'input-save', 'permission', 'mcp-config', 'model', 'auth', 'native-create', 'native-resume', 'input-save-reject', 'auth-reject', 'native-create-reject', 'input-save-timeout', 'native-create-timeout', 'native-resume-timeout', 'native-input'])('does not lose pre-stream Stop during Codex provider %s', async stage => {
+    const { OpenAICodexProvider: CodexProvider } = await import('@nimbalyst/runtime/ai/server/providers/OpenAICodexProvider');
+    const { CodexAppServerProtocol } = await import('@nimbalyst/runtime/ai/server/protocols/CodexAppServerProtocol');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nim-codex-prelude-'));
+    const db = new SQLiteDatabase({ dbDir: dir, schemaDir: path.resolve(__dirname, '../../../database/sqlite/schemas') });
+    await db.initialize();
+    await db.query("INSERT INTO ai_sessions(id, provider, title) VALUES ('opencode-session', 'openai-codex', 'test')");
+    const queue = createPGLiteQueuedPromptsStore(db as never);
+    const queuedText = 'Preserve this pre-stream input\n  exactly as queued.';
+    await queue.create({ id: 'prelude-input', sessionId: 'opencode-session', prompt: queuedText });
+    let enter!: () => void;
+    let release!: () => void;
+    let releaseNative!: (value: unknown) => void;
+    const entered = new Promise<void>(resolve => { enter = resolve; });
+    const prelude = new Promise<void>(resolve => { release = resolve; });
+    const nativeStart = new Promise(resolve => { releaseNative = resolve; });
+    let blockedNative = true;
+    const terminate = vi.fn();
+    const protocol = new CodexAppServerProtocol({ terminateProcessTreeOverride: terminate });
+    const listeners = new Set<(method: string, params: unknown) => void>();
+    const request = vi.fn(async (method: string) => {
+      if (method !== 'turn/start') return {};
+      if (blockedNative) return nativeStart;
+      queueMicrotask(() => { for (const listener of listeners) listener('turn/completed', { threadId: 'prelude-thread', turn: { id: 'fresh-turn', status: 'completed' } }); });
+      return { turn: { id: 'fresh-turn' } };
+    });
+    const nativeSession = { id: 'prelude-thread', platform: 'codex-app-server', raw: {
+      threadId: 'prelude-thread', options: {}, activeTurnId: null, cleanupStarted: false,
+      child: {}, stderrTail: [], client: { onNotification: (listener: (method: string, params: unknown) => void) => { listeners.add(listener); return () => listeners.delete(listener); }, close: vi.fn(), request },
+    } };
+    const create = vi.spyOn(protocol, 'createSession').mockResolvedValue(nativeSession as never);
+    const resume = vi.spyOn(protocol, 'resumeSession').mockResolvedValue(nativeSession as never);
+    const provider = new CodexProvider({}, { protocol, transport: 'app-server', permissionService: { rejectAllPending: vi.fn(), clearSessionCache: vi.fn() } as never });
+    const role = vi.spyOn(provider as any, 'getAgentRole').mockResolvedValue(stage === 'workflow-read' ? 'meta-agent' : 'standard');
+    const workflow = vi.spyOn(provider as any, 'getWorkflowPreset').mockResolvedValue('default');
+    const directive = vi.spyOn(provider as any, 'getSessionDirective').mockResolvedValue(undefined);
+    const model = vi.spyOn(provider as any, 'getConfiguredModel').mockResolvedValue('gpt-6.1-sol');
+    const permission = vi.spyOn(provider as any, 'requestCodexTurnPermission').mockResolvedValue({ decision: 'allow', permissionMode: 'allow-all' });
+    const mcp = vi.spyOn((provider as any).mcpConfigService, 'getMcpServersConfig').mockResolvedValue({});
+    const save = vi.spyOn(provider as any, 'logAgentMessageBestEffort').mockResolvedValue(undefined);
+    const auth = vi.fn(async () => ({ requiresOpenaiAuth: false }));
+    CodexProvider.setCodexAuthGate(auth);
+    const defer = (spy: any, value: unknown) => spy.mockImplementationOnce(async () => { enter(); await prelude; if (stage.endsWith('-reject')) throw new Error('Setup rejected after Stop'); return value; });
+    if (stage === 'role-read') defer(role, 'standard');
+    if (stage === 'workflow-read') defer(workflow, 'default');
+    if (stage === 'directive-read') defer(directive, undefined);
+    if (stage.startsWith('input-save')) defer(save, undefined);
+    if (stage === 'permission') defer(permission, { decision: 'allow', permissionMode: 'allow-all' });
+    if (stage === 'mcp-config') defer(mcp, {});
+    if (stage === 'model') defer(model, 'gpt-6.1-sol');
+    if (stage.startsWith('auth')) defer(auth, { requiresOpenaiAuth: false });
+    if (stage.startsWith('native-create')) defer(create, nativeSession);
+    if (stage.startsWith('native-resume')) defer(resume, nativeSession);
+    if (stage === 'native-input') defer(vi.spyOn(protocol as any, 'buildInput'), [{ type: 'text', text: queuedText }]);
+    const abort = vi.spyOn(provider, 'abort');
+    mocks.providerFactory.getProvider.mockReturnValue(provider);
+    mocks.queue = queue;
+    try {
+      await runTurn({ session: openCodeSession({ provider: 'openai-codex', model: 'openai-codex:gpt-6.1-sol', workspacePath: dir,
+        ...(stage.startsWith('native-resume') ? { providerSessionId: 'prelude-thread' } : {}) }), provider: provider as unknown as RecordingProvider,
+        sessionManager: { updateSessionTokenUsage: vi.fn(), updateProviderSessionData: vi.fn() },
+        runWithHandler: async (handler, event, service) => {
+          const guard = new SessionProcessingGuard();
+          service.sessionsProcessingQueue = guard;
+          let old: Promise<unknown> | undefined;
+          let observed: Promise<unknown> | undefined;
+          const dispatched = await tryClaimAndDispatchNextQueuedPrompt({ queueStore: queue, processingSet: guard,
+            sendMessageHandler: (...args) => { old = handler.handleQueued(...args); observed = old.then(() => undefined, error => error); return old as Promise<{ content: string }>; },
+            continueQueuedPromptChain: async () => {}, logError: vi.fn(), logInfo: vi.fn(), onPromptClaimed: vi.fn(), startSession: async () => {},
+            sessionId: 'opencode-session', workspacePath: dir, source: 'prelude-real', targetWindow: { isDestroyed: () => false, webContents: { ...event.sender, mainFrame: {} } } as any });
+          expect(dispatched).toBe(true);
+          await entered;
+          const question = codexQuestionTurns.current('opencode-session');
+          expect(question?.active).toBe(true);
+          expect((await queue.get('prelude-input'))?.status).toBe('executing');
+          expect(request).not.toHaveBeenCalled();
+          try {
+            const control = performTurnInterruption({
+              sessionId: 'opencode-session', mode: 'stop', provider, isCurrentProvider: () => true, guard,
+              retireInbox: async () => {}, sweep: async () => {}, settle: async () => {}, drive: async () => {},
+              logError: vi.fn(), timeouts: { stageMs: 100 },
+            });
+            await vi.waitFor(() => expect(abort).toHaveBeenCalled());
+            // Stop never detaches the in-flight read/save/native setup. Until
+            // it really settles the host and queue remain owned and fenced.
+            expect(question?.active).toBe(true);
+            expect(isTurnAdmissionBlocked('opencode-session')).toBe(true);
+            expect((await queue.get('prelude-input'))?.status).toBe('executing');
+            if (stage.endsWith('-timeout')) {
+              const timedOut = await control;
+              expect(timedOut).toMatchObject({ success: false, error: expect.stringContaining('host retirement') });
+              expect(question?.active).toBe(true);
+              expect(isTurnAdmissionBlocked('opencode-session')).toBe(true);
+              expect((await queue.get('prelude-input'))?.status).toBe('executing');
+              expect(request).not.toHaveBeenCalled();
+              expect(terminate).not.toHaveBeenCalled();
+            }
+            release();
+            const stopped = await control;
+            if (!stage.endsWith('-timeout')) expect(stopped, JSON.stringify(stopped)).toMatchObject({ success: true });
+            const error = await observed as Error;
+            expect(error?.message).toContain('has not been sent to Codex');
+            await vi.waitFor(async () => expect((await queue.get('prelude-input'))?.status).toBe('failed'));
+            expect((await queue.get('prelude-input'))?.prompt).toBe(queuedText);
+            expect(question?.active).toBe(false);
+            expect(request).not.toHaveBeenCalled();
+            expect(terminate).not.toHaveBeenCalled();
+            expect(create).toHaveBeenCalledTimes(stage.startsWith('native-create') || stage === 'native-input' ? 1 : 0);
+            expect(resume).toHaveBeenCalledTimes(stage.startsWith('native-resume') ? 1 : 0);
+            await vi.waitFor(() => expect(isTurnAdmissionBlocked('opencode-session')).toBe(false));
+            blockedNative = false;
+            await handler.handle(event, 'Fresh send after settled Stop', undefined, 'opencode-session', dir);
+            expect(request.mock.calls.filter(([method]) => method === 'turn/start')).toHaveLength(1);
+            // A native session already created during Stop remains cached;
+            // cancellation must not orphan it or start a second child.
+            expect(create.mock.calls.length + resume.mock.calls.length).toBe(stage === 'native-create-reject' ? 2 : 1);
+          } finally {
+            release();
+            provider.abort();
+            releaseNative({ turn: { id: 'cleanup-only-turn' } });
+            await observed;
+            await vi.waitFor(() => expect(isTurnAdmissionBlocked('opencode-session')).toBe(false));
+          }
+        },
+      });
+    } finally {
+      release();
+      CodexProvider.setCodexAuthGate(null);
+      provider.destroy();
+      mocks.providerFactory.getProvider.mockReset();
+      mocks.queue = undefined;
+      await db.close();
+      fs.rmSync(dir, { recursive: true });
+    }
+  });
+
   it.each(['success', 'interrupt-failure', 'missing-id', 'second-stop', 'interrupt-failure-no-queue', 'missing-id-no-queue'])('pre-stream Stop retires real Codex host/question without killing its child (%s)', async scenario => {
     const interruptFails = scenario.startsWith('interrupt-failure');
     const missingId = scenario.startsWith('missing-id');

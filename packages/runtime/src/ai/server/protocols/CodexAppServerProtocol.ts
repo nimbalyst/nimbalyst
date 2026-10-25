@@ -1,3 +1,4 @@
+import { CodexPreparationCancelledError, withCodexSetupStage } from './codexAppServer/setupStage';
 import { buildCodexThreadStartParams } from './codexAppServer/threadConfiguration';
 import { validateCodexSandbox } from './codexAppServer/validateCodexSandbox';
 import { summarizeNotificationParams, extractNotificationRouting } from './codexAppServer/notificationDiagnostics';
@@ -200,8 +201,8 @@ export class CodexAppServerProtocol implements AgentProtocol {
   async createSession(options: SessionOptions): Promise<ProtocolSession> {
     const raw = await this.spawnAndInit(options);
     const startParams = buildCodexThreadStartParams(raw.options);
-    const startResponse = await raw.client.request<ThreadStartResponse>('thread/start', startParams).then(async response => {
-      await validateCodexSandbox(response.sandbox, startParams.sandbox, raw.client);
+    const startResponse = await withCodexSetupStage(options.raw?.nimbalystSessionId as string | undefined, 'protocol-thread-start', () => raw.client.request<ThreadStartResponse>('thread/start', startParams)).then(async response => {
+      await withCodexSetupStage(options.raw?.nimbalystSessionId as string | undefined, 'protocol-sandbox-validation', () => validateCodexSandbox(response.sandbox, startParams.sandbox, raw.client, undefined, options.raw?.nimbalystSessionId as string | undefined));
       return response;
     }).catch(error => {
       this.killChild(raw);
@@ -249,8 +250,8 @@ export class CodexAppServerProtocol implements AgentProtocol {
       resumeParams.model = model;
     }
     try {
-      const resumeResponse = await raw.client.request<ThreadResumeResponse>('thread/resume', resumeParams);
-      await validateCodexSandbox(resumeResponse.sandbox, startParams.sandbox, raw.client);
+      const resumeResponse = await withCodexSetupStage(options.raw?.nimbalystSessionId as string | undefined, 'protocol-thread-resume', () => raw.client.request<ThreadResumeResponse>('thread/resume', resumeParams));
+      await withCodexSetupStage(options.raw?.nimbalystSessionId as string | undefined, 'protocol-sandbox-validation', () => validateCodexSandbox(resumeResponse.sandbox, startParams.sandbox, raw.client, undefined, options.raw?.nimbalystSessionId as string | undefined));
       raw.threadId = resumeResponse?.thread?.id ?? sessionId;
       // console.log('[CODEX][APPSERVER] thread resumed:', raw.threadId);
       return { id: raw.threadId, platform: this.platform, raw: raw as unknown as ProtocolSession['raw'] };
@@ -288,7 +289,7 @@ export class CodexAppServerProtocol implements AgentProtocol {
       ?? (session.raw as { options?: { abortSignal?: AbortSignal } })?.options?.abortSignal;
     const waitingForCancelledStart = !!raw.cancelledStarts?.size;
     try {
-      await this.waitForCancelledStarts(raw, abortSignal);
+      await withCodexSetupStage(message.sessionId ?? raw.options.raw?.nimbalystSessionId as string | undefined, 'protocol-native-retirement', () => this.waitForCancelledStarts(raw, abortSignal));
     } catch (error) {
       if (!raw.cleanupStarted && (!abortSignal?.aborted || waitingForCancelledStart)) {
         throw error instanceof CodexStartRecoveryPendingError ? error : new CodexStartRecoveryPendingError();
@@ -296,7 +297,8 @@ export class CodexAppServerProtocol implements AgentProtocol {
       return;
     }
     if (abortSignal?.aborted && waitingForCancelledStart && !raw.cleanupStarted) throw new CodexStartRecoveryPendingError();
-    if (abortSignal?.aborted || raw.cleanupStarted) return;
+    if (abortSignal?.aborted && !raw.cleanupStarted) throw new CodexPreparationCancelledError();
+    if (raw.cleanupStarted) return;
 
     // Drain queue: notifications and one terminating turn event are pushed by
     // the JsonRpcClient handler; the generator below awaits them.
@@ -450,14 +452,21 @@ export class CodexAppServerProtocol implements AgentProtocol {
 
     try {
       if (abortSignal?.aborted || raw.cleanupStarted) return;
-      const turnInput = await this.buildInput(message);
-      if (abortSignal?.aborted || raw.cleanupStarted) return;
+      let turnInput: UserInputElement[];
+      try {
+        turnInput = await withCodexSetupStage(message.sessionId, 'protocol-input-build', () => this.buildInput(message));
+      } catch (error) {
+        if (abortSignal?.aborted && !raw.cleanupStarted) throw new CodexPreparationCancelledError();
+        throw error;
+      }
+      if (abortSignal?.aborted && !raw.cleanupStarted) throw new CodexPreparationCancelledError();
+      if (raw.cleanupStarted) return;
       // The abort pump must run while this RPC is pending. A late response
       // belongs to this invocation, never the successor's raw.activeTurnId.
       turnStartIssued = true;
-      void raw.client.request<{ turn?: { id?: string } }>('turn/start', {
+      void withCodexSetupStage(message.sessionId, 'protocol-turn-start', () => raw.client.request<{ turn?: { id?: string } }>('turn/start', {
         threadId: raw.threadId, input: turnInput,
-      } as TurnStartParams).then(turnStart => {
+      } as TurnStartParams)).then(turnStart => {
         turnStartResultId = turnStart?.turn?.id ?? null;
         turnStartResolved = true;
         if (abortSignal?.aborted || retired) {
@@ -593,7 +602,7 @@ export class CodexAppServerProtocol implements AgentProtocol {
 
   private async spawnAndInit(options: SessionOptions): Promise<AppServerSessionRaw> {
     const binary = resolveCodexBinaryPath(this.resolveCodexPathOverride);
-    const tracking = await prepareCodexShellTracking(options);
+    const tracking = await withCodexSetupStage(options.raw?.nimbalystSessionId as string | undefined, 'protocol-shell-registration', () => prepareCodexShellTracking(options));
     const env = this.buildEnv(options, binary);
     Object.assign(env, tracking?.registration.env);
     const cwd = options.workspacePath || process.cwd();
@@ -621,14 +630,14 @@ export class CodexAppServerProtocol implements AgentProtocol {
     });
     let initResponse: InitializeResponse;
     try {
-      initResponse = await client.request<InitializeResponse>('initialize', {
+      initResponse = await withCodexSetupStage(options.raw?.nimbalystSessionId as string | undefined, 'protocol-initialize', () => client.request<InitializeResponse>('initialize', {
         clientInfo: this.clientInfo,
         capabilities: { experimentalApi: true },
-      });
+      }));
       client.notify('initialized', {});
       if (tracking) {
         try {
-          const trust = await tracking.trust(client);
+          const trust = await withCodexSetupStage(options.raw?.nimbalystSessionId as string | undefined, 'protocol-hooks-trust', () => tracking.trust(client));
           options = { ...options, raw: { ...options.raw, codexConfigOverrides: {
             ...(options.raw?.codexConfigOverrides as Record<string, unknown> ?? {}), ...trust,
           } } };
