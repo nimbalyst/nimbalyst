@@ -36,6 +36,37 @@ async function collect(stream: AsyncIterableIterator<StreamChunk>): Promise<Stre
 
 const WRITE_TOOL = [{ type: 'function' as const, function: { name: 'write_file' } }];
 
+describe('Gemini explicit model defaults', () => {
+  afterEach(() => { GeminiAntigravityProvider.setServerConfigLoader(null); vi.restoreAllMocks(); });
+
+  it('uses only the persisted Medium choice as a default and leaves missing choices unresolved', () => {
+    GeminiAntigravityProvider.setServerConfigLoader(() => ({}));
+    expect(GeminiAntigravityProvider.getDefaultModel()).toBe('');
+    GeminiAntigravityProvider.setServerConfigLoader(() => ({
+      defaultModel: 'antigravity-gemini-agent:gemini-3.8-flash-tiered',
+    }));
+    expect(GeminiAntigravityProvider.getDefaultModel()).toBe('antigravity-gemini-agent:gemini-3.8-flash-tiered');
+  });
+
+  it('restores saved real model IDs before the native server starts after an app restart', async () => {
+    vi.spyOn(AntigravityServerManager.prototype, 'currentEndpoint').mockReturnValue(null);
+    const ensureRunning = vi.spyOn(AntigravityServerManager.prototype, 'ensureRunning');
+    GeminiAntigravityProvider.setServerConfigLoader(() => ({
+      savedModelIds: [
+        'antigravity-gemini-agent:gemini-3.5-flash-lite',
+        'antigravity-gemini-agent:gemini-3.8-flash-tiered',
+        'antigravity-gemini-agent:gemini-3.1-pro-high',
+      ],
+    }));
+    expect((await GeminiAntigravityProvider.getModels()).map(m => m.id)).toEqual([
+      'antigravity-gemini-agent:gemini-3.5-flash-lite',
+      'antigravity-gemini-agent:gemini-3.8-flash-tiered',
+      'antigravity-gemini-agent:gemini-3.1-pro-high',
+    ]);
+    expect(ensureRunning).not.toHaveBeenCalled();
+  });
+});
+
 describe('gemini file-tracking declaration', () => {
   it('declares tool-args so the watcher keeps attributing shell-driven changes', () => {
     // Gemini's toolset is read_file / list_files / search_files / write_file /
@@ -62,7 +93,7 @@ describe('GeminiAntigravityProvider edit snapshots', () => {
   beforeEach(async () => {
     getModelResponse = vi.spyOn(AntigravityServerManager.prototype, 'getModelResponse');
     provider = new GeminiAntigravityProvider();
-    await provider.initialize({});
+    await provider.initialize({ model: 'gemini-3.8-flash-tiered' });
   });
 
   afterEach(() => {

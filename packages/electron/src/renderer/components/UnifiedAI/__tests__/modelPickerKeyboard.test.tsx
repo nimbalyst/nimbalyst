@@ -7,6 +7,7 @@ import { ModelSelector } from '../ModelSelector';
 import { AIInputControls } from '../AIInputControls';
 import { isOpenModelPickerShortcut } from '../AIInput';
 import { advancedSettingsAtom } from '../../../store/atoms/appSettings';
+import { settingAtom } from '../../../store/atoms/settingAtomFamily';
 
 vi.mock('@nimbalyst/runtime/ui/icons/MaterialSymbol', () => ({
   MaterialSymbol: () => null,
@@ -30,8 +31,11 @@ vi.mock('../ContextUsageDisplay', () => ({ ContextUsageDisplay: () => null }));
 
 afterEach(() => cleanup());
 
-function renderModelSelector(ui: React.ReactElement, showDirectChatProviders = false) {
+function renderModelSelector(ui: React.ReactElement, showDirectChatProviders = false, gemini?: { low: string; medium: string; high: string }) {
   const testStore = createStore();
+  for (const tier of ['low', 'medium', 'high'] as const) {
+    testStore.set(settingAtom(`ai.gemini.${tier}Model`), gemini?.[tier] ?? '');
+  }
   testStore.set(advancedSettingsAtom, {
     ...testStore.get(advancedSettingsAtom),
     showDirectChatProviders,
@@ -46,6 +50,32 @@ function renderModelSelector(ui: React.ReactElement, showDirectChatProviders = f
 }
 
 describe('AI model picker keyboard controls', () => {
+  it('keeps independent Gemini preset IDs and blocks an unavailable selection without choosing a replacement', async () => {
+    const provider = 'antigravity-gemini-agent';
+    const low = `${provider}:gemini-3.5-flash-lite`;
+    const medium = `${provider}:gemini-3.8-flash-tiered`;
+    const high = `${provider}:gemini-3.1-pro-high`;
+    Object.defineProperty(window, 'electronAPI', { configurable: true, value: {
+      aiGetModels: async () => ({ success: true, grouped: { [provider]: [
+        { id: low, name: 'Gemini 3.5 Flash Lite', provider },
+        { id: medium, name: 'Gemini 3.8 Flash (Tiered)', provider },
+      ] } }),
+    } });
+    const onModelChange = vi.fn();
+    renderModelSelector(<ModelSelector currentModel={medium} onModelChange={onModelChange} open />, false, { low, medium, high });
+    const mediumRow = await screen.findByRole('button', { name: 'Medium · Gemini 3.8 Flash (Tiered)' });
+    expect(mediumRow.getAttribute('aria-pressed')).toBe('true');
+    expect(screen.getAllByRole('button', { pressed: true }).length).toBe(1);
+    const unavailable = screen.getByRole('button', { name: /^High ·/ });
+    expect(unavailable.getAttribute('aria-disabled')).toBe('true');
+    fireEvent.click(unavailable);
+    expect(onModelChange).not.toHaveBeenCalled();
+    fireEvent.keyDown(unavailable, { key: 'Enter' });
+    expect(onModelChange).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Low · Gemini 3.5 Flash Lite' }));
+    expect(onModelChange).toHaveBeenCalledWith(low);
+  });
+
   it('recognizes Cmd/Ctrl+Shift+M as the model-picker shortcut', () => {
     expect(isOpenModelPickerShortcut({ key: 'm', metaKey: true, ctrlKey: false, shiftKey: true })).toBe(true);
     expect(isOpenModelPickerShortcut({ key: 'M', metaKey: false, ctrlKey: true, shiftKey: true })).toBe(true);

@@ -68,7 +68,7 @@ Twelve built-in provider lanes, plus any agent an extension contributes. Every l
 - GitHub Copilot CLI (ACP)
 - Grok Build (ACP)
 - Cursor Agent
-- Gemini via Google Antigravity (Connect-RPC over the user's Antigravity login; reports no usage numbers, so context and cost display as unavailable rather than guessed)
+- Gemini via Google Antigravity (Connect-RPC over the user's Antigravity login; explicit model discovery and independently persisted Low / Medium / High choices for Flash Lite / 3.8 Flash / Pro; unavailable saved choices stay visible without automatic replacement; reports no usage numbers, so context and cost display as unavailable rather than guessed)
 - OpenCode, with slash commands, Compact, agent roles, and a model picker populated from the user's connected accounts
 
 **Cross-provider behavior**

@@ -7,15 +7,12 @@
  * owned this provider its manifest hardcoded three model ids, and by the time
  * this moved in-tree that list was already stale: the live catalog carried a
  * Gemini 3.6 Flash family the picker never offered. That drift is exactly
- * NIM-1486, so discovery is the primary source and the seed list below is only
- * a fallback.
+ * #1653: discovery must preserve real keys rather than inventing seed models.
  *
  * Discovery never spawns the server. Enumerating models is a passive act (the
  * user opened a picker), and starting a ~120MB language server for it would be
- * a surprising side effect -- so when no endpoint is live the seed list is
- * returned and discovery fills in after the first real turn. Same posture as
- * `GrokBuildProvider.listModelIds()`, which falls back to its default when the
- * CLI cannot be reached.
+ * a surprising side effect. With no endpoint, return an empty list; the explicit
+ * Discover models action establishes an endpoint using the native login.
  *
  * The catalog spans several vendors (Antigravity also fronts Anthropic and
  * OpenAI models). This is the *Gemini* provider, so only Google-served entries
@@ -53,7 +50,24 @@ const MIN_FLASH_GENERATION: readonly [major: number, minor: number] = [3, 7];
  * Flash Lite" and "Gemini 3.1 Flash Image", which are different products that
  * happen to share the prefix -- an unanchored match would drag them in.
  */
-const FLASH_LABEL = /^Gemini (\d+)(?:\.(\d+))? Flash(?: \((?:High|Medium|Low)\))?$/;
+const FLASH_LABEL = /^Gemini (\d+)(?:\.(\d+))? Flash(?: \((?:High|Medium|Low|Tiered)\))?$/;
+// Argon is the Gemini 4 agent family (Antigravity 2.24.0 labels it "Gemini 4 Argon (High)").
+const OTHER_TEXT_LABEL = /^Gemini \d+(?:\.\d+)? (?:Flash Lite|Pro|Argon)(?: \((?:High|Medium|Low|Tiered)\))?$/;
+
+/** Human label derived from a catalog key ("gemini-3.8-flash-medium" -> "Gemini 3.8 Flash (Medium)"), or null. */
+export function geminiLabelForModelKey(key: string): string | null {
+  return labelFromModelKey(key);
+}
+
+function labelFromModelKey(key: string): string | null {
+  const match = /^gemini-(\d+(?:\.\d+)?)-(flash-lite|flash|pro|argon)(?:-(high|medium|low|tiered))?$/.exec(key);
+  if (!match) return null;
+  const family = match[2] === 'flash-lite' ? 'Flash Lite'
+    : match[2] === 'flash' ? 'Flash'
+      : match[2] === 'argon' ? 'Argon' : 'Pro';
+  const tier = match[3];
+  return `Gemini ${match[1]} ${family}${tier ? ` (${tier[0].toUpperCase()}${tier.slice(1)})` : ''}`;
+}
 
 /**
  * Generation of a Flash agent label as `[major, minor]`, or null when the
@@ -80,33 +94,17 @@ export function isOfferedFlashModel(displayName: string): boolean {
 }
 
 /**
- * Fallback catalog, used only until the language server has been reached once.
- *
- * Seeded with 3.7 rather than the newer 3.8 on purpose: this list is what a
- * user sees before discovery has run, so it has to be a generation every
- * entitled account can actually serve, and 3.7 Flash is the one the backend
- * itself names in the #1519 error. Discovery adds 3.8 as soon as the server is
- * reachable.
- */
-export const SEED_GEMINI_MODELS: ReadonlyArray<{ key: string; displayName: string }> =
-  Object.freeze([
-    { key: 'gemini-3.7-flash-high', displayName: 'Gemini 3.7 Flash (High)' },
-    { key: 'gemini-3.7-flash-low', displayName: 'Gemini 3.7 Flash (Low)' },
-    { key: 'gemini-3.7-flash-medium', displayName: 'Gemini 3.7 Flash (Medium)' },
-  ]);
-
-/** Default model key for a new Gemini session. */
-export const DEFAULT_GEMINI_MODEL_KEY = 'gemini-3.7-flash-medium';
-
-/**
  * Strip the `antigravity-gemini-agent:` namespace off a stored model id.
  *
  * The host persists the namespaced form; the language server only knows the
  * bare key. Callers may hand us either.
  */
 export function bareGeminiModelKey(raw: string | undefined | null): string {
-  if (!raw) return DEFAULT_GEMINI_MODEL_KEY;
-  return raw.includes(':') ? raw.split(':').slice(1).join(':') : raw;
+  const key = raw?.trim().replace(/^antigravity-gemini-agent:/, '');
+  if (!key || key.includes(':')) {
+    throw new Error('Select a Gemini model in Settings. No replacement model will be selected automatically.');
+  }
+  return key;
 }
 
 /**
@@ -136,11 +134,12 @@ export function selectGeminiModels(
   for (const info of catalog.values()) {
     if (info.apiProvider !== GOOGLE_API_PROVIDER) continue;
     if (entitledEnums.size > 0 && !entitledEnums.has(info.enum)) continue;
-    // An unlabelled entry is an internal/experimental slot (the server returns
-    // several with no displayName). Nothing useful to show the user.
-    if (!info.displayName) continue;
-    if (!isOfferedFlashModel(info.displayName)) continue;
-    out.push({ key: info.key, displayName: info.displayName });
+    if (!info.enum) continue;
+    // Only known text-model keys get a derived label; unknown slots stay hidden.
+    const displayName = info.displayName || labelFromModelKey(info.key);
+    if (!displayName) continue;
+    if (!isOfferedFlashModel(displayName) && !OTHER_TEXT_LABEL.test(displayName)) continue;
+    out.push({ key: info.key, displayName });
   }
   return out.sort((a, b) => a.displayName.localeCompare(b.displayName));
 }
@@ -160,22 +159,17 @@ export function entitledModelEnums(userStatus: unknown): Set<string> {
 }
 
 /**
- * Discover the model list, falling back to the seed when the server is not
- * already running or either RPC fails.
+ * Read the live catalog without starting a server or fabricating availability.
+ * Transport failures propagate so explicit discovery can display the error.
  */
 export async function discoverGeminiModels(
   server: AntigravityServerManager,
 ): Promise<Array<{ key: string; displayName: string }>> {
   const endpoint = server.currentEndpoint();
-  if (!endpoint) return [...SEED_GEMINI_MODELS];
-  try {
-    const [catalog, userStatus] = await Promise.all([
-      server.getAvailableModels(endpoint),
-      server.getUserStatus(endpoint).catch(() => null),
-    ]);
-    const models = selectGeminiModels(catalog, entitledModelEnums(userStatus));
-    return models.length > 0 ? models : [...SEED_GEMINI_MODELS];
-  } catch {
-    return [...SEED_GEMINI_MODELS];
-  }
+  if (!endpoint) return [];
+  const [catalog, userStatus] = await Promise.all([
+    server.getAvailableModels(endpoint),
+    server.getUserStatus(endpoint),
+  ]);
+  return selectGeminiModels(catalog, entitledModelEnums(userStatus));
 }

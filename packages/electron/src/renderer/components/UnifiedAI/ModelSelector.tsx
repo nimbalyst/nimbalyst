@@ -25,6 +25,8 @@ import { AlphaBadge } from '../common/AlphaBadge';
 import { HelpTooltip } from '../../help';
 import { isDirectChatProvider, isProviderVisible } from '../../utils/chatProviderVisibility';
 import { useMenuTypeahead } from '../../hooks/useMenuTypeahead';
+import { useSetting } from '../../hooks/useSetting';
+import { geminiPresetModels } from '../../../shared/geminiModelSelections';
 
 const ALPHA_PROVIDERS = new Set(['opencode', 'copilot-cli', 'grok-build', 'cursor-agent', 'antigravity-gemini-agent']);
 
@@ -32,6 +34,7 @@ interface Model {
   id: string;
   name: string;
   provider: string;
+  unavailable?: boolean;
 }
 
 type ProviderType = 'agent' | 'model';
@@ -85,6 +88,11 @@ export function ModelSelector({
   const aiProviderSettings = useAtomValue(aiProviderSettingsAtom);
   const advancedSettings = useAtomValue(advancedSettingsAtom);
   const { providers } = aiProviderSettings;
+  const geminiSelections = {
+    low: useSetting('ai.gemini.lowModel'),
+    medium: useSetting('ai.gemini.mediumModel'),
+    high: useSetting('ai.gemini.highModel'),
+  };
   const setWindowMode = useSetAtom(setWindowModeAtom);
   const navigateToSettings = useSetAtom(navigateToSettingsAtom);
   const menuRef = React.useRef<HTMLDivElement>(null);
@@ -146,7 +154,7 @@ export function ModelSelector({
   useEffect(() => {
     setModels({});
     void loadModels();
-  }, [providers, loadModels]);
+  }, [providers, aiProviderSettings.availableModels, loadModels]);
 
   const handleModelSelect = (modelId: string) => {
     resetTypeahead();
@@ -179,6 +187,7 @@ export function ModelSelector({
   }, [refs.setFloating, focusMenu]);
 
   const handleOptionKeyDown = (event: React.KeyboardEvent<HTMLButtonElement>) => {
+    if (event.currentTarget.getAttribute('aria-disabled') === 'true') return;
     const options = getEnabledModelOptions();
     const currentIndex = options.indexOf(event.currentTarget);
 
@@ -332,8 +341,13 @@ export function ModelSelector({
   };
 
   const preservedProvider = sessionHasMessages ? currentProvider : null;
+  const geminiProvider = 'antigravity-gemini-agent';
+  const displayModels = { ...models };
+  if (models[geminiProvider] || providers[geminiProvider]?.enabled) {
+    displayModels[geminiProvider] = geminiPresetModels(models[geminiProvider] ?? [], geminiSelections);
+  }
   const visibleModels = Object.fromEntries(
-    Object.entries(models).filter(([provider]) => isProviderVisible(provider, {
+    Object.entries(displayModels).filter(([provider]) => isProviderVisible(provider, {
       revealAll: advancedSettings.showDirectChatProviders,
       settings: aiProviderSettings,
       preserveProviderId: preservedProvider,
@@ -432,8 +446,10 @@ export function ModelSelector({
                       </HelpTooltip>
                       {providerModels.map(model => {
                         const isCurrent = model.id === currentModel;
-                        const isDisabled = isProviderSwitchDisabled(provider);
-                        const disabledTooltip = 'Start a new session to switch providers after the session has started';
+                        const isDisabled = isProviderSwitchDisabled(provider) || !!model.unavailable;
+                        const disabledTooltip = model.unavailable
+                          ? 'Saved model unavailable. Discover models in Gemini settings; your selection is kept.'
+                          : 'Start a new session to switch providers after the session has started';
                         return (
                           <button
                             key={model.id}
@@ -442,6 +458,7 @@ export function ModelSelector({
                             onKeyDown={handleOptionKeyDown}
                             title={isDisabled ? disabledTooltip : undefined}
                             aria-disabled={isDisabled}
+                            aria-pressed={isCurrent}
                             data-model-id={model.id}
                             data-model-name={model.name}
                           >
@@ -479,8 +496,10 @@ export function ModelSelector({
                       </div>
                       {providerModels.map(model => {
                         const isCurrent = model.id === currentModel;
-                        const isDisabled = isProviderSwitchDisabled(provider);
-                        const disabledTooltip = 'Start a new session to switch providers after the session has started';
+                        const isDisabled = isProviderSwitchDisabled(provider) || !!model.unavailable;
+                        const disabledTooltip = model.unavailable
+                          ? 'Saved model unavailable. Discover models in settings; your selection is kept.'
+                          : 'Start a new session to switch providers after the session has started';
                         return (
                           <button
                             key={model.id}
@@ -489,6 +508,7 @@ export function ModelSelector({
                             onKeyDown={handleOptionKeyDown}
                             title={isDisabled ? disabledTooltip : undefined}
                             aria-disabled={isDisabled}
+                            aria-pressed={isCurrent}
                             data-model-id={model.id}
                             data-model-name={model.name}
                           >

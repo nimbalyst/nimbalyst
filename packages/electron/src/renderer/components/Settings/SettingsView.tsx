@@ -942,7 +942,7 @@ export function SettingsView({
         return wrapWithOverride(
           'antigravity-gemini-agent',
           'Gemini',
-          <GeminiPanel config={commonProps.config} onToggle={commonProps.onToggle} />,
+          <GeminiPanel config={commonProps.config} onToggle={commonProps.onToggle} availableModels={commonProps.availableModels} />,
         );
       case 'lmstudio':
         return wrapWithOverride('lmstudio', 'LM Studio', <LMStudioPanel {...commonProps} />);
