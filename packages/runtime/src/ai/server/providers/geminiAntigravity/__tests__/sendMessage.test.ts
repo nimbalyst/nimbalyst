@@ -53,7 +53,7 @@ describe('GeminiAntigravityProvider.sendMessage', () => {
     executor = vi.fn(async (_args: GeminiToolExecutorArgs) => ({ text: 'tool ok' }));
     GeminiAntigravityProvider.setToolExecutor(executor as never);
     provider = new GeminiAntigravityProvider();
-    await provider.initialize({});
+    await provider.initialize({ model: 'gemini-3.8-flash-tiered' });
   });
 
   afterEach(() => {
@@ -78,6 +78,13 @@ describe('GeminiAntigravityProvider.sendMessage', () => {
     // Model called exactly once -> single no-tool round -> no spawn occurred.
     expect(getModelResponse).toHaveBeenCalledTimes(1);
     expect(executor).not.toHaveBeenCalled();
+  });
+
+  it('surfaces a missing explicit selection without contacting a replacement model', async () => {
+    await provider.initialize({});
+    const chunks = await collect(provider.sendMessage('hi', undefined, 'missing-selection'));
+    expect(chunks).toEqual([{ type: 'error', error: expect.stringContaining('Select a Gemini model') }]);
+    expect(getModelResponse).not.toHaveBeenCalled();
   });
 
   it('yields a tool_call with its result before text+complete when the model requests a tool', async () => {

@@ -10,6 +10,7 @@ import { type AIServiceContext } from './AIServiceContext';
 import { ModelRegistry, ProviderFactory } from '@nimbalyst/runtime/ai/server';
 import { type AIProviderType } from '@nimbalyst/runtime/ai/server/types';
 import { BrowserWindow } from 'electron';
+import { GeminiAntigravityProvider } from '@nimbalyst/runtime/ai/server/providers/GeminiAntigravityProvider';
 
 /**
  * Model catalog and per-provider capability listings.
@@ -18,6 +19,16 @@ import { BrowserWindow } from 'electron';
  * report); `ai:getModels` is the enabled subset the pickers actually offer.
  */
 export function registerModelHandlers(ctx: AIServiceContext): void {
+  safeHandle('ai:discoverGeminiModels', async () => {
+    try {
+      const models = await GeminiAntigravityProvider.discoverModels();
+      ModelRegistry.clearCache('antigravity-gemini-agent');
+      return { success: true, models };
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : String(error) };
+    }
+  });
+
   // Get ALL available models for configuration UI
   safeHandle('ai:getAllModels', async (event) => {
     // Clear cache to get fresh models
