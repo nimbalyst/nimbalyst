@@ -147,7 +147,17 @@ interface AppServerSessionRaw {
   stderrTail: string[];
   /** Prevent duplicate cleanup from re-targeting a PID after it exits. */
   cleanupStarted: boolean;
+  /** Native starts cancelled before their replies; only exact terminal proof releases them. */
+  cancelledStarts?: Set<Promise<void>>;
+  cancelledStartCleanups?: Set<() => void>;
   shellTracking?: CodexShellTrackingRegistration;
+}
+
+export class CodexStartRecoveryPendingError extends Error {
+  constructor() {
+    super('This session is recovering a cancelled Codex turn. This message has not been sent to Codex. Your text and attachments are kept in the composer. Wait for recovery or restart the app.');
+    this.name = 'CodexStartRecoveryPendingError';
+  }
 }
 
 export class CodexAppServerProtocol implements AgentProtocol {
@@ -267,6 +277,13 @@ export class CodexAppServerProtocol implements AgentProtocol {
     const abortSignal = message.abortSignal
       ?? (raw.options as unknown as { abortSignal?: AbortSignal })?.abortSignal
       ?? (session.raw as { options?: { abortSignal?: AbortSignal } })?.options?.abortSignal;
+    try {
+      await this.waitForCancelledStarts(raw, abortSignal);
+    } catch {
+      if (!abortSignal?.aborted && !raw.cleanupStarted) throw new CodexStartRecoveryPendingError();
+      return;
+    }
+    if (abortSignal?.aborted || raw.cleanupStarted) return;
 
     // Drain queue: notifications and one terminating turn event are pushed by
     // the JsonRpcClient handler; the generator below awaits them.
@@ -289,6 +306,13 @@ export class CodexAppServerProtocol implements AgentProtocol {
     // one stdout chunk. Hold turn-scoped events until the response establishes
     // which turn this generator owns.
     let turnStartResolved = false;
+    let turnStartIssued = false;
+    let retired = false;
+    let turnStartResultId: string | null = null;
+    let nativeRetirement: Promise<void> | undefined;
+    let resolveRetirement!: () => void;
+    let rejectRetirement!: (error: unknown) => void;
+    const terminalTurns = new Set<string>();
     const pendingTurnNotifications: Array<{ method: string; params: unknown }> = [];
 
     const dispatchOwnedNotification = (method: string, params: unknown) => {
@@ -325,6 +349,12 @@ export class CodexAppServerProtocol implements AgentProtocol {
       }
     };
     const onNotification = (method: string, params: unknown) => {
+      const routing = extractNotificationRouting(params);
+      if (method === 'turn/completed' && routing.threadId === raw.threadId && routing.turnId) {
+        terminalTurns.add(routing.turnId);
+        if (nativeRetirement && turnStartResultId === routing.turnId) resolveRetirement();
+      }
+      if (retired || abortSignal?.aborted) return;
       dispatchOwnedNotification(method, params);
     };
     // Capture the unsubscribe so the next turn on this same ProtocolSession does
@@ -332,7 +362,7 @@ export class CodexAppServerProtocol implements AgentProtocol {
     // sendSessionNamingReminder (which runs a second sendMessage on the same
     // session) would double-process every notification: duplicate raw_event,
     // duplicate tool_call from a single item/completed, duplicate completion.
-    unsubscribers.push(raw.client.onNotification(onNotification));
+    const detachNotifications = raw.client.onNotification(onNotification);
 
     // Wake the pump on abort. Without this, a cancel that lands while we're
     // parked awaiting the next notification is never observed (the aborted
@@ -348,13 +378,29 @@ export class CodexAppServerProtocol implements AgentProtocol {
       // still unwinds on the queued 'abort' entry, so skipping the RPC here is
       // safe. Sending without turnId is rejected (-32600) and leaves the turn
       // running (NIM-1607 follow-on).
-      if (!raw.activeTurnId) return;
+      if (raw.cleanupStarted || !turnStartResultId) return;
       interruptRequested = true;
-      const params: TurnInterruptParams = { threadId: raw.threadId, turnId: raw.activeTurnId };
+      const params: TurnInterruptParams = { threadId: raw.threadId, turnId: turnStartResultId };
       Promise.resolve(raw.client.request('turn/interrupt', params))
-        .catch((err) => console.warn('[CODEX][APPSERVER] turn/interrupt failed:', err));
+        .catch((err) => {
+          if (nativeRetirement) rejectRetirement(err);
+          console.warn('[CODEX][APPSERVER] turn/interrupt failed:', err);
+        });
     };
     const onAbort = () => {
+      if (!raw.cleanupStarted && turnStartIssued && !turnStartResolved && !nativeRetirement) {
+        nativeRetirement = new Promise<void>((resolve, reject) => { resolveRetirement = resolve; rejectRetirement = reject; });
+        (raw.cancelledStarts ??= new Set()).add(nativeRetirement);
+        const captured = nativeRetirement;
+        const cleanup = () => rejectRetirement(new Error('Codex session disposed during cancellation recovery.'));
+        (raw.cancelledStartCleanups ??= new Set()).add(cleanup);
+        // Rejection keeps the native fence latched; neither timeout nor a
+        // second Stop establishes that an unknown accepted turn has ended.
+        void captured.then(() => {
+          raw.cancelledStarts?.delete(captured);
+          raw.cancelledStartCleanups?.delete(cleanup);
+        }, () => { raw.cancelledStartCleanups?.delete(cleanup); });
+      }
       requestInterrupt();
       push({ kind: 'abort' });
     };
@@ -367,31 +413,35 @@ export class CodexAppServerProtocol implements AgentProtocol {
       }
     }
 
-    // Start the turn. Errors from the request itself are surfaced as fail.
-    const turnInput = await this.buildInput(message);
-    let turnStartResultId: string | null = null;
     try {
-      const turnStart = await raw.client.request<{ turn?: { id?: string } }>('turn/start', {
-        threadId: raw.threadId,
-        input: turnInput,
-      } as TurnStartParams);
-      turnStartResultId = turnStart?.turn?.id ?? null;
-      raw.activeTurnId = turnStartResultId;
-      turnStartResolved = true;
-      for (const pending of pendingTurnNotifications.splice(0)) {
-        dispatchOwnedNotification(pending.method, pending.params);
-      }
-    } catch (err) {
-      const baseMsg = err instanceof Error ? err.message : String(err);
-      yield {
-        type: 'error',
-        error: appendStderrTail(baseMsg, raw),
-      };
-      return;
-    }
+      if (abortSignal?.aborted || raw.cleanupStarted) return;
+      const turnInput = await this.buildInput(message);
+      if (abortSignal?.aborted || raw.cleanupStarted) return;
+      // The abort pump must run while this RPC is pending. A late response
+      // belongs to this invocation, never the successor's raw.activeTurnId.
+      turnStartIssued = true;
+      void raw.client.request<{ turn?: { id?: string } }>('turn/start', {
+        threadId: raw.threadId, input: turnInput,
+      } as TurnStartParams).then(turnStart => {
+        turnStartResultId = turnStart?.turn?.id ?? null;
+        turnStartResolved = true;
+        if (abortSignal?.aborted || retired) {
+          if (nativeRetirement) {
+            if (!turnStartResultId) rejectRetirement(new Error('Cancelled turn/start returned no turn ID.'));
+            else if (terminalTurns.has(turnStartResultId)) resolveRetirement();
+            else requestInterrupt();
+          }
+          pendingTurnNotifications.length = 0;
+          return;
+        }
+        raw.activeTurnId = turnStartResultId;
+        for (const pending of pendingTurnNotifications.splice(0)) dispatchOwnedNotification(pending.method, pending.params);
+      }, error => {
+        if (nativeRetirement) rejectRetirement(error);
+        else if (!retired) push({ kind: 'fail', error: error instanceof Error ? error : new Error(String(error)) });
+      });
 
-    // Pump events until we see the terminating queue entry.
-    try {
+      // Pump events until we see the terminating queue entry.
       while (true) {
         if (abortSignal?.aborted) {
           requestInterrupt();
@@ -400,26 +450,16 @@ export class CodexAppServerProtocol implements AgentProtocol {
           await new Promise<void>((resolve) => waiters.push(() => resolve()));
         }
         const entry = queue.shift()!;
-        if (entry.kind === 'abort') {
-          // Cancelled turn: unwind silently -- no complete (the turn didn't
-          // finish) and no error (the caller asked for this).
-          return;
-        }
-        if (entry.kind === 'event') {
-          yield entry.event;
-          continue;
-        }
+        if (entry.kind === 'abort') return;
+        if (entry.kind === 'event') { yield entry.event; continue; }
         if (entry.kind === 'fail') {
           yield { type: 'error', error: appendStderrTail(entry.error.message, raw) };
           return;
         }
         if (entry.kind === 'end') {
           yield {
-            type: 'complete',
-            content: fullText,
+            type: 'complete', content: fullText,
             usage: usage ?? { input_tokens: 0, output_tokens: 0, total_tokens: 0 },
-            // turn/completed carries no usage on this transport, so both of
-            // these come from thread/tokenUsage/updated earlier in the turn.
             ...(contextFillTokens !== undefined ? { contextFillTokens } : {}),
             ...(contextWindow !== undefined ? { contextWindow } : {}),
           };
@@ -427,11 +467,33 @@ export class CodexAppServerProtocol implements AgentProtocol {
         }
       }
     } finally {
+      retired = true;
       for (const unsub of unsubscribers) {
         try { unsub(); } catch { /* noop */ }
       }
-      raw.activeTurnId = null;
+      if (nativeRetirement) void nativeRetirement.then(detachNotifications, detachNotifications);
+      else detachNotifications();
+      if (raw.activeTurnId === turnStartResultId) raw.activeTurnId = null;
       raw.shellTracking?.endTurn();
+    }
+  }
+
+  private async waitForCancelledStarts(raw: AppServerSessionRaw, signal?: AbortSignal): Promise<void> {
+    if (raw.cleanupStarted || !raw.cancelledStarts?.size || signal?.aborted) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let onAbort: (() => void) | undefined;
+    const stopWaiting = new Promise<void>((resolve, reject) => {
+      onAbort = resolve;
+      signal?.addEventListener('abort', onAbort, { once: true });
+      timer = setTimeout(() => reject(new Error('Cancelled native turn has not retired.')), 10_000);
+    });
+    try {
+      while (raw.cancelledStarts.size && !signal?.aborted) {
+        await Promise.race([Promise.all([...raw.cancelledStarts]), stopWaiting]);
+      }
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+      if (onAbort) signal?.removeEventListener('abort', onAbort);
     }
   }
 
@@ -486,6 +548,9 @@ export class CodexAppServerProtocol implements AgentProtocol {
   private killChild(raw: AppServerSessionRaw): void {
     if (raw.cleanupStarted) return;
     raw.cleanupStarted = true;
+    for (const cleanup of raw.cancelledStartCleanups ?? []) cleanup();
+    raw.cancelledStartCleanups?.clear();
+    raw.cancelledStarts?.clear();
     raw.shellTracking?.dispose();
     try { raw.client.close('cleanup'); } catch { /* noop */ }
     this.terminateProcessTree(raw.child);

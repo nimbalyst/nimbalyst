@@ -22,7 +22,7 @@ import {
 import { AgentCapabilities, BUILTIN_AGENT_CAPABILITIES } from '../agentCapabilities';
 import type { FileChangeFidelity } from '../providerFileTracking';
 import { CodexSDKProtocol } from '../protocols/CodexSDKProtocol';
-import { CodexAppServerProtocol, type CodexAppServerHostBindings } from '../protocols/CodexAppServerProtocol';
+import { CodexAppServerProtocol, CodexStartRecoveryPendingError, type CodexAppServerHostBindings } from '../protocols/CodexAppServerProtocol';
 import {setCodexShellTrackingHost} from '../protocols/codexAppServer/shellTracking';
 import { AgentProtocol, ProtocolEvent, ProtocolSession } from '../protocols/ProtocolInterface';
 import { isNonRenderingAppServerItemStarted } from '../transcript/parsers/CodexAppServerRawParser';
@@ -1452,9 +1452,18 @@ export class OpenAICodexProvider extends BaseAgentProvider {
         !usedSessionNamingToolThisTurn &&
         !abortController.signal.aborted
       ) {
-        await this.sendSessionNamingReminder(session, sessionId);
+        try {
+          await this.sendSessionNamingReminder(session, sessionId);
+        } catch (error) {
+          // A refused naming reminder must not restore already-delivered user
+          // input to the composer. Only the main send can be not-sent input.
+          if (!(error instanceof CodexStartRecoveryPendingError)) throw error;
+        }
       }
     } catch (error) {
+      // Keep not-sent recovery rejection on the existing IPC/composer restore
+      // path; converting it into an error chunk would falsely accept input.
+      if (error instanceof CodexStartRecoveryPendingError) throw error;
       const errorMessage = error instanceof Error ? error.message : String(error);
       const isAbort = abortController.signal.aborted || /abort|cancel/i.test(errorMessage);
       if (!isAbort) {

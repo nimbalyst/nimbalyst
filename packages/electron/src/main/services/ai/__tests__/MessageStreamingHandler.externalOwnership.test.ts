@@ -237,6 +237,7 @@ import { logger } from "../../../utils/logger";
 import { resolveClaudeCodeParentContextWindow } from "@nimbalyst/runtime/ai/modelConstants";
 import { resetPushOutcomeWarnings } from "@nimbalyst/runtime/sync/pushOutcome";
 import { isTurnControlPending, isTurnAdmissionBlocked, performTurnInterruption } from '../sessionTurnControl';
+import { codexQuestionTurns } from '../codexQuestionTurns';
 import { TurnSetupCancelledError } from '../turnSetupStages';
 import { SessionProcessingGuard, tryClaimAndDispatchNextQueuedPrompt } from '../queuedPromptDispatcher';
 import { createPGLiteQueuedPromptsStore } from '../../PGLiteQueuedPromptsStore';
@@ -336,7 +337,147 @@ async function runTurn(options: {
   else await handler.handle(event, 'Prompt', undefined, options.session.id as string, options.session.workspacePath as string);
 }
 
+function expectExistingComposerRestores(error: Error, text: string, attachments: unknown[]) {
+  const transcript = fs.readFileSync(path.resolve(__dirname, '../../../../renderer/components/UnifiedAI/SessionTranscript.tsx'), 'utf8').replace(/\r\n/g, '\n');
+  const catchStart = transcript.indexOf("      console.error('[SessionTranscript] Failed to send message:', error);");
+  const catchEnd = transcript.indexOf('\n    }\n  }, [sessionId', catchStart);
+  expect(catchStart).toBeGreaterThan(0);
+  expect(catchEnd).toBeGreaterThan(catchStart);
+  let draft = 'Typed since submission';
+  let restoredAttachments: unknown[] = [];
+  const setProcessing = vi.fn();
+  const updateTranscript = vi.fn();
+  const restore = new Function('error', 'message', 'attachments', 'sessionId', 'messages', 'userMessage', 'makeOptimisticError', 'updateSessionStore', 'setDraftInput', 'setDraftAttachments', 'setIsProcessing', 'mergeRestoredPromptIntoDraft', transcript.slice(catchStart, catchEnd));
+  restore(error, text, attachments, 'opencode-session', [], {}, (message: string) => ({ message }), updateTranscript,
+    (update: (draft: string) => string) => { draft = update(draft); },
+    (update: (attachments: unknown[]) => unknown[]) => { restoredAttachments = update(restoredAttachments); },
+    setProcessing, mergeRestoredPromptIntoDraft);
+  expect(draft).toBe('Typed since submission\n\n' + text);
+  expect(restoredAttachments).toEqual(attachments);
+  expect(setProcessing).toHaveBeenCalledWith(false);
+  expect(updateTranscript).toHaveBeenCalledWith({ sessionId: 'opencode-session', updates: { messages: [{}, { message: `Error: ${error.message}` }] } });
+}
+
 describe("MessageStreamingHandler external ownership", () => {
+  it.each([false, true])('pre-stream Stop retires real Codex host/question without killing its child (interrupt failure: %s)', async interruptFails => {
+    const { OpenAICodexProvider: CodexProvider } = await import('@nimbalyst/runtime/ai/server/providers/OpenAICodexProvider');
+    const { CodexAppServerProtocol } = await import('@nimbalyst/runtime/ai/server/protocols/CodexAppServerProtocol');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nim-codex-prestream-'));
+    const db = new SQLiteDatabase({ dbDir: dir, schemaDir: path.resolve(__dirname, '../../../database/sqlite/schemas') });
+    await db.initialize();
+    await db.query("INSERT INTO ai_sessions(id, provider, title) VALUES ('opencode-session', 'openai-codex', 'test')");
+    const queue = createPGLiteQueuedPromptsStore(db as never);
+    const queuedText = 'Keep the queued successor\n  exactly once.';
+    await queue.create({ id: 'prestream-next', sessionId: 'opencode-session', prompt: queuedText });
+    let enter!: () => void;
+    const entered = new Promise<void>(resolve => { enter = resolve; });
+    let release!: (value: unknown) => void;
+    const starting = new Promise(resolve => { release = resolve; });
+    let starts = 0;
+    let nativeRunning = false;
+    const nativeInputs: string[] = [];
+    const terminate = vi.fn();
+    const protocol = new CodexAppServerProtocol({ terminateProcessTreeOverride: terminate });
+    const listeners = new Set<(method: string, params: unknown) => void>();
+    const complete = (id: string) => { for (const listener of listeners) listener('turn/completed', { threadId: 'codex-prestream-thread', turn: { id, status: 'completed' } }); };
+    const request = vi.fn(async (method: string, params: any) => {
+      if (method === 'turn/interrupt') {
+        expect(params).toEqual({ threadId: 'codex-prestream-thread', turnId: 'cancelled-turn' });
+        if (interruptFails) throw new Error('Owned native interrupt refused');
+        nativeRunning = false;
+        queueMicrotask(() => complete('cancelled-turn'));
+        return {};
+      }
+      if (method !== 'turn/start') return {};
+      nativeInputs.push(params.input.map((item: any) => item.text ?? '').join(''));
+      if (++starts === 1) { nativeRunning = true; enter(); return starting; }
+      expect(nativeRunning).toBe(false);
+      queueMicrotask(() => complete('successor-turn'));
+      return { turn: { id: 'successor-turn' } };
+    });
+    const create = vi.fn(async () => ({ id: 'codex-prestream-thread', platform: 'codex-app-server', raw: {
+      threadId: 'codex-prestream-thread', options: {}, activeTurnId: null, cleanupStarted: false,
+      child: {}, stderrTail: [], client: {
+        onNotification: (listener: (method: string, params: unknown) => void) => { listeners.add(listener); return () => listeners.delete(listener); },
+        close: vi.fn(), request,
+      },
+    } }));
+    vi.spyOn(protocol, 'createSession').mockImplementation(create as never);
+    vi.spyOn(protocol, 'resumeSession').mockImplementation(create as never);
+    const provider = new CodexProvider({}, { protocol, transport: 'app-server', permissionService: { rejectAllPending: vi.fn(), clearSessionCache: vi.fn() } as never });
+    vi.spyOn(provider as any, 'getAgentRole').mockResolvedValue('standard');
+    vi.spyOn(provider as any, 'getSessionDirective').mockResolvedValue(undefined);
+    vi.spyOn(provider as any, 'getConfiguredModel').mockResolvedValue('gpt-6.1-sol');
+    vi.spyOn(provider as any, 'requestCodexTurnPermission').mockResolvedValue({ decision: 'allow', permissionMode: 'allow-all' });
+    vi.spyOn((provider as any).mcpConfigService, 'getMcpServersConfig').mockResolvedValue({});
+    vi.spyOn(provider as any, 'logAgentMessageBestEffort').mockResolvedValue(undefined);
+    mocks.providerFactory.getProvider.mockReturnValue(provider);
+    mocks.queue = queue;
+    try {
+      await runTurn({ session: openCodeSession({ provider: 'openai-codex', model: 'openai-codex:gpt-6.1-sol', workspacePath: dir }), provider: provider as unknown as RecordingProvider,
+        sessionManager: { updateSessionTokenUsage: vi.fn(), updateProviderSessionData: vi.fn() },
+        runWithHandler: async (handler, event, service) => {
+          const old = handler.handle(event, 'Old pre-stream input', undefined, 'opencode-session', dir);
+          await Promise.race([entered, old.then(() => { throw new Error('Codex host ended before turn/start'); })]);
+          const question = codexQuestionTurns.current('opencode-session');
+          expect(question?.active).toBe(true);
+          const guard = new SessionProcessingGuard();
+          service.sessionsProcessingQueue = guard;
+          const targetWindow = { isDestroyed: () => false, webContents: { ...event.sender, mainFrame: {} } } as any;
+          let successor = false;
+          try {
+            const stopped = await performTurnInterruption({
+              sessionId: 'opencode-session', mode: 'stop', provider, isCurrentProvider: () => true, guard,
+              retireInbox: async () => {}, sweep: async () => {}, settle: async () => {},
+              drive: async () => {
+                successor = await tryClaimAndDispatchNextQueuedPrompt({ queueStore: queue, processingSet: guard,
+                  sendMessageHandler: handler.handleQueued, continueQueuedPromptChain: async () => {},
+                  logError: vi.fn(), logInfo: vi.fn(), onPromptClaimed: vi.fn(), startSession: async () => {},
+                  sessionId: 'opencode-session', workspacePath: dir, source: 'prestream-real', targetWindow });
+              }, logError: vi.fn(), timeouts: { stageMs: 100 },
+            });
+            expect(stopped).toMatchObject({ success: true });
+            await old;
+            expect(question?.active).toBe(false);
+            expect(successor).toBe(true);
+            expect(starts).toBe(1);
+            expect(nativeRunning).toBe(true);
+            expect(terminate).not.toHaveBeenCalled();
+            release({ turn: { id: 'cancelled-turn' } });
+            await vi.waitFor(async () => {
+              const row = await queue.get('prestream-next');
+              expect(row?.status, JSON.stringify(row)).toBe(interruptFails ? 'failed' : 'completed');
+            });
+            if (interruptFails) {
+              expect((await queue.get('prestream-next'))?.prompt).toBe(queuedText);
+              for (let attempt = 0; attempt < 3; attempt++) {
+                const text = 'Keep this composer input';
+                const attachments = [{ id: 'kept', type: 'document', filename: 'kept.txt', mimeType: 'text/plain', content: 'kept attachment' }];
+                const error = await handler.handle(event, text, { attachments } as any, 'opencode-session', dir).then(() => undefined, error => error);
+                expect(error.message).toContain('has not been sent to Codex');
+                expectExistingComposerRestores(error, text, attachments);
+              }
+            }
+            expect(starts).toBe(interruptFails ? 1 : 2);
+            expect(nativeInputs.filter(input => input.includes(queuedText))).toHaveLength(interruptFails ? 0 : 1);
+            expect(create).toHaveBeenCalledTimes(1);
+            expect(terminate).not.toHaveBeenCalled();
+          } finally {
+            provider.abort();
+            release({ turn: { id: 'cancelled-turn' } });
+            await old;
+            await vi.waitFor(() => expect(guard.has('opencode-session')).toBe(false));
+          }
+        },
+      });
+    } finally {
+      provider.destroy();
+      mocks.providerFactory.getProvider.mockReset();
+      await db.close();
+      fs.rmSync(dir, { recursive: true });
+    }
+  });
+
   it.each([false, true])('distinguishes attempted delivery from a first provider response (response: %s)', async responds => {
     class UncertainProvider extends RecordingProvider {
       async *sendMessage() {
@@ -457,24 +598,15 @@ describe("MessageStreamingHandler external ownership", () => {
           expect(error.message).toMatch(/restart the app/i);
           // Execute the existing renderer catch body, rather than reproducing
           // its restore algorithm or adding a second product path.
-          const transcript = fs.readFileSync(path.resolve(__dirname, '../../../../renderer/components/UnifiedAI/SessionTranscript.tsx'), 'utf8').replace(/\r\n/g, '\n');
-          const catchStart = transcript.indexOf("      console.error('[SessionTranscript] Failed to send message:', error);");
-          const catchEnd = transcript.indexOf('\n    }\n  }, [sessionId', catchStart);
-          expect(catchStart).toBeGreaterThan(0);
-          expect(catchEnd).toBeGreaterThan(catchStart);
-          let draft = 'Typed since submission';
-          let restoredAttachments: unknown[] = [];
-          const setProcessing = vi.fn();
-          const updateTranscript = vi.fn();
-          const restore = new Function('error', 'message', 'attachments', 'sessionId', 'messages', 'userMessage', 'makeOptimisticError', 'updateSessionStore', 'setDraftInput', 'setDraftAttachments', 'setIsProcessing', 'mergeRestoredPromptIntoDraft', transcript.slice(catchStart, catchEnd));
-          restore(error, text, attachments, 'opencode-session', [], {}, (message: string) => ({ message }), updateTranscript,
-            (update: (draft: string) => string) => { draft = update(draft); },
-            (update: (attachments: unknown[]) => unknown[]) => { restoredAttachments = update(restoredAttachments); },
-            setProcessing, mergeRestoredPromptIntoDraft);
-          expect(draft).toBe('Typed since submission\n\n' + text);
-          expect(restoredAttachments).toEqual(attachments);
-          expect(setProcessing).toHaveBeenCalledWith(false);
-          expect(updateTranscript).toHaveBeenCalledWith({ sessionId: 'opencode-session', updates: { messages: [{}, { message: `Error: ${error.message}` }] } });
+          expectExistingComposerRestores(error, text, attachments);
+          // Only finally releases this cleanup barrier, so recovery cannot
+          // race any of these fresh composer submissions.
+          for (let attempt = 0; attempt < 3; attempt++) {
+            expect(isTurnAdmissionBlocked('opencode-session')).toBe(true);
+            const rejected = await handler.handle(event, text, { attachments } as any, 'opencode-session', '/workspace').then(() => undefined, error => error);
+            expect(rejected.message).toMatch(/recovering a stuck save/);
+            expectExistingComposerRestores(rejected, text, attachments);
+          }
           const pending = await queue.listPending('opencode-session');
           expect(pending.map(row => row.prompt)).toEqual(['Original preserved text']);
           expect(provider.requestConfigs).toHaveLength(0);
