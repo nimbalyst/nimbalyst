@@ -3,7 +3,7 @@ import { warnIfUnpublished } from '@nimbalyst/runtime/sync/pushOutcome';
 import type { SessionChange } from '@nimbalyst/runtime/sync/types';
 import { sessionInbox } from './sessionInboxService';
 import { codexQuestionTurns } from './codexQuestionTurns';
-import { awaitSessionTurnControl, beginSessionTurn, isDirectTurnAdmissionBlocked, TurnControlPendingError, type SessionTurn } from './sessionTurnControl';
+import { awaitSessionTurnControl, beginSessionTurn, isDirectTurnAdmissionBlocked, isTurnRecoveryQuarantined, TurnControlPendingError, type SessionTurn } from './sessionTurnControl';
 import { supersedeOpenQuestions } from './supersedeOpenQuestions';
 import { beginTurnSetup, TurnSetupCancelledError } from './turnSetupStages';
 import { canDispatchIntoDrain } from './drainFollowUp';
@@ -25,6 +25,7 @@ import { cancelUsageLimitResume, maybeScheduleUsageLimitResume } from './usageLi
 
 import { BrowserWindow } from 'electron';
 import * as path from 'path';
+import { randomUUID } from 'node:crypto';
 import {
   ProviderFactory,
   ModelRegistry,
@@ -187,7 +188,7 @@ export type SendMessageHandler = (
   documentContext?: DocumentContext,
   sessionId?: string,
   workspacePath?: string,
-) => Promise<{ content: string }>;
+) => Promise<{ content: string; queued?: boolean }>;
 
 /**
  * Structural view of the AIService members this handler needs. Keeping it
@@ -223,6 +224,7 @@ interface AIServiceInternal {
     source: string,
   ): Promise<boolean>;
   requestQueueDrive(sessionId: string, workspacePath: string, reason: DriveReason): void;
+  publishQueueStateToSync(sessionId: string): Promise<void>;
   runAutoContextCommand(
     session: SessionData,
     workspacePath: string,
@@ -379,15 +381,39 @@ export class MessageStreamingHandler {
     sessionId?: string,
     workspacePath?: string,
   ) => {
-    if (sessionId && !queued && (isDirectTurnAdmissionBlocked(sessionId) || this.svc.sessionsProcessingQueue.has(sessionId))) {
+    if (sessionId && !queued && isTurnRecoveryQuarantined(sessionId)) {
+      // A timeout cannot make a live cleanup write safe to race with another
+      // provider turn. Accept the input durably without entering that turn.
+      const { getQueuedPromptsStore } = await import('../RepositoryManager');
+      const { remoteSessions } = await import('./remoteSessions');
+      await remoteSessions.assertLocalExecution(sessionId);
+      const id = `local-${randomUUID()}`;
+      await getQueuedPromptsStore().create({
+        id, sessionId, prompt: message,
+        attachments: (documentContext as any)?.attachments,
+        documentContext,
+      });
+      // Persistence is the acceptance boundary. Notification or wake failure
+      // must not reject a saved input and make the composer offer it twice.
+      try { safeSend(event, 'ai:queuedPromptsReceived', { sessionId, promptCount: 1 }); }
+      catch (error) { logger.main.error('[AIService] Failed to notify quarantined input:', error); }
+      try {
+        void this.svc.publishQueueStateToSync(sessionId).catch(error => logger.main.error('[AIService] Failed to publish quarantined input:', error));
+      } catch (error) { logger.main.error('[AIService] Failed to publish quarantined input:', error); }
+      try { if (workspacePath) this.svc.requestQueueDrive(sessionId, workspacePath, 'renderer-trigger'); }
+      catch (error) { logger.main.error('[AIService] Failed to drive quarantined input:', error); }
+      return { content: '', queued: true };
+    }
+    if (sessionId && !queued && isDirectTurnAdmissionBlocked(sessionId)) {
       throw new TurnControlPendingError();
     }
     const turn = sessionId ? beginSessionTurn(sessionId) : undefined;
     try { return await this.handleTurn(event, message, documentContext, sessionId, workspacePath, turn); }
     catch (error) {
-      if (error instanceof TurnSetupCancelledError && turn?.providerEntered) {
-        error.providerEntered = true;
-        error.message = 'The turn stopped after provider delivery began. The saved input will not be queued again automatically.';
+      if (error instanceof TurnSetupCancelledError && turn?.deliveryMayHaveStarted) {
+        error.providerEntered = !!turn.providerEntered;
+        error.deliveryMayHaveStarted = true;
+        error.message = 'The turn stopped after delivery was attempted. Acceptance may be unknown. The saved input is available for explicit retry and will not be queued again automatically.';
       }
       throw error;
     }
@@ -1534,9 +1560,10 @@ export class MessageStreamingHandler {
       // Awaited so it can never cancel the resume this same turn schedules on its own limit error.
       await cancelUsageLimitResume(session.id).catch(error => logger.main.error('[AIService] Failed to cancel usage-limit resume:', error));
       await awaitSessionTurnControl(hostTurn);
-      if (hostTurn) hostTurn.providerEntered = true;
+      if (hostTurn) hostTurn.deliveryMayHaveStarted = true;
       for await (const chunk of provider.sendMessage(messageToSend, contextWithSession, session.id, sessionMessages, effectiveWorkspacePath, attachments, toolLoopTools, toolLoopSystemPrompt)) {
         if (!chunk) continue;
+        if (hostTurn) hostTurn.providerEntered = true;
         chunkCount++;
 
         if (!firstChunkTime) {

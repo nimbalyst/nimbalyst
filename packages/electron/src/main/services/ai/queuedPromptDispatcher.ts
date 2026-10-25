@@ -249,7 +249,7 @@ export async function dispatchClaimedQueuedPrompt(
           completed.add(promptId);
         }
       } catch (queueError) {
-        if (queueError instanceof TurnSetupCancelledError && !queueError.providerEntered) {
+        if (queueError instanceof TurnSetupCancelledError && !queueError.providerEntered && !queueError.deliveryMayHaveStarted) {
           cancelledSetup = true;
           try {
             await returnToPending();
@@ -389,7 +389,12 @@ export async function tryClaimAndDispatchNextQueuedPrompt(
 
   const claimToken = processingSet.beginClaim(sessionId);
   if (!claimToken) return false;
-  const claimTurn = beginSessionTurn(sessionId);
+  let claimTurn: ReturnType<typeof beginSessionTurn>;
+  try { claimTurn = beginSessionTurn(sessionId); }
+  catch (error) {
+    processingSet.endClaim(sessionId, claimToken);
+    throw error;
+  }
   let preClaim = true;
   const retireRead = () => {
     if (!preClaim) return;

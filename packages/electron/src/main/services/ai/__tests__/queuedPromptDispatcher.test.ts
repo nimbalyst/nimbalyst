@@ -60,6 +60,31 @@ function lateHoldFixture(phase: string, agentRows = false) {
 }
 
 describe('queuedPromptDispatcher', () => {
+  it('releases its claim lease if control begins during turn registration', async () => {
+    const fixture = lateHoldFixture('none');
+    let release!: () => void;
+    const parked = new Promise<void>(resolve => { release = resolve; });
+    let control: Promise<unknown> | undefined;
+    const guard = fixture.options.processingSet;
+    const beginClaim = guard.beginClaim.bind(guard);
+    vi.spyOn(guard, 'beginClaim').mockImplementationOnce(id => {
+      const token = beginClaim(id);
+      control = performTurnInterruption({
+        sessionId: id, mode: 'stop', provider: null, guard, isCurrentProvider: () => true,
+        retireInbox: () => parked, sweep: async () => {}, settle: async () => {},
+        drive: async () => {}, logError: vi.fn(),
+      });
+      return token;
+    });
+    try {
+      await expect(tryClaimAndDispatchNextQueuedPrompt(fixture.options)).rejects.toThrow('Cancellation is still finishing');
+      expect(guard.has('s1')).toBe(false);
+      expect(fixture.queueStore.claim).not.toHaveBeenCalled();
+    } finally { release(); await control; }
+    expect(await tryClaimAndDispatchNextQueuedPrompt(fixture.options)).toBe(true);
+    await new Promise<void>(resolve => setImmediate(resolve));
+    expect(fixture.options.sendMessageHandler).toHaveBeenCalledOnce();
+  });
   it('returns every scheduled undelivered claim when cancellation wins before handoff', async () => {
     vi.useFakeTimers();
     const fixture = lateHoldFixture('none', true);

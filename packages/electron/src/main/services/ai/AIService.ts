@@ -506,9 +506,27 @@ export class AIService {
    * proposal still waiting on them instead of waiting for it (NIM-7642).
    * Meta-agent interrupts leave it unset.
    */
-  public async interruptCurrentTurn(
+  private interruptRequests?: Map<string, Promise<InterruptCurrentTurnResult>>;
+
+  public interruptCurrentTurn(
     sessionId: string,
     options: { userSendNow?: boolean } = {},
+  ): Promise<InterruptCurrentTurnResult> {
+    // Coalesce at the public entry, before asynchronous provider lookup. Two
+    // simultaneous IPC presses must not let the second interrupt a successor.
+    const requests = this.interruptRequests ??= new Map();
+    const existing = requests.get(sessionId);
+    if (existing) return existing;
+    const result = this.interruptCurrentTurnOnce(sessionId, options).finally(() => {
+      if (requests.get(sessionId) === result) requests.delete(sessionId);
+    });
+    requests.set(sessionId, result);
+    return result;
+  }
+
+  private async interruptCurrentTurnOnce(
+    sessionId: string,
+    options: { userSendNow?: boolean },
   ): Promise<InterruptCurrentTurnResult> {
     if (!sessionId) {
       throw new Error('Session ID is required to interrupt');

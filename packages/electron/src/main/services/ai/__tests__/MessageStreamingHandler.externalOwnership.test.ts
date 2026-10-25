@@ -7,6 +7,8 @@ import * as path from 'node:path';
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
+  queue: undefined as any,
+  handlers: new Map<string, (...args: any[]) => any>(),
   claim: vi.fn(),
   cancelUsageLimitResume: vi.fn(async () => {}),
   windowStates: new Map<number, { workspacePath: string }>(),
@@ -23,6 +25,11 @@ const mocks = vi.hoisted(() => ({
     // No follow-up adopted the turn's query: the not-executing publish proceeds.
     getSessionState: vi.fn(() => undefined),
   },
+}));
+vi.mock('../../RepositoryManager', () => ({ getQueuedPromptsStore: () => mocks.queue }));
+vi.mock('../../../utils/ipcRegistry', () => ({
+  safeHandle: (name: string, handler: (...args: any[]) => any) => mocks.handlers.set(name, handler),
+  safeOn: vi.fn(), safeOnce: vi.fn(), removeHandler: vi.fn(), removeAllListeners: vi.fn(), isHandlerRegistered: () => false,
 }));
 
 // MessageStreamingHandler pulls in most of the main process. Everything below
@@ -67,7 +74,8 @@ vi.mock("@nimbalyst/runtime/storage/repositories/AISessionsRepository", () => ({
   AISessionsRepository: { get: vi.fn() },
 }));
 
-vi.mock("@nimbalyst/runtime/ai/modelConstants", () => ({
+vi.mock("@nimbalyst/runtime/ai/modelConstants", async (importOriginal) => ({
+  ...await importOriginal<typeof import('@nimbalyst/runtime/ai/modelConstants')>(),
   resolveClaudeCodeParentContextWindow: vi.fn(),
 }));
 
@@ -148,6 +156,7 @@ vi.mock("../../../HistoryManager", () => ({
 
 vi.mock("../../../file/WorkspaceEventBus", () => ({
   addGitignoreBypass: vi.fn(),
+  drainWorkspaceEvents: vi.fn(() => []),
 }));
 
 vi.mock("../../SyncManager", () => ({
@@ -227,11 +236,14 @@ import { MessageStreamingHandler } from "../MessageStreamingHandler";
 import { logger } from "../../../utils/logger";
 import { resolveClaudeCodeParentContextWindow } from "@nimbalyst/runtime/ai/modelConstants";
 import { resetPushOutcomeWarnings } from "@nimbalyst/runtime/sync/pushOutcome";
-import { isTurnControlPending, performTurnInterruption } from '../sessionTurnControl';
+import { isTurnControlPending, isTurnAdmissionBlocked, performTurnInterruption } from '../sessionTurnControl';
 import { TurnSetupCancelledError } from '../turnSetupStages';
 import { SessionProcessingGuard, tryClaimAndDispatchNextQueuedPrompt } from '../queuedPromptDispatcher';
 import { createPGLiteQueuedPromptsStore } from '../../PGLiteQueuedPromptsStore';
 import { SQLiteDatabase } from '../../../database/sqlite/SQLiteDatabase';
+import { AIService } from '../AIService';
+import { registerTurnControlHandlers } from '../ipc/registerTurnControlHandlers';
+import { AISessionsRepository } from '@nimbalyst/runtime/storage/repositories/AISessionsRepository';
 
 /**
  * OpenCode replaces its whole config on every `initialize`, which is how the
@@ -312,6 +324,7 @@ async function runTurn(options: {
     buildClaudeCodeRuntimeConfig: vi.fn(),
     tryDispatchNextQueuedPrompt: vi.fn(async () => false),
     requestQueueDrive: vi.fn(),
+    publishQueueStateToSync: vi.fn(async () => {}),
     createToolHandler: vi.fn(() => vi.fn()),
   };
 
@@ -323,6 +336,146 @@ async function runTurn(options: {
 }
 
 describe("MessageStreamingHandler external ownership", () => {
+  it.each([false, true])('distinguishes attempted delivery from a first provider response (response: %s)', async responds => {
+    class UncertainProvider extends RecordingProvider {
+      async *sendMessage() {
+        if (responds) yield { type: 'text', content: 'received' };
+        throw new TurnSetupCancelledError();
+      }
+    }
+    await runTurn({ session: openCodeSession(), provider: new UncertainProvider(), runWithHandler: async (handler, event) => {
+      await expect(handler.handle(event, 'Input', undefined, 'opencode-session', '/workspace')).rejects.toMatchObject({
+        deliveryMayHaveStarted: true, providerEntered: responds,
+      });
+    } });
+  });
+
+  it('two real Send Now IPC presses retire the old handler and run one internal queued successor', async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nim-real-double-lightning-'));
+    const db = new SQLiteDatabase({ dbDir: dir, schemaDir: path.resolve(__dirname, '../../../database/sqlite/schemas') });
+    await db.initialize();
+    await db.query("INSERT INTO ai_sessions(id, provider, title) VALUES ('opencode-session', 'opencode', 'test')");
+    const queue = createPGLiteQueuedPromptsStore(db as never);
+    mocks.queue = queue;
+    const text = 'One queued correction\n  exact original text.';
+    await queue.create({ id: 'ipc-successor', sessionId: 'opencode-session', prompt: text });
+    let release!: () => void;
+    let enter!: () => void;
+    const parked = new Promise<void>(resolve => { release = resolve; });
+    const entered = new Promise<void>(resolve => { enter = resolve; });
+    let calls = 0;
+    class InterruptibleProvider extends RecordingProvider {
+      interruptCurrentTurn = vi.fn(async () => { release(); return { method: 'interrupt' as const }; });
+      abort = vi.fn(() => release());
+      async *sendMessage() {
+        if (++calls === 1) { enter(); await parked; return; }
+        await db.query("INSERT INTO ai_agent_messages(session_id, source, direction, content, created_at) VALUES ('opencode-session', 'test', 'input', $1, $2)", [text, new Date().toISOString()]);
+      }
+    }
+    const provider = new InterruptibleProvider();
+    // Concurrent dynamic imports can resolve the actual repository namespace
+    // in Vitest; provide its test-only adapter as well as the static mock.
+    const actualRepository = await vi.importActual<typeof import('@nimbalyst/runtime/storage/repositories/AISessionsRepository')>('@nimbalyst/runtime/storage/repositories/AISessionsRepository');
+    actualRepository.AISessionsRepository.setStore({ get: async () => ({ provider: 'opencode', workspacePath: '/workspace' }) } as any);
+    try {
+      await runTurn({ session: openCodeSession(), provider, runWithHandler: async (handler, event, service) => {
+        const guard = new SessionProcessingGuard();
+        service.sessionsProcessingQueue = guard;
+        service.forceSessionIdleOnCancel = vi.fn(async () => {});
+        Object.setPrototypeOf(service, AIService.prototype);
+        mocks.providerFactory.getProvider.mockReturnValue(provider);
+        vi.mocked(AISessionsRepository.get).mockResolvedValue({ provider: 'opencode', workspacePath: '/workspace' } as any);
+        let sawPostFenceReservation = false;
+        service.driveQueuedPrompts = vi.fn(async () => {
+          sawPostFenceReservation = !isTurnControlPending('opencode-session');
+          await expect(handler.handle(event, 'Competing normal input', undefined, 'opencode-session', '/workspace')).rejects.toThrow('back in the composer');
+          const sent = await tryClaimAndDispatchNextQueuedPrompt({
+            queueStore: queue, processingSet: guard, sendMessageHandler: handler.handleQueued,
+            startSession: async () => {}, continueQueuedPromptChain: async () => {}, onPromptClaimed: vi.fn(), logInfo: vi.fn(), logError: vi.fn(),
+            sessionId: 'opencode-session', workspacePath: '/workspace', source: 'real-double-IPC',
+            targetWindow: { isDestroyed: () => false, webContents: { ...event.sender, mainFrame: {} } } as any,
+          });
+          return { kind: sent ? 'dispatched' : 'nothing-pending' };
+        });
+        service.invalidateQueueDrive = vi.fn();
+        registerTurnControlHandlers({
+          analytics: service.analytics, sessionsProcessingQueue: guard,
+          interruptCurrentTurn: (id: string) => AIService.prototype.interruptCurrentTurn.call(service, id),
+        } as any);
+        const old = handler.handle(event, 'Old running input', undefined, 'opencode-session', '/workspace');
+        await entered;
+        const invoke = mocks.handlers.get('ai:interruptCurrentTurn')!;
+        const [a, b] = await Promise.all([invoke(event, 'opencode-session'), invoke(event, 'opencode-session')]);
+        await old;
+        expect(a.success).toBe(true);
+        expect(b.success).toBe(true);
+        await vi.waitFor(async () => expect((await queue.get('ipc-successor'))?.status).toBe('completed'));
+        expect(provider.interruptCurrentTurn).toHaveBeenCalledOnce();
+        expect(service.driveQueuedPrompts).toHaveBeenCalledOnce();
+        expect(sawPostFenceReservation).toBe(true);
+        expect(calls).toBe(2);
+        expect((await db.query<{ content: string }>("SELECT content FROM ai_agent_messages WHERE direction='input'")).rows.map(row => row.content)).toEqual([text]);
+      } });
+    } finally { actualRepository.AISessionsRepository.clearStore(); release(); await db.close(); fs.rmSync(dir, { recursive: true }); }
+  });
+  it.each([
+    ['retireInbox', 'none'], ['sweep', 'none'], ['settle', 'none'],
+    ['sweep', 'notify'], ['sweep', 'publish'], ['sweep', 'drive'],
+  ] as const)('accepts new input while %s remains quarantined (post-save failure: %s)', async (stalledStep, sideEffect) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nim-quarantined-input-'));
+    const db = new SQLiteDatabase({ dbDir: dir, schemaDir: path.resolve(__dirname, '../../../database/sqlite/schemas') });
+    await db.initialize();
+    await db.query("INSERT INTO ai_sessions(id, provider, title) VALUES ('opencode-session', 'opencode', 'test')");
+    const queue = createPGLiteQueuedPromptsStore(db as never);
+    mocks.queue = queue;
+    await queue.create({ id: 'stranded-original', sessionId: 'opencode-session', prompt: 'Original preserved text' });
+    let release!: () => void;
+    let enter!: () => void;
+    const parked = new Promise<void>(resolve => { release = resolve; });
+    const entered = new Promise<void>(resolve => { enter = resolve; });
+    const provider = new RecordingProvider();
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      await runTurn({ session: openCodeSession(), provider, runWithHandler: async (handler, event, service) => {
+        const control = performTurnInterruption({
+          sessionId: 'opencode-session', mode: 'stop', provider: null, isCurrentProvider: () => true, guard: new SessionProcessingGuard(),
+          retireInbox: async () => {}, sweep: async () => {}, settle: async () => {},
+          [stalledStep]: async () => { enter(); await parked; },
+          drive: async () => {}, logError: vi.fn(), timeouts: { stageMs: 20 },
+        });
+        await entered;
+        try {
+          await vi.advanceTimersByTimeAsync(20);
+          const stopped = await control;
+          expect(stopped.success).toBe(false);
+          expect(isTurnAdmissionBlocked('opencode-session')).toBe(true);
+          const attachments = [{ id: 'attachment', name: 'keep.txt' }];
+          const fail = () => { throw new Error('post-save side effect failed'); };
+          if (sideEffect === 'notify') event.sender.send.mockImplementationOnce(fail);
+          if (sideEffect === 'publish') service.publishQueueStateToSync.mockImplementationOnce(fail);
+          if (sideEffect === 'drive') service.requestQueueDrive.mockImplementationOnce(fail);
+          await expect(handler.handle(event, 'Fresh input\n  original spacing', { attachments, inputType: 'user' } as any, 'opencode-session', '/workspace')).resolves.toMatchObject({ queued: true });
+          const pending = await queue.listPending('opencode-session');
+          expect(pending.map(row => row.prompt)).toEqual(['Original preserved text', 'Fresh input\n  original spacing']);
+          expect(pending[1].attachments).toEqual(attachments);
+          expect(provider.requestConfigs).toHaveLength(0);
+          expect(event.sender.send).toHaveBeenCalledWith('ai:queuedPromptsReceived', expect.objectContaining({ sessionId: 'opencode-session' }));
+        } finally {
+          release();
+          await vi.advanceTimersByTimeAsync(0);
+          await vi.waitFor(() => expect(isTurnAdmissionBlocked('opencode-session')).toBe(false));
+        }
+      } });
+    } finally { vi.useRealTimers(); release(); await db.close(); fs.rmSync(dir, { recursive: true }); }
+  });
+  it('preserves direct entry during an ordinary queued chain without a control reservation', async () => {
+    const provider = new RecordingProvider();
+    await runTurn({ session: openCodeSession(), provider, runWithHandler: async (handler, event, service) => {
+      service.sessionsProcessingQueue.add('opencode-session');
+      await expect(handler.handle(event, 'Ordinary direct input', undefined, 'opencode-session', '/workspace')).resolves.toEqual({ content: '' });
+      expect(provider.requestConfigs).toHaveLength(1);
+    } });
+  });
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.windowStates.clear();

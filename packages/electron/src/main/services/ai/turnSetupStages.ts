@@ -19,6 +19,7 @@ import { logger } from '../../utils/logger';
 
 export class TurnSetupCancelledError extends Error {
   providerEntered = false;
+  deliveryMayHaveStarted = false;
   constructor() {
     super('Stopped before the agent started. Your message is back in the composer.');
     this.name = 'TurnSetupCancelledError';
