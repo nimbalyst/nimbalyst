@@ -275,45 +275,45 @@ export async function dispatchClaimedQueuedPrompt(
         const released = processingSet.releaseIfOwner(sessionId, guardToken);
         if (cancelledSetup) {
           if (released && returnedCancelledClaims) onDispatchDeferred?.();
-          return;
-        }
-        // A replacement dispatch owns continuation and settlement as well as
-        // the guard. A displaced turn must not report the child finished.
-        if (!released) return;
-        // NIM-7428: the turn ended by waking the session with background-task
-        // results. That wake turn's own completion continues the queue, ends the
-        // session and reports to the parent; doing it here would end a running
-        // session, or send a prompt that aborts the wake and drops its results.
-        if (isLeadTurnPending?.()) {
-          logInfo?.(`[AIService] ${source} finally: session ${sessionId} woke for background results; its wake turn owns the queue`);
-          return;
-        }
-        try {
-          await continueQueuedPromptChain(
-            sessionId,
-            workspacePath,
-            targetWindow,
-            `${source} finally`,
-          );
-        } catch (chainErr) {
-          logError(`[AIService] ${source} finally: error checking for pending prompts:`, chainErr);
-        }
-        // If no follow-on prompt was dispatched, the chain has fully settled.
-        // The inner sendMessage's completion handler deferred endSession because
-        // processingSet still contained this session (we hadn't reached this
-        // delete yet), so nobody has marked the session idle. Do it now.
-        if (!processingSet.has(sessionId) && onChainSettled) {
-          try {
-            await onChainSettled({ sessionId, workspacePath, source });
-          } catch (settledErr) {
-            logError(`[AIService] ${source} finally: chain-settled hook failed:`, settledErr);
+        } else {
+          // A replacement dispatch owns continuation and settlement as well as
+          // the guard. A displaced turn must not report the child finished.
+          if (!released) return;
+          // NIM-7428: the turn ended by waking the session with background-task
+          // results. That wake turn's own completion continues the queue, ends the
+          // session and reports to the parent; doing it here would end a running
+          // session, or send a prompt that aborts the wake and drops its results.
+          if (isLeadTurnPending?.()) {
+            logInfo?.(`[AIService] ${source} finally: session ${sessionId} woke for background results; its wake turn owns the queue`);
+            return;
           }
-        }
-        if (onAfterSettled) {
           try {
-            await onAfterSettled();
-          } catch (afterErr) {
-            logError(`[AIService] ${source} finally: post-settle hook failed:`, afterErr);
+            await continueQueuedPromptChain(
+              sessionId,
+              workspacePath,
+              targetWindow,
+              `${source} finally`,
+            );
+          } catch (chainErr) {
+            logError(`[AIService] ${source} finally: error checking for pending prompts:`, chainErr);
+          }
+          // If no follow-on prompt was dispatched, the chain has fully settled.
+          // The inner sendMessage's completion handler deferred endSession because
+          // processingSet still contained this session (we hadn't reached this
+          // delete yet), so nobody has marked the session idle. Do it now.
+          if (!processingSet.has(sessionId) && onChainSettled) {
+            try {
+              await onChainSettled({ sessionId, workspacePath, source });
+            } catch (settledErr) {
+              logError(`[AIService] ${source} finally: chain-settled hook failed:`, settledErr);
+            }
+          }
+          if (onAfterSettled) {
+            try {
+              await onAfterSettled();
+            } catch (afterErr) {
+              logError(`[AIService] ${source} finally: post-settle hook failed:`, afterErr);
+            }
           }
         }
       }
