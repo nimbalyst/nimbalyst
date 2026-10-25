@@ -1305,6 +1305,62 @@ describe('CodexAppServerProtocol', () => {
     }
   });
 
+  it.each(['stale-root-terminal', 'foreign-thread-terminal', 'failed-interrupt'])('keeps unproven or rejected cancellation latched (%s)', async ordering => {
+    const protocol = new CodexAppServerProtocol();
+    const recoveryError = vi.fn();
+    protocol.setCancellationRecoveryErrorListener(recoveryError);
+    const creating = protocol.createSession({ workspacePath: '/tmp/ws' });
+    const init = await nextWrittenMatching(child, 'initialize');
+    child.emitLine({ id: init.id, result: {} });
+    const start = await nextWrittenMatching(child, 'thread/start');
+    child.emitLine({ id: start.id, result: { thread: { id: 'latched-root' } } });
+    const session = await creating;
+    const controller = new AbortController();
+    const old = (async () => {
+      for await (const event of protocol.sendMessage(session, { content: 'old', sessionId: 'latched-owner', abortSignal: controller.signal })) void event;
+    })();
+    try {
+      const turn = await nextWrittenMatching(child, 'turn/start');
+      controller.abort();
+      await old;
+      const raw = session.raw as any;
+      const fence = [...raw.cancelledStarts][0] as Promise<void>;
+      expect(raw.cancelledStarts.size).toBe(1);
+      if (ordering !== 'failed-interrupt') {
+        // A terminal with no reply ID cannot establish ownership, even if
+        // its thread matches. Foreign-thread packets are equally insufficient.
+        child.emitLine({ method: 'turn/completed', params: {
+          threadId: ordering === 'stale-root-terminal' ? 'latched-root' : 'foreign-thread',
+          turn: { id: 'uncorrelated-turn', status: 'completed' },
+        } });
+        child.emitLine({ id: turn.id, result: { turn: {} } });
+      } else {
+        child.emitLine({ id: turn.id, result: { turn: { id: 'failed-old-turn' } } });
+        const interrupt = await nextWrittenMatching(child, 'turn/interrupt');
+        expect(interrupt.params).toEqual({ threadId: 'latched-root', turnId: 'failed-old-turn' });
+        child.emitLine({ id: interrupt.id, error: { code: -1, message: 'Interrupt refused' } });
+      }
+      await expect(fence).rejects.toBeInstanceOf(CodexStartRecoveryPendingError);
+      await vi.waitFor(() => expect(recoveryError).toHaveBeenCalledTimes(1));
+      expect(recoveryError).toHaveBeenCalledWith('latched-owner', expect.stringContaining('Restart the app'));
+      // Rejection is terminal for promise state, not proof native work ended.
+      // Even a later exact terminal cannot convert that failure into success.
+      const nativeWritesBeforeLateTerminal = child.writtenLines.length;
+      child.emitLine({ method: 'turn/completed', params: { threadId: 'latched-root', turn: { id: 'failed-old-turn', status: 'completed' } } });
+      await new Promise<void>(resolve => setImmediate(resolve));
+      expect(child.writtenLines).toHaveLength(nativeWritesBeforeLateTerminal);
+      expect(raw.cancelledStarts.size).toBe(1);
+      expect(raw.cancelledStarts.has(fence)).toBe(true);
+      await expect(fence).rejects.toBeInstanceOf(CodexStartRecoveryPendingError);
+      expect(recoveryError).toHaveBeenCalledTimes(1);
+      expect(child.writtenLines.filter((line: any) => line.method === 'turn/start')).toHaveLength(1);
+      expect(child.killed).toBe(false);
+    } finally {
+      protocol.cleanupSession(session);
+      await old;
+    }
+  });
+
   it.each(['terminal', 'dispose-after-timeout', 'dispose-during-wait'])('bounds recovery of a cancelled native turn without bypassing its fence (%s)', async recovery => {
     const protocol = new CodexAppServerProtocol();
     const creating = protocol.createSession({ workspacePath: '/tmp/ws' });

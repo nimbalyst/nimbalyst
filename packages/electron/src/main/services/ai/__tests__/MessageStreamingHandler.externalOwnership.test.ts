@@ -516,12 +516,26 @@ describe("MessageStreamingHandler external ownership", () => {
             release({ turn: { id: 'cancelled-turn' } });
             await old;
             await vi.waitFor(() => expect(guard.has('opencode-session')).toBe(false));
+            const ownedListeners = provider.listeners('session:recovery-error');
+            provider.emit('session:recovery-disposed', { sessionId: 'foreign-session' });
+            expect(provider.listeners('session:recovery-error')).toEqual(ownedListeners);
+            const unrelatedObserver = vi.fn();
+            provider.on('session:recovery-error', unrelatedObserver);
+            provider.cleanupSession('opencode-session');
+            expect(provider.listeners('session:recovery-error')).toEqual([unrelatedObserver]);
+            provider.cleanupSession('opencode-session');
+            expect(provider.listeners('session:recovery-error')).toEqual([unrelatedObserver]);
+            provider.off('session:recovery-error', unrelatedObserver);
+            expect(provider.listenerCount('session:recovery-error')).toBe(0);
+            expect(provider.listenerCount('session:recovery-disposed')).toBe(0);
           }
         },
       });
     } finally {
       provider.destroy();
       expect(recoveryListener).toHaveBeenLastCalledWith();
+      expect(provider.listenerCount('session:recovery-error')).toBe(0);
+      expect(provider.listenerCount('session:recovery-disposed')).toBe(0);
       mocks.providerFactory.getProvider.mockReset();
       await db.close();
       fs.rmSync(dir, { recursive: true });
