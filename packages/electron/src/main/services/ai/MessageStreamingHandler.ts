@@ -1254,6 +1254,17 @@ export class MessageStreamingHandler {
       void stateManager.updateActivity({ sessionId: session.id, status: 'error' })
         .catch(error => logger.main.error('[AIService] Failed to publish cancellation recovery state:', error));
     });
+    this.installListener(provider, 'session:recovery-disposed', (data: { sessionId: string }) => {
+      if (data?.sessionId !== session.id) return;
+      const listeners = this.providerListeners.get(provider);
+      for (const name of ['session:recovery-error', 'session:recovery-disposed']) {
+        const listener = listeners?.get(name);
+        if (listener) {
+          provider.off(name, listener);
+          listeners?.delete(name);
+        }
+      }
+    });
     await stateManager.startSession({
       sessionId: session.id,
       workspacePath: session.workspacePath || effectiveWorkspacePath,

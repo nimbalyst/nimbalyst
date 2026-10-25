@@ -325,10 +325,10 @@ export class CodexAppServerProtocol implements AgentProtocol {
     let nativeRetirement: Promise<void> | undefined;
     let resolveRetirement!: () => void;
     let rejectRetirement!: (error: unknown) => void;
-    let nativeRetirementResolved = false;
+    let nativeRetirementSettled = false;
     let recoveryErrorReported = false;
     const failRetirement = () => {
-      if (!nativeRetirement || nativeRetirementResolved || raw.cleanupStarted) return;
+      if (!nativeRetirement || nativeRetirementSettled || raw.cleanupStarted) return;
       rejectRetirement(new CodexStartRecoveryPendingError(true));
       if (!recoveryErrorReported && message.sessionId) {
         recoveryErrorReported = true;
@@ -414,8 +414,16 @@ export class CodexAppServerProtocol implements AgentProtocol {
     const onAbort = () => {
       if (!raw.cleanupStarted && turnStartIssued && !turnStartResolved && !nativeRetirement) {
         nativeRetirement = new Promise<void>((resolve, reject) => {
-          resolveRetirement = () => { nativeRetirementResolved = true; resolve(); };
-          rejectRetirement = reject;
+          resolveRetirement = () => {
+            if (nativeRetirementSettled) return;
+            nativeRetirementSettled = true;
+            resolve();
+          };
+          rejectRetirement = error => {
+            if (nativeRetirementSettled) return;
+            nativeRetirementSettled = true;
+            reject(error);
+          };
         });
         (raw.cancelledStarts ??= new Set()).add(nativeRetirement);
         const captured = nativeRetirement;
