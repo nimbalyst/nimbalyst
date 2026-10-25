@@ -153,9 +153,13 @@ interface AppServerSessionRaw {
   shellTracking?: CodexShellTrackingRegistration;
 }
 
+const CANCELLED_START_FAILURE = 'Codex could not confirm the stopped turn has ended. It may still be running and incurring usage. Restart the app to recover this session. Sending again will not recover it.';
+
 export class CodexStartRecoveryPendingError extends Error {
-  constructor() {
-    super('This session is recovering a cancelled Codex turn. This message has not been sent to Codex. Your text and attachments are kept in the composer. Wait for recovery or restart the app.');
+  constructor(restartRequired = false) {
+    super(restartRequired
+      ? `This message has not been sent to Codex. Your text and attachments are kept in the composer. ${CANCELLED_START_FAILURE}`
+      : 'This session is recovering a cancelled Codex turn. This message has not been sent to Codex. Your text and attachments are kept in the composer. Wait for recovery or restart the app.');
     this.name = 'CodexStartRecoveryPendingError';
   }
 }
@@ -170,6 +174,11 @@ export class CodexAppServerProtocol implements AgentProtocol {
   private readonly host: CodexAppServerHostBindings;
   private readonly clientInfo: { name: string; version: string };
   private readonly terminateProcessTree: (child: ChildProcessWithoutNullStreams) => void;
+  private cancellationRecoveryErrorListener?: (sessionId: string, message: string) => void;
+
+  setCancellationRecoveryErrorListener(listener?: (sessionId: string, message: string) => void): void {
+    this.cancellationRecoveryErrorListener = listener;
+  }
 
   constructor(options: CodexAppServerProtocolOptions = {}) {
     this.apiKey = options.apiKey ?? '';
@@ -277,12 +286,16 @@ export class CodexAppServerProtocol implements AgentProtocol {
     const abortSignal = message.abortSignal
       ?? (raw.options as unknown as { abortSignal?: AbortSignal })?.abortSignal
       ?? (session.raw as { options?: { abortSignal?: AbortSignal } })?.options?.abortSignal;
+    const waitingForCancelledStart = !!raw.cancelledStarts?.size;
     try {
       await this.waitForCancelledStarts(raw, abortSignal);
-    } catch {
-      if (!abortSignal?.aborted && !raw.cleanupStarted) throw new CodexStartRecoveryPendingError();
+    } catch (error) {
+      if (!raw.cleanupStarted && (!abortSignal?.aborted || waitingForCancelledStart)) {
+        throw error instanceof CodexStartRecoveryPendingError ? error : new CodexStartRecoveryPendingError();
+      }
       return;
     }
+    if (abortSignal?.aborted && waitingForCancelledStart && !raw.cleanupStarted) throw new CodexStartRecoveryPendingError();
     if (abortSignal?.aborted || raw.cleanupStarted) return;
 
     // Drain queue: notifications and one terminating turn event are pushed by
@@ -312,6 +325,17 @@ export class CodexAppServerProtocol implements AgentProtocol {
     let nativeRetirement: Promise<void> | undefined;
     let resolveRetirement!: () => void;
     let rejectRetirement!: (error: unknown) => void;
+    let nativeRetirementResolved = false;
+    let recoveryErrorReported = false;
+    const failRetirement = () => {
+      if (!nativeRetirement || nativeRetirementResolved || raw.cleanupStarted) return;
+      rejectRetirement(new CodexStartRecoveryPendingError(true));
+      if (!recoveryErrorReported && message.sessionId) {
+        recoveryErrorReported = true;
+        try { this.cancellationRecoveryErrorListener?.(message.sessionId, CANCELLED_START_FAILURE); }
+        catch (error) { console.warn('[CODEX][APPSERVER] cancellation recovery notification failed:', error); }
+      }
+    };
     const terminalTurns = new Set<string>();
     const pendingTurnNotifications: Array<{ method: string; params: unknown }> = [];
 
@@ -383,13 +407,16 @@ export class CodexAppServerProtocol implements AgentProtocol {
       const params: TurnInterruptParams = { threadId: raw.threadId, turnId: turnStartResultId };
       Promise.resolve(raw.client.request('turn/interrupt', params))
         .catch((err) => {
-          if (nativeRetirement) rejectRetirement(err);
+          failRetirement();
           console.warn('[CODEX][APPSERVER] turn/interrupt failed:', err);
         });
     };
     const onAbort = () => {
       if (!raw.cleanupStarted && turnStartIssued && !turnStartResolved && !nativeRetirement) {
-        nativeRetirement = new Promise<void>((resolve, reject) => { resolveRetirement = resolve; rejectRetirement = reject; });
+        nativeRetirement = new Promise<void>((resolve, reject) => {
+          resolveRetirement = () => { nativeRetirementResolved = true; resolve(); };
+          rejectRetirement = reject;
+        });
         (raw.cancelledStarts ??= new Set()).add(nativeRetirement);
         const captured = nativeRetirement;
         const cleanup = () => rejectRetirement(new Error('Codex session disposed during cancellation recovery.'));
@@ -427,7 +454,7 @@ export class CodexAppServerProtocol implements AgentProtocol {
         turnStartResolved = true;
         if (abortSignal?.aborted || retired) {
           if (nativeRetirement) {
-            if (!turnStartResultId) rejectRetirement(new Error('Cancelled turn/start returned no turn ID.'));
+            if (!turnStartResultId) failRetirement();
             else if (terminalTurns.has(turnStartResultId)) resolveRetirement();
             else requestInterrupt();
           }
@@ -437,7 +464,7 @@ export class CodexAppServerProtocol implements AgentProtocol {
         raw.activeTurnId = turnStartResultId;
         for (const pending of pendingTurnNotifications.splice(0)) dispatchOwnedNotification(pending.method, pending.params);
       }, error => {
-        if (nativeRetirement) rejectRetirement(error);
+        if (nativeRetirement) failRetirement();
         else if (!retired) push({ kind: 'fail', error: error instanceof Error ? error : new Error(String(error)) });
       });
 

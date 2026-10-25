@@ -1246,6 +1246,14 @@ export class MessageStreamingHandler {
 
     // Mark session as running/active
     const stateManager = getSessionStateManager();
+    // Native cancellation can fail after its host generator has retired.
+    // Retain the scoped subscription so an idle session still shows recovery.
+    this.installListener(provider, 'session:recovery-error', (data: { sessionId: string; message: string }) => {
+      if (data?.sessionId !== session.id) return;
+      safeSend(event, 'ai:error', data);
+      void stateManager.updateActivity({ sessionId: session.id, status: 'error' })
+        .catch(error => logger.main.error('[AIService] Failed to publish cancellation recovery state:', error));
+    });
     await stateManager.startSession({
       sessionId: session.id,
       workspacePath: session.workspacePath || effectiveWorkspacePath,
