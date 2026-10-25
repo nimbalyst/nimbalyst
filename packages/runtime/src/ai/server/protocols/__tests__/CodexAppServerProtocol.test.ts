@@ -149,6 +149,55 @@ describe('CodexAppServerProtocol', () => {
     if (!child.killed) child.kill();
   });
 
+  it.each(['shell-registration', 'initialize', 'hooks-trust', 'thread-start', 'thread-resume'])('owns cancelled native setup until %s settles without killing its child', async stage => {
+    let releaseRegistration!: () => void;
+    const registrationGate = new Promise<void>(resolve => { releaseRegistration = resolve; });
+    let registrationEntered!: () => void;
+    const entered = new Promise<void>(resolve => { registrationEntered = resolve; });
+    const registration = { command: 'fixture-hook', env: {}, dispose: vi.fn(), endTurn: vi.fn(), toolCompleted: vi.fn() };
+    if (stage === 'shell-registration' || stage === 'hooks-trust') setCodexShellTrackingHost(async () => {
+      registrationEntered();
+      if (stage === 'shell-registration') await registrationGate;
+      return registration;
+    });
+    const controller = new AbortController();
+    const terminate = vi.fn();
+    const protocol = new CodexAppServerProtocol({ terminateProcessTreeOverride: terminate });
+    const options = { workspacePath: '/tmp/ws', raw: { nimbalystSessionId: 'setup-owner', abortSignal: controller.signal } };
+    let settled = false;
+    const creating = (stage === 'thread-resume' ? protocol.resumeSession('setup-thread', options) : protocol.createSession(options)).finally(() => { settled = true; });
+    const stop = () => {
+      controller.abort();
+      expect(settled).toBe(false);
+      expect(terminate).not.toHaveBeenCalled();
+      expect(child.writtenLines.filter((line: any) => line.method === 'turn/start')).toEqual([]);
+    };
+    if (stage === 'shell-registration') { await entered; stop(); releaseRegistration(); }
+    const init = await nextWrittenMatching(child, 'initialize');
+    if (stage === 'initialize') stop();
+    child.emitLine({ id: init.id, result: {} });
+    if (stage === 'shell-registration' || stage === 'hooks-trust') {
+      const hooks = await nextWrittenMatching(child, 'hooks/list');
+      if (stage === 'hooks-trust') stop();
+      child.emitLine({ id: hooks.id, result: { data: [{ hooks: ['preToolUse', 'postToolUse'].map(eventName => ({
+        source: 'sessionFlags', handlerType: 'command', command: 'fixture-hook', matcher: '^(Bash|apply_patch|mcp__.*)$', eventName, key: eventName, currentHash: eventName, enabled: true,
+      })) }] } });
+    }
+    const thread = await nextWrittenMatching(child, stage === 'thread-resume' ? 'thread/resume' : 'thread/start');
+    if (stage === 'thread-start' || stage === 'thread-resume') stop();
+    child.emitLine({ id: thread.id, result: { thread: { id: 'setup-thread' } } });
+    const session = await creating;
+    expect(settled).toBe(true);
+    const cancelledSend = (async () => {
+      for await (const event of protocol.sendMessage(session, { content: 'must remain unsent', abortSignal: controller.signal })) void event;
+    })();
+    await expect(cancelledSend).rejects.toThrow('has not been sent to Codex');
+    expect(child.writtenLines.filter((line: any) => line.method === 'turn/start')).toEqual([]);
+    expect(terminate).not.toHaveBeenCalled();
+    protocol.cleanupSession(session);
+    expect(terminate).toHaveBeenCalledTimes(1);
+  });
+
   it.each(['start','resume'])('binds host hooks to %s and trusts only the exact session hook hashes',async(kind)=>{
     const dispose=vi.fn(),endTurn=vi.fn(),toolCompleted=vi.fn();
     const host=vi.fn(async()=>({command:'owned-hook',env:{NIMBALYST_SHELL_HOOK_URL:'http://fixture'},dispose,endTurn,toolCompleted}));setCodexShellTrackingHost(host);
