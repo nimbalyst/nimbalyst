@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 <!-- Bug fixes go here -->
+- Jump to question now goes to the newest open question instead of an older abandoned one, and returning to a session no longer scrolls back to a question you already saw.
 
 ### Removed
 <!-- Removed features go here -->
