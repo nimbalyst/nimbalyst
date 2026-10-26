@@ -96,7 +96,7 @@ import { dispatchQueuedPromptToClaudeCli } from './claudeCliQueueDispatch';
 import { publishQueuedPromptClaim } from './queuedPromptClaimEvents';
 import { canDispatchIntoDrain, isLeadTurnPending } from './drainFollowUp';
 import { hasLiveInteractivePrompt } from '../../mcp/tools/interactivePromptLiveness';
-import { isCommitProposalInFlight } from '@nimbalyst/runtime/ai/server/commitProposalInFlight';
+import { closeWaitingCommitProposals, isCommitProposalInFlight } from '@nimbalyst/runtime/ai/server/commitProposalInFlight';
 import { deferInterruptDuringCommit, deferUserSendNowDuringCommit } from './commitInterruptDeferral';
 import { ensureClaudeCliSession } from './claudeCliLauncherSingleton';
 import {
@@ -506,7 +506,10 @@ export class AIService {
    * proposal still waiting on them instead of waiting for it (NIM-7642).
    * Meta-agent interrupts leave it unset.
    */
-  private interruptRequests?: Map<string, Promise<InterruptCurrentTurnResult>>;
+  private interruptRequests?: Map<string, {
+    options: { userSendNow?: boolean };
+    result: Promise<InterruptCurrentTurnResult>;
+  }>;
 
   public interruptCurrentTurn(
     sessionId: string,
@@ -516,11 +519,18 @@ export class AIService {
     // simultaneous IPC presses must not let the second interrupt a successor.
     const requests = this.interruptRequests ??= new Map();
     const existing = requests.get(sessionId);
-    if (existing) return existing;
-    const result = this.interruptCurrentTurnOnce(sessionId, options).finally(() => {
-      if (requests.get(sessionId) === result) requests.delete(sessionId);
+    if (existing) {
+      if (!options.userSendNow) return existing.result;
+      // A user joining an ordinary interrupt still owns proposal dismissal.
+      // The shared options also preserve that intent in its deferred replay.
+      existing.options.userSendNow = true;
+      return closeWaitingCommitProposals(sessionId).then(() => existing.result);
+    }
+    const requestOptions = { ...options };
+    const result = this.interruptCurrentTurnOnce(sessionId, requestOptions).finally(() => {
+      if (requests.get(sessionId)?.result === result) requests.delete(sessionId);
     });
-    requests.set(sessionId, result);
+    requests.set(sessionId, { options: requestOptions, result });
     return result;
   }
 
@@ -538,7 +548,7 @@ export class AIService {
     const deferDuringCommit = options.userSendNow ? deferUserSendNowDuringCommit : deferInterruptDuringCommit;
     if (await deferDuringCommit(sessionId, {
       hasPendingPrompts: async (id) => (await (await import('../RepositoryManager')).getQueuedPromptsStore().listPending(id)).length > 0,
-      interrupt: (id) => this.interruptCurrentTurn(id),
+      interrupt: (id) => this.interruptCurrentTurn(id, options),
       drive: async (id) => {
         const row = await AISessionsRepository.get(id);
         const path = row?.worktreePath || row?.workspacePath;

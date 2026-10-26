@@ -51,6 +51,7 @@ import { SessionProcessingGuard, tryClaimAndDispatchNextQueuedPrompt } from '../
 import { beginSessionTurn } from '../sessionTurnControl';
 import { createPGLiteQueuedPromptsStore } from '../../PGLiteQueuedPromptsStore';
 import { SQLiteDatabase } from '../../../database/sqlite/SQLiteDatabase';
+import { beginCommitProposalCall, registerWaitingCommitProposal } from '@nimbalyst/runtime/ai/server/commitProposalInFlight';
 
 describe('desktop Stop / lightning with durable queue and question ownership', () => {
   let database: SQLiteDatabase;
@@ -102,7 +103,7 @@ describe('desktop Stop / lightning with durable queue and question ownership', (
       analytics: { sendEvent: vi.fn() }, sessionsProcessingQueue: processingSet,
       publishQueueStateToSync: service.publishQueueStateToSync,
       forceSessionIdleOnCancel: (id: string) => service.forceSessionIdleOnCancel(id),
-      interruptCurrentTurn: (id: string) => service.interruptCurrentTurn(id),
+      interruptCurrentTurn: (id: string, options?: { userSendNow?: boolean }) => service.interruptCurrentTurn(id, options),
       driveQueuedPrompts: service.driveQueuedPrompts,
       invalidateQueueDrive: (id: string) => service.invalidateQueueDrive(id),
     } as any);
@@ -191,7 +192,7 @@ describe('desktop Stop / lightning with durable queue and question ownership', (
       analytics: { sendEvent: vi.fn() }, sessionsProcessingQueue: guard,
       publishQueueStateToSync: service.publishQueueStateToSync,
       forceSessionIdleOnCancel: (id: string) => service.forceSessionIdleOnCancel(id),
-      interruptCurrentTurn: (id: string) => service.interruptCurrentTurn(id), driveQueuedPrompts: drive,
+      interruptCurrentTurn: (id: string, options?: { userSendNow?: boolean }) => service.interruptCurrentTurn(id, options), driveQueuedPrompts: drive,
       invalidateQueueDrive: (id: string) => service.invalidateQueueDrive(id),
     } as any);
     const result = await handlers.get(action === 'stop' ? 'ai:cancelRequest' : 'ai:interruptCurrentTurn')!({}, 's1');
@@ -204,6 +205,106 @@ describe('desktop Stop / lightning with durable queue and question ownership', (
     expect(abandon).toHaveBeenCalledOnce();
     expect(stateManager.state.status).toBe('idle');
     expect(await tryClaimAndDispatchNextQueuedPrompt(options)).toBe(false);
+  });
+
+  it.each(['user-first', 'meta-first', 'replay'] as const)('user Send Now closes a waiting commit proposal and sends queued text once after the old turn retires (%s)', async order => {
+    const text = 'Send this queued correction\n  exactly once after retirement.';
+    await storage.queue.create({ id: 'commit-next', sessionId: 's1', prompt: text });
+    const old = codexQuestionTurns.begin('s1');
+    const host = beginSessionTurn('s1');
+    const guard = new SessionProcessingGuard();
+    guard.acquire('s1');
+    const provider = { abort: vi.fn(), interruptCurrentTurn: vi.fn(async () => ({ method: 'interrupt' as const })) };
+    getProvider.mockReturnValue(provider);
+    const delivered: string[] = [];
+    const options = {
+      queueStore: storage.queue, processingSet: guard,
+      sendMessageHandler: vi.fn(async (_event, prompt: string) => {
+        expect(old.active).toBe(false);
+        delivered.push(prompt);
+        return { content: 'ok' };
+      }),
+      continueQueuedPromptChain: vi.fn(async () => {}), logError: vi.fn(), logInfo: vi.fn(), onPromptClaimed: vi.fn(),
+      startSession: vi.fn(async () => {}), sessionId: 's1', workspacePath: '/workspace', source: 'lightning',
+      targetWindow: { isDestroyed: () => false, webContents: { mainFrame: {} } } as any,
+    };
+    const drive = vi.fn(async () => ({
+      kind: await tryClaimAndDispatchNextQueuedPrompt(options) ? 'dispatched' : 'nothing-pending',
+    }));
+    const service = Object.assign(Object.create(AIService.prototype), {
+      sessionsProcessingQueue: guard, publishQueueStateToSync: vi.fn(async () => {}), driveQueuedPrompts: drive,
+    });
+    registerTurnControlHandlers({
+      analytics: { sendEvent: vi.fn() }, sessionsProcessingQueue: guard,
+      publishQueueStateToSync: service.publishQueueStateToSync,
+      forceSessionIdleOnCancel: (id: string) => service.forceSessionIdleOnCancel(id),
+      interruptCurrentTurn: (id: string, interruptOptions?: { userSendNow?: boolean }) => service.interruptCurrentTurn(id, interruptOptions),
+      driveQueuedPrompts: drive, invalidateQueueDrive: (id: string) => service.invalidateQueueDrive(id),
+    } as any);
+    const endCommit = beginCommitProposalCall('s1');
+    let withdraw = () => {};
+    const close = vi.fn(async () => {
+      withdraw();
+      // The real tool handler settles its call after closing the proposal.
+      setImmediate(endCommit);
+      return true;
+    });
+    withdraw = registerWaitingCommitProposal('s1', close);
+    let endReplay = () => {};
+    let withdrawReplay = () => {};
+    const closeReplay = vi.fn(async () => {
+      withdrawReplay();
+      setImmediate(endReplay);
+      return true;
+    });
+    const listPending = storage.queue.listPending.bind(storage.queue);
+    const pendingSpy = vi.spyOn(storage.queue, 'listPending');
+    let replayInstalled = false;
+    pendingSpy.mockImplementation(async (...args: unknown[]) => {
+      const rows = await listPending(...args);
+      // A second waiting proposal arrives at the replay's asynchronous read.
+      if (order === 'replay' && !replayInstalled) {
+        replayInstalled = true;
+        endReplay = beginCommitProposalCall('s1');
+        withdrawReplay = registerWaitingCommitProposal('s1', closeReplay);
+      }
+      return rows;
+    });
+    try {
+      const meta = order === 'meta-first' ? service.interruptCurrentTurn('s1') : undefined;
+      expect(close).not.toHaveBeenCalled();
+      const result = await handlers.get('ai:interruptCurrentTurn')!({}, 's1');
+      if (meta) await meta;
+      await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());
+      expect(result).toMatchObject({ success: false, deferred: 'commit-in-flight' });
+      if (order === 'replay') await vi.waitFor(() => expect(closeReplay).toHaveBeenCalledOnce());
+      await vi.waitFor(() => expect(provider.interruptCurrentTurn).toHaveBeenCalledOnce());
+      expect(delivered).toEqual([]);
+      expect(await storage.queue.get('commit-next')).toMatchObject({ status: 'pending', prompt: text });
+      expect(await tryClaimAndDispatchNextQueuedPrompt(options)).toBe(false);
+
+      // A second press while the first retires must share that operation.
+      const second = handlers.get('ai:interruptCurrentTurn')!({}, 's1');
+      host.finish();
+      expect(await second).toMatchObject({ success: true });
+      await vi.waitFor(async () => expect((await storage.queue.get('commit-next'))?.status).toBe('completed'));
+      expect(close).toHaveBeenCalledOnce();
+      expect(provider.interruptCurrentTurn).toHaveBeenCalledOnce();
+      expect(delivered).toEqual([text]);
+      expect(options.sendMessageHandler).toHaveBeenCalledOnce();
+      expect(options.logError).not.toHaveBeenCalled();
+      expect(await tryClaimAndDispatchNextQueuedPrompt(options)).toBe(false);
+    } finally {
+      withdrawReplay();
+      endReplay();
+      withdraw();
+      endCommit();
+      host.finish();
+      await new Promise<void>(resolve => setImmediate(resolve));
+      await new Promise<void>(resolve => setImmediate(resolve));
+      await vi.waitFor(() => expect(service.interruptRequests?.size ?? 0).toBe(0));
+      pendingSpy.mockRestore();
+    }
   });
 
 });
