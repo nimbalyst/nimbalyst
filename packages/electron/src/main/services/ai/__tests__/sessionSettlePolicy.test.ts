@@ -86,8 +86,8 @@ describe('shouldForceIdleOnCancel', () => {
     expect(shouldForceIdleOnCancel({ status: 'idle' })).toBe(false);
   });
 
-  it('leaves a session waiting for input alone', () => {
-    expect(shouldForceIdleOnCancel({ status: 'waiting_for_input' })).toBe(false);
+  it('clears a cancelled interactive turn after its captured owner retires', () => {
+    expect(shouldForceIdleOnCancel({ status: 'waiting_for_input' })).toBe(true);
   });
 
   it('handles an untracked session', () => {

@@ -67,6 +67,7 @@ export interface AIServiceContext {
 
   // --- queue + turn control -----------------------------------------------
   publishQueueStateToSync(sessionId: string): Promise<void>;
+  invalidateQueueDrive(sessionId: string, expected?: Promise<DriveOutcome | void>): void;
   driveQueuedPrompts(
     sessionId: string,
     workspacePath: string,

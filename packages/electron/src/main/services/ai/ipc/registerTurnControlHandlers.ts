@@ -13,6 +13,7 @@ import {
 } from '@nimbalyst/runtime/ai/server/types';
 import { agentCapabilitiesForProviderType } from '@nimbalyst/runtime/ai/server/agentCapabilities';
 import { safeSend } from '../aiServiceUtils';
+import { performTurnInterruption } from '../sessionTurnControl';
 import { cancelTurnSetup } from '../turnSetupStages';
 import type { AIServiceContext } from './AIServiceContext';
 
@@ -41,13 +42,8 @@ export function registerTurnControlHandlers(ctx: AIServiceContext): void {
       return { success: false, error: 'Session not found' };
     }
 
-    // A turn still in setup has no provider stream to abort yet. Without this
-    // it went on to call the provider after the user had cancelled.
-    if (cancelTurnSetup(sessionId)) {
-      logger.main.info(`[AIService] cancelRequest: stopping session ${sessionId} before its provider starts`);
-    }
-
     if (session.provider === 'claude-code-cli') {
+      cancelTurnSetup(sessionId);
       const terminalManager = getTerminalSessionManager();
       if (!terminalManager.isTerminalActive(sessionId)) {
         console.warn(`[AIService] Cancel failed - no active claude-code-cli terminal for session: ${sessionId}`);
@@ -65,7 +61,7 @@ export function registerTurnControlHandlers(ctx: AIServiceContext): void {
     }
 
     // console.log(`[AIService] Session found, provider type: ${session.provider}`);
-    const provider = ProviderFactory.getProvider(session.provider as AIProviderType, sessionId);
+    const provider = ProviderFactory.getProvider(session.provider as AIProviderType, sessionId) ?? null;
     // console.log(`[AIService] Provider lookup result: ${provider ? 'found' : 'NOT FOUND'}`);
     if (provider) {
       // Get provider type
@@ -78,46 +74,26 @@ export function registerTurnControlHandlers(ctx: AIServiceContext): void {
         reason: 'user_cancel'
       });
 
-      // Defensive cleanup: if the in-flight turn was processing a queued
-      // prompt, drop the in-memory guard and unwedge any DB row stuck in
-      // 'executing'. sweepExecutingForSession is delivery-aware -- a
-      // prompt whose user message already landed in ai_agent_messages is
-      // marked completed instead of rolled back, so the queue trigger
-      // that follows the abort doesn't immediately re-claim and re-send
-      // the same input (NIM-615). The delete also clears the guard's
-      // ownership lease, so when the dispatch this cancel displaced finally
-      // settles it releases nothing rather than releasing whatever prompt
-      // took the session next (#1018).
-      await sessionInbox.end(sessionInbox.current(sessionId), false).catch(err => logger.main.error('[AIService] Inbox retirement failed during interruption:', err));
-      ctx.sessionsProcessingQueue.delete(sessionId);
-      try {
-        const { getQueuedPromptsStore } = await import('../../RepositoryManager');
-        const queueStore = getQueuedPromptsStore();
-        const { completed, failed, rolledBack } = await queueStore.sweepExecutingForSession(sessionId);
-        if (completed > 0 || failed > 0 || rolledBack > 0) {
-          logger.main.info(
-            `[AIService] cancelRequest: swept session ${sessionId} -- ${completed} answered marked completed, ${failed} delivered-but-unanswered marked failed, ${rolledBack} undelivered rolled back`
-          );
-          await ctx.publishQueueStateToSync(sessionId);
-        }
-      } catch (sweepErr) {
-        logger.main.error('[AIService] cancelRequest: sweepExecutingForSession failed:', sweepErr);
-      }
-
-      provider.abort();
-      // console.log(`[AIService] Cancelled request for session ${sessionId}`);
       ctx.analytics.sendEvent('cancel_ai_request', {provider: providerType})
-      await ctx.forceSessionIdleOnCancel(sessionId);
-      return { success: true };
     }
-    // No live provider: the turn is already gone (e.g. it died on an in-band
-    // error chunk without settling). Cancel must still be authoritative --
-    // otherwise the stale 'running' state in SessionStateManager survives and
-    // the renderer's processing reconcile re-asserts the spinner seconds later.
-    await sessionInbox.end(sessionInbox.current(sessionId), false).catch(err => logger.main.error('[AIService] Inbox retirement failed during cancellation:', err));
-    console.warn(`[AIService] Cancel: no active provider for session ${sessionId} - clearing stale running state`);
-    await ctx.forceSessionIdleOnCancel(sessionId);
-    return { success: true };
+    const inbox = sessionInbox.current(sessionId);
+    return performTurnInterruption({
+      sessionId, mode: 'stop', provider, guard: ctx.sessionsProcessingQueue,
+      isCurrentProvider: () => (ProviderFactory.getProvider(session.provider as AIProviderType, sessionId) ?? null) === provider,
+      retireInbox: () => sessionInbox.end(inbox, false),
+      sweep: async () => {
+        const { getQueuedPromptsStore } = await import('../../RepositoryManager');
+        await getQueuedPromptsStore().sweepExecutingForSession(sessionId);
+        await ctx.publishQueueStateToSync(sessionId);
+      },
+      settle: () => ctx.forceSessionIdleOnCancel(sessionId),
+      invalidateDrive: (expected) => ctx.invalidateQueueDrive(sessionId, expected),
+      drive: () => {
+        const path = session.worktreePath || session.workspacePath;
+        return path ? ctx.driveQueuedPrompts(sessionId, path, 'renderer-trigger') : Promise.resolve();
+      },
+      logError: error => logger.main.error('[AIService] Turn cancellation failed:', error),
+    });
   });
 
   // Only the renderer's send-now invokes this (NIM-7642).

@@ -49,10 +49,12 @@ export function shouldSettleUnterminatedTurn(args: {
  * spinner a few seconds after every click. Cancel has to clear that state
  * itself. Sessions that are already idle are left alone so a stray click does
  * not emit a spurious `session:interrupted`.
+ * The desktop control calls this only after its captured host has retired,
+ * so a cancelled interactive wait must be cleared as well.
  */
 export function shouldForceIdleOnCancel(
   state: { status?: string; isStreaming?: boolean } | null | undefined
 ): boolean {
   if (!state) return false;
-  return state.status === 'running' || state.isStreaming === true;
+  return state.status === 'running' || state.status === 'waiting_for_input' || state.isStreaming === true;
 }

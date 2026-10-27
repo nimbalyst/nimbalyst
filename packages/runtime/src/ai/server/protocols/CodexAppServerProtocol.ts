@@ -1,3 +1,4 @@
+import { CodexPreparationCancelledError, withCodexSetupStage } from './codexAppServer/setupStage';
 import { buildCodexThreadStartParams } from './codexAppServer/threadConfiguration';
 import { validateCodexSandbox } from './codexAppServer/validateCodexSandbox';
 import { summarizeNotificationParams, extractNotificationRouting } from './codexAppServer/notificationDiagnostics';
@@ -134,7 +135,21 @@ interface AppServerSessionRaw {
   stderrTail: string[];
   /** Prevent duplicate cleanup from re-targeting a PID after it exits. */
   cleanupStarted: boolean;
+  /** Native starts cancelled before their replies; only exact terminal proof releases them. */
+  cancelledStarts?: Set<Promise<void>>;
+  cancelledStartCleanups?: Set<() => void>;
   shellTracking?: CodexShellTrackingRegistration;
+}
+
+const CANCELLED_START_FAILURE = 'Codex could not confirm the stopped turn has ended. It may still be running and incurring usage. Restart the app to recover this session. Sending again will not recover it.';
+
+export class CodexStartRecoveryPendingError extends Error {
+  constructor(restartRequired = false) {
+    super(restartRequired
+      ? `This message has not been sent to Codex. Your text and attachments are kept in the composer. ${CANCELLED_START_FAILURE}`
+      : 'This session is recovering a cancelled Codex turn. This message has not been sent to Codex. Your text and attachments are kept in the composer. Wait for recovery or restart the app.');
+    this.name = 'CodexStartRecoveryPendingError';
+  }
 }
 
 export class CodexAppServerProtocol implements AgentProtocol {
@@ -147,6 +162,11 @@ export class CodexAppServerProtocol implements AgentProtocol {
   private readonly host: CodexAppServerHostBindings;
   private readonly clientInfo: { name: string; version: string };
   private readonly terminateProcessTree: (child: ChildProcessWithoutNullStreams) => void;
+  private cancellationRecoveryErrorListener?: (sessionId: string, message: string) => void;
+
+  setCancellationRecoveryErrorListener(listener?: (sessionId: string, message: string) => void): void {
+    this.cancellationRecoveryErrorListener = listener;
+  }
 
   constructor(options: CodexAppServerProtocolOptions = {}) {
     this.apiKey = options.apiKey ?? '';
@@ -168,8 +188,8 @@ export class CodexAppServerProtocol implements AgentProtocol {
   async createSession(options: SessionOptions): Promise<ProtocolSession> {
     const raw = await this.spawnAndInit(options);
     const startParams = buildCodexThreadStartParams(raw.options);
-    const startResponse = await raw.client.request<ThreadStartResponse>('thread/start', startParams).then(async response => {
-      await validateCodexSandbox(response.sandbox, startParams.sandbox, raw.client);
+    const startResponse = await withCodexSetupStage(options.raw?.nimbalystSessionId as string | undefined, 'protocol-thread-start', () => raw.client.request<ThreadStartResponse>('thread/start', startParams)).then(async response => {
+      await withCodexSetupStage(options.raw?.nimbalystSessionId as string | undefined, 'protocol-sandbox-validation', () => validateCodexSandbox(response.sandbox, startParams.sandbox, raw.client, undefined, options.raw?.nimbalystSessionId as string | undefined));
       return response;
     }).catch(error => {
       this.killChild(raw);
@@ -217,8 +237,8 @@ export class CodexAppServerProtocol implements AgentProtocol {
       resumeParams.model = model;
     }
     try {
-      const resumeResponse = await raw.client.request<ThreadResumeResponse>('thread/resume', resumeParams);
-      await validateCodexSandbox(resumeResponse.sandbox, startParams.sandbox, raw.client);
+      const resumeResponse = await withCodexSetupStage(options.raw?.nimbalystSessionId as string | undefined, 'protocol-thread-resume', () => raw.client.request<ThreadResumeResponse>('thread/resume', resumeParams));
+      await withCodexSetupStage(options.raw?.nimbalystSessionId as string | undefined, 'protocol-sandbox-validation', () => validateCodexSandbox(resumeResponse.sandbox, startParams.sandbox, raw.client, undefined, options.raw?.nimbalystSessionId as string | undefined));
       raw.threadId = resumeResponse?.thread?.id ?? sessionId;
       // console.log('[CODEX][APPSERVER] thread resumed:', raw.threadId);
       return { id: raw.threadId, platform: this.platform, raw: raw as unknown as ProtocolSession['raw'] };
@@ -254,6 +274,18 @@ export class CodexAppServerProtocol implements AgentProtocol {
     const abortSignal = message.abortSignal
       ?? (raw.options as unknown as { abortSignal?: AbortSignal })?.abortSignal
       ?? (session.raw as { options?: { abortSignal?: AbortSignal } })?.options?.abortSignal;
+    const waitingForCancelledStart = !!raw.cancelledStarts?.size;
+    try {
+      await withCodexSetupStage(message.sessionId ?? raw.options.raw?.nimbalystSessionId as string | undefined, 'protocol-native-retirement', () => this.waitForCancelledStarts(raw, abortSignal));
+    } catch (error) {
+      if (!raw.cleanupStarted && (!abortSignal?.aborted || waitingForCancelledStart)) {
+        throw error instanceof CodexStartRecoveryPendingError ? error : new CodexStartRecoveryPendingError();
+      }
+      return;
+    }
+    if (abortSignal?.aborted && waitingForCancelledStart && !raw.cleanupStarted) throw new CodexStartRecoveryPendingError();
+    if (abortSignal?.aborted && !raw.cleanupStarted) throw new CodexPreparationCancelledError();
+    if (raw.cleanupStarted) return;
 
     // Drain queue: notifications and one terminating turn event are pushed by
     // the JsonRpcClient handler; the generator below awaits them.
@@ -276,6 +308,24 @@ export class CodexAppServerProtocol implements AgentProtocol {
     // one stdout chunk. Hold turn-scoped events until the response establishes
     // which turn this generator owns.
     let turnStartResolved = false;
+    let turnStartIssued = false;
+    let retired = false;
+    let turnStartResultId: string | null = null;
+    let nativeRetirement: Promise<void> | undefined;
+    let resolveRetirement!: () => void;
+    let rejectRetirement!: (error: unknown) => void;
+    let nativeRetirementSettled = false;
+    let recoveryErrorReported = false;
+    const failRetirement = () => {
+      if (!nativeRetirement || nativeRetirementSettled || raw.cleanupStarted) return;
+      rejectRetirement(new CodexStartRecoveryPendingError(true));
+      if (!recoveryErrorReported && message.sessionId) {
+        recoveryErrorReported = true;
+        try { this.cancellationRecoveryErrorListener?.(message.sessionId, CANCELLED_START_FAILURE); }
+        catch (error) { console.warn('[CODEX][APPSERVER] cancellation recovery notification failed:', error); }
+      }
+    };
+    const terminalTurns = new Set<string>();
     const pendingTurnNotifications: Array<{ method: string; params: unknown }> = [];
 
     const dispatchOwnedNotification = (method: string, params: unknown) => {
@@ -312,6 +362,12 @@ export class CodexAppServerProtocol implements AgentProtocol {
       }
     };
     const onNotification = (method: string, params: unknown) => {
+      const routing = extractNotificationRouting(params);
+      if (method === 'turn/completed' && routing.threadId === raw.threadId && routing.turnId) {
+        terminalTurns.add(routing.turnId);
+        if (nativeRetirement && turnStartResultId === routing.turnId) resolveRetirement();
+      }
+      if (retired || abortSignal?.aborted) return;
       dispatchOwnedNotification(method, params);
     };
     // Capture the unsubscribe so the next turn on this same ProtocolSession does
@@ -319,7 +375,7 @@ export class CodexAppServerProtocol implements AgentProtocol {
     // sendSessionNamingReminder (which runs a second sendMessage on the same
     // session) would double-process every notification: duplicate raw_event,
     // duplicate tool_call from a single item/completed, duplicate completion.
-    unsubscribers.push(raw.client.onNotification(onNotification));
+    const detachNotifications = raw.client.onNotification(onNotification);
 
     // Wake the pump on abort. Without this, a cancel that lands while we're
     // parked awaiting the next notification is never observed (the aborted
@@ -335,13 +391,40 @@ export class CodexAppServerProtocol implements AgentProtocol {
       // still unwinds on the queued 'abort' entry, so skipping the RPC here is
       // safe. Sending without turnId is rejected (-32600) and leaves the turn
       // running (NIM-1607 follow-on).
-      if (!raw.activeTurnId) return;
+      if (raw.cleanupStarted || !turnStartResultId) return;
       interruptRequested = true;
-      const params: TurnInterruptParams = { threadId: raw.threadId, turnId: raw.activeTurnId };
+      const params: TurnInterruptParams = { threadId: raw.threadId, turnId: turnStartResultId };
       Promise.resolve(raw.client.request('turn/interrupt', params))
-        .catch((err) => console.warn('[CODEX][APPSERVER] turn/interrupt failed:', err));
+        .catch((err) => {
+          failRetirement();
+          console.warn('[CODEX][APPSERVER] turn/interrupt failed:', err);
+        });
     };
     const onAbort = () => {
+      if (!raw.cleanupStarted && turnStartIssued && !turnStartResolved && !nativeRetirement) {
+        nativeRetirement = new Promise<void>((resolve, reject) => {
+          resolveRetirement = () => {
+            if (nativeRetirementSettled) return;
+            nativeRetirementSettled = true;
+            resolve();
+          };
+          rejectRetirement = error => {
+            if (nativeRetirementSettled) return;
+            nativeRetirementSettled = true;
+            reject(error);
+          };
+        });
+        (raw.cancelledStarts ??= new Set()).add(nativeRetirement);
+        const captured = nativeRetirement;
+        const cleanup = () => rejectRetirement(new Error('Codex session disposed during cancellation recovery.'));
+        (raw.cancelledStartCleanups ??= new Set()).add(cleanup);
+        // Rejection keeps the native fence latched; neither timeout nor a
+        // second Stop establishes that an unknown accepted turn has ended.
+        void captured.then(() => {
+          raw.cancelledStarts?.delete(captured);
+          raw.cancelledStartCleanups?.delete(cleanup);
+        }, () => { raw.cancelledStartCleanups?.delete(cleanup); });
+      }
       requestInterrupt();
       push({ kind: 'abort' });
     };
@@ -354,31 +437,42 @@ export class CodexAppServerProtocol implements AgentProtocol {
       }
     }
 
-    // Start the turn. Errors from the request itself are surfaced as fail.
-    const turnInput = await this.buildInput(message);
-    let turnStartResultId: string | null = null;
     try {
-      const turnStart = await raw.client.request<{ turn?: { id?: string } }>('turn/start', {
-        threadId: raw.threadId,
-        input: turnInput,
-      } as TurnStartParams);
-      turnStartResultId = turnStart?.turn?.id ?? null;
-      raw.activeTurnId = turnStartResultId;
-      turnStartResolved = true;
-      for (const pending of pendingTurnNotifications.splice(0)) {
-        dispatchOwnedNotification(pending.method, pending.params);
+      if (abortSignal?.aborted || raw.cleanupStarted) return;
+      let turnInput: UserInputElement[];
+      try {
+        turnInput = await withCodexSetupStage(message.sessionId, 'protocol-input-build', () => this.buildInput(message));
+      } catch (error) {
+        if (abortSignal?.aborted && !raw.cleanupStarted) throw new CodexPreparationCancelledError();
+        throw error;
       }
-    } catch (err) {
-      const baseMsg = err instanceof Error ? err.message : String(err);
-      yield {
-        type: 'error',
-        error: appendStderrTail(baseMsg, raw),
-      };
-      return;
-    }
+      if (abortSignal?.aborted && !raw.cleanupStarted) throw new CodexPreparationCancelledError();
+      if (raw.cleanupStarted) return;
+      // The abort pump must run while this RPC is pending. A late response
+      // belongs to this invocation, never the successor's raw.activeTurnId.
+      turnStartIssued = true;
+      void withCodexSetupStage(message.sessionId, 'protocol-turn-start', () => raw.client.request<{ turn?: { id?: string } }>('turn/start', {
+        threadId: raw.threadId, input: turnInput,
+      } as TurnStartParams)).then(turnStart => {
+        turnStartResultId = turnStart?.turn?.id ?? null;
+        turnStartResolved = true;
+        if (abortSignal?.aborted || retired) {
+          if (nativeRetirement) {
+            if (!turnStartResultId) failRetirement();
+            else if (terminalTurns.has(turnStartResultId)) resolveRetirement();
+            else requestInterrupt();
+          }
+          pendingTurnNotifications.length = 0;
+          return;
+        }
+        raw.activeTurnId = turnStartResultId;
+        for (const pending of pendingTurnNotifications.splice(0)) dispatchOwnedNotification(pending.method, pending.params);
+      }, error => {
+        if (nativeRetirement) failRetirement();
+        else if (!retired) push({ kind: 'fail', error: error instanceof Error ? error : new Error(String(error)) });
+      });
 
-    // Pump events until we see the terminating queue entry.
-    try {
+      // Pump events until we see the terminating queue entry.
       while (true) {
         if (abortSignal?.aborted) {
           requestInterrupt();
@@ -387,26 +481,16 @@ export class CodexAppServerProtocol implements AgentProtocol {
           await new Promise<void>((resolve) => waiters.push(() => resolve()));
         }
         const entry = queue.shift()!;
-        if (entry.kind === 'abort') {
-          // Cancelled turn: unwind silently -- no complete (the turn didn't
-          // finish) and no error (the caller asked for this).
-          return;
-        }
-        if (entry.kind === 'event') {
-          yield entry.event;
-          continue;
-        }
+        if (entry.kind === 'abort') return;
+        if (entry.kind === 'event') { yield entry.event; continue; }
         if (entry.kind === 'fail') {
           yield { type: 'error', error: appendStderrTail(entry.error.message, raw) };
           return;
         }
         if (entry.kind === 'end') {
           yield {
-            type: 'complete',
-            content: fullText,
+            type: 'complete', content: fullText,
             usage: usage ?? { input_tokens: 0, output_tokens: 0, total_tokens: 0 },
-            // turn/completed carries no usage on this transport, so both of
-            // these come from thread/tokenUsage/updated earlier in the turn.
             ...(contextFillTokens !== undefined ? { contextFillTokens } : {}),
             ...(contextWindow !== undefined ? { contextWindow } : {}),
           };
@@ -414,11 +498,33 @@ export class CodexAppServerProtocol implements AgentProtocol {
         }
       }
     } finally {
+      retired = true;
       for (const unsub of unsubscribers) {
         try { unsub(); } catch { /* noop */ }
       }
-      raw.activeTurnId = null;
+      if (nativeRetirement) void nativeRetirement.then(detachNotifications, detachNotifications);
+      else detachNotifications();
+      if (raw.activeTurnId === turnStartResultId) raw.activeTurnId = null;
       raw.shellTracking?.endTurn();
+    }
+  }
+
+  private async waitForCancelledStarts(raw: AppServerSessionRaw, signal?: AbortSignal): Promise<void> {
+    if (raw.cleanupStarted || !raw.cancelledStarts?.size || signal?.aborted) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let onAbort: (() => void) | undefined;
+    const stopWaiting = new Promise<void>((resolve, reject) => {
+      onAbort = resolve;
+      signal?.addEventListener('abort', onAbort, { once: true });
+      timer = setTimeout(() => reject(new Error('Cancelled native turn has not retired.')), 10_000);
+    });
+    try {
+      while (raw.cancelledStarts.size && !signal?.aborted) {
+        await Promise.race([Promise.all([...raw.cancelledStarts]), stopWaiting]);
+      }
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+      if (onAbort) signal?.removeEventListener('abort', onAbort);
     }
   }
 
@@ -473,6 +579,9 @@ export class CodexAppServerProtocol implements AgentProtocol {
   private killChild(raw: AppServerSessionRaw): void {
     if (raw.cleanupStarted) return;
     raw.cleanupStarted = true;
+    for (const cleanup of raw.cancelledStartCleanups ?? []) cleanup();
+    raw.cancelledStartCleanups?.clear();
+    raw.cancelledStarts?.clear();
     raw.shellTracking?.dispose();
     try { raw.client.close('cleanup'); } catch { /* noop */ }
     this.terminateProcessTree(raw.child);
@@ -480,7 +589,7 @@ export class CodexAppServerProtocol implements AgentProtocol {
 
   private async spawnAndInit(options: SessionOptions): Promise<AppServerSessionRaw> {
     const binary = resolveCodexBinaryPath(this.resolveCodexPathOverride);
-    const tracking = await prepareCodexShellTracking(options);
+    const tracking = await withCodexSetupStage(options.raw?.nimbalystSessionId as string | undefined, 'protocol-shell-registration', () => prepareCodexShellTracking(options));
     const env = this.buildEnv(options, binary);
     Object.assign(env, tracking?.registration.env);
     const cwd = options.workspacePath || process.cwd();
@@ -505,14 +614,14 @@ export class CodexAppServerProtocol implements AgentProtocol {
     this.wireServerRequestHandlers(client);
     let initResponse: InitializeResponse;
     try {
-      initResponse = await client.request<InitializeResponse>('initialize', {
+      initResponse = await withCodexSetupStage(options.raw?.nimbalystSessionId as string | undefined, 'protocol-initialize', () => client.request<InitializeResponse>('initialize', {
         clientInfo: this.clientInfo,
         capabilities: { experimentalApi: true },
-      });
+      }));
       client.notify('initialized', {});
       if (tracking) {
         try {
-          const trust = await tracking.trust(client);
+          const trust = await withCodexSetupStage(options.raw?.nimbalystSessionId as string | undefined, 'protocol-hooks-trust', () => tracking.trust(client));
           options = { ...options, raw: { ...options.raw, codexConfigOverrides: {
             ...(options.raw?.codexConfigOverrides as Record<string, unknown> ?? {}), ...trust,
           } } };

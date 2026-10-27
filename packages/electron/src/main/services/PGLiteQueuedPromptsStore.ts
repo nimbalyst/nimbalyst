@@ -6,6 +6,7 @@
  */
 
 import { toMillis } from '../utils/timestampUtils';
+import { randomUUID } from 'node:crypto';
 import type {
   AgentWakePromptOrigin,
   PromptProvenance,
@@ -27,6 +28,7 @@ export interface QueuedPrompt {
     agentWakeOrigin?: AgentWakePromptOrigin;
   };
   createdAt: number;  // epoch ms
+  claimToken?: string;
   claimedAt?: number; // epoch ms
   completedAt?: number; // epoch ms
   errorMessage?: string;
@@ -83,6 +85,9 @@ export interface QueuedPromptsStore {
    * This is the key atomic operation that prevents duplicate execution.
    */
   claim(id: string): Promise<QueuedPrompt | null>;
+
+  /** Return only the still-owned undelivered claims to pending. */
+  releaseClaims(claims: readonly { id: string; claimToken?: string }[]): Promise<void>;
 
   /** Mark a prompt as completed */
   complete(id: string): Promise<void>;
@@ -186,6 +191,12 @@ function rowToQueuedPrompt(row: any): QueuedPrompt {
     }
   }
 
+  const claimToken = documentContext?._queuedPromptClaimToken;
+  if (typeof claimToken === 'string') {
+    const { _queuedPromptClaimToken: _internalToken, ...context } = documentContext;
+    documentContext = context;
+  }
+
   return {
     id: row.id,
     sessionId: row.session_id,
@@ -195,6 +206,7 @@ function rowToQueuedPrompt(row: any): QueuedPrompt {
     documentContext,
     createdAt: toMillis(row.created_at)!,
     claimedAt: toMillis(row.claimed_at) ?? undefined,
+    claimToken: row.status === 'executing' && typeof claimToken === 'string' ? claimToken : undefined,
     completedAt: toMillis(row.completed_at) ?? undefined,
     errorMessage: row.error_message || undefined,
   };
@@ -317,10 +329,12 @@ export function createPGLiteQueuedPromptsStore(
       // This is the key operation that prevents duplicate execution
       const { rows } = await db.query<any>(
         `UPDATE queued_prompts
-         SET status = 'executing', claimed_at = CURRENT_TIMESTAMP
+         SET status = 'executing', claimed_at = CURRENT_TIMESTAMP,
+             document_context = jsonb_set(COALESCE(document_context, '{}'::jsonb),
+               '{_queuedPromptClaimToken}', to_jsonb($2::text))
          WHERE id = $1 AND status = 'pending'
          RETURNING *`,
-        [id]
+        [id, randomUUID()]
       );
 
       if (rows.length === 0) {
@@ -330,6 +344,21 @@ export function createPGLiteQueuedPromptsStore(
 
       console.log(`[QueuedPromptsStore] claim: successfully claimed prompt ${id}`);
       return rowToQueuedPrompt(rows[0]);
+    },
+
+    async releaseClaims(claims: readonly { id: string; claimToken?: string }[]): Promise<void> {
+      if (claims.length === 0) return;
+      if (claims.some((claim) => !claim.claimToken)) throw new Error('Claim token is required to release queued prompts');
+      await ensureReady();
+      const matches = claims.map((_, i) =>
+        `(id = $${i * 2 + 1} AND document_context->>'_queuedPromptClaimToken' = $${i * 2 + 2})`,
+      );
+      await db.query(
+        `UPDATE queued_prompts SET status = 'pending', claimed_at = NULL,
+             document_context = document_context - '_queuedPromptClaimToken'
+         WHERE status = 'executing' AND (${matches.join(' OR ')})`,
+        claims.flatMap((claim) => [claim.id, claim.claimToken]),
+      );
     },
 
     async complete(id: string): Promise<void> {

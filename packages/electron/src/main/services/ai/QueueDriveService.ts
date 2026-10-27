@@ -62,6 +62,7 @@ export interface QueueDriveDeps {
     sessionId: string;
     workspacePath: string;
     reason: DriveReason;
+    signal: AbortSignal;
   }): Promise<DriveOutcome>;
   /** Fire once a window for this workspace exists. Returns an unsubscribe. */
   onWindowAvailable(workspacePath: string, listener: () => void): () => void;
@@ -86,6 +87,7 @@ interface SessionDriveState {
   workspacePath: string;
   /** The attempt loop currently running for this session, if any. */
   inFlight: Promise<DriveOutcome> | null;
+  controller: AbortController | null;
   /** A drive requested while one was in flight; collapses to a single re-run. */
   rerunReason: DriveReason | null;
   backoffIndex: number;
@@ -140,6 +142,7 @@ export class QueueDriveService {
       state = {
         workspacePath,
         inFlight: null,
+        controller: null,
         rerunReason: null,
         backoffIndex: 0,
         backoffHandle: null,
@@ -157,37 +160,61 @@ export class QueueDriveService {
       return state.inFlight;
     }
 
-    const attempt = this.run(sessionId, reason);
-    const tracked = attempt.finally(() => {
+    const controller = new AbortController();
+    state.controller = controller;
+    // The client may retire while a pure read never returns. The worker still
+    // observes its signal before any claim or delivery; unknown writes keep
+    // their own registered turn/claim leases until their outcomes are known.
+    let retire!: (outcome: DriveOutcome) => void;
+    const retired = new Promise<DriveOutcome>(resolve => { retire = resolve; });
+    controller.signal.addEventListener('abort', () => retire({ kind: 'deferred', reason: 'session-busy' }), { once: true });
+    const attempt = this.run(sessionId, reason, controller);
+    const client = Promise.race([attempt, retired]);
+    const tracked = client.finally(() => {
       const current = this.sessions.get(sessionId);
       if (current && current.inFlight === tracked) {
         current.inFlight = null;
+        current.controller = null;
       }
     });
     state.inFlight = tracked;
     return tracked;
   }
 
+  /** Accepted Stop/interrupt retires this generation before a replacement starts. */
+  invalidate(sessionId: string, expected?: Promise<DriveOutcome | void>): void {
+    const state = this.sessions.get(sessionId);
+    if (!state || (expected && state.inFlight !== expected)) return;
+    const controller = state.controller;
+    state.controller = null;
+    state.inFlight = null;
+    state.rerunReason = null;
+    this.disarm(sessionId);
+    controller?.abort();
+  }
+
   /** Drop all timers and subscriptions (app shutdown). */
   dispose(): void {
     this.disposed = true;
     for (const sessionId of Array.from(this.sessions.keys())) {
-      this.disarm(sessionId);
+      this.invalidate(sessionId);
     }
     this.sessions.clear();
   }
 
-  private async run(sessionId: string, initialReason: DriveReason): Promise<DriveOutcome> {
+  private async run(sessionId: string, initialReason: DriveReason, controller: AbortController): Promise<DriveOutcome> {
     const state = this.sessions.get(sessionId);
     if (!state) return { kind: 'nothing-pending' };
 
     let reason = initialReason;
     let outcome: DriveOutcome = { kind: 'nothing-pending' };
+    const isCurrent = () => !this.disposed && !controller.signal.aborted && state.controller === controller;
 
     // Loop rather than re-enter: concurrent requests collapsed into
     // `rerunReason` are serviced here, so one session never has two
     // attempts in flight.
     for (;;) {
+      if (!isCurrent()) return { kind: 'deferred', reason: 'session-busy' };
       state.rerunReason = null;
 
       try {
@@ -195,8 +222,10 @@ export class QueueDriveService {
           sessionId,
           workspacePath: state.workspacePath,
           reason,
+          signal: controller.signal,
         });
       } catch (error) {
+        if (!isCurrent()) return { kind: 'deferred', reason: 'session-busy' };
         this.deps.logError(
           `[QueueDrive] attempt threw for session ${sessionId} (${reason}); treating as deferred`,
           error,
@@ -204,6 +233,7 @@ export class QueueDriveService {
         outcome = { kind: 'deferred', reason: 'provider-unavailable' };
       }
 
+      if (!isCurrent()) return { kind: 'deferred', reason: 'session-busy' };
       this.applyOutcome(sessionId, reason, outcome);
 
       if (!state.rerunReason || this.disposed) break;

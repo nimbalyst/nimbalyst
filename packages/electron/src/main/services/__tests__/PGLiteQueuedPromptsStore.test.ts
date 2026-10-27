@@ -358,6 +358,35 @@ describe('PGLiteQueuedPromptsStore boot re-drive helpers', () => {
 });
 
 describe('PGLiteQueuedPromptsStore.cleanup', () => {
+  it('returns only the original undelivered claim and preserves a later owner', async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'nim-cancel-claim-'));
+    const sqlite = new SQLiteDatabase({
+      dbDir: tmp,
+      schemaDir: path.resolve(__dirname, '..', '..', 'database', 'sqlite', 'schemas'),
+    });
+    try {
+      await sqlite.initialize();
+      sqlite.getRawHandle()!.prepare('INSERT INTO ai_sessions(id, provider, title) VALUES (?, ?, ?)').run('claim-session', 'openai-codex', 'test');
+      const store = createPGLiteQueuedPromptsStore(sqlite as never);
+      await store.create({ id: 'original', sessionId: 'claim-session', prompt: 'preserve this text', documentContext: { filePath: '/workspace/note.md' } });
+      const first = (await store.claim('original'))!;
+      expect(first.documentContext).toEqual({ filePath: '/workspace/note.md' });
+      expect(first.claimToken).toEqual(expect.any(String));
+      await store.releaseClaims([first]);
+      expect((await store.get('original'))?.status).toBe('pending');
+      const next = (await store.claim('original'))!;
+      expect(next.claimToken).not.toBe(first.claimToken);
+      await store.releaseClaims([first]);
+      expect((await store.get('original'))?.status).toBe('executing');
+      expect((await store.get('original'))?.claimToken).toBe(next.claimToken);
+      await store.releaseClaims([next]);
+      expect((await store.listPending('claim-session')).map(row => row.prompt)).toEqual(['preserve this text']);
+    } finally {
+      await sqlite.close();
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
   // Runs against a real SQLite database: the old data-modifying CTE was
   // Postgres-only, so the SQLite backend is the one that needs proving.
   it('deletes only completed/failed rows older than the cutoff, on SQLite', async () => {

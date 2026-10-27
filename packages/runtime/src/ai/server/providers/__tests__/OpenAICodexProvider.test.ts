@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { codexSandboxSetupCompleted } from '../../protocols/codexAppServer/windowsSandbox';
 import fs from 'fs/promises';
 import os from 'os';
@@ -52,6 +53,118 @@ describe('OpenAICodexProvider', () => {
     OpenAICodexProvider.setPermissionPatternChecker(async () => false);
     OpenAICodexProvider.setPermissionPatternSaver(async () => {});
     OpenAICodexProvider.setSecurityLogger(() => {});
+  });
+
+  it.each(['stop-then-destroy', 'destroy-before-settle', 'session-stop-then-destroy', 'session-destroy-before-settle', 'post-resolution-stop', 'post-resolution-destroy'])('retains cancelled setup ownership (%s)', async ordering => {
+    let enter!: () => void;
+    let release!: () => void;
+    const entered = new Promise<void>(resolve => { enter = resolve; });
+    const held = new Promise<void>(resolve => { release = resolve; });
+    const session = { id: 'anonymous-thread', platform: 'test', raw: {} };
+    const protocol = { createSession: vi.fn(async () => { enter(); await held; return session; }),
+      sendMessage: vi.fn(() => createAsyncEventStream([])), cleanupSession: vi.fn() };
+    const provider = new OpenAICodexProvider({}, { protocol: protocol as any });
+    vi.spyOn(provider as any, 'getAgentRole').mockResolvedValue('standard');
+    vi.spyOn(provider as any, 'getSessionDirective').mockResolvedValue(undefined);
+    vi.spyOn((provider as any).mcpConfigService, 'getMcpServersConfig').mockResolvedValue({});
+    vi.spyOn(provider as any, 'logAgentMessageBestEffort').mockResolvedValue(undefined);
+    const sessionId = ordering.startsWith('session-') ? 'late-setup-session' : undefined;
+    const log = vi.spyOn(console, 'log');
+    if (ordering.startsWith('post-resolution-')) log.mockImplementation((prefix, json) => {
+      if (prefix !== '[CODEX][SETUP]') return;
+      const stage = JSON.parse(String(json));
+      if (stage.stage === 'provider-native-create' && stage.boundary === 'settled') {
+        if (ordering.endsWith('destroy')) provider.destroy();
+        else provider.abort();
+      }
+    });
+    const sending = (async () => { for await (const chunk of provider.sendMessage('unsent setup', undefined, sessionId, [], process.cwd())) void chunk; })();
+    const observed = sending.then(() => undefined, error => error);
+    await entered;
+    if (ordering.endsWith('destroy-before-settle')) provider.destroy();
+    else if (!ordering.startsWith('post-resolution-')) provider.abort();
+    expect(protocol.cleanupSession).not.toHaveBeenCalled();
+    release();
+    const error = await observed;
+    try {
+      expect(error?.message).toContain('has not been sent to Codex');
+      expect(protocol.sendMessage).not.toHaveBeenCalled();
+      if (ordering.endsWith('stop-then-destroy') || ordering === 'post-resolution-stop') {
+        expect(protocol.cleanupSession).not.toHaveBeenCalled();
+        provider.destroy();
+      }
+      expect(protocol.cleanupSession).toHaveBeenCalledExactlyOnceWith(session);
+    } finally { provider.destroy(); log.mockRestore(); }
+  });
+
+  it('does not cache a mismatched resume reply after Stop', async () => {
+    let enter!: () => void;
+    let release!: () => void;
+    const entered = new Promise<void>(resolve => { enter = resolve; });
+    const held = new Promise<void>(resolve => { release = resolve; });
+    const wrong = { id: 'wrong-thread', platform: 'test', raw: {} };
+    const right = { id: 'saved-thread', platform: 'test', raw: {} };
+    const protocol = { resumeSession: vi.fn().mockImplementationOnce(async () => { enter(); await held; return wrong; }).mockResolvedValue(right),
+      sendMessage: vi.fn(() => createAsyncEventStream([{ type: 'complete', content: 'done' }])), cleanupSession: vi.fn() };
+    const provider = new OpenAICodexProvider({}, { protocol: protocol as any });
+    provider.setProviderSessionData('resume-owner', { providerSessionId: 'saved-thread' });
+    vi.spyOn(provider as any, 'getAgentRole').mockResolvedValue('standard');
+    vi.spyOn(provider as any, 'getSessionDirective').mockResolvedValue(undefined);
+    vi.spyOn(provider as any, 'logAgentMessageBestEffort').mockResolvedValue(undefined);
+    vi.spyOn((provider as any).mcpConfigService, 'getMcpServersConfig').mockResolvedValue({});
+    const send = () => (async () => { for await (const chunk of provider.sendMessage('resume input', undefined, 'resume-owner', [], process.cwd())) void chunk; })();
+    const observed = send().then(() => undefined, error => error);
+    await entered;
+    provider.abort();
+    release();
+    try {
+      expect((await observed)?.message).toContain('has not been sent to Codex');
+      expect(protocol.sendMessage).not.toHaveBeenCalled();
+      expect(protocol.cleanupSession).not.toHaveBeenCalled();
+      await send();
+      expect(protocol.resumeSession).toHaveBeenCalledTimes(2);
+      expect(protocol.sendMessage).toHaveBeenCalledExactlyOnceWith(right, expect.anything());
+      provider.destroy();
+      expect(protocol.cleanupSession).toHaveBeenCalledWith(wrong);
+      expect(protocol.cleanupSession).toHaveBeenCalledWith(right);
+      expect(protocol.cleanupSession).toHaveBeenCalledTimes(2);
+    } finally { provider.destroy(); }
+  });
+
+  it('isolates preparation Stop between session-owned providers and logs no prompt text', async () => {
+    const logs = vi.spyOn(console, 'log');
+    let enter!: () => void;
+    let release!: () => void;
+    const entered = new Promise<void>(resolve => { enter = resolve; });
+    const held = new Promise<void>(resolve => { release = resolve; });
+    const protocols = [0, 1].map(i => ({ createSession: vi.fn(async () => ({ id: `isolated-${i}`, platform: 'test', raw: {} })),
+      sendMessage: vi.fn(() => createAsyncEventStream([{ type: 'complete', content: 'done' }])), cleanupSession: vi.fn() }));
+    const providers = protocols.map(protocol => {
+      const provider = new OpenAICodexProvider({}, { protocol: protocol as any });
+      vi.spyOn(provider as any, 'getAgentRole').mockImplementation(async () => { enter(); await held; return 'standard'; });
+      vi.spyOn(provider as any, 'getSessionDirective').mockResolvedValue(undefined);
+      vi.spyOn(provider as any, 'logAgentMessageBestEffort').mockResolvedValue(undefined);
+      vi.spyOn((provider as any).mcpConfigService, 'getMcpServersConfig').mockResolvedValue({});
+      return provider;
+    });
+    const prompt = 'PRIVATE-PROMPT-SENTINEL';
+    const sends = providers.map((provider, i) => (async () => { for await (const chunk of provider.sendMessage(prompt, undefined, `isolated-${i}`, [], process.cwd())) void chunk; })().then(() => undefined, error => error));
+    await entered;
+    providers[0].abort();
+    release();
+    try {
+      expect((await sends[0])?.message).toContain('has not been sent to Codex');
+      expect(await sends[1]).toBeUndefined();
+      expect(protocols[0].sendMessage).not.toHaveBeenCalled();
+      expect(protocols[1].sendMessage).toHaveBeenCalledTimes(1);
+      const stages = logs.mock.calls.filter(([prefix]) => prefix === '[CODEX][SETUP]').map(([, json]) => JSON.parse(String(json)));
+      expect(stages.length).toBeGreaterThan(0);
+      for (const stage of stages) {
+        expect(Object.keys(stage).sort()).toEqual(['boundary', 'elapsedMs', 'sessionId', 'stage']);
+        expect(stage.elapsedMs).toBeGreaterThanOrEqual(0);
+        expect(JSON.stringify(stage)).not.toContain(prompt);
+      }
+    } finally { providers.forEach(provider => provider.destroy()); logs.mockRestore(); }
   });
 
   describe('transport-specific pre-edit hook configuration', () => {
