@@ -55,7 +55,9 @@ function hasGitDir(dir: string): boolean {
 
 export function findGitRootForFile(filePath: string, boundary: string): string | null {
   const boundaryAbs = resolve(boundary);
-  const fileAbs = isAbsolute(filePath) ? filePath : resolve(boundaryAbs, filePath);
+  // resolve also normalizes an already-absolute path, so Windows forward-slash
+  // input (`C:/a/b`) becomes `C:\a\b` and matches the boundary prefix below.
+  const fileAbs = isAbsolute(filePath) ? resolve(filePath) : resolve(boundaryAbs, filePath);
 
   // The file must live inside the boundary. resolve normalizes separators
   // so we can compare prefix-wise. Add a separator on the right side to

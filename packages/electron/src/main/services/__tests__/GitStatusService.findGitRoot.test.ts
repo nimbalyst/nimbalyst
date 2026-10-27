@@ -122,4 +122,16 @@ describe('findGitRootForFile', () => {
 
     expect(findGitRootForFile(evilTwin, ws)).toBeNull();
   });
+
+  it('normalizes an unnormalized absolute path (forward-slash on Windows) before the boundary check', async () => {
+    const workspace = path.join(tmpRoot, 'super');
+    const nested = path.join(workspace, 'repos', 'tools');
+    await makeGitRepo(nested);
+    const file = path.join(nested, 'a.md');
+    await touchFile(file);
+
+    // `..` segments stay unnormalized without resolve, like `C:/...` on win32.
+    const raw = `${workspace}${path.sep}repos${path.sep}other${path.sep}..${path.sep}tools${path.sep}a.md`;
+    expect(findGitRootForFile(raw, workspace)).toBe(path.resolve(nested));
+  });
 });
