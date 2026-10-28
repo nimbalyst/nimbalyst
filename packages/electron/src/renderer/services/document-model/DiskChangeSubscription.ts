@@ -51,7 +51,13 @@ export class DiskChangeSubscription {
     void this.register();
   }
 
+  /** Extension tabs on `virtual://` paths have no file on disk to reconcile. */
+  private get fileless(): boolean {
+    return this.path.startsWith("virtual://");
+  }
+
   private async register(): Promise<void> {
+    if (this.fileless) return;
     if (typeof window === "undefined" || !window.electronAPI?.invoke) return;
     try {
       await window.electronAPI.invoke(
@@ -165,7 +171,11 @@ export class DiskChangeSubscription {
     this.cleanups.forEach((cleanup) => cleanup());
     activeFileReconciliations.delete(this.token);
     fileReconciliationAtomFamily.remove(this.token);
-    if (typeof window !== "undefined" && window.electronAPI?.invoke) {
+    if (
+      !this.fileless &&
+      typeof window !== "undefined" &&
+      window.electronAPI?.invoke
+    ) {
       void window.electronAPI
         .invoke("file:unregister-open", this.token)
         .catch((error) =>

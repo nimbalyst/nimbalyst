@@ -1,6 +1,7 @@
 // @vitest-environment node
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { store } from "@nimbalyst/runtime/store";
+import { errorNotificationService } from "../../ErrorNotificationService";
 import { DiskChangeSubscription } from "../DiskChangeSubscription";
 import {
   activeFileReconciliations,
@@ -106,4 +107,22 @@ it("retries transient registration failure and cancels future retries on dispose
   ).toHaveLength(2);
   subscription.dispose();
   expect(vi.getTimerCount()).toBe(0);
+});
+
+it("does not register virtual:// paths for disk reconciliation or warn", async () => {
+  vi.mocked(errorNotificationService.showWarning).mockClear();
+  const invoke = vi
+    .fn()
+    .mockRejectedValue(new Error("Invalid open-file registration"));
+  vi.stubGlobal("window", { electronAPI: { invoke } });
+  const subscription = new DiskChangeSubscription(
+    "virtual://com.example.reader/page/index.md",
+    vi.fn(),
+    vi.fn(),
+    vi.fn()
+  );
+  await vi.advanceTimersByTimeAsync(120_000);
+  subscription.dispose();
+  expect(invoke).not.toHaveBeenCalled();
+  expect(errorNotificationService.showWarning).not.toHaveBeenCalled();
 });
