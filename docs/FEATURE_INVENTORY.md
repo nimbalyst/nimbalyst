@@ -201,7 +201,7 @@ Twelve built-in provider lanes, plus any agent an extension contributes. Every l
 - Open a PR in a git worktree with an agent session on its head branch
 - Tracker integration (reference-based, works with any tracker type): status badge + priority marker on list rows, editable status pill and tracker chips in the detail header, dynamic review-status filter chips
 - Jump PR ↔ tracker item ↔ review session in one click from any of the three surfaces
-- Link any tracker item to a PR from the PR detail; opening a worktree auto-links the session to referencing items
+- Link any tracker item to a PR from the PR detail; starting a review or opening a worktree keeps a local `github-pr` overlay item for the PR and links the session to it and to every referencing item, so the PR's chat pane finds the session again. Review sessions started before overlays existed are found by their opening prompt and linked the first time the PR is opened
 - Merging transitions referencing tracker items via the opt-in `prMergedStatus` schema role (comment-only for types without it); externally merged PRs surface a one-click catch-up hint
 - Tracker kanban cards show an item's external identity (e.g. PR number) via the `externalKey` schema role
 - GitHub issue browsing and triage beside pull requests, with local investigation status and notes and an explicit action to adopt an issue into a tracker

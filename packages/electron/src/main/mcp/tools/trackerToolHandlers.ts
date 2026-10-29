@@ -69,6 +69,7 @@ import {
 import { handleTrackerPublicationUpdate } from './trackerPublicationTool';
 import { prepareTrackerUpdateInput } from './trackerToolUpdateInput';
 import { handleGithubIssueOverlayCreate } from './githubIssueOverlayTool';
+import { handleGithubPrOverlayCreate } from './githubPrOverlayTool';
 import {
   bodyWriteFailure,
   DESTRUCTIVE_CONFIRM_PARAM_DESCRIPTION,
@@ -509,6 +510,22 @@ async function notifyTrackerItemUpdated(_workspacePath: string | undefined, item
       timestamp: new Date(),
     });
   }
+}
+
+/**
+ * Re-read a session's linked tracker ids and broadcast them, so the renderer's
+ * session registry sees a link written outside the MCP tools (the panel's
+ * `tracker:link-session` IPC). Without it, the PR and issue panels could not
+ * find a session they had just linked until the app reloaded (NIM-7657).
+ */
+export async function broadcastSessionLinkedTrackers(sessionId: string): Promise<void> {
+  const { getDatabase } = await import("../../database/initialize");
+  const result = await getDatabase().query<any>(
+    `SELECT metadata FROM ai_sessions WHERE id = $1`,
+    [sessionId]
+  );
+  if (result.rows.length === 0) return;
+  await notifySessionLinkedTrackerChanged(sessionId, readLinkedTrackerItemIds(result.rows[0].metadata));
 }
 
 /** Broadcast session metadata update to all windows */
@@ -1908,6 +1925,19 @@ export async function handleTrackerCreate(
       },
     );
     if (issueOverlayResult) return issueOverlayResult;
+
+    const prOverlayResult = await handleGithubPrOverlayCreate(
+      args,
+      workspacePath,
+      Boolean(sessionId && args.linkSession === true),
+      {
+        linkSession: (itemId) =>
+          handleTrackerLinkSession({ trackerId: itemId }, sessionId, workspacePath),
+        notifyAdded: (itemId) => notifyTrackerItemAdded(workspacePath, itemId),
+        notifyUpdated: (itemId) => notifyTrackerItemUpdated(workspacePath, itemId),
+      },
+    );
+    if (prOverlayResult) return prOverlayResult;
 
     const { getDatabase } = await import("../../database/initialize");
     const db = getDatabase();

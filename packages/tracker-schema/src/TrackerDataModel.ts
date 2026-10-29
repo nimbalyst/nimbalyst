@@ -335,6 +335,14 @@ export interface TrackerDataModel {
    * workspace defines `claim`.
    */
   hiddenUntilType?: string;
+  /**
+   * If false, keep this type out of type lists and create menus for good. It
+   * stays registered and resolvable, so its items render with real statuses.
+   * The GitHub overlay builtins use it: their items are written by the GitHub
+   * panel, not created by hand. A workspace schema that replaces the builtin
+   * without the flag lists the type again. Defaults to true.
+   */
+  listed?: boolean;
   /** Whether this type can be used as a primary type. Defaults to true. */
   primaryCapable?: boolean;
   /**
@@ -827,9 +835,10 @@ export class TrackerDataModelRegistry {
     return this.get(type) !== undefined;
   }
 
-  /** The types a user should be offered: `getAll()` minus types still waiting on `hiddenUntilType`. */
+  /** The types a user should be offered: `getAll()` minus `listed: false` types and types still waiting on `hiddenUntilType`. */
   getListed(): TrackerDataModel[] {
-    return this.getAll().filter(model => !model.hiddenUntilType || this.has(model.hiddenUntilType));
+    return this.getAll().filter(model =>
+      model.listed !== false && (!model.hiddenUntilType || this.has(model.hiddenUntilType)));
   }
 
   isBuiltin(type: string): boolean {

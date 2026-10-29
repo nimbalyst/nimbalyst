@@ -207,6 +207,7 @@ vi.mock('../../../services/tracker/localKeyAllocator', () => ({
 }));
 
 import {
+  broadcastSessionLinkedTrackers,
   createBidirectionalLink,
   handleTrackerCreate,
   handleTrackerAddComment,
@@ -3033,6 +3034,27 @@ describe('session metadata parsing on SQLite (NIM-829)', () => {
     expect(readLinkedTrackerItemIds(undefined)).toEqual([]);
     expect(readLinkedTrackerItemIds('{}')).toEqual([]);
     expect(readLinkedTrackerItemIds({ linkedTrackerItemIds: 'not-an-array' })).toEqual([]);
+  });
+
+  it('broadcastSessionLinkedTrackers tells every window the session\'s current links (NIM-7657)', async () => {
+    // The panel's tracker:link-session IPC writes the link then calls this; the
+    // renderer's session registry only learns about the link from the event.
+    const electron = await import('electron');
+    const send = vi.fn();
+    const original = electron.BrowserWindow.getAllWindows;
+    (electron.BrowserWindow as any).getAllWindows = () => [{ isDestroyed: () => false, webContents: { send } }];
+    try {
+      mockQuery.mockResolvedValueOnce({
+        rows: [{ metadata: '{"linkedTrackerItemIds":["gp_overlay","bug_1"]}' }],
+      });
+      await broadcastSessionLinkedTrackers('session_1');
+    } finally {
+      (electron.BrowserWindow as any).getAllWindows = original;
+    }
+    expect(send).toHaveBeenCalledWith('session-linked-tracker-changed', {
+      sessionId: 'session_1',
+      linkedTrackerItemIds: ['gp_overlay', 'bug_1'],
+    });
   });
 
   it('createBidirectionalLink preserves existing links when metadata arrives as a string', async () => {

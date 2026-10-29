@@ -109,6 +109,25 @@ describe('GithubIssueOverlayService', () => {
         status: 'adopted',
         notes: 'new investigation detail',
       });
+
+      // A teammate's synced overlay keeps its fields nested under customFields,
+      // URL as { url }. Investigating it here must reuse it (NIM-7657).
+      await db.query(
+        `INSERT INTO tracker_items (
+          id, type, type_tags, data, workspace, document_path, sync_status, source
+        ) VALUES ('ghi_synced', 'github-issue', $1, $2, '/workspace', '', 'synced', 'native')`,
+        [['github-issue'], JSON.stringify({
+          title: 'Synced',
+          status: 'needs-triage',
+          customFields: { issueUrl: { url: 'https://github.com/owner/repo/issues/77' }, issueNumber: 77 },
+        })],
+      );
+      const synced = await service.getOrCreate({
+        ...input,
+        issueUrl: 'https://github.com/owner/repo/issues/77',
+        updates: { status: 'investigating' },
+      });
+      expect(synced).toMatchObject({ id: 'ghi_synced', created: false });
     } finally {
       await db.close();
       fs.rmSync(dbDir, { recursive: true, force: true });

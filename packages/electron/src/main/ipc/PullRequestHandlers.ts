@@ -45,6 +45,12 @@ import {
   stopGithubPollScheduler,
 } from '../services/GithubServices';
 import { applyPrMergeToTrackers } from '../services/PrTrackerLifecycle';
+import {
+  getGithubPrOverlayService,
+  type GithubPrOverlayInput,
+  type GithubPrOverlayResult,
+} from '../services/GithubPrOverlayService';
+import { findPrReviewSessionIds } from '../services/prReviewSessionRecovery';
 import type {
   PullRequestRow,
   PullRequestFileRow,
@@ -660,6 +666,48 @@ export function registerPullRequestHandlers(): void {
         return { success: true, data: { ok: true } };
       } catch (error: unknown) {
         logger.error('pr:poll-now failed', { workspacePath, error });
+        return errorResponse(error);
+      }
+    },
+  );
+
+  safeHandle(
+    'pr:overlay-get-or-create',
+    async (
+      _event,
+      workspacePath: string,
+      input: Omit<GithubPrOverlayInput, 'workspacePath'>,
+    ): Promise<IPCResponse<GithubPrOverlayResult>> => {
+      if (!workspacePath || !input || typeof input !== 'object') {
+        return { success: false, error: 'workspacePath and input required' };
+      }
+      try {
+        const result = await getGithubPrOverlayService().getOrCreate({ ...input, workspacePath });
+        return { success: true, data: result };
+      } catch (error: unknown) {
+        logger.error('pr:overlay-get-or-create failed', { workspacePath, error });
+        return errorResponse(error);
+      }
+    },
+  );
+
+  safeHandle(
+    'pr:find-review-sessions',
+    async (
+      _event,
+      workspacePath: string,
+      remote: string,
+      number: number,
+    ): Promise<IPCResponse<string[]>> => {
+      if (!workspacePath || !remote || !number) {
+        return { success: false, error: 'workspacePath, remote, number required' };
+      }
+      try {
+        const db = getDatabase();
+        const ids = await findPrReviewSessionIds(db, db.getEngine(), workspacePath, remote.toLowerCase(), number);
+        return { success: true, data: ids };
+      } catch (error: unknown) {
+        logger.error('pr:find-review-sessions failed', { workspacePath, remote, number, error });
         return errorResponse(error);
       }
     },

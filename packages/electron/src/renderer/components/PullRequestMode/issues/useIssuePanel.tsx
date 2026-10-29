@@ -37,6 +37,10 @@ import {
 } from './issueFilters';
 import { useIssueAiContext } from './useIssueAiContext';
 import { useIssueOverlayWrite } from './useIssueOverlay';
+import { ISSUE_OVERLAY_TYPE } from './issueOverlay';
+import { resolveStartedStatus } from '../prOverlay';
+
+const INVESTIGATE_STATUS_NAMES = ['investigating', 'in-progress'];
 import { useIssueTrackerContext, useIssueTrackerReferences } from './useIssueTrackerContext';
 
 interface IssuePanelOptions {
@@ -148,15 +152,17 @@ export function useIssuePanel({
    * Link a new session to every tracker item already about this issue, creating
    * the overlay first.
    *
-   * This is where the issues side deliberately parts from
-   * `linkSessionToPrTrackers`, which links only to items that already exist:
-   * handing an issue to an agent is a first write, so it should leave the
-   * durable trace the overlay exists for — the same `investigating` item
-   * `/investigate` upserts from the command side, converged on by issue URL.
+   * Handing an issue to an agent is a first write, so it leaves the durable
+   * trace the overlay exists for: the same item `/investigate` upserts from the
+   * command side, converged on by issue URL. The PR side does the same in
+   * `linkSessionsToPrTrackers`.
    */
   const linkSessionToIssueTrackers = useCallback(
     async (sessionId: string, issue: GithubIssueRow) => {
-      const overlayId = await writeOverlay('start-session', issue, { status: 'investigating' });
+      // Read from the active schema: a workspace's own triage schema may not
+      // offer `investigating`, and then the overlay keeps its status.
+      const status = resolveStartedStatus(ISSUE_OVERLAY_TYPE, INVESTIGATE_STATUS_NAMES);
+      const overlayId = await writeOverlay('start-session', issue, status ? { status } : {});
       const itemIds = new Set((trackerReferences.get(issue.number) ?? []).map((item) => item.id));
       // The freshly created overlay is not in `trackerReferences` yet — that
       // map re-derives after the tracker change lands in the store.

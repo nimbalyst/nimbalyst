@@ -1,0 +1,96 @@
+# Local overlay for a GitHub pull request. The Pull Requests panel creates one
+# when you start a review session, so the session stays attached to the PR.
+# Unlisted: these items are written by the panel and the GitHub tools, not made
+# by hand. A workspace schema of the same name replaces this one wholesale.
+type: github-pr
+displayName: GitHub PR
+displayNamePlural: GitHub PRs
+icon: merge_type
+color: "#8b5cf6"
+
+modes:
+  inline: false
+  fullDocument: false
+
+sharing: personal
+draftByDefault: false
+listed: false
+
+idPrefix: ghp
+idFormat: ulid
+
+fields:
+  - name: title
+    type: string
+    required: true
+
+  - name: status
+    type: select
+    default: to-review
+    options:
+      - value: to-review
+        label: To Review
+        icon: inbox
+        category: unstarted
+      - value: reviewing
+        label: Reviewing
+        icon: search
+        color: "#eab308"
+        category: started
+      - value: approved
+        label: Approved
+        icon: verified
+        color: "#22c55e"
+        category: started
+      - value: merged
+        label: Merged
+        icon: merge
+        color: "#8b5cf6"
+        category: done
+      - value: closed
+        label: Closed
+        icon: cancel
+        color: "#64748b"
+        category: cancelled
+
+  - name: prUrl
+    type: url
+    required: true
+
+  - name: prNumber
+    type: number
+
+  - name: repo
+    type: string
+
+  - name: author
+    type: string
+
+  - name: headBranch
+    type: string
+
+  - name: baseBranch
+    type: string
+
+  - name: notes
+    type: text
+
+  - name: tags
+    type: array
+    itemType: string
+    displayInline: false
+
+tableView:
+  defaultColumns:
+    - prNumber
+    - title
+    - status
+    - author
+  sortable: true
+  filterable: true
+  exportable: false
+
+roles:
+  title: title
+  workflowStatus: status
+  tags: tags

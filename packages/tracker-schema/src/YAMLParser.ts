@@ -203,6 +203,7 @@ function applyOptionalModelProperties<T extends { type: string }>(target: T, dat
   // `creatable: false`); without them the parsed model silently diverges.
   if (data.creatable !== undefined) model.creatable = data.creatable;
   if (typeof data.hiddenUntilType === 'string') model.hiddenUntilType = data.hiddenUntilType;
+  if (data.listed === false) model.listed = false;
   if (data.primaryCapable !== undefined) model.primaryCapable = data.primaryCapable;
   if (data.supportsTags !== undefined) model.supportsTags = data.supportsTags;
 

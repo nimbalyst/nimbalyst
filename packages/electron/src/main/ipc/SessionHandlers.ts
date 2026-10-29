@@ -1131,6 +1131,7 @@ export async function registerSessionHandlers() {
             return { success: false, error: 'Local wiki pages cannot be linked to sessions yet' };
         }
         try {
+            const { createBidirectionalLink, broadcastSessionLinkedTrackers } = await import('../mcp/tools/trackerToolHandlers');
             if (payload.trackerId.startsWith('file:')) {
                 // File-based link: only write to session metadata (no tracker_items row to update)
                 const { getDatabase } = await import('../database/initialize');
@@ -1157,9 +1158,12 @@ export async function registerSessionHandlers() {
                 }
             } else {
                 // DB tracker item: bidirectional link
-                const { createBidirectionalLink } = await import('../mcp/tools/trackerToolHandlers');
                 await createBidirectionalLink(payload.trackerId, payload.sessionId);
             }
+            // The renderer's session registry only learns about the link
+            // from this broadcast; the PR and issue panels resolve sessions
+            // from it.
+            await broadcastSessionLinkedTrackers(payload.sessionId);
             return { success: true };
         } catch (error) {
             console.error('[SessionHandlers] Failed to link tracker item to session:', error);

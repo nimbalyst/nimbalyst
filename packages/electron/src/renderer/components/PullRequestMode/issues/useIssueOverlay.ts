@@ -26,7 +26,7 @@ import {
 import { useIssueTrackerReferences } from './useIssueTrackerContext';
 
 /** Fallback only for a workspace whose schema copy predates the status field. */
-const FALLBACK_DEFAULT_STATUS = 'untriaged';
+const FALLBACK_DEFAULT_STATUS = 'needs-triage';
 
 export function issueOverlaySeed(remote: string, issue: GithubIssueRow): IssueOverlaySeed {
   return {

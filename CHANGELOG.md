@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 <!-- Bug fixes go here -->
+- A review session started from the GitHub Pull Requests panel now shows in the PR's chat pane when you come back to the PR, including for PRs with no tracker item; sessions started before this fix are found and linked the next time you open their PR
 
 ### Removed
 <!-- Removed features go here -->

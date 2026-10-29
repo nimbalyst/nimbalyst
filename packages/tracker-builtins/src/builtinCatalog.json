@@ -1721,5 +1721,311 @@
     },
     "sharing": "personal",
     "draftByDefault": false
+  },
+  {
+    "type": "github-issue",
+    "displayName": "GitHub Issue",
+    "displayNamePlural": "GitHub Issues",
+    "icon": "adjust",
+    "color": "#f97316",
+    "modes": {
+      "inline": false,
+      "fullDocument": false
+    },
+    "idPrefix": "ghi",
+    "idFormat": "ulid",
+    "fields": [
+      {
+        "name": "title",
+        "type": "string",
+        "required": true,
+        "displayInline": true
+      },
+      {
+        "name": "status",
+        "type": "select",
+        "required": false,
+        "default": "needs-triage",
+        "displayInline": true,
+        "options": [
+          {
+            "value": "needs-triage",
+            "label": "Needs Triage",
+            "icon": "inbox",
+            "category": "unstarted"
+          },
+          {
+            "value": "investigating",
+            "label": "Investigating",
+            "icon": "search",
+            "color": "#eab308",
+            "category": "started"
+          },
+          {
+            "value": "needs-info",
+            "label": "Needs Info",
+            "icon": "help",
+            "color": "#eab308",
+            "category": "started"
+          },
+          {
+            "value": "keep-accept",
+            "label": "Keep / Accept",
+            "icon": "check_circle",
+            "color": "#22c55e",
+            "category": "started"
+          },
+          {
+            "value": "adopted",
+            "label": "Adopted",
+            "icon": "move_item",
+            "color": "#3b82f6",
+            "category": "done"
+          },
+          {
+            "value": "close-fixed",
+            "label": "Close: Already Fixed",
+            "icon": "verified",
+            "color": "#3b82f6",
+            "category": "done"
+          },
+          {
+            "value": "close-duplicate",
+            "label": "Close: Duplicate",
+            "icon": "content_copy",
+            "color": "#8b5cf6",
+            "category": "cancelled"
+          },
+          {
+            "value": "close-wontfix",
+            "label": "Close: Won't Do",
+            "icon": "do_not_disturb_on",
+            "color": "#64748b",
+            "category": "cancelled"
+          }
+        ]
+      },
+      {
+        "name": "priority",
+        "type": "select",
+        "required": false,
+        "default": "medium",
+        "displayInline": true,
+        "options": [
+          {
+            "value": "low",
+            "label": "Low"
+          },
+          {
+            "value": "medium",
+            "label": "Medium"
+          },
+          {
+            "value": "high",
+            "label": "High"
+          },
+          {
+            "value": "critical",
+            "label": "Critical"
+          }
+        ]
+      },
+      {
+        "name": "issueUrl",
+        "type": "url",
+        "required": true,
+        "displayInline": true
+      },
+      {
+        "name": "issueNumber",
+        "type": "number",
+        "required": false,
+        "displayInline": true
+      },
+      {
+        "name": "repo",
+        "type": "string",
+        "required": false,
+        "displayInline": true
+      },
+      {
+        "name": "author",
+        "type": "string",
+        "required": false,
+        "displayInline": true
+      },
+      {
+        "name": "adoptedItemId",
+        "type": "string",
+        "required": false,
+        "displayInline": true
+      },
+      {
+        "name": "notes",
+        "type": "text",
+        "required": false,
+        "displayInline": true
+      },
+      {
+        "name": "ghLabels",
+        "type": "array",
+        "required": false,
+        "displayInline": false,
+        "itemType": "string"
+      }
+    ],
+    "listed": false,
+    "tableView": {
+      "defaultColumns": [
+        "issueNumber",
+        "title",
+        "status",
+        "priority",
+        "author"
+      ],
+      "sortable": true,
+      "filterable": true,
+      "exportable": false
+    },
+    "roles": {
+      "title": "title",
+      "workflowStatus": "status",
+      "priority": "priority",
+      "tags": "ghLabels"
+    },
+    "sharing": "personal",
+    "draftByDefault": false
+  },
+  {
+    "type": "github-pr",
+    "displayName": "GitHub PR",
+    "displayNamePlural": "GitHub PRs",
+    "icon": "merge_type",
+    "color": "#8b5cf6",
+    "modes": {
+      "inline": false,
+      "fullDocument": false
+    },
+    "idPrefix": "ghp",
+    "idFormat": "ulid",
+    "fields": [
+      {
+        "name": "title",
+        "type": "string",
+        "required": true,
+        "displayInline": true
+      },
+      {
+        "name": "status",
+        "type": "select",
+        "required": false,
+        "default": "to-review",
+        "displayInline": true,
+        "options": [
+          {
+            "value": "to-review",
+            "label": "To Review",
+            "icon": "inbox",
+            "category": "unstarted"
+          },
+          {
+            "value": "reviewing",
+            "label": "Reviewing",
+            "icon": "search",
+            "color": "#eab308",
+            "category": "started"
+          },
+          {
+            "value": "approved",
+            "label": "Approved",
+            "icon": "verified",
+            "color": "#22c55e",
+            "category": "started"
+          },
+          {
+            "value": "merged",
+            "label": "Merged",
+            "icon": "merge",
+            "color": "#8b5cf6",
+            "category": "done"
+          },
+          {
+            "value": "closed",
+            "label": "Closed",
+            "icon": "cancel",
+            "color": "#64748b",
+            "category": "cancelled"
+          }
+        ]
+      },
+      {
+        "name": "prUrl",
+        "type": "url",
+        "required": true,
+        "displayInline": true
+      },
+      {
+        "name": "prNumber",
+        "type": "number",
+        "required": false,
+        "displayInline": true
+      },
+      {
+        "name": "repo",
+        "type": "string",
+        "required": false,
+        "displayInline": true
+      },
+      {
+        "name": "author",
+        "type": "string",
+        "required": false,
+        "displayInline": true
+      },
+      {
+        "name": "headBranch",
+        "type": "string",
+        "required": false,
+        "displayInline": true
+      },
+      {
+        "name": "baseBranch",
+        "type": "string",
+        "required": false,
+        "displayInline": true
+      },
+      {
+        "name": "notes",
+        "type": "text",
+        "required": false,
+        "displayInline": true
+      },
+      {
+        "name": "tags",
+        "type": "array",
+        "required": false,
+        "displayInline": false,
+        "itemType": "string"
+      }
+    ],
+    "listed": false,
+    "tableView": {
+      "defaultColumns": [
+        "prNumber",
+        "title",
+        "status",
+        "author"
+      ],
+      "sortable": true,
+      "filterable": true,
+      "exportable": false
+    },
+    "roles": {
+      "title": "title",
+      "workflowStatus": "status",
+      "tags": "tags"
+    },
+    "sharing": "personal",
+    "draftByDefault": false
   }
 ]

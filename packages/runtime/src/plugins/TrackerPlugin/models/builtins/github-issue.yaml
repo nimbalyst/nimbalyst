@@ -1,0 +1,124 @@
+# Local overlay for a GitHub issue. The Issues panel creates one when you
+# triage an issue or start an investigation session from it, and adoption
+# records the tracker item the issue became. Unlisted: these items are written
+# by the panel and the GitHub tools, not made by hand. A workspace schema of the
+# same name replaces this one wholesale.
+type: github-issue
+displayName: GitHub Issue
+displayNamePlural: GitHub Issues
+icon: adjust
+color: "#f97316"
+
+modes:
+  inline: false
+  fullDocument: false
+
+sharing: personal
+draftByDefault: false
+listed: false
+
+idPrefix: ghi
+idFormat: ulid
+
+fields:
+  - name: title
+    type: string
+    required: true
+
+  - name: status
+    type: select
+    default: needs-triage
+    options:
+      - value: needs-triage
+        label: Needs Triage
+        icon: inbox
+        category: unstarted
+      - value: investigating
+        label: Investigating
+        icon: search
+        color: "#eab308"
+        category: started
+      - value: needs-info
+        label: Needs Info
+        icon: help
+        color: "#eab308"
+        category: started
+      - value: keep-accept
+        label: Keep / Accept
+        icon: check_circle
+        color: "#22c55e"
+        category: started
+      - value: adopted
+        label: Adopted
+        icon: move_item
+        color: "#3b82f6"
+        category: done
+      - value: close-fixed
+        label: "Close: Already Fixed"
+        icon: verified
+        color: "#3b82f6"
+        category: done
+      - value: close-duplicate
+        label: "Close: Duplicate"
+        icon: content_copy
+        color: "#8b5cf6"
+        category: cancelled
+      - value: close-wontfix
+        label: "Close: Won't Do"
+        icon: do_not_disturb_on
+        color: "#64748b"
+        category: cancelled
+
+  - name: priority
+    type: select
+    default: medium
+    options:
+      - value: low
+        label: Low
+      - value: medium
+        label: Medium
+      - value: high
+        label: High
+      - value: critical
+        label: Critical
+
+  - name: issueUrl
+    type: url
+    required: true
+
+  - name: issueNumber
+    type: number
+
+  - name: repo
+    type: string
+
+  - name: author
+    type: string
+
+  - name: adoptedItemId
+    type: string
+
+  - name: notes
+    type: text
+
+  - name: ghLabels
+    type: array
+    itemType: string
+    displayInline: false
+
+tableView:
+  defaultColumns:
+    - issueNumber
+    - title
+    - status
+    - priority
+    - author
+  sortable: true
+  filterable: true
+  exportable: false
+
+roles:
+  title: title
+  workflowStatus: status
+  priority: priority
+  tags: ghLabels

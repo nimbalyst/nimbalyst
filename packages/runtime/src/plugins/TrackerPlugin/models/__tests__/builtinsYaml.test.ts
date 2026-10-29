@@ -30,6 +30,9 @@ const EXPECTED = [
   'source',
   'capture',
   'citation',
+  // GitHub panel overlays.
+  'github-issue',
+  'github-pr',
 ] as const;
 
 // Behavior-preserving invariants carried over from the pre-migration code array.
@@ -52,6 +55,10 @@ const INVARIANTS: Record<string, {
   source: { idPrefix: 'src', sharing: 'personal', draftByDefault: false },
   capture: { idPrefix: 'cap', sharing: 'personal', draftByDefault: false },
   citation: { idPrefix: 'cit', sharing: 'personal', draftByDefault: false },
+  // Overlays are personal by default: clicking Review or Investigate must not
+  // publish to a team tracker unless the workspace's schema says so.
+  'github-issue': { idPrefix: 'ghi', sharing: 'personal', draftByDefault: false },
+  'github-pr': { idPrefix: 'ghp', sharing: 'personal', draftByDefault: false },
 };
 
 /** Section 3 pins `modes.fullDocument: false` on all three evidence kinds. */
@@ -126,6 +133,26 @@ describe('bundled builtin tracker YAML', () => {
     for (const type of EVIDENCE_KINDS) {
       expect(listed(), `${type} listed after removing claim`).not.toContain(type);
       expect(globalRegistry.has(type), `${type} still resolvable`).toBe(true);
+    }
+  });
+
+  it('keeps the GitHub overlays unlisted until a workspace schema replaces them', () => {
+    loadBuiltinTrackers();
+    const listed = () => globalRegistry.getListed().map((m) => m.type);
+    for (const type of ['github-issue', 'github-pr']) {
+      globalRegistry.clearWorkspaceSchema(type);
+      expect(globalRegistry.get(type)?.listed, `${type} parsed listed flag`).toBe(false);
+      expect(listed(), `${type} listed as builtin`).not.toContain(type);
+
+      // A workspace's own full schema (this repo's triage types) lists it again.
+      const { listed: _unlisted, ...workspaceModel } = globalRegistry.get(type)!;
+      globalRegistry.register(workspaceModel);
+      try {
+        expect(listed(), `${type} listed with a workspace schema`).toContain(type);
+      } finally {
+        globalRegistry.clearWorkspaceSchema(type);
+      }
+      expect(listed(), `${type} unlisted after the workspace schema goes`).not.toContain(type);
     }
   });
 
