@@ -330,7 +330,10 @@ export async function buildSdkOptions(
     },
     canUseTool: createCanUseToolHandler(sessionId, workspacePath, permissionsPath),
     hooks: {
-      'PreToolUse': [{ hooks: [toolHooksService.createPreToolUseHook()] }],
+      // The plan/question dialogs block inside this hook until the user
+      // answers. Without an explicit timeout the CLI kills it after 600s and
+      // the dialog vanishes while the user is away (seconds, not ms).
+      'PreToolUse': [{ hooks: [toolHooksService.createPreToolUseHook()], timeout: 86400 }],
       'PostToolUse': [{ hooks: [toolHooksService.createPostToolUseHook()] }],
       // PermissionDenied fires when the SDK denies a tool call without
       // escalating through canUseTool (auto-mode classifier confident deny,
