@@ -270,7 +270,7 @@ export const META_AGENT_TOOL_DEFS: Array<{
         isolated: {
           type: "boolean",
           description:
-            "Default false. Set true for work unrelated to your current task: the new session is created at the top level with no parent and shares no files-edited, tabs or workstream overview with you. Pair with reporting \"none\".",
+            "Default false. Set true for work unrelated to your current task: the new session is created at the top level with no parent and shares no files-edited, tabs or workstream overview with you. Requires reporting \"none\"; any other reporting is rejected. To get a worker's result back, omit isolated.",
         },
         besideCaller: {
           type: "boolean",

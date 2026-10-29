@@ -6,7 +6,7 @@ description: Spin off a new AI session for unrelated work, a fresh continuation,
 
 Spin off a new AI session, e.g. "/launch-new-session and keep going on the tests" or "/launch-new-session to fix that unrelated bug". Pick the mode from what the user asked for:
 
-- **Independent** (`isolated: true`): for work unrelated to the current task, e.g. "fix that other bug", "chase these down separately", "commit it on its own". The new session is a top-level session that shares no files-edited, tabs, or workstream overview with this one. Fire and forget: do not wait for it or check on it.
+- **Independent** (`isolated: true`): for work unrelated to the current task, e.g. "fix that other bug", "chase these down separately", "commit it on its own". The new session is a top-level session that shares no files-edited, tabs, or workstream overview with this one. Fire and forget: do not wait for it or check on it. `spawn_session` rejects `isolated: true` with any `reporting` other than `"none"`; if you need the result back, it is a Worker.
 
 - **Continuation** (`besideCaller: true`): for the same work in a fresh session, usually to escape a long context. The new session sits beside this one in the session list, so a chain of handoffs stays flat.
 

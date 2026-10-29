@@ -759,6 +759,14 @@ export class MetaAgentService {
 
     const isolated = args.isolated === true;
     const reporting = resolveChildReporting(args.reporting, args.notifyOnComplete === true);
+    // An isolated session is top-level; one that reports back is really a
+    // worker, and would be filed outside the caller's tree (#1876).
+    if (isolated && reporting !== 'none') {
+      throw new Error(
+        `isolated cannot be combined with reporting "${reporting}": isolated is for unrelated, fire-and-forget work. ` +
+        'To get this worker\'s result back, omit isolated so it nests under you.'
+      );
+    }
 
     const workstreamId = isolated || args.useWorktree ? null : parent.id;
     const promotedParent = false;
