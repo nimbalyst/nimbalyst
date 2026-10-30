@@ -21,6 +21,13 @@ function getHighlightWindow(matchCount: number, currentIndex: number): [start: n
   return [start, start + MAX_RENDERED_HIGHLIGHTS];
 }
 
+/** Index of the current match after a search: kept (clamped) on a re-search, else the first. */
+export function matchIndexAfterSearch(previous: number, matchCount: number, preserve: boolean): number {
+  if (matchCount === 0) return -1;
+  if (!preserve || previous < 0) return 0;
+  return Math.min(previous, matchCount - 1);
+}
+
 // HighlightManager class for creating visual highlights over search matches
 export class HighlightManager {
   private editor: LexicalEditor;
@@ -29,6 +36,14 @@ export class HighlightManager {
   private observer: MutationObserver | null = null;
   private rootElement: HTMLElement | null = null;
   private parentElement: HTMLElement | null = null;
+  // Highlights are placed from rects measured at draw time, so a width change that
+  // reflows the text (window or side-pane resize) leaves them stale (GitHub #1889).
+  // The last draw is kept so a resize can redraw it. Height is ignored: the root
+  // grows on every added line, and the editor update path already re-searches then.
+  private resizeObserver: ResizeObserver | null = null;
+  private observedWidths = new Map<Element, number>();
+  private lastDraw: { matches: SearchMatch[]; currentIndex: number } | null = null;
+  private pendingFrame: number | null = null;
 
   constructor(editor: LexicalEditor) {
     this.editor = editor;
@@ -39,6 +54,8 @@ export class HighlightManager {
   }
 
   updateHighlights(matches: SearchMatch[], currentIndex: number) {
+    this.lastDraw = { matches, currentIndex };
+
     const rootElement = this.editor.getRootElement();
     if (!rootElement) return;
 
@@ -49,7 +66,7 @@ export class HighlightManager {
       this.setupObserver(rootElement, parentElement);
     }
 
-    this.clearHighlights();
+    this.removeHighlightElements();
 
     if (!this.wrapperElement.isConnected) {
       parentElement.insertBefore(this.wrapperElement, parentElement.firstChild);
@@ -105,8 +122,12 @@ export class HighlightManager {
   }
 
   clearHighlights() {
-    this.highlightElements.forEach((element) => element.remove());
-    this.highlightElements = [];
+    this.lastDraw = null;
+    if (this.pendingFrame !== null) {
+      cancelAnimationFrame(this.pendingFrame);
+      this.pendingFrame = null;
+    }
+    this.removeHighlightElements();
   }
 
   destroy() {
@@ -115,6 +136,30 @@ export class HighlightManager {
     if (this.observer) {
       this.observer.disconnect();
     }
+    this.resizeObserver?.disconnect();
+    this.resizeObserver = null;
+  }
+
+  private removeHighlightElements() {
+    this.highlightElements.forEach((element) => element.remove());
+    this.highlightElements = [];
+  }
+
+  private handleResize(entries: ResizeObserverEntry[]) {
+    let widthChanged = false;
+    for (const entry of entries) {
+      const width = entry.contentRect.width;
+      const previous = this.observedWidths.get(entry.target);
+      this.observedWidths.set(entry.target, width);
+      // The first callback after observe() reports the initial size, not a change.
+      if (previous !== undefined && previous !== width) widthChanged = true;
+    }
+    if (!widthChanged || !this.lastDraw || this.pendingFrame !== null) return;
+
+    this.pendingFrame = requestAnimationFrame(() => {
+      this.pendingFrame = null;
+      if (this.lastDraw) this.updateHighlights(this.lastDraw.matches, this.lastDraw.currentIndex);
+    });
   }
 
   private setupObserver(rootElement: HTMLElement, parentElement: HTMLElement) {
@@ -140,5 +185,15 @@ export class HighlightManager {
       childList: true,
       subtree: true,
     });
+
+    if (typeof ResizeObserver !== 'undefined') {
+      this.resizeObserver?.disconnect();
+      this.observedWidths.clear();
+      this.resizeObserver = new ResizeObserver((entries) => this.handleResize(entries));
+      // The parent too: a max-width editor centered in a wider pane keeps its own
+      // width but moves within the parent the highlights are positioned against.
+      this.resizeObserver.observe(rootElement);
+      this.resizeObserver.observe(parentElement);
+    }
   }
 }

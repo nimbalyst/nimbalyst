@@ -2,7 +2,7 @@ import { useEffect, useState, useCallback, useRef } from 'react';
 import type { LexicalEditor } from 'lexical';
 import { $getRoot, $getNodeByKey, $isTextNode, $createRangeSelection, $setSelection } from 'lexical';
 import { SearchReplaceStateManager, type SearchNavigateDirection } from './SearchReplaceStateManager';
-import { HighlightManager, type SearchMatch } from './HighlightManager';
+import { HighlightManager, matchIndexAfterSearch, type SearchMatch } from './HighlightManager';
 // Only contains global highlight styles for dynamically applied classes
 import './SearchReplaceBar.css';
 
@@ -69,6 +69,10 @@ export function SearchReplaceBar({ filePath, editor }: SearchReplaceBarProps) {
   const [useRegex, setUseRegex] = useState(false);
   const [matches, setMatches] = useState<SearchMatch[]>([]);
   const [currentMatchIndex, setCurrentMatchIndex] = useState(-1);
+  // performSearch runs from timers and editor listeners, so it reads the index here
+  // rather than through a state updater, which React may run after the caller returns.
+  const currentMatchIndexRef = useRef(currentMatchIndex);
+  currentMatchIndexRef.current = currentMatchIndex;
 
   const searchInputRef = useRef<HTMLInputElement>(null);
   const highlightManagerRef = useRef<HighlightManager | null>(null);
@@ -226,26 +230,8 @@ export function SearchReplaceBar({ filePath, editor }: SearchReplaceBarProps) {
 
         setMatches(foundMatches);
 
-        // Determine the new current index
-        let newIndex: number;
-        if (preserveIndex) {
-          // Keep the current index if it's still valid, otherwise clamp it
-          setCurrentMatchIndex(prev => {
-            if (foundMatches.length === 0) {
-              newIndex = -1;
-              return -1;
-            }
-            if (prev < 0) {
-              newIndex = 0;
-              return 0;
-            }
-            newIndex = Math.min(prev, foundMatches.length - 1);
-            return newIndex;
-          });
-        } else {
-          newIndex = foundMatches.length > 0 ? 0 : -1;
-          setCurrentMatchIndex(newIndex);
-        }
+        const newIndex = matchIndexAfterSearch(currentMatchIndexRef.current, foundMatches.length, preserveIndex);
+        setCurrentMatchIndex(newIndex);
 
         // Update highlights with the appropriate index
         // Use setTimeout to ensure we get the updated index after state updates
