@@ -23,6 +23,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Agent diffs for a file whose name has a space or non-ASCII character, and that had uncommitted changes when the session started, no longer count those earlier changes as the agent's
 - Closing a window that had opened a file from Finder or the terminal no longer throws an "Object has been destroyed" error in the main process
 - Find highlights in a markdown document are redrawn when the editor's width changes (window or side panel resize), instead of staying where the text used to be
+- The dashboard screenshot in the tutorial project's first sample session now displays, instead of a broken image, in tutorial projects created after this update
 
 ### Removed
 <!-- Removed features go here -->
