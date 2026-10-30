@@ -16,7 +16,7 @@ import { execFileSync, type ChildProcessWithoutNullStreams } from 'child_process
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { GitCatFileBatch } from '../GitCatFileBatch';
+import { GitCatFileBatch, toGitObjectPath } from '../GitCatFileBatch';
 
 let repo: string;
 let sha: string;
@@ -164,5 +164,18 @@ describe('GitCatFileBatch', () => {
     // Output the dead child had already written must not answer the replacement's read.
     child.stdout.emit('data', Buffer.from('0000000000000000000000000000000000000000 blob 6\n4a5800\n'));
     expect(await replacementRead).toBe('alpha\n');
+  });
+});
+
+describe('toGitObjectPath', () => {
+  // GitHub #1889: Windows hands `path.relative` output with backslashes to the
+  // `<rev>:<path>` lookup, which git reports as missing for any nested file.
+  it('converts a native Windows relative path into one git resolves', async () => {
+    expect(await make().read(sha, 'nested\\c.txt')).toBeNull();
+    expect(await make().read(sha, toGitObjectPath('nested\\c.txt', '\\'))).toBe('gamma\n');
+  });
+
+  it('keeps a literal backslash in a POSIX filename', () => {
+    expect(toGitObjectPath('dir/odd\\name.txt', '/')).toBe('dir/odd\\name.txt');
   });
 });

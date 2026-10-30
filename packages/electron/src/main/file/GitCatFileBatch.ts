@@ -18,6 +18,7 @@
  */
 
 import { spawn, type ChildProcessWithoutNullStreams } from 'child_process';
+import * as path from 'path';
 import { logger } from '../utils/logger';
 
 /** Matches FileSnapshotCache's per-file cap. */
@@ -29,6 +30,15 @@ interface PendingRead {
   resolve: (value: string | null) => void;
   /** Objects past the cap are drained from the stream but reported as missing. */
   oversizeIsMissing: boolean;
+}
+
+/**
+ * Git object paths always use `/`. On Windows `path.relative` returns `\`, and
+ * git reports `<rev>:nested\file` as missing (GitHub #1889). Only the native
+ * separator is converted: a backslash is a legal filename character on POSIX.
+ */
+export function toGitObjectPath(relativePath: string, sep: string = path.sep): string {
+  return sep === '/' ? relativePath : relativePath.split(sep).join('/');
 }
 
 export interface GitCatFileBatchOptions {
@@ -78,7 +88,7 @@ export class GitCatFileBatch {
       this.touchIdleTimer();
 
       try {
-        child.stdin.write(`${sha}:${relativePath}\n`);
+        child.stdin.write(`${sha}:${toGitObjectPath(relativePath)}\n`);
       } catch (error) {
         logger.main.warn('[GitCatFileBatch] Could not write request:', error);
         this.failAll();
