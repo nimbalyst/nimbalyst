@@ -37,18 +37,21 @@ engineStrict: true
 # Release cooldown: never resolve a version published less than 72 hours ago.
 minimumReleaseAge: 4320
 minimumReleaseAgeExclude:
-  # 2026-10-14: 0.3.300 fixes the 0.3.296 regression where an approved tool
-  # call runs twice on resume, plus resume-after-compaction and MCP reconnect
-  # fixes. Remove these once they clear the cooldown (2026-10-17).
-  - '@anthropic-ai/claude-agent-sdk@0.3.300'
-  - '@anthropic-ai/claude-agent-sdk-darwin-arm64@0.3.300'
-  - '@anthropic-ai/claude-agent-sdk-darwin-x64@0.3.300'
-  - '@anthropic-ai/claude-agent-sdk-linux-arm64@0.3.300'
-  - '@anthropic-ai/claude-agent-sdk-linux-arm64-musl@0.3.300'
-  - '@anthropic-ai/claude-agent-sdk-linux-x64@0.3.300'
-  - '@anthropic-ai/claude-agent-sdk-linux-x64-musl@0.3.300'
-  - '@anthropic-ai/claude-agent-sdk-win32-arm64@0.3.300'
-  - '@anthropic-ai/claude-agent-sdk-win32-x64@0.3.300'
+  # 2026-10-30: claude-agent-sdk 0.3.314 (settings-source permission leak fix,
+  # transcript ordering on resume) and codex 0.166.0 (resume keeps approval
+  # settings and reasoning-token accounting). Remove once they clear the
+  # cooldown (2026-11-02).
+  - '@anthropic-ai/claude-agent-sdk@0.3.314'
+  - '@anthropic-ai/claude-agent-sdk-darwin-arm64@0.3.314'
+  - '@anthropic-ai/claude-agent-sdk-darwin-x64@0.3.314'
+  - '@anthropic-ai/claude-agent-sdk-linux-arm64@0.3.314'
+  - '@anthropic-ai/claude-agent-sdk-linux-arm64-musl@0.3.314'
+  - '@anthropic-ai/claude-agent-sdk-linux-x64@0.3.314'
+  - '@anthropic-ai/claude-agent-sdk-linux-x64-musl@0.3.314'
+  - '@anthropic-ai/claude-agent-sdk-win32-arm64@0.3.314'
+  - '@anthropic-ai/claude-agent-sdk-win32-x64@0.3.314'
+  - '@openai/codex-sdk@0.166.0'
+  - '@openai/codex@0.166.0 || 0.166.0-darwin-arm64 || 0.166.0-darwin-x64 || 0.166.0-linux-arm64 || 0.166.0-linux-x64 || 0.166.0-win32-arm64 || 0.166.0-win32-x64'
 
 # `pnpm run` should not silently start an install: parallel agent sessions share
 # a checkout, and two concurrent installs corrupt node_modules.
@@ -82,7 +85,7 @@ ignoredOptionalDependencies:
   - y-leveldb
 
 overrides:
-  '@anthropic-ai/claude-agent-sdk': 0.3.300
+  '@anthropic-ai/claude-agent-sdk': 0.3.314
   prismjs: ^1.30.0
   vite: ^7.3.6
   zod: ^4.0.0
