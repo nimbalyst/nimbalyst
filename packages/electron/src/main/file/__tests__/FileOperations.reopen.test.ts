@@ -90,4 +90,20 @@ describe('reloadIntoWindowWithFile', () => {
     window.webContents.emit('destroyed');
     expect(fileOperations.getPendingFileOpens(window.webContents as any, '/other')).toEqual([]);
   });
+
+  // Electron's BrowserWindow.webContents getter throws "Object has been destroyed"
+  // once the window is gone, and 'destroyed' fires after that point (GitHub #1889).
+  it('disposes requests on destroy without touching the destroyed window', () => {
+    const window = makeWindow(1);
+    const contents = window.webContents;
+    loadFileIntoWindow(window as unknown as BrowserWindow, '/a.md');
+    loadFileIntoWindow(window as unknown as BrowserWindow, '/b.md');
+    expect(contents.listenerCount('destroyed')).toBe(1);
+    Object.defineProperty(window, 'webContents', {
+      get() { throw new TypeError('Object has been destroyed'); },
+    });
+
+    expect(() => contents.emit('destroyed')).not.toThrow();
+    expect(fileOperations.getPendingFileOpens(contents as any, '/ws')).toEqual([]);
+  });
 });

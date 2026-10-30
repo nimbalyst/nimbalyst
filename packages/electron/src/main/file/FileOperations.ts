@@ -46,11 +46,14 @@ export function loadFileIntoWindow(window: BrowserWindow, filePath: string) {
             console.error('[LOAD_FILE] No window state found for window ID:', windowId);
         }
 
-        let requests = pendingFileOpens.get(window.webContents);
+        // Captured once: the BrowserWindow.webContents getter throws after the
+        // window is destroyed, which is when the 'destroyed' handler runs.
+        const contents = window.webContents;
+        let requests = pendingFileOpens.get(contents);
         if (!requests) {
             requests = [];
-            pendingFileOpens.set(window.webContents, requests);
-            window.webContents.once('destroyed', () => pendingFileOpens.delete(window.webContents));
+            pendingFileOpens.set(contents, requests);
+            contents.once('destroyed', () => pendingFileOpens.delete(contents));
         }
         const request: PendingFileOpen = {
             requestId: ++nextFileOpenId,
@@ -60,7 +63,7 @@ export function loadFileIntoWindow(window: BrowserWindow, filePath: string) {
         requests.push(request);
         // This is a notification, not proof of delivery. A newly mounted
         // renderer also pulls the queue, closing the subscribe/startup race.
-        window.webContents.send('open-document', request);
+        contents.send('open-document', request);
 
         // Set represented filename for macOS
         if (process.platform === 'darwin') {
