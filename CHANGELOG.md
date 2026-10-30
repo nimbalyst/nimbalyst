@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - An agent can no longer start an independent top-level session that also reports its result back; a worker whose result the agent needs now nests under it in the session tree instead (#1876)
 - OpenAI Codex commands and edits that Codex wants approved now show the approval prompt instead of being rejected with "blocked by policy"; Codex also runs in Ask every time mode, and a declined command says so on its card (#1884)
 - On Windows, a file in a subfolder that an agent edits now gets its content from the start of the session as the diff baseline; the git lookup used to fail and the file was treated as if it had not existed (#1889)
+- Agent diffs for a file whose name has a space or non-ASCII character, and that had uncommitted changes when the session started, no longer count those earlier changes as the agent's
 
 ### Removed
 <!-- Removed features go here -->

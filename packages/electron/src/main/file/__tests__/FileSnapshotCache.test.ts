@@ -120,7 +120,7 @@ describe('FileSnapshotCache', () => {
 
     it('should cache dirty files from git status', async () => {
       setupGitMocks({
-        'status --porcelain': ' M src/modified.ts\nA  src/staged.ts\n?? src/new.ts\n',
+        'status --porcelain': ' M src/modified.ts\0A  src/staged.ts\0?? src/new.ts\0',
       });
 
       mockReadFile.mockImplementation(async (filePath: string) => {
@@ -147,9 +147,34 @@ describe('FileSnapshotCache', () => {
       expect(newContent).toBe('working new content');
     });
 
+    // `-z` output is NUL-separated and unquoted. Without it git quotes names with
+    // spaces or non-ASCII characters ("my file.md", "caf\303\251.md"), and those
+    // dirty files were never cached, so their baseline fell back to HEAD.
+    it('caches dirty files whose names have spaces, non-ASCII, or were renamed', async () => {
+      setupGitMocks({
+        'status --porcelain': '?? my file.md\0 M café.md\0R  docs/new name.md\0docs/old name.md\0',
+      });
+
+      mockReadFile.mockImplementation(async (filePath: string) => {
+        if (filePath.endsWith('my file.md')) return 'untracked with space';
+        if (filePath.endsWith('café.md')) return 'modified unicode';
+        if (filePath.endsWith('new name.md')) return 'renamed content';
+        throw new Error('not found');
+      });
+
+      const cache = new FileSnapshotCache();
+      await cache.startSession(workspacePath, 'session-1');
+
+      expect(cache.getStats().fileCount).toBe(3);
+      expect(await cache.getBeforeState(path.resolve(workspacePath, 'my file.md'))).toBe('untracked with space');
+      expect(await cache.getBeforeState(path.resolve(workspacePath, 'café.md'))).toBe('modified unicode');
+      expect(await cache.getBeforeState(path.resolve(workspacePath, 'docs/new name.md'))).toBe('renamed content');
+      expect(cache.hasSnapshot(path.resolve(workspacePath, 'docs/old name.md'))).toBe(false);
+    });
+
     it('should skip binary files when caching dirty files', async () => {
       setupGitMocks({
-        'status --porcelain': ' M image.png\n M src/code.ts\n',
+        'status --porcelain': ' M image.png\0 M src/code.ts\0',
       });
 
       mockReadFile.mockResolvedValue('code content');
@@ -201,7 +226,7 @@ describe('FileSnapshotCache', () => {
   describe('getBeforeState', () => {
     it('should return cached content for files in cache (tier 1)', async () => {
       setupGitMocks({
-        'status --porcelain': ' M dirty.ts\n',
+        'status --porcelain': ' M dirty.ts\0',
       });
 
       mockReadFile.mockResolvedValue('working dirty content');
@@ -321,7 +346,7 @@ describe('FileSnapshotCache', () => {
   describe('hasSnapshot', () => {
     it('returns true only for files in tier-1 in-memory cache, never via tier-2 git fallback', async () => {
       setupGitMocks({
-        'status --porcelain': ' M src/dirty.ts\n',
+        'status --porcelain': ' M src/dirty.ts\0',
         'show abc123:src/clean.ts': 'committed clean content',
       });
       mockReadFile.mockImplementation(async (filePath: string) => {
@@ -396,7 +421,7 @@ describe('FileSnapshotCache', () => {
   describe('dirty file rate limiting', () => {
     it('should cap cached dirty files at MAX_DIRTY_FILES (200)', async () => {
       // Generate 300 dirty files in git status output
-      const lines = Array.from({ length: 300 }, (_, i) => `?? file${i}.ts`).join('\n');
+      const lines = Array.from({ length: 300 }, (_, i) => `?? file${i}.ts\0`).join('');
       setupGitMocks({
         'status --porcelain': lines,
       });

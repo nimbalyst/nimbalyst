@@ -17,6 +17,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { GitCatFileBatch, toGitObjectPath } from '../GitCatFileBatch';
+import { parseDirtyPathsPorcelainZ } from '../FileSnapshotCache';
 
 let repo: string;
 let sha: string;
@@ -177,5 +178,31 @@ describe('toGitObjectPath', () => {
 
   it('keeps a literal backslash in a POSIX filename', () => {
     expect(toGitObjectPath('dir/odd\\name.txt', '/')).toBe('dir/odd\\name.txt');
+  });
+});
+
+describe('parseDirtyPathsPorcelainZ', () => {
+  // Checked against real `git status -z` output rather than a hand-written
+  // string, so the parser cannot just agree with my reading of the format.
+  it('returns unquoted paths and skips the source of a rename', () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nim-status-z-'));
+    try {
+      const git = (...args: string[]) => execFileSync('git', args, { cwd: dir, stdio: 'pipe' }).toString();
+      git('init', '-q');
+      git('config', 'user.email', 'test@example.com');
+      git('config', 'user.name', 'Test');
+      fs.writeFileSync(path.join(dir, 'old name.md'), 'x\n');
+      fs.writeFileSync(path.join(dir, 'tracked.md'), 'x\n');
+      git('add', '-A');
+      git('commit', '-qm', 'init');
+      git('mv', 'old name.md', 'new name.md');
+      fs.writeFileSync(path.join(dir, 'tracked.md'), 'changed\n');
+      fs.writeFileSync(path.join(dir, 'café.md'), 'new\n');
+
+      const stdout = git('--no-optional-locks', 'status', '--porcelain', '-z');
+      expect(parseDirtyPathsPorcelainZ(stdout).sort()).toEqual(['café.md', 'new name.md', 'tracked.md']);
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
