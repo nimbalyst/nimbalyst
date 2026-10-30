@@ -287,8 +287,9 @@ const posthogClient = posthog.init(
     // gate here (rather than relying only on opt_out_capturing) means no
     // existing or future `posthog.capture(...)` call site can leak an event
     // while the user has analytics turned off.
+    // E2E launches are covered here too: main reports consent as denied under
+    // the test environment (see analyticsSuppression.ts).
     before_send: (event) => {
-      if (process.env.PLAYWRIGHT_TEST) return null;
       if (!isAnalyticsConsentGranted()) return null;
       // Mark users as dev users if they've ever used a non-official build.
       // Attached to an event that was going to be sent anyway rather than

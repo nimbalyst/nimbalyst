@@ -7,6 +7,7 @@ import {getReleaseChannel, isAnalyticsEnabled, setAnalyticsEnabled} from "../../
 import {isGitAvailable} from "../../utils/gitUtils";
 import {bucketDaysSinceInstall, bucketLaunchNumber, decideLaunch, type BuildType} from "./launchAttribution";
 import {dailyActiveProperties, decideDailyActive} from "./dailyActiveHeartbeat";
+import {isAnalyticsSuppressedByEnv} from "./analyticsSuppression";
 
 const POSTHOG_PROJECT_PUBLIC_ID = 'phc_s3lQIILexwlGHvxrMBqti355xUgkRocjMXW4LjV0ATw';
 
@@ -320,6 +321,9 @@ export class AnalyticsService {
   }
 
   public allowedToSendAnalytics(): boolean {
+    // Checked before the setting so the renderer, which takes its consent from
+    // here, stays silent too.
+    if (isAnalyticsSuppressedByEnv()) return false;
     // Check if user has enabled analytics in settings
     try {
       const enabled = isAnalyticsEnabled();
@@ -461,7 +465,7 @@ export class AnalyticsService {
         },
         disableGeoip: false,
         enableExceptionAutocapture: false,
-        before_send: (event) => process.env.PLAYWRIGHT_TEST ? null : event
+        before_send: (event) => isAnalyticsSuppressedByEnv() ? null : event
       }
     );
   }

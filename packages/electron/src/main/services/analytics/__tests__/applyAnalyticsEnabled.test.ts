@@ -1,7 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const optIn = vi.fn(async () => {});
-const optOut = vi.fn(async () => {});
+// Mirrors the real service: optIn/optOut persist the setting, and
+// allowedToSendAnalytics reads it back unless the environment suppresses it.
+let settingEnabled = true;
+let envSuppressed = false;
+const optIn = vi.fn(async () => { settingEnabled = true; });
+const optOut = vi.fn(async () => { settingEnabled = false; });
+const allowedToSendAnalytics = () => !envSuppressed && settingEnabled;
 const windows: Array<{ isDestroyed: () => boolean; webContents: { send: ReturnType<typeof vi.fn> } }> = [];
 
 vi.mock('electron', () => ({
@@ -9,7 +14,7 @@ vi.mock('electron', () => ({
 }));
 
 vi.mock('../AnalyticsService', () => ({
-  AnalyticsService: { getInstance: () => ({ optIn, optOut }) },
+  AnalyticsService: { getInstance: () => ({ optIn, optOut, allowedToSendAnalytics }) },
 }));
 
 import { applyAnalyticsEnabled } from '../applyAnalyticsEnabled';
@@ -23,8 +28,22 @@ function addWindow(destroyed = false) {
 describe('applyAnalyticsEnabled', () => {
   beforeEach(() => {
     windows.length = 0;
+    settingEnabled = true;
+    envSuppressed = false;
     optIn.mockClear();
     optOut.mockClear();
+  });
+
+  // An E2E spec that turns analytics on in Settings must not re-enable the
+  // renderer's client.
+  it('tells windows analytics is off when the environment suppresses it', async () => {
+    envSuppressed = true;
+    const a = addWindow();
+
+    await applyAnalyticsEnabled(true);
+
+    expect(optIn).toHaveBeenCalledTimes(1);
+    expect(a.webContents.send).toHaveBeenCalledWith('analytics:enabled-changed', false);
   });
 
   it('opts the main-process client out and tells every window', async () => {

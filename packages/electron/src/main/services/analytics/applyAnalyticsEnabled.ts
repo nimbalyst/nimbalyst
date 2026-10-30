@@ -22,7 +22,9 @@ export async function applyAnalyticsEnabled(enabled: boolean): Promise<void> {
   } else {
     await analytics.optOut();
   }
-  broadcastAnalyticsEnabled(enabled);
+  // Broadcast the effective gate, not the toggle, so a launch where analytics
+  // is suppressed by environment (E2E) cannot switch the renderer back on.
+  broadcastAnalyticsEnabled(analytics.allowedToSendAnalytics());
 }
 
 /**
