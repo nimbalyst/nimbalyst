@@ -169,6 +169,7 @@ exports.default = async function(context) {
   // the build instead of silently shipping.
   validateBundledExtensions(resourcesDir);
   validatePackagedTutorialProject(resourcesDir);
+  validatePackagedRipgrep(resourcesDir, platformName, arch);
 
   console.log('AfterPack: Complete');
 };
@@ -342,6 +343,39 @@ function pruneOnnxRuntimeBinaries(resourcesDir, platformName, arch) {
 // with its manifest.json (and dist/ when the source has one). Throws on any
 // miss. Derives the expected set from packages/extensions so it auto-adapts
 // as extensions are added/removed -- no hardcoded id list to drift.
+// A truncated rg.exe once passed every existence check (GitHub #1889) and would
+// ship a search that cannot start. When the build host can run the target binary
+// -- release CI builds each Windows architecture on a native runner -- execute the
+// exact file the app resolves (ripgrepPath.ts) rather than trusting its presence.
+// Returns whether execution was validated.
+exports.validatePackagedRipgrep = validatePackagedRipgrep;
+function validatePackagedRipgrep(
+  resourcesDir,
+  platformName,
+  arch,
+  { hostPlatform = process.platform, hostArch = process.arch, run = spawnSync } = {},
+) {
+  if (platformName !== 'win32') return false;
+
+  const rgPath = path.join(resourcesDir, 'app.asar.unpacked/node_modules/@vscode/ripgrep/bin/rg.exe');
+  if (!fs.existsSync(rgPath) || !fs.statSync(rgPath).isFile()) {
+    throw new Error(`AfterPack: packaged ripgrep is missing: ${rgPath}`);
+  }
+  if (hostPlatform !== platformName || hostArch !== arch) {
+    console.log(`AfterPack: ripgrep present; execution not validated on a ${hostPlatform}-${hostArch} host for ${platformName}-${arch}`);
+    return false;
+  }
+
+  const result = run(rgPath, ['--version'], { encoding: 'utf8', timeout: 15000, windowsHide: true });
+  const stdout = String(result.stdout ?? '');
+  if (result.error || result.status !== 0 || !stdout.startsWith('ripgrep ')) {
+    const reason = result.error ? result.error.message : `exit ${result.status}${result.signal ? ` (${result.signal})` : ''}`;
+    throw new Error(`AfterPack: packaged ripgrep does not run (${reason}): ${rgPath}\n${stdout}${result.stderr ?? ''}`);
+  }
+  console.log(`AfterPack: packaged ripgrep runs: ${stdout.split('\n')[0]}`);
+  return true;
+}
+
 exports.validateBundledExtensions = validateBundledExtensions;
 function validateBundledExtensions(resourcesDir) {
   const sourceExtDir = path.join(__dirname, '..', '..', 'extensions');
