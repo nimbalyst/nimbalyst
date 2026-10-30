@@ -392,6 +392,7 @@ export class CodexSDKProtocol implements AgentProtocol {
     const permissionProfile = resolveCodexPermissionProfile(
       options.permissionMode,
       options.raw?.agentVerified === true,
+      { userApprovals: false },
     );
 
     // Our EffortLevel names match the SDK's ModelReasoningEffort, so the only
@@ -452,6 +453,7 @@ export class CodexSDKProtocol implements AgentProtocol {
     const permissionProfile = resolveCodexPermissionProfile(
       options.permissionMode,
       options.raw?.agentVerified === true,
+      { userApprovals: false },
     );
     if (permissionProfile.approvalsReviewer) {
       overrides.approvals_reviewer = permissionProfile.approvalsReviewer;

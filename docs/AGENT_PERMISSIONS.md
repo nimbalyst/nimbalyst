@@ -24,7 +24,7 @@ When you first open a project with an AI agent, the trust dialog presents four a
 - Routine work proceeds without interrupting you
 - Risky operations are evaluated by the provider's native automatic reviewer
 - Claude Agent uses the Claude SDK's auto-mode classifier
-- OpenAI Codex uses `workspace-write`, `approval_policy = "on-request"`, and `approvals_reviewer = "auto_review"`
+- OpenAI Codex uses `workspace-write`, `approval_policy = "on-request"`, and `approvals_reviewer = "auto_review"`; requests the reviewer passes on come to you (see [OpenAI Codex](#openai-codex))
 - Stored as `permissionMode: "bypass-all"` with `allowAllUsesClassifier: true`
 
 ### Allow everything
@@ -50,6 +50,23 @@ When you first open a project with an AI agent, the trust dialog presents four a
   - **Always in this project** - Permanently saved to `.claude/settings.local.json`
 - All approved patterns can be managed in **Settings > Agent Permissions**
 - Stored as `permissionMode: "ask"`
+
+### OpenAI Codex
+
+Codex decides for itself which actions need approval: its sandbox, and its exec-policy rules (for example "rm -f style commands are not permitted"). On the app-server transport Nimbalyst runs every mode with `approval_policy = "on-request"` and answers Codex's approval requests through the same prompt Claude uses (#1884). Under `"never"`, Codex silently rejects whatever its policy flags, `rm -rf` included, even with full access.
+
+| Mode | Codex sandbox | Who answers an approval request |
+| --- | --- | --- |
+| Agent-verified | `workspace-write`, `approvals_reviewer = "auto_review"` | Codex's reviewer, then you for anything it passes on |
+| Allow everything | `danger-full-access` | Nimbalyst accepts automatically |
+| Allow edits only | `workspace-write` | Edits are accepted automatically; commands come to you unless a remembered pattern covers them |
+| Ask every time | `read-only` | You, for every write, edit, and flagged command |
+
+- Code: `protocols/codexPermissionProfile.ts` (mode mapping), `providers/codex/codexApprovalBindings.ts` (routing to `ToolPermissionService`), `protocols/codexAppServer/approvalDecisions.ts` (decision mapping).
+- Patterns use the inner command Codex parsed out of its shell wrapper. A command still wrapped in a shell is never remembered.
+- "Always" also sends Codex's proposed exec-policy amendment when one is offered. Codex saves it in the user-level `~/.codex/rules/default.rules`, so it applies to every project; delete the line there to revoke it.
+- A declined command or edit shows "declined" on its transcript card.
+- The legacy SDK transport (`codex exec`) cannot answer approvals: it keeps `"never"` and still refuses Ask mode.
 
 ## What Gets Auto-Approved
 

@@ -1684,7 +1684,35 @@ describe('OpenAICodexProvider', () => {
     provider.cleanupSession('session-agent-verified');
   });
 
-  it('denies Codex in ask mode (tool-level permissions not supported)', async () => {
+  // #1884: approval requests reach the user on the app-server transport, so Ask mode can run.
+  it('runs Codex in ask mode on the app-server transport', async () => {
+    const createSession = vi.fn(async () => ({ id: 'thread-ask', platform: 'codex-app-server', raw: {} }));
+    const protocol = {
+      platform: 'codex-app-server',
+      createSession,
+      resumeSession: vi.fn(),
+      forkSession: vi.fn(),
+      sendMessage: vi.fn(() => createAsyncEventStream([
+        { type: 'complete', content: 'ok', usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } },
+      ])),
+      abortSession: vi.fn(),
+      cleanupSession: vi.fn(),
+    } as any;
+    const provider = new OpenAICodexProvider({ apiKey: 'test-key' }, { protocol, transport: 'app-server' });
+    OpenAICodexProvider.setTrustChecker(() => ({ trusted: true, mode: 'ask' }));
+    await provider.initialize({ apiKey: 'test-key', model: 'openai-codex:gpt-5' });
+
+    const chunks: any[] = [];
+    for await (const chunk of provider.sendMessage('test message', undefined, 'session-ask-app-server', [], process.cwd())) {
+      chunks.push(chunk);
+    }
+
+    expect(chunks.find((chunk) => chunk.type === 'error')).toBeUndefined();
+    expect(createSession).toHaveBeenCalledWith(expect.objectContaining({ permissionMode: 'ask' }));
+    provider.cleanupSession('session-ask-app-server');
+  });
+
+  it('denies Codex in ask mode on the legacy SDK transport (no approval callback)', async () => {
     const startThread = vi.fn();
 
     const provider = new OpenAICodexProvider(

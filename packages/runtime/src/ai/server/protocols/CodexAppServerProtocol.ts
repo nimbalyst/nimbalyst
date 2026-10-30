@@ -49,12 +49,14 @@ import {
   resolveCodexBinaryPath,
 } from './codexAppServer/codexAppServerBinary';
 import { terminateOwnedProcessTree } from './processTreeTermination';
+import { DECLINED_COMMAND_RESULT, DECLINED_FILE_CHANGE_RESULT } from './codexAppServer/approvalDecisions';
 import type {
   AnyItem,
-  ApprovalResponse,
+  CommandExecutionApprovalResponse,
   DynamicToolCallParams,
   DynamicToolCallResponse,
   ErrorNotification,
+  FileChangeApprovalResponse,
   FileChangeChange,
   FileChangeItem,
   InitializeResponse,
@@ -63,7 +65,9 @@ import type {
   ItemCommandExecutionRequestApprovalParams,
   ItemPermissionsRequestApprovalParams,
   ItemStartedNotification,
+  LegacyReviewDecision,
   McpElicitationResponse,
+  PermissionsApprovalResponse,
   ThreadResumeResponse,
   ThreadStartParams,
   ThreadStartResponse,
@@ -93,13 +97,22 @@ export interface DynamicToolSpec {
  * tool-permission system, dialog system, etc.). Returns the response shape
  * codex expects for that method.
  */
+/** What the protocol knows about the session an approval request belongs to. */
+export interface CodexApprovalContext {
+  /** Nimbalyst session id from `SessionOptions.raw.nimbalystSessionId`. */
+  nimbalystSessionId?: string;
+  workspacePath: string;
+  /** Changes from the `fileChange` item that shares the request's `itemId`, when seen. */
+  fileChanges?: FileChangeChange[];
+}
+
 export interface CodexAppServerHostBindings {
   /** Decide whether codex should be allowed to apply a file-change patch. */
-  approveFileChange?: (params: ItemFileChangeRequestApprovalParams) => Promise<ApprovalResponse> | ApprovalResponse;
+  approveFileChange?: (params: ItemFileChangeRequestApprovalParams, context: CodexApprovalContext) => Promise<FileChangeApprovalResponse>;
   /** Decide whether codex should be allowed to run a shell command. */
-  approveCommandExecution?: (params: ItemCommandExecutionRequestApprovalParams) => Promise<ApprovalResponse> | ApprovalResponse;
-  /** Decide an arbitrary codex permissions request. */
-  approvePermissions?: (params: ItemPermissionsRequestApprovalParams) => Promise<ApprovalResponse> | ApprovalResponse;
+  approveCommandExecution?: (params: ItemCommandExecutionRequestApprovalParams, context: CodexApprovalContext) => Promise<CommandExecutionApprovalResponse>;
+  /** Decide a request for extra sandbox permissions (network, file system). */
+  approvePermissions?: (params: ItemPermissionsRequestApprovalParams, context: CodexApprovalContext) => Promise<PermissionsApprovalResponse>;
   /** Handle an MCP elicitation prompt (MCP tool approval / form prompt). */
   handleMcpElicitation?: (params: unknown) => Promise<McpElicitationResponse> | McpElicitationResponse;
   /** Handle a tool-driven user-input prompt. */
@@ -502,7 +515,10 @@ export class CodexAppServerProtocol implements AgentProtocol {
       },
     });
     child.once('exit', () => tracking?.registration.dispose());
-    this.wireServerRequestHandlers(client);
+    this.wireServerRequestHandlers(client, {
+      nimbalystSessionId: typeof options.raw?.nimbalystSessionId === 'string' ? options.raw.nimbalystSessionId : undefined,
+      workspacePath: cwd,
+    });
     let initResponse: InitializeResponse;
     try {
       initResponse = await client.request<InitializeResponse>('initialize', {
@@ -638,46 +654,52 @@ export class CodexAppServerProtocol implements AgentProtocol {
   /**
    * Register handlers for codex's server-to-client requests. Each handler
    * delegates to the host bindings (Nimbalyst's permission system, dialog
-   * surface, etc.). Approval requests that escape Codex's automatic reviewer
-   * fail closed when no host binding is available.
+   * surface, etc.). Approval requests fail closed when no host binding is
+   * available. Every reply must match the v2 schema exactly: Codex cannot
+   * deserialize an unknown decision (the old `'denied'` string was one).
    */
-  private wireServerRequestHandlers(client: JsonRpcClient): void {
-    const deny: ApprovalResponse = { decision: 'denied' };
+  private wireServerRequestHandlers(client: JsonRpcClient, session: Omit<CodexApprovalContext, 'fileChanges'>): void {
+    // A file-change approval request carries no paths. Codex sends the
+    // `fileChange` item (`item/started`) first, so keep its changes by item id.
+    const fileChangesByItemId = new Map<string, FileChangeChange[]>();
+    client.onNotification((method, params) => {
+      const item = (params as ItemStartedNotification | undefined)?.item;
+      if (item?.type !== 'fileChange') return;
+      if (method === 'item/started') fileChangesByItemId.set(item.id, (item as FileChangeItem).changes);
+      else if (method === 'item/completed') fileChangesByItemId.delete(item.id);
+    });
 
-    client.setServerRequestHandler('item/fileChange/requestApproval', async (raw) => {
+    client.setServerRequestHandler('item/fileChange/requestApproval', async (raw): Promise<FileChangeApprovalResponse> => {
       const params = raw as ItemFileChangeRequestApprovalParams;
-      if (this.host.approveFileChange) return this.host.approveFileChange(params);
-      console.warn('[CODEX][APPSERVER] approveFileChange called with no host binding; default deny');
-      return deny;
-    });
-
-    client.setServerRequestHandler('item/commandExecution/requestApproval', async (raw) => {
-      const params = raw as ItemCommandExecutionRequestApprovalParams;
-      if (this.host.approveCommandExecution) return this.host.approveCommandExecution(params);
-      console.warn('[CODEX][APPSERVER] approveCommandExecution called with no host binding; default deny');
-      return deny;
-    });
-
-    client.setServerRequestHandler('item/permissions/requestApproval', async (raw) => {
-      const params = raw as ItemPermissionsRequestApprovalParams;
-      if (this.host.approvePermissions) return this.host.approvePermissions(params);
-      return deny;
-    });
-
-    client.setServerRequestHandler('applyPatchApproval', async (raw) => {
-      // Legacy method-name path; treat it the same as the structured one.
       if (this.host.approveFileChange) {
-        return this.host.approveFileChange(raw as ItemFileChangeRequestApprovalParams);
+        return this.host.approveFileChange(params, { ...session, fileChanges: fileChangesByItemId.get(params.itemId) });
       }
-      return deny;
+      console.error('[CODEX][APPSERVER] file change approval with no host binding; declining', { itemId: params.itemId });
+      return { decision: 'decline' };
     });
 
-    client.setServerRequestHandler('execCommandApproval', async (raw) => {
-      if (this.host.approveCommandExecution) {
-        return this.host.approveCommandExecution(raw as ItemCommandExecutionRequestApprovalParams);
-      }
-      return deny;
+    client.setServerRequestHandler('item/commandExecution/requestApproval', async (raw): Promise<CommandExecutionApprovalResponse> => {
+      const params = raw as ItemCommandExecutionRequestApprovalParams;
+      if (this.host.approveCommandExecution) return this.host.approveCommandExecution(params, session);
+      console.error('[CODEX][APPSERVER] command approval with no host binding; declining', { itemId: params.itemId });
+      return { decision: 'decline' };
     });
+
+    client.setServerRequestHandler('item/permissions/requestApproval', async (raw): Promise<PermissionsApprovalResponse> => {
+      const params = raw as ItemPermissionsRequestApprovalParams;
+      if (this.host.approvePermissions) return this.host.approvePermissions(params, session);
+      console.error('[CODEX][APPSERVER] permissions approval with no host binding; granting nothing', { itemId: params.itemId });
+      return { permissions: {}, scope: 'turn' };
+    });
+
+    // Legacy v1 approvals. The v2 app-server sends the `item/*` requests above
+    // instead; if a v1 request ever arrives, refuse it rather than guess its shape.
+    const legacyDecline = (method: string): { decision: LegacyReviewDecision } => {
+      console.error(`[CODEX][APPSERVER] unsupported legacy ${method}; declining`);
+      return { decision: { denied: { rejection: 'Nimbalyst does not support legacy Codex approval requests.' } } };
+    };
+    client.setServerRequestHandler('applyPatchApproval', async () => legacyDecline('applyPatchApproval'));
+    client.setServerRequestHandler('execCommandApproval', async () => legacyDecline('execCommandApproval'));
 
     client.setServerRequestHandler('mcpServer/elicitation/request', async (raw) => {
       if (this.host.handleMcpElicitation) return this.host.handleMcpElicitation(raw);
@@ -1128,7 +1150,9 @@ export class CodexAppServerProtocol implements AgentProtocol {
                 success: cmd.status === 'completed',
                 command: cmd.command,
                 exit_code: cmd.exitCode ?? cmd.exit_code,
-                output: cmd.aggregatedOutput ?? cmd.aggregated_output,
+                output: cmd.status === 'declined'
+                  ? DECLINED_COMMAND_RESULT
+                  : cmd.aggregatedOutput ?? cmd.aggregated_output,
               } as ToolResult,
             },
             metadata: { transport: 'app-server', threadId: n.threadId, turnId: n.turnId, itemId: (cmd as { id?: string }).id },
@@ -1238,6 +1262,7 @@ export class CodexAppServerProtocol implements AgentProtocol {
     return {
       success: item.status === 'completed',
       status: item.status,
+      ...(item.status === 'declined' ? { error: DECLINED_FILE_CHANGE_RESULT } : {}),
       changes: item.changes,
     };
   }

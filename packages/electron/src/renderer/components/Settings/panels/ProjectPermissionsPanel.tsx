@@ -282,6 +282,9 @@ export const ProjectPermissionsPanel: React.FC<ProjectPermissionsPanelProps> = (
           Manage which commands the AI agent can run in this project.
           Approved patterns are saved to <code className="text-xs bg-[var(--nim-bg-secondary)] px-1 py-0.5 rounded">.claude/settings.local.json</code> and shared with Claude Code CLI.
         </p>
+        <p className="permissions-codex-rules-note text-sm text-[var(--nim-text-muted)] leading-relaxed mt-2">
+          Choosing Always for an OpenAI Codex command can also add that exact command to Codex&apos;s own rules in <code className="text-xs bg-[var(--nim-bg-secondary)] px-1 py-0.5 rounded">~/.codex/rules/default.rules</code>, which apply to every project. Remove the line there to revoke it in Codex.
+        </p>
       </div>
 
       {(error || loadError) && (

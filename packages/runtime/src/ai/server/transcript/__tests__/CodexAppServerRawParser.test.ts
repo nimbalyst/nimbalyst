@@ -11,6 +11,8 @@ import { describe, it, expect } from 'vitest';
 import { CodexAppServerRawParser } from '../parsers/CodexAppServerRawParser';
 import type { ParseContext } from '../parsers/IRawMessageParser';
 import type { RawMessage } from '../TranscriptTransformer';
+import { DECLINED_COMMAND_RESULT } from '../../protocols/codexAppServer/approvalDecisions';
+import approvalCaptures from '../../protocols/__tests__/fixtures/codexAppServerApprovals.captured.json';
 
 const SESSION_ID = 'test-session';
 
@@ -206,6 +208,24 @@ describe('CodexAppServerRawParser', () => {
       type: 'tool_call_completed',
       exitCode: 0,
       result: '/tmp/project',
+    });
+  });
+
+  // #1884: a declined command used to leave its card running forever.
+  it('completes a declined commandExecution as an error that says it was declined', async () => {
+    const captured = approvalCaptures['write-onrequest-rm'].find((e) => e.kind === 'itemCompleted')!;
+    const parser = new CodexAppServerRawParser();
+    const msg = makeRawMessage({
+      content: envelope('item/completed', { threadId: 't-1', turnId: 'turn-1', item: captured.item }),
+    });
+
+    const descs = await parser.parseMessage(msg, makeContext());
+
+    expect(descs[1]).toMatchObject({
+      type: 'tool_call_completed',
+      status: 'error',
+      isError: true,
+      result: DECLINED_COMMAND_RESULT,
     });
   });
 

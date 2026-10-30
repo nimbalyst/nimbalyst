@@ -1,0 +1,116 @@
+{
+  "readonly-edit": [
+    {
+      "kind": "threadStart",
+      "sandbox": {
+        "type": "readOnly",
+        "networkAccess": false
+      },
+      "approvalPolicy": "on-request"
+    },
+    {
+      "kind": "serverRequest",
+      "method": "item/fileChange/requestApproval",
+      "params": {
+        "threadId": "01a18945-1e6b-7552-906c-32468fa89f28",
+        "turnId": "01a18945-1ff0-7ae1-bfe0-ed5875d09179",
+        "itemId": "exec-397dd841-bcce-4085-a420-40479c6c6902",
+        "startedAtMs": 1793304377282,
+        "reason": null,
+        "grantRoot": null
+      }
+    },
+    {
+      "kind": "itemCompleted",
+      "item": {
+        "type": "fileChange",
+        "id": "exec-397dd841-bcce-4085-a420-40479c6c6902",
+        "changes": [
+          {
+            "path": "/tmp/codex-capture/ws/hello.txt",
+            "kind": {
+              "type": "add"
+            },
+            "diff": "hi\n"
+          }
+        ],
+        "status": "declined"
+      }
+    }
+  ],
+  "write-onrequest-rm": [
+    {
+      "kind": "threadStart",
+      "sandbox": {
+        "type": "workspaceWrite",
+        "writableRoots": [],
+        "networkAccess": false,
+        "excludeTmpdirEnvVar": false,
+        "excludeSlashTmp": false
+      },
+      "approvalPolicy": "on-request"
+    },
+    {
+      "kind": "serverRequest",
+      "method": "item/commandExecution/requestApproval",
+      "params": {
+        "kind": "command",
+        "threadId": "01a18945-1e67-7e80-b6db-cba6ce937720",
+        "turnId": "01a18945-1ff1-7f61-bd85-f60c8e9a8419",
+        "itemId": "exec-1755b06f-fecb-4db2-968f-34336777a49f",
+        "startedAtMs": 1793304376136,
+        "environmentId": "local",
+        "command": "/bin/zsh -lc 'rm -rf /tmp/codex-capture/outside/old-build'",
+        "cwd": "/tmp/codex-capture/ws",
+        "commandActions": [
+          {
+            "type": "unknown",
+            "command": "rm -rf /tmp/codex-capture/outside/old-build"
+          }
+        ],
+        "proposedExecpolicyAmendment": [
+          "rm",
+          "-rf",
+          "/tmp/codex-capture/outside/old-build"
+        ],
+        "availableDecisions": [
+          "accept",
+          {
+            "acceptWithExecpolicyAmendment": {
+              "execpolicy_amendment": [
+                "rm",
+                "-rf",
+                "/tmp/codex-capture/outside/old-build"
+              ]
+            }
+          },
+          "cancel"
+        ]
+      }
+    },
+    {
+      "kind": "itemCompleted",
+      "item": {
+        "type": "commandExecution",
+        "id": "exec-1755b06f-fecb-4db2-968f-34336777a49f",
+        "pluginId": null,
+        "scriptPath": null,
+        "command": "/bin/zsh -lc 'rm -rf /tmp/codex-capture/outside/old-build'",
+        "cwd": "/tmp/codex-capture/ws",
+        "processId": null,
+        "source": "agent",
+        "status": "declined",
+        "commandActions": [
+          {
+            "type": "unknown",
+            "command": "rm -rf /tmp/codex-capture/outside/old-build"
+          }
+        ],
+        "aggregatedOutput": null,
+        "exitCode": null,
+        "durationMs": null
+      }
+    }
+  ],
+  "_source": "Captured 2026-10-29 from the bundled codex app-server 0.162.1 (darwin-arm64) via temptests/codex-capture.mjs; paths scrubbed. The client declined every request."
+}

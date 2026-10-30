@@ -281,7 +281,8 @@ export interface FileChangeChange {
 
 export interface FileChangeItem extends BaseItemPayload<'fileChange'> {
   changes: FileChangeChange[];
-  status: 'inProgress' | 'completed' | 'failed';
+  /** `declined`: an approval request for the edit was answered no. */
+  status: 'inProgress' | 'completed' | 'failed' | 'declined';
 }
 
 export interface AgentMessageItem extends BaseItemPayload<'agentMessage'> {
@@ -511,43 +512,84 @@ export interface AccountRateLimitsUpdatedNotification {
 
 // ---- Server-to-client requests (we respond to these) ----
 
+// Shapes below follow `codex app-server generate-ts` (0.162.x, v2/). Captured
+// payloads live in protocols/__tests__/fixtures/codexAppServerApprovals.captured.json.
+
+/** A command prefix Codex proposes to allow without asking again. */
+export type ExecPolicyAmendment = string[];
+
+/**
+ * The file paths are NOT in this request; they arrive on the `fileChange` item
+ * (`item/started`) that shares `itemId`.
+ */
 export interface ItemFileChangeRequestApprovalParams {
   threadId: string;
   turnId: string;
   itemId: string;
-  changes: FileChangeChange[];
-  callId?: string;
-  matcher?: string;
+  startedAtMs?: number;
+  reason?: string | null;
+  grantRoot?: string | null;
 }
 
 export interface ItemCommandExecutionRequestApprovalParams {
+  /** `writeStdin` is input to an already-running terminal. Defaults to `command`. */
+  kind?: 'command' | 'writeStdin';
   threadId: string;
   turnId: string;
   itemId: string;
-  command: string;
-  cwd?: string;
-  reason?: string;
+  startedAtMs?: number;
+  approvalId?: string | null;
+  environmentId?: string | null;
+  reason?: string | null;
+  command?: string | null;
+  cwd?: string | null;
+  commandActions?: Array<{ type: string; command: string }> | null;
+  proposedExecpolicyAmendment?: ExecPolicyAmendment | null;
+  /** Decisions Codex will take for this request. Not in the generated type but sent on the wire. */
+  availableDecisions?: CommandExecutionApprovalDecision[] | null;
 }
 
 export interface ItemPermissionsRequestApprovalParams {
   threadId: string;
   turnId: string;
   itemId: string;
-  reason?: string;
+  environmentId?: string | null;
+  startedAtMs?: number;
+  cwd?: string;
+  reason: string | null;
+  permissions: { network: unknown | null; fileSystem: unknown | null };
 }
 
-export interface ApplyPatchApprovalParams {
-  /** Legacy approval shape (pre-`turn/start`). */
-  threadId?: string;
-  turnId?: string;
-  changes?: FileChangeChange[];
-  reason?: string;
+export type CommandExecutionApprovalDecision =
+  | 'accept'
+  | 'acceptForSession'
+  | { acceptWithExecpolicyAmendment: { execpolicy_amendment: ExecPolicyAmendment } }
+  | { applyNetworkPolicyAmendment: { network_policy_amendment: unknown } }
+  | 'decline'
+  | 'cancel';
+
+export type FileChangeApprovalDecision = 'accept' | 'acceptForSession' | 'decline' | 'cancel';
+
+export interface CommandExecutionApprovalResponse {
+  decision: CommandExecutionApprovalDecision;
 }
 
-// Generic approval response. Codex accepts a decision string.
-export interface ApprovalResponse {
-  decision: 'approved' | 'denied' | 'abort';
+export interface FileChangeApprovalResponse {
+  decision: FileChangeApprovalDecision;
 }
+
+/** Granting nothing (`permissions: {}`) is how a permissions request is declined. */
+export interface PermissionsApprovalResponse {
+  permissions: { network?: unknown; fileSystem?: unknown };
+  scope: 'turn' | 'session';
+}
+
+/** Legacy v1 `applyPatchApproval` / `execCommandApproval` decision (`ReviewDecision`). */
+export type LegacyReviewDecision =
+  | 'approved'
+  | 'approved_for_session'
+  | { denied: { rejection: string } }
+  | 'abort';
 
 // Response to codex's `mcpServer/elicitation/request` (server -> client). Codex
 // forwards an MCP server's elicitation -- used both for MCP tool approval and

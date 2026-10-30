@@ -40,6 +40,7 @@ import { AskUserQuestionPrompt, AskUserQuestionPromptOption } from './shared/ask
 import { AgentProtocolTranscriptAdapter } from './agentProtocol/AgentProtocolTranscriptAdapter';
 import { buildCodexToolLookupId } from '../toolLookupIds';
 import { reverseCodexPatch, type CodexPatchKind } from './codex/patchReverse';
+import { createCodexApprovalBindings, type CodexApprovalTurn } from './codex/codexApprovalBindings';
 
 /**
  * Codex transport selection.
@@ -180,6 +181,13 @@ export class OpenAICodexProvider extends BaseAgentProvider {
   private readonly permissionService: ToolPermissionService;
   private readonly mcpConfigService: McpConfigService;
   private readonly pendingAskUserQuestions = new Map<string, PendingAskUserQuestionEntry>();
+  /** Running turns by Nimbalyst session id, for Codex approval requests (#1884). */
+  private readonly codexApprovalTurns = new Map<string, CodexApprovalTurn>();
+  private readonly codexApprovals = createCodexApprovalBindings({
+    permissionService: () => this.permissionService,
+    turnFor: (sessionId) => this.codexApprovalTurns.get(sessionId),
+    logAgentMessage: (sessionId, content) => this.logAgentMessageBestEffort(sessionId, 'output', content),
+  });
   /** Latest MCP startup status per server name, for the session MCP chip (NIM-2962). */
   private readonly appServerMcpStatuses = new Map<string, { name: string; status: string; error?: string }>();
   private appServerMcpSessionId: string | undefined;
@@ -373,7 +381,7 @@ export class OpenAICodexProvider extends BaseAgentProvider {
       this.protocol = new CodexAppServerProtocol({
         apiKey,
         resolveCodexPathOverride: resolvePackagedCodexBinaryPath,
-        host: OpenAICodexProvider.appServerHostBindings ?? undefined,
+        host: { ...this.codexApprovals.bindings, ...OpenAICodexProvider.appServerHostBindings },
         clientInfo: { name: 'nimbalyst', version: process.env.NIMBALYST_VERSION ?? '0.0.0' },
       });
     } else if (deps?.loadSdkModule || deps?.resolveCodexPathOverride) {
@@ -409,7 +417,11 @@ export class OpenAICodexProvider extends BaseAgentProvider {
         patternSaver: BaseAgentProvider.permissionPatternSaver as PermissionPatternSaver,
         patternChecker: BaseAgentProvider.permissionPatternChecker as PermissionPatternChecker,
         securityLogger: BaseAgentProvider.securityLogger ?? undefined,
-        emit: this.emit.bind(this),
+        emit: (event: string, data: any) => {
+          // Log the Codex approval card only when the user is really asked.
+          if (event === 'toolPermission:pending') this.codexApprovals.onPermissionPrompt(data);
+          this.emit(event, data);
+        },
       });
     }
 
@@ -1070,6 +1082,15 @@ export class OpenAICodexProvider extends BaseAgentProvider {
         return;
       }
 
+      if (sessionId) {
+        this.codexApprovalTurns.set(sessionId, {
+          workspacePath,
+          permissionsPath,
+          signal: abortController.signal,
+          agentVerified: permissionDecision.agentVerified === true,
+        });
+      }
+
       // Get or create protocol session.
       //
       // Order of preference:
@@ -1447,6 +1468,9 @@ export class OpenAICodexProvider extends BaseAgentProvider {
     } finally {
       if (this.abortController === abortController) {
         this.abortController = null;
+      }
+      if (sessionId && this.codexApprovalTurns.get(sessionId)?.signal === abortController.signal) {
+        this.codexApprovalTurns.delete(sessionId);
       }
       if (sessionId) {
         const remainingTurns = Math.max(
@@ -3179,10 +3203,15 @@ export class OpenAICodexProvider extends BaseAgentProvider {
         };
       }
 
-      // Codex does not expose Nimbalyst's per-tool permission callback. Permit
-      // only project modes that authorize the turn; Agent-verified bypass is
-      // narrowed downstream to Codex's native sandbox plus automatic reviewer.
-      if (trustStatus.mode === 'bypass-all' || trustStatus.mode === 'allow-all') {
+      // The app-server transport routes Codex's approval requests to the
+      // permission prompt (#1884), so every mode can run there; Ask mode uses
+      // a read-only sandbox so each write comes to the user. The legacy SDK
+      // transport has no approval callback and still refuses Ask mode.
+      if (
+        trustStatus.mode === 'bypass-all'
+        || trustStatus.mode === 'allow-all'
+        || (trustStatus.mode === 'ask' && this.transport === 'app-server')
+      ) {
         return {
           decision: 'allow',
           permissionMode: trustStatus.mode,
