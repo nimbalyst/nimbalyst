@@ -243,6 +243,16 @@ export class TranscriptWriter {
     await this.store.mergeEventPayload(eventId, update as unknown as Record<string, unknown>);
   }
 
+  /** Shallow-merge fields into an existing tool call's arguments. */
+  async mergeToolCallArguments(eventId: number, args: Record<string, unknown>): Promise<void> {
+    const existing = await this.store.getEventById(eventId);
+    if (!existing) {
+      throw new Error(`TranscriptWriter: event ${eventId} not found`);
+    }
+    const current = (existing.payload as Partial<ToolCallPayload>).arguments ?? {};
+    await this.store.mergeEventPayload(eventId, { arguments: { ...current, ...args } });
+  }
+
   async appendToolProgress(
     sessionId: string,
     params: {

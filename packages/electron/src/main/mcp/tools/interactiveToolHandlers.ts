@@ -633,6 +633,8 @@ async function runGitCommitProposal(
               // input, so this is the only place it can reach it.
               repoPath: proposalRepoPath,
               targetWorktree: target.worktree,
+              // #1756: the widget offers Confirm unless the server auto-approved.
+              autoApproved: isAutoCommit,
             },
           }),
           hidden: false,

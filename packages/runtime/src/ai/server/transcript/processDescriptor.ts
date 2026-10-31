@@ -186,6 +186,18 @@ export async function processDescriptor(
       return store.getEventById(eventId);
     }
 
+    case 'tool_call_arguments_updated': {
+      // The call may have started in this batch or an earlier one.
+      const knownId = toolEventIds.get(desc.providerToolCallId);
+      const existing = knownId !== undefined
+        ? await store.getEventById(knownId)
+        : await store.findByProviderToolCallId(desc.providerToolCallId, sessionId);
+      if (!existing || existing.eventType !== 'tool_call') return null;
+      toolEventIds.set(desc.providerToolCallId, existing.id);
+      await writer.mergeToolCallArguments(existing.id, desc.arguments);
+      return store.getEventById(existing.id);
+    }
+
     case 'tool_progress': {
       const parentEventId = toolEventIds.get(desc.providerToolCallId);
       if (!parentEventId) return null;

@@ -13,7 +13,9 @@
 import { describe, it, expect } from 'vitest';
 import { TranscriptRuntime } from '../TranscriptRuntime';
 import { InMemoryTranscriptEventStore } from '../InMemoryTranscriptEventStore';
+import { projectRawMessagesToViewMessages } from '../projectRawMessages';
 import type { IRawMessageStore, RawMessage } from '../TranscriptTransformer';
+import type { TranscriptEvent } from '../types';
 
 function makeRawStore(messages: RawMessage[]): IRawMessageStore {
   // Hold the live array so tests that push after construction see new rows.
@@ -76,6 +78,51 @@ describe('TranscriptRuntime', () => {
         const replayed = await runtime.getViewMessages('commit', 'openai-codex');
         expect(replayed.filter(m => m.type === 'tool_call')).toHaveLength(2);
         expect(replayed.filter(m => m.type === 'tool_call').map(m => m.toolCall?.status)).toEqual(['completed', 'completed']);
+      });
+    }
+  });
+
+  describe('Claude Code commit proposal host input', () => {
+    // The SDK's tool_use row holds the model's raw input. The handler's own row
+    // holds what the server resolved, including whether it auto-approved. The
+    // widget reads only the tool call's arguments (#1756).
+    const id = 'toolu_commit';
+    const raw = { workingDirectory: '../sibling', filesToStage: ['a.ts'], commitMessage: 'fix: a', reasoning: 'why' };
+    const resolved = { ...raw, filesToStage: ['/repo-sibling/a.ts'], repoPath: '/repo-sibling',
+      targetWorktree: { path: '/repo-sibling', branch: 'feature' }, autoApproved: false };
+    const sdkStart = { type: 'assistant', message: { id: 'msg_1', role: 'assistant', content: [
+      { type: 'tool_use', id, name: 'mcp__nimbalyst__developer_git_commit_proposal', input: raw }] } };
+    const hostStart = { type: 'nimbalyst_tool_use', id, name: 'developer_git_commit_proposal', input: resolved };
+    const proposal = { type: 'git_commit_proposal', autoApproved: false, proposalId: id, toolUseId: id, status: 'pending' };
+
+    for (const sdkFirst of [true, false]) {
+      it(`keeps one card carrying the resolved input live and on reload (sdkFirst=${sdkFirst})`, async () => {
+        const rows: RawMessage[] = [];
+        const runtime = new TranscriptRuntime(makeRawStore(rows));
+        const notified: TranscriptEvent[] = [];
+        runtime.setOnEventWritten((event) => notified.push(event));
+        // One row per batch, so the second start is matched through the store.
+        const append = async (source: string, content: unknown) => {
+          rows.push({ id: rows.length + 1, sessionId: 'cc-commit', source, direction: 'output',
+            content: JSON.stringify(content), createdAt: new Date(1792862293000 + rows.length) });
+          await runtime.processNewMessages('cc-commit', 'claude-code');
+        };
+        for (const start of sdkFirst ? [sdkStart, hostStart] : [hostStart, sdkStart]) await append('claude-code', start);
+        await append('mcp', proposal);
+
+        const live = (await runtime.getViewMessages('cc-commit', 'claude-code')).filter(m => m.type === 'tool_call');
+        expect(live).toHaveLength(1);
+        expect(live[0].toolCall?.arguments).toEqual(resolved);
+        // The renderer refetches on notification; the last one for this call must carry the input.
+        expect(notified.filter(e => e.providerToolCallId === id).at(-1)?.payload.arguments).toEqual(resolved);
+
+        // A reload projects every row in one batch.
+        await runtime.forceReparseSession('cc-commit', 'claude-code');
+        const reloaded = (await runtime.getViewMessages('cc-commit', 'claude-code')).filter(m => m.type === 'tool_call');
+        expect(reloaded).toHaveLength(1);
+        expect(reloaded[0].toolCall?.arguments).toEqual(resolved);
+        const mobile = (await projectRawMessagesToViewMessages(rows, 'claude-code')).filter(m => m.type === 'tool_call');
+        expect(mobile.map(m => m.toolCall?.arguments)).toEqual([resolved]);
       });
     }
   });

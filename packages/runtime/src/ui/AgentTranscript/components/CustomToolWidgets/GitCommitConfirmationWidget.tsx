@@ -543,6 +543,13 @@ export const GitCommitConfirmationWidget: React.FC<CustomToolWidgetProps> = ({
   const repoPath: string | undefined = args.repoPath;
   const targetWorktree: { path: string; branch: string | null } | undefined =
     args.targetWorktree && typeof args.targetWorktree.path === 'string' ? args.targetWorktree : undefined;
+  // The server decides each proposal's approval and records it on the input.
+  // The preference can disagree: a sibling worktree is always approved by hand
+  // (#1756), and the setting may have changed since. Rows written before the
+  // field existed fall back to the preference.
+  const autoApproved: boolean = typeof args.autoApproved === 'boolean'
+    ? args.autoApproved
+    : host?.autoCommitEnabled === true;
   const repoLabel = useMemo(
     () => (repoPath ? repoPath.split('/').filter(Boolean).pop() : undefined),
     [repoPath]
@@ -904,9 +911,9 @@ export const GitCommitConfirmationWidget: React.FC<CustomToolWidgetProps> = ({
     return null;
   }
 
-  // Auto-approve is a preference, not evidence that the server committed.
-  // Wait for its result without issuing a second git:commit from the widget.
-  if (host?.autoCommitEnabled && !targetWorktree && !isCommitting) {
+  // Auto-approval is not evidence that the server committed. Wait for its
+  // result without issuing a second git:commit from the widget.
+  if (autoApproved && !targetWorktree && !isCommitting) {
     return (
       <div data-testid="git-commit-widget" data-state="committing"
         className="git-commit-widget rounded-lg bg-[var(--nim-bg-secondary)] border border-[var(--nim-border)] overflow-hidden">

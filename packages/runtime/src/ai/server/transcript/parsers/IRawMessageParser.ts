@@ -134,6 +134,20 @@ export interface ToolCallCompletedDescriptor {
   durationMs?: number;
 }
 
+/**
+ * Input the host resolved for a tool call that already exists. A host handler
+ * such as developer_git_commit_proposal writes its own row with fields the
+ * model never sent (absolute paths, target repo, approval mode). When the
+ * provider's tool_use created the call first, these merge onto its arguments
+ * instead of starting a second call.
+ */
+export interface ToolCallArgumentsUpdatedDescriptor {
+  type: 'tool_call_arguments_updated';
+  providerToolCallId: string;
+  /** Shallow-merged over the call's existing arguments. */
+  arguments: Record<string, unknown>;
+}
+
 export interface ToolProgressDescriptor {
   type: 'tool_progress';
   providerToolCallId: string;
@@ -196,6 +210,7 @@ export type CanonicalEventDescriptor =
   | SystemMessageDescriptor
   | ToolCallStartedDescriptor
   | ToolCallCompletedDescriptor
+  | ToolCallArgumentsUpdatedDescriptor
   | ToolProgressDescriptor
   | SubagentStartedDescriptor
   | SubagentCompletedDescriptor

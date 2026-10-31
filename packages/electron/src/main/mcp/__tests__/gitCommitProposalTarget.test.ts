@@ -200,7 +200,8 @@ it('always asks for manual approval for a sibling worktree target, even with aut
   expect(mocks.commit).not.toHaveBeenCalled();
   expect(proposalRow()).toMatchObject({ autoApproved: false, targetWorktree: { path: '/sibling', branch: 'feature' } });
   const toolUse = mocks.create.mock.calls.map(([row]) => JSON.parse(row.content)).find(row => row.type === 'nimbalyst_tool_use');
-  expect(toolUse.input.targetWorktree).toEqual({ path: '/sibling', branch: 'feature' });
+  // The widget reads only this row's input, so the approval mode must ride on it.
+  expect(toolUse.input).toMatchObject({ targetWorktree: { path: '/sibling', branch: 'feature' }, autoApproved: false });
   expect(mocks.send).toHaveBeenCalledWith('ai:gitCommitProposal', expect.objectContaining({ autoApproved: false }));
   await answerWidget({ action: 'cancelled' });
   await pending;

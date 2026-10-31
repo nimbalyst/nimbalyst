@@ -714,7 +714,9 @@ describe('ClaudeCodeRawParser', () => {
       const ctx = makeContext({
         hasToolCall: () => false,
         findByProviderToolCallId: async (id) =>
-          id === 'ask-1' ? { id: 999 } as any : null,
+          id === 'ask-1'
+            ? { id: 999, eventType: 'tool_call', payload: { arguments: { questions: [{ question: 'What?' }] } } } as any
+            : null,
       });
       const descriptors = await parser.parseMessage(msg, ctx);
 

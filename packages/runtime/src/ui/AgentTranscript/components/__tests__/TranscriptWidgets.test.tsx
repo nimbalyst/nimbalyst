@@ -1282,6 +1282,50 @@ describe('GitCommitConfirmationWidget', () => {
     expect(gitCommit).not.toHaveBeenCalled();
   });
 
+  // #1756: the server records each proposal's approval on its input. The
+  // auto-approve preference must not hide Confirm on a proposal the server is
+  // waiting on, nor offer it on one the server is already committing.
+  const approvalHost = async (sessionId: string, autoCommitEnabled: boolean) => {
+    const { interactiveWidgetHostAtom } = await import('../../../../store/atoms/interactiveWidgetHost');
+    const testStore = createStore();
+    const gitCommit = vi.fn().mockResolvedValue({ success: true, commitHash: 'abc1234' });
+    testStore.set(interactiveWidgetHostAtom(sessionId), {
+      autoCommitEnabled, gitCommit, setAutoCommitEnabled: vi.fn(), trackEvent: vi.fn(),
+    } as unknown as import('../CustomToolWidgets/InteractiveWidgetHost').InteractiveWidgetHost);
+    return { testStore, gitCommit };
+  };
+
+  it.each([
+    ['manual', { autoApproved: false }],
+    ['sibling-worktree', { targetWorktree: { path: '/repo-feature', branch: 'feature' } }],
+  ])('offers a working Confirm on a %s proposal while auto-approve is on', async (sessionId, extra) => {
+    const { testStore, gitCommit } = await approvalHost(sessionId, true);
+    const message = makeToolMessage('git_commit_proposal', {
+      commitMessage: 'fix: approve by hand', filesToStage: ['/repo/file.ts'], ...extra,
+    });
+    render(<JotaiProvider store={testStore}>
+      <GitCommitConfirmationWidget message={message} isExpanded={false} onToggle={() => {}} sessionId={sessionId} />
+    </JotaiProvider>);
+    expect(screen.getByTestId('git-commit-widget').dataset.state).toBe('pending');
+    fireEvent.click(screen.getByTestId('git-commit-confirm'));
+    await waitFor(() => expect(gitCommit).toHaveBeenCalledWith(
+      message.toolCall!.providerToolCallId, ['/repo/file.ts'], 'fix: approve by hand', undefined,
+    ));
+  });
+
+  it('waits for the server on an auto-approved proposal after auto-approve is turned off', async () => {
+    const { testStore, gitCommit } = await approvalHost('auto-approved', false);
+    const message = makeToolMessage('git_commit_proposal', {
+      commitMessage: 'fix: committed by server', filesToStage: ['/repo/file.ts'], autoApproved: true,
+    });
+    render(<JotaiProvider store={testStore}>
+      <GitCommitConfirmationWidget message={message} isExpanded={false} onToggle={() => {}} sessionId="auto-approved" />
+    </JotaiProvider>);
+    expect(screen.getByTestId('git-commit-widget').dataset.state).toBe('committing');
+    expect(screen.queryByTestId('git-commit-confirm')).toBeNull();
+    expect(gitCommit).not.toHaveBeenCalled();
+  });
+
   it('sends cancel through the interactive host', async () => {
     const { interactiveWidgetHostAtom } = await import('../../../../store/atoms/interactiveWidgetHost');
 

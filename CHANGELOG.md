@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 <!-- Bug fixes go here -->
+- A commit proposal that needs your approval, such as one into another worktree, now shows Confirm and Cancel even with auto-approve on, instead of a card that never finishes.
 
 ### Removed
 <!-- Removed features go here -->
