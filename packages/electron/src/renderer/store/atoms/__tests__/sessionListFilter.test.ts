@@ -1,9 +1,12 @@
 // @vitest-environment node
 import { describe, expect, it } from 'vitest';
+import { createStore } from 'jotai';
 import type { SessionMeta } from '@nimbalyst/runtime';
 import {
   isWorkstreamParentSession,
+  matchesSessionListPhases,
   matchesSessionListTag,
+  sessionListHiddenPhasesAtom,
   VIRTUAL_TAG_WORKSTREAMS,
   VIRTUAL_TAG_WORKTREE,
 } from '../sessionListFilter';
@@ -60,5 +63,30 @@ describe('session list virtual tags', () => {
     expect(matchesSessionListTag(worktreeSession, VIRTUAL_TAG_WORKTREE, registry)).toBe(true);
     expect(matchesSessionListTag(standalone, 'feature', registry)).toBe(true);
     expect(matchesSessionListTag(standalone, 'missing', registry)).toBe(false);
+  });
+});
+
+describe('session list phase filter', () => {
+  const done = session({ id: 'done', phase: 'complete' });
+  const planning = session({ id: 'planning', phase: 'planning' });
+  const unphased = session({ id: 'unphased' });
+  const workstream = session({ id: 'ws', sessionType: 'workstream', childCount: 2 });
+  const doneChild = session({ id: 'ws-a', parentSessionId: 'ws', phase: 'complete' });
+  const activeChild = session({ id: 'ws-b', parentSessionId: 'ws', phase: 'implementing' });
+  const registry = new Map(
+    [done, planning, unphased, workstream, doneChild, activeChild].map(s => [s.id, s]),
+  );
+
+  it('hides only complete sessions by default and never hides unphased ones', () => {
+    const hidden = createStore().get(sessionListHiddenPhasesAtom);
+    expect(hidden).toEqual(['complete']);
+    expect(matchesSessionListPhases(done, hidden, registry)).toBe(false);
+    expect(matchesSessionListPhases(planning, hidden, registry)).toBe(true);
+    expect(matchesSessionListPhases(unphased, ['backlog', 'planning', 'implementing', 'validating', 'complete'], registry)).toBe(true);
+  });
+
+  it('filters a workstream without its own phase by its most active child', () => {
+    expect(matchesSessionListPhases(workstream, ['complete'], registry)).toBe(true);
+    expect(matchesSessionListPhases(workstream, ['implementing'], registry)).toBe(false);
   });
 });
