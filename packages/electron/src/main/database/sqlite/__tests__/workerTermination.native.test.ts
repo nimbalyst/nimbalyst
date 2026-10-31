@@ -24,7 +24,12 @@ it('terminates an active SQLite worker without aborting its parent process', () 
     const db = new module.exports.SQLiteDatabase({
       dbDir: workerData.dbDir, schemaDir: ${JSON.stringify(schemaDir)}, sampleRate: 0,
     });
-    db.initialize().then(() => {
+    db.initialize().then(async () => {
+      if (workerData.template) {
+        await db.close();
+        parentPort.postMessage('migrated');
+        return;
+      }
       parentPort.postMessage('ready');
       parentPort.once('message', () => {
         parentPort.postMessage('started');
@@ -38,12 +43,24 @@ it('terminates an active SQLite worker without aborting its parent process', () 
   const script = `
     const { Worker } = require('node:worker_threads');
     const { once } = require('node:events');
+    const fs = require('node:fs');
     const path = require('node:path');
     (async () => {
       const temp = ${JSON.stringify(temp)};
+      // Migrating a fresh database was most of each run, and closing it flushed
+      // the whole migration log to disk. Migrate once and start each worker
+      // from a copy: still a database of its own, opened by production code.
+      const template = new Worker(${JSON.stringify(workerCode)}, {
+        eval: true, workerData: { dbDir: path.join(temp, 'template'), template: true },
+      });
+      await once(template, 'message');
+      await template.terminate();
       for (let i = 0; i < 100; i++) {
+        const dbDir = path.join(temp, String(i));
+        fs.mkdirSync(dbDir);
+        fs.copyFileSync(path.join(temp, 'template', 'nimbalyst.sqlite'), path.join(dbDir, 'nimbalyst.sqlite'));
         const worker = new Worker(${JSON.stringify(workerCode)}, {
-          eval: true, workerData: { dbDir: path.join(temp, String(i)) },
+          eval: true, workerData: { dbDir },
         });
         await once(worker, 'message');
         const started = once(worker, 'message'); worker.postMessage('start'); await started;
@@ -53,8 +70,10 @@ it('terminates an active SQLite worker without aborting its parent process', () 
     })().catch(e => { console.error(e); process.exitCode = 1; });
   `;
   try {
-    // ~15s alone; 100 fresh databases ran past 25s under a loaded full suite. The
-    // bound only stops a hung child, so it is generous rather than tight.
+    // On a Linux box, freshly migrated databases took 24s alone (65s with every
+    // core busy) and overran this bound in the full suite; copies of the
+    // template take 10s (23s). The bound only stops a hung child, so it is
+    // generous rather than tight.
     const result = spawnSync(process.execPath, ['-e', script], {
       timeout: 75_000, encoding: 'utf8', maxBuffer: 1024 * 1024,
       env: { ...process.env, NIMBALYST_BETTER_SQLITE3_NATIVE: '' },
