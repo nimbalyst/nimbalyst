@@ -8,7 +8,8 @@ export interface ClaudeWeeklyModelLimit extends ClaudeUsageWindow {
 }
 
 export interface ClaudeUsageData {
-  fiveHour: ClaudeUsageWindow;
+  /** Null when the plan has no 5-hour session limit (the API sends `five_hour: null`). */
+  fiveHour: ClaudeUsageWindow | null;
   sevenDay: ClaudeUsageWindow;
   sevenDayOpus?: ClaudeUsageWindow;
   weeklyModelLimits?: ClaudeWeeklyModelLimit[];
@@ -30,4 +31,31 @@ export function parseWeeklyModelLimits(limits: unknown): ClaudeWeeklyModelLimit[
     }
     return [{ model, utilization: limit.percent, resetsAt: limit.resets_at ?? null }];
   });
+}
+
+function parseUsageWindow(raw: any): ClaudeUsageWindow | null {
+  if (raw == null) return null;
+  return { utilization: raw.utilization ?? 0, resetsAt: raw.resets_at ?? null };
+}
+
+/** Maps the oauth/usage response. A null `five_hour` means the plan has no session limit, not 0% used. */
+export function parseClaudeUsageResponse(data: any, now: number): ClaudeUsageData {
+  return {
+    fiveHour: parseUsageWindow(data.five_hour),
+    sevenDay: parseUsageWindow(data.seven_day) ?? { utilization: 0, resetsAt: null },
+    sevenDayOpus: parseUsageWindow(data.seven_day_opus) ?? undefined,
+    weeklyModelLimits: parseWeeklyModelLimits(data.limits),
+    lastUpdated: now,
+  };
+}
+
+export interface ClaudeUsageHeadline extends ClaudeUsageWindow {
+  label: 'Session' | 'Weekly';
+}
+
+/** The window the gutter ring shows: the session limit, or the weekly limit when the plan has none. */
+export function claudeUsageHeadline(usage: ClaudeUsageData): ClaudeUsageHeadline {
+  return usage.fiveHour
+    ? { label: 'Session', ...usage.fiveHour }
+    : { label: 'Weekly', ...usage.sevenDay };
 }

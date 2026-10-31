@@ -1,8 +1,8 @@
 /**
  * ClaudeUsagePopover - Detailed usage information popover
  *
- * Shows both session (5-hour) and weekly (7-day) usage with progress bars
- * and reset times.
+ * Shows session (5-hour, when the plan has one) and weekly (7-day) usage with
+ * progress bars and reset times.
  */
 
 import React, { useEffect, RefObject } from 'react';
@@ -179,14 +179,17 @@ export const ClaudeUsagePopover: React.FC<ClaudeUsagePopoverProps> = ({
             <div className="text-[13px] text-nim-error">{usage.error}</div>
           ) : (
             <>
-              <UsageSection
-                title="Session"
-                subtitle="5-hour window"
-                utilization={usage.fiveHour.utilization}
-                resetsAt={usage.fiveHour.resetsAt}
-                color={sessionColor as 'green' | 'yellow' | 'red' | 'muted'}
-                windowDurationMs={5 * 60 * 60 * 1000} // 5 hours
-              />
+              {/* Some plans have no 5-hour limit; the API sends five_hour: null */}
+              {usage.fiveHour && (
+                <UsageSection
+                  title="Session"
+                  subtitle="5-hour window"
+                  utilization={usage.fiveHour.utilization}
+                  resetsAt={usage.fiveHour.resetsAt}
+                  color={sessionColor as 'green' | 'yellow' | 'red' | 'muted'}
+                  windowDurationMs={5 * 60 * 60 * 1000} // 5 hours
+                />
+              )}
               <UsageSection
                 title="Weekly"
                 subtitle="7-day window"
