@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { SessionMeta } from '@nimbalyst/runtime';
 import { sessionRegistryAtom } from '../../../store/atoms/sessions';
 import { transcriptEventSignalAtom } from '../../../store/atoms/sessionTranscript';
+import { settingAtom } from '../../../store/atoms/settingAtomFamily';
 import { SessionTranscriptPeek } from '../SessionTranscriptPeek';
 
 vi.mock('@floating-ui/react', () => ({
@@ -34,15 +35,18 @@ vi.mock('@nimbalyst/runtime/ui/AgentTranscript/components/RichTranscriptView', (
     sessionId,
     messages,
     persistScrollState,
+    settings,
   }: {
     sessionId: string;
     messages: Array<{ content?: string }>;
     persistScrollState: boolean;
+    settings?: { collapseEditCards?: boolean };
   }) => (
     <div
       data-testid="mock-rich-transcript"
       data-session-id={sessionId}
       data-persist-scroll-state={String(persistScrollState)}
+      data-collapse-edit-cards={String(settings?.collapseEditCards)}
     >
       {messages.map((message) => message.content).join('|')}
     </div>
@@ -171,5 +175,29 @@ describe('SessionTranscriptPeek', () => {
     expect(getTailMessages).toHaveBeenCalledWith(newerChild.id, 100);
     expect(screen.getByTestId('session-transcript-peek').getAttribute('data-session-id')).toBe(newerChild.id);
     expect(screen.getByTestId('mock-rich-transcript').textContent).toBe('newest child transcript');
+  });
+
+  // The runtime default closes edit cards (for mobile), so desktop must pass
+  // the user's setting explicitly.
+  it('passes the collapse-file-edits setting to the transcript', async () => {
+    const store = createStore();
+    const meta = session('setting-session');
+    store.set(sessionRegistryAtom, new Map([[meta.id, meta]]));
+    getTailMessages.mockResolvedValue([{ content: 'response' }]);
+
+    render(
+      <JotaiProvider store={store}>
+        <SessionTranscriptPeek sessionId={meta.id} reference={anchor} onClose={vi.fn()} />
+      </JotaiProvider>,
+    );
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(screen.getByTestId('mock-rich-transcript').getAttribute('data-collapse-edit-cards')).toBe('false');
+
+    await act(async () => {
+      await store.set(settingAtom('ai.collapseEditCards'), true);
+    });
+    expect(screen.getByTestId('mock-rich-transcript').getAttribute('data-collapse-edit-cards')).toBe('true');
   });
 });

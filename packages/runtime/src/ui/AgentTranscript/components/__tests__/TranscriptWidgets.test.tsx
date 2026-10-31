@@ -552,6 +552,22 @@ describe('EditToolResultCard', () => {
     expect(screen.queryByText('Applied')).toBeNull();
   });
 
+  it('marks a closed row as pending until the tool_result arrives', () => {
+    const message = makeToolMessage('Write', { file_path: '/workspace/new-file.ts' });
+    const edits = [{ content: 'export const x = 1;\n' }];
+    const collapse = { isExpanded: false, onToggle: vi.fn() };
+    const { rerender } = render(
+      <EditToolResultCard toolMessage={message} edits={edits} workspacePath="/workspace" collapse={collapse} />
+    );
+    expect(screen.getByLabelText('Pending')).toBeDefined();
+
+    const completed = makeToolMessage('Write', { file_path: '/workspace/new-file.ts' }, { success: true });
+    rerender(
+      <EditToolResultCard toolMessage={completed} edits={edits} workspacePath="/workspace" collapse={collapse} />
+    );
+    expect(screen.queryByLabelText('Pending')).toBeNull();
+  });
+
   it('renders "Failed" status for error', () => {
     const message = makeToolMessage('Edit', {
       file_path: '/workspace/src/app.ts',

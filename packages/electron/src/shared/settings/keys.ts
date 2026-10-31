@@ -83,7 +83,8 @@ function setting<S extends z.ZodTypeAny>(
  *   - ai.apiKey.<name>  -- per-provider API key (string, may be empty)
  *   - ai.defaultProvider, ai.showToolCalls, ai.chatShowToolCalls, ai.aiDebugLogging,
  *     ai.showPromptAdditions, ai.customClaudeCodePath, ai.autoCommitEnabled,
- *     ai.showMcpSessionStatus, ai.trackerAutomation, ai.diffPeekSize
+ *     ai.showMcpSessionStatus, ai.trackerAutomation, ai.diffPeekSize,
+ *     ai.collapseEditCards
  */
 export const SETTINGS_REGISTRY = {
   // The default cap applies to additions, not current or restored projects.
@@ -234,6 +235,11 @@ export const SETTINGS_REGISTRY = {
     z.boolean(),
     { store: 'ai-settings', path: 'promptSuggestionsEnabled' },
     true,
+  ),
+  'ai.collapseEditCards': setting(
+    z.boolean(),
+    { store: 'ai-settings', path: 'collapseEditCards' },
+    false,
   ),
   'ai.trackerAutomation': setting(
     z.object({

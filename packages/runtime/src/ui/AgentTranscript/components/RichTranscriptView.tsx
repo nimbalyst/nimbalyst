@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useRef, useMemo, useCallback } from 'react';
 import { VList, type VListHandle, type CacheSnapshot } from 'virtua';
 import type { TranscriptViewMessage } from '../../../ai/server/types';
 import type { ToolCallDiffLoadResult } from '../../../ai/server/transcript';
@@ -15,6 +15,7 @@ import { usePendingPermissionNavigation } from './usePendingPermissionNavigation
 import { usePendingQuestionNavigation } from './usePendingQuestionNavigation';
 import { useElapsedTimeRef } from './CustomToolWidgets/useElapsedTime';
 import type { SubagentChildContext, TranscriptToolShared } from './TranscriptToolCard';
+import { getToolExpandId, isEditCardToolName } from './TranscriptToolCard';
 import { TranscriptMessageRow, computeTranscriptRowInfos, type TranscriptRowInfo } from './TranscriptMessageRow';
 import { TranscriptImageGalleryProvider } from './TranscriptImageGallery';
 
@@ -441,12 +442,21 @@ interface RichTranscriptViewProps {
   // Note: Interactive widgets read their host from interactiveWidgetHostAtom(sessionId)
 }
 
+function collectEditCardExpandIds(messages: TranscriptViewMessage[], ids: Set<string> = new Set()): Set<string> {
+  messages.forEach((message, index) => {
+    if (isEditCardToolName(message.toolCall?.toolName)) ids.add(getToolExpandId(message, index));
+    if (message.subagent?.childEvents) collectEditCardExpandIds(message.subagent.childEvents, ids);
+  });
+  return ids;
+}
+
 const defaultSettings: TranscriptSettings = {
   showToolCalls: true,
   compactMode: false,
   collapseTools: false,
   showThinking: true,
   showSessionInit: false,
+  collapseEditCards: true,
 };
 
 
@@ -947,6 +957,21 @@ export const RichTranscriptView = React.forwardRef<
     });
   }, []);
 
+  // An edit card's entry in expandedTools means "toggled away from the
+  // default", so a default change would invert every card the user touched.
+  // Drop those entries; a layout effect keeps the inverted state off screen.
+  const collapseEditCardsRef = useRef(settings.collapseEditCards);
+  useLayoutEffect(() => {
+    if (collapseEditCardsRef.current === settings.collapseEditCards) return;
+    collapseEditCardsRef.current = settings.collapseEditCards;
+    const editIds = collectEditCardExpandIds(messages);
+    setExpandedTools(prev => {
+      const next = new Set(prev);
+      for (const id of editIds) next.delete(id);
+      return next.size === prev.size ? prev : next;
+    });
+  }, [settings.collapseEditCards, messages]);
+
   const copyTranscriptViewMessageContent = useCallback(async (message: TranscriptViewMessage, index: number) => {
     try {
       await copyToClipboard(message.text ?? '');
@@ -996,8 +1021,9 @@ export const RichTranscriptView = React.forwardRef<
       canEmbedFile,
       loadToolCallDiffs,
       onToggleTool: toggleToolExpand,
+      collapseEditCards: settings.collapseEditCards,
     }),
-    [sessionId, workspacePath, readFile, onOpenFile, onOpenSession, renderEmbeddedFile, canEmbedFile, loadToolCallDiffs, toggleToolExpand]
+    [sessionId, workspacePath, readFile, onOpenFile, onOpenSession, renderEmbeddedFile, canEmbedFile, loadToolCallDiffs, toggleToolExpand, settings.collapseEditCards]
   );
 
   // Neighbour-derived row state in one pass. Unchanged infos keep their

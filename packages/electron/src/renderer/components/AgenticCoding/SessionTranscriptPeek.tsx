@@ -18,6 +18,7 @@ import type { TranscriptViewMessage } from '@nimbalyst/runtime/ai/server/types';
 import { getCardType } from '../../store/atoms/sessionKanban';
 import { sessionRegistryAtom } from '../../store/atoms/sessions';
 import { transcriptEventSignalAtom } from '../../store/atoms/sessionTranscript';
+import { settingAtom } from '../../store/atoms/settingAtomFamily';
 
 // Insertion-ordered; the oldest peeks drop off so hovering through a long list
 // does not keep 100 messages (images included) for every session ever peeked.
@@ -62,6 +63,8 @@ export function SessionTranscriptPeek({
   onClose,
 }: SessionTranscriptPeekProps) {
   const registry = useAtomValue(sessionRegistryAtom);
+  const collapseEditCards = useAtomValue(settingAtom('ai.collapseEditCards'));
+  const peekSettings = useMemo(() => ({ ...PEEK_SETTINGS, collapseEditCards }), [collapseEditCards]);
   const resolvedSessionId = useMemo(() => {
     const meta = registry.get(sessionId);
     if (!meta || getCardType(meta) === 'session') return sessionId;
@@ -195,7 +198,7 @@ export function SessionTranscriptPeek({
             <RichTranscriptView
               sessionId={resolvedSessionId}
               messages={messages}
-              settings={PEEK_SETTINGS}
+              settings={peekSettings}
               persistScrollState={false}
             />
           </div>

@@ -123,6 +123,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The Project Graph timeline has a "24 hours" time range with an hourly ruler and times in its tooltips
 - The session list can show a thin bar under each session with how full its context window is; turn it on with "Show context usage" in the session list's sort menu. Sessions from agents that don't report a context window show no bar
 - The GitHub pull request and issue lists can be searched by author: typing a login matches it, and `author:login` shows only that person's items. Pull request search also matches labels now
+- Edit and Write cards in the AI transcript now open and close when you click their header, like other tool calls. They start closed in the iOS and Android apps, and on desktop when "Collapse file edits in transcript" is turned on in Advanced settings
 - `nim wiki export --static <dir>` exports a local wiki as a static website for any static host, served from the root of a site or a subdirectory with `--base /docs/`: each page gets its own URL and readable HTML, and the browser view shows it read-only with charts, diagrams, embedded editor pages, backlinks and search. Tracker items a page links to get their own read-only page in the export when the Nimbalyst app is on the machine. Pages marked `export: false` and person fields are left out by default
 
 ### Changed

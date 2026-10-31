@@ -58,7 +58,7 @@ async function expandAllToolCards(panel: Locator): Promise<void> {
   for (let i = 0; i < count; i++) {
     const headerButton = cards
       .nth(i)
-      .locator('.rich-transcript-tool-button, .rich-transcript-edit-card__header, .file-change-widget > button')
+      .locator('.rich-transcript-tool-button, .rich-transcript-edit-row__button,.file-change-widget > button')
       .first();
     if (await headerButton.isVisible().catch(() => false)) {
       await headerButton.click().catch(() => {});

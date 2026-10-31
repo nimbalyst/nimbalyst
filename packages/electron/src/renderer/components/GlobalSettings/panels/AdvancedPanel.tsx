@@ -34,6 +34,7 @@ import {
   restorePreviousProjectsAtom,
   allowUnlimitedProjectsAtom,
 } from '../../../store/atoms/openProjects';
+import { settingAtom } from '../../../store/atoms/settingAtomFamily';
 
 /** Reusable compact dropdown row */
 function DropdownRow({
@@ -84,6 +85,7 @@ export function AdvancedPanel() {
   const [settings] = useAtom(advancedSettingsAtom);
   const [, updateSettings] = useAtom(setAdvancedSettingsAtom);
   const [, resetWalkthroughs] = useAtom(resetWalkthroughsAtom);
+  const [collapseEditCards, setCollapseEditCards] = useAtom(settingAtom('ai.collapseEditCards'));
 
   // Current enhanced PATH (fetched from main process)
   const [enhancedPath, setEnhancedPath] = useState<string>('');
@@ -424,6 +426,13 @@ export function AdvancedPanel() {
           onChange={(checked) => updateSettings({ showDirectChatProviders: checked })}
           name="Show Chat Providers"
           description="Show Claude Chat, OpenAI, and LM Studio in provider settings and new-session model selection."
+        />
+
+        <SettingsToggle
+          checked={collapseEditCards}
+          onChange={(checked) => setCollapseEditCards(checked)}
+          name="Collapse file edits in transcript"
+          description="Show Edit and Write tool calls as a closed header. Click the header to see the diff."
         />
 
         <SettingsToggle

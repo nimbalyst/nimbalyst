@@ -124,6 +124,7 @@ Twelve built-in provider lanes, plus any agent an extension contributes. Every l
 - Files-edited sidebar with per-session scope
 - Pending review banner (approve/reject AI changes)
 - Red/green diff display per tool call
+- Collapsible file edits: Edit, Write, and apply_patch cards open and close on click, like other tool calls; they start open unless **Collapse file edits in transcript** is on in Advanced settings (off by default; also applies to session previews and remote session views; the iOS and Android transcripts always start them closed)
 - Approve all / reject all pending changes
 - Interactive prompts (durable, persist across restarts):
   - AskUserQuestion
@@ -255,6 +256,7 @@ Twelve built-in provider lanes, plus any agent an extension contributes. Every l
 - Session list with search and pull-to-refresh
 - Session transcript viewing (WebView)
 - Rich mobile transcript cards for structured prompts, memory results, and live tracker links; zoomable/copyable images and tappable file links
+- File edit cards start as a closed one-line row, like other tool calls; tap to see the diff
 - Personal document/file sync and bidirectional draft sync with the desktop
 - Local wiki on the phone -- a Wiki tab for projects with a Local wiki shows its page tree by title and order (Home first, conflict copies grouped, trash hidden); pages open in the document editor with links between pages followed in the app, typed pages show their type and fields read-only above the body, and table types show their rows read-only. Page bodies are editable and keep frontmatter byte for byte; fields, table rows, and creating, renaming or moving pages stay on the desktop. A wiki in a newer format opens read-only. Requires an updated desktop syncing the project
 - Team Wiki and Team Trackers on the phone -- a Team tab for projects that belong to a team opens the team's wiki and trackers from the web console inside the app, signed in automatically from the phone's account (no second sign-in; teams that require MFA or another sign-in method open in Safari instead). Pages open read-only with an Edit button for plain pages; typed pages and type tables stay read-only. Unsaved edits are flushed when leaving or backgrounding, with a warning if they have not reached the server. Console links from Mail, Messages, the transcript and `nimbalyst://console` open in the app. Online only. Requires the updated sync server
@@ -294,6 +296,7 @@ Companion app; pairs with a desktop over encrypted sync. Voice mode is not inclu
 - Email magic link and Google OAuth login
 - Synced projects and sessions with unread state and desktop connection indicator
 - Session transcript viewing (WebView)
+- File edit cards start as a closed one-line row, like other tool calls; tap to see the diff
 - Create sessions, worktrees, workstreams, and Meta Agent sessions (when the desktop alpha is on) on a chosen desktop, choosing the model at creation from the desktop's list
 - Files tab: browse and edit synced project markdown documents
 - Team Wiki and Team Trackers on the phone, matching iOS (console links open the app through verified App Links); needs an Android System WebView with multi-profile support. Requires the updated sync server
