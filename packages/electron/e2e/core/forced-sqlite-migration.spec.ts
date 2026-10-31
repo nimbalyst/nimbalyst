@@ -15,17 +15,16 @@
  * The previous version of this spec armed a boot-time migration by writing
  * `forceMigrationFlag: true` into `database-backend.json`. That field is now
  * `@deprecated Never read` (`BackendSelector.ts`). Boot migration asks
- * `authorizeRollout()` on the launch that would migrate, which needs a live
- * PostHog payload whose `configVersion` appears in `ACCEPTED_CONFIG_VERSIONS`
- * -- and that list is deliberately empty, so no payload of any shape can
- * authorize one. There is no env var, IPC channel or file that arms it either.
+ * `authorizeRollout()` on the launch that would migrate. Production builds
+ * deliver that payload themselves (1 GiB automatic, consent above); under
+ * Playwright nothing is delivered unless the payload file below says so.
  *
  * Most of this spec drives the user-directed path: `db:migration:start` and
  * `db:migration:rollback` are what Settings > Database calls, and they run the
  * same journaled cutover (`runCutover`) that the boot path runs. The automatic
  * path is reached through `NIMBALYST_TEST_ROLLOUT_PAYLOAD_FILE`, a Playwright-only
- * stand-in for the PostHog flag payloads (`selectRolloutConfigSource`), which
- * also exercises the kill switch: a disable delivered after a cached enable.
+ * stand-in for the built-in payload (`selectRolloutConfigSource`), which
+ * also exercises the disable path: a disable delivered after a cached enable.
  *
  * Note the app quits rather than relaunches under PLAYWRIGHT (see
  * `MigrationHandlers.relaunchAfterReply`) so the runner is never left holding

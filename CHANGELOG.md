@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 <!-- Changes to existing functionality go here -->
+- Existing databases up to 1 GiB now move from PGLite to SQLite automatically at startup on every install; larger databases stay on PGLite until you choose Migrate to SQLite in Database settings
 - Cancelling a Claude Code agent's question card now tells the agent you dismissed the question and lets it keep working, instead of stopping the turn; the Stop button still stops it
 
 ### Fixed

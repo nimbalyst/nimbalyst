@@ -1,52 +1,33 @@
 /**
- * Production wiring for the migration rollout kill switch.
+ * Production wiring for migration rollout authorization.
  *
  * The decision logic lives in `rolloutAuthorization.ts` and is pure. This file
- * is the only part that knows about PostHog, the release channel, and the disk.
+ * picks the configuration source and caches the validated snapshot for
+ * Settings and support.
  *
- * ## What changed, and why the old shape was not a kill switch
+ * ## No remote kill switch
  *
- * This module used to cache a boolean in `database-backend.json` the first
- * time PostHog answered, and the boot path read only that cache. An install
- * that had ever seen `true` kept migrating forever; turning the flag off
- * stopped new exposures and nothing else. For an operation that renames the
- * user's only copy of their data, that is not a switch, it is a memory.
+ * Through the 256 MiB band the payload came from PostHog flags
+ * (`sqlite-rollout-alpha` / `sqlite-rollout-stable`), evaluated live on the
+ * launch that would migrate. Those evaluations were billed, and the band's
+ * results did not justify the cost of keeping the switch, so the build now
+ * delivers the payload itself (`builtInRolloutConfigSource`): sources up to
+ * 1 GiB migrate automatically and larger ones are offered a consented
+ * migration. Stopping the rollout now means shipping a build.
  *
- * Now the boot path asks on the launch that would migrate, with a bounded
- * timeout, and no answer means no migration. The snapshot still lands on disk,
- * but only so Settings and support can see what this install was last told --
- * nothing reads it to authorize anything.
- *
- * ## Analytics-opted-out installs
- *
- * `AnalyticsService` refuses to evaluate flags when the user has opted out of
- * analytics, which means a remote disable has no path to those machines. The
- * plan gives two ways out: add a separate configuration fetch that ignores
- * analytics consent, or keep opted-out installs out of automatic migration.
- *
- * **We keep them out.** Automatic migration is not offered to an install we
- * cannot subsequently stop. The alternative -- a second outbound request, on
- * every launch, for the specific users who asked us not to phone home -- buys
- * a faster ramp by spending the one thing those users explicitly withheld, and
- * it needs an endpoint that does not exist yet and that would then have to be
- * kept alive for as long as any old build is in the field. Neither cost is
- * worth paying for a migration that stays available to them, on demand, from
- * Settings.
- *
- * The consequence is stated rather than hidden: opted-out installs report
- * `authorization_unavailable` and stay on PGLite until the user migrates
- * manually. `RolloutConfigSource` is an interface precisely so that adding a
- * consent-independent transport later is a new implementation of
- * `isAvailable`/`fetchPayload` and touches no decision code.
+ * Installs with analytics turned off used to be kept out of automatic
+ * migration because a remote disable could not reach them. With no remote
+ * disable for anyone, that distinction is gone and they migrate like every
+ * other install.
  */
 
 import * as fs from 'fs';
 
-import { AnalyticsService } from '../../services/analytics/AnalyticsService';
-import { getReleaseChannel } from '../../utils/store';
+import { getReleaseChannel, type ReleaseChannel } from '../../utils/store';
 import { logger } from '../../utils/logger';
 import { readBackendState, updateBackendState } from './BackendSelector';
 import {
+  builtInRolloutConfigSource,
   resolveRolloutAuthorization,
   ROLLOUT_FLAG_KEYS,
   type RolloutAuthorization,
@@ -57,65 +38,39 @@ import {
 export { ROLLOUT_FLAG_KEYS };
 
 /**
- * PostHog as a configuration channel.
- *
- * `isAvailable` is the consent gate described in the file header. It is a
- * separate method from `fetchPayload` on purpose: "we chose not to ask" and
- * "we asked and got nothing" are the same *outcome* but different *facts*, and
- * only the first one is permanent for this install.
- */
-export function postHogRolloutConfigSource(): RolloutConfigSource {
-  return {
-    isAvailable: () => {
-      try {
-        return AnalyticsService.getInstance().canEvaluateRemoteConfig();
-      } catch {
-        return false;
-      }
-    },
-    fetchPayload: async (flagKey: string) => {
-      try {
-        return await AnalyticsService.getInstance().getFeatureFlagPayload(flagKey);
-      } catch (err) {
-        logger.main.warn('[rollout] payload fetch threw', err);
-        return null;
-      }
-    },
-  };
-}
-
-/**
- * Playwright-only stand-in for PostHog: a JSON file mapping flag keys to
- * payloads, re-read on every launch. It is the only way an E2E can reach the
- * automatic boot migration, and the kill switch, through a real launch.
+ * Playwright-only stand-in for the built-in configuration: a JSON file mapping
+ * flag keys to payloads, re-read on every launch. It is how an E2E reaches the
+ * automatic boot migration, and the disable path, through a real launch.
  * Requires `PLAYWRIGHT=1` as well as the path, so setting one variable on a
  * normal install does nothing.
+ *
+ * Under Playwright without a file, nothing is delivered: E2E specs that seed
+ * a PGLite install for other reasons must not migrate it behind their back.
  */
 export const TEST_ROLLOUT_PAYLOAD_ENV = 'NIMBALYST_TEST_ROLLOUT_PAYLOAD_FILE';
 
-export function selectRolloutConfigSource(env: NodeJS.ProcessEnv = process.env): RolloutConfigSource {
-  const file = env.PLAYWRIGHT === '1' ? env[TEST_ROLLOUT_PAYLOAD_ENV] : undefined;
-  if (!file) return postHogRolloutConfigSource();
+export function selectRolloutConfigSource(
+  env: NodeJS.ProcessEnv = process.env,
+  buildChannel: ReleaseChannel = getReleaseChannel(),
+): RolloutConfigSource {
+  if (env.PLAYWRIGHT !== '1') return builtInRolloutConfigSource(buildChannel);
+  const file = env[TEST_ROLLOUT_PAYLOAD_ENV];
   return {
     isAvailable: () => true,
     fetchPayload: async (flagKey: string) => {
-      if (!fs.existsSync(file)) return null;
+      if (!file || !fs.existsSync(file)) return null;
       const payloads = JSON.parse(fs.readFileSync(file, 'utf-8')) as Record<string, unknown>;
       return payloads[flagKey] ?? null;
     },
   };
 }
 
-/**
- * Ask whether this launch may migrate. Awaited by the boot path, which is
- * already async and already waits on pre-flight; a bounded wait before a
- * multi-minute destructive operation is proportionate, and it only happens on
- * installs that are actually migration-due.
- */
+/** Ask whether this launch may migrate. Awaited by the boot path. */
 export async function authorizeRollout(userDataPath: string): Promise<RolloutAuthorization> {
+  const buildChannel = getReleaseChannel();
   return resolveRolloutAuthorization({
-    source: selectRolloutConfigSource(),
-    buildChannel: getReleaseChannel(),
+    source: selectRolloutConfigSource(process.env, buildChannel),
+    buildChannel,
     onSnapshot: (snapshot) => cacheRolloutSnapshot(userDataPath, snapshot),
     log: (level, msg, meta) => logger.main[level](msg, meta),
   });

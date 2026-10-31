@@ -550,7 +550,7 @@ Companion app; pairs with a desktop over encrypted sync. Voice mode is not inclu
 - Auto-updater with toast notification
 - Deferred restart (waits for active AI sessions)
 - Linux `.deb` package for Debian and Ubuntu, which starts on Ubuntu 24.04 and later where the AppImage is blocked by AppArmor's user-namespace restriction
-- SQLite for new installs and migration from existing PGLite databases, retaining original data and recovery copies; alpha installs under 256 MiB are migrated automatically at startup when a staged rollout reaches them; backup and recovery controls in Database settings
+- SQLite for new installs and migration from existing PGLite databases, retaining original data and recovery copies; databases up to 1 GiB are migrated automatically at startup and larger ones migrate only from Database settings; backup and recovery controls in Database settings
 
 ## Onboarding & Help
 

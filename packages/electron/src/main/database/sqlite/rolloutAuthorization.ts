@@ -50,6 +50,18 @@
  * The decision is a pure function of delivered bytes plus a clock, so every
  * failure mode above is testable without a network, a PostHog project, or a
  * real install. Only `resolveRolloutAuthorization` touches the world.
+ *
+ * ## Where the payload comes from now
+ *
+ * The ramp ran on PostHog flags through the 256 MiB band (`sqlite-ramp-1`,
+ * 2026-10-18 to 2026-10-31): 269 installs reached an automatic outcome, 267
+ * completed, 2 failed before copying anything, and none of the migrated
+ * installs went back to PGLite. Every flag evaluation was billed, so the
+ * remote kill switch was retired and the build itself now delivers the
+ * payload (`builtInRolloutConfigSource`): 1 GiB automatic, consent above.
+ * The payload still passes through `evaluateRolloutAuthorization`, so every
+ * structural rule above still holds; what is gone is the ability to stop it
+ * without shipping a build.
  */
 
 import type { ReleaseChannel } from '../../utils/store';
@@ -98,9 +110,14 @@ export const ROLLOUT_FLAG_KEYS: Readonly<Record<ReleaseChannel, string>> = {
  *
  * The ramp gates require a new version for every material change to the
  * ceiling or channel policy, so a payload can never silently reuse a version
- * whose meaning has moved. Add the next one here when it is published.
+ * whose meaning has moved. `BUILT_IN_CONFIG_VERSION` is the build-delivered
+ * 1 GiB configuration; its distinct name also gives every install a fresh
+ * `migration_rollout_decision`, which is reported once per version.
+ * `sqlite-ramp-1` stays accepted for the Playwright payload file.
  */
-export const ACCEPTED_CONFIG_VERSIONS: readonly string[] = ['sqlite-ramp-1'];
+export const BUILT_IN_CONFIG_VERSION = 'sqlite-builtin-1gib';
+
+export const ACCEPTED_CONFIG_VERSIONS: readonly string[] = ['sqlite-ramp-1', BUILT_IN_CONFIG_VERSION];
 
 /**
  * The largest `maxSourceBytes` any remote payload may request. See rule 3
@@ -111,6 +128,15 @@ export const MAX_REMOTE_SOURCE_BYTES = 3 * GIB;
 
 /** The first cohort's ceiling: 256 MiB. Configuration is bytes; docs are MiB. */
 export const FIRST_COHORT_MAX_SOURCE_BYTES = 256 * MIB;
+
+/**
+ * The built-in automatic ceiling: 1 GiB. Larger sources are offered a
+ * consented migration instead (`assessCohort` -> `offer_consent`).
+ */
+export const BUILT_IN_MAX_SOURCE_BYTES = 1 * GIB;
+
+/** Validity window stamped on the built-in payload; re-minted every launch. */
+const BUILT_IN_PAYLOAD_TTL_MS = 24 * 60 * 60 * 1000;
 
 /**
  * Longest window a delivered payload may claim. A payload that grants itself
@@ -391,14 +417,37 @@ export interface RolloutConfigSource {
   /**
    * Can this source deliver anything at all right now?
    *
-   * **This is where analytics consent is decided.** See
-   * `postHogRolloutConfigSource` in `migrationFlag.ts` for the answer and the
-   * reasoning; the short version is that an install with analytics off has no
-   * channel by which a remote disable could reach it, so it is permanently
-   * ineligible for *automatic* migration rather than being migrated under an
-   * authorization nobody can revoke.
+   * The PostHog source answered `false` for installs with analytics off,
+   * because no remote disable could reach them. The built-in source has no
+   * remote disable for anyone, so it answers `true` for every install.
    */
   isAvailable(): boolean;
+}
+
+/**
+ * The build-delivered rollout configuration: enabled, 1 GiB, for the channel
+ * this build runs on. Minted fresh on each fetch so the expiry rule in
+ * `evaluateRolloutAuthorization` is satisfied without a remote clock.
+ */
+export function builtInRolloutConfigSource(
+  buildChannel: ReleaseChannel,
+  now: () => number = Date.now,
+): RolloutConfigSource {
+  return {
+    isAvailable: () => true,
+    fetchPayload: async (flagKey: string) => {
+      if (flagKey !== ROLLOUT_FLAG_KEYS[buildChannel]) return null;
+      const fetchedAt = now();
+      return {
+        enabled: true,
+        maxSourceBytes: BUILT_IN_MAX_SOURCE_BYTES,
+        releaseChannel: buildChannel,
+        configVersion: BUILT_IN_CONFIG_VERSION,
+        fetchedAt: new Date(fetchedAt).toISOString(),
+        expiresAt: new Date(fetchedAt + BUILT_IN_PAYLOAD_TTL_MS).toISOString(),
+      } satisfies RolloutSnapshot;
+    },
+  };
 }
 
 export interface ResolveRolloutInput {

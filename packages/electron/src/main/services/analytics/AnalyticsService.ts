@@ -130,32 +130,11 @@ export class AnalyticsService {
   }
 
   /**
-   * Resolve a PostHog feature flag. Returns `null` when the answer is unknown
-   * — client not up, analytics opted out, or the network call failed — so
-   * callers can distinguish "off" from "we couldn't ask". Never throws.
-   */
-  public async getFeatureFlag(key: string): Promise<boolean | null> {
-    if (!this.postHogClient || !this.allowedToSendAnalytics()) {
-      return null;
-    }
-    try {
-      const value = await this.postHogClient.isFeatureEnabled(key, this.getDistinctId());
-      return value ?? null;
-    } catch (err) {
-      this.log.warn(`[Analytics] Feature flag '${key}' lookup failed`, err);
-      return null;
-    }
-  }
-
-  /**
    * Can this install receive remote configuration through PostHog at all?
    *
    * Deliberately stricter than `allowedToSendAnalytics`, which fails *open*
-   * when the settings store cannot be read. The one caller is the migration
-   * rollout kill switch, where "we could not read the setting" must never
-   * resolve to "go ahead and rewrite the user's database". See
-   * `database/sqlite/migrationFlag.ts` for why an install that answers `false`
-   * here is kept out of automatic migration entirely.
+   * when the settings store cannot be read. Used to gate migration rollout
+   * telemetry, where an unreadable setting must not be treated as consent.
    */
   public canEvaluateRemoteConfig(): boolean {
     if (!this.postHogClient) return false;
@@ -164,25 +143,6 @@ export class AnalyticsService {
     } catch (error) {
       this.log.warn('[Analytics] Could not read analytics consent; treating remote config as unavailable', { error });
       return false;
-    }
-  }
-
-  /**
-   * The JSON payload attached to a feature flag, or `null` when it cannot be
-   * obtained — client not up, analytics opted out, flag off, or the network
-   * call failed. Never throws. Callers must treat `null` as "no answer", not
-   * as a value.
-   */
-  public async getFeatureFlagPayload(key: string): Promise<unknown | null> {
-    if (!this.postHogClient || !this.canEvaluateRemoteConfig()) {
-      return null;
-    }
-    try {
-      const payload = await this.postHogClient.getFeatureFlagPayload(key, this.getDistinctId());
-      return payload ?? null;
-    } catch (err) {
-      this.log.warn(`[Analytics] Feature flag payload '${key}' lookup failed`, err);
-      return null;
     }
   }
 
