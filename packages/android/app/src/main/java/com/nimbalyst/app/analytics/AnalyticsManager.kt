@@ -66,6 +66,8 @@ object AnalyticsManager {
         val config = PostHogAndroidConfig(apiKey = POSTHOG_KEY, host = POSTHOG_HOST).apply {
             captureScreenViews = false
             captureApplicationLifecycleEvents = false
+            // The app reads no feature flags; preloading bills a /flags request per launch.
+            preloadFeatureFlags = false
         }
         PostHogAndroid.setup(appContext, config)
 
