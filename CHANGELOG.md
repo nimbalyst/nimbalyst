@@ -10,6 +10,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 <!-- New features go here -->
+
+### Changed
+<!-- Changes to existing functionality go here -->
+
+### Fixed
+<!-- Bug fixes go here -->
+
+### Removed
+<!-- Removed features go here -->
+
+## [0.82.5] - 2026-10-31
+
+
+### Added
+<!-- New features go here -->
 - GPT-6.1 Terra is available in the OpenAI Codex model picker
 
 ### Changed
