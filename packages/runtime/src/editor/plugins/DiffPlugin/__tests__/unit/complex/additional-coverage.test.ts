@@ -227,21 +227,21 @@ const x: number = 5;
       const target = `Use \`\`modified code with \`backticks\` inside\`\`.`;
 
       const result = setupMarkdownDiffTest(original, target);
+      // Nimbalyst's exporter, which writes documents. Upstream's exporter
+      // fences each diff-split code node separately.
       const actualMarkdown = result.diffEditor.getEditorState().read(() => {
-        return $convertToMarkdownString(
-          MARKDOWN_TEST_TRANSFORMERS,
-          undefined,
-          true,
-        );
+        return $convertToEnhancedMarkdownString(MARKDOWN_TEST_TRANSFORMERS, {
+          includeFrontmatter: false,
+          shouldPreserveNewLines: true,
+        });
       });
 
-      // The markdown importer follows CommonMark: only the inner ``backticks``
-      // span is recognised as a code span; the outer double-backticks become
-      // literal text and are escaped on export. The key is that the content
-      // modification ("modified") is preserved.
-      const expectedWithEscaping =
-        'Use \\`\\`modified code with `backticks` inside\\`\\`.';
-      expectMarkdownEquivalent(actualMarkdown, expectedWithEscaping);
+      // Since Lexical 0.53 the importer reads the whole double-backtick run
+      // as one code span (CommonMark), and the exporter pads a span that
+      // contains a backtick. The content modification must survive.
+      expect(actualMarkdown).toBe(
+        'Use `` modified code with `backticks` inside ``.',
+      );
     });
   });
 

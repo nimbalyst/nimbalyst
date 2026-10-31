@@ -92,7 +92,7 @@ describe('TableCardLayoutPlugin', () => {
     table.style.display = 'block';
     expect(isTableShowingCards(table)).toBe(false);
     await act(async () => {
-      editor.update(() => $getRoot().getLastChildOrThrow<ElementNode>().selectEnd(), { discrete: true });
+      editor.update(() => $getRoot().getLastChildOrThrow().selectEnd(), { discrete: true });
     });
     expect(table.hasAttribute('data-nim-table-editing')).toBe(false);
     expect(isTableShowingCards(table)).toBe(true);

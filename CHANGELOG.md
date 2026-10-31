@@ -28,6 +28,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Closing a window that had opened a file from Finder or the terminal no longer throws an "Object has been destroyed" error in the main process
 - Find highlights in a markdown document are redrawn when the editor's width changes (window or side panel resize), instead of staying where the text used to be
 - The dashboard screenshot in the tutorial project's first sample session now displays, instead of a broken image, in tutorial projects created after this update
+- A backslash written before punctuation in a markdown document, such as `Cmd+\)`, is no longer removed when the editor saves the file
 - On Claude plans without a 5-hour session limit, the Claude usage popover no longer shows an empty Session bar (0%, "Resets in Unknown"), and the gutter ring shows weekly usage instead of 0%
 
 ### Removed

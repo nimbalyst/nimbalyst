@@ -444,6 +444,8 @@ function exportChildren(
 ): string {
   const output = [];
   const children = node.getChildren();
+  // The block-level call owns the tag stack and closes what is left at the end.
+  const ownsTagStack = unclosedTags === undefined;
   const activeUnclosedTags = unclosedTags ?? [];
   const activeUnclosableTags = unclosableTags ?? [];
 
@@ -493,6 +495,22 @@ function exportChildren(
           output.push(formattedText);
           handled = true;
         } else {
+          // A plain node still has to close any format a previous sibling
+          // left open (e.g. bold that ran through a link). Without this the
+          // closing marker drifts to the next formatted node.
+          if (activeUnclosedTags.length > 0) {
+            output.push(
+              exportTextFormat(
+                child,
+                '',
+                textFormatTransformers,
+                activeUnclosedTags,
+                activeUnclosableTags,
+                shouldPreserveNewLines,
+              ),
+            );
+          }
+
           // Text matching transformers for text nodes
           for (const transformer of textMatchTransformers) {
             if (!transformer.export) {
@@ -537,10 +555,25 @@ function exportChildren(
         }
 
         if (!handled) {
-          output.push(textContentForTransform);
+          output.push(escapeLiteralBackslashes(textContentForTransform));
         }
       }
     } else if ($isElementNode(child)) {
+      // A format that covers all of an inline element's text and continues
+      // into the text beside it (`**[a](u) more**`) is written outside the
+      // element. Lexical stores it on the link's text, so without this the
+      // span would be split into `[**a**](u) **more**`. A format confined to
+      // the link exports as `[**a**](u)`, the more common source form.
+      if (child.isInline()) {
+        output.push(
+          openFormatsCoveringInline(
+            child,
+            textFormatTransformers,
+            activeUnclosedTags,
+          ),
+        );
+      }
+
       // First check if any text-match transformer handles this element node (like LINK for LinkNode)
       let handled = false;
       for (const transformer of textMatchTransformers) {
@@ -662,7 +695,74 @@ function exportChildren(
     }
   }
 
+  if (ownsTagStack && activeUnclosedTags.length > 0) {
+    // A format still open at the end of the block (bold ending in a link)
+    // closes here; leaving it open would bleed into the next block.
+    for (let i = activeUnclosedTags.length - 1; i >= 0; i--) {
+      output.push(activeUnclosedTags[i].tag);
+    }
+    activeUnclosedTags.length = 0;
+  }
+
   return output.join('');
+}
+
+function openFormatsCoveringInline(
+  element: ElementNode,
+  textTransformers: Array<TextFormatTransformer>,
+  unclosedTags: Array<UnclosedFormatTag>,
+): string {
+  const textNodes = element.getAllTextNodes();
+  if (textNodes.length === 0) {
+    return '';
+  }
+  let opening = '';
+  const seen = new Set<TextFormatType>();
+  for (const transformer of textTransformers) {
+    const format = transformer.format[0];
+    if (format === 'code' || seen.has(format)) {
+      continue;
+    }
+    seen.add(format);
+    if (
+      textNodes.every((textNode) => textNode.hasFormat(format)) &&
+      !unclosedTags.find((entry) => entry.format === format) &&
+      (hasTextFormat(getAdjacentText(element, true), format) ||
+        hasTextFormat(getAdjacentText(element, false), format))
+    ) {
+      unclosedTags.push({ format, tag: transformer.tag });
+      opening += transformer.tag;
+    }
+  }
+  return opening;
+}
+
+/**
+ * A backslash before ASCII punctuation is a CommonMark escape, so a literal
+ * one there must be written `\\` or the importer drops it on every save.
+ * Other backslashes (`C:\Users`) are literal already and stay as written.
+ */
+function escapeLiteralBackslashes(text: string): string {
+  return text.replace(/\\(?=[!-/:-@[-`{-~])/g, '\\\\');
+}
+
+function getAdjacentText(
+  element: ElementNode,
+  backward: boolean,
+): TextNode | null {
+  const sibling = backward
+    ? element.getPreviousSibling()
+    : element.getNextSibling();
+  if ($isTextNode(sibling)) {
+    return sibling;
+  }
+  if ($isElementNode(sibling) && sibling.isInline()) {
+    const descendant = backward
+      ? sibling.getLastDescendant()
+      : sibling.getFirstDescendant();
+    return $isTextNode(descendant) ? descendant : null;
+  }
+  return null;
 }
 
 function exportTextFormat(
@@ -676,6 +776,7 @@ function exportTextFormat(
   let output = textContent;
 
   if (!node.hasFormat('code')) {
+    output = escapeLiteralBackslashes(output);
     if (shouldPreserveNewLines) {
       // Use HTML numeric character references for emphasis-relevant punctuation
       // (`*` and `_`) rather than backslash escapes. Upstream Lexical's
@@ -690,15 +791,45 @@ function exportTextFormat(
         .replace(/_/g, '&#95;')
         .replace(/([`~])/g, '\\$1');
     } else {
-      output = output.replace(/([*_`~\\])/g, '\\$1');
+      output = output.replace(/([*_`~])/g, '\\$1');
     }
   }
 
-  const match = output.match(/^(\s*)(.*?)(\s*)$/s) || ['', '', output, ''];
-  const leadingSpace = match[1];
-  const trimmedOutput = match[2];
-  const trailingSpace = match[3];
-  const isWhitespaceOnly = trimmedOutput === '';
+  let leadingSpace: string;
+  let trimmedOutput: string;
+  let trailingSpace: string;
+  let isWhitespaceOnly: boolean;
+
+  if (node.hasFormat('code')) {
+    // Inline code is an atomic literal span whose fence is derived from its
+    // content (CommonMark: one backtick longer than the longest run inside),
+    // so content containing backticks survives. Other formats wrap around it.
+    // Adjacent code nodes with identical formatting (the diff editor splits a
+    // span into added and unchanged parts) are one span: separate fences
+    // would touch (`a``b`) and re-parse as something else.
+    const prevCode = getCodeRunSibling(node, true);
+    const nextCode = getCodeRunSibling(node, false);
+    let runText = textContent;
+    for (let n = prevCode; n; n = getCodeRunSibling(n, true)) {
+      runText = n.getTextContent() + runText;
+    }
+    for (let n = nextCode; n; n = getCodeRunSibling(n, false)) {
+      runText += n.getTextContent();
+    }
+    const {fence, padded} = getCodeSpanDelimiter(runText);
+    const pad = padded.length > runText.length ? ' ' : '';
+    leadingSpace = '';
+    trimmedOutput =
+      (prevCode ? '' : fence + pad) + textContent + (nextCode ? '' : pad + fence);
+    trailingSpace = '';
+    isWhitespaceOnly = false;
+  } else {
+    const match = output.match(/^(\s*)(.*?)(\s*)$/s) || ['', '', output, ''];
+    leadingSpace = match[1];
+    trimmedOutput = match[2];
+    trailingSpace = match[3];
+    isWhitespaceOnly = trimmedOutput === '';
+  }
 
   let openingTags = '';
   let closingTagsBefore = '';
@@ -710,6 +841,11 @@ function exportTextFormat(
   for (const transformer of textTransformers) {
     const format = transformer.format[0];
     const tag = transformer.tag;
+
+    // The code fence is emitted above, not as a static tag.
+    if (format === 'code') {
+      continue;
+    }
 
     if (hasTextFormat(node, format) && !appliedFormats.has(format)) {
       appliedFormats.add(format);
@@ -724,9 +860,12 @@ function exportTextFormat(
       // text node (e.g. `~~strike *italic **bold** text* inside~~`), which
       // the close loop then popped as extra closing markers, corrupting
       // emphasis output.
+      // A tag open outside the enclosing inline element (see
+      // openFormatsCoveringInline) already covers this node.
       if (
-        !hasTextFormat(previousTextNode, format) ||
-        !unclosedTags.find((entry) => entry.tag === tag)
+        !unclosableTags.find((entry) => entry.tag === tag) &&
+        (!hasTextFormat(previousTextNode, format) ||
+          !unclosedTags.find((entry) => entry.tag === tag))
       ) {
         unclosedTags.push({ format, tag });
         openingTags += tag;
@@ -734,10 +873,27 @@ function exportTextFormat(
     }
   }
 
+  // getTextSibling looks past the end of an inline parent such as a link.
+  // A tag opened inside that parent cannot stay open across its boundary
+  // (`[**a](u) b**` is not emphasis), so for those tags the next node does not
+  // count as a continuation. Tags opened before the parent are in
+  // `unclosableTags` and are closed after it instead.
+  const parent = node.getParent();
+  const nextLeavesInlineParent =
+    nextTextNode !== null &&
+    parent !== null &&
+    parent.isInline() &&
+    !parent.isParentOf(nextTextNode);
+
   for (let i = 0; i < unclosedTags.length; i++) {
     const currentTag = unclosedTags[i];
     const nodeHasFormat = hasTextFormat(node, currentTag.format);
-    const nextNodeHasFormat = hasTextFormat(nextTextNode, currentTag.format);
+    const nextNodeHasFormat =
+      hasTextFormat(nextTextNode, currentTag.format) &&
+      !(
+        nextLeavesInlineParent &&
+        !unclosableTags.find((entry) => entry.tag === currentTag.tag)
+      );
 
     if (nodeHasFormat && nextNodeHasFormat) {
       continue;
@@ -777,6 +933,32 @@ function exportTextFormat(
     closingTagsAfter +
     trailingSpace
   );
+}
+
+function getCodeRunSibling(node: TextNode, backward: boolean): TextNode | null {
+  const sibling = backward ? node.getPreviousSibling() : node.getNextSibling();
+  return $isTextNode(sibling) &&
+    sibling.hasFormat('code') &&
+    sibling.getFormat() === node.getFormat()
+    ? sibling
+    : null;
+}
+
+/** Same rule as upstream @lexical/markdown 0.53 (not exported there). */
+function getCodeSpanDelimiter(content: string): {
+  fence: string;
+  padded: string;
+} {
+  const backtickRuns = content.match(/`+/g);
+  const longestRun = backtickRuns
+    ? Math.max(...backtickRuns.map((run) => run.length))
+    : 0;
+  const fence = '`'.repeat(longestRun + 1);
+  const needsPadding =
+    content.length === 0 ||
+    content.includes('`') ||
+    (/^\s/.test(content) && /\s$/.test(content));
+  return { fence, padded: needsPadding ? ` ${content} ` : content };
 }
 
 function isEmptyParagraph(node: LexicalNode): boolean {

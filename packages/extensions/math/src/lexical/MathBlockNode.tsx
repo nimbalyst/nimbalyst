@@ -95,6 +95,12 @@ export class MathBlockNode extends DecoratorNode<JSX.Element> {
     return { element };
   }
 
+  // Block-level: Lexical 0.53 wraps inline children of the root in a
+  // paragraph, and DecoratorNode defaults to inline.
+  isInline(): false {
+    return false;
+  }
+
   createDOM(_config: EditorConfig): HTMLElement {
     const div = document.createElement('div');
     div.className = 'nim-math-block-node';

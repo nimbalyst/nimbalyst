@@ -29,6 +29,7 @@ import {
   type ElementNode,
   type LexicalNode,
   type TextNode,
+  type PasteCommandType,
 } from 'lexical';
 
 import { MentionPicker } from './MentionPicker';
@@ -224,8 +225,10 @@ function ResourceLinkPastePlugin({
     () =>
       editor.registerCommand(
         PASTE_COMMAND,
-        (event: ClipboardEvent) => {
-          const clipboardData = event.clipboardData;
+        (event: PasteCommandType) => {
+          // PASTE_COMMAND also carries InputEvent/KeyboardEvent; only
+          // ClipboardEvent has clipboardData.
+          const clipboardData = 'clipboardData' in event ? event.clipboardData : null;
           if (!clipboardData || clipboardData.files.length > 0) return false;
 
           const value = clipboardData.getData('text/plain');

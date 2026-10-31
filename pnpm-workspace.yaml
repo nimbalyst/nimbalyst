@@ -100,8 +100,7 @@ overrides:
   '@excalidraw/mermaid-to-excalidraw>nanoid': ^5.1.16
 
 patchedDependencies:
-  '@lexical/table@0.44.0': patches/@lexical__table@0.44.0.patch
-  '@lexical/yjs@0.44.0': patches/@lexical__yjs@0.44.0.patch
+  '@lexical/yjs@0.53.0': patches/@lexical__yjs@0.53.0.patch
   '@revolist/revogrid@4.21.4': patches/@revolist__revogrid@4.21.4.patch
   app-builder-lib@26.15.3: patches/app-builder-lib@26.15.3.patch
   ghostty-web@0.4.0-next.20.g1858a59: patches/ghostty-web@0.4.0-next.20.g1858a59.patch

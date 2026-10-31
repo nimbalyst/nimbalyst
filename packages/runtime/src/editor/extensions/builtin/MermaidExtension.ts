@@ -34,7 +34,7 @@ export const MermaidExtension = defineExtension({
   register: (editor) =>
     editor.registerCommand(
       INSERT_MERMAID_COMMAND,
-      (payload?: MermaidPayload) => {
+      (payload: MermaidPayload) => {
         const selection = $getSelection();
         if ($isRangeSelection(selection)) {
           $insertNodes([$createMermaidNode(payload)]);

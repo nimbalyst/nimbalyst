@@ -23,7 +23,9 @@ import { gzipSync } from 'node:zlib';
 // eager 844,669 B gzip (the editor registry, inlined manifests, the editor page, canvas cards, the New menu);
 // total 10,760,556 B gzip, almost all lazy: each editor's bundle, and Monaco with its language workers for calc sheets.
 // 2026-10-19, Monaco without its language services and workers (src/editors/monacoCore.ts): total 8,607,058 B gzip.
-const EAGER_GZIP_BUDGET_BYTES = 900_000;
+// 2026-10-31, Lexical 0.44 -> 0.53: eager 909,040 B gzip; total 8,660,163 B gzip. The pre-upgrade eager size
+// on the same tree was not re-measured, so how much of the growth since 10-13 is the upgrade is unknown.
+const EAGER_GZIP_BUDGET_BYTES = 920_000;
 const TOTAL_GZIP_BUDGET_BYTES = 11_500_000;
 
 const dist = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../dist');

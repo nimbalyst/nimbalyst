@@ -4,7 +4,7 @@ import { ContentEditable } from '@lexical/react/LexicalContentEditable';
 import { LexicalErrorBoundary } from '@lexical/react/LexicalErrorBoundary';
 import { RichTextPlugin } from '@lexical/react/LexicalRichTextPlugin';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
-import type { LexicalEditor, ParagraphNode } from 'lexical';
+import type { LexicalEditor } from 'lexical';
 import { $createNodeSelection, $createParagraphNode, $getRoot, $setSelection } from 'lexical';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -171,7 +171,7 @@ describe('LiveTrackerReferenceRenderer', () => {
     expect(block()?.getAttribute('data-selected')).toBe('true');
 
     await act(async () => {
-      editor.update(() => { $getRoot().getFirstChildOrThrow<ParagraphNode>().selectStart(); });
+      editor.update(() => { $getRoot().getFirstChildOrThrow().selectStart(); });
     });
     expect(block()?.getAttribute('data-selected')).toBe('false');
 

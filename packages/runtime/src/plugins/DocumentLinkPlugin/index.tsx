@@ -14,6 +14,7 @@ import {
   PASTE_COMMAND,
   type LexicalEditor,
   type RangeSelection,
+  type PasteCommandType,
 } from 'lexical';
 import { $isLinkNode, LinkNode } from '@lexical/link';
 import { $createDocumentReferenceNode } from './DocumentLinkNode';
@@ -148,8 +149,10 @@ function CollabReferencePastePlugin({
     () =>
       editor.registerCommand(
         PASTE_COMMAND,
-        (event: ClipboardEvent) => {
-          const clipboardData = event.clipboardData;
+        (event: PasteCommandType) => {
+          // PASTE_COMMAND also carries InputEvent/KeyboardEvent; only
+          // ClipboardEvent has clipboardData.
+          const clipboardData = 'clipboardData' in event ? event.clipboardData : null;
           if (!clipboardData || clipboardData.files.length > 0) return false;
 
           const value = clipboardData.getData('text/plain').trim();

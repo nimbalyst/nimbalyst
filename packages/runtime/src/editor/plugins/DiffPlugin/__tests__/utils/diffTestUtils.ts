@@ -169,8 +169,8 @@ export interface ComprehensiveDiffTestResult {
   rejectEditor: LexicalEditor;
 
   // Source and target states for debugging
-  sourceState: SerializedEditorState<SerializedLexicalNode>;
-  targetState: SerializedEditorState<SerializedLexicalNode>;
+  sourceState: SerializedEditorState;
+  targetState: SerializedEditorState;
 
   // Convenience methods for testing
   getDiffNodes: () => {addNodes: LexicalNode[]; removeNodes: LexicalNode[]};
