@@ -1,6 +1,7 @@
+// @vitest-environment node
 import { describe, it, expect, vi } from 'vitest';
 import { resolveImmediateToolDecision, type ToolDecision } from '../immediateToolDecision';
-import { INTERNAL_MCP_TOOLS } from '../toolPolicy';
+import { INTERNAL_MCP_TOOLS, metaAgentBlockedNativeTools } from '../toolPolicy';
 
 function createDeps(overrides?: Partial<Parameters<typeof resolveImmediateToolDecision>[0]>) {
   return {
@@ -251,5 +252,18 @@ describe('resolveImmediateToolDecision', () => {
       const result = await resolveImmediateToolDecision(deps, params);
       expect(result).toBeNull();
     });
+  });
+});
+
+describe('metaAgentBlockedNativeTools (NIM-7668)', () => {
+  it('blocks SDK built-ins missing from SDK_NATIVE_TOOLS, keeps the allowlist and host-handled tools open', () => {
+    const blocked = metaAgentBlockedNativeTools(
+      ['TaskCreate', 'mcp__nimbalyst__update_session_meta'],
+      ['Read', 'PowerShell', 'LSP', 'TaskCreate', 'ScheduleWakeup'],
+    );
+    expect(blocked).toEqual(expect.arrayContaining(['Read', 'Bash', 'PowerShell', 'LSP']));
+    expect(blocked).not.toContain('TaskCreate');
+    expect(blocked).not.toContain('ScheduleWakeup');
+    expect(new Set(blocked).size).toBe(blocked.length);
   });
 });

@@ -37,7 +37,8 @@ import { ClaudeCodeDeps } from './dependencyInjection';
 import { resolveEffectiveSessionMode } from './resolveEffectiveSessionMode';
 import { ClaudeCodeTranscriptAdapter } from './ClaudeCodeTranscriptAdapter';
 import { buildSdkOptions, type BuildSdkOptionsDeps, type BuildSdkOptionsResult } from './sdkOptionsBuilder';
-import { SDK_NATIVE_TOOLS } from './toolPolicy';
+import { BUILTIN_TOOL_NAMES } from '@anthropic-ai/claude-agent-sdk';
+import { metaAgentBlockedNativeTools } from './toolPolicy';
 import type { TurnState } from './turnState';
 
 /** Text attachments above this go to a file on disk instead of inline in the prompt. */
@@ -385,8 +386,7 @@ export async function buildTurnQuery(
   // Meta-agent: the profile-specific MCP map was frozen by buildSdkOptions
   // through getMcpServersSnapshot; only native-tool restrictions remain here.
   if (isMetaAgent) {
-    const allowedSet = new Set(host.metaAgentAllowedTools);
-    const blockedNativeTools = SDK_NATIVE_TOOLS.filter(t => !allowedSet.has(t));
+    const blockedNativeTools = metaAgentBlockedNativeTools(host.metaAgentAllowedTools, BUILTIN_TOOL_NAMES);
     (options as any).allowedTools = host.metaAgentAllowedTools;
     (options as any).disallowedTools = blockedNativeTools;
     (options as any).blockedTools = blockedNativeTools;

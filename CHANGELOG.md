@@ -10,12 +10,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 <!-- New features go here -->
+- GPT-6.1 Terra is available in the OpenAI Codex model picker
 
 ### Changed
 <!-- Changes to existing functionality go here -->
+- Cancelling a Claude Code agent's question card now tells the agent you dismissed the question and lets it keep working, instead of stopping the turn; the Stop button still stops it
 
 ### Fixed
 <!-- Bug fixes go here -->
+- Meta-agent sessions can no longer call Claude Code built-in tools that were added after their blocked-tool list, such as PowerShell and LSP
 - A review session started from the GitHub Pull Requests panel now shows in the PR's chat pane when you come back to the PR, including for PRs with no tracker item; sessions started before this fix are found and linked the next time you open their PR
 - An agent can no longer start an independent top-level session that also reports its result back; a worker whose result the agent needs now nests under it in the session tree instead (#1876)
 - OpenAI Codex commands and edits that Codex wants approved now show the approval prompt instead of being rejected with "blocked by policy"; Codex also runs in Ask every time mode, and a declined command says so on its card (#1884)

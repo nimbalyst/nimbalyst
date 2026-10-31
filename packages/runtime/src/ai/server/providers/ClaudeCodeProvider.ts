@@ -86,6 +86,8 @@ import {
 } from './claudeCode/resultChunkUtils';
 
 import {
+  ASK_USER_QUESTION_UNANSWERED_CAPABILITY,
+  AskUserQuestionDismissedError,
   handleAskUserQuestionTool,
   pollForAskUserQuestionResponse,
   type PendingAskUserQuestionEntry,
@@ -513,6 +515,10 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
   // AskUserQuestion tool - stores pending question resolvers
   // When Claude calls AskUserQuestion, we block until the UI provides answers via IPC
   private pendingAskUserQuestions: Map<string, PendingAskUserQuestionEntry> = new Map();
+
+  // Protocol capabilities from the latest system/init frame. Empty on CLIs that
+  // predate the field, so feature-gated behavior stays off for them.
+  private cliCapabilities: ReadonlySet<string> = new Set();
 
   static readonly DEFAULT_MODEL = ClaudeCodeDeps.DEFAULT_MODEL;
 
@@ -2344,6 +2350,11 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
       void hydrateTaskListItems(sessionId, this.taskListItems);
     }
 
+    // Every turn's init carries the current list; the newest frame wins.
+    this.cliCapabilities = new Set(
+      Array.isArray(chunk.capabilities) ? chunk.capabilities.filter((c: unknown) => typeof c === 'string') : [],
+    );
+
     if (chunk.slash_commands && Array.isArray(chunk.slash_commands)) {
       this.slashCommands = chunk.slash_commands;
       ClaudeCodeProvider.cachedSdkSlashCommands = chunk.slash_commands;
@@ -3016,16 +3027,23 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
   }
 
   /**
-   * Reject a pending AskUserQuestion request (e.g., on cancel/abort)
+   * Reject a pending AskUserQuestion request because the user dismissed it
+   * (the widget's cancel on desktop or mobile). Turn aborts go through
+   * `rejectAllPendingQuestions` instead.
+   *
+   * Returns 'dismissed' when the CLI takes the dismissal as an answer
+   * (`ask_user_question_unanswered_v1`): the turn continues and the model reads
+   * it, so the caller must not abort.
    */
-  public rejectAskUserQuestion(questionId: string, error: Error): void {
+  public rejectAskUserQuestion(questionId: string, error: Error): 'dismissed' | void {
     const pending = this.pendingAskUserQuestions.get(questionId);
     if (pending) {
-      pending.reject(error);
+      pending.reject(error instanceof AskUserQuestionDismissedError ? error : new AskUserQuestionDismissedError(error.message));
       this.pendingAskUserQuestions.delete(questionId);
       // The cancelled tool result is logged by handleAskUserQuestionTool's catch block,
       // which fires when the promise rejects. It correctly handles all questionId formats
       // (both legacy ask-{sessionId}-{timestamp} and new toolu_... Claude tool use IDs).
+      if (this.cliCapabilities.has(ASK_USER_QUESTION_UNANSWERED_CAPABILITY)) return 'dismissed';
     }
   }
 
@@ -3507,6 +3525,7 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
       {
         sessionId,
         pendingAskUserQuestions: this.pendingAskUserQuestions,
+        supportsUnansweredAnnotation: () => this.cliCapabilities.has(ASK_USER_QUESTION_UNANSWERED_CAPABILITY),
         pollForResponse: (resolvedSessionId, questionId, signal) =>
           this.pollForAskUserQuestionResponse(resolvedSessionId, questionId, signal),
         emit: (event, payload) => this.emit(event, payload),

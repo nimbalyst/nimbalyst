@@ -222,6 +222,77 @@ describe('ClaudeCodeProvider.sendMessage chunk sequence', () => {
     expect(stubs.logError).not.toHaveBeenCalled();
   });
 
+  it('carries the 5m/1h cache-write split on the complete usage when result.usage reports it', async () => {
+    const { provider } = await makeProvider();
+    queryMock.mockImplementation(() =>
+      scriptQuery([
+        INIT_CHUNK,
+        {
+          type: 'assistant',
+          session_id: 'sdk-session-1',
+          message: { id: 'msg_1', content: [{ type: 'text', text: 'ok' }] },
+        },
+        {
+          type: 'result',
+          subtype: 'success',
+          is_error: false,
+          num_turns: 1,
+          usage: {
+            input_tokens: 3,
+            output_tokens: 4,
+            cache_read_input_tokens: 0,
+            cache_creation_input_tokens: 900,
+            cache_creation: { ephemeral_5m_input_tokens: 100, ephemeral_1h_input_tokens: 800 },
+          },
+        },
+      ]),
+    );
+
+    const chunks = await runTurn(provider, 'hi');
+    const complete = chunks.find((c) => c.type === 'complete');
+    expect(complete?.usage).toEqual({
+      input_tokens: 3,
+      output_tokens: 4,
+      cache_read_input_tokens: 0,
+      cache_creation_input_tokens: 900,
+      cache_creation_ephemeral_5m_input_tokens: 100,
+      cache_creation_ephemeral_1h_input_tokens: 800,
+      total_tokens: 7,
+    });
+  });
+
+  it('sums the cache-write split from modelUsage when result.usage is absent', async () => {
+    const { provider } = await makeProvider();
+    queryMock.mockImplementation(() =>
+      scriptQuery([
+        INIT_CHUNK,
+        {
+          type: 'assistant',
+          session_id: 'sdk-session-1',
+          message: { id: 'msg_1', content: [{ type: 'text', text: 'ok' }] },
+        },
+        {
+          type: 'result',
+          subtype: 'success',
+          is_error: false,
+          num_turns: 1,
+          modelUsage: {
+            'claude-opus': { inputTokens: 2, outputTokens: 1, cacheCreationInputTokens: 600, cacheCreationEphemeral5mInputTokens: 50, cacheCreationEphemeral1hInputTokens: 500 },
+            // An older CLI's entry: no split, which must not read as a 0 split.
+            'claude-haiku': { inputTokens: 1, outputTokens: 1, cacheCreationInputTokens: 40 },
+          },
+        },
+      ]),
+    );
+
+    const chunks = await runTurn(provider, 'hi');
+    expect(chunks.find((c) => c.type === 'complete')?.usage).toMatchObject({
+      cache_creation_input_tokens: 640,
+      cache_creation_ephemeral_5m_input_tokens: 50,
+      cache_creation_ephemeral_1h_input_tokens: 500,
+    });
+  });
+
   it('yields tool_call at tool_use and tool_result when the result comes back', async () => {
     const { provider } = await makeProvider();
     queryMock.mockImplementation(() =>

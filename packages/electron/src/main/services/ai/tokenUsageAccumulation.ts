@@ -10,6 +10,11 @@
  *   - cacheReadInputTokens / cacheCreationInputTokens: prompt-cache reads and
  *     writes. Disjoint from inputTokens, so input + output + cacheRead +
  *     cacheCreation counts every token once.
+ *   - cacheCreationEphemeral5mInputTokens / cacheCreationEphemeral1hInputTokens
+ *     (claude-code only): cache writes by lifetime, a breakdown already inside
+ *     cacheCreationInputTokens, never added to it. Set only once a turn reports
+ *     the split; turns from a CLI that omits it add to neither, so the pair can
+ *     sum to less than cacheCreationInputTokens.
  *   - totalTokens: unchanged historical meaning, which differs per provider (see
  *     below). Existing displays and analytics read it, so it is not redefined.
  *
@@ -52,6 +57,18 @@ function withCache(current: StoredTokenUsage, cacheRead: number, cacheCreation: 
   };
 }
 
+/** The 5m/1h cache-write counters after one turn; absent until some turn reports one. */
+function withCacheWriteSplit(current: StoredTokenUsage, usage: ChunkUsage | undefined) {
+  const add = (stored: number | undefined, turn: number | undefined) =>
+    typeof turn === 'number' ? count(stored) + count(turn) : stored;
+  const fiveMin = add(current.cacheCreationEphemeral5mInputTokens, usage?.cache_creation_ephemeral_5m_input_tokens);
+  const oneHour = add(current.cacheCreationEphemeral1hInputTokens, usage?.cache_creation_ephemeral_1h_input_tokens);
+  return {
+    ...(fiveMin !== undefined ? { cacheCreationEphemeral5mInputTokens: fiveMin } : {}),
+    ...(oneHour !== undefined ? { cacheCreationEphemeral1hInputTokens: oneHour } : {}),
+  };
+}
+
 export interface ClaudeCodeTurnUsageInput {
   usage: ChunkUsage | undefined;
   modelUsage: ModelUsage;
@@ -83,6 +100,7 @@ export function accumulateClaudeCodeTurnUsage(
     outputTokens: base.outputTokens + newOutputTokens,
     totalTokens: base.totalTokens + newInputTokens + newOutputTokens,
     ...withCache(base, count(turn.usage?.cache_read_input_tokens), count(turn.usage?.cache_creation_input_tokens)),
+    ...withCacheWriteSplit(base, turn.usage),
     costUSD: (base.costUSD || 0) + newCostUSD,
     // Both figures go, not just the fill. The meter falls back to
     // cumulative `totalTokens` over whatever denominator survives,

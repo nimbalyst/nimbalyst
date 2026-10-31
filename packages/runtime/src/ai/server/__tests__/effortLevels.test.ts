@@ -82,6 +82,7 @@ describe('per-model effort ceilings', () => {
   it.each([
     ['gpt-6-astra', 'ultra'],
     ['gpt-6.1-sol', 'ultra'],
+    ['gpt-6.1-terra', 'ultra'],
     ['gpt-6-sol', 'ultra'],
     ['gpt-6-luna', 'max'],
     ['gpt-5.6-sol', 'ultra'],

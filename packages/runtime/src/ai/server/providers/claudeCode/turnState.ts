@@ -29,6 +29,11 @@ export interface TurnUsage {
   output_tokens?: number;
   cache_read_input_tokens?: number;
   cache_creation_input_tokens?: number;
+  /** Anthropic's per-lifetime breakdown of cache_creation_input_tokens. */
+  cache_creation?: {
+    ephemeral_5m_input_tokens?: number;
+    ephemeral_1h_input_tokens?: number;
+  } | null;
 }
 
 /** Per-model usage from the SDK's `result` chunk (camelCase, unlike `TurnUsage`). */
@@ -37,6 +42,9 @@ export interface TurnModelUsage {
   outputTokens?: number;
   cacheReadInputTokens?: number;
   cacheCreationInputTokens?: number;
+  /** SDK 0.3.311+; absent on older CLIs. Both are inside cacheCreationInputTokens. */
+  cacheCreationEphemeral5mInputTokens?: number;
+  cacheCreationEphemeral1hInputTokens?: number;
   costUSD?: number;
   contextWindow?: number;
   webSearchRequests?: number;

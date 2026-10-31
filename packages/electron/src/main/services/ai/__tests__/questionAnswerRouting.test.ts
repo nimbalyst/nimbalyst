@@ -210,4 +210,17 @@ describe('Cancel on a card with no live waiter', () => {
     // The provider logs this card's cancelled result itself.
     expect(h.rows).toEqual([]);
   });
+
+  it('keeps the turn running when the provider answers the cancel as a dismissal', async () => {
+    // A CLI advertising ask_user_question_unanswered_v1 takes the dismissal as
+    // an answer, so the model reads it and continues; aborting would discard it.
+    const provider = { rejectAskUserQuestion: vi.fn().mockReturnValue('dismissed'), abort: vi.fn() };
+    h.providerInstance = provider;
+    openPrompt(sid, 'toolu_sdk_dismiss', 'decision');
+
+    expect(await cancel('toolu_sdk_dismiss')).toEqual({ success: true });
+
+    expect(provider.rejectAskUserQuestion).toHaveBeenCalledWith('toolu_sdk_dismiss', expect.any(Error));
+    expect(provider.abort).not.toHaveBeenCalled();
+  });
 });

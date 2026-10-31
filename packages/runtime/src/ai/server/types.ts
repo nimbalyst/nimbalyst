@@ -488,6 +488,11 @@ export interface SessionData {
     // read absent as 0. Per-provider semantics: tokenUsageAccumulation.ts.
     cacheReadInputTokens?: number;
     cacheCreationInputTokens?: number;
+    // Cumulative cache writes by lifetime, each already counted inside
+    // cacheCreationInputTokens. Claude Code only, and only from turns whose CLI
+    // reported the split, so they can sum to less than cacheCreationInputTokens.
+    cacheCreationEphemeral5mInputTokens?: number;
+    cacheCreationEphemeral1hInputTokens?: number;
     // Internal Codex baseline tracking for cumulative SDK snapshots.
     // Not user-facing; used to convert provider-cumulative usage into per-session deltas.
     providerCumulativeInputTokens?: number;   // cache-inclusive
@@ -633,6 +638,10 @@ export interface StreamChunk {
     total_tokens: number;
     cache_read_input_tokens?: number;
     cache_creation_input_tokens?: number;
+    // Cache writes by lifetime, already inside cache_creation_input_tokens.
+    // Absent when the CLI did not report the split.
+    cache_creation_ephemeral_5m_input_tokens?: number;
+    cache_creation_ephemeral_1h_input_tokens?: number;
   };
   // Structured `/context` report from the agent SDK (0.3.241+), when the binary
   // attaches one. Set only on the `complete` chunk of a /context turn; the
@@ -648,6 +657,8 @@ export interface StreamChunk {
     outputTokens?: number;
     cacheReadInputTokens?: number;
     cacheCreationInputTokens?: number;
+    cacheCreationEphemeral5mInputTokens?: number; // SDK 0.3.311+, inside cacheCreationInputTokens
+    cacheCreationEphemeral1hInputTokens?: number;
     costUSD?: number;
     contextWindow?: number;
     webSearchRequests?: number;

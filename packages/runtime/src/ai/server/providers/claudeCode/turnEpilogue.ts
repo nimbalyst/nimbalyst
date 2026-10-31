@@ -349,6 +349,10 @@ export function buildTurnCompleteUsage(
       output_tokens: output,
       cache_read_input_tokens: state.usageData.cache_read_input_tokens || 0,
       cache_creation_input_tokens: state.usageData.cache_creation_input_tokens || 0,
+      ...cacheWriteSplit(
+        state.usageData.cache_creation?.ephemeral_5m_input_tokens,
+        state.usageData.cache_creation?.ephemeral_1h_input_tokens,
+      ),
       total_tokens: input + output,
     };
   }
@@ -357,17 +361,41 @@ export function buildTurnCompleteUsage(
   let output = 0;
   let cacheRead = 0;
   let cacheCreation = 0;
+  let cacheWrite5m: number | undefined;
+  let cacheWrite1h: number | undefined;
   for (const stats of Object.values(state.modelUsageData)) {
     input += stats.inputTokens || 0;
     output += stats.outputTokens || 0;
     cacheRead += stats.cacheReadInputTokens || 0;
     cacheCreation += stats.cacheCreationInputTokens || 0;
+    if (typeof stats.cacheCreationEphemeral5mInputTokens === 'number') {
+      cacheWrite5m = (cacheWrite5m ?? 0) + stats.cacheCreationEphemeral5mInputTokens;
+    }
+    if (typeof stats.cacheCreationEphemeral1hInputTokens === 'number') {
+      cacheWrite1h = (cacheWrite1h ?? 0) + stats.cacheCreationEphemeral1hInputTokens;
+    }
   }
   return {
     input_tokens: input,
     output_tokens: output,
     cache_read_input_tokens: cacheRead,
     cache_creation_input_tokens: cacheCreation,
+    ...cacheWriteSplit(cacheWrite5m, cacheWrite1h),
     total_tokens: input + output,
+  };
+}
+
+/**
+ * The 5m/1h cache-write split, each half only when the CLI reported it. Older
+ * CLIs omit both, and an absent count must stay absent rather than read as 0:
+ * the two are a breakdown of cache_creation_input_tokens, not a replacement.
+ */
+function cacheWriteSplit(
+  ephemeral5m: number | undefined,
+  ephemeral1h: number | undefined,
+): Pick<NonNullable<StreamChunk['usage']>, 'cache_creation_ephemeral_5m_input_tokens' | 'cache_creation_ephemeral_1h_input_tokens'> {
+  return {
+    ...(typeof ephemeral5m === 'number' ? { cache_creation_ephemeral_5m_input_tokens: ephemeral5m } : {}),
+    ...(typeof ephemeral1h === 'number' ? { cache_creation_ephemeral_1h_input_tokens: ephemeral1h } : {}),
   };
 }

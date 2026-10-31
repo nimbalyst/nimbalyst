@@ -125,9 +125,11 @@ export class OpenAICodexProvider extends BaseAgentProvider {
     maxTokens: number;
   }> = [
     // GPT-6 catalog entries require codex >= 0.153.0 (Astra), >= 0.155.0
-    // (Sol, Luna), and >= 0.159.1 (6.1 Sol); the catalog lists a 272k default
-    // context window for all of them.
+    // (Sol, Luna), >= 0.159.1 (6.1 Sol), and >= 0.165.0 (6.1 Terra); the
+    // catalog lists a 272k default context window for all of them except
+    // 6.1 Terra, which defaults to 500k.
     { id: 'gpt-6.1-sol', name: 'GPT-6.1 Sol', contextWindow: 272000, maxTokens: 128000 },
+    { id: 'gpt-6.1-terra', name: 'GPT-6.1 Terra', contextWindow: 500000, maxTokens: 128000 },
     { id: 'gpt-6-sol', name: 'GPT-6 Sol', contextWindow: 272000, maxTokens: 128000 },
     { id: 'gpt-6-astra', name: 'GPT-6 Astra', contextWindow: 272000, maxTokens: 128000 },
     { id: 'gpt-6-luna', name: 'GPT-6 Luna', contextWindow: 272000, maxTokens: 128000 },
@@ -140,6 +142,7 @@ export class OpenAICodexProvider extends BaseAgentProvider {
   ];
   private static readonly MODEL_FALLBACK_PRIORITY: ReadonlyArray<string> = [
     'gpt-6.1-sol',
+    'gpt-6.1-terra',
     'gpt-6-sol',
     'gpt-6-luna',
     'gpt-5.6-sol',

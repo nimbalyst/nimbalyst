@@ -100,3 +100,16 @@ export const SDK_NATIVE_TOOLS: readonly string[] = [
 export const NIMBALYST_HANDLED_TOOLS: readonly string[] = [
   'ScheduleWakeup',
 ];
+
+/**
+ * Native tools a meta-agent session must not call. SDK_NATIVE_TOOLS lags the
+ * CLI, so the SDK's own BUILTIN_TOOL_NAMES is unioned in; otherwise built-ins
+ * added after our list (PowerShell, LSP, Artifact, ...) stay callable (NIM-7668).
+ */
+export function metaAgentBlockedNativeTools(
+  allowedTools: readonly string[],
+  sdkBuiltinTools: readonly string[],
+): string[] {
+  const open = new Set([...allowedTools, ...NIMBALYST_HANDLED_TOOLS]);
+  return [...new Set([...SDK_NATIVE_TOOLS, ...sdkBuiltinTools])].filter(t => !open.has(t));
+}
