@@ -11,6 +11,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import { applyBranch, buildGeneratedFiles, buildPluginConfigs, checkGenerated, checkManifestVersions, checkToolNames, cliSpec, PLUGIN_DIR, TEAM_PLUGIN_DIR, writeGenerated } from '../build-wiki-plugin.mjs';
+import { shimSpawnConfig } from '../package-manager.mjs';
 import { canRunPinnedCli, directoryLimitFindings, unbumpedChanges } from '../stage-wiki-repo.mjs';
 
 const REMOTE_SKILLS = fileURLToPath(new URL('../../plugins/nimbalyst-wiki/skills', import.meta.url));
@@ -248,7 +249,14 @@ test('npx runs the published CLI even in a project that has its own @nimbalyst/c
     const args = JSON.parse(configs.get('.mcp.json')).mcpServers['nimbalyst-session'].args
       .map((arg) => (arg === cliSpec() ? `@nimbalyst/cli@${version}` : arg));
     // --offline: the fake version is in no registry, so npx fails unless it picks the project's copy.
-    const run = spawnSync('npx', ['--offline', ...args], { cwd: project, encoding: 'utf8', input: '' });
+    const launch = shimSpawnConfig('npx');
+    const run = spawnSync(launch.command, [...launch.argsPrefix, '--offline', ...args], {
+      cwd: project,
+      encoding: 'utf8',
+      input: '',
+    });
+    assert.equal(run.error, undefined, run.error?.message);
+    assert.doesNotMatch(run.stderr, /not recognized|command not found|ENOENT/i);
     assert.doesNotMatch(run.stdout, /LOCAL COPY/);
   } finally {
     rmSync(project, { recursive: true, force: true });
