@@ -1,6 +1,6 @@
 {
   "name": "nimbalyst-wiki",
-  "version": "0.12.3",
+  "version": "0.12.4",
   "description": "A local wiki your Claude Code agents write for you, so you can think, organize, and set direction. Run setup to build the wiki, capture decisions at the end of sessions, track things with types, read and edit it in your local browser, and optionally share it with your team.",
   "author": {
     "name": "Nimbalyst",

@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "npx --prefix / -y @nimbalyst/cli@0.12.3 hook session-start",
+            "command": "npx --prefix / -y @nimbalyst/cli@0.12.4 hook session-start",
             "timeout": 30
           }
         ]
@@ -17,7 +17,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "npx --prefix / -y @nimbalyst/cli@0.12.3 hook stop",
+            "command": "npx --prefix / -y @nimbalyst/cli@0.12.4 hook stop",
             "timeout": 30
           }
         ]

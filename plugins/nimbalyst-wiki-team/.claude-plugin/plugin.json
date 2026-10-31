@@ -1,6 +1,6 @@
 {
   "name": "nimbalyst-wiki-team",
-  "version": "0.12.3",
+  "version": "0.12.4",
   "description": "The team wiki server for Nimbalyst Wiki: your team's pages on Nimbalyst Teams. Install it with nimbalyst-wiki; its team skill installs this for you when you move a wiki to a team.",
   "author": {
     "name": "Nimbalyst",

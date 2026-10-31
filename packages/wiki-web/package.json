@@ -1,6 +1,6 @@
 {
   "name": "@nimbalyst/wiki-web",
-  "version": "0.12.3",
+  "version": "0.12.4",
   "description": "Browser app for `nim wiki serve`: shows a Nimbalyst local wiki folder in a browser. Static files only; nim serves them.",
   "license": "MIT",
   "type": "module",

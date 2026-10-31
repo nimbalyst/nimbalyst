@@ -1,12 +1,12 @@
 {
   "id": "com.nimbalyst.planning",
   "name": "Planning",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "description": "Structured planning and tracking with YAML frontmatter",
   "author": "Nimbalyst",
   "apiVersion": "1.0.0",
   "marketplace": {
-    "changelog": "1.0.3: /implement keeps the plan checklist current as phases land, and the skill refers to the Wiki section by its new name.\n1.0.2: New /planning:nimbalyst-coach command reviews your project and recent sessions and suggests extensions, features, and agent-instruction changes.",
+    "changelog": "1.0.4: /launch-new-session nests a worker that reports back under the session that started it, and moving a session no longer appoints or messages a manager.\n1.0.3: /implement keeps the plan checklist current as phases land, and the skill refers to the Wiki section by its new name.\n1.0.2: New /planning:nimbalyst-coach command reviews your project and recent sessions and suggests extensions, features, and agent-instruction changes.",
     "categories": ["ai-tools"],
     "tags": ["planning", "tracker", "implementation", "frontmatter", "workflow"],
     "icon": "checklist",
