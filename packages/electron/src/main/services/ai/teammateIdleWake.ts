@@ -8,6 +8,8 @@
  * new send with the message.
  */
 
+import { decideIdleWake } from './idleWakeGating';
+
 export interface TeammateIdleWakeData {
   sessionId: string;
   message: string;
@@ -21,6 +23,10 @@ export interface TeammateIdleWakeDeps<W extends WakeTargetWindow = WakeTargetWin
   isSessionActive: (sessionId: string) => boolean;
   startSession: (options: { sessionId: string; workspacePath: string }) => Promise<void>;
   endSession: (sessionId: string) => Promise<void>;
+  /** The lead is parked on an interactive prompt, waiting on the user. */
+  isBlockedOnUser: (sessionId: string) => boolean;
+  /** Hold a wake until the lead is no longer blocked on the user. */
+  holdForUser: (sessionId: string, message: string) => void;
   /** Workspace path of the turn that installed this listener. */
   turnWorkspacePath: () => string;
   resolveOwnerWorkspacePath: (sessionId: string) => Promise<string | null>;
@@ -44,10 +50,19 @@ export function createTeammateIdleWakeListener<W extends WakeTargetWindow>(deps:
       deps.logWarn('[AIService] teammate:messageWhileIdle with no sessionId');
       return;
     }
-    // Don't wake a session that already ended (e.g., all teammates completed
-    // between the message being queued and this handler running).
-    if (!deps.isSessionActive(data.sessionId)) {
+    const decision = decideIdleWake({
+      // Don't wake a session that already ended (e.g., all teammates completed
+      // between the message being queued and this handler running).
+      sessionActive: deps.isSessionActive(data.sessionId),
+      hasPendingPrompt: deps.isBlockedOnUser(data.sessionId),
+    });
+    if (decision.action === 'drop') {
       deps.logInfo(`[AIService] Ignoring teammate message for ended session ${data.sessionId}`);
+      return;
+    }
+    if (decision.action === 'defer') {
+      deps.holdForUser(data.sessionId, data.message);
+      deps.logInfo(`[AIService] Holding teammate message for session ${data.sessionId}: lead is waiting on an interactive prompt`);
       return;
     }
     deps.logInfo(`[AIService] Teammate message while lead idle, triggering sendMessage for session ${data.sessionId}`);
