@@ -26,6 +26,7 @@ import deepEqual from 'fast-deep-equal';
 import { captureTranscriptMessages, preserveTranscriptMessageIdentity, reconcileTranscriptMessages } from '../transcriptReconciliation';
 import { sessionLaunchCountsAtom } from './sessionLaunchCounts';
 import { sessionListMetadata } from './sessionListMetadata';
+import { isWorkstreamContainer } from './sessionListFilter';
 import { workstreamStateAtom, setWorkstreamActiveChildAtom } from './workstreamState';
 import { clearSessionUnreadAtom } from './sessionActivity';
 import { aiInputHistoryAtom } from './aiInputUndo';
@@ -2199,7 +2200,7 @@ export const sessionListRootAtom = atom<SessionListItem[]>((get) => {
 /**
  * Derived: Sessions for chat mode dropdown.
  * Includes standalone sessions and workstream children, but excludes:
- * - Workstream parent sessions (they're just containers)
+ * - Workstream containers (parents with no conversation of their own)
  * - Worktree sessions (they're against different directories)
  * Now derives from sessionRegistryAtom instead of sessionListFullAtom.
  */
@@ -2211,8 +2212,7 @@ export const sessionListChatAtom = atom<SessionMeta[]>((get) => {
       if (s.agentRole === 'meta-agent') return false;
       // Exclude worktree sessions
       if (s.worktreeId) return false;
-      // Exclude workstream parents (childCount > 0 means it's a parent)
-      if (s.childCount && s.childCount > 0) return false;
+      if (isWorkstreamContainer(s)) return false;
       return true;
     })
     .sort((a, b) => b.updatedAt - a.updatedAt);
