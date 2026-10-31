@@ -61,8 +61,27 @@ describe('pending question navigation', () => {
     <RichTranscriptView sessionId={sessionId} sessionStatus="idle" messages={messages}
       provider="claude-code" persistScrollState={false} />
   );
+  // The transcript hides its list when its pane is hidden (IntersectionObserver).
+  let observers: Array<{ callback: IntersectionObserverCallback; target?: Element }>;
+  const setTranscriptVisible = (isIntersecting: boolean) => act(() => {
+    observers
+      .filter(observer => observer.target?.classList.contains('rich-transcript-view'))
+      .forEach(observer => observer.callback([{ isIntersecting } as IntersectionObserverEntry], {} as IntersectionObserver));
+  });
 
   beforeEach(() => {
+    observers = [];
+    vi.stubGlobal('IntersectionObserver', class {
+      private readonly entry: { callback: IntersectionObserverCallback; target?: Element };
+      constructor(callback: IntersectionObserverCallback) {
+        this.entry = { callback };
+        observers.push(this.entry);
+      }
+      observe(target: Element) { this.entry.target = target; }
+      unobserve() {}
+      disconnect() {}
+      takeRecords() { return []; }
+    });
     frames = new Map();
     nextFrame = 0;
     vlistState.scrollToIndex.mockReset();
@@ -115,13 +134,38 @@ describe('pending question navigation', () => {
     rerender(view([...messages, question(2)]));
     flushFrames();
     expect(vlistState.scrollToIndex).toHaveBeenLastCalledWith(2, { align: 'start' });
+    // With two cards open, Jump goes to the newest one, the card the agent waits on.
     fireEvent.click(screen.getByLabelText('Jump to question'));
     flushFrames();
-    expect(vlistState.scrollToIndex).toHaveBeenLastCalledWith(1, { align: 'start' });
+    expect(vlistState.scrollToIndex).toHaveBeenLastCalledWith(2, { align: 'start' });
 
     rerender(view([question(0)], 'other-session'));
     flushFrames();
     expect(vlistState.scrollToIndex).toHaveBeenLastCalledWith(0, { align: 'start' });
+
+    // Switching back does not replay the jump the first session already made.
+    vlistState.scrollToIndex.mockClear();
+    rerender(view([...messages, question(2)]));
+    flushFrames();
+    expect(vlistState.scrollToIndex).not.toHaveBeenCalledWith(expect.any(Number), { align: 'start' });
+  });
+
+  it('auto-jumps to the newest of several open questions once, not again when the pane is shown again', () => {
+    // An abandoned card stays open above the re-asked question.
+    const messages = [question(0), makeMessage(1, { text: 'Asking again' }), question(2), makeMessage(3, { text: '' })];
+    render(view(messages));
+    flushFrames();
+    expect(vlistState.scrollToIndex).toHaveBeenLastCalledWith(3, { align: 'start' });
+    expect(vlistState.scrollToIndex).not.toHaveBeenCalledWith(1, { align: 'start' });
+
+    vlistState.scrollToIndex.mockClear();
+    setTranscriptVisible(false);
+    flushFrames();
+    setTranscriptVisible(true);
+    flushFrames();
+    expect(vlistState.scrollToIndex).not.toHaveBeenCalledWith(expect.any(Number), { align: 'start' });
+    // The remounted list falls back to the usual bottom position.
+    expect(vlistState.scrollToIndex).toHaveBeenCalledWith(messages.length - 1, { align: 'end' });
   });
 
   it('ignores superseded answers and non-question prompts', () => {
