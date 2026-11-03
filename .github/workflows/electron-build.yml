@@ -895,19 +895,43 @@ jobs:
       # can discover it through the public releases feed. Re-running the
       # workflow with create_github_release=true updates that same release and
       # clears the prerelease flag, making it the stable release.
+      #
+      # A new release is created as a draft and only made public after every
+      # asset has uploaded. Publishing first exposed the *-mac.yml manifests
+      # ~30s before the zips finished, and clients that checked in that window
+      # got "Cannot download ... status 404". An existing release (the promote
+      # re-run) is never re-drafted so it stays visible throughout.
+      - name: Check for existing GitHub Release
+        id: existing_release
+        if: github.ref_type == 'tag'
+        run: |
+          if gh release view "${{ steps.get_version.outputs.VERSION }}" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Publish GitHub Release
         if: github.ref_type == 'tag'
         uses: softprops/action-gh-release@de2c0eb89ae2a093876385947365aca7b0e5f844 # v1 (v0.1.15)
         with:
           tag_name: ${{ steps.get_version.outputs.VERSION }}
           name: Release ${{ steps.get_version.outputs.VERSION }}
-          draft: false
+          draft: ${{ steps.existing_release.outputs.exists != 'true' }}
           prerelease: ${{ !(inputs.create_github_release == true || inputs.create_github_release == 'true') }}
           files: release-files/*
           generate_release_notes: false
           body_path: release-files/GITHUB_RELEASE_BODY.md
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Make GitHub Release public after all assets uploaded
+        if: github.ref_type == 'tag' && steps.existing_release.outputs.exists != 'true'
+        run: gh release edit "${{ steps.get_version.outputs.VERSION }}" --repo "$GITHUB_REPOSITORY" --draft=false
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Release Complete
         run: |
