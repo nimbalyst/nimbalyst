@@ -50,10 +50,21 @@ class WorkspaceFileAttributionPolicyRegistry {
       && policy.workspacePath === path.resolve(workspacePath);
   }
 
-  hasDisabledSession(workspacePath: string): boolean {
+  /**
+   * Whether a disabled session is blocking listener attribution in this
+   * workspace. `isRunning` limits it to sessions whose turn is in progress: the
+   * policy is only released by `HooklessAgentFileWatcher.stopForSession`, and a
+   * turn that exits without reaching it would otherwise silence attribution for
+   * every other session in the workspace until restart.
+   */
+  hasDisabledSession(workspacePath: string, isRunning?: (sessionId: string) => boolean): boolean {
     const normalizedWorkspacePath = path.resolve(workspacePath);
-    for (const policy of this.policies.values()) {
-      if (policy.mode === 'disabled' && policy.workspacePath === normalizedWorkspacePath) {
+    for (const [sessionId, policy] of this.policies) {
+      if (
+        policy.mode === 'disabled'
+        && policy.workspacePath === normalizedWorkspacePath
+        && (!isRunning || isRunning(sessionId))
+      ) {
         return true;
       }
     }

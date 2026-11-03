@@ -1,10 +1,15 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
-const { matchWorkspaceFileEdit, addFileLink, debug, getGitFactsForFile } = vi.hoisted(() => ({
+const { matchWorkspaceFileEdit, addFileLink, debug, getGitFactsForFile, getRunningSessionIds } = vi.hoisted(() => ({
   matchWorkspaceFileEdit: vi.fn(),
   addFileLink: vi.fn(),
   debug: vi.fn(),
   getGitFactsForFile: vi.fn(),
+  getRunningSessionIds: vi.fn((): string[] => []),
+}));
+
+vi.mock('@nimbalyst/runtime/ai/server/SessionStateManager', () => ({
+  getSessionStateManager: () => ({ getRunningSessionIds }),
 }));
 
 vi.mock('../../history/fileGitFacts', () => ({
@@ -66,10 +71,13 @@ describe('WorkspaceFileEditAttributionService', () => {
     matchWorkspaceFileEdit.mockReset();
     addFileLink.mockReset();
     debug.mockReset();
+    getRunningSessionIds.mockReset();
+    getRunningSessionIds.mockReturnValue([]);
   });
 
   it('drops pooled listener events workspace-wide while app-server attribution is disabled', async () => {
     workspaceFileAttributionPolicy.set('app-server-session', '/workspace', 'disabled');
+    getRunningSessionIds.mockReturnValue(['app-server-session']);
 
     workspaceFileEditAttributionService.ingestWatcherEvent({
       workspacePath: '/workspace',
@@ -86,6 +94,28 @@ describe('WorkspaceFileEditAttributionService', () => {
     });
     expect(matchWorkspaceFileEdit).not.toHaveBeenCalled();
     expect(addFileLink).not.toHaveBeenCalled();
+  });
+
+  // A disabled policy is only released by HooklessAgentFileWatcher.stopForSession,
+  // and some turn exits never reach it. A policy left behind by a finished Codex
+  // turn silenced Bash-edit attribution for every other session in the project
+  // until restart.
+  it('ignores a disabled policy whose session is no longer running', async () => {
+    workspaceFileAttributionPolicy.set('finished-app-server-session', '/workspace', 'disabled');
+    matchWorkspaceFileEdit.mockResolvedValue({ winner: null, candidates: [], reason: 'no-candidates' });
+
+    workspaceFileEditAttributionService.ingestWatcherEvent({
+      workspacePath: '/workspace',
+      filePath: '/workspace/src/other.ts',
+      timestamp: Date.now(),
+      beforeContent: 'before',
+    });
+
+    await vi.waitFor(() => {
+      expect(matchWorkspaceFileEdit).toHaveBeenCalledWith(
+        expect.objectContaining({ filePath: '/workspace/src/other.ts' }),
+      );
+    });
   });
 });
 

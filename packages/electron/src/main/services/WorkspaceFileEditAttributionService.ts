@@ -3,6 +3,7 @@ import { createHash } from 'crypto';
 import { SessionFilesRepository } from '@nimbalyst/runtime';
 import { historyManager } from '../HistoryManager';
 import { getSubscriberIds } from '../file/WorkspaceEventBus';
+import { getSessionStateManager } from '@nimbalyst/runtime/ai/server/SessionStateManager';
 import { logger } from '../utils/logger';
 import { pathContainsExcludedDir } from '../utils/fileFilters';
 import { sessionEditQuota } from './SessionEditQuota';
@@ -254,10 +255,12 @@ class WorkspaceFileEditAttributionServiceImpl {
 
       // App-server fileChange items are the authoritative edit stream. Disable
       // pooled listener attribution for the entire workspace while any such
-      // session is active: a filesystem event has no reliable origin, so
-      // assigning it to a concurrent listener-backed session would merely move
-      // the same cross-session race to that session.
-      if (workspaceFileAttributionPolicy.hasDisabledSession(event.workspacePath)) {
+      // session's turn is running: a filesystem event has no reliable origin,
+      // so assigning it to a concurrent listener-backed session would merely
+      // move the same cross-session race to that session. A policy left behind
+      // by a finished turn must not keep the workspace dark.
+      const runningSessionIds = new Set(getSessionStateManager().getRunningSessionIds());
+      if (workspaceFileAttributionPolicy.hasDisabledSession(event.workspacePath, (id) => runningSessionIds.has(id))) {
         logger.main.debug('[WorkspaceFileEditAttributionService] Listener attribution disabled for workspace:', {
           workspacePath: event.workspacePath,
           filePath: event.filePath,
