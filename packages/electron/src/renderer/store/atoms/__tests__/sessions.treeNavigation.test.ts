@@ -8,6 +8,7 @@ import {
   activeSessionIdAtom,
   sessionRegistryAtom,
   sessionChildrenAtom,
+  sessionListChatAtom,
   sessionListRootAtom,
   sessionListWorkspaceAtom,
   sessionOrChildProcessingAtom,
@@ -188,6 +189,18 @@ describe('tree navigation atoms', () => {
     await store.set(selectSessionActionAtom, 'blitz-child');
     expect(store.get(selectedWorkstreamAtom('/project'))).toEqual({type: 'worktree', id: 'blitz-child'});
     expect(store.get(workstreamStateAtom('blitz-child')).worktreeId).toBe('blitz-tree');
+  });
+  it('lists a parent with its own conversation in the chat picker but not an empty workstream wrapper', () => {
+    store.set(sessionRegistryAtom, new Map([
+      row('conversation-parent', null, { childCount: 1, messageCount: 12 }),
+      row('conversation-child', 'conversation-parent'),
+      row('wrapper', null, { sessionType: 'workstream', childCount: 1 }),
+      row('wrapped-child', 'wrapper'),
+      row('legacy-wrapper', null, { childCount: 2 }),
+    ].map(r => [r.id, r])));
+    expect(store.get(sessionListChatAtom).map(s => s.id).sort()).toEqual(
+      ['conversation-child', 'conversation-parent', 'wrapped-child'],
+    );
   });
 
 });

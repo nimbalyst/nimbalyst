@@ -2,6 +2,7 @@
 import { describe, expect, it } from 'vitest';
 import type { SessionMeta } from '@nimbalyst/runtime';
 import {
+  isWorkstreamContainer,
   isWorkstreamParentSession,
   matchesSessionListTag,
   VIRTUAL_TAG_WORKSTREAMS,
@@ -54,6 +55,13 @@ describe('session list virtual tags', () => {
       sessionType: 'blitz',
       childCount: 2,
     }))).toBe(false);
+  });
+
+  it('treats only conversation-less roots as workstream containers', () => {
+    expect(isWorkstreamContainer(workstream)).toBe(true);
+    expect(isWorkstreamContainer(session({ id: 'legacy', childCount: 2 }))).toBe(true);
+    expect(isWorkstreamContainer(session({ id: 'parent', childCount: 2, messageCount: 12 }))).toBe(false);
+    expect(isWorkstreamContainer(standalone)).toBe(false);
   });
 
   it('preserves the existing #worktree and persisted-tag predicates', () => {

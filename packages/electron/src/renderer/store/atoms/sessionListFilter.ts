@@ -30,6 +30,17 @@ export function isWorkstreamParentSession(session: SessionMeta): boolean {
 }
 
 /**
+ * A workstream root that only groups its children. A session that spawned
+ * children but has its own conversation is not a container.
+ */
+export function isWorkstreamContainer(
+  session: Pick<SessionMeta, 'sessionType' | 'childCount' | 'messageCount'>,
+): boolean {
+  return session.sessionType === 'workstream'
+    || (session.childCount > 0 && session.messageCount === 0);
+}
+
+/**
  * Match one list tag, including virtual structural tags. Workstream children
  * inherit the virtual #workstreams match from their parent so the predicate
  * stays correct if it is reused with the full registry rather than root rows.
