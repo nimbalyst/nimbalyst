@@ -10,6 +10,7 @@ import * as path from 'node:path';
 import { initWiki, openWiki, type LocalWiki, type ReadBodyResult, type StaticSiteLink, type StaticSiteManifest } from '@nimbalyst/local-wiki';
 import { exportStaticSite, type CarriedTrackerItem } from '../exportSite.js';
 import { normalizeBasePath } from '../sitePaths.js';
+import { renderBodyHtml, type PrerenderSite } from '../prerender.js';
 import { gatewayTrackerSource } from '../../commands/wikiExport.js';
 import type { TrackerGateway } from '../../gateway/types.js';
 
@@ -230,5 +231,21 @@ describe('exportStaticSite', () => {
     expect((await gatewayTrackerSource(gateway('Stored body.'), '/ws').find('USR.84'))?.body).toBe('Stored body.');
     expect((await gatewayTrackerSource(gateway('# Q3\n\n**Type**: question\n**ID**: q1'), '/ws').find('USR.84'))?.body).toBe('');
     expect(await gatewayTrackerSource(gateway('', true), '/ws').find('USR.84')).toBeNull();
+  });
+});
+
+describe('renderBodyHtml', () => {
+  const site: PrerenderSite = { pages: new Map(), included: new Set(), sitePaths: {}, basePath: '/' };
+  const render = (markdown: string) => renderBodyHtml(markdown, { path: 'page.md', dir: '' }, site, './');
+
+  it('keeps colored text colored, writing only the validated colors', () => {
+    expect(render(`<span style='COLOR:teal'>**late**</span> and <span style="background-color: #ffd43b4d; color: rgb(1, 2, 3)">both</span>`))
+      .toBe('<p><span style="color: teal"><strong>late</strong></span> and <span style="color: rgb(1, 2, 3); background-color: #ffd43b4d">both</span></p>\n');
+  });
+
+  it('leaves out other spans and their closing tags, and keeps escaped ones as text', () => {
+    expect(render('<span class="x" style="color: red">a</span> <span style="color: url(x)">b</span> <span style="color: red">c <span onclick="x">d</span></span>'))
+      .toBe('<p>a b <span style="color: red">c d</span></p>\n');
+    expect(render(String.raw`\<span style="color: red">e</span>`)).toBe('<p>&lt;span style=&quot;color: red&quot;&gt;e</p>\n');
   });
 });

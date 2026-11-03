@@ -77,6 +77,8 @@ await build({
     '@nimbalyst/wiki-plugin/session-inputs': path.join(packageDir, '../extensions/knowledge/src/sessionInputs/server.ts'),
     // The session-inputs server's citation format, as the plugin bundle resolves it.
     '@nimbalyst/runtime/core/citationSyntax': path.join(packageDir, '../runtime/src/core/citationSyntax.ts'),
+    // The static export's colored-text parser; see src/types/textColorSyntax.d.ts.
+    '@nimbalyst/runtime/core/textColorSyntax': path.join(packageDir, '../runtime/src/core/textColorSyntax.ts'),
   },
   // Each entry is bundled independently rather than sharing chunks: the two bin
   // entries differ only in whether they declare the bundled SQLite channel

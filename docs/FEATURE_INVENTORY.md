@@ -45,6 +45,7 @@ Maintain this when notable capabilities are added, significantly expanded, or re
 - Mentions -- `@` offers team members (written as `[@Name](mailto:...)`) and dates (written as `@2026-10-15`, shown relative) alongside page links
 - Link previews -- a link alone on its line can show as a bookmark card (metadata fetched by the app) or, for allowlisted video and design-file hosts, the site's own player; it stays a normal link in plain markdown. Players are desktop only for now
 - Code excerpts -- an `excerpt` fence quotes a line range of a committed file (read at HEAD; dotfiles refused), pinned to a commit with the snapshot stored in the page, and flags when the code has changed, moved or gone, with "Update to current" and open-at-line
+- Colored text -- seven named text and background colors from the selection toolbar, saved as `<span style="color: ...">` so Obsidian shows the color; Nimbalyst shows palette colors in theme-adjusted shades and keeps any other color as written. Shown in the editor, the AI transcript, the local wiki browser view and its static export; the team web console after its next deploy. Not yet on iOS or Android
 - Tabs -- a tabs block with named panels of ordinary markdown (each panel is a collapsible section on GitHub)
 - Action buttons -- a "Start session" button runs a stored prompt (optional model and effort) as a new agent session with the page as context, after showing the full prompt for confirmation; a "New item" button creates a typed page from an optional template and places it under the current page. Desktop only
 

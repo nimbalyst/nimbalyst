@@ -103,6 +103,22 @@ export interface ExtendedThemeColors extends ThemeColors {
   'quote-text'?: string;
   'quote-border'?: string;
 
+  // Colored text palette (see core/textColorSyntax.ts)
+  'text-color-red'?: string;
+  'text-color-orange'?: string;
+  'text-color-yellow'?: string;
+  'text-color-green'?: string;
+  'text-color-blue'?: string;
+  'text-color-purple'?: string;
+  'text-color-gray'?: string;
+  'text-bg-red'?: string;
+  'text-bg-orange'?: string;
+  'text-bg-yellow'?: string;
+  'text-bg-green'?: string;
+  'text-bg-blue'?: string;
+  'text-bg-purple'?: string;
+  'text-bg-gray'?: string;
+
   // Scrollbar
   'scrollbar-thumb'?: string;
   'scrollbar-thumb-hover'?: string;

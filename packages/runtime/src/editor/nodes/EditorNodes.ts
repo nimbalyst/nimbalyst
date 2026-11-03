@@ -18,6 +18,7 @@ import { HeadingNode, QuoteNode } from '@lexical/rich-text';
 import { TableCellNode, TableNode, TableRowNode } from '@lexical/table';
 
 import { EmojiNode } from '../plugins/EmojisPlugin/EmojiNode';
+import { TextColorNode } from '../plugins/TextColorPlugin/TextColorNode';
 
 const EditorNodes: Array<Klass<LexicalNode>> = [
   HeadingNode,
@@ -31,6 +32,7 @@ const EditorNodes: Array<Klass<LexicalNode>> = [
   OverflowNode,
   EmojiNode,
   MarkNode,
+  TextColorNode,
 ];
 
 export default EditorNodes;

@@ -12,7 +12,8 @@
     "resolveJsonModule": true,
     "types": ["node"],
     "paths": {
-      "@nimbalyst/runtime/core/pageMarkSyntax": ["./src/types/pageMarkSyntax.d.ts"]
+      "@nimbalyst/runtime/core/pageMarkSyntax": ["./src/types/pageMarkSyntax.d.ts"],
+      "@nimbalyst/runtime/core/textColorSyntax": ["./src/types/textColorSyntax.d.ts"]
     }
   },
   "include": ["src/**/*"],

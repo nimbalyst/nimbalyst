@@ -3,13 +3,15 @@
  * HTML, so it reads without JavaScript and a crawler sees its text and links.
  * When the app boots it replaces all of it with the real read-only editor, so
  * this only has to be legible, not faithful: rich blocks (charts, diagrams,
- * decisions) show their source as code, and raw HTML in a body is left out.
+ * decisions) show their source as code, and raw HTML in a body is left out,
+ * except colored text, which keeps its colors.
  *
  * Links are relative to the page's folder, so this fallback works wherever
  * the site is hosted.
  */
 import { Marked, type Tokens } from 'marked';
 import { encodeLinkPath, type LocalPage, type StaticSiteConfig } from '@nimbalyst/local-wiki';
+import { formatTextColorStyle, parseTextColorOpenTag } from '@nimbalyst/runtime/core/textColorSyntax';
 import { linkBase, resolveRelative } from './bodyLinks.js';
 
 export function escapeHtml(text: string): string {
@@ -64,7 +66,12 @@ function siteUrl(site: PrerenderSite, page: Pick<LocalPage, 'path' | 'dir'>, pre
   return `${prefix}_wiki/files/${encodeLinkPath(target)}`;
 }
 
+const SPAN_OPEN = /^<span\b[^>]*>$/i;
+const SPAN_CLOSE = /^<\/span\s*>$/i;
+
 export function renderBodyHtml(markdown: string, page: Pick<LocalPage, 'path' | 'dir'>, site: PrerenderSite, prefix: string): string {
+  // Whether each open inline `<span>` was written, so its `</span>` is written or dropped with it.
+  const openSpans: boolean[] = [];
   const marked = new Marked({
     gfm: true,
     async: false,
@@ -79,7 +86,16 @@ export function renderBodyHtml(markdown: string, page: Pick<LocalPage, 'path' | 
         return url === null ? escapeHtml(token.text) : `<img src="${escapeHtml(url)}" alt="${escapeHtml(token.text)}" loading="lazy">`;
       },
       // Columns, tabs and other HTML-backed blocks: their markdown inside still renders, the tags do not.
-      html() {
+      // Colored text is drawn from its parsed colors only, never from the tag as written.
+      html(token: Tokens.HTML | Tokens.Tag) {
+        if (token.block) return '';
+        const tag = token.text.trim();
+        if (SPAN_OPEN.test(tag)) {
+          const style = parseTextColorOpenTag(tag);
+          openSpans.push(style !== null);
+          return style ? `<span style="${escapeHtml(formatTextColorStyle(style))}">` : '';
+        }
+        if (SPAN_CLOSE.test(tag)) return openSpans.pop() ? '</span>' : '';
         return '';
       },
     },

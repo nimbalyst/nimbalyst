@@ -12,6 +12,7 @@ Readers open a page in the Nimbalyst desktop app, the team web console, or, for 
 | Mermaid, `chart`, `2x2`, `toc`, `excerpt` | yes | yes | yes |
 | `decision` block | yes | yes | yes |
 | Mentions, decision and open marks, sized images | yes | yes | yes |
+| Colored text | yes | yes | yes |
 | `action`, `new-item` buttons | yes | shown, disabled | shown, disabled |
 | Embedded editor page | yes | "preview unavailable" | yes |
 | Embedded HTML page | yes | yes | yes |
@@ -192,6 +193,30 @@ They only work when clicked in the desktop app, so add one only when the page is
 ## Mentions and dates
 
 A person is `[@Dana Lee](mailto:dana@example.com)`; a date is a bare `@2026-10-01`. Take the email from a citation snapshot or the team member list; never guess one.
+
+## Colored text
+
+Color is an inline HTML span with an inline `style` that sets only `color`, `background-color`, or both. Obsidian renders the same form. Markdown inside the span still works.
+
+```markdown
+Release is <span style="color: #f03e3e">**blocked** on review</span>.
+<span style="background-color: #ffd43b4d">Needs a decision this week.</span>
+<span style="color: #228be6; background-color: #adb5bd4d">both</span>
+```
+
+Use the palette values below. Nimbalyst draws them with theme colors so they read in light and dark themes.
+
+| Name | `color` | `background-color` |
+| --- | --- | --- |
+| red | `#f03e3e` | `#ff6b6b40` |
+| orange | `#e8590c` | `#ff922b40` |
+| yellow | `#d97706` | `#ffd43b4d` |
+| green | `#2f9e44` | `#51cf6640` |
+| blue | `#228be6` | `#4dabf740` |
+| purple | `#845ef7` | `#9775fa40` |
+| gray | `#868e96` | `#adb5bd4d` |
+
+Keep a span on one line, and give it no other attribute or style property; anything else stays literal text. Leave existing spans as written, including colors outside the palette: they are saved back unchanged, so do not convert them to the palette, to another syntax, or to plain text. Color one phrase that needs it, not whole paragraphs.
 
 ## Images
 

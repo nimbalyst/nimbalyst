@@ -36,6 +36,7 @@ import {
 } from './FrontmatterUtils';
 
 import { $getDiffState, OriginalMarkdownState } from '../plugins/DiffPlugin/core/DiffState';
+import { escapeColorSpanOpenTags, escapeUnbalancedSpanTags } from '../../core/textColorSyntax';
 import { $getState } from 'lexical';
 
 type UnclosedFormatTag = {
@@ -555,7 +556,7 @@ function exportChildren(
         }
 
         if (!handled) {
-          output.push(escapeLiteralBackslashes(textContentForTransform));
+          output.push(escapeLiteralText(child, textContentForTransform));
         }
       }
     } else if ($isElementNode(child)) {
@@ -746,6 +747,42 @@ function escapeLiteralBackslashes(text: string): string {
   return text.replace(/\\(?=[!-/:-@[-`{-~])/g, '\\\\');
 }
 
+/**
+ * Literal text as markdown: backslashes, and span tags that would otherwise
+ * read back as markup (an escaped `\<span style=...>` imports as text,
+ * so without this it turns into a real colored span on the next load).
+ */
+function escapeLiteralText(node: TextNode, text: string): string {
+  let escaped = escapeLiteralBackslashes(text);
+  if (!/<\/?span/i.test(escaped)) return escaped;
+  // Inside a colored span, a stray tag would move where the span ends.
+  if (insideTextColor(node)) escaped = escapeUnbalancedSpanTags(escaped);
+  return escapeColorSpanOpenTags(escaped, followingLineText(node));
+}
+
+function insideTextColor(node: LexicalNode): boolean {
+  for (let parent = node.getParent(); parent && parent.isInline(); parent = parent.getParent()) {
+    if (parent.getType() === 'text-color') return true;
+  }
+  return false;
+}
+
+/** The text after `node` in its block, up to the next line break (the importer reads a span within one line). */
+function followingLineText(node: LexicalNode): string {
+  let text = '';
+  let current: LexicalNode | null = node;
+  while (current) {
+    for (let sibling = current.getNextSibling(); sibling; sibling = sibling.getNextSibling()) {
+      if ($isLineBreakNode(sibling)) return text;
+      text += sibling.getTextContent();
+    }
+    const parent: ElementNode | null = current.getParent();
+    if (!parent || !parent.isInline()) break;
+    current = parent;
+  }
+  return text;
+}
+
 function getAdjacentText(
   element: ElementNode,
   backward: boolean,
@@ -776,7 +813,7 @@ function exportTextFormat(
   let output = textContent;
 
   if (!node.hasFormat('code')) {
-    output = escapeLiteralBackslashes(output);
+    output = escapeLiteralText(node, output);
     if (shouldPreserveNewLines) {
       // Use HTML numeric character references for emphasis-relevant punctuation
       // (`*` and `_`) rather than backslash escapes. Upstream Lexical's

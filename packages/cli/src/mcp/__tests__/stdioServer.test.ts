@@ -49,6 +49,7 @@ beforeAll(async () => {
       // As in scripts/build.mjs: the session-inputs server `nim hook` runs.
       '@nimbalyst/wiki-plugin/session-inputs': path.join(repoRoot, 'packages/extensions/knowledge/src/sessionInputs/server.ts'),
       '@nimbalyst/runtime/core/citationSyntax': path.join(repoRoot, 'packages/runtime/src/core/citationSyntax.ts'),
+      '@nimbalyst/runtime/core/textColorSyntax': path.join(repoRoot, 'packages/runtime/src/core/textColorSyntax.ts'),
     },
     logLevel: 'silent',
   });

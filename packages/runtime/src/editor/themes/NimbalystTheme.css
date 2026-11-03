@@ -89,6 +89,22 @@
   --nim-quote-text: rgb(101, 103, 107);
   --nim-quote-border: rgb(206, 208, 212);
 
+  /* Colored text palette (core/textColorSyntax.ts) */
+  --nim-text-color-red: #c92a2a;
+  --nim-text-color-orange: #c2410c;
+  --nim-text-color-yellow: #a16207;
+  --nim-text-color-green: #237a37;
+  --nim-text-color-blue: #1971c2;
+  --nim-text-color-purple: #7048e8;
+  --nim-text-color-gray: #6b7280;
+  --nim-text-bg-red: #ff6b6b40;
+  --nim-text-bg-orange: #ff922b40;
+  --nim-text-bg-yellow: #ffd43b4d;
+  --nim-text-bg-green: #51cf6640;
+  --nim-text-bg-blue: #4dabf740;
+  --nim-text-bg-purple: #9775fa40;
+  --nim-text-bg-gray: #adb5bd4d;
+
   /* Scrollbar */
   --nim-scrollbar-thumb: #d1d5db;
   --nim-scrollbar-thumb-hover: #9ca3af;

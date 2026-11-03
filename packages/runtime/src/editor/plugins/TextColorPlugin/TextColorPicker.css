@@ -1,0 +1,58 @@
+.dropdown.text-color-picker {
+  padding: 8px;
+  min-width: 0;
+}
+
+.text-color-picker-section + .text-color-picker-section {
+  margin-top: 8px;
+}
+
+.text-color-picker-label {
+  font-size: 11px;
+  color: var(--nim-text-muted);
+  margin: 0 2px 4px;
+}
+
+.text-color-picker-row {
+  display: flex;
+  gap: 4px;
+}
+
+.text-color-picker .text-color-swatch {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  margin: 0;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: none;
+  cursor: pointer;
+}
+
+.text-color-picker .text-color-swatch:hover,
+.text-color-picker .text-color-swatch:focus-visible {
+  background-color: var(--nim-bg-hover);
+}
+
+.text-color-picker .text-color-swatch.active {
+  border-color: var(--nim-border-focus);
+}
+
+.text-color-swatch-chip {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 4px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--nim-text);
+}
+
+.text-color-swatch--none .text-color-swatch-chip {
+  border: 1px dashed var(--nim-border);
+}
