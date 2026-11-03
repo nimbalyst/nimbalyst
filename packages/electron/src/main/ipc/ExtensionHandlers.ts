@@ -57,6 +57,7 @@ import type {
   ExtensionManifest,
 } from '@nimbalyst/extension-sdk';
 import { resolveClaudeConfigDir } from '@nimbalyst/runtime/ai/server/providers/claudeCode/claudeConfigDir';
+import { runExtensionCommand } from './extensionExec';
 
 /**
  * Validate the SHAPE of `contributions.backendModules` on a parsed manifest.
@@ -1522,27 +1523,7 @@ export function registerExtensionHandlers(): void {
       return { success: false, stdout: '', stderr: `Extension ${extensionId} not found or lacks filesystem permission`, exitCode: -1 };
     }
 
-    const { exec } = await import('child_process');
-    const { promisify } = await import('util');
-    const execAsync = promisify(exec);
-
-    try {
-      const { stdout, stderr } = await execAsync(command, {
-        cwd,
-        timeout,
-        maxBuffer,
-        env: env ? { ...process.env, ...env } : process.env,
-      });
-      return { success: true, stdout, stderr, exitCode: 0 };
-    } catch (execError: unknown) {
-      const err = execError as { stdout?: string; stderr?: string; code?: number; message?: string };
-      return {
-        success: false,
-        stdout: err.stdout || '',
-        stderr: err.stderr || err.message || '',
-        exitCode: err.code || 1,
-      };
-    }
+    return runExtensionCommand({ command, cwd, timeout, maxBuffer, env });
   });
 
   // ============================================================================

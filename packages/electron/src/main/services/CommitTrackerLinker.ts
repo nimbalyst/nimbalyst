@@ -114,7 +114,7 @@ function readCommitAuthor(
     execFile(
       'git',
       ['show', '-s', '--format=%an%n%ae', commitHash],
-      { cwd: workspacePath },
+      { windowsHide: true, cwd: workspacePath },
       (error, stdout) => {
         if (error) {
           resolve(null);

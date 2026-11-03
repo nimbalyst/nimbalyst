@@ -19,6 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Extension tabs on `virtual://` paths no longer show a "File updates delayed" warning or retry file registration every minute
 - Browser agent tools no longer fail with "File has no extension" when given a folder path alongside a browser session
 - Clicking a meta agent's child session in the session list or on the Sessions board opens that child instead of the meta agent
+- Windows: git commands Nimbalyst runs in the background, including Project Graph indexing, no longer flash console windows
+- Windows: commit proposals whose file paths use forward slashes (`C:/...`) now commit to the right repository instead of failing with "None of the selected files are in a git repository"
 
 ### Removed
 <!-- Removed features go here -->

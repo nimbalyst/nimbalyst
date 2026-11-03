@@ -34,7 +34,7 @@ export function __resetGitIdentityCacheForTests(): void {
 function readGitConfigValue(cwd: string, key: string): string | null {
   try {
     // execFileSync, not execSync: no intermediate shell to spawn.
-    return execFileSync('git', ['config', key], { cwd, stdio: 'pipe' }).toString().trim() || null;
+    return execFileSync('git', ['config', key], { windowsHide: true, cwd, stdio: 'pipe' }).toString().trim() || null;
   } catch {
     // git not configured or not a git repo
     return null;

@@ -13,7 +13,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'fs/promises';
 import * as path from 'path';
 import * as os from 'os';
-import { findGitRootForFile } from '../GitStatusService';
+import { findGitRootForFile, findGitRootForFileWith } from '../GitStatusService';
 
 let tmpRoot: string;
 
@@ -121,5 +121,32 @@ describe('findGitRootForFile', () => {
     await touchFile(evilTwin);
 
     expect(findGitRootForFile(evilTwin, ws)).toBeNull();
+  });
+});
+
+describe('findGitRootForFile with Windows path semantics', () => {
+  // Agents running in Git Bash hand over `C:/Users/...` paths (#1831). The
+  // walk must normalize them before comparing against a backslash boundary,
+  // or a file in a nested repo resolves to no repo and the commit fails.
+  const repos = new Set(['C:\\Users\\me\\notes\\repos\\tools']);
+  const hasGitDir = (dir: string) => repos.has(dir);
+  const boundary = 'C:\\Users\\me\\notes';
+
+  it('resolves a forward-slash absolute path to its nested repo', () => {
+    expect(
+      findGitRootForFileWith(path.win32, hasGitDir, 'C:/Users/me/notes/repos/tools/a.md', boundary),
+    ).toBe('C:\\Users\\me\\notes\\repos\\tools');
+  });
+
+  it('resolves the same file given with backslashes', () => {
+    expect(
+      findGitRootForFileWith(path.win32, hasGitDir, 'C:\\Users\\me\\notes\\repos\\tools\\a.md', boundary),
+    ).toBe('C:\\Users\\me\\notes\\repos\\tools');
+  });
+
+  it('still rejects a forward-slash path outside the boundary', () => {
+    expect(
+      findGitRootForFileWith(path.win32, hasGitDir, 'C:/Users/me/notes2/repos/tools/a.md', boundary),
+    ).toBeNull();
   });
 });

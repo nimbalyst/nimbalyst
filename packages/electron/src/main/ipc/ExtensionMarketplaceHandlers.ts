@@ -140,6 +140,7 @@ export async function fetchRegistry(): Promise<RegistryData> {
 function execGit(args: string[], options?: { cwd?: string }): Promise<string> {
   return new Promise((resolve, reject) => {
     const proc = spawn('git', args, {
+      windowsHide: true,
       cwd: options?.cwd,
       stdio: 'pipe',
     });

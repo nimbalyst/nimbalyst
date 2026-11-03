@@ -19,7 +19,7 @@ async function git(cwd: string, args: string[], deadline = Date.now() + SHELL_BA
     const timeout = Math.max(1, Math.floor(remaining / (attempt === 0 ? 2 : 1)));
     try {
       return await new Promise<string>((resolve, reject) => {
-        execFile('git', ['-C', cwd, ...args], { timeout, maxBuffer: 4 * 1024 * 1024, encoding: 'utf8' },
+        execFile('git', ['-C', cwd, ...args], { windowsHide: true, timeout, maxBuffer: 4 * 1024 * 1024, encoding: 'utf8' },
           (error, stdout) => error ? reject(error) : resolve(stdout));
       });
     } catch (error) {

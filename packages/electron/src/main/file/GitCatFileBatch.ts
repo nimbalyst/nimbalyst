@@ -122,6 +122,7 @@ export class GitCatFileBatch {
 
     try {
       const child = spawn('git', ['cat-file', '--batch'], {
+        windowsHide: true,
         cwd: this.workspacePath,
         stdio: ['pipe', 'pipe', 'pipe'],
       });

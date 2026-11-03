@@ -6,7 +6,8 @@ import { GitCatFileBatch } from './GitCatFileBatch';
 
 function execFileAsync(cmd: string, args: string[], opts: { cwd?: string; timeout?: number; maxBuffer?: number } = {}): Promise<{ stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
-    execFile(cmd, args, opts, (error, stdout, stderr) => {
+    // windowsHide: every caller runs git, which otherwise flashes a console window on Windows (#1839).
+    execFile(cmd, args, { ...opts, windowsHide: true }, (error, stdout, stderr) => {
       if (error) reject(error);
       else resolve({ stdout: stdout as string, stderr: stderr as string });
     });

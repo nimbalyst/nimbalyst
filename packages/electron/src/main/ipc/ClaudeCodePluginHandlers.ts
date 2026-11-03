@@ -430,6 +430,7 @@ function downloadFile(url: string, destPath: string): Promise<void> {
 function execGit(args: string[], options?: { cwd?: string }): Promise<void> {
   return new Promise((resolve, reject) => {
     const proc = spawn('git', args, {
+      windowsHide: true,
       cwd: options?.cwd,
       stdio: 'pipe',
     });
@@ -524,6 +525,7 @@ async function copyDirectory(src: string, dest: string): Promise<void> {
 async function getGitCommitSha(repoPath: string): Promise<string> {
   return new Promise((resolve) => {
     const proc = spawn('git', ['rev-parse', 'HEAD'], {
+      windowsHide: true,
       cwd: repoPath,
       stdio: 'pipe',
     });

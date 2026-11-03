@@ -30,7 +30,7 @@ function realpathOrNull(path: string): string | null {
 
 function runGit(cwd: string, args: string[]): Promise<string> {
   return new Promise<string>((resolvePromise, reject) => {
-    execFile('git', args, { cwd, env: sanitizeGitRepositoryEnv(process.env) as NodeJS.ProcessEnv },
+    execFile('git', args, { windowsHide: true, cwd, env: sanitizeGitRepositoryEnv(process.env) as NodeJS.ProcessEnv },
       (error, stdout) => (error ? reject(error) : resolvePromise(stdout)));
   });
 }

@@ -42,7 +42,7 @@ export function resolveExcerptPath(workspacePath: string, relativePath: string):
 
 function git(cwd: string, args: string[]): Promise<string | null> {
   return new Promise((resolve) => {
-    execFile('git', args, { cwd, timeout: 5_000, maxBuffer: MAX_FILE_BYTES, encoding: 'utf8' }, (error, stdout) => {
+    execFile('git', args, { windowsHide: true, cwd, timeout: 5_000, maxBuffer: MAX_FILE_BYTES, encoding: 'utf8' }, (error, stdout) => {
       resolve(error ? null : String(stdout));
     });
   });

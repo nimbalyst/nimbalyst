@@ -8,7 +8,8 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   DatabaseInstrumentation,
   SLOW_QUERY_PRUNE_EVERY,
-  SLOW_QUERY_SHAPE_MAX_CHARS,
+  QUERY_SHAPE_KEY_MAX_CHARS,
+  SLOW_QUERY_ERROR_MAX_CHARS,
   extractCallSite,
   extractPrimaryTable,
   normalizeSql,
@@ -127,6 +128,12 @@ describe('DatabaseInstrumentation aggregation', () => {
     expect(c.slowBgChunks).toBe(1);
   });
 
+  it('recordSlowBgChunk does not throw when the logger does (#1810)', () => {
+    // WriteCoordinator calls this after a background chunk has committed.
+    const inst = new DatabaseInstrumentation({ log: () => { throw new Error('logger down'); } });
+    expect(() => inst.recordSlowBgChunk({ name: 'fts', durationMs: 80, chunkIndex: 0 })).not.toThrow();
+  });
+
   it('reset() clears rolling state but leaves slow-query persistence alone', () => {
     const inst = new DatabaseInstrumentation();
     inst.recordQuery({ sql: 'SELECT 1', kind: 'read', durationMs: 1 });
@@ -168,7 +175,81 @@ describe('DatabaseInstrumentation slow-query persistence', () => {
     const columns = Array.from({ length: 2000 }, (_, i) => `col_${i}`).join(', ');
     inst.recordQuery({ sql: `SELECT ${columns} FROM t`, kind: 'read', durationMs: 20 });
     const row = insert.mock.calls[0][0] as { shape: string };
-    expect(row.shape.length).toBeLessThanOrEqual(SLOW_QUERY_SHAPE_MAX_CHARS + 3);
+    expect(row.shape.length).toBeLessThanOrEqual(QUERY_SHAPE_KEY_MAX_CHARS);
     expect(row.shape.startsWith('select col_0')).toBe(true);
+  });
+
+  it('caps the stored error message', () => {
+    const inst = new DatabaseInstrumentation({ sampleRate: 0, slowQueryThresholdMs: 10 });
+    const { insert } = bindFake(inst);
+    inst.recordQuery({ sql: 'SELECT 1', kind: 'read', durationMs: 20, error: new Error('x'.repeat(100_000)) });
+    const row = insert.mock.calls[0][0] as { errorMessage: string };
+    expect(row.errorMessage.length).toBeLessThanOrEqual(SLOW_QUERY_ERROR_MAX_CHARS + 3);
+  });
+
+  it('never throws out of recordQuery when the insert and the logger both fail', () => {
+    // A diagnostic failure must not turn a successful application query into
+    // a rejected one (#1810): recordQuery runs on the query's success path.
+    const inst = new DatabaseInstrumentation({
+      sampleRate: 0,
+      slowQueryThresholdMs: 10,
+      log: () => { throw new Error('logger down'); },
+    });
+    const { insert } = bindFake(inst);
+    insert.mockImplementation(() => { throw new Error('disk full'); });
+    expect(() => inst.recordQuery({ sql: 'SELECT 1', kind: 'read', durationMs: 20 })).not.toThrow();
+  });
+});
+
+describe('DatabaseInstrumentation oversized statements (#1810)', () => {
+  // 40,000 named placeholders, the shape of a generated membership IN-list.
+  const hugeInList = (tail: string) =>
+    `SELECT * FROM members WHERE id IN (${Array.from({ length: 40_000 }, (_, i) => `@p${i}`).join(', ')}) ${tail}`;
+
+  it('bounds the in-memory shape key for both recordQuery and beginInFlight', () => {
+    const inst = new DatabaseInstrumentation();
+    inst.recordQuery({ sql: hugeInList(''), kind: 'read', durationMs: 1 });
+    const handle = inst.beginInFlight(hugeInList(''));
+    const snapshot = inst.getSnapshot();
+    expect(snapshot.byShape[0].shape.length).toBeLessThanOrEqual(QUERY_SHAPE_KEY_MAX_CHARS);
+    expect(snapshot.inFlight[0].shape.length).toBeLessThanOrEqual(QUERY_SHAPE_KEY_MAX_CHARS);
+    handle.end();
+  });
+
+  it('keeps oversized statements that differ only in the tail as separate shapes', () => {
+    const inst = new DatabaseInstrumentation();
+    inst.recordQuery({ sql: hugeInList('ORDER BY id'), kind: 'read', durationMs: 1 });
+    inst.recordQuery({ sql: hugeInList('ORDER BY name'), kind: 'read', durationMs: 1 });
+    inst.recordQuery({ sql: hugeInList('ORDER BY name'), kind: 'read', durationMs: 1 });
+    const counts = inst.getSnapshot().byShape.map((s) => s.count).sort();
+    expect(counts).toEqual([1, 2]);
+  });
+
+  it('bounds the number of shape buckets when oversized statements vary only in literals', () => {
+    // Oversized statements are keyed by a hash of the raw text, so each new
+    // literal makes a new key; the aggregate map must still stay bounded.
+    const inst = new DatabaseInstrumentation({ maxShapeBuckets: 10 });
+    for (let i = 0; i < 50; i++) {
+      inst.recordQuery({ sql: hugeInList(`AND org = ${i}`), kind: 'read', durationMs: 1 });
+    }
+    expect(inst.getSnapshot().byShape).toHaveLength(10);
+  });
+
+  it('evicts the least recently seen shape, keeping a hot one', () => {
+    const inst = new DatabaseInstrumentation({ maxShapeBuckets: 3 });
+    inst.recordQuery({ sql: 'SELECT * FROM hot', kind: 'read', durationMs: 1 });
+    for (const table of ['a', 'b', 'c', 'd']) {
+      inst.recordQuery({ sql: `SELECT * FROM ${table}`, kind: 'read', durationMs: 1 });
+      inst.recordQuery({ sql: 'SELECT * FROM hot', kind: 'read', durationMs: 1 });
+    }
+    const shapes = inst.getSnapshot().byShape.map((s) => s.shape).sort();
+    expect(shapes).toEqual(['select * from c', 'select * from d', 'select * from hot']);
+    expect(inst.getSnapshot().byShape.find((s) => s.shape === 'select * from hot')?.count).toBe(5);
+  });
+
+  it('leaves ordinary shapes readable and unhashed', () => {
+    const inst = new DatabaseInstrumentation();
+    inst.recordQuery({ sql: 'SELECT * FROM t WHERE id = 5', kind: 'read', durationMs: 1 });
+    expect(inst.getSnapshot().byShape[0].shape).toBe('select * from t where id = ?');
   });
 });

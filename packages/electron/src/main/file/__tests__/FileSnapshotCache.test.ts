@@ -118,6 +118,19 @@ describe('FileSnapshotCache', () => {
       expect(stats.fileCount).toBe(0);
     });
 
+    it('hides the git console window on Windows for every git call (#1839)', async () => {
+      setupGitMocks();
+
+      const cache = new FileSnapshotCache();
+      await cache.startSession(workspacePath, 'session-1');
+
+      const gitCalls = mockExecFile.mock.calls.filter(([cmd]) => cmd === 'git');
+      expect(gitCalls.length).toBeGreaterThanOrEqual(3);
+      for (const [, , opts] of gitCalls) {
+        expect(opts).toMatchObject({ windowsHide: true });
+      }
+    });
+
     it('should cache dirty files from git status', async () => {
       setupGitMocks({
         'status --porcelain': ' M src/modified.ts\0A  src/staged.ts\0?? src/new.ts\0',
