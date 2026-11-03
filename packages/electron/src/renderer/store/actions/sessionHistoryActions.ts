@@ -22,7 +22,7 @@ import {selectedMachineAtom, machineSessionSelectionsAtom} from '../atoms/remote
  * longer change identity when component state changes either.
  */
 
-import { atom } from 'jotai';
+import { atom, type Getter, type Setter } from 'jotai';
 import { atomFamily } from '../debug/atomFamilyRegistry';
 import { resolveProviderFromModel } from '../../utils/modelUtils';
 import type { SessionLaunchSource } from '../../../shared/analytics/sessionLaunch';
@@ -42,6 +42,7 @@ import {
   loadSessionChildrenAtom,
   setActiveSessionInWorkstreamAtom,
   markSessionReadAtom,
+  type SessionMeta,
 } from '../index';
 import { activeWorkspacePathAtom } from '../atoms/openProjects';
 import { activeFileRepoPathAtom } from '../atoms/workspaceRepos';
@@ -160,38 +161,35 @@ export const openSessionInTabActionAtom = atom(null, async (get, set, sessionId:
 // ============================================================
 
 /**
- * Select a child session within a workstream or worktree.
+ * The tree root a selection opens at. A meta agent renders its own
+ * orchestration view rather than its tree's transcript tabs, so a session
+ * below a meta agent opens at the subtree directly beneath the nearest one
+ * (#1906). Meta agents may nest, so the nearest, not the outermost, decides.
  */
-export const selectChildSessionActionAtom = atom(
-  null,
-  async (get, set, payload: { childSessionId: string; parentId: string; parentType: 'workstream' | 'worktree' }) => {
-    const { childSessionId, parentType } = payload;
-    const parentId = parentType === 'workstream' ? sessionTreeRootId(payload.parentId, get(sessionRegistryAtom)) : payload.parentId;
-    const workspacePath = getWorkspacePath(get);
-    if (!workspacePath) return;
+function selectionRootId(sessionId: string, registry: Map<string, SessionMeta>): string {
+  const rootId = sessionTreeRootId(sessionId, registry);
+  const visited = new Set<string>();
+  let current = sessionId;
+  while (current !== rootId && !visited.has(current)) {
+    visited.add(current);
+    const parentId = registry.get(current)?.parentSessionId;
+    if (!parentId) break;
+    if (registry.get(parentId)?.agentRole === 'meta-agent') return current;
+    current = parentId;
+  }
+  return rootId;
+}
 
-    if (parentType === 'worktree') {
-      set(setWorktreeActiveSessionAtom, { worktreeId: parentId, sessionId: childSessionId });
-      set(setActiveSessionInWorkstreamAtom, { workstreamId: parentId, sessionId: childSessionId });
-      set(setSelectedWorkstreamAtom, {
-        workspacePath,
-        selection: { type: 'session', id: childSessionId },
-      });
-    } else {
-      await set(loadSessionChildrenAtom, { parentSessionId: parentId, workspacePath });
-      set(setActiveSessionInWorkstreamAtom, { workstreamId: parentId, sessionId: childSessionId });
-      set(setSelectedWorkstreamAtom, {
-        workspacePath,
-        selection: { type: parentType, id: parentId },
-      });
-    }
-  },
-);
+async function openUnderRoot(set: Setter, workspacePath: string, childSessionId: string, rootId: string) {
+  await set(loadSessionChildrenAtom, { parentSessionId: rootId, workspacePath });
+  set(setActiveSessionInWorkstreamAtom, { workstreamId: rootId, sessionId: childSessionId });
+  set(setSelectedWorkstreamAtom, {
+    workspacePath,
+    selection: { type: 'workstream', id: rootId },
+  });
+}
 
-/**
- * Select a root session (or redirect to its parent workstream for non-worktree children).
- */
-export const selectSessionActionAtom = atom(null, async (get, set, sessionId: string) => {
+async function openSession(get: Getter, set: Setter, sessionId: string) {
   const workspacePath = getWorkspacePath(get);
   if (!workspacePath) return;
 
@@ -205,9 +203,9 @@ export const selectSessionActionAtom = atom(null, async (get, set, sessionId: st
     set(setWorktreeActiveSessionAtom, { worktreeId: sessionMeta.worktreeId, sessionId });
     if (!(sessionMeta.childCount ?? 0)) set(workstreamStateAtom(sessionId), {type: 'worktree', worktreeId: sessionMeta.worktreeId});
   }
-  const rootId = sessionTreeRootId(sessionId, registry);
+  const rootId = selectionRootId(sessionId, registry);
   if (rootId !== sessionId) {
-    await set(selectChildSessionActionAtom, { childSessionId: sessionId, parentId: rootId, parentType: 'workstream' });
+    await openUnderRoot(set, workspacePath, sessionId, rootId);
     return;
   }
   if ((sessionMeta?.childCount ?? 0) > 0 && sessionMeta?.sessionType !== 'blitz') {
@@ -232,7 +230,42 @@ export const selectSessionActionAtom = atom(null, async (get, set, sessionId: st
     workspacePath,
     selection: { type, id: sessionId },
   });
-});
+}
+
+/**
+ * Select a child session within a workstream or worktree.
+ */
+export const selectChildSessionActionAtom = atom(
+  null,
+  async (get, set, payload: { childSessionId: string; parentId: string; parentType: 'workstream' | 'worktree' }) => {
+    const { childSessionId, parentType } = payload;
+    const registry = get(sessionRegistryAtom);
+    const parentId = parentType === 'workstream' ? sessionTreeRootId(payload.parentId, registry) : payload.parentId;
+    // Under a meta agent the child opens at its own selection root, not the tree root.
+    if (parentType === 'workstream' && selectionRootId(childSessionId, registry) !== parentId) {
+      await openSession(get, set, childSessionId);
+      return;
+    }
+    const workspacePath = getWorkspacePath(get);
+    if (!workspacePath) return;
+
+    if (parentType === 'worktree') {
+      set(setWorktreeActiveSessionAtom, { worktreeId: parentId, sessionId: childSessionId });
+      set(setActiveSessionInWorkstreamAtom, { workstreamId: parentId, sessionId: childSessionId });
+      set(setSelectedWorkstreamAtom, {
+        workspacePath,
+        selection: { type: 'session', id: childSessionId },
+      });
+    } else {
+      await openUnderRoot(set, workspacePath, childSessionId, parentId);
+    }
+  },
+);
+
+/**
+ * Select a root session (or redirect to its parent workstream for non-worktree children).
+ */
+export const selectSessionActionAtom = atom(null, (get, set, sessionId: string) => openSession(get, set, sessionId));
 
 /**
  * Delete a session via IPC and clear selection if it was selected.
