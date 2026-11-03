@@ -49,6 +49,8 @@ interface Dependencies {
   ) => { status: string; isStreaming?: boolean } | null;
   processNewMessages: (id: string, provider: string) => Promise<unknown>;
   refresh: (workspacePath: string) => void;
+  /** The user deleted the local session for this provider log. */
+  isDeleted?: (providerId: string, externalId: string) => boolean;
   hasPendingOwnership?: (
     ref: ExternalSessionRef,
     route: ExternalWorkspaceRoute
@@ -215,6 +217,14 @@ export class ExternalSessionIngestor {
     let sessionId = await this.deps.persistence.resolveSessionId(identity);
     fence.sessionId = sessionId ?? undefined;
     if (!eligible()) return skipped();
+    // GitHub #1825: deleting the local row must not let the follower import the
+    // provider's log again as a new session. An explicit manual import may.
+    if (
+      !sessionId &&
+      !options.manual &&
+      this.deps.isDeleted?.(ref.providerId, ref.externalId)
+    )
+      return { ...skipped(), settled: true };
     let session = sessionId ? await this.deps.sessions.get(sessionId) : null;
     if (!eligible()) return skipped();
     const owned = () => {
@@ -290,6 +300,13 @@ export class ExternalSessionIngestor {
           settled: !batch.hasMore,
         };
       }
+      // A delete can land while the reads above were pending; check again at
+      // the last synchronous point before the row is created.
+      if (
+        !options.manual &&
+        this.deps.isDeleted?.(ref.providerId, ref.externalId)
+      )
+        return { ...skipped(), settled: true };
       createdTitle = ref.parentToolUseId
         ? "Imported Session"
         : batch.title ?? ref.title ?? "Imported Session";

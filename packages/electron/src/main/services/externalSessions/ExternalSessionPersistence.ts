@@ -2,7 +2,7 @@ import type { CreateAgentMessageInput } from '@nimbalyst/runtime/ai/server/types
 import type { AppDatabase } from '../../database/PGLiteDatabaseWorker';
 import type { TransactionStatement } from '../../database/transactionStatements';
 import { providerSessionAliases, resolveProviderSessionId } from '../PGLiteSessionStore';
-import type { ExternalCursor, ExternalSessionRef } from './types';
+import type { ExternalCursor, ExternalProviderId, ExternalSessionRef } from './types';
 
 export type ExternalSessionIdentity = Pick<ExternalSessionRef, 'providerId' | 'externalId' | 'workspacePath'> & {
   /** Owning workspace for DB/list visibility; workspacePath remains the verified log cwd. */
@@ -103,6 +103,26 @@ export class ExternalSessionPersistence {
     await this.ensureReady();
     await this.db.runTransaction(statements);
   }
+}
+
+const EXTERNAL_PROVIDERS = new Set<string>(['claude-code', 'openai-codex'] satisfies ExternalProviderId[]);
+
+/** The external identity ingestion would resolve to this row (see resolveProviderSessionId):
+ * provider_session_id, or the local id for legacy rows that never stored one.
+ * Null for a missing row or a provider with no external logs. */
+export async function externalIdentityForSession(
+  db: Pick<AppDatabase, 'query'>,
+  sessionId: string,
+): Promise<{ providerId: ExternalProviderId; externalId: string } | null> {
+  const { rows } = await db.query<{ id: string; provider: string; provider_session_id: string | null }>(
+    'SELECT id, provider, provider_session_id FROM ai_sessions WHERE id = $1',
+    [sessionId],
+  );
+  const row = rows[0];
+  if (!row) return null;
+  const [providerId] = providerSessionAliases(row.provider);
+  if (!EXTERNAL_PROVIDERS.has(providerId)) return null;
+  return { providerId: providerId as ExternalProviderId, externalId: row.provider_session_id ?? row.id };
 }
 
 function encodeCursor(cursor: ExternalCursor): string {

@@ -2616,6 +2616,9 @@ const SessionHistoryComponent: React.FC = () => {
         // keep existing entries in sync, and unconditionally re-setting the
         // atom Map every fetch makes every subscriber re-render -- which
         // brought the renderer back into a re-render loop here.
+        // GitHub #1887: a fetch for a project this window has since left must
+        // not add that project's sessions to the shared registry.
+        if (store.get(activeWorkspacePathAtom) !== workspacePath) return;
         const currentRegistry = store.get(sessionRegistryAtom);
         let nextRegistry: Map<string, SessionMeta> | null = null;
         for (const result of successfulResults) {

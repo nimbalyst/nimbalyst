@@ -26,6 +26,8 @@ import { destroyProviderForArchivedSession } from '../services/ai/archiveSession
 import { resolveSessionModelSelection } from '../services/ai/sessionModelSelection';
 import { inheritedOwnership, stripOwnerControlledMetadata } from '../services/extensionSessions/sessionOwnership';
 import { readSessionSubtree } from '../services/sessionHierarchy';
+import { recordDeletedExternalSession } from '../services/externalSessions/deletedExternalSessions';
+import { externalIdentityForSession } from '../services/externalSessions/ExternalSessionPersistence';
 import { isLocalWikiItemId } from '../services/localWiki/localWikiItemIds';
 import { createTrailingSingleFlight } from '../utils/asyncCache';
 
@@ -795,6 +797,10 @@ export async function registerSessionHandlers() {
             ProviderFactory.destroyProvider(sessionId);
 
             const session = await AISessionsRepository.get(sessionId);
+            // GitHub #1825: record before removing the row, so the external-session
+            // follower never sees the log without a session and without the record.
+            const external = await externalIdentityForSession(database, sessionId);
+            if (external) recordDeletedExternalSession(external.providerId, external.externalId);
             await AISessionsRepository.delete(sessionId);
             if (session?.workspacePath) {
                 for (const window of BrowserWindow.getAllWindows()) {

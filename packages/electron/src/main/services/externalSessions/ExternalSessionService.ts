@@ -11,6 +11,7 @@ import { logger } from "../../utils/logger";
 import { ClaudeCodeSource } from "./ClaudeCodeSource";
 import { CodexSource } from "./CodexSource";
 import { ExternalSessionPersistence } from "./ExternalSessionPersistence";
+import { isDeletedExternalSession } from "./deletedExternalSessions";
 import {
   ExternalSessionIngestor,
   hasPendingExternalOwnership,
@@ -305,6 +306,7 @@ export function getExternalSessionService(): ExternalSessionService {
       sessions,
       persistence,
       getSessionState: (id) => getSessionStateManager().getSessionState(id),
+      isDeleted: isDeletedExternalSession,
       hasPendingOwnership: (ref, route) =>
         hasPendingExternalOwnership(
           sessions,

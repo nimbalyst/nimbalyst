@@ -1181,6 +1181,9 @@ export const loadSessionChildrenAtom = atom(
         { includeArchived: false }
       );
       // console.log('[loadSessionChildrenAtom] IPC result:', result);
+      // The window may have switched projects while this was in flight.
+      const listWorkspace = get(sessionListWorkspaceAtom);
+      if (listWorkspace && listWorkspace !== workspacePath) return [];
       if (result.success && Array.isArray(result.children)) {
         const childIds = result.children.map((c: any) => c.id);
         // console.log('[loadSessionChildrenAtom] Setting children:', childIds);
@@ -2184,6 +2187,9 @@ export const sessionListRootAtom = atom<SessionListItem[]>((get) => {
 
   return Array.from(registry.values())
     .filter(s => {
+      // GitHub #1887: the send path rejects a session whose workspace_id is not
+      // this workspace, so never list one (the registry is shared per window).
+      if (workspacePath && s.workspaceId && s.workspaceId !== workspacePath) return false;
       if ((s.remoteHostDeviceId ?? "") !== host) return false;
       if (!showArchived && s.isArchived) return false;
       // Root sessions (no parent) are always included

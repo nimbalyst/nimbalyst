@@ -4,6 +4,7 @@ import { store } from '@nimbalyst/runtime/store';
 import { activeWorkspacePathAtom } from '../openProjects';
 import {
   createChildSessionAtom,
+  loadSessionChildrenAtom,
   reparentSessionAtom,
   activeSessionIdAtom,
   sessionRegistryAtom,
@@ -60,6 +61,14 @@ beforeEach(() => {
   } as any;
 });
 describe('tree navigation atoms', () => {
+  it('lists only sessions of the current workspace, the same rule the send path enforces (GitHub #1887)', async () => {
+    store.set(sessionRegistryAtom, new Map([...store.get(sessionRegistryAtom), ['foreign', row('foreign', null, { workspaceId: '/other' })]]));
+    expect(store.get(sessionListRootAtom).map((r) => r.id)).not.toContain('foreign');
+    // A child fetch for a project the window has since left must not land in this list.
+    window.electronAPI.invoke = vi.fn(async () => ({ success: true, children: [row('late-child', 'other-root', { workspaceId: '/other' })] }));
+    await store.set(loadSessionChildrenAtom, { parentSessionId: 'other-root', workspacePath: '/other' });
+    expect(store.get(sessionRegistryAtom).has('late-child')).toBe(false);
+  });
   it.each(['target', null])('keeps an active grandchild selected at its new tree root after moving its parent to %s', async (newParentId) => {
     rows.push(row('target', null, {worktreeId: 'tree'}));
     store.set(sessionRegistryAtom, new Map(rows.map(r => [r.id, r])));

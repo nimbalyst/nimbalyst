@@ -52,6 +52,7 @@ import { AISessionsRepository } from '@nimbalyst/runtime/storage/repositories/AI
 import { resolveClaudeCodeParentContextWindow } from '@nimbalyst/runtime/ai/modelConstants';
 import { accumulateClaudeCodeTurnUsage, accumulateProviderTurnUsage } from './tokenUsageAccumulation';
 import { provisionalTitleForFirstMessage } from './provisionalSessionTitle';
+import { sessionNotFoundMessage } from './sessionNotFoundMessage';
 import {
   buildMcpSessionStatusSnapshot,
   type McpSessionStatusInput,
@@ -435,7 +436,7 @@ export class MessageStreamingHandler {
 
     if (!session) {
       trackSendBlocked('session_not_found');
-      throw new Error(`Session ${sessionId} not found`);
+      throw new Error(sessionNotFoundMessage(sessionId, workspacePath, await AISessionsRepository.get(sessionId).catch(() => null)));
     }
 
 

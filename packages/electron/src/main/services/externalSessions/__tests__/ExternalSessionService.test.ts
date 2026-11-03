@@ -1,6 +1,11 @@
 // @vitest-environment node
 import { describe, expect, it, vi } from "vitest";
 import { ExternalSessionService } from "../ExternalSessionService";
+import {
+  isDeletedExternalSession,
+  recordDeletedExternalSession,
+  setDeletedExternalSessionsStorageForTests,
+} from "../deletedExternalSessions";
 
 function harness(initial: unknown = false) {
   let value = initial;
@@ -226,5 +231,20 @@ describe("manual selections", () => {
     const summaries = await service.scan("/workspace");
     expect(summaries[0].messageCount).toBeNull();
     expect(summaries[0].tokenUsage).toBeNull();
+  });
+});
+
+describe("deleted external sessions (GitHub #1825)", () => {
+  it("persists deletions across reloads under the canonical provider", () => {
+    let saved: string[] = [];
+    const storage = { get: () => saved, set: (keys: string[]) => { saved = keys; } };
+    setDeletedExternalSessionsStorageForTests(storage);
+    recordDeletedExternalSession("openai-codex-acp", "thread-1");
+    // A fresh process reads only what was persisted.
+    setDeletedExternalSessionsStorageForTests(storage);
+    expect(isDeletedExternalSession("openai-codex", "thread-1")).toBe(true);
+    expect(isDeletedExternalSession("claude-code", "thread-1")).toBe(false);
+    expect(isDeletedExternalSession("openai-codex", "thread-2")).toBe(false);
+    setDeletedExternalSessionsStorageForTests(null);
   });
 });
