@@ -235,6 +235,11 @@ export const SETTINGS_REGISTRY = {
     { store: 'ai-settings', path: 'promptSuggestionsEnabled' },
     true,
   ),
+  'ai.claudeInChromeEnabled': setting(
+    z.boolean(),
+    { store: 'ai-settings', path: 'claudeInChromeEnabled' },
+    false,
+  ),
   'ai.trackerAutomation': setting(
     z.object({
       enabled: z.boolean(),

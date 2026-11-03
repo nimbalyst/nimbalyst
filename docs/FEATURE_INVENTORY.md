@@ -139,6 +139,7 @@ Twelve built-in provider lanes, plus any agent an extension contributes. Every l
 - Click-to-copy code blocks
 - Agent file-placement preference -- open file tabs above the transcript or in the right pane
 - Optional MCP status chip showing the session's configured, connected, and missing servers (off by default in Agent Features settings)
+- Claude in Chrome for Claude Code sessions (off by default, toggle under Agent Features): starts the agent with the Claude in Chrome extension's browser tools so it can drive the user's own Chrome; tool calls go through the normal permission prompt; not enabled for headless explicit-only runs
 - File `@` mention in input
 - Image attachment support
 - A named file or page context indicator above the chat input, with a separate short preview of selected text, consistent across Files, Agent and Wiki modes (shared, Local and Personal pages). Selection chips show selected text, mockup annotations and extension-provided items from node-like editors such as Excalidraw; each selection chip has an × to drop it from the prompt while keeping the document context, and node-like editors can report multiple selections at once

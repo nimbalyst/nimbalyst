@@ -258,6 +258,9 @@ export class AIService {
     ClaudeCodeProvider.setPromptSuggestionsEnabledLoader(
       () => this.getSettingsStore().get('promptSuggestionsEnabled', true) !== false,
     );
+    ClaudeCodeProvider.setClaudeInChromeEnabledLoader(
+      () => this.getSettingsStore().get('claudeInChromeEnabled', false) === true,
+    );
 
     // API keys must be explicitly set by the user in settings.
     // NEVER auto-import keys from process.env. A user's .env file with

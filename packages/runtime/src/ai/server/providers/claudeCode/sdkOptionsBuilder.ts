@@ -277,6 +277,12 @@ export async function buildSdkOptions(
     ...(wantsPromptSuggestion(ClaudeCodeDeps.promptSuggestionsEnabledLoader?.() === true, documentContext)
       ? { promptSuggestions: true }
       : {}),
+    // Claude in Chrome: the CLI only registers its browser MCP server when started
+    // with --chrome; a project settings file cannot turn it on. Headless
+    // explicit-only runs never get the user's real browser.
+    ...(!explicitOnly && ClaudeCodeDeps.claudeInChromeEnabledLoader?.() === true
+      ? { extraArgs: { chrome: null } }
+      : {}),
     // Headless provisioned servers must not be merged with repository or user discovery.
     ...(explicitOnly && !mcpLockdown ? { strictMcpConfig: true } : {}),
     // NIM-1988: this is the provider-owned, first-build snapshot, not a live

@@ -374,6 +374,7 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
 
   public static setCustomClaudeCodePathLoader(loader: ((workspacePath: string) => string) | null): void { ClaudeCodeDeps.setCustomClaudeCodePathLoader(loader); }
   public static setPromptSuggestionsEnabledLoader(loader: (() => boolean) | null): void { ClaudeCodeDeps.setPromptSuggestionsEnabledLoader(loader); }
+  public static setClaudeInChromeEnabledLoader(loader: (() => boolean) | null): void { ClaudeCodeDeps.setClaudeInChromeEnabledLoader(loader); }
 
   constructor() {
     super();

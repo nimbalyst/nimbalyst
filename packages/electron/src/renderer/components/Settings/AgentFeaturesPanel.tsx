@@ -53,6 +53,10 @@ export function AgentFeaturesPanel() {
     settingAtom('ai.promptSuggestionsEnabled'),
   ) as [boolean, (value: boolean) => void];
 
+  const [claudeInChromeEnabled, setClaudeInChromeEnabled] = useAtom(
+    settingAtom('ai.claudeInChromeEnabled'),
+  ) as [boolean, (value: boolean) => void];
+
   const [aiDebugSettings] = useAtom(aiDebugSettingsAtom);
   const [, updateAIDebugSettings] = useAtom(setAIDebugSettingsAtom);
   const { showToolCalls, chatShowToolCalls, aiDebugLogging, showPromptAdditions } = aiDebugSettings;
@@ -291,6 +295,14 @@ export function AgentFeaturesPanel() {
           name="Suggest next prompt"
           description="After a Claude Code turn you started, show a predicted next prompt in the input. Press Tab to fill it in, then Enter to send. Each suggestion is one extra model call that reuses the conversation cache."
           testId="prompt-suggestions-toggle"
+        />
+
+        <SettingsToggle
+          checked={claudeInChromeEnabled}
+          onChange={(checked) => setClaudeInChromeEnabled(checked)}
+          name="Claude in Chrome"
+          description="Let Claude Code sessions control your Chrome browser through the Claude in Chrome extension. Requires the extension to be installed and signed in. Applies to new sessions; existing sessions pick it up on their next message."
+          testId="claude-in-chrome-toggle"
         />
 
         <div className="agent-preferred-language flex items-start justify-between gap-4 py-3">

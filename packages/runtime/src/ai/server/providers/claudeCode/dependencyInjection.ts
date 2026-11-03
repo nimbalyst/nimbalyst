@@ -84,6 +84,10 @@ export const ClaudeCodeDeps = {
   // Re-read on each query so the settings toggle takes effect on the next turn.
   promptSuggestionsEnabledLoader: null as (() => boolean) | null,
 
+  // Whether to start the CLI with --chrome so the Claude in Chrome extension's
+  // browser tools are available. Off when no host wires it. Re-read on each query.
+  claudeInChromeEnabledLoader: null as (() => boolean) | null,
+
   // ---- Internal MCP server enablement ----
   // Ports, kill-switches, extension/tracker loaders, and the per-launch bearer
   // token now live in the shared `mcpServerConfig` registry (configured once
@@ -187,6 +191,10 @@ export const ClaudeCodeDeps = {
 
   setPromptSuggestionsEnabledLoader(loader: (() => boolean) | null): void {
     this.promptSuggestionsEnabledLoader = loader;
+  },
+
+  setClaudeInChromeEnabledLoader(loader: (() => boolean) | null): void {
+    this.claudeInChromeEnabledLoader = loader;
   },
 
   setMCPConfigLoader(loader: McpConfigLoader | null): void {
