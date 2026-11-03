@@ -2,6 +2,8 @@ import type { DocumentContext } from '@nimbalyst/runtime/ai/server/types';
 import { mergeClaimedRun, selectCoalescibleRun } from './coalesceQueuedPrompts';
 import { beginSessionTurn, isTurnAdmissionBlocked } from './sessionTurnControl';
 import { TurnSetupCancelledError } from './turnSetupStages';
+import { CodexPreparationCancelledError } from '@nimbalyst/runtime/ai/server/protocols/codexAppServer/setupStage';
+import { isQueueStopped } from './stoppedQueueHold';
 
 /**
  * The per-session "a queued-prompt chain is running" guard, as an ownership lease.
@@ -139,6 +141,8 @@ interface DispatchClaimedQueuedPromptOptions {
   isLeadTurnPending?: () => boolean;
   /** Re-arm the queue driver if a hold wins after the caller saw dispatch scheduled. */
   onDispatchDeferred?: () => void;
+  /** Publish the current durable queue after rollback, without starting a turn. */
+  onPromptsReturned?: () => Promise<void>;
   logInfo?: (message: string) => void;
 }
 
@@ -168,8 +172,12 @@ export async function dispatchClaimedQueuedPrompt(
   } = options;
 
   const settleIds = claimedIds && claimedIds.length > 0 ? claimedIds : [claimed.id];
-  const returnToPending = () => releaseUndeliveredClaims(queueStore, claimedRows ?? [claimed], logError);
-  const isHeld = () => !!options.signal?.aborted || isTurnAdmissionBlocked(sessionId);
+  const returnToPending = async () => {
+    await releaseUndeliveredClaims(queueStore, claimedRows ?? [claimed], logError);
+    try { await options.onPromptsReturned?.(); }
+    catch (error) { logError('[AIService] Failed to publish returned queued prompts:', error); }
+  };
+  const isHeld = () => !!options.signal?.aborted || isTurnAdmissionBlocked(sessionId) || isQueueStopped(sessionId);
 
   if (isHeld()) {
     await returnToPending();
@@ -229,7 +237,7 @@ export async function dispatchClaimedQueuedPrompt(
         }
         // A cancelling/replacement actor owns its next action. Do not wake it,
         // or advertise a healthy pending retry if storage is still unavailable.
-        if (returned && released) onDispatchDeferred?.();
+        if (returned && released && !isQueueStopped(sessionId)) onDispatchDeferred?.();
         return;
       }
       let cancelledSetup = false;
@@ -249,7 +257,8 @@ export async function dispatchClaimedQueuedPrompt(
           completed.add(promptId);
         }
       } catch (queueError) {
-        if (queueError instanceof TurnSetupCancelledError && !queueError.providerEntered && !queueError.deliveryMayHaveStarted) {
+        if (queueError instanceof CodexPreparationCancelledError ||
+          (queueError instanceof TurnSetupCancelledError && !queueError.providerEntered && !queueError.deliveryMayHaveStarted)) {
           cancelledSetup = true;
           try {
             await returnToPending();
@@ -274,7 +283,7 @@ export async function dispatchClaimedQueuedPrompt(
         // underneath it (#1018).
         const released = processingSet.releaseIfOwner(sessionId, guardToken);
         if (cancelledSetup) {
-          if (released && returnedCancelledClaims) onDispatchDeferred?.();
+          if (released && returnedCancelledClaims && !isQueueStopped(sessionId)) onDispatchDeferred?.();
         } else {
           // A replacement dispatch owns continuation and settlement as well as
           // the guard. A displaced turn must not report the child finished.
@@ -343,6 +352,7 @@ interface TryClaimAndDispatchNextQueuedPromptOptions {
   canBypassChainGuard?: () => boolean;
   isLeadTurnPending?: DispatchClaimedQueuedPromptOptions['isLeadTurnPending'];
   onDispatchDeferred?: DispatchClaimedQueuedPromptOptions['onDispatchDeferred'];
+  onPromptsReturned?: DispatchClaimedQueuedPromptOptions['onPromptsReturned'];
 }
 
 export async function tryClaimAndDispatchNextQueuedPrompt(
@@ -369,7 +379,7 @@ export async function tryClaimAndDispatchNextQueuedPrompt(
     onDispatchDeferred,
   } = options;
 
-  const isHeld = () => !!options.signal?.aborted || isTurnAdmissionBlocked(sessionId);
+  const isHeld = () => !!options.signal?.aborted || isTurnAdmissionBlocked(sessionId) || isQueueStopped(sessionId);
   if (isHeld()) return false;
 
   const liveWindow =
@@ -486,6 +496,7 @@ export async function tryClaimAndDispatchNextQueuedPrompt(
         workspacePath,
         isLeadTurnPending,
         onDispatchDeferred,
+        onPromptsReturned: options.onPromptsReturned,
         logInfo,
       });
     } catch (error) {

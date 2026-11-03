@@ -49,6 +49,7 @@ import { registerTurnControlHandlers } from '../ipc/registerTurnControlHandlers'
 import { codexQuestionTurns } from '../codexQuestionTurns';
 import { SessionProcessingGuard, tryClaimAndDispatchNextQueuedPrompt } from '../queuedPromptDispatcher';
 import { beginSessionTurn } from '../sessionTurnControl';
+import { captureQueueAuthorization, isQueueStopped } from '../stoppedQueueHold';
 import { createPGLiteQueuedPromptsStore } from '../../PGLiteQueuedPromptsStore';
 import { SQLiteDatabase } from '../../../database/sqlite/SQLiteDatabase';
 import { beginCommitProposalCall, registerWaitingCommitProposal } from '@nimbalyst/runtime/ai/server/commitProposalInFlight';
@@ -66,6 +67,7 @@ describe('desktop Stop / lightning with durable queue and question ownership', (
     storage.queue = createPGLiteQueuedPromptsStore(database as never);
   });
   afterEach(async () => {
+    captureQueueAuthorization('s1')();
     await codexQuestionTurns.end(codexQuestionTurns.current('s1'));
     await database?.close();
     if (temporary) fs.rmSync(temporary, { recursive: true, force: true });
@@ -145,6 +147,14 @@ describe('desktop Stop / lightning with durable queue and question ownership', (
     expect(old.active).toBe(false);
     expect((await storage.queue.get('old'))?.status).toBe('failed');
     expect(abandon).toHaveBeenCalledTimes(1);
+    if (action === 'stop') {
+      expect(isQueueStopped('s1')).toBe(true);
+      expect(await tryClaimAndDispatchNextQueuedPrompt(options)).toBe(false);
+      expect((await storage.queue.get('next'))?.status).toBe('pending');
+      expect(delivered).toEqual([]);
+      await handlers.get('ai:interruptCurrentTurn')!({}, 's1');
+      expect(isQueueStopped('s1')).toBe(false);
+    }
     const competing = await Promise.all([tryClaimAndDispatchNextQueuedPrompt(options), tryClaimAndDispatchNextQueuedPrompt(options)]);
     expect(competing.filter(Boolean)).toHaveLength(1);
     await vi.waitFor(async () => expect((await storage.queue.get('next'))?.status).toBe('completed'));
@@ -197,17 +207,24 @@ describe('desktop Stop / lightning with durable queue and question ownership', (
     } as any);
     const result = await handlers.get(action === 'stop' ? 'ai:cancelRequest' : 'ai:interruptCurrentTurn')!({}, 's1');
     expect(result).toMatchObject({ success: true });
-    await vi.waitFor(async () => expect((await storage.queue.get('orphan-next'))?.status).toBe('completed'));
     expect(provider.abort).toHaveBeenCalledOnce();
     expect(provider.interruptCurrentTurn).not.toHaveBeenCalled();
+    if (action === 'stop') {
+      expect(isQueueStopped('s1')).toBe(true);
+      expect((await storage.queue.get('orphan-next'))?.status).toBe('pending');
+      expect(delivered).toEqual([]);
+      await handlers.get('ai:interruptCurrentTurn')!({}, 's1');
+      expect(isQueueStopped('s1')).toBe(false);
+    }
+    await vi.waitFor(async () => expect((await storage.queue.get('orphan-next'))?.status).toBe('completed'));
     expect(delivered).toEqual([text]);
-    expect(drive).toHaveBeenCalledOnce();
+    expect(drive).toHaveBeenCalledTimes(action === 'stop' ? 2 : 1);
     expect(abandon).toHaveBeenCalledOnce();
     expect(stateManager.state.status).toBe('idle');
     expect(await tryClaimAndDispatchNextQueuedPrompt(options)).toBe(false);
   });
 
-  it.each(['user-first', 'meta-first', 'replay'] as const)('user Send Now closes a waiting commit proposal and sends queued text once after the old turn retires (%s)', async order => {
+  it.each(['user-first', 'meta-first', 'replay', 'newer-stop'] as const)('user Send Now closes a waiting commit proposal and sends queued text once after the old turn retires (%s)', async order => {
     const text = 'Send this queued correction\n  exactly once after retirement.';
     await storage.queue.create({ id: 'commit-next', sessionId: 's1', prompt: text });
     const old = codexQuestionTurns.begin('s1');
@@ -258,6 +275,7 @@ describe('desktop Stop / lightning with durable queue and question ownership', (
       return true;
     });
     const listPending = storage.queue.listPending.bind(storage.queue);
+    const interruptEntry = vi.spyOn(service, 'interruptCurrentTurn');
     const pendingSpy = vi.spyOn(storage.queue, 'listPending');
     let replayInstalled = false;
     pendingSpy.mockImplementation(async (...args: unknown[]) => {
@@ -274,6 +292,22 @@ describe('desktop Stop / lightning with durable queue and question ownership', (
       const meta = order === 'meta-first' ? service.interruptCurrentTurn('s1') : undefined;
       expect(close).not.toHaveBeenCalled();
       const result = await handlers.get('ai:interruptCurrentTurn')!({}, 's1');
+      if (order === 'newer-stop') {
+        const stop = handlers.get('ai:cancelRequest')!({}, 's1');
+        try {
+          await vi.waitFor(() => expect(provider.abort).toHaveBeenCalledOnce());
+          await vi.waitFor(() => expect(interruptEntry).toHaveBeenCalledTimes(2));
+          expect(isQueueStopped('s1')).toBe(true);
+          expect(delivered).toEqual([]);
+        } finally { host.finish(); await stop; }
+        await vi.waitFor(() => expect(service.interruptRequests?.size ?? 0).toBe(0));
+        expect((await storage.queue.get('commit-next'))?.status).toBe('pending');
+        await handlers.get('ai:interruptCurrentTurn')!({}, 's1');
+        await vi.waitFor(async () => expect((await storage.queue.get('commit-next'))?.status).toBe('completed'));
+        expect(delivered).toEqual([text]);
+        expect(options.sendMessageHandler).toHaveBeenCalledOnce();
+        return;
+      }
       if (meta) await meta;
       await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());
       expect(result).toMatchObject({ success: false, deferred: 'commit-in-flight' });

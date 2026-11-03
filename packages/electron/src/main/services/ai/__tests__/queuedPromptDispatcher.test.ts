@@ -10,6 +10,7 @@ import {
   type ClaimedQueuedPrompt,
   type QueuedPromptStoreLike,
 } from '../queuedPromptDispatcher';
+import { CodexPreparationCancelledError } from '@nimbalyst/runtime/ai/server/protocols/codexAppServer/setupStage';
 
 function lateHoldFixture(phase: string, agentRows = false) {
   let held = phase === 'before';
@@ -45,6 +46,7 @@ function lateHoldFixture(phase: string, agentRows = false) {
   const options = {
     queueStore, processingSet: new SessionProcessingGuard(),
     onDispatchDeferred: vi.fn(),
+    onPromptsReturned: vi.fn(async () => {}),
     sendMessageHandler: vi.fn(async () => ({ content: 'ok' })),
     startSession: vi.fn(async (_options: { sessionId: string; workspacePath: string }) => { if (phase === 'start') held = true; }),
     continueQueuedPromptChain: vi.fn(async () => {}),
@@ -60,6 +62,29 @@ function lateHoldFixture(phase: string, agentRows = false) {
 }
 
 describe('queuedPromptDispatcher', () => {
+  it('retains proven-unsent Codex input with its original claim and attachments for a later authorized drain', async () => {
+    vi.useFakeTimers();
+    const fixture = lateHoldFixture('none');
+    const row = (await fixture.queueStore.listPending('s1'))[0];
+    row.attachments = [{ filename: 'kept.txt', content: 'original attachment' }];
+    fixture.options.sendMessageHandler.mockRejectedValueOnce(new CodexPreparationCancelledError());
+    expect(await tryClaimAndDispatchNextQueuedPrompt(fixture.options)).toBe(true);
+    await vi.runAllTimersAsync();
+    expect(fixture.pending).toEqual(new Set(['p1']));
+    expect(fixture.executing.size).toBe(0);
+    expect(fixture.queueStore.fail).not.toHaveBeenCalled();
+    expect(fixture.queueStore.complete).not.toHaveBeenCalled();
+    expect(fixture.options.onPromptsReturned).toHaveBeenCalledOnce();
+    expect(fixture.options.continueQueuedPromptChain).not.toHaveBeenCalled();
+    expect(fixture.queueStore.releaseClaims).toHaveBeenCalledWith([
+      expect.objectContaining({ id: 'p1', claimToken: expect.any(String), attachments: row.attachments }),
+    ]);
+    expect(await tryClaimAndDispatchNextQueuedPrompt(fixture.options)).toBe(true);
+    await vi.runAllTimersAsync();
+    expect(fixture.options.sendMessageHandler).toHaveBeenCalledTimes(2);
+    expect((fixture.options.sendMessageHandler.mock.calls[1] as unknown[])[2]).toMatchObject({ queuedPromptId: 'p1', attachments: row.attachments });
+    expect(fixture.queueStore.complete).toHaveBeenCalledExactlyOnceWith('p1');
+  });
   it('releases its claim lease if control begins during turn registration', async () => {
     const fixture = lateHoldFixture('none');
     let release!: () => void;

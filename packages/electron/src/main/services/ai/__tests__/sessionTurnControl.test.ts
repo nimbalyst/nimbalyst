@@ -1,9 +1,11 @@
 // @vitest-environment node
 import { afterEach, describe, expect, it, vi } from 'vitest';
 vi.mock('../../../utils/logger', () => ({ logger: { main: { info: vi.fn(), warn: vi.fn(), error: vi.fn() } } }));
-import { beginSessionTurn, isTurnControlPending, isDirectTurnAdmissionBlocked, performTurnInterruption, TurnControlPendingError } from '../sessionTurnControl';
+import { beginSessionTurn, isTurnControlPending, isDirectTurnAdmissionBlocked, isTurnRecoveryQuarantined, performTurnInterruption, TurnControlPendingError } from '../sessionTurnControl';
 import { codexQuestionTurns } from '../codexQuestionTurns';
 import { beginTurnSetup } from '../turnSetupStages';
+import { captureQueueAuthorization, holdQueueAfterStop, isQueueStopped } from '../stoppedQueueHold';
+import { runQueueDriveAttempt } from '../queueDriveAttempt';
 
 function deferred() {
   let resolve!: () => void;
@@ -23,6 +25,26 @@ function fixture(provider: any = { abort: vi.fn(), interruptCurrentTurn: vi.fn(a
 afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
 
 describe('captured desktop turn interruption', () => {
+  it('records repeated explicit Stop immediately without a late recovery re-holding a new send', async () => {
+    const options = fixture();
+    const host = beginSessionTurn(options.sessionId);
+    const stop = vi.fn(() => holdQueueAfterStop(options.sessionId));
+    stop();
+    const first = performTurnInterruption({ ...options, mode: 'stop', timeouts: { stageMs: 5 } });
+    const authorizeOlderSend = captureQueueAuthorization(options.sessionId);
+    stop();
+    const second = performTurnInterruption({ ...options, mode: 'stop' });
+    expect(first).toBe(second);
+    authorizeOlderSend();
+    expect(isQueueStopped(options.sessionId)).toBe(true);
+    await first;
+    // A genuinely new send may authorize the queue while old retirement recovers.
+    captureQueueAuthorization(options.sessionId)();
+    host.finish();
+    await vi.waitFor(() => expect(options.settle).toHaveBeenCalledOnce());
+    expect(stop).toHaveBeenCalledTimes(2);
+    expect(isQueueStopped(options.sessionId)).toBe(false);
+  });
   it('coalesces repeated controls and escalates graceful lightning to hard Stop once', async () => {
     const options = fixture();
     const host = beginSessionTurn(options.sessionId);
@@ -345,6 +367,134 @@ describe('captured desktop turn interruption', () => {
     expect(options.sweep).toHaveBeenCalledOnce();
     expect(options.drive).not.toHaveBeenCalled();
     expect(options.logError).toHaveBeenCalledWith(expect.objectContaining({ message: 'sweep failed' }));
+  });
+
+  it.each([5, 30])('retains both overlapping timed-out controls when the newer timeout is %ims', async newerTimeout => {
+    vi.useFakeTimers();
+    const options = fixture();
+    const host = beginSessionTurn(options.sessionId);
+    const entered = deferred();
+    const parked = deferred();
+    let successor!: ReturnType<typeof beginSessionTurn>;
+    options.drive.mockImplementationOnce(async () => {
+      successor = beginSessionTurn(options.sessionId);
+      entered.resolve();
+      await parked.promise;
+    });
+    const first = performTurnInterruption({ ...options, mode: 'stop', timeouts: { stageMs: 20 } });
+    host.finish();
+    await vi.advanceTimersByTimeAsync(0);
+    await entered.promise;
+    const second = performTurnInterruption({ ...options, mode: 'stop', timeouts: { stageMs: newerTimeout } });
+    await vi.advanceTimersByTimeAsync(35);
+    expect((await first).success).toBe(false);
+    expect((await second).success).toBe(false);
+    successor.finish();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(isTurnRecoveryQuarantined(options.sessionId)).toBe(true);
+    expect(() => beginSessionTurn(options.sessionId)).toThrow(TurnControlPendingError);
+    expect(options.drive).toHaveBeenCalledOnce();
+    parked.resolve();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(isTurnRecoveryQuarantined(options.sessionId)).toBe(false);
+    // The newer Stop must finish its cleanup, rather than the old drive's retry
+    // overtaking it. Exactly one recovery resumes queue admission.
+    expect(options.sweep).toHaveBeenCalledTimes(2);
+    expect(options.settle).toHaveBeenCalledTimes(2);
+    expect(options.drive).toHaveBeenCalledTimes(2);
+    expect(isDirectTurnAdmissionBlocked(options.sessionId)).toBe(false);
+  });
+
+  it('retains a timed-out retry drive even before it registers a host', async () => {
+    vi.useFakeTimers();
+    const options = fixture(null);
+    const firstDrive = deferred();
+    const retryDrive = deferred();
+    options.drive.mockImplementationOnce(() => firstDrive.promise).mockImplementationOnce(() => retryDrive.promise);
+    const control = performTurnInterruption({ ...options, timeouts: { stageMs: 20 } });
+    await vi.advanceTimersByTimeAsync(20);
+    expect((await control).success).toBe(false);
+    firstDrive.resolve();
+    await vi.advanceTimersByTimeAsync(20);
+    expect(options.drive).toHaveBeenCalledTimes(2);
+    expect(isTurnRecoveryQuarantined(options.sessionId)).toBe(true);
+    expect(() => beginSessionTurn(options.sessionId)).toThrow(TurnControlPendingError);
+    retryDrive.resolve();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(isTurnRecoveryQuarantined(options.sessionId)).toBe(false);
+    expect(isDirectTurnAdmissionBlocked(options.sessionId)).toBe(false);
+  });
+
+  it.each([false, true])('lets a newer Stop drive after an older retry times out during its cleanup (wait also times out: %s)', async waitTimesOut => {
+    vi.useFakeTimers();
+    const options = fixture();
+    const firstDrive = deferred();
+    const retryDrive = deferred();
+    const newerSettlement = deferred();
+    let successor!: ReturnType<typeof beginSessionTurn>;
+    let resumed!: ReturnType<typeof beginSessionTurn>;
+    options.drive.mockImplementationOnce(() => firstDrive.promise).mockImplementationOnce(async () => {
+      successor = beginSessionTurn(options.sessionId);
+      await retryDrive.promise;
+    }).mockImplementationOnce(async () => { resumed = beginSessionTurn(options.sessionId); resumed.finish(); });
+    const first = performTurnInterruption({ ...options, mode: 'stop', timeouts: { stageMs: 10 } });
+    await vi.advanceTimersByTimeAsync(10);
+    expect((await first).success).toBe(false);
+    firstDrive.resolve();
+    await vi.advanceTimersByTimeAsync(0);
+    options.settle.mockImplementationOnce(() => newerSettlement.promise);
+    const second = performTurnInterruption({ ...options, mode: 'stop', timeouts: { stageMs: 50 } });
+    successor.finish();
+    await vi.advanceTimersByTimeAsync(10);
+    expect(options.settle).toHaveBeenCalledTimes(2);
+    newerSettlement.resolve();
+    await vi.advanceTimersByTimeAsync(0);
+    if (waitTimesOut) {
+      await vi.advanceTimersByTimeAsync(50);
+      expect((await second).success).toBe(false);
+      expect(isTurnRecoveryQuarantined(options.sessionId)).toBe(true);
+    }
+    retryDrive.resolve();
+    await vi.advanceTimersByTimeAsync(0);
+    if (!waitTimesOut) expect((await second).success).toBe(true);
+    expect(resumed).toBeDefined();
+    expect(options.drive).toHaveBeenCalledTimes(3);
+    expect(isDirectTurnAdmissionBlocked(options.sessionId)).toBe(false);
+  });
+
+  it('keeps a newer Stop held when an older drive retries after that control finishes', async () => {
+    vi.useFakeTimers();
+    const options = fixture();
+    const host = beginSessionTurn(options.sessionId);
+    const parked = deferred();
+    let successor!: ReturnType<typeof beginSessionTurn>;
+    const dispatch = vi.fn(async () => true);
+    const attempt = () => runQueueDriveAttempt({
+      listPendingIds: async () => ['retained-original'], isChainActive: () => false,
+      isSessionBusy: () => false, resolveWindow: async () => ({ kind: 'window', window: {}, opened: false }),
+      failAllPending: vi.fn(), dispatch, logWarn: vi.fn(),
+    }, { sessionId: options.sessionId, workspacePath: '/workspace', reason: 'send-now' });
+    const drive = vi.fn(attempt).mockImplementationOnce(async () => {
+      successor = beginSessionTurn(options.sessionId);
+      await parked.promise;
+      return { kind: 'dispatched' as const };
+    });
+    const first = performTurnInterruption({ ...options, drive, timeouts: { stageMs: 20 } });
+    host.finish();
+    await vi.advanceTimersByTimeAsync(0);
+    holdQueueAfterStop(options.sessionId);
+    const second = performTurnInterruption({ ...options, drive, mode: 'stop' });
+    successor.finish();
+    await vi.advanceTimersByTimeAsync(0);
+    expect((await second).error).toContain('still queued');
+    await vi.advanceTimersByTimeAsync(20);
+    expect((await first).success).toBe(false);
+    parked.resolve();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(drive).toHaveBeenCalledTimes(3);
+    expect(dispatch).not.toHaveBeenCalled();
+    expect(isQueueStopped(options.sessionId)).toBe(true);
+    expect(isDirectTurnAdmissionBlocked(options.sessionId)).toBe(false);
   });
 
   it('keeps the older post-drive reservation when a newer control finishes first', async () => {

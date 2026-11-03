@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 <!-- Bug fixes go here -->
+- Codex Stop preserves unsent messages until a new Send or Send Now, while corrections wait for the previous turn to stop.
 
 ### Removed
 <!-- Removed features go here -->
@@ -34,7 +35,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 <!-- Bug fixes go here -->
-- Queued messages no longer fail with overlapping-turn errors after Stop or Send Now.
 - Meta-agent sessions can no longer call Claude Code built-in tools that were added after their blocked-tool list, such as PowerShell and LSP
 - A review session started from the GitHub Pull Requests panel now shows in the PR's chat pane when you come back to the PR, including for PRs with no tracker item; sessions started before this fix are found and linked the next time you open their PR
 - An agent can no longer start an independent top-level session that also reports its result back; a worker whose result the agent needs now nests under it in the session tree instead (#1876)

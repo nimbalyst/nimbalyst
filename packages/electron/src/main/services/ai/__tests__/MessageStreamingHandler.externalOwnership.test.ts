@@ -244,8 +244,11 @@ import { createPGLiteQueuedPromptsStore } from '../../PGLiteQueuedPromptsStore';
 import { SQLiteDatabase } from '../../../database/sqlite/SQLiteDatabase';
 import { mergeRestoredPromptIntoDraft } from '../../../../shared/restoredDraft';
 import { AIService } from '../AIService';
-import { registerTurnControlHandlers } from '../ipc/registerTurnControlHandlers';
+import { cancelSessionTurn, registerTurnControlHandlers } from '../ipc/registerTurnControlHandlers';
+import { registerQueuedPromptHandlers } from '../ipc/registerQueuedPromptHandlers';
+import { remoteSessions } from '../remoteSessions';
 import { AISessionsRepository } from '@nimbalyst/runtime/storage/repositories/AISessionsRepository';
+import { captureQueueAuthorization, holdQueueAfterStop, isQueueStopped } from '../stoppedQueueHold';
 
 /**
  * OpenCode replaces its whole config on every `initialize`, which is how the
@@ -359,6 +362,126 @@ function expectExistingComposerRestores(error: Error, text: string, attachments:
 }
 
 describe("MessageStreamingHandler external ownership", () => {
+  it.each([false, true])('leaves a confirmed missing target and its previous Stop hold unchanged (previous hold: %s)', async previouslyStopped => {
+    const sessionId = `missing-stop-target-${previouslyStopped}`;
+    if (previouslyStopped) holdQueueAfterStop(sessionId);
+    vi.mocked(AISessionsRepository.get).mockResolvedValueOnce(null);
+    try {
+      expect(await cancelSessionTurn({} as never, sessionId)).toEqual({ success: false, error: 'Session not found' });
+      expect(isQueueStopped(sessionId)).toBe(previouslyStopped);
+    } finally { captureQueueAuthorization(sessionId)(); }
+  });
+  it.each([false, true])('retains Stop on repository lookup failure until a new human press (previous hold: %s)', async previouslyStopped => {
+    const sessionId = `desktop-lookup-failure-${previouslyStopped}`;
+    const oldAuthorization = captureQueueAuthorization(sessionId);
+    if (previouslyStopped) holdQueueAfterStop(sessionId);
+    vi.mocked(AISessionsRepository.get).mockRejectedValueOnce(new Error('repository temporarily unavailable'));
+    const service = { interruptCurrentTurnOnce: vi.fn(async () => ({ success: true })) };
+    registerTurnControlHandlers({ interruptCurrentTurn: (id: string, options: { userSendNow?: boolean }) =>
+      AIService.prototype.interruptCurrentTurn.call(service as any, id, options) } as never);
+    try {
+      await expect(cancelSessionTurn({} as never, sessionId)).rejects.toThrow('repository temporarily unavailable');
+      expect(isQueueStopped(sessionId)).toBe(true);
+      oldAuthorization();
+      expect(isQueueStopped(sessionId)).toBe(true);
+      await mocks.handlers.get('ai:interruptCurrentTurn')!({}, sessionId);
+      expect(isQueueStopped(sessionId)).toBe(false);
+    } finally { captureQueueAuthorization(sessionId)(); }
+  });
+  it.each([false, true])('releases a stopped queue only for human Send Now (human: %s)', async userSendNow => {
+    const sessionId = `held-send-now-${userSendNow}`;
+    const service = { interruptCurrentTurnOnce: vi.fn(async () => ({ success: true })) };
+    registerTurnControlHandlers({ interruptCurrentTurn: (id: string, options: { userSendNow?: boolean }) =>
+      AIService.prototype.interruptCurrentTurn.call(service as any, id, options) } as never);
+    holdQueueAfterStop(sessionId);
+    try {
+      if (userSendNow) await mocks.handlers.get('ai:interruptCurrentTurn')!({}, sessionId);
+      else await AIService.prototype.interruptCurrentTurn.call(service as any, sessionId, { userSendNow });
+      expect(isQueueStopped(sessionId)).toBe(!userSendNow);
+      expect(service.interruptCurrentTurnOnce).toHaveBeenCalledExactlyOnceWith(sessionId, { userSendNow });
+    } finally { captureQueueAuthorization(sessionId)(); }
+  });
+  it('rejects a malformed Stop before recording a queue hold', async () => {
+    await expect(cancelSessionTurn({} as never, '')).rejects.toThrow('Session ID is required');
+    expect(isQueueStopped('')).toBe(false);
+  });
+
+  it('does not let explicit nonhuman IPC queue provenance release Stop', async () => {
+    const sessionId = 'held-ipc-create';
+    const local = vi.spyOn(remoteSessions, 'assertLocalExecution').mockResolvedValue(undefined);
+    vi.mocked(AISessionsRepository.get).mockResolvedValue({ id: sessionId, provider: 'openai-codex' } as any);
+    mocks.queue = { create: vi.fn(async (input: any) => ({ ...input, createdAt: 1 })) };
+    registerQueuedPromptHandlers({ publishQueueStateToSync: vi.fn(async () => {}) } as never);
+    const create = mocks.handlers.get('ai:createQueuedPrompt')!;
+    const event = { sender: { isDestroyed: () => false, send: vi.fn() } };
+    holdQueueAfterStop(sessionId);
+    try {
+      await create(event, sessionId, 'automatic report', undefined, { promptProvenance: { actor: 'agent', origin: 'automation' } });
+      expect(isQueueStopped(sessionId)).toBe(true);
+      await create(event, sessionId, 'human correction');
+      expect(isQueueStopped(sessionId)).toBe(false);
+    } finally {
+      local.mockRestore();
+      captureQueueAuthorization(sessionId)();
+      mocks.queue = undefined;
+    }
+  });
+  it('queues an automatic direct wake without releasing a human Stop', async () => {
+    const sessionId = 'held-direct-wake';
+    const service = { queuePromptForSession: vi.fn(async () => ({})), requestQueueDrive: vi.fn(), publishQueueStateToSync: vi.fn(async () => {}) };
+    const handler = new MessageStreamingHandler(service as never);
+    holdQueueAfterStop(sessionId);
+    try {
+      await handler.handle({ sender: { isDestroyed: () => false, send: vi.fn() } } as never, 'background results', {}, sessionId, '/workspace');
+      expect(service.queuePromptForSession).toHaveBeenCalledWith(sessionId, 'background results', undefined,
+        { promptProvenance: { actor: 'system', origin: 'automation' } });
+      expect(isQueueStopped(sessionId)).toBe(true);
+    } finally { captureQueueAuthorization(sessionId)(); }
+  });
+  it('preserves explicit automated provenance even if an inherited context still says user input', async () => {
+    const sessionId = 'held-conflicting-input';
+    const service = { queuePromptForSession: vi.fn(async () => ({})), requestQueueDrive: vi.fn(), publishQueueStateToSync: vi.fn(async () => {}) };
+    const handler = new MessageStreamingHandler(service as never);
+    holdQueueAfterStop(sessionId);
+    try {
+      await handler.handle({ sender: { isDestroyed: () => false, send: vi.fn() } } as never, 'background results',
+        { inputType: 'user', promptProvenance: { actor: 'agent', origin: 'automation' } } as any, sessionId, '/workspace');
+      expect(isQueueStopped(sessionId)).toBe(true);
+    } finally { captureQueueAuthorization(sessionId)(); }
+  });
+  it('publishes and drives a fresh human Send through the stored workspace when the IPC path is omitted', async () => {
+    const sessionId = 'held-no-workspace';
+    vi.mocked(AISessionsRepository.get).mockResolvedValue({ workspacePath: '/stored-workspace' } as any);
+    const service = { queuePromptForSession: vi.fn(async () => ({})), requestQueueDrive: vi.fn(), publishQueueStateToSync: vi.fn(async () => {}) };
+    const handler = new MessageStreamingHandler(service as never);
+    const send = vi.fn();
+    holdQueueAfterStop(sessionId);
+    try {
+      await handler.handle({ sender: { isDestroyed: () => false, send } } as never, 'human correction', { inputType: 'user' } as any, sessionId);
+      expect(isQueueStopped(sessionId)).toBe(false);
+      expect(service.publishQueueStateToSync).toHaveBeenCalledExactlyOnceWith(sessionId);
+      expect(send).toHaveBeenCalledWith('ai:queuedPromptsReceived', { sessionId });
+      expect(service.requestQueueDrive).toHaveBeenCalledExactlyOnceWith(sessionId, '/stored-workspace', 'renderer-trigger');
+    } finally { captureQueueAuthorization(sessionId)(); }
+  });
+  it('does not let automated orchestration release a human Stop', async () => {
+    const sessionId = 'held-meta-input';
+    const service = { requestQueueDrive: vi.fn() };
+    mocks.queue = { create: vi.fn(async (input: any) => ({ ...input, createdAt: 1 })) };
+    holdQueueAfterStop(sessionId);
+    try {
+      const queue = (kind: string, actor = 'agent') => AIService.prototype.queuePromptForSession.call(service as any,
+        sessionId, 'kept instruction', undefined, { promptProvenance: { actor, origin: 'session-orchestration', messageKind: kind } });
+      await queue('report');
+      await queue('instruction');
+      expect(isQueueStopped(sessionId)).toBe(true);
+      await queue('instruction', 'human');
+      expect(isQueueStopped(sessionId)).toBe(false);
+    } finally {
+      captureQueueAuthorization(sessionId)();
+      mocks.queue = undefined;
+    }
+  });
   it.each(['role-read', 'workflow-read', 'directive-read', 'input-save', 'permission', 'mcp-config', 'model', 'auth', 'native-create', 'native-resume', 'input-save-reject', 'auth-reject', 'native-create-reject', 'input-save-timeout', 'native-create-timeout', 'native-resume-timeout', 'native-input'])('does not lose pre-stream Stop during Codex provider %s', async stage => {
     const { OpenAICodexProvider: CodexProvider } = await import('@nimbalyst/runtime/ai/server/providers/OpenAICodexProvider');
     const { CodexAppServerProtocol } = await import('@nimbalyst/runtime/ai/server/protocols/CodexAppServerProtocol');
@@ -379,11 +502,14 @@ describe("MessageStreamingHandler external ownership", () => {
     const terminate = vi.fn();
     const protocol = new CodexAppServerProtocol({ terminateProcessTreeOverride: terminate });
     const listeners = new Set<(method: string, params: unknown) => void>();
-    const request = vi.fn(async (method: string) => {
+    const nativeInputs: string[] = [];
+    const request = vi.fn(async (method: string, params?: any) => {
       if (method !== 'turn/start') return {};
       if (blockedNative) return nativeStart;
-      queueMicrotask(() => { for (const listener of listeners) listener('turn/completed', { threadId: 'prelude-thread', turn: { id: 'fresh-turn', status: 'completed' } }); });
-      return { turn: { id: 'fresh-turn' } };
+      nativeInputs.push(params.input[0].text);
+      const id = `fresh-turn-${nativeInputs.length}`;
+      queueMicrotask(() => { for (const listener of listeners) listener('turn/completed', { threadId: 'prelude-thread', turn: { id, status: 'completed' } }); });
+      return { turn: { id } };
     });
     const nativeSession = { id: 'prelude-thread', platform: 'codex-app-server', raw: {
       threadId: 'prelude-thread', options: {}, activeTurnId: null, cleanupStarted: false,
@@ -398,14 +524,14 @@ describe("MessageStreamingHandler external ownership", () => {
     const model = vi.spyOn(provider as any, 'getConfiguredModel').mockResolvedValue('gpt-6.1-sol');
     const permission = vi.spyOn(provider as any, 'requestCodexTurnPermission').mockResolvedValue({ decision: 'allow', permissionMode: 'allow-all' });
     const mcp = vi.spyOn((provider as any).mcpConfigService, 'getMcpServersConfig').mockResolvedValue({});
-    const save = vi.spyOn(provider as any, 'logAgentMessageBestEffort').mockResolvedValue(undefined);
+    const save = vi.spyOn(provider as any, 'logAgentMessageBestEffort').mockResolvedValue(true);
     const auth = vi.fn(async () => ({ requiresOpenaiAuth: false }));
     CodexProvider.setCodexAuthGate(auth);
     const defer = (spy: any, value: unknown) => spy.mockImplementationOnce(async () => { enter(); await prelude; if (stage.endsWith('-reject')) throw new Error('Setup rejected after Stop'); return value; });
     if (stage === 'role-read') defer(role, 'standard');
     if (stage === 'workflow-read') defer(workflow, 'default');
     if (stage === 'directive-read') defer(directive, undefined);
-    if (stage.startsWith('input-save')) defer(save, undefined);
+    if (stage.startsWith('input-save')) defer(save, true);
     if (stage === 'permission') defer(permission, { decision: 'allow', permissionMode: 'allow-all' });
     if (stage === 'mcp-config') defer(mcp, {});
     if (stage === 'model') defer(model, 'gpt-6.1-sol');
@@ -423,6 +549,12 @@ describe("MessageStreamingHandler external ownership", () => {
         runWithHandler: async (handler, event, service) => {
           const guard = new SessionProcessingGuard();
           service.sessionsProcessingQueue = guard;
+          service.queuePromptForSession = async (sessionId: string, prompt: string, attachments: unknown[], documentContext: any) => {
+            const authorize = captureQueueAuthorization(sessionId);
+            const created = await queue.create({ id: 'new-correction', sessionId, prompt, attachments, documentContext });
+            authorize();
+            return created;
+          };
           let old: Promise<unknown> | undefined;
           let observed: Promise<unknown> | undefined;
           const dispatched = await tryClaimAndDispatchNextQueuedPrompt({ queueStore: queue, processingSet: guard,
@@ -436,6 +568,7 @@ describe("MessageStreamingHandler external ownership", () => {
           expect((await queue.get('prelude-input'))?.status).toBe('executing');
           expect(request).not.toHaveBeenCalled();
           try {
+            holdQueueAfterStop('opencode-session');
             const control = performTurnInterruption({
               sessionId: 'opencode-session', mode: 'stop', provider, isCurrentProvider: () => true, guard,
               retireInbox: async () => {}, sweep: async () => {}, settle: async () => {}, drive: async () => {},
@@ -461,8 +594,10 @@ describe("MessageStreamingHandler external ownership", () => {
             if (!stage.endsWith('-timeout')) expect(stopped, JSON.stringify(stopped)).toMatchObject({ success: true });
             const error = await observed as Error;
             expect(error?.message).toContain('has not been sent to Codex');
-            await vi.waitFor(async () => expect((await queue.get('prelude-input'))?.status).toBe('failed'));
+            await vi.waitFor(async () => expect((await queue.get('prelude-input'))?.status).toBe('pending'));
             expect((await queue.get('prelude-input'))?.prompt).toBe(queuedText);
+            expect(service.processingQueuedPromptIds.has('prelude-input')).toBe(false);
+            expect(event.sender.send.mock.calls.some(([channel]: [string]) => channel === 'ai:error')).toBe(false);
             expect(question?.active).toBe(false);
             expect(request).not.toHaveBeenCalled();
             expect(terminate).not.toHaveBeenCalled();
@@ -470,13 +605,28 @@ describe("MessageStreamingHandler external ownership", () => {
             expect(resume).toHaveBeenCalledTimes(stage.startsWith('native-resume') ? 1 : 0);
             await vi.waitFor(() => expect(isTurnAdmissionBlocked('opencode-session')).toBe(false));
             blockedNative = false;
-            await handler.handle(event, 'Fresh send after settled Stop', undefined, 'opencode-session', dir);
-            expect(request.mock.calls.filter(([method]) => method === 'turn/start')).toHaveLength(1);
+            await handler.handle(event, 'Fresh send after settled Stop', { inputType: 'user' } as any, 'opencode-session', dir);
+            expect(request.mock.calls.filter(([method]) => method === 'turn/start')).toHaveLength(0);
+            expect(isQueueStopped('opencode-session')).toBe(false);
+            const dispatch = () => tryClaimAndDispatchNextQueuedPrompt({ queueStore: queue, processingSet: guard,
+              sendMessageHandler: (...args) => handler.handleQueued(...args),
+              continueQueuedPromptChain: async () => {}, logError: vi.fn(), logInfo: vi.fn(), onPromptClaimed: vi.fn(), startSession: async () => {},
+              sessionId: 'opencode-session', workspacePath: dir, source: 'authorized-recovery', targetWindow: { isDestroyed: () => false, webContents: { ...event.sender, mainFrame: {} } } as any });
+            expect(await dispatch()).toBe(true);
+            await vi.waitFor(async () => expect((await queue.get('prelude-input'))?.status).toBe('completed'));
+            expect(await dispatch()).toBe(true);
+            await vi.waitFor(async () => expect((await queue.get('new-correction'))?.status).toBe('completed'));
+            expect(nativeInputs).toEqual([queuedText, 'Fresh send after settled Stop']);
+            const originalLogs = save.mock.calls.filter((args: any[]) => args[1] === 'input' && args[2] === queuedText);
+            // A rejected save is retried; a completed save is retained across Stop.
+            expect(originalLogs).toHaveLength(stage === 'input-save-reject' ? 2 : 1);
+            expect(await dispatch()).toBe(false);
             // A native session already created during Stop remains cached;
             // cancellation must not orphan it or start a second child.
             expect(create.mock.calls.length + resume.mock.calls.length).toBe(stage === 'native-create-reject' ? 2 : 1);
           } finally {
             release();
+            captureQueueAuthorization('opencode-session')();
             provider.abort();
             releaseNative({ turn: { id: 'cleanup-only-turn' } });
             await observed;

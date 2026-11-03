@@ -1,3 +1,5 @@
+import { isQueueStopped } from './stoppedQueueHold';
+
 /**
  * One queued-prompt drive attempt, expressed as pure decision logic.
  *
@@ -69,6 +71,7 @@ export async function runQueueDriveAttempt<W>(
   if (pendingIds.length === 0) {
     return { kind: 'nothing-pending' };
   }
+  if (isQueueStopped(sessionId)) return retired();
 
   if (deps.isCommitProposalInFlight?.(sessionId)) {
     return { kind: 'deferred', reason: 'session-busy' };
@@ -84,6 +87,7 @@ export async function runQueueDriveAttempt<W>(
 
   const resolved = await deps.resolveWindow(workspacePath, allowsAutoOpen(reason));
   if (input.signal?.aborted) return retired();
+  if (isQueueStopped(sessionId)) return retired();
   if (resolved.kind === 'terminal') {
     const failed = await deps.failAllPending(
       sessionId,

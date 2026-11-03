@@ -1274,7 +1274,11 @@ describe('CodexAppServerProtocol', () => {
     protocol.cleanupSession(session);
   });
 
-  it.each([false, true])('retires an aborted pending start without killing shared child threads or racing its successor (late interrupt error: %s)', async lateInterruptError => {
+  it.each([
+    [false, false, 'turn/completed', false], [true, false, 'turn/completed', false],
+    [false, true, 'turn/completed', false], [true, true, 'turn/completed', false],
+    [false, true, 'turn/failed', false], [false, true, 'turn/completed', true],
+  ] as const)('retires an aborted native turn without killing shared child threads or racing its successor (late error: %s, resolved: %s, terminal: %s, interrupt rejected: %s)', async (lateInterruptError, startAlreadyResolved, terminalMethod, interruptRejected) => {
     const recoveryError = vi.fn();
     const protocol = new CodexAppServerProtocol();
     protocol.setCancellationRecoveryErrorListener(recoveryError);
@@ -1298,6 +1302,10 @@ describe('CodexAppServerProtocol', () => {
     });
     try {
       const oldStart = await nextWrittenMatching(child, 'turn/start');
+      if (startAlreadyResolved) {
+        child.emitLine({ id: oldStart.id, result: { turn: { id: 'cancelled-old-turn' } } });
+        await vi.waitFor(() => expect((session.raw as any).activeTurnId).toBe('cancelled-old-turn'));
+      }
       // The server has accepted native work but has not returned its turn ID.
       let oldNativeRunning = true;
       controller.abort();
@@ -1313,7 +1321,7 @@ describe('CodexAppServerProtocol', () => {
       waitingController.abort();
       await vi.waitFor(() => expect(waitingSettled).toBe(true), { timeout: 100 });
       await stoppedWaiter;
-      expect((session.raw as any).cancelledStarts.size).toBe(1);
+      expect((session.raw as any).cancelledStarts?.size ?? 0).toBe(1);
       next = (async () => {
         for await (const event of protocol.sendMessage(session, { content: 'queued successor' })) nextEvents.push(event);
       })();
@@ -1323,19 +1331,20 @@ describe('CodexAppServerProtocol', () => {
       expect(oldNativeRunning).toBe(true);
       child.emitLine({ method: 'turn/started', params: { threadId: 'collaboration-child', turn: { id: 'sibling-turn' } } });
       expect(siblingEvents).toHaveLength(1);
-      child.emitLine({ id: oldStart.id, result: { turn: { id: 'cancelled-old-turn' } } });
+      if (!startAlreadyResolved) child.emitLine({ id: oldStart.id, result: { turn: { id: 'cancelled-old-turn' } } });
       const interrupt = await nextWrittenMatching(child, 'turn/interrupt');
       expect(interrupt.params).toEqual({ threadId: 'prestream-root', turnId: 'cancelled-old-turn' });
       expect(turnStarts()).toHaveLength(1);
       oldNativeRunning = false;
-      if (!lateInterruptError) child.emitLine({ id: interrupt.id, result: {} });
+      if (interruptRejected) child.emitLine({ id: interrupt.id, error: { code: -1, message: 'Interrupt refused' } });
+      else if (!lateInterruptError) child.emitLine({ id: interrupt.id, result: {} });
       await new Promise(resolve => setTimeout(resolve, 20));
       expect(turnStarts()).toHaveLength(1);
       // Interrupt acknowledgement and foreign completion are not retirement.
       child.emitLine({ method: 'turn/completed', params: { threadId: 'collaboration-child', turn: { id: 'cancelled-old-turn', status: 'completed' } } });
       await new Promise(resolve => setTimeout(resolve, 10));
       expect(turnStarts()).toHaveLength(1);
-      child.emitLine({ method: 'turn/completed', params: { threadId: 'prestream-root', turn: { id: 'cancelled-old-turn', status: 'interrupted' } } });
+      child.emitLine({ method: terminalMethod, params: { threadId: 'prestream-root', turn: { id: 'cancelled-old-turn', status: terminalMethod === 'turn/failed' ? 'failed' : 'interrupted' } } });
       await vi.waitFor(() => expect(turnStarts()).toHaveLength(2));
       if (lateInterruptError) child.emitLine({ id: interrupt.id, error: { code: -1, message: 'Already completed' } });
       expect(oldNativeRunning).toBe(false);
@@ -1354,7 +1363,7 @@ describe('CodexAppServerProtocol', () => {
     }
   });
 
-  it.each(['stale-root-terminal', 'foreign-thread-terminal', 'failed-interrupt'])('keeps unproven or rejected cancellation latched (%s)', async ordering => {
+  it.each(['stale-root-terminal', 'foreign-thread-terminal', 'failed-interrupt', 'resolved-missing-id'])('keeps unproven or rejected cancellation latched (%s)', async ordering => {
     const protocol = new CodexAppServerProtocol();
     const recoveryError = vi.fn();
     protocol.setCancellationRecoveryErrorListener(recoveryError);
@@ -1370,9 +1379,14 @@ describe('CodexAppServerProtocol', () => {
     })();
     try {
       const turn = await nextWrittenMatching(child, 'turn/start');
+      if (ordering === 'resolved-missing-id') {
+        child.emitLine({ id: turn.id, result: { turn: {} } });
+        await new Promise<void>(resolve => setImmediate(resolve));
+      }
       controller.abort();
       await old;
       const raw = session.raw as any;
+      expect(raw.cancelledStarts?.size ?? 0).toBe(1);
       const fence = [...raw.cancelledStarts][0] as Promise<void>;
       expect(raw.cancelledStarts.size).toBe(1);
       if (ordering !== 'failed-interrupt') {
@@ -1406,11 +1420,15 @@ describe('CodexAppServerProtocol', () => {
       expect(child.killed).toBe(false);
     } finally {
       protocol.cleanupSession(session);
+      expect((session.raw as any).cancelledStarts?.size ?? 0).toBe(0);
       await old;
     }
   });
 
-  it.each(['terminal', 'dispose-after-timeout', 'dispose-during-wait'])('bounds recovery of a cancelled native turn without bypassing its fence (%s)', async recovery => {
+  it.each([
+    ['terminal', false], ['dispose-after-timeout', false], ['dispose-during-wait', false],
+    ['terminal', true], ['dispose-after-timeout', true], ['dispose-during-wait', true],
+  ] as const)('bounds recovery of a cancelled native turn without bypassing its fence (%s, start already resolved: %s)', async (recovery, startAlreadyResolved) => {
     const protocol = new CodexAppServerProtocol();
     const creating = protocol.createSession({ workspacePath: '/tmp/ws' });
     const init = await nextWrittenMatching(child, 'initialize');
@@ -1424,9 +1442,13 @@ describe('CodexAppServerProtocol', () => {
     })();
     try {
       const turn = await nextWrittenMatching(child, 'turn/start');
+      if (startAlreadyResolved) {
+        child.emitLine({ id: turn.id, result: { turn: { id: 'unretired-turn' } } });
+        await vi.waitFor(() => expect((session.raw as any).activeTurnId).toBe('unretired-turn'));
+      }
       controller.abort();
       await old;
-      child.emitLine({ id: turn.id, result: { turn: { id: 'unretired-turn' } } });
+      if (!startAlreadyResolved) child.emitLine({ id: turn.id, result: { turn: { id: 'unretired-turn' } } });
       const interrupt = await nextWrittenMatching(child, 'turn/interrupt');
       child.emitLine({ id: interrupt.id, result: {} });
       vi.useFakeTimers();
@@ -1467,6 +1489,30 @@ describe('CodexAppServerProtocol', () => {
       protocol.cleanupSession(session);
       await old;
     }
+  });
+
+  it('does not quarantine a known turn whose exact terminal arrived before Stop', async () => {
+    const protocol = new CodexAppServerProtocol();
+    const creating = protocol.createSession({ workspacePath: '/tmp/ws' });
+    const init = await nextWrittenMatching(child, 'initialize');
+    child.emitLine({ id: init.id, result: {} });
+    const thread = await nextWrittenMatching(child, 'thread/start');
+    child.emitLine({ id: thread.id, result: { thread: { id: 'completed-root' } } });
+    const session = await creating;
+    const controller = new AbortController();
+    const iterator = protocol.sendMessage(session, { content: 'already finished', abortSignal: controller.signal })[Symbol.asyncIterator]();
+    try {
+      const next = iterator.next();
+      const start = await nextWrittenMatching(child, 'turn/start');
+      child.emitLine({ id: start.id, result: { turn: { id: 'finished-before-stop' } } });
+      child.emitLine({ method: 'turn/completed', params: { threadId: 'completed-root', turn: { id: 'finished-before-stop', status: 'completed' } } });
+      let event = await next;
+      while (!event.done && event.value.type !== 'complete') event = await iterator.next();
+      expect(event.value?.type).toBe('complete');
+      controller.abort();
+      await iterator.next();
+      expect((session.raw as any).cancelledStarts?.size ?? 0).toBe(0);
+    } finally { protocol.cleanupSession(session); await iterator.return?.(undefined); }
   });
 
   it.each([false, true])('does not recreate cancellation recovery after the native session was disposed (late reply: %s)', async lateReply => {

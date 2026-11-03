@@ -190,7 +190,7 @@ export class OpenAICodexProvider extends BaseAgentProvider {
   private readonly codexApprovals = createCodexApprovalBindings({
     permissionService: () => this.permissionService,
     turnFor: (sessionId) => this.codexApprovalTurns.get(sessionId),
-    logAgentMessage: (sessionId, content) => this.logAgentMessageBestEffort(sessionId, 'output', content),
+    logAgentMessage: async (sessionId, content) => { await this.logAgentMessageBestEffort(sessionId, 'output', content); },
   });
   /** Latest MCP startup status per server name, for the session MCP chip (NIM-2962). */
   private readonly appServerMcpStatuses = new Map<string, { name: string; status: string; error?: string }>();
@@ -248,6 +248,9 @@ export class OpenAICodexProvider extends BaseAgentProvider {
   // ProviderFactory owns one instance per Nimbalyst session. Native collaborator
   // threads share its child, so aborting preparation never tears that child down.
   private abortGeneration = 0;
+  // One fixed-size fingerprint: a stopped queue row may retry without recording
+  // its same local input twice. A changed row/content is a different input.
+  private lastLoggedQueuedInputKey?: string;
   private destroyed = false;
   private readonly unattachedProtocolSessions = new Set<ProtocolSession>();
 
@@ -1082,12 +1085,25 @@ export class OpenAICodexProvider extends BaseAgentProvider {
       if (documentContext?.mode) {
         metadataToLog.mode = documentContext.mode;
       }
-      await prepare('provider-input-save', () => this.logAgentMessageBestEffort(
-        sessionId,
-        'input',
-        prompt,
-        Object.keys(metadataToLog).length > 0 ? { metadata: metadataToLog } : undefined
-      ));
+      const queuedPromptId = documentContext?.queuedPromptId;
+      let inputKey: string | undefined;
+      if (queuedPromptId) {
+        try {
+          inputKey = crypto.createHash('sha256')
+            .update(JSON.stringify([sessionId, queuedPromptId, prompt, metadataToLog])).digest('hex');
+        } catch {
+          // Fingerprinting is optional audit deduplication, never turn admission.
+        }
+      }
+      await prepare('provider-input-save', async () => {
+        if (inputKey && inputKey === this.lastLoggedQueuedInputKey) return;
+        const logged = await this.logAgentMessageBestEffort(
+          sessionId, 'input', prompt,
+          Object.keys(metadataToLog).length > 0 ? { metadata: metadataToLog } : undefined,
+        );
+        // Record before prepare observes a Stop that won during the save.
+        if (logged && inputKey) this.lastLoggedQueuedInputKey = inputKey;
+      });
     }
 
     assertPreparationActive();
@@ -1521,7 +1537,7 @@ export class OpenAICodexProvider extends BaseAgentProvider {
         } catch (error) {
           // A refused naming reminder must not restore already-delivered user
           // input to the composer. Only the main send can be not-sent input.
-          if (!(error instanceof CodexStartRecoveryPendingError)) throw error;
+          if (!(error instanceof CodexStartRecoveryPendingError) && !(error instanceof CodexPreparationCancelledError)) throw error;
         }
       }
     } catch (error) {
@@ -1980,6 +1996,7 @@ export class OpenAICodexProvider extends BaseAgentProvider {
 
   destroy(): void {
     this.destroyed = true;
+    this.lastLoggedQueuedInputKey = undefined;
     if (this.protocol instanceof CodexAppServerProtocol) this.protocol.setCancellationRecoveryErrorListener();
     for (const timer of this.protocolSessionIdleTimers.values()) {
       this.idleProtocolSessionScheduler.clearTimeout(timer);
