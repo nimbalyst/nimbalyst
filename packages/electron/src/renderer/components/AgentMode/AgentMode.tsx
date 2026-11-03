@@ -165,12 +165,24 @@ export const AgentMode = forwardRef<AgentModeRef, AgentModeProps>(function Agent
   const rightPanelMode = useAtomValue(
     workstreamRightPanelModeAtom(selectedWorkstreamId ?? '__no_workstream__'),
   );
+  // Get the active child session ID if the selected workstream has one
+  const activeChildAtom = useMemo(
+    () => selectedWorkstream ? workstreamActiveChildAtom(selectedWorkstream.id) : atom(null),
+    [selectedWorkstream?.id]
+  );
+  const activeChildId = useAtomValue(activeChildAtom);
+
+  // The actual active session is either the active child OR the workstream parent
+  const actualActiveSessionId = activeChildId || selectedWorkstream?.id || null;
+
+  // The active session's role, not the tree root's, so a meta-agent's workers show their own transcript.
   const selectedAgentRoleAtom = useMemo(
-    () => (selectedWorkstreamId ? sessionAgentRoleAtom(selectedWorkstreamId) : atom<'standard'>('standard')),
-    [selectedWorkstreamId]
+    () => (actualActiveSessionId ? sessionAgentRoleAtom(actualActiveSessionId) : atom<'standard'>('standard')),
+    [actualActiveSessionId]
   );
   const selectedAgentRole = useAtomValue(selectedAgentRoleAtom);
-  const isSelectedMetaAgent = selectedWorkstreamId !== null && selectedAgentRole === 'meta-agent';
+  const metaAgentSessionId = selectedAgentRole === 'meta-agent' ? actualActiveSessionId : null;
+  const isSelectedMetaAgent = metaAgentSessionId !== null;
 
   useEffect(() => {
     onPanelStateChange?.({
@@ -205,16 +217,6 @@ export const AgentMode = forwardRef<AgentModeRef, AgentModeProps>(function Agent
   const dispatchCreateNewWorktreeSession = useSetAtom(createNewWorktreeSessionActionAtom);
   const dispatchCreateWorktreeSessionCore = useSetAtom(createWorktreeSessionCoreActionAtom);
   const dispatchAddSessionToWorktree = useSetAtom(addSessionToWorktreeActionAtom);
-
-  // Get the active child session ID if the selected workstream has one
-  const activeChildAtom = useMemo(
-    () => selectedWorkstream ? workstreamActiveChildAtom(selectedWorkstream.id) : atom(null),
-    [selectedWorkstream?.id]
-  );
-  const activeChildId = useAtomValue(activeChildAtom);
-
-  // The actual active session is either the active child OR the workstream parent
-  const actualActiveSessionId = activeChildId || selectedWorkstream?.id || null;
 
   // Sync the active session to the global atom so nav gutter components
   // (VoiceModeButton) can read it without workstream context. The global
@@ -578,12 +580,12 @@ export const AgentMode = forwardRef<AgentModeRef, AgentModeProps>(function Agent
 
   // Content for the right side
   const rightContent = selectedWorkstream ? (
-    isSelectedMetaAgent ? (
+    metaAgentSessionId ? (
       <MetaAgentMode
-        key={selectedWorkstream.id}
+        key={metaAgentSessionId}
         workspacePath={workspacePath}
         isActive={isActive}
-        sessionId={selectedWorkstream.id}
+        sessionId={metaAgentSessionId}
         onOpenSessionInAgent={dispatchSelectSession}
       />
     ) : (

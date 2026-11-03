@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 <!-- Bug fixes go here -->
+- Clicking a meta agent's child session in the session list or on the kanban board opens that session instead of the meta agent
 
 ### Removed
 <!-- Removed features go here -->

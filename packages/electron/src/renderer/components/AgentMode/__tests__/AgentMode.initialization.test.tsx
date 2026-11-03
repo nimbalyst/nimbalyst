@@ -1,22 +1,26 @@
 import React, { useEffect } from 'react';
 import { act, cleanup, render } from '@testing-library/react';
 import { afterEach, expect, it, vi } from 'vitest';
+import { Provider } from 'jotai';
 import { store } from '@nimbalyst/runtime/store';
 import { workstreamStateAtom } from '../../../store/atoms/workstreamState';
 import { AgentMode } from '../AgentMode';
 import { activeWorkspacePathAtom } from '../../../store/atoms/openProjects';
+import { selectedWorkstreamAtom } from '../../../store';
+
+const metaAgentMode = vi.hoisted(() => vi.fn((_props: { sessionId: string }) => null));
 
 vi.mock('../../../store', async () => {
   const { atom } = await import('jotai');
   const { store } = await import('@nimbalyst/runtime/store');
-  const selected = atom({ id: 'restored-session', type: 'session' });
-  const role = atom('standard');
+  const selected = atom<{ id: string; type: string }>({ id: 'restored-session', type: 'session' });
   const { activeWorkspacePathAtom } = await import('../../../store/atoms/openProjects');
   return {
     store,
     selectedWorkstreamAtom: () => selected,
     sessionHistoryWidthAtom: atom(260), sessionHistoryCollapsedAtom: atom(false),
-    sessionAgentRoleAtom: () => role, isRestoringNavigationAtom: atom(false),
+    sessionAgentRoleAtom: (id: string) => atom(id.startsWith('meta-') ? 'meta-agent' : 'standard'),
+    isRestoringNavigationAtom: atom(false),
     activeSessionIdAtom: atom(null), viewModeAtom: atom('list'),
     initSessionList: vi.fn(), initSessionEditors: vi.fn(),
     initAgentModeLayout: (path: string, options?: { setActive?: boolean }) => {
@@ -48,7 +52,7 @@ vi.mock('../../../store/listeners/trayListeners', async () => ({
 vi.mock('../../AgenticCoding/SessionHistory', () => ({ SessionHistory: () => null }));
 vi.mock('../../TrackerMode/SessionKanbanBoard', () => ({ SessionKanbanBoard: () => null }));
 vi.mock('../../BlitzDialog/BlitzDialog', () => ({ BlitzDialog: () => null }));
-vi.mock('../../MetaAgentMode/MetaAgentMode', () => ({ MetaAgentMode: () => null }));
+vi.mock('../../MetaAgentMode/MetaAgentMode', () => ({ MetaAgentMode: metaAgentMode }));
 vi.mock('../../AgenticCoding/ResizablePanel', () => ({ ResizablePanel: ({ rightPanel }: { rightPanel: React.ReactNode }) => rightPanel }));
 vi.mock('../AgentWorkstreamPanel', () => ({
   AgentWorkstreamPanel: ({ workspacePath, workstreamId }: { workspacePath: string; workstreamId: string }) => {
@@ -76,4 +80,20 @@ it('initializes persistence before restored child effects and routes writes afte
   await act(async () => { await vi.advanceTimersByTimeAsync(500); });
   expect(invoke).toHaveBeenCalledWith('workspace:set-workstream-state', expect.objectContaining({ workspacePath: '/project-01', workstreamId: 'restored-session' }));
   expect(invoke).not.toHaveBeenCalledWith('workspace:set-workstream-state', expect.objectContaining({ workspacePath: '/project-32' }));
+});
+
+it('opens the active child of a meta-agent tree instead of the meta-agent view', async () => {
+  vi.useFakeTimers();
+  vi.stubGlobal('window', Object.assign(window, { electronAPI: { invoke: vi.fn(async () => ({})) } }));
+  store.set(selectedWorkstreamAtom('/project-meta'), { id: 'meta-root', type: 'workstream' });
+  store.set(workstreamStateAtom('meta-root'), { activeChildId: 'worker-1' });
+  metaAgentMode.mockClear();
+  render(<Provider store={store}><AgentMode workspacePath="/project-meta" workspaceName="project-meta" /></Provider>);
+  expect(metaAgentMode).not.toHaveBeenCalled();
+
+  act(() => { store.set(workstreamStateAtom('meta-root'), { activeChildId: 'meta-child' }); });
+  expect(metaAgentMode.mock.lastCall?.[0].sessionId).toBe('meta-child');
+
+  act(() => { store.set(workstreamStateAtom('meta-root'), { activeChildId: 'meta-root' }); });
+  expect(metaAgentMode.mock.lastCall?.[0].sessionId).toBe('meta-root');
 });
