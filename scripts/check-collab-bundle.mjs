@@ -56,7 +56,9 @@ export const COLLAB_BUNDLE_EAGER_GZIP_BUDGET_BYTES = {
   // 2026-10-09: 362,835 after the wiki blocks gained bottom-right resize
   // grips and block-menu items (type, title, columns, depth, reset size).
   // Raised from 359,000 with ~2% headroom.
-  editor: 370_000,
+  // 2026-11-03: 372,811 after colored text and highlight colors in the
+  // selection toolbar. Raised from 370,000 with ~2% headroom.
+  editor: 380_000,
   // Measured at 70,625 gzip bytes on 2026-09-08, when the list took over
   // folder browsing from the tree for the browser console (folder rows, the
   // browse scope, the row "more" action). The row context menu itself is
