@@ -22,6 +22,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Clicking a meta agent's child session in the session list or on the Sessions board opens that child instead of the meta agent
 - Windows: git commands Nimbalyst runs in the background, including Project Graph indexing, no longer flash console windows
 - Windows: commit proposals whose file paths use forward slashes (`C:/...`) now commit to the right repository instead of failing with "None of the selected files are in a git repository"
+- Windows: the Claude Code CLI provider starts in "Ask every time" mode instead of exiting with "Settings file not found"
 
 ### Removed
 <!-- Removed features go here -->

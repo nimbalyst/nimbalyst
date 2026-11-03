@@ -270,16 +270,23 @@ describe('buildClaudeCliSpawnConfig', () => {
 
   // NIM-806 Phase 4 (Direction A): register the PreToolUse permission hook via
   // --settings so built-in tool prompts route to a Nimbalyst widget.
-  it('emits --settings with the given JSON when provided', () => {
-    const settings = JSON.stringify({ hooks: { PreToolUse: [] } });
-    const cfg = buildClaudeCliSpawnConfig({ ...base, settingsJson: settings });
+  it('emits --settings with the given settings file path when provided', () => {
+    const cfg = buildClaudeCliSpawnConfig({ ...base, settingsPath: '/tmp/nimbalyst-claude-cli/s.settings.json' });
     const i = cfg.args.indexOf('--settings');
     expect(i).toBeGreaterThanOrEqual(0);
-    expect(cfg.args[i + 1]).toBe(settings);
+    expect(cfg.args[i + 1]).toBe('/tmp/nimbalyst-claude-cli/s.settings.json');
   });
 
-  it('omits --settings when no JSON is provided (native gate kept)', () => {
+  it('omits --settings when no settings file is provided (native gate kept)', () => {
     expect(buildClaudeCliSpawnConfig(base).args).not.toContain('--settings');
+  });
+
+  it('forces --permission-mode default only on a gated launch without the hook', () => {
+    const mode = (cfg: { args: string[] }) =>
+      cfg.args.includes('--permission-mode') ? cfg.args[cfg.args.indexOf('--permission-mode') + 1] : undefined;
+    expect(mode(buildClaudeCliSpawnConfig(base))).toBe('default');
+    expect(mode(buildClaudeCliSpawnConfig({ ...base, settingsPath: '/tmp/s.settings.json' }))).toBeUndefined();
+    expect(mode(buildClaudeCliSpawnConfig({ ...base, dangerouslySkipPermissions: true }))).toBeUndefined();
   });
 
   // NIM-806 Phase 4: trusted "allow-all"/"bypass-all" workspaces skip the gate
@@ -305,11 +312,11 @@ describe('buildClaudeCliSpawnConfig', () => {
   });
 
   it('places --settings (value-bearing) BEFORE the --allowedTools variadic', () => {
-    // --settings takes a single JSON value; if it landed inside/after a variadic
+    // --settings takes a single path value; if it landed inside/after a variadic
     // the value would be swallowed. It must precede the variadics.
     const cfg = buildClaudeCliSpawnConfig({
       ...base,
-      settingsJson: '{"hooks":{}}',
+      settingsPath: '/tmp/s.settings.json',
       allowedMcpServerNames: ['nimbalyst-mcp'],
     });
     const s = cfg.args.indexOf('--settings');
@@ -318,7 +325,7 @@ describe('buildClaudeCliSpawnConfig', () => {
     expect(s).toBeGreaterThanOrEqual(0);
     expect(s).toBeLessThan(allowed);
     expect(s).toBeLessThan(disallowed);
-    expect(cfg.args[s + 1]).toBe('{"hooks":{}}');
+    expect(cfg.args[s + 1]).toBe('/tmp/s.settings.json');
   });
 
   it('keeps both variadics terminated: --allowedTools … --disallowedTools … --append-system-prompt', () => {
@@ -385,7 +392,7 @@ describe('buildClaudeCliSpawnConfig', () => {
     const cfg = buildClaudeCliSpawnConfig({
       ...base,
       additionalDirectories: ['/data/attachments'],
-      settingsJson: '{"hooks":{}}',
+      settingsPath: '/tmp/s.settings.json',
       allowedMcpServerNames: ['nimbalyst-mcp'],
     });
     const addDir = cfg.args.indexOf('--add-dir');

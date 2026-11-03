@@ -24,6 +24,7 @@
  */
 
 import { promises as fs, existsSync } from 'fs';
+import { randomUUID } from 'crypto';
 import os from 'os';
 import path from 'path';
 import { buildClaudeCliSpawnConfig } from './claudeCliSpawnConfig';
@@ -76,6 +77,12 @@ export interface ClaudeCliSessionLauncherDeps {
   /** fs overrides (tests). */
   mkdir?: (dir: string, opts: { recursive: true }) => Promise<unknown>;
   writeFile?: (file: string, data: string) => Promise<void>;
+  /** Removes the per-launch `--settings` file on exit. Defaults to `fs.rm({ force: true })`. */
+  removeFile?: (file: string) => Promise<void>;
+  /** fs overrides for the stale settings-file sweep (tests). */
+  readDir?: (dir: string) => Promise<string[]>;
+  statFile?: (file: string) => Promise<{ mtimeMs: number }>;
+  now?: () => number;
   /** User home dir for the CLI jsonl resume check (NIM-806 BUG 3). Defaults to os.homedir. */
   homedir?: () => string;
   /** Existence predicate for the CLI jsonl resume check. Defaults to fs.existsSync. */
@@ -171,7 +178,12 @@ export interface LaunchClaudeCliSessionResult {
   mcpConfigPath?: string;
 }
 
+/** Settings files older than this are leftovers from a crash and get swept. */
+const STALE_SETTINGS_FILE_MS = 24 * 60 * 60 * 1000;
+
 export class ClaudeCliSessionLauncher {
+  private staleSweepStarted = false;
+
   constructor(private readonly deps: ClaudeCliSessionLauncherDeps) {}
 
   async launch(input: LaunchClaudeCliSessionInput): Promise<LaunchClaudeCliSessionResult> {
@@ -181,6 +193,10 @@ export class ClaudeCliSessionLauncher {
     }
     if (!workspacePath) {
       throw new Error('ClaudeCliSessionLauncher.launch: workspacePath is required');
+    }
+    if (!this.staleSweepStarted) {
+      this.staleSweepStarted = true;
+      void this.sweepStaleSettingsFiles();
     }
     const cwd = input.cwd || workspacePath;
 
@@ -240,7 +256,7 @@ export class ClaudeCliSessionLauncher {
     // `nimbalyst` config (the monolithic `nimbalyst-mcp` is retired). Only when
     // the hook script path is provided AND the core server is configured — and
     // never when we're skipping the gate (the two are mutually exclusive).
-    let settingsJson: string | undefined;
+    let settingsPath: string | undefined;
     const permissionHookEnv: Record<string, string> = {};
     const nimbalystMcp = mcpServers['nimbalyst'] as
       | { url?: string; headers?: Record<string, string> }
@@ -254,93 +270,107 @@ export class ClaudeCliSessionLauncher {
           this.deps.electronExecPath ?? process.execPath,
           this.deps.permissionHookScriptPath,
         );
-        settingsJson = buildPermissionHookSettingsJson({ command });
+        // Written to a file, never passed inline: on Windows `claude` is the npm
+        // shim `claude.cmd`, which node-pty runs through cmd.exe, and the `|` in
+        // the hook matcher split the command line there (#1905).
+        settingsPath = await this.writeSettingsFile(sessionId, buildPermissionHookSettingsJson({ command }));
         permissionHookEnv.NIMBALYST_PERMISSION_URL = permissionUrl;
         if (token) permissionHookEnv.NIMBALYST_PERMISSION_TOKEN = token;
       } catch (err) {
         // Never block the CLI launch over the permission hook; fall back to native.
         console.warn('[ClaudeCliSessionLauncher] failed to build permission hook settings:', err);
-        settingsJson = undefined;
+        settingsPath = undefined;
       }
     }
+    const removeSettingsFile = () => {
+      if (!settingsPath) return;
+      const removeFile = this.deps.removeFile ?? ((f: string) => fs.rm(f, { force: true }));
+      removeFile(settingsPath).catch((err) => {
+        console.warn('[ClaudeCliSessionLauncher] failed to remove settings file:', err);
+      });
+    };
 
-    // 2.5. Start the proxy observation backend (Phase 3) BEFORE spawn, so we can
-    // point the CLI's ANTHROPIC_BASE_URL at it. Tear down on PTY exit.
     let observation: Awaited<
       ReturnType<NonNullable<ClaudeCliSessionLauncherDeps['startObservation']>>
     > = null;
-    if (this.deps.startObservation) {
-      try {
-        observation = await this.deps.startObservation({ sessionId, workspacePath });
-      } catch (err) {
-        // Observation is best-effort: never block the genuine CLI from launching.
-        console.warn('[ClaudeCliSessionLauncher] startObservation failed; launching without proxy:', err);
-        observation = null;
-      }
-    }
-    const extraEnv: Record<string, string> | undefined =
-      observation || Object.keys(permissionHookEnv).length > 0
-        ? {
-            ...(observation
-              ? { ANTHROPIC_BASE_URL: observation.baseUrl, ...observation.env }
-              : {}),
-            ...permissionHookEnv,
-          }
-        : undefined;
-
-    // 2.6. Resolve the `claude` executable once (reused for the plugin-support
-    // probe and the spawn config below).
-    const claudeExecutable = this.deps.resolveClaudeExecutable(workspacePath);
-
-    // NIM-845: load extension Claude-plugin directories so namespaced slash
-    // commands (`/feedback:bug-report`, …) resolve in this CLI session. Gate on
-    // `--plugin-dir` support FIRST — on an old CLI (< 2.1.142) the flag is an
-    // unknown option and would crash the launch, so we skip loading entirely and
-    // log once (silent to the user; commands stay unresolved as before the fix).
-    let pluginDirs: string[] | undefined;
-    if (this.deps.loadPluginDirs) {
-      const supportsPluginDir = this.deps.cliSupportsPluginDir?.(claudeExecutable) ?? true;
-      if (supportsPluginDir) {
-        try {
-          pluginDirs = (await this.deps.loadPluginDirs(workspacePath)).filter(
-            (dir) => typeof dir === 'string' && dir.trim().length > 0,
-          );
-        } catch (err) {
-          // Best-effort: never block the launch over plugin discovery.
-          console.warn('[ClaudeCliSessionLauncher] failed to load plugin dirs; launching without extension plugins:', err);
-          pluginDirs = undefined;
-        }
-      } else {
-        console.log(
-          `[ClaudeCliSessionLauncher] resolved claude (${claudeExecutable}) lacks --plugin-dir support; ` +
-            'skipping extension plugins (namespaced slash commands will not resolve)',
-        );
-      }
-    }
-
-    // 3. Build the spawn config (resolves exec, sets enhanced PATH, strips API key).
-    const spawnConfig = buildClaudeCliSpawnConfig({
-      claudeExecutable,
-      cwd,
-      mcpConfigPath,
-      model: input.model,
-      sessionId,
-      resumeSessionId,
-      baseEnv: this.deps.baseEnv ?? process.env,
-      enhancedPath: this.deps.getEnhancedPath(),
-      extraEnv,
-      effortLevel: input.effortLevel,
-      allowedMcpServerNames,
-      settingsJson,
-      dangerouslySkipPermissions,
-      additionalDirectories: input.additionalDirectories,
-      pluginDirs,
-      mcpToolsUnavailable,
-    });
-
-    // 4. Spawn the genuine interactive CLI in the terminal strip. Tear the proxy
-    // down when the PTY exits (composed with the PID-watcher cleanup downstream).
+    // Everything after the settings file is written runs under one cleanup, so a
+    // throw anywhere before the PTY owns the file (executable resolution, plugin
+    // discovery, spawn) doesn't leak it or the proxy.
     try {
+      // 2.5. Start the proxy observation backend (Phase 3) BEFORE spawn, so we can
+      // point the CLI's ANTHROPIC_BASE_URL at it. Tear down on PTY exit.
+      if (this.deps.startObservation) {
+        try {
+          observation = await this.deps.startObservation({ sessionId, workspacePath });
+        } catch (err) {
+          // Observation is best-effort: never block the genuine CLI from launching.
+          console.warn('[ClaudeCliSessionLauncher] startObservation failed; launching without proxy:', err);
+          observation = null;
+        }
+      }
+      const extraEnv: Record<string, string> | undefined =
+        observation || Object.keys(permissionHookEnv).length > 0
+          ? {
+              ...(observation
+                ? { ANTHROPIC_BASE_URL: observation.baseUrl, ...observation.env }
+                : {}),
+              ...permissionHookEnv,
+            }
+          : undefined;
+
+      // 2.6. Resolve the `claude` executable once (reused for the plugin-support
+      // probe and the spawn config below).
+      const claudeExecutable = this.deps.resolveClaudeExecutable(workspacePath);
+
+      // NIM-845: load extension Claude-plugin directories so namespaced slash
+      // commands (`/feedback:bug-report`, …) resolve in this CLI session. Gate on
+      // `--plugin-dir` support FIRST — on an old CLI (< 2.1.142) the flag is an
+      // unknown option and would crash the launch, so we skip loading entirely and
+      // log once (silent to the user; commands stay unresolved as before the fix).
+      let pluginDirs: string[] | undefined;
+      if (this.deps.loadPluginDirs) {
+        const supportsPluginDir = this.deps.cliSupportsPluginDir?.(claudeExecutable) ?? true;
+        if (supportsPluginDir) {
+          try {
+            pluginDirs = (await this.deps.loadPluginDirs(workspacePath)).filter(
+              (dir) => typeof dir === 'string' && dir.trim().length > 0,
+            );
+          } catch (err) {
+            // Best-effort: never block the launch over plugin discovery.
+            console.warn('[ClaudeCliSessionLauncher] failed to load plugin dirs; launching without extension plugins:', err);
+            pluginDirs = undefined;
+          }
+        } else {
+          console.log(
+            `[ClaudeCliSessionLauncher] resolved claude (${claudeExecutable}) lacks --plugin-dir support; ` +
+              'skipping extension plugins (namespaced slash commands will not resolve)',
+          );
+        }
+      }
+
+      // 3. Build the spawn config (resolves exec, sets enhanced PATH, strips API key).
+      const spawnConfig = buildClaudeCliSpawnConfig({
+        claudeExecutable,
+        cwd,
+        mcpConfigPath,
+        model: input.model,
+        sessionId,
+        resumeSessionId,
+        baseEnv: this.deps.baseEnv ?? process.env,
+        enhancedPath: this.deps.getEnhancedPath(),
+        extraEnv,
+        effortLevel: input.effortLevel,
+        allowedMcpServerNames,
+        settingsPath,
+        dangerouslySkipPermissions,
+        additionalDirectories: input.additionalDirectories,
+        pluginDirs,
+        mcpToolsUnavailable,
+      });
+
+      // 4. Spawn the genuine interactive CLI in the terminal strip. Tear the proxy
+      // down and delete the settings file when the PTY exits (composed with the
+      // PID-watcher cleanup downstream).
       await this.deps.terminalManager.createClaudeCliTerminal(sessionId, {
         cwd,
         spawnConfig,
@@ -348,16 +378,17 @@ export class ClaudeCliSessionLauncher {
         cols: input.cols,
         rows: input.rows,
         onTurnState: input.onTurnState,
-        onExit: observation || input.onExit
+        onExit: observation || settingsPath || input.onExit
           ? (exitCode) => {
               observation?.stop();
+              removeSettingsFile();
               input.onExit?.(exitCode);
             }
           : undefined,
       });
     } catch (err) {
-      // Spawn failed — don't leak the proxy.
       observation?.stop();
+      removeSettingsFile();
       throw err;
     }
 
@@ -377,6 +408,51 @@ export class ClaudeCliSessionLauncher {
     const safeId = sessionId.replace(/[^A-Za-z0-9_-]/g, '_');
     const filePath = path.join(dir, `${safeId}.mcp.json`);
     await writeFile(filePath, JSON.stringify({ mcpServers }, null, 2));
+    return filePath;
+  }
+
+  /**
+   * Remove `*.settings.json` files older than a day from the temp folder: those
+   * a crash left behind (a clean exit deletes its own). Best-effort. The
+   * `*.mcp.json` files there are overwritten per session, so they are left alone.
+   */
+  async sweepStaleSettingsFiles(): Promise<void> {
+    const dir = this.deps.tempDir ?? path.join(os.tmpdir(), 'nimbalyst-claude-cli');
+    const readDir = this.deps.readDir ?? ((d: string) => fs.readdir(d));
+    const statFile = this.deps.statFile ?? ((f: string) => fs.stat(f));
+    const removeFile = this.deps.removeFile ?? ((f: string) => fs.rm(f, { force: true }));
+    const cutoff = (this.deps.now ?? Date.now)() - STALE_SETTINGS_FILE_MS;
+    let names: string[];
+    try {
+      names = await readDir(dir);
+    } catch {
+      return; // Folder not created yet.
+    }
+    for (const name of names) {
+      if (!name.endsWith('.settings.json')) continue;
+      const file = path.join(dir, name);
+      try {
+        if ((await statFile(file)).mtimeMs < cutoff) await removeFile(file);
+      } catch (err) {
+        console.warn('[ClaudeCliSessionLauncher] failed to sweep stale settings file:', err);
+      }
+    }
+  }
+
+  /**
+   * Write the `--settings` JSON to its own file per launch. The random suffix
+   * keeps a relaunch of the same session from sharing a file that the previous
+   * PTY's exit cleanup is about to delete.
+   */
+  private async writeSettingsFile(sessionId: string, settingsJson: string): Promise<string> {
+    const dir = this.deps.tempDir ?? path.join(os.tmpdir(), 'nimbalyst-claude-cli');
+    const mkdir = this.deps.mkdir ?? ((d: string, o: { recursive: true }) => fs.mkdir(d, o));
+    const writeFile = this.deps.writeFile ?? ((f: string, d: string) => fs.writeFile(f, d, 'utf8'));
+
+    await mkdir(dir, { recursive: true });
+    const safeId = sessionId.replace(/[^A-Za-z0-9_-]/g, '_');
+    const filePath = path.join(dir, `${safeId}.${randomUUID().slice(0, 8)}.settings.json`);
+    await writeFile(filePath, settingsJson);
     return filePath;
   }
 }
