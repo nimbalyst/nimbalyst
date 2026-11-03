@@ -579,6 +579,7 @@ Companion app; pairs with a desktop over encrypted sync. Voice mode is not inclu
 - PostHog integration (opt-in, anonymous)
 - AI usage report with historical graph and activity heatmap
 - Claude model-specific weekly usage percentages and reset times, including Fable
+- Weekly usage history in the Claude and Codex usage popovers: a chart of utilization across a selected week against an even-pace line, and each past week's final percentage (weekly and per-model limits, recorded locally while the app runs, kept indefinitely; weeks without a reading near their reset show as a lower bound)
 - Per-project usage breakdown
 - Per-tool usage tracking (local counters for built-in and MCP/extension tools) surfaced as a Tools section in the AI usage report (top tools, built-in vs MCP split, over-time, per-provider) and as a targeting signal for contextual tips; backfill from past claude-code and codex sessions
 - Developer Dashboard Renders tab for inspecting component re-render counts and causes

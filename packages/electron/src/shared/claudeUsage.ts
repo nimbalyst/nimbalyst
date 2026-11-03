@@ -1,3 +1,5 @@
+import type { UsageWeekRecord } from './usageHistory';
+
 export interface ClaudeUsageWindow {
   utilization: number;
   resetsAt: string | null;
@@ -13,6 +15,8 @@ export interface ClaudeUsageData {
   sevenDay: ClaudeUsageWindow;
   sevenDayOpus?: ClaudeUsageWindow;
   weeklyModelLimits?: ClaudeWeeklyModelLimit[];
+  /** Recorded weekly readings, attached by the main process; see shared/usageHistory.ts. */
+  weeklyHistory?: UsageWeekRecord[];
   lastUpdated: number;
   error?: string;
 }
