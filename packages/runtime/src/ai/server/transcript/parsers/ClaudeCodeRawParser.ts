@@ -654,7 +654,10 @@ export class ClaudeCodeRawParser implements IRawMessageParser {
     // with the same ID that was processed before this nimbalyst_tool_use message.
     // Check in-memory map first, then fall back to DB lookup (covers the case
     // where the assistant tool_use was processed in a prior incremental batch).
-    if (parsed.id) {
+    // Exception (#1890): the commit proposal's host row carries arguments the
+    // SDK row lacks (targetWorktree, repoPath); processDescriptor merges them
+    // into the existing event instead of creating a second one.
+    if (parsed.id && parsed.name !== 'developer_git_commit_proposal') {
       if (context.hasToolCall(parsed.id)) return [];
       const existing = await context.findByProviderToolCallId(parsed.id);
       if (existing) return [];

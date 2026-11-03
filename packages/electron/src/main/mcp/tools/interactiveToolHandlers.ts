@@ -3,6 +3,7 @@ export { handleAskUserQuestion } from './askUserQuestionHandler';
 import { BrowserWindow, ipcMain } from "electron";
 import { AgentMessagesRepository } from "@nimbalyst/runtime/storage/repositories/AgentMessagesRepository";
 import { AISessionsRepository } from "@nimbalyst/runtime/storage/repositories/AISessionsRepository";
+import { TranscriptMigrationRepository } from "@nimbalyst/runtime/storage/repositories/TranscriptMigrationRepository";
 import { STRUCTURED_INPUT_FIELD_TYPES } from "@nimbalyst/collab-protocol";
 import { getSessionStateManager } from "@nimbalyst/runtime/ai/server/SessionStateManager";
 import { notificationService } from "../../services/NotificationService";
@@ -633,6 +634,9 @@ async function runGitCommitProposal(
               // input, so this is the only place it can reach it.
               repoPath: proposalRepoPath,
               targetWorktree: target.worktree,
+              // #1890: the host's decision, so the widget never shows the
+              // auto-commit spinner for a proposal waiting on the user.
+              autoApproved: isAutoCommit,
             },
           }),
           hidden: false,
@@ -673,6 +677,19 @@ async function runGitCommitProposal(
       hidden: false,
       createdAt: now,
     });
+    // #1890: the agent is blocked on this call, so no stream chunk or turn end
+    // will run the transcript step; the widget would never see the rows above.
+    if (TranscriptMigrationRepository.hasService()) {
+      try {
+        const session = await AISessionsRepository.get(targetSessionId);
+        await TranscriptMigrationRepository.getService().processNewMessages(
+          targetSessionId,
+          session?.provider ?? "claude-code"
+        );
+      } catch (err) {
+        console.warn("[MCP Server] processNewMessages after commit proposal failed:", err);
+      }
+    }
     if (commitWindow) {
       // Include the approval decision and proposal data so voice needs no settings/DB round-trip.
       commitWindow.webContents.send("ai:gitCommitProposal", {

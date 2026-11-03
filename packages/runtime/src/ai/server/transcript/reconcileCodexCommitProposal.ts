@@ -41,3 +41,24 @@ export async function reconcileCodexCommitProposal(
   });
   return store.getEventById(existing.id);
 }
+
+/** #1890: Claude's host row and the SDK's tool_use share one provider id. When
+ * the SDK row was parsed first, merge the host's resolved arguments (absolute
+ * files, repoPath, targetWorktree, autoApproved) into that event; the widget
+ * reads them to decide between the auto-commit spinner and the approval card.
+ * The host-first order needs nothing: the parser drops the later SDK row.
+ */
+export async function reconcileClaudeCommitProposal(
+  store: ITranscriptEventStore,
+  sessionId: string,
+  desc: ToolCallStartedDescriptor,
+): Promise<TranscriptEvent | null> {
+  const id = desc.providerToolCallId;
+  if (!id || desc.toolName !== COMMIT_TOOL || parseCodexToolLookupId(id)) return null;
+  const existing = await store.findByProviderToolCallId(id, sessionId);
+  if (!existing) return null;
+  const payload = existing.payload as Record<string, unknown>;
+  if (!isCommitTool(payload.toolName) || payload.toolName === COMMIT_TOOL) return null;
+  await store.mergeEventPayload(existing.id, { arguments: desc.arguments });
+  return store.getEventById(existing.id);
+}

@@ -80,6 +80,41 @@ describe('TranscriptRuntime', () => {
     }
   });
 
+  // #1890: the host's row carries the resolved targetWorktree the widget needs
+  // to show the manual-approval card. It must reach the event whichever row
+  // the parser sees first, in one batch or across batches.
+  describe('Claude commit proposal host arguments', () => {
+    const id = 'toolu_commit';
+    const args = { commitMessage: 'commit', filesToStage: ['file.ts'] };
+    const enriched = { ...args, filesToStage: ['/wt/file.ts'], repoPath: '/wt',
+      targetWorktree: { path: '/wt', branch: 'feature' }, autoApproved: false };
+    const sdkStart = { type: 'assistant', message: { id: 'msg_1', model: 'claude-opus-4-6', content: [
+      { type: 'tool_use', id, name: 'mcp__nimbalyst-mcp__developer_git_commit_proposal', input: args },
+    ] } };
+    const hostStart = { type: 'nimbalyst_tool_use', id, name: 'developer_git_commit_proposal', input: enriched };
+    const cases: Array<[string, unknown[][]]> = [
+      ['SDK first, same batch', [[sdkStart, hostStart]]],
+      ['SDK first, earlier batch', [[sdkStart], [hostStart]]],
+      ['host first', [[hostStart], [sdkStart]]],
+    ];
+    for (const [name, batches] of cases) {
+      it(`exposes the host arguments on one card (${name})`, async () => {
+        const rows: RawMessage[] = [];
+        const runtime = new TranscriptRuntime(makeRawStore(rows));
+        for (const batch of batches) {
+          for (const content of batch) {
+            rows.push({ id: rows.length + 1, sessionId: 'c', source: 'claude-code', direction: 'output',
+              content: JSON.stringify(content), createdAt: new Date(1792862293000 + rows.length) });
+          }
+          await runtime.processNewMessages('c', 'claude-code');
+        }
+        const calls = (await runtime.getViewMessages('c', 'claude-code')).filter(m => m.type === 'tool_call');
+        expect(calls).toHaveLength(1);
+        expect(calls[0].toolCall?.arguments).toEqual(enriched);
+      });
+    }
+  });
+
   it('builds canonical events on first access for an unseen session', async () => {
     const raw = makeRawStore([userInput(1, 's1', 'hello world')]);
     const runtime = new TranscriptRuntime(raw);

@@ -11,7 +11,7 @@ import type { TranscriptWriter } from './TranscriptWriter';
 import type { ITranscriptEventStore, TranscriptEvent } from './types';
 import type { CanonicalEventDescriptor } from './parsers/IRawMessageParser';
 import type { RawMessage } from './TranscriptTransformer';
-import { reconcileCodexCommitProposal } from './reconcileCodexCommitProposal';
+import { reconcileClaudeCommitProposal, reconcileCodexCommitProposal } from './reconcileCodexCommitProposal';
 
 const PROMPT_ACTORS = new Set(['human', 'agent', 'system']);
 
@@ -112,7 +112,8 @@ export async function processDescriptor(
     }
 
     case 'tool_call_started': {
-      const reconciled = await reconcileCodexCommitProposal(store, sessionId, desc);
+      const reconciled = await reconcileCodexCommitProposal(store, sessionId, desc)
+        ?? await reconcileClaudeCommitProposal(store, sessionId, desc);
       if (reconciled && desc.providerToolCallId) {
         toolEventIds.set(desc.providerToolCallId, reconciled.id);
         return reconciled;

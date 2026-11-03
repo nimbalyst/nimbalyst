@@ -906,7 +906,13 @@ export const GitCommitConfirmationWidget: React.FC<CustomToolWidgetProps> = ({
 
   // Auto-approve is a preference, not evidence that the server committed.
   // Wait for its result without issuing a second git:commit from the widget.
-  if (host?.autoCommitEnabled && !targetWorktree && !isCommitting) {
+  // #1890: the host records its own decision in the arguments; use it so the
+  // widget never spins on a proposal the host is holding for the user. The
+  // preference predicate covers only the moment before the host row lands.
+  const hostAutoApproved: boolean | undefined =
+    typeof args.autoApproved === 'boolean' ? args.autoApproved : undefined;
+  const autoApproved = hostAutoApproved ?? (!!host?.autoCommitEnabled && !targetWorktree);
+  if (autoApproved && !isCommitting) {
     return (
       <div data-testid="git-commit-widget" data-state="committing"
         className="git-commit-widget rounded-lg bg-[var(--nim-bg-secondary)] border border-[var(--nim-border)] overflow-hidden">

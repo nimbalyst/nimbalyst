@@ -1282,6 +1282,25 @@ describe('GitCommitConfirmationWidget', () => {
     expect(gitCommit).not.toHaveBeenCalled();
   });
 
+  // #1890: the host's recorded decision wins over the live preference.
+  it.each([
+    [true, false, 'pending'],
+    [false, true, 'committing'],
+  ])('renders from the host decision (preference=%s, autoApproved=%s)', async (pref, autoApproved, state) => {
+    const { interactiveWidgetHostAtom } = await import('../../../../store/atoms/interactiveWidgetHost');
+    const testStore = createStore();
+    testStore.set(interactiveWidgetHostAtom('host-decision'), {
+      autoCommitEnabled: pref, gitCommit: vi.fn(), trackEvent: vi.fn(),
+    } as unknown as import('../CustomToolWidgets/InteractiveWidgetHost').InteractiveWidgetHost);
+    const message = makeToolMessage('git_commit_proposal', {
+      commitMessage: 'fix: x', filesToStage: ['file.ts'], autoApproved,
+    });
+    render(<JotaiProvider store={testStore}>
+      <GitCommitConfirmationWidget message={message} isExpanded={false} onToggle={() => {}} sessionId="host-decision" />
+    </JotaiProvider>);
+    expect(screen.getByTestId('git-commit-widget').dataset.state).toBe(state);
+  });
+
   it('sends cancel through the interactive host', async () => {
     const { interactiveWidgetHostAtom } = await import('../../../../store/atoms/interactiveWidgetHost');
 
