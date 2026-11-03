@@ -1,6 +1,33 @@
 // @vitest-environment node
 import { describe, it, expect, vi } from 'vitest';
 import { ingestMobileQueuedPrompts } from '../mobileQueuedPromptIngest';
+import { captureQueueAuthorization, holdQueueAfterStop, isQueueStopped } from '../stoppedQueueHold';
+
+describe('mobile send authorization after Stop', () => {
+  it('keeps sync replay held and releases only after a genuinely new durable send', async () => {
+    const { existing, deps } = makeDeps();
+    const sessionId = 'mobile-hold-replay';
+    existing.add('old-phone-row');
+    holdQueueAfterStop(sessionId);
+    try {
+      await ingestMobileQueuedPrompts(deps, sessionId, [{ id: 'old-phone-row', prompt: 'old' }]);
+      expect(isQueueStopped(sessionId)).toBe(true);
+      await ingestMobileQueuedPrompts(deps, sessionId, [{ id: 'new-phone-row', prompt: 'new' }]);
+      expect(isQueueStopped(sessionId)).toBe(false);
+      expect(deps.createPrompt).toHaveBeenCalledOnce();
+    } finally { captureQueueAuthorization(sessionId)(); }
+  });
+
+  it('does not let a mobile save finishing after a newer Stop release that hold', async () => {
+    const sessionId = 'mobile-hold-new-stop';
+    const { deps } = makeDeps();
+    deps.createPrompt = vi.fn(async () => { holdQueueAfterStop(sessionId); });
+    try {
+      await ingestMobileQueuedPrompts(deps, sessionId, [{ id: 'slow-phone-row', prompt: 'new' }]);
+      expect(isQueueStopped(sessionId)).toBe(true);
+    } finally { captureQueueAuthorization(sessionId)(); }
+  });
+});
 
 function makeDeps(overrides: Partial<Parameters<typeof ingestMobileQueuedPrompts>[0]> = {}) {
   const existing = new Set<string>();

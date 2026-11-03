@@ -328,6 +328,7 @@ export class CodexAppServerProtocol implements AgentProtocol {
     let resolveRetirement!: () => void;
     let rejectRetirement!: (error: unknown) => void;
     let nativeRetirementSettled = false;
+    let cancelledAfterResolvedStart = false;
     let recoveryErrorReported = false;
     const failRetirement = () => {
       if (!nativeRetirement || nativeRetirementSettled || raw.cleanupStarted) return;
@@ -376,7 +377,7 @@ export class CodexAppServerProtocol implements AgentProtocol {
     };
     const onNotification = (method: string, params: unknown) => {
       const routing = extractNotificationRouting(params);
-      if (method === 'turn/completed' && routing.threadId === raw.threadId && routing.turnId) {
+      if ((method === 'turn/completed' || method === 'turn/failed') && routing.threadId === raw.threadId && routing.turnId) {
         terminalTurns.add(routing.turnId);
         if (nativeRetirement && turnStartResultId === routing.turnId) resolveRetirement();
       }
@@ -409,12 +410,17 @@ export class CodexAppServerProtocol implements AgentProtocol {
       const params: TurnInterruptParams = { threadId: raw.threadId, turnId: turnStartResultId };
       Promise.resolve(raw.client.request('turn/interrupt', params))
         .catch((err) => {
-          failRetirement();
+          // A known turn can still prove retirement with its exact terminal
+          // after an interrupt RPC fails. Unknown starts remain fail-closed.
+          if (!cancelledAfterResolvedStart) failRetirement();
           console.warn('[CODEX][APPSERVER] turn/interrupt failed:', err);
         });
     };
     const onAbort = () => {
-      if (!raw.cleanupStarted && turnStartIssued && !turnStartResolved && !nativeRetirement) {
+      const awaitingOwnedTerminal = turnStartIssued && (!turnStartResolved ||
+        !turnStartResultId || !terminalTurns.has(turnStartResultId));
+      if (!raw.cleanupStarted && awaitingOwnedTerminal && !nativeRetirement) {
+        cancelledAfterResolvedStart = turnStartResolved;
         nativeRetirement = new Promise<void>((resolve, reject) => {
           resolveRetirement = () => {
             if (nativeRetirementSettled) return;
@@ -437,6 +443,7 @@ export class CodexAppServerProtocol implements AgentProtocol {
           raw.cancelledStarts?.delete(captured);
           raw.cancelledStartCleanups?.delete(cleanup);
         }, () => { raw.cancelledStartCleanups?.delete(cleanup); });
+        if (turnStartResolved && !turnStartResultId) failRetirement();
       }
       requestInterrupt();
       push({ kind: 'abort' });

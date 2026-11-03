@@ -19,6 +19,7 @@ import type { SessionManager } from '@nimbalyst/runtime/ai/server';
 import type { DriveReason } from './QueueDriveService';
 import { getLocalHostDeviceId } from './sessionHostAttribution';
 import { registerMobileHierarchyAuthority } from './mobileHierarchySync';
+import type { QueueStopRequest } from './stoppedQueueHold';
 
 /** How long a finished mobile request ID stays guarded against redelivery. */
 const MOBILE_REQUEST_DEDUP_GRACE_MS = 60_000;
@@ -34,6 +35,7 @@ const MOBILE_REQUEST_DEDUP_GRACE_MS = 60_000;
  */
 export interface MobileSyncContext {
   sessionManager: SessionManager;
+  cancelSessionTurn(sessionId: string, request?: QueueStopRequest): Promise<{ success: boolean; error?: string }>;
   publishQueueStateToSync(sessionId: string): Promise<void>;
   triggerQueuedPromptProcessingForSession(
     sessionId: string,
@@ -311,6 +313,7 @@ export class MobileSyncHandler {
       // Initialize mobile session control handler (cancel, question responses, etc.)
       // This is in a separate module to keep AIService focused
       initMobileSessionControlHandler(syncProvider, findWindowByWorkspace, {
+        cancelSessionTurn: (sessionId, request) => this.ctx.cancelSessionTurn(sessionId, request),
         triggerQueuedPromptProcessing: (sessionId, workspacePath) =>
           this.ctx.triggerQueuedPromptProcessingForSession(sessionId, workspacePath, 'mobile-control'),
         rollbackExecutingPrompts: async (sessionId) => {

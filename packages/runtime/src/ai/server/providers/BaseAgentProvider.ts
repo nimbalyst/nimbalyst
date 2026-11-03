@@ -368,12 +368,13 @@ export abstract class BaseAgentProvider extends BaseAIProvider {
       hidden?: boolean;
       searchable?: boolean;
     }
-  ): Promise<void> {
+  ): Promise<boolean> {
+    if (this.config.skipLogging) return false;
     try {
       // Check if database is available
       AgentMessagesRepository.getStore();
     } catch {
-      return; // No database available
+      return false; // No database available
     }
 
     try {
@@ -387,8 +388,10 @@ export abstract class BaseAgentProvider extends BaseAIProvider {
         undefined,
         options?.searchable ?? true
       );
+      return true;
     } catch {
       // Best-effort - don't crash on log failures
+      return false;
     }
   }
 

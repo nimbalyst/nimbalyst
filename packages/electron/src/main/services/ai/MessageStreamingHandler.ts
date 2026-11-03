@@ -6,6 +6,8 @@ import { codexQuestionTurns } from './codexQuestionTurns';
 import { awaitSessionTurnControl, beginSessionTurn, isDirectTurnAdmissionBlocked, isTurnRecoveryQuarantined, TurnControlPendingError, type SessionTurn } from './sessionTurnControl';
 import { supersedeOpenQuestions } from './supersedeOpenQuestions';
 import { beginTurnSetup, TurnSetupCancelledError } from './turnSetupStages';
+import { CodexPreparationCancelledError } from '@nimbalyst/runtime/ai/server/protocols/codexAppServer/setupStage';
+import { captureQueueAuthorization, isQueueStopped } from './stoppedQueueHold';
 import { canDispatchIntoDrain } from './drainFollowUp';
 import { publishTurnNotExecuting } from './turnExecutingSync';
 import { cancelUsageLimitResume, maybeScheduleUsageLimitResume } from './usageLimitAutoResume';
@@ -224,6 +226,8 @@ interface AIServiceInternal {
     source: string,
   ): Promise<boolean>;
   requestQueueDrive(sessionId: string, workspacePath: string, reason: DriveReason): void;
+  queuePromptForSession(sessionId: string, prompt: string, attachments?: any[], documentContext?: any): Promise<unknown>;
+  publishQueueStateToSync(sessionId: string): Promise<void>;
   runAutoContextCommand(
     session: SessionData,
     workspacePath: string,
@@ -380,6 +384,29 @@ export class MessageStreamingHandler {
     sessionId?: string,
     workspacePath?: string,
   ) => {
+    if (!queued && sessionId && isQueueStopped(sessionId)) {
+      // A fresh Send authorizes FIFO recovery. Save it behind the retained input,
+      // rather than letting the direct path overtake that earlier instruction.
+      const authorize = captureQueueAuthorization(sessionId);
+      const actor = documentContext?.promptProvenance?.actor;
+      const humanSend = actor ? actor === 'human' : (documentContext as any)?.inputType === 'user';
+      await this.svc.queuePromptForSession(sessionId, message, documentContext?.attachments, {
+        ...documentContext,
+        promptProvenance: documentContext?.promptProvenance ?? (humanSend
+          ? { actor: 'human', origin: 'composer' }
+          : { actor: 'system', origin: 'automation' }),
+      });
+      if (humanSend) authorize();
+      await this.svc.publishQueueStateToSync(sessionId);
+      safeSend(event, 'ai:queuedPromptsReceived', { sessionId });
+      let drivePath = workspacePath;
+      if (!drivePath) {
+        const stored = await AISessionsRepository.get(sessionId);
+        drivePath = stored?.worktreePath || stored?.workspacePath;
+      }
+      if (drivePath) this.svc.requestQueueDrive(sessionId, drivePath, 'renderer-trigger');
+      return { content: '' };
+    }
     if (sessionId && !queued && isDirectTurnAdmissionBlocked(sessionId)) {
       throw new TurnControlPendingError(isTurnRecoveryQuarantined(sessionId));
     }
@@ -1444,6 +1471,7 @@ export class MessageStreamingHandler {
       const effectiveMode = documentContext?.mode ?? session.mode;
 
       const contextWithSession: DocumentContext = {
+        queuedPromptId,
         // Document fields from prepared context
         filePath: preparedContext.filePath,
         fileType: preparedContext.fileType,
@@ -2879,6 +2907,12 @@ export class MessageStreamingHandler {
 
       return { content: fullResponse };
     } catch (error) {
+      if (queuedPromptId && error instanceof CodexPreparationCancelledError) {
+        // The queue owns durable retry and the Stop controller owns settlement.
+        // Do not publish an agent error or tell the user to resend retained input.
+        this.svc.processingQueuedPromptIds.delete(queuedPromptId);
+        throw error;
+      }
       await sessionInbox.end(inboxTurn, false).catch(err => logger.main.error('[AIService] Inbox retirement failed:', err));
       const retirement = codexQuestionTurns.end(questionTurn);
       void retirement.catch(err => logger.main.error('[AIService] Question recovery failed after stream error:', err));

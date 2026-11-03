@@ -25,6 +25,7 @@ const controls = new Map<string, {
   result: Promise<TurnControlResult>;
   stop(): void;
   fenced: boolean;
+  sequence: number;
 }>();
 
 const postControlDrives = new Map<string, Set<symbol>>();
@@ -33,7 +34,48 @@ export function isDirectTurnAdmissionBlocked(sessionId: string): boolean {
   return isTurnAdmissionBlocked(sessionId) || controls.has(sessionId) || postControlDrives.has(sessionId);
 }
 
-const recoveries = new Map<string, { finished: Promise<void> }>();
+interface TurnRecovery {
+  pending: Set<Promise<unknown>>;
+  resume: { sequence: number; run(): Promise<void> };
+  retired: Promise<void>;
+}
+const recoveries = new Map<string, TurnRecovery>();
+let controlSequence = 0;
+
+/** Join overlapping timeouts; the newest control owns cleanup after all retire. */
+function retainTurnRecovery(
+  sessionId: string,
+  pending: Promise<unknown>[],
+  sequence: number,
+  resume: () => Promise<void>,
+  logError: (error: unknown) => void,
+): void {
+  const existing = recoveries.get(sessionId);
+  if (existing) {
+    for (const work of pending) existing.pending.add(work);
+    if (sequence > existing.resume.sequence) existing.resume = { sequence, run: resume };
+    return;
+  }
+  let resolveRetired!: () => void;
+  const recovery: TurnRecovery = {
+    pending: new Set(pending), resume: { sequence, run: resume },
+    retired: new Promise<void>(resolve => { resolveRetired = resolve; }),
+  };
+  recoveries.set(sessionId, recovery);
+  void (async () => {
+    while (recovery.pending.size) {
+      const batch = [...recovery.pending];
+      await Promise.allSettled(batch);
+      for (const work of batch) recovery.pending.delete(work);
+    }
+    if (recoveries.get(sessionId) !== recovery) return;
+    recoveries.delete(sessionId);
+    resolveRetired();
+    // A newer live control already owns cleanup and its eventual drive.
+    if ((controls.get(sessionId)?.sequence ?? -1) > recovery.resume.sequence) return;
+    await recovery.resume.run();
+  })().catch(logError);
+}
 
 /** A timed-out operation remains live until actual retirement or app restart. */
 export function isTurnRecoveryQuarantined(sessionId: string): boolean {
@@ -151,6 +193,7 @@ export function performTurnInterruption(options: TurnControlOptions, progress: {
     }
   }
   if (!options.isCurrentProvider()) return Promise.resolve({ success: false, error: 'The session provider was replaced.' });
+  const sequence = ++controlSequence;
 
   const captured = [...(turns.get(sessionId) ?? [])];
   const question = codexQuestionTurns.current(sessionId);
@@ -182,7 +225,7 @@ export function performTurnInterruption(options: TurnControlOptions, progress: {
   let resolveResult!: (result: TurnControlResult) => void;
   let resolveDecision!: (accepted: boolean) => void;
   const decision = new Promise<boolean>(resolve => { resolveDecision = resolve; });
-  const operation = { result: new Promise<TurnControlResult>(resolve => { resolveResult = resolve; }), stop, fenced: true };
+  const operation = { result: new Promise<TurnControlResult>(resolve => { resolveResult = resolve; }), stop, fenced: true, sequence };
   controls.set(sessionId, operation);
   let reservedDrive: Promise<DriveOutcome | void> | undefined;
   const driveReserved = async () => {
@@ -256,6 +299,11 @@ export function performTurnInterruption(options: TurnControlOptions, progress: {
       options.guard.delete(sessionId);
       if (!progress.settled) await step('session settlement', async () => { await options.settle(); progress.settled = true; });
       if (progress.failure) throw progress.failure;
+      // A superseded drive may time out while this control is cleaning up.
+      // Keep our fence until that exact drive retires. Do not add this wait to
+      // pendingSteps: a timeout joins that recovery, so doing so would self-wait.
+      const earlierRecovery = recoveries.get(sessionId);
+      if (earlierRecovery) await bounded(earlierRecovery.retired, 'earlier control retirement', options.timeouts?.stageMs ?? 10_000);
       // Release admission so this drive can claim its successor. A new
       // control may target that successor once its handle is registered.
       driving = true;
@@ -274,11 +322,7 @@ export function performTurnInterruption(options: TurnControlOptions, progress: {
         if (timedOutDuringDrive) options.invalidateDrive?.(reservedDrive);
         const pending = [...pendingSteps, ...captured.map(turn => turn.finished),
           ...[...(turns.get(sessionId) ?? [])].map(turn => turn.finished)];
-        const recovery = { finished: Promise.resolve() };
-        recoveries.set(sessionId, recovery);
-        recovery.finished = Promise.allSettled(pending).then(async () => {
-          if (recoveries.get(sessionId) !== recovery) return;
-          recoveries.delete(sessionId);
+        retainTurnRecovery(sessionId, pending, sequence, async () => {
           // Retry only queue admission after a late drive. The existing driver
           // and exact claims coalesce it; never abort or sweep its successor.
           if (timedOutDuringDrive && options.isCurrentProvider()) {
@@ -289,20 +333,20 @@ export function performTurnInterruption(options: TurnControlOptions, progress: {
               if (error instanceof TurnControlTimeoutError) {
                 options.invalidateDrive?.(reservedDrive);
                 const writers = [...(turns.get(sessionId) ?? [])];
-                const retryRecovery = { finished: Promise.resolve() };
-                // A newer Stop may already own recovery for these writers.
-                if (!recoveries.has(sessionId)) recoveries.set(sessionId, retryRecovery);
-                retryRecovery.finished = Promise.allSettled(writers.map(turn => turn.finished)).then(() => {
-                  if (recoveries.get(sessionId) === retryRecovery) recoveries.delete(sessionId);
-                });
+                // Retain the exact retry drive as well as any registered host.
+                // A newer Stop keeps cleanup ownership, but joins these lives.
+                retainTurnRecovery(sessionId,
+                  [...writers.map(turn => turn.finished), ...(reservedDrive ? [reservedDrive] : [])],
+                  sequence, async () => {}, options.logError);
               }
               options.logError(error);
             }
           } else if (options.isCurrentProvider()) {
+            // Recovery continues the original control; it is not a new human Stop.
             const resumed = await performTurnInterruption({ ...options, mode: 'stop' }, progress);
             if (!resumed.success) options.logError(new Error(resumed.error));
           }
-        }).catch(options.logError);
+        }, options.logError);
       }
       options.logError(error);
       return { success: false, error: error instanceof Error ? error.message : 'Unable to interrupt the current turn.' };

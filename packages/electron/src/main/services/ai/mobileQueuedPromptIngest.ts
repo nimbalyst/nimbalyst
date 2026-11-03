@@ -15,6 +15,7 @@
 
 import type { CreateQueuedPromptInput } from '../PGLiteQueuedPromptsStore';
 import { createKeyedSerialQueue } from '@nimbalyst/runtime/sync/indexPublication';
+import { captureQueueAuthorization } from './stoppedQueueHold';
 
 // Multiple windows register listeners on the same provider. Serialize their
 // dedupe/insert/publish work so they cannot race to insert the same mobile ID.
@@ -51,13 +52,15 @@ export async function ingestMobileQueuedPrompts(
   sessionId: string,
   prompts: IncomingQueuedPrompt[],
 ): Promise<number> {
-  return ingestionQueue.run(sessionId, () => ingestQueuedPrompts(deps, sessionId, prompts));
+  const authorize = captureQueueAuthorization(sessionId);
+  return ingestionQueue.run(sessionId, () => ingestQueuedPrompts(deps, sessionId, prompts, authorize));
 }
 
 async function ingestQueuedPrompts(
   deps: MobileQueuedPromptIngestDeps,
   sessionId: string,
   prompts: IncomingQueuedPrompt[],
+  authorize: () => void,
 ): Promise<number> {
   if (prompts.length === 0) return 0;
 
@@ -106,6 +109,9 @@ async function ingestQueuedPrompts(
     }
 
     deps.logInfo(`[AIService] Inserted ${newPromptsCount} new prompts into queued_prompts table`);
+    // Only a genuinely new durable mobile send releases Stop. Sync replays above
+    // return without authorization, and a later Stop invalidates this receipt.
+    authorize();
 
     // Before anything that can claim: a claim publishes the emptied queue, and
     // a snapshot taken here but sent after that would re-assert a prompt the

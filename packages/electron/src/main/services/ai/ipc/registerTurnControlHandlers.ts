@@ -14,6 +14,7 @@ import {
 import { agentCapabilitiesForProviderType } from '@nimbalyst/runtime/ai/server/agentCapabilities';
 import { safeSend } from '../aiServiceUtils';
 import { performTurnInterruption } from '../sessionTurnControl';
+import { beginQueueStopRequest, captureQueueAuthorization, type QueueStopRequest } from '../stoppedQueueHold';
 import { cancelTurnSetup } from '../turnSetupStages';
 import type { AIServiceContext } from './AIServiceContext';
 
@@ -24,23 +25,22 @@ import type { AIServiceContext } from './AIServiceContext';
  * why compaction lives here rather than with the model handlers: it is a
  * mid-conversation control operation, not a configuration read.
  */
-export function registerTurnControlHandlers(ctx: AIServiceContext): void {
-  // Cancel current request
-  safeHandle('ai:cancelRequest', async (_event, sessionId: string, chunksReceived?: number) => {
+export async function cancelSessionTurn(ctx: AIServiceContext, sessionId: string, chunksReceived?: number, request?: QueueStopRequest) {
+  if (!sessionId) throw new Error('Session ID is required to cancel request');
+  const stopRequest = request ?? beginQueueStopRequest(sessionId);
+  try {
     // console.log(`[AIService] ai:cancelRequest received for sessionId: ${sessionId}`);
     // Abort the provider for the specific session
-    if (!sessionId) {
-      throw new Error('Session ID is required to cancel request');
-    }
-
     // Use repository directly - we just need session metadata (provider type),
     // not the full session load with messages
     const { AISessionsRepository } = await import('@nimbalyst/runtime/storage/repositories/AISessionsRepository');
     const session = await AISessionsRepository.get(sessionId);
     if (!session) {
+      stopRequest.restorePreviousHold();
       console.warn(`[AIService] Cancel failed - session not found: ${sessionId}`);
       return { success: false, error: 'Session not found' };
     }
+    if (session.provider !== 'openai-codex') stopRequest.restorePreviousHold();
 
     if (session.provider === 'claude-code-cli') {
       cancelTurnSetup(sessionId);
@@ -77,7 +77,7 @@ export function registerTurnControlHandlers(ctx: AIServiceContext): void {
       ctx.analytics.sendEvent('cancel_ai_request', {provider: providerType})
     }
     const inbox = sessionInbox.current(sessionId);
-    return performTurnInterruption({
+    const control = performTurnInterruption({
       sessionId, mode: 'stop', provider, guard: ctx.sessionsProcessingQueue,
       isCurrentProvider: () => (ProviderFactory.getProvider(session.provider as AIProviderType, sessionId) ?? null) === provider,
       retireInbox: () => sessionInbox.end(inbox, false),
@@ -94,12 +94,23 @@ export function registerTurnControlHandlers(ctx: AIServiceContext): void {
       },
       logError: error => logger.main.error('[AIService] Turn cancellation failed:', error),
     });
-  });
+    // performTurnInterruption synchronously registered its retirement fence.
+    stopRequest.finishLookup();
+    return control;
+  } finally { stopRequest.finishLookup(); }
+}
+
+export function registerTurnControlHandlers(ctx: AIServiceContext): void {
+  safeHandle('ai:cancelRequest', (_event, sessionId: string, chunksReceived?: number) =>
+    cancelSessionTurn(ctx, sessionId, chunksReceived));
 
   // Only the renderer's send-now invokes this (NIM-7642).
-  safeHandle('ai:interruptCurrentTurn', (_event, sessionId: string) =>
-    ctx.interruptCurrentTurn(sessionId, { userSendNow: true })
-  );
+  safeHandle('ai:interruptCurrentTurn', (_event, sessionId: string) => {
+    if (!sessionId) throw new Error('Session ID is required to interrupt');
+    // Authorize the actual press once; deferred replays must respect newer Stop.
+    captureQueueAuthorization(sessionId)();
+    return ctx.interruptCurrentTurn(sessionId, { userSendNow: true });
+  });
 
   // #1252: compact via the provider's real RPC. The renderer used to send
   // the literal string "/compact" as a user turn, which only ever worked for

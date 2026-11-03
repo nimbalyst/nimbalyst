@@ -8,10 +8,12 @@
 
 import type { SyncProvider, SessionControlMessage } from '@nimbalyst/runtime/sync';
 import {
+  ProviderFactory,
   isAskUserQuestionProvider,
   isExitPlanModeProvider,
   isToolPermissionProvider,
 } from '@nimbalyst/runtime/ai/server';
+import type { AIProviderType } from '@nimbalyst/runtime/ai/server/types';
 import { AISessionsRepository, type PermissionScope } from '@nimbalyst/runtime';
 import { ipcMain, BrowserWindow } from 'electron';
 import { logger } from '../../utils/logger';
@@ -22,11 +24,12 @@ import {
   getRequestUserInputFallbackResponseChannel,
   getToolPermissionResponseChannel,
 } from '../../mcp/tools/interactiveToolHandlers';
-import { deliverMobilePromptResponse, resolveSessionProvider } from './MobilePromptDelivery';
+import { deliverMobilePromptResponse } from './MobilePromptDelivery';
 import { isInteractivePromptClosed } from './questionTerminalResultLookup';
 import { handleGitCommitResponse } from './MobileGitCommitResponse';
 import { buildToolPermissionResponseRecord } from './claudeCliToolPermission';
 import { findWindowByWorkspace } from '../../window/WindowManager';
+import { beginQueueStopRequest, type QueueStopRequest } from './stoppedQueueHold';
 
 const log = logger.ai;
 
@@ -104,6 +107,8 @@ export { resolveGitCommitWorkspacePath } from './MobileGitCommitResponse';
  * this module stays free of a circular dependency on AIService.
  */
 export interface MobileSessionControlCallbacks {
+  /** Main-process turn retirement shared with desktop Stop. */
+  cancelSessionTurn(sessionId: string, request?: QueueStopRequest): Promise<{ success: boolean; error?: string }>;
   /**
    * Trigger queue processing for a session. Used by `case 'prompt'` so when
    * iOS delivers a prompt while the desktop session is idle (or busy), the
@@ -396,6 +401,7 @@ async function handleCancel(
   sessionId: string,
   callbacks: MobileSessionControlCallbacks
 ): Promise<void> {
+  const stopRequest = beginQueueStopRequest(sessionId);
   // Defensive cleanup (provider-agnostic): if a queued prompt was in-flight when
   // mobile cancelled, the DB row would otherwise stay 'executing' and be invisible
   // to listPending. Rollback so the queue isn't wedged after this cancel.
@@ -413,7 +419,36 @@ async function handleCancel(
   // claude-code-cli is an external CLI process with NO in-process provider —
   // abort it by sending Ctrl-C to the terminal PTY, mirroring the desktop
   // `ai:cancelRequest` handler (AIService.ts).
-  const { providerType, provider } = await resolveSessionProvider(sessionId);
+  // Stop needs an authoritative provider: interactive-answer delivery's legacy
+  // Claude fallback must not turn a failed lookup into a different cancellation.
+  let session: Awaited<ReturnType<typeof AISessionsRepository.get>>;
+  try { session = await AISessionsRepository.get(sessionId); }
+  catch (error) { stopRequest.finishLookup(); log.error('Mobile cancel: provider lookup failed:', error); return; }
+  if (!session) {
+    stopRequest.restorePreviousHold();
+    stopRequest.finishLookup();
+    log.warn('Mobile cancel: session not found:', sessionId);
+    return;
+  }
+  if (!session.provider) {
+    stopRequest.finishLookup();
+    log.warn('Mobile cancel: session provider unavailable:', sessionId);
+    return;
+  }
+  const providerType = session.provider as AIProviderType;
+  if (providerType === 'openai-codex') {
+    try {
+      const result = await callbacks.cancelSessionTurn(sessionId, stopRequest);
+      if (result.success) notifyAllWindows('ai:sessionCancelled', { sessionId });
+      else log.warn('Mobile cancel: shared controller did not finish:', sessionId, result.error);
+    } catch (error) {
+      log.error('Mobile cancel: shared controller failed:', error);
+    } finally { stopRequest.finishLookup(); }
+    return;
+  }
+  stopRequest.restorePreviousHold();
+  stopRequest.finishLookup();
+  const provider = ProviderFactory.getProvider(providerType, sessionId);
   if (providerType === 'claude-code-cli') {
     const { getTerminalSessionManager } = await import('../TerminalSessionManager');
     const terminalManager = getTerminalSessionManager();

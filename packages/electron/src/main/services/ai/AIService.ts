@@ -75,7 +75,7 @@ import { registerInitHandlers } from './ipc/registerInitHandlers';
 import { registerSessionHandlers } from './ipc/registerSessionHandlers';
 import { registerQueuedPromptHandlers } from './ipc/registerQueuedPromptHandlers';
 import { registerInteractivePromptHandlers } from './ipc/registerInteractivePromptHandlers';
-import { registerTurnControlHandlers } from './ipc/registerTurnControlHandlers';
+import { cancelSessionTurn, registerTurnControlHandlers } from './ipc/registerTurnControlHandlers';
 import { registerSettingsHandlers } from './ipc/registerSettingsHandlers';
 import { registerModelHandlers } from './ipc/registerModelHandlers';
 import { registerProjectSettingsHandlers } from './ipc/registerProjectSettingsHandlers';
@@ -90,6 +90,7 @@ import { createWorkspaceWindowResolver } from './resolveWorkspaceWindow';
 import { runQueueDriveAttempt } from './queueDriveAttempt';
 import { wakeParentAfterChildSettle } from './wakeParentAfterChildSettle';
 import { beginSessionTurn, isTurnAdmissionBlocked, performTurnInterruption } from './sessionTurnControl';
+import { captureQueueAuthorization } from './stoppedQueueHold';
 import { publishQueuedPromptsToSync } from './queuedPromptSyncPublisher';
 import { onWorkspaceWindowAvailable } from '../../window/workspaceWindowAvailability';
 import { dispatchQueuedPromptToClaudeCli } from './claudeCliQueueDispatch';
@@ -202,6 +203,7 @@ export class AIService {
     // Initialize mobile sync handler if sync is enabled
     this.mobileSync = new MobileSyncHandler({
       sessionManager: this.sessionManager,
+      cancelSessionTurn: (sessionId, request) => cancelSessionTurn(this.buildIpcContext(), sessionId, undefined, request),
       publishQueueStateToSync: (sessionId) => this.publishQueueStateToSync(sessionId),
       triggerQueuedPromptProcessingForSession: (sessionId, workspacePath, reason) =>
         this.triggerQueuedPromptProcessingForSession(sessionId, workspacePath, reason),
@@ -281,6 +283,7 @@ export class AIService {
     attachments?: any[],
     documentContext?: any
   ): Promise<{ id: string; prompt: string; createdAt: number }> {
+    const authorize = captureQueueAuthorization(sessionId);
     const { getQueuedPromptsStore } = await import('../RepositoryManager');
     const queueStore = getQueuedPromptsStore();
     const promptId = `meta-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
@@ -300,6 +303,7 @@ export class AIService {
       attachments,
       documentContext: queuedDocumentContext,
     });
+    if (documentContext?.promptProvenance?.actor === 'human') authorize();
     // A Claude Code turn that has answered but is draining a background task
     // takes this prompt on its live query now (drainFollowUp.ts). Covers
     // send_prompt, mentions and extension sessions, which queue through here.
@@ -518,6 +522,7 @@ export class AIService {
     sessionId: string,
     options: { userSendNow?: boolean } = {},
   ): Promise<InterruptCurrentTurnResult> {
+    if (!sessionId) return Promise.reject(new Error('Session ID is required to interrupt'));
     // Coalesce at the public entry, before asynchronous provider lookup. Two
     // simultaneous IPC presses must not let the second interrupt a successor.
     const requests = this.interruptRequests ??= new Map();
@@ -1006,6 +1011,12 @@ export class AIService {
           });
         } catch (metaErr) {
           logger.main.error(`[AIService] ${source}: error checking meta-agent wakeup:`, metaErr);
+        }
+      },
+      onPromptsReturned: async () => {
+        await this.publishQueueStateToSync(sessionId);
+        if (targetWindow && !targetWindow.isDestroyed()) {
+          targetWindow.webContents.send('ai:queuedPromptsReceived', { sessionId });
         }
       },
       onChainSettled: async ({ sessionId: settledSessionId, source: settledSource }) => {
