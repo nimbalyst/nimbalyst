@@ -333,6 +333,40 @@ describe('TranscriptRuntime', () => {
       const all = await runtime.getCanonicalEvents('s1', 'claude-code');
       expect(all.map((e) => e.searchableText)).toEqual(prompts(1, 1 + added));
     });
+
+    // A tool call whose start is on one page and whose result is on the next
+    // must still end up as one completed card, on a rebuild and when the rows
+    // arrive as new messages.
+    it('completes tool calls whose result is on the next page', async () => {
+      const messages: RawMessage[] = [];
+      const push = (method: string, item: Record<string, unknown>) => messages.push({
+        id: messages.length + 1, sessionId: 's1', source: 'openai-codex', direction: 'output',
+        content: JSON.stringify({ method, params: { item, threadId: 't', turnId: 'u' } }),
+        createdAt: new Date('2026-01-01'), metadata: { transport: 'app-server' },
+      });
+      const calls = Math.ceil(RAW_MESSAGE_PAGE_SIZE * 0.6);
+      const item = (i: number) => ({ type: 'mcpToolCall', id: `exec-${i}`, server: 'nimbalyst', tool: 'x', arguments: {} });
+      // Every start first, then every result, so later results land on page 2.
+      for (let i = 0; i < calls; i++) push('item/started', { ...item(i), status: 'inProgress', result: null });
+      for (let i = 0; i < calls; i++) {
+        push('item/completed', { ...item(i), status: 'completed', result: { content: [{ type: 'text', text: `ok ${i}` }] } });
+      }
+
+      const { store, reads } = guardedStore(messages);
+      const rebuilt = await new TranscriptRuntime(store).getCanonicalEvents('s1', 'openai-codex');
+      expect(reads.length).toBeGreaterThan(1);
+      expect(rebuilt).toHaveLength(calls);
+      expect(rebuilt.every((e) => e.payload.status === 'completed')).toBe(true);
+
+      const live: RawMessage[] = [];
+      const runtime = new TranscriptRuntime(guardedStore(live).store);
+      await runtime.getCanonicalEvents('s1', 'openai-codex');
+      live.push(...messages);
+      await runtime.processNewMessages('s1', 'openai-codex');
+      const streamed = await runtime.getCanonicalEvents('s1', 'openai-codex');
+      expect(streamed).toHaveLength(calls);
+      expect(streamed.every((e) => e.payload.status === 'completed')).toBe(true);
+    });
   });
 });
 
