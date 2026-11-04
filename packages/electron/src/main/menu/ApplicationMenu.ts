@@ -28,6 +28,7 @@ import * as path from 'path';
 import { existsSync } from 'fs';
 import * as fs from 'fs';
 import { windowStates, createWindow, findWindowByFilePath, getWindowId } from '../window/WindowManager';
+import { installShellCommandInteractive, uninstallShellCommandInteractive } from '../shellCommand/shellCommandActions';
 import { createAboutWindow } from '../window/AboutWindow';
 import { installWindowListMenuRefresh } from './windowListMenuRefresh';
 import { createWorkspaceManagerWindow } from '../window/WorkspaceManagerWindow.ts';
@@ -1637,6 +1638,19 @@ export async function createApplicationMenu() {
                     label: 'Check for Updates...',
                     click: async () => {
                         autoUpdaterService.checkForUpdatesWithUI();
+                    }
+                },
+                { type: 'separator' },
+                {
+                    label: "Install 'nimbalyst' Command in PATH...",
+                    click: async () => {
+                        await installShellCommandInteractive(getFocusedWindow());
+                    }
+                },
+                {
+                    label: "Uninstall 'nimbalyst' Command...",
+                    click: async () => {
+                        await uninstallShellCommandInteractive(getFocusedWindow());
                     }
                 },
                 { type: 'separator' },

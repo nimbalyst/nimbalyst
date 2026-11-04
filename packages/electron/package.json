@@ -8,9 +8,6 @@
   "homepage": "https://nimbalyst.com",
   "desktopName": "nimbalyst.desktop",
   "main": "out/main/index.js",
-  "bin": {
-    "nimbalyst": "./bin/nimbalyst"
-  },
   "scripts": {
     "start": "electron-vite preview",
     "dev": "./scripts/dev.sh",
@@ -461,6 +458,10 @@
         {
           "from": "../../node_modules/@zed-industries/codex-acp-darwin-${arch}",
           "to": "app.asar.unpacked/node_modules/@zed-industries/codex-acp-darwin-${arch}"
+        },
+        {
+          "from": "resources/bin/nimbalyst",
+          "to": "bin/nimbalyst"
         }
       ],
       "target": [

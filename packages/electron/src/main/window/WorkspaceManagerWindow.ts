@@ -105,10 +105,10 @@ function reuseExistingWorkspaceWindow(workspacePath: string): WorkspaceWindowReu
 
 /**
  * Focus the window already showing a workspace, or open one for it. Shared by
- * the two "open this project" channels so they cannot drift apart on recents or
- * saved bounds.
+ * the "open this project" channels and the `nimbalyst <folder>` shell command
+ * so they cannot drift apart on recents or saved bounds.
  */
-function openOrFocusWorkspaceWindow(workspacePath: string): void {
+export function openOrFocusWorkspaceWindow(workspacePath: string): void {
   addToRecentItems('workspaces', workspacePath, basename(workspacePath));
   if (reuseExistingWorkspaceWindow(workspacePath)) return;
   // Rail lookup missed but a window may still show this path as a folder

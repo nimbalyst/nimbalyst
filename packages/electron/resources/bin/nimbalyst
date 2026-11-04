@@ -1,0 +1,45 @@
+#!/bin/sh
+# The `nimbalyst` shell command. Nimbalyst > Install 'nimbalyst' Command in PATH
+# symlinks a directory on PATH to this file inside the app bundle, so the
+# command always launches the copy of the app it shipped with.
+#
+#   nimbalyst              open Nimbalyst
+#   nimbalyst .            open the current folder as a project
+#   nimbalyst <folder>     open a folder as a project
+#   nimbalyst <file>       open a file in the project that contains it
+
+case "$1" in
+  -h|--help)
+    cat <<'USAGE'
+Usage:
+  nimbalyst              open Nimbalyst
+  nimbalyst .            open the current folder as a project
+  nimbalyst <folder>     open a folder as a project
+  nimbalyst <file>       open a file in the project that contains it
+USAGE
+    exit 0
+    ;;
+esac
+
+# Follow the symlink(s) back into Contents/Resources/bin.
+SELF="$0"
+while [ -L "$SELF" ]; do
+  LINK="$(readlink "$SELF")"
+  case "$LINK" in
+    /*) SELF="$LINK" ;;
+    *) SELF="$(dirname "$SELF")/$LINK" ;;
+  esac
+done
+CONTENTS="$(cd "$(dirname "$SELF")/../.." && pwd)"
+APP_BIN="$CONTENTS/MacOS/Nimbalyst"
+
+if [ ! -x "$APP_BIN" ]; then
+  echo "nimbalyst: the Nimbalyst app is not at $CONTENTS." >&2
+  echo "If you moved or deleted it, reinstall the command from the Nimbalyst menu." >&2
+  exit 1
+fi
+
+# Relative paths are resolved by the app against this shell's directory. A
+# running Nimbalyst receives the arguments and this process exits right away.
+unset ELECTRON_RUN_AS_NODE
+nohup "$APP_BIN" "$@" >/dev/null 2>&1 &
