@@ -23,7 +23,9 @@ const DEFERRED_PREFIX = 'The user deferred implementation to a new session';
 /** The reason the SDK records when the user did not approve in place. */
 export function exitPlanModeDenialReason(response: ExitPlanModeResponse): string {
   if (response.deferredTo?.kind === 'session') {
-    return `${DEFERRED_PREFIX}.`;
+    // Older desktop and mobile transcript bundles only recognise "denied",
+    // "continue planning" or "cancelled"; any other text hides the plan card.
+    return `Planning cancelled: ${DEFERRED_PREFIX}.`;
   }
   const feedbackText = response.feedback
     ? `\n\nUser feedback: "${response.feedback}"`

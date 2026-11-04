@@ -550,6 +550,9 @@ describe('AgentToolHooks', () => {
       const result = await resultPromise;
       expect(result.hookSpecificOutput.permissionDecision).toBe('deny');
       expect(parseExitPlanModeDeferral(result.hookSpecificOutput.permissionDecisionReason)).toEqual(deferredTo);
+      // Older transcript bundles (shipped mobile apps) hide the plan card unless
+      // the result reads as a denial to their keyword match.
+      expect(result.hookSpecificOutput.permissionDecisionReason.toLowerCase()).toContain('cancelled');
     });
   });
 });
