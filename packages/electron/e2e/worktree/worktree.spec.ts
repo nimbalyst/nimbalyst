@@ -26,18 +26,32 @@ import * as path from 'path';
 import { execSync } from 'child_process';
 
 /**
- * Enable developer mode, worktrees feature flag, and blitz alpha feature.
+ * Launch with developer mode, the worktrees feature flag and the blitz alpha
+ * feature already on. The flags are written in a first launch and the app is
+ * relaunched with that userData kept: on Linux a reload right after setting
+ * them aborts the navigation and closes the window.
  */
-async function enableDeveloperWorktrees(electronApp: ElectronApplication, page: Page): Promise<void> {
-  await page.evaluate(async () => {
+async function launchWithDeveloperWorktrees(
+  workspaceDir: string,
+  options: Parameters<typeof launchElectronApp>[0] = {},
+): Promise<{ electronApp: ElectronApplication; page: Page }> {
+  const setup = await launchElectronApp({ workspace: workspaceDir });
+  const setupPage = await setup.firstWindow();
+  await setupPage.waitForLoadState('domcontentloaded');
+  await waitForWorkspaceReady(setupPage);
+  await setupPage.evaluate(async () => {
     await window.electronAPI.invoke('developer-mode:set', true);
     await window.electronAPI.invoke('developer-features:set', { worktrees: true });
     await window.electronAPI.invoke('alpha-features:set', { blitz: true });
   });
-  await page.reload();
+  await setup.close();
+
+  const electronApp = await launchElectronApp({ ...options, workspace: workspaceDir, preserveTestDatabase: true });
+  const page = await electronApp.firstWindow();
   await page.waitForLoadState('domcontentloaded');
   await dismissAPIKeyDialog(page);
   await waitForWorkspaceReady(page);
+  return { electronApp, page };
 }
 
 function initGitRepo(dir: string) {
@@ -58,6 +72,7 @@ test.describe('Worktree Session Creation', () => {
   let workspaceDir: string;
 
   test.beforeAll(async () => {
+    test.setTimeout(60_000); // two launches
     workspaceDir = await createTempWorkspace();
     initGitRepo(workspaceDir);
 
@@ -66,13 +81,7 @@ test.describe('Worktree Session Creation', () => {
     execSync('git add .', { cwd: workspaceDir, stdio: 'pipe' });
     execSync('git commit -m "Initial commit"', { cwd: workspaceDir, stdio: 'pipe' });
 
-    electronApp = await launchElectronApp({ workspace: workspaceDir });
-    page = await electronApp.firstWindow();
-    await page.waitForLoadState('domcontentloaded');
-    await dismissAPIKeyDialog(page);
-    await waitForWorkspaceReady(page);
-
-    await enableDeveloperWorktrees(electronApp, page);
+    ({ electronApp, page } = await launchWithDeveloperWorktrees(workspaceDir));
   });
 
   test.afterAll(async () => {
@@ -81,6 +90,7 @@ test.describe('Worktree Session Creation', () => {
     }
     if (workspaceDir) {
       await fs.rm(workspaceDir, { recursive: true, force: true });
+      await fs.rm(`${workspaceDir}_worktrees`, { recursive: true, force: true });
     }
   });
 
@@ -93,7 +103,7 @@ test.describe('Worktree Session Creation', () => {
     await expect(newWorktreeButton).not.toBeVisible();
   });
 
-  test('should display New Worktree button in agent mode', async () => {
+  test('should offer New Worktree in the create menu in agent mode', async () => {
     await switchToAgentMode(page);
 
     const agentModeButton = page.locator(PLAYWRIGHT_TEST_SELECTORS.agentModeButton);
@@ -105,41 +115,33 @@ test.describe('Worktree Session Creation', () => {
     const sessionHistory = page.locator(PLAYWRIGHT_TEST_SELECTORS.sessionHistory);
     await expect(sessionHistory).toBeVisible({ timeout: 10000 });
 
-    const newWorktreeButton = page.locator(PLAYWRIGHT_TEST_SELECTORS.newWorktreeSessionButton);
-    await expect(newWorktreeButton).toBeVisible({ timeout: 5000 });
-    await expect(newWorktreeButton).toHaveAttribute('title', 'New Worktree');
-    await expect(newWorktreeButton).toHaveAttribute('aria-label', 'Create new worktree session');
+    await page.locator(PLAYWRIGHT_TEST_SELECTORS.newDropdownButton).click();
+    const newWorktreeItem = page.locator(PLAYWRIGHT_TEST_SELECTORS.newWorktreeSessionButton);
+    await expect(newWorktreeItem).toBeVisible({ timeout: 5000 });
+    await expect(newWorktreeItem).toHaveAttribute('role', 'menuitem');
+    await expect(newWorktreeItem).toContainText('New Worktree');
+    await expect(newWorktreeItem).toBeEnabled();
+    await page.keyboard.press('Escape');
   });
 
-  test('should attempt to create session with claude-code provider', async () => {
-    // Already in agent mode from previous test
-    const logs: string[] = [];
-    page.on('console', (msg) => {
-      const text = msg.text();
-      if (text.includes('Creating worktree session') || text.includes('claude-code')) {
-        logs.push(text);
-      }
-    });
-
-    const newWorktreeButton = page.locator(PLAYWRIGHT_TEST_SELECTORS.newWorktreeSessionButton);
-    await newWorktreeButton.click();
-    await page.waitForTimeout(2000);
+  test('should open the worktree picker from the create menu', async () => {
+    await page.locator(PLAYWRIGHT_TEST_SELECTORS.newDropdownButton).click();
+    await page.locator(PLAYWRIGHT_TEST_SELECTORS.newWorktreeSessionButton).click();
+    await expect(page.locator('[data-testid="worktree-base-branch-picker"]')).toBeVisible({ timeout: 5000 });
   });
 
-  test('should create worktree when button is clicked', async () => {
-    // Already in agent mode
-    const newWorktreeButton = page.locator(PLAYWRIGHT_TEST_SELECTORS.newWorktreeSessionButton);
-    await newWorktreeButton.click();
+  test('should create the worktree and its session from the picker', async () => {
+    await page.locator('[data-testid="worktree-name-input"]').fill('e2e-check');
+    await page.locator('[data-testid="worktree-base-branch-create"]').click();
+    await expect(page.locator('[data-testid="worktree-base-branch-picker"]')).toBeHidden({ timeout: 30000 });
 
-    await page.waitForTimeout(3000);
-
-    const worktreesPath = path.join(workspaceDir, '.git', 'worktrees');
-    const worktreesExist = await fs.stat(worktreesPath).then(() => true).catch(() => false);
-
-    if (worktreesExist) {
-      const worktrees = await fs.readdir(worktreesPath);
-      expect(worktrees.length).toBeGreaterThan(0);
-    }
+    const worktreePath = path.join(`${workspaceDir}_worktrees`, 'e2e-check');
+    await expect.poll(() => fs.stat(path.join(worktreePath, '.git')).then((s) => s.isFile()).catch(() => false), {
+      timeout: 15000,
+    }).toBe(true);
+    const branches = execSync('git branch --list "worktree/e2e-check"', { cwd: workspaceDir, encoding: 'utf8' });
+    expect(branches).toContain('worktree/e2e-check');
+    await expect(page.getByText('Worktree: e2e-check').first()).toBeVisible({ timeout: 10000 });
   });
 });
 
@@ -155,6 +157,7 @@ test.describe('Blitz Creation', () => {
   let workspaceDir: string;
 
   test.beforeAll(async () => {
+    test.setTimeout(60_000); // two launches
     workspaceDir = await createTempWorkspace();
     initGitRepo(workspaceDir);
 
@@ -163,16 +166,9 @@ test.describe('Blitz Creation', () => {
     execSync('git add .', { cwd: workspaceDir, stdio: 'pipe' });
     execSync('git commit -m "Initial commit"', { cwd: workspaceDir, stdio: 'pipe' });
 
-    electronApp = await launchElectronApp({
-      workspace: workspaceDir,
+    ({ electronApp, page } = await launchWithDeveloperWorktrees(workspaceDir, {
       recordVideo: { dir: path.resolve(__dirname, '../../e2e_test_output/videos') },
-    });
-    page = await electronApp.firstWindow();
-    await page.waitForLoadState('domcontentloaded');
-    await dismissAPIKeyDialog(page);
-    await waitForWorkspaceReady(page);
-
-    await enableDeveloperWorktrees(electronApp, page);
+    }));
   });
 
   test.afterAll(async () => {
