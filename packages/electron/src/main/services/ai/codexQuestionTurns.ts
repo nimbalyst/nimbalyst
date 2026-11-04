@@ -190,7 +190,17 @@ export class CodexQuestionTurns {
     return "live";
   }
 
-  /** Retirement is synchronous; the returned promise only waits for recovery writes. */
+  abandonWaiters(turn: QuestionTurn | undefined): void {
+    if (!turn) return;
+    for (const question of turn.questions) {
+      const waiter = question.waiter;
+      question.waiter = undefined;
+      try { waiter?.abandon(); }
+      catch (error) { console.error('[CodexQuestion] Failed to abandon a cancelled waiter:', error); }
+    }
+  }
+
+  /** Retirement is synchronous; the returned promise waits for all recovery writes. */
   end(turn: QuestionTurn | undefined): Promise<void> {
     if (!turn?.active) return turn?.retirement ?? Promise.resolve();
     turn.active = false;
@@ -198,16 +208,18 @@ export class CodexQuestionTurns {
       `[CodexQuestion] turn retired: sessionId=${turn.sessionId}, generation=${turn.generation}`
     );
     const recoveries: Array<Promise<void>> = [];
+    this.abandonWaiters(turn);
     for (const q of turn.questions) {
-      q.waiter?.abandon();
-      q.waiter = undefined;
       if (q.recover && !q.completed) {
         const recover = q.recover;
         q.recover = undefined;
-        recoveries.push(recover());
+        recoveries.push(Promise.resolve().then(recover));
       }
     }
-    turn.retirement = Promise.all(recoveries).then(() => undefined);
+    turn.retirement = Promise.allSettled(recoveries).then(results => {
+      const failures = results.filter((result): result is PromiseRejectedResult => result.status === 'rejected');
+      if (failures.length) throw new AggregateError(failures.map(result => result.reason), 'Question recovery failed');
+    });
     return turn.retirement;
   }
 }

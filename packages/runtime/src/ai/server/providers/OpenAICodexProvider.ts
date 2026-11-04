@@ -1,3 +1,4 @@
+import { CodexPreparationCancelledError, withCodexSetupStage } from '../protocols/codexAppServer/setupStage';
 import { codexSessionConfigurationKey } from '../protocols/codexAppServer/windowsSandbox';
 import path from 'path';
 import fs from 'fs';
@@ -22,7 +23,7 @@ import {
 import { AgentCapabilities, BUILTIN_AGENT_CAPABILITIES } from '../agentCapabilities';
 import type { FileChangeFidelity } from '../providerFileTracking';
 import { CodexSDKProtocol } from '../protocols/CodexSDKProtocol';
-import { CodexAppServerProtocol, type CodexAppServerHostBindings } from '../protocols/CodexAppServerProtocol';
+import { CodexAppServerProtocol, CodexStartRecoveryPendingError, type CodexAppServerHostBindings } from '../protocols/CodexAppServerProtocol';
 import {setCodexShellTrackingHost} from '../protocols/codexAppServer/shellTracking';
 import { AgentProtocol, ProtocolEvent, ProtocolSession } from '../protocols/ProtocolInterface';
 import { isNonRenderingAppServerItemStarted } from '../transcript/parsers/CodexAppServerRawParser';
@@ -189,7 +190,7 @@ export class OpenAICodexProvider extends BaseAgentProvider {
   private readonly codexApprovals = createCodexApprovalBindings({
     permissionService: () => this.permissionService,
     turnFor: (sessionId) => this.codexApprovalTurns.get(sessionId),
-    logAgentMessage: (sessionId, content) => this.logAgentMessageBestEffort(sessionId, 'output', content),
+    logAgentMessage: async (sessionId, content) => { await this.logAgentMessageBestEffort(sessionId, 'output', content); },
   });
   /** Latest MCP startup status per server name, for the session MCP chip (NIM-2962). */
   private readonly appServerMcpStatuses = new Map<string, { name: string; status: string; error?: string }>();
@@ -244,6 +245,15 @@ export class OpenAICodexProvider extends BaseAgentProvider {
    * across Nimbalyst restarts so we can `resumeSession` after a relaunch.
    * `liveProtocolSessions` is in-memory only.
    */
+  // ProviderFactory owns one instance per Nimbalyst session. Native collaborator
+  // threads share its child, so aborting preparation never tears that child down.
+  private abortGeneration = 0;
+  // One fixed-size fingerprint: a stopped queue row may retry without recording
+  // its same local input twice. A changed row/content is a different input.
+  private lastLoggedQueuedInputKey?: string;
+  private destroyed = false;
+  private readonly unattachedProtocolSessions = new Set<ProtocolSession>();
+
   private readonly liveProtocolSessions = new Map<string, ProtocolSession>();
   private readonly liveProtocolSessionPermissionKeys = new Map<string, string>();
   private readonly activeProtocolSessionCounts = new Map<string, number>();
@@ -397,6 +407,12 @@ export class OpenAICodexProvider extends BaseAgentProvider {
         OpenAICodexProvider.sdkModuleLoader ?? loadCodexSdkModule,
         resolvePackagedCodexBinaryPath
       );
+    }
+
+    if (this.protocol instanceof CodexAppServerProtocol) {
+      this.protocol.setCancellationRecoveryErrorListener((sessionId, message) => {
+        this.emit('session:recovery-error', { sessionId, message });
+      });
     }
 
     // Initialize permission service (or use injected for testing)
@@ -990,18 +1006,41 @@ export class OpenAICodexProvider extends BaseAgentProvider {
     workspacePath?: string,
     attachments?: ChatAttachment[]
   ): AsyncIterableIterator<StreamChunk> {
+    const generation = this.abortGeneration;
+    const assertPreparationActive = () => {
+      if (this.destroyed || generation !== this.abortGeneration) throw new CodexPreparationCancelledError();
+    };
+    const prepare = async <T>(stage: string, operation: () => Promise<T>): Promise<T> => {
+      assertPreparationActive();
+      try {
+        const result = await withCodexSetupStage(sessionId, stage, operation);
+        assertPreparationActive();
+        return result;
+      } catch (error) {
+        // Stop also wins an awaited rejection; it must not become an accepted
+        // empty turn via the auth-gate or generic abort catch below.
+        assertPreparationActive();
+        throw error;
+      }
+    };
+    assertPreparationActive();
+
     const unusableWorkspace = describeUnusableWorkspacePath(workspacePath);
     if (unusableWorkspace || !workspacePath) {
       yield { type: 'error', error: unusableWorkspace ?? 'No project folder is set for this session.' };
       return;
     }
 
-    const agentRole = await this.getAgentRole(sessionId);
+    const agentRole = await prepare('provider-role', () => this.getAgentRole(sessionId));
+    assertPreparationActive();
     const isMetaAgent = agentRole === 'meta-agent';
-    const workflowPreset = isMetaAgent ? await this.getWorkflowPreset(sessionId) : 'default';
+    const workflowPreset = isMetaAgent ? await prepare('provider-workflow', () => this.getWorkflowPreset(sessionId)) : 'default';
+    assertPreparationActive();
+    const sessionDirective = await prepare('provider-directive', () => this.getSessionDirective(sessionId));
+    assertPreparationActive();
     const systemPrompt = buildCodexSystemPrompt({
       documentContext, isMetaAgent, workflowPreset, model: this.config?.model ?? undefined,
-      sessionDirective: await this.getSessionDirective(sessionId),
+      sessionDirective,
       hasOutOfBandNaming: this.isNamedOutOfBand(sessionId, documentContext),
     });
     const { userMessageAddition, messageWithContext } = buildUserMessageAddition(message, documentContext);
@@ -1019,6 +1058,7 @@ export class OpenAICodexProvider extends BaseAgentProvider {
           mimeType: attachment.mimeType,
           filepath: attachment.filepath,
         })) ?? [];
+      assertPreparationActive();
       this.emit('promptAdditions', {
         sessionId,
         systemPromptAddition: systemPrompt || null,
@@ -1045,14 +1085,28 @@ export class OpenAICodexProvider extends BaseAgentProvider {
       if (documentContext?.mode) {
         metadataToLog.mode = documentContext.mode;
       }
-      await this.logAgentMessageBestEffort(
-        sessionId,
-        'input',
-        prompt,
-        Object.keys(metadataToLog).length > 0 ? { metadata: metadataToLog } : undefined
-      );
+      const queuedPromptId = documentContext?.queuedPromptId;
+      let inputKey: string | undefined;
+      if (queuedPromptId) {
+        try {
+          inputKey = crypto.createHash('sha256')
+            .update(JSON.stringify([sessionId, queuedPromptId, prompt, metadataToLog])).digest('hex');
+        } catch {
+          // Fingerprinting is optional audit deduplication, never turn admission.
+        }
+      }
+      await prepare('provider-input-save', async () => {
+        if (inputKey && inputKey === this.lastLoggedQueuedInputKey) return;
+        const logged = await this.logAgentMessageBestEffort(
+          sessionId, 'input', prompt,
+          Object.keys(metadataToLog).length > 0 ? { metadata: metadataToLog } : undefined,
+        );
+        // Record before prepare observes a Stop that won during the save.
+        if (logged && inputKey) this.lastLoggedQueuedInputKey = inputKey;
+      });
     }
 
+    assertPreparationActive();
     const permissionsPath = documentContext?.permissionsPath || workspacePath;
     const mcpConfigWorkspacePath = documentContext?.mcpConfigWorkspacePath || workspacePath;
     const abortController = new AbortController();
@@ -1070,13 +1124,14 @@ export class OpenAICodexProvider extends BaseAgentProvider {
 
     try {
       // Check permission using ToolPermissionService
-      const permissionDecision = await this.requestCodexTurnPermission(
+      const permissionDecision = await prepare('provider-permission', () => this.requestCodexTurnPermission(
         sessionId,
         workspacePath,
         permissionsPath,
         abortController.signal
-      );
+      ));
 
+      assertPreparationActive();
       if (permissionDecision.decision !== 'allow') {
         yield {
           type: 'error',
@@ -1129,11 +1184,12 @@ export class OpenAICodexProvider extends BaseAgentProvider {
       //   action: cachedLiveSession ? 'REUSE' : (existingSessionId ? 'RESUME' : 'CREATE'),
       // });
 
-      const mcpServers = await this.mcpConfigService.getMcpServersConfig({
+      const mcpServers = await prepare('provider-mcp-config', () => this.mcpConfigService.getMcpServersConfig({
         sessionId,
         workspacePath: mcpConfigWorkspacePath,
         profile: isMetaAgent ? 'meta-agent' : 'standard',
-      });
+      }));
+      assertPreparationActive();
       // update_session_meta folds into the eager core `nimbalyst` server (MCP
       // consolidation Phase 5); the naming reminder fires when it's present.
       const hasSessionNamingServer = Object.prototype.hasOwnProperty.call(
@@ -1168,7 +1224,8 @@ export class OpenAICodexProvider extends BaseAgentProvider {
         // console.log('[CODEX] Pre-edit hook env configured:', { sessionId, sidecarDir });
       }
 
-      const resolvedModel = await this.getConfiguredModel();
+      const resolvedModel = await prepare('provider-model', () => this.getConfiguredModel());
+      assertPreparationActive();
 
       const sessionOptions = {
         workspacePath,
@@ -1204,7 +1261,8 @@ export class OpenAICodexProvider extends BaseAgentProvider {
         OpenAICodexProvider.codexAuthGate
       ) {
         try {
-          const gateResult = await OpenAICodexProvider.codexAuthGate();
+          const gateResult = await prepare('provider-auth', () => OpenAICodexProvider.codexAuthGate!());
+          assertPreparationActive();
           if (gateResult.requiresOpenaiAuth) {
             yield {
               type: 'error',
@@ -1215,9 +1273,35 @@ export class OpenAICodexProvider extends BaseAgentProvider {
             return;
           }
         } catch (err) {
+          if (err instanceof CodexPreparationCancelledError) throw err;
           console.warn('[CODEX] auth gate check failed; continuing without pre-flight:', err);
         }
       }
+
+      const retainPreparedSession = (prepared: ProtocolSession, expectedThreadId?: string): ProtocolSession => {
+        if (this.destroyed) {
+          // Explicit teardown may finish before native setup does. Dispose its
+          // late result under that teardown, never as a consequence of Stop.
+          try { this.protocol.cleanupSession(prepared); }
+          catch { console.warn('[CODEX] Late setup teardown failed for session', sessionId ?? null); }
+          throw new CodexPreparationCancelledError();
+        }
+        if (expectedThreadId && prepared.id !== expectedThreadId) {
+          // Keep the unexpected native child owned until explicit teardown;
+          // never poison the live cache or kill it as a consequence of Stop.
+          this.unattachedProtocolSessions.add(prepared);
+          throw new Error('[CODEX] Thread resume mismatch: the saved conversation was not loaded.');
+        }
+        if (sessionId) {
+          this.liveProtocolSessions.set(sessionId, prepared);
+          this.liveProtocolSessionPermissionKeys.set(sessionId, permissionKey);
+        } else {
+          // Retain before any later promise continuation can observe Stop or
+          // destroy. Anonymous sends have no session cache to own this child.
+          this.unattachedProtocolSessions.add(prepared);
+        }
+        return prepared;
+      };
 
       let session: ProtocolSession;
       let isResumedThread: boolean;
@@ -1225,19 +1309,13 @@ export class OpenAICodexProvider extends BaseAgentProvider {
         session = cachedLiveSession;
         isResumedThread = true;
       } else if (existingSessionId) {
-        session = await this.protocol.resumeSession(existingSessionId, sessionOptions);
+        session = await prepare('provider-native-resume', async () => retainPreparedSession(await this.protocol.resumeSession(existingSessionId, sessionOptions), existingSessionId));
         isResumedThread = true;
       } else {
-        session = await this.protocol.createSession(sessionOptions);
+        session = await prepare('provider-native-create', async () => retainPreparedSession(await this.protocol.createSession(sessionOptions)));
         isResumedThread = false;
       }
-      // Stash live sessions so future turns on the same Nimbalyst session reuse
-      // the same child. Skip when sessionId is absent (anonymous turns -- nothing
-      // to key by) and when we just hit the cache (no-op).
-      if (sessionId && !cachedLiveSession) {
-        this.liveProtocolSessions.set(sessionId, session);
-        this.liveProtocolSessionPermissionKeys.set(sessionId, permissionKey);
-      }
+      assertPreparationActive();
 
       // Persist a newly created thread ID immediately, before streaming the
       // turn. Codex turns can pause on PromptForUserInput / AskUserQuestion
@@ -1281,6 +1359,7 @@ export class OpenAICodexProvider extends BaseAgentProvider {
       // Canonical events are written by the TranscriptTransformer from raw ai_agent_messages.
       const transcriptAdapter = new AgentProtocolTranscriptAdapter(null, sessionId ?? '');
 
+      assertPreparationActive();
       transcriptAdapter.userMessage(
         prompt,
         documentContext?.mode === 'planning' ? 'planning' : 'agent',
@@ -1288,6 +1367,7 @@ export class OpenAICodexProvider extends BaseAgentProvider {
       );
 
       // Send message using protocol -- adapter parses all events
+      assertPreparationActive();
       for await (const event of this.protocol.sendMessage(session, {
         content: prompt,
         attachments,
@@ -1452,9 +1532,18 @@ export class OpenAICodexProvider extends BaseAgentProvider {
         !usedSessionNamingToolThisTurn &&
         !abortController.signal.aborted
       ) {
-        await this.sendSessionNamingReminder(session, sessionId);
+        try {
+          await this.sendSessionNamingReminder(session, sessionId);
+        } catch (error) {
+          // A refused naming reminder must not restore already-delivered user
+          // input to the composer. Only the main send can be not-sent input.
+          if (!(error instanceof CodexStartRecoveryPendingError) && !(error instanceof CodexPreparationCancelledError)) throw error;
+        }
       }
     } catch (error) {
+      // Keep not-sent recovery rejection on the existing IPC/composer restore
+      // path; converting it into an error chunk would falsely accept input.
+      if (error instanceof CodexStartRecoveryPendingError || error instanceof CodexPreparationCancelledError) throw error;
       const errorMessage = error instanceof Error ? error.message : String(error);
       const isAbort = abortController.signal.aborted || /abort|cancel/i.test(errorMessage);
       if (!isAbort) {
@@ -1859,6 +1948,7 @@ export class OpenAICodexProvider extends BaseAgentProvider {
 
     for await (const reminderEvent of this.protocol.sendMessage(session, {
       content: OpenAICodexProvider.SESSION_NAMING_REMINDER_PROMPT,
+      sessionId,
     })) {
       // Tag this reminder turn's persisted output rows as a system reminder so
       // the metadata-based transcript hide covers them. Without the tag they
@@ -1884,6 +1974,7 @@ export class OpenAICodexProvider extends BaseAgentProvider {
   }
 
   abort(): void {
+    this.abortGeneration++;
     this.pendingAskUserQuestions.clear();
     // Reject all pending permissions via service
     this.permissionService.rejectAllPending();
@@ -1900,9 +1991,13 @@ export class OpenAICodexProvider extends BaseAgentProvider {
     this.evictLiveProtocolSession(sessionId);
     this.sessions.deleteSession(sessionId);
     this.appServerNotificationDeduper.delete(sessionId);
+    this.emit('session:recovery-disposed', { sessionId });
   }
 
   destroy(): void {
+    this.destroyed = true;
+    this.lastLoggedQueuedInputKey = undefined;
+    if (this.protocol instanceof CodexAppServerProtocol) this.protocol.setCancellationRecoveryErrorListener();
     for (const timer of this.protocolSessionIdleTimers.values()) {
       this.idleProtocolSessionScheduler.clearTimeout(timer);
     }
@@ -1910,11 +2005,12 @@ export class OpenAICodexProvider extends BaseAgentProvider {
     this.activeProtocolSessionCounts.clear();
     // Tear down every live ProtocolSession so we don't orphan codex child
     // processes when the provider is replaced (e.g., on API key rotation).
-    for (const session of this.liveProtocolSessions.values()) {
+    for (const session of [...this.liveProtocolSessions.values(), ...this.unattachedProtocolSessions]) {
       try { this.protocol.cleanupSession(session); }
       catch (err) { console.warn('[CODEX] protocol.cleanupSession threw during destroy():', err); }
     }
     this.liveProtocolSessions.clear();
+    this.unattachedProtocolSessions.clear();
     this.liveProtocolSessionPermissionKeys.clear();
     this.appServerNotificationDeduper.clear();
     // Clear permission service caches

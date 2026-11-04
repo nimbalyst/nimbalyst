@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { OpenAICodexProvider } from '../OpenAICodexProvider';
+import { CodexStartRecoveryPendingError } from '../../protocols/CodexAppServerProtocol';
 import { configureMcpServers } from '../../services/mcpServerConfig';
 import { AgentMessagesRepository } from '../../../../storage/repositories/AgentMessagesRepository';
 import type { CreateAgentMessageInput } from '../../types';
@@ -386,7 +387,7 @@ describe('OpenAICodexProvider persistence', () => {
     expect(outputRows).toHaveLength(0);
   });
 
-  it('persists the session naming reminder as a tagged non-searchable input row', async () => {
+  it.each([false, true])('persists the session naming reminder without rejecting completed user input (reminder refused: %s)', async reminderRefused => {
     // update_session_meta now rides on the eager core `nimbalyst` server (MCP
     // consolidation Phase 5); registering it triggers the naming-reminder gate.
     configureMcpServers({ mcpServerPort: 41001 });
@@ -409,6 +410,7 @@ describe('OpenAICodexProvider persistence', () => {
       },
       async *sendMessage(_session: unknown, payload: { content: string }) {
         sentContents.push(payload.content);
+        if (reminderRefused && sentContents.length === 2) throw new CodexStartRecoveryPendingError();
         if (sentContents.length === 1) {
           yield {
             type: 'text',
@@ -445,9 +447,10 @@ describe('OpenAICodexProvider persistence', () => {
       model: 'openai-codex:gpt-5',
     });
 
-    for await (const _chunk of provider.sendMessage('name the session', undefined, 'session-reminder', [], process.cwd())) {
-      // drain
-    }
+    const chunks: any[] = [];
+    for await (const chunk of provider.sendMessage('name the session', undefined, 'session-reminder', [], process.cwd())) chunks.push(chunk);
+    expect(chunks.some(chunk => chunk.type === 'complete')).toBe(true);
+    expect(chunks.some(chunk => chunk.type === 'error')).toBe(false);
 
     expect(sentContents).toHaveLength(2);
     expect(sentContents[1]).toContain('<SYSTEM_REMINDER>');

@@ -1,5 +1,8 @@
 // @vitest-environment node
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 
 const mocks = vi.hoisted(() => {
   const provider = {
@@ -20,6 +23,7 @@ const mocks = vi.hoisted(() => {
     onPromptResolved: vi.fn(),
     getDatabase: vi.fn(() => null),
     createWorktreeStore: vi.fn(),
+    queue: undefined as any,
   };
 });
 
@@ -62,8 +66,13 @@ vi.mock('@nimbalyst/runtime', () => ({
   },
 }));
 
+vi.mock('@nimbalyst/runtime/storage/repositories/AISessionsRepository', () => ({ AISessionsRepository: { get: mocks.getSession } }));
+vi.mock('../../RepositoryManager', () => ({ getQueuedPromptsStore: () => mocks.queue }));
+vi.mock('../../TerminalSessionManager', () => ({ getTerminalSessionManager: vi.fn() }));
+
 vi.mock('../../../utils/logger', () => ({
   logger: {
+    main: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
     ai: {
       info: vi.fn(),
       warn: vi.fn(),
@@ -106,7 +115,212 @@ vi.mock('../../WorktreeStore', () => ({
   createWorktreeStore: mocks.createWorktreeStore,
 }));
 
-import { resolveExactVoicePromptResponse, resolveGitCommitWorkspacePath, resolveVoicePromptResponse } from '../MobileSessionControlHandler';
+import { initMobileSessionControlHandler, resolveExactVoicePromptResponse, resolveGitCommitWorkspacePath, resolveVoicePromptResponse } from '../MobileSessionControlHandler';
+import { cancelSessionTurn } from '../ipc/registerTurnControlHandlers';
+import { beginSessionTurn, isTurnAdmissionBlocked } from '../sessionTurnControl';
+import { createPGLiteQueuedPromptsStore } from '../../PGLiteQueuedPromptsStore';
+import { SQLiteDatabase } from '../../../database/sqlite/SQLiteDatabase';
+import { publishQueuedPromptsToSync } from '../queuedPromptSyncPublisher';
+
+describe('phone Stop retirement', () => {
+  it('retains Stop for missing provider metadata until a new authorization, without leaking lookup ownership', async () => {
+    const sessionId = 'phone-missing-provider';
+    const { captureQueueAuthorization, isQueueStopped } = await import('../stoppedQueueHold');
+    mocks.getSession.mockResolvedValue({ id: sessionId });
+    mocks.getProvider.mockReset();
+    let receive!: (message: any) => void;
+    const sharedCancel = vi.fn();
+    const dispose = initMobileSessionControlHandler({ onSessionControlMessage: (fn: any) => { receive = fn; return () => {}; } } as never,
+      () => null, { cancelSessionTurn: sharedCancel, rollbackExecutingPrompts: vi.fn(async () => 0), triggerQueuedPromptProcessing: vi.fn() });
+    try {
+      receive({ type: 'cancel', sessionId });
+      await vi.waitFor(() => expect(mocks.getSession).toHaveBeenCalledWith(sessionId));
+      await new Promise<void>(resolve => setImmediate(resolve));
+      expect(isQueueStopped(sessionId)).toBe(true);
+      expect(mocks.getProvider).not.toHaveBeenCalled();
+      expect(sharedCancel).not.toHaveBeenCalled();
+      captureQueueAuthorization(sessionId)();
+      expect(isQueueStopped(sessionId)).toBe(false);
+    } finally { dispose(); captureQueueAuthorization(sessionId)(); mocks.getSession.mockReset(); }
+  });
+  it.each([false, true])('retains Stop on unknown provider lookup failure and retires its lookup guard (previous hold: %s)', async previouslyStopped => {
+    const sessionId = `phone-lookup-failure-${previouslyStopped}`;
+    const { captureQueueAuthorization, holdQueueAfterStop, isQueueStopped } = await import('../stoppedQueueHold');
+    const oldAuthorization = captureQueueAuthorization(sessionId);
+    if (previouslyStopped) holdQueueAfterStop(sessionId);
+    mocks.getSession.mockRejectedValue(new Error('repository temporarily unavailable'));
+    const abort = vi.fn();
+    mocks.getProvider.mockReturnValue({ abort });
+    let receive!: (message: any) => void;
+    const sharedCancel = vi.fn();
+    const rollback = vi.fn(async () => 0);
+    const dispose = initMobileSessionControlHandler({ onSessionControlMessage: (fn: any) => { receive = fn; return () => {}; } } as never,
+      () => null, { cancelSessionTurn: sharedCancel, rollbackExecutingPrompts: rollback, triggerQueuedPromptProcessing: vi.fn() });
+    try {
+      receive({ type: 'cancel', sessionId });
+      await vi.waitFor(() => expect(mocks.getSession).toHaveBeenCalledWith(sessionId));
+      await new Promise<void>(resolve => setImmediate(resolve));
+      expect(isQueueStopped(sessionId)).toBe(true);
+      oldAuthorization();
+      expect(isQueueStopped(sessionId)).toBe(true);
+      expect(mocks.getProvider).not.toHaveBeenCalled();
+      expect(abort).not.toHaveBeenCalled();
+      expect(rollback).not.toHaveBeenCalled();
+      expect(sharedCancel).not.toHaveBeenCalled();
+      captureQueueAuthorization(sessionId)();
+      expect(isQueueStopped(sessionId)).toBe(false);
+    } finally { dispose(); captureQueueAuthorization(sessionId)(); mocks.getSession.mockReset(); mocks.getProvider.mockReset(); }
+  });
+  it.each([false, true])('preserves confirmed non-Codex Stop behavior and the previous hold (previous hold: %s)', async previouslyStopped => {
+    const sessionId = `phone-noncodex-${previouslyStopped}`;
+    const { captureQueueAuthorization, holdQueueAfterStop, isQueueStopped } = await import('../stoppedQueueHold');
+    if (previouslyStopped) holdQueueAfterStop(sessionId);
+    mocks.getSession.mockResolvedValue({ id: sessionId, provider: 'claude-code' });
+    const abort = vi.fn();
+    mocks.getProvider.mockReturnValue({ abort });
+    let receive!: (message: any) => void;
+    const sharedCancel = vi.fn();
+    const dispose = initMobileSessionControlHandler({ onSessionControlMessage: (fn: any) => { receive = fn; return () => {}; } } as never,
+      () => null, { cancelSessionTurn: sharedCancel, rollbackExecutingPrompts: vi.fn(async () => 0), triggerQueuedPromptProcessing: vi.fn() });
+    try {
+      receive({ type: 'cancel', sessionId });
+      await vi.waitFor(() => expect(abort).toHaveBeenCalledOnce());
+      expect(isQueueStopped(sessionId)).toBe(previouslyStopped);
+      expect(sharedCancel).not.toHaveBeenCalled();
+    } finally { dispose(); captureQueueAuthorization(sessionId)(); mocks.getSession.mockReset(); mocks.getProvider.mockReset(); }
+  });
+  it('retires a resolved native turn before admitting phone corrections and publishing idle', async () => {
+    const { CodexAppServerProtocol } = await import('@nimbalyst/runtime/ai/server/protocols/CodexAppServerProtocol');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nim-phone-poststart-'));
+    const db = new SQLiteDatabase({ dbDir: dir, schemaDir: path.resolve(__dirname, '../../../database/sqlite/schemas') });
+    await db.initialize();
+    const sessionId = 'phone-poststart';
+    await db.query("INSERT INTO ai_sessions(id, provider, title) VALUES ($1, 'openai-codex', 'test')", [sessionId]);
+    const queue = createPGLiteQueuedPromptsStore(db as never);
+    mocks.queue = queue;
+    await queue.create({ id: 'original-native', sessionId, prompt: 'Original already submitted' });
+    await queue.claim('original-native');
+    for (const [direction, content] of [['input', 'Original already submitted'], ['output', 'Task acknowledged; still working']]) {
+      await db.query("INSERT INTO ai_agent_messages(session_id, source, direction, content, created_at) SELECT session_id, 'codex-app-server', $2, $3, claimed_at FROM queued_prompts WHERE id = $1",
+        ['original-native', direction, content]);
+    }
+    await queue.create({ id: 'correction-one', sessionId, prompt: 'First correction' });
+    const listeners = new Set<(method: string, params: any) => void>();
+    const starts: string[] = [];
+    const interrupted = vi.fn();
+    const native = { id: 'phone-root', platform: 'codex-app-server', raw: {
+      threadId: 'phone-root', options: {}, activeTurnId: null, cleanupStarted: false, child: {}, stderrTail: [],
+      client: { onNotification: (fn: any) => { listeners.add(fn); return () => listeners.delete(fn); }, close: vi.fn(),
+        request: vi.fn(async (method: string, params: any) => {
+          if (method === 'turn/interrupt') { interrupted(params); return {}; }
+          if (method !== 'turn/start') return {};
+          starts.push(params.input[0].text);
+          const id = starts.length === 1 ? 'old-native-turn' : `correction-${starts.length}`;
+          if (starts.length > 1) queueMicrotask(() => terminal(id));
+          return { turn: { id } };
+        }),
+      },
+    } };
+    const terminal = (id: string, threadId = 'phone-root') => {
+      for (const fn of listeners) fn('turn/completed', { threadId, turn: { id, status: 'interrupted' } });
+    };
+    const protocol = new CodexAppServerProtocol({ terminateProcessTreeOverride: vi.fn() });
+    const abort = new AbortController();
+    const host = beginSessionTurn(sessionId);
+    let releaseHost!: () => void;
+    const cleanup = new Promise<void>(resolve => { releaseHost = resolve; });
+    const old = (async () => {
+      try { for await (const _event of protocol.sendMessage(native as never, { content: 'Original already submitted', abortSignal: abort.signal })) { /* drain */ } }
+      finally { await cleanup; host.finish(); }
+    })();
+    const provider = { abort: vi.fn(() => abort.abort()), interruptCurrentTurn: vi.fn() };
+    mocks.getSession.mockResolvedValue({ id: sessionId, provider: 'openai-codex', workspacePath: dir });
+    mocks.getProvider.mockReturnValue(provider);
+    const syncPush = vi.fn(async () => ({ published: true }));
+    let status = 'running';
+    const idle = vi.fn(async () => { status = 'idle'; });
+    const guard = new Set([sessionId]);
+    const publish = () => publishQueuedPromptsToSync({ listPending: id => queue.listPending(id),
+      getSyncProvider: () => ({ pushChange: syncPush }) as never, logWarn: vi.fn() }, sessionId);
+    const drive = vi.fn(async () => {
+      const { isQueueStopped } = await import('../stoppedQueueHold');
+      if (isQueueStopped(sessionId)) return { kind: 'deferred' as const, reason: 'session-busy' as const };
+      for (;;) {
+        const pending = (await queue.listPending(sessionId))[0];
+        const claim = pending ? await queue.claim(pending.id) : null;
+        if (!claim) return { kind: 'nothing-pending' as const };
+        for await (const _event of protocol.sendMessage(native as never, { content: claim.prompt })) { /* drain */ }
+        await queue.complete(claim.id);
+      }
+    });
+    let stop!: Promise<any>;
+    let receive!: (message: any) => void;
+    const rollback = vi.fn();
+    const dispose = initMobileSessionControlHandler({ onSessionControlMessage: (fn: any) => { receive = fn; return () => {}; } } as never,
+      () => null, { cancelSessionTurn: (id, receipt) => (stop = cancelSessionTurn({ analytics: { sendEvent: vi.fn() }, sessionsProcessingQueue: guard,
+        publishQueueStateToSync: publish, forceSessionIdleOnCancel: idle, invalidateQueueDrive: vi.fn(), driveQueuedPrompts: drive } as never, id, undefined, receipt)),
+      rollbackExecutingPrompts: rollback, triggerQueuedPromptProcessing: vi.fn() });
+    try {
+      await vi.waitFor(() => expect(native.raw.activeTurnId).toBe('old-native-turn'));
+      receive({ type: 'cancel', sessionId });
+      await vi.waitFor(() => expect(provider.abort).toHaveBeenCalledOnce());
+      expect(isTurnAdmissionBlocked(sessionId)).toBe(true);
+      expect(status).toBe('running');
+      expect(idle).not.toHaveBeenCalled();
+      expect(rollback).not.toHaveBeenCalled();
+      expect(interrupted).toHaveBeenCalledWith({ threadId: 'phone-root', turnId: 'old-native-turn' });
+      await queue.create({ id: 'correction-two', sessionId, prompt: 'Second correction' });
+      releaseHost();
+      await old;
+      expect((await stop).error).toContain('still queued');
+      expect(status).toBe('idle');
+      expect(guard.has(sessionId)).toBe(false);
+      expect((await queue.get('original-native'))?.status).toBe('completed');
+      expect((await queue.listPending(sessionId)).map(row => row.id)).toEqual(['correction-one', 'correction-two']);
+      expect(syncPush).toHaveBeenLastCalledWith(sessionId, { type: 'metadata_updated', metadata: { queuedPrompts: expect.arrayContaining([
+        expect.objectContaining({ id: 'correction-one' }), expect.objectContaining({ id: 'correction-two' }),
+      ]) } });
+      const { captureQueueAuthorization, isQueueStopped } = await import('../stoppedQueueHold');
+      expect(isQueueStopped(sessionId)).toBe(true);
+      captureQueueAuthorization(sessionId)();
+      const delivered = drive();
+      await new Promise(resolve => setTimeout(resolve, 20));
+      expect(starts).toEqual(['Original already submitted']);
+      terminal('old-native-turn', 'foreign-thread');
+      terminal('stale-turn');
+      await new Promise(resolve => setTimeout(resolve, 20));
+      expect(starts).toHaveLength(1);
+      terminal('old-native-turn');
+      await delivered;
+      await publish();
+      expect(starts).toEqual(['Original already submitted', 'First correction', 'Second correction']);
+      expect(await queue.listPending(sessionId)).toEqual([]);
+      expect(syncPush).toHaveBeenLastCalledWith(sessionId, { type: 'metadata_updated', metadata: { queuedPrompts: [] } });
+    } finally {
+      dispose(); releaseHost(); abort.abort(); terminal('old-native-turn');
+      await old; mocks.queue = undefined;
+      await db.close(); fs.rmSync(dir, { recursive: true });
+    }
+  });
+  it('delegates Stop to the shared turn controller instead of sweeping and aborting independently', async () => {
+    let receive!: (message: any) => void;
+    let finish!: (result: any) => void;
+    const pending = new Promise<any>(resolve => { finish = resolve; });
+    const cancelSessionTurn = vi.fn(() => pending);
+    const rollbackExecutingPrompts = vi.fn();
+    const abort = vi.fn();
+    mocks.getSession.mockResolvedValue({ id: 'phone-stop', provider: 'openai-codex' });
+    mocks.getProvider.mockReturnValue({ abort });
+    initMobileSessionControlHandler({ onSessionControlMessage: (callback: any) => { receive = callback; return () => {}; } } as any,
+      () => null, { cancelSessionTurn, rollbackExecutingPrompts, triggerQueuedPromptProcessing: vi.fn() });
+    receive({ type: 'cancel', sessionId: 'phone-stop' });
+    try {
+      await vi.waitFor(() => expect(cancelSessionTurn).toHaveBeenCalledExactlyOnceWith('phone-stop', expect.objectContaining({ finishLookup: expect.any(Function) })));
+      expect(rollbackExecutingPrompts).not.toHaveBeenCalled();
+      expect(abort).not.toHaveBeenCalled();
+    } finally { finish({ success: true }); }
+  });
+});
 
 describe('MobileSessionControlHandler', () => {
   it('does not claim acceptance when neither persistence nor a provider or waiter accepts it', async () => {
