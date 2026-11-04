@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 <!-- Bug fixes go here -->
 - New tracker items get local numbers (like `NIM.75`) again; items created since early October without one are numbered on the next launch. A tracker type can opt out with `localNumbers: false`
+- The pull request panel no longer reports the GitHub CLI as signed out when `gh auth status` is slow to answer.
 
 ### Removed
 <!-- Removed features go here -->
