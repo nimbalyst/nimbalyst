@@ -94,10 +94,28 @@ Manages git worktree operations using the `simple-git` library.
   - Returns `modifiedFileCount` for number of changed files
   - Returns `commitsAhead`/`commitsBehind` relative to base branch
   - Returns `isMerged` status
-- `deleteWorktree(worktreePath, workspacePath)`: Removes a git worktree
+- `deleteWorktree(worktreePath, workspacePath, { expectedBranch? })`: Removes a git worktree
   - Deletes the worktree directory
   - Removes git worktree registration
-  - Deletes the associated branch
+  - Deletes the associated branch; with `expectedBranch` (the row's branch), no other branch, so a worktree switched to another branch keeps both. The checked-out branch comes from `git worktree list`, which reads HEAD through git on every ref format; the admin dir's `HEAD` file is used only when the list names the worktree under another spelling, and on the reftable format it names no branch, so the branch is then kept
+  - Refuses, before deleting anything, each case below. The key is `WorktreeRemovalRefusedError.reason`:
+    - `not-owned`: not a worktree of `workspacePath`, even at a path this repository still lists. Its `.git` file must point into this repository's admin area, and that admin dir must name this very directory back, compared by file identity; a `.git` directory or a link into another repository fails this
+    - `main-worktree`: the repository's own working tree
+    - `moved`: a checkout moved by hand; the message suggests `git worktree repair` run inside it
+    - `copy`: a copy of a worktree git tracks elsewhere, including a hard-linked copy or one whose `.git` is a symlink to the live worktree's. No repair advice, since a repair there would take the live worktree's registration
+    - `locked`: a locked worktree, with the lock read from the list and from the admin dir
+    - `contains-worktree`: a worktree that holds another of the repository's registered worktrees inside its checkout, as Claude Code's own `.claude/worktrees/<name>` does, since deleting it would delete the inner one too. The message names `git worktree remove` and `git worktree move` as the ways out
+    - `unverifiable`: any directory still on disk when git cannot be asked or its `.git` file cannot be read, and a registered path whose `.git` file names a different admin dir than the one git lists it under (only a hand edit of the admin area produces this)
+    - `untracked`: a folder git no longer tracks, described below
+  - Refusals throw `WorktreeRemovalRefusedError`; `checkWorktreeRemovable` answers the same question without changing anything, so `worktree:archive` and `worktree:delete` refuse before destroying terminals or stopping the ref watcher, and a refused archive cleanup always shows the sessions again
+  - Deletes the directory before unregistering it, so a removal that fails part way (a file held open on Windows) keeps the registration and can be run again
+  - Deletes through `original-fs` in Electron's main process: the asar-aware `fs.promises.rm` never settles on a tree holding an `.asar` file (any Electron project's `node_modules`), which would hold the repository lock for good. There is no time limit on the delete: a caller that gave up waiting would show the sessions again while the delete went on in the background. Other git operations on the repository stop waiting for its lock after 30 seconds on their own. Archive cleanups run one at a time through one queue for all repositories, and a pending one is replayed at the next launch, so a delete that never settles (a stalled network drive) holds up every later archive cleanup, in this run and again after each restart, until the drive answers. A `git worktree remove` that hung did the same before
+  - Before unregistering, checks that nothing exists at the path git records, because `git worktree remove --force` on an existing directory deletes it
+  - A worktree whose directory is gone and which git no longer lists (or git cannot be asked) counts as already removed; its branch is kept
+  - A worktree whose directory is gone, or whose `.git` file is gone, but which git still lists is finished off and unregistered; its branch is deleted only when merged, because a checkout moved by hand may hold the only copy of its commits. Unregistering disconnects such a checkout (its `.git` file then points to a deleted admin dir, so git no longer treats it as a checkout), and `git worktree add <path> <branch>` can check the kept branch out again
+  - A folder git no longer tracks is refused, and archiving it finishes once nothing is left at its path: a checkout whose `.git` file points into this repository at an admin dir that no longer exists (a `git worktree remove` that could not delete every file, a prune while the checkout was offline, or a repository cloned again at the same path, where the folder may hold the only copy of its commits), and an unregistered folder without a `.git` file. Git cannot check either for uncommitted changes
+  - Not detected: a checkout of another repository, or another repository's linked worktree, nested inside the worktree's directory. Git lists only this repository's worktrees, and finding the others would mean walking the whole tree, so they are deleted with the directory
+  - Needs git 2.17 or later (`git worktree remove`)
 - `listWorktrees(workspacePath)`: Lists all git worktrees for a repository
   - Returns array of worktree paths, branches, and isMain flag
 
