@@ -6,6 +6,8 @@ import {
   sessionDraftHydratedAtom,
   sessionDraftInputAtom,
   sessionDraftLocalModifiedAtAtom,
+  sessionLoadErrorAtom,
+  sessionLoadingAtom,
 } from '../sessions';
 
 function deferred<T>() {
@@ -62,5 +64,46 @@ describe('session draft hydration', () => {
 
     expect(store.get(sessionDraftInputAtom(sessionId))).toBe('typed locally');
     expect(store.get(sessionDraftHydratedAtom(sessionId))).toBe(true);
+  });
+});
+
+// #1812: a session whose load threw was shown as "Session not found", which
+// users read as the session having been deleted or moved to another project.
+describe('session load errors', () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it('records why a load failed and clears it when a retry succeeds', async () => {
+    const sessionId = 'load-error-retry';
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    vi.stubGlobal('window', {
+      electronAPI: {
+        aiLoadSession: vi.fn()
+          .mockRejectedValueOnce(new Error(
+            "Error invoking remote method 'ai:loadSession': ResponseTooLargeError: Query result is too large to return (~256 MB, limit 256 MB).",
+          ))
+          .mockResolvedValueOnce({ model: 'claude:test' }),
+      },
+    });
+
+    await store.set(loadSessionDataAtom, { sessionId, workspacePath: '/workspace' });
+    expect(store.get(sessionLoadingAtom(sessionId))).toBe(false);
+    expect(store.get(sessionLoadErrorAtom(sessionId))).toBe(
+      'ResponseTooLargeError: Query result is too large to return (~256 MB, limit 256 MB).',
+    );
+
+    await store.set(loadSessionDataAtom, { sessionId, workspacePath: '/workspace' });
+    expect(store.get(sessionLoadErrorAtom(sessionId))).toBeNull();
+  });
+
+  it('records no error when the session does not exist', async () => {
+    const sessionId = 'load-error-missing';
+    vi.stubGlobal('window', { electronAPI: { aiLoadSession: vi.fn().mockResolvedValue(null) } });
+
+    await store.set(loadSessionDataAtom, { sessionId, workspacePath: '/workspace' });
+    expect(store.get(sessionLoadingAtom(sessionId))).toBe(false);
+    expect(store.get(sessionLoadErrorAtom(sessionId))).toBeNull();
   });
 });
