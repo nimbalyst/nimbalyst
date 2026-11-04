@@ -15,6 +15,7 @@ import {
 import type { AgentCapabilities } from './agentCapabilities';
 import { toolRegistry, toAnthropicTools, toOpenAITools } from '../tools/definitions';
 import { buildSystemPrompt } from '../prompt';
+import type { ExitPlanModeResponse } from '../exitPlanModeDeferral';
 import {
   AgentMessageWriteQueue,
   type MessagesLoggedBatchEvent,
@@ -63,7 +64,7 @@ export function isAskUserQuestionProvider(provider: AIProvider): provider is AIP
 export interface ExitPlanModeConfirmationProvider {
   resolveExitPlanModeConfirmation(
     requestId: string,
-    response: { approved: boolean; clearContext?: boolean; feedback?: string },
+    response: ExitPlanModeResponse,
     sessionId?: string,
     respondedBy?: 'desktop' | 'mobile'
   ): void;

@@ -19,6 +19,7 @@ import React, { useCallback, useRef, useImperativeHandle, forwardRef, useEffect,
 import { useAtom, useSetAtom, useAtomValue } from 'jotai';
 import { store, registerInteractiveWidgetHost, unregisterInteractiveWidgetHost } from '@nimbalyst/runtime/store';
 import type { SessionData, ChatAttachment, TranscriptViewMessage } from '@nimbalyst/runtime/ai/server/types';
+import type { ExitPlanModeDeferral } from '@nimbalyst/runtime/ai/exitPlanModeDeferral';
 import { agentCapabilitiesForProviderType } from '@nimbalyst/runtime/ai/server/agentCapabilities';
 import type { ToolCallDiffLoadResult } from '@nimbalyst/runtime/ai/server/transcript';
 import { AgentTranscriptPanel } from '@nimbalyst/runtime/ui/AgentTranscript/components/AgentTranscriptPanel';
@@ -1717,13 +1718,15 @@ const LocalSessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscrip
     }));
   }, [workspacePath]);
 
-  const stopExitPlanModeSession = useCallback(async (requestId: string, confirmSessionId: string) => {
+  // deferredTo is set when the plan is implemented in another session; the
+  // provider records it in the tool result so the plan card says so.
+  const stopExitPlanModeSession = useCallback(async (requestId: string, confirmSessionId: string, deferredTo?: ExitPlanModeDeferral) => {
     // Mark the prompt as cancelled in DB so it doesn't reappear
     await respondToPrompt({
       sessionId: confirmSessionId,
       promptId: requestId,
       promptType: 'exit_plan_mode_request',
-      response: { approved: false, cancelled: true },
+      response: { approved: false, cancelled: true, deferredTo },
     });
 
     // Cancel the entire agent session - this will abort the waiting ExitPlanMode request
@@ -1759,7 +1762,7 @@ const LocalSessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscrip
       });
 
       openSessionWithDraft(newSessionId, implementationPrompt);
-      await stopExitPlanModeSession(requestId, confirmSessionId);
+      await stopExitPlanModeSession(requestId, confirmSessionId, { kind: 'session' });
 
       posthog?.capture('exit_plan_mode_response', {
         decision: 'start_new_session',
