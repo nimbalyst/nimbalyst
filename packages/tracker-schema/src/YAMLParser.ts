@@ -255,8 +255,8 @@ function applyOptionalModelProperties<T extends { type: string }>(target: T, dat
   // Only written when true: an unarchived tracker is the overwhelming majority
   // and `archived: false` on every file would be noise.
   if (data.archived === true) model.archived = true;
-  // Same rule: only an opt-in is written, so absent means off.
-  if (data.localNumbers === true) model.localNumbers = true;
+  // Local numbers are on by default, so only an opt-out is kept and written.
+  if (data.localNumbers === false) model.localNumbers = false;
   // A wiki type's storage; absent means the type is not in the wiki.
   if (data.storage === 'pages' || data.storage === 'table') model.storage = data.storage;
 

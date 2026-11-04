@@ -127,16 +127,18 @@ describe('parseTrackerYAML — tracker sharing migration', () => {
     expect(serializeTrackerYAML(active)).not.toContain('archived:');
   });
 
-  // Local numbers (`NIM.75`) are opt-in per type. Losing the flag on a round
-  // trip would silently stop numbering a type the user asked to number.
-  it('round-trips localNumbers, and stays silent when a type does not opt in', () => {
-    const numbered = parseTrackerYAML(`${BASE}\nlocalNumbers: true\nfields:\n  - name: title\n    type: string\n`);
-    expect(numbered.localNumbers).toBe(true);
-    expect(parseTrackerYAML(serializeTrackerYAML(numbered)).localNumbers).toBe(true);
+  // Local numbers (`NIM.75`) are on unless a type opts out. Losing the opt-out
+  // on a round trip would silently start numbering a type the user excluded.
+  it('round-trips a localNumbers opt-out, and stays silent when a type keeps the default', () => {
+    const optedOut = parseTrackerYAML(`${BASE}\nlocalNumbers: false\nfields:\n  - name: title\n    type: string\n`);
+    expect(optedOut.localNumbers).toBe(false);
+    expect(parseTrackerYAML(serializeTrackerYAML(optedOut)).localNumbers).toBe(false);
 
-    const plain = parseTrackerYAML(`${BASE}\nfields:\n  - name: title\n    type: string\n`);
-    expect(plain.localNumbers).toBeUndefined();
-    expect(serializeTrackerYAML(plain)).not.toContain('localNumbers:');
+    for (const flag of ['', 'localNumbers: true\n']) {
+      const plain = parseTrackerYAML(`${BASE}\n${flag}fields:\n  - name: title\n    type: string\n`);
+      expect(plain.localNumbers).toBeUndefined();
+      expect(serializeTrackerYAML(plain)).not.toContain('localNumbers:');
+    }
   });
 
   // `storage` is what makes a type a Local wiki type (local-wiki FORMAT.md).

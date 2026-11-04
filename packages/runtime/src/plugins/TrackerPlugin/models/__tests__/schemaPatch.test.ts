@@ -253,6 +253,15 @@ describe('diffTrackerSchema round-trips through resolve', () => {
     expect(resolved.fields.some((f) => f.name === 'owner')).toBe(true);
   });
 
+  // A builtin type is customized through a patch, so the patch is the only way
+  // to opt one out of local numbers.
+  it('carries a localNumbers opt-out through YAML and resolves it onto the seed', () => {
+    const seed = featureSeed();
+    const patch = diffTrackerSchema(seed, { ...featureSeed(), localNumbers: false });
+    const reloaded = parseTrackerSchemaPatchYAML(serializeTrackerSchemaPatchYAML(patch));
+    expect(resolveTrackerSchemaPatch(seed, reloaded).localNumbers).toBe(false);
+  });
+
   it('an empty diff (seed === target) resolves back to the seed', () => {
     const seed = featureSeed();
     const patch = diffTrackerSchema(seed, featureSeed());

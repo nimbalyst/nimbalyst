@@ -1834,7 +1834,7 @@ export class ElectronDocumentService implements DocumentService {
    * one of them drifts. Rows already numbered cost nothing: in the steady
    * state `unnumbered` is empty and this returns without a query. New items
    * and the one-time backfill of items that predate local numbering are the
-   * same path. Only types that opt in (`localNumbers: true`) are numbered.
+   * same path. Types that opt out (`localNumbers: false`) are not numbered.
    *
    * Failure is not fatal -- an item with no number still works everywhere,
    * so a broken sweep must not take the tracker list down with it.

@@ -1039,7 +1039,7 @@ describe('handleTrackerCreate issue-key timing', () => {
   // unpublished item reports its uuid to the agent: it has no team key, and
   // its number was only minted by a later list (NIM.2842).
   it('reports the local number as the ref for an unpublished item', async () => {
-    mockGlobalRegistry.get.mockImplementation((type?: string) => type === 'bug' ? { localNumbers: true } : undefined);
+    mockGlobalRegistry.get.mockImplementation((type?: string) => type === 'bug' ? {} : undefined);
     vi.mocked(isTrackerSyncActive).mockReturnValue(false);
     vi.mocked(shouldSyncTrackerItem).mockReturnValue(false);
     const numbered = makeRow({

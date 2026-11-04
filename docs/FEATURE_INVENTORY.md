@@ -385,7 +385,7 @@ Companion app; pairs with a desktop over encrypted sync. Voice mode is not inclu
 - Quick Track (Cmd+Shift+I) creates an item of any type from anywhere, with similar-item suggestions before creating a duplicate
 - Ready view surfaces unblocked work, ordered by how much other work it unblocks; items record what they are waiting on
 - Open / All / Closed filter, hiding closed work by default; Owner and Due Date available across the All view
-- Personal and team trackers, with unpublished team items remaining private; local item numbers (`NIM.75`) are given only to items of types that set `localNumbers: true`
+- Personal and team trackers, with unpublished team items remaining private; local item numbers (`NIM.75`) are given to items of every type except types that set `localNumbers: false`
 - Table editing with multi-cell operations and undo/redo
 - Tracker-item context menus open linked AI sessions or launch a new session or worktree; draft plans with linked commits show a status-mismatch chip
 - Unread indicators — a dot on tracker rows/cards (list, kanban, tag board) when an item is new or was changed by someone else since you last viewed it; clears when you open it; your own edits and views sync across your devices (personal channel), and AI-agent edits count as unread

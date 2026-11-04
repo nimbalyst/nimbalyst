@@ -572,7 +572,8 @@ describe('createTrackerItem sync status policy', () => {
   // optimistically, so without a sweep here it renders "No key yet" until the
   // next full re-list (NIM.2842).
   it('numbers a newly created personal item before returning it', async () => {
-    mockGlobalRegistryGet.mockReturnValue({ sharing: 'personal', draftByDefault: false, localNumbers: true });
+    // No `localNumbers` key: numbering is the default, not an opt-in.
+    mockGlobalRegistryGet.mockReturnValue({ sharing: 'personal', draftByDefault: false });
     mockIsTrackerSyncActive.mockReturnValue(false);
     mockAssignLocalKeysToRows.mockResolvedValue(new Map([['bug-local', 'NIM.42']]));
 
@@ -600,9 +601,8 @@ describe('createTrackerItem sync status policy', () => {
     expect(created.localKey).toBe('NIM.42');
   });
 
-  // Local numbers are opt-in per type; a type that says nothing gets none.
-  it('leaves a new item of a type without localNumbers unnumbered', async () => {
-    mockGlobalRegistryGet.mockReturnValue({ sharing: 'personal', draftByDefault: false });
+  it('leaves a new item of a type that opts out of localNumbers unnumbered', async () => {
+    mockGlobalRegistryGet.mockReturnValue({ sharing: 'personal', draftByDefault: false, localNumbers: false });
     mockIsTrackerSyncActive.mockReturnValue(false);
 
     mockQuery.mockResolvedValueOnce({ rows: [{ min_key: null }] }); // kanbanSortOrder MIN
