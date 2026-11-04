@@ -206,7 +206,7 @@ export function SessionTreeRow(props: SessionTreeRowHandlers & VisibleSessionTre
         isActive={row.id === activeSessionId}
         treeContext
         projectPath={props.projectPath || row.workspaceId}
-        isWorkstream={hasChildren}
+        isWorkstream={row.sessionType === 'workstream' || hasChildren}
         treeLeading={leading}
         treeDetails={details}
         compact={compact}
