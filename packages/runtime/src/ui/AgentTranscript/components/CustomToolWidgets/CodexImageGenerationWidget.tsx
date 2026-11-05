@@ -16,8 +16,15 @@ export interface ImageGenerationResult {
   revisedPrompt?: string;
 }
 
+// A PNG's base64 starts with these characters (the encoded file signature).
+const PNG_BASE64_PREFIX = 'iVBORw0KGgo';
+
 export function parseImageGenerationResult(result: unknown): ImageGenerationResult | null {
-  if (typeof result !== 'string' || !result.startsWith('{')) return null;
+  if (typeof result !== 'string') return null;
+  // A parser older than this widget passes Codex's raw base64 PNG through as
+  // the result (a main process not yet restarted, or an older synced client).
+  if (result.startsWith(PNG_BASE64_PREFIX)) return { data: result };
+  if (!result.startsWith('{')) return null;
   try {
     const parsed = JSON.parse(result) as ImageGenerationResult;
     return parsed.savedPath || parsed.data ? parsed : null;
@@ -32,11 +39,14 @@ export const CodexImageGenerationWidget: React.FC<CustomToolWidgetProps> = (prop
 
   const image = parseImageGenerationResult(tool.result);
   if (!image) {
-    const failed = props.message.isError || typeof tool.result === 'string' && tool.result.length > 0;
+    const failed = props.message.isError;
+    const errorText = typeof tool.result === 'string' && tool.result.length <= 500 ? tool.result : '';
     return (
       <div className="codex-image-generation-widget text-sm py-1">
         <span className={failed ? 'text-nim-error' : 'text-nim-muted'}>
-          {failed ? String(tool.result || 'Image generation failed') : 'Generating image...'}
+          {failed
+            ? errorText || 'Image generation failed'
+            : tool.result ? 'Generated an image (no preview available)' : 'Generating image...'}
         </span>
       </div>
     );
