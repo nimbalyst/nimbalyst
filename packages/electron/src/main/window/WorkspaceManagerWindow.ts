@@ -23,7 +23,7 @@ import { initializeTrackerSync } from '../services/TrackerSyncManager';
 import { ensureWorkspaceLocalNumbersInBackground } from '../services/tracker/ensureWorkspaceLocalNumbers';
 import { updateTrackerSchemaWorkspace } from '../services/TrackerSchemaService';
 import { getDialogDefaultPath, rememberDialogSelection } from '../utils/dialogPaths';
-import { windowReferencesWorkspace } from './windowState';
+import { getWindowProjectPaths, windowReferencesWorkspace } from './windowState';
 import { formatScannedCount, isMarkdownFile, summarizeWorkspaceScan } from './workspaceScanCounts';
 import { TutorialProjectService } from '../services/tutorial/TutorialProjectService';
 import {
@@ -459,15 +459,15 @@ export function setupWorkspaceManagerHandlers() {
     return workspacesWithInfo.filter(w => w.exists);
   });
 
-  // Get currently open workspace paths (for Project Quick Open)
+  // Get currently open workspace paths (for Project Quick Open). A window's
+  // rail projects count as open even when another project is in front.
   safeHandle('workspace-manager:get-open-workspaces', async () => {
-    const openPaths: string[] = [];
+    const openPaths = new Set<string>();
     for (const [, state] of windowStates) {
-      if (state.workspacePath && state.mode === 'workspace') {
-        openPaths.push(state.workspacePath);
-      }
+      if (state.mode !== 'workspace') continue;
+      for (const path of getWindowProjectPaths(state)) openPaths.add(path);
     }
-    return openPaths;
+    return [...openPaths];
   });
 
   // Get workspace statistics

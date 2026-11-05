@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 <!-- New features go here -->
 - macOS: an optional `nimbalyst` terminal command (Nimbalyst menu > Install 'nimbalyst' Command in PATH, or Settings > Advanced) opens a folder as a project with `nimbalyst .`, or a file with `nimbalyst <file>`
 - With multiple projects per window enabled, drag a project from one window's project rail to another window's rail to move it, or drop it outside every window to open it in its own window
+- Projects switcher (Cmd+Shift+P) has an Open Folder as Project row for opening a folder that isn't in the recent list
 
 ### Changed
 <!-- Changes to existing functionality go here -->
@@ -19,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 <!-- Bug fixes go here -->
 - With multiple projects per window enabled, picking a project that isn't open in any window from the Projects switcher (Cmd+Shift+P) now adds it to the current window's project rail instead of opening a new window
+- Projects switcher (Cmd+Shift+P) now tags a project as Open when it is in any window's project rail, not only when it is the project that window started with
 
 ### Removed
 <!-- Removed features go here -->

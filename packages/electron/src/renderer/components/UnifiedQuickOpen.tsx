@@ -70,7 +70,7 @@ import { parseFileMask, matchesFileMask } from '@nimbalyst/extension-sdk/file-ma
 import type { TrackerItem } from '@nimbalyst/runtime/core/DocumentService';
 
 import { attachWorkspaceFolderWithPicker } from '../store/actions/workspaceFolders';
-import { switchToProject, PROJECT_LIMIT_WARNING } from '../store/actions/railProjects';
+import { openFolderAsProject, switchToProject, PROJECT_LIMIT_WARNING } from '../store/actions/railProjects';
 import { errorNotificationService } from '../services/ErrorNotificationService';
 
 const isMac =
@@ -2535,10 +2535,14 @@ interface ProjectItem {
  */
 type ProjectsPaneRow =
   | { kind: 'attach' }
+  | { kind: 'open-folder' }
   | { kind: 'project'; project: ProjectItem };
 
 /** Query words that surface the attach action. */
 const ATTACH_FOLDER_KEYWORDS = ['attach', 'folder', 'workspace', 'add'];
+
+/** Query words that surface the open-folder action. */
+const OPEN_FOLDER_KEYWORDS = ['open', 'folder', 'project', 'directory', 'browse'];
 
 interface RecentWorkspaceItem {
   path: string;
@@ -2609,16 +2613,19 @@ const ProjectsPane: React.FC<ProjectsPaneProps> = memo(({
    * Rows the pane navigates. "Attach Folder to Workspace..." leads, because it
    * acts on the project you already have open rather than switching away from
    * it -- the same reason it sits under File rather than under Open Recent.
+   * "Open Folder as Project..." follows, for a project not in the recents.
    */
   const rows = useMemo<ProjectsPaneRow[]>(() => {
     const projectRows = displayProjects.map<ProjectsPaneRow>((project) => ({
       kind: 'project',
       project,
     }));
-    if (!currentWorkspacePath) return projectRows;
     const q = visibleQuery.trim().toLowerCase();
-    const matchesAttach = !q || ATTACH_FOLDER_KEYWORDS.some((word) => word.includes(q));
-    return matchesAttach ? [{ kind: 'attach' }, ...projectRows] : projectRows;
+    const matches = (keywords: string[]) => !q || keywords.some((word) => word.includes(q));
+    const actions: ProjectsPaneRow[] = [];
+    if (currentWorkspacePath && matches(ATTACH_FOLDER_KEYWORDS)) actions.push({ kind: 'attach' });
+    if (matches(OPEN_FOLDER_KEYWORDS)) actions.push({ kind: 'open-folder' });
+    return [...actions, ...projectRows];
   }, [displayProjects, currentWorkspacePath, visibleQuery]);
 
   useEffect(() => {
@@ -2646,7 +2653,9 @@ const ProjectsPane: React.FC<ProjectsPaneProps> = memo(({
         }
         return;
       }
-      const result = await switchToProject(jotaiStore, row.project.path, row.project.isOpen);
+      const result = row.kind === 'open-folder'
+        ? await openFolderAsProject(jotaiStore)
+        : await switchToProject(jotaiStore, row.project.path, row.project.isOpen);
       if (result === 'at-cap') {
         errorNotificationService.showWarning(PROJECT_LIMIT_WARNING.title, PROJECT_LIMIT_WARNING.message);
       }
@@ -2692,31 +2701,16 @@ const ProjectsPane: React.FC<ProjectsPaneProps> = memo(({
           ref={listRef}
           className={`list-none m-0 p-0 ${mouseHasMoved ? '' : 'pointer-events-none'}`}
         >
-          {rows.map((row, index) => row.kind === 'attach' ? (
-            <li
-              key="attach-folder"
-              className={`unified-quick-open-item projects-pane-attach flex items-center gap-3 py-2.5 px-4 cursor-pointer border-l-[3px] transition-all duration-100 ${
-                index === selectedIndex
-                  ? 'selected bg-nim-selected border-l-nim-primary'
-                  : 'border-transparent hover:bg-nim-hover'
-              }`}
-              onClick={() => handleSelect(row)}
-              onMouseEnter={() => {
+          {rows.map((row, index) => row.kind !== 'project' ? (
+            <ProjectsActionRow
+              key={row.kind}
+              {...PROJECTS_PANE_ACTIONS[row.kind]}
+              isSelected={index === selectedIndex}
+              onSelect={() => handleSelect(row)}
+              onHover={() => {
                 if (mouseHasMoved) setSelectedIndex(index);
               }}
-            >
-              <div className="shrink-0 flex items-center justify-center w-5 h-5 text-nim-muted">
-                <MaterialSymbol icon="create_new_folder" size={16} />
-              </div>
-              <div className="flex-1 min-w-0">
-                <div className="text-sm font-medium text-nim overflow-hidden text-ellipsis whitespace-nowrap">
-                  Attach Folder to Workspace...
-                </div>
-                <div className="text-xs text-nim-faint mt-0.5 overflow-hidden text-ellipsis whitespace-nowrap">
-                  Browse it here and let agents read it, without leaving this project
-                </div>
-              </div>
-            </li>
+            />
           ) : (
             <ProjectRow
               key={row.project.path}
@@ -2733,6 +2727,54 @@ const ProjectsPane: React.FC<ProjectsPaneProps> = memo(({
     </div>
   );
 });
+
+const PROJECTS_PANE_ACTIONS = {
+  attach: {
+    className: 'projects-pane-attach',
+    icon: 'create_new_folder',
+    title: 'Attach Folder to Workspace...',
+    subtitle: 'Browse it here and let agents read it, without leaving this project',
+  },
+  'open-folder': {
+    className: 'projects-pane-open-folder',
+    icon: 'folder_open',
+    title: 'Open Folder as Project...',
+    subtitle: 'Choose a folder to open as its own project',
+  },
+} as const;
+
+/** An action row (attach, open folder) leading the Projects pane. */
+const ProjectsActionRow: React.FC<{
+  className: string;
+  icon: string;
+  title: string;
+  subtitle: string;
+  isSelected: boolean;
+  onSelect: () => void;
+  onHover: () => void;
+}> = memo(({ className, icon, title, subtitle, isSelected, onSelect, onHover }) => (
+  <li
+    className={`unified-quick-open-item ${className} flex items-center gap-3 py-2.5 px-4 cursor-pointer border-l-[3px] transition-all duration-100 ${
+      isSelected
+        ? 'selected bg-nim-selected border-l-nim-primary'
+        : 'border-transparent hover:bg-nim-hover'
+    }`}
+    onClick={onSelect}
+    onMouseEnter={onHover}
+  >
+    <div className="shrink-0 flex items-center justify-center w-5 h-5 text-nim-muted">
+      <MaterialSymbol icon={icon} size={16} />
+    </div>
+    <div className="flex-1 min-w-0">
+      <div className="text-sm font-medium text-nim overflow-hidden text-ellipsis whitespace-nowrap">
+        {title}
+      </div>
+      <div className="text-xs text-nim-faint mt-0.5 overflow-hidden text-ellipsis whitespace-nowrap">
+        {subtitle}
+      </div>
+    </div>
+  </li>
+));
 
 /** One recent-project row in the Projects pane. */
 const ProjectRow: React.FC<{

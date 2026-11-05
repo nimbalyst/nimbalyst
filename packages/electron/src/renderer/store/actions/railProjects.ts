@@ -89,6 +89,21 @@ export async function switchToProject(
 }
 
 /**
+ * Pick a folder and open it as a project, the same way the Projects switcher
+ * opens a recent one. Returns null when the user cancels the picker.
+ */
+export async function openFolderAsProject(jotaiStore: JotaiStore): Promise<SwitchToProjectResult | null> {
+  const result = await window.electronAPI.invoke('dialog-show-open-dialog', {
+    properties: ['openDirectory', 'createDirectory'],
+    title: 'Open Project',
+  });
+  const picked: string | undefined = result?.canceled ? undefined : result?.filePaths?.[0];
+  if (!picked) return null;
+  const openPaths = await window.electronAPI.workspaceManager.getOpenWorkspaces();
+  return switchToProject(jotaiStore, picked, openPaths.includes(picked));
+}
+
+/**
  * Take a project out of this window's rail and release its main-process
  * registration. Closing the last project closes the window, so the app can
  * fall back to its project-selection flow. Callers confirm first if needed.

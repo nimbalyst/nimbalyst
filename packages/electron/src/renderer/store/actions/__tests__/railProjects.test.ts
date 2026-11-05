@@ -8,7 +8,7 @@ import {
   openProjectsAtom,
   type OpenProject,
 } from '../../atoms/openProjects';
-import { removeProjectFromRail, switchToProject } from '../railProjects';
+import { openFolderAsProject, removeProjectFromRail, switchToProject } from '../railProjects';
 
 function project(path: string): OpenProject {
   return { path, name: path.split('/').pop() ?? path, openedAt: 0 };
@@ -106,5 +106,49 @@ describe('removeProjectFromRail', () => {
     await removeProjectFromRail(jotaiStore, '/ws/a');
 
     expect(invoke).toHaveBeenCalledWith('workspace:close-rail-window');
+  });
+});
+
+describe('openFolderAsProject', () => {
+  let jotaiStore: ReturnType<typeof createStore>;
+  let invoke: ReturnType<typeof vi.fn>;
+  let openWorkspace: ReturnType<typeof vi.fn>;
+  let openPaths: string[];
+
+  beforeEach(() => {
+    jotaiStore = createStore();
+    jotaiStore.set(allowUnlimitedProjectsAtom, false);
+    jotaiStore.set(multiProjectModeAtom, true);
+    jotaiStore.set(openProjectsAtom, [project('/ws/a')]);
+    openPaths = ['/ws/a'];
+    invoke = vi.fn(async (channel: string) => channel === 'dialog-show-open-dialog'
+      ? { canceled: false, filePaths: ['/ws/picked'] }
+      : { success: true });
+    openWorkspace = vi.fn().mockResolvedValue({ success: true });
+    (globalThis as any).window = { electronAPI: { invoke, workspaceManager: { openWorkspace, getOpenWorkspaces: async () => openPaths } } };
+  });
+
+  it('adds a picked folder to this rail when no window has it', async () => {
+    expect(await openFolderAsProject(jotaiStore)).toBe('added');
+
+    expect(jotaiStore.get(activeWorkspacePathAtom)).toBe('/ws/picked');
+    expect(openWorkspace).not.toHaveBeenCalled();
+  });
+
+  it('focuses the window that already has the picked folder', async () => {
+    openPaths = ['/ws/a', '/ws/picked'];
+
+    expect(await openFolderAsProject(jotaiStore)).toBe('opened-window');
+
+    expect(openWorkspace).toHaveBeenCalledWith('/ws/picked');
+  });
+
+  it('does nothing when the picker is cancelled', async () => {
+    invoke.mockResolvedValueOnce({ canceled: true, filePaths: [] });
+
+    expect(await openFolderAsProject(jotaiStore)).toBeNull();
+
+    expect(openWorkspace).not.toHaveBeenCalled();
+    expect(jotaiStore.get(openProjectsAtom)).toHaveLength(1);
   });
 });
