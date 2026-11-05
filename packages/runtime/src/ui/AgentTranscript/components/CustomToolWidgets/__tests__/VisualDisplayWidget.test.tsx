@@ -2,6 +2,7 @@ import React from 'react';
 import { render } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { VisualDisplayWidget } from '../VisualDisplayWidget';
+import { CodexImageGenerationWidget } from '../CodexImageGenerationWidget';
 
 describe('VisualDisplayWidget', () => {
   let consoleWarnSpy: ReturnType<typeof vi.spyOn>;
@@ -83,5 +84,28 @@ describe('VisualDisplayWidget', () => {
 
     const img = await findByAltText('Profile screen');
     expect(img.getAttribute('src')).toBe('data:image/jpeg;base64,QUJD');
+  });
+
+  it('loads a Codex generated image from its saved path through readFile', async () => {
+    const readFile = vi.fn(async () => ({ success: true, content: 'UE5HQllURVM=' }));
+    const { findByAltText } = render(
+      <CodexImageGenerationWidget
+        message={{
+          toolCall: {
+            toolName: 'imageGeneration',
+            arguments: {},
+            result: JSON.stringify({ savedPath: '/Users/me/.codex/generated_images/t/img.png', revisedPrompt: 'A gate icon' }),
+          },
+        } as any}
+        isExpanded={true}
+        onToggle={() => {}}
+        sessionId="session-1"
+        readFile={readFile}
+      />
+    );
+
+    const img = await findByAltText('A gate icon');
+    expect(readFile).toHaveBeenCalledWith('/Users/me/.codex/generated_images/t/img.png');
+    expect(img.getAttribute('src')).toBe('data:image/png;base64,UE5HQllURVM=');
   });
 });
