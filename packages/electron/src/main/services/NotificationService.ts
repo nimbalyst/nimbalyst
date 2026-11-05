@@ -216,7 +216,12 @@ class NotificationService {
 
       // Handle notification click - focus window and switch to session
       notification.on('click', () => {
-        this.handleNotificationClick(clickOptions);
+        // An uncaught throw in an Electron event listener surfaces as a main-process error.
+        try {
+          this.handleNotificationClick(clickOptions);
+        } catch (error) {
+          logger.main.error('[NotificationService] Failed to handle notification click:', error);
+        }
       });
 
       // Track notification
@@ -385,7 +390,10 @@ class NotificationService {
 
     // REQUIRED: workspacePath must be provided - sessions are tied to workspaces
     if (!options.workspacePath) {
-      throw new Error('workspacePath is required for notification routing');
+      logger.main.error('[NotificationService] Ignoring notification click without a workspacePath', {
+        sessionId: options.sessionId,
+      });
+      return;
     }
 
     // Find window by workspace path (the only stable identifier). This matches
@@ -434,7 +442,12 @@ class NotificationService {
     // logger.main.info('[NotificationService] Found window for workspace:', options.workspacePath);
 
     focusExisting();
-    targetWindow.webContents.send('notification-clicked', navigation);
+    try {
+      if (targetWindow.webContents.isDestroyed?.()) return;
+      targetWindow.webContents.send('notification-clicked', navigation);
+    } catch (error) {
+      logger.main.error('[NotificationService] Failed to deliver notification click to the renderer:', error);
+    }
   }
 
   /**

@@ -581,6 +581,39 @@ describe('NotificationService agent notifications', () => {
     );
   });
 
+  it('settles a click without a workspace path instead of throwing', async () => {
+    await notificationService.showNotification({
+      title: 'Response Ready',
+      body: 'Ready for review',
+      sessionId: 'session-1',
+      workspacePath: '',
+    });
+
+    expect(() => mocks.notificationListeners.get('click')?.()).not.toThrow();
+    expect(mocks.findWindowByWorkspace).not.toHaveBeenCalled();
+    expect(mocks.createWindow).not.toHaveBeenCalled();
+  });
+
+  it('does not throw when the renderer is gone or its send throws', async () => {
+    const targetWindow = makeFakeWindow();
+    mocks.findWindowByWorkspace.mockReturnValue(targetWindow);
+
+    targetWindow.webContents.send.mockImplementation(() => {
+      throw new Error('Object has been destroyed');
+    });
+    await expect(
+      clickNotification({ sessionId: 'session-1', workspacePath: '/workspace/alpha' }),
+    ).resolves.toBeUndefined();
+    expect(targetWindow.webContents.send).toHaveBeenCalledTimes(1);
+
+    targetWindow.webContents.send.mockClear();
+    (targetWindow.webContents as Record<string, unknown>).isDestroyed = () => true;
+    await expect(
+      clickNotification({ sessionId: 'session-1', workspacePath: '/workspace/alpha' }),
+    ).resolves.toBeUndefined();
+    expect(targetWindow.webContents.send).not.toHaveBeenCalled();
+  });
+
   it('still raises the window for a notification that carries no session id', async () => {
     const targetWindow = makeFakeWindow();
     mocks.findWindowByWorkspace.mockReturnValue(targetWindow);
