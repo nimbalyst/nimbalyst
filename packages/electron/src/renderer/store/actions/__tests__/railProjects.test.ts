@@ -8,7 +8,7 @@ import {
   openProjectsAtom,
   type OpenProject,
 } from '../../atoms/openProjects';
-import { switchToProject } from '../railProjects';
+import { removeProjectFromRail, switchToProject } from '../railProjects';
 
 function project(path: string): OpenProject {
   return { path, name: path.split('/').pop() ?? path, openedAt: 0 };
@@ -75,5 +75,36 @@ describe('switchToProject', () => {
 
     expect(openWorkspace).toHaveBeenCalledWith('/ws/b');
     expect(invoke).not.toHaveBeenCalled();
+  });
+});
+
+describe('removeProjectFromRail', () => {
+  let jotaiStore: ReturnType<typeof createStore>;
+  let invoke: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    jotaiStore = createStore();
+    invoke = vi.fn().mockResolvedValue({ success: true });
+    (globalThis as any).window = { electronAPI: { invoke } };
+  });
+
+  it('activates a neighbour and keeps the window when other projects remain', async () => {
+    jotaiStore.set(openProjectsAtom, [project('/ws/a'), project('/ws/b')]);
+    jotaiStore.set(activeWorkspacePathAtom, '/ws/b');
+
+    await removeProjectFromRail(jotaiStore, '/ws/b');
+
+    expect(jotaiStore.get(openProjectsAtom).map(p => p.path)).toEqual(['/ws/a']);
+    expect(jotaiStore.get(activeWorkspacePathAtom)).toBe('/ws/a');
+    expect(invoke).toHaveBeenCalledWith('workspace:unregister-additional', { workspacePath: '/ws/b' });
+    expect(invoke).not.toHaveBeenCalledWith('workspace:close-rail-window');
+  });
+
+  it('closes the window when the last project leaves', async () => {
+    jotaiStore.set(openProjectsAtom, [project('/ws/a')]);
+
+    await removeProjectFromRail(jotaiStore, '/ws/a');
+
+    expect(invoke).toHaveBeenCalledWith('workspace:close-rail-window');
   });
 });

@@ -34,7 +34,6 @@ import {
   openProjectsAtom,
   activeWorkspacePathAtom,
   isOpenProjectsAtCapAtom,
-  closeOpenProjectAtom,
   moveOpenProjectAtom,
   sortOpenProjectsAtom,
   type OpenProject,
@@ -50,7 +49,7 @@ import { ProjectIcon } from './ProjectIcon';
 import { requestConfirmation } from '../dialogs/requestConfirmation';
 import { errorNotificationService } from '../services/ErrorNotificationService';
 import { useProjectRailDrag } from './hooks/useProjectRailDrag';
-import { addProjectToRail, PROJECT_LIMIT_WARNING } from '../store/actions/railProjects';
+import { addProjectToRail, removeProjectFromRail, PROJECT_LIMIT_WARNING } from '../store/actions/railProjects';
 import './ProjectRail.css';
 
 const REVEAL_LABEL = getShowInFileBrowserLabel();
@@ -67,7 +66,7 @@ interface ProjectRailIconProps {
   menuOpen: boolean;
   dropPosition?: 'before' | 'after';
   onDragStart: (event: React.DragEvent, path: string) => void;
-  onDragEnd: () => void;
+  onDragEnd: (event: React.DragEvent) => void;
 }
 
 function ProjectRailIcon({
@@ -210,13 +209,37 @@ export function ProjectRail() {
   const openProjects = useAtomValue(openProjectsAtom);
   const [activePath, setActivePath] = useAtom(activeWorkspacePathAtom);
   const atCap = useAtomValue(isOpenProjectsAtCapAtom);
-  const closeProject = useSetAtom(closeOpenProjectAtom);
   const moveProject = useSetAtom(moveOpenProjectAtom);
   const sortProjects = useSetAtom(sortOpenProjectsAtom);
   const activity = useAtomValue(globalSessionActivityAtom);
   const activitySummary = useAtomValue(projectActivitySummaryAtom);
   const projectListRef = React.useRef<HTMLDivElement | null>(null);
-  const drag = useProjectRailDrag(projectListRef, moveProject);
+  const receiveProject = useCallback(async ({ path, beforePath }: { path: string; beforePath: string | null }) => {
+    const result = await addProjectToRail(store, path);
+    if (result === 'at-cap') {
+      errorNotificationService.showWarning(PROJECT_LIMIT_WARNING.title, PROJECT_LIMIT_WARNING.message);
+      return;
+    }
+    if (result !== 'added') return;
+    moveProject({ path, beforePath });
+    // Main tells the window the drag came from to let the project go.
+    window.electronAPI?.invoke?.('workspace:rail-drag-received', { workspacePath: path }).catch((err: unknown) => {
+      console.error('[ProjectRail] rail-drag-received failed:', err);
+    });
+  }, [store, moveProject]);
+  const reportDragEnd = useCallback(({ path, dropEffect }: { path: string; dropEffect: string }) => {
+    const isOnlyProject = store.get(openProjectsAtom).length <= 1;
+    window.electronAPI?.invoke?.('workspace:rail-drag-end', { workspacePath: path, dropEffect, isOnlyProject }).catch((err: unknown) => {
+      console.error('[ProjectRail] rail-drag-end failed:', err);
+    });
+  }, [store]);
+  const drag = useProjectRailDrag(projectListRef, { move: moveProject, receive: receiveProject, ended: reportDragEnd });
+  const startDrag = useCallback((event: React.DragEvent, path: string) => {
+    drag.onDragStart(event, path);
+    window.electronAPI?.invoke?.('workspace:rail-drag-start', { workspacePath: path }).catch((err: unknown) => {
+      console.error('[ProjectRail] rail-drag-start failed:', err);
+    });
+  }, [drag.onDragStart]);
 
   React.useLayoutEffect(() => {
     const list = projectListRef.current;
@@ -309,28 +332,9 @@ export function ProjectRail() {
         if (!proceed) return;
       }
 
-      const wasLast = openProjects.length <= 1;
-
-      closeProject(project.path);
-
-      try {
-        await window.electronAPI?.invoke?.('workspace:unregister-additional', { workspacePath: project.path });
-      } catch (err) {
-        console.error('[ProjectRail] unregister-additional failed:', err);
-      }
-
-      // Closing the last project leaves nothing to render in this window.
-      // Ask the host to close the window so the app can fall back to its
-      // initial project-selection flow.
-      if (wasLast) {
-        try {
-          await window.electronAPI?.invoke?.('workspace:close-rail-window');
-        } catch (err) {
-          console.error('[ProjectRail] close-rail-window failed:', err);
-        }
-      }
+      await removeProjectFromRail(store, project.path);
     },
-    [closeProject, activity, openProjects.length]
+    [activity, store]
   );
 
   // Right-click context menu state. Anchored to a virtual reference at the
@@ -485,7 +489,7 @@ export function ProjectRail() {
               isDragging={drag.draggedPath === project.path}
               menuOpen={menu !== null}
               dropPosition={drag.beforePath === project.path ? 'before' : drag.beforePath === null && project === openProjects.at(-1) ? 'after' : undefined}
-              onDragStart={(event, path) => { closeMenu(); drag.onDragStart(event, path); }}
+              onDragStart={(event, path) => { closeMenu(); startDrag(event, path); }}
               onDragEnd={drag.onDragEnd}
             />
           );

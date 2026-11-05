@@ -282,6 +282,130 @@ export function createWorkspaceManagerWindow(options: WorkspaceManagerWindowOpti
   return workspaceManagerWindow;
 }
 
+export interface OpenWorkspaceOptions {
+  /** Skip reusing a window that already references the project (#1856). */
+  forceNewWindow?: boolean;
+  /** Screen position for a new window, e.g. where a rail project was dropped. */
+  position?: { x: number; y: number };
+}
+
+/**
+ * Open a project window, focusing the window that already hosts it unless
+ * `forceNewWindow` is set.
+ */
+export async function openWorkspaceWindow(workspacePath: string, options?: OpenWorkspaceOptions) {
+  // Add to recent workspaces
+  addToRecentItems('workspaces', workspacePath, basename(workspacePath));
+
+  // Reuse the window that already hosts this workspace. It may have switched
+  // to a different project since it was created, in which case focusing it
+  // alone leaves the user looking at the wrong project (#1427) -- the reuse
+  // helper sends the navigation message that actually switches it back.
+  // The rail's explicit new-window action must bypass reuse even though the
+  // source window necessarily already references this project (#1856).
+  const forceNewWindow = options?.forceNewWindow === true;
+  const reuse = forceNewWindow ? null : reuseExistingWorkspaceWindow(workspacePath);
+  if (reuse) {
+    // Close workspace manager after handing off to the existing workspace
+    if (workspaceManagerWindow && !workspaceManagerWindow.isDestroyed()) {
+      workspaceManagerClosingForProject = true;
+      workspaceManagerWindow.close();
+    }
+
+    return { success: true, action: reuse };
+  }
+
+  // Check for saved workspace window state
+  const savedState = getWorkspaceWindowState(workspacePath);
+
+  // Create window with saved bounds if available. A torn-off rail project
+  // keeps its saved size but lands where it was dropped.
+  const bounds = options?.position
+    ? { width: savedState?.bounds?.width ?? 1200, height: savedState?.bounds?.height ?? 800, ...options.position }
+    : savedState?.bounds;
+  const window = createWindow(false, true, workspacePath, bounds,
+    forceNewWindow ? { restorePreviousProjects: false } : undefined);
+
+  (async () => {
+    try {
+      const { files } = await getWorkspaceFiles(workspacePath, '', 1000, 8);
+
+      let isGitRepository = false;
+      let isGitHub = false;
+
+      try {
+        const gitStatusService = new GitStatusService();
+        isGitRepository = await gitStatusService.isGitRepo(workspacePath);
+        if (isGitRepository) {
+          isGitHub = await gitStatusService.hasGitHubRemote(workspacePath);
+        }
+      } catch (gitError) {
+        console.error('Error checking git status:', gitError);
+      }
+
+      const analytics = AnalyticsService.getInstance();
+      analytics.sendEvent('workspace_opened', {
+        fileCount: bucketFileCount(files.length),
+        hasSubfolders: await hasSubfolders(workspacePath),
+        source: 'dialog',
+        isGitRepository,
+        isGitHub,
+      });
+    } catch (error) {
+      console.error('Error tracking workspace_opened event:', error);
+    }
+  })();
+
+  setTimeout(() => {
+    // Start watching workspace MCP config for changes after the open handler returns.
+    try {
+      const mcpService = getMcpConfigService();
+      if (mcpService) {
+        mcpService.startWatchingWorkspaceConfig(workspacePath);
+      }
+    } catch (error) {
+      // Log error but don't throw - workspace opening must continue
+      console.error('[MCP] Failed to start watching workspace config:', error);
+    }
+
+    // Auto-match workspace to a team and initialize tracker sync only after
+    // we've yielded the main thread; both paths may probe git remotes.
+    void autoMatchTeamForWorkspace(workspacePath).catch(() => {});
+    void initializeTrackerSync(workspacePath).catch(() => {});
+    // Sibling, not a step inside tracker sync: that path returns early for a
+    // workspace with no team, which is exactly the workspace whose items have
+    // nothing but a local number.
+    ensureWorkspaceLocalNumbersInBackground(workspacePath);
+    updateTrackerSchemaWorkspace(workspacePath);
+  }, 0);
+
+  // Restore dev tools if they were open
+  if (savedState?.devToolsOpen) {
+    window.webContents.once('did-finish-load', () => {
+      window.webContents.openDevTools();
+    });
+  }
+
+  // Disable single file restoration - we now use tab restoration instead
+  // if (savedState?.filePath && existsSync(savedState.filePath)) {
+  //   window.webContents.once('did-finish-load', () => {
+  //     // Give the renderer time to initialize
+  //     setTimeout(() => {
+  //       window.webContents.send('open-workspace-file', savedState.filePath);
+  //     }, 500);
+  //   });
+  // }
+
+  // Close workspace manager after opening workspace
+  if (workspaceManagerWindow && !workspaceManagerWindow.isDestroyed()) {
+    // Mark that we're closing because a project was selected (not user manually closing)
+    workspaceManagerClosingForProject = true;
+    workspaceManagerWindow.close();
+  }
+
+  return { success: true, action: 'created' as const };
+}
+
 // Setup handlers once when module loads
 let handlersRegistered = false;
 
@@ -441,113 +565,8 @@ export function setupWorkspaceManagerHandlers() {
   });
 
   // Open workspace (reuse existing window if already open)
-  safeHandle('workspace-manager:open-workspace', async (event, workspacePath: string, options?: { forceNewWindow?: boolean }) => {
-    // Add to recent workspaces
-    addToRecentItems('workspaces', workspacePath, basename(workspacePath));
-
-    // Reuse the window that already hosts this workspace. It may have switched
-    // to a different project since it was created, in which case focusing it
-    // alone leaves the user looking at the wrong project (#1427) -- the reuse
-    // helper sends the navigation message that actually switches it back.
-    // The rail's explicit new-window action must bypass reuse even though the
-    // source window necessarily already references this project (#1856).
-    const forceNewWindow = options?.forceNewWindow === true;
-    const reuse = forceNewWindow ? null : reuseExistingWorkspaceWindow(workspacePath);
-    if (reuse) {
-      // Close workspace manager after handing off to the existing workspace
-      if (workspaceManagerWindow && !workspaceManagerWindow.isDestroyed()) {
-        workspaceManagerClosingForProject = true;
-        workspaceManagerWindow.close();
-      }
-
-      return { success: true, action: reuse };
-    }
-
-    // Check for saved workspace window state
-    const savedState = getWorkspaceWindowState(workspacePath);
-
-    // Create window with saved bounds if available
-    const window = createWindow(false, true, workspacePath, savedState?.bounds,
-      forceNewWindow ? { restorePreviousProjects: false } : undefined);
-
-    (async () => {
-      try {
-        const { files } = await getWorkspaceFiles(workspacePath, '', 1000, 8);
-
-        let isGitRepository = false;
-        let isGitHub = false;
-
-        try {
-          const gitStatusService = new GitStatusService();
-          isGitRepository = await gitStatusService.isGitRepo(workspacePath);
-          if (isGitRepository) {
-            isGitHub = await gitStatusService.hasGitHubRemote(workspacePath);
-          }
-        } catch (gitError) {
-          console.error('Error checking git status:', gitError);
-        }
-
-        const analytics = AnalyticsService.getInstance();
-        analytics.sendEvent('workspace_opened', {
-          fileCount: bucketFileCount(files.length),
-          hasSubfolders: await hasSubfolders(workspacePath),
-          source: 'dialog',
-          isGitRepository,
-          isGitHub,
-        });
-      } catch (error) {
-        console.error('Error tracking workspace_opened event:', error);
-      }
-    })();
-
-    setTimeout(() => {
-      // Start watching workspace MCP config for changes after the open handler returns.
-      try {
-        const mcpService = getMcpConfigService();
-        if (mcpService) {
-          mcpService.startWatchingWorkspaceConfig(workspacePath);
-        }
-      } catch (error) {
-        // Log error but don't throw - workspace opening must continue
-        console.error('[MCP] Failed to start watching workspace config:', error);
-      }
-
-      // Auto-match workspace to a team and initialize tracker sync only after
-      // we've yielded the main thread; both paths may probe git remotes.
-      void autoMatchTeamForWorkspace(workspacePath).catch(() => {});
-      void initializeTrackerSync(workspacePath).catch(() => {});
-      // Sibling, not a step inside tracker sync: that path returns early for a
-      // workspace with no team, which is exactly the workspace whose items have
-      // nothing but a local number.
-      ensureWorkspaceLocalNumbersInBackground(workspacePath);
-      updateTrackerSchemaWorkspace(workspacePath);
-    }, 0);
-
-    // Restore dev tools if they were open
-    if (savedState?.devToolsOpen) {
-      window.webContents.once('did-finish-load', () => {
-        window.webContents.openDevTools();
-      });
-    }
-
-    // Disable single file restoration - we now use tab restoration instead
-    // if (savedState?.filePath && existsSync(savedState.filePath)) {
-    //   window.webContents.once('did-finish-load', () => {
-    //     // Give the renderer time to initialize
-    //     setTimeout(() => {
-    //       window.webContents.send('open-workspace-file', savedState.filePath);
-    //     }, 500);
-    //   });
-    // }
-
-    // Close workspace manager after opening workspace
-    if (workspaceManagerWindow && !workspaceManagerWindow.isDestroyed()) {
-      // Mark that we're closing because a project was selected (not user manually closing)
-      workspaceManagerClosingForProject = true;
-      workspaceManagerWindow.close();
-    }
-
-    return { success: true, action: 'created' as const };
+  safeHandle('workspace-manager:open-workspace', async (_event, workspacePath: string, options?: { forceNewWindow?: boolean }) => {
+    return openWorkspaceWindow(workspacePath, { forceNewWindow: options?.forceNewWindow === true });
   });
 
   safeHandle('team:open-project-workspace', async (_event, workspacePath: string) => {

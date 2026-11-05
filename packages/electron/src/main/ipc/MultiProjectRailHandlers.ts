@@ -30,6 +30,7 @@ import { BrowserWindow, dialog } from 'electron';
 import { basename } from 'path';
 import { existsSync, statSync } from 'fs';
 import { safeHandle } from '../utils/ipcRegistry';
+import { registerRailProjectDragHandlers } from './RailProjectDragHandlers';
 import {
     getWindowId,
     windowStates,
@@ -154,6 +155,8 @@ function windowsShowingWorkspace(workspacePath: string): Array<[number, BrowserW
 }
 
 export function registerMultiProjectRailHandlers(): void {
+    registerRailProjectDragHandlers();
+
     safeHandle('workspace:register-additional', async (event, data: { workspacePath: string }) => {
         const { workspacePath } = data;
         if (!workspacePath || typeof workspacePath !== 'string') {

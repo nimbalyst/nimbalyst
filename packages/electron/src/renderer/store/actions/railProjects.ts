@@ -10,6 +10,7 @@ import type { createStore } from 'jotai';
 import {
   addOpenProjectAtom,
   activeWorkspacePathAtom,
+  closeOpenProjectAtom,
   isOpenProjectsAtCapAtom,
   multiProjectModeAtom,
   openProjectsAtom,
@@ -85,4 +86,31 @@ export async function switchToProject(
   }
   await window.electronAPI.workspaceManager.openWorkspace(workspacePath);
   return 'opened-window';
+}
+
+/**
+ * Take a project out of this window's rail and release its main-process
+ * registration. Closing the last project closes the window, so the app can
+ * fall back to its project-selection flow. Callers confirm first if needed.
+ */
+export async function removeProjectFromRail(jotaiStore: JotaiStore, workspacePath: string): Promise<void> {
+  const projects = jotaiStore.get(openProjectsAtom);
+  if (!projects.some(p => p.path === workspacePath)) return;
+  const wasLast = projects.length <= 1;
+
+  jotaiStore.set(closeOpenProjectAtom, workspacePath);
+
+  try {
+    await window.electronAPI?.invoke?.('workspace:unregister-additional', { workspacePath });
+  } catch (err) {
+    console.error('[railProjects] unregister-additional failed:', err);
+  }
+
+  if (wasLast) {
+    try {
+      await window.electronAPI?.invoke?.('workspace:close-rail-window');
+    } catch (err) {
+      console.error('[railProjects] close-rail-window failed:', err);
+    }
+  }
 }

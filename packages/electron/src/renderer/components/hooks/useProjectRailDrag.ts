@@ -2,14 +2,28 @@ import { useCallback, useEffect, useRef, useState, type DragEvent, type RefObjec
 
 const PROJECT_DRAG_TYPE = 'application/x-nimbalyst-rail-project';
 
-/** Native drag with an insertion marker and frame-based scrolling at list edges. */
+interface ProjectRailDragHandlers {
+  /** Reorder within this rail. */
+  move: (input: { path: string; beforePath: string | null }) => void;
+  /** A project dragged from another window's rail was dropped here. */
+  receive: (input: { path: string; beforePath: string | null }) => void;
+  /** This rail's drag ended; `dropEffect` is 'none' when nothing accepted it. */
+  ended: (input: { path: string; dropEffect: string }) => void;
+}
+
+/**
+ * Native drag with an insertion marker and frame-based scrolling at list edges.
+ * The drag data crosses windows, so a rail also accepts projects dragged from
+ * another window's rail.
+ */
 export function useProjectRailDrag(
   listRef: RefObject<HTMLDivElement | null>,
-  move: (input: { path: string; beforePath: string | null }) => void,
+  { move, receive, ended }: ProjectRailDragHandlers,
 ) {
   const [draggedPath, setDraggedPath] = useState<string | null>(null);
   const [beforePath, setBeforePath] = useState<string | null | undefined>();
-  const drag = useRef<{ path: string; y: number; inside: boolean } | null>(null);
+  // `foreign` drags started in another window; their path is unreadable until drop.
+  const drag = useRef<{ path: string; y: number; inside: boolean; foreign?: boolean } | null>(null);
   const frame = useRef<number | null>(null);
 
   const clear = useCallback(() => {
@@ -61,7 +75,11 @@ export function useProjectRailDrag(
   }, []);
 
   const onDragOver = useCallback((event: DragEvent) => {
-    if (!drag.current) return; // Files and drags from other windows are not rail moves.
+    if (!drag.current) {
+      // Files and other drags are not rail moves.
+      if (!event.dataTransfer.types.includes(PROJECT_DRAG_TYPE)) return;
+      drag.current = { path: '', y: event.clientY, inside: true, foreign: true };
+    }
     event.preventDefault();
     event.stopPropagation();
     event.dataTransfer.dropEffect = 'move';
@@ -76,17 +94,31 @@ export function useProjectRailDrag(
     // Native drags can report a null relatedTarget between children.
     if (event.clientX >= bounds.left && event.clientX < bounds.right
       && event.clientY >= bounds.top && event.clientY < bounds.bottom) return;
+    // A foreign drag gets no dragend here, so forget it once it leaves.
+    if (drag.current?.foreign) { clear(); return; }
     if (drag.current) drag.current.inside = false;
     setBeforePath(undefined);
-  }, []);
+  }, [clear]);
 
   const onDrop = useCallback((event: DragEvent) => {
     if (!drag.current) return;
     event.preventDefault();
     event.stopPropagation();
-    move({ path: drag.current.path, beforePath: targetAt(event.clientY) });
+    const beforePath = targetAt(event.clientY);
+    if (drag.current.foreign) {
+      const path = event.dataTransfer.getData(PROJECT_DRAG_TYPE);
+      if (path) receive({ path, beforePath });
+    } else {
+      move({ path: drag.current.path, beforePath });
+    }
     clear();
-  }, [move, targetAt, clear]);
+  }, [move, receive, targetAt, clear]);
 
-  return { draggedPath, beforePath, onDragStart, onDragEnd: clear, listProps: { onDragOver, onDragLeave, onDrop } };
+  const onDragEnd = useCallback((event: DragEvent) => {
+    const path = drag.current?.path;
+    clear();
+    if (path) ended({ path, dropEffect: event.dataTransfer.dropEffect });
+  }, [ended, clear]);
+
+  return { draggedPath, beforePath, onDragStart, onDragEnd, listProps: { onDragOver, onDragLeave, onDrop } };
 }
