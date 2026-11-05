@@ -17,6 +17,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 <!-- Bug fixes go here -->
+- With multiple projects per window enabled, picking a project that isn't open in any window from the Projects switcher (Cmd+Shift+P) now adds it to the current window's project rail instead of opening a new window
 
 ### Removed
 <!-- Removed features go here -->

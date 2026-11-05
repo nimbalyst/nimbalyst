@@ -18,7 +18,7 @@ import React, {
   useCallback,
   memo,
 } from 'react';
-import { useAtomValue, useSetAtom } from 'jotai';
+import { useAtomValue, useSetAtom, useStore } from 'jotai';
 import { usePostHog } from 'posthog-js/react';
 import { MaterialSymbol } from '@nimbalyst/runtime/ui/icons/MaterialSymbol';
 import { ProviderIcon } from '@nimbalyst/runtime/ui/icons/ProviderIcons';
@@ -70,6 +70,8 @@ import { parseFileMask, matchesFileMask } from '@nimbalyst/extension-sdk/file-ma
 import type { TrackerItem } from '@nimbalyst/runtime/core/DocumentService';
 
 import { attachWorkspaceFolderWithPicker } from '../store/actions/workspaceFolders';
+import { switchToProject, PROJECT_LIMIT_WARNING } from '../store/actions/railProjects';
+import { errorNotificationService } from '../services/ErrorNotificationService';
 
 const isMac =
   typeof navigator !== 'undefined' && navigator.platform.startsWith('Mac');
@@ -2560,6 +2562,7 @@ const ProjectsPane: React.FC<ProjectsPaneProps> = memo(({
   currentWorkspacePath,
   onClose,
 }) => {
+  const jotaiStore = useStore();
   const [projects, setProjects] = useState<ProjectItem[]>([]);
   const [selectedIndex, setSelectedIndex] = useState(0);
   const [mouseHasMoved, setMouseHasMoved] = useState(false);
@@ -2643,9 +2646,12 @@ const ProjectsPane: React.FC<ProjectsPaneProps> = memo(({
         }
         return;
       }
-      await window.electronAPI.workspaceManager.openWorkspace(row.project.path);
+      const result = await switchToProject(jotaiStore, row.project.path, row.project.isOpen);
+      if (result === 'at-cap') {
+        errorNotificationService.showWarning(PROJECT_LIMIT_WARNING.title, PROJECT_LIMIT_WARNING.message);
+      }
     },
-    [onClose, currentWorkspacePath],
+    [onClose, currentWorkspacePath, jotaiStore],
   );
 
   useEffect(() => {

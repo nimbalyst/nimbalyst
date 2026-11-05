@@ -34,7 +34,6 @@ import {
   openProjectsAtom,
   activeWorkspacePathAtom,
   isOpenProjectsAtCapAtom,
-  addOpenProjectAtom,
   closeOpenProjectAtom,
   moveOpenProjectAtom,
   sortOpenProjectsAtom,
@@ -51,6 +50,7 @@ import { ProjectIcon } from './ProjectIcon';
 import { requestConfirmation } from '../dialogs/requestConfirmation';
 import { errorNotificationService } from '../services/ErrorNotificationService';
 import { useProjectRailDrag } from './hooks/useProjectRailDrag';
+import { addProjectToRail, PROJECT_LIMIT_WARNING } from '../store/actions/railProjects';
 import './ProjectRail.css';
 
 const REVEAL_LABEL = getShowInFileBrowserLabel();
@@ -210,7 +210,6 @@ export function ProjectRail() {
   const openProjects = useAtomValue(openProjectsAtom);
   const [activePath, setActivePath] = useAtom(activeWorkspacePathAtom);
   const atCap = useAtomValue(isOpenProjectsAtCapAtom);
-  const addProject = useSetAtom(addOpenProjectAtom);
   const closeProject = useSetAtom(closeOpenProjectAtom);
   const moveProject = useSetAtom(moveOpenProjectAtom);
   const sortProjects = useSetAtom(sortOpenProjectsAtom);
@@ -255,29 +254,8 @@ export function ProjectRail() {
 
   const addProjectByPath = useCallback(async (workspacePath: string) => {
     if (!window.electronAPI?.invoke) return;
-    if (store.get(isOpenProjectsAtCapAtom) && !store.get(openProjectsAtom).some(p => p.path === workspacePath)) return;
-    try {
-      const reg = await window.electronAPI.invoke('workspace:register-additional', { workspacePath });
-      if (!reg?.success) {
-        console.error('[ProjectRail] register-additional failed:', reg?.error);
-        return;
-      }
-
-      const project: OpenProject = {
-        path: workspacePath,
-        name: workspacePath.split(/[\\/]/).filter(Boolean).pop() || workspacePath,
-        openedAt: Date.now(),
-      };
-      // `addOpenProjectAtom` flips `activeWorkspacePathAtom` to this path;
-      // the atom subscriber dispatches `workspace:set-active` to main.
-      if (!addProject(project)) {
-        // The limit can change in another window while registration is pending.
-        await window.electronAPI.invoke('workspace:unregister-additional', { workspacePath });
-      }
-    } catch (err) {
-      console.error('[ProjectRail] addProjectByPath failed:', err);
-    }
-  }, [addProject, store]);
+    await addProjectToRail(store, workspacePath);
+  }, [store]);
 
   const handlePickFolder = useCallback(async () => {
     if (!window.electronAPI?.invoke) return;
@@ -307,10 +285,7 @@ export function ProjectRail() {
 
   const handleOpenAddMenu = useCallback(() => {
     if (atCap) {
-      errorNotificationService.showWarning(
-        'Project limit reached',
-        'The project limit is eight per window. Close a project or enable Allow unlimited projects in Settings > Advanced.',
-      );
+      errorNotificationService.showWarning(PROJECT_LIMIT_WARNING.title, PROJECT_LIMIT_WARNING.message);
       return;
     }
     refreshRecents();
