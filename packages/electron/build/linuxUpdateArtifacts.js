@@ -9,6 +9,12 @@
  * the AppImage -- all this did before we started shipping a .deb for #1430 --
  * leaves a .deb install with no matching entry, so it silently never updates.
  *
+ * The same argument applies across architectures: an arm64 install with no
+ * arm64 entry either never updates or is offered an x64 binary it cannot run.
+ * electron-updater matches the `arch` field against the running process, so
+ * every published artifact is listed as its own (package type, arch) pair --
+ * the shape latest.yml (Windows) and latest-mac.yml already use.
+ *
  * Kept out of generate-update-yml.js because that script runs its whole
  * pipeline on require (and process.exit(1)s on a missing release directory),
  * so nothing in it can be exercised from a test.
@@ -27,24 +33,46 @@ const crypto = require('crypto');
 const LINUX_ARTIFACT_EXTENSIONS = ['AppImage', 'deb'];
 
 /**
- * The filenames to look for, mirroring the `artifactName` template in
- * package.json ("${productName}-Linux.${ext}").
+ * Architectures to publish, in channel-file order within a package type. x64
+ * leads so that it wins the top-level `path`/`sha512` fallback, matching
+ * generateWindowsYml.
  */
-function linuxArtifactFileNames(productName) {
-  return LINUX_ARTIFACT_EXTENSIONS.map((extension) => `${productName}-Linux.${extension}`);
+const LINUX_ARTIFACT_ARCHITECTURES = ['x64', 'arm64'];
+
+/**
+ * The (file name, arch) pairs to look for, mirroring the `artifactName`
+ * template in package.json ("${productName}-Linux-${arch}.${ext}").
+ *
+ * Ordered by package type first and architecture second, so the AppImage heads
+ * the list whenever one was built at all -- including a release that carries an
+ * arm64 AppImage alongside an x64 .deb.
+ */
+function linuxArtifactTargets(productName) {
+  const targets = [];
+
+  for (const extension of LINUX_ARTIFACT_EXTENSIONS) {
+    for (const arch of LINUX_ARTIFACT_ARCHITECTURES) {
+      targets.push({
+        fileName: `${productName}-Linux-${arch}.${extension}`,
+        arch,
+      });
+    }
+  }
+
+  return targets;
 }
 
 /**
  * Collect the Linux artifacts present in `releaseDir`, in channel-file order.
  *
  * An absent artifact is skipped rather than fatal: the per-platform CI job and
- * the release job both call this, and only the latter has every package type on
- * disk at once.
+ * the release job both call this, and only the latter has every package type
+ * and architecture on disk at once.
  */
 function collectLinuxArtifacts(releaseDir, productName) {
   const artifacts = [];
 
-  for (const fileName of linuxArtifactFileNames(productName)) {
+  for (const { fileName, arch } of linuxArtifactTargets(productName)) {
     const filePath = path.join(releaseDir, fileName);
     if (!fs.existsSync(filePath)) {
       continue;
@@ -55,6 +83,7 @@ function collectLinuxArtifacts(releaseDir, productName) {
       url: fileName,
       sha512: crypto.createHash('sha512').update(contents).digest('base64'),
       size: contents.length,
+      arch,
     });
   }
 
@@ -77,6 +106,9 @@ function buildLinuxChannelYaml(version, artifacts, releaseDate) {
     yaml += `  - url: ${artifact.url}\n`;
     yaml += `    sha512: ${artifact.sha512}\n`;
     yaml += `    size: ${artifact.size}\n`;
+    if (artifact.arch) {
+      yaml += `    arch: ${artifact.arch}\n`;
+    }
   }
   yaml += `path: ${primary.url}\n`;
   yaml += `sha512: ${primary.sha512}\n`;
@@ -87,7 +119,8 @@ function buildLinuxChannelYaml(version, artifacts, releaseDate) {
 
 module.exports = {
   LINUX_ARTIFACT_EXTENSIONS,
-  linuxArtifactFileNames,
+  LINUX_ARTIFACT_ARCHITECTURES,
+  linuxArtifactTargets,
   collectLinuxArtifacts,
   buildLinuxChannelYaml,
 };
