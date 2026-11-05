@@ -71,6 +71,7 @@ class HiddenTabManager {
     if (this.hiddenContainer) return;
 
     this.hiddenContainer = document.createElement('div');
+    // BrowserSurface keys on this id to keep its native page off screen.
     this.hiddenContainer.id = 'hidden-editors';
     this.hiddenContainer.style.position = 'absolute';
     this.hiddenContainer.style.left = '-9999px';
