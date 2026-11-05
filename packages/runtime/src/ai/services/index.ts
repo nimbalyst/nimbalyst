@@ -12,6 +12,7 @@ export type {
   DocumentState,
   DocumentTransition,
   TextSelection,
+  TranscriptSelection,
   UserMessageAdditions,
   ContextPreparationResult,
   ModeTransition,

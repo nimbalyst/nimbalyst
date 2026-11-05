@@ -52,8 +52,9 @@ import { SlashCommandSuggestions } from './SlashCommandSuggestions';
 import { InlineTipDisplay } from '../../tips/InlineTipDisplay';
 import { activeTipIdAtom } from '../../tips/atoms';
 import { supportsWorkspaceSlashCommands } from '../Typeahead/slashCommandAutocomplete';
-import type { TextSelection } from './TextSelectionIndicator';
+import { getTranscriptSelection, type TextSelection } from './TextSelectionIndicator';
 import { type SerializableDocumentContext } from '../../hooks/useDocumentContext';
+import { useTranscriptSelectionContext } from '../../hooks/useTranscriptSelectionContext';
 import { serializeEditorContextItemsForIpc } from './editorContextSerialization';
 import { isClaudeCliTerminalSession } from './claudeCliInputRouting';
 import { expandSessionMentions } from './sessionMentions';
@@ -280,10 +281,16 @@ export interface SessionTranscriptProps {
  * Always sends full content - backend handles diff optimization.
  */
 function serializeDocumentContext(
-  documentContext: SerializableDocumentContext | undefined
+  documentContext: SerializableDocumentContext | undefined,
+  sessionId: string
 ): SerializableDocumentContext | undefined {
-  if (!documentContext) return undefined;
+  const chatSelection = getTranscriptSelection(sessionId);
+  const transcriptSelection = chatSelection
+    ? { text: chatSelection.text, author: chatSelection.author ?? 'assistant', timestamp: chatSelection.timestamp }
+    : undefined;
+  if (!documentContext) return transcriptSelection ? { transcriptSelection } : undefined;
   return {
+    transcriptSelection,
     filePath: documentContext.filePath,
     content: documentContext.content,
     fileType: documentContext.fileType,
@@ -645,6 +652,8 @@ const LocalSessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscrip
   // Observed by ClaudeCliTerminalStrip so the CLI still spawns while collapsed
   // (the body is display:none when collapsed and would never intersect).
   const cliTerminalDrawerRef = useRef<HTMLDivElement>(null);
+  const transcriptAreaRef = useRef<HTMLDivElement>(null);
+  useTranscriptSelectionContext(transcriptAreaRef, sessionId);
   const [cliTerminalResizing, setCliTerminalResizing] = useState(false);
   // NIM-852: whether the genuine `claude` CLI is installed. null until checked.
   // When false we render an install notice instead of spawning the terminal strip.
@@ -1052,7 +1061,7 @@ const LocalSessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscrip
     try {
       // Get fresh document context at queue time (reads from disk)
       const effectiveContext = await getEffectiveDocumentContext();
-      const serializableContext = serializeDocumentContext(effectiveContext);
+      const serializableContext = serializeDocumentContext(effectiveContext, sessionId);
 
       // Read attachments imperatively — we don't subscribe to keep typing
       // from re-rendering the entire transcript.
@@ -1182,7 +1191,7 @@ const LocalSessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscrip
           // (The queued path already carries it via ai:createQueuedPrompt.)
           let documentContext: unknown;
           try {
-            documentContext = serializeDocumentContext(await getEffectiveDocumentContext());
+            documentContext = serializeDocumentContext(await getEffectiveDocumentContext(), sessionId);
           } catch (contextError) {
             console.warn('[SessionTranscript] Failed to capture document context for CLI submit:', contextError);
           }
@@ -1341,7 +1350,7 @@ const LocalSessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscrip
 
       // Always send full document content - backend handles diff optimization
       const docContext = {
-        ...serializeDocumentContext(effectiveContext),
+        ...serializeDocumentContext(effectiveContext, sessionId),
         attachments: attachments.length > 0 ? attachments : undefined,
         mode: overrideMode,
         inputType: 'user' as const,
@@ -1523,7 +1532,7 @@ const LocalSessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscrip
       // Get fresh document context at compact time (reads from disk)
       const effectiveContext = await getEffectiveDocumentContext();
       const docContext = {
-        ...serializeDocumentContext(effectiveContext),
+        ...serializeDocumentContext(effectiveContext, sessionId),
         mode: aiMode,
         inputType: 'user' as const,
       };
@@ -2569,6 +2578,7 @@ const LocalSessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscrip
           below. */}
       {!collapseTranscript && (
         <div
+          ref={transcriptAreaRef}
           style={{
             flex: 1,
             overflow: 'hidden',

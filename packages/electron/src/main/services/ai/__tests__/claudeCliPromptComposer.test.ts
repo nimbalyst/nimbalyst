@@ -156,4 +156,20 @@ describe('composeClaudeCliContextPreamble', () => {
     expect(preamble).toContain('<SELECTED_TEXT>foo\\nbar</SELECTED_TEXT>');
     expect(preamble).not.toContain('\n');
   });
+
+  it('includes a chat transcript selection with no open document', () => {
+    const preamble = composeClaudeCliContextPreamble({
+      transcriptSelection: { text: 'dedupe?\nyes', author: 'assistant' },
+    });
+    expect(preamble).toContain('selected in this chat, from one of your earlier replies');
+    expect(preamble).toContain('<SELECTED_TEXT>dedupe?\\nyes</SELECTED_TEXT>');
+    expect(preamble).not.toContain('ACTIVE_DOCUMENT');
+    expect(preamble).not.toContain('\n');
+  });
+
+  it('attributes a transcript selection from the user to their own message', () => {
+    expect(composeClaudeCliContextPreamble({
+      transcriptSelection: { text: 'my point', author: 'user' },
+    })).toContain('from one of their own earlier messages');
+  });
 });

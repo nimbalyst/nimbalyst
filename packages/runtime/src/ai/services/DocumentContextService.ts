@@ -26,6 +26,7 @@ import type {
   ContextPreparationResult,
   ModeTransition,
   TextSelection,
+  TranscriptSelection,
   PersistedDocumentState,
   PersistDocumentStateCallback,
 } from './types';
@@ -327,6 +328,10 @@ export class DocumentContextService implements IDocumentContextService {
       baseContext.textSelectionTimestamp = rawContext.textSelectionTimestamp;
     }
 
+    if (rawContext?.transcriptSelection?.text.trim()) {
+      baseContext.transcriptSelection = rawContext.transcriptSelection;
+    }
+
     // Add mockup-specific fields if present
     if (rawContext?.mockupSelection) {
       baseContext.mockupSelection = rawContext.mockupSelection;
@@ -385,7 +390,12 @@ export class DocumentContextService implements IDocumentContextService {
     // The SDK handles planning behavior natively via `permissionMode: 'plan'`.
 
     // Build document context prompt (file path, cursor, selection, content/diff, transitions)
-    const documentContextPrompt = this.buildDocumentContextPrompt(documentContext, providerType, wikiSkillAvailable);
+    // The transcript selection is built separately because the document prompt
+    // returns early when no document is open, and a chat selection needs none.
+    const documentContextPrompt = [
+      this.buildDocumentContextPrompt(documentContext, providerType, wikiSkillAvailable),
+      this.buildTranscriptSelectionPrompt(documentContext.transcriptSelection),
+    ].filter(Boolean).join('\n');
     if (documentContextPrompt) {
       additions.documentContextPrompt = documentContextPrompt;
     }
@@ -413,6 +423,21 @@ export class DocumentContextService implements IDocumentContextService {
    * Staleness threshold for text selections (60 seconds).
    */
   private static readonly SELECTION_STALENESS_MS = 60000;
+
+  /**
+   * Describe text the user selected in the chat transcript, mirroring the
+   * document selection wording so "this" resolves the same way.
+   */
+  private buildTranscriptSelectionPrompt(selection: TranscriptSelection | undefined): string | undefined {
+    if (!selection) return undefined;
+    const source = selection.author === 'assistant' ? 'one of your earlier replies' : 'one of their own earlier messages';
+    let prompt = `The user currently has the following text selected in this chat, from ${source}:\n<SELECTED_TEXT>\n${selection.text}\n</SELECTED_TEXT>\n`;
+    if (Date.now() - selection.timestamp > DocumentContextService.SELECTION_STALENESS_MS) {
+      prompt += `(Note: This selection was made over a minute ago and may be outdated.)\n`;
+    }
+    prompt += `When the user refers to "this", "this text", "here", or similar, they mean this selected text.\n`;
+    return prompt;
+  }
 
   /**
    * Build the document context prompt that gets appended to the user message.

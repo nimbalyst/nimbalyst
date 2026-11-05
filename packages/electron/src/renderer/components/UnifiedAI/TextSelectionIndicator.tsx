@@ -5,8 +5,22 @@ import React, { useSyncExternalStore, useCallback } from 'react';
  */
 export interface TextSelection {
   text: string;
+  /** The owning document's path, or {@link transcriptSelectionKey} for a chat selection. */
   filePath: string;
   timestamp: number;
+  /** Who wrote the chat message the text came from; set only for chat selections. */
+  author?: 'user' | 'assistant';
+}
+
+/** Owner key for a selection made in a session's chat transcript. */
+export function transcriptSelectionKey(sessionId: string): string {
+  return `transcript:${sessionId}`;
+}
+
+/** The selection made in this session's chat transcript, if that is the current selection. */
+export function getTranscriptSelection(sessionId: string): TextSelection | null {
+  const selection = getTextSelection();
+  return selection?.filePath === transcriptSelectionKey(sessionId) ? selection : null;
 }
 
 interface TextSelectionIndicatorProps {
@@ -57,21 +71,23 @@ export function getTextSelection(): TextSelection | null {
   const text = (window as any).__textSelectionText as string | undefined;
   const filePath = (window as any).__textSelectionFilePath as string | undefined;
   const timestamp = (window as any).__textSelectionTimestamp as number | undefined;
+  const author = (window as any).__textSelectionAuthor as TextSelection['author'];
 
   if (!text || !filePath || !timestamp) {
     return null;
   }
 
-  return { text, filePath, timestamp };
+  return author ? { text, filePath, timestamp, author } : { text, filePath, timestamp };
 }
 
 /**
  * Set text selection in window globals
  */
-export function setTextSelection(text: string, filePath: string): void {
+export function setTextSelection(text: string, filePath: string, author?: TextSelection['author']): void {
   (window as any).__textSelectionText = text;
   (window as any).__textSelectionFilePath = filePath;
   (window as any).__textSelectionTimestamp = Date.now();
+  (window as any).__textSelectionAuthor = author;
   notifyTextSelectionChanged();
 }
 
@@ -97,6 +113,7 @@ export function clearTextSelection(ownerFilePath?: string): void {
   (window as any).__textSelectionText = undefined;
   (window as any).__textSelectionFilePath = undefined;
   (window as any).__textSelectionTimestamp = undefined;
+  (window as any).__textSelectionAuthor = undefined;
   notifyTextSelectionChanged();
 }
 

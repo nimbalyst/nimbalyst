@@ -632,6 +632,47 @@ function test6() {
         expect(result.userMessageAdditions.documentContextPrompt).toContain('selection was made over a minute ago');
       });
 
+      it('includes a chat transcript selection when no document is open', () => {
+        const rawContext: RawDocumentContext = {
+          content: '',
+          transcriptSelection: { text: 'Should we dedupe?', author: 'assistant', timestamp: Date.now() },
+        };
+
+        const prompt = service.prepareContext(rawContext, 'session-1', 'claude-code', undefined)
+          .userMessageAdditions.documentContextPrompt;
+
+        expect(prompt).toContain('selected in this chat, from one of your earlier replies');
+        expect(prompt).toContain('<SELECTED_TEXT>\nShould we dedupe?\n</SELECTED_TEXT>');
+        expect(prompt).not.toContain('selection was made over a minute ago');
+      });
+
+      it('appends a chat transcript selection after the open document context', () => {
+        const rawContext: RawDocumentContext = {
+          filePath: '/test/file.ts',
+          fileType: 'typescript',
+          content: 'const x = 1;',
+          transcriptSelection: { text: 'my earlier point', author: 'user', timestamp: Date.now() - 120000 },
+        };
+
+        const prompt = service.prepareContext(rawContext, 'session-1', 'claude-code', undefined)
+          .userMessageAdditions.documentContextPrompt!;
+
+        expect(prompt.indexOf('/test/file.ts')).toBeLessThan(prompt.indexOf('selected in this chat'));
+        expect(prompt).toContain('from one of their own earlier messages');
+        expect(prompt).toContain('selection was made over a minute ago');
+      });
+
+      it('ignores a whitespace-only chat transcript selection', () => {
+        const rawContext: RawDocumentContext = {
+          content: '',
+          transcriptSelection: { text: '  \n ', author: 'assistant', timestamp: Date.now() },
+        };
+
+        const result = service.prepareContext(rawContext, 'session-1', 'claude-code', undefined);
+
+        expect(result.userMessageAdditions.documentContextPrompt).toBeUndefined();
+      });
+
       it('shows diff for modified documents instead of full content', () => {
         // Use a much larger file so diff is smaller than content
         // The diff algorithm only returns diff if it's smaller than full content

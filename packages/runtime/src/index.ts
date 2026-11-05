@@ -33,6 +33,7 @@ export {
   type RawDocumentContext,
   type PreparedDocumentContext,
   type TextSelection,
+  type TranscriptSelection,
   type UserMessageAdditions,
   type ContextPreparationResult,
   type ModeTransition,

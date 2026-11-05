@@ -37,6 +37,17 @@ export interface DocumentState {
 export type TextSelection = string;
 
 /**
+ * Text the user selected in the agent chat transcript. Unlike a document
+ * selection it needs no open document, so it travels in its own field.
+ * `author` is who wrote the message the text was selected from.
+ */
+export interface TranscriptSelection {
+  text: string;
+  author: 'user' | 'assistant';
+  timestamp: number;
+}
+
+/**
  * Raw document context from the renderer process.
  * This is what comes over IPC from SessionTranscript.tsx.
  */
@@ -53,6 +64,8 @@ export interface RawDocumentContext {
   selection?: string | { text: string; filePath: string; timestamp: number } | { start: { line: number; column: number }; end: { line: number; column: number } };
   textSelection?: string | { text: string; filePath: string; timestamp: number };  // Either format accepted
   textSelectionTimestamp?: number | null;  // For staleness detection when textSelection is a string
+
+  transcriptSelection?: TranscriptSelection;
 
   // Mockup-specific fields
   mockupSelection?: {
@@ -94,6 +107,8 @@ export interface PreparedDocumentContext {
   // Selection (normalized)
   textSelection?: TextSelection;
   textSelectionTimestamp?: number | null;  // For staleness detection
+
+  transcriptSelection?: TranscriptSelection;
 
   // Mockup-specific fields
   mockupSelection?: {

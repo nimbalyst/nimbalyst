@@ -34,6 +34,8 @@ export interface ClaudeCliDocumentContext {
    * tolerate both (mirrors DocumentContextService.normalizeTextSelection).
    */
   textSelection?: { text?: string | null } | string | null;
+  /** Text selected in the chat transcript; needs no open document. */
+  transcriptSelection?: { text?: string | null; author?: 'user' | 'assistant' } | null;
   promptProvenance?: PromptProvenance;
 }
 
@@ -62,6 +64,13 @@ function flattenToSingleLine(text: string): string {
   return text.replace(/\r\n|\r|\n/g, '\\n');
 }
 
+function compactSelection(text: string): string {
+  const selection = flattenToSingleLine(text);
+  return selection.length > MAX_SELECTION_CHARS
+    ? `${selection.slice(0, MAX_SELECTION_CHARS)} …(selection truncated)`
+    : selection;
+}
+
 /**
  * Build the compact single-line context block appended after the typed prompt
  * (NIM-818). Empty string when there is no usable context. Wording mirrors the
@@ -72,7 +81,8 @@ export function composeClaudeCliContextPreamble(
 ): string {
   const filePath = (context?.filePath ?? '').trim();
   const rawSelection = selectionTextOf(context);
-  if (!filePath && !rawSelection) return '';
+  const transcriptText = (context?.transcriptSelection?.text ?? '').trim();
+  if (!filePath && !rawSelection && !transcriptText) return '';
 
   const parts: string[] = ['[Nimbalyst context — appended automatically, not typed by the user]'];
 
@@ -90,12 +100,18 @@ export function composeClaudeCliContextPreamble(
   }
 
   if (rawSelection) {
-    let selection = flattenToSingleLine(rawSelection);
-    if (selection.length > MAX_SELECTION_CHARS) {
-      selection = `${selection.slice(0, MAX_SELECTION_CHARS)} …(selection truncated)`;
-    }
     parts.push(
-      `The user currently has this text selected (newlines shown as \\n): <SELECTED_TEXT>${selection}</SELECTED_TEXT>`,
+      `The user currently has this text selected (newlines shown as \\n): <SELECTED_TEXT>${compactSelection(rawSelection)}</SELECTED_TEXT>`,
+      'When the user refers to "this", "this text", or "here", they mean this selected text.',
+    );
+  }
+
+  if (transcriptText) {
+    const source = context?.transcriptSelection?.author === 'user'
+      ? 'one of their own earlier messages'
+      : 'one of your earlier replies';
+    parts.push(
+      `The user currently has this text selected in this chat, from ${source} (newlines shown as \\n): <SELECTED_TEXT>${compactSelection(transcriptText)}</SELECTED_TEXT>`,
       'When the user refers to "this", "this text", or "here", they mean this selected text.',
     );
   }

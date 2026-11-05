@@ -695,6 +695,7 @@ export const TranscriptMessageRow = React.memo(function TranscriptMessageRow({
   return (
     <div
       data-message-index={index}
+      data-message-role={isUser ? 'user' : 'assistant'}
       ref={setRef}
       className={`rich-transcript-message rounded-md relative max-w-full overflow-x-hidden break-words mb-2 ${isUser ? 'user bg-[var(--nim-bg-secondary)]' : 'assistant bg-[var(--nim-bg)]'} ${compactMode ? 'compact p-2' : 'normal p-3'} ${!isNewGroup ? 'continuation -mt-1' : ''}`}
     >
