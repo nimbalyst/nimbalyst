@@ -188,6 +188,23 @@
   cursor: not-allowed;
 }
 
+/* App-wide items portaled in from NavigationGutter. */
+.project-rail-global-items {
+  flex-shrink: 0;
+  align-self: stretch;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  margin-top: 4px;
+  padding-top: 8px;
+  border-top: 1px solid var(--nim-border, rgba(255, 255, 255, 0.06));
+}
+
+.project-rail-global-items:empty {
+  display: none;
+}
+
 .project-rail-context-menu {
   position: fixed;
   /* Keep menus clickable even near the native title bar (#1052).

@@ -35,6 +35,7 @@ import {
   activeWorkspacePathAtom,
   isOpenProjectsAtCapAtom,
   moveOpenProjectAtom,
+  projectRailGlobalSlotAtom,
   sortOpenProjectsAtom,
   type OpenProject,
 } from '../store/atoms/openProjects';
@@ -211,6 +212,7 @@ export function ProjectRail() {
   const atCap = useAtomValue(isOpenProjectsAtCapAtom);
   const moveProject = useSetAtom(moveOpenProjectAtom);
   const sortProjects = useSetAtom(sortOpenProjectsAtom);
+  const setGlobalSlot = useSetAtom(projectRailGlobalSlotAtom);
   const activity = useAtomValue(globalSessionActivityAtom);
   const activitySummary = useAtomValue(projectActivitySummaryAtom);
   const projectListRef = React.useRef<HTMLDivElement | null>(null);
@@ -508,6 +510,8 @@ export function ProjectRail() {
       >
         +
       </button>
+      {/* App-wide gutter items (usage, theme, feedback, account) portal in here. */}
+      <div ref={setGlobalSlot} className="project-rail-global-items" data-testid="project-rail-global-items" />
       {addTooltipOpen && (
         <FloatingPortal>
           <div

@@ -69,6 +69,13 @@ export const activeWorkspacePathAtom = atom<string | null>(null);
 export const multiProjectModeAtom = atom<boolean>(false);
 
 /**
+ * Container at the bottom of the ProjectRail that the navigation gutter
+ * portals its app-wide items (usage, theme, feedback, account) into. Null
+ * while the rail is hidden, so those items stay in the gutter.
+ */
+export const projectRailGlobalSlotAtom = atom<HTMLElement | null>(null);
+
+/**
  * When true, the rail rehydrates with the projects that were open at last
  * app close. When false (default), the rail starts with only the project
  * the user picked from the launch screen; additional projects are added
