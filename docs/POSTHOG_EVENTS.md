@@ -480,6 +480,17 @@ Because the dedup key is the user's *local* date, a user far from the project ti
 | `voice_model_fallback` | `RealtimeAPIClient.ts` | gpt-realtime-2 unavailable; fell back to gpt-realtime | `from`, `to` | (pending release) |  |
 | `voice_voice_mismatch` | `RealtimeAPIClient.ts` | Server output voice diverged from requested voice (drift guardrail) | `requested`, `server`, `model` | (pending release) |  |
 
+### Dictation
+
+Speech-to-text into the agent input and document editors. No event carries dictated text. Not yet on the server-side allow-list, so these are dropped at ingestion until added there.
+
+| Event Name | File(s) | Trigger | Properties | First Added (Public) | Significant Changes |
+| --- | --- | --- | --- | --- | --- |
+| `dictation_enabled` | `store/atoms/dictation.ts` | User turns Dictation on in Settings | None | (pending release) |  |
+| `dictation_disabled` | `store/atoms/dictation.ts` | User turns Dictation off in Settings | None | (pending release) |  |
+| `dictation_started` | `dictation/dictationController.ts` | A dictation started recording (engine accepted it and the microphone opened) | `engine` (on-device/openai)<br/>`surface` (agent-input/markdown/code)<br/>`trigger` (button/shortcut) | (pending release) |  |
+| `dictation_inserted` | `dictation/dictationController.ts` | A dictation ended after inserting at least one committed segment; not sent for cancelled or empty dictations | `engine`<br/>`surface`<br/>`durationMs` (recording time, start to stop)<br/>`segments` (committed segments inserted) | (pending release) |  |
+
 ### Mobile App
 
 | Event Name | File(s) | Trigger | Properties | First Added (Public) | Significant Changes |

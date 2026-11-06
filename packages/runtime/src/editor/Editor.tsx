@@ -34,7 +34,6 @@ import { getImagePluginCallbacks, setImagePluginCallbacks } from './plugins/Imag
 import { KanbanBoardPlugin } from './plugins/KanbanBoardPlugin';
 import MarkdownShortcutPlugin from './plugins/MarkdownShortcutPlugin';
 import ShortcutsPlugin from './plugins/ShortcutsPlugin';
-import SpeechToTextPlugin from './plugins/SpeechToTextPlugin';
 import TableCellActionMenuPlugin from './plugins/TableActionMenuPlugin';
 import TableCardLayoutPlugin from './plugins/TableCardLayoutPlugin';
 import TableCellResizer from './plugins/TableCellResizer';
@@ -266,7 +265,6 @@ export default function Editor({ config = DEFAULT_EDITOR_CONFIG }: EditorProps):
         <EmojiPickerPlugin />
         <AutoEmbedPlugin />
         <HashtagPlugin />
-        <SpeechToTextPlugin />
 
         {isRichText ? (
           <>

@@ -170,6 +170,10 @@ import { initBlitzListeners } from './store/listeners/blitzListeners';
 import { initUpdateListeners } from './store/listeners/updateListeners';
 import { initWalkthroughListeners } from './store/listeners/walkthroughListeners';
 import { initWakeupListeners } from './store/listeners/wakeupListener';
+import { initDictationListeners } from './store/listeners/dictationListeners';
+import { installDictationShortcut } from './dictation/dictationShortcut';
+import { getDictationController } from './dictation/dictationController';
+import { DictationPendingOverlay } from './dictation/DictationPendingOverlay';
 import { TrackerMode } from './components/TrackerMode';
 import { PullRequestMode, type PullRequestModeRef } from './components/PullRequestMode';
 import { CollabMode, type CollabModeRef } from './components/CollabMode';
@@ -462,6 +466,8 @@ export default function App() {
     const cleanupUpdate = initUpdateListeners();
     const cleanupWalkthrough = initWalkthroughListeners();
     const cleanupWakeup = initWakeupListeners();
+    const cleanupDictation = initDictationListeners();
+    const cleanupDictationShortcut = installDictationShortcut(getDictationController);
     const cleanupNetworkAvailability = initNetworkAvailabilityListeners();
     const cleanupTeamInbox = initTeamInboxListeners();
     const cleanupConversations = initConversationListeners();
@@ -518,6 +524,8 @@ export default function App() {
       cleanupUpdate?.();
       cleanupWalkthrough?.();
       cleanupWakeup?.();
+      cleanupDictation();
+      cleanupDictationShortcut();
       cleanupNetworkAvailability?.();
       cleanupTeamInbox?.();
       cleanupConversations?.();
@@ -3323,6 +3331,7 @@ export default function App() {
       {/* UnifiedOnboarding is now managed by DialogProvider via useOnboarding hook */}
       {/* ClaudeCommandsToast removed - commands now via extension-based plugins */}
       <ErrorToastContainer />
+      <DictationPendingOverlay />
       <ExtensionHostComponents />
       <ExtensionPermissionPrompt />
       <UpdateToast />

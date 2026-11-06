@@ -210,6 +210,7 @@ import { registerMockupHandlers } from './ipc/MockupHandlers';
 import { registerOffscreenEditorHandlers } from './ipc/OffscreenEditorHandlers';
 import { initVoiceModeService } from './services/voice/VoiceModeService';
 import { initVoiceModeSettingsHandler } from './services/voice/VoiceModeSettingsHandler';
+import { initDictationService } from './services/dictation/DictationService';
 import { registerWalkthroughHandlers } from './ipc/WalkthroughHandlers';
 import { registerDataModelHandlers } from './ipc/DataModelHandlers';
 import { registerClaudeUsageHandlers } from './ipc/ClaudeUsageHandlers';
@@ -2720,6 +2721,7 @@ app.whenReady().then(async () => {
     });
     initVoiceModeService();
     initVoiceModeSettingsHandler();
+    initDictationService();
     registerWalkthroughHandlers();
 
     // Start MCP SSE server

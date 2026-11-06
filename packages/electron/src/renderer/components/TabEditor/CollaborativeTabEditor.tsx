@@ -147,6 +147,7 @@ import {
 } from '../../../shared/analytics/teamAnalytics';
 import { trackTeamAnalyticsEvent } from '../../utils/teamAnalytics';
 import { resolveDocumentCommentCapabilities } from '../../../../../collab-bundle/src/editor/commenting';
+import { createHostDictationSlot } from '../../dictation/dictationTargets';
 
 interface CollaborativeTabEditorProps {
   /** The collab:// URI for this document */
@@ -1114,6 +1115,8 @@ export const CollaborativeTabEditor: React.FC<CollaborativeTabEditorProps> = ({
       setEditorContextItems(): void {},
 
       registerEditorAPI(): void {},
+
+      registerDictationTarget: createHostDictationSlot(`collab-editor:${filePath}`),
 
       registerMenuItems(): void {},
     };

@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - macOS: an optional `nimbalyst` terminal command (Nimbalyst menu > Install 'nimbalyst' Command in PATH, or Settings > Advanced) opens a folder as a project with `nimbalyst .`, or a file with `nimbalyst <file>`
 - With multiple projects per window enabled, drag a project from one window's project rail to another window's rail to move it, or drop it outside every window to open it in its own window
 - Projects switcher (Cmd+Shift+P) has an Open Folder as Project row for opening a folder that isn't in the recent list
+- Dictation: speak into the agent input, markdown editor or code editor with the mic button or by holding Ctrl+Option+Space. Uses macOS on-device speech recognition, or OpenAI transcription with your OpenAI key. Turn it off in Settings > Dictation to hide it
 
 ### Changed
 <!-- Changes to existing functionality go here -->

@@ -251,6 +251,16 @@ Twelve built-in provider lanes, plus any agent an extension contributes. Every l
 - Voice agent tool calls (memory lookups, coding-agent questions, and more) are recorded in the voice session transcript and render as tool widgets, including a dedicated memory-recall widget showing the query and the returned source documents (title + snippet)
 - Available on desktop and iOS; native iOS defaults to Realtime and offers GPT Live as an opt-in preview
 
+## Dictation
+
+- Speech-to-text into the agent input, markdown editor, and Monaco code editor at the cursor; never speaks back and never submits
+- Mic button in the agent input; hold Ctrl+Option+Space to talk, tap to toggle, Esc discards the pending text
+- Live partial text shown in a muted style and replaced by the final text
+- Engines: on-device macOS speech recognition (default on Mac, no key, audio stays local) or OpenAI transcription on the user's key; an explicit engine choice never falls back to the other
+- Recognition biased toward open file names and identifiers
+- Settings > Dictation toggle turns the feature off and hides every mic button, shortcut, and hint
+- Extension editors can accept dictation through `EditorHost.registerDictationTarget`
+
 ## Mobile (iOS)
 
 - Native SwiftUI app with encrypted sync
