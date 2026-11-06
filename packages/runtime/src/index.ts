@@ -29,11 +29,14 @@ export {
 } from './storage/toolOutputRetention';
 export {
   DocumentContextService,
+  escapeSelectedText,
+  describeTranscriptSelectionSource,
   type IDocumentContextService,
   type RawDocumentContext,
   type PreparedDocumentContext,
   type TextSelection,
   type TranscriptSelection,
+  type TranscriptSelectionSource,
   type UserMessageAdditions,
   type ContextPreparationResult,
   type ModeTransition,

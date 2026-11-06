@@ -116,7 +116,7 @@ export const EditToolResultCard: React.FC<EditToolResultCardProps> = ({
 
   return (
     <div className="rich-transcript-edit-card rounded bg-nim-secondary border border-nim p-2 flex flex-col gap-2">
-      <div className="rich-transcript-edit-card__header flex items-start gap-2">
+      <div className="rich-transcript-edit-card__header flex items-start gap-2 select-none">
         <div className="rich-transcript-edit-card__icon w-5 h-5 text-nim-primary shrink-0 p-1 rounded-lg flex items-center justify-center" aria-hidden="true">
           <MaterialSymbol icon={allNewFiles ? "note_add" : "edit"} size={16} />
         </div>

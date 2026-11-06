@@ -86,7 +86,7 @@ describe('SelectionChips', () => {
 
   it('shows a chat transcript selection only in its own session panel, with no document open', () => {
     const { rerender } = render(<SelectionChips sessionId="s1" />);
-    act(() => setTextSelection('selected in chat', transcriptSelectionKey('s1'), 'assistant'));
+    act(() => setTextSelection('selected in chat', transcriptSelectionKey('s1'), { author: 'assistant' }));
     screen.getByText('Selection');
 
     rerender(<SelectionChips sessionId="s2" currentFilePath={FILE} />);

@@ -24,6 +24,11 @@
  */
 import type { PromptProvenance } from '@nimbalyst/runtime/ai/server/types';
 import { isCollabDocumentFileType, isCollabUri } from '@nimbalyst/collab-protocol';
+import {
+  describeTranscriptSelectionSource,
+  escapeSelectedText,
+  type TranscriptSelectionSource,
+} from '@nimbalyst/runtime';
 
 export interface ClaudeCliDocumentContext {
   filePath?: string | null;
@@ -35,7 +40,7 @@ export interface ClaudeCliDocumentContext {
    */
   textSelection?: { text?: string | null } | string | null;
   /** Text selected in the chat transcript; needs no open document. */
-  transcriptSelection?: { text?: string | null; author?: 'user' | 'assistant' } | null;
+  transcriptSelection?: (Partial<TranscriptSelectionSource> & { text?: string | null }) | null;
   promptProvenance?: PromptProvenance;
 }
 
@@ -65,7 +70,7 @@ function flattenToSingleLine(text: string): string {
 }
 
 function compactSelection(text: string): string {
-  const selection = flattenToSingleLine(text);
+  const selection = flattenToSingleLine(escapeSelectedText(text));
   return selection.length > MAX_SELECTION_CHARS
     ? `${selection.slice(0, MAX_SELECTION_CHARS)} …(selection truncated)`
     : selection;
@@ -107,11 +112,12 @@ export function composeClaudeCliContextPreamble(
   }
 
   if (transcriptText) {
-    const source = context?.transcriptSelection?.author === 'user'
-      ? 'one of their own earlier messages'
-      : 'one of your earlier replies';
+    const source = describeTranscriptSelectionSource({
+      author: context?.transcriptSelection?.author ?? 'assistant',
+      tool: context?.transcriptSelection?.tool,
+    });
     parts.push(
-      `The user currently has this text selected in this chat, from ${source} (newlines shown as \\n): <SELECTED_TEXT>${compactSelection(transcriptText)}</SELECTED_TEXT>`,
+      `The user currently has this text selected in this chat, ${source} (newlines shown as \\n): <SELECTED_TEXT>${compactSelection(transcriptText)}</SELECTED_TEXT>`,
       'When the user refers to "this", "this text", or "here", they mean this selected text.',
     );
   }

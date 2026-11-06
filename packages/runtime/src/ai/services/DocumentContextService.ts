@@ -27,6 +27,7 @@ import type {
   ModeTransition,
   TextSelection,
   TranscriptSelection,
+  TranscriptSelectionSource,
   PersistedDocumentState,
   PersistDocumentStateCallback,
 } from './types';
@@ -51,6 +52,24 @@ function escapeXml(value: string): string {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&apos;');
+}
+
+/**
+ * Keep selected text from closing or opening tags around it. `&` is escaped
+ * too, so text that already contains `&lt;` stays distinguishable from an
+ * escaped `<`; quotes are left alone because the text is never an attribute.
+ */
+export function escapeSelectedText(text: string): string {
+  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+export function describeTranscriptSelectionSource(source: TranscriptSelectionSource): string {
+  if (source.tool) {
+    const file = source.tool.filePath ? ` on ${source.tool.filePath}` : '';
+    return `from the output of the ${source.tool.name} tool call${file} in one of your earlier turns`;
+  }
+  if (source.author === 'mixed') return 'spanning several messages, each part labeled with who wrote it';
+  return source.author === 'assistant' ? 'from one of your earlier replies' : 'from one of their own earlier messages';
 }
 
 function serializeEditorContextData(data: unknown): string | undefined {
@@ -430,8 +449,7 @@ export class DocumentContextService implements IDocumentContextService {
    */
   private buildTranscriptSelectionPrompt(selection: TranscriptSelection | undefined): string | undefined {
     if (!selection) return undefined;
-    const source = selection.author === 'assistant' ? 'one of your earlier replies' : 'one of their own earlier messages';
-    let prompt = `The user currently has the following text selected in this chat, from ${source}:\n<SELECTED_TEXT>\n${selection.text}\n</SELECTED_TEXT>\n`;
+    let prompt = `The user currently has the following text selected in this chat, ${describeTranscriptSelectionSource(selection)}:\n<SELECTED_TEXT>\n${escapeSelectedText(selection.text)}\n</SELECTED_TEXT>\n`;
     if (Date.now() - selection.timestamp > DocumentContextService.SELECTION_STALENESS_MS) {
       prompt += `(Note: This selection was made over a minute ago and may be outdated.)\n`;
     }
@@ -542,7 +560,7 @@ export class DocumentContextService implements IDocumentContextService {
           ? (Date.now() - context.textSelectionTimestamp > DocumentContextService.SELECTION_STALENESS_MS)
           : false;
 
-        prompt += `\nThe user currently has the following text selected in the document:\n<SELECTED_TEXT>\n${context.textSelection}\n</SELECTED_TEXT>\n`;
+        prompt += `\nThe user currently has the following text selected in the document:\n<SELECTED_TEXT>\n${escapeSelectedText(context.textSelection)}\n</SELECTED_TEXT>\n`;
 
         if (isStale) {
           prompt += `(Note: This selection was made over a minute ago and may be outdated.)\n`;

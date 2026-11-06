@@ -695,7 +695,6 @@ export const TranscriptMessageRow = React.memo(function TranscriptMessageRow({
   return (
     <div
       data-message-index={index}
-      data-message-role={isUser ? 'user' : 'assistant'}
       ref={setRef}
       className={`rich-transcript-message rounded-md relative max-w-full overflow-x-hidden break-words mb-2 ${isUser ? 'user bg-[var(--nim-bg-secondary)]' : 'assistant bg-[var(--nim-bg)]'} ${compactMode ? 'compact p-2' : 'normal p-3'} ${!isNewGroup ? 'continuation -mt-1' : ''}`}
     >
@@ -710,7 +709,7 @@ export const TranscriptMessageRow = React.memo(function TranscriptMessageRow({
         </div>
       )}
       {isNewGroup && (
-        <div className="rich-transcript-message-header flex items-center gap-2 mb-1.5">
+        <div className="rich-transcript-message-header flex items-center gap-2 mb-1.5 select-none">
           <div className={`rich-transcript-message-avatar w-7 h-7 rounded-full shrink-0 flex items-center justify-center ${isUser ? 'user' : 'assistant'}`}>
             {isUser ? (
               <MaterialSymbol icon="person" size={18} />
@@ -760,7 +759,7 @@ export const TranscriptMessageRow = React.memo(function TranscriptMessageRow({
 
       <div className={`rich-transcript-message-content relative ${isNewGroup ? 'ml-6' : 'no-indent ml-0'}`}>
         {/* Copy button - shows on hover */}
-        <div className="rich-transcript-message-copy-action absolute -top-1 right-0 z-[1]">
+        <div className="rich-transcript-message-copy-action absolute -top-1 right-0 z-[1] select-none">
           <button
             onClick={() => onCopy(message, index)}
             className={`rich-transcript-copy-button p-1.5 rounded-md bg-[var(--nim-bg-secondary)] border border-[var(--nim-border)] cursor-pointer transition-all flex items-center justify-center hover:bg-[var(--nim-bg-hover)] ${isCopied ? 'copied' : ''}`}
@@ -794,7 +793,7 @@ export const TranscriptMessageRow = React.memo(function TranscriptMessageRow({
       </div>
 
       {turn && (
-        <div className="rich-transcript-turn-elapsed text-xs text-[var(--nim-text-faint)] mt-2 ml-6">
+        <div className="rich-transcript-turn-elapsed text-xs text-[var(--nim-text-faint)] mt-2 ml-6 select-none">
           Finished in {turn.duration}
           {turn.finishedAt && <span> {turn.finishedAt}</span>}
           {turn.fileStats && (

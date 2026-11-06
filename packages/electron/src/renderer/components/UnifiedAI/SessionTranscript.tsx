@@ -286,7 +286,12 @@ function serializeDocumentContext(
 ): SerializableDocumentContext | undefined {
   const chatSelection = getTranscriptSelection(sessionId);
   const transcriptSelection = chatSelection
-    ? { text: chatSelection.text, author: chatSelection.author ?? 'assistant', timestamp: chatSelection.timestamp }
+    ? {
+        author: 'assistant' as const,
+        ...chatSelection.transcript,
+        text: chatSelection.text,
+        timestamp: chatSelection.timestamp,
+      }
     : undefined;
   if (!documentContext) return transcriptSelection ? { transcriptSelection } : undefined;
   return {
@@ -386,7 +391,7 @@ const LocalSessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscrip
   const inputRef = useRef<AIInputRef>(null);
   // Guards the await between Enter and the composer clearing against a second send.
   const submittingRef = useRef(false);
-  const transcriptPanelRef = useRef<{ scrollToMessage: (index: number) => void; scrollToTop: () => void }>(null);
+  const transcriptPanelRef = useRef<{ scrollToMessage: (index: number) => void; scrollToTop: () => void; getMessages: () => TranscriptViewMessage[] }>(null);
   const loadToolCallDiffs = useCallback(
     (toolCallItemId: string, toolCallTimestamp?: number): Promise<ToolCallDiffLoadResult> =>
       window.electronAPI.invoke(
@@ -653,7 +658,11 @@ const LocalSessionTranscript = forwardRef<SessionTranscriptRef, SessionTranscrip
   // (the body is display:none when collapsed and would never intersect).
   const cliTerminalDrawerRef = useRef<HTMLDivElement>(null);
   const transcriptAreaRef = useRef<HTMLDivElement>(null);
-  useTranscriptSelectionContext(transcriptAreaRef, sessionId);
+  useTranscriptSelectionContext(
+    transcriptAreaRef,
+    sessionId,
+    () => transcriptPanelRef.current?.getMessages() ?? [],
+  );
   const [cliTerminalResizing, setCliTerminalResizing] = useState(false);
   // NIM-852: whether the genuine `claude` CLI is installed. null until checked.
   // When false we render an install notice instead of spawning the terminal strip.

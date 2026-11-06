@@ -37,13 +37,21 @@ export interface DocumentState {
 export type TextSelection = string;
 
 /**
+ * Where in the chat transcript a selection came from. `author` is who wrote
+ * the selected message, or `mixed` when it spans both sides (the text then
+ * labels each part). `tool` is set when the text is a tool call's output.
+ */
+export interface TranscriptSelectionSource {
+  author: 'user' | 'assistant' | 'mixed';
+  tool?: { name: string; filePath?: string };
+}
+
+/**
  * Text the user selected in the agent chat transcript. Unlike a document
  * selection it needs no open document, so it travels in its own field.
- * `author` is who wrote the message the text was selected from.
  */
-export interface TranscriptSelection {
+export interface TranscriptSelection extends TranscriptSelectionSource {
   text: string;
-  author: 'user' | 'assistant';
   timestamp: number;
 }
 

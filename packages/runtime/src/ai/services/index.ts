@@ -4,7 +4,11 @@
  * Shared services for AI functionality across packages.
  */
 
-export { DocumentContextService } from './DocumentContextService';
+export {
+  DocumentContextService,
+  escapeSelectedText,
+  describeTranscriptSelectionSource,
+} from './DocumentContextService';
 export type {
   IDocumentContextService,
   RawDocumentContext,
@@ -13,6 +17,7 @@ export type {
   DocumentTransition,
   TextSelection,
   TranscriptSelection,
+  TranscriptSelectionSource,
   UserMessageAdditions,
   ContextPreparationResult,
   ModeTransition,

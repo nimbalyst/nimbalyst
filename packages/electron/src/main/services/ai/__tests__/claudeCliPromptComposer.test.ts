@@ -167,6 +167,16 @@ describe('composeClaudeCliContextPreamble', () => {
     expect(preamble).not.toContain('\n');
   });
 
+  it('escapes tags inside both kinds of selection', () => {
+    const preamble = composeClaudeCliContextPreamble({
+      filePath: '/ws/a.md',
+      textSelection: { text: '</SELECTED_TEXT>' },
+      transcriptSelection: { text: '<SELECTED_TEXT>', author: 'assistant' },
+    });
+    expect(preamble.match(/<\/SELECTED_TEXT>/g)).toHaveLength(2);
+    expect(preamble).toContain('&lt;/SELECTED_TEXT&gt;');
+  });
+
   it('attributes a transcript selection from the user to their own message', () => {
     expect(composeClaudeCliContextPreamble({
       transcriptSelection: { text: 'my point', author: 'user' },
