@@ -104,9 +104,14 @@ function ProjectRailIcon({
     onActivate(project.path);
   }, [onActivate, project.path]);
 
-  const handleClose = useCallback(
+  // Middle-click closes, like a browser tab. There is no hover close button:
+  // it sat on the icon's corner and caught clicks meant to select the project.
+  const handleAuxClick = useCallback(
     (event: React.MouseEvent) => {
+      if (event.button !== 1) return;
+      event.preventDefault();
       event.stopPropagation();
+      setTooltipOpen(false);
       onClose(project);
     },
     [onClose, project]
@@ -136,9 +141,6 @@ function ProjectRailIcon({
   const showBadge = !isActive && (processingCount > 0 || unreadCount > 0);
   const badgeLabel = processingCount > 0 ? `${processingCount}` : unreadCount > 0 ? `${unreadCount}` : '';
 
-  // Wrapper is a non-interactive container so the activate button and the
-  // close button can sit as siblings. Nesting a button inside a button is
-  // invalid HTML and confuses screen readers / keyboard navigation.
   return (
     <div
       ref={tooltipRefs.setReference}
@@ -154,6 +156,9 @@ function ProjectRailIcon({
         type="button"
         className="project-rail-item-main"
         onClick={handleClick}
+        onAuxClick={handleAuxClick}
+        // Stop the middle-button autoscroll cursor from starting.
+        onMouseDown={event => { if (event.button === 1) event.preventDefault(); }}
         draggable
         onDragStart={event => { setTooltipOpen(false); onDragStart(event, project.path); }}
         onDragEnd={onDragEnd}
@@ -178,14 +183,6 @@ function ProjectRailIcon({
           </span>
         )}
       </button>
-      <button
-        type="button"
-        className="project-rail-item-close"
-        onClick={handleClose}
-        aria-label={`Close ${project.name}`}
-      >
-        ×
-      </button>
       {tooltipOpen && !isDragging && !menuOpen && (
         <FloatingPortal>
           <div
@@ -196,6 +193,7 @@ function ProjectRailIcon({
           >
             <span className="project-rail-tooltip-name">{project.name}</span>
             <span className="project-rail-tooltip-path">{project.path}</span>
+            <span className="project-rail-tooltip-hint">Right-click for options. Middle-click to close.</span>
           </div>
         </FloatingPortal>
       )}
@@ -252,7 +250,7 @@ export function ProjectRail() {
       if (!active) return;
       const viewport = list.getBoundingClientRect();
       const item = active.getBoundingClientRect();
-      // Include the close button's overhang. Scroll only the project list,
+      // Keep a few pixels of margin. Scroll only the project list,
       // leaving the rest of the window and keyboard focus untouched.
       const above = item.top - viewport.top - 4;
       const below = item.bottom - viewport.bottom + 4;
