@@ -79,6 +79,7 @@ import {
   initSessionList,
 } from './store/atoms/sessions';
 import { dispatchCreateNewSession } from './store/actions/sessionHistoryActions';
+import { navigateToNotificationSession } from './store/actions/sessionNotificationNavigation';
 import { NavigationGutter } from './components/NavigationGutter';
 // NOTE: useTabs and useTabNavigation removed - EditorMode manages tabs now
 import type { ContentMode } from './types/WindowModeTypes';
@@ -2315,6 +2316,13 @@ export default function App() {
           workspacePath: eventWorkspacePath,
           persist: true,
         });
+      }
+
+      // A session from another rail project must open in that project, not
+      // under whichever project is active.
+      if (eventWorkspacePath && eventWorkspacePath !== store.get(activeWorkspacePathAtom)) {
+        await navigateToNotificationSession({ sessionId, workspacePath: eventWorkspacePath, sourceLabel: '' });
+        return;
       }
 
       setActiveMode('agent');

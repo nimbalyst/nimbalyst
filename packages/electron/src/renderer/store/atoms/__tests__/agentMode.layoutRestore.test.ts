@@ -9,6 +9,7 @@ import { activeWorkspacePathAtom, openProjectsAtom } from '../openProjects';
 import { selectedWorkstreamAtom } from '../sessions';
 import { initWorkstreamState, workstreamStatesLoadedAtom } from '../workstreamState';
 import { navigateToNotificationSession } from '../../actions/sessionNotificationNavigation';
+import { initTrayListeners } from '../../listeners/trayListeners';
 
 /**
  * Switching the rail to another project runs `initAgentModeLayout` for it,
@@ -190,6 +191,28 @@ describe('initAgentModeLayout selection restore', () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(100); });
     expect(store.get(selectedWorkstreamAtom(PROJECT_A))).toEqual({ type: 'session', id: 'clicked-session' });
     expect(select).not.toHaveBeenCalled();
+  });
+
+  // Main routes a menu bar click to the window whose rail holds the project,
+  // which may be showing another rail project.
+  it('opens a menu bar session in its own rail project, not the active one', async () => {
+    installWindow({ [PROJECT_A]: ['session-a'], [PROJECT_B]: ['session-b'] }, async () => ({}));
+    store.set(selectedWorkstreamAtom(PROJECT_B), { type: 'session', id: 'session-b' });
+    const handlers = new Map<string, (data: unknown) => unknown>();
+    (window as any).electronAPI.on = vi.fn((channel: string, handler: (data: unknown) => unknown) => {
+      handlers.set(channel, handler);
+      return () => {};
+    });
+    const stop = initTrayListeners();
+    try {
+      await handlers.get('tray:navigate-to-session')!({ sessionId: 'session-a', workspacePath: PROJECT_A });
+      await vi.waitFor(() => expect(store.get(activeWorkspacePathAtom)).toBe(PROJECT_A));
+      await vi.waitFor(() =>
+        expect(store.get(selectedWorkstreamAtom(PROJECT_A))).toEqual({ type: 'session', id: 'session-a' }));
+      expect(store.get(selectedWorkstreamAtom(PROJECT_B))).toEqual({ type: 'session', id: 'session-b' });
+    } finally {
+      stop();
+    }
   });
 
 });
