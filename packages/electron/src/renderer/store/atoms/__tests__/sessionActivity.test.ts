@@ -11,8 +11,9 @@ import {
   markSessionUnreadAtom,
   clearSessionUnreadAtom,
   clearWorkspaceActivityAtom,
-  projectActivitySummaryAtom,
 } from '../sessionActivity';
+import { projectRailBadgesAtom } from '../projectRailBadges';
+import { sessionHasPendingInteractivePromptAtom } from '../sessions';
 
 const PATH_A = '/ws/a';
 const PATH_B = '/ws/b';
@@ -128,21 +129,29 @@ describe('sessionActivity atoms', () => {
     });
   });
 
-  describe('projectActivitySummaryAtom', () => {
-    it('summarizes streaming + unread counts per workspace', () => {
+  describe('projectRailBadgesAtom', () => {
+    // Same priority and colors as the Agent gutter bubble: awaiting input
+    // (orange) beats running (green) beats unread (blue), and the count is the
+    // number of sessions in the winning state.
+    it('colors each project by its highest-priority session state', () => {
       jotaiStore.set(markSessionStreamingAtom, { sessionId: 's1', workspacePath: PATH_A });
       jotaiStore.set(markSessionStreamingAtom, { sessionId: 's2', workspacePath: PATH_A });
       jotaiStore.set(markSessionUnreadAtom, { sessionId: 's3', workspacePath: PATH_A });
       jotaiStore.set(markSessionUnreadAtom, { sessionId: 's4', workspacePath: PATH_B });
 
-      const summary = jotaiStore.get(projectActivitySummaryAtom);
-      expect(summary.get(PATH_A)).toEqual({ processing: 2, unread: 1 });
-      expect(summary.get(PATH_B)).toEqual({ processing: 0, unread: 1 });
+      let badges = jotaiStore.get(projectRailBadgesAtom);
+      expect(badges.get(PATH_A)).toEqual({ color: 'green', count: 2 });
+      expect(badges.get(PATH_B)).toEqual({ color: 'blue', count: 1 });
+
+      // A running session that asks a question moves to awaiting, and only
+      // the awaiting sessions are counted.
+      jotaiStore.set(sessionHasPendingInteractivePromptAtom('s2'), true);
+      badges = jotaiStore.get(projectRailBadgesAtom);
+      expect(badges.get(PATH_A)).toEqual({ color: 'orange', count: 1 });
     });
 
     it('omits workspaces with no activity', () => {
-      const summary = jotaiStore.get(projectActivitySummaryAtom);
-      expect(summary.size).toBe(0);
+      expect(jotaiStore.get(projectRailBadgesAtom).size).toBe(0);
     });
   });
 });

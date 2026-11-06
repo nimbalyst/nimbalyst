@@ -39,10 +39,8 @@ import {
   sortOpenProjectsAtom,
   type OpenProject,
 } from '../store/atoms/openProjects';
-import {
-  globalSessionActivityAtom,
-  projectActivitySummaryAtom,
-} from '../store/atoms/sessionActivity';
+import { globalSessionActivityAtom } from '../store/atoms/sessionActivity';
+import { projectRailBadgesAtom, type ProjectRailBadge } from '../store/atoms/projectRailBadges';
 import { generateWorkspaceAccentColor, projectIconForeground } from '../../shared/projectAppearance';
 import { projectAppearanceAtom } from '../store/atoms/projectAppearance';
 import { openSettingsCommandAtom } from '../store/atoms/settingsNavigation';
@@ -55,11 +53,16 @@ import './ProjectRail.css';
 
 const REVEAL_LABEL = getShowInFileBrowserLabel();
 
+const BADGE_LABELS: Record<ProjectRailBadge['color'], string> = {
+  orange: 'awaiting input',
+  green: 'running',
+  blue: 'unread',
+};
+
 interface ProjectRailIconProps {
   project: OpenProject;
   isActive: boolean;
-  processingCount: number;
-  unreadCount: number;
+  badge: ProjectRailBadge | undefined;
   onActivate: (path: string) => void;
   onClose: (project: OpenProject) => void;
   onContextMenu: (project: OpenProject, x: number, y: number) => void;
@@ -73,8 +76,7 @@ interface ProjectRailIconProps {
 function ProjectRailIcon({
   project,
   isActive,
-  processingCount,
-  unreadCount,
+  badge,
   onActivate,
   onClose,
   onContextMenu,
@@ -138,8 +140,7 @@ function ProjectRailIcon({
   // Inactive projects show a badge when something needs attention. Active
   // projects already have the user's eyes on them so we suppress the
   // badge to keep the rail quiet.
-  const showBadge = !isActive && (processingCount > 0 || unreadCount > 0);
-  const badgeLabel = processingCount > 0 ? `${processingCount}` : unreadCount > 0 ? `${unreadCount}` : '';
+  const shownBadge = isActive ? undefined : badge;
 
   return (
     <div
@@ -174,12 +175,13 @@ function ProjectRailIcon({
         aria-current={isActive ? 'true' : undefined}
       >
         <ProjectIcon name={project.name} appearance={appearance} />
-        {showBadge && (
+        {shownBadge && (
           <span
             className="project-rail-item-badge"
-            aria-label={processingCount > 0 ? `${processingCount} streaming session(s)` : `${unreadCount} unread`}
+            data-state={shownBadge.color}
+            aria-label={`${shownBadge.count} ${BADGE_LABELS[shownBadge.color]} session${shownBadge.count === 1 ? '' : 's'}`}
           >
-            {badgeLabel}
+            {shownBadge.count}
           </span>
         )}
       </button>
@@ -212,7 +214,7 @@ export function ProjectRail() {
   const sortProjects = useSetAtom(sortOpenProjectsAtom);
   const setGlobalSlot = useSetAtom(projectRailGlobalSlotAtom);
   const activity = useAtomValue(globalSessionActivityAtom);
-  const activitySummary = useAtomValue(projectActivitySummaryAtom);
+  const railBadges = useAtomValue(projectRailBadgesAtom);
   const projectListRef = React.useRef<HTMLDivElement | null>(null);
   const receiveProject = useCallback(async ({ path, beforePath }: { path: string; beforePath: string | null }) => {
     const result = await addProjectToRail(store, path);
@@ -475,14 +477,12 @@ export function ProjectRail() {
       <OrgSwitcher />
       <div ref={projectListRef} className="project-rail-projects" data-testid="project-rail-projects" {...drag.listProps}>
         {openProjects.map((project) => {
-          const activity = activitySummary.get(project.path);
           return (
             <ProjectRailIcon
               key={project.path}
               project={project}
               isActive={project.path === activePath}
-              processingCount={activity?.processing ?? 0}
-              unreadCount={activity?.unread ?? 0}
+              badge={railBadges.get(project.path)}
               onActivate={handleActivate}
               onClose={handleClose}
               onContextMenu={handleContextMenu}

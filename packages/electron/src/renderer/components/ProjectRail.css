@@ -122,6 +122,15 @@
   pointer-events: none;
 }
 
+/* Same colors as the Agent gutter bubble: awaiting input, running, unread. */
+.project-rail-item-badge[data-state='orange'] {
+  background-color: var(--nim-warning);
+}
+
+.project-rail-item-badge[data-state='green'] {
+  background-color: var(--nim-success);
+}
+
 .project-rail-divider {
   flex-shrink: 0;
   width: 32px;

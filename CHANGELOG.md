@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 <!-- Changes to existing functionality go here -->
 - With multiple projects per window enabled, the usage indicators, theme toggle, feedback button and account menu sit at the bottom of the project rail instead of in each project's navigation gutter
 - Project rail icons no longer show a close button on hover, which was easy to hit when selecting a project; close a project from its right-click menu or by middle-clicking it
+- Project rail badges use the same colors as the Agent mode bubble: orange when a session is waiting for your input, green while sessions are running, blue for unread
 - The transcript's prompts menu also lists your answers to agent questions and jumps to the question card; prompts sent by other sessions are shown muted and no longer count toward the badge
 
 ### Fixed
