@@ -76,18 +76,26 @@
   border-color: transparent;
 }
 
-/* Opaque images hide the fill change. Mark selection outside the image with
- * a neutral gap and a theme-contrasting ring, independent of its accent color. */
+/* Ring every active icon with a neutral gap so selection reads even when an
+ * inactive project has a bright custom color or image. */
+.project-rail-item.is-active .project-rail-item-main {
+  box-shadow: 0 0 0 2px var(--nim-bg-secondary), 0 0 0 4px var(--rail-item-accent, var(--nim-text));
+}
+
+/* Opaque images hide the fill change, so use a theme-contrasting ring instead
+ * of the accent color. */
 .project-rail-item.is-active .project-rail-item-main:has(> .project-icon-image) {
   box-shadow: 0 0 0 2px var(--nim-bg-secondary), 0 0 0 4px var(--nim-text);
 }
 
+/* The item sits 8px from the rail edge and .project-rail-projects clips
+ * overflow-x, so the bar must start at -8px to be fully visible. */
 .project-rail-item.is-active::before {
   content: '';
   position: absolute;
-  left: -10px;
-  top: 8px;
-  bottom: 8px;
+  left: -8px;
+  top: 4px;
+  bottom: 4px;
   width: 4px;
   border-radius: 0 4px 4px 0;
   background-color: var(--rail-item-accent, var(--nim-text, #111827));
