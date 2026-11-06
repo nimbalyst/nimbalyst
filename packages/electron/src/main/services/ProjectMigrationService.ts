@@ -20,6 +20,9 @@ import { findWindowByWorkspace } from '../window/WindowManager';
 import type { AppDatabase } from '../database/PGLiteDatabaseWorker';
 import { database } from '../database/PGLiteDatabaseWorker';
 import { encodeWorkspaceDir } from './ClaudeCodeSessionScanner';
+import { createGit } from './gitClient';
+import { clearProjectMoving, isProjectMoving, markProjectMoving } from './projectMoveRegistry';
+import { sanitizeGitRepositoryEnv } from './gitRepositoryEnv';
 
 // Import store utilities - we'll need to access the underlying stores directly
 import {
@@ -54,22 +57,54 @@ export interface MoveResult {
   success: boolean;
   error?: string;
   newPath?: string;
+  /** Non-fatal problems after the files moved, e.g. a failed worktree relink */
+  warnings?: string[];
+}
+
+export type MovePhase = 'backup' | 'moving' | 'moving-worktrees' | 'database' | 'repairing-worktrees';
+
+interface PathPair {
+  oldPath: string;
+  newPath: string;
+}
+
+/** Nimbalyst's sibling worktree folder convention: `<parent>/<project>_worktrees` */
+function worktreesDirFor(projectPath: string): string {
+  return path.join(path.dirname(projectPath), `${path.basename(projectPath)}_worktrees`);
+}
+
+/**
+ * Rename when source and destination share a volume (atomic, nothing copied);
+ * copy when they do not. A copied source is left in place.
+ */
+async function moveDirectory(from: string, to: string): Promise<'renamed' | 'copied'> {
+  try {
+    await fs.rename(from, to);
+    return 'renamed';
+  } catch (error: any) {
+    if (error?.code !== 'EXDEV') {
+      throw error;
+    }
+    logger.main.info('[ProjectMigration] Different volume, copying', from, '->', to);
+    await fs.cp(from, to, { recursive: true, verbatimSymlinks: true, errorOnExist: true, force: false });
+    return 'copied';
+  }
 }
 
 /**
  * ProjectMigrationService handles safe migration of projects to new locations.
  *
  * Migration is performed in this order:
- * 1. Validate preconditions (project not open, no worktrees, destination available)
+ * 1. Validate preconditions (project not open, destination available)
  * 2. Create database backup
- * 3. Copy project directory to new location
- * 4. Rename Claude Code session directory
- * 5. Update database records (single transaction)
- * 6. Migrate workspace settings in electron-store
- * 7. Update recent workspaces in app settings
- * 8. Delete original project directory
+ * 3. Move the project directory and its `<project>_worktrees` sibling
+ *    (rename on the same volume, copy across volumes; a copy's source is kept)
+ * 4. Rename Claude Code session directories
+ * 5. Update database records
+ * 6. Migrate workspace settings and recent workspaces
+ * 7. Relink git worktrees with `git worktree repair`
  *
- * If any step fails, rollback is performed to restore the original state.
+ * If a step before 7 fails, directory renames are undone.
  */
 export class ProjectMigrationService {
   private dbWorker: AppDatabase;
@@ -80,6 +115,9 @@ export class ProjectMigrationService {
 
   /**
    * Check if a project can be moved.
+   *
+   * Worktrees do not block a move: the sibling `<project>_worktrees` folder
+   * moves with the project and `git worktree repair` relinks it afterwards.
    *
    * @param oldPath - Current project path
    * @returns CanMoveResult indicating whether move is allowed
@@ -92,145 +130,67 @@ export class ProjectMigrationService {
       return { canMove: false, reason: 'Project directory does not exist' };
     }
 
+    if (isProjectMoving(oldPath)) {
+      return { canMove: false, reason: 'This project is already being moved.' };
+    }
+
     // Check if project is open in any window
     const window = findWindowByWorkspace(oldPath);
     if (window) {
       return { canMove: false, reason: 'Project is currently open. Please close it first.' };
     }
 
-    // Check for existing worktrees
-    try {
-      const result = await this.dbWorker.query(
-        'SELECT COUNT(*) as count FROM worktrees WHERE workspace_id = $1',
-        [oldPath]
-      );
-      const count = parseInt(result.rows[0]?.count || '0', 10);
-      if (count > 0) {
-        return {
-          canMove: false,
-          reason: `Project has ${count} worktree${count > 1 ? 's' : ''}. Please delete worktrees before moving.`
-        };
-      }
-    } catch (error) {
-      logger.main.error('[ProjectMigration] Error checking worktrees:', error);
-      // Continue anyway - worktrees table might not exist
-    }
+    return { canMove: true };
+  }
 
+  /**
+   * Check everything a move to `newPath` needs before any work starts, so a
+   * background move can report these errors synchronously.
+   */
+  async validateMove(oldPath: string, newPath: string): Promise<CanMoveResult> {
+    const canMove = await this.canMoveProject(oldPath);
+    if (!canMove.canMove) {
+      return canMove;
+    }
+    if (existsSync(newPath)) {
+      return { canMove: false, reason: 'Destination already exists' };
+    }
+    if (!existsSync(path.dirname(newPath))) {
+      return { canMove: false, reason: 'Destination parent directory does not exist' };
+    }
+    if (existsSync(worktreesDirFor(oldPath)) && existsSync(worktreesDirFor(newPath))) {
+      return {
+        canMove: false,
+        reason: `Destination worktrees folder already exists: ${worktreesDirFor(newPath)}`,
+      };
+    }
     return { canMove: true };
   }
 
   /**
    * Move a project to a new location.
    *
+   * Same-volume moves use an atomic rename. Cross-volume moves copy, and the
+   * original directory is intentionally NOT deleted: the user can delete it
+   * after verifying the move. Automatic recursive deletion is too dangerous -
+   * external apps with open file handles can corrupt state during the copy.
+   *
    * @param oldPath - Current project path
    * @param newPath - Destination path (full path including project directory name)
+   * @param onProgress - Called as the move enters each phase
    * @returns MoveResult indicating success or failure
    */
-  async moveProject(oldPath: string, newPath: string): Promise<MoveResult> {
+  async moveProject(
+    oldPath: string,
+    newPath: string,
+    onProgress?: (phase: MovePhase) => void
+  ): Promise<MoveResult> {
     logger.main.info('[ProjectMigration] Moving project from', oldPath, 'to', newPath);
-
-    // Re-validate before proceeding
-    const canMove = await this.canMoveProject(oldPath);
-    if (!canMove.canMove) {
-      return { success: false, error: canMove.reason };
-    }
-
-    // Validate destination doesn't exist
-    if (existsSync(newPath)) {
-      return { success: false, error: 'Destination already exists' };
-    }
-
-    // Ensure parent directory exists
-    const parentDir = path.dirname(newPath);
-    if (!existsSync(parentDir)) {
-      return { success: false, error: 'Destination parent directory does not exist' };
-    }
-
-    // Track what's been done for rollback
-    let projectCopied = false;
-    let claudeDirRenamed = false;
-    let oldClaudePath: string | null = null;
-    let newClaudePath: string | null = null;
-
-    try {
-      // Step 1: Create database backup
-      logger.main.info('[ProjectMigration] Creating database backup...');
-      const backupResult = await this.dbWorker.createBackup();
-      if (!backupResult.success) {
-        return { success: false, error: `Failed to create backup: ${backupResult.error}` };
-      }
-      logger.main.info('[ProjectMigration] Database backup created successfully');
-
-      // Step 2: Copy project directory
-      logger.main.info('[ProjectMigration] Copying project directory...');
-      await fs.cp(oldPath, newPath, { recursive: true });
-      projectCopied = true;
-      logger.main.info('[ProjectMigration] Project directory copied');
-
-      // Step 3: Rename Claude Code session directory
-      const claudeProjectsDir = path.join(resolveClaudeConfigDir(), 'projects');
-      oldClaudePath = path.join(claudeProjectsDir, encodeWorkspaceDir(oldPath));
-      newClaudePath = path.join(claudeProjectsDir, encodeWorkspaceDir(newPath));
-
-      if (existsSync(oldClaudePath)) {
-        logger.main.info('[ProjectMigration] Renaming Claude session directory...');
-        await fs.rename(oldClaudePath, newClaudePath);
-        claudeDirRenamed = true;
-        logger.main.info('[ProjectMigration] Claude session directory renamed');
-      }
-
-      // Step 4: Update database tables
-      logger.main.info('[ProjectMigration] Updating database records...');
-      await this.migrateDatabase(oldPath, newPath);
-      logger.main.info('[ProjectMigration] Database records updated');
-
-      // Step 5: Migrate workspace settings
-      logger.main.info('[ProjectMigration] Migrating workspace settings...');
-      await this.migrateWorkspaceSettings(oldPath, newPath);
-      logger.main.info('[ProjectMigration] Workspace settings migrated');
-
-      // Step 6: Update recent workspaces
-      logger.main.info('[ProjectMigration] Updating recent workspaces...');
-      this.updateRecentWorkspaces(oldPath, newPath);
-      logger.main.info('[ProjectMigration] Recent workspaces updated');
-
-      // Original directory is intentionally NOT deleted.
-      // The user can delete it manually after verifying the move succeeded.
-      // Automatic recursive deletion is too dangerous - external apps with
-      // open file handles can corrupt state during the copy window.
-      logger.main.info('[ProjectMigration] Project moved successfully. Original directory preserved at:', oldPath);
-      return { success: true, newPath };
-
-    } catch (error: any) {
-      logger.main.error('[ProjectMigration] Move failed:', error);
-
-      // Rollback Claude directory rename (safe - just a rename back)
-      if (claudeDirRenamed && oldClaudePath && newClaudePath) {
-        try {
-          await fs.rename(newClaudePath, oldClaudePath);
-          logger.main.info('[ProjectMigration] Rollback: Renamed Claude directory back');
-        } catch (rollbackError) {
-          logger.main.error('[ProjectMigration] Rollback failed: Could not rename Claude directory back:', rollbackError);
-        }
-      }
-
-      // Never delete the copied directory - if a partial copy exists at newPath,
-      // that's still better than losing data. The user can clean it up.
-      if (projectCopied) {
-        logger.main.warn('[ProjectMigration] Partial copy may exist at:', newPath);
-      }
-
-      return { success: false, error: error.message || 'Migration failed' };
-    }
+    return this.relocate(oldPath, newPath, onProgress);
   }
 
   /**
    * Rename a project in place using atomic fs.rename().
-   *
-   * Unlike moveProject (which copies + deletes for cross-filesystem moves),
-   * rename uses a single atomic OS call. This prevents data loss when external
-   * apps (e.g. Xcode) have files open - they'll get ENOENT on next write
-   * instead of racing with a copy+delete.
    *
    * @param oldPath - Current project path
    * @param newName - New directory name (not full path)
@@ -248,96 +208,174 @@ export class ProjectMigrationService {
       return { success: false, error: 'Name contains invalid characters' };
     }
 
-    const parentDir = path.dirname(oldPath);
-    const newPath = path.join(parentDir, newName);
-
+    const newPath = path.join(path.dirname(oldPath), newName);
     logger.main.info('[ProjectMigration] Renaming project from', oldPath, 'to', newPath);
+    return this.relocate(oldPath, newPath);
+  }
 
-    // Re-validate before proceeding
-    const canMove = await this.canMoveProject(oldPath);
-    if (!canMove.canMove) {
-      return { success: false, error: canMove.reason };
+  /**
+   * Shared move/rename. Moves the project directory and its sibling
+   * `<project>_worktrees` folder, then rewrites every record keyed by either
+   * path and relinks git worktrees to the moved repository.
+   */
+  private async relocate(
+    oldPath: string,
+    newPath: string,
+    onProgress?: (phase: MovePhase) => void
+  ): Promise<MoveResult> {
+    const valid = await this.validateMove(oldPath, newPath);
+    if (!valid.canMove) {
+      return { success: false, error: valid.reason };
     }
 
-    // Validate destination doesn't exist
-    if (existsSync(newPath)) {
-      return { success: false, error: 'Destination already exists' };
-    }
+    markProjectMoving(oldPath);
+    const oldWorktreesDir = worktreesDirFor(oldPath);
+    const newWorktreesDir = worktreesDirFor(newPath);
+    const moveWorktreesDir = existsSync(oldWorktreesDir);
 
-    let claudeDirRenamed = false;
-    let oldClaudePath: string | null = null;
-    let newClaudePath: string | null = null;
+    // Undo log for the renames; copies are never deleted.
+    const renamed: Array<{ from: string; to: string }> = [];
 
     try {
       // Step 1: Create database backup
+      onProgress?.('backup');
       logger.main.info('[ProjectMigration] Creating database backup...');
       const backupResult = await this.dbWorker.createBackup();
       if (!backupResult.success) {
         return { success: false, error: `Failed to create backup: ${backupResult.error}` };
       }
-      logger.main.info('[ProjectMigration] Database backup created successfully');
 
-      // Step 2: Atomic rename of project directory
-      // fs.rename() is a single OS call (rename(2)) - no copy+delete, no race window
-      logger.main.info('[ProjectMigration] Renaming project directory (atomic)...');
-      await fs.rename(oldPath, newPath);
-      logger.main.info('[ProjectMigration] Project directory renamed');
+      // Collected before anything moves, while the old paths still resolve.
+      const pairs: PathPair[] = [{ oldPath, newPath }];
+      if (moveWorktreesDir) {
+        for (const worktreePath of await this.collectWorktreePaths(oldPath, oldWorktreesDir)) {
+          pairs.push({
+            oldPath: worktreePath,
+            newPath: newWorktreesDir + worktreePath.substring(oldWorktreesDir.length),
+          });
+        }
+      }
 
-      // Step 3: Rename Claude Code session directory
+      // Step 2: Move the project directory, then the worktrees folder
+      onProgress?.('moving');
+      if ((await moveDirectory(oldPath, newPath)) === 'renamed') {
+        renamed.push({ from: oldPath, to: newPath });
+      }
+      if (moveWorktreesDir) {
+        onProgress?.('moving-worktrees');
+        if ((await moveDirectory(oldWorktreesDir, newWorktreesDir)) === 'renamed') {
+          renamed.push({ from: oldWorktreesDir, to: newWorktreesDir });
+        }
+      }
+
+      // Step 3: Rename Claude Code session directories (worktree sessions run
+      // with the worktree as cwd, so each has its own directory)
       const claudeProjectsDir = path.join(resolveClaudeConfigDir(), 'projects');
-      oldClaudePath = path.join(claudeProjectsDir, encodeWorkspaceDir(oldPath));
-      newClaudePath = path.join(claudeProjectsDir, encodeWorkspaceDir(newPath));
-
-      if (existsSync(oldClaudePath)) {
-        logger.main.info('[ProjectMigration] Renaming Claude session directory...');
-        await fs.rename(oldClaudePath, newClaudePath);
-        claudeDirRenamed = true;
-        logger.main.info('[ProjectMigration] Claude session directory renamed');
+      for (const pair of pairs) {
+        const from = path.join(claudeProjectsDir, encodeWorkspaceDir(pair.oldPath));
+        const to = path.join(claudeProjectsDir, encodeWorkspaceDir(pair.newPath));
+        if (existsSync(from) && !existsSync(to)) {
+          await fs.rename(from, to);
+          renamed.push({ from, to });
+        }
       }
 
       // Step 4: Update database tables
+      onProgress?.('database');
       logger.main.info('[ProjectMigration] Updating database records...');
-      await this.migrateDatabase(oldPath, newPath);
-      logger.main.info('[ProjectMigration] Database records updated');
+      for (const pair of pairs) {
+        await this.migrateDatabase(pair.oldPath, pair.newPath);
+      }
 
-      // Step 5: Migrate workspace settings
-      logger.main.info('[ProjectMigration] Migrating workspace settings...');
-      await this.migrateWorkspaceSettings(oldPath, newPath);
-      logger.main.info('[ProjectMigration] Workspace settings migrated');
-
-      // Step 6: Update recent workspaces
-      logger.main.info('[ProjectMigration] Updating recent workspaces...');
+      // Step 5: Migrate workspace settings and recent workspaces
+      for (const pair of pairs) {
+        await this.migrateWorkspaceSettings(pair.oldPath, pair.newPath);
+      }
       this.updateRecentWorkspaces(oldPath, newPath);
-      logger.main.info('[ProjectMigration] Recent workspaces updated');
 
-      logger.main.info('[ProjectMigration] Project renamed successfully');
-      return { success: true, newPath };
+      // Step 6: Relink git worktrees. The move itself succeeded; a repair
+      // failure is reported as a warning so the user can run it by hand.
+      onProgress?.('repairing-worktrees');
+      const warnings = await this.repairWorktrees(newPath);
 
+      logger.main.info('[ProjectMigration] Project moved successfully to', newPath);
+      return { success: true, newPath, ...(warnings.length > 0 ? { warnings } : {}) };
     } catch (error: any) {
-      logger.main.error('[ProjectMigration] Rename failed, rolling back:', error);
-
-      // Rollback: Rename project directory back
-      // If the directory was renamed but a later step failed, rename it back
-      if (existsSync(newPath) && !existsSync(oldPath)) {
+      logger.main.error('[ProjectMigration] Move failed, rolling back renames:', error);
+      // Renames are undone in reverse. A copy is never deleted: a partial
+      // copy at the destination is better than losing data.
+      for (const { from, to } of renamed.reverse()) {
         try {
-          await fs.rename(newPath, oldPath);
-          logger.main.info('[ProjectMigration] Rollback: Renamed project directory back');
+          if (existsSync(to) && !existsSync(from)) {
+            await fs.rename(to, from);
+            logger.main.info('[ProjectMigration] Rollback: renamed back', to, '->', from);
+          }
         } catch (rollbackError) {
-          logger.main.error('[ProjectMigration] Rollback failed: Could not rename project directory back:', rollbackError);
+          logger.main.error('[ProjectMigration] Rollback failed for', to, rollbackError);
         }
       }
+      return { success: false, error: error.message || 'Move failed' };
+    } finally {
+      clearProjectMoving(oldPath);
+    }
+  }
 
-      // Rollback: Rename Claude directory back
-      if (claudeDirRenamed && oldClaudePath && newClaudePath) {
-        try {
-          await fs.rename(newClaudePath, oldClaudePath);
-          logger.main.info('[ProjectMigration] Rollback: Renamed Claude directory back');
-        } catch (rollbackError) {
-          logger.main.error('[ProjectMigration] Rollback failed: Could not rename Claude directory back:', rollbackError);
-        }
+  /**
+   * Every workspace path under the project's worktrees folder that needs its
+   * records rewritten: worktree rows plus any workspace id that session rows
+   * recorded there, including worktrees deleted since.
+   */
+  private async collectWorktreePaths(projectPath: string, worktreesDir: string): Promise<string[]> {
+    const prefix = worktreesDir + path.sep;
+    const found = new Set<string>();
+    const worktrees = await this.dbWorker.query<{ path: string }>(
+      'SELECT path FROM worktrees WHERE workspace_id = $1',
+      [projectPath]
+    );
+    for (const row of worktrees.rows) found.add(row.path);
+    for (const table of ['ai_sessions', 'session_files', 'document_history']) {
+      const result = await this.dbWorker.query<{ workspace_id: string }>(
+        `SELECT DISTINCT workspace_id FROM ${table}`
+      );
+      for (const row of result.rows) found.add(row.workspace_id);
+    }
+    return [...found].filter((p) => typeof p === 'string' && p.startsWith(prefix));
+  }
+
+  /**
+   * Point git's worktree links at the moved repository, in both directions.
+   * Returns warnings instead of throwing: the files have already moved.
+   */
+  private async repairWorktrees(projectPath: string): Promise<string[]> {
+    if (!existsSync(path.join(projectPath, '.git'))) {
+      return [];
+    }
+    const result = await this.dbWorker.query<{ path: string }>(
+      'SELECT path FROM worktrees WHERE workspace_id = $1',
+      [projectPath]
+    );
+    const worktreePaths = new Set(result.rows.map((row) => row.path));
+    // Checkouts in the worktrees folder that Nimbalyst has no row for.
+    const worktreesDir = worktreesDirFor(projectPath);
+    if (existsSync(worktreesDir)) {
+      for (const entry of await fs.readdir(worktreesDir, { withFileTypes: true })) {
+        if (entry.isDirectory()) worktreePaths.add(path.join(worktreesDir, entry.name));
       }
-
-      return { success: false, error: error.message || 'Rename failed' };
+    }
+    const live = [...worktreePaths].filter((p) => existsSync(path.join(p, '.git')));
+    if (live.length === 0) {
+      return [];
+    }
+    try {
+      const git = createGit(projectPath, {}, sanitizeGitRepositoryEnv(process.env));
+      await git.raw(['worktree', 'repair', ...live]);
+      logger.main.info('[ProjectMigration] Repaired', live.length, 'worktree link(s)');
+      return [];
+    } catch (error: any) {
+      logger.main.warn('[ProjectMigration] git worktree repair failed:', error);
+      return [
+        `Worktrees moved, but relinking them failed. Run "git worktree repair" in ${projectPath}. (${error.message || error})`,
+      ];
     }
   }
 
@@ -369,9 +407,13 @@ export class ProjectMigrationService {
       [newPath, oldPath]
     );
 
-    // Update worktrees (shouldn't have any if we passed validation, but just in case)
+    // Update worktrees: rows owned by the project, and the worktree's own path
     await this.dbWorker.query(
       'UPDATE worktrees SET workspace_id = $1 WHERE workspace_id = $2',
+      [newPath, oldPath]
+    );
+    await this.dbWorker.query(
+      'UPDATE worktrees SET path = $1 WHERE path = $2',
       [newPath, oldPath]
     );
 

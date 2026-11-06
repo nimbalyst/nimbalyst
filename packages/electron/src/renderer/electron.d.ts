@@ -55,6 +55,15 @@ interface ArchiveTask {
   error?: string;
 }
 
+interface ProjectMoveJob {
+  oldPath: string;
+  newPath: string;
+  status: 'running' | 'succeeded' | 'failed';
+  phase: 'backup' | 'moving' | 'moving-worktrees' | 'database' | 'repairing-worktrees' | null;
+  error?: string;
+  warnings?: string[];
+}
+
 interface GhCliStatus {
   installed: boolean;
   version?: string;
@@ -722,8 +731,11 @@ interface ElectronAPI {
   // Project Migration (move/rename)
   projectMigration: {
     canMove: (oldPath: string) => Promise<{ canMove: boolean; reason?: string }>;
-    move: (oldPath: string, newPath: string) => Promise<{ success: boolean; error?: string; newPath?: string }>;
-    rename: (oldPath: string, newName: string) => Promise<{ success: boolean; error?: string; newPath?: string }>;
+    /** Starts a background move; progress arrives through onMoveProgress */
+    move: (oldPath: string, newPath: string) => Promise<{ started: boolean; error?: string }>;
+    getMoveJobs: () => Promise<ProjectMoveJob[]>;
+    onMoveProgress: (callback: (job: ProjectMoveJob) => void) => () => void;
+    rename: (oldPath: string, newName: string) => Promise<{ success: boolean; error?: string; newPath?: string; warnings?: string[] }>;
   };
 
   // Tracker lifecycle: personal -> team promotion (one-way) and archive.

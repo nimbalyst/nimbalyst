@@ -26,6 +26,7 @@ import { getDialogDefaultPath, rememberDialogSelection } from '../utils/dialogPa
 import { getWindowProjectPaths, windowReferencesWorkspace } from './windowState';
 import { formatScannedCount, isMarkdownFile, summarizeWorkspaceScan } from './workspaceScanCounts';
 import { TutorialProjectService } from '../services/tutorial/TutorialProjectService';
+import { isProjectMoving } from '../services/projectMoveRegistry';
 import {
   normalizeTutorialEntryPoint,
   type TutorialEntryPoint,
@@ -294,6 +295,12 @@ export interface OpenWorkspaceOptions {
  * `forceNewWindow` is set.
  */
 export async function openWorkspaceWindow(workspacePath: string, options?: OpenWorkspaceOptions) {
+  // A background move rewrites this project's records and may have already
+  // renamed its directory; opening it now would race the migration.
+  if (isProjectMoving(workspacePath)) {
+    return { success: false, error: 'This project is being moved. Open it from its new location when the move finishes.' };
+  }
+
   // Add to recent workspaces
   addToRecentItems('workspaces', workspacePath, basename(workspacePath));
 

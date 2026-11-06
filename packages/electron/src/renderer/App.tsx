@@ -125,6 +125,7 @@ import { initPromptSuggestionListeners } from './store/listeners/promptSuggestio
 import { initClaudeCliTerminalListeners } from './store/listeners/claudeCliTerminalListeners';
 import { initWindowFocusListeners } from './store/listeners/windowFocusListeners';
 import { initRailProjectListeners } from './store/listeners/railProjectListeners';
+import { initProjectMoveListeners } from './store/listeners/projectMoveListeners';
 import { initCodexUsageListeners } from './store/listeners/codexUsageListeners';
 import { initGeminiUsageListeners } from './store/listeners/geminiUsageListeners';
 import { initFileOpenListeners } from './store/listeners/fileOpenListeners';
@@ -433,6 +434,7 @@ export default function App() {
     const cleanupClaudeCliTerminal = initClaudeCliTerminalListeners();
     const cleanupWindowFocus = initWindowFocusListeners();
     const cleanupRailProjects = initRailProjectListeners();
+    const cleanupProjectMoves = initProjectMoveListeners();
     const cleanupCodex = initCodexUsageListeners();
     const cleanupGemini = initGeminiUsageListeners();
     const cleanupFileOpen = initFileOpenListeners();
@@ -488,6 +490,7 @@ export default function App() {
       cleanupClaudeCliTerminal?.();
       cleanupWindowFocus?.();
       cleanupRailProjects?.();
+      cleanupProjectMoves?.();
       cleanupCodex?.();
       cleanupGemini?.();
       cleanupFileOpen();
