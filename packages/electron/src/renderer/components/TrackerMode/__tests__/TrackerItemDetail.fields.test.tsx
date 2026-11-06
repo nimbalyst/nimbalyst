@@ -276,7 +276,7 @@ describe('TrackerItemDetail metadata region', () => {
       renderPage({ collabScope: null });
       await waitFor(() => expect(pageCrumb()).toBe('Spec / Modules / Chip row item'));
       act(() => store.set(pageTree.itemPlacements, [{ itemId: ITEM.id, parentId: 'd-research' }]));
-      expect(pageCrumb()).toBe('Spec / Research / Chip row item');
+      await waitFor(() => expect(pageCrumb()).toBe('Spec / Research / Chip row item'));
     } finally {
       spy.mockRestore();
       store.set(pageTree.itemPlacements, []);
