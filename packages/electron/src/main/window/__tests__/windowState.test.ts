@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import {
   windowStates,
   getWindowProjectPaths,
+  getInitialRailState,
   resolveActiveWorkspacePath,
   resolveActiveWorkspacePathForWindowId,
   resolveDocumentServicePath,
@@ -385,5 +386,21 @@ describe('windowState helpers', () => {
       expect(() => syncRepresentedFilename(null, null)).not.toThrow();
       expect(() => syncRepresentedFilename(undefined, '/ws/notes.md')).not.toThrow();
     });
+  });
+});
+
+describe('getInitialRailState', () => {
+  const restoredRail = { projectPaths: ['/c', '/a', '/b'], activeWorkspacePath: '/b' };
+
+  it('serves the rail saved at last close until the renderer re-registers it', () => {
+    const state = makeState({ restoredRail, workspacePath: '/a' });
+    expect(getInitialRailState(state, '/a')).toEqual({ openProjectPaths: ['/c', '/a', '/b'], activeWorkspacePath: '/b' });
+  });
+
+  it('prefers the live rail once the window has registered its projects', () => {
+    const state = makeState({
+      restoredRail, workspacePath: '/a', additionalWorkspacePaths: ['/d'], projectRailOrder: ['/d', '/a'], activeWorkspacePath: '/d',
+    });
+    expect(getInitialRailState(state, '/a')).toEqual({ openProjectPaths: ['/d', '/a'], activeWorkspacePath: '/d' });
   });
 });

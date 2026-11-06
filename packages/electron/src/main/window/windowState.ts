@@ -17,6 +17,25 @@ export function getWindowProjectPaths(state: WindowState): string[] {
         .filter(path => registered.has(path));
 }
 
+/**
+ * The rail a renderer boots with. A window restored from the session state
+ * knows only its primary project until the renderer re-registers the others,
+ * so until then the rail saved at last close is served instead.
+ */
+export function getInitialRailState(state: WindowState, primaryPath: string): {
+    openProjectPaths: string[];
+    activeWorkspacePath: string;
+} {
+    const liveProjectPaths = getWindowProjectPaths(state);
+    const restoredRail = liveProjectPaths.length <= 1 ? state.restoredRail : undefined;
+    const openProjectPaths = restoredRail?.projectPaths ?? liveProjectPaths;
+    const candidate = restoredRail ? restoredRail.activeWorkspacePath : state.activeWorkspacePath;
+    return {
+        openProjectPaths,
+        activeWorkspacePath: candidate && openProjectPaths.includes(candidate) ? candidate : primaryPath,
+    };
+}
+
 /** Workspace/document windows registered by WindowManager, including hidden ones. */
 export function getProjectWindows(): BrowserWindow[] {
     return [...windows.values()].filter(window => !window.isDestroyed());

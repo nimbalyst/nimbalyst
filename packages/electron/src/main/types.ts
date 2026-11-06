@@ -42,6 +42,12 @@ export interface WindowState {
     projectRailOrder?: string[];
     /** Per-window override for bootstrapping the global saved rail; not an app setting. */
     restorePreviousProjects?: boolean;
+    /**
+     * Rail saved with this window in the session state. Served by
+     * `get-initial-state` until the renderer registers the rail and reports
+     * its order, so a restart reopens every project the window hosted.
+     */
+    restoredRail?: RestoredRail;
     documentEdited: boolean;
 
     // Tab management (optional for backward compatibility)
@@ -59,6 +65,11 @@ export interface RecentItem {
     timestamp: number;
 }
 
+export interface RestoredRail {
+    projectPaths: string[];
+    activeWorkspacePath: string | null;
+}
+
 export interface SessionWindow {
     mode: 'document' | 'workspace' | 'agentic-coding';
     filePath?: string;
@@ -72,6 +83,10 @@ export interface SessionWindow {
     };
     focusOrder?: number; // Track window focus order (higher = more recently focused)
     devToolsOpen?: boolean; // Track if developer tools are open
+    /** Rail projects in display order; saved only when the window hosts more than one. */
+    projectPaths?: string[];
+    /** The rail project the window was showing. */
+    activeWorkspacePath?: string;
 }
 
 export interface SessionState {
