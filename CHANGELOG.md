@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 <!-- Changes to existing functionality go here -->
+- The transcript's prompts menu also lists your answers to agent questions and jumps to the question card; prompts sent by other sessions are shown muted and no longer count toward the badge
 
 ### Fixed
 <!-- Bug fixes go here -->

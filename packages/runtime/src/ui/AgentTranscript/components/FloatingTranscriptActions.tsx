@@ -2,7 +2,8 @@
  * FloatingTranscriptActions - Floating action buttons for AgentTranscriptPanel
  *
  * Provides two floating buttons in the top-right corner of the transcript:
- * 1. Prompts menu (TOC icon) - Dropdown showing all user prompts in the session
+ * 1. Prompts menu (TOC icon) - Dropdown of the session's prompts, the user's
+ *    answers to questions, and (muted) prompts sent by other sessions
  * 2. Toggle history button - Shows/hides the file history sidebar
  *
  * This component follows the same design pattern as FloatingDocumentActionsPlugin
@@ -70,6 +71,10 @@ export const PromptsMenuButton: React.FC<PromptsMenuButtonProps> = ({
   const role = useRole(context, { role: 'menu' });
   const { getReferenceProps, getFloatingProps } = useInteractions([dismiss, role]);
 
+  // The badge counts only the user's own prompts; answers and agent sends are
+  // listed but would inflate the number the user reads as "my turns".
+  const ownPromptCount = prompts.filter(p => (p.kind ?? 'prompt') === 'prompt').length;
+
   // Handle prompt selection
   const handlePromptClick = (marker: PromptMarker) => {
     onNavigateToPrompt(marker);
@@ -92,22 +97,49 @@ export const PromptsMenuButton: React.FC<PromptsMenuButtonProps> = ({
       >
         {prompts.length > 0 ? (
           <ul className="prompts-list list-none m-0 py-1 px-0">
-            {prompts.map((prompt) => (
-              <li
-                key={prompt.id}
-                className="prompts-item flex items-start gap-2 px-3 py-2.5 cursor-pointer transition-colors border-b border-[var(--nim-border)] last:border-b-0 hover:bg-[var(--nim-bg-hover)]"
-                onClick={() => handlePromptClick(prompt)}
-                title={prompt.promptText}
-              >
-                <div className="prompts-item-number text-[var(--nim-text-faint)] text-[11px] font-semibold min-w-8 text-right pt-0.5">#{prompt.id}</div>
-                <div className="prompts-item-text flex-1 text-[var(--nim-text)] text-[13px] leading-snug overflow-hidden text-ellipsis line-clamp-2">
-                  {truncatePrompt(prompt.promptText)}
-                </div>
-                <div className="prompts-item-timestamp text-[var(--nim-text-faint)] text-[11px] whitespace-nowrap pt-0.5">
-                  {formatShortTime(prompt.timestamp)}
-                </div>
-              </li>
-            ))}
+            {prompts.map((prompt) => {
+              const kind = prompt.kind ?? 'prompt';
+              return (
+                <li
+                  key={prompt.id}
+                  className={`prompts-item prompts-item-${kind} flex items-start gap-2 px-3 py-2.5 cursor-pointer transition-colors border-b border-[var(--nim-border)] last:border-b-0 hover:bg-[var(--nim-bg-hover)]`}
+                  onClick={() => handlePromptClick(prompt)}
+                  title={kind === 'answer' ? `${prompt.promptText}\n${prompt.answerText ?? ''}` : prompt.promptText}
+                >
+                  <div className="prompts-item-number flex justify-end text-[var(--nim-text-faint)] text-[11px] font-semibold min-w-8 text-right pt-0.5">
+                    {kind === 'prompt' ? (
+                      `#${prompt.promptNumber ?? prompt.id}`
+                    ) : kind === 'answer' ? (
+                      <MaterialSymbol icon="help" size={14} className="text-[var(--nim-primary)]" />
+                    ) : (
+                      <MaterialSymbol icon="smart_toy" size={14} />
+                    )}
+                  </div>
+                  {kind === 'answer' ? (
+                    <div className="prompts-item-text flex-1 min-w-0 text-[13px] leading-snug">
+                      <div className="prompts-item-question text-[var(--nim-text-faint)] text-[11px] truncate">{prompt.promptText}</div>
+                      <div className="prompts-item-answer-text text-[var(--nim-text)] overflow-hidden text-ellipsis line-clamp-2">
+                        {truncatePrompt(prompt.answerText ?? '')}
+                      </div>
+                    </div>
+                  ) : kind === 'agentPrompt' ? (
+                    <div className="prompts-item-text flex-1 min-w-0 text-[13px] leading-snug">
+                      <div className="text-[var(--nim-text-faint)] text-[11px]">From another session</div>
+                      <div className="text-[var(--nim-text-muted)] italic overflow-hidden text-ellipsis line-clamp-2">
+                        {truncatePrompt(prompt.promptText)}
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="prompts-item-text flex-1 text-[var(--nim-text)] text-[13px] leading-snug overflow-hidden text-ellipsis line-clamp-2">
+                      {truncatePrompt(prompt.promptText)}
+                    </div>
+                  )}
+                  <div className="prompts-item-timestamp text-[var(--nim-text-faint)] text-[11px] whitespace-nowrap pt-0.5">
+                    {formatShortTime(prompt.timestamp)}
+                  </div>
+                </li>
+              );
+            })}
           </ul>
         ) : (
           <div className="prompts-empty py-6 px-4 text-center text-[var(--nim-text-faint)] text-[13px]">No prompts in this session</div>
@@ -123,7 +155,7 @@ export const PromptsMenuButton: React.FC<PromptsMenuButtonProps> = ({
         className={buttonClassName || 'floating-transcript-button pointer-events-auto w-9 h-9 rounded-md border border-[var(--nim-border)] bg-[var(--nim-bg)] text-[var(--nim-text)] cursor-pointer flex items-center justify-center transition-all relative shadow-sm hover:bg-[var(--nim-bg-tertiary)] active:scale-95'}
         aria-label="Prompts Menu"
         aria-expanded={showMenu}
-        title="Show prompts in this session"
+        title="Show prompts and answers in this session"
         {...getReferenceProps({
           onClick: () => setShowMenu(open => !open),
         })}
@@ -133,8 +165,8 @@ export const PromptsMenuButton: React.FC<PromptsMenuButtonProps> = ({
           className="icon table-of-contents w-5 h-5 bg-contain bg-no-repeat dark:invert"
           style={{ backgroundImage: `url(${tableOfContentsIconUrl})` }}
         />
-        {prompts.length > 0 && (
-          <span className="prompts-badge absolute -top-1 -right-1 bg-[var(--nim-primary)] text-white text-[10px] font-semibold px-1.5 py-0.5 rounded-full min-w-[18px] text-center leading-none shadow-sm">{prompts.length}</span>
+        {ownPromptCount > 0 && (
+          <span className="prompts-badge absolute -top-1 -right-1 bg-[var(--nim-primary)] text-white text-[10px] font-semibold px-1.5 py-0.5 rounded-full min-w-[18px] text-center leading-none shadow-sm">{ownPromptCount}</span>
         )}
       </button>
       {dropdownContent}
