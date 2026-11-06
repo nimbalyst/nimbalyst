@@ -46,8 +46,12 @@ import {
   loadTerminals,
   terminalListAtom,
   terminalListWorkspaceAtom,
+  terminalPanelStateAtomFamily,
   terminalPanelVisibleAtom,
+  openTerminalPanelAtom,
+  loadTerminalPanelState,
 } from '../../../store/atoms/terminals';
+import { activeWorkspacePathAtom } from '../../../store/atoms/openProjects';
 
 function terminalInstance(id: string, cwd: string) {
   return {
@@ -85,7 +89,9 @@ beforeEach(() => {
   store.set(terminalListAtom, []);
   store.set(terminalListWorkspaceAtom, undefined);
   store.set(activeTerminalIdAtom, undefined);
-  store.set(terminalPanelVisibleAtom, true);
+  for (const workspacePath of ['/proj-a', '/proj-b']) {
+    store.set(terminalPanelStateAtomFamily(workspacePath), { visible: true, height: 300, hydrated: true });
+  }
 
   (window as unknown as { electronAPI: unknown }).electronAPI = {
     on: vi.fn(() => () => {}),
@@ -98,6 +104,7 @@ beforeEach(() => {
           })
       ),
       setPanelVisible: vi.fn(),
+      getPanelState: vi.fn(async () => ({ panelVisible: false, panelHeight: 300 })),
     },
   };
 });
@@ -153,5 +160,33 @@ describe('loadTerminals when answers arrive out of order', () => {
     expect(store.get(terminalListWorkspaceAtom)).toBe('/proj-b');
     expect(store.get(terminalListAtom).map((t) => t.id)).toEqual(['b1']);
     expect(store.get(activeTerminalIdAtom)).toBe('b1');
+  });
+});
+
+describe('terminal panel visibility in a multi-project window', () => {
+  beforeEach(() => {
+    for (const workspacePath of ['/proj-a', '/proj-b']) {
+      terminalPanelStateAtomFamily.remove(workspacePath);
+    }
+  });
+
+  it('keeps the terminal panel open in one project without opening it in another', async () => {
+    const api = (window as unknown as { electronAPI: { terminal: { setPanelVisible: ReturnType<typeof vi.fn> } } }).electronAPI;
+    act(() => store.set(activeWorkspacePathAtom, '/proj-a'));
+    await act(() => loadTerminalPanelState('/proj-a'));
+    const view = render(ui('/proj-a'));
+    act(() => store.set(openTerminalPanelAtom));
+    expect(api.terminal.setPanelVisible).toHaveBeenCalledWith('/proj-a', true);
+
+    act(() => store.set(activeWorkspacePathAtom, '/proj-b'));
+    view.rerender(ui('/proj-b'));
+    await act(() => loadTerminalPanelState('/proj-b'));
+    expect(api.terminal.setPanelVisible).not.toHaveBeenCalledWith('/proj-b', true);
+    expect(store.get(terminalPanelVisibleAtom)).toBe(false);
+
+    act(() => store.set(activeWorkspacePathAtom, '/proj-a'));
+    view.rerender(ui('/proj-a'));
+    await act(() => loadTerminalPanelState('/proj-a'));
+    expect(store.get(terminalPanelVisibleAtom)).toBe(true);
   });
 });

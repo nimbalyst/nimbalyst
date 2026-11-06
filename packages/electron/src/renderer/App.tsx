@@ -317,7 +317,6 @@ import {
   closeTerminalPanelAtom,
   openTerminalPanelAtom,
   loadTerminalPanelState,
-  resetTerminalPanelHydration,
 } from './store/atoms/terminals';
 
 interface TitleBarGitActionState {
@@ -1080,7 +1079,6 @@ export default function App() {
   // Load terminal panel state from terminal store into Jotai atoms
   useEffect(() => {
     if (!workspacePath) return;
-    resetTerminalPanelHydration();
     void loadTerminalPanelState(workspacePath);
   }, [workspacePath]);
 
