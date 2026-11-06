@@ -43,6 +43,7 @@ import { hasVoiceAudioSignal } from '../../utils/voiceAudioActivity';
 import { formatGitCommitProposalForVoice } from './voiceInteractivePrompt';
 import { activeSessionIdAtom, agentSessionAttentionAtom, sessionRegistryAtom, sessionHasPendingInteractivePromptAtom, sessionPendingPromptsAtom, sessionProcessingAtom, respondToPromptAtom, refreshSessionListAtom } from '../atoms/sessions';
 import { windowModeAtom } from '../atoms/windowMode';
+import { activeWorkspacePathAtom } from '../atoms/openProjects';
 import { buildCommitPrompt } from '@nimbalyst/runtime/ui/AgentTranscript/utils/commitPromptBuilder';
 import {
   VoiceEventQueue,
@@ -62,6 +63,66 @@ let _onLinkedSessionChanged: ((newSessionId: string) => void) | null = null;
  */
 export function onLinkedSessionChanged(callback: ((newSessionId: string) => void) | null): void {
   _onLinkedSessionChanged = callback;
+}
+
+export interface VoiceUiContextRequest {
+  workspacePath: string;
+  resultChannel: string;
+}
+
+/**
+ * Answer the voice agent's "what is on screen" tool. Every value read here
+ * (window mode, active session, active file) belongs to the rail project the
+ * window is showing, so the answer is refused when that is not the project
+ * voice runs in: reporting another project's session as the voice project's
+ * would send the agent's next prompt to the wrong project.
+ */
+export function buildVoiceUiContextResponse(payload: VoiceUiContextRequest): {
+  workspacePath: string;
+  error?: string;
+  context?: unknown;
+} {
+  if (store.get(voiceActiveSessionIdAtom) === null) {
+    return { workspacePath: payload.workspacePath, error: 'Voice mode is not active.' };
+  }
+  if (!payload.workspacePath || payload.workspacePath !== store.get(voiceWorkspacePathAtom)) {
+    return {
+      workspacePath: payload.workspacePath,
+      error: 'The UI context request does not match the active voice workspace.',
+    };
+  }
+  const shownWorkspacePath = store.get(activeWorkspacePathAtom);
+  if (shownWorkspacePath !== payload.workspacePath) {
+    return {
+      workspacePath: payload.workspacePath,
+      error: `The window is showing another project (${shownWorkspacePath ?? 'none'}), not the project voice runs in. Ask the user to switch back to read its screen.`,
+    };
+  }
+
+  const activeSessionId = store.get(activeSessionIdAtom);
+  const sessionMeta = activeSessionId
+    ? store.get(sessionRegistryAtom).get(activeSessionId)
+    : undefined;
+  const sessionStatus = activeSessionId && store.get(sessionHasPendingInteractivePromptAtom(activeSessionId))
+    ? 'waiting_for_input'
+    : activeSessionId && store.get(sessionProcessingAtom(activeSessionId))
+      ? 'running'
+      : 'idle';
+
+  return {
+    workspacePath: payload.workspacePath,
+    context: {
+      activeView: store.get(windowModeAtom),
+      selectedFilePath: getCurrentVoiceFilePath(),
+      activeSession: activeSessionId
+        ? {
+            id: activeSessionId,
+            title: sessionMeta?.title || 'Untitled',
+            status: sessionStatus,
+          }
+        : null,
+    },
+  };
 }
 
 export function getCurrentVoiceFilePath(): string | null {
@@ -835,50 +896,8 @@ export function initVoiceModeListeners(): () => void {
   // Current UI Context (voice tool request/response)
   // =========================================================================
   cleanups.push(
-    window.electronAPI.on('voice-mode:request-ui-context', (payload: {
-      workspacePath: string;
-      resultChannel: string;
-    }) => {
-      const activeWorkspacePath = store.get(voiceWorkspacePathAtom);
-      if (!isVoiceActive()) {
-        window.electronAPI.send(payload.resultChannel, {
-          workspacePath: payload.workspacePath,
-          error: 'Voice mode is not active.',
-        });
-        return;
-      }
-      if (!payload.workspacePath || payload.workspacePath !== activeWorkspacePath) {
-        window.electronAPI.send(payload.resultChannel, {
-          workspacePath: payload.workspacePath,
-          error: 'The UI context request does not match the active voice workspace.',
-        });
-        return;
-      }
-
-      const activeSessionId = store.get(activeSessionIdAtom);
-      const sessionMeta = activeSessionId
-        ? store.get(sessionRegistryAtom).get(activeSessionId)
-        : undefined;
-      const sessionStatus = activeSessionId && store.get(sessionHasPendingInteractivePromptAtom(activeSessionId))
-        ? 'waiting_for_input'
-        : activeSessionId && store.get(sessionProcessingAtom(activeSessionId))
-          ? 'running'
-          : 'idle';
-
-      window.electronAPI.send(payload.resultChannel, {
-        workspacePath: payload.workspacePath,
-        context: {
-          activeView: store.get(windowModeAtom),
-          selectedFilePath: getCurrentVoiceFilePath(),
-          activeSession: activeSessionId
-            ? {
-                id: activeSessionId,
-                title: sessionMeta?.title || 'Untitled',
-                status: sessionStatus,
-              }
-            : null,
-        },
-      });
+    window.electronAPI.on('voice-mode:request-ui-context', (payload: VoiceUiContextRequest) => {
+      window.electronAPI.send(payload.resultChannel, buildVoiceUiContextResponse(payload));
     })
   );
 

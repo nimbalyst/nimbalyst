@@ -23,7 +23,7 @@ import {
     getMostRecentlyFocusedWorkspaceWindow,
 } from './window/WindowManager';
 import { beginStartupActivation, finishStartupWindowCreation } from './window/StartupActivation';
-import { loadFileIntoWindow, reloadIntoWindowWithFile } from './file/FileOperations';
+import { loadFileIntoWindow, loadFileIntoWorkspaceWindow, reloadIntoWindowWithFile } from './file/FileOperations';
 import { createApplicationMenu } from './menu/ApplicationMenu';
 import { updateNativeTheme, updateWindowTitleBars } from './theme/ThemeManager';
 import { restoreSessionState, saveSessionState } from './session/SessionState';
@@ -1362,35 +1362,34 @@ function openLaunchTarget(target: LaunchTarget): boolean {
 
 // Helper function to open a file with workspace detection
 async function openFileWithWorkspaceDetection(filePath: string): Promise<void> {
+    // Detect which workspace this file belongs to
+    const workspacePath = detectFileWorkspace(filePath);
+
+    // The window whose rail holds the project may be showing another rail
+    // project; it switches to the file's project before the file opens. This
+    // also covers a file that window already has open.
+    if (workspacePath && loadFileIntoWorkspaceWindow(workspacePath, filePath)) {
+        return;
+    }
+
     // Check if file is already open in a window
     if (reloadIntoWindowWithFile(filePath)) {
         return;
     }
 
-    // Detect which workspace this file belongs to
-    const workspacePath = detectFileWorkspace(filePath);
-
     if (workspacePath) {
         // File belongs to a known workspace
         logger.main.info(`File belongs to workspace: ${workspacePath}`);
 
-        // Find or create workspace window
-        let workspaceWindow = findWindowByWorkspace(workspacePath);
-
-        if (workspaceWindow) {
-            // Workspace window exists, use it - no need to focus, let macOS handle window ordering
-            await loadFileIntoWindow(workspaceWindow, filePath);
-        } else {
-            // Create new workspace window for this workspace
-            workspaceWindow = createWindow(false, true, workspacePath, undefined, {
-                startupReveal: true,
-                startupFrontmost: true,
-            });
-            updateTrackerSchemaWorkspace(workspacePath);
-            // createWindow reveals the window itself — inactive while this runs
-            // during launch, activating for a file opened later.
-            loadFileIntoWindow(workspaceWindow, filePath);
-        }
+        // No open window holds the project: create a workspace window for it
+        const workspaceWindow = createWindow(false, true, workspacePath, undefined, {
+            startupReveal: true,
+            startupFrontmost: true,
+        });
+        updateTrackerSchemaWorkspace(workspacePath);
+        // createWindow reveals the window itself — inactive while this runs
+        // during launch, activating for a file opened later.
+        loadFileIntoWindow(workspaceWindow, filePath);
     } else {
         // File is not in a known workspace - open it in the frontmost workspace window as an external file
         logger.main.info(`File not in known workspace, opening as external file in frontmost window`);

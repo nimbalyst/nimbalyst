@@ -8,7 +8,12 @@ import {
   windowReferencesWorkspace,
   anyWindowReferencesWorkspace,
   syncRepresentedFilename,
+  windows,
+  listWindowsWithProject,
+  resolveRequestWorkspacePath,
+  resolveProjectForFile,
 } from '../windowState';
+import type { BrowserWindow } from 'electron';
 import type { WindowState } from '../../types';
 
 function makeState(partial: Partial<WindowState> = {}): WindowState {
@@ -217,6 +222,91 @@ describe('windowState helpers', () => {
     it('returns false when the only references are excluded', () => {
       windowStates.set(1, makeState({ workspacePath: '/ws/lone' }));
       expect(anyWindowReferencesWorkspace('/ws/lone', 1)).toBe(false);
+    });
+  });
+
+  describe('listWindowsWithProject', () => {
+    function fakeWindow(destroyed = false): BrowserWindow {
+      return { isDestroyed: () => destroyed } as unknown as BrowserWindow;
+    }
+
+    afterEach(() => {
+      windows.clear();
+    });
+
+    it('includes a window whose non-first rail project matches', () => {
+      const railWindow = fakeWindow();
+      const otherWindow = fakeWindow();
+      windows.set(1, railWindow);
+      windows.set(2, otherWindow);
+      windowStates.set(1, makeState({ workspacePath: '/ws/a', additionalWorkspacePaths: ['/ws/b'] }));
+      windowStates.set(2, makeState({ workspacePath: '/ws/c' }));
+
+      expect(listWindowsWithProject('/ws/b')).toEqual([railWindow]);
+      expect(listWindowsWithProject('/ws/a')).toEqual([railWindow]);
+    });
+
+    it('matches through a trailing separator and skips destroyed windows', () => {
+      windows.set(1, fakeWindow(true));
+      windows.set(2, fakeWindow());
+      windowStates.set(1, makeState({ workspacePath: '/ws/a' }));
+      windowStates.set(2, makeState({ workspacePath: '/ws/x', additionalWorkspacePaths: ['/ws/a'] }));
+
+      expect(listWindowsWithProject('/ws/a/')).toEqual([windows.get(2)]);
+    });
+
+    it('does not match an attached folder or an unrelated window', () => {
+      windows.set(1, fakeWindow());
+      windowStates.set(1, makeState({ workspacePath: '/ws/a' }));
+      expect(listWindowsWithProject('/ws/zzz')).toEqual([]);
+    });
+  });
+
+  describe('resolveRequestWorkspacePath', () => {
+    const railState = () => makeState({
+      workspacePath: '/ws/a',
+      additionalWorkspacePaths: ['/ws/b'],
+      activeWorkspacePath: '/ws/b',
+    });
+
+    it('returns the active rail project, not the first one, when nothing is named', () => {
+      expect(resolveRequestWorkspacePath(railState())).toBe('/ws/b');
+    });
+
+    it('honors a named rail project even when another is active', () => {
+      expect(resolveRequestWorkspacePath(railState(), '/ws/a')).toBe('/ws/a');
+    });
+
+    it('refuses a named project the window does not have open', () => {
+      expect(resolveRequestWorkspacePath(railState(), '/ws/other')).toBeNull();
+    });
+
+    it('works for any window mode and returns null without a state', () => {
+      expect(resolveRequestWorkspacePath(makeState({ mode: 'document', workspacePath: '/ws/a' }))).toBe('/ws/a');
+      expect(resolveRequestWorkspacePath(undefined)).toBeNull();
+    });
+  });
+
+  describe('resolveProjectForFile', () => {
+    it('returns the rail project that contains the file, not the first project', () => {
+      const state = makeState({
+        workspacePath: '/ws/a',
+        additionalWorkspacePaths: ['/ws/b'],
+        activeWorkspacePath: '/ws/a',
+      });
+      expect(resolveProjectForFile(state, '/ws/b/docs/plan.md')).toBe('/ws/b');
+      expect(resolveProjectForFile(state, '/ws/a/readme.md')).toBe('/ws/a');
+    });
+
+    it('prefers the deepest project when rail projects nest', () => {
+      const state = makeState({ workspacePath: '/ws/mono', additionalWorkspacePaths: ['/ws/mono/pkg'] });
+      expect(resolveProjectForFile(state, '/ws/mono/pkg/src/x.ts')).toBe('/ws/mono/pkg');
+    });
+
+    it('does not treat a sibling with a shared prefix as containing the file', () => {
+      const state = makeState({ workspacePath: '/ws/snake', additionalWorkspacePaths: [] });
+      expect(resolveProjectForFile(state, '/ws/snake_worktrees/x.md')).toBeNull();
+      expect(resolveProjectForFile(undefined, '/ws/snake/x.md')).toBeNull();
     });
   });
 

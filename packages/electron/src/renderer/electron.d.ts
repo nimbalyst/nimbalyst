@@ -650,7 +650,7 @@ interface ElectronAPI {
   onMcpRenameSharedItem: (callback: (data: { itemId: string, kind: 'doc' | 'folder', newName: string, resultChannel: string }) => void) => () => void;
   onMcpDeleteSharedItem: (callback: (data: { itemId: string, kind: 'doc' | 'folder', resultChannel: string }) => void) => () => void;
   sendMcpCollabIndexResult: (resultChannel: string, result: { success: boolean; error?: string; [key: string]: unknown }) => void;
-  onMcpGetResourceSharingStatus: (callback: (data: { sourceId: string; resultChannel: string }) => void) => () => void;
+  onMcpGetResourceSharingStatus: (callback: (data: { sourceId: string; workspacePath?: string; resultChannel: string }) => void) => () => void;
   sendMcpCollabReadResult: (resultChannel: string, result: { success: boolean; result?: unknown; error?: string }) => void;
   updateMcpDocumentState: (state: any) => void;
   clearMcpDocumentState: () => Promise<void>;

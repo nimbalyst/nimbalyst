@@ -20,6 +20,8 @@ const mocks = vi.hoisted(() => ({
   queuePrompt: vi.fn(),
   sessionRepoCreate: vi.fn(async () => {}),
   sessionRepoGet: vi.fn(),
+  windowStates: new Map<number, { workspacePath?: string }>(),
+  allWindows: [{ id: 1, isDestroyed: () => false }] as Array<{ id: number; isDestroyed: () => boolean }>,
 }));
 
 vi.mock('../../../utils/logger', () => ({ logger: { main: mocks.logger } }));
@@ -27,7 +29,7 @@ vi.mock('../../../utils/store', () => ({ getDefaultAIModel: () => 'claude-code:o
 vi.mock('../../../window/WindowManager', () => ({
   createWindow: vi.fn(),
   findWindowByWorkspace: mocks.findWindowByWorkspace,
-  windowStates: new Map(),
+  windowStates: mocks.windowStates,
 }));
 vi.mock('../sessionHostAttribution', () => ({
   getLocalHostDeviceId: () => 'host-1',
@@ -35,7 +37,7 @@ vi.mock('../sessionHostAttribution', () => ({
   stampSessionHost: mocks.stampSessionHost,
 }));
 vi.mock('electron', () => ({
-  BrowserWindow: { getAllWindows: () => [{ isDestroyed: () => false }] },
+  BrowserWindow: { getAllWindows: () => mocks.allWindows },
 }));
 vi.mock('@nimbalyst/runtime/storage/repositories/AISessionsRepository', () => ({
   AISessionsRepository: { get: mocks.sessionRepoGet, create: mocks.sessionRepoCreate, updateMetadata: vi.fn(async () => {}) },
@@ -157,6 +159,27 @@ describe('mobile create-session request handling', () => {
       success: true,
       sessionId: 'session-1',
     });
+  });
+
+  // projectId is a workspace path. A window whose project merely contains
+  // that string, or shares its folder name, is another project.
+  it('never creates the session in a different project whose path contains the projectId', async () => {
+    mocks.findWindowByWorkspace.mockReturnValue(undefined);
+    mocks.windowStates.set(1, { workspacePath: '/workspace-old' });
+    const { provider, captured } = fakeProvider(vi.fn(async () => ({ published: true, publishedSessionIds: ['session-1'] })));
+    registerMobileCreateSessionHandler(provider as never, requestContext());
+
+    try {
+      await captured.session!({ requestId: 'near-miss', projectId: '/workspace' });
+    } finally {
+      mocks.windowStates.clear();
+    }
+
+    expect(mocks.createSession).not.toHaveBeenCalled();
+    expect(provider.sendCreateSessionResponse).toHaveBeenCalledWith(expect.objectContaining({
+      requestId: 'near-miss',
+      success: false,
+    }));
   });
 
   it('does not acknowledge a socket send that the server never indexed', async () => {

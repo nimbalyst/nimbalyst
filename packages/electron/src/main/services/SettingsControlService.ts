@@ -59,7 +59,8 @@ import { FeatureUsageService, FEATURES } from './FeatureUsageService';
 import { SessionNamingService } from './SessionNamingService';
 import { setTrackerIssueKeyPrefix } from './TrackerSyncManager';
 import { updateNativeTheme, updateWindowTitleBars } from '../theme/ThemeManager';
-import { createWindow, findWindowByWorkspace } from '../window/WindowManager';
+import { createWindow } from '../window/WindowManager';
+import { reuseOpenWorkspaceWindow } from '../window/reuseOpenWorkspaceWindow';
 import { getWorkspaceWindowState } from '../utils/store';
 import { getWorkspaceSettingsOverview } from './workspaceSettingsOverview';
 import { transcriptBackfill } from './sync/transcriptBackfill';
@@ -278,11 +279,8 @@ export class SettingsControlService {
   }
 
   private openWorkspaceInternal(workspacePath: string): void {
-    const existing = findWindowByWorkspace(workspacePath);
-    if (existing && !existing.isDestroyed()) {
-      existing.focus();
-      return;
-    }
+    // Switches the window to the project when it is showing another rail project.
+    if (reuseOpenWorkspaceWindow(workspacePath)) return;
     const savedState = getWorkspaceWindowState(workspacePath);
     createWindow(false, true, workspacePath, savedState?.bounds);
   }

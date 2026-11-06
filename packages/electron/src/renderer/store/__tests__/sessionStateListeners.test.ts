@@ -133,6 +133,7 @@ afterEach(() => {
   store.set(activeWorkspacePathAtom, null);
   store.set(sessionListWorkspaceAtom, null);
   store.set(openProjectsAtom, []);
+  store.set(multiProjectModeAtom, false);
   store.set(workstreamStatesLoadedAtom, false);
   vi.unstubAllGlobals();
 });
@@ -141,6 +142,9 @@ describe('notification click navigation', () => {
   it('switches to the immutable workspace carried by the notification', async () => {
     const sid = uniqueSessionId('notification-workspace');
     const targetWorkspace = `/ws/notification-target-${sid}`;
+    // Switching this window to the notification's project is rail behavior;
+    // with the rail off main routes the click to that project's own window.
+    store.set(multiProjectModeAtom, true);
     initWorkstreamState(targetWorkspace);
     store.set(activeWorkspacePathAtom, '/ws/current-project');
     store.set(sessionListWorkspaceAtom, '/ws/current-project');

@@ -2,7 +2,7 @@ import type { BrowserWindow } from 'electron';
 import * as fs from 'fs';
 import { logger } from '../../utils/logger';
 import { getDefaultAIModel } from '../../utils/store';
-import { createWindow, findWindowByWorkspace, windowStates } from '../../window/WindowManager';
+import { createWindow, findWindowByWorkspace } from '../../window/WindowManager';
 import { getLocalHostDeviceId, isTargetedAtAnotherDevice, stampSessionHost } from './sessionHostAttribution';
 import type { SessionManager } from '@nimbalyst/runtime/ai/server';
 import type { IndexPublishOutcome, SessionIndexData, SyncProvider } from '@nimbalyst/runtime/sync';
@@ -196,24 +196,13 @@ export function registerMobileCreateSessionHandler(
       let targetWindow: BrowserWindow | undefined;
       let workspacePath: string | undefined;
 
-      // Try to find a window with this workspace using findWindowByWorkspace
+      // projectId is the workspace path, and the lookup is rail-aware. There is
+      // no name or substring fallback: a window whose project shares a folder
+      // name or contains the path is a different project.
       const matchedWindow = findWindowByWorkspace(request.projectId);
       if (matchedWindow) {
         targetWindow = matchedWindow;
         workspacePath = request.projectId;
-      } else {
-        // Try to find by project name (last path component)
-        for (const win of windows) {
-          const state = windowStates.get(win.id);
-          if (state?.workspacePath) {
-            const pathBasename = state.workspacePath.split(/[\\/]/).pop();
-            if (pathBasename === request.projectId || state.workspacePath.includes(request.projectId)) {
-              targetWindow = win;
-              workspacePath = state.workspacePath;
-              break;
-            }
-          }
-        }
       }
 
       // If no matching window found, try to open the workspace automatically
@@ -347,14 +336,6 @@ export function registerMobileCreateSessionHandler(
             workspacePath
           });
         }
-      }
-
-      // Notify the window to show the new session
-      if (targetWindow && !targetWindow.isDestroyed()) {
-        targetWindow.webContents.send('ai:sessionCreatedFromMobile', {
-          sessionId: session.id,
-          requestId: request.requestId
-        });
       }
     } catch (error) {
       logger.main.error('[MobileSync] Failed to create session from mobile:', error);

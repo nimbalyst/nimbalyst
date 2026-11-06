@@ -61,6 +61,10 @@ vi.mock('../../window/WindowManager', () => ({
   findWindowByWorkspace: vi.fn(() => null),
 }));
 
+vi.mock('../../window/reuseOpenWorkspaceWindow', () => ({
+  reuseOpenWorkspaceWindow: vi.fn(() => null),
+}));
+
 vi.mock('../../utils/logger', () => ({
   logger: {
     store: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
@@ -89,6 +93,8 @@ import {
   SettingsControlService,
 } from '../SettingsControlService';
 import { getWorkspaceState, type WorkspaceState } from '../../utils/store';
+import { createWindow, findWindowByWorkspace } from '../../window/WindowManager';
+import { reuseOpenWorkspaceWindow } from '../../window/reuseOpenWorkspaceWindow';
 
 describe('SettingsControlService permission diagnostics', () => {
   it.each([
@@ -313,5 +319,21 @@ describe('SettingsControlService.toggleFeature', () => {
     expect(result.requiresUserAction).toBeUndefined();
     expect(result.message).toContain('session-fleet');
     expect(setAppSetting).not.toHaveBeenCalled();
+  });
+});
+
+describe('SettingsControlService.openWorkspace', () => {
+  // The window holding the project in its rail may be showing another rail
+  // project; focusing it alone leaves the wrong project on screen.
+  it('switches the window that holds the project instead of only focusing it', async () => {
+    const focus = vi.fn();
+    vi.mocked(findWindowByWorkspace).mockReturnValue({ isDestroyed: () => false, focus } as never);
+    vi.mocked(reuseOpenWorkspaceWindow).mockReturnValue({ matchedPath: process.cwd() } as never);
+
+    const result = await SettingsControlService.getInstance().openWorkspace('session-open', { workspacePath: process.cwd() });
+
+    expect(result.ok).toBe(true);
+    expect(reuseOpenWorkspaceWindow).toHaveBeenCalledWith(process.cwd());
+    expect(createWindow).not.toHaveBeenCalled();
   });
 });

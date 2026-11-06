@@ -454,9 +454,9 @@ export const AgentMode = forwardRef<AgentModeRef, AgentModeProps>(function Agent
 
   // React to `blitz:analysis-created` events broadcast by main when all blitz
   // children complete. The IPC event is handled centrally in
-  // store/listeners/blitzListeners.ts which writes blitzAnalysisCreatedAtom;
-  // we register the analysis session and trigger queue processing only for
-  // events matching our workspacePath, skipping the initial-mount value.
+  // store/listeners/blitzListeners.ts which writes blitzAnalysisCreatedAtom
+  // and starts the analysis; we register the analysis session only for events
+  // matching our workspacePath, skipping the initial-mount value.
   const blitzAnalysisCreated = useAtomValue(blitzAnalysisCreatedAtom);
   const initialBlitzAnalysisCreatedRef = useRef(blitzAnalysisCreated);
   useEffect(() => {
@@ -483,12 +483,7 @@ export const AgentMode = forwardRef<AgentModeRef, AgentModeProps>(function Agent
       uncommittedCount: 0,
     });
 
-    // Trigger queue processing to start the analysis
-    window.electronAPI.invoke('ai:triggerQueueProcessing', data.analysisSessionId, workspacePath)
-      .catch((error: Error) => {
-        console.error('[AgentMode] Failed to trigger analysis session queue processing:', error);
-      });
-
+    // blitzListeners starts the analysis, also for a non-active rail project.
     refreshSessions();
   }, [blitzAnalysisCreated, workspacePath, addSession, refreshSessions]);
 

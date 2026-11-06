@@ -5,11 +5,12 @@ import { store } from '@nimbalyst/runtime/store';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { initAgentModeLayout } from '../agentMode';
-import { activeWorkspacePathAtom, openProjectsAtom } from '../openProjects';
+import { activeWorkspacePathAtom, multiProjectModeAtom, openProjectsAtom } from '../openProjects';
 import { selectedWorkstreamAtom } from '../sessions';
 import { initWorkstreamState, workstreamStatesLoadedAtom } from '../workstreamState';
 import { navigateToNotificationSession } from '../../actions/sessionNotificationNavigation';
 import { initTrayListeners } from '../../listeners/trayListeners';
+import { openSessionInTabActionAtom } from '../../actions/sessionHistoryActions';
 
 /**
  * Switching the rail to another project runs `initAgentModeLayout` for it,
@@ -41,6 +42,11 @@ function installWindow(
             sessions: ids.map((id) => ({ id, title: id, createdAt: 0, updatedAt: 0 })),
           };
         }
+        if (channel === 'sessions:get') {
+          const owner = Object.keys(sessionsByProject)
+            .find((project) => sessionsByProject[project].includes(args[0] as string));
+          return { success: true, session: owner ? { id: args[0], workspacePath: owner } : null };
+        }
         if (channel === 'workspace:get-state') return getState(args[0] as string);
         return { success: true };
       }),
@@ -65,6 +71,7 @@ describe('initAgentModeLayout selection restore', () => {
 
   beforeEach(() => {
     errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    store.set(multiProjectModeAtom, true);
     store.set(openProjectsAtom, [openProject(PROJECT_A), openProject(PROJECT_B)]);
     store.set(activeWorkspacePathAtom, PROJECT_B);
     initWorkstreamState(PROJECT_B);
@@ -213,6 +220,92 @@ describe('initAgentModeLayout selection restore', () => {
     } finally {
       stop();
     }
+  });
+
+  // The user clicks project B in the rail while the notification for session-a
+  // is still loading project A's session list.
+  it('drops a notification navigation when the user switches projects before it lands', async () => {
+    // A cold window: the navigation waits for the persisted workstream states.
+    store.set(workstreamStatesLoadedAtom, false);
+    const restore = heldRestore('session-a-old');
+    let stateRequested = false;
+    installWindow(
+      { [PROJECT_A]: ['session-a'], [PROJECT_B]: ['session-b'] },
+      (workspacePath) => {
+        if (workspacePath !== PROJECT_A) return Promise.resolve({});
+        stateRequested = true;
+        return restore.persisted;
+      },
+    );
+    store.set(selectedWorkstreamAtom(PROJECT_B), { type: 'session', id: 'session-b' });
+
+    const navigation = navigateToNotificationSession({
+      sessionId: 'session-a', workspacePath: PROJECT_A, sourceLabel: 'Session A',
+    });
+    await vi.waitFor(() => expect(stateRequested).toBe(true));
+    expect(store.get(activeWorkspacePathAtom)).toBe(PROJECT_A);
+    store.set(activeWorkspacePathAtom, PROJECT_B);
+    restore.answer();
+
+    expect(await navigation).toBe(false);
+    expect(store.get(activeWorkspacePathAtom)).toBe(PROJECT_B);
+    expect(store.get(selectedWorkstreamAtom(PROJECT_B))).toEqual({ type: 'session', id: 'session-b' });
+  });
+
+  // With the rail off this window renders only project B. Switching it to A
+  // would point main and every workspace-scoped operation at A while B stays
+  // on screen, so A's window opens the session instead.
+  it('with the rail off, hands a session from another project to that project\'s window', async () => {
+    store.set(multiProjectModeAtom, false);
+    installWindow({ [PROJECT_A]: ['session-a'], [PROJECT_B]: ['session-b'] }, async () => ({}));
+    store.set(selectedWorkstreamAtom(PROJECT_B), { type: 'session', id: 'session-b' });
+    const invoke = (window as any).electronAPI.invoke;
+
+    await store.set(openSessionInTabActionAtom, 'session-a');
+
+    expect(invoke).toHaveBeenCalledWith('notifications:navigate-to-session', {
+      sessionId: 'session-a', workspacePath: PROJECT_A, sourceLabel: '',
+    });
+    expect(invoke).not.toHaveBeenCalledWith('workspace:register-additional', expect.anything());
+    expect(store.get(activeWorkspacePathAtom)).toBe(PROJECT_B);
+    expect(store.get(selectedWorkstreamAtom(PROJECT_A))).toEqual({ type: 'session', id: 'session-a-old' });
+    expect(store.get(selectedWorkstreamAtom(PROJECT_B))).toEqual({ type: 'session', id: 'session-b' });
+  });
+
+  // The user switches projects while the session list for the click is loading.
+  it('does not select a session under a project the user switched to mid-open', async () => {
+    installWindow({ [PROJECT_A]: ['session-a'], [PROJECT_B]: ['session-b'] }, async () => ({}));
+    store.set(selectedWorkstreamAtom(PROJECT_B), { type: 'session', id: 'session-b' });
+    const invoke = (window as any).electronAPI.invoke;
+    const answer = invoke.getMockImplementation();
+    let release: () => void = () => {};
+    const held = new Promise<void>((resolve) => { release = resolve; });
+    let listing = false;
+    invoke.mockImplementation(async (channel: string, ...args: unknown[]) => {
+      if (channel === 'sessions:list' && args[0] === PROJECT_B && !listing) { listing = true; await held; }
+      return answer(channel, ...args);
+    });
+
+    const opening = store.set(openSessionInTabActionAtom, 'session-b');
+    await vi.waitFor(() => expect(listing).toBe(true));
+    store.set(activeWorkspacePathAtom, PROJECT_A);
+    release();
+    await opening;
+
+    expect(store.get(selectedWorkstreamAtom(PROJECT_A))).toEqual({ type: 'session', id: 'session-a-old' });
+  });
+
+  // A session chip, a comment's agent link, or a quick-open pick names only a
+  // session id; the session can belong to another rail project.
+  it('opens a session id from another rail project in that project, not under the active one', async () => {
+    installWindow({ [PROJECT_A]: ['session-a'], [PROJECT_B]: ['session-b'] }, async () => ({}));
+    store.set(selectedWorkstreamAtom(PROJECT_B), { type: 'session', id: 'session-b' });
+
+    await store.set(openSessionInTabActionAtom, 'session-a');
+
+    expect(store.get(activeWorkspacePathAtom)).toBe(PROJECT_A);
+    expect(store.get(selectedWorkstreamAtom(PROJECT_A))).toEqual({ type: 'session', id: 'session-a' });
+    expect(store.get(selectedWorkstreamAtom(PROJECT_B))).toEqual({ type: 'session', id: 'session-b' });
   });
 
 });

@@ -56,7 +56,7 @@ async function createHarness() {
     }),
     getWorkspaceWindowState: vi.fn(() => undefined),
     createWindow: vi.fn(),
-    findWindowByWorkspace: vi.fn(() => null),
+    reuseOpenWorkspaceWindow: vi.fn(() => null),
     addToRecentItems: vi.fn(),
     closeWorkspaceManagerWindow: vi.fn(),
     seedTutorialTrackers: vi.fn(async () => [EXAMPLE_BUG]),
@@ -183,22 +183,22 @@ describe("TutorialProjectService", () => {
     expect(harness.dependencies.createWindow).toHaveBeenCalledOnce();
   });
 
-  it("focuses the existing window instead of opening a duplicate when the tutorial is already open", async () => {
+  // The window holding the tutorial in its rail may be showing another rail
+  // project; it has to switch to the tutorial, not only take focus.
+  it("reuses the window that holds the tutorial instead of opening a duplicate when the tutorial is already open", async () => {
     const harness = await createHarness();
     const first = await harness.service.startTutorial();
     if (!first.success) throw new Error(first.error);
 
-    const focus = vi.fn();
     vi.clearAllMocks();
-    vi.mocked(harness.dependencies.findWindowByWorkspace).mockReturnValue({
-      isDestroyed: () => false,
-      focus,
+    vi.mocked(harness.dependencies.reuseOpenWorkspaceWindow).mockReturnValue({
+      matchedPath: first.workspacePath,
     } as never);
 
     const second = await harness.service.startTutorial();
 
     expect(second).toMatchObject({ success: true, reused: true });
-    expect(focus).toHaveBeenCalledOnce();
+    expect(harness.dependencies.reuseOpenWorkspaceWindow).toHaveBeenCalledWith(first.workspacePath);
     expect(harness.dependencies.createWindow).not.toHaveBeenCalled();
   });
 

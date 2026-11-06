@@ -39,7 +39,8 @@ import { initializeSync, shutdownSync, isSyncEnabled, reinitializeSync, getSyncP
 import { shutdownTrackerSync, initializeTrackerSync } from './TrackerSyncManager';
 import { ensureWorkspaceLocalNumbersInBackground } from './tracker/ensureWorkspaceLocalNumbers';
 import { onAuthStateChange } from './StytchAuthService';
-import { windows, windowStates } from '../window/WindowManager';
+import { windows } from '../window/WindowManager';
+import { listOpenWorkspacePaths } from '../window/windowState';
 
 class RepositoryManager {
   private sessionStore: SessionStore | null = null;
@@ -427,16 +428,15 @@ class RepositoryManager {
 
     // Also reinitialize tracker sync for all open workspaces
     // Tracker sync requires a workspace path (for project identity via git remote)
-    for (const state of windowStates.values()) {
-      if (state.workspacePath) {
-        initializeTrackerSync(state.workspacePath).catch(err => {
-          logger.main.error('[RepositoryManager] Failed to initialize tracker sync for workspace:', err);
-        });
-        // Usually a no-op -- the window already swept on open. It matters when
-        // that sweep failed because the database was not up yet: this is the
-        // only later trigger a single-window workspace gets.
-        ensureWorkspaceLocalNumbersInBackground(state.workspacePath);
-      }
+    // Every rail project of every window, not only each window's first one.
+    for (const workspacePath of listOpenWorkspacePaths()) {
+      initializeTrackerSync(workspacePath).catch(err => {
+        logger.main.error('[RepositoryManager] Failed to initialize tracker sync for workspace:', err);
+      });
+      // Usually a no-op -- the window already swept on open. It matters when
+      // that sweep failed because the database was not up yet: this is the
+      // only later trigger a single-window workspace gets.
+      ensureWorkspaceLocalNumbersInBackground(workspacePath);
     }
   }
 

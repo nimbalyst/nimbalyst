@@ -10,7 +10,6 @@
  *
  * Outbound (broadcast from scheduler / MCP tool):
  * - wakeup:changed       (row) -> sent to all renderer windows.
- * - wakeup:focus-session ({ sessionId }) -> sent when user clicks the OS notification.
  */
 
 import { ipcMain, BrowserWindow } from 'electron';

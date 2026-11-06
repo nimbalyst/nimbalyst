@@ -815,8 +815,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   sendMcpCollabIndexResult: (resultChannel: string, result: { success: boolean; error?: string; [key: string]: unknown }) => {
     ipcRenderer.send(resultChannel, result);
   },
-  onMcpGetResourceSharingStatus: (callback: (data: { sourceId: string; resultChannel: string }) => void) => {
-    const handler = (_event: any, data: { sourceId: string; resultChannel: string }) => callback(data);
+  onMcpGetResourceSharingStatus: (callback: (data: { sourceId: string; workspacePath?: string; resultChannel: string }) => void) => {
+    const handler = (_event: any, data: { sourceId: string; workspacePath?: string; resultChannel: string }) => callback(data);
     ipcRenderer.on('mcp:getResourceSharingStatus', handler);
     return () => ipcRenderer.removeListener('mcp:getResourceSharingStatus', handler);
   },

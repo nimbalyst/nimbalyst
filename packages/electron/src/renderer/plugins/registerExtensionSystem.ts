@@ -30,6 +30,7 @@ import { syncExtensionEditors } from '../extensions/ExtensionEditorBridge';
 import { initializeExtensionThemeBridge } from '../extensions/ExtensionThemeBridge';
 import { initializeExtensionAgentProviderSync } from '../store/extensionAgentProviderSync';
 import { hiddenTabManager } from '../services/HiddenTabManager';
+import { selectFileForExtensionTest } from './extensionTestOpenFile';
 
 // Track workspace path for MCP tool registration
 let currentWorkspacePath: string | null = null;
@@ -483,6 +484,8 @@ function setupExtensionTestListeners(): void {
   // Handle extension_test_open_file requests
   electronAPI.on('extension-test:open-file', async (data: {
     filePath: string;
+    /** The rail project to open the file in; main sends it with every request. */
+    workspacePath?: string;
     waitForExtension?: string;
     timeout: number;
     responseChannel: string;
@@ -490,15 +493,7 @@ function setupExtensionTestListeners(): void {
     // console.log('[ExtensionSystem] Extension test: open file', data.filePath);
 
     try {
-      // Use the E2E-exposed handleWorkspaceFileSelect to open the file.
-      // This switches to Files mode, loads file content, and creates a tab
-      // with the correct extension editor.
-      const handler = (window as any).__handleWorkspaceFileSelect;
-      if (handler) {
-        await handler(data.filePath);
-      } else {
-        console.warn('[ExtensionSystem] __handleWorkspaceFileSelect not available');
-      }
+      await selectFileForExtensionTest(data.filePath, data.workspacePath, data.timeout);
 
       // If we need to wait for a specific extension editor to render
       if (data.waitForExtension) {
