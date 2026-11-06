@@ -25,6 +25,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 <!-- Bug fixes go here -->
+- With multiple projects per window enabled, restarting Nimbalyst reopens each window with all of its rail projects and the project it was showing, instead of only the window's first project
 - Moving or renaming a project no longer requires deleting its worktrees first; the project's worktrees folder moves with it and git's worktree links are repaired
 - With multiple projects per window enabled, clicking a session in the menu bar panel switches the window to that session's project instead of opening the session under the project currently shown
 - With multiple projects per window enabled, session links, Cmd+L picks, wakeup notifications, and files opened from Finder or the `nimbalyst` command open in the project they belong to instead of the project currently shown
