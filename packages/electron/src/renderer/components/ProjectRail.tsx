@@ -171,18 +171,20 @@ function ProjectRailIcon({
         aria-current={isActive ? 'true' : undefined}
       >
         <ProjectIcon name={project.name} appearance={appearance} />
-        {/* Shown on the selected project too: it describes the project's
-            sessions, so hiding it on select changed it for no reason. */}
-        {badge && (
-          <span
-            className="project-rail-item-badge"
-            data-state={badge.color}
-            aria-label={`${badge.count} ${BADGE_LABELS[badge.color]} session${badge.count === 1 ? '' : 's'}`}
-          >
-            {badge.count}
-          </span>
-        )}
       </button>
+      {/* A sibling of the button so dimming an unselected icon leaves the
+          badge readable. Shown on the selected project too: it describes the
+          project's sessions, so hiding it on select changed it for no reason. */}
+      {badge && (
+        <span
+          role="img"
+          className="project-rail-item-badge"
+          data-state={badge.color}
+          aria-label={`${badge.count} ${BADGE_LABELS[badge.color]} session${badge.count === 1 ? '' : 's'}`}
+        >
+          {badge.count}
+        </span>
+      )}
       {tooltipOpen && !isDragging && !menuOpen && (
         <FloatingPortal>
           <div
