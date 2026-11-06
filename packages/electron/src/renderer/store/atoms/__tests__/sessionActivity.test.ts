@@ -13,7 +13,7 @@ import {
   clearWorkspaceActivityAtom,
 } from '../sessionActivity';
 import { projectRailBadgesAtom } from '../projectRailBadges';
-import { sessionHasPendingInteractivePromptAtom } from '../sessions';
+import { sessionHasPendingInteractivePromptAtom, sessionListWorkspaceAtom, sessionRegistryAtom } from '../sessions';
 
 const PATH_A = '/ws/a';
 const PATH_B = '/ws/b';
@@ -152,6 +152,20 @@ describe('sessionActivity atoms', () => {
 
     it('omits workspaces with no activity', () => {
       expect(jotaiStore.get(projectRailBadgesAtom).size).toBe(0);
+    });
+
+    // The selected project's badge sits next to the Agent bubble, so it takes
+    // the bubble's state. The rail tracker can miss a session the bubble
+    // sees, e.g. one still waiting on a question after a restart.
+    it('gives the selected project the Agent bubble state', () => {
+      jotaiStore.set(markSessionStreamingAtom, { sessionId: 's1', workspacePath: PATH_A });
+      jotaiStore.set(sessionListWorkspaceAtom, PATH_A);
+      jotaiStore.set(sessionRegistryAtom, new Map([
+        ['s9', { id: 's9', workspaceId: PATH_A, isArchived: false, updatedAt: 1 } as never],
+      ]));
+      jotaiStore.set(sessionHasPendingInteractivePromptAtom('s9'), true);
+
+      expect(jotaiStore.get(projectRailBadgesAtom).get(PATH_A)).toEqual({ color: 'orange', count: 1 });
     });
   });
 });

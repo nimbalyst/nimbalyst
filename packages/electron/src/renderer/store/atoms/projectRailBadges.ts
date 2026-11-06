@@ -6,6 +6,11 @@
  * shows the highest state present with that state's count. Awaiting input is
  * orange, running is green, unread is blue.
  *
+ * The selected project (the one the session list shows) takes
+ * `agentBubbleStateAtom` directly. Its badge sits beside the Agent bubble, and
+ * the activity tracker can miss sessions the bubble sees, such as one still
+ * waiting on a question after a restart.
+ *
  * Lives in its own module because it reads both `sessionActivity` (which
  * covers every project in the window, not only the active one) and the
  * per-session pending-prompt flag in `sessions`, and `sessions` already
@@ -14,7 +19,12 @@
 
 import { atom } from 'jotai';
 import { globalSessionActivityAtom } from './sessionActivity';
-import { sessionHasPendingInteractivePromptAtom, type AgentBubbleColor } from './sessions';
+import {
+  agentBubbleStateAtom,
+  sessionHasPendingInteractivePromptAtom,
+  sessionListWorkspaceAtom,
+  type AgentBubbleColor,
+} from './sessions';
 
 export interface ProjectRailBadge {
   color: AgentBubbleColor;
@@ -35,6 +45,13 @@ export const projectRailBadgesAtom = atom<Map<string, ProjectRailBadge>>((get) =
     if (awaiting > 0) out.set(path, { color: 'orange', count: awaiting });
     else if (running > 0) out.set(path, { color: 'green', count: running });
     else if (unread > 0) out.set(path, { color: 'blue', count: unread });
+  }
+
+  const selectedPath = get(sessionListWorkspaceAtom);
+  if (selectedPath) {
+    const bubble = get(agentBubbleStateAtom);
+    if (bubble.color) out.set(selectedPath, { color: bubble.color, count: bubble.count });
+    else out.delete(selectedPath);
   }
   return out;
 });
