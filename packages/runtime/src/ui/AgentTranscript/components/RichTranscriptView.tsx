@@ -520,7 +520,7 @@ const getTranscriptMessageKey = (
 
 
 export const RichTranscriptView = React.forwardRef<
-  { scrollToMessage: (index: number) => void; scrollToTop: () => void },
+  { scrollToMessage: (index: number) => void; scrollToTop: () => void; getMessages: () => TranscriptViewMessage[] },
   RichTranscriptViewProps
 >(({ sessionId, sessionStatus, isProcessing, hasPendingInteractivePrompt, messages, provider, settings: propsSettings, onSettingsChange, showSettings, documentContext, workspacePath, renderEmptyExtra, hideEmptyHelp, readFile, onOpenFile, onOpenSession, onCompact, promptAdditions, currentTeammates, waitingForNoun, backgroundTasks, appStartTime, renderEmbeddedFile, canEmbedFile, loadToolCallDiffs, onSearchBarVisibilityChange, persistScrollState = true }, ref) => {
   const [collapsedMessages, setCollapsedMessages] = useState<Set<number>>(new Set());
@@ -548,6 +548,8 @@ export const RichTranscriptView = React.forwardRef<
   // onScrollEnd finishes the trip to the first row once virtua applies its jump.
   const hitFalseTopRef = useRef(false);
   const messageRefs = useRef<Map<number, HTMLDivElement>>(new Map());
+  const messagesRef = useRef(messages);
+  messagesRef.current = messages;
   const isAtBottomRef = useRef(
     persistScrollState ? getSessionIsAtBottom(sessionId) : true
   );
@@ -826,7 +828,9 @@ export const RichTranscriptView = React.forwardRef<
     },
     scrollToTop: () => {
       vlistRef.current?.scrollToIndex(0, { align: 'start' });
-    }
+    },
+    // Row `data-message-index` values index into this array.
+    getMessages: () => messagesRef.current,
   }), []);
 
   // Reset scroll-ready state when session changes or container hides

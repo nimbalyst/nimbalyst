@@ -1417,6 +1417,7 @@ export const AIInput = forwardRef<AIInputRef, AIInputProps>(
         <SelectionChips
           currentFilePath={currentFilePath}
           currentFileName={currentFileName}
+          sessionId={sessionId}
         />
 
         {/* Inline controls row - hidden in memory mode */}
