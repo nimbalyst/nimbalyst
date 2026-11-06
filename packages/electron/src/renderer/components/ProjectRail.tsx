@@ -137,10 +137,6 @@ function ProjectRailIcon({
   // summary header (and in SessionHistory entries) for the same project.
   const accentColor = appearance.color || generateWorkspaceAccentColor(project.path);
 
-  // Inactive projects show a badge when something needs attention. Active
-  // projects already have the user's eyes on them so we suppress the
-  // badge to keep the rail quiet.
-  const shownBadge = isActive ? undefined : badge;
 
   return (
     <div
@@ -175,13 +171,15 @@ function ProjectRailIcon({
         aria-current={isActive ? 'true' : undefined}
       >
         <ProjectIcon name={project.name} appearance={appearance} />
-        {shownBadge && (
+        {/* Shown on the selected project too: it describes the project's
+            sessions, so hiding it on select changed it for no reason. */}
+        {badge && (
           <span
             className="project-rail-item-badge"
-            data-state={shownBadge.color}
-            aria-label={`${shownBadge.count} ${BADGE_LABELS[shownBadge.color]} session${shownBadge.count === 1 ? '' : 's'}`}
+            data-state={badge.color}
+            aria-label={`${badge.count} ${BADGE_LABELS[badge.color]} session${badge.count === 1 ? '' : 's'}`}
           >
-            {shownBadge.count}
+            {badge.count}
           </span>
         )}
       </button>
