@@ -1,19 +1,20 @@
 # Using Wally models with OpenCode in Nimbalyst
 
-[Wally](https://www.runwally.com) by RunAnywhere serves open-weight models (DeepSeek, GLM, Kimi, MiniMax) through an OpenAI-compatible API. OpenCode ships Wally as a built-in provider, so once OpenCode is signed in to Wally, its models appear in Nimbalyst's OpenCode model picker. Nimbalyst needs no extra configuration.
+[Wally](https://www.runwally.com) by RunAnywhere serves open-weight models (DeepSeek, GLM, Kimi, MiniMax) through an OpenAI-compatible API. OpenCode ships Wally as a built-in provider, so once OpenCode is signed in to Wally, its models appear in Nimbalyst's OpenCode model picker. Nothing Wally-specific is configured in Nimbalyst.
 
 ## Setup
 
-1. Create an API key in the [RunAnywhere console](https://console.runanywhere.ai).
-2. Sign OpenCode in to Wally from a terminal:
+1. In Nimbalyst, open Settings > Agent Providers > OpenCode. If the OpenCode CLI is missing, click **Install OpenCode CLI** (or run `npm i -g opencode-ai`), then turn on **Enable OpenCode**.
+2. Create an API key in the [RunAnywhere console](https://console.runanywhere.ai).
+3. Sign OpenCode in to Wally from a terminal:
 
    ```bash
    opencode auth login
    ```
 
    Pick **Wally** from the provider list and paste the key. OpenCode keeps it in its own credentials file.
-3. In Nimbalyst, open Settings > Agent Providers > OpenCode and click **Discover models**. Wally models appear with ids like `wally/deepseek-v4.1-flash`.
-4. Pick a Wally model in the session model picker.
+4. Open a project, return to Settings > Agent Providers > OpenCode, and click **Discover models**. Wally models appear with ids like `wally/deepseek-v4.1-flash`.
+5. Pick a Wally model in the session model picker.
 
 To check the sign-in from a terminal, run `opencode models wally`.
 
