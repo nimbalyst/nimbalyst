@@ -48,7 +48,7 @@ export const TrackerQuickCreateCreatedStrip: React.FC<{
   if (createdIds.length === 0) return null;
 
   return (
-    <div className="tracker-quick-create-created flex flex-wrap items-center gap-1 border-t border-[var(--nim-border)] bg-[var(--nim-bg-secondary)] px-3 py-1.5">
+    <div className="tracker-quick-create-created flex max-h-[260px] flex-wrap items-center gap-1 overflow-y-auto border-t border-[var(--nim-border)] bg-[var(--nim-bg-secondary)] px-3 py-1.5">
       {createdIds.map((itemId) => (
         <div key={itemId} className="tracker-quick-create-created-item flex flex-wrap items-center gap-2">
           <CreatedChip itemId={itemId} onOpenItem={onOpenItem} />

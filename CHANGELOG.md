@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 <!-- Bug fixes go here -->
+- The new tracker item popup no longer pushes its title field off screen in fullscreen when many items are waiting to publish; the list of saved items now scrolls.
 
 ### Removed
 <!-- Removed features go here -->
