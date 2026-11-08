@@ -67,11 +67,11 @@ describe('dictation helper protocol', () => {
 
 describe('dictation engine selection', () => {
   it('auto prefers on-device, falls back to OpenAI, and explicit choices never fall back', () => {
-    expect(selectDictationEngine('auto', { onDevice: true, openai: true })).toBe('on-device');
-    expect(selectDictationEngine('auto', { onDevice: false, openai: true })).toBe('openai');
-    expect(selectDictationEngine('auto', { onDevice: false, openai: false })).toBeNull();
-    expect(selectDictationEngine('on-device', { onDevice: false, openai: true })).toBeNull();
-    expect(selectDictationEngine('openai', { onDevice: true, openai: false })).toBeNull();
+    expect(selectDictationEngine('auto', { system: false, onDevice: true, openai: true })).toBe('on-device');
+    expect(selectDictationEngine('auto', { system: false, onDevice: false, openai: true })).toBe('openai');
+    expect(selectDictationEngine('auto', { system: false, onDevice: false, openai: false })).toBeNull();
+    expect(selectDictationEngine('on-device', { system: false, onDevice: false, openai: true })).toBeNull();
+    expect(selectDictationEngine('openai', { system: false, onDevice: true, openai: false })).toBeNull();
   });
 
   it('on-device is unavailable off macOS, before macOS 13, or without the helper binary', () => {
@@ -94,6 +94,7 @@ describe('DictationController', () => {
       isVoiceModeActive: () => extra.voice ?? false,
       ensureMicrophoneAccess,
       log: () => {},
+      platform: 'darwin',
     });
     return { controller, ensureMicrophoneAccess };
   }

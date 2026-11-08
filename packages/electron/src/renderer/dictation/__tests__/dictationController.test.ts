@@ -118,7 +118,8 @@ describe('DictationController', () => {
     t.emit({ dictationId: 'd1', type: 'ended' });
     resolveStart({ ok: true, engine: 'on-device' });
     expect(await pending).toBe(false);
-    expect(t.captureStart).not.toHaveBeenCalled();
+    // The mic opens alongside the engine start; it must be closed again.
+    expect(t.captureStop).toHaveBeenCalledTimes(t.captureStart.mock.calls.length);
     expect(t.controller.isRecording()).toBe(false);
   });
 
@@ -127,7 +128,7 @@ describe('DictationController', () => {
     t.invoke.mockImplementationOnce(async () => ({ ok: false, reason: 'no-engine' }) as any);
     expect(await t.controller.start(t.target, 'button')).toBe(false);
     expect(t.notify).toHaveBeenCalledWith('Dictation could not start', expect.stringContaining('No speech engine'));
-    expect(t.captureStart).not.toHaveBeenCalled();
+    expect(t.captureStop).toHaveBeenCalledTimes(t.captureStart.mock.calls.length);
     expect(t.controller.isRecording()).toBe(false);
   });
 });
@@ -147,7 +148,7 @@ describe('gatherDictationContextStrings', () => {
 });
 
 describe('installDictationShortcut', () => {
-  function harness(enabled = true) {
+  function harness(enabled = true, system = false) {
     const listeners: Record<string, (e: any) => void> = {};
     const target = {
       addEventListener: (type: string, fn: any) => { listeners[type] = fn; },
@@ -156,6 +157,7 @@ describe('installDictationShortcut', () => {
     let recording = false;
     const controller = {
       isEnabled: () => enabled,
+      usesSystemDictation: () => system,
       isRecording: () => recording,
       startInFocused: vi.fn(async () => { recording = true; return true; }),
       stop: vi.fn(() => { recording = false; }),
@@ -206,5 +208,193 @@ describe('installDictationShortcut', () => {
     const e = h.key('keydown');
     expect(h.controller.startInFocused).not.toHaveBeenCalled();
     expect(e.preventDefault).not.toHaveBeenCalled();
+  });
+});
+
+describe('DictationController mic startup', () => {
+  function deferred<T>() {
+    let resolve!: (v: T) => void;
+    const promise = new Promise<T>((r) => (resolve = r));
+    return { promise, resolve };
+  }
+  function harness(opts: { micWarmMs?: number } = {}) {
+    const store = createStore();
+    store.set(dictationSettingsAtom, { ...DEFAULT_DICTATION_SETTINGS, enabled: true });
+    const starts: Array<ReturnType<typeof deferred<any>>> = [];
+    const invoke = vi.fn((channel: string) => {
+      if (channel !== DICTATION_IPC.start) return Promise.resolve(undefined);
+      const d = deferred<any>();
+      starts.push(d);
+      return d.promise;
+    });
+    const send = vi.fn();
+    const captures: Array<{ start: any; stop: any; feed: (b64: string) => void }> = [];
+    const createCapture = vi.fn(() => {
+      const c: any = { feed: () => {} };
+      c.start = vi.fn(async (cb: (b64: string) => void) => { c.feed = cb; });
+      c.stop = vi.fn();
+      captures.push(c);
+      return c;
+    });
+    let n = 0;
+    const controller = new DictationController({
+      store: store as any,
+      invoke: invoke as any,
+      send,
+      createCapture: createCapture as any,
+      notify: vi.fn(),
+      capture: vi.fn(),
+      contextStrings: () => [],
+      newId: () => `d${++n}`,
+      now: () => Date.now(),
+      micWarmMs: opts.micWarmMs,
+    });
+    const target = (key: string): RegisteredDictationTarget => ({
+      key, surface: 'agent-input', kind: 'rich-text', hasFocus: () => true,
+      showPartial: vi.fn(), clearPartial: vi.fn(), commitFinal: vi.fn(),
+    });
+    return { store, controller, starts, send, captures, createCapture, target };
+  }
+  const flush = () => new Promise((r) => setTimeout(r, 0));
+
+  it('opens the mic before the engine is ready and sends what was said meanwhile', async () => {
+    const t = harness();
+    const started = t.controller.start(t.target('a'), 'shortcut');
+    await flush();
+    expect(t.captures).toHaveLength(1);
+    expect(t.captures[0].start).toHaveBeenCalled();
+    t.captures[0].feed('AAAA'); // device warm-up silence
+    t.captures[0].feed('c3BlZWNo');
+    expect(t.send).not.toHaveBeenCalled();
+    t.starts[0].resolve({ ok: true, engine: 'on-device' });
+    await started;
+    t.captures[0].feed('bW9yZQ==');
+    expect(t.send.mock.calls).toEqual([
+      [DICTATION_IPC.audio, 'd1', 'c3BlZWNo'],
+      [DICTATION_IPC.audio, 'd1', 'bW9yZQ=='],
+    ]);
+  });
+
+  it('releases the mic when the engine refuses to start', async () => {
+    const t = harness();
+    const started = t.controller.start(t.target('a'), 'shortcut');
+    await flush();
+    t.starts[0].resolve({ ok: false, reason: 'busy' });
+    expect(await started).toBe(false);
+    expect(t.captures[0].stop).toHaveBeenCalled();
+  });
+
+  it('does not leave the mic running when a second start overlaps the first', async () => {
+    const t = harness();
+    const a = t.controller.start(t.target('a'), 'shortcut');
+    await flush();
+    const b = t.controller.start(t.target('b'), 'button');
+    await flush();
+    t.starts[1].resolve({ ok: false, reason: 'busy' });
+    await b;
+    t.starts[0].resolve({ ok: true, engine: 'on-device' });
+    await a;
+    await flush();
+    const running = t.captures.filter((c) => c.start.mock.calls.length > 0 && c.stop.mock.calls.length === 0);
+    expect(running).toHaveLength(t.controller.isRecording() ? 1 : 0);
+    expect(t.store.get(activeDictationAtom) !== null).toBe(t.controller.isRecording());
+  });
+
+  it('keeps the mic warm briefly so the next dictation skips device warm-up', async () => {
+    vi.useFakeTimers();
+    try {
+      const t = harness({ micWarmMs: 5000 });
+      const first = t.controller.start(t.target('a'), 'shortcut');
+      await vi.advanceTimersByTimeAsync(0);
+      t.starts[0].resolve({ ok: true, engine: 'on-device' });
+      await first;
+      t.controller.stop(false);
+      expect(t.captures[0].stop).not.toHaveBeenCalled();
+      t.captures[0].feed('aWRsZQ=='); // audio while parked is dropped
+      const second = t.controller.start(t.target('a'), 'shortcut');
+      await vi.advanceTimersByTimeAsync(0);
+      t.starts[1].resolve({ ok: true, engine: 'on-device' });
+      await second;
+      expect(t.createCapture).toHaveBeenCalledTimes(1);
+      t.captures[0].feed('bmV4dA==');
+      expect(t.send).toHaveBeenLastCalledWith(DICTATION_IPC.audio, 'd2', 'bmV4dA==');
+      expect(t.send).not.toHaveBeenCalledWith(DICTATION_IPC.audio, expect.anything(), 'aWRsZQ==');
+      t.controller.stop(false);
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(t.captures[0].stop).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe('macOS system dictation', () => {
+  it('the controller hands off to macOS without opening our mic or engine', async () => {
+    const store = createStore();
+    store.set(dictationSettingsAtom, { ...DEFAULT_DICTATION_SETTINGS, enabled: true, engine: 'auto' });
+    const invoke = vi.fn(async () => ({ ok: true }));
+    const createCapture = vi.fn();
+    const events: string[] = [];
+    const controller = new DictationController({
+      store: store as any, invoke: invoke as any, send: vi.fn(), createCapture: createCapture as any,
+      notify: vi.fn(), capture: (e) => events.push(e), contextStrings: () => [], newId: () => 'd1', now: () => 0,
+      isMac: true,
+    });
+    const target = { key: 'a', surface: 'agent-input', kind: 'rich-text', hasFocus: () => true,
+      showPartial: vi.fn(), clearPartial: vi.fn(), commitFinal: vi.fn() } as RegisteredDictationTarget;
+    expect(controller.usesSystemDictation()).toBe(true);
+    expect(await controller.start(target, 'button')).toBe(true);
+    expect(invoke).toHaveBeenCalledWith(DICTATION_IPC.systemStart);
+    expect(invoke).not.toHaveBeenCalledWith(DICTATION_IPC.start, expect.anything());
+    expect(createCapture).not.toHaveBeenCalled();
+    expect(events).toEqual(['dictation_started']);
+
+    // An explicit engine choice on a Mac still uses our pipeline.
+    store.set(dictationSettingsAtom, { ...DEFAULT_DICTATION_SETTINGS, enabled: true, engine: 'on-device' });
+    expect(controller.usesSystemDictation()).toBe(false);
+  });
+
+  it('the shortcut starts system dictation only once every key is released', async () => {
+    const listeners: Record<string, (e: any) => void> = {};
+    const controller = {
+      isEnabled: () => true,
+      usesSystemDictation: () => true,
+      isRecording: () => false,
+      startInFocused: vi.fn(async () => true),
+      stop: vi.fn(),
+    };
+    installDictationShortcut(() => controller as any, { addEventListener: (t: string, f: any) => { listeners[t] = f; }, removeEventListener: vi.fn() } as any, () => 0);
+    const ev = (extra: Record<string, unknown>) => ({ code: 'Space', key: ' ', ctrlKey: true, altKey: true, metaKey: false,
+      shiftKey: false, repeat: false, preventDefault: vi.fn(), stopPropagation: vi.fn(), ...extra });
+    const down = ev({});
+    listeners.keydown(down);
+    expect(down.preventDefault).toHaveBeenCalled();
+    expect(controller.startInFocused).not.toHaveBeenCalled();
+    listeners.keyup(ev({}));                                   // Space up, modifiers held
+    listeners.keyup(ev({ code: 'ControlLeft', key: 'Control', ctrlKey: false })); // Option still held
+    expect(controller.startInFocused).not.toHaveBeenCalled();
+    listeners.keyup(ev({ code: 'AltLeft', key: 'Alt', ctrlKey: false, altKey: false }));
+    expect(controller.startInFocused).toHaveBeenCalledWith('shortcut');
+    expect(controller.stop).not.toHaveBeenCalled();
+  });
+});
+
+describe('macOS system dictation outside registered surfaces', () => {
+  it('starts in any focused editable field, but not when nothing editable has focus', async () => {
+    const store = createStore();
+    store.set(dictationSettingsAtom, { ...DEFAULT_DICTATION_SETTINGS, enabled: true, engine: 'system' });
+    const invoke = vi.fn(async () => ({ ok: true }));
+    let active: unknown = { isContentEditable: true, tagName: 'DIV' };
+    const controller = new DictationController({
+      store: store as any, invoke: invoke as any, send: vi.fn(), createCapture: vi.fn() as any,
+      notify: vi.fn(), capture: vi.fn(), contextStrings: () => [], newId: () => 'd1', now: () => 0,
+      isMac: true, activeElement: () => active as Element,
+    });
+    expect(await controller.startInFocused('shortcut')).toBe(true);
+    expect(invoke).toHaveBeenCalledWith(DICTATION_IPC.systemStart);
+    invoke.mockClear();
+    active = { isContentEditable: false, tagName: 'BUTTON' };
+    expect(await controller.startInFocused('shortcut')).toBe(false);
+    expect(invoke).not.toHaveBeenCalled();
   });
 });

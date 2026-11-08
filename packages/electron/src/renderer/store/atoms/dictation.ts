@@ -70,7 +70,7 @@ export const refreshDictationAvailabilityAtom = atom(null, async (_get, set) => 
     set(dictationAvailabilityAtom, availability ?? { onDevice: false, openai: false });
   } catch (error) {
     console.error('[dictation] Failed to read availability:', error);
-    set(dictationAvailabilityAtom, { onDevice: false, openai: false });
+    set(dictationAvailabilityAtom, { system: false, onDevice: false, openai: false });
   }
 });
 
@@ -110,6 +110,8 @@ export interface ActiveDictation {
   dictationId: string;
   targetKey: string;
   surface: DictationSurface;
+  /** Non-silent audio is arriving; until then the user should wait to speak. */
+  hearing?: boolean;
 }
 
 export const activeDictationAtom = atom<ActiveDictation | null>(null);

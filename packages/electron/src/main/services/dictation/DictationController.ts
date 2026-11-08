@@ -29,6 +29,19 @@ export interface DictationControllerDeps {
   /** Ask the OS for microphone access (macOS prompt). Resolves false when denied. */
   ensureMicrophoneAccess(): Promise<boolean>;
   log(message: string): void;
+  platform: NodeJS.Platform;
+  /**
+   * Dev builds only: receives each dictation's raw audio and recognized text
+   * so accuracy can be replayed offline (temptests/dictation/eval).
+   */
+  recordDebugAudio?(recording: DictationDebugRecording): void;
+}
+
+export interface DictationDebugRecording {
+  dictationId: string;
+  engine: DictationEngineId;
+  pcm16: Buffer[];
+  finals: string[];
 }
 
 function toDictationEvent(
@@ -57,6 +70,7 @@ interface ActiveDictation {
   pendingStop: { cancel: boolean } | null;
   ended: boolean;
   timing: DictationTiming;
+  debug?: { pcm16: Buffer[]; finals: string[] };
 }
 
 /**
@@ -92,6 +106,7 @@ export class DictationController {
 
   getAvailability(): DictationAvailability {
     return {
+      system: this.deps.platform === 'darwin',
       onDevice: this.deps.engines['on-device'].isAvailable(),
       openai: this.deps.engines.openai.isAvailable(),
     };
@@ -120,6 +135,7 @@ export class DictationController {
       pendingStop: null,
       ended: false,
       timing: { requestedAt: Date.now(), audioChunks: 0, partials: 0, finalLagsMs: [] },
+      debug: this.deps.recordDebugAudio ? { pcm16: [], finals: [] } : undefined,
     };
     // Claim the slot before any await so a second start can't race in.
     this.active = active;
@@ -150,6 +166,7 @@ export class DictationController {
         onEvent: (event) => {
           if (this.active !== active || active.ended) return;
           this.recordEventTiming(active, event.type);
+          if (event.type === 'final') active.debug?.finals.push(event.text);
           this.send(active, toDictationEvent(active.dictationId, engineId, event));
         },
         onEnded: () => this.finish(active),
@@ -183,6 +200,7 @@ export class DictationController {
     if (active.timing.firstAudioMs === undefined) active.timing.firstAudioMs = now - active.timing.requestedAt;
     active.timing.audioChunks++;
     active.timing.lastAudioAt = now;
+    active.debug?.pcm16.push(Buffer.from(base64Pcm16, 'base64'));
     active.session?.pushAudio(base64Pcm16);
   }
 
@@ -228,6 +246,13 @@ export class DictationController {
     if (this.active === active) this.active = null;
     active.timing.endedMs = Date.now() - active.timing.requestedAt;
     this.logTiming(active);
+    if (active.debug && active.debug.pcm16.length > 0) {
+      try {
+        this.deps.recordDebugAudio?.({ dictationId: active.dictationId, engine: active.engine, ...active.debug });
+      } catch (error) {
+        this.deps.log(`[Dictation] debug recording failed: ${String(error)}`);
+      }
+    }
     this.send(active, { dictationId: active.dictationId, type: 'ended' });
   }
 

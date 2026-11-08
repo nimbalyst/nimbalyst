@@ -13,9 +13,23 @@ Dictation is speech-to-text that inserts what the user says at the cursor in the
 
 | Setting | Behavior |
 | --- | --- |
-| Auto (default) | On-device on macOS 13+ when the helper binary is present, otherwise OpenAI when a key is set, otherwise start fails with `no-engine` |
+| Auto (default) | macOS dictation on a Mac. Elsewhere OpenAI when a key is set, otherwise start fails with `no-engine` |
+| macOS dictation | Sends AppKit's `startDictation:` (the Edit > Start Dictation action) to the focused text view with `Menu.sendActionToFirstResponder`. macOS owns the mic, recognition, insertion and its UI; we get no events back |
 | On-device | macOS helper only. Never falls back, so audio never leaves the machine |
 | OpenAI | `gpt-4o-transcribe` in a transcription-only Realtime session with server VAD, on the key from Nimbalyst settings. Never falls back |
+
+### macOS dictation
+
+- Starts listening about 40 ms after the request, against about 2.8 s to first real audio on our own engine with AirPods (device wake-up).
+- Works in any focused editable field, including surfaces that never registered a dictation target. The renderer (`dictationController.ts`) decides; main only sends the action (`DICTATION_IPC.systemStart`).
+- Stalls before the recognizer starts (DictationIM "stage 1", never "stage 2") when our capture still holds the microphone. Our mic is closed before every request and there is no warm window. Observed on 2026-11-06 in the macOS log (`/usr/bin/log show --predicate 'process == "DictationIM"'`); the held-mic cause is the best fit, not proven.
+- The shortcut fires on key release. Whether the stall also happens on key press is unconfirmed.
+- No hold-to-talk: it ends after a pause or on another press (which restarts it). Its popup cannot find Chromium's caret and stays hidden.
+- Recognition hints from file names are not used.
+
+### Our engines
+
+On-device and OpenAI remain available in Settings > Dictation and are what non-Mac platforms use.
 
 The on-device engine is a Swift helper (`packages/electron/native/dictation-helper/main.swift`). It uses `SpeechAnalyzer` + `SpeechTranscriber` on macOS 26+ (model assets downloaded through `AssetInventory`, reported as a `preparing` event) and `SFSpeechRecognizer` with on-device recognition required on macOS 13 to 25. On macOS 27.0.1, `SpeechTranscriber` transcribed with speech-recognition authorization `not-determined` and showed no prompt; only the `SFSpeechRecognizer` path asks for that permission.
 

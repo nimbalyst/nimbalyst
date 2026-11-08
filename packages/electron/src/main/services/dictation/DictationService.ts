@@ -3,13 +3,14 @@
  * Mode: never speaks, never submits. Contract: src/shared/dictation.ts.
  */
 
-import { app, BrowserWindow, systemPreferences, type WebContents } from 'electron';
+import { app, BrowserWindow, Menu, systemPreferences, type WebContents } from 'electron';
 import { spawn } from 'child_process';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import {
   DICTATION_IPC,
+  DICTATION_SAMPLE_RATE,
   type DictationSettings,
   type DictationStartRequest,
   type DictationStopRequest,
@@ -20,7 +21,7 @@ import { logger } from '../../utils/logger';
 import { getProviderCredentials } from '../credentials/providerCredentials';
 import { ensureVoiceMicrophoneAccess } from '../voice/microphoneAccess';
 import { getActiveVoiceSessionId } from '../voice/VoiceModeService';
-import { DictationController, type DictationTarget } from './DictationController';
+import { DictationController, type DictationDebugRecording, type DictationTarget } from './DictationController';
 import { normalizeDictationSettings } from './dictationSettings';
 import { OnDeviceDictationEngine } from './OnDeviceDictationEngine';
 import { OpenAIDictationEngine } from './OpenAIDictationEngine';
@@ -29,6 +30,30 @@ const SETTINGS_KEY = 'dictation';
 const HELPER_NAME = 'nimbalyst-dictation';
 
 let controller: DictationController | null = null;
+
+/**
+ * Dev builds only: keep each dictation's audio as a WAV next to the text the
+ * engine produced, so accuracy can be replayed through engine variants.
+ * Folder: <userData>/dictation-debug, newest 30 kept.
+ */
+function writeDictationDebugRecording(recording: DictationDebugRecording): void {
+  const dir = path.join(app.getPath('userData'), 'dictation-debug');
+  fs.mkdirSync(dir, { recursive: true });
+  const pcm = Buffer.concat(recording.pcm16);
+  const header = Buffer.alloc(44);
+  header.write('RIFF', 0); header.writeUInt32LE(36 + pcm.length, 4); header.write('WAVE', 8);
+  header.write('fmt ', 12); header.writeUInt32LE(16, 16); header.writeUInt16LE(1, 20); header.writeUInt16LE(1, 22);
+  header.writeUInt32LE(DICTATION_SAMPLE_RATE, 24); header.writeUInt32LE(DICTATION_SAMPLE_RATE * 2, 28);
+  header.writeUInt16LE(2, 32); header.writeUInt16LE(16, 34); header.write('data', 36); header.writeUInt32LE(pcm.length, 40);
+  const base = path.join(dir, `${new Date().toISOString().replace(/[:.]/g, '-')}-${recording.engine}`);
+  fs.writeFileSync(`${base}.wav`, Buffer.concat([header, pcm]));
+  fs.writeFileSync(`${base}.json`, JSON.stringify({ engine: recording.engine, finals: recording.finals }, null, 2));
+  const files = fs.readdirSync(dir).filter((f) => f.endsWith('.wav')).sort();
+  for (const old of files.slice(0, Math.max(0, files.length - 30))) {
+    fs.rmSync(path.join(dir, old), { force: true });
+    fs.rmSync(path.join(dir, old.replace(/\.wav$/, '.json')), { force: true });
+  }
+}
 
 export function getDictationHelperPath(): string {
   // Packaged: mac.extraResources copies it to Contents/Resources/dictation-helper.
@@ -78,6 +103,8 @@ export function initDictationService(): void {
       }),
     },
     isVoiceModeActive: () => getActiveVoiceSessionId() !== null,
+    platform: process.platform,
+    recordDebugAudio: app.isPackaged ? undefined : writeDictationDebugRecording,
     ensureMicrophoneAccess: async () => {
       try {
         await ensureVoiceMicrophoneAccess(process.platform, systemPreferences);
@@ -114,6 +141,18 @@ export function initDictationService(): void {
   });
 
   safeHandle(DICTATION_IPC.getAvailability, () => dictation.getAvailability());
+
+  // macOS system dictation: send Edit > Start Dictation's AppKit action to the
+  // focused text view. It starts listening in about 40ms and inserts text
+  // itself. Only works when no keys are held (the renderer fires it on key
+  // release); from a held shortcut it stalls before the recognizer starts.
+  safeHandle(DICTATION_IPC.systemStart, () => {
+    if (process.platform !== 'darwin' || !getSettings().enabled) return { ok: false };
+    if (dictation.isActive()) dictation.cancelActive();
+    logger.main.info('[Dictation] system dictation requested');
+    Menu.sendActionToFirstResponder('startDictation:');
+    return { ok: true };
+  });
 
   safeHandle(DICTATION_IPC.start, (event, request: DictationStartRequest) => {
     watchSender(event.sender);

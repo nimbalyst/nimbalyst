@@ -57,6 +57,9 @@ export function selectDictationEngine(
       return availability.onDevice ? 'on-device' : null;
     case 'openai':
       return availability.openai ? 'openai' : null;
+    case 'system':
+      // macOS dictation runs outside this service (DICTATION_IPC.systemStart).
+      return null;
     default:
       if (availability.onDevice) return 'on-device';
       if (availability.openai) return 'openai';

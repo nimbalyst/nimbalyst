@@ -9,12 +9,16 @@ import { useDictation } from './useDictation';
  * disabled in Settings.
  */
 export function DictationButton({ targetKey, disabled }: { targetKey: string; disabled?: boolean }) {
-  const { enabled, recording, status, toggle } = useDictation(targetKey);
+  const { enabled, recording, status, hearing, toggle } = useDictation(targetKey);
   if (!enabled) return null;
 
-  const preparing = status === 'starting' || status === 'preparing';
+  // Pulse until the mic delivers real audio: Bluetooth headsets send silence
+  // for about 2s while switching into mic mode, so talking early is lost.
+  const preparing = status === 'starting' || status === 'preparing' || (recording && !hearing);
   const title = recording
-    ? 'Stop dictation (Esc discards the unfinished phrase)'
+    ? hearing
+      ? 'Stop dictation (Esc discards the unfinished phrase)'
+      : 'Waiting for the microphone...'
     : `Dictate (click, or hold ${getShortcutDisplay(DICTATION_SHORTCUT)})`;
 
   return (

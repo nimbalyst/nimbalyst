@@ -6,8 +6,12 @@
  * See nimbalyst-local/plans/agent-input-dictation.md and docs/DICTATION.md.
  */
 
-/** 'auto' = on-device on macOS when available, otherwise OpenAI if a key is set. */
-export type DictationEngineSetting = 'auto' | 'on-device' | 'openai';
+/**
+ * 'auto' = macOS system dictation on a Mac, otherwise OpenAI if a key is set.
+ * 'system' = hand off to the OS dictation (macOS only); it inserts text itself
+ * and never goes through DictationService's engines.
+ */
+export type DictationEngineSetting = 'auto' | 'system' | 'on-device' | 'openai';
 
 /** The engine actually running a dictation. */
 export type DictationEngineId = 'on-device' | 'openai';
@@ -67,6 +71,8 @@ export type DictationEvent =
 
 /** What `dictation:get-availability` reports, so the UI can explain a missing engine. */
 export interface DictationAvailability {
+  /** macOS system dictation can be triggered. */
+  system: boolean;
   onDevice: boolean;
   openai: boolean;
 }
@@ -79,6 +85,8 @@ export const DICTATION_IPC = {
   /** Fire-and-forget (safeOn): (dictationId: string, base64Pcm16: string) */
   audio: 'dictation:audio',
   stop: 'dictation:stop',
+  /** Start macOS system dictation in the focused text field: { ok: boolean } */
+  systemStart: 'dictation:system-start',
   /** main -> renderer: DictationEvent */
   event: 'dictation:event',
   /** main -> all windows: DictationSettings */

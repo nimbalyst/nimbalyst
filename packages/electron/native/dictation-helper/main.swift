@@ -106,6 +106,27 @@ func cleanText(_ text: String) -> String {
 // the SFSpeechRecognizer path only.
 #if compiler(>=6.2)
 @available(macOS 26, *)
+func mapResults<S: AsyncSequence & Sendable>(
+  _ sequence: S,
+  _ transform: @escaping @Sendable (S.Element) -> (String, Bool)
+) -> AsyncThrowingStream<(text: String, isFinal: Bool), Error> where S.Element: Sendable {
+  AsyncThrowingStream { continuation in
+    let task = Task {
+      do {
+        for try await element in sequence {
+          let (text, isFinal) = transform(element)
+          continuation.yield((text: text, isFinal: isFinal))
+        }
+        continuation.finish()
+      } catch {
+        continuation.finish(throwing: error)
+      }
+    }
+    continuation.onTermination = { _ in task.cancel() }
+  }
+}
+
+@available(macOS 26, *)
 final class AnalyzerRecognizer: Recognizer {
   private let id: String
   private var analyzer: SpeechAnalyzer?
@@ -118,36 +139,63 @@ final class AnalyzerRecognizer: Recognizer {
     self.id = id
   }
 
-  func start(localeIdentifier: String?, contextualStrings: [String]) async throws {
+  func start(localeIdentifier: String?, contextualStrings: [String], variant: String) async throws {
     let requested = localeIdentifier.map { Locale(identifier: $0) } ?? Locale.current
-    guard let locale = await SpeechTranscriber.supportedLocale(equivalentTo: requested) else {
+    let useDictation = variant.hasPrefix("dictation")
+    let supported = useDictation
+      ? await DictationTranscriber.supportedLocale(equivalentTo: requested)
+      : await SpeechTranscriber.supportedLocale(equivalentTo: requested)
+    guard let locale = supported else {
       throw HelperError(code: "unsupported-locale", message: "On-device dictation does not support \(requested.identifier).")
     }
-    let transcriber = SpeechTranscriber(
-      locale: locale,
-      transcriptionOptions: [],
-      reportingOptions: [.volatileResults],
-      attributeOptions: []
-    )
 
-    let status = await AssetInventory.status(forModules: [transcriber])
+    // Variants exist to compare accuracy and latency on recorded audio
+    // (temptests/dictation eval harness); the app sends the default.
+    let module: any SpeechModule
+    let results: AsyncThrowingStream<(text: String, isFinal: Bool), Error>
+    switch variant {
+    case "dictation", "dictation-long":
+      let transcriber = DictationTranscriber(
+        locale: locale,
+        contentHints: variant == "dictation" ? [.shortForm] : [],
+        transcriptionOptions: [.punctuation],
+        reportingOptions: [.volatileResults, .frequentFinalization],
+        attributeOptions: []
+      )
+      module = transcriber
+      results = mapResults(transcriber.results) { (String($0.text.characters), $0.isFinal) }
+    default:
+      let transcriber = SpeechTranscriber(
+        locale: locale,
+        transcriptionOptions: [],
+        // .fastResults: first text about 1.1s after speech instead of about 4s,
+        // same accuracy on the eval corpus (2026-11-06). "speech-slow" keeps
+        // the old behavior for comparison.
+        reportingOptions: variant == "speech-slow" ? [.volatileResults] : [.volatileResults, .fastResults],
+        attributeOptions: []
+      )
+      module = transcriber
+      results = mapResults(transcriber.results) { (String($0.text.characters), $0.isFinal) }
+    }
+
+    let status = await AssetInventory.status(forModules: [module])
     if status == .unsupported {
       throw HelperError(code: "unsupported-locale", message: "On-device dictation is not available for \(locale.identifier).")
     }
     if status != .installed {
       emit(["type": "preparing", "id": id])
-      if let request = try await AssetInventory.assetInstallationRequest(supporting: [transcriber]) {
+      if let request = try await AssetInventory.assetInstallationRequest(supporting: [module]) {
         try await request.downloadAndInstall()
       }
     }
 
-    guard let format = await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: [transcriber]) else {
+    guard let format = await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: [module]) else {
       throw HelperError(code: "engine-error", message: "No audio format is compatible with the speech model.")
     }
     analyzerFormat = format
     converter = AVAudioConverter(from: inputFormat, to: format)
 
-    let analyzer = SpeechAnalyzer(modules: [transcriber])
+    let analyzer = SpeechAnalyzer(modules: [module])
     self.analyzer = analyzer
     if !contextualStrings.isEmpty {
       let context = AnalysisContext()
@@ -159,8 +207,8 @@ final class AnalyzerRecognizer: Recognizer {
     let id = self.id
     resultsTask = Task {
       do {
-        for try await result in transcriber.results {
-          let text = cleanText(String(result.text.characters))
+        for try await result in results {
+          let text = cleanText(result.text)
           if result.isFinal {
             if !text.isEmpty { emit(["type": "final", "id": id, "text": text]) }
           } else {
@@ -357,7 +405,8 @@ final class Controller {
       await stopActive(cancel: true)
       let locale = object["locale"] as? String
       let strings = (object["contextualStrings"] as? [String]) ?? []
-      await start(id: id, locale: locale, contextualStrings: strings)
+      let variant = (object["variant"] as? String) ?? "speech"
+      await start(id: id, locale: locale, contextualStrings: strings, variant: variant)
     case "audio":
       guard let id, id == activeId, let base64 = object["data"] as? String,
             let bytes = Data(base64Encoded: base64) else { return }
@@ -376,14 +425,14 @@ final class Controller {
     }
   }
 
-  private func start(id: String, locale: String?, contextualStrings: [String]) async {
+  private func start(id: String, locale: String?, contextualStrings: [String], variant: String) async {
     activeId = id
     do {
       #if compiler(>=6.2)
       if #available(macOS 26, *), useAnalyzer() {
         let analyzer = AnalyzerRecognizer(id: id)
         recognizer = analyzer
-        try await analyzer.start(localeIdentifier: locale, contextualStrings: contextualStrings)
+        try await analyzer.start(localeIdentifier: locale, contextualStrings: contextualStrings, variant: variant)
         emit(["type": "ready", "id": id])
         return
       }

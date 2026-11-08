@@ -15,6 +15,8 @@ export interface UseDictationResult {
   enabled: boolean;
   recording: boolean;
   status: DictationStatus | null;
+  /** Recording and real (non-silent) audio is arriving: safe to talk. */
+  hearing: boolean;
   toggle: () => void;
 }
 
@@ -30,6 +32,7 @@ export function useDictation(targetKey: string | null): UseDictationResult {
     enabled,
     recording,
     status: recording ? (session ?? INITIAL_DICTATION_SESSION).status : null,
+    hearing: recording && !!active?.hearing,
     toggle,
   };
 }

@@ -50,14 +50,44 @@ export interface DictationControllerDeps {
   contextStrings: () => string[];
   newId: () => string;
   now: () => number;
+  /**
+   * Keep the microphone open this long after a dictation ends so the next one
+   * starts hot. Bluetooth headsets take about 2s to switch into mic mode and
+   * deliver digital silence meanwhile, which swallowed the first words.
+   * 0 (default) closes it immediately.
+   */
+  micWarmMs?: number;
+  /** 'auto' resolves to macOS system dictation on a Mac. */
+  isMac?: boolean;
+  /** Defaults to document.activeElement. */
+  activeElement?: () => Element | null;
 }
+
+/** One open microphone, shared across back-to-back dictations while warm. */
+interface MicHolder {
+  capture: Pick<AudioCapture, 'start' | 'stop'>;
+  /** Where audio goes right now; null while parked (audio is dropped). */
+  sink: ((pcm16Base64: string) => void) | null;
+  ready: Promise<void>;
+  closed: boolean;
+  idleTimer: ReturnType<typeof setTimeout> | null;
+}
+
+/** All-zero PCM16 encodes to only 'A' (plus padding): device warm-up silence. */
+const SILENT_CHUNK = /^A+=*$/;
 
 interface DictationRecord {
   dictationId: string;
   target: RegisteredDictationTarget;
   surface: DictationSurface;
   engine: string | null;
-  capture: Pick<AudioCapture, 'start' | 'stop'> | null;
+  mic: MicHolder | null;
+  /** Audio captured before the engine accepted the dictation; null once streaming. */
+  pendingAudio: string[] | null;
+  /** First non-silent audio arrived. */
+  heard: boolean;
+  /** Mic released for this record (stopped, cancelled, or failed). */
+  micReleased: boolean;
   startedAt: number;
   stoppedAt: number | null;
   /** Stop was requested before start finished (released a held key early). */
@@ -88,11 +118,18 @@ const FAILURE_MESSAGES: Record<DictationStartFailure, string> = {
 export class DictationController {
   private records = new Map<string, DictationRecord>();
   private activeId: string | null = null;
+  private mic: MicHolder | null = null;
 
   constructor(private deps: DictationControllerDeps) {}
 
   isEnabled(): boolean {
     return this.deps.store.get(dictationSettingsAtom).enabled;
+  }
+
+  /** Auto on a Mac, or chosen explicitly: hand off to the OS dictation. */
+  usesSystemDictation(): boolean {
+    const engine = this.deps.store.get(dictationSettingsAtom).engine;
+    return engine === 'system' || (engine === 'auto' && !!this.deps.isMac);
   }
 
   isRecording(targetKey?: string): boolean {
@@ -104,8 +141,21 @@ export class DictationController {
   /** Start in the focused surface (shortcut). Returns false when nothing happened. */
   startInFocused(trigger: DictationTrigger): Promise<boolean> {
     const target = findFocusedDictationTarget();
-    if (!target) return Promise.resolve(false);
-    return this.start(target, trigger);
+    if (target) return this.start(target, trigger);
+    // macOS dictation inserts into whatever has focus, so any editable field
+    // works, not only surfaces that registered a dictation target.
+    if (this.isEnabled() && this.usesSystemDictation() && this.focusedIsEditable()) {
+      return this.startSystem('other', trigger);
+    }
+    return Promise.resolve(false);
+  }
+
+  private focusedIsEditable(): boolean {
+    const el = this.deps.activeElement ? this.deps.activeElement() : (typeof document !== 'undefined' ? document.activeElement : null);
+    if (!el) return false;
+    if ((el as HTMLElement).isContentEditable) return true;
+    const tag = el.tagName;
+    return tag === 'TEXTAREA' || (tag === 'INPUT' && !(el as HTMLInputElement).readOnly);
   }
 
   /** Mic button: start in this target, or stop if it is already recording. */
@@ -121,7 +171,8 @@ export class DictationController {
   async start(target: RegisteredDictationTarget, trigger: DictationTrigger): Promise<boolean> {
     // Disabled means inert: no IPC, no microphone, no message.
     if (!this.isEnabled()) return false;
-    if (this.activeId) this.stop(false);
+    if (this.usesSystemDictation()) return this.startSystem(target.surface, trigger);
+    if (this.activeId) this.stopRecord(this.activeId, false);
 
     const { store: s } = this.deps;
     const dictationId = this.deps.newId();
@@ -133,7 +184,10 @@ export class DictationController {
       target,
       surface: target.surface,
       engine: null,
-      capture: null,
+      mic: null,
+      pendingAudio: [],
+      heard: false,
+      micReleased: false,
       startedAt: this.deps.now(),
       stoppedAt: null,
       stopRequested: null,
@@ -145,7 +199,12 @@ export class DictationController {
     };
     this.records.set(dictationId, record);
     this.activeId = dictationId;
-    s.set(activeDictationAtom, { dictationId, targetKey: target.key, surface: target.surface });
+    s.set(activeDictationAtom, { dictationId, targetKey: target.key, surface: target.surface, hearing: false });
+
+    // Open the microphone now, in parallel with the engine start, and buffer
+    // until the engine accepts. Waiting for main first lost about 1.3s of
+    // speech at the start of every dictation.
+    const micReady = this.attachMic(record);
 
     const request: DictationStartRequest = { dictationId, contextStrings: this.deps.contextStrings() };
     let result: DictationStartResult;
@@ -163,32 +222,39 @@ export class DictationController {
       if (failure.reason !== 'disabled') {
         this.deps.notify('Dictation could not start', failure.message || FAILURE_MESSAGES[failure.reason]);
       }
+      this.releaseMic(record, true);
       this.finish(dictationId);
       return false;
     }
-
     record.engine = result.engine;
-    const capture = this.deps.createCapture();
-    try {
-      await capture.start((base64) => this.deps.send(DICTATION_IPC.audio, dictationId, base64));
-    } catch (error) {
+
+    let micError = await micReady;
+    if (micError && this.records.has(dictationId)) {
+      // First use: the mic opened before main's OS permission check granted
+      // it. Main has asked by now, so try once more.
+      this.releaseMic(record, true);
+      record.micReleased = false;
+      micError = await this.attachMic(record);
+    }
+    if (!this.records.has(dictationId)) return false;
+    if (micError) {
       this.deps.notify(
         'Dictation could not use the microphone',
-        error instanceof Error ? error.message : FAILURE_MESSAGES['mic-denied'],
+        micError instanceof Error ? micError.message : FAILURE_MESSAGES['mic-denied'],
       );
       void this.sendStop(dictationId, true);
+      this.releaseMic(record, true);
       this.finish(dictationId);
       return false;
     }
-    if (!this.records.has(dictationId)) {
-      // Ended while the microphone was opening: release it.
-      capture.stop();
-      return false;
-    }
-    record.capture = capture;
+
+    // Engine is listening: send what was said while it started, then stream.
+    const buffered = record.pendingAudio ?? [];
+    record.pendingAudio = null;
+    for (const chunk of buffered) this.deps.send(DICTATION_IPC.audio, dictationId, chunk);
     this.deps.capture('dictation_started', { engine: result.engine, surface: target.surface, trigger });
 
-    if (record.stopRequested) this.stop(record.stopRequested.cancel);
+    if (record.stopRequested) this.stopRecord(dictationId, record.stopRequested.cancel);
     return true;
   }
 
@@ -197,19 +263,24 @@ export class DictationController {
    * engine not to flush; otherwise trailing finals still land.
    */
   stop(cancel: boolean): void {
-    const id = this.activeId;
-    if (!id) return;
+    if (this.activeId) this.stopRecord(this.activeId, cancel);
+  }
+
+  /** Stop one dictation by id, whether or not it still owns the UI. */
+  private stopRecord(id: string, cancel: boolean): void {
     const record = this.records.get(id);
     if (!record) return;
-    if (!record.capture) {
-      // Still starting: remember and apply once start resolves.
+    if (record.pendingAudio !== null) {
+      // Engine still starting: keep buffering and stop once start resolves.
       record.stopRequested = { cancel };
       if (cancel) this.clearPartial(record);
       return;
     }
-    this.activeId = null;
-    this.deps.store.set(activeDictationAtom, null);
-    record.capture.stop();
+    if (this.activeId === id) {
+      this.activeId = null;
+      this.deps.store.set(activeDictationAtom, null);
+    }
+    this.releaseMic(record);
     record.stoppedAt = this.deps.now();
     if (cancel) this.clearPartial(record);
     const sessionAtom = dictationSessionAtomFamily(id);
@@ -222,7 +293,101 @@ export class DictationController {
       this.finish(id);
       return;
     }
-    record.cleanupTimer = setTimeout(() => this.finish(id), ENDED_GRACE_MS);
+    if (!record.cleanupTimer) record.cleanupTimer = setTimeout(() => this.finish(id), ENDED_GRACE_MS);
+  }
+
+  /**
+   * macOS dictation owns the mic, recognition, insertion and its own UI, and
+   * we get no events back, so nothing is tracked here.
+   */
+  private async startSystem(surface: DictationSurface | 'other', trigger: DictationTrigger): Promise<boolean> {
+    if (this.activeId) this.stopRecord(this.activeId, true);
+    // macOS needs the microphone; release ours, warm or not.
+    if (this.mic) this.closeMic(this.mic);
+    let result: { ok?: boolean } | undefined;
+    try {
+      result = await this.deps.invoke(DICTATION_IPC.systemStart);
+    } catch {
+      result = undefined;
+    }
+    if (!result?.ok) {
+      this.deps.notify('Dictation could not start', 'macOS dictation is not available. Choose another engine in Settings > Dictation.');
+      return false;
+    }
+    this.deps.capture('dictation_started', { engine: 'system', surface, trigger });
+    return true;
+  }
+
+  /** Route microphone audio to this record, opening the mic (or reusing a warm one). */
+  private attachMic(record: DictationRecord): Promise<unknown> {
+    let holder = this.mic;
+    if (holder && !holder.closed) {
+      if (holder.idleTimer) clearTimeout(holder.idleTimer);
+      holder.idleTimer = null;
+    } else {
+      const created: MicHolder = {
+        capture: this.deps.createCapture(),
+        sink: null,
+        ready: Promise.resolve(),
+        closed: false,
+        idleTimer: null,
+      };
+      created.ready = created.capture.start((b64) => created.sink?.(b64));
+      this.mic = holder = created;
+    }
+    record.mic = holder;
+    holder.sink = (b64) => this.onAudio(record, b64);
+    return holder.ready.then(
+      () => null,
+      (error: unknown) => {
+        this.closeMic(holder!);
+        return error ?? new Error('microphone failed');
+      },
+    );
+  }
+
+  private onAudio(record: DictationRecord, b64: string): void {
+    if (record.micReleased) return;
+    if (!record.heard) {
+      if (SILENT_CHUNK.test(b64)) return; // device still waking up
+      record.heard = true;
+      const active = this.deps.store.get(activeDictationAtom);
+      if (active?.dictationId === record.dictationId) {
+        this.deps.store.set(activeDictationAtom, { ...active, hearing: true });
+      }
+    }
+    if (record.pendingAudio) record.pendingAudio.push(b64);
+    else this.deps.send(DICTATION_IPC.audio, record.dictationId, b64);
+  }
+
+  /** Detach the record from the mic; park it warm unless `immediate`. */
+  private releaseMic(record: DictationRecord, immediate = false): void {
+    if (record.micReleased) return;
+    record.micReleased = true;
+    const holder = record.mic;
+    if (!holder || holder.closed) return;
+    holder.sink = null;
+    const warmMs = this.deps.micWarmMs ?? 0;
+    if (immediate || warmMs <= 0) {
+      this.closeMic(holder);
+      return;
+    }
+    if (holder.idleTimer) clearTimeout(holder.idleTimer);
+    holder.idleTimer = setTimeout(() => this.closeMic(holder), warmMs);
+  }
+
+  private closeMic(holder: MicHolder): void {
+    if (holder.closed) return;
+    holder.closed = true;
+    holder.sink = null;
+    if (holder.idleTimer) clearTimeout(holder.idleTimer);
+    holder.idleTimer = null;
+    try {
+      holder.capture.stop();
+    } catch {
+      // already stopped
+    }
+    if (this.mic === holder) this.mic = null;
   }
 
   private async sendStop(dictationId: string, cancel: boolean): Promise<void> {
@@ -285,7 +450,6 @@ export class DictationController {
         // Engine ended on its own while we were recording.
         this.activeId = null;
         this.deps.store.set(activeDictationAtom, null);
-        record.capture?.stop();
         record.stoppedAt = this.deps.now();
       }
       this.finish(dictationId);
@@ -316,8 +480,11 @@ export class DictationController {
     if (this.activeId === dictationId) {
       this.activeId = null;
       this.deps.store.set(activeDictationAtom, null);
-      record.capture?.stop();
     }
+    // Whatever ended this record, its audio stops here (the review's
+    // overlapping-start bug left the mic running when only the active
+    // record was released).
+    this.releaseMic(record);
     if (record.lastPartial) this.clearPartial(record);
     if (record.insertedSegments > 0) {
       this.deps.capture('dictation_inserted', {
@@ -371,7 +538,13 @@ export function getDictationController(): DictationController {
       store,
       invoke: (channel, ...args) => window.electronAPI.invoke(channel, ...args),
       send: (channel, ...args) => window.electronAPI.send(channel, ...args),
-      createCapture: () => new AudioCapture(),
+      // Accuracy experiment (2026-11-06): flip with renderer_eval
+      // `window.__nimDictationMicProcessing = false` to compare raw audio.
+      // No warm window: an open mic blocks macOS dictation from starting
+      // (it stalls before the recognizer runs), and macOS is the Mac default.
+      isMac: navigator.platform.startsWith('Mac'),
+      createCapture: () =>
+        new AudioCapture({ processing: (window as { __nimDictationMicProcessing?: boolean }).__nimDictationMicProcessing ?? true }),
       notify: (title, message) => {
         errorNotificationService.showWarning(title, message, { allowDuplicate: true });
       },

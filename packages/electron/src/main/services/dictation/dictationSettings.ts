@@ -4,7 +4,7 @@ import {
   type DictationSettings,
 } from '../../../shared/dictation';
 
-const ENGINE_SETTINGS: DictationEngineSetting[] = ['auto', 'on-device', 'openai'];
+const ENGINE_SETTINGS: DictationEngineSetting[] = ['auto', 'system', 'on-device', 'openai'];
 
 /** Coerce a stored or renderer-supplied value into valid settings. */
 export function normalizeDictationSettings(value: unknown): DictationSettings {

@@ -13,6 +13,7 @@ import { SettingsToggle } from '../GlobalSettings/SettingsToggle';
 
 const ENGINE_OPTIONS: Array<{ value: DictationEngineSetting; label: string }> = [
   { value: 'auto', label: 'Auto' },
+  { value: 'system', label: 'macOS dictation' },
   { value: 'on-device', label: 'On-device (macOS)' },
   { value: 'openai', label: 'OpenAI' },
 ];
@@ -37,7 +38,15 @@ function describeDictationAvailability(
   availability: DictationAvailability | null,
 ): { ok: boolean; text: string } | null {
   if (!availability) return null;
-  const { onDevice, openai } = availability;
+  const { system, onDevice, openai } = availability;
+  if (engine === 'system' || (engine === 'auto' && system)) {
+    return system
+      ? {
+          ok: true,
+          text: `${engine === 'auto' ? 'Auto uses macOS dictation' : 'Uses macOS dictation'}: it starts instantly and follows your Keyboard > Dictation settings in System Settings. The shortcut starts it when you release the keys; it stops after a pause.`,
+        }
+      : { ok: false, text: 'macOS dictation is only available on a Mac. Choose Auto or OpenAI instead.' };
+  }
   if (engine === 'on-device') {
     return onDevice
       ? { ok: true, text: 'On-device recognition is available. Audio stays on this Mac.' }
