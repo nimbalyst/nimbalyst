@@ -63,6 +63,7 @@ const {
     webContents: {
       listeners: webContentsListeners,
       send: vi.fn(),
+      on: vi.fn((event: string, handler: CallableFunction) => { webContentsListeners.set(event, handler); }),
       once: vi.fn((event: string, handler: CallableFunction) => { webContentsListeners.set(event, handler); }),
       insertCSS: vi.fn(() => Promise.resolve('css-key')),
     },
@@ -231,6 +232,21 @@ describe('MenuBarIslandWindow', () => {
     expect(win.hide).not.toHaveBeenCalled();
     expect(win.isVisible()).toBe(true);
     expect(browserWindowCtor).toHaveBeenCalledTimes(1);
+  });
+
+  // The BrowserWindow outlives its renderer. After a sleep/wake the frame can be
+  // gone while `isDestroyed()` is still false, so without this the island stays
+  // blank and every repaint sends into a disposed frame.
+  it('rebuilds the window on the next repaint after its renderer is gone', () => {
+    showMenuBarIsland(frame(1));
+    expect(browserWindowCtor).toHaveBeenCalledTimes(1);
+
+    win.webContents.listeners.get('render-process-gone')?.({}, { reason: 'killed' });
+    win.webContents.send.mockClear();
+    showMenuBarIsland(frame(2));
+
+    expect(win.destroy).toHaveBeenCalled();
+    expect(browserWindowCtor).toHaveBeenCalledTimes(2);
   });
 
   it("hides Vite's error overlay before showing the development island", async () => {
