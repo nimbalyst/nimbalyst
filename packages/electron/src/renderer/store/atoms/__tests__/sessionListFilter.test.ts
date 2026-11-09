@@ -2,8 +2,12 @@
 import { describe, expect, it } from 'vitest';
 import type { SessionMeta } from '@nimbalyst/runtime';
 import {
+  AUTOMATIONS_GROUP_KEY,
+  isAutomationSession,
+  isSessionListGroupCollapsed,
   isWorkstreamParentSession,
   matchesSessionListTag,
+  toggleSessionListGroup,
   VIRTUAL_TAG_WORKSTREAMS,
   VIRTUAL_TAG_WORKTREE,
 } from '../sessionListFilter';
@@ -60,5 +64,27 @@ describe('session list virtual tags', () => {
     expect(matchesSessionListTag(worktreeSession, VIRTUAL_TAG_WORKTREE, registry)).toBe(true);
     expect(matchesSessionListTag(standalone, 'feature', registry)).toBe(true);
     expect(matchesSessionListTag(standalone, 'missing', registry)).toBe(false);
+  });
+});
+
+describe('automation sessions', () => {
+  it('matches only titles the automations extension sets', () => {
+    expect(isAutomationSession(session({ id: 'a', title: 'Automation: Daily Post-Due Nudge' }))).toBe(true);
+    expect(isAutomationSession(session({ id: 'b', title: 'Daily post-due nudge' }))).toBe(false);
+    expect(isAutomationSession(session({ id: 'c', title: 'Automations sidebar grouping' }))).toBe(false);
+  });
+
+  it('keeps the Automations group collapsed until the user opens it', () => {
+    expect(isSessionListGroupCollapsed([], AUTOMATIONS_GROUP_KEY)).toBe(true);
+    const opened = toggleSessionListGroup([], AUTOMATIONS_GROUP_KEY);
+    expect(isSessionListGroupCollapsed(opened, AUTOMATIONS_GROUP_KEY)).toBe(false);
+    expect(isSessionListGroupCollapsed(toggleSessionListGroup(opened, AUTOMATIONS_GROUP_KEY), AUTOMATIONS_GROUP_KEY)).toBe(true);
+  });
+
+  it('leaves other groups expanded by default', () => {
+    expect(isSessionListGroupCollapsed([], 'Today')).toBe(false);
+    const collapsed = toggleSessionListGroup([], 'Today');
+    expect(collapsed).toEqual(['Today']);
+    expect(isSessionListGroupCollapsed(collapsed, 'Today')).toBe(true);
   });
 });

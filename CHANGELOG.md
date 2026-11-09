@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 <!-- New features go here -->
+- Scheduled automation runs sit in a collapsed Automations group in the session list, so daily and weekly runs stop pushing your own sessions down the list.
 
 ### Changed
 <!-- Changes to existing functionality go here -->
