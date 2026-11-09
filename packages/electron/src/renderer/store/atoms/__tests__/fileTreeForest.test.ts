@@ -12,6 +12,7 @@ import {
   replaceFolderChildren,
   keepLoadedTruncatedChildren,
   findExpandedTruncatedFolders,
+  buildTreeRenderRows,
   type RendererFileTreeItem,
 } from '../fileTree';
 
@@ -169,6 +170,21 @@ describe('omitted entries under a capped folder', () => {
     expect(omitted).toEqual([
       { row: { folderPath: '/proj/big', count: 51, depth: 1 }, after: '/proj/big/z/inner.md' },
     ]);
+  });
+
+  it('renders the note as its own fixed-height list item that navigation indices skip', () => {
+    const nodes = flatten(capped, ['/proj'], ['/proj/big', '/proj/big/z']);
+    const { rows, renderIndexOf } = buildTreeRenderRows(nodes);
+
+    // One virtual item per rendered row, so a fixed item height holds for every item.
+    expect(rows.map((row) => (row.kind === 'node' ? row.node.path : `note:${row.folderPath}:${row.count}`))).toEqual([
+      '/proj/big', '/proj/big/a.md', '/proj/big/z', '/proj/big/z/inner.md', 'note:/proj/big:51', '/proj/after.md',
+    ]);
+    // Navigation index -> rendered index, for scrolling a focused node into view.
+    expect(renderIndexOf).toEqual([0, 1, 2, 3, 5]);
+    rows.forEach((row, renderIndex) => {
+      if (row.kind === 'node') expect(renderIndexOf[row.node.index]).toBe(renderIndex);
+    });
   });
 
   it('shows no omitted row while the capped folder is collapsed', () => {

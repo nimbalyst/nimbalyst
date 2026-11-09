@@ -121,7 +121,33 @@ describe('FileTree All Files Mode', () => {
         expect(smallNode.omittedChildCount ?? 0).toBe(0);
     });
 
-    it('counts symlinks the cap skipped without a stat as omitted, but not broken links', async () => {
+    it('does not count a broken symlink the cap skipped as a hidden entry', async () => {
+        const big = path.join(tempDir, 'big');
+        fs.mkdirSync(big);
+        for (let i = 1; i <= 200; i++) fs.mkdirSync(path.join(big, `d-${String(i).padStart(3, '0')}`));
+        fs.symlinkSync(path.join(big, 'missing'), path.join(big, 'zz-broken'));
+
+        const result = await getFolderContents(tempDir);
+
+        expect(result[0].children).toHaveLength(200);
+        expect(result[0].omittedChildCount ?? 0).toBe(0);
+    });
+
+    it('stops resolving skipped symlinks past a bound and marks the count as a minimum', async () => {
+        const big = path.join(tempDir, 'big');
+        fs.mkdirSync(big);
+        for (let i = 1; i <= 200; i++) fs.mkdirSync(path.join(big, `d-${String(i).padStart(3, '0')}`));
+        for (let i = 1; i <= 205; i++) fs.symlinkSync(path.join(big, 'd-001'), path.join(big, `zz-${String(i).padStart(3, '0')}`));
+        vi.mocked(stat).mockClear();
+
+        const result = await getFolderContents(tempDir);
+
+        expect(vi.mocked(stat).mock.calls.length).toBeLessThanOrEqual(200);
+        expect(result[0].omittedChildCount).toBe(200);
+        expect(result[0].omittedChildCountIsMinimum).toBe(true);
+    });
+
+    it('counts live symlinks the cap pushed out, but not broken links', async () => {
         const big = path.join(tempDir, 'big');
         fs.mkdirSync(big);
         for (let i = 1; i <= 201; i++) fs.mkdirSync(path.join(big, `d-${String(i).padStart(3, '0')}`));
@@ -131,8 +157,8 @@ describe('FileTree All Files Mode', () => {
 
         const result = await getFolderContents(tempDir);
 
-        // 201 dirs + 2 live links = 203 visible entries; 200 kept. zz-link is
-        // never stat'd and counts; a-broken is stat'd, broken, and does not.
+        // 201 dirs + 2 live links = 203 visible entries; 200 kept. a-broken
+        // resolves as broken and does not count.
         expect(result[0].omittedChildCount).toBe(3);
     });
 
@@ -147,8 +173,9 @@ describe('FileTree All Files Mode', () => {
         expect(result).toHaveLength(200);
         expect(result[0]).toMatchObject({ name: 'a-link', type: 'directory' });
         expect(result.map(item => item.name)).not.toContain('zz-link');
-        // Only a-link could land inside the cap; zz-link sorts after d-199 even as a directory.
-        expect(vi.mocked(stat).mock.calls.map(([p]) => path.basename(String(p)))).toEqual(['a-link']);
+        // Only a-link could land inside the cap; zz-link sorts after d-199 even
+        // as a directory, so it is stat'd once afterwards, only to be counted.
+        expect(vi.mocked(stat).mock.calls.map(([p]) => path.basename(String(p)))).toEqual(['a-link', 'zz-link']);
     });
 
     it('should return empty folders', async () => {

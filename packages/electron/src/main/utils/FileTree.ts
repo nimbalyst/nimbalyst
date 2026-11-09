@@ -40,6 +40,9 @@ const naturalCollator = new Intl.Collator(undefined, {
 //   This handles flat-huge directories (e.g., a folder with 50,000 images).
 const MAX_DEPTH = 8;
 const MAX_ITEMS_PER_DIR = 200;
+// Symlinks the cap skipped are stat'd afterwards only to count them, at most
+// this many per folder. Past it the count is a minimum.
+const MAX_OMITTED_LINK_STATS = 200;
 
 // Special directories that should always appear first
 const SPECIAL_DIRECTORIES = ['nimbalyst-local'];
@@ -141,36 +144,37 @@ async function readFolder(
     dirPath: string,
     depth: number,
     signal?: AbortSignal
-): Promise<{ items: FileTreeItem[]; omitted: number }> {
+): Promise<{ items: FileTreeItem[]; omitted: number; omittedIsMinimum: boolean }> {
     const result: FileTreeItem[] = [];
-    // Entries that would have been visible without the cap. Symlinks the cap
-    // skipped are counted without a stat, so a skipped link that is broken or
-    // targets an excluded folder still counts; a stat'd broken link does not.
+    // Entries that would have been visible without the cap: broken symlinks
+    // and links to excluded folders are not displayable and do not count.
     let visibleTotal = 0;
+    let omittedIsMinimum = false;
+    const aborted = { items: [], omitted: 0, omittedIsMinimum: false };
 
     if (signal?.aborted || depth > MAX_DEPTH) {
-        return { items: result, omitted: 0 };
+        return aborted;
     }
 
     try {
         const entries = await readdir(dirPath, { withFileTypes: true });
         const symlinks: Dirent[] = [];
 
+        const isDisplayable = (name: string, fullPath: string, isDir: boolean, isFile: boolean) =>
+            isDir ? !(shouldExcludeDir(name) || shouldExcludePath(fullPath)) : isFile;
         const addItem = (name: string, fullPath: string, isDir: boolean, isFile: boolean) => {
-            if (isDir) {
-                if (shouldExcludeDir(name) || shouldExcludePath(fullPath)) return;
-                result.push({ name, type: 'directory', path: fullPath, children: [] });
-                visibleTotal++;
-            } else if (isFile) {
-                result.push({ name, type: 'file', path: fullPath });
-                visibleTotal++;
-            }
+            if (!isDisplayable(name, fullPath, isDir, isFile)) return;
+            result.push(isDir
+                ? { name, type: 'directory', path: fullPath, children: [] }
+                : { name, type: 'file', path: fullPath });
+            visibleTotal++;
         };
+        const skippedLinks: Dirent[] = [];
 
         // Plain files and directories are typed by readdir itself, so the whole
         // folder can be sorted before the cap without any per-entry I/O.
         for (const entry of entries) {
-            if (signal?.aborted) return { items: [], omitted: 0 };
+            if (signal?.aborted) return aborted;
             if (entry.name === '.DS_Store') continue;
             if (entry.isSymbolicLink()) {
                 symlinks.push(entry);
@@ -187,10 +191,10 @@ async function readFolder(
         // when the link would land past the cap even as a directory (the earliest
         // it can sort), so a huge folder of links is not stat'd entry by entry.
         for (const entry of symlinks) {
-            if (signal?.aborted) return { items: [], omitted: 0 };
+            if (signal?.aborted) return aborted;
             if (result.length >= MAX_ITEMS_PER_DIR
                 && compareItems({ name: entry.name, type: 'directory', path: '' }, result[result.length - 1]) >= 0) {
-                visibleTotal++;
+                skippedLinks.push(entry);
                 continue;
             }
             const fullPath = join(dirPath, entry.name);
@@ -199,6 +203,18 @@ async function readFolder(
             addItem(entry.name, fullPath, resolved.isDir, resolved.isFile);
             sortItems(result);
             if (result.length > MAX_ITEMS_PER_DIR) result.length = MAX_ITEMS_PER_DIR;
+        }
+
+        // Count skipped links only once they resolve to something displayable.
+        for (const [index, entry] of skippedLinks.entries()) {
+            if (signal?.aborted) return aborted;
+            if (index >= MAX_OMITTED_LINK_STATS) {
+                omittedIsMinimum = true;
+                break;
+            }
+            const fullPath = join(dirPath, entry.name);
+            const resolved = await resolveEntryType(entry, fullPath);
+            if (resolved && isDisplayable(entry.name, fullPath, resolved.isDir, resolved.isFile)) visibleTotal++;
         }
 
         const directoriesToPopulate = result.filter(item => item.type === 'directory');
@@ -210,7 +226,7 @@ async function readFolder(
         // Recurse sequentially to avoid unbounded file-descriptor fan-out.
         // Each call is still async (non-blocking), so the main thread stays responsive.
         for (const directory of directoriesToPopulate) {
-            if (signal?.aborted) return { items: [], omitted: 0 };
+            if (signal?.aborted) return aborted;
             // Past the limit the folder is unread, not empty. Say so, or a
             // rebuild replaces children the renderer loaded on expand with [].
             if (depth + 1 > MAX_DEPTH) {
@@ -220,6 +236,7 @@ async function readFolder(
             const child = await readFolder(directory.path, depth + 1, signal);
             directory.children = child.items;
             if (child.omitted > 0) directory.omittedChildCount = child.omitted;
+            if (child.omittedIsMinimum) directory.omittedChildCountIsMinimum = true;
         }
     } catch (error: any) {
         if (error.code !== 'ENOENT') {
@@ -227,5 +244,5 @@ async function readFolder(
         }
     }
 
-    return { items: result, omitted: visibleTotal - result.length };
+    return { items: result, omitted: visibleTotal - result.length, omittedIsMinimum };
 }

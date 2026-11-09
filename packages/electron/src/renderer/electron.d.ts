@@ -25,6 +25,7 @@ interface FileTreeItem {
   children?: FileTreeItem[];
   childrenTruncated?: boolean;
   omittedChildCount?: number;
+  omittedChildCountIsMinimum?: boolean;
 }
 
 interface ClaudeForWindowsInstallation {
