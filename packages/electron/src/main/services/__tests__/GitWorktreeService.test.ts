@@ -43,7 +43,10 @@ const fixtureGit = (dir: string) => createGit(dir, {}, gitSandboxEnv(undefined, 
 async function initRepo(dir: string): Promise<void> {
   fs.mkdirSync(dir, { recursive: true });
   const git = fixtureGit(dir);
-  await git.init();
+  // Pinned: simple-git fixtures read the host's ~/.gitconfig, so a bare init
+  // names the branch after the machine's init.defaultBranch (main here, master
+  // on CI) and the tests that expect `main` pass only locally.
+  await git.init(['--initial-branch=main']);
   await git.addConfig('user.email', 'test@example.com', false, 'local');
   await git.addConfig('user.name', 'Test', false, 'local');
   await git.addConfig('commit.gpgsign', 'false', false, 'local');
