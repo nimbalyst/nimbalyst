@@ -124,6 +124,12 @@ export interface TurnState {
    * end of the turn. NIM-1470.
    */
   sawTaskNotificationThisTurn: boolean;
+  /**
+   * How many of the turn's terminal task notifications the model took in: those
+   * recorded by the last lead tool result, since the CLI reads queued
+   * notifications into the request that follows one. #1410.
+   */
+  notificationsTakenIn: number;
   /** A `rate_limit_event` blocked this turn; the terminal error carries its reset. */
   blockingUsageLimit: BlockingUsageLimit | null;
 
@@ -170,6 +176,7 @@ export function createTurnState(init: {
     completeEmitted: false,
     sawAssistantOutputThisTurn: false,
     sawTaskNotificationThisTurn: false,
+    notificationsTakenIn: 0,
     blockingUsageLimit: null,
 
     usageData: undefined,
