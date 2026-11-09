@@ -135,6 +135,7 @@ import {
   canAdoptDrainingQuery,
   DrainHandoff,
   LIVE_WAKE_TIMEOUT_MS,
+  parkedUntilAborted,
   type AdoptedQuery,
 } from './claudeCode/drainHandoff';
 import {
@@ -984,6 +985,7 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
           // means the message was lost.
           // Behind its live wake, this turn stops reading: the CLI's turn about the
           // results stays queued in the iterator for the wake turn that adopts it.
+          // A turn that replaces it without adopting aborts it, which still ends it.
           const parked = this.liveWake !== null && carriedNext === null;
           const watchdogActive = !parked && (awaitingSuggestion || (bindUuid !== null ? foreignResultSeen : shouldArmStreamStallWatchdog({
             resultReceivedTime: state.resultReceivedTime,
@@ -992,7 +994,7 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
             hasPendingUserInteraction: this.hasPendingUserInteraction(),
           })));
           const nextPromise: Promise<IteratorResult<any>> = parked
-            ? new Promise<never>(() => {})
+            ? parkedUntilAborted(turnController?.signal)
             : carriedNext ?? iterator.next();
           carriedNext = null;
           const raceResult = await raceNextChunkWithStallWatchdog<any>({

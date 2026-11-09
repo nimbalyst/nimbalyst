@@ -31,6 +31,25 @@ export const DRAIN_HANDOFF_TIMEOUT_MS = 10_000;
 /** How long the drain keeps the query open for a live wake before ending the old way (close, then a cold resume). */
 export const LIVE_WAKE_TIMEOUT_MS = 60_000;
 
+/**
+ * Stands in for the next chunk while a draining turn waits behind its live wake
+ * without reading. Rejects with an AbortError when the turn is aborted (a turn
+ * that could not adopt the query replaced it), so the turn ends the way a read
+ * would have ended it.
+ */
+export function parkedUntilAborted(signal: AbortSignal | undefined): Promise<never> {
+  return new Promise<never>((_resolve, reject) => {
+    if (!signal) return;
+    const abort = (): void => {
+      const error = new Error('The draining turn was aborted while waiting for its live wake');
+      error.name = 'AbortError';
+      reject(error);
+    };
+    if (signal.aborted) abort();
+    else signal.addEventListener('abort', abort, { once: true });
+  });
+}
+
 export interface DrainAdoptionFacts {
   hasLeadQuery: boolean;
   draining: boolean;

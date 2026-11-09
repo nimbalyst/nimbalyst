@@ -1435,9 +1435,43 @@ describe('ClaudeCodeProvider.sendMessage chunk sequence', () => {
     expect(live.close).not.toHaveBeenCalled();
     expect(idleMessages).toHaveLength(1);
   });
+
+  // The draining turn stops reading behind its live wake. A wake turn that cannot
+  // take the live CLI over aborts it instead, and the parked turn must still end.
+  it('ends the parked turn and closes its CLI when the wake turn starts a new query', async () => {
+    const { provider } = await makeProvider();
+    const live = liveQuery();
+    queryMock.mockImplementation(({ prompt }: { prompt: AsyncIterable<unknown> }) => {
+      live.attach(prompt);
+      return live.query;
+    });
+    const idleMessages: Array<{ message: string }> = [];
+    provider.on('teammate:messageWhileIdle', (payload) => idleMessages.push(payload));
+
+    live.send(INIT_CHUNK, backgroundShell('task_1', 'sleep 45'), STARTED, LEAD_RESULT);
+    const first: StreamChunk[] = [];
+    let firstTurnEnded = false;
+    const firstTurn = runTurn(provider, 'start the shell', (chunk) => first.push(chunk))
+      .then(() => { firstTurnEnded = true; });
+    await waitFor(() => first.some((chunk) => chunk.type === 'complete'));
+    live.send(shellSettled('task_1'));
+    await waitFor(() => idleMessages.length === 1);
+
+    // The live CLI runs the old model, so the wake turn starts a new query.
+    (provider as unknown as { config: { model: string } }).config.model = 'opus';
+    queryMock.mockImplementation(() => scriptQuery([INIT_CHUNK, { type: 'result', subtype: 'success', is_error: false, num_turns: 1 }]));
+    await runTurn(provider, idleMessages[0].message);
+    expect(queryMock).toHaveBeenCalledTimes(2);
+    expect(JSON.stringify(stubsOf(provider).logAgentMessage.mock.calls)).toContain('closed the Claude Code process');
+
+    await waitFor(() => firstTurnEnded);
+    await firstTurn;
+    expect(live.close).toHaveBeenCalledOnce();
+    expect(idleMessages).toHaveLength(1);
+  });
 });
 
-const STARTED = { type: 'assistant', session_id: 'sdk-session-1', message: { id: 'msg_1', content: [{ type: 'text', text: 'STARTED' }] } };
+const STARTED ={ type: 'assistant', session_id: 'sdk-session-1', message: { id: 'msg_1', content: [{ type: 'text', text: 'STARTED' }] } };
 const LEAD_RESULT = { type: 'result', subtype: 'success', is_error: false, num_turns: 1 };
 
 function backgroundShell(taskId: string, description: string) {
