@@ -84,6 +84,7 @@ import { createMetaAgentSession } from '../../utils/metaAgentUtils';
 import { HelpTooltip } from '../../help';
 import { AlphaBadge } from '../common/AlphaBadge';
 import { defaultAgentModelAtom } from '../../store/atoms/appSettings';
+import { useResetOnWorkspaceChange } from './useResetOnWorkspaceChange';
 import { usePostHog } from 'posthog-js/react';
 import { projectAppearanceAtom } from '../../store/atoms/projectAppearance';
 import { WorkspaceSummaryHeader, generateWorkspaceAccentColor } from '../WorkspaceSummaryHeader';
@@ -483,6 +484,13 @@ const SessionHistoryComponent: React.FC = () => {
   const [searchFilters, setSearchFilters] = useState<SearchFilters>(DEFAULT_SEARCH_FILTERS);
   const [showSearchFilters, setShowSearchFilters] = useState(false);
   const searchFiltersRef = useRef<HTMLDivElement>(null);
+  // Clearing searchQuery changes the filter key, so the filter effect below also drops content-search results.
+  useResetOnWorkspaceChange(workspacePath, () => {
+    setSearchQuery('');
+    setContentSearchTriggered(false);
+    setPendingSearchQuery(null);
+    setSearchFilters(DEFAULT_SEARCH_FILTERS);
+  });
 
   // Tag filter state (parity with Kanban tag picker; session-only, no persistence)
   const allWorkspaceTags = useAtomValue(sessionKanbanTagsAtom);
