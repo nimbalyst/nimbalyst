@@ -489,6 +489,7 @@ const SessionHistoryComponent: React.FC = () => {
     setSearchQuery('');
     setContentSearchTriggered(false);
     setIsSearching(false);
+    setError(null);
     setPendingSearchQuery(null);
     setSearchFilters(DEFAULT_SEARCH_FILTERS);
   });
