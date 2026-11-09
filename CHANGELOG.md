@@ -10,9 +10,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 <!-- New features go here -->
+- A file tree subfolder cut off at the 200-entry limit now ends with a row saying how many items are hidden ("51 more items", or "N or more" when skipped symlinks were not checked). The workspace root folder and folders loaded on expand do not show it yet
 
 ### Changed
 <!-- Changes to existing functionality go here -->
+- Messages queued while an agent is working, typed by you or sent by other sessions, are now delivered together in one turn, each labeled with its author; slash commands and messages with a different document context still go as their own turn, and Send Now delivers everything that can share a turn in one press
+- On macOS and Linux, processes Nimbalyst starts (agent sessions, MCP servers, CLIs, git) now put the login shell's PATH ahead of the system defaults, so tools from version managers such as mise are found before `/usr/bin` versions, and PATH is deduplicated per folder
 
 ### Fixed
 <!-- Bug fixes go here -->
@@ -21,6 +24,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Creating a local wiki page whose content starts with its own frontmatter now writes one frontmatter block with those fields and type, instead of adding a second block above it
 - A question card (AskUserQuestion or PromptForUserInput) that a PreToolUse hook denies now shows as blocked with the hook's reason, instead of as answered or as a form that can still be submitted
 - The `consume_session_inbox` tool is now listed on the `nimbalyst-host` MCP server, so orchestrating agents can call it as their instructions describe
+- The Agent Sessions search is cleared when you switch workspace in the same window, and a search still running for the previous workspace no longer replaces the new workspace's list or shows its error there
+- The session machine picker labels the local machine with its device name, followed by "(this device)", instead of "This Mac" on every platform
+- When a workspace has more than 5,000 uncommitted files, the session list skips matching sessions to those files instead of sending every path to the database in one query. Git status still lists every untracked file, so this does not remove all memory growth in very large workspaces
 
 ### Removed
 <!-- Removed features go here -->

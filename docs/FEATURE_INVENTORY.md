@@ -143,7 +143,7 @@ Twelve built-in provider lanes, plus any agent an extension contributes. Every l
 - File `@` mention in input
 - Image attachment support
 - A named file or page context indicator above the chat input, with a separate short preview of selected text, consistent across Files, Agent and Wiki modes (shared, Local and Personal pages). Selection chips show selected text, mockup annotations and extension-provided items from node-like editors such as Excalidraw; each selection chip has an × to drop it from the prompt while keeping the document context, and node-like editors can report multiple selections at once
-- Queued prompts display
+- Queued prompts display; messages queued while the agent works (typed by the user or sent by other sessions) are delivered together in one turn, each labeled with its author, with slash commands and differing document context kept as separate turns
 - Slash command typeahead
 - Action prompts dropdown in composer (reusable prompt presets defined in `nimbalyst-local/ai-actions.md`; pick to insert verbatim into the draft, with undo support)
 
@@ -213,7 +213,7 @@ Twelve built-in provider lanes, plus any agent an extension contributes. Every l
 
 - Multi-folder projects -- attach folders from the File menu or quick open; their files participate in the explorer, search, and agent context, with Git tracked per repository; Quick Open, @ mentions and content search also find files in repositories cloned inside a project, and worktree sessions get the project's attached folders
 - File tree with expand/collapse and keyboard navigation
-- Virtualized file tree for large repositories
+- Virtualized file tree for large repositories; a subfolder cut off at the 200-entry limit ends with a row saying how many items are hidden
 - Context menu: rename, delete, reveal in Finder, open externally, copy path, move, copy
 - Drag-and-drop file/folder operations (Option/Alt to copy)
 - File watching with auto-reload on external changes
