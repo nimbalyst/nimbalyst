@@ -77,6 +77,15 @@ describe('getEnhancedPath ordering (#1934)', () => {
     expect(new Set(normalized).size).toBe(normalized.length);
   });
 
+  it('preserves whitespace in folder names and does not dedupe them against the unspaced folder', () => {
+    process.env.PATH = '/opt/toolchain:/usr/bin';
+    __setDetectedPathsForTest({ shellPath: '/opt/toolchain : /opt/lead:/usr/bin' });
+
+    const entries = getEnhancedPath().split(':');
+
+    expect(entries.slice(2, 6)).toEqual(['/opt/toolchain ', ' /opt/lead', '/usr/bin', '/opt/toolchain']);
+  });
+
   it('keeps process.env.PATH first among system dirs before shell detection finishes', () => {
     process.env.PATH = '/early/bin:/usr/bin';
     const entries = getEnhancedPath().split(':');

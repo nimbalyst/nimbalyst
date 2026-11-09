@@ -541,8 +541,8 @@ function dedupePathEntries(entries: string[], delimiter: string): string {
   const result: string[] = [];
   for (const entry of entries) {
     if (!entry) continue;
-    for (const raw of entry.split(delimiter)) {
-      const dir = raw.trim();
+    // No trimming: whitespace is a legal, significant part of a Unix path.
+    for (const dir of entry.split(delimiter)) {
       if (!dir) continue;
       const folder = dir.replace(/\/+$/, '') || dir;
       if (seen.has(folder)) continue;
