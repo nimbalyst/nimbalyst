@@ -202,6 +202,7 @@ import { configureUsageLimitAutoResume } from './services/ai/usageLimitAutoResum
 import { getSettingsService } from './services/SettingsService';
 import { getPendingSubmissionStore, getSessionWakeupsStore, repositoryManager } from './services/RepositoryManager';
 import { recoverPendingSubmissionsOnBoot } from './services/ai/pendingSubmissions';
+import { takeLateAnswersForRunningTurn } from './services/ai/requestUserInputOrphanedAnswer';
 import { ExtensionDevService } from './services/ExtensionDevService';
 import { MetaAgentService } from './services/MetaAgentService';
 import { notificationService } from './services/NotificationService';
@@ -2362,6 +2363,16 @@ app.whenReady().then(async () => {
     // the prompt cache. The provider resolves this once per session and freezes
     // it.
     ClaudeCodeProvider.setGitContextLoader((workspacePath: string) => getAgentGitContext(workspacePath));
+    // A widget answer queued while its turn runs reaches the turn at the next
+    // tool boundary instead of after the turn ends. Broadcast the claim like
+    // the CLI queue flush: there is no originating window, and the renderer
+    // filters by sessionId.
+    ClaudeCodeProvider.setLateAnswerLoader((sessionId: string) =>
+      takeLateAnswersForRunningTurn(sessionId, (promptId) => {
+        for (const win of BrowserWindow.getAllWindows()) {
+          if (!win.isDestroyed()) win.webContents.send('ai:promptClaimed', { sessionId, promptId });
+        }
+      }));
     // Document history for the agent tool hooks. The runtime used to import
     // HistoryManager by a relative path out of its own package, which dragged
     // the desktop app into every graph that touched session execution.

@@ -36,6 +36,7 @@ export function registerInteractivePromptHandlers(ctx: AIServiceContext): void {
     // Not a human turn: it must not supersede other open questions.
     ctx.sendMessageHandler(event, message, { promptOrigin: 'interactive-question' }, sessionId, workspacePath),
     sessionId => ctx.publishQueueStateToSync(sessionId),
+    (sessionId, workspacePath) => ctx.driveQueuedPrompts(sessionId, workspacePath, 'session-idle'),
   );
   // Handle ExitPlanMode confirmation response from renderer
   safeHandle('ai:exitPlanModeConfirmResponse', async (event, requestId: string, sessionId: string, response: ExitPlanModeResponse) => {
