@@ -54,4 +54,25 @@ describe('useResetOnWorkspaceChange', () => {
     rerender({ path: '/a' });
     expect(isCurrent()).toBe(true);
   });
+
+  it('reports a request that rejects after the workspace changed as stale, so callers skip error and finally effects', async () => {
+    const { result, rerender } = renderHook(
+      ({ path }) => useResetOnWorkspaceChange(path, vi.fn()),
+      { initialProps: { path: '/a' } },
+    );
+    let rejectSearch!: (error: Error) => void;
+    const search = new Promise<string[]>((_resolve, reject) => { rejectSearch = reject; });
+    const errors: string[] = [];
+    let searching = true;
+
+    const isCurrentA = result.current();
+    const run = search.catch(err => { if (!isCurrentA()) return; errors.push(err.message); }).finally(() => {
+      if (isCurrentA()) searching = false;
+    });
+    rerender({ path: '/b' });
+    rejectSearch(new Error('A failed'));
+    await run;
+    expect(errors).toEqual([]);
+    expect(searching).toBe(true);
+  });
 });

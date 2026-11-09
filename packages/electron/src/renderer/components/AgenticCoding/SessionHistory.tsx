@@ -488,6 +488,7 @@ const SessionHistoryComponent: React.FC = () => {
   const trackWorkspaceRequest = useResetOnWorkspaceChange(workspacePath, () => {
     setSearchQuery('');
     setContentSearchTriggered(false);
+    setIsSearching(false);
     setPendingSearchQuery(null);
     setSearchFilters(DEFAULT_SEARCH_FILTERS);
   });
@@ -709,10 +710,11 @@ const SessionHistoryComponent: React.FC = () => {
         setSessions(searchResults);
       }
     } catch (err) {
+      if (!isCurrentWorkspace()) return;
       console.error('[SessionHistory] Failed to search sessions:', err);
       setError('Failed to search sessions');
     } finally {
-      setIsSearching(false);
+      if (isCurrentWorkspace()) setIsSearching(false);
     }
   };
 
@@ -736,6 +738,7 @@ const SessionHistoryComponent: React.FC = () => {
       // Otherwise proceed with search
       await executeSearch(query);
     } catch (err) {
+      if (!isCurrentWorkspace()) return;
       console.error('[SessionHistory] Failed to search sessions:', err);
       setError('Failed to search sessions');
     }
