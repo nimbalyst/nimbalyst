@@ -14,6 +14,7 @@ const mocks = vi.hoisted(() => {
     notifyWorkspaceUsageChanged: vi.fn(),
     startWorkspaceWatcher: vi.fn(),
     stopWorkspaceWatcher: vi.fn(),
+    stopProjectFileSync: vi.fn(),
     setFileSystemService: vi.fn(),
     clearFileSystemService: vi.fn(),
     setFileSystemServiceFor: vi.fn(),
@@ -44,6 +45,7 @@ vi.mock('../../utils/ipcRegistry', () => ({
 vi.mock('../../file/WorkspaceWatcher.ts', () => ({
   startWorkspaceWatcher: mocks.startWorkspaceWatcher,
   stopWorkspaceWatcher: mocks.stopWorkspaceWatcher,
+  stopProjectFileSync: mocks.stopProjectFileSync,
 }));
 
 vi.mock('@nimbalyst/runtime', () => ({
@@ -187,6 +189,7 @@ describe('MultiProjectRailHandlers', () => {
     mocks.windowStates.clear();
     mocks.startWorkspaceWatcher.mockReset();
     mocks.stopWorkspaceWatcher.mockReset();
+    mocks.stopProjectFileSync.mockReset();
     mocks.notifyWorkspaceUsageChanged.mockReset();
     mocks.setFileSystemService.mockReset();
     mocks.clearFileSystemService.mockReset();
@@ -271,7 +274,9 @@ describe('MultiProjectRailHandlers', () => {
       const result = await invoke('workspace:set-active', { workspacePath: '/ws/b' }, 1);
 
       expect(result).toMatchObject({ success: true });
-      expect(mocks.stopWorkspaceWatcher).toHaveBeenCalledWith(1);
+      // Doc sync for /ws/a stays connected: the project is still open in the rail,
+      // and restarting it rescans every synced file on each switch.
+      expect(mocks.stopWorkspaceWatcher).toHaveBeenCalledWith(1, { keepProjectFileSync: true });
       expect(mocks.startWorkspaceWatcher).toHaveBeenCalledWith(expect.anything(), '/ws/b');
       expect(mocks.setFileSystemService).toHaveBeenCalledTimes(1);
       expect(mocks.windowStates.get(1)?.activeWorkspacePath).toBe('/ws/b');
@@ -336,6 +341,7 @@ describe('MultiProjectRailHandlers', () => {
 
       expect(mocks.documentServices.has('/ws/warm')).toBe(true);
       expect(mocks.fileSystemServices.has('/ws/warm')).toBe(true);
+      expect(mocks.stopProjectFileSync).not.toHaveBeenCalled();
     });
 
     it('does not stop the watcher when the closed path was not active', async () => {
@@ -357,9 +363,10 @@ describe('MultiProjectRailHandlers', () => {
 
       await invoke('workspace:unregister-additional', { workspacePath: '/ws/warm' }, 1);
 
-      expect(mocks.stopWorkspaceWatcher).toHaveBeenCalledWith(1);
+      expect(mocks.stopWorkspaceWatcher).toHaveBeenCalledWith(1, { keepProjectFileSync: true });
       expect(mocks.clearFileSystemService).toHaveBeenCalled();
       expect(mocks.windowStates.get(1)?.activeWorkspacePath).toBeNull();
+      expect(mocks.stopProjectFileSync).toHaveBeenCalledWith('/ws/warm');
     });
   });
 
