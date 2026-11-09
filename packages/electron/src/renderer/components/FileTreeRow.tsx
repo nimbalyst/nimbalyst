@@ -208,7 +208,7 @@ const FileTreeItemRow = ({
   onDrop,
   onRenameConfirm,
   onRenameCancel,
-}) => {
+}: FileTreeRowProps) => {
   const indent = node.depth * 16 + 8;
 
   if (node.type === 'directory') {
