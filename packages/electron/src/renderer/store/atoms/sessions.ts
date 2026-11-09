@@ -1797,6 +1797,7 @@ export const setSessionWorkspaceOpenAtom = atom(
       closed.delete(workspacePath);
     } else {
       closed.add(workspacePath);
+      sessionListCache.delete(workspacePath);
       const generations = new Map(get(sessionWorkspaceGenerationsAtom));
       generations.set(workspacePath, {});
       set(sessionWorkspaceGenerationsAtom, generations);
@@ -2328,11 +2329,16 @@ export const refreshSessionListAtom = atom(
  */
 let initInProgress: Promise<void> | null = null;
 let lastInitWorkspacePath: string | null = null;
+/** Session list of each project this window switched away from, by workspace path. */
+const sessionListCache = new Map<string, { registry: Map<string, SessionMeta>; launchCounts: Record<string, number> }>();
 let initializedWorkspacePath: string | null = null;
 
 export async function initSessionList(workspacePath: string): Promise<void> {
-  // If already initialized for this workspace, return immediately
-  if (initializedWorkspacePath === workspacePath) {
+  // If already initialized for this workspace, return immediately. A rail
+  // switch away and back before the other project's load finished leaves
+  // initializedWorkspacePath on this project while the list points at the
+  // other one, so the list's workspace must match too.
+  if (initializedWorkspacePath === workspacePath && store.get(sessionListWorkspaceAtom) === workspacePath) {
     return;
   }
 
@@ -2342,17 +2348,36 @@ export async function initSessionList(workspacePath: string): Promise<void> {
   }
 
   lastInitWorkspacePath = workspacePath;
-  if (store.get(sessionListWorkspaceAtom) !== workspacePath) store.set(sessionLaunchCountsAtom, {});
+  const previousWorkspacePath = store.get(sessionListWorkspaceAtom);
+  if (previousWorkspacePath !== workspacePath) {
+    // The registry holds one project's sessions. Keep the outgoing project's
+    // list and show the incoming one's cached list while it refetches, so a
+    // rail switch back to a project does not blank the list for the round trip.
+    // A switch can land before the outgoing project's first refresh did, when
+    // the registry still holds an older project; cache only matching rows.
+    const outgoing = [...store.get(sessionRegistryAtom)].filter(([, s]) => s.workspaceId === previousWorkspacePath);
+    if (previousWorkspacePath && outgoing.length > 0) {
+      sessionListCache.set(previousWorkspacePath, {
+        registry: new Map(outgoing),
+        launchCounts: store.get(sessionLaunchCountsAtom),
+      });
+    }
+    const cached = sessionListCache.get(workspacePath);
+    store.set(sessionLaunchCountsAtom, cached?.launchCounts ?? {});
+    if (cached) store.set(sessionRegistryAtom, cached.registry);
+  }
   store.set(sessionListWorkspaceAtom, workspacePath);
 
   // Trigger initial load and track the promise
-  initInProgress = store.set(refreshSessionListAtom);
+  const load = store.set(refreshSessionListAtom);
+  initInProgress = load;
   try {
-    await initInProgress;
-    // Mark as initialized only after successful completion
-    initializedWorkspacePath = workspacePath;
+    await load;
+    // Mark as initialized only after successful completion, and only if the
+    // list still shows this project: a switch during the load discards it.
+    if (store.get(sessionListWorkspaceAtom) === workspacePath) initializedWorkspacePath = workspacePath;
   } finally {
-    initInProgress = null;
+    if (initInProgress === load) initInProgress = null;
   }
 }
 
