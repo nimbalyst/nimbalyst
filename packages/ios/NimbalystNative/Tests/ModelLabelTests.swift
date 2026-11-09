@@ -9,7 +9,7 @@ final class ModelLabelTests: XCTestCase {
     // MARK: - Claude Code
 
     func testClaudeCodeCanonicalVariants() {
-        XCTAssertEqual(ModelLabel.shortLabel(provider: "claude-code", model: "claude-code:fable"), "Fable 5.1")
+        XCTAssertEqual(ModelLabel.shortLabel(provider: "claude-code", model: "claude-code:fable"), "Fable 5.2")
         XCTAssertEqual(ModelLabel.shortLabel(provider: "claude-code", model: "claude-code:opus"), "Opus 5.5")
         XCTAssertEqual(ModelLabel.shortLabel(provider: "claude-code", model: "claude-code:sonnet"), "Sonnet 5.5")
         XCTAssertEqual(ModelLabel.shortLabel(provider: "claude-code", model: "claude-code:haiku"), "Haiku 5.5")
@@ -17,15 +17,17 @@ final class ModelLabelTests: XCTestCase {
     }
 
     func testClaudeCodeExtendedContextVariants() {
-        XCTAssertEqual(ModelLabel.shortLabel(provider: "claude-code", model: "claude-code:fable-1m"), "Fable 5.1")
+        XCTAssertEqual(ModelLabel.shortLabel(provider: "claude-code", model: "claude-code:fable-1m"), "Fable 5.2")
         XCTAssertEqual(ModelLabel.shortLabel(provider: "claude-code", model: "claude-code:opus-1m"), "Opus 5.5")
         XCTAssertEqual(ModelLabel.shortLabel(provider: "claude-code", model: "claude-code:sonnet-1m"), "Sonnet 5.5")
     }
 
     func testClaudeCodeFableAliasVariants() {
-        // `fable-5` is the pinned previous generation; `fable-5-1` is an alias for `fable`.
+        // `fable-5-1` and `fable-5` are pinned previous generations; `fable-5-2` is an alias for `fable`.
         XCTAssertEqual(ModelLabel.shortLabel(provider: "claude-code", model: "claude-code:fable-5"), "Fable 5")
         XCTAssertEqual(ModelLabel.shortLabel(provider: "claude-code", model: "claude-code:fable-5-1"), "Fable 5.1")
+        XCTAssertEqual(ModelLabel.shortLabel(provider: "claude-code", model: "claude-code:fable-5-2"), "Fable 5.2")
+        XCTAssertEqual(ModelLabel.shortLabel(provider: "claude", model: "claude:claude-fable-5-2"), "Fable 5.2")
     }
 
     func testClaudeCodeSonnet55AndPinnedSonnet5() {
@@ -76,7 +78,7 @@ final class ModelLabelTests: XCTestCase {
     func testClaudeCodeCliVariantsMatchAgent() {
         // The subscription CLI shares the variant set with the SDK provider, so
         // the model badge resolves the same way (must NOT collapse to Sonnet).
-        XCTAssertEqual(ModelLabel.shortLabel(provider: "claude-code-cli", model: "claude-code-cli:fable"), "Fable 5.1")
+        XCTAssertEqual(ModelLabel.shortLabel(provider: "claude-code-cli", model: "claude-code-cli:fable"), "Fable 5.2")
         XCTAssertEqual(ModelLabel.shortLabel(provider: "claude-code-cli", model: "claude-code-cli:opus"), "Opus 5.5")
         XCTAssertEqual(ModelLabel.shortLabel(provider: "claude-code-cli", model: "claude-code-cli:opus-1m"), "Opus 5.5")
         XCTAssertEqual(ModelLabel.shortLabel(provider: "claude-code-cli", model: "claude-code-cli:sonnet-1m"), "Sonnet 5.5")
