@@ -38,10 +38,11 @@ vi.mock('../claudeCode/promptSuggestionWait', async (importOriginal) => ({
   PROMPT_SUGGESTION_WAIT_MS: 300,
 }));
 
-// The real window is 60s; the test that lets a live wake go unanswered cannot wait that long.
+// The real windows are 60s and 15s; the tests that let them run out cannot wait that long.
 vi.mock('../claudeCode/drainHandoff', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../claudeCode/drainHandoff')>()),
   LIVE_WAKE_TIMEOUT_MS: 400,
+  CLI_TURN_START_MS: 300,
 }));
 
 const queryMock = vi.fn();
@@ -900,14 +901,11 @@ describe('ClaudeCodeProvider.sendMessage chunk sequence', () => {
     expect(idleMessages).toEqual([]);
   });
 
-  // Regression: a fast background shell on an older CLI settles BEFORE the
-  // launch acknowledgement reaches us. At notification time there is no
-  // background evidence yet, so nothing is recorded; the acknowledgement then
-  // arrives for an already-terminal task. The result chunk sees no running task
-  // and an empty buffer, and the continuation is lost entirely -- the reporter
-  // never learns the background command finished. The notification has to be
-  // held until the acknowledgement can classify it.
-  it('wakes when an older-CLI background shell settles before its launch acknowledgement', async () => {
+  // A fast background shell on an older CLI settles BEFORE the launch
+  // acknowledgement reaches us, so the notification is held until the
+  // acknowledgement classifies it. The CLI reads it into the model request that
+  // follows the acknowledgement, so the turn has already taken it in: no wake.
+  it('does not wake for an older-CLI background shell that settles before its launch acknowledgement', async () => {
     const { provider } = await makeProvider();
     const { query, close } = scriptQueryWithClose([
       INIT_CHUNK,
@@ -956,15 +954,13 @@ describe('ClaudeCodeProvider.sendMessage chunk sequence', () => {
 
     await runTurn(provider, 'run the build in the background');
 
-    expect(close).toHaveBeenCalledTimes(1);
-    expect(idleMessages).toHaveLength(1);
-    expect(idleMessages[0].message).toContain('npm run build');
-    expect(idleMessages[0].message).toContain('build succeeded');
+    expect(close).not.toHaveBeenCalled();
+    expect(idleMessages).toEqual([]);
   });
 
-  // The held notification must still be released exactly once when the
-  // acknowledgement is followed by a repeat notification.
-  it('wakes once when a held notification is followed by a duplicate after the acknowledgement', async () => {
+  // The held notification is released exactly once: a repeat after the
+  // acknowledgement must not count as a result the model has not seen.
+  it('does not wake when a held notification is followed by a duplicate after the acknowledgement', async () => {
     const { provider } = await makeProvider();
     const { query } = scriptQueryWithClose([
       INIT_CHUNK,
@@ -1020,8 +1016,7 @@ describe('ClaudeCodeProvider.sendMessage chunk sequence', () => {
 
     await runTurn(provider, 'run the build in the background');
 
-    expect(idleMessages).toHaveLength(1);
-    expect(idleMessages[0].message.match(/npm run build/g)).toHaveLength(1);
+    expect(idleMessages).toEqual([]);
   });
 
   // A genuinely backgrounded shell still has to reach the drain path, and the
@@ -1469,6 +1464,121 @@ describe('ClaudeCodeProvider.sendMessage chunk sequence', () => {
     expect(live.close).toHaveBeenCalledOnce();
     expect(idleMessages).toHaveLength(1);
   });
+
+  // #1410 closed the CLI and woke the session whenever a background task settled
+  // during the turn. The CLI reads a notification into its next model request,
+  // and each request after the first follows a tool result: here the model saw
+  // the result in this turn, so a wake only got it answered twice.
+  it('neither closes nor wakes when the turn already took in a mid-turn background result', async () => {
+    const { provider } = await makeProvider();
+    const { query, close } = scriptQueryWithClose([
+      INIT_CHUNK,
+      leadToolUse('msg_1', 'toolu_task_1', 'sleep 5'),
+      backgroundShell('task_1', 'sleep 5'),
+      launchAck('toolu_task_1'),
+      leadToolUse('msg_2', 'toolu_fg', 'sleep 15'),
+      shellSettled('task_1'),
+      { type: 'user', parent_tool_use_id: null, message: { content: [{ type: 'tool_result', tool_use_id: 'toolu_fg', content: '', is_error: false }] } },
+      assistantText('msg_3', 'BG-RESULT task_1 finished'),
+      LEAD_RESULT,
+    ]);
+    queryMock.mockImplementation(() => query);
+    const idleMessages: unknown[] = [];
+    provider.on('teammate:messageWhileIdle', (payload) => idleMessages.push(payload));
+
+    await runTurn(provider, 'start the shell, then wait in the foreground');
+
+    expect(close).not.toHaveBeenCalled();
+    expect(idleMessages).toEqual([]);
+    expect(provider.isLeadBusy()).toBe(false);
+  });
+
+  // A result that lands while the turn's last model request streams is answered
+  // by the CLI in a turn of its own after `result`; closing the CLI cut that turn off.
+  it('wakes with the live CLI\'s own turn about a result that settled during the final request', async () => {
+    const { provider } = await makeProvider();
+    const live = liveQuery();
+    queryMock.mockImplementation(({ prompt }: { prompt: AsyncIterable<unknown> }) => {
+      live.attach(prompt);
+      return live.query;
+    });
+    const idleMessages: Array<{ message: string }> = [];
+    provider.on('teammate:messageWhileIdle', (payload) => idleMessages.push(payload));
+
+    live.send(
+      INIT_CHUNK,
+      leadToolUse('msg_1', 'toolu_task_1', 'sleep 4'),
+      backgroundShell('task_1', 'sleep 4'),
+      launchAck('toolu_task_1'),
+      shellSettled('task_1'),
+      assistantText('msg_2', 'STORY'),
+      LEAD_RESULT,
+      // The CLI starts its own turn about the result right away.
+      INIT_CHUNK,
+      assistantText('msg_own', 'CLI_OWN_TURN'),
+    );
+    const first: StreamChunk[] = [];
+    const firstTurn = runTurn(provider, 'start the shell, then write a story', (chunk) => first.push(chunk));
+    await waitFor(() => idleMessages.length === 1);
+    expect(first.filter((chunk) => chunk.type === 'text').map((chunk) => chunk.content)).toEqual(['STORY']);
+    expect(idleMessages[0].message).toContain('sleep 4');
+    expect(idleMessages[0].message).not.toContain('closed the Claude Code process');
+
+    const wake: StreamChunk[] = [];
+    const wakeTurn = runTurn(provider, idleMessages[0].message, (chunk) => wake.push(chunk));
+    await firstTurn;
+    live.send(LEAD_RESULT);
+    await wakeTurn;
+    expect(wake.filter((chunk) => chunk.type === 'text').map((chunk) => chunk.content)).toEqual(['CLI_OWN_TURN']);
+    expect(live.prompts).toHaveLength(1);
+    expect(queryMock).toHaveBeenCalledTimes(1);
+    expect(live.close).not.toHaveBeenCalled();
+    expect(idleMessages).toHaveLength(1);
+  });
+
+  // If the CLI took the result in after all, it starts no turn, and the wake
+  // turn would wait on silence until the stall watchdog. It sends the wake instead.
+  it('sends the wake into the live query when the CLI starts no turn of its own', async () => {
+    const { provider } = await makeProvider();
+    const live = liveQuery();
+    queryMock.mockImplementation(({ prompt }: { prompt: AsyncIterable<unknown> }) => {
+      live.attach(prompt);
+      return live.query;
+    });
+    const idleMessages: Array<{ message: string }> = [];
+    provider.on('teammate:messageWhileIdle', (payload) => idleMessages.push(payload));
+
+    live.send(
+      INIT_CHUNK,
+      leadToolUse('msg_1', 'toolu_task_1', 'sleep 4'),
+      backgroundShell('task_1', 'sleep 4'),
+      launchAck('toolu_task_1'),
+      shellSettled('task_1'),
+      assistantText('msg_2', 'STORY'),
+      LEAD_RESULT,
+      // Frames after `result` that start no turn: a suggestion, and an older CLI's duplicate notification.
+      { type: 'prompt_suggestion', suggestion: 'run the tests', uuid: 'u1', session_id: 'sdk-session-1' },
+      shellSettled('task_1'),
+    );
+    const firstTurn = runTurn(provider, 'start the shell, then write a story');
+    await waitFor(() => idleMessages.length === 1);
+
+    const wake: StreamChunk[] = [];
+    const wakeTurn = runTurn(provider, idleMessages[0].message, (chunk) => wake.push(chunk));
+    await firstTurn;
+    await waitFor(() => live.prompts.length === 2);
+    expect((live.prompts[1] as { message: { content: unknown } }).message.content).toBe(idleMessages[0].message);
+
+    live.send(INIT_CHUNK, assistantText('msg_reply', 'WAKE_ANSWER'), LEAD_RESULT);
+    await wakeTurn;
+    expect(wake.filter((chunk) => chunk.type === 'text').map((chunk) => chunk.content)).toEqual(['WAKE_ANSWER']);
+    expect(wake.filter((chunk) => chunk.type === 'error')).toEqual([]);
+    expect(queryMock).toHaveBeenCalledTimes(1);
+    expect(live.close).not.toHaveBeenCalled();
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(idleMessages).toHaveLength(1);
+    expect(provider.isLeadBusy()).toBe(false);
+  });
 });
 
 const STARTED ={ type: 'assistant', session_id: 'sdk-session-1', message: { id: 'msg_1', content: [{ type: 'text', text: 'STARTED' }] } };
@@ -1480,6 +1590,14 @@ function backgroundShell(taskId: string, description: string) {
 
 function shellSettled(taskId: string) {
   return { type: 'system', subtype: 'task_notification', task_id: taskId, status: 'completed', summary: `${taskId} finished` };
+}
+
+function leadToolUse(id: string, toolUseId: string, command: string) {
+  return { type: 'assistant', session_id: 'sdk-session-1', parent_tool_use_id: null, message: { id, content: [{ type: 'tool_use', id: toolUseId, name: 'Bash', input: { command } }] } };
+}
+
+function launchAck(toolUseId: string) {
+  return { type: 'user', parent_tool_use_id: null, message: { content: [{ type: 'tool_result', tool_use_id: toolUseId, content: 'Command running in background with ID: b0hywzbc1.', is_error: false }] } };
 }
 
 function assistantText(id: string, text: string) {
