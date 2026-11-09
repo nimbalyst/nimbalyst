@@ -32,7 +32,6 @@ export function installDictationShortcut(
   now: () => number = () => Date.now(),
 ): () => void {
   let pressedAt: number | null = null;
-  let systemPending = false;
 
   const onKeyDown = (e: KeyboardEvent) => {
     const controller = getController();
@@ -47,8 +46,10 @@ export function installDictationShortcut(
     e.preventDefault();
     e.stopPropagation();
     if (controller.usesSystemDictation()) {
-      // macOS dictation stalls if started while keys are held; wait for release.
-      systemPending = true;
+      // macOS dictation runs on its own after this; no hold-to-talk. (Waiting
+      // for every key to be released was tried and never fired until the next
+      // unrelated key, 2026-11-09.)
+      if (!e.repeat) void controller.startInFocused('shortcut');
       return;
     }
     if (e.repeat || pressedAt !== null) return;
@@ -64,12 +65,6 @@ export function installDictationShortcut(
   };
 
   const onKeyUp = (e: KeyboardEvent) => {
-    if (systemPending) {
-      if (e.ctrlKey || e.altKey) return;
-      systemPending = false;
-      void getController().startInFocused('shortcut');
-      return;
-    }
     if (pressedAt === null) return;
     if (e.code !== 'Space' && e.key !== 'Control' && e.key !== 'Alt') return;
     const heldFor = now() - pressedAt;
@@ -79,7 +74,6 @@ export function installDictationShortcut(
 
   // Releasing the keys while the window is in the background never fires keyup.
   const onBlur = () => {
-    systemPending = false;
     if (pressedAt === null) return;
     pressedAt = null;
     getController().stop(false);

@@ -354,7 +354,7 @@ describe('macOS system dictation', () => {
     expect(controller.usesSystemDictation()).toBe(false);
   });
 
-  it('the shortcut starts system dictation only once every key is released', async () => {
+  it('the shortcut starts system dictation on key press, once per press', async () => {
     const listeners: Record<string, (e: any) => void> = {};
     const controller = {
       isEnabled: () => true,
@@ -369,12 +369,10 @@ describe('macOS system dictation', () => {
     const down = ev({});
     listeners.keydown(down);
     expect(down.preventDefault).toHaveBeenCalled();
-    expect(controller.startInFocused).not.toHaveBeenCalled();
-    listeners.keyup(ev({}));                                   // Space up, modifiers held
-    listeners.keyup(ev({ code: 'ControlLeft', key: 'Control', ctrlKey: false })); // Option still held
-    expect(controller.startInFocused).not.toHaveBeenCalled();
-    listeners.keyup(ev({ code: 'AltLeft', key: 'Alt', ctrlKey: false, altKey: false }));
     expect(controller.startInFocused).toHaveBeenCalledWith('shortcut');
+    listeners.keydown(ev({ repeat: true }));
+    listeners.keyup(ev({ code: 'Enter', key: 'Enter', ctrlKey: false, altKey: false }));
+    expect(controller.startInFocused).toHaveBeenCalledTimes(1);
     expect(controller.stop).not.toHaveBeenCalled();
   });
 });
@@ -398,3 +396,4 @@ describe('macOS system dictation outside registered surfaces', () => {
     expect(invoke).not.toHaveBeenCalled();
   });
 });
+
