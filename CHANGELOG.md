@@ -19,6 +19,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The weekly history in the Claude and Codex usage popovers now charts the main weekly limit by default instead of a per-model limit such as Fable
 - Nested lists under numbered items are saved indented past the parent's number (3 spaces under `2. `, 4 under `10. `), so other Markdown tools keep them nested, and a nested numbered list under an item numbered 10 starts at 1 instead of 10
 - Creating a local wiki page whose content starts with its own frontmatter now writes one frontmatter block with those fields and type, instead of adding a second block above it
+- A question card (AskUserQuestion or PromptForUserInput) that a PreToolUse hook denies now shows as blocked with the hook's reason, instead of as answered or as a form that can still be submitted
+- The `consume_session_inbox` tool is now listed on the `nimbalyst-host` MCP server, so orchestrating agents can call it as their instructions describe
 
 ### Removed
 <!-- Removed features go here -->
