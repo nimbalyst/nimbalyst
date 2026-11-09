@@ -161,6 +161,12 @@ const InlineRenameInput = memo<{
  * Its own virtual list item, one row tall. Not a treeitem: no click, drag, or
  * selection, and not in the node list that keyboard navigation walks.
  */
+function omittedEntriesLabel(count: number, isMinimum: boolean): string {
+  if (isMinimum && count === 0) return 'More items not shown';
+  const items = count === 1 ? 'item' : 'items';
+  return `${count.toLocaleString()} ${isMinimum ? `or more ${items}` : `more ${items}`}`;
+}
+
 export const OmittedEntriesRow = memo<{ count: number; depth: number; isMinimum: boolean }>(({ count, depth, isMinimum }) => (
   <div
     role="note"
@@ -168,7 +174,7 @@ export const OmittedEntriesRow = memo<{ count: number; depth: number; isMinimum:
     style={{ paddingLeft: depth * 16 + 8 }}
   >
     <span className="file-tree-spacer"></span>
-    {`${count.toLocaleString()}${isMinimum ? '+' : ''} more ${count === 1 && !isMinimum ? 'item' : 'items'}`}
+    {omittedEntriesLabel(count, isMinimum)}
   </div>
 ));
 

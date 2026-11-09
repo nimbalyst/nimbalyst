@@ -187,6 +187,19 @@ describe('omitted entries under a capped folder', () => {
     });
   });
 
+  it('still shows a note when only unresolved links were hidden', () => {
+    const items: RendererFileTreeItem[] = [
+      { name: 'links', path: '/proj/links', type: 'directory', omittedChildCountIsMinimum: true, children: [
+        { name: 'a.md', path: '/proj/links/a.md', type: 'file' },
+      ] },
+    ];
+    const { rows } = buildTreeRenderRows(flatten(items, ['/proj'], ['/proj/links']));
+
+    expect(rows.filter((row) => row.kind === 'omitted')).toEqual([
+      { kind: 'omitted', folderPath: '/proj/links', count: 0, depth: 1, isMinimum: true },
+    ]);
+  });
+
   it('shows no omitted row while the capped folder is collapsed', () => {
     const nodes = flatten(capped, ['/proj']);
 

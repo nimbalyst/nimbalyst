@@ -101,7 +101,7 @@ export interface FileTreeItem {
     children?: FileTreeItem[];
     /** Entries the per-directory cap hid from `children`; absent when nothing was hidden. */
     omittedChildCount?: number;
-    /** `omittedChildCount` stopped resolving symlinks at a bound; there may be more. */
+    /** The cap also skipped symlinks it never resolved; `omittedChildCount` is a minimum. */
     omittedChildCountIsMinimum?: boolean;
     /** The tree walk stopped at its depth limit here; `children` was not read. */
     childrenTruncated?: boolean;

@@ -40,9 +40,6 @@ const naturalCollator = new Intl.Collator(undefined, {
 //   This handles flat-huge directories (e.g., a folder with 50,000 images).
 const MAX_DEPTH = 8;
 const MAX_ITEMS_PER_DIR = 200;
-// Symlinks the cap skipped are stat'd afterwards only to count them, at most
-// this many per folder. Past it the count is a minimum.
-const MAX_OMITTED_LINK_STATS = 200;
 
 // Special directories that should always appear first
 const SPECIAL_DIRECTORIES = ['nimbalyst-local'];
@@ -146,8 +143,9 @@ async function readFolder(
     signal?: AbortSignal
 ): Promise<{ items: FileTreeItem[]; omitted: number; omittedIsMinimum: boolean }> {
     const result: FileTreeItem[] = [];
-    // Entries that would have been visible without the cap: broken symlinks
-    // and links to excluded folders are not displayable and do not count.
+    // Resolved entries that would have been visible without the cap. A symlink
+    // the cap skipped is never stat'd, so it cannot be counted; it only marks
+    // the count as a minimum (it may be broken or an excluded folder).
     let visibleTotal = 0;
     let omittedIsMinimum = false;
     const aborted = { items: [], omitted: 0, omittedIsMinimum: false };
@@ -169,7 +167,6 @@ async function readFolder(
                 : { name, type: 'file', path: fullPath });
             visibleTotal++;
         };
-        const skippedLinks: Dirent[] = [];
 
         // Plain files and directories are typed by readdir itself, so the whole
         // folder can be sorted before the cap without any per-entry I/O.
@@ -194,7 +191,7 @@ async function readFolder(
             if (signal?.aborted) return aborted;
             if (result.length >= MAX_ITEMS_PER_DIR
                 && compareItems({ name: entry.name, type: 'directory', path: '' }, result[result.length - 1]) >= 0) {
-                skippedLinks.push(entry);
+                omittedIsMinimum = true;
                 continue;
             }
             const fullPath = join(dirPath, entry.name);
@@ -203,18 +200,6 @@ async function readFolder(
             addItem(entry.name, fullPath, resolved.isDir, resolved.isFile);
             sortItems(result);
             if (result.length > MAX_ITEMS_PER_DIR) result.length = MAX_ITEMS_PER_DIR;
-        }
-
-        // Count skipped links only once they resolve to something displayable.
-        for (const [index, entry] of skippedLinks.entries()) {
-            if (signal?.aborted) return aborted;
-            if (index >= MAX_OMITTED_LINK_STATS) {
-                omittedIsMinimum = true;
-                break;
-            }
-            const fullPath = join(dirPath, entry.name);
-            const resolved = await resolveEntryType(entry, fullPath);
-            if (resolved && isDisplayable(entry.name, fullPath, resolved.isDir, resolved.isFile)) visibleTotal++;
         }
 
         const directoriesToPopulate = result.filter(item => item.type === 'directory');

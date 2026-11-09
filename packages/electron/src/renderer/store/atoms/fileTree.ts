@@ -361,7 +361,7 @@ export interface RendererFileTreeItem {
   childrenTruncated?: boolean;
   /** Entries the main-process per-folder cap hid from `children`. */
   omittedChildCount?: number;
-  /** The count stopped resolving symlinks at a bound; there may be more. */
+  /** The cap also skipped symlinks it never resolved; the count is a minimum. */
   omittedChildCountIsMinimum?: boolean;
 }
 
@@ -699,13 +699,13 @@ export function flattenTree(options: FlattenTreeOptions): FlatTreeNode[] {
         walk(item.children, depth + 1, item.path);
       }
 
-      if (isExpanded && item.omittedChildCount) {
+      if (isExpanded && (item.omittedChildCount || item.omittedChildCountIsMinimum)) {
         const last = result[result.length - 1];
         last.omittedAfter = [
           ...(last.omittedAfter ?? []),
           {
             folderPath: item.path,
-            count: item.omittedChildCount,
+            count: item.omittedChildCount ?? 0,
             depth: depth + 1,
             ...(item.omittedChildCountIsMinimum ? { isMinimum: true as const } : {}),
           },
