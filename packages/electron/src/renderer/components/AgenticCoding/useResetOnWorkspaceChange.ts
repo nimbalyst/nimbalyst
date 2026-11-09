@@ -26,3 +26,29 @@ export function useResetOnWorkspaceChange(workspacePath: string, reset: () => vo
     return () => generation.current === started;
   }, []);
 }
+
+export interface WorkspaceGuardedRequest<T> {
+  isCurrent: () => boolean;
+  request: () => Promise<T>;
+  onResult?: (result: T) => void | Promise<void>;
+  onError?: (error: unknown) => void;
+  onSettled?: () => void;
+}
+
+/**
+ * Runs `request` and applies onResult / onError / onSettled only while `isCurrent`
+ * (from `trackRequest`) still says the workspace has not changed. A throwing onResult
+ * is routed to onError.
+ */
+export async function runWorkspaceGuardedRequest<T>(opts: WorkspaceGuardedRequest<T>): Promise<void> {
+  try {
+    const result = await opts.request();
+    if (!opts.isCurrent()) return;
+    await opts.onResult?.(result);
+  } catch (error) {
+    if (!opts.isCurrent()) return;
+    opts.onError?.(error);
+  } finally {
+    if (opts.isCurrent()) opts.onSettled?.();
+  }
+}

@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { describe, it, expect, vi } from 'vitest';
 import { renderHook } from '@testing-library/react';
-import { useResetOnWorkspaceChange } from '../useResetOnWorkspaceChange';
+import { runWorkspaceGuardedRequest, useResetOnWorkspaceChange } from '../useResetOnWorkspaceChange';
 
 describe('useResetOnWorkspaceChange', () => {
   it('does not reset on first mount', () => {
@@ -25,26 +25,6 @@ describe('useResetOnWorkspaceChange', () => {
     expect(reset).toHaveBeenCalledTimes(1);
   });
 
-  it('marks a request started in a superseded workspace as stale once the workspace changes', async () => {
-    const { result, rerender } = renderHook(
-      ({ path }) => useResetOnWorkspaceChange(path, vi.fn()),
-      { initialProps: { path: '/a' } },
-    );
-    let resolveSearch!: (sessions: string[]) => void;
-    const search = new Promise<string[]>(resolve => { resolveSearch = resolve; });
-    const applied: string[][] = [];
-
-    const isCurrentA = result.current();
-    const run = search.then(sessions => { if (isCurrentA()) applied.push(sessions); });
-    rerender({ path: '/b' });
-    resolveSearch(['session-from-a']);
-    await run;
-    expect(applied).toEqual([]);
-
-    const isCurrentB = result.current();
-    expect(isCurrentB()).toBe(true);
-  });
-
   it('keeps a request current when the workspace does not change', () => {
     const { result, rerender } = renderHook(
       ({ path }) => useResetOnWorkspaceChange(path, vi.fn()),
@@ -54,25 +34,66 @@ describe('useResetOnWorkspaceChange', () => {
     rerender({ path: '/a' });
     expect(isCurrent()).toBe(true);
   });
+});
 
-  it('reports a request that rejects after the workspace changed as stale, so callers skip error and finally effects', async () => {
+describe('runWorkspaceGuardedRequest', () => {
+  function setup() {
     const { result, rerender } = renderHook(
       ({ path }) => useResetOnWorkspaceChange(path, vi.fn()),
       { initialProps: { path: '/a' } },
     );
-    let rejectSearch!: (error: Error) => void;
-    const search = new Promise<string[]>((_resolve, reject) => { rejectSearch = reject; });
-    const errors: string[] = [];
-    let searching = true;
+    const callbacks = { onResult: vi.fn(), onError: vi.fn(), onSettled: vi.fn() };
+    let resolve!: (value: string) => void;
+    let reject!: (error: Error) => void;
+    const pending = new Promise<string>((res, rej) => { resolve = res; reject = rej; });
+    const run = runWorkspaceGuardedRequest({ isCurrent: result.current(), request: () => pending, ...callbacks });
+    return { rerender, callbacks, resolve, reject, run };
+  }
 
-    const isCurrentA = result.current();
-    const run = search.catch(err => { if (!isCurrentA()) return; errors.push(err.message); }).finally(() => {
-      if (isCurrentA()) searching = false;
-    });
-    rerender({ path: '/b' });
-    rejectSearch(new Error('A failed'));
-    await run;
-    expect(errors).toEqual([]);
-    expect(searching).toBe(true);
+  it('applies the result and settles while the workspace is current', async () => {
+    const t = setup();
+    t.resolve('sessions');
+    await t.run;
+    expect(t.callbacks.onResult).toHaveBeenCalledWith('sessions');
+    expect(t.callbacks.onSettled).toHaveBeenCalledTimes(1);
+    expect(t.callbacks.onError).not.toHaveBeenCalled();
+  });
+
+  it('applies the error and settles while the workspace is current', async () => {
+    const t = setup();
+    t.reject(new Error('boom'));
+    await t.run;
+    expect(t.callbacks.onError).toHaveBeenCalledTimes(1);
+    expect(t.callbacks.onSettled).toHaveBeenCalledTimes(1);
+    expect(t.callbacks.onResult).not.toHaveBeenCalled();
+  });
+
+  it('calls nothing when a superseded workspace resolves', async () => {
+    const t = setup();
+    t.rerender({ path: '/b' });
+    t.resolve('sessions-from-a');
+    await t.run;
+    expect(t.callbacks.onResult).not.toHaveBeenCalled();
+    expect(t.callbacks.onError).not.toHaveBeenCalled();
+    expect(t.callbacks.onSettled).not.toHaveBeenCalled();
+  });
+
+  it('calls nothing when a superseded workspace rejects', async () => {
+    const t = setup();
+    t.rerender({ path: '/b' });
+    t.reject(new Error('A failed'));
+    await t.run;
+    expect(t.callbacks.onResult).not.toHaveBeenCalled();
+    expect(t.callbacks.onError).not.toHaveBeenCalled();
+    expect(t.callbacks.onSettled).not.toHaveBeenCalled();
+  });
+
+  it('routes a throwing onResult to onError', async () => {
+    const t = setup();
+    t.callbacks.onResult.mockImplementation(() => { throw new Error('map failed'); });
+    t.resolve('sessions');
+    await t.run;
+    expect(t.callbacks.onError).toHaveBeenCalledTimes(1);
+    expect(t.callbacks.onSettled).toHaveBeenCalledTimes(1);
   });
 });
