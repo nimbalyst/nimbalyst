@@ -17,6 +17,7 @@ import type { Options as ClaudeAgentSdkOptions, SettingSource } from '@anthropic
 import path from 'path';
 import { getHostEnvironment } from '../../../../host/hostEnvironment';
 import { ClaudeCodeDeps } from './dependencyInjection';
+import { createLateAnswerHook } from './lateAnswerHook';
 import { CLAUDE_TASK_TOOLS, createClaudeSystemPrompt } from './sdkCompatibility';
 import { INTERNAL_MCP_TOOLS } from './toolPolicy';
 import { wantsPromptSuggestion } from './promptSuggestionWait';
@@ -34,6 +35,9 @@ type SDKUserMessage = {
   parent_tool_use_id: string | null;
   /** 'next' folds the message into a running turn at the next model request. */
   priority?: 'now' | 'next' | 'later';
+  origin?: { kind: 'human' };
+  /** The CLI stamps the reply to this message with it (`user_message_uuid`). */
+  uuid?: string;
 };
 
 export interface BuildSdkOptionsDeps {
@@ -106,6 +110,13 @@ export interface PromptStreamController {
    * background shell is keeping alive (see ClaudeCodeProvider drain handoff).
    */
   push(message: SDKUserMessage): boolean;
+  /**
+   * Push a message and resolve true once the SDK has taken it, which is when
+   * it asks for the following one: by then it has written this one to the
+   * CLI. Resolves false if the stream has ended, or if the SDK has not taken
+   * the message within `timeoutMs`, in which case it is withdrawn.
+   */
+  deliver(message: SDKUserMessage, timeoutMs: number): Promise<boolean>;
 }
 
 export interface BuildSdkOptionsResult {
@@ -119,7 +130,7 @@ export function createPersistentPromptStream(
   initialMessage: SDKUserMessage,
 ): { iterable: AsyncIterable<SDKUserMessage>; controller: PromptStreamController } {
   let ended = false;
-  const pushed: SDKUserMessage[] = [];
+  const pushed: Array<{ message: SDKUserMessage; taken?: () => void }> = [];
   let wake: (() => void) | null = null;
   const signal = () => {
     const resolve = wake;
@@ -136,7 +147,10 @@ export function createPersistentPromptStream(
     // sendMessage's finally block and abort() ensure we always exit.
     while (true) {
       if (pushed.length > 0) {
-        yield pushed.shift()!;
+        const entry = pushed.shift()!;
+        yield entry.message;
+        // Resumed by the SDK's request for the next message.
+        entry.taken?.();
         continue;
       }
       if (ended) return;
@@ -156,9 +170,30 @@ export function createPersistentPromptStream(
       isEnded: () => ended,
       push: (message: SDKUserMessage) => {
         if (ended) return false;
-        pushed.push(message);
+        pushed.push({ message });
         signal();
         return true;
+      },
+      deliver: (message: SDKUserMessage, timeoutMs: number) => {
+        if (ended) return Promise.resolve(false);
+        return new Promise<boolean>((resolve) => {
+          const entry = {
+            message,
+            taken: () => {
+              clearTimeout(timer);
+              resolve(true);
+            },
+          };
+          const timer = setTimeout(() => {
+            const index = pushed.indexOf(entry);
+            // Already handed to the SDK: it was written, so count it.
+            if (index === -1) return resolve(true);
+            pushed.splice(index, 1);
+            resolve(false);
+          }, timeoutMs);
+          pushed.push(entry);
+          signal();
+        });
       },
     },
   };
@@ -264,6 +299,9 @@ export async function buildSdkOptions(
   const resolvedModel = resolveModelVariant();
   const explicitOnly = getHostEnvironment().agentConfiguration === 'explicit-only';
 
+  // The late-answer hook needs this query's prompt stream, which is created
+  // after the options below.
+  let promptStreamForHooks: PromptStreamController | null = null;
   const options: ClaudeAgentSdkOptions = {
     pathToClaudeCodeExecutable: effectivePath,
     // NOTE: this `append` string is re-sent on EVERY resumed turn and sits at
@@ -347,6 +385,9 @@ export async function buildSdkOptions(
       // the dialog vanishes while the user is away (seconds, not ms).
       'PreToolUse': [{ hooks: [toolHooksService.createPreToolUseHook()], timeout: 86400 }],
       'PostToolUse': [{ hooks: [toolHooksService.createPostToolUseHook()] }],
+      // Widget answers queued while this turn runs, delivered before the next
+      // model request instead of after the turn ends.
+      'PostToolBatch': [{ hooks: [createLateAnswerHook(sessionId, () => promptStreamForHooks)] }],
       // PermissionDenied fires when the SDK denies a tool call without
       // escalating through canUseTool (auto-mode classifier confident deny,
       // headless auto-deny, deny rules, dontAsk mode). In auto-mode sessions
@@ -622,6 +663,7 @@ export async function buildSdkOptions(
 
   const { iterable: promptInput, controller: promptController } =
     createPersistentPromptStream(initialMessage);
+  promptStreamForHooks = promptController;
 
   return { options, promptInput, promptController, helperMethod };
 }
