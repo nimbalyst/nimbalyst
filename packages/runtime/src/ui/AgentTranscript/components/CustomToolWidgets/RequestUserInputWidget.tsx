@@ -60,7 +60,7 @@ import {
   decidePriming,
   parseRequestUserInputResult,
 } from './requestUserInputFieldLogic';
-import { isBlockedQuestionResult, toolResultText } from './askUserQuestionResult';
+import { erroredQuestionOutcome } from './askUserQuestionResult';
 import type {
   RequestUserInputAnswer,
   RequestUserInputArgs,
@@ -761,12 +761,20 @@ export const RequestUserInputWidget: React.FC<CustomToolWidgetProps> = ({ messag
   const args = parseArgs(toolCall.arguments);
 
   const rawResult = toolCall.result;
-  const parsedResult = useMemo(() => parseRequestUserInputResult(rawResult), [rawResult]);
+  // An errored result is never read for answers (#1577); see erroredQuestionOutcome.
+  const errored = useMemo(
+    () => erroredQuestionOutcome(toolCall),
+    [toolCall.isError, toolCall.status, rawResult],
+  );
+  const parsedResult = useMemo(() => {
+    if (!errored) return parseRequestUserInputResult(rawResult);
+    return errored.kind === 'cancelled' ? { cancelled: true, reason: errored.reason, answers: {} } : null;
+  }, [errored, rawResult]);
   // The user sent a new message instead of answering. Older transcripts have
   // no durable result for this, so the transcript also passes `superseded`.
   // The call failed before reaching the user (e.g. a PreToolUse hook denied
   // it, #1577). No prompt is pending behind it, so it must never be answerable.
-  const isBlocked = parsedResult === null && isBlockedQuestionResult(toolCall);
+  const isBlocked = errored?.kind === 'blocked';
   const isSkipped = parsedResult?.reason === 'superseded' || (parsedResult === null && !isBlocked && superseded === true);
   const isCompleted = parsedResult !== null || isSkipped || isBlocked;
   const isPending = !isCompleted;
@@ -842,7 +850,7 @@ export const RequestUserInputWidget: React.FC<CustomToolWidgetProps> = ({ messag
   if (!args) return null;
 
   if (isBlocked) {
-    const reason = toolResultText(rawResult).trim();
+    const reason = errored?.kind === 'blocked' ? errored.reason : '';
     return (
       <div
         data-testid="request-user-input-widget"

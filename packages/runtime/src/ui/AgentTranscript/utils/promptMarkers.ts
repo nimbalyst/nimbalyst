@@ -4,7 +4,7 @@ import type { RequestUserInputAnswer, RequestUserInputField } from '../../../ai/
 import { formatISO } from '../../../utils/dateUtils';
 import type { PromptMarker } from '../types';
 import { isToolLikeMessage } from './messageTypeHelpers';
-import { parseAnswers, parseCancelledResult } from '../components/CustomToolWidgets/askUserQuestionResult';
+import { erroredQuestionOutcome, parseAnswers, parseCancelledResult } from '../components/CustomToolWidgets/askUserQuestionResult';
 import { parseRequestUserInputResult } from '../components/CustomToolWidgets/requestUserInputFieldLogic';
 
 interface AnsweredQuestion {
@@ -70,6 +70,8 @@ function summarizeRequestUserInput(args: any, result: unknown): AnsweredQuestion
 function summarizeAnsweredQuestion(message: TranscriptViewMessage): AnsweredQuestion | null {
   const tool = message.toolCall;
   if (!tool?.result) return null;
+  // An errored result is never an answer, whatever its text looks like (#1577).
+  if (erroredQuestionOutcome(tool)) return null;
   return stripMcpPrefix(tool.toolName) === 'AskUserQuestion'
     ? summarizeAskUserQuestion(tool.arguments, tool.result)
     : summarizeRequestUserInput(tool.arguments, tool.result);

@@ -111,4 +111,44 @@ describe('question widgets with a hook-denied (errored) result', () => {
     expect(screen.getByTestId('request-user-input-widget').getAttribute('data-state')).toBe('completed');
     expect(screen.queryByTestId('request-user-input-completed')).not.toBeNull();
   });
+
+  // Review follow-ups: hook text that merely contains an open-question phrase,
+  // or looks like an answer, is still a denial.
+  const TIMEOUT_LOOKALIKE = 'Hook PreToolUse denied: policy service Request timed out';
+  const ANSWER_LOOKALIKE = 'Hook PreToolUse denied: use "mode"="short" instead';
+  const MODE_ARGS = {
+    questions: [{ question: 'mode', header: 'Mode', multiSelect: false, options: [{ label: 'short', description: '' }, { label: 'long', description: '' }] }],
+  };
+
+  it.each([TIMEOUT_LOOKALIKE, ANSWER_LOOKALIKE])('AskUserQuestion: %s is blocked', async (text) => {
+    clearAskUserQuestionDraft('ask-lookalike');
+    render(
+      <JotaiProvider store={store}>
+        <AskUserQuestionWidget message={toolMessage('ask-lookalike', MODE_ARGS, text, true)} sessionId={SESSION_ID} isExpanded onToggle={() => {}} />
+      </JotaiProvider>,
+    );
+    await act(async () => {});
+    expect(screen.getByTestId('ask-user-question-widget').getAttribute('data-state')).toBe('blocked');
+    expect(screen.queryByTestId('ask-user-question-submit')).toBeNull();
+  });
+
+  it.each([
+    TIMEOUT_LOOKALIKE,
+    'Hook PreToolUse denied: {"answers":{"ok":{"type":"confirm","value":true}}}',
+    'Hook PreToolUse denied: request cancelled by policy',
+  ])('PromptForUserInput: %s is blocked', async (text) => {
+    await renderForm('form-lookalike', text, true);
+    expect(screen.getByTestId('request-user-input-widget').getAttribute('data-state')).toBe('blocked');
+    expect(screen.queryByRole('button', { name: /submit/i })).toBeNull();
+  });
+
+  it('PromptForUserInput: a real MCP timeout still leaves the form answerable', async () => {
+    await renderForm('form-timeout', 'MCP error -32001: Request timed out', true);
+    expect(screen.getByTestId('request-user-input-widget').getAttribute('data-state')).toBe('pending');
+  });
+
+  it('a structured cancel with isError still renders as cancelled', async () => {
+    await renderForm('form-cancel', JSON.stringify({ cancelled: true }), true);
+    expect(screen.getByTestId('request-user-input-widget').getAttribute('data-state')).toBe('cancelled');
+  });
 });

@@ -29,7 +29,7 @@ import {
   WidgetOptionRow,
   WidgetStatusPill,
 } from './shared/InteractiveWidgetChrome';
-import { isBlockedQuestionResult, parseAnswers, parseCancelledResult, toolResultText } from './askUserQuestionResult';
+import { erroredQuestionOutcome, parseAnswers, parseCancelledResult } from './askUserQuestionResult';
 
 // Shared with the feedback surfaces via InteractiveWidgetChrome; the glyph
 // itself stays local because it is this widget's identity.
@@ -128,11 +128,24 @@ export const AskUserQuestionWidget: React.FC<CustomToolWidgetProps> = ({
 
   // Parse result to determine completion state
   const rawResult = toolCall.result;
-  const parsedAnswers = useMemo(() => parseAnswers(toolCall.arguments, rawResult), [toolCall.arguments, rawResult]);
+  // An errored result is never read for answers (#1577); see erroredQuestionOutcome.
+  const errored = useMemo(
+    () => erroredQuestionOutcome(toolCall),
+    [toolCall.isError, toolCall.status, rawResult],
+  );
+  const parsedAnswers = useMemo(
+    () => (errored ? {} : parseAnswers(toolCall.arguments, rawResult)),
+    [errored, toolCall.arguments, rawResult],
+  );
   const hasResult = rawResult !== undefined && rawResult !== null && rawResult !== '';
 
   // Check if cancelled
-  const cancelledState = useMemo(() => parseCancelledResult(rawResult), [rawResult]);
+  const cancelledState = useMemo(
+    () => (errored
+      ? { cancelled: errored.kind === 'cancelled', reason: errored.kind === 'cancelled' ? errored.reason : undefined }
+      : parseCancelledResult(rawResult)),
+    [errored, rawResult],
+  );
   const isCancelled = cancelledState.cancelled;
   // The user sent a new message instead of answering. Older transcripts have
   // no durable result for this, so the transcript also passes `superseded`.
@@ -140,9 +153,7 @@ export const AskUserQuestionWidget: React.FC<CustomToolWidgetProps> = ({
 
   // The call failed before reaching the user (e.g. a PreToolUse hook denied
   // it, #1577). Its error text is not an answer, and no prompt is pending.
-  const isBlocked = !isCancelled
-    && Object.keys(parsedAnswers).length === 0
-    && isBlockedQuestionResult(toolCall);
+  const isBlocked = errored?.kind === 'blocked';
 
   const isCompleted = hasResult || isSkipped || isBlocked;
   const isPending = !isCompleted;
@@ -316,7 +327,7 @@ export const AskUserQuestionWidget: React.FC<CustomToolWidgetProps> = ({
   }
 
   if (isBlocked) {
-    const reason = toolResultText(rawResult).trim();
+    const reason = errored?.kind === 'blocked' ? errored.reason : '';
     return (
       <InteractiveWidgetCard
         rootClassName="ask-user-question-widget"

@@ -51,4 +51,22 @@ describe('buildPromptMarkers', () => {
     ]);
     expect(new Set(markers.map(m => m.id)).size).toBe(markers.length);
   });
+
+  // #1577: an errored tool result is never an answer, even when the hook's
+  // denial text happens to look like one.
+  it('does not list a hook-denied question as an answer', () => {
+    const denied = (call: TranscriptViewMessage): TranscriptViewMessage => ({
+      ...call,
+      toolCall: { ...call.toolCall!, status: 'error', isError: true },
+    } as TranscriptViewMessage);
+    const messages = [
+      denied(questionCall('AskUserQuestion', 'd1', {
+        questions: [{ question: 'mode', header: 'Mode', options: [{ label: 'short' }] }],
+      }, 'Hook PreToolUse denied: use "mode"="short" instead')),
+      denied(questionCall('mcp__nimbalyst__PromptForUserInput', 'd2', {
+        fields: [{ type: 'confirm', id: 'ok', label: 'Ok?' }],
+      }, 'Hook PreToolUse denied: {"answers":{"ok":{"type":"confirm","value":true}}}')),
+    ];
+    expect(buildPromptMarkers(messages, 's1', false).filter(m => m.kind === 'answer')).toEqual([]);
+  });
 });
