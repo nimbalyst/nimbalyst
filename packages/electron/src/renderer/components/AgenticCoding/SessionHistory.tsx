@@ -485,7 +485,7 @@ const SessionHistoryComponent: React.FC = () => {
   const [showSearchFilters, setShowSearchFilters] = useState(false);
   const searchFiltersRef = useRef<HTMLDivElement>(null);
   // Clearing searchQuery changes the filter key, so the filter effect below also drops content-search results.
-  useResetOnWorkspaceChange(workspacePath, () => {
+  const trackWorkspaceRequest = useResetOnWorkspaceChange(workspacePath, () => {
     setSearchQuery('');
     setContentSearchTriggered(false);
     setPendingSearchQuery(null);
@@ -669,6 +669,7 @@ const SessionHistoryComponent: React.FC = () => {
 
   // Execute the actual search query
   const executeSearch = async (query: string, filters: SearchFilters = searchFilters) => {
+    const isCurrentWorkspace = trackWorkspaceRequest();
     try {
       setIsSearching(true);
       setError(null);
@@ -678,6 +679,8 @@ const SessionHistoryComponent: React.FC = () => {
         timeRange: filters.timeRange,
         direction: filters.direction,
       });
+
+      if (!isCurrentWorkspace()) return; // workspace switched while searching
 
       if (result.success && Array.isArray(result.sessions)) {
         let searchResults: SessionItem[] = result.sessions.map((s: any) => ({
@@ -716,9 +719,11 @@ const SessionHistoryComponent: React.FC = () => {
   // Search message content in database (heavy operation)
   // Checks if FTS index exists and prompts user to build if needed for large databases
   const searchMessageContent = async (query: string) => {
+    const isCurrentWorkspace = trackWorkspaceRequest();
     try {
       // Check FTS index status before searching
       const { indexExists, messageCount } = await window.electronAPI.ai.getFtsIndexStatus(workspacePath);
+      if (!isCurrentWorkspace()) return;
 
       // If index doesn't exist and database is large, prompt user to build
       if (!indexExists && messageCount > 5000) {
