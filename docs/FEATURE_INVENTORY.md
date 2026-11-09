@@ -255,7 +255,7 @@ Twelve built-in provider lanes, plus any agent an extension contributes. Every l
 
 - Speech-to-text into the agent input, markdown editor, and Monaco code editor at the cursor; never speaks back and never submits
 - On a Mac the default starts macOS system dictation in the focused field (any editable field); starts listening in about 40 ms
-- Mic button in the agent input; Ctrl+Option+Space starts dictation (on key release for macOS dictation; hold to talk or tap to toggle for our engines), Esc discards pending text on our engines
+- Mic button in the agent input; Ctrl+Option+Space starts dictation (on key press for macOS dictation; hold to talk or tap to toggle for our engines), Esc discards pending text on our engines
 - Alternative engines in Settings: on-device macOS speech recognition (Swift helper, audio stays local) or OpenAI transcription on the user's key; an explicit engine choice never falls back
 - Our engines open the mic in parallel with engine start and buffer, so the first words are not lost; live partial text shown muted and replaced by the final text
 - Settings > Dictation toggle turns the feature off and hides every mic button, shortcut, and hint
