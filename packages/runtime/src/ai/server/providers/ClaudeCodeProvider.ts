@@ -714,6 +714,11 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
       );
     }
 
+    // A newer sendMessage replaces this controller, which is how this turn knows
+    // it no longer owns the provider's live fields.
+    const turnController = this.abortController;
+    let turnQuery: Query | null = null;
+
     // Clear edited files tracker for new turn
     this.toolHooksService.clearEditedFiles();
 
@@ -764,6 +769,13 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
         { documentContext, sessionId, workspacePath, attachments, paths, prepared },
       );
 
+      // Superseded or stopped while the prompt was being built. Starting now would
+      // spawn a subprocess nothing can stop.
+      if (this.abortController !== turnController) {
+        builtPromptController.end('superseded');
+        return;
+      }
+
       const queryCallStart = Date.now();
 
       const leadQuery: AsyncIterable<any> = adopted
@@ -775,6 +787,7 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
       if (!adopted) this.liveQueryModelVariant = this.resolveModelVariant();
 
       this.leadQuery = leadQuery as unknown as Query;
+      turnQuery = this.leadQuery;
       ClaudeCodeProvider.streamingInstances.add(this);
       this.teammateIdleMessagePending = false;
       // Reset per-turn background-drain state (defensive; also reset in finally).
@@ -1651,6 +1664,14 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
     } finally {
       if (this.drainExitCause === 'handoff' && this.drainHandoff && !this.drainHandoff.cancelled) {
         this.releaseToFollowUpTurn(this.drainHandoff, sessionId);
+      } else if (this.abortController !== null && this.abortController !== turnController) {
+        // A newer turn owns the live fields. Clearing them here would orphan its
+        // subprocess, so only this turn's own subprocess is stopped.
+        try {
+          turnQuery?.close();
+        } catch (error) {
+          console.warn('[CLAUDE-CODE] Closing superseded query failed:', error);
+        }
       } else {
         // A handoff the follow-up gave up on is a supersede: the follow-up
         // starts its own query and aborts this one.
