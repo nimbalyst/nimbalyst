@@ -718,6 +718,10 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
     // it no longer owns the provider's live fields.
     const turnController = this.abortController;
     let turnQuery: Query | null = null;
+    // The grace timer belongs to this turn too: once superseded it must neither
+    // outlive the turn nor end the newer turn's prompt stream.
+    let turnPromptController: PromptStreamController | null = null;
+    let turnPromptEndTimer: ReturnType<typeof setTimeout> | null = null;
 
     // Clear edited files tracker for new turn
     this.toolHooksService.clearEditedFiles();
@@ -761,6 +765,9 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
           currentMode: this.currentMode,
           metaAgentAllowedTools: BaseAgentProvider.META_AGENT_ALLOWED_TOOLS,
           publishSdkResult: (result) => {
+            // A turn superseded while its prompt was being built must not replace
+            // the newer turn's prompt stream.
+            if (this.abortController !== turnController) return;
             this.helperMethod = result.helperMethod;
             this.promptController = adopted ? adopted.promptController : result.promptController;
           },
@@ -775,6 +782,7 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
         builtPromptController.end('superseded');
         return;
       }
+      turnPromptController = adopted ? adopted.promptController : builtPromptController;
 
       const queryCallStart = Date.now();
 
@@ -868,16 +876,17 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
       // every one that outran it. Silence from a shell is not a stall. See #1355.
       const shellDrainMs = resolveShellDrainMs();
       const armPromptEndTimer = (reason: string) => {
-        if (this.promptEndTimer) {
-          clearTimeout(this.promptEndTimer);
+        if (turnPromptEndTimer) {
+          clearTimeout(turnPromptEndTimer);
         }
         const delay = resolvePromptEndDelay(this.activeTasks.values(), {
           idle: PROMPT_GRACE_MS,
           subagent: SUBAGENT_DRAIN_GRACE_MS,
           shell: shellDrainMs,
         });
-        this.promptEndTimer = setTimeout(() => {
-          this.promptEndTimer = null;
+        const timer = setTimeout(() => {
+          if (this.promptEndTimer === timer) this.promptEndTimer = null;
+          turnPromptEndTimer = null;
           // Record that WE ended the stream on a still-running task. Ending it
           // closes the CLI's stdin, which kills every live background task with
           // the process — they then report 'stopped', indistinguishable from a
@@ -886,8 +895,10 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
             this.drainGraceExpired = true;
             console.warn(`[CLAUDE-CODE] SUBAGENT_DRAIN: grace window (${delay}ms) expired with ${countRunningTasks(this.activeTasks.values())} task(s) still running; ending stream will kill them`);
           }
-          this.promptController?.end(reason);
+          turnPromptController?.end(reason);
         }, delay);
+        turnPromptEndTimer = timer;
+        this.promptEndTimer = timer;
       };
 
       // Stream the response
@@ -1667,6 +1678,11 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
       } else if (this.abortController !== null && this.abortController !== turnController) {
         // A newer turn owns the live fields. Clearing them here would orphan its
         // subprocess, so only this turn's own subprocess is stopped.
+        if (turnPromptEndTimer) {
+          clearTimeout(turnPromptEndTimer);
+          if (this.promptEndTimer === turnPromptEndTimer) this.promptEndTimer = null;
+          turnPromptEndTimer = null;
+        }
         try {
           turnQuery?.close();
         } catch (error) {

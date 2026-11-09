@@ -92,6 +92,34 @@ async function drain(provider: ClaudeCodeProvider, message: string): Promise<voi
   }
 }
 
+const ASSISTANT_CHUNK = {
+  type: 'assistant',
+  session_id: 'sdk-session-1',
+  message: { id: 'msg_1', content: [{ type: 'text', text: 'done' }] },
+};
+
+const RESULT_CHUNK = { type: 'result', subtype: 'success', is_error: false, num_turns: 1 };
+
+/** A subprocess that finishes its turn, then stays alive the way the CLI does between turns. */
+function finishedQuery(controller: AbortController): LiveQuery {
+  return {
+    async *[Symbol.asyncIterator]() {
+      yield INIT_CHUNK;
+      yield ASSISTANT_CHUNK;
+      yield RESULT_CHUNK;
+      if (!controller.signal.aborted) {
+        await new Promise((resolve) => controller.signal.addEventListener('abort', resolve, { once: true }));
+      }
+    },
+    interrupt: async () => {},
+    streamInput: async () => {},
+    close: vi.fn(),
+    controller,
+  } as unknown as LiveQuery;
+}
+
+type PromptController = { isEnded(): boolean };
+
 async function waitForQueries(count: number): Promise<void> {
   await vi.waitFor(() => expect(queryMock.mock.calls.length).toBe(count), { timeout: 5000 });
 }
@@ -160,6 +188,78 @@ describe('overlapping ClaudeCodeProvider turns', () => {
 
     expect(started[0].close).toHaveBeenCalled();
     expect(started[1].close).not.toHaveBeenCalled();
+
+    provider.abort();
+    await second;
+  });
+
+  it('does not let the older turn\'s grace timer close the newer turn\'s prompt stream', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      queryMock.mockImplementationOnce(({ options }: { options: { abortController: AbortController } }) => {
+        const query = finishedQuery(options.abortController);
+        started.push(query);
+        return query;
+      });
+      const provider = await makeProvider();
+      const internals = provider as unknown as { promptController: PromptController | null };
+
+      // The consumer stops pulling right after `complete`, so the first turn's
+      // grace timer is armed and its teardown has not run yet.
+      const firstTurn = provider.sendMessage('first', { mode: 'agent' } as never, 'nimbalyst-session-1', undefined, os.tmpdir());
+      const firstIterator = firstTurn[Symbol.asyncIterator]();
+      for (;;) {
+        const { value, done } = await firstIterator.next();
+        if (done || (value as { type?: string }).type === 'complete') break;
+      }
+
+      const second = drain(provider, 'second');
+      await waitForQueries(2);
+      const secondPrompt = internals.promptController;
+      expect(secondPrompt?.isEnded()).toBe(false);
+
+      vi.advanceTimersByTime(31_000);
+      expect(secondPrompt?.isEnded()).toBe(false);
+
+      while (!(await firstIterator.next()).done) { /* let the first turn tear down */ }
+      expect(internals.promptController).toBe(secondPrompt);
+      expect(secondPrompt?.isEnded()).toBe(false);
+
+      provider.abort();
+      await second;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps the newer turn\'s prompt stream when the older turn finishes building its prompt last', async () => {
+    const provider = await makeProvider();
+    const internals = provider as unknown as {
+      promptController: PromptController | null;
+      getMcpServersSnapshot: () => Promise<Record<string, unknown>>;
+    };
+    let releaseFirstBuild!: () => void;
+    const firstBuildGate = new Promise<void>((resolve) => { releaseFirstBuild = resolve; });
+    let snapshotCalls = 0;
+    internals.getMcpServersSnapshot = vi.fn(async () => {
+      snapshotCalls += 1;
+      if (snapshotCalls === 1) await firstBuildGate;
+      return {};
+    });
+
+    const first = drain(provider, 'first');
+    await vi.waitFor(() => expect(snapshotCalls).toBe(1), { timeout: 5000 });
+    const second = drain(provider, 'second');
+    await waitForQueries(1);
+    const secondPrompt = internals.promptController;
+    expect(secondPrompt?.isEnded()).toBe(false);
+
+    releaseFirstBuild();
+    await first;
+
+    expect(queryMock).toHaveBeenCalledTimes(1);
+    expect(internals.promptController).toBe(secondPrompt);
+    expect(secondPrompt?.isEnded()).toBe(false);
 
     provider.abort();
     await second;
