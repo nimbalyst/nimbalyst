@@ -289,6 +289,7 @@ export function supportsEffortLevel(modelId?: string): boolean {
   const variant = extractClaudeCodeVariant(modelId) ?? behavesAsVariantForModelId(modelId);
   if (
     variant === 'fable' ||
+    variant === 'fable-5-1' ||
     variant === 'fable-5' ||
     variant === 'opus' ||
     variant === 'opus-5' ||
