@@ -382,7 +382,7 @@
     "@nimbalyst/tracker-core": "workspace:*",
     "@nimbalyst/tracker-engine": "workspace:*",
     "@nimbalyst/tracker-schema": "workspace:*",
-    "@openai/codex-sdk": "^0.166.0",
+    "@openai/codex-sdk": "^0.167.0",
     "@opencode-ai/sdk": "^1.3.0",
     "@types/js-yaml": "^4.0.9",
     "@types/mdast": "^4.0.4",

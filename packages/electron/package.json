@@ -72,7 +72,7 @@
     "@nimbalyst/runtime": "workspace:*",
     "@nimbalyst/tracker-engine": "workspace:*",
     "@nimbalyst/tracker-schema": "workspace:*",
-    "@openai/codex-sdk": "^0.166.0",
+    "@openai/codex-sdk": "^0.167.0",
     "@revolist/react-datagrid": "4.21.4",
     "@revolist/revogrid": "4.21.4",
     "@types/glob": "^8.1.0",
