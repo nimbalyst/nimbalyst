@@ -398,10 +398,10 @@ Identify:
  
 **Buying Criteria** (ranked by frequency):
 1. **Integration with existing tools** (11/12 mentioned)
-  - Quote: "If it doesn't connect to Salesforce, it's a non-starter" - Director of Ops, E-commerce
+   - Quote: "If it doesn't connect to Salesforce, it's a non-starter" - Director of Ops, E-commerce
  
 2. **Onboarding and training support** (10/12)
-  - Quote: "We need white-glove onboarding or our team won't adopt it" - VP Product, Fintech
+   - Quote: "We need white-glove onboarding or our team won't adopt it" - VP Product, Fintech
  
 3. **Pricing transparency and flexibility** (9/12)
  

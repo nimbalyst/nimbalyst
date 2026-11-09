@@ -194,6 +194,25 @@ Just some text.`;
       const result = normalizeMarkdownLists(markdown);
       expect(result).toBe(expected);
     });
+    it('nests each item against its parent marker, not a document-wide size', () => {
+      const markdown = `- Bullet
+  - Bullet child
+  - Bullet child
+1. Number
+   1. Number child
+10. Wide
+    1. Wide child`;
+
+      const expected = `- Bullet
+  - Bullet child
+  - Bullet child
+1. Number
+  1. Number child
+10. Wide
+  1. Wide child`;
+
+      expect(normalizeMarkdownLists(markdown, { targetIndentSize: 2 })).toBe(expected);
+    });
   });
 
   describe('normalizeMarkdown', () => {

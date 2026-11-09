@@ -19,6 +19,8 @@ import {
   CHECK_LIST
 } from '../ListTransformers';
 import { CORE_TRANSFORMERS } from '../core-transformers';
+import { unified } from 'unified';
+import remarkParse from 'remark-parse';
 
 describe('ListTransformers', () => {
   describe('getIndentLevel', () => {
@@ -127,6 +129,128 @@ describe('ListTransformers', () => {
       // Should normalize to dash
       expect(exportedStar).toContain('- ');
       expect(exportedPlus).toContain('- ');
+    });
+  });
+
+  // #1937: nested children must be indented past the parent's marker so
+  // CommonMark parsers keep them nested, and each sublist keeps its own start.
+  describe('nested ordered lists', () => {
+    let editor: ReturnType<typeof createEditor>;
+
+    beforeEach(() => {
+      setListConfig({ exportIndentSize: 2, importMinIndentSize: 2 });
+      editor = createEditor({
+        nodes: [HeadingNode, QuoteNode, ListNode, ListItemNode, CodeNode, LinkNode],
+        onError: (error) => { throw error; },
+      });
+    });
+
+    function roundTrip(markdown: string): string {
+      editor.update(() => {
+        $convertFromEnhancedMarkdownString(markdown, CORE_TRANSFORMERS);
+      }, { discrete: true });
+      return editor.read(() => $convertToMarkdownString(CORE_TRANSFORMERS));
+    }
+
+    // Outer list structure as an independent CommonMark parser sees it
+    function commonmarkLists(markdown: string) {
+      const lists: Array<{ depth: number; start: number | null | undefined; items: number }> = [];
+      const walk = (node: any, depth: number) => {
+        if (node.type === 'list') {
+          lists.push({ depth, start: node.start, items: node.children.length });
+        }
+        node.children?.forEach((child: any) => walk(child, node.type === 'list' ? depth + 1 : depth));
+      };
+      walk(unified().use(remarkParse).parse(markdown), 0);
+      return lists;
+    }
+
+    it('keeps children under "2. " nested for CommonMark', () => {
+      const markdown = `1. First step.
+2. Second step.
+   1. Sub-step one.
+   2. Sub-step two.
+3. Third step.`;
+
+      const exported = roundTrip(markdown);
+      expect(exported).toBe(markdown);
+      expect(commonmarkLists(exported)).toEqual([
+        { depth: 0, start: 1, items: 3 },
+        { depth: 1, start: 1, items: 2 },
+      ]);
+    });
+
+    it('starts a sublist at its own first number, not the parent list start', () => {
+      const markdown = `10. Add more choices.
+    1. Click the dropdown.
+    2. Enter the title.
+11. Click Update Card.`;
+
+      const exported = roundTrip(markdown);
+      expect(exported).toBe(markdown);
+      expect(commonmarkLists(exported)).toEqual([
+        { depth: 0, start: 10, items: 2 },
+        { depth: 1, start: 1, items: 2 },
+      ]);
+    });
+
+    it('indents each child past its own parent marker across a width change', () => {
+      const markdown = `99. Parent.
+    1. Child one.
+100. Next.
+     1. Child two.`;
+
+      expect(roundTrip(markdown)).toBe(markdown);
+    });
+
+    it('re-saves legacy two-space ordered children as nested', () => {
+      const legacy = `1. First step.
+2. Second step.
+  1. Sub-step one.
+  2. Sub-step two.
+3. Third step.`;
+
+      expect(roundTrip(legacy)).toBe(`1. First step.
+2. Second step.
+   1. Sub-step one.
+   2. Sub-step two.
+3. Third step.`);
+    });
+
+    it('nests a bullet sublist under a numbered item', () => {
+      const markdown = `1. Parent.
+   - Child one.
+   - Child two.
+2. Next.`;
+
+      const exported = roundTrip(markdown);
+      expect(exported).toBe(markdown);
+      expect(commonmarkLists(exported)).toEqual([
+        { depth: 0, start: 1, items: 2 },
+        { depth: 1, start: null, items: 2 },
+      ]);
+    });
+
+    it('keeps the outer number after a loose sublist with its own start', () => {
+      const markdown = `1. Parent.
+
+   7. Child seven.
+   8. Child eight.
+2. Next.`;
+
+      expect(roundTrip(markdown)).toBe(markdown);
+    });
+
+    it('keeps two-space children under bullet and check items', () => {
+      const bullets = `- Parent.
+  - Child.
+    1. Grandchild.
+- Next.`;
+      const checks = `- [ ] Task.
+  - [x] Subtask.`;
+
+      expect(roundTrip(bullets)).toBe(bullets);
+      expect(roundTrip(checks)).toBe(checks);
     });
   });
 });
