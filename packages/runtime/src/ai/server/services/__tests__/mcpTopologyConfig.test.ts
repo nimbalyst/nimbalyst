@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, it, expect } from 'vitest';
 import { McpConfigService, McpConfigServiceDeps } from '../McpConfigService';
 import {
@@ -78,6 +79,17 @@ describe('Topology descriptor', () => {
   it('moves tracker config tools onto the tracker server, not the host', () => {
     expect(FIRST_PARTY_TOOL_TO_SERVER.get('tracker_set_sync_policy')).toBe(MCP_TRACKERS);
     expect(FIRST_PARTY_TOOL_TO_SERVER.get('tracker_set_issue_key_prefix')).toBe(MCP_TRACKERS);
+  });
+
+  it('exposes inbox consumption only on the deferred host endpoint', () => {
+    const endpoints = MCP_FIRST_PARTY_TOPOLOGY.filter((entry) =>
+      entry.tools.includes('consume_session_inbox'),
+    );
+
+    expect(FIRST_PARTY_TOOL_TO_SERVER.get('consume_session_inbox')).toBe(MCP_HOST);
+    expect(endpoints.map(({ configKey }) => configKey)).toEqual([MCP_HOST]);
+    expect(endpoints[0]?.endpointPath).toBe('/mcp/host');
+    expect(endpoints[0]?.loadPolicy).toBe('deferred');
   });
 
   it('keeps workspace_open (not open_workspace) to resolve the collision', () => {
