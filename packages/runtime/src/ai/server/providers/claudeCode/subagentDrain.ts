@@ -128,19 +128,17 @@ export function shouldRecordTerminalNotification(
 }
 
 /**
- * Decide whether the turn must run drain finalization even though it never
- * entered the drain (nothing was still running at the `result` chunk).
- *
- * True when a backgrounded task reported terminally during the turn: that fact
- * predicts the CLI has a continuation turn queued on a subprocess whose control
- * channel is about to die. Finalization closes it and delivers the results
- * visibly instead. See #1410.
+ * A tool result from the lead agent (not from inside a sub-agent). The CLI builds
+ * the lead's next model request right after one, reading in any task
+ * notifications queued by then; a notification that comes later is answered in
+ * a CLI turn of its own after `result` instead. See #1410.
  */
-export function shouldFinalizeForSettledBackgroundTasks(params: {
-  willDrainSubagents: boolean;
-  terminalNotificationCount: number;
-}): boolean {
-  return !params.willDrainSubagents && params.terminalNotificationCount > 0;
+export function isLeadToolResultChunk(chunk: unknown): boolean {
+  if (typeof chunk !== 'object' || chunk === null) return false;
+  const message = chunk as { type?: unknown; parent_tool_use_id?: unknown; message?: { content?: unknown } };
+  if (message.type !== 'user' || message.parent_tool_use_id) return false;
+  const content = message.message?.content;
+  return Array.isArray(content) && content.some((item) => (item as { type?: unknown } | null)?.type === 'tool_result');
 }
 
 /**

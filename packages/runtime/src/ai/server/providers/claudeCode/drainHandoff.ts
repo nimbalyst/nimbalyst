@@ -32,6 +32,25 @@ export const DRAIN_HANDOFF_TIMEOUT_MS = 10_000;
 export const LIVE_WAKE_TIMEOUT_MS = 60_000;
 
 /**
+ * How long a wake turn waits for the CLI to start its own turn about the settled
+ * results before sending the wake itself. The CLI starts that turn right after
+ * `result`; silence means it had taken the results in after all.
+ */
+export const CLI_TURN_START_MS = 15_000;
+
+/**
+ * True for a frame that belongs to a CLI turn. Other frames can still trail the
+ * previous turn's `result` (a prompt suggestion, an older CLI's duplicate task
+ * notification) and do not show that the CLI started one.
+ */
+export function startsCliTurn(chunk: unknown): boolean {
+  if (!chunk || typeof chunk !== 'object') return false;
+  const frame = chunk as { type?: unknown; subtype?: unknown };
+  if (frame.type === 'system') return frame.subtype === 'init';
+  return frame.type === 'assistant' || frame.type === 'user' || frame.type === 'stream_event' || frame.type === 'result';
+}
+
+/**
  * Stands in for the next chunk while a draining turn waits behind its live wake
  * without reading. Rejects with an AbortError when the turn is aborted (a turn
  * that could not adopt the query replaced it), so the turn ends the way a read
@@ -57,7 +76,6 @@ export interface DrainAdoptionFacts {
   hasRunningTasks: boolean;
   /** The last task settled and the wake carrying its result is on its way to take this query. */
   liveWakePending: boolean;
-  settledThisTurn: boolean;
   graceExpired: boolean;
   wasInterrupted: boolean;
   hasPendingUserInteraction: boolean;
@@ -78,7 +96,6 @@ export function canAdoptDrainingQuery(facts: DrainAdoptionFacts): boolean {
     && facts.draining
     && facts.promptStreamOpen
     && (facts.hasRunningTasks || facts.liveWakePending)
-    && !facts.settledThisTurn
     && !facts.graceExpired
     && !facts.wasInterrupted
     && !facts.hasPendingUserInteraction

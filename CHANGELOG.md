@@ -28,6 +28,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - When a background task finishes after the agent's turn ended, the agent's reply to it is no longer cut off, so the transcript no longer shows "No response requested." and the agent no longer apologizes for work it never dropped
 - A message sent while background tasks are still running goes in right away, instead of waiting for all of them once one has finished
 - Answering a question card while the agent's turn is still running now reaches the agent at its next tool call, instead of after the turn ends
+- A background task that finishes while the agent is still working no longer gets its result answered twice, and the agent's reply to a task that finishes near the end of its turn is no longer cut off
 
 ### Removed
 <!-- Removed features go here -->
