@@ -64,6 +64,15 @@ describe('weekly usage history', () => {
     ]);
   });
 
+  it('lists the main weekly meter first even when a model limit reset earlier', () => {
+    const fable = { meter: 'claude:model:fable', label: 'Fable (Weekly)', utilization: 0, resetsAt: '2026-10-27T16:59:59Z' };
+    const history = recordUsageWeekSamples([], [weekly(68, RESET_1), fable], reset1Ms - DAY);
+    expect(usageWeeksByMeter(history, reset1Ms - DAY).map(m => m.meter)).toEqual([
+      'claude:weekly',
+      'claude:model:fable',
+    ]);
+  });
+
   it('ignores resets already in the past or further out than a week', () => {
     const now = reset1Ms - DAY;
     expect(recordUsageWeekSamples([], [

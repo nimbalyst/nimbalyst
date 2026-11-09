@@ -111,7 +111,14 @@ export function usageWeeksByMeter(
   for (const history of byMeter.values()) {
     history.weeks.sort((a, b) => Date.parse(b.resetsAt) - Date.parse(a.resetsAt));
   }
-  return [...byMeter.values()];
+  // Insertion order follows reset times across all meters, so a model limit that reset
+  // a moment earlier would otherwise take the chart; the account-wide meter leads.
+  return [...byMeter.values()].sort((a, b) => Number(isMainMeter(b.meter)) - Number(isMainMeter(a.meter)));
+}
+
+/** The provider's account-wide weekly limit, as opposed to a per-model or secondary limit. */
+function isMainMeter(meter: string): boolean {
+  return meter === 'claude:weekly' || meter.startsWith('codex:codex:');
 }
 
 export function claudeUsageWeekSamples(usage: ClaudeUsageData): UsageWeekSample[] {
