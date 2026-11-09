@@ -129,10 +129,27 @@ export async function listFolderFilesRecursive(
 }
 
 export async function getFolderContents(dirPath: string, depth: number = 0, signal?: AbortSignal): Promise<FileTreeItem[]> {
+    return (await readFolder(dirPath, depth, signal)).items;
+}
+
+/**
+ * One folder's tree plus how many of its visible entries MAX_ITEMS_PER_DIR
+ * hid. A child folder carries its own count as `omittedChildCount`; the
+ * caller's top-level array has no node to carry it, so it is returned here.
+ */
+async function readFolder(
+    dirPath: string,
+    depth: number,
+    signal?: AbortSignal
+): Promise<{ items: FileTreeItem[]; omitted: number }> {
     const result: FileTreeItem[] = [];
+    // Entries that would have been visible without the cap. Symlinks the cap
+    // skipped are counted without a stat, so a skipped link that is broken or
+    // targets an excluded folder still counts; a stat'd broken link does not.
+    let visibleTotal = 0;
 
     if (signal?.aborted || depth > MAX_DEPTH) {
-        return result;
+        return { items: result, omitted: 0 };
     }
 
     try {
@@ -143,15 +160,17 @@ export async function getFolderContents(dirPath: string, depth: number = 0, sign
             if (isDir) {
                 if (shouldExcludeDir(name) || shouldExcludePath(fullPath)) return;
                 result.push({ name, type: 'directory', path: fullPath, children: [] });
+                visibleTotal++;
             } else if (isFile) {
                 result.push({ name, type: 'file', path: fullPath });
+                visibleTotal++;
             }
         };
 
         // Plain files and directories are typed by readdir itself, so the whole
         // folder can be sorted before the cap without any per-entry I/O.
         for (const entry of entries) {
-            if (signal?.aborted) return [];
+            if (signal?.aborted) return { items: [], omitted: 0 };
             if (entry.name === '.DS_Store') continue;
             if (entry.isSymbolicLink()) {
                 symlinks.push(entry);
@@ -168,9 +187,10 @@ export async function getFolderContents(dirPath: string, depth: number = 0, sign
         // when the link would land past the cap even as a directory (the earliest
         // it can sort), so a huge folder of links is not stat'd entry by entry.
         for (const entry of symlinks) {
-            if (signal?.aborted) return [];
+            if (signal?.aborted) return { items: [], omitted: 0 };
             if (result.length >= MAX_ITEMS_PER_DIR
                 && compareItems({ name: entry.name, type: 'directory', path: '' }, result[result.length - 1]) >= 0) {
+                visibleTotal++;
                 continue;
             }
             const fullPath = join(dirPath, entry.name);
@@ -190,14 +210,16 @@ export async function getFolderContents(dirPath: string, depth: number = 0, sign
         // Recurse sequentially to avoid unbounded file-descriptor fan-out.
         // Each call is still async (non-blocking), so the main thread stays responsive.
         for (const directory of directoriesToPopulate) {
-            if (signal?.aborted) return [];
+            if (signal?.aborted) return { items: [], omitted: 0 };
             // Past the limit the folder is unread, not empty. Say so, or a
             // rebuild replaces children the renderer loaded on expand with [].
             if (depth + 1 > MAX_DEPTH) {
                 directory.childrenTruncated = true;
                 continue;
             }
-            directory.children = await getFolderContents(directory.path, depth + 1, signal);
+            const child = await readFolder(directory.path, depth + 1, signal);
+            directory.children = child.items;
+            if (child.omitted > 0) directory.omittedChildCount = child.omitted;
         }
     } catch (error: any) {
         if (error.code !== 'ENOENT') {
@@ -205,5 +227,5 @@ export async function getFolderContents(dirPath: string, depth: number = 0, sign
         }
     }
 
-    return result;
+    return { items: result, omitted: visibleTotal - result.length };
 }

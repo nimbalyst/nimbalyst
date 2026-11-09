@@ -105,6 +105,37 @@ describe('FileTree All Files Mode', () => {
         expect(result.slice(1).map(item => item.name)).toEqual(names.slice(0, 199));
     });
 
+    it('records how many entries the per-directory cap hid on the capped folder only', async () => {
+        const big = path.join(tempDir, 'big');
+        fs.mkdirSync(big);
+        for (let i = 1; i <= 251; i++) fs.writeFileSync(path.join(big, `a-${String(i).padStart(3, '0')}.md`), '');
+        fs.mkdirSync(path.join(tempDir, 'small'));
+        fs.writeFileSync(path.join(tempDir, 'small', 'one.md'), '');
+
+        const result = await getFolderContents(tempDir);
+        const bigNode = result.find(item => item.name === 'big')!;
+        const smallNode = result.find(item => item.name === 'small')!;
+
+        expect(bigNode.children).toHaveLength(200);
+        expect(bigNode.omittedChildCount).toBe(51);
+        expect(smallNode.omittedChildCount ?? 0).toBe(0);
+    });
+
+    it('counts symlinks the cap skipped without a stat as omitted, but not broken links', async () => {
+        const big = path.join(tempDir, 'big');
+        fs.mkdirSync(big);
+        for (let i = 1; i <= 201; i++) fs.mkdirSync(path.join(big, `d-${String(i).padStart(3, '0')}`));
+        fs.symlinkSync(path.join(big, 'd-001'), path.join(big, 'a-link'));
+        fs.symlinkSync(path.join(big, 'd-001'), path.join(big, 'zz-link'));
+        fs.symlinkSync(path.join(big, 'missing'), path.join(big, 'a-broken'));
+
+        const result = await getFolderContents(tempDir);
+
+        // 201 dirs + 2 live links = 203 visible entries; 200 kept. zz-link is
+        // never stat'd and counts; a-broken is stat'd, broken, and does not.
+        expect(result[0].omittedChildCount).toBe(3);
+    });
+
     it('sorts symlinks by target type but never stats a link that cannot make the cap', async () => {
         for (let i = 1; i <= 201; i++) fs.mkdirSync(path.join(tempDir, `d-${String(i).padStart(3, '0')}`));
         fs.symlinkSync(path.join(tempDir, 'd-001'), path.join(tempDir, 'a-link'));

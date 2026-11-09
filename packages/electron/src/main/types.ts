@@ -99,7 +99,8 @@ export interface FileTreeItem {
     type: 'file' | 'directory';
     path: string;
     children?: FileTreeItem[];
-    truncated?: number; // Number of items hidden when directory was too large
+    /** Entries the per-directory cap hid from `children`; absent when nothing was hidden. */
+    omittedChildCount?: number;
     /** The tree walk stopped at its depth limit here; `children` was not read. */
     childrenTruncated?: boolean;
 }

@@ -163,7 +163,36 @@ const InlineRenameInput = memo<{
  * for backward compatibility with E2E tests and existing styles.
  * Indentation is handled via inline paddingLeft instead of nested <ul> elements.
  */
-export const FileTreeRow = memo<FileTreeRowProps>(({
+export const FileTreeRow = memo<FileTreeRowProps>((props) => {
+  const omitted = props.node.omittedAfter;
+  if (!omitted?.length) return <FileTreeItemRow {...props} />;
+  return (
+    <>
+      <FileTreeItemRow {...props} />
+      {omitted.map((row) => (
+        <OmittedEntriesRow key={row.folderPath} count={row.count} depth={row.depth} />
+      ))}
+    </>
+  );
+});
+
+/**
+ * "N more items" under a folder the main-process per-folder cap cut short.
+ * Not a treeitem: no click, drag, or selection, and not in the node list that
+ * keyboard navigation walks.
+ */
+const OmittedEntriesRow = ({ count, depth }: { count: number; depth: number }) => (
+  <div
+    role="note"
+    className="file-tree-omitted-row flex items-center h-7 px-2 italic text-nim-muted select-none cursor-default whitespace-nowrap"
+    style={{ paddingLeft: depth * 16 + 8 }}
+  >
+    <span className="file-tree-spacer"></span>
+    {count === 1 ? '1 more item' : `${count.toLocaleString()} more items`}
+  </div>
+);
+
+const FileTreeItemRow = ({
   node,
   showIcons,
   isFocused,
@@ -274,4 +303,4 @@ export const FileTreeRow = memo<FileTreeRowProps>(({
       )}
     </div>
   );
-});
+};

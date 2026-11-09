@@ -24,6 +24,7 @@ interface FileTreeItem {
   type: 'file' | 'directory';
   children?: FileTreeItem[];
   childrenTruncated?: boolean;
+  omittedChildCount?: number;
 }
 
 interface ClaudeForWindowsInstallation {

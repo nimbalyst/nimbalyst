@@ -359,6 +359,8 @@ export interface RendererFileTreeItem {
   children?: RendererFileTreeItem[];
   /** The main-process walk stopped at its depth limit here; `children` was not read. */
   childrenTruncated?: boolean;
+  /** Entries the main-process per-folder cap hid from `children`. */
+  omittedChildCount?: number;
 }
 
 // Special directories that should always appear first with distinct styling
@@ -603,6 +605,19 @@ export interface FlatTreeNode {
    * header rows at all.
    */
   isWorkspaceRoot: boolean;
+  /**
+   * "N more items" rows to draw after this row, innermost folder first: one
+   * per expanded capped folder whose last visible descendant this row is.
+   * They ride on a real node so keyboard navigation, selection and scroll
+   * indices never see them as items.
+   */
+  omittedAfter?: OmittedEntriesRow[];
+}
+
+export interface OmittedEntriesRow {
+  folderPath: string;
+  count: number;
+  depth: number;
 }
 
 /**
@@ -655,6 +670,14 @@ export function flattenTree(options: FlattenTreeOptions): FlatTreeNode[] {
 
       if (isExpanded && item.children) {
         walk(item.children, depth + 1, item.path);
+      }
+
+      if (isExpanded && item.omittedChildCount) {
+        const last = result[result.length - 1];
+        last.omittedAfter = [
+          ...(last.omittedAfter ?? []),
+          { folderPath: item.path, count: item.omittedChildCount, depth: depth + 1 },
+        ];
       }
     }
   }
