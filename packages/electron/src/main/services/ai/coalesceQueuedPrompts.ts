@@ -79,11 +79,6 @@ const MERGE_NEUTRAL_CONTEXT_KEYS = new Set([
   'textSelectionTimestamp',
 ]);
 
-function isEmptyContextValue(value: unknown): boolean {
-  return value === undefined || value === null || value === ''
-    || (Array.isArray(value) && value.length === 0);
-}
-
 function sameContextValue(a: unknown, b: unknown): boolean {
   if (a === b) return true;
   if (typeof a !== 'object' || typeof b !== 'object' || a === null || b === null) return false;
@@ -100,7 +95,9 @@ function sameContextValue(a: unknown, b: unknown): boolean {
  * row sets is set identically on the head. A row that sets nothing (a typical
  * agent report) asserts nothing about the turn and merges under the head's
  * context; a row that sets something the head lacks or sets differently would
- * have its context dropped, so it stays separate.
+ * have its context dropped, so it stays separate. Only an absent field is
+ * neutral: an explicit `''`, `null`, or `[]` says the document is now empty or
+ * the selection cleared, and the head's older value would replace that.
  */
 function contextFitsHead(head: CoalescibleQueuedPrompt, row: CoalescibleQueuedPrompt): boolean {
   const headContext = (head.documentContext ?? {}) as Record<string, unknown>;
@@ -108,7 +105,7 @@ function contextFitsHead(head: CoalescibleQueuedPrompt, row: CoalescibleQueuedPr
   return Object.keys(rowContext).every((key) => {
     if (MERGE_NEUTRAL_CONTEXT_KEYS.has(key)) return true;
     const value = rowContext[key];
-    if (isEmptyContextValue(value)) return true;
+    if (value === undefined) return true;
     return sameContextValue(headContext[key], value);
   });
 }

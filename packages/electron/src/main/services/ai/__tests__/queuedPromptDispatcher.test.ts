@@ -346,11 +346,37 @@ describe('queuedPromptDispatcher', () => {
         humanPrompt('h1', 'first', { filePath: '/a.md', content: 'A', textSelection: 'x', textSelectionTimestamp: 1 }),
         humanPrompt('h2', 'second', { filePath: '/a.md', content: 'A', textSelection: 'x', textSelectionTimestamp: 2 }),
         agentPrompt('a', 'report'),
-        humanPrompt('h3', 'third', { textSelection: null, editorContextItems: [] }),
+        humanPrompt('h3', 'third', { textSelection: undefined }),
       ]);
       expect(sent).toHaveLength(1);
       expect(labelLines(sent[0])).toHaveLength(4);
       expect(contexts[0]).toMatchObject({ filePath: '/a.md', content: 'A', textSelection: 'x' });
+    });
+
+    // Only an absent field asserts nothing. An explicit empty value is a fact
+    // about the document ("it is empty now"), and the head's copy would replace it.
+    it.each([
+      ['empty content', { content: 'old contents' }, { content: '' }],
+      ['a cleared selection', { textSelection: 'x' }, { textSelection: null }],
+      ['cleared editor items', { editorContextItems: [{ id: 'n1' }] }, { editorContextItems: [] }],
+      ['empty items the head lacks', {}, { editorContextItems: [] }],
+    ])('stops the run at a user prompt with explicitly %s', async (_label, headExtra, tailExtra) => {
+      const { sent, remaining } = await drain([
+        humanPrompt('h1', 'first', { filePath: '/a.md', ...headExtra }),
+        humanPrompt('h2', 'fill the empty document', { filePath: '/a.md', ...tailExtra }),
+      ]);
+      expect(sent).toEqual(['first']);
+      expect(remaining).toEqual(['h2']);
+    });
+
+    it('merges rows that are explicitly empty in the same way', async () => {
+      const { sent, remaining } = await drain([
+        humanPrompt('h1', 'first', { filePath: '/a.md', content: '', textSelection: null, editorContextItems: [] }),
+        humanPrompt('h2', 'second', { filePath: '/a.md', content: '', textSelection: null, editorContextItems: [] }),
+      ]);
+      expect(sent).toHaveLength(1);
+      expect(labelLines(sent[0])).toHaveLength(2);
+      expect(remaining).toEqual([]);
     });
 
     // Rows without known authorship cannot be labeled honestly, so they keep
