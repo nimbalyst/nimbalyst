@@ -29,7 +29,7 @@ import {
   WidgetOptionRow,
   WidgetStatusPill,
 } from './shared/InteractiveWidgetChrome';
-import { parseAnswers, parseCancelledResult } from './askUserQuestionResult';
+import { isBlockedQuestionResult, parseAnswers, parseCancelledResult, toolResultText } from './askUserQuestionResult';
 
 // Shared with the feedback surfaces via InteractiveWidgetChrome; the glyph
 // itself stays local because it is this widget's identity.
@@ -138,7 +138,13 @@ export const AskUserQuestionWidget: React.FC<CustomToolWidgetProps> = ({
   // no durable result for this, so the transcript also passes `superseded`.
   const isSkipped = cancelledState.reason === 'superseded' || (!hasResult && superseded === true);
 
-  const isCompleted = hasResult || isSkipped;
+  // The call failed before reaching the user (e.g. a PreToolUse hook denied
+  // it, #1577). Its error text is not an answer, and no prompt is pending.
+  const isBlocked = !isCancelled
+    && Object.keys(parsedAnswers).length === 0
+    && isBlockedQuestionResult(toolCall);
+
+  const isCompleted = hasResult || isSkipped || isBlocked;
   const isPending = !isCompleted;
 
   // Draft state lives in a jotai atomFamily keyed by questionId so it survives
@@ -307,6 +313,42 @@ export const AskUserQuestionWidget: React.FC<CustomToolWidgetProps> = ({
   // If no questions, show nothing
   if (questions.length === 0) {
     return null;
+  }
+
+  if (isBlocked) {
+    const reason = toolResultText(rawResult).trim();
+    return (
+      <InteractiveWidgetCard
+        rootClassName="ask-user-question-widget"
+        testId="ask-user-question-widget"
+        state="blocked"
+        tone="resolved"
+      >
+        <InteractiveWidgetHeader
+          icon={<QuestionMarkIcon />}
+          title="Question Blocked"
+          trailing={
+            <WidgetStatusPill tone="muted" testId="ask-user-question-blocked">
+              Blocked
+            </WidgetStatusPill>
+          }
+        />
+        <InteractiveWidgetBody>
+          {reason && (
+            <WidgetNoteRow rootClassName="ask-user-question-blocked-reason" testId="ask-user-question-blocked-reason">
+              {reason}
+            </WidgetNoteRow>
+          )}
+          {questions.map((question, qIndex) => (
+            <WidgetBlock
+              key={qIndex}
+              tag={question.header}
+              question={question.question}
+            />
+          ))}
+        </InteractiveWidgetBody>
+      </InteractiveWidgetCard>
+    );
   }
 
   // Determine display result (local takes precedence while waiting)

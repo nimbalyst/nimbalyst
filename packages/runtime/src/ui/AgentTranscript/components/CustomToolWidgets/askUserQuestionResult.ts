@@ -135,3 +135,48 @@ export function parseCancelledResult(result: unknown): CancelledState {
 
   return NOT_CANCELLED;
 }
+
+/**
+ * Errored results that do not end the prompt: an interrupt (#1116) or an MCP
+ * timeout leaves the question pending on the host, so the form stays
+ * answerable. These keep their existing handling.
+ */
+const ANSWERABLE_ERROR = [
+  /\[Request interrupted/i,
+  /doesn['’]t want to proceed with this tool use/i,
+  /Request timed out/i,
+];
+
+/** Flatten a tool result (string, MCP content array, or `{ text }`) to its text. */
+export function toolResultText(result: unknown): string {
+  if (typeof result === 'string') return result;
+  if (Array.isArray(result)) {
+    return result
+      .map((item) => (item && typeof item === 'object' && typeof (item as any).text === 'string' ? (item as any).text : ''))
+      .filter(Boolean)
+      .join('\n');
+  }
+  if (result && typeof result === 'object') {
+    const record = result as Record<string, unknown>;
+    for (const nested of [record.text, record.content, record.result, record.error]) {
+      const text = nested === undefined ? '' : toolResultText(nested);
+      if (text) return text;
+    }
+  }
+  return '';
+}
+
+/**
+ * The question tool call itself failed before reaching the user, e.g. a
+ * PreToolUse hook denied it (#1577). No prompt exists behind it, so callers
+ * must render it as a terminal blocked state: not answered, not pending, and
+ * never answerable. Check this only after a parsed answer or cancel.
+ */
+export function isBlockedQuestionResult(
+  toolCall: { isError?: boolean; status?: string; result?: unknown } | undefined,
+): boolean {
+  if (!toolCall) return false;
+  if (toolCall.isError !== true && toolCall.status !== 'error') return false;
+  const text = toolResultText(toolCall.result);
+  return !ANSWERABLE_ERROR.some((pattern) => pattern.test(text));
+}
