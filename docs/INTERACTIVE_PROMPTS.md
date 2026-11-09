@@ -99,6 +99,10 @@ The Claude Agent SDK's own `AskUserQuestion` (the `canUseTool` path in `claudeCo
 
 `replied_in_chat` and `skipped` are not sent: no path delivers a chat message to a pending SDK question, and the widget has no per-question skip.
 
+## Answering From Another Desktop
+
+A desktop viewing a session hosted on another desktop registers `createRemoteInteractiveWidgetHost` for that transcript. Each widget answer becomes a `prompt_response` session-control message (`RemoteSessionMirror.respond`) addressed to the host device, which handles it in `MobileSessionControlHandler` exactly like a mobile answer. The viewer never resolves a prompt locally. Only desktop hosts get a widget host: headless sandbox nodes drop `prompt_response`.
+
 ## Durable Rendering Rules
 
 Interactive widgets should follow these rules:

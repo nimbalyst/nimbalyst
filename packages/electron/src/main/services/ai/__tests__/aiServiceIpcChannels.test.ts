@@ -114,6 +114,7 @@ const EXPECTED_CHANNELS: Record<string, string[]> = {
     'ai:unwatchRemoteSession',
     'ai:queueRemotePrompt',
     'ai:cancelRemoteSession',
+    'ai:respondRemotePrompt',
     'ai:createSession',
     'ai:recordPendingSubmission',
     'ai:sendMessage',
@@ -206,12 +207,12 @@ describe('AIService IPC registrars', () => {
     });
   }
 
-  it('registers all 62 channels across the modules, with no duplicates', () => {
+  it('registers all 63 channels across the modules, with no duplicates', () => {
     for (const register of Object.values(REGISTRARS)) {
       register(stubContext);
     }
-    expect(registered).toHaveLength(62);
-    expect(new Set(registered).size).toBe(62);
+    expect(registered).toHaveLength(63);
+    expect(new Set(registered).size).toBe(63);
   });
 });
 

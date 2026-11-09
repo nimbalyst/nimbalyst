@@ -9,7 +9,8 @@ import type { DeviceInfo, SyncProvider } from '@nimbalyst/runtime/sync/types';
 import { isSessionConnectionRefused } from '@nimbalyst/runtime/sync/SyncedSessionStore';
 
 type IndexEntry = NonNullable<Awaited<ReturnType<NonNullable<SyncProvider['fetchIndex']>>>>['sessions'][number];
-import type { RemoteSessionSnapshot } from '../../../shared/remoteSessions';
+import type { RemotePromptResponse, RemoteSessionSnapshot } from '../../../shared/remoteSessions';
+import type { PromptResponsePayload } from './MobileSessionControlHandler';
 export type { RemoteSessionSnapshot } from '../../../shared/remoteSessions';
 interface Observation {
   entry: IndexEntry;
@@ -56,7 +57,7 @@ export class RemoteSessionMirror {
       this.provider?.disconnect(id);
       for (const listener of observation.listeners) listener({
         session: this.sessionData(observation.entry, []), connected: false,
-        hostOnline: false, syncing: false, executing: false, queuedPrompts: [],
+        hostOnline: false, syncing: false, executing: false, queuedPrompts: [], canAnswerPrompts: false,
         error: 'Session sync changed. Reopen this remote session to reconnect.',
       });
     }
@@ -194,6 +195,10 @@ export class RemoteSessionMirror {
     }
     return undefined;
   }
+  // Headless sandbox nodes log and drop `prompt_response`; only the desktop control handler resolves it.
+  private answersPrompts(entry: IndexEntry): boolean {
+    return this.provider?.getConnectedDevices?.().some(device => device.deviceId === entry.hostDeviceId && device.type === 'desktop') ?? false;
+  }
   private async snapshot(id: string, observation: Observation): Promise<RemoteSessionSnapshot> {
     const status = this.provider?.getStatus(id);
     const version = observation.rowVersion;
@@ -206,6 +211,7 @@ export class RemoteSessionMirror {
       connected: status?.connected ?? false, hostOnline: this.hostOnline(observation.entry),
       syncing: status?.syncing ?? false, executing: observation.entry.isExecuting ?? false,
       readOnlyReason: this.readOnlyReason(observation.entry),
+      canAnswerPrompts: this.answersPrompts(observation.entry),
       queuedPrompts: observation.entry.queuedPrompts ?? [], error: observation.error ?? status?.error ?? undefined,
     };
   }
@@ -378,5 +384,52 @@ export class RemoteSessionMirror {
     const readOnlyReason = this.readOnlyReason(entry);
     if (readOnlyReason) throw new Error(readOnlyReason);
     await this.provider.sendSessionControlMessage({ sessionId: id, type: 'cancel', targetDeviceId: entry.hostDeviceId, timestamp: Date.now(), sentBy: 'desktop' });
+  }
+
+  async respond(id: string, workspace: string, answer: RemotePromptResponse): Promise<void> {
+    const payload: PromptResponsePayload | null = normalizeRemotePromptResponse(answer);
+    if (!payload) throw new Error('Invalid prompt answer.');
+    const entry = await this.requireEntry(id, workspace);
+    const provider = this.provider;
+    if (!provider?.sendSessionControlMessage || !this.hostOnline(entry)) throw new Error('The remote machine is offline. Your answer has not been sent.');
+    const readOnlyReason = this.readOnlyReason(entry);
+    if (readOnlyReason) throw new Error(readOnlyReason);
+    if (!this.answersPrompts(entry)) throw new Error('This machine cannot take answers from another device. Answer on the machine itself.');
+    await provider.sendSessionControlMessage({
+      sessionId: id, type: 'prompt_response', targetDeviceId: entry.hostDeviceId,
+      sentByDeviceId: provider.getLocalDeviceInfo?.()?.deviceId, sentBy: 'desktop', timestamp: Date.now(),
+      payload: payload as unknown as Record<string, unknown>,
+    });
+  }
+}
+
+const isRecord = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
+const isStringMap = (value: unknown): value is Record<string, string> => isRecord(value) && Object.values(value).every(v => typeof v === 'string');
+const permissionScopes = new Set(['once', 'session', 'always', 'always-all']);
+
+/** Rebuilds the answer from known fields only; the host trusts this payload without validating it. */
+function normalizeRemotePromptResponse(value: unknown): RemotePromptResponse | null {
+  if (!isRecord(value) || !isRecord(value.response)) return null;
+  const { promptType, promptId, response } = value;
+  if (typeof promptId !== 'string' || !promptId || promptId.length > 512) return null;
+  const cancelled = response.cancelled === true ? { cancelled: true } : {};
+  switch (promptType) {
+    case 'ask_user_question':
+      return isStringMap(response.answers) ? { promptType, promptId, response: { answers: response.answers, ...cancelled } } : null;
+    case 'request_user_input':
+      return isRecord(response.answers) ? { promptType, promptId, response: { answers: response.answers, ...cancelled } } : null;
+    case 'exit_plan_mode':
+      if (typeof response.approved !== 'boolean' || (response.feedback !== undefined && typeof response.feedback !== 'string')) return null;
+      return { promptType, promptId, response: { approved: response.approved, ...(response.feedback !== undefined ? { feedback: response.feedback } : {}) } };
+    case 'tool_permission':
+      if ((response.decision !== 'allow' && response.decision !== 'deny') || typeof response.scope !== 'string' || !permissionScopes.has(response.scope)) return null;
+      return { promptType, promptId, response: { decision: response.decision, scope: response.scope as 'once' | 'session' | 'always' | 'always-all' } };
+    case 'git_commit':
+      if (response.action === 'cancelled') return { promptType, promptId, response: { action: 'cancelled' } };
+      if (response.action !== 'committed' || typeof response.message !== 'string' || !response.message.trim()
+        || !Array.isArray(response.files) || !response.files.length || !response.files.every(file => typeof file === 'string')) return null;
+      return { promptType, promptId, response: { action: 'committed', files: response.files, message: response.message } };
+    default:
+      return null;
   }
 }

@@ -497,7 +497,8 @@ Companion app; pairs with a desktop over encrypted sync. Voice mode is not inclu
 - Headless Node runner creates or resumes Claude Code sessions without Electron, persists transcripts, and can serve as a personal-sync execution device for mapped repositories
 - Cloudflare sandbox management from Settings using the user's own account -- deploy, inspect status, wake, stop, delete, and pair a headless runner
 - Remote sandbox sessions use the normal composer, attachments, project Actions, session list, streamed transcripts, follow-up prompts, and stop controls
-- Remote execution limitations: sandbox files/processes are ephemeral; previous execution state is not restored after the host restarts, and remote interactive question/permission answers and remote worktree creation are not supported
+- Sessions hosted on another desktop accept answers from the viewing desktop -- questions, forms, tool permissions, plan approval or rejection, and commit proposals (whole files) are sent to the host, which resolves them through the same path as the mobile app; starting the plan in a new session and partial-file commits stay on the host
+- Remote execution limitations: sandbox files/processes are ephemeral; previous execution state is not restored after the host restarts, sandbox hosts do not accept interactive question/permission answers, and remote worktree creation is not supported
 
 ## Terminal
 

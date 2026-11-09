@@ -47,4 +47,5 @@ export function registerRemoteSessionHandlers(): void {
   });
   safeHandle('ai:queueRemotePrompt', (_event, sessionId: string, workspacePath: string, prompt: string, attachments: import("@nimbalyst/runtime/ai/server/types").ChatAttachment[] = [], options?: import("@nimbalyst/runtime/sync/types").RemoteTurnOptions) => remoteSessions.queue(sessionId, workspacePath, prompt, attachments, options));
   safeHandle('ai:cancelRemoteSession', (_event, sessionId: string, workspacePath: string) => remoteSessions.cancel(sessionId, workspacePath));
+  safeHandle('ai:respondRemotePrompt', (_event, sessionId: string, workspacePath: string, answer: import('../../../../shared/remoteSessions').RemotePromptResponse) => remoteSessions.respond(sessionId, workspacePath, answer));
 }

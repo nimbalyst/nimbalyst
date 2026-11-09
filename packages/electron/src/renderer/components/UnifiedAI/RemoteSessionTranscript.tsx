@@ -19,7 +19,9 @@ import {
   sessionDraftHydratedAtom,
   sessionDraftLocalModifiedAtAtom,
 } from "../../store/atoms/sessions";
+import { registerInteractiveWidgetHost, unregisterInteractiveWidgetHost } from "@nimbalyst/runtime/store";
 import { SessionAIInput } from "./SessionAIInput";
+import { createRemoteInteractiveWidgetHost } from "./remoteInteractiveWidgetHost";
 import type { SlashCommandEntry } from "../Typeahead/slashCommandAutocomplete";
 import type { AIInputRef } from "./AIInput";
 import type { ActionPrompt } from "../../store/atoms/actionPrompts";
@@ -124,6 +126,13 @@ export const RemoteSessionTranscript = forwardRef<
     snapshot?.hostOnline,
     snapshot?.readOnlyReason,
   ]);
+  const answersPrompts = !!workspacePath && !!snapshot?.canAnswerPrompts;
+  useEffect(() => {
+    if (!answersPrompts || !workspacePath) return;
+    const host = createRemoteInteractiveWidgetHost(sessionId, workspacePath, setError);
+    registerInteractiveWidgetHost(sessionId, host);
+    return () => unregisterInteractiveWidgetHost(sessionId, host);
+  }, [sessionId, workspacePath, answersPrompts]);
   const persistDraft = useCallback(
     async (text: string, files: ChatAttachment[]) => {
       await window.electronAPI.invoke(

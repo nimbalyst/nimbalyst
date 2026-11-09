@@ -158,6 +158,51 @@ describe('remote desktop mirrors', () => {
     stop();
   });
 
+  it('sends prompt answers only to an online desktop host that owns the session', async () => {
+    vi.useFakeTimers();
+    const f = fixture(); const received = vi.fn();
+    const answer = {promptType: 'ask_user_question', promptId: 'question-1', response: {answers: {'Which branch?': 'develop'}}} as const;
+    const stop = await f.mirror.watch('remote', '/repo', received);
+    await vi.advanceTimersByTimeAsync(200);
+    expect(received.mock.lastCall![0].canAnswerPrompts).toBe(false);
+    await expect(f.mirror.respond('remote', '/repo', answer)).rejects.toThrow('cannot take answers');
+
+    f.entry.hostDeviceId = 'studio';
+    f.provider.getConnectedDevices.mockReturnValue([{deviceId: 'studio', type: 'desktop', isOnline: true}] as any);
+    f.index();
+    await vi.advanceTimersByTimeAsync(200);
+    expect(received.mock.lastCall![0].canAnswerPrompts).toBe(true);
+    await expect(f.mirror.respond('remote', '/other', answer)).rejects.toThrow('not available');
+    for (const invalid of [
+      {...answer, promptType: 'shell_command'},
+      {...answer, promptId: ''},
+      {...answer, response: 'yes'},
+      {promptType: 'ask_user_question', promptId: 'q', response: {answers: {q: 1}}},
+      {promptType: 'tool_permission', promptId: 'p', response: {decision: 'allow', scope: 'forever'}},
+      {promptType: 'git_commit', promptId: 'c', response: {action: 'committed', files: 'a.ts', message: 'x'}},
+    ]) await expect(f.mirror.respond('remote', '/repo', invalid as any)).rejects.toThrow('Invalid prompt answer');
+    await f.mirror.respond('remote', '/repo', answer);
+    // Fields the viewer never offers, such as starting a new session, are not forwarded to the host.
+    await f.mirror.respond('remote', '/repo', {promptType: 'exit_plan_mode', promptId: 'plan-1', response: {approved: true, startNewSession: true}} as any);
+    expect(f.provider.sendSessionControlMessage).toHaveBeenCalledTimes(2);
+    expect(f.provider.sendSessionControlMessage).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      sessionId: 'remote', type: 'prompt_response', targetDeviceId: 'studio', sentByDeviceId: 'desktop', sentBy: 'desktop', payload: answer,
+    }));
+    expect(f.provider.sendSessionControlMessage).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      payload: {promptType: 'exit_plan_mode', promptId: 'plan-1', response: {approved: true}},
+    }));
+
+    f.provider.getConnectedDevices.mockReturnValue([{deviceId: 'studio', type: 'desktop', isOnline: false}] as any);
+    await expect(f.mirror.respond('remote', '/repo', answer)).rejects.toThrow('offline');
+    f.provider.getConnectedDevices.mockReturnValue([{deviceId: 'studio', type: 'headless', isOnline: true, connectedAt: 0}] as any);
+    await expect(f.mirror.respond('remote', '/repo', answer)).rejects.toThrow('cannot take answers');
+    f.provider.getConnectedDevices.mockReturnValue([{deviceId: 'studio', type: 'desktop', isOnline: true}] as any);
+    f.deps.hasLocalSession.mockResolvedValue(true);
+    await expect(f.mirror.respond('remote', '/repo', answer)).rejects.toThrow('not available');
+    expect(f.provider.sendSessionControlMessage).toHaveBeenCalledTimes(2);
+    stop();
+  });
+
   it('clears transcript content on account change and rejects a stale in-flight authorization', async () => {
     vi.useFakeTimers();
     const f = fixture(); const received = vi.fn();
