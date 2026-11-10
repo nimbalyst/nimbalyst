@@ -73,6 +73,45 @@ describe('desktop Stop / lightning with durable queue and question ownership', (
     if (temporary) fs.rmSync(temporary, { recursive: true, force: true });
   });
 
+  it('keeps an explicitly stopped pending queue idle until a human Send Now', async () => {
+    const id = 's1';
+    const text = 'Retain this queued original exactly once.';
+    await storage.queue.create({ id: 'portable-row', sessionId: id, prompt: text });
+    const provider = { abort: vi.fn(), interruptCurrentTurn: vi.fn(async () => ({ method: 'interrupt' as const })) };
+    getProvider.mockReturnValue(provider);
+    const guard = new SessionProcessingGuard();
+    const service = Object.assign(Object.create(AIService.prototype), {
+      sessionsProcessingQueue: guard, publishQueueStateToSync: vi.fn(async () => {}),
+      driveQueuedPrompts: vi.fn(async () => ({ kind: 'nothing-pending' })),
+    });
+    registerTurnControlHandlers({
+      analytics: { sendEvent: vi.fn() }, sessionsProcessingQueue: guard,
+      publishQueueStateToSync: service.publishQueueStateToSync,
+      forceSessionIdleOnCancel: (key: string) => service.forceSessionIdleOnCancel(key),
+      interruptCurrentTurn: (key: string, options?: { userSendNow?: boolean }) => service.interruptCurrentTurn(key, options),
+      driveQueuedPrompts: service.driveQueuedPrompts,
+      invalidateQueueDrive: (key: string) => service.invalidateQueueDrive(key),
+    } as any);
+    const delivered: string[] = [];
+    const options = {
+      queueStore: storage.queue, processingSet: guard,
+      sendMessageHandler: vi.fn(async (_event, prompt: string) => { delivered.push(prompt); return { content: 'ok' }; }),
+      continueQueuedPromptChain: vi.fn(async () => {}), logError: vi.fn(), logInfo: vi.fn(), onPromptClaimed: vi.fn(),
+      startSession: vi.fn(async () => {}), sessionId: id, workspacePath: '/workspace', source: 'automatic-after-stop',
+      targetWindow: { isDestroyed: () => false, webContents: { mainFrame: {} } } as any,
+    };
+    const stopped = await handlers.get('ai:cancelRequest')!({}, id);
+    const automatic = await tryClaimAndDispatchNextQueuedPrompt(options);
+    const stateAfterStop = (await storage.queue.get('portable-row'))?.status;
+    await handlers.get('ai:interruptCurrentTurn')!({}, id);
+    await tryClaimAndDispatchNextQueuedPrompt(options);
+    await vi.waitFor(async () => expect((await storage.queue.get('portable-row'))?.status).toBe('completed'));
+    expect(stopped).toMatchObject({ success: true });
+    expect(automatic).toBe(false);
+    expect(stateAfterStop).toBe('pending');
+    expect(delivered).toEqual([text]);
+  });
+
   it.each([
     ['stop', 'running'], ['lightning', 'running'],
     ['stop', 'waiting_for_input'], ['lightning', 'waiting_for_input'],

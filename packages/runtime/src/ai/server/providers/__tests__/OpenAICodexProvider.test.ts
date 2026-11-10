@@ -91,6 +91,7 @@ describe('OpenAICodexProvider', () => {
     release();
     const error = await observed;
     try {
+      expect(error).toBeDefined();
       expect(error?.message).toContain('has not been sent to Codex');
       expect(protocol.sendMessage).not.toHaveBeenCalled();
       if (ordering.endsWith('stop-then-destroy') || ordering === 'post-resolution-stop') {

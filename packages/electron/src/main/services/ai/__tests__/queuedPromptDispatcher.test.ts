@@ -714,6 +714,7 @@ describe('queuedPromptDispatcher', () => {
       const rows = [humanPrompt('h1', 'one'), humanPrompt('h2', 'two')];
       const failed: string[] = [];
       const queueStore: QueuedPromptStoreLike = {
+        releaseClaims: vi.fn(async () => {}),
         listPending: vi.fn(async () => rows),
         claim: vi.fn(async (id: string) => rows.find((p) => p.id === id) ?? null),
         complete: vi.fn(async () => {}),

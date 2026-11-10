@@ -149,6 +149,47 @@ describe('CodexAppServerProtocol', () => {
     if (!child.killed) child.kill();
   });
 
+  it.each([false, true])('keeps a resolved Stop behind the exact native terminal before its successor (interrupt rejection: %s)', async rejectInterrupt => {
+    const protocol = new CodexAppServerProtocol();
+    const creating = protocol.createSession({ workspacePath: '/tmp/ws' });
+    const init = await nextWrittenMatching(child, 'initialize');
+    child.emitLine({ id: init.id, result: {} });
+    const thread = await nextWrittenMatching(child, 'thread/start');
+    child.emitLine({ id: thread.id, result: { thread: { id: 'portable-root' } } });
+    const session = await creating;
+    const firstController = new AbortController();
+    const collect = async (content: string, abortSignal?: AbortSignal) => {
+      for await (const event of protocol.sendMessage(session, { content, abortSignal })) void event;
+    };
+    const old = collect('old', firstController.signal);
+    let next: Promise<void> | undefined;
+    try {
+      const first = await nextWrittenMatching(child, 'turn/start');
+      child.emitLine({ id: first.id, result: { turn: { id: 'owned-old' } } });
+      await vi.waitFor(() => expect((session.raw as any).activeTurnId).toBe('owned-old'));
+      firstController.abort();
+      await old;
+      const interrupt = await nextWrittenMatching(child, 'turn/interrupt');
+      if (rejectInterrupt) child.emitLine({ id: interrupt.id, error: { code: -1, message: 'fixture refused interrupt' } });
+      else child.emitLine({ id: interrupt.id, result: {} });
+      next = collect('successor').catch(() => {});
+      const starts = () => child.writtenLines.filter((row: any) => row.method === 'turn/start') as any[];
+      await new Promise(resolve => setTimeout(resolve, 25));
+      const beforeTerminal = starts().length;
+      child.emitLine({ method: 'turn/completed', params: { threadId: 'sibling', turn: { id: 'owned-old' } } });
+      child.emitLine({ method: 'turn/completed', params: { threadId: 'portable-root', turn: { id: 'stale-old' } } });
+      await new Promise(resolve => setTimeout(resolve, 25));
+      const afterForeignTerminals = starts().length;
+      child.emitLine({ method: 'turn/completed', params: { threadId: 'portable-root', turn: { id: 'owned-old' } } });
+      await vi.waitFor(() => expect(starts()).toHaveLength(2));
+      child.emitLine({ id: starts()[1].id, result: { turn: { id: 'successor-turn' } } });
+      child.emitLine({ method: 'turn/completed', params: { threadId: 'portable-root', turn: { id: 'successor-turn' } } });
+      await next;
+      expect(beforeTerminal).toBe(1);
+      expect(afterForeignTerminals).toBe(1);
+    } finally { protocol.cleanupSession(session); await Promise.allSettled([old, ...(next ? [next] : [])]); }
+  });
+
   it.each(['shell-registration', 'initialize', 'hooks-trust', 'thread-start', 'thread-resume'])('owns cancelled native setup until %s settles without killing its child', async stage => {
     let releaseRegistration!: () => void;
     const registrationGate = new Promise<void>(resolve => { releaseRegistration = resolve; });
