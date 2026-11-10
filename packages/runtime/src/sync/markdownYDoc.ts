@@ -23,6 +23,7 @@ import { $convertToEnhancedMarkdownString } from '../editor/markdown/EnhancedMar
 import { $convertFromEnhancedMarkdownString } from '../editor/markdown/EnhancedMarkdownImport';
 import { getHeadlessBodyTransformers } from '../editor/markdown/headlessBodyTransformers';
 import { HeadlessBodyNodes } from '../editor/nodes/headlessBodyNodes';
+import { $hasCommentMarks, $unwrapCommentMarks } from './commentMarkExport';
 import { applyMarkdownReplacementsToHeadlessEditor } from './headlessMarkdownReplace';
 import type { HeadlessLexicalYDoc } from './HeadlessLexicalYDoc';
 import { withUnknownNodePlaceholders } from './unknownNodePlaceholders';
@@ -115,7 +116,10 @@ export function applyMarkdownReplacementsToLexicalYUpdate(
   }
 }
 
-/** Read a Lexical collaborative document's state back out as markdown. */
+/**
+ * Read a Lexical collaborative document's state back out as markdown. Comment
+ * marks are transparent: the export is byte-identical with and without them.
+ */
 export function lexicalYDocToMarkdown(state: Uint8Array): string {
   const doc = new Doc();
   try {
@@ -123,6 +127,10 @@ export function lexicalYDocToMarkdown(state: Uint8Array): string {
     const nodes = withUnknownNodePlaceholders(doc, HeadlessBodyNodes);
     return withHeadlessLexicalBridge(doc, { nodes }, (headless) => {
       assertHydrated(doc, headless);
+      // Writes only to this function's private copy of the document; see
+      // commentMarkExport.ts for why marks must not reach the exporter.
+      const hasMarks = headless.editor.getEditorState().read($hasCommentMarks);
+      if (hasMarks) headless.applyUpdate($unwrapCommentMarks);
       return headless.editor.getEditorState().read(() =>
         $convertToEnhancedMarkdownString(getHeadlessBodyTransformers()),
       );

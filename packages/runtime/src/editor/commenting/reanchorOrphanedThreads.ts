@@ -12,6 +12,13 @@
  * whose quote now occurs more than once, is left orphaned on purpose — these
  * writes go into the shared Y.Doc, so a wrong guess is permanent and visible to
  * everyone.
+ *
+ * The match is the thread's text-quote selector (`getThreadQuoteSelector`)
+ * under `findThreadQuoteOffset`: its prefix/suffix context first, else the
+ * bare quote when it occurs exactly once, so a thread whose neighbours were
+ * edited still re-attaches. A commenter's quote-only thread gains a MarkNode
+ * the first time a client that may edit the body opens the page.
+ * Callers must not run this for a user without body-edit rights.
  */
 import { $wrapSelectionInMarkNode } from '@lexical/mark';
 import {
@@ -24,7 +31,9 @@ import {
 import {
   CollabCommentControllerError,
   collectMarkIds,
-  resolveAnchor,
+  $buildCommentTextIndex,
+  getThreadQuoteSelector,
+  resolveThreadAnchorInIndex,
 } from './CollabCommentControllerRegistry';
 import type { Thread } from './index';
 
@@ -44,7 +53,7 @@ export function reanchorOrphanedThreads(
 
   const attached = collectMarkIds(editor);
   const orphaned = threads.filter(
-    (thread) => thread.quote && !attached.has(thread.id),
+    (thread) => getThreadQuoteSelector(thread) && !attached.has(thread.id),
   );
   if (orphaned.length === 0) return result;
 
@@ -61,7 +70,14 @@ export function reanchorOrphanedThreads(
         try {
           // Re-resolved per thread: each wrap splits text nodes, so offsets
           // from a single up-front pass would be stale after the first mark.
-          resolved = resolveAnchor({ exact: thread.quote });
+          const selector = getThreadQuoteSelector(thread)!;
+          // Context first, then the bare quote when it is unique; a repeated
+          // quote stays orphaned (findThreadQuoteOffset).
+          resolved = resolveThreadAnchorInIndex($buildCommentTextIndex(), {
+            exact: selector.exact,
+            prefix: selector.prefix,
+            suffix: selector.suffix,
+          });
         } catch (error) {
           result.skipped.push({
             id: thread.id,

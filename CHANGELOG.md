@@ -13,9 +13,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 <!-- Changes to existing functionality go here -->
+- Team guests now see only the projects they are granted, instead of reading every project like a viewer (requires the updated sync server)
 
 ### Fixed
 <!-- Bug fixes go here -->
+- An agent edit to a shared document next to a comment on part of a bold run or inline code no longer writes broken markdown (such as an extra pair of `**` or backticks), and exporting such a document to a file keeps its formatting intact
 
 ### Removed
 <!-- Removed features go here -->

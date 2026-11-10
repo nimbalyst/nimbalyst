@@ -19,7 +19,7 @@ describe('collab editor comments state', () => {
         serverAccess,
         hasConnectedOnce: true,
         hostCanComment: true,
-      }).capabilities).toEqual({ read: true, comment: true });
+      }).capabilities).toEqual({ read: true, comment: true, editBody: true });
     }
   });
 
@@ -32,7 +32,7 @@ describe('collab editor comments state', () => {
         serverAccess,
         hasConnectedOnce: true,
         hostCanComment: false,
-      }).capabilities).toEqual({ read: true, comment: false });
+      }).capabilities).toEqual({ read: true, comment: false, editBody: true });
     }
 
     // A server verdict that refuses writes overrides a host that says yes. This
@@ -44,7 +44,7 @@ describe('collab editor comments state', () => {
         serverAccess,
         hasConnectedOnce: true,
         hostCanComment: true,
-      }).capabilities).toEqual({ read: true, comment: false });
+      }).capabilities).toEqual({ read: true, comment: false, editBody: false });
     }
   });
 
@@ -66,7 +66,7 @@ describe('collab editor comments state', () => {
     expect(connected).toEqual({
       hasConnectedOnce: true,
       isHydrated: true,
-      capabilities: { read: true, comment: true },
+      capabilities: { read: true, comment: true, editBody: true },
     });
     expect(deriveCollabEditorCommentsState({
       connection: 'disconnected',
@@ -74,6 +74,22 @@ describe('collab editor comments state', () => {
       hasConnectedOnce: connected.hasConnectedOnce,
       hostCanComment: true,
     }).isHydrated).toBe(true);
+  });
+
+  it('keeps commenting and locks the body for a commenter, from either side', () => {
+    const base = { connection: 'connected' as const, hasConnectedOnce: true };
+    // The room's verdict alone: covers a commenter the host roster cannot see.
+    expect(deriveCollabEditorCommentsState({
+      ...base, serverAccess: 'comment-only', hostCanComment: true,
+    }).capabilities).toEqual({ read: true, comment: true, editBody: false });
+    // The host's answer alone, before or without a verdict.
+    expect(deriveCollabEditorCommentsState({
+      ...base, serverAccess: 'writable', hostCanComment: true, hostCanEditBody: false,
+    }).capabilities).toEqual({ read: true, comment: true, editBody: false });
+    // Neither: unchanged from before the field existed.
+    expect(deriveCollabEditorCommentsState({
+      ...base, serverAccess: 'writable', hostCanComment: true,
+    }).capabilities).toEqual({ read: true, comment: true, editBody: true });
   });
 });
 

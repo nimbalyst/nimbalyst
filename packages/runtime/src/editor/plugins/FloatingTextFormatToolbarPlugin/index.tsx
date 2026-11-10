@@ -316,6 +316,20 @@ function TextFormatFloatingToolbar({
     );
   }, [editor, $updateTextFormatFloatingToolbar]);
 
+  const renderAction = (action: FloatingTextToolbarAction) => (
+    <button
+      key={action.id}
+      type="button"
+      className="popup-item spaced floating-toolbar-action"
+      title={action.label}
+      aria-label={action.label}
+      data-testid={`floating-toolbar-action-${action.id}`}
+      onMouseDown={(event) => event.preventDefault()}
+      onClick={action.onSelect}>
+      <span className="material-symbols-outlined">{action.icon}</span>
+    </button>
+  );
+
   return (
     <div ref={popupCharStylesEditorRef} className="floating-text-format-popup">
       {editor.isEditable() && (
@@ -437,21 +451,11 @@ function TextFormatFloatingToolbar({
           </button>
           <TextColorPicker editor={editor} buttonClassName="popup-item spaced" />
           {actions.length > 0 && <div className="divider" />}
-          {actions.map((action) => (
-            <button
-              key={action.id}
-              type="button"
-              className="popup-item spaced floating-toolbar-action"
-              title={action.label}
-              aria-label={action.label}
-              data-testid={`floating-toolbar-action-${action.id}`}
-              onMouseDown={(event) => event.preventDefault()}
-              onClick={action.onSelect}>
-              <span className="material-symbols-outlined">{action.icon}</span>
-            </button>
-          ))}
+          {actions.map(renderAction)}
         </>
       )}
+      {!editor.isEditable() &&
+        actions.filter((action) => action.availableWhenReadOnly).map(renderAction)}
     </div>
   );
 }

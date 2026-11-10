@@ -14,7 +14,7 @@
  * host does expose the service.
  */
 
-import { useEffect, useMemo, type RefObject } from "react";
+import { useEffect, useMemo, useRef, type RefObject } from "react";
 import type {
   CollaborationCommentsService,
   MountedCommentAnchorAdapter,
@@ -24,6 +24,8 @@ import type * as Y from "yjs";
 import { MockupPinRepository } from "../../comments/mockupPinRepository";
 import {
   bindMockupPinStore,
+  canWriteMockupPins,
+  guardMockupPinWrites,
   type MockupPinStore,
 } from "../../comments/mockupPinStore";
 import { createMockupPinAnchorAdapter } from "../../comments/mockupPinAnchor";
@@ -78,7 +80,14 @@ export function useMockupComments({
   );
   useEffect(() => () => repository.destroy(), [repository]);
 
-  const store = useMemo(() => bindMockupPinStore(repository), [repository]);
+  // Read through a ref: the store outlives a service swap, and the gate must
+  // answer from the current service at write time.
+  const serviceRef = useRef(service);
+  serviceRef.current = service;
+  const store = useMemo(
+    () => guardMockupPinWrites(bindMockupPinStore(repository), () => canWriteMockupPins(serviceRef.current)),
+    [repository]
+  );
 
   const viewer = useMemo(
     () => ({ userId: user?.id ?? "local", name: user?.name ?? "You" }),

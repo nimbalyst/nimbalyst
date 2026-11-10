@@ -118,6 +118,35 @@ describe('DocumentSync compaction safety (NIM-1519)', () => {
     provider.destroy();
   });
 
+  it('never compacts when the room says this connection cannot write (viewer, commenter)', async () => {
+    const provider = createProvider(await createDocumentKey());
+    provider.getYDoc().getMap('m').set('k', 'v');
+    const fakeWs = createFakeWebSocket();
+    primeForCompaction(provider, fakeWs);
+    // The verdict a commenter's sync response carries.
+    (provider as any).serverCanWrite = false;
+
+    await (provider as any).maybeCompact();
+    expect(fakeWs.sent.some((m) => m.type === 'docCompact')).toBe(false);
+    await expect(provider.forceReplaceServerState(10)).rejects.toThrow('cannot write');
+    expect(fakeWs.sent.some((m) => m.type === 'docCompact')).toBe(false);
+    provider.destroy();
+  });
+
+  it('records the write verdict from a sync response', async () => {
+    const provider = createProvider(await createDocumentKey());
+    await (provider as any).handleSyncResponse({
+      type: 'docSyncResponse',
+      updates: [],
+      hasMore: false,
+      cursor: 0,
+      canWrite: false,
+      canComment: true,
+    });
+    expect((provider as any).serverCanWrite).toBe(false);
+    provider.destroy();
+  });
+
   it('never sends a compaction snapshot of an effectively empty Y.Doc', async () => {
     const provider = createProvider(await createDocumentKey());
     // Doc left empty: lastSeq says the server has 500 rows we did not apply.

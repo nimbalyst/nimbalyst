@@ -23,6 +23,7 @@ import {
   asTeamOrgId,
   asTeamProjectId,
   type CollabEditorCommentsOptions,
+  type CollabEditorMountOptions,
   type CollabEditorHandle,
 } from '../types';
 
@@ -604,7 +605,7 @@ class FakeRoomSocket {
    * for a server that predates the verdict, which is how the client's fallback
    * to its own host answer stays covered.
    */
-  deliverSyncResponse(canWrite?: boolean): void {
+  deliverSyncResponse(canWrite?: boolean, canComment?: boolean): void {
     this.emit('message', {
       data: JSON.stringify({
         type: 'docSyncResponse',
@@ -614,6 +615,44 @@ class FakeRoomSocket {
         serverHead: 0,
         serverHasState: true,
         ...(canWrite === undefined ? {} : { canWrite }),
+        ...(canComment === undefined ? {} : { canComment }),
+      }),
+    });
+  }
+
+  /**
+   * The room demoting a connected editor to commenter mid-session (a role
+   * change), which the server sends instead of `document_read_only`.
+   */
+  deliverCommentOnlyDemotion(): void {
+    this.emit('message', {
+      data: JSON.stringify({
+        type: 'error',
+        code: 'document_comment_only',
+        message: 'Your current role now permits commenting on this document but not editing it',
+      }),
+    });
+  }
+
+  /** The room granting body write to an open connection (a role change). */
+  deliverWritableGrant(): void {
+    this.emit('message', {
+      data: JSON.stringify({
+        type: 'error',
+        code: 'document_writable',
+        message: 'Your current role now permits editing this document',
+      }),
+    });
+  }
+
+  /** The room refusing a commenter update that touched more than comments. */
+  deliverCommentUpdateRefusal(clientUpdateId: string): void {
+    this.emit('message', {
+      data: JSON.stringify({
+        type: 'error',
+        code: 'document_comment_update_refused',
+        message: 'Commenters may only change comment threads',
+        clientUpdateId,
       }),
     });
   }
@@ -645,7 +684,12 @@ describe('comment authoring on a document that has not been written to', () => {
     documentId: string,
     canComment: () => boolean,
     serverCanWrite?: boolean,
-  ): Promise<{ handle: CollabEditorHandle; documentUri: string }> {
+    extra: {
+      serverCanComment?: boolean;
+      canEditBody?: () => boolean;
+      onTermination?: CollabEditorMountOptions['onTermination'];
+    } = {},
+  ): Promise<{ handle: CollabEditorHandle; documentUri: string; element: HTMLElement }> {
     FakeRoomSocket.opened.length = 0;
     const element = document.createElement('div');
     document.body.append(element);
@@ -657,6 +701,7 @@ describe('comment authoring on a document that has not been written to', () => {
       documentId,
       documentUri,
       canComment,
+      ...(extra.canEditBody ? { canEditBody: extra.canEditBody } : {}),
     };
     const handle = mountCollabEditor({
       element,
@@ -677,6 +722,7 @@ describe('comment authoring on a document that has not been written to', () => {
       },
       user: { memberId: asTeamMemberId('member-reader'), name: 'Reader' },
       comments,
+      onTermination: extra.onTermination,
     });
     mountedHandles.push(handle);
     await settle();
@@ -685,10 +731,10 @@ describe('comment authoring on a document that has not been written to', () => {
     if (!socket) throw new Error('the editor never opened a room socket');
     await act(async () => {
       socket.open();
-      socket.deliverSyncResponse(serverCanWrite);
+      socket.deliverSyncResponse(serverCanWrite, extra.serverCanComment);
     });
     await settle();
-    return { handle, documentUri };
+    return { handle, documentUri, element };
   }
 
   function commentCapability(documentUri: string): boolean {
@@ -772,5 +818,159 @@ describe('comment authoring on a document that has not been written to', () => {
     await act(async () => staleSocket.deliverReadOnlyRefusal());
     expect(stale.handle.getState()).toMatchObject({ serverAccess: 'read-only' });
     expect(commentCapability(stale.documentUri)).toBe(false);
+  });
+
+  it('keeps commenting for a commenter verdict instead of demoting to read-only', async () => {
+    // canWrite false alone is a reader; with canComment it is a commenter,
+    // which the server reports even when the host roster cannot see the grant.
+    const commenter = await openTeamDocument('doc-commenter', () => true, false, {
+      serverCanComment: true,
+    });
+    expect(commenter.handle.getState()).toMatchObject({
+      serverAccess: 'comment-only',
+      readOnly: true,
+    });
+    expect(commentController(commenter.documentUri).getCapabilities()).toEqual({
+      read: true,
+      comment: true,
+      editBody: false,
+    });
+
+    // The room acknowledges a commenter's comment updates; that is not
+    // evidence the body became writable.
+    const socket = FakeRoomSocket.opened[0]!;
+    await act(async () => socket.deliverWriteAcknowledged());
+    expect(commenter.handle.getState()).toMatchObject({ serverAccess: 'comment-only' });
+
+    // A host commenter answer locks the body even on a writable verdict.
+    const hostCommenter = await openTeamDocument('doc-host-commenter', () => true, true, {
+      canEditBody: () => false,
+    });
+    expect(hostCommenter.handle.getState()).toMatchObject({ readOnly: true });
+    expect(commentController(hostCommenter.documentUri).getCapabilities()).toMatchObject({
+      comment: true,
+      editBody: false,
+    });
+  });
+
+  it('switches a connected editor to commenter mode when the room demotes it, and back on a writable verdict', async () => {
+    const editor = await openTeamDocument('doc-demoted', () => true, true);
+    const body = editor.element.querySelector('[contenteditable]');
+    expect(body?.getAttribute('contenteditable')).toBe('true');
+    expect(commentController(editor.documentUri).getCapabilities()).toMatchObject({
+      comment: true,
+      editBody: true,
+    });
+
+    const socket = FakeRoomSocket.opened[0]!;
+    await act(async () => socket.deliverCommentOnlyDemotion());
+    await settle();
+
+    // Read-only body, commenting kept, socket still open: not a termination.
+    expect(editor.handle.getState()).toMatchObject({
+      connection: 'connected',
+      serverAccess: 'comment-only',
+      readOnly: true,
+      termination: null,
+    });
+    expect(editor.element.querySelector('[contenteditable="true"]')).toBeNull();
+    expect(editor.element.querySelector('[contenteditable="false"]')).not.toBeNull();
+    expect(commentController(editor.documentUri).getCapabilities()).toEqual({
+      read: true,
+      comment: true,
+      editBody: false,
+    });
+    // An ack for an update sent before the demotion does not restore editing.
+    await act(async () => socket.deliverWriteAcknowledged());
+    expect(editor.handle.getState()).toMatchObject({ serverAccess: 'comment-only', readOnly: true });
+
+    // A later verdict that grants writing (the next sync response) does.
+    await act(async () => socket.deliverSyncResponse(true, true));
+    await settle();
+    expect(editor.handle.getState()).toMatchObject({ serverAccess: 'writable', readOnly: false });
+    expect(editor.element.querySelector('[contenteditable="true"]')).not.toBeNull();
+    expect(commentController(editor.documentUri).getCapabilities()).toMatchObject({
+      comment: true,
+      editBody: true,
+    });
+  });
+
+  it('unlocks a commenter granted write mid-session, without reconnecting', async () => {
+    const commenter = await openTeamDocument('doc-promoted', () => true, false, {
+      serverCanComment: true,
+    });
+    const root = () => commenter.handle.getDocument().get('root', Y.XmlText).toString();
+    const before = root();
+    await act(async () => commenter.handle.insertText(' LOCKED-INPUT'));
+    expect(root()).toBe(before);
+
+    const socket = FakeRoomSocket.opened[0]!;
+    await act(async () => socket.deliverWritableGrant());
+    await settle();
+    expect(commenter.handle.getState()).toMatchObject({
+      connection: 'connected',
+      serverAccess: 'writable',
+      readOnly: false,
+      termination: null,
+    });
+    expect(commentController(commenter.documentUri).getCapabilities()).toMatchObject({
+      comment: true,
+      editBody: true,
+    });
+    const body = commenter.element.querySelector('[contenteditable="true"]');
+    expect(body).not.toBeNull();
+    await act(async () => commenter.handle.insertText(' GRANTED-INPUT'));
+    expect(root()).toContain('GRANTED-INPUT');
+    expect(FakeRoomSocket.opened).toHaveLength(1);
+
+    // Resent after hibernation to a socket that already writes: no change.
+    const settled = commenter.handle.getState();
+    await act(async () => socket.deliverWritableGrant());
+    await settle();
+    expect(commenter.handle.getState()).toEqual(settled);
+    expect(commenter.element.querySelector('[contenteditable="true"]')).toBe(body);
+  });
+
+  it('turns on commenting for a reader granted it mid-session', async () => {
+    const reader = await openTeamDocument('doc-reader-granted', () => true, false);
+    expect(reader.handle.getState()).toMatchObject({ serverAccess: 'read-only' });
+    expect(commentCapability(reader.documentUri)).toBe(false);
+
+    await act(async () => FakeRoomSocket.opened[0]!.deliverCommentOnlyDemotion());
+    await settle();
+    expect(reader.handle.getState()).toMatchObject({ serverAccess: 'comment-only', readOnly: true });
+    expect(commentController(reader.documentUri).getCapabilities()).toEqual({
+      read: true,
+      comment: true,
+      editBody: false,
+    });
+  });
+
+  it('terminates with comment-update-refused when the room refuses a commenter update', async () => {
+    const terminations: unknown[] = [];
+    const commenter = await openTeamDocument('doc-refused', () => true, false, {
+      serverCanComment: true,
+      onTermination: (termination) => terminations.push(termination),
+    });
+    const socket = FakeRoomSocket.opened[0]!;
+
+    await act(async () => socket.deliverCommentUpdateRefusal('client-update-3'));
+
+    // The shape the web console's isCommentUpdateRefusal() checks to remount.
+    expect(terminations).toEqual([{
+      reason: 'comment-update-refused',
+      closeCode: 4009,
+      message: 'Commenters may only change comment threads',
+      clientUpdateId: 'client-update-3',
+    }]);
+    expect(commenter.handle.getState()).toMatchObject({
+      connection: 'terminated',
+      readOnly: true,
+      termination: { reason: 'comment-update-refused', closeCode: 4009 },
+    });
+    expect(commentCapability(commenter.documentUri)).toBe(false);
+    // No reconnect on a Y.Doc the room can never accept again.
+    await settle();
+    expect(FakeRoomSocket.opened).toHaveLength(1);
   });
 });

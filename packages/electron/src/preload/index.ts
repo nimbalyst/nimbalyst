@@ -1939,7 +1939,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // projection from the server; project-access grant/revoke/list manage the
   // per-project member set.
   org: {
-    canAccess: (input: { orgId?: string | null; projectId?: string | null; action: 'view' | 'edit' | 'admin' }) =>
+    canAccess: (input: { orgId?: string | null; projectId?: string | null; action: 'view' | 'comment' | 'edit' | 'admin' }) =>
       ipcRenderer.invoke('org:can-access', input),
     syncProjection: () => ipcRenderer.invoke('org:sync-projection'),
     grantProjectAccess: (orgId: string, projectId: string, userId: string, projectRole: string) =>

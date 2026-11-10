@@ -24,6 +24,7 @@ vi.mock('../../../services/ErrorNotificationService', () => ({
 import {
   createCollabExtensionHost,
   createCollaborationContext,
+  createReadOnlySignal,
   flushCollaborativeContent,
 } from '../collabExtensionHost';
 
@@ -67,6 +68,71 @@ describe('createCollabExtensionHost embedded mode', () => {
     expect(mocks.storeSet).not.toHaveBeenCalled();
     expect(mocks.setEditorContext).not.toHaveBeenCalled();
     expect(mocks.setEditorContextItems).not.toHaveBeenCalled();
+  });
+});
+
+describe('createCollabExtensionHost live read-only', () => {
+  it('follows a read-only signal that flips after mount (commenter verdict arriving late)', () => {
+    const readOnlySignal = createReadOnlySignal(false);
+    const host = createCollabExtensionHost({
+      filePath: 'collab://org:team-1:doc:drawing-1',
+      fileName: 'Drawing',
+      isActive: true,
+      activeConfig: {
+        scope: {
+          scopeKey: '/workspace',
+          orgId: 'team-1',
+          indexConfig: { serverUrl: 'ws://sync', teamMemberId: asTeamMemberId('user-1') },
+        },
+        orgId: 'team-1',
+        documentId: 'drawing-1',
+        title: 'Drawing',
+        serverUrl: 'ws://sync',
+        getJwt: async () => asTeamJwt('token'),
+        teamMemberId: asTeamMemberId('user-1'),
+        accountId: 'account-1',
+      },
+      collaboration: { yDoc: {} } as never,
+      readOnlySignal,
+    });
+    const seen: boolean[] = [];
+    const unsubscribe = host.onReadOnlyChanged!((value) => seen.push(value));
+    expect(host.readOnly).toBe(false);
+    readOnlySignal.set(true);
+    expect(host.readOnly).toBe(true);
+    readOnlySignal.set(true);
+    unsubscribe();
+    readOnlySignal.set(false);
+    expect(seen).toEqual([false, true]);
+  });
+
+  it('answers read-only as soon as the room verdict says so, before React catches up', () => {
+    let verdictLocked = false;
+    const signal = createReadOnlySignal(false, () => verdictLocked);
+    expect(signal.get()).toBe(false);
+    verdictLocked = true;
+    expect(signal.get()).toBe(true);
+  });
+
+  it('never notifies a value that differs from get(), and only on a change of the combined value', () => {
+    let verdictLocked = true;
+    const signal = createReadOnlySignal(true, () => verdictLocked);
+    const seen: boolean[] = [];
+    signal.subscribe((value) => seen.push(value));
+
+    // Local flag clears while the room verdict still locks the body.
+    signal.set(false);
+    expect(signal.get()).toBe(true);
+    expect(seen).toEqual([]);
+
+    // The verdict unlocks; the next set reports the combined change once.
+    verdictLocked = false;
+    signal.set(false);
+    expect(seen).toEqual([false]);
+    signal.set(false);
+    signal.set(true);
+    expect(seen).toEqual([false, true]);
+    expect(seen.at(-1)).toBe(signal.get());
   });
 });
 

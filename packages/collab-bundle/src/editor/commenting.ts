@@ -54,7 +54,8 @@ export async function resolveDocumentCommentCapabilities(
  * whose project grant was downgraded is offered an affordance the server will
  * refuse. That is bounded and self-correcting rather than silent -- the refusal
  * arrives as `document_read_only`, which moves `serverAccess` to 'read-only'
- * and withdraws the affordance here. The two roles that must never reach it,
+ * and withdraws the affordance here. A room verdict of `canWrite: false,
+ * canComment: true` ('comment-only') keeps commenting and locks the body. The two roles that must never reach it,
  * `viewer` and `guest`, are refused by the host answer itself and never depend
  * on the veto.
  */
@@ -64,16 +65,26 @@ export function deriveCollabEditorCommentsState(options: {
   hasConnectedOnce: boolean;
   /** The host's role-derived answer; see `CollabEditorCommentsOptions.canComment`. */
   hostCanComment: boolean;
+  /**
+   * The host's body-edit answer; see `CollabEditorCommentsOptions.canEditBody`.
+   * Omitted means permitted.
+   */
+  hostCanEditBody?: boolean;
 }): CollabEditorCommentsState {
   const hasConnectedOnce = options.hasConnectedOnce || options.connection === 'connected';
   const serverRefusesWrites = options.serverAccess === 'read-only'
     || options.serverAccess === 'revoked';
+  // A commenter verdict from the room and a host commenter answer are each
+  // enough to lock the body: the most restrictive answer wins. The room's
+  // verdict also covers a commenter the host's roster cannot see.
+  const serverRefusesBody = serverRefusesWrites || options.serverAccess === 'comment-only';
   return {
     hasConnectedOnce,
     isHydrated: hasConnectedOnce,
     capabilities: {
       read: true,
       comment: options.hostCanComment && !serverRefusesWrites,
+      editBody: (options.hostCanEditBody ?? true) && !serverRefusesBody,
     },
   };
 }

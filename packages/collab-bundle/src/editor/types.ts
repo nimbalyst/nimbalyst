@@ -72,6 +72,12 @@ export type CollabEditorServerAccess =
   | 'not-applicable'
   | 'unknown'
   | 'writable'
+  /**
+   * A commenter: the room accepts comment threads but refuses any change to
+   * the document body (`canWrite: false, canComment: true`). The editor is
+   * read-only and comments are written without touching the body.
+   */
+  | 'comment-only'
   | 'read-only'
   | 'revoked';
 
@@ -82,10 +88,25 @@ export interface CollabEditorWriteRejection {
   clientUpdateId?: string;
 }
 
+
 export interface CollabEditorTermination {
-  reason: 'removed-from-org' | 'document-access-revoked' | 'deleted-document';
-  closeCode: 4002 | 4003 | 4004;
+  /**
+   * `comment-update-refused` (close 4009): the room refused a commenter's
+   * update because it changed more than the comment threads
+   * (`document_comment_update_refused`). Terminal for this mount's Y.Doc:
+   * every later update from its Yjs client depends on the refused one. The
+   * host remounts with a fresh provider (a fresh Y.Doc and client id) and tells
+   * the user the last comment was not saved.
+   */
+  reason:
+    | 'removed-from-org'
+    | 'document-access-revoked'
+    | 'deleted-document'
+    | 'comment-update-refused';
+  closeCode: 4002 | 4003 | 4004 | 4009;
   message: string;
+  /** The refused docUpdate, for `comment-update-refused` when the server named it. */
+  clientUpdateId?: string;
 }
 
 export type CollabEditorFlushResult =
@@ -101,7 +122,8 @@ export type CollabEditorFlushResult =
         | 'server-read-only'
         | 'removed-from-org'
         | 'document-access-revoked'
-        | 'deleted-document';
+        | 'deleted-document'
+        | 'comment-update-refused';
     }
   | { status: 'timed-out'; timeoutMs: number }
   | { status: 'failed'; message: string };
@@ -171,6 +193,16 @@ export interface CollabEditorCommentsOptions {
    * that supplies no capability resolver at all.
    */
   canComment?: () => boolean;
+  /**
+   * Whether this user's role permits changing the document body, answered by
+   * the host. `false` with `canComment` true is a commenter: the editor is
+   * read-only and comments are stored without touching the body. Combined with
+   * the room's own verdict (`canWrite: false, canComment: true`); the more
+   * restrictive answer wins. Resolved as a function for the same reasons as
+   * `canComment`; call `refreshCommentAccess` after it changes. Omitted means
+   * permitted.
+   */
+  canEditBody?: () => boolean;
   onMention?: (recipientUserIds: string[], payload: CommentMentionPayload) => void;
   onReply?: (recipientUserIds: string[], payload: CommentReplyPayload) => void;
 }

@@ -372,7 +372,12 @@ export class BodyDocCache {
     factory: BodyDocConfigFactory,
   ): Promise<CacheEntry | null> {
     const existing = this.entries.get(itemId);
-    if (existing) {
+    // A provider whose commenter update the room refused is dead for good
+    // (its Y.Doc carries structs the room never accepts). Once nobody holds
+    // it, build a fresh provider and Y.Doc instead of handing it back.
+    if (existing && existing.refCount === 0 && existing.syncProvider.isCommentUpdateRefused()) {
+      this.destroyEntry(existing, 'comment-update-refused');
+    } else if (existing) {
       if (COLLAB_CONNECTION_DIAGNOSTICS_COMPILED) {
         emitCollabConnectionEvent(existing.syncProvider, 'BodyDocCache', 'warm-hit', {
           refCount: existing.refCount,
