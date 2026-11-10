@@ -6,7 +6,7 @@
         "--prefix",
         "/",
         "-y",
-        "@nimbalyst/cli@0.12.4",
+        "@nimbalyst/cli@0.12.5",
         "hook",
         "session-inputs"
       ]
@@ -20,7 +20,7 @@
         "--prefix",
         "/",
         "-y",
-        "@nimbalyst/cli@0.12.4",
+        "@nimbalyst/cli@0.12.5",
         "mcp",
         "--plugin-agent",
         "codex"

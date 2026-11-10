@@ -8,6 +8,7 @@ The SDK is versioned independently of the Nimbalyst app. Each release declares i
 
 | SDK version | Minimum Nimbalyst app version |
 | --- | --- |
+| 0.7.2 | 0.79.0 |
 | 0.7.1 | 0.79.0 |
 | 0.7.0 | 0.79.0 |
 | 0.6.0 | 0.78.0 |
@@ -21,6 +22,19 @@ The SDK is versioned independently of the Nimbalyst app. Each release declares i
 | 0.1.0 | 0.58.5 |
 
 ## [Unreleased]
+
+## [0.7.2] - 2026-11-10
+
+Requires Nimbalyst 0.79.0. The new APIs are optional; hosts that lack them omit them.
+
+### Added
+
+- `EditorHost.registerDictationTarget()` and `DictationTarget` let a custom editor receive dictated text at its cursor while it has focus.
+- `CommentCapabilities.editBody` tells an editor whether the user may change the document body. Absent means true.
+
+### Changed
+
+- `useCollaborativeEditor` never seeds an empty shared document from a read-only host, such as a commenter's, and still binds the editor to it.
 
 ## [0.7.1] - 2026-10-16
 
