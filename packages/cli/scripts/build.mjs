@@ -79,6 +79,8 @@ await build({
     '@nimbalyst/runtime/core/citationSyntax': path.join(packageDir, '../runtime/src/core/citationSyntax.ts'),
     // The static export's colored-text parser; see src/types/textColorSyntax.d.ts.
     '@nimbalyst/runtime/core/textColorSyntax': path.join(packageDir, '../runtime/src/core/textColorSyntax.ts'),
+    // The editor's comment quote matcher, for anchor states in `nim wiki comments`; see src/types/quoteMatch.d.ts.
+    '@nimbalyst/runtime/editor/commenting/quoteMatch': path.join(packageDir, '../runtime/src/editor/commenting/quoteMatch.ts'),
   },
   // Each entry is bundled independently rather than sharing chunks: the two bin
   // entries differ only in whether they declare the bundled SQLite channel

@@ -9,6 +9,11 @@
  * - `moveLocalWikiToTeam`: the whole local wiki into the bound team project
  *   (localWiki/moveToTeam.ts). Page bodies go from the files to the server;
  *   the agent gets counts, links and errors.
+ * - `publishLocalWikiToTeam`: the local wiki one way into its team project
+ *   for reviewers (localWiki/publishToTeam.ts); the files stay the source.
+ * - `listPublishedComments` and `diffPublishedPage`: reviewers' threads and
+ *   team-side edits on the published pages, mapped back to the local files
+ *   (localWiki/publishedComments.ts).
  * - `openUrl`: opens a Nimbalyst console page in the user's browser, and
  *   nothing else.
  */
@@ -18,6 +23,8 @@ import { resolveServer } from '../cloud/config.js';
 import { loadCredentials } from '../cloud/credentials.js';
 import { NoLocalWikiError } from '../localWiki/open.js';
 import { moveLocalWikiToTeam, MoveRefusal, type MoveDeps } from '../localWiki/moveToTeam.js';
+import { initPublish, publishLocalWikiToTeam, PublishRefusal } from '../localWiki/publishToTeam.js';
+import { diffPublishedPage, listPublishedComments } from '../localWiki/publishedComments.js';
 import { openBrowser } from '../serve/runWikiServe.js';
 import { noLocalWikiResult, type LocalWikiContext } from './localTools.js';
 import { textResult, type McpTool } from './toolMap.js';
@@ -25,6 +32,9 @@ import { textResult, type McpTool } from './toolMap.js';
 export const SIGN_IN_TOOL_NAME = 'teamSignIn';
 export const MOVE_TOOL_NAME = 'moveLocalWikiToTeam';
 export const OPEN_URL_TOOL_NAME = 'openUrl';
+export const PUBLISH_TOOL_NAME = 'publishLocalWikiToTeam';
+export const COMMENTS_TOOL_NAME = 'listPublishedComments';
+export const DIFF_TOOL_NAME = 'diffPublishedPage';
 
 export const CONSOLE_ORIGIN = 'https://console.nimbalyst.com';
 
@@ -200,6 +210,117 @@ function moveTool(context: LocalWikiContext, options: TeamToolOptions): McpTool 
   };
 }
 
+const PROJECT_ARG = {
+  type: 'object',
+  description: 'An existing team project, { orgId, projectId }.',
+  properties: { orgId: { type: 'string' }, projectId: { type: 'string' } },
+  required: ['orgId', 'projectId'],
+};
+
+function pinOf(value: unknown): { orgId: string; projectId: string } | undefined {
+  const project = value as { orgId?: unknown; projectId?: unknown } | undefined;
+  return project && typeof project.orgId === 'string' && typeof project.projectId === 'string' ? { orgId: project.orgId, projectId: project.projectId } : undefined;
+}
+
+/** A refusal the agent acts on, or an error. */
+function failure(name: string, err: unknown) {
+  if (err instanceof NoLocalWikiError) return noLocalWikiResult(err);
+  if (err instanceof PublishRefusal || err instanceof MoveRefusal) return textResult({ error: err.message, ...(err.next ? { next: err.next } : {}) }, true);
+  return textResult(`${name}: ${(err as Error).message}`, true);
+}
+
+function publishTool(context: LocalWikiContext, options: TeamToolOptions): McpTool {
+  return {
+    definition: {
+      name: PUBLISH_TOOL_NAME,
+      description:
+        "Publish this project's local wiki one way into a team project, so invited reviewers can read and comment on it in the browser. The local files stay the source of truth; run it again after changing them. " +
+        'Pages with export: false (and pages under them) and person fields are left out. A page someone edited in the team is not overwritten and is listed in bodyEdited: make the file hold the team text (diffPublishedPage shows the difference; publish takes the page back once it shows none), then edit the file and publish as usual. ' +
+        'A page deleted locally since the last publish goes to team Trash (a typed page is archived), unless it was edited in the team; removals lists each. More removals than 3 pages and 10% of the published pages are held as pending until confirmRemovals: true, which needs confirmation from the user. orphanedThreads lists open comments whose quoted text is gone after this publish: resolve or answer them. ' +
+        'The first time, pass init: true: it uses the team project this repository is bound to, or binds `project`, or creates a project (team admins) in `orgId`, records it in .nimbalyst/local-wiki.json and publishes. Needs teamSignIn first. Refuses a wiki that was moved with moveLocalWikiToTeam. ' +
+        'Page text goes from the files to the server and is not returned.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          init: { type: 'boolean', description: 'First publish: choose or create the team project, record it, publish.' },
+          project: { ...PROJECT_ARG, description: 'With init: an existing team project to publish to, { orgId, projectId }.' },
+          orgId: { type: 'string', description: 'With init: the team to create the project in, when the repository has none.' },
+          name: { type: 'string', description: "With init: the new project's name. Default: the repository folder's name." },
+          dryRun: { type: 'boolean', description: 'Count what would be published and removed; send nothing.' },
+          confirmRemovals: {
+            type: 'boolean',
+            description: 'Carry out removals over the per-publish limit (more than 3 pages and 10% of the published pages). Only after the user confirmed those local pages were deleted on purpose.',
+          },
+        },
+      },
+      annotations: { readOnlyHint: false, destructiveHint: true, openWorldHint: true },
+    },
+    call: async (args) => {
+      try {
+        const opened = await context.open();
+        const dryRun = args.dryRun === true;
+        const confirmRemovals = args.confirmRemovals === true;
+        const report = args.init === true
+          ? await initPublish(opened, { project: pinOf(args.project), orgId: typeof args.orgId === 'string' ? args.orgId : undefined, name: typeof args.name === 'string' ? args.name : undefined, dryRun, confirmRemovals }, options.moveDeps)
+          : await publishLocalWikiToTeam(opened, { dryRun, confirmRemovals }, options.moveDeps);
+        return textResult({ wikiFolder: opened.dir, ...report }, report.verified === false);
+      } catch (err) {
+        return failure(PUBLISH_TOOL_NAME, err);
+      }
+    },
+  };
+}
+
+function commentsTool(context: LocalWikiContext, options: TeamToolOptions): McpTool {
+  return {
+    definition: {
+      name: COMMENTS_TOOL_NAME,
+      description:
+        'Open comment threads reviewers left on the pages publishLocalWikiToTeam published, each with the local file to edit, the quoted text, who wrote what, and anchorState: marked or quote (the quoted text is in the page) or orphaned (it is not; the comment may already be addressed). ' +
+        'Act on a thread by editing the file, then publish again.',
+      inputSchema: {
+        type: 'object',
+        properties: { page: { type: 'string', description: 'Only this page: its id, path in the wiki, or title. Default: every published page.' } },
+      },
+      annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: true },
+    },
+    call: async (args) => {
+      try {
+        const opened = await context.open();
+        return textResult(await listPublishedComments(opened, { page: typeof args.page === 'string' ? args.page : undefined }, options.moveDeps));
+      } catch (err) {
+        return failure(COMMENTS_TOOL_NAME, err);
+      }
+    },
+  };
+}
+
+function diffTool(context: LocalWikiContext, options: TeamToolOptions): McpTool {
+  return {
+    definition: {
+      name: DIFF_TOOL_NAME,
+      description:
+        'For a published page someone edited in the team (bodyEdited in the publish result): its team text as a unified diff against the local file (- local, + team). Merge what should stay into the file, then publish again. ' +
+        'Links differ by design: the team text points them at team pages.',
+      inputSchema: {
+        type: 'object',
+        properties: { page: { type: 'string', description: 'The page: its id, path in the wiki, or title.' } },
+        required: ['page'],
+      },
+      annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: true },
+    },
+    call: async (args) => {
+      try {
+        if (typeof args.page !== 'string' || !args.page) throw usageError('`page` is required');
+        const opened = await context.open();
+        return textResult(await diffPublishedPage(opened, args.page, options.moveDeps));
+      } catch (err) {
+        return failure(DIFF_TOOL_NAME, err);
+      }
+    },
+  };
+}
+
 function openUrlTool(options: TeamToolOptions): McpTool {
   const open = options.openUrl ?? openBrowser;
   return {
@@ -228,5 +349,5 @@ function openUrlTool(options: TeamToolOptions): McpTool {
 }
 
 export function teamTools(context: LocalWikiContext, options: TeamToolOptions = {}): McpTool[] {
-  return [signInTool(options), moveTool(context, options), openUrlTool(options)];
+  return [signInTool(options), moveTool(context, options), publishTool(context, options), commentsTool(context, options), diffTool(context, options), openUrlTool(options)];
 }

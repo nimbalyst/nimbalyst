@@ -23,6 +23,8 @@ export interface TeamContentWriter {
     { ok: true; outcome: 'seeded' | 'applied' | 'unchanged' } | ContentFailure
   >;
   uploadFile(file: { documentId: string; abs: string }): Promise<{ ok: true; uri: string } | ContentFailure>;
+  /** Opens a team document's room, hands its Y.Doc to `read`, and closes it; nothing is written. */
+  readRoom?<T>(documentId: string, read: (doc: unknown) => T): Promise<{ ok: true; value: T } | ContentFailure>;
 }
 
 /** The server's per-asset limit (`documentAssetFormat.ts` in the collab server). */
@@ -57,6 +59,12 @@ export function assetIdFor(bytes: Uint8Array): string {
   return createHash('sha256').update(bytes).digest('hex').slice(0, 32);
 }
 
+/** The uri an upload of `bytes` into a team document gets, as `buildCollabAssetUri` (runtime `editor/utils/collabAssetUri.ts`) writes it. */
+export function assetUriFor(documentId: string, bytes: Uint8Array): string {
+  // A typed page's `tracker-content/<id>` is one segment.
+  return `collab-asset://doc/${encodeURIComponent(documentId)}/asset/${encodeURIComponent(assetIdFor(bytes))}`;
+}
+
 export function syncUrlFor(server: string): string {
   return server.replace(/^http(s?):\/\//, (_match, secure: string) => `ws${secure}://`);
 }
@@ -89,47 +97,64 @@ export function createTeamContentWriter(options: TeamContentOptions): TeamConten
     return credential;
   };
 
+  type RoomProvider = InstanceType<EditorModels['DocumentSyncProvider']>;
+  /** Opens the room, waits for its first sync, runs `use`, and always closes it. */
+  const withRoom = async <R>(documentId: string, use: (provider: RoomProvider, serverEmpty: boolean) => Promise<R | ContentFailure>): Promise<R | ContentFailure> => {
+    const models = options.models;
+    if (!models) return { ok: false, code: 'editor_code_unavailable', message: "The editors' document code is not installed." };
+    const issued = await currentCredential();
+    /** The server's answer, at first sync, to whether the room held anything. */
+    let resolveFirstSync!: (serverEmpty: boolean) => void;
+    const firstSync = new Promise<boolean>((resolve) => {
+      resolveFirstSync = resolve;
+    });
+    const provider = new models.DocumentSyncProvider({
+      serverUrl: syncUrlFor(options.server),
+      getJwt: async (opts?: { forceRefresh?: boolean }) => (await currentCredential(opts?.forceRefresh === true)).token,
+      orgId: issued.orgId,
+      teamMemberId: issued.memberId,
+      documentId,
+      onFirstSyncComplete: (isEmpty) => resolveFirstSync(isEmpty),
+    });
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      await provider.connect();
+      // Only the room's first sync says what it holds; a timeout is never read as an empty room.
+      const serverEmpty = await Promise.race([
+        firstSync,
+        new Promise<null>((resolve) => {
+          timer = setTimeout(() => resolve(null), options.connectTimeoutMs ?? CONNECT_TIMEOUT_MS);
+        }),
+      ]);
+      if (serverEmpty === null) {
+        const status = provider.getLastAuthRejectionStatus();
+        return {
+          ok: false,
+          code: status === null ? 'room_unavailable' : 'room_refused',
+          message: status === null ? 'Timed out opening the team document.' : `The server refused the team document (status ${status}).`,
+        };
+      }
+      // A snapshot or update the client could not read leaves the doc short of what the room holds; acting on it is blind.
+      if (provider.hasUndecodedContent()) {
+        return { ok: false, code: 'room_unreadable', message: 'Part of the team document could not be read, so nim did not act on it.' };
+      }
+      return await use(provider, serverEmpty);
+    } catch (err) {
+      return { ok: false, code: 'write_failed', message: err instanceof Error ? err.message : String(err) };
+    } finally {
+      if (timer) clearTimeout(timer);
+      try {
+        provider.destroy();
+      } catch {
+        // Teardown of a socket that already closed; nothing left to release.
+      }
+    }
+  };
+
   return {
     async writeEditorPage(page) {
-      const models = options.models;
-      if (!models) return { ok: false, code: 'editor_code_unavailable', message: "The editors' document code is not installed." };
-      const issued = await currentCredential();
-      /** The server's answer, at first sync, to whether the room held anything. */
-      let resolveFirstSync!: (serverEmpty: boolean) => void;
-      const firstSync = new Promise<boolean>((resolve) => {
-        resolveFirstSync = resolve;
-      });
-      const provider = new models.DocumentSyncProvider({
-        serverUrl: syncUrlFor(options.server),
-        getJwt: async (opts?: { forceRefresh?: boolean }) => (await currentCredential(opts?.forceRefresh === true)).token,
-        orgId: issued.orgId,
-        teamMemberId: issued.memberId,
-        documentId: page.documentId,
-        onFirstSyncComplete: (isEmpty) => resolveFirstSync(isEmpty),
-      });
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      try {
-        await provider.connect();
-        // Only the room's first sync says what it holds; a timeout is never read as an empty room.
-        const serverEmpty = await Promise.race([
-          firstSync,
-          new Promise<null>((resolve) => {
-            timer = setTimeout(() => resolve(null), options.connectTimeoutMs ?? CONNECT_TIMEOUT_MS);
-          }),
-        ]);
-        if (serverEmpty === null) {
-          const status = provider.getLastAuthRejectionStatus();
-          return {
-            ok: false,
-            code: status === null ? 'room_unavailable' : 'room_refused',
-            message: status === null ? 'Timed out opening the team document.' : `The server refused the team document (status ${status}).`,
-          };
-        }
-        // A snapshot or update the client could not read leaves the doc short of what the room holds; writing on it is blind.
-        if (provider.hasUndecodedContent()) {
-          return { ok: false, code: 'room_unreadable', message: 'Part of the team document could not be read, so the move did not write it.' };
-        }
-        const outcome = models.editorCodecs.writeDoc(page.documentType, provider.getYDoc(), page.text, { roomHadState: !serverEmpty });
+      return withRoom(page.documentId, async (provider, serverEmpty) => {
+        const outcome = options.models!.editorCodecs.writeDoc(page.documentType, provider.getYDoc(), page.text, { roomHadState: !serverEmpty });
         if (outcome === 'edited') {
           return { ok: false, code: 'body_edited', message: 'Someone has changed this page in the team since the move wrote it (or it already had other content), so it was not overwritten.' };
         }
@@ -137,16 +162,11 @@ export function createTeamContentWriter(options: TeamContentOptions): TeamConten
           return { ok: false, code: 'write_unconfirmed', message: 'The server did not confirm the page content was saved; run the move again.' };
         }
         return { ok: true, outcome };
-      } catch (err) {
-        return { ok: false, code: 'write_failed', message: err instanceof Error ? err.message : String(err) };
-      } finally {
-        if (timer) clearTimeout(timer);
-        try {
-          provider.destroy();
-        } catch {
-          // Teardown of a socket that already closed; nothing left to release.
-        }
-      }
+      });
+    },
+
+    async readRoom(documentId, read) {
+      return withRoom(documentId, async (provider) => ({ ok: true as const, value: read(provider.getYDoc()) }));
     },
 
     async uploadFile(file) {
@@ -179,8 +199,7 @@ export function createTeamContentWriter(options: TeamContentOptions): TeamConten
           const detail = await res.text().catch(() => '');
           return { ok: false, code: `upload_http_${res.status}`, message: `The upload was refused (HTTP ${res.status})${detail ? `: ${detail.slice(0, 200)}` : ''}.` };
         }
-        // As `buildCollabAssetUri` (runtime `editor/utils/collabAssetUri.ts`) writes it: a typed page's `tracker-content/<id>` is one segment.
-        return { ok: true, uri: `collab-asset://doc/${encodeURIComponent(file.documentId)}/asset/${encodeURIComponent(assetId)}` };
+        return { ok: true, uri: assetUriFor(file.documentId, bytes) };
       } catch (err) {
         return { ok: false, code: 'upload_failed', message: err instanceof Error ? err.message : String(err) };
       }

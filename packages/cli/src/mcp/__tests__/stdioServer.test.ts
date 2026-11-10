@@ -50,6 +50,7 @@ beforeAll(async () => {
       '@nimbalyst/wiki-plugin/session-inputs': path.join(repoRoot, 'packages/extensions/knowledge/src/sessionInputs/server.ts'),
       '@nimbalyst/runtime/core/citationSyntax': path.join(repoRoot, 'packages/runtime/src/core/citationSyntax.ts'),
       '@nimbalyst/runtime/core/textColorSyntax': path.join(repoRoot, 'packages/runtime/src/core/textColorSyntax.ts'),
+      '@nimbalyst/runtime/editor/commenting/quoteMatch': path.join(repoRoot, 'packages/runtime/src/editor/commenting/quoteMatch.ts'),
     },
     logLevel: 'silent',
   });
@@ -129,7 +130,7 @@ describe('nim mcp over stdio', () => {
     expect(created).toBe(true);
     // The list is stable without a wiki, and every name but the local-only ones is a contract name.
     const names = responses[1].result.tools.map((t: { name: string }) => t.name);
-    expect(names).toEqual(['initLocalWiki', 'useLocalWiki', ...LOCAL_TOOLS, 'convertTypeStorage', 'pagesForFiles', 'wikiDoctor', 'listMarks', ...EDITOR_TOOLS, 'openWikiInBrowser', 'teamSignIn', 'moveLocalWikiToTeam', 'openUrl']);
+    expect(names).toEqual(['initLocalWiki', 'useLocalWiki', ...LOCAL_TOOLS, 'convertTypeStorage', 'pagesForFiles', 'wikiDoctor', 'listMarks', ...EDITOR_TOOLS, 'openWikiInBrowser', 'teamSignIn', 'moveLocalWikiToTeam', 'publishLocalWikiToTeam', 'listPublishedComments', 'diffPublishedPage', 'openUrl']);
     expect(LOCAL_TOOLS.every((n: string) => (PAGE_TOOL_NAMES as readonly string[]).includes(n))).toBe(true);
     // createSharedDoc makes editor pages locally, so it must not inherit the remote server's markdown-only wording.
     const createDoc = responses[1].result.tools.find((t: { name: string }) => t.name === 'createSharedDoc');

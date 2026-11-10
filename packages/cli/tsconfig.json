@@ -13,7 +13,8 @@
     "types": ["node"],
     "paths": {
       "@nimbalyst/runtime/core/pageMarkSyntax": ["./src/types/pageMarkSyntax.d.ts"],
-      "@nimbalyst/runtime/core/textColorSyntax": ["./src/types/textColorSyntax.d.ts"]
+      "@nimbalyst/runtime/core/textColorSyntax": ["./src/types/textColorSyntax.d.ts"],
+      "@nimbalyst/runtime/editor/commenting/quoteMatch": ["./src/types/quoteMatch.d.ts"]
     }
   },
   "include": ["src/**/*"],

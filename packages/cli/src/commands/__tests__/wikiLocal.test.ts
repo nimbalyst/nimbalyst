@@ -146,6 +146,11 @@ describe('nim wiki over a local folder', () => {
     expect(route('list', '--org', 'o1', '--project', 'p1')).toBe(false);
     expect(route('list', '--team')).toBe(false);
     expect(route('items')).toBe(false);
+    // `comments` is the published wiki's threads unless it names team pages; publish verbs are local only.
+    expect(route('comments')).toBe(true);
+    expect(route('comments', '--page', 'collab://org:o1:doc:d1')).toBe(false);
+    expect(route('publish', '--init', '--org', 'o1', '--project', 'p1')).toBe(true);
+    expect(() => route('publish', '--team')).toThrow(/is for the local wiki/);
   });
 
   it('loads a wiki written by the library unchanged', async () => {

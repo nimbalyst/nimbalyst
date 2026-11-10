@@ -485,6 +485,9 @@ importers:
       vitest:
         specifier: 4.1.11
         version: 4.1.11(@types/node@20.19.43)(@vitest/ui@4.1.11)(happy-dom@21.0.4(bufferutil@4.1.0)(utf-8-validate@5.0.10))(jsdom@26.1.0(bufferutil@4.1.0)(supports-color@10.2.2)(utf-8-validate@5.0.10))(vite@7.3.6(@types/node@20.19.43)(jiti@2.7.0)(terser@5.46.1)(yaml@2.8.3))
+      yjs:
+        specifier: 13.6.32
+        version: 13.6.32
     optionalDependencies:
       better-sqlite3:
         specifier: 13.0.3

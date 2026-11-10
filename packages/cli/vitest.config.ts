@@ -45,6 +45,11 @@ export default defineConfig({
         find: '@nimbalyst/runtime/core/textColorSyntax',
         replacement: path.join(repoRoot, 'packages/runtime/src/core/textColorSyntax.ts'),
       },
+      // The editor's comment quote matcher; see src/types/quoteMatch.d.ts.
+      {
+        find: '@nimbalyst/runtime/editor/commenting/quoteMatch',
+        replacement: path.join(repoRoot, 'packages/runtime/src/editor/commenting/quoteMatch.ts'),
+      },
       // The Pages tool contract: tool names and schemas for `nim mcp`.
       {
         find: '@nimbalyst/collab-protocol',
