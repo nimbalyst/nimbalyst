@@ -30,9 +30,11 @@ describe('findQuoteMatches', () => {
     expect(findQuoteMatches(text, { exact: 'beta', prefix: 'Delta ' })).toEqual([24]);
   });
 
-  it('counts non-overlapping occurrences only', () => {
-    expect(findQuoteMatches('aaaa', { exact: 'aa' })).toEqual([0, 2]);
-    expect(findQuoteMatches('aaa', { exact: 'aa' })).toEqual([0]);
+  it('counts overlapping occurrences and can disambiguate them with context', () => {
+    expect(findQuoteMatches('aaaa', { exact: 'aa' })).toEqual([0, 1, 2]);
+    expect(findQuoteMatches('aaa', { exact: 'aa' })).toEqual([0, 1]);
+    expect(findQuoteMatches('banana', { exact: 'ana', prefix: 'ban' })).toEqual([3]);
+    expect(findThreadQuoteOffset('banana', { exact: 'ana' })).toBeNull();
   });
 
   it('matches nothing for an invalid selector instead of throwing', () => {

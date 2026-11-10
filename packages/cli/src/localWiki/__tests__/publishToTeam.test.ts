@@ -133,6 +133,30 @@ const block = (text: string) => ({
 });
 
 describe('publishLocalWikiToTeam', () => {
+  it('compares published editor embeds in the same form as publish without loading codecs', async () => {
+    const opened = await makeWiki();
+    writePublishTarget(opened.projectRoot, PROJECT);
+    const flow = (await opened.wiki.command({ type: 'register-document', title: 'Flow', parentFolderId: null, documentType: 'excalidraw', body: '{"elements":[]}' })).id!;
+    const notes = (await opened.wiki.command({
+      type: 'register-document', title: 'Notes', parentFolderId: null,
+      body: `[Flow](Flow.excalidraw "id=${flow}")\n\n[Flow by path](Flow.excalidraw)\n`,
+    })).id!;
+    const server = fakeServer();
+    const content = {
+      writeEditorPage: async () => ({ ok: true as const, outcome: 'seeded' as const }),
+      uploadFile: async () => ({ ok: true as const, uri: 'unused' }),
+    };
+    const deps = { call: server.call, ...noWait };
+    const published = await publishLocalWikiToTeam(opened, {}, {
+      ...deps, content, loadEditorModels: async () => ({ editorCodecs: { documentTypes: ['excalidraw'] } }) as any,
+    });
+    expect(published.verified).toBe(true);
+    expect(server.pages.get(notes)!.body).toContain('embedType=.excalidraw');
+    // The diff command does not load the editor-models bundle. Published page
+    // metadata must suffice to reproduce both id-based and path-based embeds.
+    expect(await diffPublishedPage(opened, notes, deps)).toMatchObject({ identical: true, diff: '' });
+  });
+
   it('publishes, counts unchanged pages, and trashes a page deleted locally unless it was edited in the team', async () => {
     const opened = await makeWiki();
     const { wiki } = opened;

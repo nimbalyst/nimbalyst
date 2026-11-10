@@ -203,12 +203,17 @@ export default function CommentsPlugin({
   // identity would leave the gate showing stale affordances after revocation.
   const capabilities = resolveCommentCapabilities(config);
   const bodyLocked = !canEditBody(capabilities);
+  const bodyAccessConfigRef = useRef(config);
+  bodyAccessConfigRef.current = config;
 
   // -- Commenter mode: no write may reach the body ---------------------------
   useEffect(() => {
     if (!bodyLocked) return;
-    return registerBodyWriteGuard(editor, () => !canEditCommentedBody(config));
-  }, [editor, config, bodyLocked]);
+    // Desktop replaces the config on access changes. Keep the guard installed
+    // across locked configs, and let cleanup see the promoted capabilities so
+    // it restores the editability this guard disabled.
+    return registerBodyWriteGuard(editor, () => !canEditCommentedBody(bodyAccessConfigRef.current));
+  }, [editor, bodyLocked]);
 
   // -- Attach the CommentStore to the shared document Y.Doc ------------------
   useEffect(() => {

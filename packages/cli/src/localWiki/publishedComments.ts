@@ -189,7 +189,12 @@ export async function diffPublishedPage(opened: OpenedWiki, ref: string, deps: P
 /** A page's body as the next publish would send it, with team ids from the manifest. */
 async function localTeamForm(opened: OpenedWiki, localId: string, manifest: PublishManifest): Promise<string> {
   const wikiPrefix = path.relative(opened.projectRoot, opened.dir).split(path.sep).join('/');
-  const exported = await collectLocalWiki(opened.wiki, { wikiPrefix, wikiDir: opened.dir, publish: true });
+  // Comparing markdown needs the published editor pages' locations and file
+  // extensions for embed rewrites, but never their codecs or a room write.
+  const editorTypes = new Set((await opened.wiki.snapshot()).pages
+    .filter((page) => manifest.pages[page.id]?.kind === 'editorPage')
+    .map((page) => page.documentType));
+  const exported = await collectLocalWiki(opened.wiki, { wikiPrefix, wikiDir: opened.dir, publish: true, editorTypes });
   const page = exported.pages.find((p) => p.localId === localId);
   if (!page) return (await opened.wiki.readBody(localId)).markdown;
   const homeId = exported.projectHomeLocalId;

@@ -24,7 +24,7 @@ export function joinCommentTextBlocks(blocks: readonly string[]): string {
 }
 
 /**
- * Start offsets in `text` where the selector matches: every non-overlapping
+ * Start offsets in `text` where the selector matches: every (even overlapping)
  * occurrence of `exact` whose preceding text ends with `prefix` and whose
  * following text starts with `suffix` (each checked only when non-empty). The
  * selector is normalized first; a selector that fails validation (empty
@@ -54,7 +54,7 @@ export function findQuoteMatches(
     const suffixMatches =
       !suffix || text.slice(endOffset, endOffset + suffix.length) === suffix;
     if (prefixMatches && suffixMatches) matches.push(index);
-    searchFrom = index + Math.max(1, exact.length);
+    searchFrom = index + 1;
   }
   return matches;
 }

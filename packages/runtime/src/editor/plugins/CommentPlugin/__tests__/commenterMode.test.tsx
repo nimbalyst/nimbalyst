@@ -228,7 +228,7 @@ function mountClient(
     documentUri: 'collab://org:test:doc:doc-1',
   };
   let editor: LexicalEditor | undefined;
-  const view = render(
+  const renderClient = (commentsConfig: CommentsConfig) => (
     <LexicalComposer
       initialConfig={{
         namespace: `commenter-mode-${Math.random()}`,
@@ -240,9 +240,10 @@ function mountClient(
       }}
     >
       <CollabBridge doc={clientDoc} onReady={(value) => (editor = value)} />
-      <CommentsPlugin config={config} anchorElem={anchor} />
-    </LexicalComposer>,
+      <CommentsPlugin config={commentsConfig} anchorElem={anchor} />
+    </LexicalComposer>
   );
+  const view = render(renderClient(config));
   if (!editor) throw new Error('Editor did not initialize.');
   // Hydrate from the server the way a provider's sync step does.
   act(() => {
@@ -255,6 +256,9 @@ function mountClient(
     editor: editor as LexicalEditor,
     outgoing,
     pane,
+    setCapabilities(next: CommentCapabilities) {
+      view.rerender(renderClient({ ...config, getCapabilities: () => next }));
+    },
     unmount: view.unmount,
   };
 }
@@ -333,6 +337,44 @@ describe('commenter mode', () => {
   afterEach(() => {
     for (const unmount of unmounts.splice(0)) unmount();
     for (const pane of panes.splice(0)) pane.remove();
+  });
+
+  it('restores editing after immutable capability configs promote a commenter', () => {
+    const server = serverDocWith(['Alpha beta gamma.']);
+    const client = mountClient(server, { read: true, comment: true, editBody: false });
+    panes.push(client.pane);
+    unmounts.push(client.unmount);
+    expect(client.editor.isEditable()).toBe(false);
+
+    // Hosts can replace the config while still locked, before promotion.
+    client.setCapabilities({ read: true, comment: true, editBody: false });
+    client.setCapabilities({ read: true, comment: true });
+    expect(client.editor.isEditable()).toBe(true);
+    act(() => client.editor.update(() => {
+      $getRoot().append($createParagraphNode().append($createTextNode('Added.')));
+    }, { discrete: true }));
+    expect(changedTypes(server, client.outgoing).changed.root).toBe(true);
+
+    client.setCapabilities({ read: true, comment: true, editBody: false });
+    expect(client.editor.isEditable()).toBe(false);
+  });
+
+  it('anchors an overlapping quote to the occurrence the reviewer selected', () => {
+    const server = serverDocWith(['banana']);
+    const client = mountClient(server, { read: true, comment: true, editBody: false });
+    panes.push(client.pane);
+    unmounts.push(client.unmount);
+    act(() => {
+      selectText(client.editor, 'ana', 1);
+      client.editor.dispatchCommand(OPEN_COMMENT_COMPOSER_COMMAND, undefined);
+    });
+    act(() => submitComposer(client.pane, 'The last three letters.'));
+    client.editor.read(() => {});
+    const { changed, threads } = changedTypes(server, client.outgoing);
+    expect(changed.root).toBe(false);
+    const range = resolveQuoteHighlights(client.editor, threads).ranges.get(threads[0].id);
+    expect(range?.start.offset).toBe(3);
+    expect(range?.end.offset).toBe(6);
   });
 
   // The server owns a commenter's thread by its first comment, so a thread
