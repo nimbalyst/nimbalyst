@@ -72,11 +72,12 @@ export function PromptQueueList({ queue, onCancel, onEdit, onSendNow }: PromptQu
             {item.attachments && item.attachments.length > 0 && (
               <AttachmentIndicator attachments={item.attachments} />
             )}
-            {onSendNow && (
+            {onSendNow && index === 0 && (
               <button
                 className="prompt-queue-send-now shrink-0 w-5 h-5 flex items-center justify-center bg-transparent border-none rounded text-nim-muted cursor-pointer text-sm leading-none p-0 transition-all duration-150 hover:bg-nim-hover hover:text-nim-accent"
                 onClick={() => onSendNow(item.id, item.prompt)}
-                title="Interrupt and send now"
+                title="Send now"
+                aria-label="Send now"
                 type="button"
               >
                 <svg width="12" height="12" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">

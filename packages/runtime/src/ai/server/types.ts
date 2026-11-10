@@ -24,6 +24,8 @@ export type { ToolResult } from './protocols/ProtocolInterface';
 export type { TranscriptViewMessage } from './transcript/TranscriptProjector';
 
 export interface DocumentContext {
+  /** Stable durable queue row identity, preserved across pre-submission retries. */
+  queuedPromptId?: string;
   filePath?: string;
   fileType?: string;
   content?: string;  // Optional: omitted when documentTransition is 'none' (content unchanged)

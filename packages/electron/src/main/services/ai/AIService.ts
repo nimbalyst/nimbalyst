@@ -75,7 +75,7 @@ import { registerInitHandlers } from './ipc/registerInitHandlers';
 import { registerSessionHandlers } from './ipc/registerSessionHandlers';
 import { registerQueuedPromptHandlers } from './ipc/registerQueuedPromptHandlers';
 import { registerInteractivePromptHandlers } from './ipc/registerInteractivePromptHandlers';
-import { registerTurnControlHandlers } from './ipc/registerTurnControlHandlers';
+import { cancelSessionTurn, registerTurnControlHandlers } from './ipc/registerTurnControlHandlers';
 import { registerSettingsHandlers } from './ipc/registerSettingsHandlers';
 import { registerModelHandlers } from './ipc/registerModelHandlers';
 import { registerProjectSettingsHandlers } from './ipc/registerProjectSettingsHandlers';
@@ -89,14 +89,15 @@ import {
 import { createWorkspaceWindowResolver } from './resolveWorkspaceWindow';
 import { runQueueDriveAttempt } from './queueDriveAttempt';
 import { wakeParentAfterChildSettle } from './wakeParentAfterChildSettle';
-import { clearStuckRunningState } from './clearStuckRunningState';
+import { beginSessionTurn, isTurnAdmissionBlocked, performTurnInterruption } from './sessionTurnControl';
+import { captureQueueAuthorization } from './stoppedQueueHold';
 import { publishQueuedPromptsToSync } from './queuedPromptSyncPublisher';
 import { onWorkspaceWindowAvailable } from '../../window/workspaceWindowAvailability';
 import { dispatchQueuedPromptToClaudeCli } from './claudeCliQueueDispatch';
 import { publishQueuedPromptClaim } from './queuedPromptClaimEvents';
 import { canDispatchIntoDrain, isLeadTurnPending } from './drainFollowUp';
 import { hasLiveInteractivePrompt } from '../../mcp/tools/interactivePromptLiveness';
-import { isCommitProposalInFlight } from '@nimbalyst/runtime/ai/server/commitProposalInFlight';
+import { closeWaitingCommitProposals, isCommitProposalInFlight } from '@nimbalyst/runtime/ai/server/commitProposalInFlight';
 import { deferInterruptDuringCommit, deferUserSendNowDuringCommit } from './commitInterruptDeferral';
 import { ensureClaudeCliSession } from './claudeCliLauncherSingleton';
 import {
@@ -202,6 +203,7 @@ export class AIService {
     // Initialize mobile sync handler if sync is enabled
     this.mobileSync = new MobileSyncHandler({
       sessionManager: this.sessionManager,
+      cancelSessionTurn: (sessionId, request) => cancelSessionTurn(this.buildIpcContext(), sessionId, undefined, request),
       publishQueueStateToSync: (sessionId) => this.publishQueueStateToSync(sessionId),
       triggerQueuedPromptProcessingForSession: (sessionId, workspacePath, reason) =>
         this.triggerQueuedPromptProcessingForSession(sessionId, workspacePath, reason),
@@ -281,6 +283,7 @@ export class AIService {
     attachments?: any[],
     documentContext?: any
   ): Promise<{ id: string; prompt: string; createdAt: number }> {
+    const authorize = captureQueueAuthorization(sessionId);
     const { getQueuedPromptsStore } = await import('../RepositoryManager');
     const queueStore = getQueuedPromptsStore();
     const promptId = `meta-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
@@ -300,6 +303,7 @@ export class AIService {
       attachments,
       documentContext: queuedDocumentContext,
     });
+    if (documentContext?.promptProvenance?.actor === 'human') authorize();
     // A Claude Code turn that has answered but is draining a background task
     // takes this prompt on its live query now (drainFollowUp.ts). Covers
     // send_prompt, mentions and extension sessions, which queue through here.
@@ -428,16 +432,23 @@ export class AIService {
    * One drive attempt. Returns a deferred outcome (never a discarded `false`)
    * so the driver can arm the matching wake condition.
    */
+  public invalidateQueueDrive(sessionId: string, expected?: Promise<DriveOutcome | void>): void {
+    this.queueDriveService?.invalidate(sessionId, expected);
+  }
+
   private async attemptQueueDrive({
     sessionId,
     workspacePath,
     reason,
+    signal,
   }: {
     sessionId: string;
     workspacePath: string;
     reason: DriveReason;
+    signal: AbortSignal;
   }): Promise<DriveOutcome> {
     const { getQueuedPromptsStore } = await import('../RepositoryManager');
+    if (signal.aborted) return { kind: 'deferred', reason: 'session-busy' };
     let queueStore: ReturnType<typeof getQueuedPromptsStore>;
     try {
       queueStore = getQueuedPromptsStore();
@@ -451,7 +462,7 @@ export class AIService {
         isChainActive: (id) => this.sessionsProcessingQueue.has(id),
         isSessionBusy: (id) => {
           const liveState = getSessionStateManager().getSessionState(id);
-          return !!liveState && (liveState.status === 'running' || liveState.isStreaming);
+          return isTurnAdmissionBlocked(id) || (!!liveState && (liveState.status === 'running' || liveState.isStreaming));
         },
         canDispatchIntoDrain,
         isAwaitingUserInput: (id) =>
@@ -461,15 +472,19 @@ export class AIService {
         resolveWindow: (path, allowAutoOpen) =>
           this.queueWindowResolver.resolve(path, { allowAutoOpen }),
         failAllPending: async (id, errorMessage) => {
-          const failed = await queueStore.failAllPendingForSession(id, errorMessage);
-          await this.publishQueueStateToSync(id);
-          return failed;
+          if (signal.aborted) return 0;
+          const writeTurn = beginSessionTurn(id);
+          try {
+            const failed = await queueStore.failAllPendingForSession(id, errorMessage);
+            await this.publishQueueStateToSync(id);
+            return failed;
+          } finally { writeTurn.finish(); }
         },
-        dispatch: ({ sessionId: id, workspacePath: path, window, reason: driveReason }) =>
-          this.tryDispatchNextQueuedPrompt(id, path, window, `queue-drive:${driveReason}`),
+        dispatch: ({ sessionId: id, workspacePath: path, window, reason: driveReason, signal: attemptSignal }) =>
+          this.tryDispatchNextQueuedPrompt(id, path, window, `queue-drive:${driveReason}`, attemptSignal),
         logWarn: (message) => logger.main.warn(message),
       },
-      { sessionId, workspacePath, reason },
+      { sessionId, workspacePath, reason, signal },
     );
   }
 
@@ -498,9 +513,38 @@ export class AIService {
    * proposal still waiting on them instead of waiting for it (NIM-7642).
    * Meta-agent interrupts leave it unset.
    */
-  public async interruptCurrentTurn(
+  private interruptRequests?: Map<string, {
+    options: { userSendNow?: boolean };
+    result: Promise<InterruptCurrentTurnResult>;
+  }>;
+
+  public interruptCurrentTurn(
     sessionId: string,
     options: { userSendNow?: boolean } = {},
+  ): Promise<InterruptCurrentTurnResult> {
+    if (!sessionId) return Promise.reject(new Error('Session ID is required to interrupt'));
+    // Coalesce at the public entry, before asynchronous provider lookup. Two
+    // simultaneous IPC presses must not let the second interrupt a successor.
+    const requests = this.interruptRequests ??= new Map();
+    const existing = requests.get(sessionId);
+    if (existing) {
+      if (!options.userSendNow) return existing.result;
+      // A user joining an ordinary interrupt still owns proposal dismissal.
+      // The shared options also preserve that intent in its deferred replay.
+      existing.options.userSendNow = true;
+      return closeWaitingCommitProposals(sessionId).then(() => existing.result);
+    }
+    const requestOptions = { ...options };
+    const result = this.interruptCurrentTurnOnce(sessionId, requestOptions).finally(() => {
+      if (requests.get(sessionId)?.result === result) requests.delete(sessionId);
+    });
+    requests.set(sessionId, { options: requestOptions, result });
+    return result;
+  }
+
+  private async interruptCurrentTurnOnce(
+    sessionId: string,
+    options: { userSendNow?: boolean },
   ): Promise<InterruptCurrentTurnResult> {
     if (!sessionId) {
       throw new Error('Session ID is required to interrupt');
@@ -512,7 +556,7 @@ export class AIService {
     const deferDuringCommit = options.userSendNow ? deferUserSendNowDuringCommit : deferInterruptDuringCommit;
     if (await deferDuringCommit(sessionId, {
       hasPendingPrompts: async (id) => (await (await import('../RepositoryManager')).getQueuedPromptsStore().listPending(id)).length > 0,
-      interrupt: (id) => this.interruptCurrentTurn(id),
+      interrupt: (id) => this.interruptCurrentTurn(id, options),
       drive: async (id) => {
         const row = await AISessionsRepository.get(id);
         const path = row?.worktreePath || row?.workspacePath;
@@ -538,45 +582,25 @@ export class AIService {
       return { success: true, method: 'terminal-ctrl-c' };
     }
 
-    await sessionInbox.end(sessionInbox.current(sessionId), false).catch(err => logger.main.error('[AIService] Inbox retirement failed during interruption:', err));
-    const provider = ProviderFactory.getProvider(session.provider as AIProviderType, sessionId);
-    if (!provider) {
-      return { success: false, error: 'No active provider for session' };
-    }
-
-    this.sessionsProcessingQueue.delete(sessionId);
-    try {
-      const { getQueuedPromptsStore } = await import('../RepositoryManager');
-      const queueStore = getQueuedPromptsStore();
-      const { completed, failed, rolledBack } = await queueStore.sweepExecutingForSession(sessionId);
-      if (completed > 0 || failed > 0 || rolledBack > 0) {
-        logger.main.info(
-          `[AIService] interruptCurrentTurn: swept session ${sessionId} -- ${completed} answered marked completed, ${failed} delivered-but-unanswered marked failed, ${rolledBack} undelivered rolled back`
-        );
+    const provider = ProviderFactory.getProvider(session.provider as AIProviderType, sessionId) ?? null;
+    const inbox = sessionInbox.current(sessionId);
+    return performTurnInterruption({
+      sessionId, mode: 'interrupt', provider, guard: this.sessionsProcessingQueue,
+      isCurrentProvider: () => (ProviderFactory.getProvider(session.provider as AIProviderType, sessionId) ?? null) === provider,
+      retireInbox: () => sessionInbox.end(inbox, false),
+      sweep: async () => {
+        const { getQueuedPromptsStore } = await import('../RepositoryManager');
+        await getQueuedPromptsStore().sweepExecutingForSession(sessionId);
         await this.publishQueueStateToSync(sessionId);
-      }
-    } catch (sweepErr) {
-      logger.main.error('[AIService] interruptCurrentTurn: sweepExecutingForSession failed:', sweepErr);
-    }
-
-    const result = await provider.interruptCurrentTurn();
-    logger.main.info(`[AIService] Interrupted current turn for session ${sessionId} (method=${result.method})`);
-
-    // A session stuck at running/streaming with no turn behind it -- because
-    // there never was one, or because `method: 'abort'` just destroyed it --
-    // would otherwise defer the follow-up queue drive on a `session:completed`
-    // that can never arrive (NIM-2434, NIM-2512).
-    const stateManager = getSessionStateManager();
-    const forcedIdle = await clearStuckRunningState(
-      {
-        getSessionState: (id) => stateManager.getSessionState(id),
-        interruptSession: (id) => stateManager.interruptSession(id),
-        logWarn: (message) => logger.main.warn(message),
       },
-      { sessionId, hadActiveTurn: result.hadActiveTurn, method: result.method },
-    );
-
-    return { success: true, method: result.method, forcedIdle };
+      settle: () => this.forceSessionIdleOnCancel(sessionId),
+      invalidateDrive: (expected) => this.invalidateQueueDrive(sessionId, expected),
+      drive: () => {
+        const path = session.worktreePath || session.workspacePath;
+        return path ? this.driveQueuedPrompts(sessionId, path, 'send-now') : Promise.resolve();
+      },
+      logError: error => logger.main.error('[AIService] Turn interruption failed:', error),
+    });
   }
 
   public async respondToInteractivePrompt(params: {
@@ -932,7 +956,9 @@ export class AIService {
     workspacePath: string,
     targetWindow: Electron.BrowserWindow | null,
     source: string,
+    signal?: AbortSignal,
   ): Promise<boolean> {
+    if (signal?.aborted) return false;
     // NIM-834: claude-code-cli sessions have no in-process turn driver — the SDK
     // dispatch below would call the provider's Phase 1 sendMessage stub and mark
     // the prompt failed (broke meta-agent spawns, restart continuations, and
@@ -946,11 +972,13 @@ export class AIService {
     } catch (lookupError) {
       logger.main.warn(`[AIService] ${source}: provider lookup failed before queued dispatch:`, lookupError);
     }
+    if (signal?.aborted) return false;
     if (dispatchSession?.provider === 'claude-code-cli') {
       return this.dispatchQueuedPromptToClaudeCliSession(sessionId, workspacePath, dispatchSession, source);
     }
 
     const { getQueuedPromptsStore } = await import('../RepositoryManager');
+    if (signal?.aborted) return false;
     const queueStore = getQueuedPromptsStore();
 
     // Captures whether the just-settled child chain ended in 'error' so the
@@ -961,6 +989,7 @@ export class AIService {
     let settledChildErrored = false;
 
     return tryClaimAndDispatchNextQueuedPrompt({
+      signal,
       continueQueuedPromptChain: (nextSessionId, nextWorkspacePath, nextTargetWindow, nextSource) =>
         this.continueQueuedPromptChain(nextSessionId, nextWorkspacePath, nextTargetWindow, nextSource),
       logError: (message, error) => logger.main.error(message, error),
@@ -982,6 +1011,12 @@ export class AIService {
           });
         } catch (metaErr) {
           logger.main.error(`[AIService] ${source}: error checking meta-agent wakeup:`, metaErr);
+        }
+      },
+      onPromptsReturned: async () => {
+        await this.publishQueueStateToSync(sessionId);
+        if (targetWindow && !targetWindow.isDestroyed()) {
+          targetWindow.webContents.send('ai:queuedPromptsReceived', { sessionId });
         }
       },
       onChainSettled: async ({ sessionId: settledSessionId, source: settledSource }) => {
@@ -1010,7 +1045,7 @@ export class AIService {
       },
       processingSet: this.sessionsProcessingQueue,
       queueStore,
-      sendMessageHandler: this.sendMessageHandler,
+      sendMessageHandler: this.streamingHandler.handleQueued,
       sessionId,
       source,
       startSession: ({ sessionId: activeSessionId, workspacePath: activeWorkspacePath }) =>
@@ -1286,6 +1321,7 @@ export class AIService {
 
       publishQueueStateToSync: (sessionId) => this.publishQueueStateToSync(sessionId),
       driveQueuedPrompts: (sessionId, workspacePath, reason) => this.driveQueuedPrompts(sessionId, workspacePath, reason),
+      invalidateQueueDrive: (sessionId, expected) => this.invalidateQueueDrive(sessionId, expected),
       forceSessionIdleOnCancel: (sessionId) => this.forceSessionIdleOnCancel(sessionId),
       interruptCurrentTurn: (sessionId, options) => this.interruptCurrentTurn(sessionId, options),
 

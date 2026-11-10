@@ -3,8 +3,11 @@ import { warnIfUnpublished } from '@nimbalyst/runtime/sync/pushOutcome';
 import type { SessionChange } from '@nimbalyst/runtime/sync/types';
 import { sessionInbox } from './sessionInboxService';
 import { codexQuestionTurns } from './codexQuestionTurns';
+import { awaitSessionTurnControl, beginSessionTurn, isDirectTurnAdmissionBlocked, isTurnRecoveryQuarantined, TurnControlPendingError, type SessionTurn } from './sessionTurnControl';
 import { supersedeOpenQuestions } from './supersedeOpenQuestions';
 import { beginTurnSetup, TurnSetupCancelledError } from './turnSetupStages';
+import { CodexPreparationCancelledError } from '@nimbalyst/runtime/ai/server/protocols/codexAppServer/setupStage';
+import { captureQueueAuthorization, isQueueStopped } from './stoppedQueueHold';
 import { canDispatchIntoDrain } from './drainFollowUp';
 import { publishTurnNotExecuting } from './turnExecutingSync';
 import { cancelUsageLimitResume, maybeScheduleUsageLimitResume } from './usageLimitAutoResume';
@@ -223,6 +226,8 @@ interface AIServiceInternal {
     source: string,
   ): Promise<boolean>;
   requestQueueDrive(sessionId: string, workspacePath: string, reason: DriveReason): void;
+  queuePromptForSession(sessionId: string, prompt: string, attachments?: any[], documentContext?: any): Promise<unknown>;
+  publishQueueStateToSync(sessionId: string): Promise<void>;
   runAutoContextCommand(
     session: SessionData,
     workspacePath: string,
@@ -364,12 +369,67 @@ export class MessageStreamingHandler {
     installScopedProviderListener(this.providerListeners, provider, event, listener);
   }
 
-  handle: SendMessageHandler = async (
-    event,
+  handle: SendMessageHandler = (event, message, context, sessionId, workspacePath) =>
+    this.handleRegistered(false, event, message, context, sessionId, workspacePath);
+
+  /** Internal queue dispatcher entry; IPC always uses handle. */
+  handleQueued: SendMessageHandler = (event, message, context, sessionId, workspacePath) =>
+    this.handleRegistered(true, event, message, context, sessionId, workspacePath);
+
+  private handleRegistered = async (
+    queued: boolean,
+    event: Parameters<SendMessageHandler>[0],
     message: string,
     documentContext?: DocumentContext,
     sessionId?: string,
     workspacePath?: string,
+  ) => {
+    if (!queued && sessionId && isQueueStopped(sessionId)) {
+      // A fresh Send authorizes FIFO recovery. Save it behind the retained input,
+      // rather than letting the direct path overtake that earlier instruction.
+      const authorize = captureQueueAuthorization(sessionId);
+      const actor = documentContext?.promptProvenance?.actor;
+      const humanSend = actor ? actor === 'human' : (documentContext as any)?.inputType === 'user';
+      await this.svc.queuePromptForSession(sessionId, message, documentContext?.attachments, {
+        ...documentContext,
+        promptProvenance: documentContext?.promptProvenance ?? (humanSend
+          ? { actor: 'human', origin: 'composer' }
+          : { actor: 'system', origin: 'automation' }),
+      });
+      if (humanSend) authorize();
+      await this.svc.publishQueueStateToSync(sessionId);
+      safeSend(event, 'ai:queuedPromptsReceived', { sessionId });
+      let drivePath = workspacePath;
+      if (!drivePath) {
+        const stored = await AISessionsRepository.get(sessionId);
+        drivePath = stored?.worktreePath || stored?.workspacePath;
+      }
+      if (drivePath) this.svc.requestQueueDrive(sessionId, drivePath, 'renderer-trigger');
+      return { content: '' };
+    }
+    if (sessionId && !queued && isDirectTurnAdmissionBlocked(sessionId)) {
+      throw new TurnControlPendingError(isTurnRecoveryQuarantined(sessionId));
+    }
+    const turn = sessionId ? beginSessionTurn(sessionId) : undefined;
+    try { return await this.handleTurn(event, message, documentContext, sessionId, workspacePath, turn); }
+    catch (error) {
+      if (error instanceof TurnSetupCancelledError && turn?.deliveryMayHaveStarted) {
+        error.providerEntered = !!turn.providerEntered;
+        error.deliveryMayHaveStarted = true;
+        error.message = 'The turn stopped after delivery was attempted. Acceptance may be unknown. The saved input is available for explicit retry and will not be queued again automatically.';
+      }
+      throw error;
+    }
+    finally { turn?.finish(); }
+  };
+
+  private handleTurn = async (
+    event: Parameters<SendMessageHandler>[0],
+    message: string,
+    documentContext?: DocumentContext,
+    sessionId?: string,
+    workspacePath?: string,
+    hostTurn?: SessionTurn,
   ) => {
     // Check for queued prompt deduplication - prevents duplicate execution from multiple renderer panels
     const queuedPromptId = (documentContext as any)?.queuedPromptId as string | undefined;
@@ -432,6 +492,7 @@ export class MessageStreamingHandler {
 
     const loadStartTime = Date.now();
     const session = await this.svc.sessionManager.loadSession(sessionId, workspacePath);
+    await awaitSessionTurnControl(hostTurn);
     perfLog.sessionLoadTime = Date.now() - loadStartTime;
 
     if (!session) {
@@ -533,6 +594,7 @@ export class MessageStreamingHandler {
     }
 
     // Get or create provider for this session
+    await awaitSessionTurnControl(hostTurn);
     const providerStartTime = Date.now();
     const isProviderClaudeCode = session.provider === 'claude-code';
 
@@ -1212,6 +1274,25 @@ export class MessageStreamingHandler {
 
     // Mark session as running/active
     const stateManager = getSessionStateManager();
+    // Native cancellation can fail after its host generator has retired.
+    // Retain the scoped subscription so an idle session still shows recovery.
+    this.installListener(provider, 'session:recovery-error', (data: { sessionId: string; message: string }) => {
+      if (data?.sessionId !== session.id) return;
+      safeSend(event, 'ai:error', data);
+      void stateManager.updateActivity({ sessionId: session.id, status: 'error' })
+        .catch(error => logger.main.error('[AIService] Failed to publish cancellation recovery state:', error));
+    });
+    this.installListener(provider, 'session:recovery-disposed', (data: { sessionId: string }) => {
+      if (data?.sessionId !== session.id) return;
+      const listeners = this.providerListeners.get(provider);
+      for (const name of ['session:recovery-error', 'session:recovery-disposed']) {
+        const listener = listeners?.get(name);
+        if (listener) {
+          provider.off(name, listener);
+          listeners?.delete(name);
+        }
+      }
+    });
     await stateManager.startSession({
       sessionId: session.id,
       workspacePath: session.workspacePath || effectiveWorkspacePath,
@@ -1271,6 +1352,7 @@ export class MessageStreamingHandler {
     try {
       inboxTurn = ['claude-code', 'openai-codex'].includes(session.provider)
         ? await setup.stage('inbox', () => sessionInbox.begin(session.id, session.workspacePath ?? workspacePath)) : undefined;
+      await awaitSessionTurnControl(hostTurn);
       questionTurn = session.provider === 'openai-codex' ? codexQuestionTurns.begin(session.id) : undefined;
       await setup.stage('supersede-questions', () => supersedeOpenQuestions({ sessionId: session.id, provider: session.provider, context: documentContext }));
       let fullResponse = '';
@@ -1389,6 +1471,7 @@ export class MessageStreamingHandler {
       const effectiveMode = documentContext?.mode ?? session.mode;
 
       const contextWithSession: DocumentContext = {
+        queuedPromptId,
         // Document fields from prepared context
         filePath: preparedContext.filePath,
         fileType: preparedContext.fileType,
@@ -1495,11 +1578,15 @@ export class MessageStreamingHandler {
 
       const { isToolLoopSession, toolLoopTools, toolLoopSystemPrompt } = resolveToolLoopTurnConfig(session, effectiveWorkspacePath);
 
+      await awaitSessionTurnControl(hostTurn);
       setup.finish();
       // Awaited so it can never cancel the resume this same turn schedules on its own limit error.
       await cancelUsageLimitResume(session.id).catch(error => logger.main.error('[AIService] Failed to cancel usage-limit resume:', error));
+      await awaitSessionTurnControl(hostTurn);
+      if (hostTurn) hostTurn.deliveryMayHaveStarted = true;
       for await (const chunk of provider.sendMessage(messageToSend, contextWithSession, session.id, sessionMessages, effectiveWorkspacePath, attachments, toolLoopTools, toolLoopSystemPrompt)) {
         if (!chunk) continue;
+        if (hostTurn) hostTurn.providerEntered = true;
         chunkCount++;
 
         if (!firstChunkTime) {
@@ -2820,6 +2907,12 @@ export class MessageStreamingHandler {
 
       return { content: fullResponse };
     } catch (error) {
+      if (queuedPromptId && error instanceof CodexPreparationCancelledError) {
+        // The queue owns durable retry and the Stop controller owns settlement.
+        // Do not publish an agent error or tell the user to resend retained input.
+        this.svc.processingQueuedPromptIds.delete(queuedPromptId);
+        throw error;
+      }
       await sessionInbox.end(inboxTurn, false).catch(err => logger.main.error('[AIService] Inbox retirement failed:', err));
       const retirement = codexQuestionTurns.end(questionTurn);
       void retirement.catch(err => logger.main.error('[AIService] Question recovery failed after stream error:', err));

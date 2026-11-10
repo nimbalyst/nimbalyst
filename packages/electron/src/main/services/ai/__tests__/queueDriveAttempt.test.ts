@@ -1,5 +1,6 @@
 // @vitest-environment node
 import { describe, expect, it, vi } from 'vitest';
+import { captureQueueAuthorization, holdQueueAfterStop, isQueueStopped } from '../stoppedQueueHold';
 import {
   allowsAutoOpen,
   runQueueDriveAttempt,
@@ -27,6 +28,19 @@ const run = (deps: QueueDriveAttemptDeps<FakeWindow>, reason: DriveReason = 'mob
   runQueueDriveAttempt(deps, { sessionId: 's1', workspacePath: '/ws', reason });
 
 describe('runQueueDriveAttempt', () => {
+  it.each(['session-idle', 'safety-sweep', 'renderer-trigger', 'send-now'] as const)('respects Stop even for a stale %s drive', async reason => {
+    const deps = createDeps({ canDispatchIntoDrain: () => true });
+    holdQueueAfterStop('s1');
+    try {
+      expect(await run(deps, reason)).toEqual({ kind: 'deferred', reason: 'session-busy' });
+      expect(deps.dispatch).not.toHaveBeenCalled();
+      expect(deps.resolveWindow).not.toHaveBeenCalled();
+      expect(isQueueStopped('s1')).toBe(true);
+      captureQueueAuthorization('s1')();
+      expect(await run(deps, reason)).toEqual({ kind: 'dispatched', promptId: 'p1' });
+      expect(deps.dispatch).toHaveBeenCalledOnce();
+    } finally { captureQueueAuthorization('s1')(); }
+  });
   it('never resolves a window when nothing is pending', async () => {
     const deps = createDeps({ listPendingIds: vi.fn(async () => []) });
 

@@ -29,7 +29,7 @@ vi.mock('../codexAppServer/codexAppServerBinary', () => ({
   getCodexVendorPathEntries: () => [],
 }));
 
-import { CodexAppServerProtocol, type CodexAppServerHostBindings } from '../CodexAppServerProtocol';
+import { CodexAppServerProtocol, CodexStartRecoveryPendingError, type CodexAppServerHostBindings } from '../CodexAppServerProtocol';
 import { resolveCodexPermissionProfile } from '../codexPermissionProfile';
 import type { ProtocolEvent } from '../ProtocolInterface';
 
@@ -147,6 +147,96 @@ describe('CodexAppServerProtocol', () => {
   afterEach(() => {
     setCodexShellTrackingHost(undefined);
     if (!child.killed) child.kill();
+  });
+
+  it.each([false, true])('keeps a resolved Stop behind the exact native terminal before its successor (interrupt rejection: %s)', async rejectInterrupt => {
+    const protocol = new CodexAppServerProtocol();
+    const creating = protocol.createSession({ workspacePath: '/tmp/ws' });
+    const init = await nextWrittenMatching(child, 'initialize');
+    child.emitLine({ id: init.id, result: {} });
+    const thread = await nextWrittenMatching(child, 'thread/start');
+    child.emitLine({ id: thread.id, result: { thread: { id: 'portable-root' } } });
+    const session = await creating;
+    const firstController = new AbortController();
+    const collect = async (content: string, abortSignal?: AbortSignal) => {
+      for await (const event of protocol.sendMessage(session, { content, abortSignal })) void event;
+    };
+    const old = collect('old', firstController.signal);
+    let next: Promise<void> | undefined;
+    try {
+      const first = await nextWrittenMatching(child, 'turn/start');
+      child.emitLine({ id: first.id, result: { turn: { id: 'owned-old' } } });
+      await vi.waitFor(() => expect((session.raw as any).activeTurnId).toBe('owned-old'));
+      firstController.abort();
+      await old;
+      const interrupt = await nextWrittenMatching(child, 'turn/interrupt');
+      if (rejectInterrupt) child.emitLine({ id: interrupt.id, error: { code: -1, message: 'fixture refused interrupt' } });
+      else child.emitLine({ id: interrupt.id, result: {} });
+      next = collect('successor').catch(() => {});
+      const starts = () => child.writtenLines.filter((row: any) => row.method === 'turn/start') as any[];
+      await new Promise(resolve => setTimeout(resolve, 25));
+      const beforeTerminal = starts().length;
+      child.emitLine({ method: 'turn/completed', params: { threadId: 'sibling', turn: { id: 'owned-old' } } });
+      child.emitLine({ method: 'turn/completed', params: { threadId: 'portable-root', turn: { id: 'stale-old' } } });
+      await new Promise(resolve => setTimeout(resolve, 25));
+      const afterForeignTerminals = starts().length;
+      child.emitLine({ method: 'turn/completed', params: { threadId: 'portable-root', turn: { id: 'owned-old' } } });
+      await vi.waitFor(() => expect(starts()).toHaveLength(2));
+      child.emitLine({ id: starts()[1].id, result: { turn: { id: 'successor-turn' } } });
+      child.emitLine({ method: 'turn/completed', params: { threadId: 'portable-root', turn: { id: 'successor-turn' } } });
+      await next;
+      expect(beforeTerminal).toBe(1);
+      expect(afterForeignTerminals).toBe(1);
+    } finally { protocol.cleanupSession(session); await Promise.allSettled([old, ...(next ? [next] : [])]); }
+  });
+
+  it.each(['shell-registration', 'initialize', 'hooks-trust', 'thread-start', 'thread-resume'])('owns cancelled native setup until %s settles without killing its child', async stage => {
+    let releaseRegistration!: () => void;
+    const registrationGate = new Promise<void>(resolve => { releaseRegistration = resolve; });
+    let registrationEntered!: () => void;
+    const entered = new Promise<void>(resolve => { registrationEntered = resolve; });
+    const registration = { command: 'fixture-hook', env: {}, dispose: vi.fn(), endTurn: vi.fn(), toolCompleted: vi.fn() };
+    if (stage === 'shell-registration' || stage === 'hooks-trust') setCodexShellTrackingHost(async () => {
+      registrationEntered();
+      if (stage === 'shell-registration') await registrationGate;
+      return registration;
+    });
+    const controller = new AbortController();
+    const terminate = vi.fn();
+    const protocol = new CodexAppServerProtocol({ terminateProcessTreeOverride: terminate });
+    const options = { workspacePath: '/tmp/ws', raw: { nimbalystSessionId: 'setup-owner', abortSignal: controller.signal } };
+    let settled = false;
+    const creating = (stage === 'thread-resume' ? protocol.resumeSession('setup-thread', options) : protocol.createSession(options)).finally(() => { settled = true; });
+    const stop = () => {
+      controller.abort();
+      expect(settled).toBe(false);
+      expect(terminate).not.toHaveBeenCalled();
+      expect(child.writtenLines.filter((line: any) => line.method === 'turn/start')).toEqual([]);
+    };
+    if (stage === 'shell-registration') { await entered; stop(); releaseRegistration(); }
+    const init = await nextWrittenMatching(child, 'initialize');
+    if (stage === 'initialize') stop();
+    child.emitLine({ id: init.id, result: {} });
+    if (stage === 'shell-registration' || stage === 'hooks-trust') {
+      const hooks = await nextWrittenMatching(child, 'hooks/list');
+      if (stage === 'hooks-trust') stop();
+      child.emitLine({ id: hooks.id, result: { data: [{ hooks: ['preToolUse', 'postToolUse'].map(eventName => ({
+        source: 'sessionFlags', handlerType: 'command', command: 'fixture-hook', matcher: '^(Bash|apply_patch|mcp__.*)$', eventName, key: eventName, currentHash: eventName, enabled: true,
+      })) }] } });
+    }
+    const thread = await nextWrittenMatching(child, stage === 'thread-resume' ? 'thread/resume' : 'thread/start');
+    if (stage === 'thread-start' || stage === 'thread-resume') stop();
+    child.emitLine({ id: thread.id, result: { thread: { id: 'setup-thread' } } });
+    const session = await creating;
+    expect(settled).toBe(true);
+    const cancelledSend = (async () => {
+      for await (const event of protocol.sendMessage(session, { content: 'must remain unsent', abortSignal: controller.signal })) void event;
+    })();
+    await expect(cancelledSend).rejects.toThrow('has not been sent to Codex');
+    expect(child.writtenLines.filter((line: any) => line.method === 'turn/start')).toEqual([]);
+    expect(terminate).not.toHaveBeenCalled();
+    protocol.cleanupSession(session);
+    expect(terminate).toHaveBeenCalledTimes(1);
   });
 
   it.each(['start','resume'])('binds host hooks to %s and trusts only the exact session hook hashes',async(kind)=>{
@@ -1223,6 +1313,280 @@ describe('CodexAppServerProtocol', () => {
     expect(spawnMock).toHaveBeenCalledTimes(1);
 
     protocol.cleanupSession(session);
+  });
+
+  it.each([
+    [false, false, 'turn/completed', false], [true, false, 'turn/completed', false],
+    [false, true, 'turn/completed', false], [true, true, 'turn/completed', false],
+    [false, true, 'turn/failed', false], [false, true, 'turn/completed', true],
+  ] as const)('retires an aborted native turn without killing shared child threads or racing its successor (late error: %s, resolved: %s, terminal: %s, interrupt rejected: %s)', async (lateInterruptError, startAlreadyResolved, terminalMethod, interruptRejected) => {
+    const recoveryError = vi.fn();
+    const protocol = new CodexAppServerProtocol();
+    protocol.setCancellationRecoveryErrorListener(recoveryError);
+    const creating = protocol.createSession({ workspacePath: '/tmp/ws' });
+    const init = await nextWrittenMatching(child, 'initialize');
+    child.emitLine({ id: init.id, result: { codexHome: '/fake', platformFamily: 'unix', platformOs: 'macos', userAgent: 'fake/0' } });
+    const start = await nextWrittenMatching(child, 'thread/start');
+    child.emitLine({ id: start.id, result: { thread: { id: 'prestream-root' } } });
+    const session = await creating;
+    const controller = new AbortController();
+    const events: ProtocolEvent[] = [];
+    let settled = false;
+    const old = (async () => {
+      for await (const event of protocol.sendMessage(session, { content: 'old input', sessionId: 'owner-session', abortSignal: controller.signal })) events.push(event);
+    })().finally(() => { settled = true; });
+    let next: Promise<void> | undefined;
+    const nextEvents: ProtocolEvent[] = [];
+    const siblingEvents: unknown[] = [];
+    const unsubscribeSibling = (session.raw as any).client.onNotification((method: string, params: any) => {
+      if (params?.threadId === 'collaboration-child') siblingEvents.push({ method, params });
+    });
+    try {
+      const oldStart = await nextWrittenMatching(child, 'turn/start');
+      if (startAlreadyResolved) {
+        child.emitLine({ id: oldStart.id, result: { turn: { id: 'cancelled-old-turn' } } });
+        await vi.waitFor(() => expect((session.raw as any).activeTurnId).toBe('cancelled-old-turn'));
+      }
+      // The server has accepted native work but has not returned its turn ID.
+      let oldNativeRunning = true;
+      controller.abort();
+      await vi.waitFor(() => expect(settled).toBe(true), { timeout: 100 });
+      expect(child.killed).toBe(false);
+      expect(events).toEqual([]);
+      const waitingController = new AbortController();
+      let waitingSettled = false;
+      const stoppedWaiter = (async () => {
+        for await (const event of protocol.sendMessage(session, { content: 'cancel this waiter', abortSignal: waitingController.signal })) nextEvents.push(event);
+      })().catch(error => { expect(error).toBeInstanceOf(CodexStartRecoveryPendingError); }).finally(() => { waitingSettled = true; });
+      await new Promise(resolve => setTimeout(resolve, 10));
+      waitingController.abort();
+      await vi.waitFor(() => expect(waitingSettled).toBe(true), { timeout: 100 });
+      await stoppedWaiter;
+      expect((session.raw as any).cancelledStarts?.size ?? 0).toBe(1);
+      next = (async () => {
+        for await (const event of protocol.sendMessage(session, { content: 'queued successor' })) nextEvents.push(event);
+      })();
+      await new Promise(resolve => setTimeout(resolve, 20));
+      const turnStarts = () => child.writtenLines.filter((line: any) => line.method === 'turn/start') as any[];
+      expect(turnStarts()).toHaveLength(1);
+      expect(oldNativeRunning).toBe(true);
+      child.emitLine({ method: 'turn/started', params: { threadId: 'collaboration-child', turn: { id: 'sibling-turn' } } });
+      expect(siblingEvents).toHaveLength(1);
+      if (!startAlreadyResolved) child.emitLine({ id: oldStart.id, result: { turn: { id: 'cancelled-old-turn' } } });
+      const interrupt = await nextWrittenMatching(child, 'turn/interrupt');
+      expect(interrupt.params).toEqual({ threadId: 'prestream-root', turnId: 'cancelled-old-turn' });
+      expect(turnStarts()).toHaveLength(1);
+      oldNativeRunning = false;
+      if (interruptRejected) child.emitLine({ id: interrupt.id, error: { code: -1, message: 'Interrupt refused' } });
+      else if (!lateInterruptError) child.emitLine({ id: interrupt.id, result: {} });
+      await new Promise(resolve => setTimeout(resolve, 20));
+      expect(turnStarts()).toHaveLength(1);
+      // Interrupt acknowledgement and foreign completion are not retirement.
+      child.emitLine({ method: 'turn/completed', params: { threadId: 'collaboration-child', turn: { id: 'cancelled-old-turn', status: 'completed' } } });
+      await new Promise(resolve => setTimeout(resolve, 10));
+      expect(turnStarts()).toHaveLength(1);
+      child.emitLine({ method: terminalMethod, params: { threadId: 'prestream-root', turn: { id: 'cancelled-old-turn', status: terminalMethod === 'turn/failed' ? 'failed' : 'interrupted' } } });
+      await vi.waitFor(() => expect(turnStarts()).toHaveLength(2));
+      if (lateInterruptError) child.emitLine({ id: interrupt.id, error: { code: -1, message: 'Already completed' } });
+      expect(oldNativeRunning).toBe(false);
+      child.emitLine({ id: turnStarts()[1].id, result: { turn: { id: 'successor-turn' } } });
+      child.emitLine({ method: 'turn/completed', params: { threadId: 'prestream-root', turn: { id: 'cancelled-old-turn', status: 'interrupted' } } });
+      child.emitLine({ method: 'turn/completed', params: { threadId: 'prestream-root', turn: { id: 'successor-turn', status: 'completed' } } });
+      await next;
+      expect(nextEvents.filter(event => event.type === 'complete')).toHaveLength(1);
+      expect(child.killed).toBe(false);
+      expect(recoveryError).not.toHaveBeenCalled();
+      expect(child.writtenLines.filter((line: any) => line.method === 'turn/interrupt')).toHaveLength(1);
+    } finally {
+      unsubscribeSibling();
+      protocol.cleanupSession(session);
+      await Promise.allSettled([old, ...(next ? [next] : [])]);
+    }
+  });
+
+  it.each(['stale-root-terminal', 'foreign-thread-terminal', 'failed-interrupt', 'resolved-missing-id'])('keeps unproven or rejected cancellation latched (%s)', async ordering => {
+    const protocol = new CodexAppServerProtocol();
+    const recoveryError = vi.fn();
+    protocol.setCancellationRecoveryErrorListener(recoveryError);
+    const creating = protocol.createSession({ workspacePath: '/tmp/ws' });
+    const init = await nextWrittenMatching(child, 'initialize');
+    child.emitLine({ id: init.id, result: {} });
+    const start = await nextWrittenMatching(child, 'thread/start');
+    child.emitLine({ id: start.id, result: { thread: { id: 'latched-root' } } });
+    const session = await creating;
+    const controller = new AbortController();
+    const old = (async () => {
+      for await (const event of protocol.sendMessage(session, { content: 'old', sessionId: 'latched-owner', abortSignal: controller.signal })) void event;
+    })();
+    try {
+      const turn = await nextWrittenMatching(child, 'turn/start');
+      if (ordering === 'resolved-missing-id') {
+        child.emitLine({ id: turn.id, result: { turn: {} } });
+        await new Promise<void>(resolve => setImmediate(resolve));
+      }
+      controller.abort();
+      await old;
+      const raw = session.raw as any;
+      expect(raw.cancelledStarts?.size ?? 0).toBe(1);
+      const fence = [...raw.cancelledStarts][0] as Promise<void>;
+      expect(raw.cancelledStarts.size).toBe(1);
+      if (ordering !== 'failed-interrupt') {
+        // A terminal with no reply ID cannot establish ownership, even if
+        // its thread matches. Foreign-thread packets are equally insufficient.
+        child.emitLine({ method: 'turn/completed', params: {
+          threadId: ordering === 'stale-root-terminal' ? 'latched-root' : 'foreign-thread',
+          turn: { id: 'uncorrelated-turn', status: 'completed' },
+        } });
+        child.emitLine({ id: turn.id, result: { turn: {} } });
+      } else {
+        child.emitLine({ id: turn.id, result: { turn: { id: 'failed-old-turn' } } });
+        const interrupt = await nextWrittenMatching(child, 'turn/interrupt');
+        expect(interrupt.params).toEqual({ threadId: 'latched-root', turnId: 'failed-old-turn' });
+        child.emitLine({ id: interrupt.id, error: { code: -1, message: 'Interrupt refused' } });
+      }
+      await expect(fence).rejects.toBeInstanceOf(CodexStartRecoveryPendingError);
+      await vi.waitFor(() => expect(recoveryError).toHaveBeenCalledTimes(1));
+      expect(recoveryError).toHaveBeenCalledWith('latched-owner', expect.stringContaining('Restart the app'));
+      // Rejection is terminal for promise state, not proof native work ended.
+      // Even a later exact terminal cannot convert that failure into success.
+      const nativeWritesBeforeLateTerminal = child.writtenLines.length;
+      child.emitLine({ method: 'turn/completed', params: { threadId: 'latched-root', turn: { id: 'failed-old-turn', status: 'completed' } } });
+      await new Promise<void>(resolve => setImmediate(resolve));
+      expect(child.writtenLines).toHaveLength(nativeWritesBeforeLateTerminal);
+      expect(raw.cancelledStarts.size).toBe(1);
+      expect(raw.cancelledStarts.has(fence)).toBe(true);
+      await expect(fence).rejects.toBeInstanceOf(CodexStartRecoveryPendingError);
+      expect(recoveryError).toHaveBeenCalledTimes(1);
+      expect(child.writtenLines.filter((line: any) => line.method === 'turn/start')).toHaveLength(1);
+      expect(child.killed).toBe(false);
+    } finally {
+      protocol.cleanupSession(session);
+      expect((session.raw as any).cancelledStarts?.size ?? 0).toBe(0);
+      await old;
+    }
+  });
+
+  it.each([
+    ['terminal', false], ['dispose-after-timeout', false], ['dispose-during-wait', false],
+    ['terminal', true], ['dispose-after-timeout', true], ['dispose-during-wait', true],
+  ] as const)('bounds recovery of a cancelled native turn without bypassing its fence (%s, start already resolved: %s)', async (recovery, startAlreadyResolved) => {
+    const protocol = new CodexAppServerProtocol();
+    const creating = protocol.createSession({ workspacePath: '/tmp/ws' });
+    const init = await nextWrittenMatching(child, 'initialize');
+    child.emitLine({ id: init.id, result: { codexHome: '/fake', platformFamily: 'unix', platformOs: 'macos', userAgent: 'fake/0' } });
+    const start = await nextWrittenMatching(child, 'thread/start');
+    child.emitLine({ id: start.id, result: { thread: { id: 'timeout-root' } } });
+    const session = await creating;
+    const controller = new AbortController();
+    const old = (async () => {
+      for await (const event of protocol.sendMessage(session, { content: 'old input', abortSignal: controller.signal })) void event;
+    })();
+    try {
+      const turn = await nextWrittenMatching(child, 'turn/start');
+      if (startAlreadyResolved) {
+        child.emitLine({ id: turn.id, result: { turn: { id: 'unretired-turn' } } });
+        await vi.waitFor(() => expect((session.raw as any).activeTurnId).toBe('unretired-turn'));
+      }
+      controller.abort();
+      await old;
+      if (!startAlreadyResolved) child.emitLine({ id: turn.id, result: { turn: { id: 'unretired-turn' } } });
+      const interrupt = await nextWrittenMatching(child, 'turn/interrupt');
+      child.emitLine({ id: interrupt.id, result: {} });
+      vi.useFakeTimers();
+      const blockedEvents: ProtocolEvent[] = [];
+      let recoveryError: unknown;
+      const waiting = (async () => {
+        for await (const event of protocol.sendMessage(session, { content: 'not sent yet' })) blockedEvents.push(event);
+      })().catch(error => { recoveryError = error; });
+      if (recovery === 'dispose-during-wait') {
+        await vi.advanceTimersByTimeAsync(0);
+        protocol.cleanupSession(session);
+        await waiting;
+        expect(recoveryError).toBeUndefined();
+        expect(blockedEvents).toEqual([]);
+        expect((session.raw as any).cancelledStarts.size).toBe(0);
+        expect((session.raw as any).cancelledStartCleanups.size).toBe(0);
+        return;
+      }
+      await vi.advanceTimersByTimeAsync(10_001);
+      await waiting;
+      expect(blockedEvents).toEqual([]);
+      expect(recoveryError).toBeInstanceOf(CodexStartRecoveryPendingError);
+      expect((recoveryError as Error).message).toContain('has not been sent to Codex');
+      expect((session.raw as any).cancelledStarts.size).toBe(1);
+      expect(child.writtenLines.filter((line: any) => line.method === 'turn/start')).toHaveLength(1);
+      expect(child.killed).toBe(false);
+      const client = (session.raw as any).client;
+      const handlersBefore = client.notificationHandlers.size;
+      expect(handlersBefore).toBeGreaterThan(0);
+      if (recovery === 'dispose-after-timeout') protocol.cleanupSession(session);
+      else child.emitLine({ method: 'turn/completed', params: { threadId: 'timeout-root', turn: { id: 'unretired-turn', status: 'interrupted' } } });
+      await vi.advanceTimersByTimeAsync(0);
+      expect((session.raw as any).cancelledStarts.size).toBe(0);
+      expect((session.raw as any).cancelledStartCleanups.size).toBe(0);
+      expect(client.notificationHandlers.size).toBe(handlersBefore - 1);
+    } finally {
+      vi.useRealTimers();
+      protocol.cleanupSession(session);
+      await old;
+    }
+  });
+
+  it('does not quarantine a known turn whose exact terminal arrived before Stop', async () => {
+    const protocol = new CodexAppServerProtocol();
+    const creating = protocol.createSession({ workspacePath: '/tmp/ws' });
+    const init = await nextWrittenMatching(child, 'initialize');
+    child.emitLine({ id: init.id, result: {} });
+    const thread = await nextWrittenMatching(child, 'thread/start');
+    child.emitLine({ id: thread.id, result: { thread: { id: 'completed-root' } } });
+    const session = await creating;
+    const controller = new AbortController();
+    const iterator = protocol.sendMessage(session, { content: 'already finished', abortSignal: controller.signal })[Symbol.asyncIterator]();
+    try {
+      const next = iterator.next();
+      const start = await nextWrittenMatching(child, 'turn/start');
+      child.emitLine({ id: start.id, result: { turn: { id: 'finished-before-stop' } } });
+      child.emitLine({ method: 'turn/completed', params: { threadId: 'completed-root', turn: { id: 'finished-before-stop', status: 'completed' } } });
+      let event = await next;
+      while (!event.done && event.value.type !== 'complete') event = await iterator.next();
+      expect(event.value?.type).toBe('complete');
+      controller.abort();
+      await iterator.next();
+      expect((session.raw as any).cancelledStarts?.size ?? 0).toBe(0);
+    } finally { protocol.cleanupSession(session); await iterator.return?.(undefined); }
+  });
+
+  it.each([false, true])('does not recreate cancellation recovery after the native session was disposed (late reply: %s)', async lateReply => {
+    const protocol = new CodexAppServerProtocol();
+    const creating = protocol.createSession({ workspacePath: '/tmp/ws' });
+    const init = await nextWrittenMatching(child, 'initialize');
+    child.emitLine({ id: init.id, result: {} });
+    const start = await nextWrittenMatching(child, 'thread/start');
+    child.emitLine({ id: start.id, result: { thread: { id: 'disposed-root' } } });
+    const session = await creating;
+    const controller = new AbortController();
+    const old = (async () => {
+      for await (const event of protocol.sendMessage(session, { content: 'old', abortSignal: controller.signal })) void event;
+    })();
+    const turn = await nextWrittenMatching(child, 'turn/start');
+    const raw = session.raw as any;
+    const request = vi.spyOn(raw.client, 'request');
+    const handlersBefore = raw.client.notificationHandlers.size;
+    if (lateReply) {
+      controller.abort();
+      child.emitLine({ id: turn.id, result: { turn: { id: 'disposed-late-turn' } } });
+    }
+    protocol.cleanupSession(session);
+    controller.abort();
+    await old;
+    expect(raw.cancelledStarts?.size ?? 0).toBe(0);
+    expect(raw.cancelledStartCleanups?.size ?? 0).toBe(0);
+    expect(raw.client.notificationHandlers.size).toBe(handlersBefore - 1);
+    await expect((async () => {
+      for await (const event of protocol.sendMessage(session, { content: 'after disposal' })) void event;
+    })()).resolves.toBeUndefined();
+    expect(child.writtenLines.filter((line: any) => line.method === 'turn/start')).toHaveLength(1);
+    expect(request.mock.calls.filter(call => call[0] === 'turn/interrupt')).toHaveLength(0);
   });
 
   it('sends turn/interrupt and ends the stream when aborted while parked between notifications (NIM-1607)', async () => {

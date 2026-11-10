@@ -9,6 +9,7 @@ import { type AIServiceContext } from './AIServiceContext';
 import { getSessionStateManager } from '@nimbalyst/runtime/ai/server/SessionStateManager';
 import { remoteSessions } from '../remoteSessions';
 import { canDispatchIntoDrain } from '../drainFollowUp';
+import { captureQueueAuthorization } from '../stoppedQueueHold';
 
 /**
  * Queued-prompt lifecycle: claim, complete, fail, list, create, delete, and the
@@ -110,6 +111,7 @@ export function registerQueuedPromptHandlers(ctx: AIServiceContext): void {
     attachments?: any[],
     documentContext?: any
   ) => {
+    const authorize = captureQueueAuthorization(sessionId);
     await remoteSessions.assertLocalExecution(sessionId);
     const { getQueuedPromptsStore } = await import('../../RepositoryManager');
     const queueStore = getQueuedPromptsStore();
@@ -134,6 +136,7 @@ export function registerQueuedPromptHandlers(ctx: AIServiceContext): void {
       attachments,
       documentContext: queuedDocumentContext,
     });
+    if (queuedDocumentContext.promptProvenance.actor === 'human') authorize();
 
     logger.main.info(`[AIService] createQueuedPrompt: created ${promptId} for session ${sessionId}`);
 

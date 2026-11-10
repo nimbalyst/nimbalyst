@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { OpenAICodexProvider } from '../OpenAICodexProvider';
 import { configureMcpServers } from '../../services/mcpServerConfig';
+import { CodexPreparationCancelledError } from '../../protocols/codexAppServer/setupStage';
 
 interface ManualTimerHandle {
   dueAt: number;
@@ -121,6 +122,60 @@ function createHarness(options: {
 }
 
 describe('OpenAICodexProvider app-server lifecycle retention', () => {
+  it('retains the queued input audit fingerprint across an unrelated nonqueued input', async () => {
+    const h = createHarness();
+    await h.provider.initialize({ apiKey: 'test-key', model: 'openai-codex:gpt-5' });
+    let cancelFirst = true;
+    const logging = vi.spyOn(h.provider as any, 'logAgentMessageBestEffort').mockImplementation(async (...args: unknown[]) => {
+      if (args[1] === 'input' && args[2] === 'retained original' && cancelFirst) {
+        cancelFirst = false;
+        h.provider.abort();
+      }
+      return true;
+    });
+    const queued = async () => {
+      for await (const _chunk of h.provider.sendMessage('retained original', { queuedPromptId: 'same-durable-row' },
+        'session-lifecycle', [], process.cwd())) void _chunk;
+    };
+    try {
+      await expect(queued()).rejects.toBeInstanceOf(CodexPreparationCancelledError);
+      expect(h.sendMessage).not.toHaveBeenCalled();
+      await drainTurn(h.provider, 'unrelated input');
+      await queued();
+      expect(logging.mock.calls.filter((args: unknown[]) => args[1] === 'input' && args[2] === 'retained original')).toHaveLength(1);
+      expect(h.sendMessage).toHaveBeenCalledTimes(2);
+    } finally { h.provider.destroy(); }
+  });
+  it('keeps optional audit fingerprint serialization failure from rejecting native input', async () => {
+    const h = createHarness();
+    await h.provider.initialize({ apiKey: 'test-key', model: 'openai-codex:gpt-5' });
+    const logging = vi.spyOn(h.provider as any, 'logAgentMessageBestEffort').mockResolvedValue(false);
+    const circular: any = {};
+    circular.self = circular;
+    try {
+      const drain = async () => {
+        for await (const _chunk of h.provider.sendMessage('keep sending', {
+          queuedPromptId: 'bad-optional-metadata',
+          promptProvenance: { actor: 'human', origin: 'composer', extra: circular } as any,
+        }, 'session-lifecycle', [], process.cwd())) void _chunk;
+      };
+      await expect(drain()).resolves.toBeUndefined();
+      await expect(drain()).resolves.toBeUndefined();
+      expect(h.sendMessage).toHaveBeenCalledTimes(2);
+      expect(logging.mock.calls.filter((call: any[]) => call[1] === 'input')).toHaveLength(2);
+    } finally { h.provider.destroy(); }
+  });
+  it('never replays delivered input when only the post-turn naming reminder was stopped before submission', async () => {
+    const h = createHarness();
+    await h.provider.initialize({ apiKey: 'test-key', model: 'openai-codex:gpt-5' });
+    vi.spyOn((h.provider as any).mcpConfigService, 'getMcpServersConfig').mockResolvedValue({ nimbalyst: { command: 'fixture' } });
+    const reminder = vi.spyOn(h.provider as any, 'sendSessionNamingReminder').mockRejectedValue(new CodexPreparationCancelledError());
+    try {
+      await expect(drainTurn(h.provider, 'already delivered input')).resolves.toBeUndefined();
+      expect(reminder).toHaveBeenCalledOnce();
+      expect(h.sendMessage).toHaveBeenCalledOnce();
+    } finally { h.provider.destroy(); }
+  });
   beforeEach(() => {
     configureMcpServers({ mcpServerPort: null, extensionDevServerPort: null });
     OpenAICodexProvider.setTrustChecker(() => ({ trusted: true, mode: 'allow-all' }));

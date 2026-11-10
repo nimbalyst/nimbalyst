@@ -1,3 +1,5 @@
+import { isQueueStopped } from './stoppedQueueHold';
+
 /**
  * One queued-prompt drive attempt, expressed as pure decision logic.
  *
@@ -43,7 +45,7 @@ export interface QueueDriveAttemptDeps<W> {
   isCommitProposalInFlight?(sessionId: string): boolean;
   resolveWindow(workspacePath: string, allowAutoOpen: boolean): Promise<WindowResolution<W>>;
   failAllPending(sessionId: string, errorMessage: string): Promise<number>;
-  dispatch(input: { sessionId: string; workspacePath: string; window: W; reason: DriveReason }): Promise<boolean>;
+  dispatch(input: { sessionId: string; workspacePath: string; window: W; reason: DriveReason; signal?: AbortSignal }): Promise<boolean>;
   logWarn(message: string): void;
 }
 
@@ -58,14 +60,18 @@ export function allowsAutoOpen(reason: DriveReason): boolean {
 
 export async function runQueueDriveAttempt<W>(
   deps: QueueDriveAttemptDeps<W>,
-  input: { sessionId: string; workspacePath: string; reason: DriveReason },
+  input: { sessionId: string; workspacePath: string; reason: DriveReason; signal?: AbortSignal },
 ): Promise<DriveOutcome> {
   const { sessionId, workspacePath, reason } = input;
+  const retired = (): DriveOutcome => ({ kind: 'deferred', reason: 'session-busy' });
+  if (input.signal?.aborted) return retired();
 
   const pendingIds = await deps.listPendingIds(sessionId);
+  if (input.signal?.aborted) return retired();
   if (pendingIds.length === 0) {
     return { kind: 'nothing-pending' };
   }
+  if (isQueueStopped(sessionId)) return retired();
 
   if (deps.isCommitProposalInFlight?.(sessionId)) {
     return { kind: 'deferred', reason: 'session-busy' };
@@ -80,6 +86,8 @@ export async function runQueueDriveAttempt<W>(
   }
 
   const resolved = await deps.resolveWindow(workspacePath, allowsAutoOpen(reason));
+  if (input.signal?.aborted) return retired();
+  if (isQueueStopped(sessionId)) return retired();
   if (resolved.kind === 'terminal') {
     const failed = await deps.failAllPending(
       sessionId,
@@ -99,7 +107,9 @@ export async function runQueueDriveAttempt<W>(
     workspacePath,
     window: resolved.window,
     reason,
+    signal: input.signal,
   });
+  if (input.signal?.aborted) return retired();
   if (dispatched) {
     return { kind: 'dispatched', promptId: pendingIds[0] };
   }
@@ -107,6 +117,7 @@ export async function runQueueDriveAttempt<W>(
   // The dispatcher declined (row claimed elsewhere, CLI mid-turn, ...).
   // Re-arm if rows remain rather than stranding them.
   const stillPending = await deps.listPendingIds(sessionId);
+  if (input.signal?.aborted) return retired();
   return stillPending.length > 0
     ? { kind: 'deferred', reason: 'session-busy' }
     : { kind: 'nothing-pending' };
