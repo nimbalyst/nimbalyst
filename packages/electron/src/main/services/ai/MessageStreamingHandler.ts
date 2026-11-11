@@ -226,6 +226,8 @@ interface AIServiceInternal {
     source: string,
   ): Promise<boolean>;
   requestQueueDrive(sessionId: string, workspacePath: string, reason: DriveReason): void;
+  hasPendingQueuedPrompts(sessionId: string): Promise<boolean>;
+  closeWaitingCommitProposals(sessionId: string, proposalId?: string): Promise<number>;
   queuePromptForSession(sessionId: string, prompt: string, attachments?: any[], documentContext?: any): Promise<unknown>;
   publishQueueStateToSync(sessionId: string): Promise<void>;
   runAutoContextCommand(
@@ -384,9 +386,11 @@ export class MessageStreamingHandler {
     sessionId?: string,
     workspacePath?: string,
   ) => {
-    if (!queued && sessionId && isQueueStopped(sessionId)) {
-      // A fresh Send authorizes FIFO recovery. Save it behind the retained input,
-      // rather than letting the direct path overtake that earlier instruction.
+    if (!queued && sessionId && (isQueueStopped(sessionId)
+      || await this.svc.hasPendingQueuedPrompts(sessionId)
+      || isQueueStopped(sessionId))) {
+      // A fresh Send joins the durable FIFO whenever older rows exist, including
+      // when a commit or question holds the queue after Stop was released.
       const authorize = captureQueueAuthorization(sessionId);
       const actor = documentContext?.promptProvenance?.actor;
       const humanSend = actor ? actor === 'human' : (documentContext as any)?.inputType === 'user';
@@ -397,6 +401,7 @@ export class MessageStreamingHandler {
           : { actor: 'system', origin: 'automation' }),
       });
       if (humanSend) authorize();
+      if (humanSend) await this.svc.closeWaitingCommitProposals(sessionId);
       await this.svc.publishQueueStateToSync(sessionId);
       safeSend(event, 'ai:queuedPromptsReceived', { sessionId });
       let drivePath = workspacePath;
@@ -404,7 +409,7 @@ export class MessageStreamingHandler {
         const stored = await AISessionsRepository.get(sessionId);
         drivePath = stored?.worktreePath || stored?.workspacePath;
       }
-      if (drivePath) this.svc.requestQueueDrive(sessionId, drivePath, 'renderer-trigger');
+      if (drivePath) this.svc.requestQueueDrive(sessionId, drivePath, humanSend ? 'send-now' : 'renderer-trigger');
       return { content: '' };
     }
     if (sessionId && !queued && isDirectTurnAdmissionBlocked(sessionId)) {
@@ -1829,6 +1834,10 @@ export class MessageStreamingHandler {
               // name/tags/phase it asked for. Re-apply it here.
               if ((chunk.toolCall as { orphaned?: boolean }).orphaned) {
                 void repairOrphanedSessionMetaCall(chunk.toolCall, session.id);
+                if (chunk.toolCall.name.endsWith('__developer_git_commit_proposal')) {
+                  void this.svc.closeWaitingCommitProposals(session.id, chunk.toolCall.id)
+                    .catch(error => logger.main.error('[AIService] Failed to close orphaned commit proposal:', error));
+                }
               }
               if (lastTextSection.trim()) prevTextSection = lastTextSection.trim();
               lastTextSection = '';  // Reset so notification shows text after last tool call

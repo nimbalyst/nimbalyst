@@ -1618,6 +1618,9 @@ describe('CodexAppServerProtocol', () => {
     child.emitLine({ id: turnReq.id, result: { turn: { id: 'turn-1', items: [], status: 'inProgress' } } });
     // Reasoning starts, then codex goes silent -- no further notifications.
     child.emitLine({ method: 'item/started', params: { threadId: 't-abort', turnId: 'turn-1', item: { id: 'rs-1', type: 'reasoning' } } });
+    child.emitLine({ method: 'item/started', params: { threadId: 't-abort', turnId: 'turn-1', item: {
+      id: 'proposal-1', type: 'mcpToolCall', server: 'nimbalyst', tool: 'developer_git_commit_proposal', arguments: {},
+    } } });
     await new Promise((r) => setTimeout(r, 20));
 
     controller.abort();
@@ -1642,6 +1645,8 @@ describe('CodexAppServerProtocol', () => {
     // Silent unwind: no complete (the turn didn't finish) and no error.
     expect(events.some((e) => e.type === 'complete')).toBe(false);
     expect(events.some((e) => e.type === 'error')).toBe(false);
+    expect(events.some((e) => e.type === 'tool_call' && e.toolCall?.id === 'proposal-1'
+      && (e.toolCall as { orphaned?: boolean }).orphaned)).toBe(true);
 
     protocol.cleanupSession(session);
   });

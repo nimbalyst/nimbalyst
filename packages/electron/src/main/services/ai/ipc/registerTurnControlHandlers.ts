@@ -14,6 +14,7 @@ import {
 import { agentCapabilitiesForProviderType } from '@nimbalyst/runtime/ai/server/agentCapabilities';
 import { safeSend } from '../aiServiceUtils';
 import { performTurnInterruption } from '../sessionTurnControl';
+import { closeWaitingCommitProposals } from '@nimbalyst/runtime/ai/server/commitProposalInFlight';
 import { beginQueueStopRequest, captureQueueAuthorization, type QueueStopRequest } from '../stoppedQueueHold';
 import { cancelTurnSetup } from '../turnSetupStages';
 import type { AIServiceContext } from './AIServiceContext';
@@ -28,6 +29,10 @@ import type { AIServiceContext } from './AIServiceContext';
 export async function cancelSessionTurn(ctx: AIServiceContext, sessionId: string, chunksReceived?: number, request?: QueueStopRequest) {
   if (!sessionId) throw new Error('Session ID is required to cancel request');
   const stopRequest = request ?? beginQueueStopRequest(sessionId);
+  // Stop is authoritative even while a proposal is waiting in an MCP call.
+  // The execution record refuses cancellation if a confirmed commit owns it.
+  void closeWaitingCommitProposals(sessionId).catch(error =>
+    logger.main.error('[AIService] Failed to close waiting commit proposal on Stop:', error));
   try {
     // console.log(`[AIService] ai:cancelRequest received for sessionId: ${sessionId}`);
     // Abort the provider for the specific session

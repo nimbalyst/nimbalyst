@@ -5,6 +5,8 @@ import {
   type DriveOutcome,
   type QueueDriveDeps,
 } from '../QueueDriveService';
+import { clearLiveInteractivePrompt, noteLiveInteractivePrompt, onInteractivePromptsCleared } from '../../../mcp/tools/interactivePromptLiveness';
+import { beginCommitProposalCall, isCommitProposalInFlight, onCommitProposalsSettled } from '@nimbalyst/runtime/ai/server/commitProposalInFlight';
 
 function createHarness(attemptImpl: QueueDriveDeps['attempt']) {
   const windowListeners: Array<{ workspacePath: string; listener: () => void }> = [];
@@ -148,6 +150,31 @@ describe('QueueDriveService', () => {
     await flush();
 
     expect(seenReasons).toEqual(['boot-recovery', 'session-idle']);
+  });
+
+  it('drives after a commit call ends even when the prompt cleared before it', async () => {
+    const endCommit = beginCommitProposalCall('commit-race');
+    noteLiveInteractivePrompt('commit-race');
+    const seenReasons: string[] = [];
+    const harness = createHarness(async ({ reason }) => {
+      seenReasons.push(reason);
+      return isCommitProposalInFlight('commit-race')
+        ? { kind: 'deferred', reason: 'session-busy' }
+        : { kind: 'dispatched', promptId: 'queued' };
+    });
+    harness.deps.onInteractivePromptsCleared = onInteractivePromptsCleared;
+    harness.deps.onCommitProposalsSettled = onCommitProposalsSettled;
+    try {
+      harness.service.requestDrive('commit-race', '/ws', 'renderer-trigger');
+      await flush();
+      clearLiveInteractivePrompt('commit-race');
+      await flush();
+      expect(seenReasons).toEqual(['renderer-trigger', 'session-idle']);
+      endCommit();
+      await flush();
+      expect(seenReasons).toEqual(['renderer-trigger', 'session-idle', 'session-idle']);
+      expect(harness.clearedHandles).toContain(harness.timerCalls[0].handle);
+    } finally { endCommit(); harness.service.dispose(); clearLiveInteractivePrompt('commit-race'); }
   });
 
   it('does not defer or retry a terminal failure', async () => {

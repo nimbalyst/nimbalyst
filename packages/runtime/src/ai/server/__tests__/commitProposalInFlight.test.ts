@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { expect, it, vi } from 'vitest';
-import { afterCommitProposalSettles, beginCommitProposalCall, isCommitProposalInFlight } from '../commitProposalInFlight';
+import { afterCommitProposalSettles, beginCommitProposalCall, closeWaitingCommitProposals, isCommitProposalInFlight, onCommitProposalsSettled, registerWaitingCommitProposal } from '../commitProposalInFlight';
 
 it('holds deferred work until every in-flight commit call for the session settles', async () => {
   const action = vi.fn(() => 'ran');
@@ -22,4 +22,25 @@ it('holds deferred work until every in-flight commit call for the session settle
 it('runs immediately when nothing is in flight or the session is unknown', async () => {
   await expect(afterCommitProposalSettles('idle', () => 1)).resolves.toBe(1);
   await expect(afterCommitProposalSettles(undefined, () => 2)).resolves.toBe(2);
+});
+
+it('wakes only when the last call settles and allows an exact orphan to close', async () => {
+  const wake = vi.fn();
+  const unsubscribe = onCommitProposalsSettled('exact', wake);
+  const endFirst = beginCommitProposalCall('exact');
+  const endSecond = beginCommitProposalCall('exact');
+  const closeFirst = vi.fn(async () => true);
+  const closeSecond = vi.fn(async () => false); // confirmed commit owns this one
+  const unregisterFirst = registerWaitingCommitProposal('exact', closeFirst, 'item-1');
+  const unregisterSecond = registerWaitingCommitProposal('exact', closeSecond, 'item-2');
+  try {
+    expect(await closeWaitingCommitProposals('exact', 'item-1')).toBe(1);
+    expect(closeFirst).toHaveBeenCalledOnce();
+    expect(closeSecond).not.toHaveBeenCalled();
+    expect(await closeWaitingCommitProposals('exact', 'item-2')).toBe(0);
+    endFirst();
+    expect(wake).not.toHaveBeenCalled();
+    endSecond();
+    expect(wake).toHaveBeenCalledOnce();
+  } finally { unregisterFirst(); unregisterSecond(); unsubscribe(); endFirst(); endSecond(); }
 });

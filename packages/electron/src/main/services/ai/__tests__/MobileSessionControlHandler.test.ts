@@ -171,7 +171,7 @@ describe('phone Stop retirement', () => {
       expect(isQueueStopped(sessionId)).toBe(false);
     } finally { dispose(); captureQueueAuthorization(sessionId)(); mocks.getSession.mockReset(); mocks.getProvider.mockReset(); }
   });
-  it.each([false, true])('preserves confirmed non-Codex Stop behavior and the previous hold (previous hold: %s)', async previouslyStopped => {
+  it.each([false, true])('routes non-Codex phone Stop through the shared controller (previous hold: %s)', async previouslyStopped => {
     const sessionId = `phone-noncodex-${previouslyStopped}`;
     const { captureQueueAuthorization, holdQueueAfterStop, isQueueStopped } = await import('../stoppedQueueHold');
     if (previouslyStopped) holdQueueAfterStop(sessionId);
@@ -179,15 +179,70 @@ describe('phone Stop retirement', () => {
     const abort = vi.fn();
     mocks.getProvider.mockReturnValue({ abort });
     let receive!: (message: any) => void;
-    const sharedCancel = vi.fn();
+    const sharedCancel = vi.fn(async (_id: string, request?: { restorePreviousHold(): void }) => {
+      request?.restorePreviousHold();
+      return { success: true };
+    });
     const dispose = initMobileSessionControlHandler({ onSessionControlMessage: (fn: any) => { receive = fn; return () => {}; } } as never,
       () => null, { cancelSessionTurn: sharedCancel, rollbackExecutingPrompts: vi.fn(async () => 0), triggerQueuedPromptProcessing: vi.fn() });
     try {
       receive({ type: 'cancel', sessionId });
-      await vi.waitFor(() => expect(abort).toHaveBeenCalledOnce());
+      await vi.waitFor(() => expect(sharedCancel).toHaveBeenCalledExactlyOnceWith(sessionId, expect.objectContaining({ finishLookup: expect.any(Function) })));
       expect(isQueueStopped(sessionId)).toBe(previouslyStopped);
-      expect(sharedCancel).not.toHaveBeenCalled();
+      expect(abort).not.toHaveBeenCalled();
     } finally { dispose(); captureQueueAuthorization(sessionId)(); mocks.getSession.mockReset(); mocks.getProvider.mockReset(); }
+  });
+  it('retires a non-Codex phone turn through abort, queue sweep, idle, and drive', async () => {
+    const sessionId = 'phone-noncodex-controller';
+    mocks.getSession.mockResolvedValue({ id: sessionId, provider: 'claude-code', workspacePath: '/ws' });
+    const abort = vi.fn();
+    mocks.getProvider.mockReturnValue({ abort });
+    const sweep = vi.fn(async () => 0);
+    mocks.queue = { sweepExecutingForSession: sweep };
+    const idle = vi.fn(async () => {});
+    const drive = vi.fn(async () => ({ kind: 'nothing-pending' as const }));
+    const ctx = {
+      analytics: { sendEvent: vi.fn() }, sessionsProcessingQueue: new Set<string>(),
+      publishQueueStateToSync: vi.fn(async () => {}), forceSessionIdleOnCancel: idle,
+      invalidateQueueDrive: vi.fn(), driveQueuedPrompts: drive,
+    };
+    let receive!: (message: any) => void;
+    const sharedCancel = vi.fn((id: string, request?: any) => cancelSessionTurn(ctx as never, id, undefined, request));
+    const dispose = initMobileSessionControlHandler({ onSessionControlMessage: (fn: any) => { receive = fn; return () => {}; } } as never,
+      () => null, { cancelSessionTurn: sharedCancel, rollbackExecutingPrompts: vi.fn(async () => 0), triggerQueuedPromptProcessing: vi.fn() });
+    try {
+      receive({ type: 'cancel', sessionId });
+      await vi.waitFor(() => expect(drive).toHaveBeenCalledExactlyOnceWith(sessionId, '/ws', 'renderer-trigger'));
+      expect(sharedCancel).toHaveBeenCalledOnce();
+      expect(abort).toHaveBeenCalledOnce();
+      expect(sweep).toHaveBeenCalledOnce();
+      expect(ctx.publishQueueStateToSync).toHaveBeenCalledExactlyOnceWith(sessionId);
+      expect(idle).toHaveBeenCalledExactlyOnceWith(sessionId);
+    } finally { dispose(); mocks.queue = undefined; mocks.getSession.mockReset(); mocks.getProvider.mockReset(); }
+  });
+  it('rolls back CLI executing rows before shared phone Stop sends Ctrl-C', async () => {
+    const sessionId = 'phone-cli';
+    const { getTerminalSessionManager } = await import('../../TerminalSessionManager');
+    vi.mocked(getTerminalSessionManager).mockReturnValue({ isTerminalActive: () => true } as never);
+    mocks.getSession.mockResolvedValue({ id: sessionId, provider: 'claude-code-cli' });
+    const order: string[] = [];
+    const rollback = vi.fn(async () => { order.push('rollback'); return 1; });
+    const sharedCancel = vi.fn(async () => { order.push('cancel'); return { success: true }; });
+    let receive!: (message: any) => void;
+    const dispose = initMobileSessionControlHandler({ onSessionControlMessage: (fn: any) => { receive = fn; return () => {}; } } as never,
+      () => null, { cancelSessionTurn: sharedCancel, rollbackExecutingPrompts: rollback, triggerQueuedPromptProcessing: vi.fn() });
+    try {
+      receive({ type: 'cancel', sessionId });
+      await vi.waitFor(() => expect(sharedCancel).toHaveBeenCalledOnce());
+      expect(order).toEqual(['rollback', 'cancel']);
+      expect(rollback).toHaveBeenCalledExactlyOnceWith(sessionId);
+    } finally {
+      const { captureQueueAuthorization } = await import('../stoppedQueueHold');
+      captureQueueAuthorization(sessionId)();
+      dispose();
+      mocks.getSession.mockReset();
+      vi.mocked(getTerminalSessionManager).mockReset();
+    }
   });
   it('retires a resolved native turn before admitting phone corrections and publishing idle', async () => {
     const { CodexAppServerProtocol } = await import('@nimbalyst/runtime/ai/server/protocols/CodexAppServerProtocol');

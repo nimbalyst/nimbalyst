@@ -23,6 +23,20 @@
 
 /** Per-session count of interactive prompts currently blocking a turn. */
 const liveInteractivePrompts = new Map<string, number>();
+const clearedListeners = new Map<string, Set<() => void>>();
+
+/** Subscribe to the last live prompt settling, including late abort cleanup. */
+export function onInteractivePromptsCleared(sessionKey: string, listener: () => void): () => void {
+  const listeners = clearedListeners.get(sessionKey) ?? new Set<() => void>();
+  listeners.add(listener);
+  clearedListeners.set(sessionKey, listeners);
+  return () => {
+    listeners.delete(listener);
+    if (listeners.size === 0 && clearedListeners.get(sessionKey) === listeners) {
+      clearedListeners.delete(sessionKey);
+    }
+  };
+}
 
 /** Record that an interactive prompt has begun blocking a session's turn. */
 export function noteLiveInteractivePrompt(sessionKey: string): void {
@@ -33,9 +47,13 @@ export function noteLiveInteractivePrompt(sessionKey: string): void {
 /** Record that an interactive prompt has settled (answered, cancelled, or timed out). */
 export function clearLiveInteractivePrompt(sessionKey: string): void {
   if (!sessionKey) return;
-  const next = (liveInteractivePrompts.get(sessionKey) ?? 0) - 1;
+  const previous = liveInteractivePrompts.get(sessionKey) ?? 0;
+  const next = previous - 1;
   if (next <= 0) {
     liveInteractivePrompts.delete(sessionKey);
+    if (previous > 0) {
+      for (const listener of [...(clearedListeners.get(sessionKey) ?? [])]) listener();
+    }
   } else {
     liveInteractivePrompts.set(sessionKey, next);
   }

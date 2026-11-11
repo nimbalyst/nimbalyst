@@ -13,6 +13,7 @@
  */
 const inFlight = new Map<string, number>();
 const waiters = new Map<string, Array<() => void>>();
+const settledListeners = new Map<string, Set<() => void>>();
 
 /** Marks a commit call in flight; the returned function ends it (idempotent). */
 export function beginCommitProposalCall(sessionId: string): () => void {
@@ -30,6 +31,20 @@ export function beginCommitProposalCall(sessionId: string): () => void {
     const pending = waiters.get(sessionId) ?? [];
     waiters.delete(sessionId);
     for (const wake of pending) wake();
+    for (const listener of [...(settledListeners.get(sessionId) ?? [])]) listener();
+  };
+}
+
+/** Wake a deferred queue drive when the last commit call actually settles. */
+export function onCommitProposalsSettled(sessionId: string, listener: () => void): () => void {
+  const listeners = settledListeners.get(sessionId) ?? new Set<() => void>();
+  listeners.add(listener);
+  settledListeners.set(sessionId, listeners);
+  return () => {
+    listeners.delete(listener);
+    if (listeners.size === 0 && settledListeners.get(sessionId) === listeners) {
+      settledListeners.delete(sessionId);
+    }
   };
 }
 
@@ -58,26 +73,29 @@ export async function afterCommitProposalSettles<T>(
  */
 type CloseWaitingProposal = () => Promise<boolean>;
 
-const waitingProposals = new Map<string, Set<CloseWaitingProposal>>();
+type WaitingProposal = { proposalId?: string; close: CloseWaitingProposal };
+const waitingProposals = new Map<string, Set<WaitingProposal>>();
 
 /** A proposal is waiting for the user; the returned function withdraws it (idempotent). */
-export function registerWaitingCommitProposal(sessionId: string, close: CloseWaitingProposal): () => void {
-  const set = waitingProposals.get(sessionId) ?? new Set<CloseWaitingProposal>();
-  set.add(close);
+export function registerWaitingCommitProposal(sessionId: string, close: CloseWaitingProposal, proposalId?: string): () => void {
+  const set = waitingProposals.get(sessionId) ?? new Set<WaitingProposal>();
+  const entry = { proposalId, close };
+  set.add(entry);
   waitingProposals.set(sessionId, set);
   return () => {
-    set.delete(close);
+    set.delete(entry);
     if (set.size === 0 && waitingProposals.get(sessionId) === set) waitingProposals.delete(sessionId);
   };
 }
 
 /**
- * NIM-7642: the user sent a new message instead of answering. Closes every
- * proposal of the session still waiting on them and resolves how many closed.
- * Their calls then return, ending the in-flight mark a deferred send-now waits on.
+ * Closes still-waiting proposals when the user sends new input or stops the
+ * turn. An orphaned MCP call may target its exact proposal ID. Their calls
+ * then return, ending the in-flight mark a deferred queue drive waits on.
  */
-export async function closeWaitingCommitProposals(sessionId: string): Promise<number> {
-  const closes = [...(waitingProposals.get(sessionId) ?? [])];
-  const closed = await Promise.all(closes.map(close => close().catch(() => false)));
+export async function closeWaitingCommitProposals(sessionId: string, proposalId?: string): Promise<number> {
+  const closes = [...(waitingProposals.get(sessionId) ?? [])]
+    .filter(entry => proposalId === undefined || entry.proposalId === proposalId);
+  const closed = await Promise.all(closes.map(entry => entry.close().catch(() => false)));
   return closed.filter(Boolean).length;
 }

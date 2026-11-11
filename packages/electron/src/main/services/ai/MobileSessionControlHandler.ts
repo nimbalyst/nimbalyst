@@ -436,43 +436,24 @@ async function handleCancel(
     return;
   }
   const providerType = session.provider as AIProviderType;
-  if (providerType === 'openai-codex') {
-    try {
-      const result = await callbacks.cancelSessionTurn(sessionId, stopRequest);
-      if (result.success) notifyAllWindows('ai:sessionCancelled', { sessionId });
-      else log.warn('Mobile cancel: shared controller did not finish:', sessionId, result.error);
-    } catch (error) {
-      log.error('Mobile cancel: shared controller failed:', error);
-    } finally { stopRequest.finishLookup(); }
-    return;
-  }
-  stopRequest.restorePreviousHold();
-  stopRequest.finishLookup();
-  const provider = ProviderFactory.getProvider(providerType, sessionId);
-  if (providerType === 'claude-code-cli') {
-    const { getTerminalSessionManager } = await import('../TerminalSessionManager');
-    const terminalManager = getTerminalSessionManager();
-    if (!terminalManager.isTerminalActive(sessionId)) {
-      log.warn('Mobile cancel: no active claude-code-cli terminal for session:', sessionId);
-      return;
+  try {
+    // The CLI has no in-process provider. Keep its active-terminal check and
+    // executing-row rollback before the shared controller sends Ctrl-C.
+    if (providerType === 'claude-code-cli') {
+      const { getTerminalSessionManager } = await import('../TerminalSessionManager');
+      if (!getTerminalSessionManager().isTerminalActive(sessionId)) {
+        stopRequest.restorePreviousHold();
+        log.warn('Mobile cancel: no active claude-code-cli terminal for session:', sessionId);
+        return;
+      }
+      await rollbackQueuedPrompts();
     }
-    await rollbackQueuedPrompts();
-    terminalManager.writeToTerminal(sessionId, '\x03');
-    log.info('Mobile cancel: sent Ctrl+C to CLI session', sessionId);
-    notifyAllWindows('ai:sessionCancelled', { sessionId });
-    return;
-  }
-
-  if (provider && 'abort' in provider) {
-    log.info('Aborting session:', sessionId);
-    await rollbackQueuedPrompts();
-    (provider as { abort: () => void }).abort();
-
-    // Notify renderer to update UI
-    notifyAllWindows('ai:sessionCancelled', { sessionId });
-  } else {
-    log.warn('No provider found or provider does not support abort:', sessionId);
-  }
+    const result = await callbacks.cancelSessionTurn(sessionId, stopRequest);
+    if (result.success) notifyAllWindows('ai:sessionCancelled', { sessionId });
+    else log.warn('Mobile cancel: shared controller did not finish:', sessionId, result.error);
+  } catch (error) {
+    log.error('Mobile cancel: shared controller failed:', error);
+  } finally { stopRequest.finishLookup(); }
 }
 
 /**

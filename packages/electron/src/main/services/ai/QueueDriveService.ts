@@ -68,6 +68,10 @@ export interface QueueDriveDeps {
   onWindowAvailable(workspacePath: string, listener: () => void): () => void;
   /** Fire once this session leaves the running state. Returns an unsubscribe. */
   onSessionIdle(sessionId: string, listener: () => void): () => void;
+  /** A deferred proposal may end after its interactive prompt clears. */
+  onCommitProposalsSettled?(sessionId: string, listener: () => void): () => void;
+  /** A form can outlive the terminal event; wake when the last one settles. */
+  onInteractivePromptsCleared?(sessionId: string, listener: () => void): () => void;
   /** Fire once the database is usable. Returns an unsubscribe. */
   onDatabaseReady?(listener: () => void): () => void;
   logInfo(message: string): void;
@@ -300,7 +304,16 @@ export class QueueDriveService {
         unsubscribe = this.deps.onWindowAvailable(state.workspacePath, fire);
         break;
       case 'session-busy':
-        unsubscribe = this.deps.onSessionIdle(sessionId, fire);
+        {
+          const unsubscribeIdle = this.deps.onSessionIdle(sessionId, fire);
+          const unsubscribePrompts = this.deps.onInteractivePromptsCleared?.(sessionId, fire);
+          const unsubscribeCommit = this.deps.onCommitProposalsSettled?.(sessionId, fire);
+          unsubscribe = () => {
+            unsubscribeIdle();
+            unsubscribePrompts?.();
+            unsubscribeCommit?.();
+          };
+        }
         break;
       case 'db-not-ready':
         unsubscribe = this.deps.onDatabaseReady?.(fire);

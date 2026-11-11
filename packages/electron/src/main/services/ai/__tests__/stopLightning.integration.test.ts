@@ -52,7 +52,7 @@ import { beginSessionTurn } from '../sessionTurnControl';
 import { captureQueueAuthorization, isQueueStopped } from '../stoppedQueueHold';
 import { createPGLiteQueuedPromptsStore } from '../../PGLiteQueuedPromptsStore';
 import { SQLiteDatabase } from '../../../database/sqlite/SQLiteDatabase';
-import { beginCommitProposalCall, registerWaitingCommitProposal } from '@nimbalyst/runtime/ai/server/commitProposalInFlight';
+import { beginCommitProposalCall, isCommitProposalInFlight, registerWaitingCommitProposal } from '@nimbalyst/runtime/ai/server/commitProposalInFlight';
 
 describe('desktop Stop / lightning with durable queue and question ownership', () => {
   let database: SQLiteDatabase;
@@ -110,6 +110,33 @@ describe('desktop Stop / lightning with durable queue and question ownership', (
     expect(automatic).toBe(false);
     expect(stateAfterStop).toBe('pending');
     expect(delivered).toEqual([text]);
+  });
+
+  it('withdraws a waiting commit proposal when Stop retires its turn', async () => {
+    await storage.queue.create({ id: 'after-proposal', sessionId: 's1', prompt: 'Keep this input' });
+    const provider = { abort: vi.fn(), interruptCurrentTurn: vi.fn(async () => ({ method: 'interrupt' as const })) };
+    getProvider.mockReturnValue(provider);
+    const endCommit = beginCommitProposalCall('s1');
+    const close = vi.fn(async () => { endCommit(); return true; });
+    const unregister = registerWaitingCommitProposal('s1', close);
+    const service = Object.assign(Object.create(AIService.prototype), {
+      sessionsProcessingQueue: new SessionProcessingGuard(),
+      publishQueueStateToSync: vi.fn(async () => {}),
+      driveQueuedPrompts: vi.fn(async () => ({ kind: 'nothing-pending' })),
+    });
+    registerTurnControlHandlers({
+      analytics: { sendEvent: vi.fn() }, sessionsProcessingQueue: service.sessionsProcessingQueue,
+      publishQueueStateToSync: service.publishQueueStateToSync,
+      forceSessionIdleOnCancel: (id: string) => service.forceSessionIdleOnCancel(id),
+      driveQueuedPrompts: service.driveQueuedPrompts,
+      invalidateQueueDrive: vi.fn(),
+    } as any);
+    try {
+      await handlers.get('ai:cancelRequest')!({}, 's1');
+      expect(close).toHaveBeenCalledOnce();
+      expect(isCommitProposalInFlight('s1')).toBe(false);
+      expect((await storage.queue.get('after-proposal'))?.status).toBe('pending');
+    } finally { unregister(); endCommit(); }
   });
 
   it.each([

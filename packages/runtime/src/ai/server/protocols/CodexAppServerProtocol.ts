@@ -446,6 +446,9 @@ export class CodexAppServerProtocol implements AgentProtocol {
         if (turnStartResolved && !turnStartResultId) failRetirement();
       }
       requestInterrupt();
+      // The generator stops on this abort entry. Emit orphaned MCP calls first
+      // so the host can withdraw a waiting proposal before the old turn retires.
+      this.sweepOrphanedMcpCalls(push, raw.threadId, turnStartResultId ?? undefined);
       push({ kind: 'abort' });
     };
     if (abortSignal) {

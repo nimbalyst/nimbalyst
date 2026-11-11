@@ -1,9 +1,11 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+// @vitest-environment node
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import {
   clearLiveInteractivePrompt,
   countLiveInteractivePrompts,
   hasLiveInteractivePrompt,
   noteLiveInteractivePrompt,
+  onInteractivePromptsCleared,
 } from '../tools/interactivePromptLiveness';
 import {
   clearPendingInteractiveWaiter,
@@ -38,6 +40,25 @@ describe('interactivePromptLiveness (NIM-2208)', () => {
     clearLiveInteractivePrompt('s1');
     expect(countLiveInteractivePrompts('s1')).toBe(0);
     expect(hasLiveInteractivePrompt('s1')).toBe(false);
+  });
+
+  it('notifies only when the last live prompt settles, then unsubscribes cleanly', () => {
+    const listener = vi.fn();
+    const unsubscribe = onInteractivePromptsCleared('s1', listener);
+    try {
+      clearLiveInteractivePrompt('s1');
+      noteLiveInteractivePrompt('s1');
+      noteLiveInteractivePrompt('s1');
+      clearLiveInteractivePrompt('s1');
+      expect(listener).not.toHaveBeenCalled();
+      clearLiveInteractivePrompt('s1');
+      clearLiveInteractivePrompt('s1');
+      expect(listener).toHaveBeenCalledOnce();
+      unsubscribe();
+      noteLiveInteractivePrompt('s1');
+      clearLiveInteractivePrompt('s1');
+      expect(listener).toHaveBeenCalledOnce();
+    } finally { unsubscribe(); }
   });
 
   it('is a SEPARATE counter from the NIM-1981 fallback registry', () => {

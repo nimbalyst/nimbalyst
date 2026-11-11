@@ -249,6 +249,7 @@ import { registerQueuedPromptHandlers } from '../ipc/registerQueuedPromptHandler
 import { remoteSessions } from '../remoteSessions';
 import { AISessionsRepository } from '@nimbalyst/runtime/storage/repositories/AISessionsRepository';
 import { captureQueueAuthorization, holdQueueAfterStop, isQueueStopped } from '../stoppedQueueHold';
+import { registerWaitingCommitProposal } from '@nimbalyst/runtime/ai/server/commitProposalInFlight';
 
 /**
  * OpenCode replaces its whole config on every `initialize`, which is how the
@@ -328,6 +329,8 @@ async function runTurn(options: {
     getApiKeyForProvider: vi.fn(() => undefined),
     buildClaudeCodeRuntimeConfig: vi.fn(),
     tryDispatchNextQueuedPrompt: vi.fn(async () => false),
+    hasPendingQueuedPrompts: vi.fn(async () => false),
+    closeWaitingCommitProposals: vi.fn(async () => 0),
     requestQueueDrive: vi.fn(),
     publishQueueStateToSync: vi.fn(async () => {}),
     createToolHandler: vi.fn(() => vi.fn()),
@@ -428,7 +431,7 @@ describe("MessageStreamingHandler external ownership", () => {
   });
   it('queues an automatic direct wake without releasing a human Stop', async () => {
     const sessionId = 'held-direct-wake';
-    const service = { queuePromptForSession: vi.fn(async () => ({})), requestQueueDrive: vi.fn(), publishQueueStateToSync: vi.fn(async () => {}) };
+    const service = { queuePromptForSession: vi.fn(async () => ({})), closeWaitingCommitProposals: vi.fn(async () => 0), requestQueueDrive: vi.fn(), publishQueueStateToSync: vi.fn(async () => {}) };
     const handler = new MessageStreamingHandler(service as never);
     holdQueueAfterStop(sessionId);
     try {
@@ -452,7 +455,7 @@ describe("MessageStreamingHandler external ownership", () => {
   it('publishes and drives a fresh human Send through the stored workspace when the IPC path is omitted', async () => {
     const sessionId = 'held-no-workspace';
     vi.mocked(AISessionsRepository.get).mockResolvedValue({ workspacePath: '/stored-workspace' } as any);
-    const service = { queuePromptForSession: vi.fn(async () => ({})), requestQueueDrive: vi.fn(), publishQueueStateToSync: vi.fn(async () => {}) };
+    const service = { queuePromptForSession: vi.fn(async () => ({})), closeWaitingCommitProposals: vi.fn(async () => 0), requestQueueDrive: vi.fn(), publishQueueStateToSync: vi.fn(async () => {}) };
     const handler = new MessageStreamingHandler(service as never);
     const send = vi.fn();
     holdQueueAfterStop(sessionId);
@@ -461,8 +464,52 @@ describe("MessageStreamingHandler external ownership", () => {
       expect(isQueueStopped(sessionId)).toBe(false);
       expect(service.publishQueueStateToSync).toHaveBeenCalledExactlyOnceWith(sessionId);
       expect(send).toHaveBeenCalledWith('ai:queuedPromptsReceived', { sessionId });
-      expect(service.requestQueueDrive).toHaveBeenCalledExactlyOnceWith(sessionId, '/stored-workspace', 'renderer-trigger');
+      expect(service.requestQueueDrive).toHaveBeenCalledExactlyOnceWith(sessionId, '/stored-workspace', 'send-now');
     } finally { captureQueueAuthorization(sessionId)(); }
+  });
+  it('saves a second direct Send behind older rows after the Stop hold has been released', async () => {
+    const sessionId = 'ordered-direct-send';
+    mocks.queue = { listPending: vi.fn(async () => [{ id: 'older-row' }]) };
+    const service = {
+      hasPendingQueuedPrompts: AIService.prototype.hasPendingQueuedPrompts,
+      queuePromptForSession: vi.fn(async () => ({})),
+      closeWaitingCommitProposals: vi.fn(async () => 0),
+      requestQueueDrive: vi.fn(),
+      publishQueueStateToSync: vi.fn(async () => {}),
+    };
+    const handler = new MessageStreamingHandler(service as never);
+    const event = { sender: { isDestroyed: () => false, send: vi.fn() } } as never;
+    try {
+      expect(isQueueStopped(sessionId)).toBe(false);
+      await expect(handler.handle(event, 'second correction', { inputType: 'user' } as any, sessionId, '/workspace'))
+        .resolves.toEqual({ content: '' });
+      expect(mocks.queue.listPending).toHaveBeenCalledExactlyOnceWith(sessionId);
+      expect(service.queuePromptForSession).toHaveBeenCalledWith(sessionId, 'second correction', undefined,
+        { inputType: 'user', promptProvenance: { actor: 'human', origin: 'composer' } });
+      expect(service.closeWaitingCommitProposals).toHaveBeenCalledExactlyOnceWith(sessionId);
+      expect(service.requestQueueDrive).toHaveBeenCalledExactlyOnceWith(sessionId, '/workspace', 'send-now');
+    } finally { mocks.queue = undefined; }
+  });
+  it('withdraws only the orphaned commit proposal announced by Codex', async () => {
+    const closeExact = vi.fn(async () => true);
+    const closeOther = vi.fn(async () => true);
+    const unregisterExact = registerWaitingCommitProposal('opencode-session', closeExact, 'proposal-1');
+    const unregisterOther = registerWaitingCommitProposal('opencode-session', closeOther, 'proposal-2');
+    const provider = new RecordingProvider([{
+      type: 'tool_call',
+      toolCall: {
+        id: 'proposal-1', name: 'mcp__nimbalyst__developer_git_commit_proposal',
+        arguments: {}, orphaned: true,
+      },
+    }]);
+    try {
+      await runTurn({ session: openCodeSession(), provider, runWithHandler: async (handler, event, service) => {
+        (service as any).closeWaitingCommitProposals = AIService.prototype.closeWaitingCommitProposals;
+        await handler.handle(event, 'Continue', undefined, 'opencode-session', '/workspace');
+        await vi.waitFor(() => expect(closeExact).toHaveBeenCalledOnce());
+        expect(closeOther).not.toHaveBeenCalled();
+      } });
+    } finally { unregisterExact(); unregisterOther(); }
   });
   it('does not let automated orchestration release a human Stop', async () => {
     const sessionId = 'held-meta-input';

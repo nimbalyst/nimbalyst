@@ -96,8 +96,8 @@ import { onWorkspaceWindowAvailable } from '../../window/workspaceWindowAvailabi
 import { dispatchQueuedPromptToClaudeCli } from './claudeCliQueueDispatch';
 import { publishQueuedPromptClaim } from './queuedPromptClaimEvents';
 import { canDispatchIntoDrain, isLeadTurnPending } from './drainFollowUp';
-import { hasLiveInteractivePrompt } from '../../mcp/tools/interactivePromptLiveness';
-import { closeWaitingCommitProposals, isCommitProposalInFlight } from '@nimbalyst/runtime/ai/server/commitProposalInFlight';
+import { hasLiveInteractivePrompt, onInteractivePromptsCleared } from '../../mcp/tools/interactivePromptLiveness';
+import { closeWaitingCommitProposals, isCommitProposalInFlight, onCommitProposalsSettled } from '@nimbalyst/runtime/ai/server/commitProposalInFlight';
 import { deferInterruptDuringCommit, deferUserSendNowDuringCommit } from './commitInterruptDeferral';
 import { ensureClaudeCliSession } from './claudeCliLauncherSingleton';
 import {
@@ -367,6 +367,8 @@ export class AIService {
     if (!this.queueDriveService) {
       this.queueDriveService = new QueueDriveService({
         attempt: (input) => this.attemptQueueDrive(input),
+        onInteractivePromptsCleared,
+        onCommitProposalsSettled,
         onWindowAvailable: (workspacePath, listener) =>
           onWorkspaceWindowAvailable((availablePath) => {
             if (availablePath === workspacePath) listener();
@@ -398,6 +400,17 @@ export class AIService {
   /** Ask the driver to drain a session's queue. Fire-and-forget. */
   public requestQueueDrive(sessionId: string, workspacePath: string, reason: DriveReason): void {
     this.getQueueDrive().requestDrive(sessionId, workspacePath, reason);
+  }
+
+  /** Direct composer sends join older durable rows before starting a turn. */
+  public async hasPendingQueuedPrompts(sessionId: string): Promise<boolean> {
+    const { getQueuedPromptsStore } = await import('../RepositoryManager');
+    return (await getQueuedPromptsStore().listPending(sessionId)).length > 0;
+  }
+
+  /** A human Send supersedes a proposal still waiting on that same session. */
+  public closeWaitingCommitProposals(sessionId: string, proposalId?: string): Promise<number> {
+    return closeWaitingCommitProposals(sessionId, proposalId);
   }
 
   /**

@@ -948,7 +948,7 @@ async function runGitCommitProposal(
       }
       settle({ action: "cancelled", superseded: true }, "superseded");
       return true;
-    });
+    }, proposalId);
 
     const settle = (result: CommitResult, source: string) => {
       if (settled) return;
