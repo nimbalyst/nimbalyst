@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-10-31T19:56:11.369Z",
+  "generatedAt": "2026-11-10T23:58:05.596Z",
   "extensions": [
     {
       "id": "com.nimbalyst.animation",
@@ -436,7 +436,7 @@
       "id": "com.nimbalyst.excalidraw",
       "name": "Excalidraw",
       "description": "Excalidraw diagram editor with AI-assisted editing",
-      "version": "1.0.4",
+      "version": "1.0.5",
       "author": "Nimbalyst",
       "categories": [
         "diagrams"
@@ -464,10 +464,10 @@
         "ai"
       ],
       "minimumAppVersion": "1.0.0",
-      "downloadUrl": "https://extensions.nimbalyst.com/dl/com.nimbalyst.excalidraw/1.0.4",
-      "checksum": "3b628683343fb238a19028350526425a6762ae88bf39fb653a98612e664a7364",
+      "downloadUrl": "https://extensions.nimbalyst.com/dl/com.nimbalyst.excalidraw/1.0.5",
+      "checksum": "be55912e7a565ff9457b74984cd30c3c98b63ac199a6a60b250001d872f9f1d1",
       "repositoryUrl": "",
-      "changelog": "1.0.4: Open shared drawings in the web console, agents can edit shared drawings without opening a tab, and embedded drawings hide editor chrome until selected.\n1.0.3: Shared drawings keep every edit.\n1.0.2: Share selected diagram elements with AI, with improved Mermaid imports and arrow labels.\n1.0.1: Shared-document collaboration fixes, Mermaid image import fix, and more reliable AI edits to open diagrams.",
+      "changelog": "1.0.5: A user who can only view or comment on a shared drawing no longer writes to it, so their session is not ended for an edit they did not make.\n1.0.4: Open shared drawings in the web console, agents can edit shared drawings without opening a tab, and embedded drawings hide editor chrome until selected.\n1.0.3: Shared drawings keep every edit.\n1.0.2: Share selected diagram elements with AI, with improved Mermaid imports and arrow labels.\n1.0.1: Shared-document collaboration fixes, Mermaid image import fix, and more reliable AI edits to open diagrams.",
       "tagline": "Hand-drawn style diagrams with AI-assisted editing",
       "longDescription": "Create architecture diagrams, flowcharts, wireframes, and freeform sketches using the Excalidraw canvas. The AI can create and modify diagrams from natural language descriptions, import Mermaid syntax, and lay out complex systems visually. Switch between the visual canvas and source mode for direct JSON editing.",
       "highlights": [
@@ -757,7 +757,7 @@
       "id": "com.nimbalyst.mockuplm",
       "name": "MockupLM",
       "description": "Visual UX mockup creation with HTML/CSS for planning and design",
-      "version": "1.0.4",
+      "version": "1.0.5",
       "author": "Nimbalyst",
       "categories": [
         "diagrams"
@@ -786,10 +786,10 @@
         "ai"
       ],
       "minimumAppVersion": "1.0.0",
-      "downloadUrl": "https://extensions.nimbalyst.com/dl/com.nimbalyst.mockuplm/1.0.4",
-      "checksum": "d602b6df6a8a41b1442358e901436613233f7ef54eca0ab29456c7e0eab139e7",
+      "downloadUrl": "https://extensions.nimbalyst.com/dl/com.nimbalyst.mockuplm/1.0.5",
+      "checksum": "d2ce3f1a3fa92ac18a0a6c6c3feddb751085d59a254d745f54bf57b3b681ade3",
       "repositoryUrl": "",
-      "changelog": "1.0.4: Open shared mockups in the web console, comment on a spot in a shared mockup, and see the mockups a feedback request compares.\n1.0.3: Shared mockups keep every edit and gain a source pane. Sharing a mockup project is turned off until its screens sync.\n1.0.2: Share selected mockup screens with AI and render shared mockup links more reliably.\n1.0.1: Share to Team collaboration for mockups and projects, shared viewer and diff review fixes.",
+      "changelog": "1.0.5: A user who can only comment on a shared mockup no longer writes mockup pins, so their session is not ended when pins are collected or healed.\n1.0.4: Open shared mockups in the web console, comment on a spot in a shared mockup, and see the mockups a feedback request compares.\n1.0.3: Shared mockups keep every edit and gain a source pane. Sharing a mockup project is turned off until its screens sync.\n1.0.2: Share selected mockup screens with AI and render shared mockup links more reliably.\n1.0.1: Share to Team collaboration for mockups and projects, shared viewer and diff review fixes.",
       "tagline": "AI-generated UI mockups rendered as live HTML/CSS",
       "longDescription": "Design UI mockups by describing what you want in natural language. The AI generates complete HTML/CSS mockups that render as live previews in the editor. Iterate on designs visually or switch to source mode to hand-edit the HTML. Great for planning features, communicating designs, and rapid prototyping.",
       "highlights": [
