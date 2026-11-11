@@ -14,19 +14,10 @@ import {
 import { agentCapabilitiesForProviderType } from '@nimbalyst/runtime/ai/server/agentCapabilities';
 import { safeSend } from '../aiServiceUtils';
 import { performTurnInterruption } from '../sessionTurnControl';
-import { closeWaitingCommitProposals } from '@nimbalyst/runtime/ai/server/commitProposalInFlight';
+import { closeWaitingCommitProposals, isCommitProposalInFlight } from '@nimbalyst/runtime/ai/server/commitProposalInFlight';
 import { beginQueueStopRequest, captureQueueAuthorization, type QueueStopRequest } from '../stoppedQueueHold';
 import { cancelTurnSetup } from '../turnSetupStages';
 import type { AIServiceContext } from './AIServiceContext';
-
-async function waitForCliProposalClose(close: Promise<number>): Promise<void> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  try {
-    await Promise.race([close, new Promise<never>((_, reject) => {
-      timer = setTimeout(() => reject(new Error('Ctrl-C was sent, but the waiting commit proposal has not closed yet.')), 10_000);
-    })]);
-  } finally { if (timer) clearTimeout(timer); }
-}
 
 /**
  * Stopping and compacting an in-flight turn.
@@ -41,10 +32,20 @@ export async function cancelSessionTurn(ctx: AIServiceContext, sessionId: string
   // Stop is authoritative even while a proposal is waiting in an MCP call.
   // The execution record refuses cancellation if a confirmed commit owns it.
   let proposalCloseFailed = false;
-  const proposalClose = closeWaitingCommitProposals(sessionId, undefined, error => {
+  let proposalCloseSettled = false;
+  void closeWaitingCommitProposals(sessionId, undefined, error => {
     proposalCloseFailed = true;
     logger.main.error('[AIService] Failed to close waiting commit proposal on Stop:', error);
+  }).then(() => { proposalCloseSettled = true; }, error => {
+    proposalCloseFailed = true;
+    proposalCloseSettled = true;
+    logger.main.error('[AIService] Failed to close waiting commit proposal on Stop:', error);
   });
+  const proposalWarning = () => proposalCloseFailed
+    ? 'The turn stopped, but a waiting commit proposal could not be closed.'
+    : !proposalCloseSettled || isCommitProposalInFlight(sessionId)
+      ? 'The turn stopped; a commit proposal may still be closing.'
+      : undefined;
   try {
     // console.log(`[AIService] ai:cancelRequest received for sessionId: ${sessionId}`);
     // Abort the provider for the specific session
@@ -67,20 +68,18 @@ export async function cancelSessionTurn(ctx: AIServiceContext, sessionId: string
         return { success: false, error: 'No active terminal for session' };
       }
 
-      terminalManager.writeToTerminal(sessionId, '\x03');
+      try { terminalManager.writeToTerminal(sessionId, '\x03'); }
+      catch (error) {
+        return { success: false, error: error instanceof Error ? error.message : 'Unable to stop the terminal turn.' };
+      }
       ctx.analytics.sendEvent('ai_stream_interrupted', {
         provider: 'claude-code-cli',
         chunksReceived: chunksReceived || 0,
         reason: 'user_cancel'
       });
       ctx.analytics.sendEvent('cancel_ai_request', { provider: 'claude-code-cli' });
-      try { await waitForCliProposalClose(proposalClose); }
-      catch (error) {
-        logger.main.error('[AIService] Failed to close waiting commit proposal on Stop:', error);
-        return { success: false, error: error instanceof Error ? error.message : 'The waiting commit proposal did not close.' };
-      }
-      if (proposalCloseFailed) return { success: false, error: 'Ctrl-C was sent, but a waiting commit proposal could not be closed.' };
-      return { success: true };
+      const warning = proposalWarning();
+      return warning ? { success: true, warning: warning.replace('The turn stopped', 'Ctrl-C was sent') } : { success: true };
     }
 
     // console.log(`[AIService] Session found, provider type: ${session.provider}`);
@@ -105,9 +104,8 @@ export async function cancelSessionTurn(ctx: AIServiceContext, sessionId: string
       isCurrentProvider: () => (ProviderFactory.getProvider(session.provider as AIProviderType, sessionId) ?? null) === provider,
       retireInbox: () => sessionInbox.end(inbox, false),
       sweep: async () => {
-        // Started before provider abort so a blocked MCP call can settle the
-        // captured host turn; the shared control bounds this cleanup stage.
-        await proposalClose;
+        // Proposal close runs independently: a lost MCP response must not
+        // keep executing rows from being swept or published after Stop.
         const { getQueuedPromptsStore } = await import('../../RepositoryManager');
         await getQueuedPromptsStore().sweepExecutingForSession(sessionId);
         await ctx.publishQueueStateToSync(sessionId);
@@ -123,9 +121,9 @@ export async function cancelSessionTurn(ctx: AIServiceContext, sessionId: string
     // performTurnInterruption synchronously registered its retirement fence.
     stopRequest.finishLookup();
     const result = await control;
-    return proposalCloseFailed
-      ? { success: false, error: 'The turn stopped, but a waiting commit proposal could not be closed.' }
-      : result;
+    if (!result.success) return result;
+    const warning = proposalWarning();
+    return warning ? { ...result, warning: result.warning ? `${result.warning} ${warning}` : warning } : result;
   } finally { stopRequest.finishLookup(); }
 }
 

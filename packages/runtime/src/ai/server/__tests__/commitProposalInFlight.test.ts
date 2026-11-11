@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { expect, it, vi } from 'vitest';
-import { afterCommitProposalSettles, beginCommitProposalCall, closeWaitingCommitProposals, isCommitProposalInFlight, onCommitProposalsSettled, registerWaitingCommitProposal } from '../commitProposalInFlight';
+import { afterCommitProposalSettles, beginCommitProposalCall, closeWaitingCommitProposals, isCommitProposalInFlight, onCommitProposalsSettled, reapOrphanedCommitProposalCalls, registerWaitingCommitProposal } from '../commitProposalInFlight';
 
 it('holds deferred work until every in-flight commit call for the session settles', async () => {
   const action = vi.fn(() => 'ran');
@@ -56,4 +56,20 @@ it('reports a failed close while still closing other waiting proposals', async (
     expect(onError).toHaveBeenCalledExactlyOnceWith(failure);
     expect(closeGood).toHaveBeenCalledOnce();
   } finally { unregisterFailed(); unregisterGood(); }
+});
+
+it('reaps an orphaned marker without letting its late cleanup erase a new call', () => {
+  const endOld = beginCommitProposalCall('orphan');
+  const wake = vi.fn();
+  const unsubscribe = onCommitProposalsSettled('orphan', wake);
+  try {
+    expect(reapOrphanedCommitProposalCalls('orphan')).toBe(true);
+    expect(isCommitProposalInFlight('orphan')).toBe(false);
+    expect(wake).toHaveBeenCalledOnce();
+    const endNew = beginCommitProposalCall('orphan');
+    endOld();
+    expect(isCommitProposalInFlight('orphan')).toBe(true);
+    endNew();
+    expect(isCommitProposalInFlight('orphan')).toBe(false);
+  } finally { endOld(); unsubscribe(); }
 });

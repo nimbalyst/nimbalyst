@@ -198,6 +198,24 @@ describe('captured desktop turn interruption', () => {
     expect(result.error).toContain('turn stopped');
   });
 
+  it.each(['deferred', 'failed'] as const)('reports Stop success with a warning when queue drive is %s', async kind => {
+    const options = fixture(null);
+    const result = await performTurnInterruption({
+      ...options, mode: 'stop',
+      drive: async () => kind === 'deferred'
+        ? { kind: 'deferred', reason: 'session-busy' } as const
+        : { kind: 'failed', reason: 'workspace-missing' } as const,
+    });
+    expect(result).toMatchObject({ success: true, warning: expect.stringContaining('turn stopped') });
+  });
+
+  it.each(['sweep', 'drive'] as const)('keeps Stop success truthful when post-retirement %s fails', async stage => {
+    const options = fixture(null);
+    options[stage].mockRejectedValueOnce(new Error(`${stage} unavailable`));
+    const result = await performTurnInterruption({ ...options, mode: 'stop' });
+    expect(result).toMatchObject({ success: true, warning: expect.stringContaining(`${stage} unavailable`) });
+  });
+
   it.each(['stop', 'interrupt'] as const)('honors a new %s targeting the successor admitted during the previous drive', async mode => {
     const options = fixture();
     options.mode = mode;
@@ -342,7 +360,7 @@ describe('captured desktop turn interruption', () => {
     await vi.advanceTimersByTimeAsync(0);
     await entered.promise;
     await vi.advanceTimersByTimeAsync(20);
-    expect((await control).success).toBe(false);
+    expect(await control).toMatchObject({ success: true, warning: expect.stringContaining('timed out') });
     expect((await performTurnInterruption({ ...options, mode: 'stop' })).error).toContain('Restart the app');
     expect(options.provider.abort).toHaveBeenCalledTimes(2);
     expect(successor.cancelled).toBe(true);
@@ -387,7 +405,7 @@ describe('captured desktop turn interruption', () => {
     await entered.promise;
     const second = performTurnInterruption({ ...options, mode: 'stop', timeouts: { stageMs: newerTimeout } });
     await vi.advanceTimersByTimeAsync(35);
-    expect((await first).success).toBe(false);
+    expect(await first).toMatchObject({ success: true, warning: expect.stringContaining('timed out') });
     expect((await second).success).toBe(false);
     successor.finish();
     await vi.advanceTimersByTimeAsync(0);
@@ -439,7 +457,7 @@ describe('captured desktop turn interruption', () => {
     }).mockImplementationOnce(async () => { resumed = beginSessionTurn(options.sessionId); resumed.finish(); });
     const first = performTurnInterruption({ ...options, mode: 'stop', timeouts: { stageMs: 10 } });
     await vi.advanceTimersByTimeAsync(10);
-    expect((await first).success).toBe(false);
+    expect(await first).toMatchObject({ success: true, warning: expect.stringContaining('timed out') });
     firstDrive.resolve();
     await vi.advanceTimersByTimeAsync(0);
     options.settle.mockImplementationOnce(() => newerSettlement.promise);
@@ -451,7 +469,7 @@ describe('captured desktop turn interruption', () => {
     await vi.advanceTimersByTimeAsync(0);
     if (waitTimesOut) {
       await vi.advanceTimersByTimeAsync(50);
-      expect((await second).success).toBe(false);
+      expect(await second).toMatchObject({ success: true, warning: expect.stringContaining('timed out') });
       expect(isTurnRecoveryQuarantined(options.sessionId)).toBe(true);
     }
     retryDrive.resolve();
@@ -486,7 +504,7 @@ describe('captured desktop turn interruption', () => {
     const second = performTurnInterruption({ ...options, drive, mode: 'stop' });
     successor.finish();
     await vi.advanceTimersByTimeAsync(0);
-    expect((await second).error).toContain('still queued');
+    expect(await second).toMatchObject({ success: true, warning: expect.stringContaining('still queued') });
     await vi.advanceTimersByTimeAsync(20);
     expect((await first).success).toBe(false);
     parked.resolve();

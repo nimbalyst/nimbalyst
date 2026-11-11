@@ -99,6 +99,7 @@ import { canDispatchIntoDrain, isLeadTurnPending } from './drainFollowUp';
 import { hasLiveInteractivePrompt, onInteractivePromptsCleared } from '../../mcp/tools/interactivePromptLiveness';
 import { closeWaitingCommitProposals, isCommitProposalInFlight, onCommitProposalsSettled } from '@nimbalyst/runtime/ai/server/commitProposalInFlight';
 import { deferInterruptDuringCommit, deferUserSendNowDuringCommit } from './commitInterruptDeferral';
+import { reapIdleCommitProposalMarker } from './orphanedCommitProposalRecovery';
 import { ensureClaudeCliSession } from './claudeCliLauncherSingleton';
 import {
   resolveProviderWorkflowCatalog,
@@ -468,6 +469,10 @@ export class AIService {
     } catch {
       return { kind: 'deferred', reason: 'db-not-ready' };
     }
+
+    // A lost tool call can leave the marker after its host turn is gone. The
+    // queue's own retry recovers older rows even if no new Send arrives.
+    reapIdleCommitProposalMarker(sessionId, message => logger.main.warn(message));
 
     return runQueueDriveAttempt<Electron.BrowserWindow>(
       {

@@ -23,7 +23,7 @@ export interface SessionTurn {
 const turns = new Map<string, Set<SessionTurn>>();
 const controls = new Map<string, {
   result: Promise<TurnControlResult>;
-  stop(): void;
+  stop(explicit?: boolean): void;
   fenced: boolean;
   sequence: number;
 }>();
@@ -90,6 +90,11 @@ export function isTurnControlPending(sessionId: string): boolean {
   return controls.get(sessionId)?.fenced === true;
 }
 
+/** A host invocation still owns this session, including a waiting tool call. */
+export function hasActiveSessionTurn(sessionId: string): boolean {
+  return (turns.get(sessionId)?.size ?? 0) > 0;
+}
+
 /** Registration and the control fence check are synchronous. */
 export function beginSessionTurn(sessionId: string): SessionTurn {
   if (isTurnAdmissionBlocked(sessionId)) throw new TurnControlPendingError(isTurnRecoveryQuarantined(sessionId));
@@ -133,6 +138,7 @@ export interface TurnControlResult {
   success: boolean;
   method?: 'interrupt' | 'abort';
   error?: string;
+  warning?: string;
   forcedIdle?: boolean;
 }
 
@@ -188,7 +194,7 @@ export function performTurnInterruption(options: TurnControlOptions, progress: {
       // drive is currently claiming or running, rather than being swallowed.
       if (!(turns.get(sessionId)?.size)) return Promise.resolve({ success: false, error: 'The previous queue drive is still starting. Your message remains queued.' });
     } else {
-      if (options.mode === 'stop') existing.stop();
+      if (options.mode === 'stop') existing.stop(true);
       return existing.result;
     }
   }
@@ -203,6 +209,8 @@ export function performTurnInterruption(options: TurnControlOptions, progress: {
     return Promise.resolve({ success: false, error: 'An active setup has no owned host invocation. Stop again to retry; if this persists, reopen the session.' });
   }
   let hard = options.mode === 'stop' || captured.length === 0;
+  let stopRequested = options.mode === 'stop';
+  let turnStopped = false;
   let driving = false;
   let abortCalled = false;
   let resolveHard!: (value: { method: 'abort' }) => void;
@@ -210,7 +218,8 @@ export function performTurnInterruption(options: TurnControlOptions, progress: {
   const hardResult = new Promise<{ method: 'abort' }>((resolve, reject) => { resolveHard = resolve; rejectHard = reject; });
   // A rejected escalation is also observed before the operation starts.
   void hardResult.catch(() => {});
-  const stop = () => {
+  const stop = (explicit = false) => {
+    if (explicit) stopRequested = true;
     if (driving) return;
     hard = true;
     if (abortCalled) return;
@@ -277,6 +286,7 @@ export function performTurnInterruption(options: TurnControlOptions, progress: {
       codexQuestionTurns.abandonWaiters(question);
       await bounded(Promise.all(captured.map(turn => turn.finished)), 'host retirement', options.timeouts?.stageMs ?? 10_000);
       if (!options.isCurrentProvider()) throw new Error('The session provider was replaced during cancellation.');
+      turnStopped = true;
       if (!progress.retired) {
         const retired = await step('inbox and question retirement', async () => {
           const results = await Promise.allSettled([codexQuestionTurns.end(question), options.retireInbox()]);
@@ -311,8 +321,14 @@ export function performTurnInterruption(options: TurnControlOptions, progress: {
       let driven: DriveOutcome | void;
       try { driven = await step('queue drive', driveReserved); }
       catch (error) { timedOutDuringDrive = true; throw error; }
-      if (driven?.kind === 'failed') return { success: false, error: 'The turn stopped, but the queued message could not start because the project is unavailable.' };
-      if (driven?.kind === 'deferred') return { success: false, error: 'The turn stopped. Your message is still queued and will start when the session is ready.' };
+      if (driven?.kind === 'failed' || driven?.kind === 'deferred') {
+        const message = driven.kind === 'failed'
+          ? 'The turn stopped, but the queued message could not start because the project is unavailable.'
+          : 'The turn stopped. Your message is still queued and will start when the session is ready.';
+        return stopRequested
+          ? { success: true, method: 'abort', warning: message }
+          : { success: false, error: message };
+      }
       return { success: true, method: hard ? 'abort' : result.method };
     } catch (error) {
       if (error instanceof TurnControlTimeoutError) {
@@ -349,7 +365,10 @@ export function performTurnInterruption(options: TurnControlOptions, progress: {
         }, options.logError);
       }
       options.logError(error);
-      return { success: false, error: error instanceof Error ? error.message : 'Unable to interrupt the current turn.' };
+      const message = error instanceof Error ? error.message : 'Unable to interrupt the current turn.';
+      return stopRequested && turnStopped
+        ? { success: true, method: 'abort', warning: `The turn stopped, but cleanup is incomplete: ${message}` }
+        : { success: false, error: message };
     } finally {
       resolveDecision(false);
       if (controls.get(sessionId) === operation) controls.delete(sessionId);

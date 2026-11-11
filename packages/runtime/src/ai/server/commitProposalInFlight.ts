@@ -11,28 +11,46 @@
  * proposal still waiting on them (`closeWaitingCommitProposals`), so it waits
  * only for a commit the user already confirmed, not for the user.
  */
-const inFlight = new Map<string, number>();
+type InFlightCalls = { count: number };
+const inFlight = new Map<string, InFlightCalls>();
 const waiters = new Map<string, Array<() => void>>();
 const settledListeners = new Map<string, Set<() => void>>();
 
 /** Marks a commit call in flight; the returned function ends it (idempotent). */
 export function beginCommitProposalCall(sessionId: string): () => void {
-  inFlight.set(sessionId, (inFlight.get(sessionId) ?? 0) + 1);
+  const calls = inFlight.get(sessionId) ?? { count: 0 };
+  calls.count += 1;
+  inFlight.set(sessionId, calls);
   let ended = false;
   return () => {
     if (ended) return;
     ended = true;
-    const remaining = (inFlight.get(sessionId) ?? 1) - 1;
-    if (remaining > 0) {
-      inFlight.set(sessionId, remaining);
-      return;
-    }
+    // An orphan reaper may have retired this generation while a later call
+    // started. Its late cleanup must never erase the later call's marker.
+    if (inFlight.get(sessionId) !== calls) return;
+    calls.count -= 1;
+    if (calls.count > 0) return;
     inFlight.delete(sessionId);
-    const pending = waiters.get(sessionId) ?? [];
-    waiters.delete(sessionId);
-    for (const wake of pending) wake();
-    for (const listener of [...(settledListeners.get(sessionId) ?? [])]) listener();
+    wakeCommitProposalWaiters(sessionId);
   };
+}
+
+function wakeCommitProposalWaiters(sessionId: string): void {
+  const pending = waiters.get(sessionId) ?? [];
+  waiters.delete(sessionId);
+  for (const wake of pending) wake();
+  for (const listener of [...(settledListeners.get(sessionId) ?? [])]) listener();
+}
+
+/**
+ * Retire a marker whose owner turn is already gone. Callers must establish
+ * that the session has no live host turn or running provider before invoking
+ * this: a confirmed commit is not safe to interrupt merely because it is slow.
+ */
+export function reapOrphanedCommitProposalCalls(sessionId: string): boolean {
+  if (!inFlight.delete(sessionId)) return false;
+  wakeCommitProposalWaiters(sessionId);
+  return true;
 }
 
 /** Wake a deferred queue drive when the last commit call actually settles. */

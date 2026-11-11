@@ -9,6 +9,7 @@ import { beginTurnSetup, TurnSetupCancelledError } from './turnSetupStages';
 import { CodexPreparationCancelledError } from '@nimbalyst/runtime/ai/server/protocols/codexAppServer/setupStage';
 import { captureQueueAuthorization, isQueueStopped } from './stoppedQueueHold';
 import { isCommitProposalInFlight } from '@nimbalyst/runtime/ai/server/commitProposalInFlight';
+import { closeProposalForHumanSend } from './orphanedCommitProposalRecovery';
 import { canDispatchIntoDrain } from './drainFollowUp';
 import { publishTurnNotExecuting } from './turnExecutingSync';
 import { cancelUsageLimitResume, maybeScheduleUsageLimitResume } from './usageLimitAutoResume';
@@ -387,10 +388,10 @@ export class MessageStreamingHandler {
     sessionId?: string,
     workspacePath?: string,
   ) => {
-    if (!queued && sessionId && (isQueueStopped(sessionId)
-      || isCommitProposalInFlight(sessionId)
-      || await this.svc.hasPendingQueuedPrompts(sessionId)
-      || isQueueStopped(sessionId))) {
+    const hasPending = !queued && sessionId ? await this.svc.hasPendingQueuedPrompts(sessionId) : false;
+    if (!queued && sessionId && (hasPending
+      || isQueueStopped(sessionId)
+      || isCommitProposalInFlight(sessionId))) {
       // A fresh Send joins the durable FIFO whenever older rows exist, including
       // when a commit or question holds the queue after Stop was released.
       const authorize = captureQueueAuthorization(sessionId);
@@ -403,7 +404,8 @@ export class MessageStreamingHandler {
           : { actor: 'system', origin: 'automation' }),
       });
       if (humanSend) authorize();
-      if (humanSend) await this.svc.closeWaitingCommitProposals(sessionId);
+      if (humanSend) await closeProposalForHumanSend(sessionId,
+        () => this.svc.closeWaitingCommitProposals(sessionId), message => logger.main.warn(message));
       await this.svc.publishQueueStateToSync(sessionId);
       safeSend(event, 'ai:queuedPromptsReceived', { sessionId });
       let drivePath = workspacePath;

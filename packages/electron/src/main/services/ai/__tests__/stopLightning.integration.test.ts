@@ -4,10 +4,11 @@ import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
-const { handlers, getProvider, stateManager, storage } = vi.hoisted(() => ({
+const { handlers, getProvider, stateManager, storage, terminal } = vi.hoisted(() => ({
   handlers: new Map<string, (...args: any[]) => any>(),
   getProvider: vi.fn(),
   storage: { queue: undefined as any },
+  terminal: { isTerminalActive: vi.fn(() => false), writeToTerminal: vi.fn() },
   stateManager: {
     state: { status: 'running', isStreaming: true },
     getSessionState() { return this.state; },
@@ -34,7 +35,7 @@ vi.mock('../../../utils/privateSettingsStore', () => ({ default: class {
   set() {} onDidChange() { return () => {}; } onDidAnyChange() { return () => {}; }
 } }));
 vi.mock('../../../window/WindowManager', () => ({ getWindowId: () => undefined }));
-vi.mock('../../TerminalSessionManager', () => ({ getTerminalSessionManager: () => undefined }));
+vi.mock('../../TerminalSessionManager', () => ({ getTerminalSessionManager: () => terminal }));
 vi.mock('../../../mcp/tools/backendToolHandler', () => ({ handleBackendTool: () => undefined }));
 vi.mock('../../SyncManager', () => ({ getSyncProvider: () => null }));
 vi.mock('../../RepositoryManager', () => ({ getQueuedPromptsStore: () => storage.queue }));
@@ -53,12 +54,18 @@ import { captureQueueAuthorization, isQueueStopped } from '../stoppedQueueHold';
 import { createPGLiteQueuedPromptsStore } from '../../PGLiteQueuedPromptsStore';
 import { SQLiteDatabase } from '../../../database/sqlite/SQLiteDatabase';
 import { beginCommitProposalCall, isCommitProposalInFlight, registerWaitingCommitProposal } from '@nimbalyst/runtime/ai/server/commitProposalInFlight';
+import { AISessionsRepository } from '@nimbalyst/runtime/storage/repositories/AISessionsRepository';
+import { closeProposalForHumanSend } from '../orphanedCommitProposalRecovery';
+import { QueueDriveService } from '../QueueDriveService';
+import { runQueueDriveAttempt } from '../queueDriveAttempt';
 
 describe('desktop Stop / lightning with durable queue and question ownership', () => {
   let database: SQLiteDatabase;
   let temporary: string;
   beforeEach(async () => {
     vi.clearAllMocks();
+    terminal.isTerminalActive.mockReturnValue(false);
+    vi.mocked(AISessionsRepository.get).mockResolvedValue({ provider: 'openai-codex', workspacePath: '/workspace' } as any);
     stateManager.state = { status: 'running', isStreaming: true };
     temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'nim-stop-lightning-'));
     database = new SQLiteDatabase({ dbDir: temporary, schemaDir: path.resolve(__dirname, '../../../database/sqlite/schemas') });
@@ -139,7 +146,7 @@ describe('desktop Stop / lightning with durable queue and question ownership', (
     } finally { unregister(); endCommit(); }
   });
 
-  it('does not report Stop complete while a slow proposal close is still pending', async () => {
+  it('settles Stop and sweeps its queue while a proposal close is still pending', async () => {
     getProvider.mockReturnValue({ abort: vi.fn() });
     const endCommit = beginCommitProposalCall('s1');
     let releaseClose!: () => void;
@@ -152,19 +159,16 @@ describe('desktop Stop / lightning with durable queue and question ownership', (
       driveQueuedPrompts: vi.fn(async () => ({ kind: 'nothing-pending' })), invalidateQueueDrive: vi.fn(),
     };
     const response = cancelSessionTurn(ctx as never, 's1');
-    let responded = false;
-    void response.then(() => { responded = true; });
     try {
       await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());
-      await new Promise<void>(resolve => setImmediate(resolve));
-      expect(responded).toBe(false);
+      await vi.waitFor(() => expect(ctx.forceSessionIdleOnCancel).toHaveBeenCalledOnce());
+      expect(await response).toMatchObject({ success: true, warning: expect.stringMatching(/commit proposal/i) });
       releaseClose();
-      await response;
-      expect(isCommitProposalInFlight('s1')).toBe(false);
+      await vi.waitFor(() => expect(isCommitProposalInFlight('s1')).toBe(false));
     } finally { releaseClose(); await response; unregister(); endCommit(); }
   });
 
-  it('reports a failed proposal close instead of claiming Stop fully completed', async () => {
+  it('reports a successful Stop with a warning when proposal close fails', async () => {
     getProvider.mockReturnValue({ abort: vi.fn() });
     const close = vi.fn(async () => { throw new Error('proposal storage unavailable'); });
     const unregister = registerWaitingCommitProposal('s1', close);
@@ -176,8 +180,90 @@ describe('desktop Stop / lightning with durable queue and question ownership', (
     try {
       const response = await cancelSessionTurn(ctx as never, 's1');
       expect(close).toHaveBeenCalledOnce();
-      expect(response).toMatchObject({ success: false, error: expect.stringMatching(/commit proposal/i) });
+      expect(response).toMatchObject({ success: true, warning: expect.stringMatching(/commit proposal/i) });
     } finally { unregister(); }
+  });
+
+  it('sweeps and publishes executing rows when proposal close never resolves', async () => {
+    await storage.queue.create({ id: 'executing-before-stop', sessionId: 's1', prompt: 'Keep this input' });
+    await storage.queue.claim('executing-before-stop');
+    getProvider.mockReturnValue({ abort: vi.fn() });
+    const unregister = registerWaitingCommitProposal('s1', () => new Promise<boolean>(() => {}));
+    const ctx = {
+      analytics: { sendEvent: vi.fn() }, sessionsProcessingQueue: new SessionProcessingGuard(),
+      publishQueueStateToSync: vi.fn(async () => {}), forceSessionIdleOnCancel: vi.fn(async () => {}),
+      driveQueuedPrompts: vi.fn(async () => ({ kind: 'nothing-pending' })), invalidateQueueDrive: vi.fn(),
+    };
+    try {
+      const response = cancelSessionTurn(ctx as never, 's1');
+      await vi.waitFor(async () => expect((await storage.queue.get('executing-before-stop'))?.status).toBe('pending'));
+      expect(ctx.publishQueueStateToSync).toHaveBeenCalledExactlyOnceWith('s1');
+      expect(await response).toMatchObject({ success: true });
+    } finally { unregister(); }
+  });
+
+  it('preserves a provider abort failure when proposal close also fails', async () => {
+    getProvider.mockReturnValue({ abort: vi.fn(() => { throw new Error('abort refused'); }) });
+    const unregister = registerWaitingCommitProposal('s1', async () => { throw new Error('close failed'); });
+    const ctx = {
+      analytics: { sendEvent: vi.fn() }, sessionsProcessingQueue: new SessionProcessingGuard(),
+      publishQueueStateToSync: vi.fn(async () => {}), forceSessionIdleOnCancel: vi.fn(async () => {}),
+      driveQueuedPrompts: vi.fn(async () => ({ kind: 'nothing-pending' })), invalidateQueueDrive: vi.fn(),
+    };
+    try {
+      expect(await cancelSessionTurn(ctx as never, 's1')).toMatchObject({ success: false, error: 'abort refused' });
+    } finally { unregister(); }
+  });
+
+  it('reports CLI Stop success promptly when proposal close never resolves', async () => {
+    vi.mocked(AISessionsRepository.get).mockResolvedValue({ provider: 'claude-code-cli', workspacePath: '/workspace' } as any);
+    terminal.isTerminalActive.mockReturnValue(true);
+    const unregister = registerWaitingCommitProposal('s1', () => new Promise<boolean>(() => {}));
+    const ctx = { analytics: { sendEvent: vi.fn() } };
+    try {
+      const result = cancelSessionTurn(ctx as never, 's1');
+      await vi.waitFor(() => expect(terminal.writeToTerminal).toHaveBeenCalledWith('s1', '\x03'));
+      await expect(result).resolves.toMatchObject({ success: true, warning: expect.stringMatching(/commit proposal/i) });
+    } finally { unregister(); }
+  });
+
+  it('delivers older and newer queued rows once and in order after an idle proposal marker is reaped', async () => {
+    stateManager.state = { status: 'idle', isStreaming: false };
+    await storage.queue.create({ id: 'a-older', sessionId: 's1', prompt: 'older input' });
+    await storage.queue.create({ id: 'z-newer', sessionId: 's1', prompt: 'newer input' });
+    const endCommit = beginCommitProposalCall('s1');
+    const delivered: string[] = [];
+    const targetWindow = { isDestroyed: () => false, webContents: { mainFrame: {} } } as any;
+    const guard = new SessionProcessingGuard();
+    const driver = new QueueDriveService({
+      attempt: ({ sessionId, workspacePath, reason, signal }) => runQueueDriveAttempt({
+        listPendingIds: async id => (await storage.queue.listPending(id)).map((row: any) => row.id),
+        isChainActive: () => false, isSessionBusy: () => false, isCommitProposalInFlight,
+        resolveWindow: async () => ({ kind: 'window', window: targetWindow, opened: false }),
+        failAllPending: async () => 0,
+        dispatch: async () => tryClaimAndDispatchNextQueuedPrompt({
+          queueStore: storage.queue, processingSet: guard,
+          sendMessageHandler: vi.fn(async (_event, prompt: string) => { delivered.push(prompt); return { content: 'ok' }; }),
+          continueQueuedPromptChain: vi.fn(async () => {}), logError: vi.fn(), logInfo: vi.fn(), onPromptClaimed: vi.fn(),
+          startSession: vi.fn(async () => {}), sessionId, workspacePath, source: reason, targetWindow,
+        }),
+        logWarn: vi.fn(),
+      }, { sessionId, workspacePath, reason, signal }),
+      onWindowAvailable: () => () => {}, onSessionIdle: () => () => {},
+      logInfo: vi.fn(), logWarn: vi.fn(), logError: vi.fn(),
+    });
+    try {
+      await closeProposalForHumanSend('s1', async () => 0, vi.fn());
+      expect(isCommitProposalInFlight('s1')).toBe(false);
+      await driver.drive('s1', '/workspace', 'send-now');
+      await vi.waitFor(async () => expect((await storage.queue.get('a-older'))?.status).toBe('completed'));
+      await driver.drive('s1', '/workspace', 'send-now');
+      await vi.waitFor(async () => expect((await storage.queue.get('z-newer'))?.status).toBe('completed'));
+      await driver.drive('s1', '/workspace', 'send-now');
+      expect(delivered).toEqual(['older input', 'newer input']);
+      expect((await storage.queue.get('a-older'))?.status).toBe('completed');
+      expect((await storage.queue.get('z-newer'))?.status).toBe('completed');
+    } finally { driver.dispose(); endCommit(); }
   });
 
   it.each([

@@ -1,6 +1,6 @@
 import { beforeEach, expect, it, vi } from 'vitest';
-const { showError } = vi.hoisted(() => ({ showError: vi.fn() }));
-vi.mock('../../../services/ErrorNotificationService', () => ({ errorNotificationService: { showError } }));
+const { showError, showWarning } = vi.hoisted(() => ({ showError: vi.fn(), showWarning: vi.fn() }));
+vi.mock('../../../services/ErrorNotificationService', () => ({ errorNotificationService: { showError, showWarning } }));
 import { requestTurnControl } from '../requestTurnControl';
 
 beforeEach(() => { vi.clearAllMocks(); window.electronAPI = { invoke: vi.fn() } as any; });
@@ -20,4 +20,11 @@ it('retains the queued message when a commit defers send-now or IPC fails', asyn
   vi.mocked(window.electronAPI.invoke).mockRejectedValueOnce(new Error('IPC disconnected'));
   expect(await requestTurnControl('session', 'stop')).toBe(false);
   expect(showError).toHaveBeenLastCalledWith(expect.any(String), 'IPC disconnected');
+});
+
+it('shows a Stop warning while preserving its successful result', async () => {
+  vi.mocked(window.electronAPI.invoke).mockResolvedValueOnce({ success: true, warning: 'A commit proposal may still be closing.' });
+  expect(await requestTurnControl('session', 'stop')).toBe(true);
+  expect(showWarning).toHaveBeenCalledWith('Turn stopped with a warning', 'A commit proposal may still be closing.');
+  expect(showError).not.toHaveBeenCalled();
 });

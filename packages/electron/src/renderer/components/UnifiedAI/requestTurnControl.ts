@@ -4,7 +4,11 @@ import { errorNotificationService } from '../../services/ErrorNotificationServic
 export async function requestTurnControl(sessionId: string, action: 'stop' | 'send-now'): Promise<boolean> {
   try {
     const result = await window.electronAPI.invoke(action === 'stop' ? 'ai:cancelRequest' : 'ai:interruptCurrentTurn', sessionId);
-    if (result?.success === true) return true;
+    if (result?.success === true) {
+      if (result.warning) errorNotificationService.showWarning(
+        action === 'stop' ? 'Turn stopped with a warning' : 'Send Now needs attention', result.warning);
+      return true;
+    }
     errorNotificationService.showError(
       action === 'stop' ? 'Unable to stop this turn' : 'Unable to send now',
       result?.error || 'Cancellation was not confirmed. Your queued message is retained.',

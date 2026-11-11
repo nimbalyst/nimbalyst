@@ -236,7 +236,8 @@ import { MessageStreamingHandler } from "../MessageStreamingHandler";
 import { logger } from "../../../utils/logger";
 import { resolveClaudeCodeParentContextWindow } from "@nimbalyst/runtime/ai/modelConstants";
 import { resetPushOutcomeWarnings } from "@nimbalyst/runtime/sync/pushOutcome";
-import { isTurnControlPending, isTurnAdmissionBlocked, performTurnInterruption } from '../sessionTurnControl';
+import { beginSessionTurn, isTurnControlPending, isTurnAdmissionBlocked, performTurnInterruption } from '../sessionTurnControl';
+import { reapIdleCommitProposalMarker } from '../orphanedCommitProposalRecovery';
 import { codexQuestionTurns } from '../codexQuestionTurns';
 import { TurnSetupCancelledError } from '../turnSetupStages';
 import { SessionProcessingGuard, tryClaimAndDispatchNextQueuedPrompt } from '../queuedPromptDispatcher';
@@ -249,7 +250,7 @@ import { registerQueuedPromptHandlers } from '../ipc/registerQueuedPromptHandler
 import { remoteSessions } from '../remoteSessions';
 import { AISessionsRepository } from '@nimbalyst/runtime/storage/repositories/AISessionsRepository';
 import { captureQueueAuthorization, holdQueueAfterStop, isQueueStopped } from '../stoppedQueueHold';
-import { beginCommitProposalCall, registerWaitingCommitProposal } from '@nimbalyst/runtime/ai/server/commitProposalInFlight';
+import { beginCommitProposalCall, isCommitProposalInFlight, registerWaitingCommitProposal } from '@nimbalyst/runtime/ai/server/commitProposalInFlight';
 
 /**
  * OpenCode replaces its whole config on every `initialize`, which is how the
@@ -514,6 +515,68 @@ describe("MessageStreamingHandler external ownership", () => {
       expect(service.requestQueueDrive).toHaveBeenCalledExactlyOnceWith(sessionId, '/workspace', 'send-now');
       expect(directTurn).not.toHaveBeenCalled();
     } finally { endCommit(); }
+  });
+  it('queues a Send when a commit begins during the pending-row read', async () => {
+    const sessionId = 'proposal-starts-during-read';
+    let endCommit = () => {};
+    const service = {
+      hasPendingQueuedPrompts: vi.fn(async () => { endCommit = beginCommitProposalCall(sessionId); return false; }),
+      queuePromptForSession: vi.fn(async () => ({})),
+      closeWaitingCommitProposals: vi.fn(async () => { endCommit(); return 1; }),
+      requestQueueDrive: vi.fn(), publishQueueStateToSync: vi.fn(async () => {}),
+    };
+    const handler = new MessageStreamingHandler(service as never);
+    const directTurn = vi.fn(async () => ({ content: 'direct' }));
+    (handler as any).handleTurn = directTurn;
+    try {
+      await handler.handle({ sender: { isDestroyed: () => false, send: vi.fn() } } as never,
+        'new input', { inputType: 'user' } as any, sessionId, '/workspace');
+      expect(service.queuePromptForSession).toHaveBeenCalledOnce();
+      expect(directTurn).not.toHaveBeenCalled();
+    } finally { endCommit(); }
+  });
+  it.each(['returns zero', 'throws', 'never resolves'] as const)(
+    'reaps an orphaned proposal marker and drives a human Send when close %s', async outcome => {
+      const sessionId = `orphaned-proposal-${outcome}`;
+      const endCommit = beginCommitProposalCall(sessionId);
+      const closeWaitingCommitProposals = vi.fn(async () => {
+        if (outcome === 'throws') throw new Error('proposal close failed');
+        if (outcome === 'never resolves') return new Promise<number>(() => {});
+        return 0;
+      });
+      const service = {
+        hasPendingQueuedPrompts: vi.fn(async () => false), queuePromptForSession: vi.fn(async () => ({})),
+        closeWaitingCommitProposals, requestQueueDrive: vi.fn(), publishQueueStateToSync: vi.fn(async () => {}),
+      };
+      const handler = new MessageStreamingHandler(service as never);
+      try {
+        await expect(handler.handle({ sender: { isDestroyed: () => false, send: vi.fn() } } as never,
+          'deliver me', { inputType: 'user' } as any, sessionId, '/workspace')).resolves.toEqual({ content: '' });
+        expect(service.queuePromptForSession).toHaveBeenCalledOnce();
+        expect(service.requestQueueDrive).toHaveBeenCalledExactlyOnceWith(sessionId, '/workspace', 'send-now');
+        expect(isCommitProposalInFlight(sessionId)).toBe(false);
+      } finally { endCommit(); }
+    },
+  );
+  it('keeps a real in-flight proposal guarded until its host turn retires', async () => {
+    const sessionId = 'live-proposal-send';
+    const host = beginSessionTurn(sessionId);
+    const endCommit = beginCommitProposalCall(sessionId);
+    const service = {
+      hasPendingQueuedPrompts: vi.fn(async () => false), queuePromptForSession: vi.fn(async () => ({})),
+      closeWaitingCommitProposals: vi.fn(async () => 0),
+      requestQueueDrive: vi.fn(), publishQueueStateToSync: vi.fn(async () => {}),
+    };
+    try {
+      await new MessageStreamingHandler(service as never).handle(
+        { sender: { isDestroyed: () => false, send: vi.fn() } } as never,
+        'queued behind a real commit', { inputType: 'user' } as any, sessionId, '/workspace');
+      expect(isCommitProposalInFlight(sessionId)).toBe(true);
+      expect(reapIdleCommitProposalMarker(sessionId, vi.fn())).toBe(false);
+      host.finish();
+      expect(reapIdleCommitProposalMarker(sessionId, vi.fn())).toBe(true);
+      expect(isCommitProposalInFlight(sessionId)).toBe(false);
+    } finally { host.finish(); endCommit(); }
   });
   it('withdraws only the orphaned commit proposal announced by Codex', async () => {
     const closeExact = vi.fn(async () => true);
@@ -1009,7 +1072,7 @@ describe("MessageStreamingHandler external ownership", () => {
         try {
           await vi.advanceTimersByTimeAsync(20);
           const stopped = await control;
-          expect(stopped.success).toBe(false);
+          expect(stopped).toMatchObject({ success: true, warning: expect.stringContaining('timed out') });
           expect(isTurnAdmissionBlocked('opencode-session')).toBe(true);
           const attachments = [{ id: 'attachment', name: 'keep.txt' }];
           const text = 'Fresh input\n  original spacing';
@@ -1231,7 +1294,7 @@ describe("MessageStreamingHandler external ownership", () => {
           await expect(handler.handle(event, 'Forged queued input', { inputType: 'user', queuedPromptId: 'edge-input' } as any, 'opencode-session', '/workspace')).rejects.toThrow('back in the composer');
         }
         await vi.advanceTimersByTimeAsync(20);
-        expect((await control).success).toBe(false);
+        expect(await control).toMatchObject({ success: true, warning: expect.stringContaining('timed out') });
         if (position === 'pre-claim') expect(await queue.get('edge-input')).toMatchObject({ status: 'pending', prompt: text });
         release();
         await vi.waitFor(async () => expect((await queue.get('edge-input'))?.status).toBe('completed'));

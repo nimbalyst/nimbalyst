@@ -108,7 +108,7 @@ export { resolveGitCommitWorkspacePath } from './MobileGitCommitResponse';
  */
 export interface MobileSessionControlCallbacks {
   /** Main-process turn retirement shared with desktop Stop. */
-  cancelSessionTurn(sessionId: string, request?: QueueStopRequest): Promise<{ success: boolean; error?: string }>;
+  cancelSessionTurn(sessionId: string, request?: QueueStopRequest): Promise<{ success: boolean; error?: string; warning?: string }>;
   /**
    * Trigger queue processing for a session. Used by `case 'prompt'` so when
    * iOS delivers a prompt while the desktop session is idle (or busy), the
@@ -449,7 +449,10 @@ async function handleCancel(
       await rollbackQueuedPrompts();
     }
     const result = await callbacks.cancelSessionTurn(sessionId, stopRequest);
-    if (result.success) notifyAllWindows('ai:sessionCancelled', { sessionId });
+    if (result.success) {
+      if (result.warning) log.warn('Mobile cancel: turn stopped with a warning:', sessionId, result.warning);
+      notifyAllWindows('ai:sessionCancelled', { sessionId });
+    }
     else log.warn('Mobile cancel: shared controller did not finish:', sessionId, result.error);
   } catch (error) {
     log.error('Mobile cancel: shared controller failed:', error);

@@ -137,7 +137,7 @@ it('a second stalled recovery drive still permits a later Stop to retry', async 
   try {
     const first = control();
     await vi.advanceTimersByTimeAsync(40);
-    expect((await first).success).toBe(false);
+    expect(await first).toMatchObject({ success: true, warning: expect.stringContaining('timed out') });
     expect(signals).toHaveLength(2);
     expect(signals.every(signal => signal.aborted)).toBe(true);
     expect(isTurnAdmissionBlocked(sessionId)).toBe(false);
@@ -176,7 +176,7 @@ it('Stop recovers its timed-out never-settling drive without waiting for the old
     const stopping = f.control();
     await f.entered;
     await vi.advanceTimersByTimeAsync(20);
-    expect((await stopping).success).toBe(false);
+    expect(await stopping).toMatchObject({ success: true, warning: expect.stringContaining('timed out') });
     await flush();
     expect(f.send).toHaveBeenCalledOnce();
     expect((await f.store.get('head'))?.status).toBe('completed');
@@ -207,7 +207,7 @@ it('a newer Stop owns an unknown write created by the old recovery retry', async
     await f.entered;
     const retryWrite = f.parkRetryWrite();
     await vi.advanceTimersByTimeAsync(20);
-    expect((await first).success).toBe(false);
+    expect(await first).toMatchObject({ success: true, warning: expect.stringContaining('timed out') });
     await retryWrite;
     const newer = f.control();
     await vi.advanceTimersByTimeAsync(20);
@@ -255,7 +255,7 @@ it.each(['claim-write', 'start-write'] as const)('a timed-out Stop waits for %s 
     const stopping = f.control();
     await f.entered;
     await vi.advanceTimersByTimeAsync(20);
-    expect((await stopping).success).toBe(false);
+    expect(await stopping).toMatchObject({ success: true, warning: expect.stringContaining('timed out') });
     expect(isTurnAdmissionBlocked(f.sessionId)).toBe(true);
     expect(f.send).not.toHaveBeenCalled();
     await f.drive();

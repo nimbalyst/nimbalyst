@@ -205,6 +205,30 @@ describe('QueueDriveService', () => {
     } finally { harness.service.dispose(); }
   });
 
+  it('dispatches one row once when the idle wake races the post-subscribe recheck', async () => {
+    let attempts = 0;
+    let dispatches = 0;
+    const harness = createHarness(async () => {
+      attempts += 1;
+      if (attempts === 1) return { kind: 'deferred', reason: 'session-busy' };
+      if (dispatches === 0) { dispatches += 1; return { kind: 'dispatched', promptId: 'queued' }; }
+      return { kind: 'nothing-pending' };
+    });
+    const subscribe = harness.deps.onSessionIdle;
+    harness.deps.onSessionIdle = (sessionId, listener) => {
+      const unsubscribe = subscribe(sessionId, listener);
+      queueMicrotask(listener);
+      return unsubscribe;
+    };
+    try {
+      harness.service.requestDrive('wake-recheck-race', '/ws', 'renderer-trigger');
+      await flush();
+      await flush();
+      expect(dispatches).toBe(1);
+      expect(attempts).toBeGreaterThanOrEqual(2);
+    } finally { harness.service.dispose(); }
+  });
+
   it('unsubscribes an idle wake that fires synchronously during registration', async () => {
     const reasons: string[] = [];
     const unsubscribe = vi.fn();

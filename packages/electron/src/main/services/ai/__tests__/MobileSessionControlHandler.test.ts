@@ -358,7 +358,7 @@ describe('phone Stop retirement', () => {
       await queue.create({ id: 'correction-two', sessionId, prompt: 'Second correction' });
       releaseHost();
       await old;
-      expect((await stop).error).toContain('still queued');
+      expect(await stop).toMatchObject({ success: true, warning: expect.stringContaining('still queued') });
       expect(status).toBe('idle');
       expect(guard.has(sessionId)).toBe(false);
       expect((await queue.get('original-native'))?.status).toBe('completed');
