@@ -162,6 +162,16 @@ function splitRelations(
   return { fields: plain, relations };
 }
 
+/** The only fields a team page outside a type stores; the server refuses a patch with any other key. */
+const TEAM_PAGE_FIELD_KEYS = new Set(['owner', 'status', 'summary', 'tags']);
+
+/**
+ * Largest editor page (drawing, canvas, mockup) a team room can hold. The room
+ * stores the content as one update and cannot compact a document past 1 MB, so
+ * a larger file is refused (SQLITE_TOOBIG) after the page row was created.
+ */
+export const MAX_TEAM_EDITOR_PAGE_BYTES = 1024 * 1024;
+
 export const MIGRATION_BANNER_PREFIX = 'This wiki moved to the team project:';
 
 export const migrationBanner = (link: string) => `${MIGRATION_BANNER_PREFIX} ${link}`;
@@ -224,6 +234,13 @@ export async function collectLocalWiki(wiki: LocalWiki, options: CollectOptions 
     }
     for (const table of snapshot.tables ?? []) if (table.malformed) malformedTables.add(table.typeId);
   }
+  for (const page of live) {
+    if (page.documentType === 'markdown' || skipReasons.get(page.id) !== null) continue;
+    const bytes = Buffer.byteLength((await wiki.readBody(page.id)).markdown);
+    if (bytes > MAX_TEAM_EDITOR_PAGE_BYTES) {
+      skipReasons.set(page.id, `${(bytes / (1024 * 1024)).toFixed(1)} MB, over the 1 MB a team page's content can hold; it stays local`);
+    }
+  }
   const included = (page: LocalPage) => skipReasons.get(page.id) === null;
   for (const page of live) {
     const reason = skipReasons.get(page.id);
@@ -251,6 +268,7 @@ export async function collectLocalWiki(wiki: LocalWiki, options: CollectOptions 
   const pagePaths = new Set(live.flatMap((page) => (page.path ? [page.path.toLowerCase()] : [])));
   const locations = new Map<string, PageLocation>();
   const usedTypes = new Set<string>();
+  const definedTypes = new Set(wiki.typeDefs().map((def) => def.typeId));
   const relationFieldsByType = new Map(
     wiki.typeDefs().map((def) => [def.typeId, new Set(def.fields.filter((f) => f.type === 'relationship').map((f) => f.name))]),
   );
@@ -268,6 +286,10 @@ export async function collectLocalWiki(wiki: LocalWiki, options: CollectOptions 
       const stripped = stripIdentity(rest, (typeId ? userFieldsByType.get(typeId) : undefined) ?? new Set());
       strippedFields += stripped.removed;
       fields = stripped.fields;
+    }
+    if (!typeId) {
+      // `paths` and any other local-only frontmatter would make the server refuse the whole field set.
+      fields = Object.fromEntries(Object.entries(fields).filter(([key]) => TEAM_PAGE_FIELD_KEYS.has(key)));
     }
     const split = splitRelations(fields, typeId ? relationFieldsByType.get(typeId) : undefined);
     // A relation to a page the publish leaves out is dropped, not reported as a target that failed.
@@ -331,15 +353,17 @@ export async function collectLocalWiki(wiki: LocalWiki, options: CollectOptions 
     }
     const files = await linkedFilesOf(wiki, page.id, markdown, { path: page.path, dir: page.dir }, pagePaths);
     if (files.length) linkedFiles.set(page.id, files);
-    if (page.type) usedTypes.add(page.type);
+    // `type: page` names the plain page type (as static export reads it), not a tracker type.
+    const typeId = page.type && (page.type !== 'page' || definedTypes.has('page')) ? page.type : null;
+    if (typeId) usedTypes.add(typeId);
     pages.push({
       localId: page.id,
       parentLocalId: importedParent(page.parentId),
       title: page.title,
       ...(page.order !== null ? { order: page.order } : {}),
-      kind: page.type ? 'typedPage' : 'page',
-      ...(page.type ? { typeId: page.type } : {}),
-      ...withFields(page.id, page.type, page.fields),
+      kind: typeId ? 'typedPage' : 'page',
+      ...(typeId ? { typeId } : {}),
+      ...withFields(page.id, typeId, page.fields),
       body: stripMigrationBanner(markdown),
     });
   }

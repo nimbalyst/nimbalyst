@@ -227,6 +227,41 @@ describe('publishLocalWikiToTeam', () => {
     expect(next.removals).toEqual([expect.objectContaining({ localId: spec, action: 'trashed' })]);
   });
 
+  it('sends only the page fields the team stores, publishes type: page as a plain page, and leaves out an editor page too large for a team room', async () => {
+    const opened = await makeWiki();
+    const { wiki } = opened;
+    writePublishTarget(opened.projectRoot, PROJECT);
+    const covered = (await wiki.command({ type: 'register-document', title: 'Covered', parentFolderId: null, body: 'Code map.\n' })).id!;
+    await wiki.command({ type: 'set-document-fields', documentId: covered, fields: { status: 'current', summary: 'Where the code lives', paths: ['src/**'] } });
+    const plain = (await wiki.command({ type: 'register-document', title: 'Plain', parentFolderId: null, body: '---\ntype: page\n---\nPlain text.\n' })).id!;
+    const huge = (await wiki.command({
+      type: 'register-document', title: 'Huge map', parentFolderId: null, documentType: 'excalidraw',
+      body: JSON.stringify({ elements: [{ id: 'x', text: 'y'.repeat(1_100_000) }] }),
+    })).id!;
+    const server = fakeServer();
+    const written: string[] = [];
+    const content = {
+      writeEditorPage: async (page: { documentId: string }) => {
+        written.push(page.documentId);
+        return { ok: true as const, outcome: 'seeded' as const };
+      },
+      uploadFile: async () => ({ ok: true as const, uri: 'unused' }),
+    };
+
+    const report = await publishLocalWikiToTeam(opened, {}, {
+      call: server.call, ...noWait, content, loadEditorModels: async () => ({ editorCodecs: { documentTypes: ['excalidraw'] } }) as any,
+    });
+
+    const sent = server.calls.filter((c) => c.name === 'pages_import').flatMap((c) => c.args.pages);
+    expect(sent.find((page: any) => page.localId === covered)!.fields).toEqual({ status: 'current', summary: 'Where the code lives' });
+    expect(sent.find((page: any) => page.localId === plain)).toMatchObject({ kind: 'page' });
+    expect(sent.find((page: any) => page.localId === plain).typeId).toBeUndefined();
+    expect(sent.some((page: any) => page.localId === huge)).toBe(false);
+    expect(written).toEqual([]);
+    expect(report.skipped).toEqual([expect.objectContaining({ title: 'Huge map', reason: expect.stringContaining('MB') })]);
+    expect(report.verified).toBe(true);
+  });
+
   it('reports a page edited in the team without failing, and removes nothing after an unverified publish', async () => {
     const opened = await makeWiki();
     const { wiki } = opened;
