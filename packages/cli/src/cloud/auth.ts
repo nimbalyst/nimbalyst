@@ -85,21 +85,58 @@ interface DeviceFlow {
   scope?: string;
 }
 
+/**
+ * A device code that was shown to the user and is still being approved. It is
+ * enough to resume polling from another process: a host that restarts the MCP
+ * server between tool calls must finish the code the user approved, not mint a
+ * new one.
+ */
+export interface PendingDeviceLogin {
+  deviceCode: string;
+  userCode: string;
+  verificationUri: string;
+  verificationUriComplete?: string;
+  intervalMs: number;
+  /** Epoch ms after which the code is expired. */
+  deadline: number;
+}
+
+export interface DeviceLoginOptions {
+  /** Poll this code instead of requesting a new one. The prompt is repeated with its code. */
+  resume?: PendingDeviceLogin;
+  /** Called once a new code exists, before polling, so a caller can keep it. */
+  onStarted?: (pending: PendingDeviceLogin) => void;
+}
+
 /** RFC 8628: request a code, show it, poll until approved. Returns the token response. */
 async function runDeviceFlow(
   flow: DeviceFlow,
   onPrompt: (userCode: string, verificationUri: string, verificationUriComplete?: string) => void,
+  options: DeviceLoginOptions = {},
 ): Promise<TokenResponse> {
-  const start = await postJson(flow.codeUrl, { client_id: flow.clientId, ...(flow.scope ? { scope: flow.scope } : {}) }, true);
-  const { device_code, user_code, verification_uri, verification_uri_complete, expires_in } = start.json ?? {};
-  if (start.status !== 200 || !device_code) {
-    throw connectionError(`${flow.label} refused the device code request: ${start.json?.error_description ?? start.json?.error ?? start.status}`);
+  let pending = options.resume;
+  if (!pending) {
+    const start = await postJson(flow.codeUrl, { client_id: flow.clientId, ...(flow.scope ? { scope: flow.scope } : {}) }, true);
+    const { device_code, user_code, verification_uri, verification_uri_complete, expires_in } = start.json ?? {};
+    if (start.status !== 200 || !device_code) {
+      throw connectionError(`${flow.label} refused the device code request: ${start.json?.error_description ?? start.json?.error ?? start.status}`);
+    }
+    pending = {
+      deviceCode: String(device_code),
+      userCode: String(user_code),
+      verificationUri: String(verification_uri),
+      ...(typeof verification_uri_complete === 'string' ? { verificationUriComplete: verification_uri_complete } : {}),
+      intervalMs: boundedIntervalMs(start.json.interval, DEVICE_INTERVAL_DEFAULT_S),
+      deadline: Date.now() + boundedExpiresMs(expires_in),
+    };
+    options.onStarted?.(pending);
   }
-  onPrompt(user_code, verification_uri, typeof verification_uri_complete === 'string' ? verification_uri_complete : undefined);
+  onPrompt(pending.userCode, pending.verificationUri, pending.verificationUriComplete);
 
   const expired = () => new CliError(ExitCode.USAGE, `The ${flow.label} sign-in code expired before it was approved. Run nim login again.`);
-  let intervalMs = boundedIntervalMs(start.json.interval, DEVICE_INTERVAL_DEFAULT_S);
-  const deadline = Date.now() + boundedExpiresMs(expires_in);
+  const device_code = pending.deviceCode;
+  let intervalMs = Math.max(pending.intervalMs, pollFloorMs());
+  const deadline = pending.deadline;
   while (Date.now() < deadline) {
     await sleep(intervalMs);
     const poll = await postJson(flow.tokenUrl, { grant_type: DEVICE_GRANT, device_code, client_id: flow.clientId }, true);
@@ -128,10 +165,12 @@ async function runDeviceFlow(
 export async function nimbalystDeviceLogin(
   server: string,
   onPrompt: (userCode: string, verificationUri: string, verificationUriComplete?: string) => void,
+  options: DeviceLoginOptions = {},
 ): Promise<StoredCredentials> {
   const body = await runDeviceFlow(
     { label: 'Nimbalyst', codeUrl: `${server}/oauth/device/code`, tokenUrl: `${server}/oauth/token`, clientId: NIM_CLI_CLIENT_ID },
     onPrompt,
+    options,
   );
   const creds = toStored(body);
   await saveCredentials(server, creds);

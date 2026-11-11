@@ -21,6 +21,7 @@ import { CliError, usageError } from '../cli/exitCodes.js';
 import { fetchUserInfo, nimbalystDeviceLogin, type UserInfo } from '../cloud/auth.js';
 import { resolveServer } from '../cloud/config.js';
 import { loadCredentials } from '../cloud/credentials.js';
+import { clearPendingSignIn, loadPendingSignIn, savePendingSignIn } from '../cloud/pendingSignIn.js';
 import { NoLocalWikiError } from '../localWiki/open.js';
 import { moveLocalWikiToTeam, MoveRefusal, type MoveDeps } from '../localWiki/moveToTeam.js';
 import { initPublish, publishLocalWikiToTeam, PublishRefusal } from '../localWiki/publishToTeam.js';
@@ -99,19 +100,28 @@ function signInTool(options: TeamToolOptions): McpTool {
   const start = async (server: string) => {
     let resolvePrompt!: (prompt: SignInPrompt) => void;
     const prompted = new Promise<SignInPrompt>((resolve) => (resolvePrompt = resolve));
-    const login = deviceLogin(server, (userCode, uri, completeUri) => {
-      const verificationUrl = String(completeUri ?? uri);
-      resolvePrompt({ userCode: String(userCode), verificationUrl });
-      if (/^https:\/\//i.test(verificationUrl)) open(verificationUrl);
-    });
+    // A code an earlier process showed (and the user may already have
+    // approved) is finished here, not replaced, and its page is not reopened.
+    const resume = loadPendingSignIn(server);
+    const login = deviceLogin(
+      server,
+      (userCode, uri, completeUri) => {
+        const verificationUrl = String(completeUri ?? uri);
+        resolvePrompt({ userCode: String(userCode), verificationUrl });
+        if (!resume && /^https:\/\//i.test(verificationUrl)) open(verificationUrl);
+      },
+      { resume, onStarted: (pending) => savePendingSignIn(server, pending) },
+    );
     const current = { server, prompt: { userCode: '', verificationUrl: '' }, finished: false } as NonNullable<typeof flow>;
     current.done = login.then(
       () => {
         current.finished = true;
+        clearPendingSignIn(server);
       },
       (err: Error) => {
         current.finished = true;
         current.error = err;
+        clearPendingSignIn(server);
       },
     );
     flow = current;
@@ -138,7 +148,10 @@ function signInTool(options: TeamToolOptions): McpTool {
     call: async (args) => {
       try {
         const server = resolveServer();
-        if (args.restart === true) flow = null;
+        if (args.restart === true) {
+          flow = null;
+          clearPendingSignIn(server);
+        }
         if (!flow && loadCredentials(server)) {
           // A stored session that still works needs no new approval.
           const info = await userInfo(server).catch((err) => (err instanceof CliError ? null : Promise.reject(err)));
@@ -158,7 +171,12 @@ function signInTool(options: TeamToolOptions): McpTool {
         }
         if (!current.finished) return pending(current.prompt);
         flow = null;
-        if (current.error) return textResult(`${SIGN_IN_TOOL_NAME}: ${current.error.message} Call teamSignIn again for a new code.`, true);
+        if (current.error) {
+          // Another process polling the same code may have taken the tokens,
+          // which spends it for this one.
+          if (loadCredentials(server) && (await userInfo(server).catch(() => null)) !== null) return signedIn(server);
+          return textResult(`${SIGN_IN_TOOL_NAME}: ${current.error.message} Call teamSignIn again for a new code.`, true);
+        }
         return signedIn(server);
       } catch (err) {
         return textResult(`${SIGN_IN_TOOL_NAME}: ${(err as Error).message}`, true);
