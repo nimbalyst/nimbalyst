@@ -285,8 +285,8 @@ export function performTurnInterruption(options: TurnControlOptions, progress: {
       // stream cleanup, rather than this call, owns host-turn retirement.
       codexQuestionTurns.abandonWaiters(question);
       await bounded(Promise.all(captured.map(turn => turn.finished)), 'host retirement', options.timeouts?.stageMs ?? 10_000);
-      if (!options.isCurrentProvider()) throw new Error('The session provider was replaced during cancellation.');
       turnStopped = true;
+      const providerReplaced = !options.isCurrentProvider();
       if (!progress.retired) {
         const retired = await step('inbox and question retirement', async () => {
           const results = await Promise.allSettled([codexQuestionTurns.end(question), options.retireInbox()]);
@@ -309,6 +309,10 @@ export function performTurnInterruption(options: TurnControlOptions, progress: {
       options.guard.delete(sessionId);
       if (!progress.settled) await step('session settlement', async () => { await options.settle(); progress.settled = true; });
       if (progress.failure) throw progress.failure;
+      if (providerReplaced) {
+        return { success: true, method: hard ? 'abort' : result.method,
+          warning: 'The turn stopped and its queue was settled, but queue drive was skipped because the session provider was replaced.' };
+      }
       // A superseded drive may time out while this control is cleaning up.
       // Keep our fence until that exact drive retires. Do not add this wait to
       // pendingSteps: a timeout joins that recovery, so doing so would self-wait.

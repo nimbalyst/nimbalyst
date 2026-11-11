@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { expect, it, vi } from 'vitest';
-import { afterCommitProposalSettles, beginCommitProposalCall, closeWaitingCommitProposals, isCommitProposalInFlight, onCommitProposalsSettled, reapOrphanedCommitProposalCalls, registerWaitingCommitProposal } from '../commitProposalInFlight';
+import { afterCommitProposalSettles, beginCommitProposalCall, closeWaitingCommitProposals, isCommitProposalInFlight, onCommitProposalsSettled, reapOrphanedCommitProposalCalls, registerWaitingCommitProposal, noteConfirmedCommitProposalExecution, CONFIRMED_COMMIT_QUEUE_CEILING_MS } from '../commitProposalInFlight';
 
 it('holds deferred work until every in-flight commit call for the session settles', async () => {
   const action = vi.fn(() => 'ran');
@@ -72,4 +72,49 @@ it('reaps an orphaned marker without letting its late cleanup erase a new call',
     endNew();
     expect(isCommitProposalInFlight('orphan')).toBe(false);
   } finally { endOld(); unsubscribe(); }
+});
+
+it('applies a Send close that arrived before this proposal registered its waiter', async () => {
+  const end = beginCommitProposalCall('late-waiter', 'proposal-1');
+  const wake = vi.fn();
+  const unsubscribe = onCommitProposalsSettled('late-waiter', wake);
+  const close = vi.fn(async () => { end(); return true; });
+  try {
+    expect(await closeWaitingCommitProposals('late-waiter')).toBe(0);
+    const unregister = registerWaitingCommitProposal('late-waiter', close, 'proposal-1');
+    try {
+      await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());
+      expect(isCommitProposalInFlight('late-waiter')).toBe(false);
+      expect(wake).toHaveBeenCalledOnce();
+    } finally { unregister(); }
+    const newEnd = beginCommitProposalCall('late-waiter', 'proposal-2');
+    const newClose = vi.fn(async () => true);
+    const unregisterNew = registerWaitingCommitProposal('late-waiter', newClose, 'proposal-2');
+    try { await Promise.resolve(); expect(newClose).not.toHaveBeenCalled(); }
+    finally { unregisterNew(); newEnd(); }
+  } finally { end(); unsubscribe(); }
+});
+
+it('releases only an aged confirmed generation while leaving its commit alive', async () => {
+  vi.useFakeTimers();
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  const end = beginCommitProposalCall('long-commit', 'confirmed');
+  const wake = vi.fn();
+  const unsubscribe = onCommitProposalsSettled('long-commit', wake);
+  const action = vi.fn(() => 'released');
+  try {
+    noteConfirmedCommitProposalExecution('long-commit', 'confirmed');
+    const deferred = afterCommitProposalSettles('long-commit', action);
+    await vi.advanceTimersByTimeAsync(CONFIRMED_COMMIT_QUEUE_CEILING_MS - 1);
+    expect(isCommitProposalInFlight('long-commit')).toBe(true);
+    expect(action).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(isCommitProposalInFlight('long-commit')).toBe(false);
+    await expect(deferred).resolves.toBe('released');
+    expect(wake).toHaveBeenCalledOnce();
+    expect(warn).toHaveBeenCalledOnce();
+    const endFresh = beginCommitProposalCall('long-commit', 'fresh');
+    try { expect(isCommitProposalInFlight('long-commit')).toBe(true); }
+    finally { endFresh(); }
+  } finally { end(); unsubscribe(); warn.mockRestore(); vi.useRealTimers(); }
 });

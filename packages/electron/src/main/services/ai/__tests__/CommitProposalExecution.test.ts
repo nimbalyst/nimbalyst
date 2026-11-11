@@ -22,12 +22,59 @@ import {
   resetCommitProposalExecutionMemoryForTests,
 } from "../CommitProposalExecution";
 import { reservePromptAnswer } from "../PromptAnswerReservation";
+import { beginCommitProposalCall, isCommitProposalInFlight, CONFIRMED_COMMIT_QUEUE_CEILING_MS } from '@nimbalyst/runtime/ai/server/commitProposalInFlight';
+import { reapIdleCommitProposalMarker } from '../orphanedCommitProposalRecovery';
 beforeEach(() => {
   records.clear();
   resetCommitProposalExecutionMemoryForTests();
   writes.failResults = false;
 });
 describe("shared card and voice answer boundary", () => {
+  it('reaps only a stale generation while a confirmed Git execution is still running', async () => {
+    const endStale = beginCommitProposalCall('reap-live-commit', 'stale');
+    const endLive = beginCommitProposalCall('reap-live-commit', 'live');
+    let finish!: () => void;
+    const execute = vi.fn(async () => {
+      await new Promise<void>(resolve => { finish = resolve; });
+      return { success: true, commitHash: 'live-hash' };
+    });
+    const committing = runCommitProposalOnce('reap-live-commit', 'live', 'selection', execute);
+    try {
+      expect(reapIdleCommitProposalMarker('reap-live-commit', vi.fn())).toBe(true);
+      expect(isCommitProposalInFlight('reap-live-commit')).toBe(true);
+      endStale();
+      expect(isCommitProposalInFlight('reap-live-commit')).toBe(true);
+    } finally {
+      finish();
+      await committing;
+      endLive();
+      endStale();
+    }
+  });
+  it('keeps a confirmed Git execution alive when its 10-minute queue guard expires', async () => {
+    vi.useFakeTimers();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const end = beginCommitProposalCall('ceiling-git', 'proposal');
+    let finish!: () => void;
+    const execute = vi.fn(async () => {
+      await new Promise<void>(resolve => { finish = resolve; });
+      return { success: true, commitHash: 'after-ceiling' };
+    });
+    const committing = runCommitProposalOnce('ceiling-git', 'proposal', 'selection', execute);
+    try {
+      await vi.advanceTimersByTimeAsync(CONFIRMED_COMMIT_QUEUE_CEILING_MS);
+      expect(isCommitProposalInFlight('ceiling-git')).toBe(false);
+      expect(reapIdleCommitProposalMarker('ceiling-git', vi.fn())).toBe(false);
+      expect(execute).toHaveBeenCalledOnce();
+      expect(warn).toHaveBeenCalledOnce();
+    } finally {
+      finish();
+      expect(await committing).toMatchObject({ success: true, commitHash: 'after-ceiling' });
+      end();
+      warn.mockRestore();
+      vi.useRealTimers();
+    }
+  });
   it("reserves a commit before awaiting Git, retains the real failure, and blocks cancellation/replay", async () => {
     let finish!: () => void;
     const execute = vi.fn(async () => {

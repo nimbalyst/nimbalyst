@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import Store from "../../utils/privateSettingsStore";
 import type { GitCommitExecutionResult } from "../GitCommitService";
+import { noteConfirmedCommitProposalExecution } from '@nimbalyst/runtime/ai/server/commitProposalInFlight';
 
 interface ProposalExecution {
   identity: string;
@@ -24,10 +25,20 @@ function proposalKey(sessionId: string, promptId: string): string {
 const executions = new Map<string, ProposalExecution>();
 /** Executions in progress in this process, so an outcome check can wait for one. */
 const running = new Map<string, Promise<GitCommitExecutionResult>>();
+const runningConfirmedBySession = new Map<string, Set<string>>();
+const runningSince = new Map<string, number>();
+
+/** True only for a confirmed Git execution, including one past the queue ceiling. */
+export function hasRunningCommitProposalExecution(sessionId: string, promptId?: string): boolean {
+  const keys = runningConfirmedBySession.get(sessionId);
+  return !!keys && (promptId === undefined ? keys.size > 0 : keys.has(proposalKey(sessionId, promptId)));
+}
 
 /** Tests only: forget this process's copies, as a restart would. */
 export function resetCommitProposalExecutionMemoryForTests(): void {
   executions.clear();
+  runningConfirmedBySession.clear();
+  runningSince.clear();
 }
 
 function lookupExecution(key: string): ProposalExecution | undefined {
@@ -83,6 +94,8 @@ export async function runCommitProposalOnce(
   const key = proposalKey(sessionId, promptId);
   const old = lookupExecution(key);
   if (old) {
+    const startedAt = runningSince.get(key);
+    if (startedAt !== undefined) noteConfirmedCommitProposalExecution(sessionId, promptId, startedAt);
     if (old.identity !== identity)
       return {
         success: false,
@@ -99,6 +112,14 @@ export async function runCommitProposalOnce(
   }
   storage().set(key, { identity });
   executions.set(key, { identity });
+  if (identity !== 'cancelled') {
+    const keys = runningConfirmedBySession.get(sessionId) ?? new Set<string>();
+    keys.add(key);
+    runningConfirmedBySession.set(sessionId, keys);
+    const startedAt = Date.now();
+    runningSince.set(key, startedAt);
+    noteConfirmedCommitProposalExecution(sessionId, promptId, startedAt);
+  }
   const run = (async (): Promise<GitCommitExecutionResult> => {
     let result: GitCommitExecutionResult;
     try {
@@ -127,6 +148,10 @@ export async function runCommitProposalOnce(
     return await run;
   } finally {
     running.delete(key);
+    runningSince.delete(key);
+    const keys = runningConfirmedBySession.get(sessionId);
+    keys?.delete(key);
+    if (keys?.size === 0) runningConfirmedBySession.delete(sessionId);
   }
 }
 

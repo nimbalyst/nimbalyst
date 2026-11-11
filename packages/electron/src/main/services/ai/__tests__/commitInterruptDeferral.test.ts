@@ -1,6 +1,6 @@
 // @vitest-environment node
 import { expect, it, vi } from 'vitest';
-import { beginCommitProposalCall, registerWaitingCommitProposal } from '@nimbalyst/runtime/ai/server/commitProposalInFlight';
+import { beginCommitProposalCall, registerWaitingCommitProposal, noteConfirmedCommitProposalExecution, CONFIRMED_COMMIT_QUEUE_CEILING_MS } from '@nimbalyst/runtime/ai/server/commitProposalInFlight';
 import { deferInterruptDuringCommit, deferUserSendNowDuringCommit } from '../commitInterruptDeferral';
 
 const flush = () => new Promise(resolve => setTimeout(resolve, 0));
@@ -75,6 +75,22 @@ it("keeps the user's send-now waiting while a commit they confirmed owns the pro
   proposal.end();
   await flush();
   expect(d.calls).toEqual(['interrupt', 'drive']);
+});
+
+it('replays a queued Send at the confirmed commit ceiling without ending that commit call', async () => {
+  vi.useFakeTimers();
+  const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+  const end = beginCommitProposalCall('ceiling-send', 'proposal');
+  const d = deps(true);
+  try {
+    noteConfirmedCommitProposalExecution('ceiling-send', 'proposal');
+    expect(deferInterruptDuringCommit('ceiling-send', d)).toBe(true);
+    await vi.advanceTimersByTimeAsync(CONFIRMED_COMMIT_QUEUE_CEILING_MS - 1);
+    expect(d.calls).toEqual([]);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(d.calls).toEqual(['interrupt', 'drive']);
+    expect(warn).toHaveBeenCalledOnce();
+  } finally { end(); warn.mockRestore(); vi.useRealTimers(); }
 });
 
 it('never closes a waiting proposal for a meta-agent or teammate interrupt', async () => {

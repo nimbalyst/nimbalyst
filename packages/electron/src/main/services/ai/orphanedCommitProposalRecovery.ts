@@ -1,9 +1,10 @@
 import { getSessionStateManager } from '@nimbalyst/runtime/ai/server/SessionStateManager';
 import {
-  isCommitProposalInFlight,
+  hasCommitProposalCall,
   reapOrphanedCommitProposalCalls,
 } from '@nimbalyst/runtime/ai/server/commitProposalInFlight';
 import { hasActiveSessionTurn, isTurnAdmissionBlocked } from './sessionTurnControl';
+import { hasRunningCommitProposalExecution } from './CommitProposalExecution';
 
 /** A short grace for the proposal's normal close/settle path before orphan recovery. */
 export const COMMIT_PROPOSAL_CLOSE_GRACE_MS = 1_000;
@@ -13,11 +14,12 @@ export const COMMIT_PROPOSAL_CLOSE_GRACE_MS = 1_000;
  * original tool call. Retire only that orphan; a live commit keeps its guard.
  */
 export function reapIdleCommitProposalMarker(sessionId: string, logWarn: (message: string) => void): boolean {
-  if (!isCommitProposalInFlight(sessionId) || hasActiveSessionTurn(sessionId) || isTurnAdmissionBlocked(sessionId)) return false;
+  if (!hasCommitProposalCall(sessionId) || hasActiveSessionTurn(sessionId) || isTurnAdmissionBlocked(sessionId)) return false;
   const state = getSessionStateManager().getSessionState(sessionId);
   if (state?.status === 'running' || state?.status === 'waiting_for_input' || state?.isStreaming) return false;
-  const reaped = reapOrphanedCommitProposalCalls(sessionId);
-  if (reaped) logWarn(`[AIService] Reaped orphaned commit proposal marker for idle session ${sessionId}`);
+  const reaped = reapOrphanedCommitProposalCalls(sessionId,
+    proposalId => hasRunningCommitProposalExecution(sessionId, proposalId));
+  if (reaped) logWarn(`[AIService] Reaped orphaned commit proposal call(s) for idle session ${sessionId}`);
   return reaped;
 }
 

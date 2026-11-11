@@ -587,7 +587,7 @@ async function runGitCommitProposal(
   // #1682: meta-agent and teammate interrupts wait while this is set. The
   // user's own send-now first closes the proposal if it is still waiting on
   // them (NIM-7642, below), so it waits only for a commit they confirmed.
-  cleanups.push(beginCommitProposalCall(targetSessionId));
+  cleanups.push(beginCommitProposalCall(targetSessionId, proposalId));
 
   // Decide before publishing: voice must never request approval for an automatic commit.
   let isAutoCommit = false;

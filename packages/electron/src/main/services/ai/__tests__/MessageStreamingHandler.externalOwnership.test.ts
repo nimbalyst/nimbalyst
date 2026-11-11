@@ -250,7 +250,7 @@ import { registerQueuedPromptHandlers } from '../ipc/registerQueuedPromptHandler
 import { remoteSessions } from '../remoteSessions';
 import { AISessionsRepository } from '@nimbalyst/runtime/storage/repositories/AISessionsRepository';
 import { captureQueueAuthorization, holdQueueAfterStop, isQueueStopped } from '../stoppedQueueHold';
-import { beginCommitProposalCall, isCommitProposalInFlight, registerWaitingCommitProposal } from '@nimbalyst/runtime/ai/server/commitProposalInFlight';
+import { beginCommitProposalCall, closeWaitingCommitProposals, isCommitProposalInFlight, onCommitProposalsSettled, registerWaitingCommitProposal } from '@nimbalyst/runtime/ai/server/commitProposalInFlight';
 
 /**
  * OpenCode replaces its whole config on every `initialize`, which is how the
@@ -577,6 +577,36 @@ describe("MessageStreamingHandler external ownership", () => {
       expect(reapIdleCommitProposalMarker(sessionId, vi.fn())).toBe(true);
       expect(isCommitProposalInFlight(sessionId)).toBe(false);
     } finally { host.finish(); endCommit(); }
+  });
+  it('delivers a human Send once when its close request preceded proposal registration', async () => {
+    const sessionId = 'proposal-registration-race';
+    const host = beginSessionTurn(sessionId);
+    const endCommit = beginCommitProposalCall(sessionId, 'proposal-race');
+    const delivered = vi.fn();
+    const requestQueueDrive = vi.fn((_sessionId: string, _workspacePath: string, _reason: string) => {
+      if (!isCommitProposalInFlight(sessionId)) delivered();
+    });
+    const unsubscribe = onCommitProposalsSettled(sessionId,
+      () => requestQueueDrive(sessionId, '/workspace', 'send-now'));
+    let unregister = () => {};
+    const service = {
+      hasPendingQueuedPrompts: vi.fn(async () => false),
+      queuePromptForSession: vi.fn(async () => ({})),
+      closeWaitingCommitProposals,
+      requestQueueDrive,
+      publishQueueStateToSync: vi.fn(async () => {}),
+    };
+    try {
+      await new MessageStreamingHandler(service as never).handle(
+        { sender: { isDestroyed: () => false, send: vi.fn() } } as never,
+        'deliver me', { inputType: 'user' } as any, sessionId, '/workspace');
+      expect(service.queuePromptForSession).toHaveBeenCalledOnce();
+      expect(delivered).not.toHaveBeenCalled();
+      const close = vi.fn(async () => { endCommit(); return true; });
+      unregister = registerWaitingCommitProposal(sessionId, close, 'proposal-race');
+      await vi.waitFor(() => expect(delivered).toHaveBeenCalledOnce());
+      expect(close).toHaveBeenCalledOnce();
+    } finally { unregister(); unsubscribe(); host.finish(); endCommit(); }
   });
   it('withdraws only the orphaned commit proposal announced by Codex', async () => {
     const closeExact = vi.fn(async () => true);

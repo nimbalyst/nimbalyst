@@ -119,16 +119,17 @@ describe('captured desktop turn interruption', () => {
     expect(options.provider.interruptCurrentTurn).not.toHaveBeenCalled();
   });
 
-  it('does not sweep or idle a replacement after the old host finishes', async () => {
+  it('settles Stop after host retirement even when its provider was replaced', async () => {
     const options = fixture();
     const host = beginSessionTurn(options.sessionId);
-    const control = performTurnInterruption(options);
+    const control = performTurnInterruption({ ...options, mode: 'stop' });
     await Promise.resolve();
     options.isCurrentProvider.mockReturnValue(false);
     host.finish();
-    expect((await control).success).toBe(false);
-    expect(options.sweep).not.toHaveBeenCalled();
-    expect(options.settle).not.toHaveBeenCalled();
+    expect(await control).toMatchObject({ success: true, warning: expect.stringContaining('provider was replaced') });
+    expect(options.sweep).toHaveBeenCalledOnce();
+    expect(options.settle).toHaveBeenCalledOnce();
+    expect(options.drive).not.toHaveBeenCalled();
   });
 
   it('cancels setup before a parked preparation can reach the provider', async () => {

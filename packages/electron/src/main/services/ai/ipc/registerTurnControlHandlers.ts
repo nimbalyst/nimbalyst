@@ -14,7 +14,7 @@ import {
 import { agentCapabilitiesForProviderType } from '@nimbalyst/runtime/ai/server/agentCapabilities';
 import { safeSend } from '../aiServiceUtils';
 import { performTurnInterruption } from '../sessionTurnControl';
-import { closeWaitingCommitProposals, isCommitProposalInFlight } from '@nimbalyst/runtime/ai/server/commitProposalInFlight';
+import { closeWaitingCommitProposals, hasCommitProposalCall } from '@nimbalyst/runtime/ai/server/commitProposalInFlight';
 import { beginQueueStopRequest, captureQueueAuthorization, type QueueStopRequest } from '../stoppedQueueHold';
 import { cancelTurnSetup } from '../turnSetupStages';
 import type { AIServiceContext } from './AIServiceContext';
@@ -43,8 +43,8 @@ export async function cancelSessionTurn(ctx: AIServiceContext, sessionId: string
   });
   const proposalWarning = () => proposalCloseFailed
     ? 'The turn stopped, but a waiting commit proposal could not be closed.'
-    : !proposalCloseSettled || isCommitProposalInFlight(sessionId)
-      ? 'The turn stopped; a commit proposal may still be closing.'
+    : !proposalCloseSettled || hasCommitProposalCall(sessionId)
+      ? 'The turn stopped; a commit proposal may still be closing or executing.'
       : undefined;
   try {
     // console.log(`[AIService] ai:cancelRequest received for sessionId: ${sessionId}`);
