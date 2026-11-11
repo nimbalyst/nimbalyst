@@ -78,7 +78,7 @@ export function getCardType(meta: SessionMeta | undefined): KanbanCardType {
  * Returns the "most active" child phase (implementing > validating > planning > backlog > complete).
  * Returns undefined if no children have a phase.
  */
-function derivePhaseFromChildren(parentId: string, registry: Map<string, SessionMeta>): string | undefined {
+function derivePhaseFromChildren(parentId: string, registry: ReadonlyMap<string, SessionMeta>): string | undefined {
   let bestPhase: string | undefined;
   let bestPriority = Infinity;
 
@@ -94,6 +94,18 @@ function derivePhaseFromChildren(parentId: string, registry: Map<string, Session
   }
 
   return bestPhase;
+}
+
+/**
+ * The phase a root session is shown under: its own phase, or for a workstream
+ * parent without one, the most active phase among its children.
+ */
+export function getEffectiveSessionPhase(
+  meta: SessionMeta,
+  registry: ReadonlyMap<string, SessionMeta>,
+): string | undefined {
+  return meta.phase
+    ?? (meta.childCount > 0 ? derivePhaseFromChildren(meta.id, registry) : undefined);
 }
 
 // ============================================================
@@ -135,9 +147,7 @@ export const sessionsByPhaseAtom = atom((get) => {
     // Only show root sessions (not children of workstreams)
     if (meta.parentSessionId) continue;
 
-    // For workstream parents without an explicit phase, derive from children
-    const phase = meta.phase
-      ?? (meta.childCount > 0 ? derivePhaseFromChildren(meta.id, registry) : undefined);
+    const phase = getEffectiveSessionPhase(meta, registry);
 
     // Skip complete if filter says hide
     if (!filter.showComplete && phase === 'complete') continue;
