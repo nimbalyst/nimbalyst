@@ -196,6 +196,38 @@ describe('publishLocalWikiToTeam', () => {
     expect(manifest.pages[old]).toBeUndefined();
   });
 
+  it('republishes only what changed: nothing for an unchanged wiki, the edited page, and a page linking to a new one', async () => {
+    const opened = await makeWiki();
+    const { wiki } = opened;
+    writePublishTarget(opened.projectRoot, PROJECT);
+    const ids: string[] = [];
+    for (let i = 0; i < 6; i++) ids.push((await wiki.command({ type: 'register-document', title: `Page ${i}`, parentFolderId: null, body: `Text ${i}.\n` })).id!);
+    const server = fakeServer();
+    const deps = { call: server.call, ...noWait };
+    const sentPages = () => server.calls.splice(0).filter((c) => c.name === 'pages_import').flatMap((c) => c.args.pages.map((page: any) => page.localId));
+
+    expect((await publishLocalWikiToTeam(opened, {}, deps)).verified).toBe(true);
+    expect(sentPages().length).toBeGreaterThanOrEqual(7);
+
+    expect(await publishLocalWikiToTeam(opened, {}, deps)).toMatchObject({ verified: true, updated: 0, unchanged: 7 });
+    expect(sentPages()).toEqual([]);
+
+    await wiki.writeBody(ids[2], 'Text 2, revised.\n', (await wiki.readBody(ids[2])).version);
+    expect(await publishLocalWikiToTeam(opened, {}, deps)).toMatchObject({ verified: true, updated: 1, unchanged: 6 });
+    expect(sentPages()).toEqual([ids[2]]);
+    expect(server.pages.get(ids[2])!.body).toBe('Text 2, revised.\n');
+
+    // A new page, and an unchanged page whose link to it now resolves to the team page.
+    const added = (await wiki.command({ type: 'register-document', title: 'Added', parentFolderId: null, body: 'New.\n' })).id!;
+    await wiki.writeBody(ids[4], 'See [Added](Added.md).\n', (await wiki.readBody(ids[4])).version);
+    expect((await publishLocalWikiToTeam(opened, {}, deps)).verified).toBe(true);
+    expect(server.pages.get(ids[4])!.body).toContain(`https://console/t-${added}`);
+    server.calls.splice(0);
+    // Unchanged since: the linking page is not sent again.
+    expect((await publishLocalWikiToTeam(opened, {}, deps)).verified).toBe(true);
+    expect(sentPages()).toEqual([]);
+  });
+
   it('leaves out export: false pages and person fields, and says on the team Home where the pages come from', async () => {
     const opened = await makeWiki();
     const { wiki } = opened;

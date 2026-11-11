@@ -180,6 +180,13 @@ export interface ImportTarget {
    * is sent as the team holds it and is written once, not twice.
    */
   prior?: Record<string, ImportedEntry>;
+  /**
+   * Send only these pages (a republish's changed ones); the rest are already
+   * in the team as `prior` records them. A page outside the set is still sent
+   * when its team form links to a page this run creates, since its link only
+   * resolves now. Absent: every page.
+   */
+  only?: ReadonlySet<string>;
 }
 
 export interface TeamFormLookups {
@@ -249,6 +256,8 @@ export interface ImportOutcome {
   warnings: ImportError[];
   /** Every page sent was reported created or updated, with no errors and an id for each. */
   complete: boolean;
+  /** The pages this run sent; with `target.only`, the rest were left as the team has them. */
+  sentIds: Set<string>;
 }
 
 function asResult(value: any): PagesImportResult {
@@ -281,7 +290,8 @@ export async function importToTeam(exported: LocalWikiExport, target: ImportTarg
     // Every batch names it, so the server resolves Home as a parent or a re-sent body in any of them.
     ...(exported.projectHomeLocalId ? { homeLocalId: exported.projectHomeLocalId } : {}),
   };
-  const idMap: Record<string, ImportedEntry> = {};
+  // A partial run resolves links to the pages it does not send through what the earlier publish created.
+  const idMap: Record<string, ImportedEntry> = target.only ? { ...(target.prior ?? {}) } : {};
   const errors: ImportError[] = [];
   const warnings: ImportError[] = [];
   let created = 0;
@@ -343,9 +353,26 @@ export async function importToTeam(exported: LocalWikiExport, target: ImportTarg
     if (uris.size) assetUris.set(localId, uris);
   };
   const prior = target.prior ?? {};
-  for (const localId of exported.linkedFiles.keys()) if (prior[localId]) await uploadFor(localId, prior[localId]);
-
   const byPath = pathIndex(exported.locations);
+  const sendSet = target.only ? new Set(target.only) : null;
+  if (sendSet) {
+    // An unchanged page whose link (or relation) targets a page this run creates goes again, to pick up its team link.
+    const exportedIds = new Set(exported.pages.map((page) => page.localId));
+    const isNew = (localId: string) => exportedIds.has(localId) && !prior[localId];
+    for (const page of exported.pages) {
+      if (sendSet.has(page.localId)) continue;
+      let dependsOnNew = false;
+      const probe = (localId: string) => {
+        if (isNew(localId)) dependsOnNew = true;
+        return prior[localId];
+      };
+      teamForm(exported, page, byPath, { entryFor: probe, linkFor: (localId) => probe(localId)?.link, orgId: target.project.orgId, assetUri: () => undefined });
+      if (dependsOnNew) sendSet.add(page.localId);
+    }
+  }
+  const toSend = (localId: string) => !sendSet || sendSet.has(localId);
+  for (const localId of exported.linkedFiles.keys()) if (prior[localId] && toSend(localId)) await uploadFor(localId, prior[localId]);
+
   /** What a page's team body and fields are, with links resolved through `entryFor`; null fields when a relation target is unknown. */
   const finalForm = (page: ImportPage, entryFor: (localId: string) => ImportedEntry | undefined, typeMismatch: ReadonlySet<string>) =>
     teamForm(exported, page, byPath, {
@@ -363,7 +390,7 @@ export async function importToTeam(exported: LocalWikiExport, target: ImportTarg
   // Relationship fields go only when every target is known. Pages come in tree order, so a page that did not
   // make it is known before any of its children is sent; those are held back (and theirs, in turn) rather than
   // sent with a parent the server never got.
-  const firstPages = exported.pages.map((page) => {
+  const firstPages = exported.pages.filter((page) => toSend(page.localId)).map((page) => {
     if (!Object.keys(prior).length) return page;
     const form = finalForm(page, (localId) => prior[localId], new Set());
     return { ...page, body: form.body, ...(form.fields ? { fields: form.fields } : {}) };
@@ -408,6 +435,7 @@ export async function importToTeam(exported: LocalWikiExport, target: ImportTarg
   const linkFor = (localId: string) => idMap[localId]?.link;
   let linksRewritten = 0;
   for (const [localId, file] of exported.editorFiles) {
+    if (!toSend(localId)) continue;
     const entry = idMap[localId];
     if (!entry || typeMismatch.has(localId)) continue;
     const location = exported.locations.get(localId);
@@ -425,13 +453,13 @@ export async function importToTeam(exported: LocalWikiExport, target: ImportTarg
   }
   for (const localId of exported.linkedFiles.keys()) {
     const entry = idMap[localId];
-    if (entry && !uploaded.has(localId)) await uploadFor(localId, entry);
+    if (entry && toSend(localId) && !uploaded.has(localId)) await uploadFor(localId, entry);
   }
 
   // Pass 2: the final form with every team id known; only pages whose body or fields differ from what pass 1 sent go again.
   const changed: ImportPage[] = [];
   for (const page of exported.pages) {
-    if (!idMap[page.localId]) continue;
+    if (!idMap[page.localId] || !toSend(page.localId)) continue;
     const form = finalForm(page, (localId) => idMap[localId], typeMismatch);
     linksRewritten += form.rewritten;
     if (form.missing.length) {
@@ -449,9 +477,10 @@ export async function importToTeam(exported: LocalWikiExport, target: ImportTarg
   errors.push(...secondPass.tooLarge.map(tooLargeError));
   for (const batch of secondPass.batches) await send(batch);
 
+  const sentIds = new Set(firstPages.map((page) => page.localId));
   const complete =
     errors.length === 0 &&
-    created + updated === exported.pages.length &&
+    created + updated === sentIds.size &&
     exported.pages.every((page) => idMap[page.localId]);
-  return { batches, created, updated, linksRewritten, editorPagesWritten, filesUploaded, idMap, errors, warnings, complete };
+  return { batches, created, updated, linksRewritten, editorPagesWritten, filesUploaded, idMap, errors, warnings, complete, sentIds };
 }

@@ -23,6 +23,7 @@
  * artifact. The manifest records every candidate before anything is trashed,
  * and keeps the ones left in place, so a failure is retried and reported.
  */
+import { statSync } from 'node:fs';
 import * as path from 'node:path';
 import { CliError, ExitCode } from '../cli/exitCodes.js';
 import { resolveServer } from '../cloud/config.js';
@@ -166,7 +167,17 @@ function signedInCaller(deps: PublishDeps, dryRun: boolean): ToolCaller | null {
 
 /** Hash of everything a publish sends for one page, to tell unchanged pages from updated ones. */
 function sourceHash(page: ImportPage, exported: LocalWikiExport): string {
-  return hashText(JSON.stringify([page, exported.editorFiles.get(page.localId)?.text ?? null, exported.relations.get(page.localId) ?? null]));
+  // A linked file replaced under the same name changes the page too, so its upload is not skipped.
+  const files = (exported.linkedFiles.get(page.localId) ?? []).map((file) => {
+    if (!file.abs) return [file.linkPath, null];
+    try {
+      const stat = statSync(file.abs);
+      return [file.linkPath, stat.size, stat.mtimeMs];
+    } catch {
+      return [file.linkPath, null];
+    }
+  });
+  return hashText(JSON.stringify([page, exported.editorFiles.get(page.localId)?.text ?? null, exported.relations.get(page.localId) ?? null, files]));
 }
 
 function teamBodyText(result: any): string | null {
@@ -384,18 +395,27 @@ async function runPublish(opened: OpenedWiki, target: PublishTarget, options: Pu
   const prior = Object.fromEntries(
     Object.entries(previous?.pages ?? {}).map(([id, entry]) => [id, { nodeId: entry.nodeId, id: entry.id, link: entry.link, ...(entry.uri ? { uri: entry.uri } : {}) }]),
   );
-  const outcome = await importToTeam(exported, { repo: teams.repo, project, wikiId, prior }, call, content);
+  // A republish sends only the pages whose source changed since the last verified publish (and, inside
+  // importToTeam, those whose links now reach a new page); the rest are already in the team as recorded.
+  const hashes = new Map(exported.pages.map((page) => [page.localId, sourceHash(page, exported)]));
+  const only = previous
+    ? new Set(exported.pages.filter((page) => {
+        const before = previous.pages[page.localId];
+        return !before || before.removedLocally || before.sourceHash !== hashes.get(page.localId);
+      }).map((page) => page.localId))
+    : undefined;
+  const outcome = await importToTeam(exported, { repo: teams.repo, project, wikiId, prior, ...(only ? { only } : {}) }, call, content);
 
   const bodyEditedIds = new Set(outcome.errors.filter((error) => error.code === 'body_edited').map((error) => error.localId));
-  const hashes = new Map(exported.pages.map((page) => [page.localId, sourceHash(page, exported)]));
   const unchanged = exported.pages.filter((page) => {
+    if (only) return !outcome.sentIds.has(page.localId) && Boolean(outcome.idMap[page.localId]);
     const before = previous?.pages[page.localId];
     return before && !before.removedLocally && before.sourceHash === hashes.get(page.localId) && !bodyEditedIds.has(page.localId) && outcome.idMap[page.localId];
   }).length;
   const otherErrors = outcome.errors.filter((error) => error.code !== 'body_edited');
   Object.assign(report, {
     created: outcome.created,
-    updated: Math.max(0, outcome.updated - unchanged),
+    updated: only ? outcome.updated : Math.max(0, outcome.updated - unchanged),
     unchanged,
     bodyEdited: [...bodyEditedIds].map((id) => refOf(id, titles.get(id) ?? id, files, outcome.idMap[id]?.link)),
     errors: otherErrors.map((error) => ({ ...error, title: titles.get(error.localId) })),
@@ -443,7 +463,7 @@ async function runPublish(opened: OpenedWiki, target: PublishTarget, options: Pu
     let teamBodyHash = before?.teamBodyHash;
     if (page.kind === 'editorPage') teamBodyHash = undefined;
     // A body edited on the team side keeps the hash of what the publish last wrote, so it still reads as edited.
-    else if (!bodyEditedIds.has(page.localId) && (before?.sourceHash !== hash || !teamBodyHash)) {
+    else if (!bodyEditedIds.has(page.localId) && (outcome.sentIds.has(page.localId) || !teamBodyHash)) {
       const text = await readBody(entry.uri ?? entry.link);
       teamBodyHash = text === null ? undefined : hashText(text);
     }
@@ -459,7 +479,8 @@ async function runPublish(opened: OpenedWiki, target: PublishTarget, options: Pu
       ...(page.underType ? { underType: true as const } : {}),
       link: entry.link,
       ...(entry.uri ? { uri: entry.uri } : {}),
-      sourceHash: hash,
+      // A body the team refused (edited there) keeps the old hash, so the next publish sends it again and reports it.
+      sourceHash: bodyEditedIds.has(page.localId) ? before?.sourceHash ?? '' : hash,
       ...(teamBodyHash ? { teamBodyHash } : {}),
     };
   }
