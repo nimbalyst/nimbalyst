@@ -1755,6 +1755,13 @@ describe('CodexAppServerProtocol', () => {
       expect(swept.arguments).toEqual({ phase: 'validating' });
     });
 
+    it('keeps the commit proposal item id through start and orphan sweep', () => {
+      const itemId = 'exec-21d55d57-adc9-4a89-a25a-2d4c65520fe2';
+      const calls = toolCalls(drive([started(itemId, 'developer_git_commit_proposal'), turnCompleted]));
+      expect(calls.map(call => call.event.toolCall?.id)).toEqual([itemId, itemId]);
+      expect((calls[1].event.toolCall as { orphaned?: boolean }).orphaned).toBe(true);
+    });
+
     it('leaves a normally-completed call alone', () => {
       const pushed = drive([started('call_1', 'update_session_meta'), completed('call_1', 'update_session_meta'), turnCompleted]);
       const orphaned = toolCalls(pushed).filter(

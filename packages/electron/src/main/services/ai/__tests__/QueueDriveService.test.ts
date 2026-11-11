@@ -134,6 +134,7 @@ describe('QueueDriveService', () => {
   it('arms an idle subscription on session-busy and drives when the session goes idle', async () => {
     const outcomes: DriveOutcome[] = [
       { kind: 'deferred', reason: 'session-busy' },
+      { kind: 'deferred', reason: 'session-busy' },
       { kind: 'dispatched', promptId: 'p1' },
     ];
     const seenReasons: string[] = [];
@@ -149,18 +150,21 @@ describe('QueueDriveService', () => {
     harness.idleListeners[0].listener();
     await flush();
 
-    expect(seenReasons).toEqual(['boot-recovery', 'session-idle']);
+    expect(seenReasons).toEqual(['boot-recovery', 'session-idle', 'session-idle']);
   });
 
   it('drives after a commit call ends even when the prompt cleared before it', async () => {
     const endCommit = beginCommitProposalCall('commit-race');
     noteLiveInteractivePrompt('commit-race');
     const seenReasons: string[] = [];
+    const seenOutcomes: DriveOutcome[] = [];
     const harness = createHarness(async ({ reason }) => {
       seenReasons.push(reason);
-      return isCommitProposalInFlight('commit-race')
+      const outcome: DriveOutcome = isCommitProposalInFlight('commit-race')
         ? { kind: 'deferred', reason: 'session-busy' }
         : { kind: 'dispatched', promptId: 'queued' };
+      seenOutcomes.push(outcome);
+      return outcome;
     });
     harness.deps.onInteractivePromptsCleared = onInteractivePromptsCleared;
     harness.deps.onCommitProposalsSettled = onCommitProposalsSettled;
@@ -169,12 +173,54 @@ describe('QueueDriveService', () => {
       await flush();
       clearLiveInteractivePrompt('commit-race');
       await flush();
-      expect(seenReasons).toEqual(['renderer-trigger', 'session-idle']);
+      expect(seenReasons[0]).toBe('renderer-trigger');
+      expect(seenReasons.slice(1).every(reason => reason === 'session-idle')).toBe(true);
+      expect(seenOutcomes.every(outcome => outcome.kind === 'deferred')).toBe(true);
+      const beforeCommitSettled = seenReasons.length;
       endCommit();
       await flush();
-      expect(seenReasons).toEqual(['renderer-trigger', 'session-idle', 'session-idle']);
+      expect(seenReasons.length).toBeGreaterThan(beforeCommitSettled);
+      expect(seenOutcomes.at(-1)).toEqual({ kind: 'dispatched', promptId: 'queued' });
       expect(harness.clearedHandles).toContain(harness.timerCalls[0].handle);
     } finally { endCommit(); harness.service.dispose(); clearLiveInteractivePrompt('commit-race'); }
+  });
+
+  it('rechecks once when a busy condition clears before its wake listener is installed', async () => {
+    const reasons: string[] = [];
+    let busy = true;
+    const harness = createHarness(async ({ reason }) => {
+      reasons.push(reason);
+      if (busy) {
+        busy = false;
+        return { kind: 'deferred', reason: 'session-busy' };
+      }
+      return { kind: 'dispatched', promptId: 'queued' };
+    });
+    try {
+      harness.service.requestDrive('settle-before-subscribe', '/ws', 'renderer-trigger');
+      await flush();
+      expect(reasons).toEqual(['renderer-trigger', 'session-idle']);
+      expect(harness.idleListeners).toHaveLength(0);
+      expect(harness.clearedHandles).toContain(harness.timerCalls[0].handle);
+    } finally { harness.service.dispose(); }
+  });
+
+  it('unsubscribes an idle wake that fires synchronously during registration', async () => {
+    const reasons: string[] = [];
+    const unsubscribe = vi.fn();
+    const harness = createHarness(async ({ reason }) => {
+      reasons.push(reason);
+      return reasons.length === 1
+        ? { kind: 'deferred', reason: 'session-busy' }
+        : { kind: 'dispatched', promptId: 'queued' };
+    });
+    harness.deps.onSessionIdle = (_sessionId, fire) => { fire(); return unsubscribe; };
+    try {
+      harness.service.requestDrive('idle-during-subscribe', '/ws', 'renderer-trigger');
+      await flush();
+      expect(reasons).toEqual(['renderer-trigger', 'session-idle']);
+      expect(unsubscribe).toHaveBeenCalledOnce();
+    } finally { harness.service.dispose(); }
   });
 
   it('does not defer or retry a terminal failure', async () => {

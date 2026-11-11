@@ -283,6 +283,8 @@ async function runTurn(options: {
     getApiKeyForProvider: vi.fn(() => undefined),
     buildClaudeCodeRuntimeConfig: vi.fn(),
     tryDispatchNextQueuedPrompt: vi.fn(async () => false),
+    hasPendingQueuedPrompts: vi.fn(async () => false),
+    closeWaitingCommitProposals: vi.fn(async () => 0),
     requestQueueDrive: vi.fn(),
     createToolHandler: vi.fn(() => vi.fn()),
   };

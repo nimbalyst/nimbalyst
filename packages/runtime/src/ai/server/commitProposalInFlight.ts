@@ -93,9 +93,16 @@ export function registerWaitingCommitProposal(sessionId: string, close: CloseWai
  * turn. An orphaned MCP call may target its exact proposal ID. Their calls
  * then return, ending the in-flight mark a deferred queue drive waits on.
  */
-export async function closeWaitingCommitProposals(sessionId: string, proposalId?: string): Promise<number> {
+export async function closeWaitingCommitProposals(
+  sessionId: string,
+  proposalId?: string,
+  onError?: (error: unknown) => void,
+): Promise<number> {
   const closes = [...(waitingProposals.get(sessionId) ?? [])]
     .filter(entry => proposalId === undefined || entry.proposalId === proposalId);
-  const closed = await Promise.all(closes.map(entry => entry.close().catch(() => false)));
+  const closed = await Promise.all(closes.map(async entry => {
+    try { return await entry.close(); }
+    catch (error) { onError?.(error); return false; }
+  }));
   return closed.filter(Boolean).length;
 }

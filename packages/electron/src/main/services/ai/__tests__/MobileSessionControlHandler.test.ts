@@ -244,6 +244,37 @@ describe('phone Stop retirement', () => {
       vi.mocked(getTerminalSessionManager).mockReset();
     }
   });
+  it('writes Ctrl-C exactly once after one CLI rollback through the real shared controller', async () => {
+    const sessionId = 'phone-cli-real-controller';
+    const { getTerminalSessionManager } = await import('../../TerminalSessionManager');
+    const order: string[] = [];
+    const writeToTerminal = vi.fn((_id: string, _text: string) => { order.push('ctrl-c'); });
+    vi.mocked(getTerminalSessionManager).mockReturnValue({
+      isTerminalActive: vi.fn(() => true), writeToTerminal,
+    } as never);
+    mocks.getSession.mockResolvedValue({ id: sessionId, provider: 'claude-code-cli' });
+    const rollback = vi.fn(async () => { order.push('rollback'); return 1; });
+    const sharedCancel = vi.fn((id: string, request?: any) => cancelSessionTurn({
+      analytics: { sendEvent: vi.fn() },
+    } as never, id, undefined, request));
+    let receive!: (message: any) => void;
+    const dispose = initMobileSessionControlHandler({ onSessionControlMessage: (fn: any) => { receive = fn; return () => {}; } } as never,
+      () => null, { cancelSessionTurn: sharedCancel, rollbackExecutingPrompts: rollback, triggerQueuedPromptProcessing: vi.fn() });
+    try {
+      receive({ type: 'cancel', sessionId });
+      await vi.waitFor(() => expect(writeToTerminal).toHaveBeenCalledOnce());
+      expect(rollback).toHaveBeenCalledExactlyOnceWith(sessionId);
+      expect(sharedCancel).toHaveBeenCalledOnce();
+      expect(writeToTerminal).toHaveBeenCalledExactlyOnceWith(sessionId, '\x03');
+      expect(order).toEqual(['rollback', 'ctrl-c']);
+    } finally {
+      const { captureQueueAuthorization } = await import('../stoppedQueueHold');
+      captureQueueAuthorization(sessionId)();
+      dispose();
+      mocks.getSession.mockReset();
+      vi.mocked(getTerminalSessionManager).mockReset();
+    }
+  });
   it('retires a resolved native turn before admitting phone corrections and publishing idle', async () => {
     const { CodexAppServerProtocol } = await import('@nimbalyst/runtime/ai/server/protocols/CodexAppServerProtocol');
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nim-phone-poststart-'));

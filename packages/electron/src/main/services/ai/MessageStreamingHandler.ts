@@ -8,6 +8,7 @@ import { supersedeOpenQuestions } from './supersedeOpenQuestions';
 import { beginTurnSetup, TurnSetupCancelledError } from './turnSetupStages';
 import { CodexPreparationCancelledError } from '@nimbalyst/runtime/ai/server/protocols/codexAppServer/setupStage';
 import { captureQueueAuthorization, isQueueStopped } from './stoppedQueueHold';
+import { isCommitProposalInFlight } from '@nimbalyst/runtime/ai/server/commitProposalInFlight';
 import { canDispatchIntoDrain } from './drainFollowUp';
 import { publishTurnNotExecuting } from './turnExecutingSync';
 import { cancelUsageLimitResume, maybeScheduleUsageLimitResume } from './usageLimitAutoResume';
@@ -387,6 +388,7 @@ export class MessageStreamingHandler {
     workspacePath?: string,
   ) => {
     if (!queued && sessionId && (isQueueStopped(sessionId)
+      || isCommitProposalInFlight(sessionId)
       || await this.svc.hasPendingQueuedPrompts(sessionId)
       || isQueueStopped(sessionId))) {
       // A fresh Send joins the durable FIFO whenever older rows exist, including

@@ -291,7 +291,9 @@ export class QueueDriveService {
     const state = this.sessions.get(sessionId);
     if (!state || state.wakeSubscriptions.has(blocked)) return;
 
+    let firedDuringSubscription = false;
     const fire = () => {
+      firedDuringSubscription = true;
       const current = this.sessions.get(sessionId);
       if (!current) return;
       this.disarmWake(sessionId, blocked);
@@ -324,7 +326,17 @@ export class QueueDriveService {
     }
 
     if (unsubscribe) {
+      if (firedDuringSubscription) {
+        unsubscribe();
+        return;
+      }
       state.wakeSubscriptions.set(blocked, unsubscribe);
+      // The busy condition may have cleared after attempt() read it and before
+      // these listeners were installed. Recheck once; an unchanged deferral
+      // finds the existing subscription and does not create a retry loop.
+      if (blocked === 'session-busy') {
+        this.requestDrive(sessionId, state.workspacePath, WAKE_REASON[blocked]);
+      }
     }
   }
 

@@ -45,7 +45,7 @@ vi.mock('@nimbalyst/runtime/storage/repositories/AISessionsRepository', () => ({
 vi.mock('../../../tray/TrayManager', () => ({ TrayManager: { getInstance: () => ({ onPromptResolved: vi.fn() }) } }));
 
 import { AIService } from '../AIService';
-import { registerTurnControlHandlers } from '../ipc/registerTurnControlHandlers';
+import { cancelSessionTurn, registerTurnControlHandlers } from '../ipc/registerTurnControlHandlers';
 import { codexQuestionTurns } from '../codexQuestionTurns';
 import { SessionProcessingGuard, tryClaimAndDispatchNextQueuedPrompt } from '../queuedPromptDispatcher';
 import { beginSessionTurn } from '../sessionTurnControl';
@@ -137,6 +137,47 @@ describe('desktop Stop / lightning with durable queue and question ownership', (
       expect(isCommitProposalInFlight('s1')).toBe(false);
       expect((await storage.queue.get('after-proposal'))?.status).toBe('pending');
     } finally { unregister(); endCommit(); }
+  });
+
+  it('does not report Stop complete while a slow proposal close is still pending', async () => {
+    getProvider.mockReturnValue({ abort: vi.fn() });
+    const endCommit = beginCommitProposalCall('s1');
+    let releaseClose!: () => void;
+    const closeReady = new Promise<void>(resolve => { releaseClose = resolve; });
+    const close = vi.fn(async () => { await closeReady; endCommit(); return true; });
+    const unregister = registerWaitingCommitProposal('s1', close);
+    const ctx = {
+      analytics: { sendEvent: vi.fn() }, sessionsProcessingQueue: new SessionProcessingGuard(),
+      publishQueueStateToSync: vi.fn(async () => {}), forceSessionIdleOnCancel: vi.fn(async () => {}),
+      driveQueuedPrompts: vi.fn(async () => ({ kind: 'nothing-pending' })), invalidateQueueDrive: vi.fn(),
+    };
+    const response = cancelSessionTurn(ctx as never, 's1');
+    let responded = false;
+    void response.then(() => { responded = true; });
+    try {
+      await vi.waitFor(() => expect(close).toHaveBeenCalledOnce());
+      await new Promise<void>(resolve => setImmediate(resolve));
+      expect(responded).toBe(false);
+      releaseClose();
+      await response;
+      expect(isCommitProposalInFlight('s1')).toBe(false);
+    } finally { releaseClose(); await response; unregister(); endCommit(); }
+  });
+
+  it('reports a failed proposal close instead of claiming Stop fully completed', async () => {
+    getProvider.mockReturnValue({ abort: vi.fn() });
+    const close = vi.fn(async () => { throw new Error('proposal storage unavailable'); });
+    const unregister = registerWaitingCommitProposal('s1', close);
+    const ctx = {
+      analytics: { sendEvent: vi.fn() }, sessionsProcessingQueue: new SessionProcessingGuard(),
+      publishQueueStateToSync: vi.fn(async () => {}), forceSessionIdleOnCancel: vi.fn(async () => {}),
+      driveQueuedPrompts: vi.fn(async () => ({ kind: 'nothing-pending' })), invalidateQueueDrive: vi.fn(),
+    };
+    try {
+      const response = await cancelSessionTurn(ctx as never, 's1');
+      expect(close).toHaveBeenCalledOnce();
+      expect(response).toMatchObject({ success: false, error: expect.stringMatching(/commit proposal/i) });
+    } finally { unregister(); }
   });
 
   it.each([

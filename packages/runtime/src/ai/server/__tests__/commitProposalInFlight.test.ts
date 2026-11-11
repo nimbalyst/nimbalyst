@@ -44,3 +44,16 @@ it('wakes only when the last call settles and allows an exact orphan to close', 
     expect(wake).toHaveBeenCalledOnce();
   } finally { unregisterFirst(); unregisterSecond(); unsubscribe(); endFirst(); endSecond(); }
 });
+
+it('reports a failed close while still closing other waiting proposals', async () => {
+  const failure = new Error('proposal storage unavailable');
+  const onError = vi.fn();
+  const unregisterFailed = registerWaitingCommitProposal('close-failure', async () => { throw failure; }, 'bad');
+  const closeGood = vi.fn(async () => true);
+  const unregisterGood = registerWaitingCommitProposal('close-failure', closeGood, 'good');
+  try {
+    expect(await closeWaitingCommitProposals('close-failure', undefined, onError)).toBe(1);
+    expect(onError).toHaveBeenCalledExactlyOnceWith(failure);
+    expect(closeGood).toHaveBeenCalledOnce();
+  } finally { unregisterFailed(); unregisterGood(); }
+});
