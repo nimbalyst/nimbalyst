@@ -116,6 +116,12 @@ export async function cancelSessionTurn(ctx: AIServiceContext, sessionId: string
         const path = session.worktreePath || session.workspacePath;
         return path ? ctx.driveQueuedPrompts(sessionId, path, 'renderer-trigger') : Promise.resolve();
       },
+      requestDrive: () => {
+        const path = session.worktreePath || session.workspacePath;
+        if (!path) return false;
+        ctx.requestQueueDrive(sessionId, path, 'renderer-trigger');
+        return true;
+      },
       logError: error => logger.main.error('[AIService] Turn cancellation failed:', error),
     });
     // performTurnInterruption synchronously registered its retirement fence.

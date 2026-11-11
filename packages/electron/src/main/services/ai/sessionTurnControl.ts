@@ -152,6 +152,8 @@ interface TurnControlOptions {
   sweep(): Promise<void>;
   settle(): Promise<void>;
   drive(): Promise<DriveOutcome | void>;
+  /** Schedule the queue's durable retry loop after a provider replacement. */
+  requestDrive?(): boolean;
   invalidateDrive?(expected?: Promise<DriveOutcome | void>): void;
   logError(error: unknown): void;
   timeouts?: { interruptMs?: number; stageMs?: number };
@@ -253,11 +255,25 @@ export function performTurnInterruption(options: TurnControlOptions, progress: {
   };
   const pendingSteps = new Set<Promise<unknown>>();
   let timedOutDuringDrive = false;
+  let providerReplaced = false;
+  let replacementDriveIssued = false;
   const step = async <T>(label: string, work: () => Promise<T>): Promise<T> => {
     const pending = Promise.resolve().then(work);
     pendingSteps.add(pending);
     void pending.then(() => pendingSteps.delete(pending), () => pendingSteps.delete(pending));
     return bounded(pending, label, options.timeouts?.stageMs ?? 10_000);
+  };
+  const issueReplacementDrive = (): boolean => {
+    if (replacementDriveIssued) return true;
+    if (!progress.swept || !progress.settled || progress.failure) return false;
+    // A replacement drive belongs to the new provider. Release this control's
+    // fence before handing the session to the retrying queue driver.
+    driving = true;
+    operation.fenced = false;
+    if (controls.get(sessionId) === operation) controls.delete(sessionId);
+    try { replacementDriveIssued = options.requestDrive?.() ?? false; }
+    catch (error) { options.logError(error); }
+    return replacementDriveIssued;
   };
   const run = async (): Promise<TurnControlResult> => {
     try {
@@ -286,7 +302,7 @@ export function performTurnInterruption(options: TurnControlOptions, progress: {
       codexQuestionTurns.abandonWaiters(question);
       await bounded(Promise.all(captured.map(turn => turn.finished)), 'host retirement', options.timeouts?.stageMs ?? 10_000);
       turnStopped = true;
-      const providerReplaced = !options.isCurrentProvider();
+      providerReplaced = !options.isCurrentProvider();
       if (!progress.retired) {
         const retired = await step('inbox and question retirement', async () => {
           const results = await Promise.allSettled([codexQuestionTurns.end(question), options.retireInbox()]);
@@ -310,8 +326,10 @@ export function performTurnInterruption(options: TurnControlOptions, progress: {
       if (!progress.settled) await step('session settlement', async () => { await options.settle(); progress.settled = true; });
       if (progress.failure) throw progress.failure;
       if (providerReplaced) {
-        return { success: true, method: hard ? 'abort' : result.method,
-          warning: 'The turn stopped and its queue was settled, but queue drive was skipped because the session provider was replaced.' };
+        return issueReplacementDrive()
+          ? { success: true, method: hard ? 'abort' : result.method,
+              warning: 'The turn stopped and its queue was settled; queue drive was requested after the session provider was replaced.' }
+          : { success: false, error: 'The turn stopped, but queued input could not be scheduled after the session provider was replaced.' };
       }
       // A superseded drive may time out while this control is cleaning up.
       // Keep our fence until that exact drive retires. Do not add this wait to
@@ -361,6 +379,11 @@ export function performTurnInterruption(options: TurnControlOptions, progress: {
               }
               options.logError(error);
             }
+          } else if (providerReplaced && progress.swept && progress.settled && !progress.failure) {
+            // A bounded settlement may finish after Stop has returned. The
+            // recovery fence is gone here; keep its pending rows on the
+            // driver's idle/backoff net instead of requiring another Send.
+            if (!issueReplacementDrive()) options.logError(new Error('Queued input could not be scheduled after provider replacement recovery.'));
           } else if (options.isCurrentProvider()) {
             // Recovery continues the original control; it is not a new human Stop.
             const resumed = await performTurnInterruption({ ...options, mode: 'stop' }, progress);
@@ -370,6 +393,9 @@ export function performTurnInterruption(options: TurnControlOptions, progress: {
       }
       options.logError(error);
       const message = error instanceof Error ? error.message : 'Unable to interrupt the current turn.';
+      if (providerReplaced && turnStopped && !replacementDriveIssued) {
+        return { success: false, error: `The turn stopped, but queued input could not be scheduled after the provider was replaced: ${message}` };
+      }
       return stopRequested && turnStopped
         ? { success: true, method: 'abort', warning: `The turn stopped, but cleanup is incomplete: ${message}` }
         : { success: false, error: message };

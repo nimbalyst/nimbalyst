@@ -73,6 +73,7 @@ export interface AIServiceContext {
     workspacePath: string,
     reason: DriveReason,
   ): Promise<DriveOutcome>;
+  requestQueueDrive(sessionId: string, workspacePath: string, reason: DriveReason): void;
   forceSessionIdleOnCancel(sessionId: string): Promise<void>;
   interruptCurrentTurn(sessionId: string, options?: { userSendNow?: boolean }): Promise<InterruptCurrentTurnResult>;
 

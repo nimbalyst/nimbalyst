@@ -6,6 +6,7 @@ import { codexQuestionTurns } from '../codexQuestionTurns';
 import { beginTurnSetup } from '../turnSetupStages';
 import { captureQueueAuthorization, holdQueueAfterStop, isQueueStopped } from '../stoppedQueueHold';
 import { runQueueDriveAttempt } from '../queueDriveAttempt';
+import { QueueDriveService } from '../QueueDriveService';
 
 function deferred() {
   let resolve!: () => void;
@@ -19,7 +20,8 @@ function fixture(provider: any = { abort: vi.fn(), interruptCurrentTurn: vi.fn(a
     sessionId, mode: 'interrupt' as 'stop' | 'interrupt', provider,
     isCurrentProvider: vi.fn(() => true), guard: new Set([sessionId]),
     retireInbox: vi.fn(async () => {}), sweep: vi.fn(async () => {}),
-    settle: vi.fn(async () => {}), drive: vi.fn(async () => {}), logError: vi.fn(),
+    settle: vi.fn(async () => {}), drive: vi.fn(async () => {}),
+    requestDrive: vi.fn(() => true), invalidateDrive: vi.fn(), logError: vi.fn(),
   };
 }
 afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
@@ -129,6 +131,154 @@ describe('captured desktop turn interruption', () => {
     expect(await control).toMatchObject({ success: true, warning: expect.stringContaining('provider was replaced') });
     expect(options.sweep).toHaveBeenCalledOnce();
     expect(options.settle).toHaveBeenCalledOnce();
+    expect(options.drive).not.toHaveBeenCalled();
+    expect(options.requestDrive).toHaveBeenCalledOnce();
+  });
+
+  it('drives two swept rows in order after replacement, including a backoff wake', async () => {
+    const options = fixture();
+    const host = beginSessionTurn(options.sessionId);
+    const pending = ['older', 'newer'];
+    const delivered: string[] = [];
+    const allDelivered = deferred();
+    const backoffArmed = deferred();
+    const timers: Array<() => void> = [];
+    let ready = false;
+    let driver!: QueueDriveService;
+    let issuedDrive!: Promise<unknown>;
+    driver = new QueueDriveService({
+      attempt: async () => {
+        if (!ready) return { kind: 'deferred', reason: 'session-busy' };
+        const row = pending.shift();
+        if (!row) return { kind: 'nothing-pending' };
+        delivered.push(row);
+        if (pending.length) queueMicrotask(() => driver.requestDrive(options.sessionId, '/workspace', 'fifo-continuation'));
+        else allDelivered.resolve();
+        return { kind: 'dispatched', promptId: row };
+      },
+      onWindowAvailable: () => () => {}, onSessionIdle: () => () => {},
+      logInfo: vi.fn(), logWarn: vi.fn(), logError: vi.fn(),
+      timers: {
+        setTimeout: fn => { timers.push(fn); backoffArmed.resolve(); return fn; },
+        clearTimeout: vi.fn(),
+      },
+    });
+    options.requestDrive.mockImplementation(() => {
+      expect(isDirectTurnAdmissionBlocked(options.sessionId)).toBe(false);
+      issuedDrive = driver.drive(options.sessionId, '/workspace', 'renderer-trigger');
+      return true;
+    });
+    try {
+      const control = performTurnInterruption({ ...options, mode: 'stop' });
+      options.isCurrentProvider.mockReturnValue(false);
+      host.finish();
+      expect((await control).success).toBe(true);
+      await issuedDrive;
+      await backoffArmed.promise;
+      expect(delivered).toEqual([]);
+      ready = true;
+      timers[0]();
+      await allDelivered.promise;
+      expect(delivered).toEqual(['older', 'newer']);
+      expect(options.requestDrive).toHaveBeenCalledOnce();
+    } finally { host.finish(); driver.dispose(); }
+  });
+
+  it('coalesces a replacement drive with an already in-flight drive on the same session', async () => {
+    const options = fixture();
+    const host = beginSessionTurn(options.sessionId);
+    const oldEntered = deferred();
+    const releaseOld = deferred();
+    const delivered = deferred();
+    const rows = ['only-row'];
+    let attempts = 0;
+    let deliveries = 0;
+    const driver = new QueueDriveService({
+      attempt: async ({ signal }) => {
+        if (++attempts === 1) { oldEntered.resolve(); await releaseOld.promise; }
+        if (signal.aborted) return { kind: 'deferred', reason: 'session-busy' };
+        const row = rows.shift();
+        if (!row) return { kind: 'nothing-pending' };
+        deliveries += 1;
+        delivered.resolve();
+        return { kind: 'dispatched', promptId: row };
+      },
+      onWindowAvailable: () => () => {}, onSessionIdle: () => () => {},
+      logInfo: vi.fn(), logWarn: vi.fn(), logError: vi.fn(),
+      timers: { setTimeout: vi.fn(), clearTimeout: vi.fn() },
+    });
+    options.invalidateDrive.mockImplementation(() => driver.invalidate(options.sessionId));
+    options.requestDrive.mockImplementation(() => {
+      driver.requestDrive(options.sessionId, '/workspace', 'send-now');
+      return true;
+    });
+    try {
+      const oldDrive = driver.drive(options.sessionId, '/workspace', 'renderer-trigger');
+      await oldEntered.promise;
+      const control = performTurnInterruption(options);
+      options.isCurrentProvider.mockReturnValue(false);
+      host.finish();
+      expect((await control).success).toBe(true);
+      releaseOld.resolve();
+      await oldDrive;
+      await delivered.promise;
+      expect(attempts).toBe(2);
+      expect(deliveries).toBe(1);
+      expect(options.requestDrive).toHaveBeenCalledOnce();
+    } finally { releaseOld.resolve(); host.finish(); driver.dispose(); }
+  });
+
+  it('issues only one replacement drive for duplicate Stop events', async () => {
+    const options = fixture();
+    const host = beginSessionTurn(options.sessionId);
+    const first = performTurnInterruption({ ...options, mode: 'stop' });
+    const duplicate = performTurnInterruption({ ...options, mode: 'stop' });
+    expect(duplicate).toBe(first);
+    options.isCurrentProvider.mockReturnValue(false);
+    host.finish();
+    expect((await first).success).toBe(true);
+    expect(options.requestDrive).toHaveBeenCalledOnce();
+    expect((await performTurnInterruption({ ...options, mode: 'stop' })).success).toBe(false);
+    expect(options.requestDrive).toHaveBeenCalledOnce();
+  });
+
+  it.each(['stop', 'interrupt'] as const)('does not report %s success when a replacement drive cannot be issued', async mode => {
+    const options = fixture();
+    options.requestDrive.mockReturnValue(false);
+    const host = beginSessionTurn(options.sessionId);
+    const control = performTurnInterruption({ ...options, mode });
+    options.isCurrentProvider.mockReturnValue(false);
+    host.finish();
+    expect((await control).success).toBe(false);
+    expect(options.requestDrive).toHaveBeenCalledOnce();
+  });
+
+  it('reports a replaced Stop as incomplete when cleanup fails before a drive can be issued', async () => {
+    const options = fixture();
+    options.sweep.mockRejectedValueOnce(new Error('queue storage unavailable'));
+    const host = beginSessionTurn(options.sessionId);
+    const control = performTurnInterruption({ ...options, mode: 'stop' });
+    options.isCurrentProvider.mockReturnValue(false);
+    host.finish();
+    expect(await control).toMatchObject({ success: false, error: expect.stringContaining('queue storage unavailable') });
+    expect(options.requestDrive).not.toHaveBeenCalled();
+  });
+
+  it('requests the replacement drive after a timed-out settlement eventually retires', async () => {
+    vi.useFakeTimers();
+    const options = fixture();
+    const host = beginSessionTurn(options.sessionId);
+    const settle = deferred();
+    options.settle.mockImplementationOnce(() => settle.promise);
+    const control = performTurnInterruption({ ...options, mode: 'stop', timeouts: { stageMs: 20 } });
+    options.isCurrentProvider.mockReturnValue(false);
+    host.finish();
+    await vi.advanceTimersByTimeAsync(20);
+    expect((await control).success).toBe(false);
+    expect(options.requestDrive).not.toHaveBeenCalled();
+    settle.resolve();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(options.requestDrive).toHaveBeenCalledOnce();
     expect(options.drive).not.toHaveBeenCalled();
   });
 

@@ -617,6 +617,12 @@ export class AIService {
         const path = session.worktreePath || session.workspacePath;
         return path ? this.driveQueuedPrompts(sessionId, path, 'send-now') : Promise.resolve();
       },
+      requestDrive: () => {
+        const path = session.worktreePath || session.workspacePath;
+        if (!path) return false;
+        this.requestQueueDrive(sessionId, path, 'send-now');
+        return true;
+      },
       logError: error => logger.main.error('[AIService] Turn interruption failed:', error),
     });
   }
@@ -1339,6 +1345,7 @@ export class AIService {
 
       publishQueueStateToSync: (sessionId) => this.publishQueueStateToSync(sessionId),
       driveQueuedPrompts: (sessionId, workspacePath, reason) => this.driveQueuedPrompts(sessionId, workspacePath, reason),
+      requestQueueDrive: (sessionId, workspacePath, reason) => this.requestQueueDrive(sessionId, workspacePath, reason),
       invalidateQueueDrive: (sessionId, expected) => this.invalidateQueueDrive(sessionId, expected),
       forceSessionIdleOnCancel: (sessionId) => this.forceSessionIdleOnCancel(sessionId),
       interruptCurrentTurn: (sessionId, options) => this.interruptCurrentTurn(sessionId, options),
