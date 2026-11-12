@@ -184,7 +184,7 @@ interface SessionListItemProps {
   model?: string;
   messageCount?: number;
   sessionType?: 'session' | 'workstream' | 'blitz' | 'voice'; // Structural type of session
-  isWorkstream?: boolean; // Whether this session is a workstream (has children)
+  isWorkstream?: boolean; // Explicit workstream container or session with children
   isWorktreeSession?: boolean; // Whether this session belongs to a worktree (shows worktree icon)
   parentSessionId?: string | null; // Parent session ID for hierarchical workstreams
   projectPath?: string; // Workspace path for drag-drop validation
@@ -385,7 +385,7 @@ export const SessionListItem = memo<SessionListItemProps>(function SessionListIt
           </div>
         ) : isWorktreeSession && !treeContext ? (
           <WorktreeIcon size={16} />
-        ) : isWorkstream && !treeContext ? (
+        ) : isWorkstream && (!treeContext || sessionType === 'workstream') ? (
           <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
             <circle cx="8" cy="4" r="1.5" fill="currentColor"/>
             <circle cx="4" cy="12" r="1.5" fill="currentColor"/>

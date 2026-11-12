@@ -104,6 +104,35 @@ function tree() {
   );
 }
 describe('tree interactions', () => {
+  it('keeps an empty workstream distinct from an ordinary session when its children disappear', () => {
+    const wrapper = row('workstream', null, { sessionType: 'workstream' });
+    const child = row('child', 'workstream');
+    const sibling = row('sibling', 'workstream');
+    const onSelect = vi.fn();
+    const onArchive = vi.fn();
+    store.set(sessionRegistryAtom, new Map([wrapper, child, sibling].map(r => [r.id, r])));
+    const view = render(<Provider store={store}><SessionTree root={wrapper} sessions={[child, sibling]}
+      activeSessionId={null} onSessionSelect={onSelect} onSessionArchive={onArchive} /></Provider>);
+    view.rerender(<Provider store={store}><SessionTree root={wrapper} sessions={[]}
+      activeSessionId={null} onSessionSelect={onSelect} onSessionArchive={onArchive} /></Provider>);
+    const header = screen.getByText('workstream').closest('.session-list-item')!;
+    expect(header.getAttribute('data-session-type')).toBe('workstream');
+    expect(header.querySelector('.workstream-icon svg')).not.toBeNull();
+    expect(screen.queryByRole('button', { name: 'Expand workstream' })).toBeNull();
+    fireEvent.click(header);
+    expect(onSelect).toHaveBeenCalledWith('workstream', expect.anything());
+    fireEvent.contextMenu(header);
+    fireEvent.click(screen.getByRole('button', { name: 'Archive Workstream' }));
+    expect(onArchive).toHaveBeenCalledWith('workstream');
+    expect(store.get(sessionRegistryAtom).get('workstream')?.sessionType).toBe('workstream');
+    view.unmount();
+    render(<Provider store={store}><SessionTree root={row('ordinary')} sessions={[]}
+      activeSessionId={null} onSessionSelect={onSelect} /></Provider>);
+    const ordinary = screen.getByText('ordinary').closest('.session-list-item')!;
+    expect(ordinary.getAttribute('data-session-type')).toBe('session');
+    expect(ordinary.querySelector('.workstream-icon')).toBeNull();
+  });
+
   it('flattens each tree to one entry per visible row so a virtual list never holds a whole tree', () => {
     const trees = [{ key: 'root', rows: rows.slice(0, 3) }];
     const { result } = renderHook(() => useVisibleSessionTreeRows(trees, null, '/project'), {
