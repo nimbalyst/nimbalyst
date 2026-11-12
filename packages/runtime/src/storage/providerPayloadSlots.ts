@@ -43,7 +43,18 @@ import { isImageBlock } from '../utils/contentBytes';
 export type PayloadSlotKind =
   /** `message.content[i].content`, as a string or a text block within an array. */
   | 'claudeToolResult'
-  /** `tool_use_result.<key>` -- the Edit/Write/Read sidecar. */
+  /**
+   * A whole image block inside a tool result's content array (claude
+   * `message.content[i].content[j]`, codex `item.result.content[j]`). Its own
+   * kind because an image is replaced as a block, not as a string, and so a
+   * caller has to opt in by kind rather than receive it as ordinary output.
+   */
+  | 'toolResultImage'
+  /**
+   * `tool_use_result.<key>` -- the Edit/Write/Read sidecar. When the sidecar is
+   * an array or a string (the MCP tool-result copy) the slot is the whole
+   * `tool_use_result`.
+   */
   | 'claudeToolUseResult'
   /** `message.content[i].signature` on a thinking block (~12 KB of base64). */
   | 'claudeThinkingSignature'
@@ -121,9 +132,18 @@ function collectClaudeSlots(chunk: Record<string, unknown>, out: PayloadSlot[]):
       if (!Array.isArray(content)) return;
 
       (content as unknown[]).forEach((item, j) => {
-        // An image is the one payload whose entire purpose is being looked at,
-        // and a screenshot is bounded where a log is not. Never a slot.
-        if (isImageBlock(item)) return;
+        // Offered under its own kind. Aged screenshots were 600 MB of one
+        // measured install (2,005 blocks, 314 KB average), kept forever
+        // because this used to offer no slot for them at all.
+        if (isImageBlock(item)) {
+          out.push(makeSlot(
+            'toolResultImage',
+            `message.content[${i}].content[${j}]`,
+            content as unknown as Record<number, unknown>,
+            j,
+          ));
+          return;
+        }
         if (isTextBlock(item)) {
           out.push(makeSlot(
             'claudeToolResult',
@@ -144,6 +164,11 @@ function collectClaudeSlots(chunk: Record<string, unknown>, out: PayloadSlot[]):
     for (const key of Object.keys(tur)) {
       out.push(makeSlot('claudeToolUseResult', `tool_use_result.${key}`, tur, key));
     }
+  } else if (Array.isArray(tur) || typeof tur === 'string') {
+    // The MCP form: a second copy of the result's content array (or text).
+    // Rows written before the write path learned to drop it still carry the
+    // screenshot twice. One slot for the whole value.
+    out.push(makeSlot('claudeToolUseResult', 'tool_use_result', chunk, 'tool_use_result'));
   }
 }
 
@@ -182,7 +207,15 @@ function collectCodexSlots(chunk: Record<string, unknown>, out: PayloadSlot[]): 
     } else if (isPlainObject(result)) {
       if (Array.isArray(result.content)) {
         (result.content as unknown[]).forEach((block, j) => {
-          if (isImageBlock(block)) return;
+          if (isImageBlock(block)) {
+            out.push(makeSlot(
+              'toolResultImage',
+              `${itemPath}.result.content[${j}]`,
+              result.content as unknown as Record<number, unknown>,
+              j,
+            ));
+            return;
+          }
           if (isTextBlock(block)) {
             out.push(makeSlot(
               'codexItemResult',
