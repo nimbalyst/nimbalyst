@@ -145,6 +145,55 @@ describe('SQLiteBackupService', () => {
     expect(sizeAfter).toBe(sizeBefore);
   });
 
+  /** 50 sessions carrying 64 KB each, so compaction can move the size ratio. */
+  const seedHeavySessions = () => {
+    const handle = sqlite.getRawHandle()!;
+    const insert = handle.prepare('INSERT INTO ai_sessions(id, provider, metadata) VALUES (?, ?, ?)');
+    for (let i = 0; i < 50; i++) {
+      insert.run(`heavy-${i}`, 'claude', JSON.stringify({ pad: 'x'.repeat(64 * 1024) }));
+    }
+  };
+  const compactKeepingEverySession = () => {
+    const handle = sqlite.getRawHandle()!;
+    handle.prepare(`UPDATE ai_sessions SET metadata = '{}'`).run();
+    handle.pragma('wal_checkpoint(TRUNCATE)');
+    handle.exec('VACUUM');
+  };
+
+  it('accepts a much smaller backup that still holds every session', async () => {
+    // What retention plus VACUUM produces: the same sessions in far fewer
+    // bytes. Rejecting it froze backups at the pre-compaction copy for good.
+    seedHeavySessions();
+    await svc.createBackup();
+    const sizeBefore = svc.getBackupStatus().currentBackup!.sizeBytes;
+
+    compactKeepingEverySession();
+    await svc.createBackup();
+
+    const status = svc.getBackupStatus();
+    expect(status.currentBackup!.sizeBytes).toBeLessThan(sizeBefore / 2);
+    expect(status.previousBackup!.sizeBytes).toBe(sizeBefore);
+  });
+
+  it('accepts the smaller backup when the current one predates recorded session counts', async () => {
+    seedHeavySessions();
+    await svc.createBackup();
+    const sizeBefore = svc.getBackupStatus().currentBackup!.sizeBytes;
+
+    // Metadata as an older build wrote it: no sessionCount on the slot.
+    const metadataPath = path.join(backupDir, 'backup-metadata.json');
+    const stored = JSON.parse(fs.readFileSync(metadataPath, 'utf-8'));
+    delete stored.currentBackup.sessionCount;
+    fs.writeFileSync(metadataPath, JSON.stringify(stored));
+    svc = new SQLiteBackupService({ sqliteDir, backupDir, sqlite });
+    await svc.initialize();
+
+    compactKeepingEverySession();
+    await svc.createBackup();
+
+    expect(svc.getBackupStatus().currentBackup!.sizeBytes).toBeLessThan(sizeBefore / 2);
+  });
+
   it('restoreFromBackup replaces nimbalyst.sqlite with the backup file', async () => {
     await svc.createBackup();
 

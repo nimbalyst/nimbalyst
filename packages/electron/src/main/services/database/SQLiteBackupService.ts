@@ -41,6 +41,11 @@ interface BackupSlotMetadata {
   timestamp: string;
   sizeBytes: number;
   verified: boolean;
+  /**
+   * `ai_sessions` rows in the file, from the verifier. Absent on slots an
+   * older build wrote; see `decideBackupRotation`.
+   */
+  sessionCount?: number;
 }
 
 interface BackupMetadata {
@@ -78,6 +83,43 @@ export const MAX_BACKUP_COPIES_KEPT = BACKUP_SLOT_ORDER.length;
 
 const METADATA_FILENAME = 'backup-metadata.json';
 const SIZE_GUARD_RATIO = 0.5;
+/** A smaller backup must hold at least this share of the current backup's sessions. */
+const SESSION_GUARD_RATIO = 0.9;
+
+export interface BackupRotationFacts {
+  newSizeBytes: number;
+  /** 0 when there is no current backup. */
+  currentSizeBytes: number;
+  newSessionCount: number | undefined;
+  currentSessionCount: number | undefined;
+}
+
+/**
+ * Whether a verified new backup may rotate the chain.
+ *
+ * The size check alone could not tell an emptied database from a compacted
+ * one: after retention plus VACUUM halved a file, every later backup was
+ * deleted as "suspiciously smaller" and the chain froze at the pre-compaction
+ * copy (NIM-7736, GitHub #1925). Size stays as the trigger, since a backup of
+ * similar size needs no second look. When it trips, the decision is made on
+ * content: sessions are the record that no maintenance pass removes, so a
+ * smaller file that still holds them was compacted, and one that lost them is
+ * the case this guard exists for. Without both counts there is nothing to
+ * verify against, and the backup is rejected as before.
+ */
+export function decideBackupRotation(facts: BackupRotationFacts): { accept: boolean; reason: string } {
+  const { newSizeBytes, currentSizeBytes, newSessionCount, currentSessionCount } = facts;
+  if (currentSizeBytes <= 0 || newSizeBytes / currentSizeBytes >= SIZE_GUARD_RATIO) {
+    return { accept: true, reason: 'size within range' };
+  }
+  if (newSessionCount === undefined || currentSessionCount === undefined) {
+    return { accept: false, reason: 'smaller, and session counts are unavailable to compare' };
+  }
+  if (newSessionCount >= currentSessionCount * SESSION_GUARD_RATIO) {
+    return { accept: true, reason: 'smaller, but holds the sessions the current backup holds' };
+  }
+  return { accept: false, reason: 'smaller, and holds fewer sessions than the current backup' };
+}
 
 /** A bad setting must never mean "keep zero backups". */
 function clampCopiesKept(value: number | undefined): number {
@@ -248,7 +290,7 @@ export class SQLiteBackupService {
         return { success: false, error: `Verification failed: ${verification.error}` };
       }
 
-      const rotated = await this.rotateBackups(tempPath, timestamp, sizeBytes);
+      const rotated = await this.rotateBackups(tempPath, timestamp, sizeBytes, verification.sessionCount);
       // better-sqlite3's online backup opens the destination in WAL mode
       // and leaves `.sqlite-shm`/`.sqlite-wal` siblings next to the file.
       // The rotation moves the main file but the siblings stay behind —
@@ -414,16 +456,50 @@ export class SQLiteBackupService {
     newPath: string,
     timestamp: string,
     sizeBytes: number,
+    sessionCount: number | undefined,
   ): Promise<boolean> {
-    const currentSize = this.metadata.currentBackup?.sizeBytes ?? 0;
-    if (currentSize > 0 && sizeBytes / currentSize < SIZE_GUARD_RATIO) {
+    const current = this.metadata.currentBackup;
+    const currentSize = current?.sizeBytes ?? 0;
+    let decision = decideBackupRotation({
+      newSizeBytes: sizeBytes,
+      currentSizeBytes: currentSize,
+      newSessionCount: sessionCount,
+      currentSessionCount: current?.sessionCount,
+    });
+    if (!decision.accept && current && current.sessionCount === undefined && sessionCount !== undefined) {
+      // A slot written before counts were recorded. Read the count from the
+      // file itself, once, rather than rejecting on a number we never took.
+      const currentFile = path.join(this.backupDir, BACKUP_FILENAMES.current);
+      const check = await this.verify(currentFile);
+      if (check.valid && check.sessionCount !== undefined) {
+        current.sessionCount = check.sessionCount;
+        decision = decideBackupRotation({
+          newSizeBytes: sizeBytes,
+          currentSizeBytes: currentSize,
+          newSessionCount: sessionCount,
+          currentSessionCount: check.sessionCount,
+        });
+      }
+    }
+    if (!decision.accept) {
       this.log('warn', '[SQLite Backup] New backup suspiciously smaller; rejecting rotation', {
         sizeBytes,
         currentSize,
         ratio: (sizeBytes / currentSize).toFixed(2),
+        sessionCount,
+        currentSessionCount: current?.sessionCount,
+        reason: decision.reason,
       });
       await fs.rm(newPath, { force: true });
       return false;
+    }
+    if (decision.reason !== 'size within range') {
+      this.log('info', '[SQLite Backup] Accepting a smaller backup', {
+        sizeBytes,
+        currentSize,
+        sessionCount,
+        currentSessionCount: current?.sessionCount,
+      });
     }
 
     // Slots from newest to oldest, truncated to the retention setting. Slots
@@ -463,7 +539,7 @@ export class SQLiteBackupService {
       await fs.rm(currentPath, { force: true });
     }
     await fs.rename(newPath, currentPath);
-    this.metadata.currentBackup = { timestamp, sizeBytes, verified: true };
+    this.metadata.currentBackup = { timestamp, sizeBytes, verified: true, sessionCount };
     return true;
   }
 
