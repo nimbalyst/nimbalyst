@@ -109,6 +109,32 @@ export function writeMigratedTo(root: string, migratedTo: MigratedTo): void {
   fs.writeFileSync(file, JSON.stringify({ ...readSettingFile(root), migratedTo }, null, 2) + '\n');
 }
 
+/**
+ * Set once the local wiki publishes to a team project (`nim wiki publish
+ * --init`): the files stay the source of truth and the team copy is a mirror.
+ * Separate from `migratedTo`; a wiki has one or the other.
+ */
+export interface PublishTarget {
+  orgId: string;
+  projectId: string;
+  /** ISO time of the last verified publish; absent until the first one. */
+  publishedAt?: string;
+}
+
+export function readPublishTarget(root: string): PublishTarget | undefined {
+  const value = readSettingFile(root).publish as Partial<PublishTarget> | undefined;
+  if (typeof value?.orgId !== 'string' || typeof value?.projectId !== 'string') return undefined;
+  return { orgId: value.orgId, projectId: value.projectId, ...(typeof value.publishedAt === 'string' ? { publishedAt: value.publishedAt } : {}) };
+}
+
+/** Records the publish target in `.nimbalyst/local-wiki.json`, keeping every other key. */
+export function writePublishTarget(root: string, publish: PublishTarget): void {
+  const file = settingPath(root);
+  if (fs.existsSync(file)) readLocationSetting(root);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, JSON.stringify({ ...readSettingFile(root), publish }, null, 2) + '\n');
+}
+
 export interface WikiLocation {
   projectRoot: string;
   /** Absolute wiki folder. */

@@ -5,6 +5,10 @@ import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { Provider, createStore } from 'jotai';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AIInput } from '../AIInput';
+import { DEFAULT_DICTATION_SETTINGS } from '../../../../shared/dictation';
+import { dictationSettingsAtom } from '../../../store/atoms/dictation';
+import { getDictationTarget } from '../../../dictation/dictationTargets';
+import { getDictationController } from '../../../dictation/dictationController';
 
 vi.mock('../AIInputControls', () => ({ AIInputControls: () => null }));
 vi.mock('../../../help', () => ({ HelpTooltip: ({ children }: { children: React.ReactNode }) => <>{children}</> }));
@@ -89,5 +93,69 @@ describe('Windows clipboard image paste', () => {
     await act(async () => { finishSave({ success: true, attachment: { id: 'pasted' } }); });
     expect(onAttachmentAdd).toHaveBeenCalledTimes(1);
     expect(input.value).toMatch(/^edited during save @pasted-image-.*\.png $/);
+  });
+});
+
+describe('dictation in the agent input', () => {
+  function renderInput(enabled: boolean) {
+    Object.defineProperty(window, 'electronAPI', { configurable: true, value: { invoke: vi.fn(async () => ({})) } });
+    const onSend = vi.fn();
+    function Harness() {
+      const [value, setValue] = useState('fix the bug');
+      return <AIInput value={value} onChange={setValue} onSend={onSend} sessionId="dictation-test" remoteSession />;
+    }
+    const store = createStore();
+    store.set(dictationSettingsAtom, { ...DEFAULT_DICTATION_SETTINGS, enabled });
+    render(<Provider store={store}><Harness /></Provider>);
+    return { input: screen.getByRole('textbox') as HTMLTextAreaElement, onSend };
+  }
+
+  it('renders no mic button when dictation is disabled in Settings', () => {
+    renderInput(false);
+    expect(screen.queryByTestId('dictation-button')).toBeNull();
+    cleanup();
+    renderInput(true);
+    expect(screen.getAllByTestId('dictation-button')).toHaveLength(1);
+  });
+
+  it('writes partials and finals into the draft at the caret without sending', () => {
+    const { input, onSend } = renderInput(true);
+    input.focus();
+    input.setSelectionRange(7, 7);
+    const target = getDictationTarget('agent-input:dictation-test')!;
+    act(() => target.showPartial!('log'));
+    expect(input.value).toBe('fix the log bug');
+    act(() => target.commitFinal('login'));
+    expect(input.value).toBe('fix the login bug');
+    act(() => target.showPartial!('discard'));
+    act(() => target.clearPartial());
+    expect(input.value).toBe('fix the login bug');
+    expect(onSend).not.toHaveBeenCalled();
+    // The committed phrase is one undo step.
+    fireEvent.keyDown(input, { key: 'z', ctrlKey: true });
+    expect(input.value).toBe('fix the bug');
+  });
+
+  it('stops dictation on send and sends the visible text, partial included', () => {
+    const { input, onSend } = renderInput(true);
+    input.focus();
+    input.setSelectionRange(11, 11);
+    const controller = getDictationController();
+    vi.spyOn(controller, 'isRecording').mockImplementation((key) => key === 'agent-input:dictation-test');
+    const stop = vi.spyOn(controller, 'stop').mockImplementation(() => {
+      // The real stop(true) clears the pending partial through the target.
+      getDictationTarget('agent-input:dictation-test')!.clearPartial();
+    });
+    const target = getDictationTarget('agent-input:dictation-test')!;
+    act(() => target.showPartial!('now'));
+    expect(input.value).toBe('fix the bug now');
+
+    fireEvent.keyDown(input, { key: 'Enter' });
+
+    expect(stop).toHaveBeenCalledWith(true);
+    expect(onSend).toHaveBeenCalledWith('fix the bug now');
+    // Stopping must not strip the partial out of the text that was just sent.
+    expect(input.value).toBe('fix the bug now');
+    vi.restoreAllMocks();
   });
 });

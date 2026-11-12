@@ -168,8 +168,12 @@ const ORG_INVITE_ROLE = {
   description: "Team role. Default 'member'.",
 } as const;
 
-/** The project roles an invitation or invite link can grant; the server's `project_access` roles. */
-export const TEAM_PROJECT_ROLES = ['project-admin', 'project-editor', 'project-viewer'] as const;
+/**
+ * The project roles an invitation or invite link can grant; the server's
+ * `project_access` roles. `project-commenter` sits between viewer and editor:
+ * it reads the project's pages and writes comment threads, never page bodies.
+ */
+export const TEAM_PROJECT_ROLES = ['project-admin', 'project-editor', 'project-commenter', 'project-viewer'] as const;
 export type TeamProjectRole = (typeof TEAM_PROJECT_ROLES)[number];
 /** What an invitation with a project grants when no role is named. */
 export const DEFAULT_INVITE_PROJECT_ROLE: TeamProjectRole = 'project-editor';
@@ -177,7 +181,7 @@ export const DEFAULT_INVITE_PROJECT_ROLE: TeamProjectRole = 'project-editor';
 const INVITE_PROJECT_ROLE = {
   type: 'string',
   enum: [...TEAM_PROJECT_ROLES],
-  description: "Role on `projectId`. Default 'project-editor' when projectId is given; 'editor' and 'viewer' are accepted for project-editor and project-viewer.",
+  description: "Role on `projectId`. Default 'project-editor' when projectId is given; 'editor', 'commenter' and 'viewer' are accepted for project-editor, project-commenter and project-viewer. A commenter reads and comments on pages but never edits page bodies.",
 } as const;
 
 // ---------------------------------------------------------------------------

@@ -101,6 +101,22 @@ describe('hosted extension comments', () => {
     fixture.hosted.destroy();
   });
 
+  it('carries a locked body to the extension when the host re-resolves after a verdict', async () => {
+    const fixture = createFixture();
+    await fixture.hosted.refreshCapabilities();
+    expect(fixture.hosted.service.getCapabilities()).toEqual({ read: true, comment: true });
+
+    // The room's verdict says comment-only; on an extension page the host
+    // answers read-only, no-comment.
+    fixture.capabilities.value = { read: true, comment: false, editBody: false };
+    const listener = vi.fn();
+    fixture.hosted.service.subscribe(listener);
+    await fixture.hosted.refreshCapabilities();
+    expect(fixture.hosted.service.getCapabilities()).toEqual({ read: true, comment: false, editBody: false });
+    expect(listener).toHaveBeenCalled();
+    fixture.hosted.destroy();
+  });
+
   it('keeps authority host-owned and re-reads access, hydration, and roster at mutation time', async () => {
     const fixture = createFixture({ now: 1_234 });
     fixture.hosted.service.registerAnchorAdapter(entityAdapter());

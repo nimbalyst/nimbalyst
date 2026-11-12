@@ -1,13 +1,13 @@
 {
   "id": "com.nimbalyst.mockuplm",
   "name": "MockupLM",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "description": "Visual UX mockup creation with HTML/CSS for planning and design",
   "author": "Nimbalyst",
   "main": "dist/index.js",
   "apiVersion": "1.0.0",
   "marketplace": {
-    "changelog": "1.0.4: Open shared mockups in the web console, comment on a spot in a shared mockup, and see the mockups a feedback request compares.\n1.0.3: Shared mockups keep every edit and gain a source pane. Sharing a mockup project is turned off until its screens sync.\n1.0.2: Share selected mockup screens with AI and render shared mockup links more reliably.\n1.0.1: Share to Team collaboration for mockups and projects, shared viewer and diff review fixes.",
+    "changelog": "1.0.5: A user who can only comment on a shared mockup no longer writes mockup pins, so their session is not ended when pins are collected or healed.\n1.0.4: Open shared mockups in the web console, comment on a spot in a shared mockup, and see the mockups a feedback request compares.\n1.0.3: Shared mockups keep every edit and gain a source pane. Sharing a mockup project is turned off until its screens sync.\n1.0.2: Share selected mockup screens with AI and render shared mockup links more reliably.\n1.0.1: Share to Team collaboration for mockups and projects, shared viewer and diff review fixes.",
     "categories": ["diagrams"],
     "tags": ["mockup", "wireframe", "ui", "ux", "design", "prototype", "html"],
     "icon": "palette",

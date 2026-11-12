@@ -205,6 +205,23 @@ function createIslandWindow(): BrowserWindow {
     if (pinned) setPinned(false);
   });
 
+  // The BrowserWindow outlives its renderer: after a sleep/wake the frame can be
+  // gone while `isDestroyed()` stays false, so `showMenuBarIsland` would keep
+  // pushing into it and never rebuild. Drop the window; the next repaint
+  // recreates it lazily.
+  window.webContents.on('render-process-gone', (_event, details) => {
+    if (islandWindow !== window) return;
+    logger.main.warn(`[MenuBarIsland] Renderer gone (${details?.reason}); rebuilding on next repaint`);
+    stopPolling();
+    hover = { hovered: false, outsideSince: 0 };
+    pinned = false;
+    dragging = null;
+    ignoringMouse = true;
+    islandRendererReady = false;
+    window.destroy();
+    islandWindow = null;
+  });
+
   loadIslandRenderer(window);
 
   window.webContents.once('did-finish-load', () => {

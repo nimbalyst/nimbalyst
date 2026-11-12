@@ -497,21 +497,22 @@ describe('resolveClaudeCliModelArg', () => {
   });
 
   it('uses the same explicit current Fable model as the SDK', () => {
-    expect(resolveClaudeCliModelArg('claude-code-cli:fable')).toBe('claude-fable-5-1');
-    expect(resolveClaudeCliModelArg('fable')).toBe('claude-fable-5-1');
+    expect(resolveClaudeCliModelArg('claude-code-cli:fable')).toBe('claude-fable-5-2');
+    expect(resolveClaudeCliModelArg('fable')).toBe('claude-fable-5-2');
   });
 
   it('resolves pinned fable-5 to the full model id (CLI does not accept `fable-5` as alias)', () => {
     expect(resolveClaudeCliModelArg('claude-code-cli:fable-5')).toBe('claude-fable-5');
     expect(resolveClaudeCliModelArg('fable-5')).toBe('claude-fable-5');
+    expect(resolveClaudeCliModelArg('claude-code-cli:fable-5-1')).toBe('claude-fable-5-1');
   });
 
   // Plain `fable` is 1M on a plan that auto-upgrades, but NOT behind an
   // ANTHROPIC_BASE_URL gateway (our observation proxy) and not on Pro without
   // credits — the explicit `[1m]` form is the user's opt-in for those (NIM-2170).
   it('preserves the explicit 1M suffix for current Fable', () => {
-    expect(resolveClaudeCliModelArg('claude-code-cli:fable-1m')).toBe('claude-fable-5-1[1m]');
-    expect(resolveClaudeCliModelArg('fable-1m')).toBe('claude-fable-5-1[1m]');
+    expect(resolveClaudeCliModelArg('claude-code-cli:fable-1m')).toBe('claude-fable-5-2[1m]');
+    expect(resolveClaudeCliModelArg('fable-1m')).toBe('claude-fable-5-2[1m]');
   });
 
   it('passes a bare variant through (normalized), translating -1m to [1m]', () => {

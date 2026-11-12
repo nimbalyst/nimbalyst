@@ -376,6 +376,11 @@ export async function initEnhancedPath(): Promise<void> {
   }
 }
 
+/** Test-only: seed the detection cache without spawning a login shell. */
+export function __setDetectedPathsForTest(detected: DetectedPaths | null): void {
+  cachedDetectedPaths = detected;
+}
+
 /**
  * Get the cached shell environment variables detected at startup.
  * Returns all env vars from the user's login shell EXCEPT PATH
@@ -420,16 +425,20 @@ export function getEnhancedPath(): string {
   // Ensure vendored ripgrep is available even when rg is not system-installed.
   paths.push(...getVendoredRipgrepDirs());
 
-  // Start with existing PATH
+  // The login shell's PATH comes before the inherited one so tools resolve the
+  // same way they do in Terminal. A Dock launch inherits launchd's
+  // /usr/bin:/bin:/usr/sbin:/sbin, which would otherwise shadow version
+  // managers like mise or rbenv (#1934). Until async detection finishes,
+  // shellPath is unset and the inherited PATH leads as before.
+  if ((process.platform === 'darwin' || process.platform === 'linux') && detected.shellPath) {
+    paths.push(detected.shellPath);
+  }
+
   if (process.env.PATH) {
     paths.push(process.env.PATH);
   }
 
   if (process.platform === 'darwin' || process.platform === 'linux') {
-    // Use cached shell PATH if available (populated asynchronously at startup)
-    if (detected.shellPath) {
-      paths.push(detected.shellPath);
-    }
 
     // Common Unix paths
     paths.push('/usr/local/bin');
@@ -519,8 +528,27 @@ export function getEnhancedPath(): string {
     return [...new Set(windowsPaths)].join(';');
   }
 
-  const uniquePaths = [...new Set(paths.filter(Boolean))];
-  const pathString = uniquePaths.join(':');
+  return dedupePathEntries(paths, ':');
+}
 
-  return pathString;
+/**
+ * Split each entry on the delimiter (some entries are whole PATH strings) and
+ * keep the first occurrence of each folder. Empty segments are dropped and a
+ * trailing slash does not make a folder distinct.
+ */
+function dedupePathEntries(entries: string[], delimiter: string): string {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const entry of entries) {
+    if (!entry) continue;
+    // No trimming: whitespace is a legal, significant part of a Unix path.
+    for (const dir of entry.split(delimiter)) {
+      if (!dir) continue;
+      const folder = dir.replace(/\/+$/, '') || dir;
+      if (seen.has(folder)) continue;
+      seen.add(folder);
+      result.push(folder);
+    }
+  }
+  return result.join(delimiter);
 }

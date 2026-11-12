@@ -175,6 +175,13 @@ export function createExtensionCommentsService(input: {
     const resolved = host.getCapabilities();
     // `comment` is gated on `read` so a host that says "no read, yes comment"
     // cannot produce a composer over threads the user is not allowed to see.
+    // It is also gated on body write: in v1 a commenter (`editBody: false`)
+    // gets read-only, no-comment access on extension pages, because an
+    // extension's anchors (mockup pins) live outside `comments` and the room
+    // ends a commenter's session on any write there.
+    if (resolved.editBody === false) {
+      return { read: resolved.read, comment: false, editBody: false };
+    }
     return { read: resolved.read, comment: resolved.read && resolved.comment };
   };
 

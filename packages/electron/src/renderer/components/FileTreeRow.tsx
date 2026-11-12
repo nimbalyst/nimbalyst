@@ -157,6 +157,28 @@ const InlineRenameInput = memo<{
 });
 
 /**
+ * "N more items" under a folder the main-process per-folder cap cut short.
+ * Its own virtual list item, one row tall. Not a treeitem: no click, drag, or
+ * selection, and not in the node list that keyboard navigation walks.
+ */
+function omittedEntriesLabel(count: number, isMinimum: boolean): string {
+  if (isMinimum && count === 0) return 'More items not shown';
+  const items = count === 1 ? 'item' : 'items';
+  return `${count.toLocaleString()} ${isMinimum ? `or more ${items}` : `more ${items}`}`;
+}
+
+export const OmittedEntriesRow = memo<{ count: number; depth: number; isMinimum: boolean }>(({ count, depth, isMinimum }) => (
+  <div
+    role="note"
+    className="file-tree-omitted-row flex items-center h-7 px-2 italic text-nim-muted select-none cursor-default whitespace-nowrap"
+    style={{ paddingLeft: depth * 16 + 8 }}
+  >
+    <span className="file-tree-spacer"></span>
+    {omittedEntriesLabel(count, isMinimum)}
+  </div>
+));
+
+/**
  * Memoized row renderer for the flat virtualized file tree.
  *
  * Preserves existing CSS class names (.file-tree-file, .file-tree-directory, etc.)

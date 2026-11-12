@@ -28,6 +28,8 @@ import * as path from 'path';
 import { existsSync } from 'fs';
 import * as fs from 'fs';
 import { windowStates, createWindow, findWindowByFilePath, getWindowId } from '../window/WindowManager';
+import { resolveActiveWorkspacePath } from '../window/windowState';
+import { installShellCommandInteractive, uninstallShellCommandInteractive } from '../shellCommand/shellCommandActions';
 import { createAboutWindow } from '../window/AboutWindow';
 import { installWindowListMenuRefresh } from './windowListMenuRefresh';
 import { createWorkspaceManagerWindow } from '../window/WorkspaceManagerWindow.ts';
@@ -112,8 +114,9 @@ function createWindowListMenu(): any[] {
             title = 'About';
             category = 'other';
         } else if (state) {
-            if (state.mode === 'workspace' && state.workspacePath) {
-                title = basename(state.workspacePath);
+            const activeWorkspacePath = resolveActiveWorkspacePath(state);
+            if (state.mode === 'workspace' && activeWorkspacePath) {
+                title = basename(activeWorkspacePath);
                 category = 'workspace';
             }
         }
@@ -402,13 +405,15 @@ export async function createApplicationMenu() {
                         }
 
                         const state = windowStates.get(windowId);
-                        if (state?.mode !== 'workspace' || !state.workspacePath) {
+                        const activeWorkspacePath = resolveActiveWorkspacePath(state);
+                        if (state?.mode !== 'workspace' || !activeWorkspacePath) {
                             createWindow();
                             return;
                         }
 
-                        // Check current mode at keypress time (not menu build time)
-                        const workspaceState = getWorkspaceState(state.workspacePath);
+                        // Check current mode at keypress time (not menu build time),
+                        // for the rail project on screen, not the window's first one.
+                        const workspaceState = getWorkspaceState(activeWorkspacePath);
                         const currentMode = workspaceState?.activeMode;
 
                         // One resolver decides what Cmd+N makes, shared with the
@@ -603,8 +608,9 @@ export async function createApplicationMenu() {
                             const state = windowId !== null ? windowStates.get(windowId) : undefined;
                             let projectName = 'Untitled';
 
-                            if (state?.mode === 'workspace' && state.workspacePath) {
-                                projectName = basename(state.workspacePath);
+                            const activeWorkspacePath = resolveActiveWorkspacePath(state);
+                            if (state?.mode === 'workspace' && activeWorkspacePath) {
+                                projectName = basename(activeWorkspacePath);
                             } else if (state?.filePath) {
                                 projectName = basename(state.filePath);
                             }
@@ -1637,6 +1643,19 @@ export async function createApplicationMenu() {
                     label: 'Check for Updates...',
                     click: async () => {
                         autoUpdaterService.checkForUpdatesWithUI();
+                    }
+                },
+                { type: 'separator' },
+                {
+                    label: "Install 'nimbalyst' Command in PATH...",
+                    click: async () => {
+                        await installShellCommandInteractive(getFocusedWindow());
+                    }
+                },
+                {
+                    label: "Uninstall 'nimbalyst' Command...",
+                    click: async () => {
+                        await uninstallShellCommandInteractive(getFocusedWindow());
                     }
                 },
                 { type: 'separator' },

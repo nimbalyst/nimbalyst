@@ -107,6 +107,66 @@ describe('canAccess resolver (SQLite backend, migration 0013)', () => {
     expect(adminR.reason).toBe('insufficient-project-role');
   });
 
+  it('lets a project-commenter grant view and comment but never edit', async () => {
+    await db.query(`INSERT INTO project_access (project_id, user_id, project_role) VALUES ('p1','member1','project-commenter')`);
+    const view = await canAccess(db, teamViewer('member1'), { orgId: 'o', projectId: 'p1', action: 'view' });
+    expect(view.allowed).toBe(true);
+    expect(view.projectRole).toBe('project-commenter');
+    expect((await canAccess(db, teamViewer('member1'), { orgId: 'o', projectId: 'p1', action: 'comment' })).allowed).toBe(true);
+    const edit = await canAccess(db, teamViewer('member1'), { orgId: 'o', projectId: 'p1', action: 'edit' });
+    expect(edit.allowed).toBe(false);
+    expect(edit.projectRole).toBe('project-commenter');
+    expect(edit.reason).toBe('insufficient-project-role');
+  });
+
+  it('ranks comment above view and below edit for the other project roles', async () => {
+    await db.query(`INSERT INTO project_access (project_id, user_id, project_role) VALUES ('p1','member1','project-editor')`);
+    expect((await canAccess(db, teamViewer('member1'), { orgId: 'o', projectId: 'p1', action: 'comment' })).allowed).toBe(true);
+    await db.query(`INSERT INTO org_members (org_id, user_id, role) VALUES ('o','member2','member')`);
+    await db.query(`INSERT INTO project_access (project_id, user_id, project_role) VALUES ('p1','member2','project-viewer')`);
+    const viewerComment = await canAccess(db, teamViewer('member2'), { orgId: 'o', projectId: 'p1', action: 'comment' });
+    expect(viewerComment.allowed).toBe(false);
+    expect(viewerComment.reason).toBe('insufficient-project-role');
+  });
+
+  it('caps a commenter grant at the organization viewer ceiling', async () => {
+    await db.query(`INSERT INTO project_access (project_id, user_id, project_role) VALUES ('p1','viewer1','project-commenter')`);
+    const comment = await canAccess(db, teamViewer('viewer1'), { orgId: 'o', projectId: 'p1', action: 'comment' });
+    expect(comment.allowed).toBe(false);
+    expect(comment.projectRole).toBe('project-viewer');
+    expect(comment.reason).toBe('org-role-ceiling');
+  });
+
+  it('allows org-level comments for a member but not an organization viewer', async () => {
+    expect((await canAccess(db, teamViewer('member1'), { orgId: 'o', action: 'comment' })).allowed).toBe(true);
+    const viewer = await canAccess(db, teamViewer('viewer1'), { orgId: 'o', action: 'comment' });
+    expect(viewer.allowed).toBe(false);
+    expect(viewer.reason).toBe('org-level-read-only-role');
+  });
+
+  it('gives a guest no org-level access and never edit rights on a project', async () => {
+    await db.query(`INSERT INTO org_members (org_id, user_id, role) VALUES ('o','guest1','guest')`);
+    const orgLevel = await canAccess(db, teamViewer('guest1'), { orgId: 'o', action: 'view' });
+    expect(orgLevel.allowed).toBe(false);
+    expect(orgLevel.reason).toBe('org-level-guest');
+    // No grant: nothing.
+    expect((await canAccess(db, teamViewer('guest1'), { orgId: 'o', projectId: 'p1', action: 'view' })).allowed).toBe(false);
+
+    // A commenter grant: read and comment, never edit.
+    await db.query(`INSERT INTO project_access (project_id, user_id, project_role) VALUES ('p1','guest1','project-commenter')`);
+    expect((await canAccess(db, teamViewer('guest1'), { orgId: 'o', projectId: 'p1', action: 'comment' })).allowed).toBe(true);
+    expect((await canAccess(db, teamViewer('guest1'), { orgId: 'o', projectId: 'p1', action: 'edit' })).allowed).toBe(false);
+
+    // An editor grant on a guest only reads.
+    await db.query(`UPDATE project_access SET project_role = 'project-editor' WHERE user_id = 'guest1'`);
+    const view = await canAccess(db, teamViewer('guest1'), { orgId: 'o', projectId: 'p1', action: 'view' });
+    expect(view.allowed).toBe(true);
+    expect(view.projectRole).toBe('project-viewer');
+    const comment = await canAccess(db, teamViewer('guest1'), { orgId: 'o', projectId: 'p1', action: 'comment' });
+    expect(comment.allowed).toBe(false);
+    expect(comment.reason).toBe('org-role-ceiling');
+  });
+
   it('caps a project-viewer grant at view only', async () => {
     await db.query(`INSERT INTO project_access (project_id, user_id, project_role) VALUES ('p1','viewer1','project-viewer')`);
     expect((await canAccess(db, teamViewer('viewer1'), { orgId: 'o', projectId: 'p1', action: 'view' })).allowed).toBe(true);

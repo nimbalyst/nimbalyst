@@ -2,7 +2,7 @@ import { BrowserWindow, nativeImage, app, powerMonitor } from 'electron';
 import { systemShell } from '../utils/systemShell';
 import { safeHandle, safeOn } from '../utils/ipcRegistry';
 import { windowStates, windows, getWindowId } from '../window/WindowManager';
-import { syncRepresentedFilename, getWindowProjectPaths } from '../window/windowState';
+import { syncRepresentedFilename, getInitialRailState, resolveActiveWorkspacePath } from '../window/windowState';
 import { basename, join } from 'path';
 import { writeFileSync, existsSync, mkdirSync } from 'fs';
 import { tmpdir } from 'os';
@@ -43,11 +43,7 @@ export function registerWindowHandlers() {
         if (!state) return null;
 
         if (state.mode === 'workspace' && state.workspacePath) {
-            const openProjectPaths = getWindowProjectPaths(state);
-            const activeWorkspacePath =
-                state.activeWorkspacePath && openProjectPaths.includes(state.activeWorkspacePath)
-                    ? state.activeWorkspacePath
-                    : state.workspacePath;
+            const { openProjectPaths, activeWorkspacePath } = getInitialRailState(state, state.workspacePath);
             return {
                 mode: 'workspace',
                 workspacePath: state.workspacePath,
@@ -111,9 +107,11 @@ export function registerWindowHandlers() {
         const state = windowStates.get(windowId);
         if (!state || state.mode !== 'workspace') return null;
 
+        // The project on screen, not the window's first rail project.
+        const activeWorkspacePath = resolveActiveWorkspacePath(state);
         return {
-            path: state.workspacePath,
-            name: state.workspacePath ? basename(state.workspacePath) : null
+            path: activeWorkspacePath,
+            name: activeWorkspacePath ? basename(activeWorkspacePath) : null
         };
     });
     // Set document edited state
@@ -329,7 +327,7 @@ function workspacePathForEvent(event: Electron.IpcMainInvokeEvent): string | und
     if (!window) return undefined;
     const windowId = getWindowId(window);
     if (windowId === null) return undefined;
-    return windowStates.get(windowId)?.workspacePath ?? undefined;
+    return resolveActiveWorkspacePath(windowStates.get(windowId)) ?? undefined;
 }
 
 async function createTempFileFromDataURL(dataURL: string, workspacePath?: string): Promise<string | null> {

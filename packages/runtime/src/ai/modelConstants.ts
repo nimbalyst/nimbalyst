@@ -12,6 +12,13 @@ export interface ModelDefinition {
 
 export const CLAUDE_MODELS: ModelDefinition[] = [
   {
+    id: 'claude-fable-5-2',
+    displayName: 'Claude Fable 5.2 (1M)',
+    shortName: 'Fable 5.2',
+    maxTokens: 8192,
+    contextWindow: 1000000,
+  },
+  {
     id: 'claude-fable-5-1',
     displayName: 'Claude Fable 5.1 (1M)',
     shortName: 'Fable 5.1',
@@ -300,17 +307,18 @@ export const OPENAI_MODELS: ModelDefinition[] = [
  *   the previous generation selectable after bumping a canonical row to the
  *   next version.
  */
-export type ClaudeCodeVariant = 'fable' | 'fable-5' | 'opus' | 'opus-5' | 'sonnet' | 'sonnet-5' | 'haiku' | 'opus-4-8' | 'opus-4-7' | 'opus-4-6' | 'sonnet-4-6' | 'haiku-4-5';
-export type ClaudeCodeVariantInput = ClaudeCodeVariant | 'opus-5-5' | 'sonnet-5-5' | 'fable-5-1' | 'haiku-5-5';
+export type ClaudeCodeVariant = 'fable' | 'fable-5-1' | 'fable-5' | 'opus' | 'opus-5' | 'sonnet' | 'sonnet-5' | 'haiku' | 'opus-4-8' | 'opus-4-7' | 'opus-4-6' | 'sonnet-4-6' | 'haiku-4-5';
+export type ClaudeCodeVariantInput = ClaudeCodeVariant | 'opus-5-5' | 'sonnet-5-5' | 'fable-5-2' | 'haiku-5-5';
 
 /**
  * Accepted input aliases for Claude Agent model identifiers.
  *
- * `opus-5-5`, `sonnet-5-5`, `fable-5-1`, and `haiku-5-5` normalize to their
+ * `opus-5-5`, `sonnet-5-5`, `fable-5-2`, and `haiku-5-5` normalize to their
  * canonical picker entries. Older version inputs remain pinned to that generation.
  */
 export const CLAUDE_CODE_ACCEPTED_VARIANT_INPUTS: readonly ClaudeCodeVariantInput[] = [
   'fable',
+  'fable-5-2',
   'fable-5-1',
   'fable-5',
   'opus',
@@ -330,7 +338,8 @@ export const CLAUDE_CODE_ACCEPTED_VARIANT_INPUTS: readonly ClaudeCodeVariantInpu
 
 const CLAUDE_CODE_VARIANT_INPUT_MAP: Readonly<Record<ClaudeCodeVariantInput, ClaudeCodeVariant>> = {
   fable: 'fable',
-  'fable-5-1': 'fable',
+  'fable-5-2': 'fable',
+  'fable-5-1': 'fable-5-1',
   'fable-5': 'fable-5',
   opus: 'opus',
   'opus-5-5': 'opus',
@@ -352,7 +361,8 @@ export function normalizeClaudeCodeVariant(variant: string): ClaudeCodeVariant |
 }
 
 export const CLAUDE_CODE_VARIANT_VERSIONS: Record<ClaudeCodeVariant, string> = {
-  fable: '5.1',
+  fable: '5.2',
+  'fable-5-1': '5.1',
   'fable-5': '5',
   opus: '5.5',
   'opus-5': '5',
@@ -368,6 +378,7 @@ export const CLAUDE_CODE_VARIANT_VERSIONS: Record<ClaudeCodeVariant, string> = {
 
 export const CLAUDE_CODE_MODEL_LABELS: Record<ClaudeCodeVariant, string> = {
   fable: 'Fable',
+  'fable-5-1': 'Fable',
   'fable-5': 'Fable',
   opus: 'Opus',
   'opus-5': 'Opus',
@@ -391,7 +402,8 @@ export const CLAUDE_CODE_PINNED_SDK_MODELS: Partial<Record<ClaudeCodeVariant, st
   'opus-5': 'claude-opus-5',
   sonnet: 'claude-sonnet-5-5',
   'sonnet-5': 'claude-sonnet-5',
-  fable: 'claude-fable-5-1',
+  fable: 'claude-fable-5-2',
+  'fable-5-1': 'claude-fable-5-1',
   'fable-5': 'claude-fable-5',
   haiku: 'claude-haiku-5-5',
   'haiku-4-5': 'claude-haiku-4-5-20251001',
@@ -443,6 +455,7 @@ export function canDisableClaudeThinking(model: string | undefined): boolean {
  */
 export const CLAUDE_CODE_NATIVE_1M_VARIANTS: readonly ClaudeCodeVariant[] = [
   'fable',
+  'fable-5-1',
   'fable-5',
   'opus',
   'opus-5',

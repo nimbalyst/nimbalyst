@@ -552,4 +552,67 @@ describe('CodexAppServerRawParser', () => {
     })]);
     expect((completed[0] as { result: string }).result).toContain('"results"');
   });
+
+  it('parses imageGeneration into a saved-path result without the base64 image bytes', async () => {
+    const parser = new CodexAppServerRawParser();
+    const context = makeContext();
+    const base64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk';
+    const started = await parser.parseMessage(makeRawMessage({
+      id: 70,
+      content: envelope('item/started', {
+        threadId: 't-1',
+        turnId: 'turn-1',
+        item: {
+          id: 'exec-img-1', type: 'imageGeneration', status: 'in_progress', revisedPrompt: null,
+          result: '', transparentBackground: null, failure: null, generationId: null,
+          startedAtMs: 1793920860763, completedAtMs: null,
+        },
+        startedAtMs: 1793920860763,
+      }),
+    }), context);
+    expect(started).toEqual([expect.objectContaining({
+      type: 'tool_call_started',
+      toolName: 'imageGeneration',
+      arguments: {},
+    })]);
+
+    const completed = await parser.parseMessage(makeRawMessage({
+      id: 71,
+      content: envelope('item/completed', {
+        threadId: 't-1',
+        turnId: 'turn-1',
+        item: {
+          id: 'exec-img-1', type: 'imageGeneration', status: 'completed', revisedPrompt: 'A small gate icon',
+          result: base64, transparentBackground: false, failure: null,
+          savedPath: '/Users/me/.codex/generated_images/t-1/exec-img-1.png',
+          generationId: 'gen-1', startedAtMs: 1793920860763, completedAtMs: 1793920887184,
+        },
+      }),
+    }), context);
+    expect(completed).toHaveLength(1);
+    expect(completed[0]).toMatchObject({ type: 'tool_call_completed', status: 'completed', isError: false });
+    const result = (completed[0] as { result: string }).result;
+    expect(result).not.toContain(base64);
+    expect(JSON.parse(result)).toEqual({
+      savedPath: '/Users/me/.codex/generated_images/t-1/exec-img-1.png',
+      revisedPrompt: 'A small gate icon',
+    });
+  });
+
+  it('completes a failed imageGeneration as an error naming the failure', async () => {
+    const parser = new CodexAppServerRawParser();
+    const descs = await parser.parseMessage(makeRawMessage({
+      id: 80,
+      content: envelope('item/completed', {
+        threadId: 't-1',
+        turnId: 'turn-1',
+        item: {
+          id: 'exec-img-2', type: 'imageGeneration', status: 'failed', revisedPrompt: null, result: '',
+          failure: { type: 'usageLimitExceeded', limitId: 'images', resetsAt: null }, generationId: null,
+        },
+      }),
+    }), makeContext());
+    expect(descs[1]).toMatchObject({ type: 'tool_call_completed', status: 'error', isError: true });
+    expect((descs[1] as { result: string }).result).toContain('usageLimitExceeded');
+  });
 });

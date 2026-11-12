@@ -8,7 +8,8 @@
  * Events handled:
  * - `blitz:created`              -> blitzCreatedAtom (request)
  * - `blitz:display-name-updated` -> blitzDisplayNameUpdateAtom (request)
- * - `blitz:analysis-created`     -> blitzAnalysisCreatedAtom (request)
+ * - `blitz:analysis-created`     -> blitzAnalysisCreatedAtom (request), and
+ *                                   starts the analysis for a rail project
  *
  * Call initBlitzListeners() once at app startup.
  */
@@ -19,6 +20,7 @@ import {
   blitzCreatedAtom,
   blitzDisplayNameUpdateAtom,
 } from '../atoms/blitz';
+import { openProjectsAtom } from '../atoms/openProjects';
 
 let initialized = false;
 
@@ -80,6 +82,17 @@ export function initBlitzListeners(): () => void {
           workspacePath: data.workspacePath,
         },
       });
+
+      // Start the analysis here rather than in AgentMode, which only reacts
+      // for the active rail project: the children often finish while the user
+      // is looking at another project. Main broadcasts to every window; the
+      // one whose rail holds the project starts it.
+      const inRail = store.get(openProjectsAtom).some((project) => project.path === data.workspacePath);
+      if (!inRail) return;
+      window.electronAPI.invoke('ai:triggerQueueProcessing', data.analysisSessionId, data.workspacePath)
+        .catch((error: Error) => {
+          console.error('[blitzListeners] Failed to trigger analysis session queue processing:', error);
+        });
     },
   );
   if (typeof u3 === 'function') cleanups.push(u3);

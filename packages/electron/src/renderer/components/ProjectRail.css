@@ -60,13 +60,25 @@
   border: 1.5px solid transparent;
   padding: 0;
   transition: border-radius 150ms ease, background-color 150ms ease,
-    border-color 150ms ease, color 150ms ease, transform 150ms ease;
+    border-color 150ms ease, color 150ms ease, transform 150ms ease,
+    opacity 150ms ease;
+}
+
+/* The selected project fills with its color and gets a soft halo in that
+ * color; the other projects dim until hovered or focused. Hover only undims,
+ * so it never looks like selection. The badge is outside the button, so it
+ * stays at full strength on every project. */
+.project-rail-item:not(.is-active) .project-rail-item-main {
+  opacity: 0.5;
+}
+
+.project-rail-item:not(.is-active) .project-rail-item-main:hover,
+.project-rail-item:not(.is-active) .project-rail-item-main:focus-visible {
+  opacity: 1;
 }
 
 .project-rail-item-main:hover {
   border-radius: 14px;
-  background-color: var(--rail-item-accent, var(--nim-primary, #3b82f6));
-  color: var(--rail-item-foreground, #ffffff);
 }
 
 .project-rail-item.is-active .project-rail-item-main {
@@ -74,23 +86,7 @@
   background-color: var(--rail-item-accent, var(--nim-primary, #3b82f6));
   color: var(--rail-item-foreground, #ffffff);
   border-color: transparent;
-}
-
-/* Opaque images hide the fill change. Mark selection outside the image with
- * a neutral gap and a theme-contrasting ring, independent of its accent color. */
-.project-rail-item.is-active .project-rail-item-main:has(> .project-icon-image) {
-  box-shadow: 0 0 0 2px var(--nim-bg-secondary), 0 0 0 4px var(--nim-text);
-}
-
-.project-rail-item.is-active::before {
-  content: '';
-  position: absolute;
-  left: -10px;
-  top: 8px;
-  bottom: 8px;
-  width: 4px;
-  border-radius: 0 4px 4px 0;
-  background-color: var(--rail-item-accent, var(--nim-text, #111827));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--rail-item-accent, var(--nim-primary)) 35%, transparent);
 }
 
 .project-rail-item-badge {
@@ -114,32 +110,13 @@
   pointer-events: none;
 }
 
-.project-rail-item-close {
-  position: absolute;
-  top: -4px;
-  right: -4px;
-  width: 18px;
-  height: 18px;
-  border-radius: 50%;
-  background-color: var(--nim-bg-secondary, #1a1a1a);
-  color: var(--nim-text, #111827);
-  border: 1px solid var(--nim-border, rgba(255, 255, 255, 0.12));
-  display: none;
-  align-items: center;
-  justify-content: center;
-  font-size: 11px;
-  line-height: 1;
-  cursor: pointer;
-  padding: 0;
+/* Same colors as the Agent gutter bubble: awaiting input, running, unread. */
+.project-rail-item-badge[data-state='orange'] {
+  background-color: var(--nim-warning);
 }
 
-.project-rail-item:hover .project-rail-item-close {
-  display: flex;
-}
-
-.project-rail-item-close:hover {
-  background-color: var(--nim-error, #ef4444);
-  color: #ffffff;
+.project-rail-item-badge[data-state='green'] {
+  background-color: var(--nim-success);
 }
 
 .project-rail-divider {
@@ -178,6 +155,23 @@
 .project-rail-add:disabled {
   opacity: 0.4;
   cursor: not-allowed;
+}
+
+/* App-wide items portaled in from NavigationGutter. */
+.project-rail-global-items {
+  flex-shrink: 0;
+  align-self: stretch;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  margin-top: 4px;
+  padding-top: 8px;
+  border-top: 1px solid var(--nim-border, rgba(255, 255, 255, 0.06));
+}
+
+.project-rail-global-items:empty {
+  display: none;
 }
 
 .project-rail-context-menu {
@@ -286,6 +280,12 @@
 .project-rail-tooltip-name {
   font-weight: 600;
   color: var(--nim-text, #111827);
+}
+
+.project-rail-tooltip-hint {
+  font-size: 11px;
+  font-weight: 400;
+  color: var(--nim-text-faint, var(--nim-text-muted, #6b7280));
 }
 
 .project-rail-tooltip-path {

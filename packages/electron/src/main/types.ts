@@ -42,6 +42,12 @@ export interface WindowState {
     projectRailOrder?: string[];
     /** Per-window override for bootstrapping the global saved rail; not an app setting. */
     restorePreviousProjects?: boolean;
+    /**
+     * Rail saved with this window in the session state. Served by
+     * `get-initial-state` until the renderer registers the rail and reports
+     * its order, so a restart reopens every project the window hosted.
+     */
+    restoredRail?: RestoredRail;
     documentEdited: boolean;
 
     // Tab management (optional for backward compatibility)
@@ -59,6 +65,11 @@ export interface RecentItem {
     timestamp: number;
 }
 
+export interface RestoredRail {
+    projectPaths: string[];
+    activeWorkspacePath: string | null;
+}
+
 export interface SessionWindow {
     mode: 'document' | 'workspace' | 'agentic-coding';
     filePath?: string;
@@ -72,6 +83,10 @@ export interface SessionWindow {
     };
     focusOrder?: number; // Track window focus order (higher = more recently focused)
     devToolsOpen?: boolean; // Track if developer tools are open
+    /** Rail projects in display order; saved only when the window hosts more than one. */
+    projectPaths?: string[];
+    /** The rail project the window was showing. */
+    activeWorkspacePath?: string;
 }
 
 export interface SessionState {
@@ -84,7 +99,10 @@ export interface FileTreeItem {
     type: 'file' | 'directory';
     path: string;
     children?: FileTreeItem[];
-    truncated?: number; // Number of items hidden when directory was too large
+    /** Entries the per-directory cap hid from `children`; absent when nothing was hidden. */
+    omittedChildCount?: number;
+    /** The cap also skipped symlinks it never resolved; `omittedChildCount` is a minimum. */
+    omittedChildCountIsMinimum?: boolean;
     /** The tree walk stopped at its depth limit here; `children` was not read. */
     childrenTruncated?: boolean;
 }

@@ -30,6 +30,7 @@ import { recordDeletedExternalSession } from '../services/externalSessions/delet
 import { externalIdentityForSession } from '../services/externalSessions/ExternalSessionPersistence';
 import { isLocalWikiItemId } from '../services/localWiki/localWikiItemIds';
 import { createTrailingSingleFlight } from '../utils/asyncCache';
+import { createUncommittedSessionLookup } from './uncommittedSessionLookup';
 
 // Several listeners refresh the list on one event; eight identical calls in the
 // same millisecond each materialized every session row before the OOM abort.
@@ -42,21 +43,13 @@ const analyticsService = AnalyticsService.getInstance();
 // Track if handlers are registered to prevent double registration
 let handlersRegistered = false;
 
-// ============================================================
-// Session Files Cache
-// Caches the (uncommitted-file -> last-editing-session) mapping. The query is
-// bounded to currently-uncommitted file paths (typically tens) so the result
-// set is small. In-flight dedup keyed by (workspace + file set) collapses
-// concurrent callers from session list refreshes onto a single query.
-// ============================================================
-interface SessionFilesCache {
-    /** Map of file_path -> session_id (most recent editor of each uncommitted file) */
-    fileToSession: Map<string, string>;
-    timestamp: number;
-}
+// Uncommitted-file -> last-editing-session lookup, capped for huge workspaces
+// (#1936). See uncommittedSessionLookup.ts.
+const uncommittedSessionLookup = createUncommittedSessionLookup(
+    (sql, params) => database.query<{ session_id: string; file_path: string }>(sql, params)
+);
+const getSessionsForUncommittedFiles = uncommittedSessionLookup.lookup;
 
-const sessionFilesCache = new Map<string, SessionFilesCache>();
-const sessionFilesInFlight = new Map<string, Promise<Map<string, string>>>();
 const SESSION_FILES_CACHE_TTL_MS = 5000; // 5 second cache
 
 // Sessions that have ever edited any file in a workspace -- bounded by session
@@ -73,87 +66,6 @@ function trackCreateAISession(provider: AIProviderType, options?: {
     hadPrefilledPrompt?: boolean;
 }): void {
     trackCreateAiSession({ provider, ...options });
-}
-
-function makeSessionFilesCacheKey(workspacePath: string, uncommittedFiles: Set<string>): string {
-    if (uncommittedFiles.size === 0) return `${workspacePath}::__empty__`;
-    return `${workspacePath}::${Array.from(uncommittedFiles).sort().join('|')}`;
-}
-
-/**
- * For each currently-uncommitted file, find the most recent session that edited it.
- * Returns a Map<file_path-as-stored-in-session_files, session_id>.
- *
- * The query is bounded to `uncommittedFiles.size` candidate paths instead of
- * scanning the entire per-file edit history of the workspace. Previously this
- * returned thousands of rows on every session-list refresh and saturated the
- * single-threaded PGLite queue.
- *
- * In-flight dedup is keyed by (workspace + file set) so concurrent callers
- * from sessions:list, sessions:list-children, and sessions:get-uncommitted-counts
- * share one query.
- */
-async function getSessionsForUncommittedFiles(
-    workspacePath: string,
-    uncommittedFiles: Set<string>
-): Promise<Map<string, string>> {
-    if (uncommittedFiles.size === 0) {
-        return new Map();
-    }
-
-    const cacheKey = makeSessionFilesCacheKey(workspacePath, uncommittedFiles);
-
-    const cached = sessionFilesCache.get(cacheKey);
-    if (cached && Date.now() - cached.timestamp < SESSION_FILES_CACHE_TTL_MS) {
-        return cached.fileToSession;
-    }
-
-    const inFlight = sessionFilesInFlight.get(cacheKey);
-    if (inFlight) return inFlight;
-
-    const queryPromise = (async () => {
-        const { database } = await import('../database/PGLiteDatabaseWorker');
-
-        // session_files historically stored paths in two forms (relative for
-        // older Edit/Write rows, absolute for Bash watcher and ApplyPatch).
-        // Look up by both so legacy rows still match. New rows are normalized
-        // by SessionFileTracker.
-        const candidatePaths: string[] = [];
-        for (const relativePath of uncommittedFiles) {
-            candidatePaths.push(relativePath);
-            candidatePaths.push(`${workspacePath}/${relativePath}`);
-        }
-
-        // Pick the most recent session per file_path. Rewritten from PG's
-        // `SELECT DISTINCT ON (file_path) ... ORDER BY file_path, timestamp DESC`
-        // to a window-function form that works under both PGLite and SQLite.
-        const { rows } = await database.query<{ session_id: string; file_path: string }>(
-            `SELECT session_id, file_path FROM (
-               SELECT session_id, file_path,
-                      ROW_NUMBER() OVER (PARTITION BY file_path ORDER BY timestamp DESC) AS rn
-               FROM session_files
-               WHERE workspace_id = $1
-                 AND link_type = 'edited'
-                 AND file_path = ANY($2::text[])
-             ) ranked WHERE rn = 1`,
-            [workspacePath, candidatePaths]
-        );
-
-        const fileToSession = new Map<string, string>();
-        rows.forEach(row => {
-            fileToSession.set(row.file_path, row.session_id);
-        });
-
-        sessionFilesCache.set(cacheKey, { fileToSession, timestamp: Date.now() });
-        return fileToSession;
-    })();
-
-    sessionFilesInFlight.set(cacheKey, queryPromise);
-    try {
-        return await queryPromise;
-    } finally {
-        sessionFilesInFlight.delete(cacheKey);
-    }
 }
 
 /**
@@ -199,12 +111,7 @@ async function getSessionIdsWithEdits(workspacePath: string): Promise<Set<string
  * Call this when files are edited to ensure fresh data on next query.
  */
 export function invalidateSessionFilesCache(workspacePath: string): void {
-    const prefix = `${workspacePath}::`;
-    for (const key of sessionFilesCache.keys()) {
-        if (key.startsWith(prefix)) {
-            sessionFilesCache.delete(key);
-        }
-    }
+    uncommittedSessionLookup.invalidate(workspacePath);
     sessionEditorsCache.delete(workspacePath);
 }
 

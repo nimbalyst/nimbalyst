@@ -16,6 +16,14 @@ export class AudioCapture {
   private onAudioData: ((pcm16Base64: string) => void) | null = null;
 
   /**
+   * `processing: false` turns off Chromium's echo cancellation, noise
+   * suppression and auto gain. Voice Mode needs them because it plays audio;
+   * dictation plays nothing, and the processing can distort speech for the
+   * recognizer.
+   */
+  constructor(private readonly options: { processing?: boolean } = {}) {}
+
+  /**
    * Start capturing audio from microphone
    */
   async start(onAudioData: (pcm16Base64: string) => void, timing?: VoiceStartupTiming): Promise<void> {
@@ -31,9 +39,9 @@ export class AudioCapture {
         audio: {
           channelCount: 1, // Mono
           sampleRate: 24000, // 24kHz required by OpenAI
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true,
+          echoCancellation: this.options.processing ?? true,
+          noiseSuppression: this.options.processing ?? true,
+          autoGainControl: this.options.processing ?? true,
         },
       });
 

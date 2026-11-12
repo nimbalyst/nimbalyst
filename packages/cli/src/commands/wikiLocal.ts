@@ -11,7 +11,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import type { ParsedArgs } from '../cli/parse.js';
-import { flagBool, flagInt, flagStr } from '../cli/parse.js';
+import { flagBool, flagInt, flagList, flagStr } from '../cli/parse.js';
 import { CliError, ExitCode, notFoundError, usageError } from '../cli/exitCodes.js';
 import { bold, dim } from '../cli/colors.js';
 import { resolveServer } from '../cloud/config.js';
@@ -20,12 +20,13 @@ import { resolveWikiLocation } from '../localWiki/locate.js';
 import { hasLocalWiki, initLocalWiki, openLocalWiki } from '../localWiki/open.js';
 import { buildTree, findPage, isTeamReference, positionBeside } from '../localWiki/tree.js';
 import { runMoveToTeam } from './wikiMove.js';
+import { runComments, runPublish, runPublishDiff } from './wikiPublish.js';
 import { runWikiExport } from './wikiExport.js';
 
 /** Verbs the local wiki has; `ls` is `list`. */
-const LOCAL_VERBS = new Set(['init', 'list', 'ls', 'read', 'write', 'move', 'search', 'convert-type', 'move-to-team', 'export']);
+const LOCAL_VERBS = new Set(['init', 'list', 'ls', 'read', 'write', 'move', 'search', 'convert-type', 'move-to-team', 'export', 'publish', 'publish-diff', 'comments']);
 /** Local verbs with no team counterpart. */
-const LOCAL_ONLY = new Set(['init', 'write', 'convert-type', 'move-to-team', 'export']);
+const LOCAL_ONLY = new Set(['init', 'write', 'convert-type', 'move-to-team', 'export', 'publish', 'publish-diff']);
 
 const startDir = (args: ParsedArgs) => flagStr(args, 'workspace') ?? process.cwd();
 
@@ -48,6 +49,8 @@ export function isLocalWikiCall(args: ParsedArgs): boolean {
   if (!LOCAL_VERBS.has(verb)) return false;
   if (LOCAL_ONLY.has(verb)) return true;
   if (flagStr(args, 'repo') || flagStr(args, 'org') || flagStr(args, 'project')) return false;
+  // `comments --page <uri>` is the team verb (citable comments on named team pages); without it, the published wiki's threads.
+  if (verb === 'comments' && flagList(args, 'page').length) return false;
   if (args.positionals[0] && isTeamReference(args.positionals[0])) return false;
   if (hasLocalWiki(startDir(args), flagStr(args, 'location'))) return true;
   // Neither wiki is reachable: say how to get each, not just "log in".
@@ -107,6 +110,12 @@ export async function runLocalWiki(args: ParsedArgs, version = '0.0.0-dev'): Pro
         return await runMoveToTeam(args, opened, version);
       case 'export':
         return await runWikiExport(args, opened, version);
+      case 'publish':
+        return await runPublish(args, opened, version);
+      case 'publish-diff':
+        return await runPublishDiff(args, opened);
+      case 'comments':
+        return await runComments(args, opened, version);
       case 'list':
       case 'ls':
         return await runLs(args, wiki);

@@ -4,7 +4,8 @@ import { HistoryManager } from '../HistoryManager';
 import { safeHandle, safeOn } from '../utils/ipcRegistry';
 import { getAppSetting } from '../utils/store';
 import { BrowserWindow, type IpcMainInvokeEvent } from 'electron';
-import { getWindowId, windowStates } from '../window/WindowManager';
+import { getWindowId } from '../window/WindowManager';
+import { listWindowsWithProject } from '../window/windowState';
 import { resolveSenderWorkspacePath } from '../window/captureWindowWorkspace';
 import { dirtyEditorRegistry } from '../services/DirtyEditorRegistry';
 import { ProjectFileService } from '../services/ProjectFileService';
@@ -46,12 +47,8 @@ function getAuthorizedWorkspaceRoot(event: IpcMainInvokeEvent): string {
 }
 
 function broadcastProjectFileWrite(workspaceRoot: string, receipt: ProjectFileWriteReceipt): void {
-    for (const window of BrowserWindow.getAllWindows()) {
-        const windowId = getWindowId(window);
-        const candidateRoot = windowId === null ? undefined : windowStates.get(windowId)?.workspacePath;
-        if (!window.isDestroyed() && candidateRoot && path.resolve(candidateRoot) === path.resolve(workspaceRoot)) {
-            window.webContents.send('project-fs:changed', receipt);
-        }
+    for (const window of listWindowsWithProject(workspaceRoot)) {
+        window.webContents.send('project-fs:changed', receipt);
     }
 }
 

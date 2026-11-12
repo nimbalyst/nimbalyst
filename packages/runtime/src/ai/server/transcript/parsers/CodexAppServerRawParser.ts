@@ -770,6 +770,12 @@ export class CodexAppServerRawParser implements IRawMessageParser {
 
   private buildGenericToolLikeArguments(item: AppServerItem): Record<string, unknown> {
     const record = item as Record<string, unknown>;
+    if (item.type === 'imageGeneration') {
+      // Everything else on the item is lifecycle or output state; `result` is
+      // the base64 PNG and must never reach the card as text.
+      const prompt = record.revisedPrompt;
+      return typeof prompt === 'string' && prompt ? { prompt } : {};
+    }
     const args: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(record)) {
       // App-server started notifications include null/empty output
@@ -786,6 +792,7 @@ export class CodexAppServerRawParser implements IRawMessageParser {
 
   private buildGenericToolLikeResult(item: AppServerItem): string {
     if (item.error?.message) return item.error.message;
+    if (item.type === 'imageGeneration') return this.buildImageGenerationResult(item);
     const aggregatedOutput = item.aggregated_output ?? item.aggregatedOutput;
     if (typeof aggregatedOutput === 'string' && aggregatedOutput) return aggregatedOutput;
 
@@ -800,6 +807,26 @@ export class CodexAppServerRawParser implements IRawMessageParser {
       summary[key] = value;
     }
     return Object.keys(summary).length === 0 ? '' : JSON.stringify(summary);
+  }
+
+  /**
+   * Codex image generation puts the base64 PNG in `result` and the file it
+   * wrote in `savedPath`. The card renders the file, so the result carries the
+   * path; the bytes are kept only when there is no file to point at.
+   */
+  private buildImageGenerationResult(item: AppServerItem): string {
+    const record = item as Record<string, unknown>;
+    if (record.failure) return `Image generation failed: ${JSON.stringify(record.failure)}`;
+    const summary: Record<string, unknown> = {};
+    if (typeof record.savedPath === 'string' && record.savedPath) {
+      summary.savedPath = record.savedPath;
+    } else if (typeof record.result === 'string' && record.result) {
+      summary.data = record.result;
+    }
+    if (typeof record.revisedPrompt === 'string' && record.revisedPrompt) {
+      summary.revisedPrompt = record.revisedPrompt;
+    }
+    return JSON.stringify(summary);
   }
 
   private buildCollabAgentToolArguments(item: AppServerItem): Record<string, unknown> {

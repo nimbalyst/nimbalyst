@@ -23,7 +23,7 @@ import {
     getMostRecentlyFocusedWorkspaceWindow,
 } from './window/WindowManager';
 import { beginStartupActivation, finishStartupWindowCreation } from './window/StartupActivation';
-import { loadFileIntoWindow, reloadIntoWindowWithFile } from './file/FileOperations';
+import { loadFileIntoWindow, loadFileIntoWorkspaceWindow, reloadIntoWindowWithFile } from './file/FileOperations';
 import { createApplicationMenu } from './menu/ApplicationMenu';
 import { updateNativeTheme, updateWindowTitleBars } from './theme/ThemeManager';
 import { restoreSessionState, saveSessionState } from './session/SessionState';
@@ -36,7 +36,7 @@ import {
     dispatchAppActionLink,
     type AppAction,
 } from './utils/appActionLinks';
-import { createWorkspaceManagerWindow, getWorkspaceManagerWindow, setupWorkspaceManagerHandlers, wasWorkspaceManagerManuallyClosed } from './window/WorkspaceManagerWindow.ts';
+import { createWorkspaceManagerWindow, getWorkspaceManagerWindow, openOrFocusWorkspaceWindow, setupWorkspaceManagerHandlers, wasWorkspaceManagerManuallyClosed } from './window/WorkspaceManagerWindow.ts';
 import { initializeApplicationWindowRecovery } from './window/ApplicationWindowRecovery';
 import { createTeamManagementWindow, setupTeamManagementHandlers } from './window/TeamManagementWindow';
 import { setupTrayPanelHandlers } from './window/TrayPanelWindow';
@@ -66,6 +66,8 @@ import { getExternalSessionService, stopExternalSessionService } from './service
 import { registerNotificationHandlers } from './ipc/NotificationHandlers';
 import { registerPermissionHandlers } from './ipc/PermissionHandlers';
 import { registerGitStatusHandlers } from './ipc/GitStatusHandlers';
+import { registerShellCommandHandlers } from './shellCommand/shellCommandActions';
+import { resolveLaunchTarget, statPathKind, userArgsStart, type LaunchTarget } from './shellCommand/launchTarget';
 import { registerGitHandlers } from './ipc/GitHandlers';
 import { registerProjectSelectionHandlers } from './ipc/ProjectSelectionHandlers';
 import { registerProjectAppearanceHandlers } from './ipc/ProjectAppearanceHandlers';
@@ -208,6 +210,7 @@ import { registerMockupHandlers } from './ipc/MockupHandlers';
 import { registerOffscreenEditorHandlers } from './ipc/OffscreenEditorHandlers';
 import { initVoiceModeService } from './services/voice/VoiceModeService';
 import { initVoiceModeSettingsHandler } from './services/voice/VoiceModeSettingsHandler';
+import { initDictationService } from './services/dictation/DictationService';
 import { registerWalkthroughHandlers } from './ipc/WalkthroughHandlers';
 import { registerDataModelHandlers } from './ipc/DataModelHandlers';
 import { registerClaudeUsageHandlers } from './ipc/ClaudeUsageHandlers';
@@ -752,13 +755,15 @@ if (!allowMultipleInstances) {
 
         logger.main.info(`[SingleInstance] Second instance launched, waiting for open-file. argv=${JSON.stringify(process.argv)}`);
 
-        // Also check argv for file paths (Windows/Linux, or CLI open --args)
-        const fileArg = process.argv.find(arg =>
-            !arg.startsWith('-') &&
-            arg !== process.argv[0] &&
-            path.isAbsolute(arg)
-        );
-        if (fileArg) {
+        // Also check argv for file paths (Windows/Linux, or CLI open --args).
+        // A folder (`nimbalyst .`) reaches the primary through its
+        // second-instance event, which carries this process's argv and cwd.
+        const launchTarget = resolveLaunchTarget(process.argv.slice(userArgsStart(app.isPackaged)), process.cwd());
+        const fileArg = launchTarget?.kind === 'file' ? launchTarget.path : null;
+        if (launchTarget && launchTarget.kind !== 'file') {
+            logger.main.info(`[SingleInstance] Second instance has ${launchTarget.kind} target, quitting: ${launchTarget.path}`);
+            app.quit();
+        } else if (fileArg) {
             logger.main.info(`[SingleInstance] Found file in argv: ${fileArg}`);
             try { writeFileSync(pendingOpenFilePath, fileArg, 'utf-8'); } catch (_) {}
             app.quit();
@@ -793,7 +798,7 @@ if (!allowMultipleInstances) {
     } else {
         // We are the primary instance. When a second instance tries to launch,
         // extract any deep link URL or file path and handle it here.
-        app.on('second-instance', (_event, argv, _workingDirectory) => {
+        app.on('second-instance', (_event, argv, workingDirectory) => {
             logger.main.info('[SingleInstance] second-instance event, argv:', argv);
 
             // On Windows the protocol URL is passed as the last argument
@@ -803,18 +808,15 @@ if (!allowMultipleInstances) {
                 handleDeepLink(deepLinkUrl);
             }
 
-            // Check argv for file paths (Windows/Linux pass files as args)
-            const fileArg = argv.find(arg =>
-                !arg.startsWith('-') &&
-                !arg.startsWith('nimbalyst://') &&
-                arg !== argv[0] &&
-                path.isAbsolute(arg) &&
-                existsSync(arg) &&
-                fs.statSync(arg).isFile()
-            );
-            if (fileArg) {
-                logger.main.info(`[SingleInstance] Opening file from argv: ${fileArg}`);
-                openFileWithWorkspaceDetection(fileArg);
+            // A file or folder path: Windows/Linux file opens, and the
+            // `nimbalyst` shell command, whose relative paths are resolved
+            // against the terminal's directory.
+            const launchTarget = resolveLaunchTarget(argv.slice(userArgsStart(app.isPackaged)), workingDirectory);
+            if (launchTarget) {
+                // A terminal launch leaves the terminal frontmost; bring
+                // Nimbalyst forward before the target window is focused.
+                if (process.platform === 'darwin') app.focus({ steal: true });
+                if (openLaunchTarget(launchTarget)) return;
             }
 
             // Focus an existing window so the user sees the result
@@ -1321,6 +1323,16 @@ app.on('open-file', (event, path) => {
     event.preventDefault();
     logger.main.info(`open-file event received: ${path}`);
 
+    // `open -a Nimbalyst <folder>` and folders dropped on the Dock icon.
+    if (statPathKind(path) === 'directory') {
+        if (app.isReady()) {
+            openLaunchTarget({ kind: 'directory', path });
+        } else {
+            pendingWorkspacePath = path;
+        }
+        return;
+    }
+
     if (app.isReady()) {
         openFileWithWorkspaceDetection(path);
     } else {
@@ -1329,37 +1341,56 @@ app.on('open-file', (event, path) => {
     }
 });
 
+/**
+ * Open what a launch asked for in the running app. Returns false when there
+ * was nothing to open, so the caller falls back to focusing a window.
+ */
+function openLaunchTarget(target: LaunchTarget): boolean {
+    if (target.kind === 'directory') {
+        logger.main.info(`[LaunchTarget] Opening folder: ${target.path}`);
+        openOrFocusWorkspaceWindow(target.path);
+        updateTrackerSchemaWorkspace(target.path);
+        return true;
+    }
+    if (target.kind === 'file') {
+        logger.main.info(`[LaunchTarget] Opening file: ${target.path}`);
+        void openFileWithWorkspaceDetection(target.path);
+        return true;
+    }
+    logger.main.warn(`[LaunchTarget] Path does not exist: ${target.path}`);
+    return false;
+}
+
 // Helper function to open a file with workspace detection
 async function openFileWithWorkspaceDetection(filePath: string): Promise<void> {
+    // Detect which workspace this file belongs to
+    const workspacePath = detectFileWorkspace(filePath);
+
+    // The window whose rail holds the project may be showing another rail
+    // project; it switches to the file's project before the file opens. This
+    // also covers a file that window already has open.
+    if (workspacePath && loadFileIntoWorkspaceWindow(workspacePath, filePath)) {
+        return;
+    }
+
     // Check if file is already open in a window
     if (reloadIntoWindowWithFile(filePath)) {
         return;
     }
 
-    // Detect which workspace this file belongs to
-    const workspacePath = detectFileWorkspace(filePath);
-
     if (workspacePath) {
         // File belongs to a known workspace
         logger.main.info(`File belongs to workspace: ${workspacePath}`);
 
-        // Find or create workspace window
-        let workspaceWindow = findWindowByWorkspace(workspacePath);
-
-        if (workspaceWindow) {
-            // Workspace window exists, use it - no need to focus, let macOS handle window ordering
-            await loadFileIntoWindow(workspaceWindow, filePath);
-        } else {
-            // Create new workspace window for this workspace
-            workspaceWindow = createWindow(false, true, workspacePath, undefined, {
-                startupReveal: true,
-                startupFrontmost: true,
-            });
-            updateTrackerSchemaWorkspace(workspacePath);
-            // createWindow reveals the window itself — inactive while this runs
-            // during launch, activating for a file opened later.
-            loadFileIntoWindow(workspaceWindow, filePath);
-        }
+        // No open window holds the project: create a workspace window for it
+        const workspaceWindow = createWindow(false, true, workspacePath, undefined, {
+            startupReveal: true,
+            startupFrontmost: true,
+        });
+        updateTrackerSchemaWorkspace(workspacePath);
+        // createWindow reveals the window itself — inactive while this runs
+        // during launch, activating for a file opened later.
+        loadFileIntoWindow(workspaceWindow, filePath);
     } else {
         // File is not in a known workspace - open it in the frontmost workspace window as an external file
         logger.main.info(`File not in known workspace, opening as external file in frontmost window`);
@@ -1420,17 +1451,20 @@ function parseCommandLineArgs() {
         } else if (arg.startsWith('nimbalyst://')) {
             pendingDeepLinkUrl = arg;
             logger.main.info(`[SingleInstance] Found deep link in argv: ${arg.substring(0, 60)}...`);
-        } else if (!arg.startsWith('--') && !arg.startsWith('-')) {
-            // Handle plain file path argument (e.g., "preditor file.md")
-            const argExists = existsSync(arg);
-            const argIsMarkdown = arg.endsWith('.md');
-            logger.main.info(`  Potential file: exists=${argExists}, isMarkdown=${argIsMarkdown}`);
-
-            if (argExists && argIsMarkdown) {
-                pendingFilePath = arg;
-                logger.main.info(`✓ File path from CLI: ${pendingFilePath}`);
-            }
         }
+    }
+
+    // Plain path argument: `nimbalyst .`, `nimbalyst notes.md`, or a file the
+    // OS passes as an argument on Windows/Linux.
+    const launchTarget = resolveLaunchTarget(args, process.cwd());
+    if (launchTarget?.kind === 'directory' && !pendingWorkspacePath) {
+        pendingWorkspacePath = launchTarget.path;
+        logger.main.info(`✓ Folder from CLI: ${pendingWorkspacePath}`);
+    } else if (launchTarget?.kind === 'file') {
+        pendingFilePath = launchTarget.path;
+        logger.main.info(`✓ File path from CLI: ${pendingFilePath}`);
+    } else if (launchTarget?.kind === 'missing') {
+        logger.main.warn(`Path from CLI does not exist: ${launchTarget.path}`);
     }
 
     // Validate --file requires --workspace
@@ -1752,6 +1786,7 @@ app.whenReady().then(async () => {
     geminiUsageService.initialize();
     registerPermissionHandlers();
     registerGitStatusHandlers();
+    registerShellCommandHandlers();
     registerGitHandlers();
     registerWorktreeHandlers();
     registerPullRequestHandlers();
@@ -2686,6 +2721,7 @@ app.whenReady().then(async () => {
     });
     initVoiceModeService();
     initVoiceModeSettingsHandler();
+    initDictationService();
     registerWalkthroughHandlers();
 
     // Start MCP SSE server

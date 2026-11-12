@@ -18,7 +18,7 @@ import { selectedOrgIdAtom } from '../../../store/atoms/orgScope';
 import { EMPTY_TEAM_INBOX_SNAPSHOT, teamInboxSnapshotAtom } from '../../../store/atoms/teamInbox';
 import { activeExtensionPanelAtom } from '../../../store/atoms/extensionPanels';
 import { windowModeAtom, setWindowModeAtom } from '../../../store/atoms/windowMode';
-import { activeWorkspacePathAtom } from '../../../store/atoms/openProjects';
+import { activeWorkspacePathAtom, projectRailGlobalSlotAtom } from '../../../store/atoms/openProjects';
 
 const projectOrg = vi.hoisted(() => ({ current: null as { orgId: string; name: string } | null }));
 const extensionButtons = vi.hoisted(() => ({ current: [] as Array<{ id: string; label: string; icon: string; placement: 'sidebar'; isAlpha: boolean }> }));
@@ -129,5 +129,36 @@ describe('Org mode gutter item', () => {
     fireEvent.click(screen.getByTestId('org-mode-button'));
     expect(onContentModeChange).toHaveBeenCalledWith('org');
     expect(store.get(selectedOrgIdAtom)).toBe('org-elsewhere');
+  });
+});
+
+describe('App-wide gutter items with the multi-project rail', () => {
+  const placementOf = (container: HTMLElement, id: string) =>
+    container.querySelector(`[data-gutter-item="${id}"]`)?.closest('.navigation-gutter, .project-rail-global-items')?.className.split(' ')[0];
+
+  it('moves usage, theme, feedback and the account button to the rail and keeps project items in the gutter', () => {
+    const store = createStore();
+    const slot = document.createElement('div');
+    slot.className = 'project-rail-global-items';
+    document.body.appendChild(slot);
+    store.set(projectRailGlobalSlotAtom, slot);
+    renderGutter(store);
+
+    for (const id of ['claude-usage', 'codex-usage', 'theme-toggle', 'feedback']) {
+      expect(placementOf(document.body, id)).toBe('project-rail-global-items');
+    }
+    for (const id of ['voice-mode', 'trust-indicator', 'extension-dev']) {
+      expect(placementOf(document.body, id)).toBe('navigation-gutter');
+    }
+    expect(slot.contains(screen.getByTestId('gutter-user-button'))).toBe(true);
+    slot.remove();
+  });
+
+  it('keeps everything in the gutter when the rail is hidden', () => {
+    renderGutter();
+    for (const id of ['claude-usage', 'feedback', 'trust-indicator']) {
+      expect(placementOf(document.body, id)).toBe('navigation-gutter');
+    }
+    expect(screen.getByTestId('gutter-user-button').closest('.navigation-gutter')).not.toBeNull();
   });
 });

@@ -45,6 +45,7 @@ import {
   type SessionMeta,
 } from '../index';
 import { activeWorkspacePathAtom } from '../atoms/openProjects';
+import { openSessionInOwningProject } from './sessionNotificationNavigation';
 import { activeFileRepoPathAtom } from '../atoms/workspaceRepos';
 import { defaultAgentModelAtom, worktreesFeatureAvailableAtom, alphaFeatureEnabledAtom } from '../atoms/appSettings';
 import {
@@ -127,6 +128,18 @@ function getWorkspacePath(get: (a: any) => any): string | null {
   return get(activeWorkspacePathAtom);
 }
 
+/** The project a session belongs to, or null when it cannot be read. */
+async function owningWorkspacePath(sessionId: string): Promise<string | null> {
+  try {
+    const result = await window.electronAPI.invoke('sessions:get', sessionId) as
+      { success?: boolean; session?: { workspacePath?: string | null } | null } | null;
+    return result?.session?.workspacePath?.trim() || null;
+  } catch (error) {
+    console.error('[sessionHistoryActions] Failed to resolve the project of session', sessionId, error);
+    return null;
+  }
+}
+
 /**
  * Open a session by id: resolves whether it's a child, root session,
  * worktree, or workstream and updates `selectedWorkstreamAtom` accordingly.
@@ -142,6 +155,22 @@ export const openSessionInTabActionAtom = atom(null, async (get, set, sessionId:
   try {
     const result = await window.electronAPI.invoke('sessions:list', workspacePath, { includeArchived: false });
     if (!result.success) throw new Error('Failed to load session list');
+
+    // Callers name only a session id (a session chip, a comment's agent link,
+    // a quick-open pick made before the rail switched). A session from another
+    // rail project opens in that project, never under the active one.
+    if (!result.sessions.some((row: { id: string }) => row.id === sessionId)) {
+      const owner = await owningWorkspacePath(sessionId);
+      if (owner && owner !== workspacePath) {
+        await openSessionInOwningProject({ sessionId, workspacePath: owner, sourceLabel: '' });
+        return;
+      }
+    }
+
+    // `selectSessionActionAtom` selects under the active project. If the user
+    // switched projects while the lookups above ran, selecting now would put
+    // this project's session into the other one.
+    if (get(activeWorkspacePathAtom) !== workspacePath) return;
 
     const registry = new Map(get(sessionRegistryAtom));
     for (const row of result.sessions) registry.set(row.id, sessionListMetadata(row, workspacePath));

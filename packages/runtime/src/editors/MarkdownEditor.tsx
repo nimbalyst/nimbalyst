@@ -28,6 +28,7 @@ import {
 import { applyExternalMarkdown } from '../editor/applyExternalMarkdown';
 import type { EditorHost } from '../extensions/editorHost';
 import { $getRoot, $setSelection } from 'lexical';
+import { createLexicalDictationTarget } from './lexicalDictationTarget';
 
 export interface MarkdownEditorConfig {
   /**
@@ -307,6 +308,15 @@ export function MarkdownEditor({
       },
     });
   }, [editorInstance, onContentController]);
+
+  // Accept dictated text at the cursor. The host paints the pending partial
+  // next to the caret; only committed finals touch the document.
+  useEffect(() => {
+    if (!editorInstance || !host.registerDictationTarget) return;
+    if (config.editable === false || host.readOnly) return;
+    host.registerDictationTarget(createLexicalDictationTarget(editorInstance));
+    return () => host.registerDictationTarget?.(null);
+  }, [editorInstance, host, config.editable]);
 
   // NOTE: We intentionally do NOT subscribe to diff requests here.
   // Markdown diff handling is fully implemented in TabEditor.tsx using Lexical's

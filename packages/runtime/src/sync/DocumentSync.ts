@@ -97,6 +97,31 @@ const COMPACTION_TIME_THRESHOLD_MS = 5 * 60 * 1000;
 const COMPACTION_TIME_MIN_UPDATES = 20;
 const COMPACTION_CHECK_INTERVAL_MS = 60 * 1000;
 
+/**
+ * The room's refusal of a commenter update that changed more than the comment
+ * threads. Mirrors collabv3 `documentBody/commentOnlyUpdate.ts`.
+ */
+export const COMMENT_UPDATE_REFUSED_CODE = 'document_comment_update_refused';
+export const COMMENT_UPDATE_REFUSED_CLOSE = 4009;
+/**
+ * Sent on an open socket when its user is demoted from editor to commenter.
+ * Mirrors collabv3 `COMMENT_ONLY_VERDICT_CODE`.
+ */
+export const COMMENT_ONLY_VERDICT_CODE = 'document_comment_only';
+/**
+ * Sent on an open socket when its user gains body write (a commenter granted
+ * project-editor). May be resent after hibernation to a socket that already
+ * writes.
+ */
+export const WRITABLE_VERDICT_CODE = 'document_writable';
+
+/** The room's per-connection verdict from `docSyncResponse`. */
+export interface DocumentAccessVerdict {
+  canWrite: boolean;
+  /** Null from a server that predates the comment tier. */
+  canComment: boolean | null;
+}
+
 export class DocumentSyncProvider {
   private ydoc: Y.Doc;
   private readonly ownsYDoc: boolean;
@@ -112,6 +137,28 @@ export class DocumentSyncProvider {
   // Last-writer attribution from the server (who/when last edited the content).
   // Populated from docSyncResponse; used by the overwrite confirm before a push.
   private lastWriterUserId: string | null = null;
+  /**
+   * The room's write verdict from the latest sync response; null until one
+   * arrives or from a server that predates it. False for read-only viewers and
+   * commenters, whose `docCompact` the room refuses (a commenter's with
+   * `document_comment_forbidden`; the socket stays open, but the compaction
+   * is wasted).
+   */
+  private serverCanWrite: boolean | null = null;
+  /** The room's comment verdict from the latest sync response; null when absent. */
+  private serverCanComment: boolean | null = null;
+  private accessVerdictListeners: Set<(verdict: DocumentAccessVerdict) => void> = new Set();
+  /**
+   * Set when the room refused a commenter's update for changing more than the
+   * comment threads (`document_comment_update_refused`, close 4009). Terminal
+   * for this provider: Yjs updates from one clientID are clock-sequential, so
+   * every later update from this Y.Doc depends on the refused structs and the
+   * room can never integrate it. The provider stops and never reconnects or
+   * resends; the host discards the local copy and reopens with a fresh Y.Doc.
+   */
+  private commentUpdateRefused = false;
+  private commentRefusalListeners: Set<() => void> = new Set();
+  private commentRefusalSettling: Promise<void> | null = null;
   private lastUpdatedAt: number | null = null;
   private updateObserverDispose: (() => void) | null = null;
   private awarenessStates: Map<string, AwarenessState> = new Map();
@@ -260,6 +307,9 @@ export class DocumentSyncProvider {
   private connecting = false;
 
   async connect(): Promise<void> {
+    // A refused commenter update is terminal for this Y.Doc; reconnecting
+    // would resend state the room can never integrate.
+    if (this.commentUpdateRefused) return;
     if (this.destroyed) {
       if (COLLAB_CONNECTION_DIAGNOSTICS_COMPILED) {
         emitCollabConnectionEvent(this, 'DocumentSyncProvider', 'connect-skipped', {
@@ -405,6 +455,13 @@ export class DocumentSyncProvider {
         const status = Number.parseInt(event.reason.split(':')[1] ?? '', 10);
         this.lastAuthRejectionStatus = Number.isFinite(status) ? status : 0;
       }
+      if (event.code === COMMENT_UPDATE_REFUSED_CLOSE) {
+        // Never handleDisconnect(): that would schedule a reconnect that
+        // resends the refused update.
+        this.suppressReconnect = true;
+        void (this.commentRefusalSettling ?? Promise.resolve()).then(() => this.markCommentUpdateRefused());
+        return;
+      }
       this.handleDisconnect();
     });
 
@@ -469,6 +526,8 @@ export class DocumentSyncProvider {
     this.awarenessListeners.clear();
     this.awarenessStates.clear();
     this.statusListeners.clear();
+    this.accessVerdictListeners.clear();
+    this.commentRefusalListeners.clear();
   }
 
   // --------------------------------------------------------------------------
@@ -722,6 +781,43 @@ export class DocumentSyncProvider {
   }
 
   /**
+   * The room's latest write/comment verdict for this connection, or null until
+   * a sync response carries one (or from a server that predates it).
+   */
+  getServerAccessVerdict(): DocumentAccessVerdict | null {
+    if (this.serverCanWrite === null) return null;
+    return { canWrite: this.serverCanWrite, canComment: this.serverCanComment };
+  }
+
+  /**
+   * Called with every verdict a sync response carries, and immediately with
+   * the current one if already known. The room is the authority: a host's own
+   * role projection can be stale.
+   */
+  onAccessVerdict(listener: (verdict: DocumentAccessVerdict) => void): () => void {
+    this.accessVerdictListeners.add(listener);
+    const current = this.getServerAccessVerdict();
+    if (current) listener(current);
+    return () => this.accessVerdictListeners.delete(listener);
+  }
+
+  /** True once the room refused a commenter update; see `commentUpdateRefused`. */
+  isCommentUpdateRefused(): boolean {
+    return this.commentUpdateRefused;
+  }
+
+  /**
+   * Called once when the room refuses a commenter update (immediately if it
+   * already has). The provider has stopped; the host should discard the local
+   * copy and reopen the document with a fresh provider and Y.Doc.
+   */
+  onCommentUpdateRefused(listener: () => void): () => void {
+    this.commentRefusalListeners.add(listener);
+    if (this.commentUpdateRefused) listener();
+    return () => this.commentRefusalListeners.delete(listener);
+  }
+
+  /**
    * Force the provider to treat the current Y.Doc as local state that should
    * be persisted upstream.
    *
@@ -826,7 +922,29 @@ export class DocumentSyncProvider {
           break;
         case 'error':
           console.error('[DocumentSync] Server error:', msg.code, msg.message);
-          await this.handleWriteRejection(msg.code, msg.clientUpdateId);
+          if (msg.code === COMMENT_UPDATE_REFUSED_CODE) {
+            // Settle the outbox (rejected, so the host may discard it) before
+            // the 4009 close that follows can announce the refusal.
+            const settled = this.handleWriteRejection(msg.code, msg.clientUpdateId);
+            this.commentRefusalSettling = settled.catch(() => {});
+            await settled;
+            this.markCommentUpdateRefused();
+          } else {
+            // A mid-session demotion arrives as an error on the open socket.
+            // `document_comment_only` (editor -> commenter) is the same verdict
+            // as a sync response with canWrite false, canComment true;
+            // `document_read_only` means no writes and no comments.
+            // `document_writable` is a promotion (commenter -> editor); it may
+            // be resent after the room hibernates to a socket that already
+            // writes, which the verdict dedupe makes a no-op. Not a rejection.
+            if (msg.code === WRITABLE_VERDICT_CODE) {
+              this.setServerAccessVerdict(true, true);
+              break;
+            }
+            if (msg.code === COMMENT_ONLY_VERDICT_CODE) this.setServerAccessVerdict(false, true);
+            else if (msg.code === 'document_read_only') this.setServerAccessVerdict(false, false);
+            await this.handleWriteRejection(msg.code, msg.clientUpdateId);
+          }
           break;
       }
     } catch (err) {
@@ -919,6 +1037,12 @@ export class DocumentSyncProvider {
     }
     if (msg.lastUpdatedAt !== undefined) {
       this.lastUpdatedAt = msg.lastUpdatedAt;
+    }
+    if (typeof msg.canWrite === 'boolean') {
+      this.setServerAccessVerdict(
+        msg.canWrite,
+        typeof msg.canComment === 'boolean' ? msg.canComment : null,
+      );
     }
 
     // Apply snapshot if present (covers the entire doc state up to replacesUpTo).
@@ -1570,6 +1694,50 @@ export class DocumentSyncProvider {
     );
   }
 
+  private setServerAccessVerdict(canWrite: boolean, canComment: boolean | null): void {
+    // Listeners hear changes only: a sync response or a resent signal that
+    // repeats the current verdict is not news.
+    if (this.serverCanWrite === canWrite && this.serverCanComment === canComment) return;
+    this.serverCanWrite = canWrite;
+    this.serverCanComment = canComment;
+    const verdict: DocumentAccessVerdict = { canWrite, canComment };
+    for (const listener of this.accessVerdictListeners) {
+      try {
+        listener(verdict);
+      } catch (error) {
+        console.error('[DocumentSync] Access verdict listener failed:', error);
+      }
+    }
+  }
+
+  private markCommentUpdateRefused(): void {
+    if (this.commentUpdateRefused || this.destroyed) return;
+    this.commentUpdateRefused = true;
+    console.warn('[DocumentSync] Room refused a commenter update; stopping this provider for', this.getRoomId());
+    // Drop, never requeue: the refused update and everything queued after it
+    // depend on structs the room will never accept.
+    this.clearReplayAckTimer();
+    this.inflightPendingUpdate = null;
+    this.queuedPendingUpdate = null;
+    this.replayingClientUpdateId = null;
+    this.replayingReplicaOutboxIds = [];
+    this.surfaceReplayStatus = false;
+    this.replayStartedAt = null;
+    this.replayAttemptCount = 0;
+    this.disconnect();
+    this.inflightPendingUpdate = null;
+    this.queuedPendingUpdate = null;
+    this.setStatus('error');
+    this.notifyPendingWriteWaiters();
+    for (const listener of this.commentRefusalListeners) {
+      try {
+        listener();
+      } catch (error) {
+        console.error('[DocumentSync] Comment refusal listener failed:', error);
+      }
+    }
+  }
+
   private handleDisconnect(): void {
     this.decisionClient.disconnect();
     const shouldReconnect = !this.suppressReconnect;
@@ -1669,6 +1837,7 @@ export class DocumentSyncProvider {
   }
 
   private scheduleReconnect(): void {
+    if (this.commentUpdateRefused) return;
     if (this.destroyed || this.reconnectTimer) {
       if (COLLAB_CONNECTION_DIAGNOSTICS_COMPILED) {
         emitCollabConnectionEvent(this, 'DocumentSyncProvider', 'reconnect-skipped', {
@@ -1732,7 +1901,7 @@ export class DocumentSyncProvider {
    * Falls back to normal backoff on failure.
    */
   reconnectNow(): void {
-    if (this.destroyed) return;
+    if (this.destroyed || this.commentUpdateRefused) return;
 
     // A previous reconnectNow() already started a fresh handshake that hasn't
     // resolved yet. Don't tear it down -- post-wake the broker fires several
@@ -1883,6 +2052,9 @@ export class DocumentSyncProvider {
     if (!this.synced) return;
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return;
     if (this.pendingCompactionId) return;
+    // A connection the room says cannot write (viewer, commenter) never
+    // compacts; the room would refuse the snapshot.
+    if (this.serverCanWrite === false) return;
     // Skip while we have unacked local writes -- otherwise the snapshot would
     // include local state beyond `replacesUpTo`, and that state would also
     // appear in the subsequent update once acked, doubling the payload (benign
@@ -1992,6 +2164,9 @@ export class DocumentSyncProvider {
     if (!this.synced) throw new Error('Cannot force-replace before the room has synced');
     if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
       throw new Error('Cannot force-replace while the room is disconnected');
+    }
+    if (this.serverCanWrite === false) {
+      throw new Error('Cannot replace the state of a room this connection cannot write');
     }
     if (!options.allowUndecoded && this.hasUndecodedContent()) {
       throw new Error('Cannot finalize a room containing content this device could not decrypt');

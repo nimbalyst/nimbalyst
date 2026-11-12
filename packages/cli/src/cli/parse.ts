@@ -45,6 +45,8 @@ const BOOLEAN_FLAGS = new Set([
   'versions',
   'refresh-cache',
   'keep-identity',
+  'init',
+  'confirm-removals',
 ]);
 
 /**

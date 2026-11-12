@@ -1,6 +1,6 @@
 import type { LexicalEditor } from 'lexical';
 
-import { canAuthorComments } from '../../commenting/capabilities';
+import { canAuthorComments, isCommentOnly } from '../../commenting/capabilities';
 import type { CommentsConfig } from '../../commenting/types';
 import type { FloatingTextToolbarAction } from '../FloatingTextFormatToolbarPlugin/types';
 import { OPEN_COMMENT_COMPOSER_COMMAND } from './commands';
@@ -20,6 +20,10 @@ export function getCommentToolbarActions(
       id: 'comment',
       label: 'Add comment',
       icon: 'add_comment',
+      // Only a commenter is offered this in a read-only editor: their thread is
+      // quote-anchored and writes only the comments array. Anyone with body
+      // rights would write a MarkNode, which a read-only view must not.
+      availableWhenReadOnly: isCommentOnly(comments),
       onSelect: () => {
         editor.dispatchCommand(OPEN_COMMENT_COMPOSER_COMMAND, undefined);
       },

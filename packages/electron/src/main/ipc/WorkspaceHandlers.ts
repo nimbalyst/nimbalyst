@@ -17,7 +17,14 @@ const { writeFile, mkdir, rename, unlink, rmdir, copyFile, readFile, rm, stat, c
 const execAsync = promisify(exec);
 import { windowStates, getWindowId, createWindow, markRecentlyDeleted, clearRecentlyDeleted } from '../window/WindowManager';
 // Aliased: this module has a local `windows` (BrowserWindow[]) further down.
-import { syncRepresentedFilename, windows as windowsById } from '../window/windowState';
+import {
+    syncRepresentedFilename,
+    windows as windowsById,
+    getWindowProjectPaths,
+    resolveActiveWorkspacePath,
+    resolveProjectForFile,
+} from '../window/windowState';
+import { WORKSPACE_ACTIVATE_CHANNEL } from '../window/workspaceWindowMatch';
 import { startFileWatcher, stopFileWatcher } from '../file/FileWatcher';
 import { getFolderContents, listFolderFilesRecursive } from '../utils/FileTree';
 import { decodeTextFileBuffer } from '../utils/textEncoding';
@@ -224,9 +231,13 @@ export function registerWorkspaceHandlers() {
             // Use unified FileOpener API with skipFileWatcher=true
             // File watchers are managed separately by start-watching-file/stop-watching-file
             // when tabs are opened/closed, not when switching between them
+            // The file's own rail project, which need not be the window's
+            // first one; openFile records the recent file under it.
+            const fileWorkspacePath = resolveProjectForFile(state ?? undefined, filePath)
+                ?? resolveActiveWorkspacePath(state ?? undefined);
             const result = await openFile({
                 filePath,
-                workspacePath: state?.workspacePath || undefined,
+                workspacePath: fileWorkspacePath || undefined,
                 source: 'tab_switch',
                 targetWindow: window,
                 skipFileWatcher: true,  // Tabs manage their own watchers
@@ -445,9 +456,9 @@ export function registerWorkspaceHandlers() {
             const windowId = getWindowId(window);
             if (windowId === null) return [];
 
-            const state = windowStates.get(windowId);
-            if (!state || !state.workspacePath) return [];
-            scope = state.workspacePath;
+            const activeWorkspacePath = resolveActiveWorkspacePath(windowStates.get(windowId));
+            if (!activeWorkspacePath) return [];
+            scope = activeWorkspacePath;
         }
 
         // Get recent files for this workspace from store
@@ -472,9 +483,10 @@ export function registerWorkspaceHandlers() {
         if (windowId === null) return;
 
         const state = windowStates.get(windowId);
-        if (!state || !state.workspacePath) return;
+        const workspacePath = resolveProjectForFile(state, filePath) ?? resolveActiveWorkspacePath(state);
+        if (!workspacePath) return;
 
-        addWorkspaceRecentFile(state.workspacePath, filePath);
+        addWorkspaceRecentFile(workspacePath, filePath);
     });
 
     // Get entire workspace state - no routing, no BS
@@ -657,9 +669,9 @@ export function registerWorkspaceHandlers() {
             if (!isDirectory && filePath.endsWith('.md')) {
               const window = BrowserWindow.fromWebContents(event.sender);
               const wId = window ? getWindowId(window) : null;
-              const wState = wId !== null ? windowStates.get(wId) : null;
-              if (wState?.workspacePath) {
-                deletedSyncId = getSyncId(filePath, wState.workspacePath);
+              const ownerPath = wId !== null ? resolveProjectForFile(windowStates.get(wId), filePath) : null;
+              if (ownerPath) {
+                deletedSyncId = getSyncId(filePath, ownerPath);
               }
             }
 
@@ -861,7 +873,21 @@ export function registerWorkspaceHandlers() {
             if (!window) {
                 throw new Error('No window found for event sender');
             }
-            window.webContents.send('open-document', { path: absoluteFilePath });
+            // Name the rail project so the open lands in that project's
+            // editor, not whichever one is on screen. A root outside the rail
+            // (an attached folder) has no editor of its own, so it is omitted.
+            const windowId = getWindowId(window);
+            const state = windowId !== null ? windowStates.get(windowId) : undefined;
+            const railWorkspacePath = workspacePath && state && getWindowProjectPaths(state).includes(workspacePath)
+                ? workspacePath
+                : undefined;
+            if (railWorkspacePath && railWorkspacePath !== resolveActiveWorkspacePath(state)) {
+                // The open waits for that project's editor, so bring it on screen.
+                window.webContents.send(WORKSPACE_ACTIVATE_CHANNEL, { workspacePath: railWorkspacePath });
+            }
+            window.webContents.send('open-document', railWorkspacePath
+                ? { path: absoluteFilePath, workspacePath: railWorkspacePath }
+                : { path: absoluteFilePath });
 
             return { success: true };
         } catch (error: any) {

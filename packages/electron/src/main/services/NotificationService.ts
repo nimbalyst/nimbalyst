@@ -375,6 +375,23 @@ class NotificationService {
   }
 
   /**
+   * Open a session in its project's window, the same routing a notification
+   * click uses: focus the window that holds the project and select the session
+   * there, or open the project and queue the selection for its renderer. With
+   * the project rail off a window shows one project, so a session link to
+   * another project has to land in another window.
+   */
+  navigateToSession(target: SessionNotificationNavigationTarget): void {
+    this.handleNotificationClick({
+      title: '',
+      body: '',
+      sessionId: target.sessionId,
+      workspacePath: target.workspacePath,
+      sourceLabel: target.sourceLabel,
+    });
+  }
+
+  /**
    * Handle notification click - bring window to focus and switch to session
    */
   private handleNotificationClick(options: NotificationOptions): void {

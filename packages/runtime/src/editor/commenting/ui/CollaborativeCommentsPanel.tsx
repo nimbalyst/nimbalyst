@@ -22,6 +22,11 @@
 import type { JSX, KeyboardEvent, ReactNode } from 'react';
 import { useCallback, useEffect, useId, useRef, useState } from 'react';
 
+import {
+  canDeleteCommentThread,
+  canDeleteThreadComment,
+  canManageCommentThread,
+} from '../capabilities';
 import { CommentCountBadge } from './CommentCountBadge';
 import { CommentThreadCard } from './CommentThreadCard';
 import { isDetachedThread } from './types';
@@ -73,6 +78,12 @@ export interface CollaborativeCommentsPanelProps extends CommentThreadActions {
   threads: CommentThreadView[];
   activeThreadId: string | null;
   capabilities: CommentCapabilities;
+  /**
+   * The signed-in user's id, as written in `actor.userId`. A commenter
+   * (`editBody: false`) is offered resolve and delete only on their own
+   * threads and comments; without it they are offered neither.
+   */
+  currentUserId?: string;
   getMembers(): CommentMember[];
   title?: string;
   /** Shown when there are no threads at all. */
@@ -95,6 +106,7 @@ export function CollaborativeCommentsPanel({
   threads,
   activeThreadId,
   capabilities,
+  currentUserId,
   getMembers,
   title = 'Comments',
   emptyMessage,
@@ -309,6 +321,19 @@ export function CollaborativeCommentsPanel({
                   anchorLabel={view.anchorLabel}
                   isActive={view.thread.id === activeThreadId}
                   canComment={canComment}
+                  canManageThread={canManageCommentThread(
+                    capabilities,
+                    currentUserId,
+                    view.thread,
+                  )}
+                  canDeleteThread={canDeleteCommentThread(
+                    capabilities,
+                    currentUserId,
+                    view.thread,
+                  )}
+                  canDeleteComment={(comment) =>
+                    canDeleteThreadComment(capabilities, currentUserId, comment)
+                  }
                   getMembers={getMembers}
                   tabIndex={view.thread.id === rovingThreadId ? 0 : -1}
                   autoFocusComposer={view.thread.id === autoFocusThreadId}

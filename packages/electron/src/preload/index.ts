@@ -3,6 +3,7 @@ import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import { createIpcSubscriber } from './ipcSubscriptions.ts';
 import {ClaudeForWindowsInstallation} from "../main/services/CLIManager.ts";
 import type { GhCliStatus } from '../main/services/GhCliDetector.ts';
+import type { ProjectMoveJob } from '../main/ipc/ProjectMigrationHandlers.ts';
 import type { GitStatusChangedPayload } from '../main/services/GitStatusRefreshCoordinator.ts';
 import type {
   AppendLocalReplicaUpdateInput,
@@ -815,8 +816,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   sendMcpCollabIndexResult: (resultChannel: string, result: { success: boolean; error?: string; [key: string]: unknown }) => {
     ipcRenderer.send(resultChannel, result);
   },
-  onMcpGetResourceSharingStatus: (callback: (data: { sourceId: string; resultChannel: string }) => void) => {
-    const handler = (_event: any, data: { sourceId: string; resultChannel: string }) => callback(data);
+  onMcpGetResourceSharingStatus: (callback: (data: { sourceId: string; workspacePath?: string; resultChannel: string }) => void) => {
+    const handler = (_event: any, data: { sourceId: string; workspacePath?: string; resultChannel: string }) => callback(data);
     ipcRenderer.on('mcp:getResourceSharingStatus', handler);
     return () => ipcRenderer.removeListener('mcp:getResourceSharingStatus', handler);
   },
@@ -928,8 +929,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Project Migration (move/rename)
   projectMigration: {
     canMove: (oldPath: string) => ipcRenderer.invoke('project:can-move', oldPath) as Promise<{ canMove: boolean; reason?: string }>,
-    move: (oldPath: string, newPath: string) => ipcRenderer.invoke('project:move', oldPath, newPath) as Promise<{ success: boolean; error?: string; newPath?: string }>,
-    rename: (oldPath: string, newName: string) => ipcRenderer.invoke('project:rename', oldPath, newName) as Promise<{ success: boolean; error?: string; newPath?: string }>,
+    move: (oldPath: string, newPath: string) => ipcRenderer.invoke('project:move', oldPath, newPath) as Promise<{ started: boolean; error?: string }>,
+    getMoveJobs: () => ipcRenderer.invoke('project:move-jobs') as Promise<ProjectMoveJob[]>,
+    onMoveProgress: (callback: (job: ProjectMoveJob) => void) => subscribeToIpcChannel('project:move-progress', callback),
+    rename: (oldPath: string, newName: string) => ipcRenderer.invoke('project:rename', oldPath, newName) as Promise<{ success: boolean; error?: string; newPath?: string; warnings?: string[] }>,
   },
 
 
@@ -1936,7 +1939,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // projection from the server; project-access grant/revoke/list manage the
   // per-project member set.
   org: {
-    canAccess: (input: { orgId?: string | null; projectId?: string | null; action: 'view' | 'edit' | 'admin' }) =>
+    canAccess: (input: { orgId?: string | null; projectId?: string | null; action: 'view' | 'comment' | 'edit' | 'admin' }) =>
       ipcRenderer.invoke('org:can-access', input),
     syncProjection: () => ipcRenderer.invoke('org:sync-projection'),
     grantProjectAccess: (orgId: string, projectId: string, userId: string, projectRole: string) =>

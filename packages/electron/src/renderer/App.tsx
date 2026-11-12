@@ -79,6 +79,7 @@ import {
   initSessionList,
 } from './store/atoms/sessions';
 import { dispatchCreateNewSession } from './store/actions/sessionHistoryActions';
+import { openSessionInOwningProject } from './store/actions/sessionNotificationNavigation';
 import { NavigationGutter } from './components/NavigationGutter';
 // NOTE: useTabs and useTabNavigation removed - EditorMode manages tabs now
 import type { ContentMode } from './types/WindowModeTypes';
@@ -123,6 +124,8 @@ import { initClaudeUsageListeners } from './store/listeners/claudeUsageListeners
 import { initPromptSuggestionListeners } from './store/listeners/promptSuggestionListeners';
 import { initClaudeCliTerminalListeners } from './store/listeners/claudeCliTerminalListeners';
 import { initWindowFocusListeners } from './store/listeners/windowFocusListeners';
+import { initRailProjectListeners } from './store/listeners/railProjectListeners';
+import { initProjectMoveListeners } from './store/listeners/projectMoveListeners';
 import { initCodexUsageListeners } from './store/listeners/codexUsageListeners';
 import { initGeminiUsageListeners } from './store/listeners/geminiUsageListeners';
 import { initFileOpenListeners } from './store/listeners/fileOpenListeners';
@@ -167,6 +170,10 @@ import { initBlitzListeners } from './store/listeners/blitzListeners';
 import { initUpdateListeners } from './store/listeners/updateListeners';
 import { initWalkthroughListeners } from './store/listeners/walkthroughListeners';
 import { initWakeupListeners } from './store/listeners/wakeupListener';
+import { initDictationListeners } from './store/listeners/dictationListeners';
+import { installDictationShortcut } from './dictation/dictationShortcut';
+import { getDictationController } from './dictation/dictationController';
+import { DictationPendingOverlay } from './dictation/DictationPendingOverlay';
 import { TrackerMode } from './components/TrackerMode';
 import { PullRequestMode, type PullRequestModeRef } from './components/PullRequestMode';
 import { CollabMode, type CollabModeRef } from './components/CollabMode';
@@ -310,7 +317,6 @@ import {
   closeTerminalPanelAtom,
   openTerminalPanelAtom,
   loadTerminalPanelState,
-  resetTerminalPanelHydration,
 } from './store/atoms/terminals';
 
 interface TitleBarGitActionState {
@@ -430,6 +436,8 @@ export default function App() {
     const cleanupPromptSuggestion = initPromptSuggestionListeners();
     const cleanupClaudeCliTerminal = initClaudeCliTerminalListeners();
     const cleanupWindowFocus = initWindowFocusListeners();
+    const cleanupRailProjects = initRailProjectListeners();
+    const cleanupProjectMoves = initProjectMoveListeners();
     const cleanupCodex = initCodexUsageListeners();
     const cleanupGemini = initGeminiUsageListeners();
     const cleanupFileOpen = initFileOpenListeners();
@@ -457,6 +465,8 @@ export default function App() {
     const cleanupUpdate = initUpdateListeners();
     const cleanupWalkthrough = initWalkthroughListeners();
     const cleanupWakeup = initWakeupListeners();
+    const cleanupDictation = initDictationListeners();
+    const cleanupDictationShortcut = installDictationShortcut(getDictationController);
     const cleanupNetworkAvailability = initNetworkAvailabilityListeners();
     const cleanupTeamInbox = initTeamInboxListeners();
     const cleanupConversations = initConversationListeners();
@@ -484,6 +494,8 @@ export default function App() {
       cleanupPromptSuggestion?.();
       cleanupClaudeCliTerminal?.();
       cleanupWindowFocus?.();
+      cleanupRailProjects?.();
+      cleanupProjectMoves?.();
       cleanupCodex?.();
       cleanupGemini?.();
       cleanupFileOpen();
@@ -511,6 +523,8 @@ export default function App() {
       cleanupUpdate?.();
       cleanupWalkthrough?.();
       cleanupWakeup?.();
+      cleanupDictation();
+      cleanupDictationShortcut();
       cleanupNetworkAvailability?.();
       cleanupTeamInbox?.();
       cleanupConversations?.();
@@ -1065,7 +1079,6 @@ export default function App() {
   // Load terminal panel state from terminal store into Jotai atoms
   useEffect(() => {
     if (!workspacePath) return;
-    resetTerminalPanelHydration();
     void loadTerminalPanelState(workspacePath);
   }, [workspacePath]);
 
@@ -2314,6 +2327,14 @@ export default function App() {
         });
       }
 
+      // A session from another project must open in that project, not under
+      // whichever project is active: in another rail project, or with the
+      // rail off, in that project's own window.
+      if (eventWorkspacePath && eventWorkspacePath !== store.get(activeWorkspacePathAtom)) {
+        await openSessionInOwningProject({ sessionId, workspacePath: eventWorkspacePath, sourceLabel: '' });
+        return;
+      }
+
       setActiveMode('agent');
 
       // Open the session using the AgentMode ref
@@ -3308,6 +3329,7 @@ export default function App() {
       {/* UnifiedOnboarding is now managed by DialogProvider via useOnboarding hook */}
       {/* ClaudeCommandsToast removed - commands now via extension-based plugins */}
       <ErrorToastContainer />
+      <DictationPendingOverlay />
       <ExtensionHostComponents />
       <ExtensionPermissionPrompt />
       <UpdateToast />

@@ -333,6 +333,11 @@ export class RemoteSessionMirror {
     });
   }
 
+  /** The name other devices see for this machine in session sync, or null when sync is off or the name is blank. */
+  localDeviceName(): string | null {
+    return this.provider?.getLocalDeviceInfo?.()?.name?.trim() || null;
+  }
+
   async hosts(workspace: string): Promise<DeviceInfo[]> {
     if (!workspace) throw new Error('workspace is required');
     try { await this.refresh(); } catch { /* Retain offline history. */ }

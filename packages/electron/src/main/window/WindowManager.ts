@@ -2,7 +2,7 @@ import { BrowserWindow, app, nativeImage, ipcMain, screen, Menu, type IpcMainEve
 import { safeHandle, safeOn } from '../utils/ipcRegistry';
 import { join, basename } from 'path';
 import { existsSync } from 'fs';
-import { WindowState, FileTreeItem } from '../types';
+import { WindowState, FileTreeItem, RestoredRail } from '../types';
 import { WINDOW_CASCADE_OFFSET } from '../utils/constants';
 import { getTheme, saveWorkspaceWindowState, getWorkspaceNavigationHistory, saveWorkspaceNavigationHistory } from '../utils/store';
 import { stopFileWatcher } from '../file/FileWatcher';
@@ -181,6 +181,8 @@ export function getFocusedOrNewWindow(): BrowserWindow {
 export interface CreateWindowOptions {
     /** Explicit project windows must not inherit another window's saved rail. */
     restorePreviousProjects?: boolean;
+    /** Rail projects saved with this window by session restore. */
+    restoredRail?: RestoredRail;
     /** Show the window without activating the app (no focus steal). */
     showInactive?: boolean;
     /**
@@ -306,6 +308,7 @@ export function createWindow(
             filePath: null,
             workspacePath: isWorkspaceMode ? workspacePath : null,
             restorePreviousProjects: options?.restorePreviousProjects,
+            restoredRail: options?.restoredRail,
             documentEdited: false
         });
 

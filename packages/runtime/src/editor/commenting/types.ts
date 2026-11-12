@@ -107,6 +107,15 @@ export interface CommentMentionPayload {
 export interface CommentCapabilities {
   read: boolean;
   comment: boolean;
+  /**
+   * Whether this user may change the document body (the Lexical `root` in the
+   * shared Y.Doc). Absent means true, so hosts that predate the field keep
+   * their behavior. `false` with `comment: true` is commenter mode: the editor
+   * is read-only, new threads carry only a `text-quote` anchor (no MarkNode),
+   * and the client writes nothing to `root`. The server refuses any commenter
+   * update that changes anything but the `comments` array.
+   */
+  editBody?: boolean;
 }
 
 export interface CommentReplyPayload extends CommentMentionPayload {

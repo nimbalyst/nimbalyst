@@ -282,6 +282,42 @@ export function notifyCollabStatus(
 // Collab-enabled EditorHost factory
 // ---------------------------------------------------------------------------
 
+/** A read-only flag the host reads live and pushes to `onReadOnlyChanged`. */
+export interface ReadOnlySignal {
+  get(): boolean;
+  set(next: boolean): void;
+  subscribe(callback: (readOnly: boolean) => void): () => void;
+}
+
+/**
+ * `alsoReadOnly` is read synchronously on every `get()`, for a fact that can
+ * change before React state catches up (the room's verdict lands in the same
+ * tick as the `connected` status that triggers a first-open seed).
+ */
+export function createReadOnlySignal(initial: boolean, alsoReadOnly?: () => boolean): ReadOnlySignal {
+  let value = initial;
+  const listeners = new Set<(readOnly: boolean) => void>();
+  const get = (): boolean => value || alsoReadOnly?.() === true;
+  // Listeners hear the combined value `get()` returns, and only when it
+  // changes: clearing the local flag while the verdict still locks the body
+  // must not announce "editable".
+  let lastNotified = get();
+  return {
+    get,
+    set(next) {
+      value = next;
+      const combined = get();
+      if (combined === lastNotified) return;
+      lastNotified = combined;
+      for (const listener of [...listeners]) listener(combined);
+    },
+    subscribe(callback) {
+      listeners.add(callback);
+      return () => listeners.delete(callback);
+    },
+  };
+}
+
 export interface CollabExtensionHostArgs {
   filePath: string;
   fileName: string;
@@ -300,6 +336,11 @@ export interface CollabExtensionHostArgs {
   /** Inline collaborative embeds are always marked embedded + read-only. */
   embedded?: boolean;
   readOnly?: boolean;
+  /**
+   * A live read-only state that can change after mount (a commenter, or an
+   * editor demoted mid-session). Takes precedence over `readOnly`.
+   */
+  readOnlySignal?: ReadOnlySignal;
   /**
    * Receives the editor's scroll viewport when it publishes one.
    *
@@ -344,6 +385,7 @@ export function createCollabExtensionHost(
     subscribeToThemeChanges,
     embedded = false,
     readOnly = false,
+    readOnlySignal,
     onViewportRegistered,
     editorAPIPriority = 'visible',
   } = args;
@@ -367,7 +409,7 @@ export function createCollabExtensionHost(
     filePath,
     fileName,
     embedded,
-    get readOnly() { return readOnly; },
+    get readOnly() { return readOnlySignal ? readOnlySignal.get() : readOnly; },
     get theme() { return getTheme ? getTheme() : 'auto'; },
     get isActive() { return isActive; },
     workspaceId,
@@ -376,6 +418,10 @@ export function createCollabExtensionHost(
       return subscribeToThemeChanges ? subscribeToThemeChanges(callback) : () => {};
     },
     onReadOnlyChanged(callback: (readOnly: boolean) => void): () => void {
+      if (readOnlySignal) {
+        callback(readOnlySignal.get());
+        return readOnlySignal.subscribe(callback);
+      }
       callback(readOnly);
       return () => {};
     },

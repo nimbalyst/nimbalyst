@@ -31,6 +31,16 @@ function fixture() {
 
 afterEach(() => vi.useRealTimers());
 describe('remote desktop mirrors', () => {
+  it('reports the trimmed local device name, or null without a provider or with a blank name', () => {
+    const f = fixture();
+    expect(f.mirror.localDeviceName()).toBeNull();
+    f.provider.getLocalDeviceInfo = () => ({ deviceId: 'desktop', name: '  Greg-PC ' }) as never;
+    expect(f.mirror.localDeviceName()).toBe('Greg-PC');
+    f.provider.getLocalDeviceInfo = () => ({ deviceId: 'desktop', name: '   ' }) as never;
+    expect(f.mirror.localDeviceName()).toBeNull();
+    f.mirror.setProvider(null);
+    expect(f.mirror.localDeviceName()).toBeNull();
+  });
   it('counts descendants recursively without crossing workspace or host boundaries', async () => {
     const f = fixture();
     f.provider.fetchIndex.mockResolvedValue({ sessions: [f.entry,

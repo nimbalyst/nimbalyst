@@ -2,7 +2,8 @@ import { BrowserWindow, dialog, ipcMain } from 'electron';
 import { basename, dirname, join } from 'path';
 import { existsSync, mkdirSync, readdirSync, writeFileSync } from 'fs';
 import { templates } from '../../../../extensions/extension-dev-kit/src/templates.ts';
-import { createWindow, findWindowByWorkspace } from '../window/WindowManager';
+import { createWindow } from '../window/WindowManager';
+import { reuseOpenWorkspaceWindow } from '../window/reuseOpenWorkspaceWindow';
 import {
   addToRecentItems,
   getWorkspaceWindowState,
@@ -51,11 +52,8 @@ function writeTemplateFiles(projectPath: string, files: Record<string, string>):
 function openWorkspace(projectPath: string): void {
   addToRecentItems('workspaces', projectPath, basename(projectPath));
 
-  const existingWindow = findWindowByWorkspace(projectPath);
-  if (existingWindow && !existingWindow.isDestroyed()) {
-    existingWindow.focus();
-    return;
-  }
+  // Switches the window to the project when it is showing another rail project.
+  if (reuseOpenWorkspaceWindow(projectPath)) return;
 
   const savedState = getWorkspaceWindowState(projectPath);
   createWindow(false, true, projectPath, savedState?.bounds);

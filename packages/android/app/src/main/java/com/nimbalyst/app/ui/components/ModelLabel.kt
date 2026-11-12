@@ -26,7 +26,9 @@ object ModelLabel {
 
     // Claude Code: mirrors CLAUDE_CODE_VARIANT_VERSIONS in modelConstants.ts.
     private val claudeCodeVariantVersions = mapOf(
-        "fable" to "5.1",
+        "fable" to "5.2",
+        "fable-5-2" to "5.2",
+        "fable-5-1" to "5.1",
         "fable-5" to "5",
         "opus" to "5.5",
         "opus-5-5" to "5.5",
@@ -78,6 +80,8 @@ object ModelLabel {
 
     // Claude API: mirrors CLAUDE_MODELS[*].shortName in modelConstants.ts.
     private val claudeApiShortNames = mapOf(
+        "claude-fable-5-2" to "Fable 5.2",
+        "claude-fable-5-1" to "Fable 5.1",
         "claude-fable-5" to "Fable 5",
         "claude-sonnet-5-5" to "Sonnet 5.5",
         "claude-sonnet-5" to "Sonnet 5",

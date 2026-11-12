@@ -187,7 +187,8 @@ const injectRichTranscriptStyles = () => {
       0%, 100% { background-color: inherit; }
       50% { background-color: var(--nim-bg-hover); }
     }
-    .rich-transcript-message.highlight-message {
+    .rich-transcript-message.highlight-message,
+    [data-transcript-tool-id].highlight-message {
       animation: highlight 2s ease-in-out;
     }
 
@@ -520,7 +521,7 @@ const getTranscriptMessageKey = (
 
 
 export const RichTranscriptView = React.forwardRef<
-  { scrollToMessage: (index: number) => void; scrollToTop: () => void; getMessages: () => TranscriptViewMessage[] },
+  { scrollToMessage: (index: number, toolCallId?: string) => void; scrollToTop: () => void; getMessages: () => TranscriptViewMessage[] },
   RichTranscriptViewProps
 >(({ sessionId, sessionStatus, isProcessing, hasPendingInteractivePrompt, messages, provider, settings: propsSettings, onSettingsChange, showSettings, documentContext, workspacePath, renderEmptyExtra, hideEmptyHelp, readFile, onOpenFile, onOpenSession, onCompact, promptAdditions, currentTeammates, waitingForNoun, backgroundTasks, appStartTime, renderEmbeddedFile, canEmbedFile, loadToolCallDiffs, onSearchBarVisibilityChange, persistScrollState = true }, ref) => {
   const [collapsedMessages, setCollapsedMessages] = useState<Set<number>>(new Set());
@@ -812,12 +813,22 @@ export const RichTranscriptView = React.forwardRef<
 
   // Expose scroll method via ref
   React.useImperativeHandle(ref, () => ({
-    scrollToMessage: (index: number) => {
+    scrollToMessage: (index: number, toolCallId?: string) => {
       if (!vlistRef.current) return;
-      vlistRef.current.scrollToIndex(index, { align: 'center' });
+      vlistRef.current.scrollToIndex(index, { align: toolCallId ? 'start' : 'center' });
       // Highlight after scroll settles
       setTimeout(() => {
-        const messageDiv = messageRefs.current.get(index);
+        // A question card can sit deep inside a long tool group; bring the
+        // card itself into view rather than the top of its row.
+        const container = scrollContainerRef.current;
+        const card = toolCallId
+          ? Array.from(container?.querySelectorAll<HTMLElement>('[data-transcript-tool-id]') ?? [])
+            .find(element => element.dataset.transcriptToolId === toolCallId)
+          : undefined;
+        if (card && container && vlistRef.current) {
+          vlistRef.current.scrollBy(card.getBoundingClientRect().top - container.getBoundingClientRect().top - 8);
+        }
+        const messageDiv = card ?? messageRefs.current.get(index);
         if (messageDiv) {
           messageDiv.classList.add('highlight-message');
           setTimeout(() => {

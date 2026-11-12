@@ -23,7 +23,7 @@ import { resolveTeamsTarget, type ProjectPin } from '../cloud/repo.js';
 import { createTeamContentWriter, type TeamContentWriter } from '../cloud/teamContent.js';
 import { importToTeam, pacedCaller, planBatches, planTypeBatches, TYPE_BATCH_MAX, type ImportDeps, type ImportError, type ToolCaller } from '../cloud/teamImport.js';
 import type { EditorModels, EditorModelsLoader } from '../mcp/editorTools.js';
-import { readMigratedTo, writeMigratedTo, type MigratedTo } from './locate.js';
+import { readMigratedTo, readPublishTarget, writeMigratedTo, type MigratedTo } from './locate.js';
 import type { OpenedWiki } from './open.js';
 import { collectLocalWiki, MIGRATION_BANNER_PREFIX, migrationBanner, type CollectOptions } from './teamExport.js';
 
@@ -84,6 +84,13 @@ async function editorModels(opened: OpenedWiki, load: EditorModelsLoader | undef
 }
 
 export async function moveLocalWikiToTeam(opened: OpenedWiki, options: MoveOptions, deps: MoveDeps = {}): Promise<MoveReport> {
+  const publishing = readPublishTarget(opened.projectRoot);
+  if (publishing) {
+    throw new MoveRefusal(
+      `This local wiki publishes to team project ${publishing.orgId}/${publishing.projectId} (\`nim wiki publish\`), with the files as the source. ` +
+        'Moving it would make the team copy the source instead. Remove `publish` from .nimbalyst/local-wiki.json first if that is what the user wants.',
+    );
+  }
   const { models, editorTypes } = await editorModels(opened, deps.loadEditorModels);
   const wikiPrefix = path.relative(opened.projectRoot, opened.dir).split(path.sep).join('/');
   const exported = await collectLocalWiki(opened.wiki, { editorTypes, wikiPrefix, wikiDir: opened.dir });

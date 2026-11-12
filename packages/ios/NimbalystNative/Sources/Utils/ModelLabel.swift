@@ -36,7 +36,9 @@ public enum ModelLabel {
 
     /// Mirrors `CLAUDE_CODE_VARIANT_VERSIONS` in `modelConstants.ts`.
     private static let claudeCodeVariantVersions: [String: String] = [
-        "fable": "5.1",
+        "fable": "5.2",
+        "fable-5-2": "5.2",
+        "fable-5-1": "5.1",
         "fable-5": "5",
         "opus": "5.5",
         "opus-5-5": "5.5",
@@ -118,6 +120,8 @@ public enum ModelLabel {
 
     /// Mirrors `CLAUDE_MODELS[*].shortName` in `modelConstants.ts`.
     private static let claudeApiShortNames: [String: String] = [
+        "claude-fable-5-2": "Fable 5.2",
+        "claude-fable-5-1": "Fable 5.1",
         "claude-fable-5": "Fable 5",
         "claude-sonnet-5-5": "Sonnet 5.5",
         "claude-sonnet-5": "Sonnet 5",

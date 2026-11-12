@@ -2,7 +2,7 @@ import { mkdir, readdir, readFile, rm, rmdir, stat, unlink } from 'node:fs/promi
 import * as path from 'node:path';
 import yaml from 'js-yaml';
 import { contentVersion, idForFileName, ulid } from './ids.js';
-import { composeMarkdownFile, flattenLegacy, parseMarkdownFile, RESERVED_KEYS } from './frontmatter.js';
+import { composeMarkdownFile, flattenLegacy, parseMarkdownFile, readPageMeta, RESERVED_KEYS } from './frontmatter.js';
 import { fileStemForTitle, nameKey, uniqueStem } from './names.js';
 import { atomicWrite, movePath, pathExists, relJoin } from './fsutil.js';
 import { ACTIVITY_SUFFIX, linkBaseDir, MARKER_FILE, resolveLinkPath, TRASH_DIR, TRASH_MANIFEST, type PageRecord, type TrashManifest } from './scan.js';
@@ -487,6 +487,17 @@ export class LocalWiki extends WikiTables {
     const title = input.title.trim();
     if (!title) throw new LocalWikiError('invalid', 'A page needs a title');
     const editor = input.documentType !== 'markdown';
+    if (!editor) {
+      // An agent often writes its own frontmatter into the body. Fold it into the
+      // one block this page gets instead of stacking a second block above it.
+      // The wiki owns id, title and order; explicit type and fields win.
+      const parsed = parseMarkdownFile(input.body);
+      if (!parsed.ok) throw new LocalWikiError('invalid', `The page body starts with frontmatter that cannot be read: ${parsed.error}`);
+      if (parsed.block) {
+        const meta = readPageMeta(parsed.data);
+        input = { ...input, body: parsed.body, pageType: input.pageType ?? meta.type, fields: { ...meta.fields, ...input.fields } };
+      }
+    }
     let suffix = '.md';
     if (editor) {
       if (input.pageType) throw new LocalWikiError('invalid', `A ${input.documentType} page cannot have a type; only markdown pages can`);

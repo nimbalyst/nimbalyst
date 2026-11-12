@@ -21,7 +21,7 @@ import { app } from 'electron';
 import * as os from 'os';
 import { getProjectFileSyncService } from './ProjectFileSyncService';
 import { startProjectFileSync, stopAllProjectFileSync } from '../file/WorkspaceWatcher';
-import { windowStates } from '../window/WindowManager';
+import { listOpenWorkspacePaths } from '../window/windowState';
 import { createProjectConfigSync } from './sync/projectConfigSync';
 import { projectConfigSources } from './sync/projectConfigSources';
 import { nextMobileSettingsVersion } from './sync/mobileSettingsVersion';
@@ -706,12 +706,11 @@ export async function initializeSync(baseStore: SessionStore): Promise<SessionSt
         // The workspace watcher's startProjectFileSync call at window-open time
         // likely ran before sync was ready (isSyncEnabled() was false), so we
         // need to retry now that sync is fully initialized.
-        for (const ws of windowStates.values()) {
-          if (ws.workspacePath) {
-            startProjectFileSync(ws.workspacePath).catch(err => {
-              logger.main.warn('[SyncManager] Failed to start project file sync for workspace:', err);
-            });
-          }
+        // Every rail project, not only each window's first one.
+        for (const workspacePath of listOpenWorkspacePaths()) {
+          startProjectFileSync(workspacePath).catch(err => {
+            logger.main.warn('[SyncManager] Failed to start project file sync for workspace:', err);
+          });
         }
       } catch (err) {
         logger.main.warn('[SyncManager] ProjectFileSyncService failed to initialize (non-fatal):', err);

@@ -24,6 +24,7 @@
 import { existsSync, statSync } from 'node:fs';
 import { cp, mkdir, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
+import { isExportOptOut, stripIdentity } from './visibility.js';
 import { HTML_EMBED_SHELL_CSP, HTML_EMBED_SHELL_HTML } from '@nimbalyst/collab-protocol';
 import {
   findLinks,
@@ -109,27 +110,7 @@ export interface StaticExportReport {
 
 export class StaticExportError extends Error {}
 
-const IDENTITY_FIELD = /^(owners?|assignees?|authors?|reporters?|created_?by|updated_?by|emails?|contacts?|members?)$/i;
-const EMAIL = /[^\s@<>()]+@[^\s@<>()]+\.[a-z]{2,}/i;
 const MANIFEST = path.posix.join(STATIC_SITE_DATA_DIR, 'manifest.json');
-
-function hasEmail(value: unknown): boolean {
-  if (typeof value === 'string') return EMAIL.test(value);
-  if (Array.isArray(value)) return value.some(hasEmail);
-  return false;
-}
-
-/** Fields with person fields removed; `userFields` are the type's `user` fields. */
-function stripIdentity(fields: Record<string, unknown>, userFields: ReadonlySet<string>, keep: boolean): { fields: Record<string, unknown>; removed: number } {
-  if (keep) return { fields, removed: 0 };
-  const out: Record<string, unknown> = {};
-  let removed = 0;
-  for (const [name, value] of Object.entries(fields)) {
-    if (IDENTITY_FIELD.test(name) || userFields.has(name) || hasEmail(value)) removed++;
-    else out[name] = value;
-  }
-  return { fields: out, removed };
-}
 
 function relationIds(value: unknown): string[] {
   if (typeof value === 'string') return value.split(',').map((part) => part.trim()).filter(Boolean);
@@ -206,7 +187,7 @@ export async function exportStaticSite(options: StaticExportOptions): Promise<St
   const visit = (page: LocalPage, hidden: boolean) => {
     if (visited.has(page.id)) return;
     visited.add(page.id);
-    const optedOut = page.fields.export === false || page.fields.export === 'false';
+    const optedOut = isExportOptOut(page.fields);
     if (hidden) excluded.push({ id: page.id, title: page.title, reason: 'under-excluded' });
     else if (optedOut) excluded.push({ id: page.id, title: page.title, reason: 'export-false' });
     else if (page.malformed) excluded.push({ id: page.id, title: page.title, reason: 'malformed' });

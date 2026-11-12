@@ -239,9 +239,11 @@ export interface TrackerDataModel {
      */
     archived?: boolean;
     /**
-     * Give items of this type machine-private local numbers (`NIM.75`). Off
-     * unless the type opts in. Team issue keys (`NIM-123`) are unaffected, and a
-     * number already issued stays readable and resolvable after opting out.
+     * Set to false to stop giving items of this type machine-private local
+     * numbers (`NIM.75`). On unless the type opts out: an opt-in default left
+     * every type unnumbered for weeks because no type set it. Team
+     * issue keys (`NIM-123`) are unaffected, and a number already issued stays
+     * readable and resolvable after opting out.
      */
     localNumbers?: boolean;
     /**

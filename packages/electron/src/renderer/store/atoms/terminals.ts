@@ -10,6 +10,7 @@
 import { atom } from 'jotai';
 import { atomFamily } from '../debug/atomFamilyRegistry';
 import { store } from '@nimbalyst/runtime/store';
+import { activeWorkspacePathAtom } from './openProjects';
 
 /**
  * Terminal instance metadata
@@ -76,20 +77,66 @@ export const activeTerminalIdAtom = atom<string | undefined>(undefined);
 
 // --- Terminal Panel UI State ---
 
-/**
- * Terminal panel visibility atom
- */
-export const terminalPanelVisibleAtom = atom<boolean>(false);
+interface TerminalPanelState {
+  visible: boolean;
+  height: number;
+  /** Whether this project's state has been loaded from persistent storage. */
+  hydrated: boolean;
+}
 
 /**
- * Terminal panel height atom
+ * Bottom terminal panel state, one per project. A multi-project window switches
+ * projects without remounting, so a single window-wide value would carry one
+ * project's open panel into the next project.
  */
-export const terminalPanelHeightAtom = atom<number>(300);
+export const terminalPanelStateAtomFamily = atomFamily((_workspacePath: string) =>
+  atom<TerminalPanelState>({ visible: false, height: 300, hydrated: false })
+);
+
+const activeTerminalPanelStateAtom = atom((get) =>
+  terminalPanelStateAtomFamily(get(activeWorkspacePathAtom) ?? '')
+);
 
 /**
- * Whether terminal panel state has been hydrated from persistent storage
+ * Terminal panel visibility for the visible project. Writes persist to that
+ * project once its stored state has loaded.
  */
-export const terminalPanelHydratedAtom = atom<boolean>(false);
+export const terminalPanelVisibleAtom = atom(
+  (get) => get(get(activeTerminalPanelStateAtom)).visible,
+  (get, set, update: boolean | ((previous: boolean) => boolean)) => {
+    const workspacePath = get(activeWorkspacePathAtom);
+    const stateAtom = get(activeTerminalPanelStateAtom);
+    const state = get(stateAtom);
+    const visible = typeof update === 'function' ? update(state.visible) : update;
+    if (visible === state.visible) return;
+    set(stateAtom, { ...state, visible });
+    if (workspacePath && state.hydrated) {
+      window.electronAPI?.terminal?.setPanelVisible(workspacePath, visible);
+    }
+  }
+);
+
+/**
+ * Terminal panel height for the visible project
+ */
+export const terminalPanelHeightAtom = atom(
+  (get) => get(get(activeTerminalPanelStateAtom)).height
+);
+
+/**
+ * Whether the visible project's terminal panel state has been hydrated from persistent storage
+ */
+export const terminalPanelHydratedAtom = atom(
+  (get) => get(get(activeTerminalPanelStateAtom)).hydrated
+);
+
+/**
+ * Set the panel height for a project while resizing. Persisting is left to the
+ * caller so a drag writes once.
+ */
+export function setTerminalPanelHeight(workspacePath: string, height: number): void {
+  store.set(terminalPanelStateAtomFamily(workspacePath), (prev) => ({ ...prev, height }));
+}
 
 /**
  * Toggle terminal panel visibility (write-only atom)
@@ -113,31 +160,23 @@ export const openTerminalPanelAtom = atom(null, (_get, set) => {
 });
 
 /**
- * Load terminal panel state from backend and update atoms.
- * Called once on startup per workspace.
+ * Load a project's terminal panel state from the backend. A project that is
+ * already loaded keeps its in-memory state, which every change has persisted.
  */
 export async function loadTerminalPanelState(workspacePath: string): Promise<void> {
+  const stateAtom = terminalPanelStateAtomFamily(workspacePath);
+  if (store.get(stateAtom).hydrated) return;
+  let loaded: { panelVisible?: boolean; panelHeight?: number } | undefined;
   try {
-    if (!window.electronAPI?.terminal?.getPanelState) {
-      store.set(terminalPanelHydratedAtom, true);
-      return;
-    }
-    const state = await window.electronAPI.terminal.getPanelState(workspacePath);
-    if (state?.panelVisible !== undefined) {
-      store.set(terminalPanelVisibleAtom, state.panelVisible);
-    }
-    if (state?.panelHeight !== undefined) {
-      store.set(terminalPanelHeightAtom, state.panelHeight);
-    }
+    loaded = await window.electronAPI?.terminal?.getPanelState?.(workspacePath);
   } catch (error) {
     console.error('[terminals] Failed to load terminal panel state:', error);
-  } finally {
-    store.set(terminalPanelHydratedAtom, true);
   }
-}
-
-export function resetTerminalPanelHydration(): void {
-  store.set(terminalPanelHydratedAtom, false);
+  store.set(stateAtom, (prev) => ({
+    visible: loaded?.panelVisible ?? prev.visible,
+    height: loaded?.panelHeight ?? prev.height,
+    hydrated: true,
+  }));
 }
 
 /**

@@ -117,6 +117,15 @@ describe('the browser comments service for extension editors', () => {
     expect(service.getCapabilities()).toEqual({ read: true, comment: false });
   });
 
+  it('gives a commenter session read-only, no-comment access on an extension page', async () => {
+    const { service, yDoc } = build({ capabilities: { read: true, comment: true, editBody: false } });
+    service.registerAnchorAdapter(attachedAdapter());
+
+    expect(service.getCapabilities()).toEqual({ read: true, comment: false, editBody: false });
+    await expect(service.createThread(placement())).rejects.toThrow(/permission/i);
+    expect(yDoc.getArray('comments').length).toBe(0);
+  });
+
   it('refuses to author before the room has synced once', async () => {
     const { service, yDoc } = build({ hydrated: false });
     service.registerAnchorAdapter(attachedAdapter());

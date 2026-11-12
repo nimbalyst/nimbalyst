@@ -34,16 +34,13 @@ import {
   openProjectsAtom,
   activeWorkspacePathAtom,
   isOpenProjectsAtCapAtom,
-  addOpenProjectAtom,
-  closeOpenProjectAtom,
   moveOpenProjectAtom,
+  projectRailGlobalSlotAtom,
   sortOpenProjectsAtom,
   type OpenProject,
 } from '../store/atoms/openProjects';
-import {
-  globalSessionActivityAtom,
-  projectActivitySummaryAtom,
-} from '../store/atoms/sessionActivity';
+import { globalSessionActivityAtom } from '../store/atoms/sessionActivity';
+import { projectRailBadgesAtom, type ProjectRailBadge } from '../store/atoms/projectRailBadges';
 import { generateWorkspaceAccentColor, projectIconForeground } from '../../shared/projectAppearance';
 import { projectAppearanceAtom } from '../store/atoms/projectAppearance';
 import { openSettingsCommandAtom } from '../store/atoms/settingsNavigation';
@@ -51,15 +48,21 @@ import { ProjectIcon } from './ProjectIcon';
 import { requestConfirmation } from '../dialogs/requestConfirmation';
 import { errorNotificationService } from '../services/ErrorNotificationService';
 import { useProjectRailDrag } from './hooks/useProjectRailDrag';
+import { addProjectToRail, removeProjectFromRail, PROJECT_LIMIT_WARNING } from '../store/actions/railProjects';
 import './ProjectRail.css';
 
 const REVEAL_LABEL = getShowInFileBrowserLabel();
 
+const BADGE_LABELS: Record<ProjectRailBadge['color'], string> = {
+  orange: 'awaiting input',
+  green: 'running',
+  blue: 'unread',
+};
+
 interface ProjectRailIconProps {
   project: OpenProject;
   isActive: boolean;
-  processingCount: number;
-  unreadCount: number;
+  badge: ProjectRailBadge | undefined;
   onActivate: (path: string) => void;
   onClose: (project: OpenProject) => void;
   onContextMenu: (project: OpenProject, x: number, y: number) => void;
@@ -67,14 +70,13 @@ interface ProjectRailIconProps {
   menuOpen: boolean;
   dropPosition?: 'before' | 'after';
   onDragStart: (event: React.DragEvent, path: string) => void;
-  onDragEnd: () => void;
+  onDragEnd: (event: React.DragEvent) => void;
 }
 
 function ProjectRailIcon({
   project,
   isActive,
-  processingCount,
-  unreadCount,
+  badge,
   onActivate,
   onClose,
   onContextMenu,
@@ -104,9 +106,14 @@ function ProjectRailIcon({
     onActivate(project.path);
   }, [onActivate, project.path]);
 
-  const handleClose = useCallback(
+  // Middle-click closes, like a browser tab. There is no hover close button:
+  // it sat on the icon's corner and caught clicks meant to select the project.
+  const handleAuxClick = useCallback(
     (event: React.MouseEvent) => {
+      if (event.button !== 1) return;
+      event.preventDefault();
       event.stopPropagation();
+      setTooltipOpen(false);
       onClose(project);
     },
     [onClose, project]
@@ -130,15 +137,7 @@ function ProjectRailIcon({
   // summary header (and in SessionHistory entries) for the same project.
   const accentColor = appearance.color || generateWorkspaceAccentColor(project.path);
 
-  // Inactive projects show a badge when something needs attention. Active
-  // projects already have the user's eyes on them so we suppress the
-  // badge to keep the rail quiet.
-  const showBadge = !isActive && (processingCount > 0 || unreadCount > 0);
-  const badgeLabel = processingCount > 0 ? `${processingCount}` : unreadCount > 0 ? `${unreadCount}` : '';
 
-  // Wrapper is a non-interactive container so the activate button and the
-  // close button can sit as siblings. Nesting a button inside a button is
-  // invalid HTML and confuses screen readers / keyboard navigation.
   return (
     <div
       ref={tooltipRefs.setReference}
@@ -154,6 +153,9 @@ function ProjectRailIcon({
         type="button"
         className="project-rail-item-main"
         onClick={handleClick}
+        onAuxClick={handleAuxClick}
+        // Stop the middle-button autoscroll cursor from starting.
+        onMouseDown={event => { if (event.button === 1) event.preventDefault(); }}
         draggable
         onDragStart={event => { setTooltipOpen(false); onDragStart(event, project.path); }}
         onDragEnd={onDragEnd}
@@ -169,23 +171,20 @@ function ProjectRailIcon({
         aria-current={isActive ? 'true' : undefined}
       >
         <ProjectIcon name={project.name} appearance={appearance} />
-        {showBadge && (
-          <span
-            className="project-rail-item-badge"
-            aria-label={processingCount > 0 ? `${processingCount} streaming session(s)` : `${unreadCount} unread`}
-          >
-            {badgeLabel}
-          </span>
-        )}
       </button>
-      <button
-        type="button"
-        className="project-rail-item-close"
-        onClick={handleClose}
-        aria-label={`Close ${project.name}`}
-      >
-        ×
-      </button>
+      {/* A sibling of the button so dimming an unselected icon leaves the
+          badge readable. Shown on the selected project too: it describes the
+          project's sessions, so hiding it on select changed it for no reason. */}
+      {badge && (
+        <span
+          role="img"
+          className="project-rail-item-badge"
+          data-state={badge.color}
+          aria-label={`${badge.count} ${BADGE_LABELS[badge.color]} session${badge.count === 1 ? '' : 's'}`}
+        >
+          {badge.count}
+        </span>
+      )}
       {tooltipOpen && !isDragging && !menuOpen && (
         <FloatingPortal>
           <div
@@ -196,6 +195,7 @@ function ProjectRailIcon({
           >
             <span className="project-rail-tooltip-name">{project.name}</span>
             <span className="project-rail-tooltip-path">{project.path}</span>
+            <span className="project-rail-tooltip-hint">Right-click for options. Middle-click to close.</span>
           </div>
         </FloatingPortal>
       )}
@@ -210,14 +210,38 @@ export function ProjectRail() {
   const openProjects = useAtomValue(openProjectsAtom);
   const [activePath, setActivePath] = useAtom(activeWorkspacePathAtom);
   const atCap = useAtomValue(isOpenProjectsAtCapAtom);
-  const addProject = useSetAtom(addOpenProjectAtom);
-  const closeProject = useSetAtom(closeOpenProjectAtom);
   const moveProject = useSetAtom(moveOpenProjectAtom);
   const sortProjects = useSetAtom(sortOpenProjectsAtom);
+  const setGlobalSlot = useSetAtom(projectRailGlobalSlotAtom);
   const activity = useAtomValue(globalSessionActivityAtom);
-  const activitySummary = useAtomValue(projectActivitySummaryAtom);
+  const railBadges = useAtomValue(projectRailBadgesAtom);
   const projectListRef = React.useRef<HTMLDivElement | null>(null);
-  const drag = useProjectRailDrag(projectListRef, moveProject);
+  const receiveProject = useCallback(async ({ path, beforePath }: { path: string; beforePath: string | null }) => {
+    const result = await addProjectToRail(store, path);
+    if (result === 'at-cap') {
+      errorNotificationService.showWarning(PROJECT_LIMIT_WARNING.title, PROJECT_LIMIT_WARNING.message);
+      return;
+    }
+    if (result !== 'added') return;
+    moveProject({ path, beforePath });
+    // Main tells the window the drag came from to let the project go.
+    window.electronAPI?.invoke?.('workspace:rail-drag-received', { workspacePath: path }).catch((err: unknown) => {
+      console.error('[ProjectRail] rail-drag-received failed:', err);
+    });
+  }, [store, moveProject]);
+  const reportDragEnd = useCallback(({ path, dropEffect }: { path: string; dropEffect: string }) => {
+    const isOnlyProject = store.get(openProjectsAtom).length <= 1;
+    window.electronAPI?.invoke?.('workspace:rail-drag-end', { workspacePath: path, dropEffect, isOnlyProject }).catch((err: unknown) => {
+      console.error('[ProjectRail] rail-drag-end failed:', err);
+    });
+  }, [store]);
+  const drag = useProjectRailDrag(projectListRef, { move: moveProject, receive: receiveProject, ended: reportDragEnd });
+  const startDrag = useCallback((event: React.DragEvent, path: string) => {
+    drag.onDragStart(event, path);
+    window.electronAPI?.invoke?.('workspace:rail-drag-start', { workspacePath: path }).catch((err: unknown) => {
+      console.error('[ProjectRail] rail-drag-start failed:', err);
+    });
+  }, [drag.onDragStart]);
 
   React.useLayoutEffect(() => {
     const list = projectListRef.current;
@@ -228,7 +252,7 @@ export function ProjectRail() {
       if (!active) return;
       const viewport = list.getBoundingClientRect();
       const item = active.getBoundingClientRect();
-      // Include the close button's overhang. Scroll only the project list,
+      // Keep a few pixels of margin. Scroll only the project list,
       // leaving the rest of the window and keyboard focus untouched.
       const above = item.top - viewport.top - 4;
       const below = item.bottom - viewport.bottom + 4;
@@ -255,29 +279,8 @@ export function ProjectRail() {
 
   const addProjectByPath = useCallback(async (workspacePath: string) => {
     if (!window.electronAPI?.invoke) return;
-    if (store.get(isOpenProjectsAtCapAtom) && !store.get(openProjectsAtom).some(p => p.path === workspacePath)) return;
-    try {
-      const reg = await window.electronAPI.invoke('workspace:register-additional', { workspacePath });
-      if (!reg?.success) {
-        console.error('[ProjectRail] register-additional failed:', reg?.error);
-        return;
-      }
-
-      const project: OpenProject = {
-        path: workspacePath,
-        name: workspacePath.split(/[\\/]/).filter(Boolean).pop() || workspacePath,
-        openedAt: Date.now(),
-      };
-      // `addOpenProjectAtom` flips `activeWorkspacePathAtom` to this path;
-      // the atom subscriber dispatches `workspace:set-active` to main.
-      if (!addProject(project)) {
-        // The limit can change in another window while registration is pending.
-        await window.electronAPI.invoke('workspace:unregister-additional', { workspacePath });
-      }
-    } catch (err) {
-      console.error('[ProjectRail] addProjectByPath failed:', err);
-    }
-  }, [addProject, store]);
+    await addProjectToRail(store, workspacePath);
+  }, [store]);
 
   const handlePickFolder = useCallback(async () => {
     if (!window.electronAPI?.invoke) return;
@@ -307,10 +310,7 @@ export function ProjectRail() {
 
   const handleOpenAddMenu = useCallback(() => {
     if (atCap) {
-      errorNotificationService.showWarning(
-        'Project limit reached',
-        'The project limit is eight per window. Close a project or enable Allow unlimited projects in Settings > Advanced.',
-      );
+      errorNotificationService.showWarning(PROJECT_LIMIT_WARNING.title, PROJECT_LIMIT_WARNING.message);
       return;
     }
     refreshRecents();
@@ -334,28 +334,9 @@ export function ProjectRail() {
         if (!proceed) return;
       }
 
-      const wasLast = openProjects.length <= 1;
-
-      closeProject(project.path);
-
-      try {
-        await window.electronAPI?.invoke?.('workspace:unregister-additional', { workspacePath: project.path });
-      } catch (err) {
-        console.error('[ProjectRail] unregister-additional failed:', err);
-      }
-
-      // Closing the last project leaves nothing to render in this window.
-      // Ask the host to close the window so the app can fall back to its
-      // initial project-selection flow.
-      if (wasLast) {
-        try {
-          await window.electronAPI?.invoke?.('workspace:close-rail-window');
-        } catch (err) {
-          console.error('[ProjectRail] close-rail-window failed:', err);
-        }
-      }
+      await removeProjectFromRail(store, project.path);
     },
-    [closeProject, activity, openProjects.length]
+    [activity, store]
   );
 
   // Right-click context menu state. Anchored to a virtual reference at the
@@ -496,21 +477,19 @@ export function ProjectRail() {
       <OrgSwitcher />
       <div ref={projectListRef} className="project-rail-projects" data-testid="project-rail-projects" {...drag.listProps}>
         {openProjects.map((project) => {
-          const activity = activitySummary.get(project.path);
           return (
             <ProjectRailIcon
               key={project.path}
               project={project}
               isActive={project.path === activePath}
-              processingCount={activity?.processing ?? 0}
-              unreadCount={activity?.unread ?? 0}
+              badge={railBadges.get(project.path)}
               onActivate={handleActivate}
               onClose={handleClose}
               onContextMenu={handleContextMenu}
               isDragging={drag.draggedPath === project.path}
               menuOpen={menu !== null}
               dropPosition={drag.beforePath === project.path ? 'before' : drag.beforePath === null && project === openProjects.at(-1) ? 'after' : undefined}
-              onDragStart={(event, path) => { closeMenu(); drag.onDragStart(event, path); }}
+              onDragStart={(event, path) => { closeMenu(); startDrag(event, path); }}
               onDragEnd={drag.onDragEnd}
             />
           );
@@ -529,6 +508,8 @@ export function ProjectRail() {
       >
         +
       </button>
+      {/* App-wide gutter items (usage, theme, feedback, account) portal in here. */}
+      <div ref={setGlobalSlot} className="project-rail-global-items" data-testid="project-rail-global-items" />
       {addTooltipOpen && (
         <FloatingPortal>
           <div

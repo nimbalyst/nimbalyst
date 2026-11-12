@@ -293,8 +293,9 @@ export async function tryClaimAndDispatchNextQueuedPrompt(
       return false;
     }
 
-    // Agent-authored rows deliver as one turn; a human row keeps its own turn and
-    // bounds the run on both sides. See coalesceQueuedPrompts.ts.
+    // Consecutive rows that can share a turn deliver as one, user and agent
+    // alike; slash commands and rows with differing context keep their own.
+    // See coalesceQueuedPrompts.ts.
     const run = selectCoalescibleRun(pendingPrompts);
     const nextPrompt = run[0];
     logInfo(`[AIService] ${source}: processing prompt ${nextPrompt.id} for session ${sessionId}`);
@@ -319,7 +320,7 @@ export async function tryClaimAndDispatchNextQueuedPrompt(
     const claimedIds = claimedRun.map((row) => row.id);
 
     if (claimedRun.length > 1) {
-      logInfo(`[AIService] ${source}: coalesced ${claimedRun.length} agent-authored prompts into one turn for session ${sessionId}`);
+      logInfo(`[AIService] ${source}: coalesced ${claimedRun.length} queued prompts into one turn for session ${sessionId}`);
     }
 
     if (!sendMessageHandler) {

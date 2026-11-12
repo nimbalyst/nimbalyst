@@ -10,12 +10,82 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 <!-- New features go here -->
+- `nim wiki publish` copies a project's local wiki into a team project for review while the files stay the source: each publish updates the team pages, never overwrites a page someone edited there, and moves pages deleted locally to the team Trash. Reviewers are invited with the new Commenter project role, which reads and comments on that one project but cannot edit pages, and `nim wiki comments` lists their open comments with the local file each belongs to (requires the updated sync server)
 
 ### Changed
 <!-- Changes to existing functionality go here -->
+- Team guests now see only the projects they are granted, instead of reading every project like a viewer (requires the updated sync server)
 
 ### Fixed
 <!-- Bug fixes go here -->
+- An agent edit to a shared document next to a comment on part of a bold run or inline code no longer writes broken markdown (such as an extra pair of `**` or backticks), and exporting such a document to a file keeps its formatting intact
+
+### Removed
+<!-- Removed features go here -->
+
+## [0.83.0] - 2026-11-09
+
+
+### Added
+<!-- New features go here -->
+- A file tree subfolder cut off at the 200-entry limit now ends with a row saying how many items are hidden ("51 more items", or "N or more" when skipped symlinks were not checked). The workspace root folder and folders loaded on expand do not show it yet
+- Claude Fable 5.2 is now available in the model picker, with Fable 5.1 and Fable 5 kept as selectable previous-generation options
+
+### Changed
+<!-- Changes to existing functionality go here -->
+- Messages queued while an agent is working, typed by you or sent by other sessions, are now delivered together in one turn, each labeled with its author; slash commands and messages with a different document context still go as their own turn, and Send Now delivers everything that can share a turn in one press
+- On macOS and Linux, processes Nimbalyst starts (agent sessions, MCP servers, CLIs, git) now put the login shell's PATH ahead of the system defaults, so tools from version managers such as mise are found before `/usr/bin` versions, and PATH is deduplicated per folder
+
+### Fixed
+<!-- Bug fixes go here -->
+- The weekly history in the Claude and Codex usage popovers now charts the main weekly limit by default instead of a per-model limit such as Fable
+- Nested lists under numbered items are saved indented past the parent's number (3 spaces under `2. `, 4 under `10. `), so other Markdown tools keep them nested, and a nested numbered list under an item numbered 10 starts at 1 instead of 10
+- Creating a local wiki page whose content starts with its own frontmatter now writes one frontmatter block with those fields and type, instead of adding a second block above it
+- A question card (AskUserQuestion or PromptForUserInput) that a PreToolUse hook denies now shows as blocked with the hook's reason, instead of as answered or as a form that can still be submitted
+- The `consume_session_inbox` tool is now listed on the `nimbalyst-host` MCP server, so orchestrating agents can call it as their instructions describe
+- The Agent Sessions search is cleared when you switch workspace in the same window, and a search still running for the previous workspace no longer replaces the new workspace's list or shows its error there
+- A prompt queued after you clear the document no longer merges into a turn with the older document content
+- The session machine picker labels the local machine with its device name, followed by "(this device)", instead of "This Mac" on every platform
+- When a workspace has more than 5,000 uncommitted files, the session list skips matching sessions to those files instead of sending every path to the database in one query. Git status still lists every untracked file, so this does not remove all memory growth in very large workspaces
+
+### Removed
+<!-- Removed features go here -->
+
+## [0.82.8] - 2026-11-09
+
+
+### Added
+<!-- New features go here -->
+- macOS: an optional `nimbalyst` terminal command (Nimbalyst menu > Install 'nimbalyst' Command in PATH, or Settings > Advanced) opens a folder as a project with `nimbalyst .`, or a file with `nimbalyst <file>`
+- With multiple projects per window enabled, drag a project from one window's project rail to another window's rail to move it, or drop it outside every window to open it in its own window
+- Projects switcher (Cmd+Shift+P) has an Open Folder as Project row for opening a folder that isn't in the recent list
+- Dictation: speak into the agent input, markdown editor or code editor with the mic button or Ctrl+Option+Space. On a Mac it starts macOS dictation; you can choose on-device speech recognition or OpenAI transcription with your OpenAI key in Settings > Dictation instead, where you can also turn it off to hide it
+
+### Changed
+<!-- Changes to existing functionality go here -->
+- Moving a project from the Project Manager runs in the background: the Project Manager stays usable and shows the move's progress, and moves on the same disk rename the folder instead of copying it
+- With multiple projects per window enabled, the usage indicators, theme toggle, feedback button and account menu sit at the bottom of the project rail instead of in each project's navigation gutter
+- Project rail icons no longer show a close button on hover, which was easy to hit when selecting a project; close a project from its right-click menu or by middle-clicking it
+- The selected project in the project rail fills with its color and the other projects dim until hovered, replacing the ring and edge bar
+- Project rail badges use the same colors as the Agent mode bubble: orange when a session is waiting for your input, green while sessions are running, blue for unread, and stay visible on the selected project
+- The transcript's prompts menu also lists your answers to agent questions and jumps to the question card; prompts sent by other sessions are shown muted and no longer count toward the badge
+
+### Fixed
+<!-- Bug fixes go here -->
+- With multiple projects per window enabled, opening the terminal panel in one project no longer opens it in the other projects in the rail
+- With multiple projects per window enabled, restarting Nimbalyst reopens each window with all of its rail projects and the project it was showing, instead of only the window's first project
+- Moving or renaming a project no longer requires deleting its worktrees first; the project's worktrees folder moves with it and git's worktree links are repaired
+- With multiple projects per window enabled, clicking a session in the menu bar panel switches the window to that session's project instead of opening the session under the project currently shown
+- With multiple projects per window enabled, session links, Cmd+L picks, wakeup notifications, and files opened from Finder or the `nimbalyst` command open in the project they belong to instead of the project currently shown
+- With multiple projects per window enabled, new documents, chat attachments, pasted images, recent files and Cmd+N use the project currently shown instead of the first project in the rail
+- A session started from the mobile app for a project that wasn't matched exactly could be created in another open project whose path contained the same text; it now goes only to the exact project
+- With multiple projects per window enabled, picking a project that isn't open in any window from the Projects switcher (Cmd+Shift+P) now adds it to the current window's project rail instead of opening a new window
+- Projects switcher (Cmd+Shift+P) now tags a project as Open when it is in any window's project rail, not only when it is the project that window started with
+- Images generated by Codex's built-in image tool now show in the transcript instead of as a block of base64 text
+- Dictation: the macOS shortcut starts dictation on key press instead of waiting for every key to be released, and the first words are no longer lost
+- Overlapping or superseded Claude turns in one session no longer close or replace the newer turn's live query
+- With multiple projects per window enabled, switching rail projects shows the cached session list while it reloads, and project document sync stays connected for the projects that remain open
+- The sleep blocker stays on through brief sync drops, and the menu bar session panel recovers after its renderer is lost
 
 ### Removed
 <!-- Removed features go here -->

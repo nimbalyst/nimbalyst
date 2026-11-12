@@ -5,7 +5,10 @@ import {
   loadOrgDirectory,
   matchOrgMembers,
   readResourceSharingStatus,
+  readSharedDocumentFromRenderer,
 } from '../collabReadToolHandlers';
+import { findWorkspaceWindowMatch } from '../../../window/WindowManager';
+import { requestFromRenderer } from '../../rendererRequest';
 import type { TeamDetails, TeamMember } from '../../../services/TeamService';
 
 vi.mock('../../../services/TeamService', () => ({
@@ -13,6 +16,18 @@ vi.mock('../../../services/TeamService', () => ({
   resolveTeamForWorkspace: vi.fn(async () => ({ team: null, complete: false })),
   getOrgScopedJwt: vi.fn(),
   listMembersWithTeamJwt: vi.fn(),
+}));
+
+vi.mock('../../../window/WindowManager', () => ({
+  documentServices: new Map(),
+  findWorkspaceWindowMatch: vi.fn(() => null),
+}));
+
+vi.mock('../../rendererRequest', () => ({
+  requestFromRenderer: vi.fn(async () => ({
+    status: 'answered',
+    response: { success: true, result: { kind: 'document', sourceId: 'doc-1', teamVisible: false, orgId: null, reason: 'notShared' } },
+  })),
 }));
 
 const TEAM = {
@@ -124,5 +139,27 @@ describe('readResourceSharingStatus', () => {
     expect(unpublished).toMatchObject({ teamVisible: false, orgId: null, reason: 'notShared' });
     expect(teamless).toMatchObject({ teamVisible: false, orgId: null, reason: 'noTeam' });
     expect(shared).toMatchObject({ teamVisible: true, orgId: 'org-design', reason: 'shared' });
+  });
+});
+
+describe('readSharedDocumentFromRenderer', () => {
+  // The renderer keys a team index by the project path its window holds. A
+  // worktree (or a symlinked spelling) of that project must ask about the
+  // project, or the open project answers "not loaded".
+  it('asks the window about the project the request resolves to, not the worktree path', async () => {
+    const window = { isDestroyed: () => false };
+    vi.mocked(findWorkspaceWindowMatch).mockReturnValue({
+      window, windowId: 1, matchedPath: '/projects/app', isActive: true, kind: 'worktree-parent',
+    } as never);
+
+    await readSharedDocumentFromRenderer('doc-1', '/projects/app_worktrees/brave-otter');
+
+    expect(findWorkspaceWindowMatch).toHaveBeenCalledWith('/projects/app_worktrees/brave-otter');
+    expect(requestFromRenderer).toHaveBeenCalledWith(
+      window,
+      'mcp:getResourceSharingStatus',
+      { sourceId: 'doc-1', workspacePath: '/projects/app' },
+      expect.anything(),
+    );
   });
 });

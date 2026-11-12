@@ -1,5 +1,4 @@
 import * as path from 'path';
-import { BrowserWindow } from 'electron';
 import type { TeamJwt } from '@nimbalyst/runtime/auth/jwtScopes';
 import { shouldSyncTrackerItem, getEffectiveTrackerSharingPolicy } from '../../services/TrackerPolicyService';
 import { ElectronDocumentService } from '../../services/ElectronDocumentService';
@@ -11,8 +10,7 @@ import {
   type TeamDetails,
   type TeamMember,
 } from '../../services/TeamService';
-import { documentServices } from '../../window/WindowManager';
-import { findWindowIdForWorkspacePath } from '../mcpWorkspaceResolver';
+import { documentServices, findWorkspaceWindowMatch } from '../../window/WindowManager';
 import { requestFromRenderer } from '../rendererRequest';
 
 type McpToolResult = {
@@ -255,20 +253,25 @@ async function readTrackerSharing(
   }
 }
 
-async function readSharedDocumentFromRenderer(
+export async function readSharedDocumentFromRenderer(
   sourceId: string,
   workspacePath: string,
 ): Promise<ResourceSharingResult> {
-  const windowId = await findWindowIdForWorkspacePath(workspacePath);
-  const window = windowId ? BrowserWindow.fromId(windowId) : null;
-  if (!window || window.isDestroyed()) {
+  // The rail-aware match resolves a worktree to its parent project and a
+  // symlinked or case-variant spelling to the path the window holds. The
+  // renderer keys its team index by that path, so it is the one sent.
+  const match = findWorkspaceWindowMatch(workspacePath);
+  const window = match?.window;
+  if (!match || !window || window.isDestroyed()) {
     throw new Error('getResourceSharingStatus requires an open window for the requested workspace.');
   }
 
   const outcome = await requestFromRenderer<{ success: boolean; result?: ResourceSharingResult; error?: string }>(
     window,
     'mcp:getResourceSharingStatus',
-    { sourceId },
+    // The window may be showing another rail project; the renderer answers
+    // from this project's index, not the active one's.
+    { sourceId, workspacePath: match.matchedPath },
     { timeoutMs: 5000, resultChannelPrefix: 'mcp-resource-sharing' },
   );
   if (outcome.status === 'timedOut') {

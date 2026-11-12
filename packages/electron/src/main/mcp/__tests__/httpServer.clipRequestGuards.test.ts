@@ -5,6 +5,7 @@ import {
   getAllowedClipOrigin,
   hasAllowedClipContentType,
 } from "../clipRequestGuards";
+import { pickClipTarget } from "../clipTarget";
 
 function makeRequest(opts: {
   origin?: string;
@@ -69,5 +70,17 @@ describe("clip request guards", () => {
       const req = makeRequest({});
       expect(hasAllowedClipContentType(req)).toBe(false);
     });
+  });
+});
+
+describe("pickClipTarget", () => {
+  // The window was opened for project A and its rail now shows project B; the
+  // clip belongs in B, where the user will see it open.
+  it("saves into the rail project the most recently focused window is showing", () => {
+    expect(pickClipTarget([
+      { windowId: 1, mode: "workspace", workspacePath: "/a", activeWorkspacePath: "/b", focusOrder: 5 },
+      { windowId: 2, mode: "workspace", workspacePath: "/c", activeWorkspacePath: "/c", focusOrder: 2 },
+      { windowId: 3, mode: "settings", workspacePath: "/d", focusOrder: 9 },
+    ])).toEqual({ windowId: 1, workspacePath: "/b" });
   });
 });

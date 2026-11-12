@@ -22,6 +22,7 @@ import {
   workstreamStateAtom,
   workstreamStatesLoadedAtom,
   setWorkstreamResourcesAtom,
+  setWorkstreamRightPanelModeAtom,
   trackerResourceId,
   isTrackerResourceId,
   fileResource,
@@ -94,6 +95,7 @@ const WorkstreamEditorTabsInner = forwardRef<WorkstreamEditorTabsRef, Workstream
     const setTabCount = useSetAtom(setSessionTabCountAtom);
     const workstreamState = useAtomValue(workstreamStateAtom(workstreamId));
     const setWorkstreamResources = useSetAtom(setWorkstreamResourcesAtom);
+    const setRightPanelMode = useSetAtom(setWorkstreamRightPanelModeAtom);
     const workstreamStatesLoaded = useAtomValue(workstreamStatesLoadedAtom);
     const prevTabCountRef = useRef(tabs.length);
     // Track restore state: 'pending' -> 'restoring' -> 'done'
@@ -398,6 +400,7 @@ const WorkstreamEditorTabsInner = forwardRef<WorkstreamEditorTabsRef, Workstream
         {tabs.length === 0 && <div className="workstream-file-viewer-empty flex-1 flex flex-col items-center justify-center gap-3 p-4 text-center text-sm text-nim-muted">
           <span>Open a file to view it here</span>
           <button type="button" className="rounded border border-nim px-3 py-1.5 cursor-pointer hover:bg-nim-hover text-nim" onClick={handleOpenFile}>Open file…</button>
+          {filePlacement === 'right' && <button type="button" className="workstream-file-viewer-show-edited rounded border border-nim px-3 py-1.5 cursor-pointer hover:bg-nim-hover text-nim" onClick={() => setRightPanelMode({ workstreamId, mode: 'edited-files' })}>Show edited files</button>}
         </div>}
         <FilePlacementNotice />
         <div className="workstream-editor-tabs-content flex-1 min-h-0 overflow-hidden" style={{ display: tabs.length ? undefined : 'none' }}>

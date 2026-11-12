@@ -1,6 +1,6 @@
 {
   "name": "@nimbalyst/electron",
-  "version": "0.82.7",
+  "version": "0.83.0",
   "private": true,
   "license": "MIT",
   "author": "Nimbalyst Team",
@@ -8,9 +8,6 @@
   "homepage": "https://nimbalyst.com",
   "desktopName": "nimbalyst.desktop",
   "main": "out/main/index.js",
-  "bin": {
-    "nimbalyst": "./bin/nimbalyst"
-  },
   "scripts": {
     "start": "electron-vite preview",
     "dev": "./scripts/dev.sh",
@@ -23,17 +20,18 @@
     "build:cloudflare-sandbox": "pnpm --filter @nimbalyst/cloudflare-sandbox run build",
     "build:worker": "node build/build-worker.js",
     "build:extensions": "node build/build-extensions.js",
+    "build:dictation-helper": "./scripts/build-dictation-helper.sh",
     "typecheck": "node ../../scripts/tsc-native.mjs --noEmit",
     "lint": "eslint src/",
     "lint:fix": "eslint src/ --fix",
     "postinstall": "install-electron && electron-builder install-app-deps",
-    "build:unpack": "pnpm run build && pnpm run build:extensions && pnpm run validate:extra-resources && electron-builder --dir",
-    "build:dist": "pnpm run build && pnpm run build:extensions && pnpm run validate:extra-resources && electron-builder",
-    "build:mac": "pnpm run build && pnpm run build:extensions && node -r dotenv/config build/configure-build.js && node build/build-with-env.js --mac",
-    "build:mac:signed": "pnpm run build && pnpm run build:extensions && node -r dotenv/config build/configure-build.js && node build/build-with-env.js --mac",
-    "build:mac:notarized": "pnpm run build && pnpm run build:extensions && node -r dotenv/config build/configure-build.js && REQUIRE_NOTARIZE=true node build/build-with-env.js --mac",
-    "build:mac:local": "SKIP_NOTARIZE=true pnpm run build && pnpm run build:extensions && SKIP_NOTARIZE=true node -r dotenv/config build/configure-build.js && SKIP_NOTARIZE=true node build/build-with-env.js --mac --publish never",
-    "build:mac:release": "pnpm run build && pnpm run build:extensions && node -r dotenv/config build/configure-build.js && REQUIRE_NOTARIZE=true node build/build-with-env.js --mac --publish always",
+    "build:unpack": "pnpm run build && pnpm run build:dictation-helper && pnpm run build:extensions && pnpm run validate:extra-resources && electron-builder --dir",
+    "build:dist": "pnpm run build && pnpm run build:dictation-helper && pnpm run build:extensions && pnpm run validate:extra-resources && electron-builder",
+    "build:mac": "pnpm run build && pnpm run build:dictation-helper && pnpm run build:extensions && node -r dotenv/config build/configure-build.js && node build/build-with-env.js --mac",
+    "build:mac:signed": "pnpm run build && pnpm run build:dictation-helper && pnpm run build:extensions && node -r dotenv/config build/configure-build.js && node build/build-with-env.js --mac",
+    "build:mac:notarized": "pnpm run build && pnpm run build:dictation-helper && pnpm run build:extensions && node -r dotenv/config build/configure-build.js && REQUIRE_NOTARIZE=true node build/build-with-env.js --mac",
+    "build:mac:local": "SKIP_NOTARIZE=true pnpm run build && pnpm run build:dictation-helper && pnpm run build:extensions && SKIP_NOTARIZE=true node -r dotenv/config build/configure-build.js && SKIP_NOTARIZE=true node build/build-with-env.js --mac --publish never",
+    "build:mac:release": "pnpm run build && pnpm run build:dictation-helper && pnpm run build:extensions && node -r dotenv/config build/configure-build.js && REQUIRE_NOTARIZE=true node build/build-with-env.js --mac --publish always",
     "validate:extra-resources": "node build/normalize-extra-resources.js && node build/validate-extra-resources.js",
     "verify:native-runtime": "node build/verify-native-runtime.js",
     "validate:win-updater-config": "node build/validate-windows-updater-config.js",
@@ -54,7 +52,7 @@
     "marketing:screenshots:grep": "playwright test --config=marketing/playwright.marketing.config.ts --grep"
   },
   "dependencies": {
-    "@anthropic-ai/claude-agent-sdk": "0.3.314",
+    "@anthropic-ai/claude-agent-sdk": "0.3.321",
     "@anthropic-ai/sdk": "^0.115.0",
     "@electric-sql/pglite": "0.3.14",
     "@electron-toolkit/utils": "^4.0.0",
@@ -74,7 +72,7 @@
     "@nimbalyst/runtime": "workspace:*",
     "@nimbalyst/tracker-engine": "workspace:*",
     "@nimbalyst/tracker-schema": "workspace:*",
-    "@openai/codex-sdk": "^0.166.0",
+    "@openai/codex-sdk": "^0.167.0",
     "@revolist/react-datagrid": "4.21.4",
     "@revolist/revogrid": "4.21.4",
     "@types/glob": "^8.1.0",
@@ -461,6 +459,14 @@
         {
           "from": "../../node_modules/@zed-industries/codex-acp-darwin-${arch}",
           "to": "app.asar.unpacked/node_modules/@zed-industries/codex-acp-darwin-${arch}"
+        },
+        {
+          "from": "resources/bin/nimbalyst",
+          "to": "bin/nimbalyst"
+        },
+        {
+          "from": "resources/dictation-helper-bin/nimbalyst-dictation",
+          "to": "dictation-helper/nimbalyst-dictation"
         }
       ],
       "target": [
@@ -494,7 +500,8 @@
       "extendInfo": {
         "NSLocalNetworkUsageDescription": "Nimbalyst needs access to local network devices for features like MCP servers and local AI model connections.",
         "NSMicrophoneUsageDescription": "Nimbalyst uses the microphone for Voice Mode, allowing you to interact with the AI assistant using your voice.",
-        "NSAppleEventsUsageDescription": "Nimbalyst opens Terminal.app to run the Claude Code login and logout flows."
+        "NSAppleEventsUsageDescription": "Nimbalyst opens Terminal.app to run the Claude Code login and logout flows.",
+        "NSSpeechRecognitionUsageDescription": "Nimbalyst uses on-device speech recognition to turn your dictation into text."
       }
     },
     "dmg": {

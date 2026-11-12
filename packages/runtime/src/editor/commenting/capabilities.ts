@@ -18,7 +18,7 @@
  * identity would leave the gate decorative exactly when it matters.
  */
 
-import type { CommentCapabilities, CommentsConfig } from './types';
+import type { Comment, CommentCapabilities, CommentsConfig, Thread } from './types';
 
 /** Applied when the host supplies no `getCapabilities` resolver. */
 export const DEFAULT_COMMENT_CAPABILITIES: CommentCapabilities = {
@@ -40,4 +40,81 @@ export function resolveCommentCapabilities(
  */
 export function canAuthorComments(config: CapabilitySource | undefined): boolean {
   return resolveCommentCapabilities(config).comment;
+}
+
+/** `editBody` absent means true; only an explicit `false` locks the body. */
+export function canEditBody(capabilities: CommentCapabilities): boolean {
+  return capabilities.editBody !== false;
+}
+
+/**
+ * Whether the current user may change the document body. Same caching rule as
+ * `canAuthorComments`: resolve at render time and again before any write.
+ */
+export function canEditCommentedBody(
+  config: CapabilitySource | undefined,
+): boolean {
+  return canEditBody(resolveCommentCapabilities(config));
+}
+
+/**
+ * Commenter mode: may comment, may not touch the body. Threads are stored
+ * quote-anchored without a MarkNode, since a MarkNode is a write to `root`.
+ */
+export function isCommentOnly(config: CapabilitySource | undefined): boolean {
+  const capabilities = resolveCommentCapabilities(config);
+  return capabilities.comment && !canEditBody(capabilities);
+}
+
+/** Whether `comment` was written by the user `currentUserId`. */
+function isOwnComment(comment: Comment | undefined, currentUserId: string | undefined): boolean {
+  return (
+    currentUserId !== undefined &&
+    comment?.actor?.kind === 'user' &&
+    comment.actor.userId === currentUserId
+  );
+}
+
+/**
+ * Whether the current user may resolve or reopen `thread`. Anyone who can
+ * comment and edit the body may. A commenter may only for a thread they
+ * started: the room owns a thread by its first comment's author and refuses,
+ * terminally, a commenter's change to anyone else's. An empty thread has no
+ * owner.
+ */
+export function canManageCommentThread(
+  capabilities: CommentCapabilities,
+  currentUserId: string | undefined,
+  thread: Thread,
+): boolean {
+  if (!capabilities.comment) return false;
+  if (canEditBody(capabilities)) return true;
+  return isOwnComment(thread.comments[0], currentUserId);
+}
+
+/** Whether the current user may delete `comment`; a commenter only their own. */
+export function canDeleteThreadComment(
+  capabilities: CommentCapabilities,
+  currentUserId: string | undefined,
+  comment: Comment,
+): boolean {
+  if (!capabilities.comment) return false;
+  if (canEditBody(capabilities)) return true;
+  return isOwnComment(comment, currentUserId);
+}
+
+/**
+ * Whether the current user may delete `thread` outright. A commenter may only
+ * when every comment in it is theirs: removing the thread removes each reply
+ * with it, and the room refuses a commenter's removal of another person's
+ * comment. An own thread with someone else's reply can still be resolved.
+ */
+export function canDeleteCommentThread(
+  capabilities: CommentCapabilities,
+  currentUserId: string | undefined,
+  thread: Thread,
+): boolean {
+  if (!canManageCommentThread(capabilities, currentUserId, thread)) return false;
+  if (canEditBody(capabilities)) return true;
+  return thread.comments.every((comment) => isOwnComment(comment, currentUserId));
 }

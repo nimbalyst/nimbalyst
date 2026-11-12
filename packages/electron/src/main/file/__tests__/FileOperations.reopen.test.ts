@@ -3,9 +3,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { BrowserWindow } from 'electron';
 import { EventEmitter } from 'node:events';
 
-const { windowStates, windowIds } = vi.hoisted(() => ({
+const { windowStates, windowIds, findWorkspaceWindowMatch, multiProjectMode } = vi.hoisted(() => ({
   windowStates: new Map<number, { filePath: string | null; documentEdited: boolean }>(),
   windowIds: new Map<unknown, number>(),
+  findWorkspaceWindowMatch: vi.fn((_workspacePath: string): unknown => null),
+  multiProjectMode: { enabled: true },
 }));
 
 vi.mock('../../window/WindowManager', () => ({
@@ -17,19 +19,25 @@ vi.mock('../../window/WindowManager', () => ({
     }
     return null;
   },
+  findWorkspaceWindowMatch,
 }));
 
 vi.mock('../../utils/store', () => ({
   addToRecentItems: vi.fn(),
+  getMultiProjectMode: () => multiProjectMode.enabled,
 }));
 
-import { loadFileIntoWindow, reloadIntoWindowWithFile } from '../FileOperations';
+import { loadFileIntoWindow, loadFileIntoWorkspaceWindow, reloadIntoWindowWithFile } from '../FileOperations';
 import * as fileOperations from '../FileOperations';
 
 function makeWindow(id: number) {
   const window = {
-    webContents: Object.assign(new EventEmitter(), { send: vi.fn() }),
+    webContents: Object.assign(new EventEmitter(), { send: vi.fn(), isDestroyed: () => false }),
     setRepresentedFilename: vi.fn(),
+    isDestroyed: () => false,
+    isMinimized: () => false,
+    restore: vi.fn(),
+    focus: vi.fn(),
   };
   windowIds.set(window, id);
   windowStates.set(id, { filePath: null, documentEdited: false });
@@ -105,5 +113,47 @@ describe('reloadIntoWindowWithFile', () => {
 
     expect(() => contents.emit('destroyed')).not.toThrow();
     expect(fileOperations.getPendingFileOpens(contents as any, '/ws')).toEqual([]);
+  });
+});
+
+describe('loadFileIntoWorkspaceWindow', () => {
+  beforeEach(() => {
+    windowStates.clear();
+    windowIds.clear();
+  });
+
+  // Finder or `nimbalyst <file>` for a file in rail project B, while the window
+  // that holds B is showing rail project A.
+  it('switches the window to the file\'s rail project and queues the open for that project', () => {
+    const window = makeWindow(1);
+    Object.assign(windowStates.get(1)!, { workspacePath: '/a', activeWorkspacePath: '/a', additionalWorkspacePaths: ['/b'] });
+    findWorkspaceWindowMatch.mockReturnValue({ window, windowId: 1, matchedPath: '/b', isActive: false, kind: 'referenced' });
+
+    expect(loadFileIntoWorkspaceWindow('/b', '/b/notes.md')).toBe(true);
+
+    expect(window.webContents.send).toHaveBeenCalledWith('workspace:activate-project', { workspacePath: '/b' });
+    expect(window.webContents.send).toHaveBeenCalledWith('open-document', expect.objectContaining({ path: '/b/notes.md', workspacePath: '/b' }));
+    expect(fileOperations.getPendingFileOpens(window.webContents as any, '/b').map(request => request.path)).toEqual(['/b/notes.md']);
+    expect(fileOperations.getPendingFileOpens(window.webContents as any, '/a')).toEqual([]);
+  });
+
+  // With the rail off a window shows only its own project; one that still
+  // references B from rail mode cannot show it, so B gets its own window.
+  it('does not route to a window that cannot show the project while the rail is off', () => {
+    const window = makeWindow(1);
+    Object.assign(windowStates.get(1)!, { workspacePath: '/a', activeWorkspacePath: '/a', additionalWorkspacePaths: ['/b'] });
+    findWorkspaceWindowMatch.mockReturnValue({ window, windowId: 1, matchedPath: '/b', isActive: false, kind: 'referenced' });
+    multiProjectMode.enabled = false;
+    try {
+      expect(loadFileIntoWorkspaceWindow('/b', '/b/notes.md')).toBe(false);
+    } finally {
+      multiProjectMode.enabled = true;
+    }
+    expect(window.webContents.send).not.toHaveBeenCalled();
+  });
+
+  it('leaves a project no window holds to the caller', () => {
+    findWorkspaceWindowMatch.mockReturnValue(null);
+    expect(loadFileIntoWorkspaceWindow('/c', '/c/notes.md')).toBe(false);
   });
 });

@@ -240,6 +240,37 @@ describe('restoreSessionState window activation', () => {
     expect(mocks.ensureTrackerSyncForWorkspace).toHaveBeenNthCalledWith(2, '/workspace/newer');
   });
 
+  it('restores a multi-project window with its rail projects and active project after restart', async () => {
+    mocks.windowStates.set(1, {
+      mode: 'workspace',
+      workspacePath: '/workspace/primary',
+      additionalWorkspacePaths: ['/workspace/b', '/workspace/c'],
+      projectRailOrder: ['/workspace/c', '/workspace/primary', '/workspace/b'],
+      activeWorkspacePath: '/workspace/b',
+    } as never);
+    mocks.windows.set(1, {
+      isDestroyed: () => false,
+      getBounds: () => ({ x: 0, y: 0, width: 800, height: 600 }),
+      isMaximized: () => false,
+    });
+    mocks.saveSessionState.mockImplementation((state) => mocks.getSessionState.mockReturnValue(state));
+
+    await saveSessionState();
+    const restore = restoreSessionState();
+    await vi.runAllTimersAsync();
+    await expect(restore).resolves.toBe(true);
+
+    expect(mocks.createWindow).toHaveBeenCalledWith(false, true, '/workspace/primary', expect.anything(), {
+      showInactive: true,
+      startupReveal: true,
+      startupFrontmost: true,
+      restoredRail: {
+        projectPaths: ['/workspace/c', '/workspace/primary', '/workspace/b'],
+        activeWorkspacePath: '/workspace/b',
+      },
+    });
+  });
+
   it('defers saved DevTools restoration until startup foregrounding is done', async () => {
     mocks.getSessionState.mockReturnValue({
       windows: [

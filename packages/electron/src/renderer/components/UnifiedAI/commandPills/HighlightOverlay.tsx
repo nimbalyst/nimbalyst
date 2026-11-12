@@ -10,7 +10,9 @@ import type { CommandToken } from './parseCommandTokens';
 export type OverlayToken =
   | { kind: 'command'; start: number; end: number; name: string }
   | { kind: 'fileMention'; start: number; end: number }
-  | { kind: 'sessionMention'; start: number; end: number };
+  | { kind: 'sessionMention'; start: number; end: number }
+  /** Uncommitted dictation text; muted until the engine commits it. */
+  | { kind: 'dictationPending'; start: number; end: number };
 
 /**
  * Renders a transparent layer over the chat textarea that re-draws the same text
@@ -136,6 +138,17 @@ export const HighlightOverlay: React.FC<HighlightOverlayProps> = ({
               e.stopPropagation();
               onPillClick(token, (e.currentTarget as HTMLElement).getBoundingClientRect());
             }}
+          >
+            {text}
+          </span>
+        );
+      } else if (token.kind === 'dictationPending') {
+        // Color only: any font change would shift glyphs off the caret.
+        nodes.push(
+          <span
+            key={`dictation-${token.start}-${i}`}
+            className="dictation-pending-text"
+            style={{ color: 'var(--nim-text-muted)' }}
           >
             {text}
           </span>

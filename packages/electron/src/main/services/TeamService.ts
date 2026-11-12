@@ -273,7 +273,7 @@ type InviteMemberRole = 'owner' | 'admin' | 'member' | 'viewer' | 'guest';
  */
 export interface InviteProjectGrant {
   teamProjectId: string;
-  projectRole: 'project-admin' | 'project-editor' | 'project-viewer';
+  projectRole: 'project-admin' | 'project-editor' | 'project-commenter' | 'project-viewer';
 }
 
 export interface InviteMemberOutcome {

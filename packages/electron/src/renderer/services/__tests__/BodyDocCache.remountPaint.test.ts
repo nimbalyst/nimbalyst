@@ -51,6 +51,11 @@ vi.mock('@nimbalyst/runtime/sync', async () => {
     setLocalAwareness(): void { /* no-op */ }
     setRoomMetadata(): void { /* no-op */ }
     getLastSeq(): number { return 0; }
+    // Room verdict and commenter refusal (R5): a fake room says nothing.
+    getServerAccessVerdict() { return null; }
+    onAccessVerdict() { return () => {}; }
+    onCommentUpdateRefused() { return () => {}; }
+    isCommentUpdateRefused() { return false; }
     async flushWithAck(): Promise<boolean> { return stubAcknowledgesWrites; }
     destroy(): void { this.destroyed = true; }
   }

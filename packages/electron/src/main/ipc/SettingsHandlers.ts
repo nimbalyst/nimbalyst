@@ -637,7 +637,11 @@ export function registerSettingsHandlers() {
         const order = Array.isArray(paths) ? paths.filter(path => typeof path === 'string') : [];
         const windowId = getWindowIdForWindow(BrowserWindow.fromWebContents(event.sender));
         const state = windowId === null ? undefined : windowStates.get(windowId);
-        if (state) state.projectRailOrder = order;
+        if (state) {
+            state.projectRailOrder = order;
+            // The renderer now owns the rail; a reload must not resurrect the saved one.
+            state.restoredRail = undefined;
+        }
         setOpenProjectPaths(order);
     });
 

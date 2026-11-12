@@ -14,7 +14,8 @@ import { addWorkspaceRecentFile } from '../utils/store';
 import { logger } from '../utils/logger';
 import { homedir } from 'os';
 import { AnalyticsService } from '../services/analytics/AnalyticsService';
-import { isPathInWorkspace, getRelativeWorkspacePath } from '../utils/workspaceDetection';
+import { isPathInWorkspace } from '../utils/workspaceDetection';
+import { resolveProjectForFile, resolveRequestWorkspacePath } from '../window/windowState';
 import { SessionFileWatcher } from '../file/SessionFileWatcher';
 import { addGitignoreBypass, removeGitignoreBypass } from '../file/WorkspaceEventBus';
 import { pushFileToIndex } from '../services/DocSyncService';
@@ -231,32 +232,30 @@ export function registerFileHandlers() {
                 state.documentEdited = false; // Reset dirty state after save
             }
 
-            // Refresh metadata and tracker items cache immediately after save if in workspace mode
-            if (state?.workspacePath) {
-                const workspacePath = state.workspacePath; // Store in local variable for closure
-                const documentService = documentServices.get(workspacePath);
-                // console.log('[SAVE] Workspace mode:', workspacePath, 'documentService exists:', !!documentService);
+            // Refresh metadata and tracker items cache immediately after save.
+            // The file's own rail project owns it, which need not be the
+            // window's first project. Files outside every rail project (a
+            // worktree, an attached folder) have no DocumentService to refresh.
+            const fileProjectPath = resolveProjectForFile(state, filePath);
+            if (fileProjectPath) {
+                const documentService = documentServices.get(fileProjectPath);
+                // console.log('[SAVE] Workspace mode:', fileProjectPath, 'documentService exists:', !!documentService);
                 if (documentService) {
-                    // Only refresh if file is actually in the workspace (not in a worktree)
-                    // Use proper path boundary checking to avoid matching snake_worktrees when workspace is snake
-                    const relativeFilePath = getRelativeWorkspacePath(filePath, workspacePath);
-                    if (relativeFilePath !== null) {
-                        // Add a small delay to ensure file is fully written before reading
-                        setTimeout(async () => {
-                            try {
-                                // refreshFileMetadata already calls
-                                // updateTrackerItemsCache for the same path;
-                                // calling it again here just doubled the
-                                // tracker_items queries on every save.
-                                await documentService.refreshFileMetadata(filePath);
-                            } catch (err) {
-                                console.error('[SAVE] Failed to refresh metadata/tracker items:', err);
-                            }
-                        }, 50);
-                    }
+                    // Add a small delay to ensure file is fully written before reading
+                    setTimeout(async () => {
+                        try {
+                            // refreshFileMetadata already calls
+                            // updateTrackerItemsCache for the same path;
+                            // calling it again here just doubled the
+                            // tracker_items queries on every save.
+                            await documentService.refreshFileMetadata(filePath);
+                        } catch (err) {
+                            console.error('[SAVE] Failed to refresh metadata/tracker items:', err);
+                        }
+                    }, 50);
                 }
             } else {
-                console.log('[SAVE] Not in workspace mode, state:', state);
+                // console.log('[SAVE] File is outside every rail project, state:', state);
             }
 
             // Clear the saving flag after a delay to ensure the file watcher doesn't react
@@ -272,8 +271,8 @@ export function registerFileHandlers() {
             saveFailureTelemetry.markSuccess(filePath);
 
             // Push file index update for .md files in sync-enabled projects
-            if (filePath.endsWith('.md') && state?.workspacePath) {
-              pushFileToIndex(filePath, state.workspacePath).catch(() => {});
+            if (filePath.endsWith('.md') && fileProjectPath) {
+              pushFileToIndex(filePath, fileProjectPath).catch(() => {});
             }
 
             return { success: true, filePath };
@@ -447,15 +446,17 @@ export function registerFileHandlers() {
             return { success: false, error: 'Window ID not found' };
         }
 
-        const state = windowStates.get(windowId);
-        if (!state || !state.workspacePath) {
+        // The renderer names no project, so the document goes to the one on
+        // screen, not the window's first rail project.
+        const workspacePath = resolveRequestWorkspacePath(windowStates.get(windowId));
+        if (!workspacePath) {
             console.error('[CREATE_DOC] No workspace path in window state');
             return { success: false, error: 'No workspace open' };
         }
 
         try {
             // Build the absolute path
-            const absolutePath = join(state.workspacePath, relativePath);
+            const absolutePath = join(workspacePath, relativePath);
             const directory = dirname(absolutePath);
 
             console.log('[CREATE_DOC] Creating document:', absolutePath);
@@ -490,17 +491,15 @@ export function registerFileHandlers() {
             });
 
             // Add to recent files
-            if (state.workspacePath) {
-                addWorkspaceRecentFile(state.workspacePath, absolutePath);
-            }
+            addWorkspaceRecentFile(workspacePath, absolutePath);
 
             // Sync the new .md doc to mobile immediately (index + content) rather
             // than waiting on the file watcher to notice the create. save-file
             // already pushes to the index; createDocument did neither, so a new
             // design doc wasn't readable on mobile until a watcher event or restart.
-            if (absolutePath.endsWith('.md') && state.workspacePath) {
-                pushFileToIndex(absolutePath, state.workspacePath).catch(() => {});
-                pushNewDocumentToSync(absolutePath, state.workspacePath);
+            if (absolutePath.endsWith('.md')) {
+                pushFileToIndex(absolutePath, workspacePath).catch(() => {});
+                pushNewDocumentToSync(absolutePath, workspacePath);
             }
 
             return {
@@ -668,9 +667,9 @@ export function registerFileHandlers() {
             // Register gitignore bypass so watcher events fire for open gitignored files
             const windowId = getWindowId(window);
             if (windowId !== null) {
-                const state = windowStates.get(windowId);
-                if (state?.workspacePath) {
-                    addGitignoreBypass(state.workspacePath, filePath);
+                const projectPath = resolveProjectForFile(windowStates.get(windowId), filePath);
+                if (projectPath) {
+                    addGitignoreBypass(projectPath, filePath);
                 }
             }
 
@@ -702,9 +701,9 @@ export function registerFileHandlers() {
         }
 
         // Remove gitignore bypass when tab is closed
-        const state = windowStates.get(windowId);
-        if (state?.workspacePath) {
-            removeGitignoreBypass(state.workspacePath, filePath);
+        const projectPath = resolveProjectForFile(windowStates.get(windowId), filePath);
+        if (projectPath) {
+            removeGitignoreBypass(projectPath, filePath);
         }
 
         return { success: true };

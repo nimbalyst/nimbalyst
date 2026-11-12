@@ -290,12 +290,12 @@ export function shouldBlockStartedSessionProviderSwitch(
  * still choose previous generations. See CLAUDE_CODE_PINNED_SDK_MODELS in
  * modelConstants.ts.
  *
- * `fable` is the Fable tier above Opus (currently Fable 5.1). `fable-5` is the
- * pinned previous-generation Fable. Both run a 1M window natively.
+ * `fable` is the Fable tier above Opus (currently Fable 5.2). `fable-5-1` and `fable-5` are the
+ * pinned previous generations. All run a 1M window natively.
  *
  * `haiku` is Haiku 5.5; `haiku-4-5` keeps Haiku 4.5 selectable.
  */
-export const CLAUDE_CODE_VARIANTS = ['fable', 'fable-5', 'opus', 'opus-5', 'opus-4-8', 'opus-4-7', 'opus-4-6', 'sonnet', 'sonnet-5', 'sonnet-4-6', 'haiku', 'haiku-4-5'] as const;
+export const CLAUDE_CODE_VARIANTS = ['fable', 'fable-5-1', 'fable-5', 'opus', 'opus-5', 'opus-4-8', 'opus-4-7', 'opus-4-6', 'sonnet', 'sonnet-5', 'sonnet-4-6', 'haiku', 'haiku-4-5'] as const;
 
 /**
  * Resolves a configured model string to the SDK model value.

@@ -25,6 +25,11 @@ vi.mock('@nimbalyst/runtime/sync', async (importOriginal) => {
     getStatus() {
       return this.status;
     }
+    // Room verdict and commenter refusal (R5): a fake room says nothing.
+    getServerAccessVerdict() { return null; }
+    onAccessVerdict() { return () => {}; }
+    onCommentUpdateRefused() { return () => {}; }
+    isCommentUpdateRefused() { return false; }
 
     isSynced() {
       return this.status === 'connected';

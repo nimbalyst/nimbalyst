@@ -30,6 +30,7 @@ import { BrowserWindow, dialog } from 'electron';
 import { basename } from 'path';
 import { existsSync, statSync } from 'fs';
 import { safeHandle } from '../utils/ipcRegistry';
+import { registerRailProjectDragHandlers } from './RailProjectDragHandlers';
 import {
     getWindowId,
     windowStates,
@@ -38,6 +39,7 @@ import {
 import {
   startRootWatcher,
   startWorkspaceWatcher,
+  stopProjectFileSync,
   stopRootWatcher,
   stopWorkspaceWatcher,
 } from '../file/WorkspaceWatcher.ts';
@@ -154,6 +156,8 @@ function windowsShowingWorkspace(workspacePath: string): Array<[number, BrowserW
 }
 
 export function registerMultiProjectRailHandlers(): void {
+    registerRailProjectDragHandlers();
+
     safeHandle('workspace:register-additional', async (event, data: { workspacePath: string }) => {
         const { workspacePath } = data;
         if (!workspacePath || typeof workspacePath !== 'string') {
@@ -215,7 +219,7 @@ export function registerMultiProjectRailHandlers(): void {
         // watcher and flip the FS global to the new active project.
         const wasActive = state.activeWorkspacePath === workspacePath;
         if (wasActive) {
-            stopWorkspaceWatcher(windowId);
+            stopWorkspaceWatcher(windowId, { keepProjectFileSync: true });
             state.activeWorkspacePath = null;
             clearFileSystemService();
         }
@@ -224,6 +228,8 @@ export function registerMultiProjectRailHandlers(): void {
 
         // Free services only if no other window references the path.
         releaseWhenWorkspaceUnused(workspacePath, () => {
+            stopProjectFileSync(workspacePath);
+
             const docService = documentServices.get(workspacePath);
             if (docService) {
                 docService.destroy();
@@ -288,7 +294,7 @@ export function registerMultiProjectRailHandlers(): void {
         // every flip. Watcher is the only "active-only" main-process
         // resource (services in `documentServices`/`fileSystemServices`
         // remain warm for inactive rail projects).
-        stopWorkspaceWatcher(windowId);
+        stopWorkspaceWatcher(windowId, { keepProjectFileSync: true });
         state.activeWorkspacePath = workspacePath;
         startWorkspaceWatcher(window, workspacePath);
 

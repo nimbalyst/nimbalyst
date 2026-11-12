@@ -11,6 +11,11 @@ import {
   numberUnresolvedPins,
 } from "../mockupPinRepository";
 import type { MockupPin } from "../../collab/seed";
+import {
+  bindMockupPinStore,
+  canWriteMockupPins,
+  guardMockupPinWrites,
+} from "../mockupPinStore";
 
 function parse(html: string): Document {
   return new DOMParser().parseFromString(html, "text/html");
@@ -99,6 +104,36 @@ describe("mockup pin resolution", () => {
       { id: "ambiguous", selector: "#removed" },
       { id: "unique", selector: ".primary" },
     ]);
+    repository.destroy();
+    yDoc.destroy();
+  });
+
+  it("writes nothing to mockupPins for a user who may not write the body (commenter)", () => {
+    const yDoc = new Y.Doc();
+    const repository = new MockupPinRepository(yDoc);
+    repository.create(pin({ id: "p1", selector: "#removed" }));
+    const service = { getCapabilities: () => ({ read: true, comment: false, editBody: false }) };
+    const store = guardMockupPinWrites(bindMockupPinStore(repository), () => canWriteMockupPins(service));
+    const updates = vi.fn();
+    yDoc.on("update", updates);
+
+    // Render-time selector healing still resolves, but persists nothing.
+    const healed = resolveAndHealMockupPin(
+      parse('<button class="primary">Save changes</button>'),
+      repository.snapshot()[0]!,
+      store
+    );
+    expect(healed.status).toBe("healed");
+    // Passive collection and a direct create are skipped too.
+    expect(store.delete("p1")).toBe(false);
+    store.create(pin({ id: "p2" }));
+    expect(updates).not.toHaveBeenCalled();
+    expect(store.snapshot().map(({ id, selector }) => ({ id, selector })))
+      .toEqual([{ id: "p1", selector: "#removed" }]);
+
+    // An editor's store, and one outside a room, still write.
+    expect(canWriteMockupPins({ getCapabilities: () => ({ read: true, comment: true }) })).toBe(true);
+    expect(canWriteMockupPins(null)).toBe(true);
     repository.destroy();
     yDoc.destroy();
   });

@@ -8,7 +8,7 @@
  * with only the active project's sessions) stays unchanged. This atom is
  * the source of truth for:
  *
- * - Rail badges in `projectActivitySummaryAtom`
+ * - Rail badges in `projectRailBadgesAtom` (projectRailBadges.ts)
  * - Close-confirm streaming detection in `ProjectRail.handleClose`
  *
  * Maintained imperatively by `sessionStateListeners.ts` from the events
@@ -252,24 +252,3 @@ export const clearWorkspaceActivityAtom = atom(
     if (mutated) set(sessionActivityIndexAtom, index);
   }
 );
-
-export interface ProjectActivitySummary {
-  processing: number;
-  unread: number;
-}
-
-/**
- * Per-project rollup of streaming + unread counts. Drives rail badges.
- *
- * Replaces the earlier `projectActivitySummaryAtom` in `openProjects.ts`
- * which iterated `sessionRegistryAtom` and missed inactive workspaces.
- */
-export const projectActivitySummaryAtom = atom<Map<string, ProjectActivitySummary>>((get) => {
-  const activity = get(globalSessionActivityAtom);
-  const out = new Map<string, ProjectActivitySummary>();
-  for (const [path, entry] of activity) {
-    if (entry.streaming.size === 0 && entry.unread.size === 0) continue;
-    out.set(path, { processing: entry.streaming.size, unread: entry.unread.size });
-  }
-  return out;
-});

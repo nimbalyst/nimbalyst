@@ -18,6 +18,11 @@ import {
   type ThreadSnapshot,
   type YDocCommentRepository,
 } from './YDocCommentRepository';
+import {
+  findQuoteMatches,
+  findThreadQuoteOffset,
+  joinCommentTextBlocks,
+} from './quoteMatch';
 import type {
   AgentCommentActor,
   Comment,
@@ -28,6 +33,7 @@ import type {
   Thread,
   CommentCapabilities,
   CommentMember,
+  TextQuoteCommentAnchor,
 } from './types';
 import {
   assertCommentMutationAllowed,
@@ -626,36 +632,75 @@ export function collectMarkIds(editor: LexicalEditor | undefined): Set<string> {
   return ids;
 }
 
-type TextSegment = {
+export type CommentTextSegment = {
   end: number;
   node: TextNode;
   start: number;
 };
+type TextSegment = CommentTextSegment;
+
+/**
+ * The document's visible text as quote anchors see it: top-level blocks joined
+ * by a newline, each text node's span recorded so a match maps back to Lexical
+ * points. Build it once per pass when resolving several anchors.
+ */
+export type CommentTextIndex = { text: string; segments: CommentTextSegment[] };
+
+export type ResolvedCommentAnchor = {
+  end: { key: string; offset: number };
+  quote: string;
+  start: { key: string; offset: number };
+};
+
+/**
+ * The selector a thread is found by: its structured text-quote anchor, or its
+ * legacy `quote` when it predates structured anchors. Null for anchor kinds a
+ * Lexical document cannot evaluate.
+ */
+export function getThreadQuoteSelector(
+  thread: Pick<Thread, 'anchor' | 'quote'>,
+): TextQuoteCommentAnchor | null {
+  if (thread.anchor) {
+    return thread.anchor.kind === 'text-quote' ? thread.anchor : null;
+  }
+  return thread.quote ? { kind: 'text-quote', exact: thread.quote } : null;
+}
+
+/** Must run inside a Lexical read or update. */
+export function $buildCommentTextIndex(): CommentTextIndex {
+  return buildTextSegments();
+}
 
 function buildTextSegments(): { text: string; segments: TextSegment[] } {
   const root = $getRoot();
   const topLevelChildren = root.getChildren();
   const segments: TextSegment[] = [];
-  let text = '';
 
-  topLevelChildren.forEach((child, childIndex) => {
+  const blocks: string[] = [];
+  // Offset of the current block in the joined text: the blocks before it plus
+  // one `\n` separator each, which is how `joinCommentTextBlocks` joins them.
+  let blockStart = 0;
+
+  for (const child of topLevelChildren) {
     const textNodes = $isTextNode(child)
       ? [child]
       : $isElementNode(child)
       ? child.getAllTextNodes()
       : [];
+    let block = '';
     for (const textNode of textNodes) {
+      // Normalized per node so segment offsets match the joined text;
+      // normalizing again inside joinCommentTextBlocks is then a no-op.
       const content = normalizeVisibleCommentText(textNode.getTextContent());
-      const start = text.length;
-      text += content;
-      segments.push({ start, end: text.length, node: textNode });
+      const start = blockStart + block.length;
+      block += content;
+      segments.push({ start, end: start + content.length, node: textNode });
     }
-    if (childIndex < topLevelChildren.length - 1) {
-      text += '\n';
-    }
-  });
+    blocks.push(block);
+    blockStart += block.length + 1;
+  }
 
-  return { text, segments };
+  return { text: joinCommentTextBlocks(blocks), segments };
 }
 
 function resolvePoint(
@@ -677,28 +722,27 @@ function resolvePoint(
   return null;
 }
 
-export function resolveAnchor(selector: CommentAnchorSelector): {
-  end: { key: string; offset: number };
-  quote: string;
-  start: { key: string; offset: number };
-} {
-  const { exact, prefix, suffix } = validateTextQuoteSelector(selector);
+export function resolveAnchor(
+  selector: CommentAnchorSelector,
+): ResolvedCommentAnchor {
+  return resolveAnchorInIndex(buildTextSegments(), selector);
+}
 
-  const { text, segments } = buildTextSegments();
-  const matches: number[] = [];
-  let searchFrom = 0;
-  while (searchFrom <= text.length - exact.length) {
-    const index = text.indexOf(exact, searchFrom);
-    if (index === -1) break;
-    const prefixMatches =
-      !prefix ||
-      text.slice(Math.max(0, index - prefix.length), index) === prefix;
-    const endOffset = index + exact.length;
-    const suffixMatches =
-      !suffix || text.slice(endOffset, endOffset + suffix.length) === suffix;
-    if (prefixMatches && suffixMatches) matches.push(index);
-    searchFrom = index + Math.max(1, exact.length);
-  }
+/**
+ * The exact-and-unique quote match every text-quote anchor uses: MarkNode
+ * creation, orphan re-anchoring, and the decoration highlights of threads that
+ * have no MarkNode. Throws ANCHOR_NOT_FOUND or ANCHOR_AMBIGUOUS.
+ */
+export function resolveAnchorInIndex(
+  index: CommentTextIndex,
+  selector: CommentAnchorSelector,
+): ResolvedCommentAnchor {
+  // Validated here as well so an invalid selector keeps throwing its specific
+  // error; findQuoteMatches alone would answer "no match".
+  const { exact } = validateTextQuoteSelector(selector);
+
+  const { text, segments } = index;
+  const matches = findQuoteMatches(text, selector);
 
   if (matches.length === 0) {
     throw new CollabCommentControllerError(
@@ -713,10 +757,16 @@ export function resolveAnchor(selector: CommentAnchorSelector): {
     );
   }
 
-  const startOffset = matches[0];
-  const endOffset = startOffset + exact.length;
+  return mapMatch(segments, matches[0], exact);
+}
+
+function mapMatch(
+  segments: TextSegment[],
+  startOffset: number,
+  exact: string,
+): ResolvedCommentAnchor {
   const start = resolvePoint(segments, startOffset, false);
-  const end = resolvePoint(segments, endOffset, true);
+  const end = resolvePoint(segments, startOffset + exact.length, true);
   if (!start || !end) {
     throw new CollabCommentControllerError(
       'ANCHOR_NOT_FOUND',
@@ -724,6 +774,36 @@ export function resolveAnchor(selector: CommentAnchorSelector): {
     );
   }
   return { start, end, quote: exact };
+}
+
+/**
+ * Where an existing thread's quote is now, by `findThreadQuoteOffset`: its
+ * full selector, or, when the context no longer matches anywhere, its bare
+ * quote if that occurs exactly once. Used by every reader of an existing
+ * thread (re-anchoring, highlights, `list()`); creating a thread stays strict
+ * (`resolveAnchorInIndex`). Throws ANCHOR_NOT_FOUND or ANCHOR_AMBIGUOUS.
+ */
+export function resolveThreadAnchorInIndex(
+  index: CommentTextIndex,
+  selector: CommentAnchorSelector,
+): ResolvedCommentAnchor {
+  const { exact } = validateTextQuoteSelector(selector);
+  const offset = findThreadQuoteOffset(index.text, selector);
+  if (offset === null) {
+    const ambiguous =
+      findQuoteMatches(index.text, selector).length > 1 ||
+      findQuoteMatches(index.text, { exact: selector.exact }).length > 1;
+    throw ambiguous
+      ? new CollabCommentControllerError(
+          'ANCHOR_AMBIGUOUS',
+          'The anchor text occurs in more than one place.',
+        )
+      : new CollabCommentControllerError(
+          'ANCHOR_NOT_FOUND',
+          'The requested anchor text is no longer present.',
+        );
+  }
+  return mapMatch(index.segments, offset, exact);
 }
 
 function ensureReadable(capabilities: CommentCapabilities): void {
@@ -826,6 +906,26 @@ export function createCollabCommentController(options: {
         (thread) => includeResolved || !thread.resolved,
       );
       const page = eligible.slice(cursor, cursor + limit);
+      // A thread with no MarkNode is still attached when its quote occurs
+      // exactly once: that is where the editor draws its highlight.
+      const quoteAttached = new Set<string>();
+      if (editor) {
+        editor.getEditorState().read(() => {
+          let index: CommentTextIndex | null = null;
+          for (const thread of page) {
+            if (markIds.has(thread.id)) continue;
+            const selector = getThreadQuoteSelector(thread);
+            if (!selector) continue;
+            index ??= buildTextSegments();
+            try {
+              resolveThreadAnchorInIndex(index, selector);
+              quoteAttached.add(thread.id);
+            } catch {
+              // Not found or ambiguous: orphaned.
+            }
+          }
+        });
+      }
       const nextOffset = cursor + page.length;
       return {
         document: {
@@ -838,7 +938,7 @@ export function createCollabCommentController(options: {
             candidate.anchor !== undefined &&
             candidate.anchor.kind !== 'text-quote'
               ? 'unsupported'
-              : markIds.has(candidate.id)
+              : markIds.has(candidate.id) || quoteAttached.has(candidate.id)
               ? 'attached'
               : 'orphaned',
           ),
@@ -929,7 +1029,12 @@ export function createCollabCommentController(options: {
     },
 
     async createAnchored(input, actor) {
-      assertCommentMutationAllowed(getCapabilities(), isHydrated());
+      const capabilities = getCapabilities();
+      assertCommentMutationAllowed(capabilities, isHydrated());
+      // Commenter mode: a MarkNode is a write to `root`, which the server
+      // refuses from this user, so the thread is stored with its text-quote
+      // anchor only and the editor draws the highlight from the quote.
+      const quoteOnly = capabilities.editBody === false;
       if (!editor) {
         throw new CollabCommentControllerError(
           'DOCUMENT_NOT_MOUNTED',
@@ -973,46 +1078,55 @@ export function createCollabCommentController(options: {
         .read(() => resolveAnchor(selector));
 
       let created: { comment: Comment; thread: Thread } | undefined;
-      editor.update(
-        () => {
-          const comment = createComment(
-            body,
-            actor.kind === 'agent' ? actor.sessionName : actor.displayName,
-            {
-              actor,
-              clientMutationId,
-            },
-          );
-          const thread = createThread(
-            resolved.quote,
-            [comment],
-            undefined,
-            undefined,
-            {
-              kind: 'text-quote',
-              exact: resolved.quote,
-              ...(selector.prefix === undefined
-                ? {}
-                : { prefix: normalizeVisibleCommentText(selector.prefix) }),
-              ...(selector.suffix === undefined
-                ? {}
-                : { suffix: normalizeVisibleCommentText(selector.suffix) }),
-            },
-          );
-          const selection = $createRangeSelection();
-          selection.anchor.set(
-            resolved.start.key,
-            resolved.start.offset,
-            'text',
-          );
-          selection.focus.set(resolved.end.key, resolved.end.offset, 'text');
-          $setSelection(selection);
-          $wrapSelectionInMarkNode(selection, false, thread.id);
-          commentStore.addComment(thread);
-          created = { comment, thread };
-        },
-        { discrete: true },
-      );
+      const buildThread = () => {
+        const comment = createComment(
+          body,
+          actor.kind === 'agent' ? actor.sessionName : actor.displayName,
+          {
+            actor,
+            clientMutationId,
+          },
+        );
+        const thread = createThread(
+          resolved.quote,
+          [comment],
+          undefined,
+          undefined,
+          {
+            kind: 'text-quote',
+            exact: resolved.quote,
+            ...(selector.prefix === undefined
+              ? {}
+              : { prefix: normalizeVisibleCommentText(selector.prefix) }),
+            ...(selector.suffix === undefined
+              ? {}
+              : { suffix: normalizeVisibleCommentText(selector.suffix) }),
+          },
+        );
+        return { comment, thread };
+      };
+      if (quoteOnly) {
+        created = buildThread();
+        commentStore.addComment(created.thread);
+      } else {
+        editor.update(
+          () => {
+            const next = buildThread();
+            const selection = $createRangeSelection();
+            selection.anchor.set(
+              resolved.start.key,
+              resolved.start.offset,
+              'text',
+            );
+            selection.focus.set(resolved.end.key, resolved.end.offset, 'text');
+            $setSelection(selection);
+            $wrapSelectionInMarkNode(selection, false, next.thread.id);
+            commentStore.addComment(next.thread);
+            created = next;
+          },
+          { discrete: true },
+        );
+      }
 
       if (!created) {
         throw new CollabCommentControllerError(
@@ -1020,7 +1134,7 @@ export function createCollabCommentController(options: {
           'The requested anchor could not be created.',
         );
       }
-      if (!collectMarkIds(editor).has(created.thread.id)) {
+      if (!quoteOnly && !collectMarkIds(editor).has(created.thread.id)) {
         commentStore.deleteCommentOrThread(created.thread);
         throw new CollabCommentControllerError(
           'ANCHOR_NOT_FOUND',

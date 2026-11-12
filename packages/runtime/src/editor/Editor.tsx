@@ -34,7 +34,6 @@ import { getImagePluginCallbacks, setImagePluginCallbacks } from './plugins/Imag
 import { KanbanBoardPlugin } from './plugins/KanbanBoardPlugin';
 import MarkdownShortcutPlugin from './plugins/MarkdownShortcutPlugin';
 import ShortcutsPlugin from './plugins/ShortcutsPlugin';
-import SpeechToTextPlugin from './plugins/SpeechToTextPlugin';
 import TableCellActionMenuPlugin from './plugins/TableActionMenuPlugin';
 import TableCardLayoutPlugin from './plugins/TableCardLayoutPlugin';
 import TableCellResizer from './plugins/TableCellResizer';
@@ -43,7 +42,7 @@ import ToolbarPlugin from './plugins/ToolbarPlugin';
 import TreeViewPlugin from './plugins/TreeViewPlugin';
 import CommentsPlugin from './plugins/CommentPlugin';
 import { getCommentToolbarActions } from './plugins/CommentPlugin/toolbarAction';
-import { canAuthorComments } from './commenting/capabilities';
+import { canAuthorComments, canEditCommentedBody, isCommentOnly } from './commenting/capabilities';
 import type { CommentsConfig } from './commenting/types';
 import type { FloatingTextToolbarAction } from './plugins/FloatingTextFormatToolbarPlugin/types';
 import { SelectionAlwaysOnDisplay } from './plugins/SelectionAlwaysOnDisplayPlugin';
@@ -81,9 +80,10 @@ export function useCommentToolbarActions(
   editor: Pick<LexicalEditor, 'dispatchCommand'>,
 ): FloatingTextToolbarAction[] {
   const canComment = canAuthorComments(comments);
+  const commentOnly = isCommentOnly(comments);
   return useMemo(
     () => getCommentToolbarActions(comments, editor),
-    [comments, editor, canComment],
+    [comments, editor, canComment, commentOnly],
   );
 }
 
@@ -266,7 +266,6 @@ export default function Editor({ config = DEFAULT_EDITOR_CONFIG }: EditorProps):
         <EmojiPickerPlugin />
         <AutoEmbedPlugin />
         <HashtagPlugin />
-        <SpeechToTextPlugin />
 
         {isRichText ? (
           <>
@@ -274,7 +273,12 @@ export default function Editor({ config = DEFAULT_EDITOR_CONFIG }: EditorProps):
               <CollaborationPlugin
                 id="main"
                 providerFactory={config.collaboration.providerFactory}
-                shouldBootstrap={config.collaboration.shouldBootstrap}
+                // A body-locked user (commenter) must never seed an empty
+                // document: that is a write to `root`, which the server refuses.
+                shouldBootstrap={
+                  config.collaboration.shouldBootstrap &&
+                  canEditCommentedBody(config.comments)
+                }
                 username={config.collaboration.username}
                 cursorColor={config.collaboration.cursorColor}
                 cursorsContainerRef={cursorsContainerRef}

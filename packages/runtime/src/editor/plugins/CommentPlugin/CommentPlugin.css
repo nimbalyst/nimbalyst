@@ -61,3 +61,21 @@
   top: -6px;
   right: -6px;
 }
+
+/* --- Quote-anchored thread highlights (no MarkNode) ------------------------ */
+/* Drawn with the CSS Custom Highlight API by quoteHighlightPainter.ts, for
+   threads a commenter created without writing to the body. ::highlight takes
+   only color, background and text-decoration, so the mark's bottom border
+   becomes an underline. Same --nim-comment-mark token as .nim-mark. */
+::highlight(nim-comment-quote) {
+  background-color: color-mix(in srgb, var(--nim-comment-mark) 15%, transparent);
+  text-decoration: underline 2px color-mix(in srgb, var(--nim-comment-mark) 42%, transparent);
+}
+::highlight(nim-comment-quote-selected) {
+  background-color: color-mix(in srgb, var(--nim-comment-mark) 34%, transparent);
+  text-decoration: underline 2px var(--nim-comment-mark);
+}
+::highlight(nim-comment-quote-resolved) {
+  background-color: transparent;
+  text-decoration: underline 1px dotted var(--nim-text-faint);
+}

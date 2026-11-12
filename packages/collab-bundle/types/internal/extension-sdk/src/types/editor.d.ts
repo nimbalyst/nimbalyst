@@ -302,6 +302,31 @@ export interface EditorViewport {
     setScrollFraction(fraction: number): void;
 }
 /**
+ * Where dictated (speech-to-text) words land in an editor. See
+ * {@link EditorHost.registerDictationTarget}.
+ *
+ * The host owns the microphone and the recognizer; the editor owns its content,
+ * so the editor decides how pending and committed text appear. `showPartial`
+ * replaces the current uncommitted text (render it as a decoration, never as
+ * document content); `commitFinal` inserts committed text at the cursor and
+ * clears the pending text; `clearPartial` drops pending text (Esc or stop).
+ */
+export interface DictationTarget {
+    /** Kind of editor, reported in usage analytics. */
+    readonly kind: 'rich-text' | 'code';
+    /** True while this editor holds keyboard focus. */
+    hasFocus(): boolean;
+    /**
+     * Show uncommitted text at the cursor. Optional: when omitted the host
+     * paints the partial itself next to `getCaretRect()`.
+     */
+    showPartial?(text: string): void;
+    /** Viewport rect of the caret, for a host-painted partial. */
+    getCaretRect?(): DOMRect | null;
+    clearPartial(): void;
+    commitFinal(text: string): void;
+}
+/**
  * Context that an editor pushes to the chat panel.
  * When set, the chat UI shows an indicator and includes this context
  * in the AI prompt when the user sends a message.
@@ -774,6 +799,13 @@ export interface EditorHost {
      * ```
      */
     registerViewport?(viewport: EditorViewport | null): void;
+    /**
+     * Accept dictated text. An editor that registers a target receives speech
+     * at its cursor when the user dictates while it has focus; one that never
+     * calls this is simply not a dictation surface. Call with `null` to
+     * unregister. Hosts without dictation omit this method.
+     */
+    registerDictationTarget?(target: DictationTarget | null): void;
     /**
      * Present only when this document was opened collaboratively.
      *

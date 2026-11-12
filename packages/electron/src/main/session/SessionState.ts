@@ -14,6 +14,23 @@ import { updateTrackerSchemaWorkspace } from '../services/TrackerSchemaService';
 import { ensureTrackerSyncForWorkspace } from '../services/TrackerSyncManager';
 import { onStartupActivated } from '../window/StartupActivation';
 import { shouldSuppressSafeModeSessionSave } from './safeModeSessionState';
+import { getWindowProjectPaths } from '../window/windowState';
+import type { RestoredRail, SessionWindow } from '../types';
+
+/**
+ * The rail a restored window reopens with. Projects deleted since the save are
+ * dropped; a rail left with only one project restores as a plain window.
+ */
+function getRestoredRail(sessionWindow: SessionWindow): RestoredRail | undefined {
+    const projectPaths = (sessionWindow.projectPaths ?? [])
+        .filter(path => path === sessionWindow.workspacePath || existsSync(path));
+    if (projectPaths.length < 2) return undefined;
+    const active = sessionWindow.activeWorkspacePath;
+    return {
+        projectPaths,
+        activeWorkspacePath: active && projectPaths.includes(active) ? active : null,
+    };
+}
 
 // Save session state
 export async function saveSessionState() {
@@ -46,6 +63,13 @@ export async function saveSessionState() {
         }
         if (state.workspacePath) {
             sessionWindow.workspacePath = state.workspacePath;
+            const projectPaths = getWindowProjectPaths(state);
+            if (projectPaths.length > 1) {
+                sessionWindow.projectPaths = projectPaths;
+                if (state.activeWorkspacePath && projectPaths.includes(state.activeWorkspacePath)) {
+                    sessionWindow.activeWorkspacePath = state.activeWorkspacePath;
+                }
+            }
         }
 
         sessionWindows.push(sessionWindow);
@@ -172,10 +196,12 @@ export async function restoreSessionState(): Promise<boolean> {
                             logger.session.error('Error tracking workspace_opened event:', error);
                         }
 
+                        const restoredRail = getRestoredRail(sessionWindow);
                         window = createWindow(false, true, sessionWindow.workspacePath, sessionWindow.bounds, {
                             showInactive: true,
                             startupReveal: true,
                             startupFrontmost: true,
+                            ...(restoredRail ? { restoredRail } : {}),
                         });
                         logger.session.info(`Restored workspace window: ${sessionWindow.workspacePath}`);
 

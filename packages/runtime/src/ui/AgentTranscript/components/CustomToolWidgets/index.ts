@@ -46,6 +46,7 @@ export { AskUserQuestionWidget } from './AskUserQuestionWidget';
 export { RequestUserInputWidget } from './RequestUserInputWidget';
 export { FeedbackRequestComposeWidget } from './feedback/FeedbackRequestComposeWidget';
 export { VisualDisplayWidget } from './VisualDisplayWidget';
+export { CodexImageGenerationWidget } from './CodexImageGenerationWidget';
 export { BashWidget } from './BashWidget';
 export { GitCommitConfirmationWidget } from './GitCommitConfirmationWidget';
 export { ExitPlanModeWidget } from './ExitPlanModeWidget';
@@ -112,6 +113,7 @@ import { AskUserQuestionWidget } from './AskUserQuestionWidget';
 import { RequestUserInputWidget } from './RequestUserInputWidget';
 import { FeedbackRequestComposeWidget } from './feedback/FeedbackRequestComposeWidget';
 import { VisualDisplayWidget } from './VisualDisplayWidget';
+import { CodexImageGenerationWidget } from './CodexImageGenerationWidget';
 import { BashWidget } from './BashWidget';
 import { GitCommitConfirmationWidget } from './GitCommitConfirmationWidget';
 import { ExitPlanModeWidget } from './ExitPlanModeWidget';
@@ -176,6 +178,9 @@ const BUILT_IN_TOOL_WIDGETS: CustomToolWidgetRegistry = {
 
   // Display to user tool - renders charts and image galleries inline in the transcript
   'display_to_user': VisualDisplayWidget,
+
+  // Codex built-in image generation - shows the saved PNG, not the base64 result
+  'imageGeneration': CodexImageGenerationWidget,
 
   // Bash tool - terminal-style display for shell commands
   'Bash': BashWidget,

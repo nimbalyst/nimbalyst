@@ -28,6 +28,9 @@ describe('nim wiki', () => {
       tool: 'team_invite_link_create',
       args: { orgId: 'o1', expiresIn: 86400, maxUses: 5 },
     });
+    // `commenter` is short for the project role, like editor and viewer.
+    expect(call('invite', '--org', 'o1', 'a@x.com', '--project', 'p1', '--project-role', 'commenter').args.projectRole).toBe('project-commenter');
+    expect(call('invite-link', '--org', 'o1', '--project', 'p1', '--project-role', 'commenter').args.projectRole).toBe('project-commenter');
     expect(() => call('invite', 'a@x.com')).toThrow(/--org/);
     expect(() => call('import')).toThrow(/move-to-team/);
     expect(() => call('import-token')).toThrow(/move-to-team/);

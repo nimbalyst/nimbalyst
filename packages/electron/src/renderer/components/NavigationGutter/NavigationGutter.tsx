@@ -1,4 +1,5 @@
 import React, { useState, useCallback, useEffect, useRef } from 'react';
+import { createPortal } from 'react-dom';
 import { usePostHog } from 'posthog-js/react';
 import { useAtomValue, useSetAtom } from 'jotai';
 import { MaterialSymbol } from '@nimbalyst/runtime/ui/icons/MaterialSymbol';
@@ -31,6 +32,7 @@ import {
   resetGutterCustomizationAtom,
 } from '../../store/atoms/appSettings';
 import { pagesAvailableAtom } from '../../store/atoms/collabDocuments';
+import { projectRailGlobalSlotAtom } from '../../store/atoms/openProjects';
 import { stytchIsSignedInAtom } from '../../store/atoms/stytchAuth';
 import { personalAccountsAtom } from '../../store/atoms/settingsDomains';
 import { orgInboxUnreadCountAtomFamily } from '../../store/atoms/teamInbox';
@@ -132,6 +134,9 @@ export const NavigationGutter: React.FC<NavigationGutterProps> = ({
 }) => {
   const posthog = usePostHog();
   const developerMode = useAtomValue(developerModeAtom);
+  // While the multi-project rail is visible, app-wide items and the account
+  // button render there instead of in this per-project gutter.
+  const railSlot = useAtomValue(projectRailGlobalSlotAtom);
   const [userMenuOpen, setUserMenuOpen] = useState(false);
   const userMenuButtonRef = useRef<HTMLButtonElement>(null);
   const gutterRef = useRef<HTMLDivElement>(null);
@@ -477,15 +482,15 @@ export const NavigationGutter: React.FC<NavigationGutterProps> = ({
       render: () => <VoiceModeButton workspacePath={workspacePath} />,
     },
     {
-      id: 'claude-usage', section: 'indicators', icon: 'speed', label: 'Claude Usage', hideable: true,
+      id: 'claude-usage', section: 'indicators', icon: 'speed', label: 'Claude Usage', hideable: true, scope: 'app',
       render: () => <ClaudeUsageIndicator />,
     },
     {
-      id: 'codex-usage', section: 'indicators', icon: 'speed', label: 'Codex Usage', hideable: true,
+      id: 'codex-usage', section: 'indicators', icon: 'speed', label: 'Codex Usage', hideable: true, scope: 'app',
       render: () => <CodexUsageIndicator />,
     },
     {
-      id: 'gemini-usage', section: 'indicators', icon: 'gemini', label: 'Gemini Usage', hideable: true,
+      id: 'gemini-usage', section: 'indicators', icon: 'gemini', label: 'Gemini Usage', hideable: true, scope: 'app',
       render: () => <GeminiUsageIndicator />,
     },
     {
@@ -503,11 +508,11 @@ export const NavigationGutter: React.FC<NavigationGutterProps> = ({
       ),
     },
     {
-      id: 'theme-toggle', section: 'indicators', icon: 'dark_mode', label: 'Theme Toggle', hideable: true,
+      id: 'theme-toggle', section: 'indicators', icon: 'dark_mode', label: 'Theme Toggle', hideable: true, scope: 'app',
       render: () => <ThemeToggleButton />,
     },
     {
-      id: 'feedback', section: 'indicators', icon: 'feedback', label: 'Feedback', hideable: true,
+      id: 'feedback', section: 'indicators', icon: 'feedback', label: 'Feedback', hideable: true, scope: 'app',
       render: () => (
         <HelpTooltip testId="gutter-feedback-button" placement="right">
           <button
@@ -547,6 +552,13 @@ export const NavigationGutter: React.FC<NavigationGutterProps> = ({
     }
   }, [hiddenItems, canHide, toggleHidden]);
 
+  const projectIndicatorItems = railSlot
+    ? indicatorItems.filter((it) => it.scope !== 'app')
+    : indicatorItems;
+  const appIndicatorItems = railSlot
+    ? indicatorItems.filter((it) => it.scope === 'app')
+    : [];
+
   // Render one section: available items, in saved order, minus hidden ones.
   // Each item is wrapped so a right-click targets it in the context menu.
   const renderSection = (items: GutterItem[], section: GutterSection): React.ReactNode => {
@@ -562,6 +574,82 @@ export const NavigationGutter: React.FC<NavigationGutterProps> = ({
       </div>
     ));
   };
+
+  // User menu: always visible, never hideable, always last.
+  const userMenu = (
+    <div>
+      {userMenuOpen && (
+        <AccountInspectorPopover
+          accounts={accounts}
+          projectOrg={projectOrg}
+          projectOrgLoading={projectOrgLoading}
+          onAddProjectToOrganization={() => {
+            setUserMenuOpen(false);
+            handleNavigateSettings('project', 'project-sharing');
+          }}
+          anchorEl={userMenuButtonRef.current}
+          onClose={() => setUserMenuOpen(false)}
+          onOpenAccount={() => {
+            setUserMenuOpen(false);
+            handleNavigateSettings('account', 'account');
+          }}
+          onOpenApplicationSettings={() => {
+            setUserMenuOpen(false);
+            handleNavigateSettings('application');
+          }}
+          onOpenProjectSettings={() => {
+            setUserMenuOpen(false);
+            handleNavigateSettings('project');
+          }}
+          onManageOrganization={(orgId) => {
+            setUserMenuOpen(false);
+            openOrganizationSurface(orgId, workspacePath);
+          }}
+          messagesUnreadCount={projectOrgUnread}
+          onOpenMessages={(orgId) => {
+            setUserMenuOpen(false);
+            if (projectOrg?.orgId === orgId) {
+              onContentModeChange('org');
+            }
+          }}
+          sync={syncSummary}
+          onOpenSyncSettings={() => {
+            setUserMenuOpen(false);
+            // Per-project sync selection lives in the Mobile App panel.
+            handleNavigateSettings('account', 'account-mobile');
+          }}
+        />
+      )}
+      <HelpTooltip testId="gutter-user-button" placement="right">
+        <button
+          ref={userMenuButtonRef}
+          className={`account-inspector-trigger nav-button relative w-9 h-9 flex items-center justify-center border-none rounded-md cursor-pointer transition-all duration-150 p-0 active:scale-95 focus-visible:outline-2 focus-visible:outline-[var(--nim-primary)] focus-visible:outline-offset-2 ${userMenuOpen ? 'bg-nim-tertiary text-nim' : accountNeedsAttention ? 'bg-transparent text-nim-warning hover:bg-nim-tertiary' : 'bg-transparent text-nim-muted hover:bg-nim-tertiary hover:text-nim'}`}
+          onClick={() => setUserMenuOpen(!userMenuOpen)}
+          aria-label={
+            needsSignIn
+              ? 'User menu (signed out -- sync requires sign in)'
+              : syncSummary?.needsAttention
+                ? `User menu (sync: ${syncSummary.detail})`
+                : 'User menu'
+          }
+          aria-expanded={userMenuOpen}
+          data-signed-in={isSignedIn === null ? undefined : isSignedIn}
+          data-needs-sign-in={needsSignIn || undefined}
+          data-sync-attention={syncSummary?.needsAttention || undefined}
+          data-testid="gutter-user-button"
+        >
+          {accounts.length > 0 ? (
+            <>
+              <span className={`flex h-7 w-7 items-center justify-center rounded-full text-xs font-semibold text-white ${accountNeedsAttention ? 'bg-[var(--nim-bg-tertiary)] text-[var(--nim-warning)]' : 'bg-[var(--nim-primary)]'}`}>
+                {(accounts.find((account) => account.isSyncAccount)?.email?.[0] ?? accounts[0]?.email?.[0] ?? '?').toUpperCase()}
+              </span>
+              {accounts.length > 1 && <span className="absolute -bottom-0.5 -right-0.5 rounded-full border border-[var(--nim-border)] bg-[var(--nim-bg-tertiary)] px-1 text-[8px] font-semibold leading-3">{accounts.length}</span>}
+            </>
+          ) : <MaterialSymbol icon={needsSignIn ? 'no_accounts' : 'person'} size={20} />}
+        </button>
+      </HelpTooltip>
+    </div>
+  );
 
   return (
     <div
@@ -590,82 +678,18 @@ export const NavigationGutter: React.FC<NavigationGutterProps> = ({
 
       {/* Indicators + settings cluster (bottom) */}
       <div className="nav-section nav-settings flex flex-col items-center gap-1 w-full px-1.5 py-1 mt-auto pt-2 border-t border-nim">
-        {renderSection(indicatorItems, 'indicators')}
+        {renderSection(projectIndicatorItems, 'indicators')}
 
-        {/* User menu: always visible, never hideable, always last */}
-        <div>
-          {userMenuOpen && (
-            <AccountInspectorPopover
-              accounts={accounts}
-              projectOrg={projectOrg}
-              projectOrgLoading={projectOrgLoading}
-              onAddProjectToOrganization={() => {
-                setUserMenuOpen(false);
-                handleNavigateSettings('project', 'project-sharing');
-              }}
-              anchorEl={userMenuButtonRef.current}
-              onClose={() => setUserMenuOpen(false)}
-              onOpenAccount={() => {
-                setUserMenuOpen(false);
-                handleNavigateSettings('account', 'account');
-              }}
-              onOpenApplicationSettings={() => {
-                setUserMenuOpen(false);
-                handleNavigateSettings('application');
-              }}
-              onOpenProjectSettings={() => {
-                setUserMenuOpen(false);
-                handleNavigateSettings('project');
-              }}
-              onManageOrganization={(orgId) => {
-                setUserMenuOpen(false);
-                openOrganizationSurface(orgId, workspacePath);
-              }}
-              messagesUnreadCount={projectOrgUnread}
-              onOpenMessages={(orgId) => {
-                setUserMenuOpen(false);
-                if (projectOrg?.orgId === orgId) {
-                  onContentModeChange('org');
-                }
-              }}
-              sync={syncSummary}
-              onOpenSyncSettings={() => {
-                setUserMenuOpen(false);
-                // Per-project sync selection lives in the Mobile App panel.
-                handleNavigateSettings('account', 'account-mobile');
-              }}
-            />
-          )}
-          <HelpTooltip testId="gutter-user-button" placement="right">
-            <button
-              ref={userMenuButtonRef}
-              className={`account-inspector-trigger nav-button relative w-9 h-9 flex items-center justify-center border-none rounded-md cursor-pointer transition-all duration-150 p-0 active:scale-95 focus-visible:outline-2 focus-visible:outline-[var(--nim-primary)] focus-visible:outline-offset-2 ${userMenuOpen ? 'bg-nim-tertiary text-nim' : accountNeedsAttention ? 'bg-transparent text-nim-warning hover:bg-nim-tertiary' : 'bg-transparent text-nim-muted hover:bg-nim-tertiary hover:text-nim'}`}
-              onClick={() => setUserMenuOpen(!userMenuOpen)}
-              aria-label={
-                needsSignIn
-                  ? 'User menu (signed out -- sync requires sign in)'
-                  : syncSummary?.needsAttention
-                    ? `User menu (sync: ${syncSummary.detail})`
-                    : 'User menu'
-              }
-              aria-expanded={userMenuOpen}
-              data-signed-in={isSignedIn === null ? undefined : isSignedIn}
-              data-needs-sign-in={needsSignIn || undefined}
-              data-sync-attention={syncSummary?.needsAttention || undefined}
-              data-testid="gutter-user-button"
-            >
-              {accounts.length > 0 ? (
-                <>
-                  <span className={`flex h-7 w-7 items-center justify-center rounded-full text-xs font-semibold text-white ${accountNeedsAttention ? 'bg-[var(--nim-bg-tertiary)] text-[var(--nim-warning)]' : 'bg-[var(--nim-primary)]'}`}>
-                    {(accounts.find((account) => account.isSyncAccount)?.email?.[0] ?? accounts[0]?.email?.[0] ?? '?').toUpperCase()}
-                  </span>
-                  {accounts.length > 1 && <span className="absolute -bottom-0.5 -right-0.5 rounded-full border border-[var(--nim-border)] bg-[var(--nim-bg-tertiary)] px-1 text-[8px] font-semibold leading-3">{accounts.length}</span>}
-                </>
-              ) : <MaterialSymbol icon={needsSignIn ? 'no_accounts' : 'person'} size={20} />}
-            </button>
-          </HelpTooltip>
-        </div>
+        {!railSlot && userMenu}
       </div>
+
+      {railSlot && createPortal(
+        <>
+          {renderSection(appIndicatorItems, 'indicators')}
+          {userMenu}
+        </>,
+        railSlot,
+      )}
 
       {/* Gutter context menu */}
       {contextMenu && (

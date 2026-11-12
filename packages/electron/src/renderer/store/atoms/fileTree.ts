@@ -359,6 +359,10 @@ export interface RendererFileTreeItem {
   children?: RendererFileTreeItem[];
   /** The main-process walk stopped at its depth limit here; `children` was not read. */
   childrenTruncated?: boolean;
+  /** Entries the main-process per-folder cap hid from `children`. */
+  omittedChildCount?: number;
+  /** The cap also skipped symlinks it never resolved; the count is a minimum. */
+  omittedChildCountIsMinimum?: boolean;
 }
 
 // Special directories that should always appear first with distinct styling
@@ -603,6 +607,44 @@ export interface FlatTreeNode {
    * header rows at all.
    */
   isWorkspaceRoot: boolean;
+  /**
+   * "N more items" notes to draw after this row, innermost folder first: one
+   * per expanded capped folder whose last visible descendant this row is.
+   * They are not nodes, so keyboard navigation, selection and drag/drop never
+   * see them; `buildTreeRenderRows` turns them into their own list items.
+   */
+  omittedAfter?: OmittedEntriesRow[];
+}
+
+export interface OmittedEntriesRow {
+  folderPath: string;
+  count: number;
+  depth: number;
+  /** Only set when true: the count is a lower bound. */
+  isMinimum?: true;
+}
+
+export type TreeRenderRow =
+  | { kind: 'node'; node: FlatTreeNode }
+  | ({ kind: 'omitted' } & OmittedEntriesRow);
+
+/**
+ * The rows the virtual list renders, one fixed-height item each: every node
+ * plus a note item after each capped folder's last visible descendant.
+ * `renderIndexOf[node.index]` is that node's item index, for scrolling a
+ * navigation index into view.
+ */
+export function buildTreeRenderRows(nodes: FlatTreeNode[]): { rows: TreeRenderRow[]; renderIndexOf: number[] } {
+  const rows: TreeRenderRow[] = [];
+  const renderIndexOf: number[] = [];
+  for (const node of nodes) {
+    renderIndexOf.push(rows.length);
+    rows.push({ kind: 'node', node });
+    for (const omitted of node.omittedAfter ?? []) {
+      rows.push({ kind: 'omitted', ...omitted });
+    }
+  }
+  return { rows, renderIndexOf };
 }
 
 /**
@@ -656,6 +698,19 @@ export function flattenTree(options: FlattenTreeOptions): FlatTreeNode[] {
       if (isExpanded && item.children) {
         walk(item.children, depth + 1, item.path);
       }
+
+      if (isExpanded && (item.omittedChildCount || item.omittedChildCountIsMinimum)) {
+        const last = result[result.length - 1];
+        last.omittedAfter = [
+          ...(last.omittedAfter ?? []),
+          {
+            folderPath: item.path,
+            count: item.omittedChildCount ?? 0,
+            depth: depth + 1,
+            ...(item.omittedChildCountIsMinimum ? { isMinimum: true as const } : {}),
+          },
+        ];
+      }
     }
   }
 
@@ -681,3 +736,6 @@ export const visibleNodesAtom = atom<FlatTreeNode[]>((get) => {
     workspaceRootPaths: new Set(get(workspaceRootPathsAtom)),
   });
 });
+
+/** The virtual list's rows: visible nodes plus omitted-entry notes. */
+export const treeRenderRowsAtom = atom((get) => buildTreeRenderRows(get(visibleNodesAtom)));
