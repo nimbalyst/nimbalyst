@@ -464,6 +464,29 @@ export const workstreamStateAtom = atomFamily((workstreamId: string) =>
   )
 );
 
+/**
+ * Sets the explicit tree expansion of many parents in one store update, as
+ * "Collapse all" / "Expand all" do. Parents already at the target are left
+ * alone, and each changed parent persists through the usual debounced path.
+ */
+export const setTreeExpandedForAtom = atom(
+  null,
+  (get, set, { ids, expanded }: { ids: readonly string[]; expanded: boolean }) => {
+    const current = get(workstreamStatesAtom);
+    const map = new Map(current);
+    const changed: string[] = [];
+    for (const id of new Set(ids)) {
+      const existing = map.get(id);
+      if (existing?.treeExpanded === expanded) continue;
+      map.set(id, { ...(existing ?? createDefaultState(id)), treeExpanded: expanded });
+      changed.push(id);
+    }
+    if (!changed.length) return;
+    set(workstreamStatesAtom, map);
+    changed.forEach(schedulePersist);
+  }
+);
+
 // ============================================================
 // Derived Atoms (Read-Only Slices)
 // ============================================================

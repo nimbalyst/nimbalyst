@@ -8,6 +8,7 @@ import {
   sessionMoveError,
   sessionTreeRootId,
   treeIndent,
+  treeParentIds,
   visibleSessionTreeIds,
   type TreeSession,
 } from '../sessionTreeModel';
@@ -86,5 +87,17 @@ describe('session tree projection', () => {
     rows.set('foreign', row('foreign', null, { worktreeId: 'other' }));
     expect(sessionMoveError(rows, 'branch', 'foreign')).toMatch(/same worktree/);
     expect(sessionMoveError(rows, String(D), null)).toBeNull();
+  });
+});
+
+describe('treeParentIds', () => {
+  it('lists every node that has children, at any depth, and skips leaves', () => {
+    const rows = [row('root'), row('middle', 'root'), row('leaf', 'middle'), row('sibling', 'root'), row('solo')];
+    expect(treeParentIds(rows).sort()).toEqual(['middle', 'root']);
+  });
+
+  it('does not depend on what is expanded', () => {
+    expect(treeParentIds([row('a'), row('b', 'a')])).toEqual(['a']);
+    expect(treeParentIds([row('a')])).toEqual([]);
   });
 });
