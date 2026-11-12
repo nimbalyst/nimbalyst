@@ -8,7 +8,8 @@
  * Internal actions (copy ID, export, share, set phase) are always available.
  */
 import React, { useState, useRef, useMemo, useCallback } from 'react';
-import { useAtomValue, useSetAtom } from 'jotai';
+import { atom, useAtomValue, useSetAtom } from 'jotai';
+import { sessionRegistryAtom } from '../../store/atoms/sessions';
 import { MaterialSymbol, copyToClipboard } from '@nimbalyst/runtime';
 import { sessionShareAtom, shareKeysAtom, removeSessionShareAtom, buildShareUrl } from '../../store';
 import { setSessionPhaseAtom, SESSION_PHASE_COLUMNS } from '../../store/atoms/sessionKanban';
@@ -26,6 +27,10 @@ export interface SessionContextMenuProps {
   // Session metadata for conditional menu items
   isArchived?: boolean;
   isPinned?: boolean;
+  /**
+   * Row groups other sessions (a container or a session with children). Labels
+   * do not use it: "Workstream" names only the container type, read from the registry.
+   */
   isWorkstream?: boolean;
   isWorktreeSession?: boolean;
   parentSessionId?: string | null;
@@ -36,12 +41,15 @@ export interface SessionContextMenuProps {
   onPinToggle?: (isPinned: boolean) => void;
   onBranch?: () => void;
   onMoveUnder?: () => void;
+  onMoveToWorkstream?: () => void;
   onRemoveFromWorkstream?: () => void;
   onArchive?: () => void;
   onUnarchive?: () => void;
   onDelete?: () => void;
   /** When part of a multiselect, how many items the action applies to */
   selectedCount?: number;
+  /** How many sessions "Move to workstream..." moves (the multi-selection, or this row). */
+  moveCount?: number;
 }
 
 export const SessionContextMenu: React.FC<SessionContextMenuProps> = ({
@@ -51,7 +59,6 @@ export const SessionContextMenu: React.FC<SessionContextMenuProps> = ({
   onClose,
   isArchived = false,
   isPinned = false,
-  isWorkstream = false,
   isWorktreeSession = false,
   parentSessionId = null,
   phase,
@@ -60,15 +67,21 @@ export const SessionContextMenu: React.FC<SessionContextMenuProps> = ({
   onBranch,
   onRemoveFromWorkstream,
   onMoveUnder,
+  onMoveToWorkstream,
   onArchive,
   onUnarchive,
   onDelete,
   selectedCount = 1,
+  moveCount = 1,
 }) => {
   const [showPhaseSubmenu, setShowPhaseSubmenu] = useState(false);
   const [submenuFlipped, setSubmenuFlipped] = useState(false);
   const submenuParentRef = useRef<HTMLDivElement>(null);
   const setSessionPhase = useSetAtom(setSessionPhaseAtom);
+  const isContainer = useAtomValue(
+    useMemo(() => atom((get) => get(sessionRegistryAtom).get(sessionId)?.sessionType === 'workstream'), [sessionId])
+  );
+  const rowNoun = isContainer ? 'Workstream' : isWorktreeSession ? 'Worktree' : 'Session';
 
   // Share state
   const shareInfo = useAtomValue(sessionShareAtom(sessionId));
@@ -278,6 +291,12 @@ export const SessionContextMenu: React.FC<SessionContextMenuProps> = ({
           </button>
         )}
 
+        {onMoveToWorkstream && (
+          <button className={menuItemClass} onClick={(e) => handleAction(e, onMoveToWorkstream)}>
+            <MaterialSymbol icon="folder" size={14} />
+            {moveCount > 1 ? `Move ${moveCount} sessions to workstream...` : 'Move to workstream...'}
+          </button>
+        )}
         {onMoveUnder && <button className={menuItemClass} onClick={(e) => handleAction(e, onMoveUnder)}><MaterialSymbol icon="drive_file_move" size={14} />Move under...</button>}
 
         {/* Group 3: Copy to clipboard */}
@@ -340,12 +359,12 @@ export const SessionContextMenu: React.FC<SessionContextMenuProps> = ({
             {isArchived ? (
               <>
                 <MaterialSymbol icon="unarchive" size={14} />
-                Unarchive {selectedCount > 1 ? `${selectedCount} Sessions` : isWorkstream ? 'Workstream' : isWorktreeSession ? 'Worktree' : 'Session'}
+                Unarchive {selectedCount > 1 ? `${selectedCount} Sessions` : rowNoun}
               </>
             ) : (
               <>
                 <MaterialSymbol icon="archive" size={14} />
-                Archive {selectedCount > 1 ? `${selectedCount} Sessions` : isWorkstream ? 'Workstream' : isWorktreeSession ? 'Worktree' : 'Session'}
+                Archive {selectedCount > 1 ? `${selectedCount} Sessions` : rowNoun}
               </>
             )}
           </button>

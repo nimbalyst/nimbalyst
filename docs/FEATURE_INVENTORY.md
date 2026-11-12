@@ -100,6 +100,7 @@ Twelve built-in provider lanes, plus any agent an extension contributes. Every l
 ## Workstreams
 
 - Nested session trees within a workspace or worktree, with collapsible orchestrators and subtree activity, unread, and uncommitted-file rollups
+- Workstream containers: a named group with a folder icon that holds peer sessions with no parent or manager among them; created from the create menu or "Move to workstream..." (one or several selected sessions), filled by moving or dragging sessions in or by starting a session while it is selected
 - Workstream editor tabs (multi-file editing per session)
 - Workstream session tabs (switch between child sessions)
 - Agent-to-agent session spawning (`/launch-new-session`, `spawn_session`, and `create_session`) places workers beneath their caller and shares the tree's files, tabs, and overview; isolated sessions and workers launched into another worktree remain separate roots managed by their caller; each spawn chooses how the worker reports back (`reporting`: none by default, final response only, or mid-run messages)

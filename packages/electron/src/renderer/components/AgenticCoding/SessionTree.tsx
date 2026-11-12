@@ -12,7 +12,7 @@ import { workspaceSessionTurnActivityAtom } from '../../store/atoms/sessionActiv
 import { workstreamStateAtom } from '../../store/atoms/workstreamState';
 import { compactRowsAtom } from '../../store/atoms/agentMode';
 import { SessionListItem } from './SessionListItem';
-import { buildSessionTree, mergedTreeHeader, treeIndent, type SessionTreeNode } from './sessionTreeModel';
+import { buildSessionTree, isWorkstreamContainer, mergedTreeHeader, treeIndent, type SessionTreeNode } from './sessionTreeModel';
 
 export interface SessionTreeProps {
   sessions: SessionMeta[];
@@ -26,6 +26,8 @@ export interface SessionTreeProps {
   onSessionPinToggle?: (id: string, pinned: boolean) => void;
   onSessionRename?: (id: string, title: string) => void;
   onSessionBranch?: (id: string) => void;
+  /** The sidebar's multi-selection; move and archive actions on a selected row apply to all of it. */
+  selectedSessionIds?: ReadonlySet<string>;
 }
 
 export type SessionTreeRowHandlers = Omit<SessionTreeProps, 'sessions' | 'root'>;
@@ -158,6 +160,12 @@ export function SessionTreeRow(props: SessionTreeRowHandlers & VisibleSessionTre
   const indent = treeIndent(node.depth - baseDepth);
   const hasChildren = node.children.length > 0;
   const hiddenCount = node.ids.length - 1;
+  const isSelected = !!props.selectedSessionIds?.has(row.id);
+  const selectedIds = useMemo(
+    () => (isSelected && props.selectedSessionIds ? [...props.selectedSessionIds] : undefined),
+    [isSelected, props.selectedSessionIds]
+  );
+  const isContainer = isWorkstreamContainer(row);
   // SessionListItem's memo compares these by reference; build them only when
   // their inputs change so an unrelated list render does not repaint every row.
   // Inline on the metadata line; a separate row per parent cost a line of height each.
@@ -206,7 +214,10 @@ export function SessionTreeRow(props: SessionTreeRowHandlers & VisibleSessionTre
         isActive={row.id === activeSessionId}
         treeContext
         projectPath={props.projectPath || row.workspaceId}
-        isWorkstream={row.sessionType === 'workstream' || hasChildren}
+        isWorkstream={isContainer || hasChildren}
+        isExpanded={hasChildren && expanded}
+        isSelected={isSelected}
+        selectedSessionIds={selectedIds}
         treeLeading={leading}
         treeDetails={details}
         compact={compact}
@@ -217,7 +228,7 @@ export function SessionTreeRow(props: SessionTreeRowHandlers & VisibleSessionTre
         onUnarchive={props.onSessionUnarchive && (() => props.onSessionUnarchive!(row.id))}
         onPinToggle={props.onSessionPinToggle && ((pinned) => props.onSessionPinToggle!(pinSession.id, pinned))}
         onRename={props.onSessionRename && ((title) => props.onSessionRename!(row.id, title))}
-        onBranch={props.onSessionBranch && (() => props.onSessionBranch!(row.id))}
+        onBranch={props.onSessionBranch && !isContainer ? () => props.onSessionBranch!(row.id) : undefined}
       />
     </div>
   );

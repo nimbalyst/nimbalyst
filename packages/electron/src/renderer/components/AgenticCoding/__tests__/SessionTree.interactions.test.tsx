@@ -3,7 +3,7 @@ import React from 'react';
 import { Provider } from 'jotai';
 import { act, cleanup, fireEvent, render, renderHook, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-vi.mock('@nimbalyst/runtime/ui/icons/MaterialSymbol', () => ({ MaterialSymbol: () => null }));
+vi.mock('@nimbalyst/runtime/ui/icons/MaterialSymbol', () => ({ MaterialSymbol: ({ icon }: { icon: string }) => <span data-icon={icon} /> }));
 vi.mock('../SessionProviderIcon', () => ({ SessionProviderIcon: () => null }));
 vi.mock('../SessionSpawnerLink', () => ({ SessionSpawnerLink: () => null }));
 vi.mock('../../../services/ErrorNotificationService', () => ({
@@ -12,11 +12,16 @@ vi.mock('../../../services/ErrorNotificationService', () => ({
 import { store } from '@nimbalyst/runtime/store';
 import { SessionTree, useVisibleSessionTreeRows } from '../SessionTree.tsx';
 import { SessionMovePicker } from '../SessionMovePicker';
+import { WorkstreamEmptyState } from '../WorkstreamEmptyState';
+import { activeWorkspacePathAtom } from '../../../store/atoms/openProjects';
 import { useSessionTreeMove } from '../useSessionTreeMove';
 import {
   sessionRegistryAtom,
   sessionUnreadAtom,
   sessionProcessingAtom,
+  pendingSessionRenameAtom,
+  selectedWorkstreamAtom,
+  setSelectedWorkstreamAtom,
   type SessionMeta,
 } from '../../../store/atoms/sessions';
 import {
@@ -117,7 +122,7 @@ describe('tree interactions', () => {
       activeSessionId={null} onSessionSelect={onSelect} onSessionArchive={onArchive} /></Provider>);
     const header = screen.getByText('workstream').closest('.session-list-item')!;
     expect(header.getAttribute('data-session-type')).toBe('workstream');
-    expect(header.querySelector('.workstream-icon svg')).not.toBeNull();
+    expect(header.querySelector('.session-list-item-icon [data-icon="folder"]')).not.toBeNull();
     expect(screen.queryByRole('button', { name: 'Expand workstream' })).toBeNull();
     fireEvent.click(header);
     expect(onSelect).toHaveBeenCalledWith('workstream', expect.anything());
@@ -131,6 +136,143 @@ describe('tree interactions', () => {
     const ordinary = screen.getByText('ordinary').closest('.session-list-item')!;
     expect(ordinary.getAttribute('data-session-type')).toBe('session');
     expect(ordinary.querySelector('.workstream-icon')).toBeNull();
+  });
+
+  it('names a session with children a Session and keeps its provider icon; only the container is a Workstream', () => {
+    const onArchive = vi.fn();
+    tree();
+    cleanup();
+    render(<Provider store={store}><SessionTree root={rows[0]} sessions={rows.slice(1, 3)}
+      activeSessionId={null} onSessionSelect={vi.fn()} onSessionArchive={onArchive} /></Provider>);
+    const parent = screen.getByText('root').closest('.session-list-item')!;
+    expect(parent.querySelector('[data-icon="folder"], [data-icon="folder_open"]')).toBeNull();
+    fireEvent.contextMenu(parent);
+    fireEvent.click(screen.getByRole('button', { name: 'Archive Session' }));
+    expect(onArchive).toHaveBeenCalledWith('root');
+  });
+
+  it('moves a multi-selection into a workstream picked from the context menu, or into a new one', async () => {
+    rows = [
+      row('a'), row('b'),
+      row('ws', null, { sessionType: 'workstream', userWorkstream: true }),
+      row('plain'),
+      row('tree-only', null, { worktreeId: 'wt' }),
+    ];
+    store.set(sessionRegistryAtom, new Map(rows.map((r) => [r.id, r])));
+    invoke.mockImplementation(async (channel: string, payload?: any) => {
+      if (channel === 'sessions:create') {
+        rows = [...rows, row(payload.session.id, null, { sessionType: payload.session.sessionType, title: payload.session.title, userWorkstream: payload.session.metadata?.userWorkstream })];
+        return { success: true, id: payload.session.id };
+      }
+      if (channel === 'sessions:set-parent') {
+        rows = rows.map((r) => (r.id === payload.sessionId ? { ...r, parentSessionId: payload.newParentId } : r));
+        return { success: true, previousParentId: null, previousManagerId: null };
+      }
+      if (channel === 'sessions:list') return { success: true, sessions: rows };
+      return { success: true };
+    });
+    const view = render(<Provider store={store}><SessionTree root={rows[0]} sessions={[]} activeSessionId={null}
+      onSessionSelect={vi.fn()} selectedSessionIds={new Set(['a', 'b'])} /></Provider>);
+    fireEvent.contextMenu(screen.getByText('a').closest('.session-list-item')!);
+    fireEvent.click(screen.getByRole('button', { name: 'Move 2 sessions to workstream...' }));
+    expect(screen.getAllByRole('option').map((o) => o.textContent)).toEqual(['New workstream...', 'ws']);
+    fireEvent.click(screen.getByRole('option', { name: 'ws' }));
+    await waitFor(() => expect(store.get(sessionRegistryAtom).get('b')?.parentSessionId).toBe('ws'));
+    expect(store.get(sessionRegistryAtom).get('a')?.parentSessionId).toBe('ws');
+    expect(invoke.mock.calls.filter(([channel]) => channel === 'sessions:set-parent').map(([, p]) => p.restoreManagerId)).toEqual([undefined, undefined]);
+
+    view.unmount();
+    render(<Provider store={store}><SessionTree root={store.get(sessionRegistryAtom).get('plain')} sessions={[]}
+      activeSessionId={null} onSessionSelect={vi.fn()} /></Provider>);
+    fireEvent.contextMenu(screen.getByText('plain').closest('.session-list-item')!);
+    fireEvent.click(screen.getByRole('button', { name: 'Move to workstream...' }));
+    fireEvent.change(screen.getByRole('textbox', { name: 'Search workstreams' }), { target: { value: 'Release' } });
+    fireEvent.click(screen.getByRole('option', { name: 'New workstream "Release"' }));
+    await waitFor(() => expect(store.get(sessionRegistryAtom).get('plain')?.parentSessionId).toBeTruthy());
+    const created = store.get(sessionRegistryAtom).get(store.get(sessionRegistryAtom).get('plain')!.parentSessionId!)!;
+    expect(created).toMatchObject({ title: 'Release', sessionType: 'workstream', userWorkstream: true });
+  });
+
+  it('says so when a new workstream is created but the sessions could not move into it', async () => {
+    rows = [row('a'), row('b')];
+    store.set(sessionRegistryAtom, new Map(rows.map((r) => [r.id, r])));
+    invoke.mockImplementation(async (channel: string, payload?: any) =>
+      channel === 'sessions:create' ? { success: true, id: payload.session.id }
+        : channel === 'sessions:set-parent' ? (payload.sessionId === 'a' ? { success: true, previousParentId: null, previousManagerId: null } : { success: false, error: 'rejected' })
+        : { success: true });
+    render(<Provider store={store}><SessionTree root={rows[0]} sessions={[]} activeSessionId={null}
+      onSessionSelect={vi.fn()} selectedSessionIds={new Set(['a', 'b'])} /></Provider>);
+    fireEvent.contextMenu(screen.getByText('a').closest('.session-list-item')!);
+    fireEvent.click(screen.getByRole('button', { name: 'Move 2 sessions to workstream...' }));
+    fireEvent.click(screen.getByRole('option', { name: 'New workstream...' }));
+    await waitFor(() => expect(errorNotificationService.showError).toHaveBeenCalledWith(
+      'Some sessions were not moved', expect.stringContaining('1 of 2')));
+    expect([...store.get(sessionRegistryAtom).values()].some((r) => r.sessionType === 'workstream')).toBe(true);
+
+    vi.mocked(errorNotificationService.showError).mockClear();
+    invoke.mockImplementation(async (channel: string, payload?: any) =>
+      channel === 'sessions:create' ? { success: true, id: payload.session.id }
+        : channel === 'sessions:set-parent' ? { success: false, error: 'rejected' } : { success: true });
+    fireEvent.contextMenu(screen.getByText('a').closest('.session-list-item')!);
+    fireEvent.click(screen.getByRole('button', { name: 'Move 2 sessions to workstream...' }));
+    fireEvent.click(screen.getByRole('option', { name: 'New workstream...' }));
+    await waitFor(() => expect(errorNotificationService.showError).toHaveBeenCalledWith(
+      'Sessions not moved', expect.stringContaining('is empty')));
+  });
+
+  it('opens the title editor on a newly created workstream and saves the typed name', () => {
+    const ws = row('ws', null, { sessionType: 'workstream', userWorkstream: true, title: 'New Workstream' });
+    store.set(sessionRegistryAtom, new Map([[ws.id, ws]]));
+    const onRename = vi.fn();
+    act(() => store.set(pendingSessionRenameAtom, 'ws'));
+    render(<Provider store={store}><SessionTree root={ws} sessions={[]} activeSessionId={null}
+      onSessionSelect={vi.fn()} onSessionRename={onRename} /></Provider>);
+    const input = screen.getByDisplayValue('New Workstream');
+    expect(store.get(pendingSessionRenameAtom)).toBeNull();
+    fireEvent.change(input, { target: { value: 'Release' } });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    expect(onRename).toHaveBeenCalledWith('ws', 'Release');
+  });
+
+  it('starts a session inside the empty workstream from its empty state', async () => {
+    const ws = row('ws', null, { sessionType: 'workstream', userWorkstream: true });
+    store.set(sessionRegistryAtom, new Map([[ws.id, ws]]));
+    store.set(activeWorkspacePathAtom, '/project');
+    store.set(setSelectedWorkstreamAtom, { workspacePath: '/project', selection: { type: 'workstream', id: 'ws' } });
+    invoke.mockImplementation(async (channel: string, payload?: any) =>
+      channel === 'sessions:create' ? { success: true, id: payload.session.id }
+        : channel === 'sessions:list-children' ? { success: true, children: [] } : { success: true });
+    render(<Provider store={store}><WorkstreamEmptyState workstreamId="ws" /></Provider>);
+    fireEvent.click(screen.getByRole('button', { name: 'New session in this workstream' }));
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('sessions:create',
+      expect.objectContaining({ session: expect.objectContaining({ parentSessionId: 'ws' }) })));
+    expect(store.get(selectedWorkstreamAtom('/project'))).toEqual({ type: 'workstream', id: 'ws' });
+  });
+
+  it('accepts a session dropped onto an empty workstream row', async () => {
+    rows = [row('ws', null, { sessionType: 'workstream', userWorkstream: true }), row('loose')];
+    store.set(sessionRegistryAtom, new Map(rows.map((r) => [r.id, r])));
+    render(<Provider store={store}>
+      <SessionTree root={rows[0]} sessions={[]} activeSessionId={null} onSessionSelect={vi.fn()} />
+      <SessionTree root={rows[1]} sessions={[]} activeSessionId={null} onSessionSelect={vi.fn()} />
+    </Provider>);
+    const payload = new Map<string, string>();
+    const dataTransfer = { types: ['application/x-nimbalyst-session'], setData: (k: string, v: string) => payload.set(k, v),
+      getData: (k: string) => payload.get(k), dropEffect: 'move', effectAllowed: 'move' };
+    const fire = (title: string, name: string) => {
+      const element = screen.getByText(title).closest('.session-list-item')! as HTMLElement;
+      vi.spyOn(element, 'getBoundingClientRect').mockReturnValue({ top: 0, bottom: 40 } as DOMRect);
+      const event = new MouseEvent(name, { bubbles: true, cancelable: true, clientY: 20 });
+      Object.defineProperty(event, 'dataTransfer', { value: dataTransfer });
+      fireEvent(element, event);
+    };
+    fire('loose', 'dragstart');
+    fire('ws', 'dragover');
+    expect(dataTransfer.dropEffect).toBe('move');
+    screen.getByText('into ws');
+    fire('ws', 'drop');
+    await waitFor(() => expect(invoke).toHaveBeenCalledWith('sessions:set-parent',
+      expect.objectContaining({ sessionId: 'loose', newParentId: 'ws' })));
   });
 
   it('flattens each tree to one entry per visible row so a virtual list never holds a whole tree', () => {
@@ -216,6 +358,8 @@ describe('tree interactions', () => {
     await waitFor(() => expect(errorNotificationService.showInfo).toHaveBeenCalledOnce());
     expect(store.get(sessionRegistryAtom).get('middle')?.parentSessionId).toBe('target');
     expect(store.get(sessionRegistryAtom).get('leaf')?.parentSessionId).toBe('middle');
+    // A move never makes the new parent a manager; the old one is no longer an ancestor.
+    expect(store.get(sessionRegistryAtom).get('middle')?.createdBySessionId).toBeNull();
     const options = vi.mocked(errorNotificationService.showInfo).mock.calls[0][2];
     await act(async () => options?.action?.onClick());
     await waitFor(() => expect(store.get(sessionRegistryAtom).get('middle')?.parentSessionId).toBe('root'));
@@ -224,6 +368,26 @@ describe('tree interactions', () => {
       expect.objectContaining({ newParentId: 'root', restoreManagerId: 'root' })
     );
     expect(invoke.mock.calls.some(([channel]) => channel === 'sessions:create')).toBe(false);
+  });
+  it('a bulk move invalidates an earlier single-move Undo', async () => {
+    function Move() {
+      const { move, moveMany } = useSessionTreeMove('target', '/project');
+      return <>
+        <button onClick={() => void move('target', 'root')}>Single</button>
+        <button onClick={() => void moveMany(['target', 'leaf'], 'middle')}>Bulk</button>
+      </>;
+    }
+    render(<Provider store={store}><Move /></Provider>);
+    fireEvent.click(screen.getByText('Single'));
+    await waitFor(() => expect(errorNotificationService.showInfo).toHaveBeenCalledOnce());
+    const undo = vi.mocked(errorNotificationService.showInfo).mock.calls[0][2]!.action!.onClick;
+    fireEvent.click(screen.getByText('Bulk'));
+    await waitFor(() => expect(store.get(sessionRegistryAtom).get('target')?.parentSessionId).toBe('middle'));
+    const moves = () => invoke.mock.calls.filter(([channel]) => channel === 'sessions:set-parent').length;
+    const before = moves();
+    await act(async () => undo());
+    expect(moves()).toBe(before);
+    expect(store.get(sessionRegistryAtom).get('target')?.parentSessionId).toBe('middle');
   });
   it('rejects descendant and foreign-worktree drops, and dropping between rows adopts their parent', async () => {
     function DragRow({ id }: { id: string }) {

@@ -259,3 +259,23 @@ it.each(['pglite', 'sqlite'] as const)('%s keeps deferred launches charged throu
     await expect(assertChildSpawnCapacity('/p', 'manager', raw)).resolves.toBeUndefined();
   } finally { driver.dispose(); await raw.close(); fs.rmSync(temporary, { recursive: true, force: true }); }
 });
+
+it.each(['pglite', 'sqlite'] as const)('%s never stores a workstream container as a manager, on create or move', async backend => {
+  const { db, close } = await openBackend(backend);
+  try {
+    const store = createPGLiteSessionStore(db);
+    const manager = async (id: string) => (await db.query<{ created_by_session_id: string | null }>('SELECT created_by_session_id FROM ai_sessions WHERE id = $1', [id])).rows[0].created_by_session_id;
+    await store.create({ id: 'ws', provider: 'claude-code', workspaceId: '/p', sessionType: 'workstream' });
+    await store.create({ id: 'spawner', provider: 'claude-code', workspaceId: '/p' });
+    // A phone or any caller creating a child in the container names it as manager.
+    await store.create({ id: 'inside', provider: 'claude-code', workspaceId: '/p', parentSessionId: 'ws', createdBySessionId: 'ws' });
+    expect(await manager('inside')).toBeNull();
+    await store.create({ id: 'moved', provider: 'claude-code', workspaceId: '/p', createdBySessionId: 'spawner' });
+    await store.updateMetadata('moved', { parentSessionId: 'ws', createdBySessionId: 'ws' });
+    expect(await manager('moved')).toBeNull();
+    // Without an explicit manager, the move rule drops a manager that is no longer an ancestor.
+    await store.create({ id: 'plain', provider: 'claude-code', workspaceId: '/p', createdBySessionId: 'spawner' });
+    await store.updateMetadata('plain', { parentSessionId: 'ws' });
+    expect(await manager('plain')).toBeNull();
+  } finally { await close(); }
+});

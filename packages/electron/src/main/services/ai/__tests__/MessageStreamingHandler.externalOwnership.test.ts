@@ -319,6 +319,18 @@ describe("MessageStreamingHandler external ownership", () => {
     mocks.providerFactory.getProvider.mockReturnValue(null);
     mocks.claim.mockResolvedValue(undefined);
   });
+  it("refuses to run a turn on a workstream container before any provider or transcript side effect", async () => {
+    const provider = new RecordingProvider();
+    const addMessage = vi.fn();
+    await expect(runTurn({
+      session: openCodeSession({ id: "ws", provider: "claude-code", sessionType: "workstream" }),
+      provider,
+      sessionManager: { addMessage },
+    })).rejects.toThrow(/workstream/);
+    expect(addMessage).not.toHaveBeenCalled();
+    expect(mocks.providerFactory.createProvider).not.toHaveBeenCalled();
+    expect(provider.requestConfigs).toEqual([]);
+  });
   it("aborts before user raw/provider side effects when the durable claim fails, then permits retry", async () => {
     const provider = new RecordingProvider();
     const addMessage = vi.fn();

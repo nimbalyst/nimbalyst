@@ -46,6 +46,12 @@ export interface SessionMeta {
    * session list refresh so a stale in-memory atom gets corrected.
    */
   hasPendingInteractivePrompt?: boolean;
+  /**
+   * `metadata.userWorkstream`: a `workstream` wrapper the user made on purpose.
+   * Unmarked wrappers (auto-created before the session tree) are merged into
+   * their only child in the sidebar; marked ones always show.
+   */
+  userWorkstream?: boolean;
   // Kanban board phase and tags (from metadata JSONB)
   phase?: string;
   tags?: string[];

@@ -55,7 +55,16 @@ export async function readHierarchy(db: HierarchyDatabase, workspaceId: string, 
   )).rows;
 }
 
-export async function assertSessionCreation(db: HierarchyDatabase, payload: CreateSessionPayload, existing?: { workspace_id?: string }): Promise<void> {
+/**
+ * A workstream container only groups peers. It never runs, so it can never
+ * receive completion reports; any caller naming one as manager gets none.
+ */
+function containerFreeManager(rows: HierarchyRow[], managerId: string | null): string | null {
+  return managerId && rows.some(row => row.id === managerId && row.session_type === 'workstream') ? null : managerId;
+}
+
+/** Validates placement and returns the manager to store (never a workstream container). */
+export async function assertSessionCreation(db: HierarchyDatabase, payload: CreateSessionPayload, existing?: { workspace_id?: string }): Promise<string | null> {
   if (existing?.workspace_id && existing.workspace_id !== payload.workspaceId) throw new Error('Cannot recreate a session in a different workspace');
   const node: HierarchyRow = { id: payload.id, workspace_id: payload.workspaceId,
     worktree_id: payload.worktreeId ?? null, parent_session_id: payload.parentSessionId ?? null,
@@ -63,6 +72,7 @@ export async function assertSessionCreation(db: HierarchyDatabase, payload: Crea
   const hierarchy = node.parent_session_id || node.created_by_session_id || existing ? await readHierarchy(db, payload.workspaceId) : [];
   assertHierarchyPlacement(hierarchy, node, node.parent_session_id);
   if (node.created_by_session_id && (node.created_by_session_id === node.id || !hierarchy.some(row => row.id === node.created_by_session_id && row.workspace_id === node.workspace_id))) throw new Error('Invalid session manager in this workspace');
+  return containerFreeManager(hierarchy, node.created_by_session_id ?? null);
 }
 
 /** Validate the proposed edge against the entire moved subtree, not just its root. */
@@ -256,7 +266,7 @@ export function wrapSessionHierarchyWrites(store: SessionStore, db: HierarchyDat
         assertHierarchyPlacement(hierarchy, proposed, parentId);
         const moved = patch.parentSessionId !== undefined && (current.parent_session_id ?? null) !== parentId;
         const currentManagerId = current.created_by_session_id ?? null;
-        const managerId = patch.createdBySessionId !== undefined ? patch.createdBySessionId : moved ? managerAfterMove(hierarchy, currentManagerId, parentId) : currentManagerId;
+        const managerId = containerFreeManager(hierarchy, patch.createdBySessionId !== undefined ? patch.createdBySessionId : moved ? managerAfterMove(hierarchy, currentManagerId, parentId) : currentManagerId);
         if (managerId && (managerId === sessionId || !hierarchy.some(row => row.id === managerId && row.workspace_id === current.workspace_id))) throw new Error('Invalid session manager in this workspace');
         const managerChanged = (current.created_by_session_id ?? null) !== managerId;
         const authoritativePatch = moved || managerChanged ? { ...patch, createdBySessionId: managerId,

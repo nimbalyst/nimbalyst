@@ -285,6 +285,22 @@ it('carries the persisted context fill from list and search through both list pr
   }
 });
 
+it('carries the user-created workstream marker from stored metadata to the registry row', async () => {
+  const insert = (id: string, sessionType: string, metadata: object) => sqlite.query(
+    `INSERT INTO ai_sessions (id, provider, workspace_id, title, session_type, metadata) VALUES ($1, 'claude-code', '/p', $1, $2, $3)`,
+    [id, sessionType, JSON.stringify(metadata)],
+  );
+  await insert('made', 'workstream', { userWorkstream: true, isWorkstreamRoot: true });
+  // Pre-October auto wrappers carry no marker and stay mergeable.
+  await insert('legacy', 'workstream', { isWorkstreamRoot: true });
+  await insert('spoofed', 'workstream', { userWorkstream: 'yes' });
+  const store = createPGLiteSessionStore(createSQLiteStoreAdapter(sqlite));
+  const registry = new Map(projectSessionList(await store.list('/p'), new Map()).map(s => [s.id, sessionListMetadata(s, '/p')]));
+  expect(registry.get('made')?.userWorkstream).toBe(true);
+  expect(registry.get('legacy')?.userWorkstream).toBeUndefined();
+  expect(registry.get('spoofed')?.userWorkstream).toBeUndefined();
+});
+
 it('lists and searches sessions from projected metadata, never the whole blob', async () => {
   await sqlite.query(
     `INSERT INTO ai_sessions (id, provider, workspace_id, title, metadata) VALUES ('s1', 'claude-code', '/p', 'Projection probe', $1)`,

@@ -75,7 +75,7 @@ const normalizeJsonObject = parseJsonObjectColumn;
  */
 const SESSION_LIST_METADATA_KEYS = [
   'hasUnread', 'hasPendingPrompt', 'externalSource', 'externalLastActivityAt',
-  'phase', 'tags', 'linkedTrackerItemIds', 'tokenUsage',
+  'phase', 'tags', 'linkedTrackerItemIds', 'tokenUsage', 'userWorkstream',
 ] as const;
 function sessionListMetadataSql(): string {
   return `${buildMetadataProjectionSql('s.metadata', SESSION_LIST_METADATA_KEYS, [`'nestedHasUnread', s.metadata->'metadata'->'hasUnread'`])} AS metadata`;
@@ -534,7 +534,7 @@ export function createPGLiteSessionStore(db: PGliteLike, ensureDbReady?: EnsureR
         `SELECT metadata, workspace_id FROM ai_sessions WHERE id = $1`,
         [payload.id],
       );
-      await assertSessionCreation(db, payload, existingRows[0]);
+      const createdBySessionId = await assertSessionCreation(db, payload, existingRows[0]);
       const existingMetadata = existingRows[0] ? normalizeJsonObject(existingRows[0].metadata) : null;
       if (existingMetadata && readSessionOwner(existingMetadata)) {
         createMetadata = {
@@ -593,7 +593,7 @@ export function createPGLiteSessionStore(db: PGliteLike, ensureDbReady?: EnsureR
           payload.sessionType ?? 'session',
           payload.mode ?? 'agent',
           payload.agentRole ?? 'standard',
-          payload.createdBySessionId ?? null,
+          createdBySessionId,
           payload.documentContext ?? null,
           payload.providerConfig ?? null,
           payload.providerSessionId ?? null,
@@ -944,6 +944,7 @@ export function createPGLiteSessionStore(db: PGliteLike, ensureDbReady?: EnsureR
             ? metadata.externalSource : undefined,
           externalLastActivityAt: typeof metadata.externalLastActivityAt === 'number' && Number.isFinite(metadata.externalLastActivityAt)
             ? metadata.externalLastActivityAt : undefined,
+          ...(metadata.userWorkstream === true && { userWorkstream: true }),
           // Kanban board phase and tags from metadata JSONB
           phase: metadata.phase ?? undefined,
           tags: Array.isArray(metadata.tags) ? metadata.tags : undefined,

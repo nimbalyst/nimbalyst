@@ -447,6 +447,11 @@ export class MessageStreamingHandler {
       throw new Error(`Session mismatch: requested ${sessionId} but got ${session.id}`);
     }
 
+    // A workstream container only groups sessions; it has no agent of its own.
+    if (session.sessionType === 'workstream') {
+      throw new Error(`Cannot send a message to workstream ${sessionId}; start a session inside it instead`);
+    }
+
     if (session.providerConfig && 'imported' in session.providerConfig && session.providerConfig.imported === true) {
       await claimExternalSessionForLocalExecution(session.id);
     }

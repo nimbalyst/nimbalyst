@@ -2,16 +2,17 @@ import { SessionSpawnerLink } from './SessionSpawnerLink';
 import { SessionProviderIcon } from './SessionProviderIcon';
 import { SessionContextUsageBar } from './SessionContextUsageBar';
 import React, { useState, useCallback, useEffect, useRef, useMemo, memo } from 'react';
-import { atom, useAtomValue } from 'jotai';
+import { atom, useAtomValue, useSetAtom } from 'jotai';
 import { MaterialSymbol } from '@nimbalyst/runtime/ui/icons/MaterialSymbol';
-import { useSessionTreeMove } from './useSessionTreeMove';
+import { invalidateSessionMoveUndo, useSessionTreeMove } from './useSessionTreeMove';
 import { SessionMovePicker } from './SessionMovePicker';
 import { WorktreeIcon } from '../common/WorktreeIcon';
 import { ProviderIcon } from '@nimbalyst/runtime/ui/icons/ProviderIcons';
 import { getRelativeTimeString } from '../../utils/dateFormatting';
 import { sessionOrChildProcessingAtom, sessionUnreadAtom, sessionPendingPromptAtom, sessionHasPendingInteractivePromptAtom, sessionShareAtom, sessionWakeupAtom, sessionLastActivityAtom } from '../../store';
-import { sessionRegistryAtom } from '../../store/atoms/sessions';
+import { sessionRegistryAtom, pendingSessionRenameAtom, createWorkstreamAtom } from '../../store/atoms/sessions';
 import { SessionContextMenu } from './SessionContextMenu';
+import { errorNotificationService } from '../../services/ErrorNotificationService';
 import { FullTitleTooltip } from './FullTitleTooltip';
 import { settingAtom } from '../../store/atoms/settingAtomFamily';
 import { sessionAgentWakePendingAtom } from '../../store/atoms/teamInbox';
@@ -185,6 +186,9 @@ interface SessionListItemProps {
   messageCount?: number;
   sessionType?: 'session' | 'workstream' | 'blitz' | 'voice'; // Structural type of session
   isWorkstream?: boolean; // Explicit workstream container or session with children
+  isExpanded?: boolean; // Tree rows: whether the row's children are showing (folder_open icon)
+  /** Every selected session when this row is part of a multi-selection; move actions apply to all. */
+  selectedSessionIds?: readonly string[];
   isWorktreeSession?: boolean; // Whether this session belongs to a worktree (shows worktree icon)
   parentSessionId?: string | null; // Parent session ID for hierarchical workstreams
   projectPath?: string; // Workspace path for drag-drop validation
@@ -226,6 +230,8 @@ export const SessionListItem = memo<SessionListItemProps>(function SessionListIt
   messageCount,
   sessionType,
   isWorkstream = false,
+  isExpanded = false,
+  selectedSessionIds,
   isWorktreeSession = false,
   parentSessionId = null,
   projectPath,
@@ -238,8 +244,8 @@ export const SessionListItem = memo<SessionListItemProps>(function SessionListIt
   const [isRenaming, setIsRenaming] = useState(false);
   const [renameValue, setRenameValue] = useState('');
   const renameInputRef = useRef<HTMLInputElement>(null);
-  const [showMovePicker, setShowMovePicker] = useState(false);
-  const { move, isDragging, isDraggable, hint, onDragStart: handleDragStart, onDragEnd: handleDragEnd, onDragOver: handleDragOver, onDragLeave: handleDragLeave, onDrop: handleDrop } = useSessionTreeMove(id, projectPath);
+  const [movePicker, setMovePicker] = useState<null | 'parent' | 'workstreams'>(null);
+  const { move, moveMany, canJoinWorkstream, isDragging, isDraggable, hint, onDragStart: handleDragStart, onDragEnd: handleDragEnd, onDragOver: handleDragOver, onDragLeave: handleDragLeave, onDrop: handleDrop } = useSessionTreeMove(id, projectPath);
 
   // Share state (for the share icon indicator in the list item)
   const shareInfo = useAtomValue(sessionShareAtom(id));
@@ -250,6 +256,30 @@ export const SessionListItem = memo<SessionListItemProps>(function SessionListIt
   const isAwaitingInput = hasInteractivePrompt || hasPendingPromptAtom;
 
   const handleRemoveFromWorkstream = useCallback(() => { void move(id, null); }, [move, id]);
+  const moveIds = isSelected && selectedSessionIds && selectedSessionIds.length > 1 ? selectedSessionIds : [id];
+  const createWorkstream = useSetAtom(createWorkstreamAtom);
+  const handleCreateWorkstream = useCallback(async (name: string) => {
+    if (!projectPath) return false;
+    invalidateSessionMoveUndo();
+    const created = await createWorkstream({ workspacePath: projectPath, title: name || undefined, sessionIds: moveIds, rename: !name });
+    if (!created) {
+      errorNotificationService.showError('Cannot create workstream', 'The workstream could not be created. Try again.');
+      return false;
+    }
+    // The workstream stays even if moves fail, so the user can drag sessions into it.
+    const total = moveIds.length;
+    const label = name || 'New Workstream';
+    if (created.failed === total)
+      errorNotificationService.showError('Sessions not moved', `Created "${label}", but none of the ${total === 1 ? 'session' : `${total} sessions`} could move into it, so it is empty.`);
+    else if (created.failed > 0)
+      errorNotificationService.showError('Some sessions were not moved', `Moved ${total - created.failed} of ${total} sessions into "${label}"; ${created.failed} could not move.`);
+    else errorNotificationService.showInfo('Sessions moved', `Moved ${total === 1 ? 'the session' : `${total} sessions`} into "${label}"`, { duration: 5000 });
+    return true;
+  }, [createWorkstream, projectPath, moveIds]);
+
+  // A row created by "New Workstream" opens its title editor as soon as it renders.
+  const renameRequested = useAtomValue(useMemo(() => atom((get) => get(pendingSessionRenameAtom) === id), [id]));
+  const clearRenameRequest = useSetAtom(pendingSessionRenameAtom);
 
   const handleContextMenu = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
@@ -280,6 +310,14 @@ export const SessionListItem = memo<SessionListItemProps>(function SessionListIt
       setIsRenaming(false);
     }
   };
+
+  useEffect(() => {
+    if (!renameRequested) return;
+    clearRenameRequest(null);
+    if (!onRename) return;
+    setRenameValue(title);
+    setIsRenaming(true);
+  }, [renameRequested, clearRenameRequest, onRename, title]);
 
   // Auto-focus and select text when rename input appears
   useEffect(() => {
@@ -385,14 +423,9 @@ export const SessionListItem = memo<SessionListItemProps>(function SessionListIt
           </div>
         ) : isWorktreeSession && !treeContext ? (
           <WorktreeIcon size={16} />
-        ) : isWorkstream && (!treeContext || sessionType === 'workstream') ? (
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <circle cx="8" cy="4" r="1.5" fill="currentColor"/>
-            <circle cx="4" cy="12" r="1.5" fill="currentColor"/>
-            <circle cx="12" cy="12" r="1.5" fill="currentColor"/>
-            <line x1="7.5" y1="5.2" x2="4.5" y2="10.8" stroke="currentColor" strokeWidth="1" strokeLinecap="round"/>
-            <line x1="8.5" y1="5.2" x2="11.5" y2="10.8" stroke="currentColor" strokeWidth="1" strokeLinecap="round"/>
-          </svg>
+        ) : sessionType === 'workstream' ? (
+          // The container gets a folder; a session with children keeps its provider icon.
+          <MaterialSymbol icon={isExpanded ? 'folder_open' : 'folder'} size={16} />
         ) : (
           <SessionProviderIcon sessionId={id} provider={provider} size={16} isActive={isActive} hideLaunchCount={treeContext} />
         )}
@@ -464,7 +497,15 @@ export const SessionListItem = memo<SessionListItemProps>(function SessionListIt
 
       </div>
 
-      {showMovePicker && <SessionMovePicker sessionId={id} onMove={(parentId) => move(id, parentId)} onClose={() => setShowMovePicker(false)} />}
+      {movePicker && (
+        <SessionMovePicker
+          sessionId={id}
+          mode={movePicker}
+          onMove={(parentId) => (movePicker === 'workstreams' ? moveMany(moveIds, parentId) : move(id, parentId))}
+          onCreateWorkstream={movePicker === 'workstreams' ? handleCreateWorkstream : undefined}
+          onClose={() => setMovePicker(null)}
+        />
+      )}
 
       {/* Context Menu */}
       {showContextMenu && (
@@ -483,11 +524,13 @@ export const SessionListItem = memo<SessionListItemProps>(function SessionListIt
           onPinToggle={onPinToggle}
           onBranch={onBranch}
           onRemoveFromWorkstream={parentSessionId ? handleRemoveFromWorkstream : undefined}
-          onMoveUnder={isDraggable ? () => setShowMovePicker(true) : undefined}
+          onMoveUnder={isDraggable ? () => setMovePicker('parent') : undefined}
+          onMoveToWorkstream={canJoinWorkstream && projectPath ? () => setMovePicker('workstreams') : undefined}
           onArchive={onArchive}
           onUnarchive={onUnarchive}
           onDelete={onDelete}
           selectedCount={selectedCount}
+          moveCount={moveIds.length}
         />
       )}
     </div>
@@ -514,6 +557,8 @@ export const SessionListItem = memo<SessionListItemProps>(function SessionListIt
     prev.messageCount === next.messageCount &&
     prev.sessionType === next.sessionType &&
     prev.isWorkstream === next.isWorkstream &&
+    prev.isExpanded === next.isExpanded &&
+    prev.selectedSessionIds === next.selectedSessionIds &&
     prev.isWorktreeSession === next.isWorktreeSession &&
     prev.parentSessionId === next.parentSessionId &&
     prev.projectPath === next.projectPath &&

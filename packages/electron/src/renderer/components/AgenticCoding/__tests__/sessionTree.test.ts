@@ -35,6 +35,12 @@ describe('session tree projection', () => {
       row('child', 'wrapper'),
     ]);
     expect(mergedTreeHeader(wrapper).session.id).toBe('child');
+    // A workstream the user made keeps its row with one session or none.
+    for (const children of [[row('only', 'made')], []]) {
+      const [made] = buildSessionTree([row('made', null, { sessionType: 'workstream', userWorkstream: true }), ...children]);
+      expect(mergedTreeHeader(made)).toBe(made);
+      expect(visibleSessionTreeIds([made.session, ...children], () => true)).toEqual(['made', ...children.map((c) => c.id)]);
+    }
     const [ordinary] = buildSessionTree([row('root'), row('child', 'root')]);
     expect(mergedTreeHeader(ordinary)).toBe(ordinary);
     const roots = buildSessionTree([

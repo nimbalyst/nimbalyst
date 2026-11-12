@@ -161,6 +161,10 @@ export async function registerSessionHandlers() {
                 providerSessionId: session.providerSessionId,
                 worktreeId: session.worktreeId || null,
                 parentSessionId: session.parentSessionId ?? null,
+                // Only the user-created grouping container is typed here; the
+                // store rejects it in a worktree or under a parent. Blitz and
+                // other typed rows have their own creation paths.
+                ...(session.sessionType === 'workstream' ? { sessionType: 'workstream' as const } : {}),
                 agentRole: session.agentRole || 'standard',
                 createdBySessionId: session.createdBySessionId || null,
                 // Written with the row, so a directive or notifyParent is never
@@ -636,12 +640,15 @@ export async function registerSessionHandlers() {
                 }
 
             }
-            const managerId = payload.restoreManagerId !== undefined ? payload.restoreManagerId : newParentId;
+            // A move is organizational (#1858): the store keeps the manager only
+            // while it stays an ancestor. Only an undo names a manager explicitly.
+            const managerId = payload.restoreManagerId;
             if (managerId) {
                 const manager = await AISessionsRepository.get(managerId);
                 if (managerId === sessionId || !manager || manager.workspacePath !== workspacePath) throw new Error('Invalid session manager');
             }
-            await AISessionsRepository.updateMetadata(sessionId, { parentSessionId: newParentId, createdBySessionId: managerId,
+            await AISessionsRepository.updateMetadata(sessionId, { parentSessionId: newParentId,
+                ...(managerId !== undefined ? { createdBySessionId: managerId } : {}),
                 expectedParentSessionId: session.parentSessionId ?? null, expectedCreatedBySessionId: session.createdBySessionId ?? null });
             for (const window of BrowserWindow.getAllWindows()) {
                 if (!window.isDestroyed()) window.webContents.send('sessions:refresh-list', { workspacePath, sessionId });

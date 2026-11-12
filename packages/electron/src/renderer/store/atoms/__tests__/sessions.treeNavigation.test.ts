@@ -18,7 +18,8 @@ import {
   type SessionMeta,
 } from '../sessions';
 import { initWorkstreamState, workstreamStateAtom } from '../workstreamState';
-import { selectChildSessionActionAtom, selectSessionActionAtom } from '../../actions/sessionHistoryActions';
+import { createNewSessionActionAtom, selectChildSessionActionAtom, selectSessionActionAtom } from '../../actions/sessionHistoryActions';
+import { createWorkstreamAtom, selectedActiveSessionIdAtom, setActiveSessionInWorkstreamAtom } from '../sessions';
 const row = (
   id: string,
   parentSessionId: string | null = null,
@@ -239,4 +240,71 @@ describe('tree navigation atoms', () => {
     expect(store.get(activeSessionIdAtom)).toBe('helper');
   });
 
+  it('selects an empty workstream as a container and puts new sessions inside it as peers', async () => {
+    const made = row('made', null, { sessionType: 'workstream', userWorkstream: true });
+    const legacy = row('legacy', null, { sessionType: 'workstream' });
+    const only = row('only', 'legacy');
+    store.set(sessionRegistryAtom, new Map([made, legacy, only].map((r) => [r.id, r])));
+    const invoke = vi.mocked(window.electronAPI.invoke);
+    invoke.mockImplementation(async (channel: string, payload?: any) =>
+      channel === 'sessions:create' ? { success: true, id: payload.session.id }
+        : channel === 'sessions:list-children' ? { success: true, children: [] } : { success: true });
+
+    await store.set(selectSessionActionAtom, 'made');
+    expect(store.get(selectedWorkstreamAtom('/project'))).toEqual({ type: 'workstream', id: 'made' });
+
+    const created = await store.set(createNewSessionActionAtom, { intoSelectedWorkstream: true });
+    const session = invoke.mock.calls.find(([channel]) => channel === 'sessions:create')![1].session;
+    expect(session).toMatchObject({ id: created, parentSessionId: 'made' });
+    expect(session.createdBySessionId).toBeUndefined();
+    expect(store.get(sessionRegistryAtom).get(created!)?.parentSessionId).toBe('made');
+    expect(store.get(selectedWorkstreamAtom('/project'))).toEqual({ type: 'workstream', id: 'made' });
+
+    // A legacy wrapper merged into its only session is invisible; it must not swallow new sessions.
+    invoke.mockClear();
+    await store.set(selectSessionActionAtom, 'only');
+    await store.set(createNewSessionActionAtom, { intoSelectedWorkstream: true });
+    expect(invoke.mock.calls.find(([channel]) => channel === 'sessions:create')![1].session.parentSessionId).toBeUndefined();
+    // Launches that do not opt in (trackers, PRs, canvases) stay at top level.
+    invoke.mockClear();
+    await store.set(selectSessionActionAtom, 'made');
+    await store.set(createNewSessionActionAtom, { launchSource: 'tray' });
+    expect(invoke.mock.calls.find(([channel]) => channel === 'sessions:create')![1].session.parentSessionId).toBeUndefined();
+  });
+
+  it('creates a marked workstream row and moves the given sessions into it without a manager', async () => {
+    const a = row('a', null, { createdBySessionId: null });
+    store.set(sessionRegistryAtom, new Map([[a.id, a]]));
+    const invoke = vi.mocked(window.electronAPI.invoke);
+    invoke.mockImplementation(async (channel: string, payload?: any) =>
+      channel === 'sessions:create' ? { success: true, id: payload.session.id }
+        : channel === 'sessions:set-parent' ? { success: true, previousParentId: null, previousManagerId: null }
+        : { success: true });
+    const result = await store.set(createWorkstreamAtom, { workspacePath: '/project', title: 'Release', sessionIds: ['a'] });
+    expect(result).toMatchObject({ failed: 0 });
+    expect(invoke).toHaveBeenCalledWith('sessions:create', expect.objectContaining({
+      session: expect.objectContaining({ id: result!.id, title: 'Release', sessionType: 'workstream', metadata: expect.objectContaining({ userWorkstream: true }) }),
+      workspaceId: '/project',
+    }));
+    const move = invoke.mock.calls.find(([channel]) => channel === 'sessions:set-parent')![1];
+    expect(move).toEqual({ sessionId: 'a', newParentId: result!.id, workspacePath: '/project' });
+  });
+
+  it('never makes a workstream container the active transcript, even when its sessions are archived', async () => {
+    const ws = row('ws', null, { sessionType: 'workstream', userWorkstream: true });
+    const archived = row('gone', 'ws', { isArchived: true });
+    const plain = row('plain');
+    store.set(sessionRegistryAtom, new Map([ws, archived, plain].map((r) => [r.id, r])));
+    store.set(activeSessionIdAtom, 'plain');
+    vi.mocked(window.electronAPI.invoke).mockImplementation(async (channel: string) =>
+      channel === 'sessions:list-children' ? { success: true, children: [] } : { success: true });
+    await store.set(loadSessionChildrenAtom, { parentSessionId: 'ws', workspacePath: '/project' });
+    expect(store.get(workstreamStateAtom('ws')).activeChildId).toBeNull();
+    expect(store.get(workstreamSessionsAtom('ws'))).toEqual([]);
+    store.set(setActiveSessionInWorkstreamAtom, { workstreamId: 'ws', sessionId: 'ws' });
+    expect(store.get(activeSessionIdAtom)).toBe('plain');
+    // What Agent mode publishes as the active session for a selection.
+    expect(store.get(selectedActiveSessionIdAtom('ws'))).toBeNull();
+    expect(store.get(selectedActiveSessionIdAtom('plain'))).toBe('plain');
+  });
 });

@@ -8,7 +8,7 @@ vi.mock('@nimbalyst/runtime/ui/icons/MaterialSymbol', () => ({ MaterialSymbol: (
 vi.mock('@nimbalyst/runtime/ui/icons/ProviderIcons', () => ({ ProviderIcon: () => null }));
 vi.mock('@nimbalyst/runtime/store', () => ({ store: { get: vi.fn() } }));
 vi.mock('../../../store/atoms/sessions', () => ({
-  sessionArchivedAtom: () => false, sessionRegistryAtom: null, convertToWorkstreamAtom: null,
+  sessionArchivedAtom: () => false, sessionRegistryAtom: null,
 }));
 vi.mock('../../../store', () => ({
   sessionTitleAtom: (id: string) => id, sessionProviderAtom: () => 'claude',

@@ -217,6 +217,17 @@ export function createPGLiteQueuedPromptsStore(
     async create(input: CreateQueuedPromptInput): Promise<QueuedPrompt> {
       await ensureReady();
 
+      // Every queue route (composer, voice, phone, agents) lands here. A
+      // workstream container only groups sessions and has no agent, so a
+      // prompt queued for it would never run.
+      const { rows: target } = await db.query<{ session_type: string | null }>(
+        `SELECT session_type FROM ai_sessions WHERE id = $1`,
+        [input.sessionId]
+      );
+      if (target[0]?.session_type === 'workstream') {
+        throw new Error(`Cannot queue a prompt for workstream ${input.sessionId}; start a session inside it instead`);
+      }
+
       const { rows } = await db.query<any>(
         `INSERT INTO queued_prompts (id, session_id, prompt, attachments, document_context)
          VALUES ($1, $2, $3, $4, $5)

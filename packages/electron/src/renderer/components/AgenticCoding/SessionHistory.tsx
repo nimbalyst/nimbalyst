@@ -47,7 +47,7 @@ import { alphaFeatureEnabledAtom, worktreesFeatureAvailableAtom } from '../../st
 import { activeWorkspacePathAtom } from '../../store/atoms/openProjects';
 import { useGitRepoProbe } from '../../hooks/useGitRepoProbe';
 import { workstreamStateAtom } from '../../store/atoms/workstreamState';
-import { sessionProcessingAtom, sessionUnreadAtom, sessionHasPendingInteractivePromptAtom, activeSessionIdAtom as globalActiveSessionIdAtom, sessionPinnedUpdateAtom } from '../../store/atoms/sessions';
+import { sessionProcessingAtom, sessionUnreadAtom, sessionHasPendingInteractivePromptAtom, activeSessionIdAtom as globalActiveSessionIdAtom, sessionPinnedUpdateAtom, createWorkstreamAtom } from '../../store/atoms/sessions';
 import { collapsedGroupsAtom, compactRowsAtom, setCompactRowsAtom, showContextUsageAtom, setShowContextUsageAtom, sortOrderAtom, setCollapsedGroupsAtom, setSortOrderAtom } from '../../store/atoms/agentMode';
 import {
   recentlyRenamedSessionAtom,
@@ -307,8 +307,13 @@ const SessionHistoryComponent: React.FC = () => {
     void dispatchBranchSession(sessionId);
   }, [dispatchBranchSession]);
   const onNewSession: (() => void) | undefined = useCallback(() => {
-    void dispatchCreateNewSession({ launchSource: 'session_history' });
+    void dispatchCreateNewSession({ launchSource: 'session_history', intoSelectedWorkstream: true });
   }, [dispatchCreateNewSession]);
+  const dispatchCreateWorkstream = useSetAtom(createWorkstreamAtom);
+  const onNewWorkstream = useCallback(() => {
+    if (!workspacePath) return;
+    void dispatchCreateWorkstream({ workspacePath, select: true, rename: true });
+  }, [dispatchCreateWorkstream, workspacePath]);
   const onNewWorktreeSession: ((options?: { baseBranch?: string; name?: string }) => void | Promise<void>) | undefined = isWorktreesFeatureAvailable
     ? async (options?: { baseBranch?: string; name?: string }) => {
         await dispatchCreateNewWorktreeSession(options);
@@ -441,6 +446,8 @@ const SessionHistoryComponent: React.FC = () => {
   const showArchived = showArchivedAtom;
   const setShowArchived = setShowArchivedAtom;
   const [selectedSessionIds, setSelectedSessionIds] = useState<Set<string>>(new Set());
+  // One array per selection change, so memoized rows only repaint when it changes.
+  const selectedSessionIdList = useMemo(() => [...selectedSessionIds], [selectedSessionIds]);
   const [selectedGroupIds, setSelectedGroupIds] = useState<Set<string>>(new Set()); // Format: "blitz:id", "worktree:id", "workstream:id", "superloop:id"
   const lastSelectedIdRef = useRef<string | null>(null); // For shift+click range selection
   // Tracks the last searchQuery|tagFilter|mode combination the title-filter effect ran for, so
@@ -1938,6 +1945,7 @@ const SessionHistoryComponent: React.FC = () => {
   // which re-rendered this, which republished: "Maximum update depth exceeded".
   const createHandlersRef = useRef({
     onNewSession,
+    onNewWorkstream,
     onNewBlitz,
     onNewTerminal,
     openWorktreeBaseBranchPicker,
@@ -1946,6 +1954,7 @@ const SessionHistoryComponent: React.FC = () => {
   });
   createHandlersRef.current = {
     onNewSession,
+    onNewWorkstream,
     onNewBlitz,
     onNewTerminal,
     openWorktreeBaseBranchPicker,
@@ -1958,7 +1967,13 @@ const SessionHistoryComponent: React.FC = () => {
   const hasTerminalOption = Boolean(onNewTerminal);
 
   useEffect(() => {
-    const items: TitleBarCreateMenuItem[] = [];
+    const items: TitleBarCreateMenuItem[] = [{
+      id: 'workstream',
+      label: 'New Workstream',
+      icon: 'create_new_folder',
+      testId: 'new-workstream-button',
+      onSelect: () => createHandlersRef.current.onNewWorkstream(),
+    }];
     if (hasWorktreeOption) {
       items.push({
         id: 'worktree',
@@ -3341,6 +3356,7 @@ const SessionHistoryComponent: React.FC = () => {
                       onSessionPinToggle={handleSessionPinToggle}
                       onSessionRename={onSessionRename}
                       onSessionBranch={onSessionBranch}
+                      selectedSessionIds={selectedSessionIds}
                     />
                   );
                 }
@@ -3535,6 +3551,7 @@ const SessionHistoryComponent: React.FC = () => {
                     isPinned={session.isPinned}
                     isSelected={selectedSessionIds.has(session.id)}
                     selectedCount={selectedSessionIds.has(session.id) ? selectedSessionIds.size : 1}
+                    selectedSessionIds={selectedSessionIds.has(session.id) ? selectedSessionIdList : undefined}
                     sortBy={sortBy}
                     onClick={(e) => handleSessionClick(session.id, e)}
                     onDelete={() => handleDeleteSession(session.id)}

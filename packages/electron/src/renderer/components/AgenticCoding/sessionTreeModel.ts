@@ -6,6 +6,8 @@ export interface TreeSession {
   workspaceId?: string;
   remoteHostDeviceId?: string;
   sessionType?: string;
+  /** A workstream the user created on purpose; never merged into its child. */
+  userWorkstream?: boolean;
   isPinned?: boolean;
   createdAt: number;
   updatedAt?: number;
@@ -80,8 +82,20 @@ function compareNodes<T extends TreeSession>(a: SessionTreeNode<T>, b: SessionTr
   );
 }
 
+/** True for the folder-style grouping row, as opposed to a session that has children. */
+export function isWorkstreamContainer(session: Pick<TreeSession, 'sessionType'>): boolean {
+  return session.sessionType === 'workstream';
+}
+
+/**
+ * Wrappers the app created automatically before the session tree carry no meaning
+ * with one session in them, so they are hidden behind that session. A workstream
+ * the user made (`userWorkstream`) always keeps its row.
+ */
 export function mergedTreeHeader<T extends TreeSession>(node: SessionTreeNode<T>): SessionTreeNode<T> {
-  return node.session.sessionType === 'workstream' && node.children.length === 1 ? node.children[0] : node;
+  return isWorkstreamContainer(node.session) && !node.session.userWorkstream && node.children.length === 1
+    ? node.children[0]
+    : node;
 }
 
 /** Visible preorder is also the range-selection order; hidden wrappers never participate. */

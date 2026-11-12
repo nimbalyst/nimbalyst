@@ -395,3 +395,23 @@ describe('PGLiteQueuedPromptsStore.cleanup', () => {
     }
   });
 });
+
+describe('PGLiteQueuedPromptsStore.create', () => {
+  it('refuses to queue a prompt for a workstream container, which has no agent to run it', async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'nim-queued-container-'));
+    const sqlite = new SQLiteDatabase({ dbDir: tmp, schemaDir: path.resolve(__dirname, '..', '..', 'database', 'sqlite', 'schemas') });
+    try {
+      await sqlite.initialize();
+      const handle = sqlite.getRawHandle()!;
+      handle.prepare("INSERT INTO ai_sessions(id, provider, title, session_type) VALUES ('ws', 'claude-code', 'W', 'workstream')").run();
+      handle.prepare("INSERT INTO ai_sessions(id, provider, title) VALUES ('s', 'claude-code', 'S')").run();
+      const store = createPGLiteQueuedPromptsStore(sqlite as never);
+      await expect(store.create({ id: 'p1', sessionId: 'ws', prompt: 'hi' })).rejects.toThrow(/workstream/);
+      await expect(store.create({ id: 'p2', sessionId: 's', prompt: 'hi' })).resolves.toMatchObject({ id: 'p2' });
+      expect((handle.prepare('SELECT id FROM queued_prompts').all() as Array<{ id: string }>).map(r => r.id)).toEqual(['p2']);
+    } finally {
+      await sqlite.close();
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});

@@ -118,6 +118,29 @@ export interface CreateNewSessionOptions {
    * guessed at, because a wrong attribution is worse than a missing one here.
    */
   launchSource?: SessionLaunchSource;
+  /**
+   * Create the session inside the selected workstream when the selection is in
+   * one. Only the user's own "new session" commands set this; launches from
+   * trackers, PRs or canvases stay at top level.
+   */
+  intoSelectedWorkstream?: boolean;
+}
+
+/**
+ * The workstream container the current selection sits in, if the user can see
+ * it as a row. A legacy wrapper merged into its only session is invisible, so a
+ * new session must not land in it and make it reappear.
+ */
+export function selectedWorkstreamContainerId(get: Getter, workspacePath: string): string | null {
+  const selection = get(selectedWorkstreamAtom(workspacePath));
+  if (!selection) return null;
+  const registry = get(sessionRegistryAtom);
+  const rootId = sessionTreeRootId(selection.id, registry);
+  const root = registry.get(rootId);
+  if (!root || root.sessionType !== 'workstream' || root.isArchived) return null;
+  let children = 0;
+  for (const row of registry.values()) if (row.parentSessionId === rootId) children++;
+  return root.userWorkstream || children !== 1 ? rootId : null;
 }
 
 // ============================================================
@@ -243,7 +266,9 @@ async function openSession(get: Getter, set: Setter, sessionId: string) {
   }
 
   const state = get(workstreamStateAtom(sessionId));
-  const type = state.type === 'worktree' ? 'worktree'
+  // A workstream container is never a transcript, even with no sessions in it yet.
+  const type = sessionMeta?.sessionType === 'workstream' ? 'workstream'
+    : state.type === 'worktree' ? 'worktree'
     : state.type === 'workstream' ? 'workstream'
     : 'session';
 
@@ -449,6 +474,8 @@ export const createNewSessionActionAtom = atom(
     try {
       const sessionId = options.sessionId ?? crypto.randomUUID();
       const provider = resolveProviderFromModel(model);
+      // A peer inside the workstream: a parent but no manager, like a moved session.
+      const parentSessionId = options.intoSelectedWorkstream ? selectedWorkstreamContainerId(get, workspacePath) : null;
       const result = await window.electronAPI.invoke('sessions:create', {
         session: {
           id: sessionId,
@@ -457,6 +484,7 @@ export const createNewSessionActionAtom = atom(
           title,
           mode: options.mode,
           metadata: options.metadata,
+          ...(parentSessionId ? { parentSessionId } : {}),
         },
         workspaceId: workspacePath,
         launchSource: options.launchSource,
@@ -478,7 +506,7 @@ export const createNewSessionActionAtom = atom(
           workspaceId: workspacePath,
           isArchived: false,
           isPinned: false,
-          parentSessionId: null,
+          parentSessionId,
           worktreeId: null,
           childCount: 0,
           uncommittedCount: 0,
@@ -494,7 +522,8 @@ export const createNewSessionActionAtom = atom(
         }
 
         if (options.selectSession !== false) {
-          set(setSelectedWorkstreamAtom, {
+          if (parentSessionId) await openUnderRoot(set, workspacePath, result.id, parentSessionId);
+          else set(setSelectedWorkstreamAtom, {
             workspacePath,
             selection: { type: 'session', id: result.id },
           });
