@@ -171,6 +171,13 @@ describe('database maintenance settings', () => {
     expect(getToolOutputRetentionCursor()).toBe(4242);
     expect(getDatabaseMaintenanceSettings().toolOutputRetentionDays).toBe(14);
   });
+
+  it('ignores a cursor an older build stored, so the pass walks once from the start', async () => {
+    // Older builds could leave this far past rows the pass never examined.
+    backing.databaseMaintenance = { toolOutputRetentionCursor: 3712306 };
+    const { getToolOutputRetentionCursor } = await import('../store');
+    expect(getToolOutputRetentionCursor()).toBe(0);
+  });
 });
 
 describe('setWorkspaceTrusted classifier flag', () => {

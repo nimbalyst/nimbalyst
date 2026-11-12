@@ -142,6 +142,48 @@ describe('tool output retention pass', () => {
     expect(result.lastId).toBe(second);
   });
 
+  it('stops at the first row still inside the window, so that row is reached once it ages', () => {
+    // Ids and timestamps do not rise together: an imported or copied row keeps
+    // its old timestamp at a new id. Advancing the cursor to that row skipped
+    // every younger row below it for good.
+    const db = makeDb();
+    const aged = insert(db, {});
+    const young = insert(db, { createdAt: RECENT });
+    const agedAtHighId = insert(db, {});
+
+    const run = (now: number, startAfterId: number) => {
+      let result: any = null;
+      const work = createToolOutputRetentionWork(
+        { retentionDays: 30, now: () => now, startAfterId },
+        (r) => { result = r; },
+      );
+      for (let i = 0; i < 100 && !work.chunk(db).done; i++) { /* drive */ }
+      return result;
+    };
+
+    const first = run(NOW, 0);
+    expect(first.lastId).toBe(aged);
+    expect(first.stoppedEarly).toBe(false);
+    expect(contentOf(db, aged)).toContain('Output discarded to reclaim disk');
+
+    const sixtyDaysLater = NOW + 60 * 24 * 60 * 60 * 1000;
+    const second = run(sixtyDaysLater, first.lastId);
+    expect(contentOf(db, young)).toContain('Output discarded to reclaim disk');
+    expect(contentOf(db, agedAtHighId)).toContain('Output discarded to reclaim disk');
+    expect(second.lastId).toBe(agedAtHighId);
+  });
+
+  it('walks past a row dated in the future instead of stopping at it forever', () => {
+    const db = makeDb();
+    insert(db, { createdAt: '2099-01-01T00:00:00.000Z' });
+    const aged = insert(db, {});
+
+    const result = runPass(db);
+
+    expect(contentOf(db, aged)).toContain('Output discarded to reclaim disk');
+    expect(result.lastId).toBe(aged);
+  });
+
   it('tombstones codex command output under both the old meta and the new tool label', () => {
     const db = makeDb();
     const commandCompleted = JSON.stringify({

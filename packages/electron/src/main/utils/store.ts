@@ -90,8 +90,13 @@ interface StoredDatabaseMaintenance extends Partial<DatabaseMaintenanceSettings>
    * without this flag is not a user choice and reads as the current default.
    */
   toolOutputRetentionDaysUserSet?: boolean;
-  /** Resume cursor for the scheduled retention pass; see `RetentionResult.lastId`. */
-  toolOutputRetentionCursor?: number;
+  /**
+   * Resume cursor for the scheduled retention pass; see `RetentionResult.lastId`.
+   * Stored under a new key since NIM-7735: the cursor kept under
+   * `toolOutputRetentionCursor` could sit far past rows the pass never
+   * examined, so that value is ignored and the pass walks once from the start.
+   */
+  toolOutputRetentionResumeId?: number;
 }
 
 export const DEFAULT_DATABASE_MAINTENANCE: DatabaseMaintenanceSettings = {
@@ -1171,13 +1176,13 @@ export function setDatabaseMaintenanceSettings(
 }
 
 export function getToolOutputRetentionCursor(): number {
-  return getStoredDatabaseMaintenance()?.toolOutputRetentionCursor ?? 0;
+  return getStoredDatabaseMaintenance()?.toolOutputRetentionResumeId ?? 0;
 }
 
 export function setToolOutputRetentionCursor(lastId: number): void {
   getAppStore().set('databaseMaintenance', {
     ...getStoredDatabaseMaintenance(),
-    toolOutputRetentionCursor: lastId,
+    toolOutputRetentionResumeId: lastId,
   } satisfies StoredDatabaseMaintenance);
 }
 
