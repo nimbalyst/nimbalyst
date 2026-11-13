@@ -28,6 +28,7 @@ export interface McpServerStatusInfo {
   tools?: { name: string; description?: string }[];
 }
 import { parse as parseShellCommand } from 'shell-quote';
+import { randomUUID } from 'crypto';
 
 import { BaseAgentProvider } from './BaseAgentProvider';
 import {
@@ -103,7 +104,7 @@ import {
   handleToolPermissionWithService as handleToolPermissionWithServiceHelper,
   type ToolPermissionOptions,
 } from './claudeCode/toolAuthorization';
-import { ClaudeCodeDeps, type HistoryManagerPort } from './claudeCode/dependencyInjection';
+import { ClaudeCodeDeps, type HistoryManagerPort, type LateAnswerLoader } from './claudeCode/dependencyInjection';
 import { resolvePermissionMode, type PromptStreamController } from './claudeCode/sdkOptionsBuilder';
 import { resolveEffectiveSessionMode } from './claudeCode/resolveEffectiveSessionMode';
 import { resolveClaudeConfigDir } from './claudeCode/claudeConfigDir';
@@ -128,7 +129,15 @@ import {
   type DrainExitCause,
   type TaskTerminalNotification,
 } from './claudeCode/subagentDrain';
-import { awaitDrainHandoff, canAdoptDrainingQuery, DrainHandoff, type AdoptedQuery } from './claudeCode/drainHandoff';
+import {
+  answersPushedMessage,
+  awaitDrainHandoff,
+  canAdoptDrainingQuery,
+  DrainHandoff,
+  LIVE_WAKE_TIMEOUT_MS,
+  parkedUntilAborted,
+  type AdoptedQuery,
+} from './claudeCode/drainHandoff';
 import {
   PROMPT_SUGGESTION_WAIT_MS,
   canAdoptAwaitingSuggestionQuery,
@@ -231,6 +240,9 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
   // Flag: set when a teammate:messageWhileIdle has been emitted but sendMessage hasn't
   // started yet. Prevents interruptWithMessage from emitting duplicate events.
   private teammateIdleMessagePending: boolean = false;
+  // Set when a draining turn hands its live query to a follow-up, cleared when
+  // the follow-up starts streaming it. leadQuery is null in between.
+  private adoptionPending: boolean = false;
   // Flag: set when streamInput fails due to dead transport, used in finally block
   private transportDied: boolean = false;
   // Flag: set when interrupt() is called on the lead query. After interrupt(),
@@ -285,6 +297,10 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
   private drainHandoff: DrainHandoff<Query, AgentToolHooks | null> | null = null;
   // Model the live query was spawned with; a follow-up on another model needs its own process.
   private liveQueryModelVariant: string | null = null;
+  // The last background task settled during a drain and its result went out as a
+  // wake that takes this live query (drainHandoff.ts). `cold` is the same report
+  // for a fresh query, used when the wake cannot take this one. Any turn consumes it.
+  private liveWake: { live: string; cold: string; timer: ReturnType<typeof setTimeout> | null; expired: boolean } | null = null;
 
   // Teammate management: spawning, messaging, lifecycle, config I/O
   private teammateManager: TeammateManager;
@@ -535,6 +551,7 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
   public static setEnhancedPathLoader(loader: (() => string) | null): void { ClaudeCodeDeps.setEnhancedPathLoader(loader); }
   public static setAdditionalDirectoriesLoader(loader: ((workspacePath: string) => string[]) | null): void { ClaudeCodeDeps.setAdditionalDirectoriesLoader(loader); }
   public static setGitContextLoader(loader: ((workspacePath: string) => Promise<string | null>) | null): void { ClaudeCodeDeps.setGitContextLoader(loader); }
+  public static setLateAnswerLoader(loader: LateAnswerLoader | null): void { ClaudeCodeDeps.setLateAnswerLoader(loader); }
   public static setAttachmentStagingLoader(loader: ((workspacePath: string) => { root: string; mode: 'temp' | 'workspace' | 'custom' }) | null): void { ClaudeCodeDeps.setAttachmentStagingLoader(loader); }
   public static setAttachmentDenyRulesLoader(loader: ((workspacePath: string) => Promise<string[]>) | null): void { ClaudeCodeDeps.setAttachmentDenyRulesLoader(loader); }
   public static setSecurityLogger(logger: ((message: string, data?: any) => void) | null): void { BaseAgentProvider.setSecurityLogger(logger); }
@@ -686,9 +703,25 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
 
     // A follow-up while a background task keeps the previous turn draining
     // adopts that live query; aborting it would kill the task with the process.
-    const adopted = this.canAcceptFollowUpDuringDrain() && this.liveQueryModelVariant === this.resolveModelVariant()
+    // So does the live wake carrying the last task's result.
+    const pendingWake = this.liveWake;
+    const liveWake = pendingWake?.live === message ? pendingWake : null;
+    const canAdopt = liveWake ? this.canAdoptLiveQuery(!liveWake.expired) : this.canAcceptFollowUpDuringDrain();
+    const adopted = canAdopt && this.liveQueryModelVariant === this.resolveModelVariant()
       ? await this.takeOverDrainingQuery()
       : null;
+    if (pendingWake) {
+      if (pendingWake.timer) clearTimeout(pendingWake.timer);
+      if (this.liveWake === pendingWake) this.liveWake = null;
+    }
+    if (liveWake && !adopted) {
+      // A fresh query resumes the conversation from a closed process: send the report that says so.
+      console.log('[CLAUDE-CODE] SUBAGENT_DRAIN: the live wake could not take the live query; delivering it on a new query');
+      state.message = liveWake.cold;
+    }
+    // The live CLI already has the results and answers them in a turn of its own;
+    // the wake turn is that turn. Sending the wake too would get a second answer.
+    const takesCliTurn = liveWake !== null && adopted !== null;
 
     if (adopted) {
       // The live process was spawned with this controller and these hooks.
@@ -786,8 +819,15 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
 
       const queryCallStart = Date.now();
 
+      // A task settled during the drain, so the CLI may be mid-way through its own
+      // turn about it: this turn starts at the CLI's reply to its message.
+      let bindUuid: string | null = adopted?.bindToOwnTurn && !takesCliTurn ? randomUUID() : null;
+      let foreignChunkCount = 0;
+      let foreignResultSeen = false;
+      if (bindUuid) console.log(`[CLAUDE-CODE] DRAIN_HANDOFF: a background task settled during the drain; this turn starts at the CLI's reply to message ${bindUuid}`);
+      if (takesCliTurn) console.log('[CLAUDE-CODE] DRAIN_HANDOFF: the wake turn reads the CLI\'s own turn about the settled task(s); nothing is sent to the CLI');
       const leadQuery: AsyncIterable<any> = adopted
-        ? await this.deliverToAdoptedQuery(adopted, promptInput, builtPromptController)
+        ? await this.deliverToAdoptedQuery(adopted, promptInput, builtPromptController, bindUuid, !takesCliTurn)
         : query({
           prompt: promptInput as any,
           options
@@ -796,6 +836,7 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
 
       this.leadQuery = leadQuery as unknown as Query;
       turnQuery = this.leadQuery;
+      this.adoptionPending = false;
       ClaudeCodeProvider.streamingInstances.add(this);
       this.teammateIdleMessagePending = false;
       // Reset per-turn background-drain state (defensive; also reset in finally).
@@ -939,13 +980,22 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
           const suggestionWaitMs = awaitingSuggestion
             ? promptSuggestionWaitRemainingMs(this.promptSuggestionDeadline!, Date.now())
             : 0;
-          const watchdogActive = awaitingSuggestion || shouldArmStreamStallWatchdog({
+          // Before the reply to an adopted turn's message, the CLI's own turn may run
+          // tools for any length of time; only silence right after that turn ended
+          // means the message was lost.
+          // Behind its live wake, this turn stops reading: the CLI's turn about the
+          // results stays queued in the iterator for the wake turn that adopts it.
+          // A turn that replaces it without adopting aborts it, which still ends it.
+          const parked = this.liveWake !== null && carriedNext === null;
+          const watchdogActive = !parked && (awaitingSuggestion || (bindUuid !== null ? foreignResultSeen : shouldArmStreamStallWatchdog({
             resultReceivedTime: state.resultReceivedTime,
             outstandingToolCalls: state.outstandingToolCalls,
             hasRunningTasks: this.hasRunningTasks(),
             hasPendingUserInteraction: this.hasPendingUserInteraction(),
-          });
-          const nextPromise = carriedNext ?? iterator.next();
+          })));
+          const nextPromise: Promise<IteratorResult<any>> = parked
+            ? parkedUntilAborted(turnController?.signal)
+            : carriedNext ?? iterator.next();
           carriedNext = null;
           const raceResult = await raceNextChunkWithStallWatchdog<any>({
             nextPromise,
@@ -955,7 +1005,14 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
           });
 
           if (raceResult.kind === 'interrupted') {
-            if (this.handOffIfRequested(state.completeEmitted, iterator, nextPromise)) break;
+            if (this.handOffIfRequested(state.completeEmitted, iterator, parked ? null : nextPromise)) break;
+            if (this.liveWake?.expired) {
+              // No turn came for the live wake: end the drain the old way. The wake
+              // still runs, on a fresh query (finalizeBackgroundDrain).
+              void nextPromise.catch(() => {});
+              this.drainExitCause = 'resolved';
+              break;
+            }
             console.log('[CLAUDE-CODE] Interrupt signal received, breaking streaming loop');
             this.drainExitCause = 'interrupted';
             break;
@@ -1016,6 +1073,20 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
             continue;
           }
 
+          // Until the CLI answers an adopted turn's message, its frames belong to the
+          // CLI's own turn about a settled task: only task lifecycle counts (drainHandoff.ts).
+          if (bindUuid !== null) {
+            if (answersPushedMessage(chunk, bindUuid)) {
+              console.log(`[CLAUDE-CODE] DRAIN_HANDOFF: the CLI answered this turn's message (${chunk.type} frame) after ${foreignChunkCount} frame(s) of its own turn`);
+              bindUuid = null;
+            } else {
+              foreignChunkCount++;
+              if (chunk?.type === 'result') foreignResultSeen = true;
+              else if (chunk?.type === 'assistant') foreignResultSeen = false;
+            }
+          }
+          const beforeOwnReply = bindUuid !== null;
+
           // Grace-period stdin-close logic. The SDK's `isSingleUserTurn` is
           // false because we always pass an AsyncIterable prompt -- so the
           // SDK does NOT close stdin on `type: 'result'` for us. Instead, we
@@ -1025,7 +1096,8 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
           // can_use_tool requests (the original "Stream closed" trigger)
           // complete on the still-open stdin while still letting the turn
           // finish in a bounded amount of time.
-          if (typeof chunk === 'object' && chunk !== null) {
+          // Neither the CLI's own turn nor a pending live wake ends stdin on a timer.
+          if (typeof chunk === 'object' && chunk !== null && !beforeOwnReply && !this.liveWake) {
             // A notification-flush result (num_turns=0, no output, emitted on
             // resume before the real turn runs) is NOT end-of-turn. Arming the
             // grace timer on it starts a 5s-silence countdown while the CLI is
@@ -1154,7 +1226,7 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
             // here — sub-agent assistant text, tool calls, usage — must NOT be
             // yielded: the consumer already received isComplete:true and any further
             // text would mutate the finished parent response. See NIM-1344 / #732 (Medium).
-            if (state.completeEmitted && (this.drainingBackgroundTasks || this.awaitingPromptSuggestion) && item.kind !== 'system_task') {
+            if ((beforeOwnReply || (state.completeEmitted && (this.drainingBackgroundTasks || this.awaitingPromptSuggestion))) && item.kind !== 'system_task') {
               continue;
             }
             switch (item.kind) {
@@ -1498,14 +1570,14 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
           // result completes the turn, and the post-loop fallback covers the
           // case where it never arrives. See NIM-1470.
           if (
-            typeof chunk === 'object' && chunk !== null && !state.completeEmitted
+            typeof chunk === 'object' && chunk !== null && !state.completeEmitted && !beforeOwnReply
             && isNotificationFlushResult(chunk, state.sawTaskNotificationThisTurn, state.sawAssistantOutputThisTurn)
           ) {
             console.log('[CLAUDE-CODE] Ignoring notification-flush result (num_turns=0, no output) — awaiting the real turn result');
             continue;
           }
 
-          if (typeof chunk === 'object' && chunk !== null && chunk.type === 'result' && !state.completeEmitted) {
+          if (typeof chunk === 'object' && chunk !== null && chunk.type === 'result' && !state.completeEmitted && !beforeOwnReply) {
             await this.flushPendingWrites();
             if (sessionId) await this.processTranscriptMessages(sessionId);
 
@@ -1607,7 +1679,9 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
 
           // While draining background sub-agents after `complete` was emitted,
           // exit as soon as every task has reported a terminal status.
-          if (shouldExitDrain(state.completeEmitted, this.drainingBackgroundTasks, this.hasRunningTasks())) {
+          if (!this.liveWake && shouldExitDrain(state.completeEmitted, this.drainingBackgroundTasks, this.hasRunningTasks())) {
+            // Keep the CLI open for the wake carrying the results, so its own turn about them is not cut off.
+            if (this.startLiveWake(sessionId)) continue;
             this.drainExitCause = 'resolved';
             console.log('[CLAUDE-CODE] SUBAGENT_DRAIN: all background sub-agent task(s) resolved; ending drain loop');
             break;
@@ -1707,6 +1781,7 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
     // against the torn-down control channel and leaks. NIM-1470.
     const queryForDrainCleanup = this.leadQuery;
     this.leadQuery = null;
+    this.adoptionPending = false;
     // Background commands drained with the turn; nothing it started is still running.
     if (sessionId) agentToolActivity.endTurn(sessionId);
     ClaudeCodeProvider.streamingInstances.delete(this);
@@ -2215,13 +2290,14 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
 
   /**
    * Check if the lead is currently processing or about to process a message.
-   * True when leadQuery is set (actively streaming) or when a
-   * teammate:messageWhileIdle event was emitted but sendMessage hasn't started yet.
+   * True when leadQuery is set (actively streaming), when a
+   * teammate:messageWhileIdle event was emitted but sendMessage hasn't started yet,
+   * or when a follow-up took over the live query and has not started streaming it.
    * Used by the teammates:allCompleted handler to avoid ending the session
    * while the lead is mid-turn.
    */
   public isLeadBusy(): boolean {
-    return this.leadQuery !== null || this.teammateIdleMessagePending;
+    return this.leadQuery !== null || this.teammateIdleMessagePending || this.adoptionPending;
   }
 
   /**
@@ -2255,15 +2331,22 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
 
   /** A follow-up can go onto this draining turn's live query (drainHandoff.ts); the host dispatches on it. */
   public canAcceptFollowUpDuringDrain(): boolean {
+    // The live wake takes the query first; queued prompts follow its turn.
+    if (this.liveWake) return false;
+    return this.canAdoptLiveQuery(false);
+  }
+
+  private canAdoptLiveQuery(liveWakePending: boolean): boolean {
+    const hasTeammateWork = this.teammateIdleMessagePending
+      || this.teammateManager.hasPendingTeammateMessages()
+      || this.teammateManager.hasActiveTeammates();
     return canAdoptAwaitingSuggestionQuery({
       awaiting: this.awaitingPromptSuggestion,
       hasLeadQuery: this.leadQuery !== null,
       promptStreamOpen: !!this.promptController && !this.promptController.isEnded(),
       wasInterrupted: this.wasInterrupted,
       hasPendingUserInteraction: this.hasPendingUserInteraction(),
-      hasTeammateWork: this.teammateIdleMessagePending
-        || this.teammateManager.hasPendingTeammateMessages()
-        || this.teammateManager.hasActiveTeammates(),
+      hasTeammateWork,
       hasPendingContinuation: this.streamClosedContinuationMessagePending !== null,
       handoffInProgress: this.drainHandoff !== null,
     }) || canAdoptDrainingQuery({
@@ -2271,18 +2354,60 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
       draining: this.drainingBackgroundTasks,
       promptStreamOpen: !!this.promptController && !this.promptController.isEnded(),
       hasRunningTasks: this.hasRunningTasks(),
-      terminalNotificationCount: this.drainTerminalNotifications.length,
+      liveWakePending,
       settledThisTurn: this.settledBackgroundTasksThisTurn,
       graceExpired: this.drainGraceExpired,
       wasInterrupted: this.wasInterrupted,
-      hasPendingUserInteraction: this.hasPendingUserInteraction(),
-      hasTeammateWork: this.teammateIdleMessagePending
-        || this.teammateManager.hasPendingTeammateMessages()
-        || this.teammateManager.hasActiveTeammates(),
+      // The CLI's own turn about the settled task may be asking the user something;
+      // the live wake takes that turn over, question included.
+      hasPendingUserInteraction: !liveWakePending && this.hasPendingUserInteraction(),
+      hasTeammateWork,
       // `streamClosedContinuationPrepared` only records that the check ran.
       hasPendingContinuation: this.streamClosedContinuationMessagePending !== null,
       handoffInProgress: this.drainHandoff !== null,
     });
+  }
+
+  /**
+   * The last background task settled while the turn drained. The live CLI
+   * answers it in a turn of its own; instead of closing the CLI mid-way through
+   * that turn, this emits a wake whose turn takes over this live query
+   * (drainHandoff.ts) and reads the CLI's turn. The draining turn stops reading
+   * meanwhile. False leaves the old path: end the drain, close the CLI, and
+   * wake on a fresh query.
+   */
+  private startLiveWake(sessionId: string | undefined): boolean {
+    if (
+      !sessionId
+      || !shouldContinueWithTaskResults('resolved', this.drainTerminalNotifications)
+      || !this.promptController || this.promptController.isEnded()
+      || this.wasInterrupted || this.drainGraceExpired || this.drainHandoff
+      || this.teammateIdleMessagePending
+      || this.teammateManager.hasPendingTeammateMessages() || this.teammateManager.hasActiveTeammates()
+      || this.streamClosedContinuationMessagePending !== null
+    ) return false;
+    if (this.promptEndTimer) {
+      clearTimeout(this.promptEndTimer);
+      this.promptEndTimer = null;
+    }
+    const liveWake = {
+      live: buildTaskResultContinuationMessage(this.drainTerminalNotifications, { processClosed: false }),
+      cold: buildTaskResultContinuationMessage(this.drainTerminalNotifications),
+      timer: null as ReturnType<typeof setTimeout> | null,
+      expired: false,
+    };
+    liveWake.timer = setTimeout(() => {
+      liveWake.timer = null;
+      liveWake.expired = true;
+      console.warn(`[CLAUDE-CODE] SUBAGENT_DRAIN: no turn took the live wake within ${LIVE_WAKE_TIMEOUT_MS}ms; ending the drain`);
+      const resolve = this.interruptResolve;
+      this.interruptResolve = null;
+      resolve?.();
+    }, LIVE_WAKE_TIMEOUT_MS);
+    this.liveWake = liveWake;
+    console.log(`[CLAUDE-CODE] SUBAGENT_DRAIN: waking session ${sessionId} with ${this.drainTerminalNotifications.length} background task result(s) on the live query`);
+    this.emit('teammate:messageWhileIdle', { sessionId, message: liveWake.live });
+    return true;
   }
 
   /** Asks the draining turn to stop iterating and waits for its live query. */
@@ -2329,8 +2454,11 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
       promptController: this.promptController!,
       abortController: this.abortController,
       toolHooksService: this.toolHooksService,
+      // The live CLI holds the settled tasks' notifications and answers them in a turn of its own.
+      bindToOwnTurn: this.drainTerminalNotifications.length > 0,
     };
     this.leadQuery = null;
+    this.adoptionPending = true;
     ClaudeCodeProvider.streamingInstances.delete(this);
     this.wasInterrupted = false;
     this.interruptResolve = null;
@@ -2345,16 +2473,26 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
     handoff.release(adopted);
   }
 
-  /** Pushes onto the open prompt stream: a finite streamInput() closes stdin when it ends, killing the tasks. */
+  /**
+   * Pushes onto the open prompt stream: a finite streamInput() closes stdin when it ends, killing the tasks.
+   * `send` false (the live wake) pushes nothing: the turn reads the CLI's own turn.
+   */
   private async deliverToAdoptedQuery(
     adopted: AdoptedQuery<Query, AgentToolHooks | null>,
     promptInput: AsyncIterable<any>,
     builtPromptController: PromptStreamController,
+    uuid: string | null,
+    send: boolean,
   ): Promise<AsyncIterable<any>> {
-    const { value: followUp } = await promptInput[Symbol.asyncIterator]().next();
-    builtPromptController.end('adopted-live-query');
-    if (!followUp || !adopted.promptController.push(followUp)) {
-      throw new Error('Claude Code closed its input before the follow-up could be delivered. Send it again.');
+    if (send) {
+      const { value: followUp } = await promptInput[Symbol.asyncIterator]().next();
+      builtPromptController.end('adopted-live-query');
+      if (followUp && uuid) followUp.uuid = uuid;
+      if (!followUp || !adopted.promptController.push(followUp)) {
+        throw new Error('Claude Code closed its input before the follow-up could be delivered. Send it again.');
+      }
+    } else {
+      builtPromptController.end('adopted-live-query');
     }
     if (typeof adopted.query.setPermissionMode === 'function') {
       try {
@@ -2486,6 +2624,17 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
       const stranded = reapRunningTasks(this.activeTasks.values());
       console.warn(`[CLAUDE-CODE] SUBAGENT_DRAIN: loop exited (cause=${this.drainExitCause}) with ${stranded.length} unresolved sub-agent task(s); marking stopped. autoContinue=${outcome.autoContinue}. tasks=[${stranded.join(', ')}]`);
       this.emitTaskUpdate(sessionId).catch(() => {});
+    }
+
+    // The live wake already went out and now runs on a fresh query. Keep the
+    // session for it, as after any wake, and send no second one.
+    if (this.liveWake) {
+      if (this.liveWake.timer) {
+        clearTimeout(this.liveWake.timer);
+        this.liveWake.timer = null;
+      }
+      this.teammateIdleMessagePending = true;
+      return;
     }
 
     if (outcome.autoContinue && sessionId) {

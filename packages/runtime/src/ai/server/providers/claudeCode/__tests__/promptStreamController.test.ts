@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { createPersistentPromptStream } from '../sdkOptionsBuilder';
 
 /**
@@ -109,5 +109,50 @@ describe('createPersistentPromptStream', () => {
     controller.end('done');
     expect((await iterator.next()).done).toBe(true);
     expect(controller.push(makeMessage())).toBe(false);
+  });
+
+  // The late-answer hook replies only after the SDK has written the answer, so
+  // the CLI reads it before the hook's reply and the next request carries it.
+  describe('deliver()', () => {
+    const answer = { ...makeMessage(), message: { role: 'user' as const, content: 'answer' } };
+
+    it('resolves true only once the SDK asks for the message after it', async () => {
+      const { iterable, controller } = createPersistentPromptStream(makeMessage());
+      const iterator = iterable[Symbol.asyncIterator]();
+      await iterator.next();
+      let settled: boolean | undefined;
+      const delivery = controller.deliver(answer, 1_000).then((value) => { settled = value; });
+
+      expect((await iterator.next()).value).toBe(answer);
+      await Promise.resolve();
+      expect(settled).toBeUndefined();
+
+      void iterator.next();
+      await delivery;
+      expect(settled).toBe(true);
+    });
+
+    it('withdraws a message the SDK has not taken in time', async () => {
+      vi.useFakeTimers();
+      try {
+        const { iterable, controller } = createPersistentPromptStream(makeMessage());
+        const iterator = iterable[Symbol.asyncIterator]();
+        await iterator.next();
+        const delivery = controller.deliver(answer, 1_000);
+
+        await vi.advanceTimersByTimeAsync(1_000);
+        expect(await delivery).toBe(false);
+        controller.end('done');
+        expect((await iterator.next()).done).toBe(true);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('resolves false on an ended stream', async () => {
+      const { controller } = createPersistentPromptStream(makeMessage());
+      controller.end('done');
+      expect(await controller.deliver(answer, 1_000)).toBe(false);
+    });
   });
 });

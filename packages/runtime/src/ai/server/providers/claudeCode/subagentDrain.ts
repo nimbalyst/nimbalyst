@@ -280,15 +280,36 @@ function formatElapsed(ms: number): string {
 }
 
 /**
+ * Sent with every wake that follows closing the CLI process. The CLI often starts its own continuation turn for a settled task
+ * before the close lands: it writes the notification or a sub-agent hand-back
+ * as a user turn and calls the model. On resume, Claude Code finds that turn
+ * unanswered and inserts a synthetic "No response requested." reply after it
+ * (checked against CLI 2.1.317), and it reports the task as not finished
+ * "before the previous session ended". Without this note the agent reads the
+ * placeholder as its own reply and apologises for work it never dropped.
+ */
+const CLOSED_PROCESS_NOTE =
+  'Nimbalyst closed the Claude Code process that held these results and is delivering them here.'
+  + ' If a task notification or hand-back just above was answered with "No response requested.",'
+  + ' Claude Code inserted that reply because the process closed before you could answer: you did not write it,'
+  + ' and that input is still unhandled.'
+  + ' A notice that one of these tasks "didn\'t finish before the previous session ended" refers to the closed process;'
+  + ' the status listed here is the real outcome.';
+
+/**
  * Build the continuation prompt delivered (via the idle-message path) when
  * background tasks settled after the lead turn ended. Visible to the user, so
  * it reads as a system notification rather than an internal nudge.
  *
  * A teardown kill is named as a kill, not left as a bare "stopped": the agent
  * reads this to decide whether the work still needs doing. See #1355.
+ *
+ * `processClosed: false` is the live wake, which goes into the CLI that holds
+ * the results (drainHandoff.ts), so there is no closed process to explain.
  */
 export function buildTaskResultContinuationMessage(
   notifications: TaskTerminalNotification[],
+  { processClosed = true }: { processClosed?: boolean } = {},
 ): string {
   const reportable = notifications.filter(isReportable);
   const killed = reportable.filter(wasKilledByTeardown);
@@ -317,7 +338,7 @@ export function buildTaskResultContinuationMessage(
       + ' Continue the work that was waiting on the rest.]'
     : '\nContinue the work that was waiting on them.]';
 
-  return header + '\n' + lines.join('\n') + footer;
+  return header + '\n' + lines.join('\n') + (processClosed ? '\n' + CLOSED_PROCESS_NOTE : '') + footer;
 }
 
 /** True if any tracked sub-agent task is still running. */
