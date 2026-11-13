@@ -6,6 +6,7 @@ import {createStore} from 'jotai';
 import {selectedMachineAtom} from '../atoms/remoteMachines';
 import { TranscriptProjector } from '@nimbalyst/runtime/ai/server/transcript/TranscriptProjector';
 import type { TranscriptEvent } from '@nimbalyst/runtime/ai/server/transcript/types';
+import { warnOnDuplicateUserPrompt } from '../transcriptReconciliation';
 
 function makeMessage(id: number, text: string): TranscriptViewMessage {
   return {
@@ -17,6 +18,12 @@ function makeMessage(id: number, text: string): TranscriptViewMessage {
     subagentId: null,
   };
 }
+
+/** Payloads of the #919 duplicate-prompt diagnostic caught by a console.warn spy. */
+const duplicateWarnings = (warn: { mock: { calls: unknown[][] } }) => warn.mock.calls
+  .map(([line]) => String(line))
+  .filter((line) => line.includes('Duplicate user prompt'))
+  .map((line) => JSON.parse(line.slice(line.indexOf('{'))));
 
 function makeSession(overrides: Partial<SessionData> = {}): SessionData {
   return {
@@ -151,6 +158,75 @@ describe('updateSessionStoreAtom registry identity', () => {
 
     store.set(updateSessionStoreAtom, {sessionId: 'session-1', updates: {title: 'Renamed'}});
     expect(store.get(sessionRegistryAtom).get('session-1')?.title).toBe('Renamed');
+  });
+
+  // #919 diagnostic: optimistic sends replace the list from a component's copy.
+  it('warns once when a messages update holds a duplicated user prompt', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const store = createStore();
+      const id = 'duplicate-prompt-update';
+      const prompt = { ...makeMessage(1, 'Audit the repo'), type: 'user_message' as const };
+      store.set(sessionStoreAtom(id), makeSession({ id, messages: [prompt] }));
+      store.set(updateSessionStoreAtom, {sessionId: id, updates: {messages: [prompt, makeMessage(2, 'Working')]}});
+      expect(duplicateWarnings(warn)).toEqual([]);
+      const copy = { ...prompt, id: -5, sequence: 3 };
+      store.set(updateSessionStoreAtom, {sessionId: id, updates: {messages: [prompt, makeMessage(2, 'Working'), copy]}});
+      store.set(updateSessionStoreAtom, {sessionId: id, updates: {messages: [prompt, makeMessage(2, 'Working'), copy]}});
+      expect(duplicateWarnings(warn)).toEqual([{
+        sessionId: id, mergePath: 'update', length: 3, ids: [1, -5], indices: [0, 2],
+        transcriptGenerations: [null, null], sequences: [1, 3], createdAt: [0, 0],
+      }]);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+});
+
+// #919 diagnostic: which lists count as a duplicated prompt. The guard is
+// per session, so each test uses its own session id.
+describe('warnOnDuplicateUserPrompt matching rule', () => {
+  const user = (id: number, text: string, at: number, extra: Partial<TranscriptViewMessage> = {}): TranscriptViewMessage =>
+    ({ id, sequence: id, transcriptGeneration: 3, createdAt: new Date(at), type: 'user_message', text, subagentId: null, ...extra });
+  const reply = (id: number, at: number): TranscriptViewMessage =>
+    ({ id, sequence: id, transcriptGeneration: 3, createdAt: new Date(at), type: 'assistant_message', text: 'ok', subagentId: null });
+  const optimistic = { sequence: -1, optimistic: true, transcriptGeneration: undefined };
+
+  it('stays silent for repeated sends, an optimistic re-send after its saved twin, and repeated system prompts', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const id = 'duplicate-rule-repeats';
+      warnOnDuplicateUserPrompt(id, 'reload', [user(1, 'continue', 1000), reply(2, 1100), user(3, 'continue', 2000), reply(4, 2100), user(5, 'continue', 3000)]);
+      warnOnDuplicateUserPrompt(id, 'update', [user(1, 'continue', 1000), reply(2, 1100), user(-7, 'continue', 2000, optimistic)]);
+      warnOnDuplicateUserPrompt(id, 'stream', [user(1, 'Answered', 1000, { promptActor: 'system' }), reply(2, 1100), user(3, 'Answered', 2000, { promptActor: 'system' })]);
+      expect(duplicateWarnings(warn)).toEqual([]);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('stays silent for tool calls and replies that share a raw row\'s time and have no text', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const tool = (id: number): TranscriptViewMessage =>
+        ({ id, sequence: id, transcriptGeneration: 3, createdAt: new Date(2000), type: 'tool_call', subagentId: null });
+      warnOnDuplicateUserPrompt('duplicate-rule-tools', 'stream', [user(1, 'Audit', 1000), tool(2), tool(3), reply(4, 2000), reply(5, 2000)]);
+      expect(duplicateWarnings(warn)).toEqual([]);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('reports the same saved prompt id twice, even when the copies differ in time', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const id = 'duplicate-rule-same-id';
+      warnOnDuplicateUserPrompt(id, 'update', [user(1, 'Audit', 1000), reply(2, 1100), user(1, 'Audit', 1000, { transcriptGeneration: 4 })]);
+      warnOnDuplicateUserPrompt(id, 'update', [user(1, 'Audit', 1000), reply(2, 1100), user(1, 'Audit', 999, { transcriptGeneration: 2 })]);
+      expect(duplicateWarnings(warn).map((w) => [w.ids, w.transcriptGenerations])).toEqual([[[1, 1], [3, 4]], [[1, 1], [3, 2]]]);
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
 
@@ -536,6 +612,35 @@ describe('canonical generation load/reload reconciliation', () => {
         'AB',
         'New request',
       ]);
+    });
+    // #919 diagnostic: the saved first prompt showed a second time under load.
+    it(`${name} warns once for a duplicated user prompt, naming the ${name} path`, async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      try {
+        const store = createStore();
+        const id = `duplicate-prompt-${name}`;
+        const prompt = (msgId: number, sequence: number) =>
+          ({ ...message(msgId, sequence, 3, 'Audit the repo'), type: 'user_message' as const, createdAt: new Date(500) });
+        const normal = [prompt(1, 0), message(2, 1, 3)];
+        let snapshot = normal;
+        store.set(sessionStoreAtom(id), makeSession({ id, messages: [] }));
+        vi.stubGlobal('window', {
+          electronAPI: { aiLoadSession: vi.fn(async () => makeSession({ id, model: 'claude:test', messages: snapshot })) },
+        });
+        await run(store, { sessionId: id, workspacePath: '/repo' });
+        expect(duplicateWarnings(warn)).toEqual([]);
+
+        snapshot = [...normal, prompt(9, 2)];
+        await run(store, { sessionId: id, workspacePath: '/repo' });
+        await run(store, { sessionId: id, workspacePath: '/repo' });
+        expect(store.get(sessionStoreAtom(id))?.messages.map((m) => m.id)).toEqual([1, 2, 9]);
+        expect(duplicateWarnings(warn)).toEqual([{
+          sessionId: id, mergePath: name, length: 3, ids: [1, 9], indices: [0, 2],
+          transcriptGenerations: [3, 3], sequences: [0, 2], createdAt: [500, 500],
+        }]);
+      } finally {
+        warn.mockRestore();
+      }
     });
     it(`${name} treats an untagged empty result as no authority to remove tagged live data`, async () => {
       const store = createStore();

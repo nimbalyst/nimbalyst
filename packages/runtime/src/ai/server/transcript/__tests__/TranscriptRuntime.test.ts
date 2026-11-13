@@ -368,6 +368,148 @@ describe('TranscriptRuntime', () => {
       expect(streamed.every((e) => e.payload.status === 'completed')).toBe(true);
     });
   });
+
+  // GitHub #919: a session evicted while its own rebuild was paging got a new
+  // store for the remaining pages. The rebuild split across two generations and
+  // the cache kept only the tail: 602 of 1,101 messages, starting at "Reply 500".
+  describe('eviction while a rebuild is paging', () => {
+    const codexRow = (id: number, sessionId: string, item: Record<string, unknown>, createdAt = new Date(id)): RawMessage => ({
+      id, sessionId, source: 'openai-codex', direction: 'output', createdAt, metadata: { transport: 'app-server' },
+      content: JSON.stringify({ method: 'item/completed', params: { threadId: 't', turnId: 'u', item } }),
+    });
+    const codexPrompt = (id: number, sessionId: string, text: string): RawMessage => ({
+      id, sessionId, source: 'openai-codex', direction: 'input', content: JSON.stringify({ prompt: text }), createdAt: new Date(0),
+    });
+
+    /**
+     * Session A holds a prompt and 1,100 items (three raw pages); every other
+     * session holds one prompt. `hooks.midRebuild` runs once, inside the read
+     * of A's second page.
+     */
+    function setup(cacheCap: number, others: string[]) {
+      const raw: RawMessage[] = [
+        codexPrompt(1, 'A', 'Long request'),
+        ...Array.from({ length: 1100 }, (_, i) => codexRow(i + 2, 'A', i % 2 === 0
+          ? { type: 'agentMessage', id: `message-${i}`, text: `Reply ${i}` }
+          : { type: 'commandExecution', id: `tool-${i}`, command: `step ${i}`, status: 'completed', aggregatedOutput: 'ok' })),
+        ...others.map((sid, i) => codexPrompt(5000 + i, sid, `Prompt ${sid}`)),
+      ];
+      const hooks: { midRebuild: (() => Promise<unknown> | void) | null } = { midRebuild: null };
+      const runtime = new TranscriptRuntime({
+        async getMessages(sessionId, afterId = 0, limit) {
+          if (sessionId === 'A' && afterId >= RAW_MESSAGE_PAGE_SIZE && hooks.midRebuild) {
+            const hook = hooks.midRebuild;
+            hooks.midRebuild = null;
+            await hook();
+          }
+          const rows = raw.filter((r) => r.sessionId === sessionId && r.id > afterId);
+          return limit === undefined ? rows : rows.slice(0, limit);
+        },
+      }, { cacheCap });
+      const generationsWritten = new Map<number, number>();
+      runtime.setOnEventWritten((e) => {
+        if (e.sessionId === 'A') generationsWritten.set(e.transcriptGeneration!, (generationsWritten.get(e.transcriptGeneration!) ?? 0) + 1);
+      });
+      const appendToA = () => raw.push(codexRow(1200, 'A', { type: 'agentMessage', id: 'tail', text: 'Newest' }, new Date(5000)));
+      const cached = async (sessionIds: string[]) => {
+        const out: string[] = [];
+        for (const sid of sessionIds) if (!(await runtime.needsTransformation(sid))) out.push(sid);
+        return out;
+      };
+      return { runtime, hooks, generationsWritten, appendToA, cached };
+    }
+
+    it('keeps the rebuild in one generation when another session is touched mid-rebuild', async () => {
+      const { runtime, hooks, generationsWritten, appendToA } = setup(1, ['B', 'C']);
+      const complete = (await runtime.getViewMessages('A', 'openai-codex')).length;
+      expect(complete).toBe(1101);
+      await runtime.getCanonicalEvents('B', 'openai-codex'); // evicts A
+      generationsWritten.clear();
+      hooks.midRebuild = () => runtime.getCanonicalEvents('C', 'openai-codex');
+      appendToA();
+
+      await runtime.processNewMessages('A', 'openai-codex');
+      const after = await runtime.getViewMessages('A', 'openai-codex');
+
+      expect(after).toHaveLength(complete + 1);
+      expect(after[0]).toMatchObject({ type: 'user_message', text: 'Long request' });
+      expect(after.at(-1)?.text).toBe('Newest');
+      expect([...generationsWritten.keys()]).toHaveLength(1);
+      expect(new Set(after.map((m) => m.transcriptGeneration))).toEqual(new Set(generationsWritten.keys()));
+    });
+
+    it('evicts down to the cap once the rebuild finishes', async () => {
+      const { runtime, hooks, appendToA, cached } = setup(1, ['B', 'C', 'D']);
+      const all = ['A', 'B', 'C', 'D'];
+      await runtime.getViewMessages('A', 'openai-codex');
+      await runtime.getCanonicalEvents('B', 'openai-codex'); // evicts A
+      let cachedMidRebuild: string[] = [];
+      let cEvents = 0;
+      hooks.midRebuild = async () => {
+        cEvents = (await runtime.getCanonicalEvents('C', 'openai-codex')).length;
+        cachedMidRebuild = await cached(all);
+      };
+      appendToA();
+
+      await runtime.processNewMessages('A', 'openai-codex');
+
+      // C was read in full, then evicted once idle; A stayed although older.
+      expect(cEvents).toBe(1);
+      expect(cachedMidRebuild).toEqual(['A']);
+      expect(await cached(all)).toEqual(['A']);
+      // A is evictable again now that its rebuild finished.
+      await runtime.getCanonicalEvents('D', 'openai-codex');
+      expect(await cached(all)).toEqual(['D']);
+      expect(await runtime.getViewMessages('A', 'openai-codex')).toHaveLength(1102);
+      expect(await cached(all)).toEqual(['A']);
+    });
+
+    it('waits for a running rebuild before a forced reparse evicts the session', async () => {
+      const { runtime, hooks, generationsWritten, appendToA } = setup(1, ['B']);
+      await runtime.getViewMessages('A', 'openai-codex');
+      await runtime.getCanonicalEvents('B', 'openai-codex'); // evicts A
+      generationsWritten.clear();
+      let reparse: Promise<boolean> | null = null;
+      hooks.midRebuild = () => { reparse = runtime.forceReparseSession('A', 'openai-codex'); };
+      appendToA();
+
+      await runtime.processNewMessages('A', 'openai-codex');
+      expect([...generationsWritten.keys()]).toHaveLength(1);
+      const [rebuildGeneration] = generationsWritten.keys();
+      expect(await reparse).toBe(true);
+      expect(await runtime.needsTransformation('A')).toBe(true);
+
+      const reparsed = await runtime.getViewMessages('A', 'openai-codex');
+      expect(reparsed).toHaveLength(1102);
+      expect(reparsed[0]).toMatchObject({ type: 'user_message', text: 'Long request' });
+      expect(reparsed[0].transcriptGeneration).toBeGreaterThan(rebuildGeneration);
+    });
+
+    it('releases a session whose call failed, so a forced reparse and the next read still run', async () => {
+      const { runtime, hooks, appendToA, cached } = setup(1, ['B']);
+      await runtime.getViewMessages('A', 'openai-codex');
+      await runtime.getCanonicalEvents('B', 'openai-codex'); // evicts A
+      hooks.midRebuild = () => { throw new Error('database closed'); };
+      appendToA();
+
+      await expect(runtime.processNewMessages('A', 'openai-codex')).rejects.toThrow('database closed');
+      await runtime.forceReparseSession('A', 'openai-codex');
+      expect(await cached(['A', 'B'])).toEqual([]);
+      expect(await runtime.getViewMessages('A', 'openai-codex')).toHaveLength(1102);
+    });
+
+    // Same window after the build: each read evicted the other session between
+    // its build and its read, so both returned no events.
+    it('reads each session in full when two are built at once past the cap', async () => {
+      const { runtime } = setup(1, ['B', 'C']);
+      const [b, c] = await Promise.all([
+        runtime.getCanonicalEvents('B', 'openai-codex'),
+        runtime.getCanonicalEvents('C', 'openai-codex'),
+      ]);
+      expect(b.map((e) => e.searchableText)).toEqual(['Prompt B']);
+      expect(c.map((e) => e.searchableText)).toEqual(['Prompt C']);
+    });
+  });
 });
 
 describe('InMemoryTranscriptEventStore tool-call lookups', () => {

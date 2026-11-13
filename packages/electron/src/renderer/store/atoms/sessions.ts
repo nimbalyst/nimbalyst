@@ -23,7 +23,7 @@ import { ModelIdentifier, type ChatAttachment, type SessionData } from '@nimbaly
 import { stripMcpPrefix } from '@nimbalyst/runtime/ai/server/interactivePromptTools';
 import type { SessionMeta } from '@nimbalyst/runtime';
 import deepEqual from 'fast-deep-equal';
-import { captureTranscriptMessages, preserveTranscriptMessageIdentity, reconcileTranscriptMessages } from '../transcriptReconciliation';
+import { captureTranscriptMessages, preserveTranscriptMessageIdentity, reconcileTranscriptMessages, warnOnDuplicateUserPrompt } from '../transcriptReconciliation';
 import { sessionLaunchCountsAtom } from './sessionLaunchCounts';
 import { sessionListMetadata } from './sessionListMetadata';
 import { workstreamStateAtom, setWorkstreamActiveChildAtom } from './workstreamState';
@@ -726,6 +726,7 @@ export const updateSessionStoreAtom = atom(
       if (updates.tokenUsage !== undefined && deepEqual(current.tokenUsage, updates.tokenUsage)) {
         normalizedUpdates.tokenUsage = current.tokenUsage;
       }
+      if (updates.messages) warnOnDuplicateUserPrompt(sessionId, 'update', updates.messages);
       set(sessionStoreAtom(sessionId), { ...current, ...normalizedUpdates });
     }
 
@@ -1665,6 +1666,7 @@ export const loadSessionDataAtom = atom(
           get(sessionStoreAtom(sessionId))?.messages ?? [], sessionData.messages ?? [],
           { startedWith: messagesAtStart },
         );
+        warnOnDuplicateUserPrompt(sessionId, 'load', sessionData.messages);
         // Set sessionStoreAtom - derived atoms (mode, model, archived) will automatically sync
         set(sessionStoreAtom(sessionId), sessionData);
 
@@ -1834,6 +1836,7 @@ export const reloadSessionDataAtom = atom(
         sessionData.messages = reconcileTranscriptMessages(
           current?.messages ?? [], sessionData.messages ?? [], { startedWith: messagesAtStart },
         );
+        warnOnDuplicateUserPrompt(sessionId, 'reload', sessionData.messages);
         if (current) {
           // Preserve read state
           const preservedTimestamp = current.lastReadMessageTimestamp || 0;

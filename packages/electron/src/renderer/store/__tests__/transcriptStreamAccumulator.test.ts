@@ -54,6 +54,12 @@ function makeDbMessage(id: number, type: 'user_message' | 'assistant_message', t
   };
 }
 
+/** Payloads of the #919 duplicate-prompt diagnostic caught by a console.warn spy. */
+const duplicateWarnings = (warn: { mock: { calls: unknown[][] } }) => warn.mock.calls
+  .map(([line]) => String(line))
+  .filter((line) => line.includes('Duplicate user prompt'))
+  .map((line) => JSON.parse(line.slice(line.indexOf('{'))));
+
 interface Harness {
   acc: TranscriptStreamAccumulator;
   /** Pending scheduled callbacks. Drained by tickFrame(). */
@@ -230,6 +236,30 @@ describe('TranscriptStreamAccumulator', () => {
     h.acc.apply({ ...makeAssistantEvent(21, 'tail', 1), transcriptGeneration: 2 });
     h.tickFrame();
     expect(h.lastEmit!.messages.map((m) => m.id)).toEqual([20, 21]);
+  });
+  // #919 diagnostic: the saved first prompt showed a second time under load.
+  it('warns once per duplicated user prompt it publishes, and not for a normal list', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const sessionId = 'duplicate-prompt-stream';
+      const live = (event: TranscriptEvent) => ({ ...event, sessionId, transcriptGeneration: 4 });
+      const h = createHarness([{ ...makeDbMessage(1, 'user_message', 'Audit the repo'), transcriptGeneration: 4 }]);
+      h.acc.apply(live(makeAssistantEvent(2, 'Working')));
+      h.tickFrame();
+      expect(duplicateWarnings(warn)).toEqual([]);
+
+      h.acc.apply(live(makeUserEvent(9, 'Audit the repo')));
+      h.tickFrame();
+      h.acc.apply(live(makeAssistantEvent(10, 'Still working')));
+      h.tickFrame();
+      expect(h.lastEmit!.messages.map((m) => m.id)).toEqual([1, 2, 9, 10]);
+      expect(duplicateWarnings(warn)).toEqual([{
+        sessionId, mergePath: 'stream', length: 3, ids: [1, 9], indices: [0, 2],
+        transcriptGenerations: [4, 4], sequences: [1, 9], createdAt: [0, 0],
+      }]);
+    } finally {
+      warn.mockRestore();
+    }
   });
   it('orders canonical messages by sequence while retaining unmatched optimistic input at the end', () => {
     const h = createHarness([
