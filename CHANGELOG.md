@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 <!-- New features go here -->
 - Workstreams: a named group in the session list, shown with a folder icon, that holds sessions as peers without making one of them the parent. Create one from the New menu or with "Move to workstream..." on one or several selected sessions, drag sessions onto it, or start a session while it is selected. A workstream holding a single session shows as a group only on the desktop that created it
 - `nim wiki publish` copies a project's local wiki into a team project for review while the files stay the source: each publish updates the team pages, never overwrites a page someone edited there, and moves pages deleted locally to the team Trash. Reviewers are invited with the new Commenter project role, which reads and comments on that one project but cannot edit pages, and `nim wiki comments` lists their open comments with the local file each belongs to (requires the updated sync server)
+- The GitHub panel can point at any repository in a multi-repo project, chosen from a picker in its header and remembered per project; a PR opened as a worktree branches from that repository
 
 ### Changed
 <!-- Changes to existing functionality go here -->
@@ -25,6 +26,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - On the SQLite backend, database backups no longer stop rotating after the database shrinks to under half its previous size while still holding its sessions; a smaller backup is now rejected only when it also holds fewer sessions than the current one
 - The daily cleanup of old tool output could skip past recent rows and never return to them once they aged; it now stops at the first row still inside the retention window and resumes there the next day
 - An agent edit to a shared document next to a comment on part of a bold run or inline code no longer writes broken markdown (such as an extra pair of `**` or backticks), and exporting such a document to a file keeps its formatting intact
+- Git repositories cloned inside a project and ignored by its `.gitignore` now get status badges and appear in the Git panel's repo picker and the title-bar branch menu.
 
 ### Removed
 <!-- Removed features go here -->
