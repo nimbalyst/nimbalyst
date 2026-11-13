@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
-import type { SessionData } from '../../../ai/server/types';
+import type { SessionData, TranscriptViewMessage } from '../../../ai/server/types';
 import type { ToolCallDiffLoadResult } from '../../../ai/server/transcript';
 import type { TranscriptSettings, PromptMarker, FileEditSummary } from '../types';
 import { RichTranscriptView } from './RichTranscriptView';
@@ -135,7 +135,7 @@ interface AgentTranscriptPanelProps {
 const EMPTY_FILE_EDITS: FileEditSummary[] = [];
 
 const AgentTranscriptPanelComponent = React.forwardRef<
-  { scrollToMessage: (index: number) => void; scrollToTop: () => void },
+  { scrollToMessage: (index: number) => void; scrollToTop: () => void; getMessages: () => TranscriptViewMessage[] },
   AgentTranscriptPanelProps
 >(({
   sessionId,
@@ -195,7 +195,7 @@ const AgentTranscriptPanelComponent = React.forwardRef<
   // Removed activeTab state - sidebar now only shows Files tab
 
   const [prompts, setPrompts] = useState<PromptMarker[]>([]);
-  const transcriptRef = useRef<{ scrollToMessage: (index: number, toolCallId?: string) => void; scrollToTop: () => void }>(null);
+  const transcriptRef = useRef<{ scrollToMessage: (index: number, toolCallId?: string) => void; scrollToTop: () => void; getMessages: () => TranscriptViewMessage[] }>(null);
 
   // Resize logic
   const [isDragging, setIsDragging] = useState(false);
@@ -241,7 +241,8 @@ const AgentTranscriptPanelComponent = React.forwardRef<
     },
     scrollToTop: () => {
       transcriptRef.current?.scrollToTop();
-    }
+    },
+    getMessages: () => transcriptRef.current?.getMessages() ?? [],
   }), []);
 
   // Handle resize drag

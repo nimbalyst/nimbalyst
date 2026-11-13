@@ -88,6 +88,7 @@ export type {
 export type {
   PreparedDocumentContext,
   RawDocumentContext,
+  TranscriptSelectionSource,
 } from './ai/services/types';
 export type { SessionFileStore } from './storage/repositories/SessionFilesRepository';
 export type {
@@ -118,7 +119,11 @@ export type {
   StalePlanStatus,
 } from './plugins/TrackerPlugin/models/planStatusIntegrity';
 export { fuzzyMatchPath } from './utils/fuzzyMatch';
-export { DocumentContextService } from './ai/services/DocumentContextService';
+export {
+  DocumentContextService,
+  escapeSelectedText,
+  describeTranscriptSelectionSource,
+} from './ai/services/DocumentContextService';
 export {
   CLAUDE_CODE_NATIVE_1M_VARIANTS,
   claudeCodeFamilyKeyword,

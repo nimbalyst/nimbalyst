@@ -1377,6 +1377,7 @@ export class MessageStreamingHandler {
         selection: documentContext.selection,
         textSelection: documentContext.textSelection,
         textSelectionTimestamp: documentContext.textSelectionTimestamp,
+        transcriptSelection: (documentContext as any).transcriptSelection,
         mockupSelection: (documentContext as any).mockupSelection,
         mockupDrawing: (documentContext as any).mockupDrawing,
         editorContextItems: (documentContext as any).editorContextItems,

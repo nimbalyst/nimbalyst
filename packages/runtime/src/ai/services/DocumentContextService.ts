@@ -26,6 +26,8 @@ import type {
   ContextPreparationResult,
   ModeTransition,
   TextSelection,
+  TranscriptSelection,
+  TranscriptSelectionSource,
   PersistedDocumentState,
   PersistDocumentStateCallback,
 } from './types';
@@ -50,6 +52,24 @@ function escapeXml(value: string): string {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&apos;');
+}
+
+/**
+ * Keep selected text from closing or opening tags around it. `&` is escaped
+ * too, so text that already contains `&lt;` stays distinguishable from an
+ * escaped `<`; quotes are left alone because the text is never an attribute.
+ */
+export function escapeSelectedText(text: string): string {
+  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+export function describeTranscriptSelectionSource(source: TranscriptSelectionSource): string {
+  if (source.tool) {
+    const file = source.tool.filePath ? ` on ${source.tool.filePath}` : '';
+    return `from the output of the ${source.tool.name} tool call${file} in one of your earlier turns`;
+  }
+  if (source.author === 'mixed') return 'spanning several messages, each part labeled with who wrote it';
+  return source.author === 'assistant' ? 'from one of your earlier replies' : 'from one of their own earlier messages';
 }
 
 function serializeEditorContextData(data: unknown): string | undefined {
@@ -327,6 +347,10 @@ export class DocumentContextService implements IDocumentContextService {
       baseContext.textSelectionTimestamp = rawContext.textSelectionTimestamp;
     }
 
+    if (rawContext?.transcriptSelection?.text.trim()) {
+      baseContext.transcriptSelection = rawContext.transcriptSelection;
+    }
+
     // Add mockup-specific fields if present
     if (rawContext?.mockupSelection) {
       baseContext.mockupSelection = rawContext.mockupSelection;
@@ -385,7 +409,12 @@ export class DocumentContextService implements IDocumentContextService {
     // The SDK handles planning behavior natively via `permissionMode: 'plan'`.
 
     // Build document context prompt (file path, cursor, selection, content/diff, transitions)
-    const documentContextPrompt = this.buildDocumentContextPrompt(documentContext, providerType, wikiSkillAvailable);
+    // The transcript selection is built separately because the document prompt
+    // returns early when no document is open, and a chat selection needs none.
+    const documentContextPrompt = [
+      this.buildDocumentContextPrompt(documentContext, providerType, wikiSkillAvailable),
+      this.buildTranscriptSelectionPrompt(documentContext.transcriptSelection),
+    ].filter(Boolean).join('\n');
     if (documentContextPrompt) {
       additions.documentContextPrompt = documentContextPrompt;
     }
@@ -413,6 +442,20 @@ export class DocumentContextService implements IDocumentContextService {
    * Staleness threshold for text selections (60 seconds).
    */
   private static readonly SELECTION_STALENESS_MS = 60000;
+
+  /**
+   * Describe text the user selected in the chat transcript, mirroring the
+   * document selection wording so "this" resolves the same way.
+   */
+  private buildTranscriptSelectionPrompt(selection: TranscriptSelection | undefined): string | undefined {
+    if (!selection) return undefined;
+    let prompt = `The user currently has the following text selected in this chat, ${describeTranscriptSelectionSource(selection)}:\n<SELECTED_TEXT>\n${escapeSelectedText(selection.text)}\n</SELECTED_TEXT>\n`;
+    if (Date.now() - selection.timestamp > DocumentContextService.SELECTION_STALENESS_MS) {
+      prompt += `(Note: This selection was made over a minute ago and may be outdated.)\n`;
+    }
+    prompt += `When the user refers to "this", "this text", "here", or similar, they mean this selected text.\n`;
+    return prompt;
+  }
 
   /**
    * Build the document context prompt that gets appended to the user message.
@@ -517,7 +560,7 @@ export class DocumentContextService implements IDocumentContextService {
           ? (Date.now() - context.textSelectionTimestamp > DocumentContextService.SELECTION_STALENESS_MS)
           : false;
 
-        prompt += `\nThe user currently has the following text selected in the document:\n<SELECTED_TEXT>\n${context.textSelection}\n</SELECTED_TEXT>\n`;
+        prompt += `\nThe user currently has the following text selected in the document:\n<SELECTED_TEXT>\n${escapeSelectedText(context.textSelection)}\n</SELECTED_TEXT>\n`;
 
         if (isStale) {
           prompt += `(Note: This selection was made over a minute ago and may be outdated.)\n`;
