@@ -1087,6 +1087,40 @@ describe('closed project transcript retention', () => {
   });
 });
 
+describe('transcript rebuild held behind the screen (#919)', () => {
+  it('keeps the complete transcript and reloads when a newer generation streams in behind it', async () => {
+    vi.useFakeTimers();
+    const sessionId = uniqueSessionId('evicted');
+    const workspacePath = '/ws/rebuild-hold';
+    const old = [0, 1, 2].map((i) => ({
+      id: 100 + i, sequence: i, createdAt: new Date(0), type: i % 2 ? 'assistant_message' : 'user_message',
+      text: `m${i}`, subagentId: null, transcriptGeneration: 1,
+    }));
+    let land!: (data: unknown) => void;
+    const aiLoadSession = vi.fn(() => new Promise((resolve) => { land = resolve; }));
+    (window.electronAPI as any).aiLoadSession = aiLoadSession;
+    store.set(sessionStoreAtom(sessionId), { id: sessionId, workspacePath, messages: old } as any);
+    try {
+      // Main evicted the session and rebuilds it from its first row.
+      handlers.get('transcript:event')!({
+        id: 200, sessionId, sequence: 0, transcriptGeneration: 2, createdAt: new Date(0), eventType: 'user_message',
+        searchableText: 'm0', payload: { mode: 'agent', inputType: 'user' }, parentEventId: null, searchable: true,
+        subagentId: null, provider: 'claude-code', providerToolCallId: null,
+      });
+      await vi.advanceTimersByTimeAsync(50);
+      expect(store.get(sessionStoreAtom(sessionId))?.messages).toBe(old);
+      expect(aiLoadSession).toHaveBeenCalledWith(sessionId, workspacePath);
+      land({ id: sessionId, workspacePath, messages: old.map((m) => ({ ...m, id: m.id + 100, transcriptGeneration: 2 })) });
+      await vi.advanceTimersByTimeAsync(50);
+      expect(store.get(sessionStoreAtom(sessionId))?.messages.map((m) => m.id)).toEqual([200, 201, 202]);
+      expect(aiLoadSession).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+      store.set(sessionStoreAtom(sessionId), null);
+    }
+  });
+});
+
 // A session left selected in a background window must still report that it
 // finished: "selected" only counts as "being read" while the window is focused.
 // Otherwise the debounced read-sync (hasUnread:false) also clears the tray /
