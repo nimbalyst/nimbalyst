@@ -2820,6 +2820,7 @@ const SessionHistoryComponent: React.FC = () => {
     <WorktreeBaseBranchPicker
       isOpen={worktreeBaseBranchPickerOpen}
       repoPath={worktreeSourceRepoPath}
+      workspacePath={workspacePath}
       onCreate={async ({ baseBranch, name }) => {
         // Await the parent's create handler so the picker can keep its
         // submitting state until creation actually resolves (and surface

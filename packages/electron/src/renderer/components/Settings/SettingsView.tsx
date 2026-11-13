@@ -78,6 +78,7 @@ import {
 } from './panels/AccountSettingsPanel';
 import { ProjectSharingPanel, type ProjectSettingsTarget } from './panels/ProjectSharingPanel';
 import { ProjectAIProvidersPanel } from './panels/ProjectAIProvidersPanel';
+import { ProjectWorktreesPanel } from './panels/ProjectWorktreesPanel';
 import { fetchProviderModels } from './providerModelFetch';
 
 /**
@@ -1051,6 +1052,10 @@ export function SettingsView({
         return workspacePath
           ? <ProjectAIProvidersPanel workspacePath={workspacePath} workspaceName={workspaceName ?? 'this project'} />
           : <p className="text-sm text-[var(--nim-text-muted)]">Open a local project to configure provider overrides.</p>;
+      case 'project-worktrees':
+        return workspacePath
+          ? <ProjectWorktreesPanel key={workspacePath} workspacePath={workspacePath} workspaceName={workspaceName ?? 'this project'} />
+          : <p className="text-sm text-[var(--nim-text-muted)]">Open a local project to configure worktrees.</p>;
       case 'project-extensions':
         return <InstalledExtensionsPanel scope="project" workspacePath={workspacePath ?? undefined} />;
       case 'project-github':

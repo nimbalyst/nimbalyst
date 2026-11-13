@@ -28,6 +28,7 @@ import {
 } from '../../shared/orgProjectWalk';
 import { omitModelsField } from '@nimbalyst/runtime/ai/server/utils/modelConfigUtils';
 import { planWorkstreamStatePrune } from './workstreamStatePrune';
+import type { WorktreeDefaultBaseSetting } from '../services/worktreeBaseBranch';
 import type { OpenCodeModelCatalogCache } from '@nimbalyst/runtime/ai/server';
 
 // Theme can be a built-in theme or an extension theme ID (format: "extensionId:themeId")
@@ -707,6 +708,9 @@ export interface WorkspaceState {
   // PR review: gh CLI account login override for this project. When set, it
   // wins over the global AppStoreSchema.prReviewDefaultGhAccount.
   prReviewGhAccountOverride?: string;
+  // Default base for new worktrees created without an explicit base (#1958).
+  // Unset means 'remote-default'. See services/worktreeBaseBranch.ts.
+  worktreeDefaultBase?: WorktreeDefaultBaseSetting;
   // Privileged extension capability grants scoped to this workspace.
   // Global-scope grants live on AppStoreSchema.extensionPermissionGrantsGlobal.
   // See packages/electron/src/main/extensions/permissionGrantStore.ts for the
@@ -1759,6 +1763,23 @@ export function getPrReviewGhAccountOverride(workspacePath: string): string | un
 export function savePrReviewGhAccountOverride(workspacePath: string, login: string | undefined): void {
   updateWorkspaceState(workspacePath, workspace => {
     workspace.prReviewGhAccountOverride = login;
+  });
+}
+
+export function getWorktreeDefaultBase(workspacePath: string): WorktreeDefaultBaseSetting | undefined {
+  return getWorkspaceState(workspacePath).worktreeDefaultBase;
+}
+
+/** Replaces the whole setting; `undefined` clears it back to the remote default. */
+export function setWorktreeDefaultBase(workspacePath: string, setting: WorktreeDefaultBaseSetting | undefined): void {
+  updateWorkspaceState(workspacePath, workspace => {
+    if (setting) {
+      workspace.worktreeDefaultBase = setting.mode === 'custom'
+        ? { mode: 'custom', ref: setting.ref }
+        : { mode: setting.mode };
+    } else {
+      delete workspace.worktreeDefaultBase;
+    }
   });
 }
 

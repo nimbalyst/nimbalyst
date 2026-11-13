@@ -6,6 +6,7 @@ const mocks = vi.hoisted(() => ({
   createWorktree: vi.fn(),
   getWorktreeStatus: vi.fn(),
   fetch: vi.fn(),
+  raw: vi.fn(),
   store: { create: vi.fn().mockResolvedValue(undefined), getByPath: vi.fn() },
   start: vi.fn().mockResolvedValue(undefined),
   inUse: true,
@@ -16,7 +17,9 @@ vi.mock('electron', () => ({
 }));
 vi.mock('electron-log/main', () => ({ default: { scope: () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn() }) } }));
 vi.mock('../../services/GitWorktreeService', () => ({ GitWorktreeService: class { createWorktree = mocks.createWorktree; getWorktreeStatus = mocks.getWorktreeStatus; } }));
-vi.mock('simple-git', () => ({ simpleGit: () => ({ fetch: mocks.fetch }) }));
+vi.mock('simple-git', () => ({ simpleGit: () => ({ fetch: mocks.fetch, raw: mocks.raw }) }));
+vi.mock('../../utils/ipcRegistry', () => ({ safeHandle: (name: string, fn: (...args: any[]) => Promise<any>) => mocks.handlers.set(name, fn) }));
+vi.mock('../../utils/store', () => ({ getWorktreeDefaultBase: vi.fn(), setWorktreeDefaultBase: vi.fn() }));
 vi.mock('../../services/WorktreeStore', () => ({ createWorktreeStore: () => mocks.store }));
 vi.mock('../../services/SuperLoopStore', () => ({ createSuperLoopStore: vi.fn() }));
 vi.mock('../../database/initialize', () => ({ getDatabase: () => ({}) }));
@@ -68,4 +71,21 @@ it('returns local status when the pre-archive fetch hangs', async () => {
   } finally {
     vi.useRealTimers();
   }
+});
+
+// #1958: a worktree based on `origin/main` stores that ref; the pre-status
+// fetch ran `git fetch origin origin/main`, which fails.
+it('fetches the remote branch, not the remote ref, for a remote-ref base', async () => {
+  mocks.store.getByPath.mockResolvedValue({ baseBranch: 'origin/main' });
+  mocks.raw.mockImplementation(async (args: string[]) => {
+    if (args[0] === 'remote') return 'origin\n';
+    if (args.includes('refs/remotes/origin/main^{commit}')) return 'abc123\n';
+    return '';
+  });
+  mocks.fetch.mockResolvedValue(undefined);
+  mocks.getWorktreeStatus.mockResolvedValue({ hasUncommittedChanges: false });
+
+  await mocks.handlers.get('worktree:get-status')!({}, '/project_worktrees/branch', { fetchFirst: true });
+
+  expect(mocks.fetch).toHaveBeenCalledWith(['--', 'origin', 'main']);
 });

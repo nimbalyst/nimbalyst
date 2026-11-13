@@ -160,6 +160,7 @@ Twelve built-in provider lanes, plus any agent an extension contributes. Every l
 ## Git Worktrees
 
 - Create isolated worktrees for AI coding sessions (Cmd+Alt+W)
+- Per-project default base branch for new worktrees (Project Settings > Worktrees): the remote default branch, the main checkout's current branch, or a specific branch; used by the new-worktree dialog and by agent, mobile and loop worktrees
 - Multiple sessions per worktree
 - Merge worktree into base branch
 - Rebase onto base branch

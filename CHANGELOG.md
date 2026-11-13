@@ -15,6 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 <!-- Changes to existing functionality go here -->
+- New worktrees start from the remote's default branch (such as origin/main) instead of the branch the main checkout is on, and their branches no longer track it; Project Settings > Worktrees can pick the current branch or a specific branch instead
 - The open menu bar island can be resized by dragging its left, right or bottom edge or a bottom corner; the width and the session list's maximum height are kept for the next time it opens
 - The daily cleanup of old tool output now also replaces images in tool results older than the retention window (30 days by default) with a short marker naming the image type and size, and removes the duplicate copy of a tool result that older sessions stored alongside it
 - Team guests now see only the projects they are granted, instead of reading every project like a viewer (requires the updated sync server)

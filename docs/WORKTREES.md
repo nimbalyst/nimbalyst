@@ -88,6 +88,8 @@ Manages git worktree operations using the `simple-git` library.
   - Creates branch with `worktree/` prefix (e.g., `worktree/swift-falcon`)
   - Creates worktree in `../{project_name}_worktrees/` directory
   - Handles name conflicts by appending incrementing numbers
+  - Bases the branch on `options.baseBranch` when given, otherwise on the project's default base (see [Default base branch](#default-base-branch))
+  - Always passes `--no-track`, so `worktree/<name>` never gets an upstream
   - Returns worktree metadata
 - `getWorktreeStatus(worktreePath)`: Fetches git status for a worktree
   - Returns `hasUncommittedChanges` boolean
@@ -130,6 +132,8 @@ Exposes worktree operations to the renderer process via IPC.
 - `worktree:delete` - Delete worktree and its database record
 - `worktree:list` - List all worktrees for a workspace
 - `worktree:get` - Get single worktree by ID
+- `worktree:resolve-default-base` - Resolve the default base a new worktree would get (picker pre-select, settings panel); never fetches
+- `worktree:set-default-base` - Set or clear the project's default base setting
 
 **Preload API** (`packages/electron/src/preload/index.ts`):
 ```typescript
@@ -195,16 +199,36 @@ interface WorktreeSingleProps {
 ### Creating a Worktree Session
 
 1. User clicks "New Worktree" button in agent mode
-2. `SessionHistory.tsx` calls `handleNewWorktreeSession()`
-3. IPC call to `worktree:create` with workspace path
+2. `WorktreeBaseBranchPicker` opens: it lists local and cached remote branches, pre-selects the project's default base for the owning workspace (labeled "(project default)"; a default that is not in either list, such as a detached-HEAD SHA, gets its own "Project default" row), and runs `git:fetch` in the background. After the fetch it re-resolves the default and re-selects it only if the user has not picked a branch. A failed fetch shows a note instead of failing silently.
+3. IPC call to `worktree:create` with the workspace path, the chosen base, an optional name, and the source folder for multi-root workspaces
 4. `GitWorktreeService` creates git worktree:
-   - Generates unique branch name (e.g., `worktree-01JBCD3FG2H5K6M7N8P9QR`)
-   - Creates directory: `../{project_name}_worktrees/{branch_name}/`
-   - Checks out new branch in that directory
-5. `WorktreeStore` saves worktree metadata to database
+   - Generates a unique adjective-noun name (e.g., `swift-falcon`) unless one was given
+   - Creates directory: `../{project_name}_worktrees/{name}/`
+   - Runs `git worktree add --no-track -b worktree/{name} <path> <base>`
+5. `WorktreeStore` saves worktree metadata to database. `base_branch` stores the base as resolved, which may be a remote ref such as `origin/main`
 6. AI session created with `worktreeId` set
 7. `SessionManager` passes `worktreePath` to `ClaudeCodeProvider`
 8. Claude Code operations execute in the worktree directory
+
+### Default base branch
+
+A worktree created without an explicit base (spawn_session and create_session with `useWorktree`, mobile, Blitz, Super Loop, the tip flow) gets the project's default base. The resolver is `services/worktreeBaseBranch.ts` and runs inside `GitWorktreeService.createWorktree`, so those entry points pass no base. An explicit base always wins: the picker passes the user's choice, and PR review worktrees pass the PR head.
+
+The setting is `WorkspaceState.worktreeDefaultBase` (`{ mode: 'remote-default' | 'current-branch' | 'custom'; ref? }`), edited in Project Settings > Worktrees. Unset means `remote-default`. Resolution order:
+
+- `remote-default`: pick `origin`, or the only remote if there is no `origin`. Use `<remote>/HEAD` if it points at an existing ref, then `<remote>/main`, then `<remote>/master`. With no usable remote ref (none, or a dangling `<remote>/HEAD`), use the local branch `resolveMainBranch` names (`utils/gitAgentContext.ts`), then local `main`, then local `master`, then the main checkout's current branch. Each step past the remote refs is reported as `source: 'fallback'` with a `fallbackReason`.
+- `current-branch`: the main checkout's current branch, or its commit SHA on a detached HEAD. An unborn branch (no commits) resolves to nothing, so creation throws `WorkspaceHasNoCommitsError`.
+- `custom`: the configured ref (local branch or remote ref) if it resolves to a commit in this repo; otherwise the `remote-default` order, with a reason such as `origin/develop not found locally`. For attached folders in a multi-root workspace this means a custom ref applies only where it exists.
+
+Resolution never fails worktree creation because of the setting. It does not fetch: when the resolved default is a remote ref, `createWorktree` runs one `git fetch <remote> <branch>` bounded at 5 seconds BEFORE taking the git operation lock, so other operations on the repo do not queue behind it. On timeout the fetch's git process is killed (abort signal). Creation then resolves again inside the lock and uses whatever ref is cached, logging a failed fetch.
+
+Resolved refs stay fully qualified (`refs/remotes/origin/main`, `refs/heads/main`) through the fetch and `git worktree add`, because a short `origin/main` is ambiguous when a local branch of that name exists and git would pick the local one. The short form (`origin/main`) is what `worktrees.base_branch` stores and the picker shows.
+
+An explicit base is validated before `git worktree add`: it must not start with `-` and must resolve to a commit (`rev-parse --verify --quiet <ref>^{commit}`), otherwise creation fails with `Base branch "<ref>" not found`.
+
+New branches use `--no-track`. Without it git's default `branch.autoSetupMerge` makes `worktree/<name>` track `origin/main`, and under `push.default=upstream` a bare `git push` from the worktree would push to `main`.
+
+Remote-ref bases downstream: `worktree:get-status` with `fetchFirst` splits a stored base like `origin/main` into remote and branch (checked against `git remote`, so a local branch named `origin/foo` is not misread) and runs `git fetch origin main`. Ahead/behind, diff, commits and rebase work against the remote ref as is. `mergeToMain` still targets the branch from `inferBaseBranch`, not the stored base.
 
 ### Session-Worktree Association
 

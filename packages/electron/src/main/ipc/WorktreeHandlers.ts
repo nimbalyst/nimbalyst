@@ -28,6 +28,15 @@ import { gitOperationLock } from '../services/GitOperationLock';
 import fs from 'node:fs';
 import { archiveSessionsAndDestroyProviders } from '../services/ai/archiveSessionProviderLifecycle';
 import { createWorktreeArchiveCleanup } from '../services/worktreeArchiveCleanup';
+import { safeHandle } from '../utils/ipcRegistry';
+import { sanitizeGitRepositoryEnv } from '../services/gitRepositoryEnv';
+import { getWorktreeDefaultBase, setWorktreeDefaultBase } from '../utils/store';
+import {
+  resolveWorktreeBase,
+  setWorktreeDefaultBaseProvider,
+  splitRemoteRef,
+  type WorktreeDefaultBaseSetting,
+} from '../services/worktreeBaseBranch';
 
 // Archive waits on this fetch; a stalled remote must not hang the click (#282).
 const STATUS_FETCH_TIMEOUT_MS = 15_000;
@@ -314,8 +323,26 @@ export async function archiveWorktree(worktreeId: string, workspacePath: string)
 /**
  * Register worktree IPC handlers
  */
+/**
+ * Repository a worktree is branched from. A workspace can span several roots,
+ * so the caller names which one; unnamed falls back to the primary root's
+ * repo, which is the only repo a single-folder workspace has.
+ */
+function resolveSourceRepo(workspacePath: string, sourceFolderPath?: string): string {
+  return (sourceFolderPath ? listReposForRoot(sourceFolderPath)[0] : undefined)
+    ?? resolveDefaultRepo(workspacePath)
+    ?? workspacePath;
+}
+
+const DEFAULT_BASE_MODES: ReadonlySet<string> = new Set(['remote-default', 'current-branch', 'custom']);
+
 export function registerWorktreeHandlers(): void {
   const gitWorktreeService = new GitWorktreeService();
+
+  // Every createWorktree caller without an explicit base (spawn_session,
+  // mobile, Blitz, Super Loop, the tip flow) reads the project setting through
+  // this, whichever GitWorktreeService instance it constructed.
+  setWorktreeDefaultBaseProvider(getWorktreeDefaultBase);
 
   // In-flight request dedup for worktree:get-status -- if multiple sessions share
   // the same worktree path, only one set of git commands runs at a time.
@@ -337,18 +364,9 @@ export function registerWorktreeHandlers(): void {
     const MAX_RETRIES = 3;
     const name = options?.name;
     const baseBranch = options?.baseBranch;
-    /**
-     * Repository the worktree is branched from. A workspace can span several
-     * roots, so the caller names which one; unnamed falls back to the primary
-     * root's repo, which is the only repo a single-folder workspace has.
-     *
-     * The worktree's IDENTITY stays `workspacePath` (sessions, kanban and
-     * trackers key off it) -- only the git operations move to this repo.
-     */
-    const sourceRepo =
-      (options?.sourceFolderPath ? listReposForRoot(options.sourceFolderPath)[0] : undefined)
-      ?? resolveDefaultRepo(workspacePath)
-      ?? workspacePath;
+    // The worktree's IDENTITY stays `workspacePath` (sessions, kanban and
+    // trackers key off it) -- only the git operations move to this repo.
+    const sourceRepo = resolveSourceRepo(workspacePath, options?.sourceFolderPath);
 
     // Retry loop for handling race conditions where concurrent requests pick the same name
     for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
@@ -405,7 +423,12 @@ export function registerWorktreeHandlers(): void {
 
         // Create the git worktree
         const gitCreateStartTime = Date.now();
-        const created = await gitWorktreeService.createWorktree(sourceRepo, { name: finalName, baseBranch });
+        const created = await gitWorktreeService.createWorktree(sourceRepo, {
+          name: finalName,
+          baseBranch,
+          // The project setting is keyed by the workspace, not the attached repo.
+          settingsWorkspacePath: workspacePath,
+        });
         // The service reports the repo it branched from as `projectPath`;
         // re-anchor to the workspace so identity stays on the primary root and
         // record the source repo separately.
@@ -450,7 +473,10 @@ export function registerWorktreeHandlers(): void {
         analyticsService.sendEvent('worktree_created', {
           duration_ms: totalDuration,
           retry_count: attempt - 1,
-          base_branch_source: baseBranch ? 'picker' : 'default',
+          // 'picker' for an explicit base; otherwise where the resolver took
+          // the default from (project-setting, remote-default, current-branch,
+          // fallback). 'default' predates the resolver.
+          base_branch_source: baseBranch ? 'picker' : (worktree.baseBranchSource ?? 'default'),
         });
 
         return {
@@ -513,6 +539,71 @@ export function registerWorktreeHandlers(): void {
   });
 
   /**
+   * Resolve the default base a new worktree would get, for the picker's
+   * pre-selection and the Worktrees settings panel. Never fetches.
+   *
+   * Returns the effective default under the current setting, plus the remote
+   * default and the main checkout's current branch so the panel can show what
+   * each option means.
+   */
+  safeHandle('worktree:resolve-default-base', async (
+    _event,
+    workspacePath: string,
+    sourceFolderPath?: string,
+  ) => {
+    if (!workspacePath) throw new Error('workspacePath is required');
+    const sourceRepo = resolveSourceRepo(workspacePath, sourceFolderPath);
+    const setting = getWorktreeDefaultBase(workspacePath);
+    try {
+      const git = createGit(sourceRepo, {}, sanitizeGitRepositoryEnv(process.env));
+      const [resolved, remoteDefault, currentBranch] = await Promise.all([
+        resolveWorktreeBase(git, setting),
+        resolveWorktreeBase(git, { mode: 'remote-default' }),
+        resolveWorktreeBase(git, { mode: 'current-branch' }),
+      ]);
+      return {
+        success: true as const,
+        setting: setting ?? null,
+        resolved,
+        remoteDefault,
+        currentBranch: currentBranch.displayRef || null,
+      };
+    } catch (error) {
+      logger.warn('Failed to resolve default worktree base', { workspacePath, sourceRepo, error });
+      return {
+        success: false as const,
+        setting: setting ?? null,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  });
+
+  /**
+   * Set (or clear with null) the project's default worktree base. Replaces
+   * the whole value: `workspace:update-state` deep-merges, which would keep a
+   * stale `ref` after switching away from 'custom'.
+   */
+  safeHandle('worktree:set-default-base', async (
+    _event,
+    workspacePath: string,
+    setting: WorktreeDefaultBaseSetting | null,
+  ) => {
+    if (!workspacePath) throw new Error('workspacePath is required');
+    if (setting !== null) {
+      if (!setting || !DEFAULT_BASE_MODES.has(setting.mode)) {
+        throw new Error('setting.mode must be remote-default, current-branch or custom');
+      }
+      if (setting.mode === 'custom') {
+        const ref = typeof setting.ref === 'string' ? setting.ref.trim() : '';
+        if (!ref || ref.startsWith('-')) throw new Error('A custom default base needs a branch name');
+        setting = { mode: 'custom', ref };
+      }
+    }
+    setWorktreeDefaultBase(workspacePath, setting ?? undefined);
+    return { success: true as const, setting: getWorktreeDefaultBase(workspacePath) ?? null };
+  });
+
+  /**
    * Get git status for a worktree
    *
    * @param worktreePath - Path to the worktree directory
@@ -548,8 +639,14 @@ export function registerWorktreeHandlers(): void {
         if (options?.fetchFirst && baseBranch) {
           try {
             const git = createGit(worktreePath, { timeout: { block: STATUS_FETCH_TIMEOUT_MS } });
+            // A stored base of `origin/main` must fetch `origin main`, not
+            // `origin origin/main` (which fails). A local base fetches the
+            // same-named branch from origin, as before.
+            const remoteBase = await splitRemoteRef(git, baseBranch);
             await withTimeout(
-              git.fetch(['origin', baseBranch]),
+              remoteBase
+                ? git.fetch(['--', remoteBase.remote, remoteBase.branch])
+                : git.fetch(['--', 'origin', baseBranch]),
               STATUS_FETCH_TIMEOUT_MS,
               `git fetch timed out after ${STATUS_FETCH_TIMEOUT_MS}ms`,
             );

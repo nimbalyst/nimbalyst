@@ -81,7 +81,7 @@ export async function getAgentGitContext(workspacePath: string): Promise<string 
  * The repo's main branch: what `origin/HEAD` points at when the remote has been
  * probed, otherwise whichever of the conventional names actually exists.
  */
-async function resolveMainBranch(git: { raw(args: string[]): Promise<string> }): Promise<string> {
+export async function resolveMainBranch(git: { raw(args: string[]): Promise<string> }): Promise<string> {
   try {
     const ref = (await git.raw(['symbolic-ref', '--short', 'refs/remotes/origin/HEAD'])).trim();
     // "origin/main" -> "main"

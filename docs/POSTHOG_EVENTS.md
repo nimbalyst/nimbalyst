@@ -90,7 +90,7 @@ The renderer resolves both from the main process rather than re-deriving them fr
 
 | Event Name | File(s) | Trigger | Properties | First Added (Public) | Significant Changes |
 | --- | --- | --- | --- | --- | --- |
-| `worktree_created` | `WorktreeHandlers.ts:115` | User creates a new git worktree | `duration_ms`<br/>`retry_count`<br/>`base_branch_source` (`default` \| `picker`) | (pending release) | (pending release): Added base_branch_source (#264) |
+| `worktree_created` | `WorktreeHandlers.ts:473` | User creates a new git worktree | `duration_ms`<br/>`retry_count`<br/>`base_branch_source` (`picker` for an explicit base; otherwise where the default came from: `remote-default` \| `project-setting` \| `current-branch` \| `fallback`; `default` only from builds before the resolver) | (pending release) | (pending release): Added base_branch_source (#264); (pending release): default-base values replace `default` (#1958) |
 | `worktree_archived` | `WorktreeHandlers.ts:897` | User archives a worktree (sessions archived immediately, cleanup queued) | `session_count`<br/>`worktree_age_days`<br/>`failed_sessions`<br/>`has_uncommitted_changes`<br/>`has_unmerged_changes` | (pending release as of 6d0b51b5) | (pending release): Added has_uncommitted_changes and has_unmerged_changes |
 | `worktree_archive_completed` | `WorktreeHandlers.ts:921` | Worktree cleanup completes successfully | `session_count`<br/>`duration_ms` | (pending release as of 6d0b51b5) |  |
 | `worktree_archive_failed` | `WorktreeHandlers.ts:937, 961` | Worktree archive fails | `error_type`<br/>`stage` (archiving-sessions/removing-worktree) | (pending release as of 6d0b51b5) |  |
