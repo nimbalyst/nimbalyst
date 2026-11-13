@@ -12,6 +12,7 @@ import { CommitHoverCard } from './CommitHoverCard';
 import { CommitContextMenu } from './CommitContextMenu';
 import { CommitDetailContent, type CommitDetail } from './CommitDetailContent';
 import { BranchPicker } from './BranchPicker';
+import { BranchSwitcher, type CreateBranchRequest } from './BranchSwitcher';
 import { ALL_REPOS, RepoPicker } from './RepoPicker';
 import { ChangesTab } from './ChangesTab';
 import { OutputTab } from './OutputTab';
@@ -180,7 +181,10 @@ export function GitLogPanel({ host }: PanelHostProps) {
   const [unfilteredCommits, setUnfilteredCommits] = useState<GitCommit[]>([]);
   const [status, setStatus] = useState<GitStatusResult | null>(null);
   const [branches, setBranches] = useState<string[]>([]);
-  const [selectedBranch, setSelectedBranch] = useState<string>('');
+  // #1959: the Log follows the checked-out branch unless the user pins
+  // another one in the "Showing:" filter. null means follow.
+  const [logBranchPin, setLogBranchPin] = useState<string | null>(null);
+  const [createBranchRequest, setCreateBranchRequest] = useState<CreateBranchRequest | null>(null);
   const [searchFilter, setSearchFilter] = useState<string>('');
   const [loading, setLoading] = useState(true);
   const [actionLoading, setActionLoading] = useState<string | null>(null);
@@ -424,9 +428,6 @@ export function GitLogPanel({ host }: PanelHostProps) {
       const result = await ipc.invoke('git:branches', requestedRepo) as GitBranchResult;
       if (repoPathRef.current !== requestedRepo) return;
       setBranches(result.branches);
-      if (result.current) {
-        setSelectedBranch(current => current || result.current);
-      }
     } catch {
       // Non-fatal: branch selector stays empty
     }
@@ -441,9 +442,6 @@ export function GitLogPanel({ host }: PanelHostProps) {
 
   const applyStatus = useCallback((result: GitStatusResult) => {
     setStatus(result);
-    if (result.branch) {
-      setSelectedBranch(current => current || result.branch);
-    }
   }, []);
 
   const loadStatus = useCallback(async () => {
@@ -460,24 +458,30 @@ export function GitLogPanel({ host }: PanelHostProps) {
     }
   }, [applyStatus, repoPath]);
 
+  const checkedOutBranch = status?.branch ?? '';
+  const viewedBranch = logBranchPin ?? checkedOutBranch;
+
+  // Only the newest `git:log` request may paint. A slow request for the
+  // branch the Log used to follow (or another repo) is dropped on arrival.
+  const logGenerationRef = useRef(0);
   const loadCommits = useCallback(async () => {
-    const requestedRepo = repoPath;
+    const generation = ++logGenerationRef.current;
     setLoading(true);
     try {
-      const result = await ipc.invoke('git:log', requestedRepo, 100, {
-        branch: selectedBranch || undefined,
+      const result = await ipc.invoke('git:log', repoPath, 100, {
+        branch: viewedBranch || undefined,
         aheadBehind: true,
       }) as GitCommit[];
 
-      if (repoPathRef.current !== requestedRepo) return;
+      if (generation !== logGenerationRef.current) return;
       setUnfilteredCommits(result);
     } catch (err) {
       console.error('[GitLogPanel] Failed to load commits:', err);
     } finally {
       // A stale response must not clear the spinner the current request set.
-      if (repoPathRef.current === requestedRepo) setLoading(false);
+      if (generation === logGenerationRef.current) setLoading(false);
     }
-  }, [repoPath, selectedBranch]);
+  }, [repoPath, viewedBranch]);
 
   // Switching repos has to drop the previous repo's branch selection: `git:log`
   // against a branch the new repo does not have returns nothing at all.
@@ -485,7 +489,7 @@ export function GitLogPanel({ host }: PanelHostProps) {
   useEffect(() => {
     if (previousRepoRef.current === repoPath) return;
     previousRepoRef.current = repoPath;
-    setSelectedBranch('');
+    setLogBranchPin(null);
     setStatus(null);
     setSelectedHash(null);
   }, [repoPath, setSelectedHash]);
@@ -667,6 +671,13 @@ export function GitLogPanel({ host }: PanelHostProps) {
     setChangesRefreshToken(t => t + 1);
   }, [loadStatus, loadBranches, loadCommits]);
 
+  // GitRefWatcher skips repos that started detached, so a switch away from a
+  // detached HEAD may never raise git:status-changed; refresh explicitly.
+  const handleBranchSwitched = useCallback((branch: string) => {
+    showMessage(`Switched to ${branch}`);
+    handleRefresh();
+  }, [showMessage, handleRefresh]);
+
   const clearHideTimer = useCallback(() => {
     if (hideTimerRef.current) { clearTimeout(hideTimerRef.current); hideTimerRef.current = null; }
   }, []);
@@ -827,11 +838,13 @@ export function GitLogPanel({ host }: PanelHostProps) {
             onRequestBranches={loadRepoBranches}
           />
 
-          {/* Branch selector */}
-          <BranchPicker
-            branches={branches}
-            current={selectedBranch}
-            onChange={setSelectedBranch}
+          {/* Checked-out branch: shows and switches it (#1959) */}
+          <BranchSwitcher
+            repoPath={repoPath}
+            currentBranch={checkedOutBranch}
+            createRequest={createBranchRequest}
+            onSwitched={handleBranchSwitched}
+            onOpenChanges={() => setActiveTab('changes')}
           />
 
           {/* Remote status */}
@@ -980,6 +993,14 @@ export function GitLogPanel({ host }: PanelHostProps) {
             onChange={event => setSearchFilter(event.target.value)}
             spellCheck={false}
           />
+          <BranchPicker
+            branches={branches}
+            current={viewedBranch}
+            onChange={(branch) => setLogBranchPin(branch === checkedOutBranch ? null : branch)}
+            checkedOut={checkedOutBranch}
+            pinned={logBranchPin !== null}
+            onFollowCheckedOut={() => setLogBranchPin(null)}
+          />
           {searchFilter && (
             <>
               <span className="git-log-search-count">
@@ -1009,6 +1030,11 @@ export function GitLogPanel({ host }: PanelHostProps) {
           onClose={() => setContextMenu(null)}
           onMessage={showMessage}
           onRefresh={handleRefresh}
+          onCreateBranch={(hash) => setCreateBranchRequest({
+            startPoint: hash,
+            startLabel: hash.slice(0, 7),
+            nonce: Date.now(),
+          })}
         />
       )}
 

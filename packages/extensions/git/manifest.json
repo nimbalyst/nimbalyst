@@ -1,7 +1,7 @@
 {
   "id": "com.nimbalyst.git",
   "name": "Git",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "description": "Git log viewer with push, pull, and rebase support",
   "author": "Nimbalyst",
   "main": "dist/index.js",
@@ -9,7 +9,7 @@
   "apiVersion": "1.0.0",
   "requiredReleaseChannel": "alpha",
   "marketplace": {
-    "changelog": "1.0.4: The Log hover card no longer blinks while the cursor rests on it.\n1.0.3: One flat Changes tab, per-repository git in projects that span several folders, the AI session behind each commit in the Log, running git commands shown in the title bar, and Refresh now reloads the Changes tab.\n1.0.2: Keep command output across reloads, search Git history more effectively, and group Windows paths consistently.\n1.0.1: Redesigned Changes pane with inline diff peek, per-workspace tab memory, detached-HEAD handling, and Output log fixes.",
+    "changelog": "1.0.5: Switch branches from the toolbar branch button, including remote-only branches and new branches; branches checked out in another worktree open that worktree's session instead. The Log's branch filter now follows the checked-out branch unless you pin another one. Create Branch in the Log context menu works again.\n1.0.4: The Log hover card no longer blinks while the cursor rests on it.\n1.0.3: One flat Changes tab, per-repository git in projects that span several folders, the AI session behind each commit in the Log, running git commands shown in the title bar, and Refresh now reloads the Changes tab.\n1.0.2: Keep command output across reloads, search Git history more effectively, and group Windows paths consistently.\n1.0.1: Redesigned Changes pane with inline diff peek, per-workspace tab memory, detached-HEAD handling, and Output log fixes.",
     "categories": ["developer-tools"],
     "tags": ["git", "version-control", "log", "commit", "branch", "diff"],
     "icon": "call_split",

@@ -50,6 +50,17 @@ import {
 } from '../services/GitStatusRefreshCoordinator';
 import { isReadOnlyGitCommandLine } from '../services/gitCommandClassifier';
 import { validateGitCwd, validateGitOperand, validateGitOptions, validatedGitRebaseArgs } from '../services/gitOperandValidation';
+import {
+  defaultReadGit,
+  listBranchesDetailed,
+  queryWorktreesByPaths,
+  switchBranch,
+  switchPreflight,
+  validateSwitchRequest,
+  type BranchSwitchDeps,
+} from '../services/gitBranchSwitch';
+import { getDatabase } from '../database/initialize';
+import { getSessionStateManager } from '@nimbalyst/runtime/ai/server/SessionStateManager';
 
 function isGitRepository(repoPath: string): boolean {
   try {
@@ -1260,6 +1271,61 @@ export function registerGitHandlers(): void {
       return result;
     }
   );
+
+  // ---- #1959: branch switcher ----
+
+  /** Main-process lookups the switcher needs: worktree records and running sessions. */
+  const branchSwitchDeps = (): BranchSwitchDeps => ({
+    readGit: defaultReadGit,
+    // One query for every worktree path. No database means ownership is
+    // unknown, which preflight treats as "could not verify", not "unmanaged".
+    lookupWorktrees: async (paths) => {
+      const db = getDatabase();
+      if (!db) throw new Error('Database not initialized');
+      return queryWorktreesByPaths(db, paths);
+    },
+    listRunningSessions: async () => {
+      const ids = getSessionStateManager().getRunningSessionIds();
+      if (ids.length === 0) return [];
+      const sessions = await AISessionsRepository.getMany(ids);
+      return sessions.map(session => ({
+        id: session.id,
+        title: session.title || 'Untitled session',
+        workspacePath: session.workspacePath,
+        worktreeId: session.worktreeId,
+      }));
+    },
+  });
+
+  safeHandle('git:list-branches-detailed', async (_event, repoPath: string) => {
+    validateGitCwd(repoPath, 'repoPath');
+    if (!isGitRepository(repoPath)) throw new Error('Not a git repository');
+    return listBranchesDetailed(repoPath, branchSwitchDeps());
+  });
+
+  safeHandle('git:switch-preflight', async (_event, repoPath: string, target: unknown) => {
+    validateGitCwd(repoPath, 'repoPath');
+    validateSwitchRequest(target);
+    if (!isGitRepository(repoPath)) throw new Error('Not a git repository');
+    return switchPreflight(repoPath, target, branchSwitchDeps());
+  });
+
+  // Re-runs every preflight check inside the lock; `confirmToken` comes from
+  // the preflight the user confirmed and must still match the fresh state.
+  safeHandle('git:switch-branch', async (_event, repoPath: string, request: unknown, confirmToken?: unknown) => {
+    validateGitCwd(repoPath, 'repoPath');
+    validateSwitchRequest(request);
+    if (confirmToken !== undefined && typeof confirmToken !== 'string') throw new Error('confirmToken must be a string');
+    if (!isGitRepository(repoPath)) return { success: false, error: 'Not a git repository' };
+
+    return gitOperationLock.withLock(repoPath, 'git:switch-branch', () => switchBranch(repoPath, request, {
+      ...branchSwitchDeps(),
+      runSwitch: async (cwd, args) => {
+        const result = await runGitCommandStreaming(operationLog, cwd, args);
+        return result.success ? { success: true } : { success: false, error: result.error };
+      },
+    }, confirmToken));
+  });
 
   log.info('Git IPC handlers registered');
 }

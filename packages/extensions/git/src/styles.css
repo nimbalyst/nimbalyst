@@ -2400,3 +2400,283 @@
     flex: 0 0 200px;
   }
 }
+
+/* #1959 Branch switcher (toolbar): checked-out branch, switch, new branch */
+.git-branch-switcher-trigger-label {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-align: left;
+}
+
+.git-branch-switcher {
+  z-index: 10000;
+  display: flex;
+  flex-direction: column;
+  width: 380px;
+  max-width: calc(100vw - 16px);
+  background: var(--nim-bg-secondary);
+  border: 1px solid var(--nim-border);
+  border-radius: 6px;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.45);
+  font-size: 12px;
+  color: var(--nim-text);
+  overflow: hidden;
+}
+
+.git-branch-switcher-search {
+  display: flex;
+  padding: 8px 8px 4px;
+}
+
+.git-branch-switcher-search .git-log-search-input {
+  flex: 1;
+}
+
+.git-branch-switcher-fetch {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 10px 4px;
+  color: var(--nim-text-faint);
+  font-size: 11px;
+}
+
+.git-branch-switcher-list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding-bottom: 4px;
+}
+
+.git-branch-switcher-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 10px;
+  cursor: pointer;
+}
+
+.git-branch-switcher-row--active {
+  background: var(--nim-bg-active);
+}
+
+.git-branch-switcher-row--current {
+  cursor: default;
+}
+
+.git-branch-switcher-row--current .git-branch-switcher-name {
+  color: var(--nim-primary);
+}
+
+.git-branch-switcher-row--occupied .git-branch-switcher-main {
+  opacity: 0.55;
+}
+
+.git-branch-switcher-check {
+  width: 12px;
+  flex-shrink: 0;
+  color: var(--nim-primary);
+  font-size: 11px;
+}
+
+.git-branch-switcher-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.git-branch-switcher-name,
+.git-branch-switcher-sub {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.git-branch-switcher-sub {
+  color: var(--nim-text-faint);
+  font-size: 11px;
+}
+
+.git-branch-switcher-right {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 1;
+  min-width: 0;
+  max-width: 55%;
+}
+
+.git-branch-switcher-tag {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 1px 6px;
+  border: 1px solid var(--nim-border);
+  border-radius: 8px;
+  color: var(--nim-text-muted);
+  font-size: 10px;
+}
+
+.git-branch-switcher-link {
+  flex-shrink: 0;
+  padding: 0 2px;
+  background: none;
+  border: none;
+  color: var(--nim-primary);
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.git-branch-switcher-link:disabled {
+  color: var(--nim-text-faint);
+  cursor: default;
+}
+
+.git-branch-switcher-footer {
+  border-top: 1px solid var(--nim-border);
+  padding: 4px;
+}
+
+.git-branch-switcher-footer-action {
+  width: 100%;
+  padding: 5px 8px;
+  background: none;
+  border: none;
+  border-radius: 4px;
+  color: var(--nim-text-muted);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.git-branch-switcher-footer-action:hover {
+  background: var(--nim-bg-active);
+  color: var(--nim-text);
+}
+
+.git-branch-switcher-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px 12px;
+  overflow-y: auto;
+}
+
+.git-branch-switcher-busy {
+  color: var(--nim-text-muted);
+}
+
+.git-branch-switcher-card-title {
+  margin: 0;
+  font-weight: 600;
+}
+
+.git-branch-switcher-card-body {
+  margin: 0;
+  color: var(--nim-text-muted);
+  line-height: 1.45;
+  user-select: text;
+}
+
+.git-branch-switcher-card code {
+  font-family: var(--nim-font-mono, monospace);
+  font-size: 11px;
+  color: var(--nim-text);
+}
+
+.git-branch-switcher-files {
+  max-height: 140px;
+  overflow-y: auto;
+  border: 1px solid var(--nim-border);
+  border-radius: 4px;
+  background: var(--nim-bg);
+  padding: 4px 0;
+  user-select: text;
+}
+
+.git-branch-switcher-file {
+  padding: 1px 8px;
+  font-family: var(--nim-font-mono, monospace);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.git-branch-switcher-file--more {
+  color: var(--nim-text-faint);
+  font-family: inherit;
+}
+
+.git-branch-switcher-warning {
+  display: flex;
+  gap: 6px;
+  margin: 0 8px 4px;
+  padding: 6px 8px;
+  border: 1px solid color-mix(in srgb, var(--nim-warning) 45%, transparent);
+  border-radius: 4px;
+  background: color-mix(in srgb, var(--nim-warning) 10%, transparent);
+  color: var(--nim-text);
+  line-height: 1.4;
+}
+
+.git-branch-switcher-card .git-branch-switcher-warning {
+  margin: 0;
+}
+
+.git-branch-switcher-glyph {
+  flex-shrink: 0;
+  font-weight: 700;
+  color: var(--nim-warning);
+}
+
+.git-branch-switcher-refusal-line {
+  display: flex;
+  gap: 6px;
+  line-height: 1.45;
+}
+
+.git-branch-switcher-refusal .git-branch-switcher-glyph {
+  color: var(--nim-error);
+}
+
+.git-branch-switcher-error {
+  color: var(--nim-error);
+  white-space: pre-wrap;
+  word-break: break-word;
+  user-select: text;
+}
+
+.git-branch-switcher-btn-row {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.git-branch-switcher-primary {
+  background: var(--nim-primary);
+  border-color: var(--nim-primary);
+  color: var(--nim-on-primary);
+}
+
+.git-log-action-btn.git-branch-switcher-primary:hover:not(:disabled) {
+  background: var(--nim-primary);
+  color: var(--nim-on-primary);
+  filter: brightness(1.1);
+}
+
+.git-branch-switcher-field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  color: var(--nim-text-muted);
+  font-size: 11px;
+}
+
+/* Log filter ("Showing: <branch>") beside the Log search */
+.git-log-branch-filter-prefix {
+  color: var(--nim-text-faint);
+}

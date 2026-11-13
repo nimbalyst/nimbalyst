@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 <!-- New features go here -->
+- The Git panel's branch button switches branches: search local and remote branches (a remote-only branch gets a local tracking branch) or start a new one; uncommitted changes come along, a switch git refuses changes nothing, a running agent session in the checkout asks for confirmation first, and a branch checked out in another worktree offers to open that worktree's session
 - Workstreams: a named group in the session list, shown with a folder icon, that holds sessions as peers without making one of them the parent. Create one from the New menu or with "Move to workstream..." on one or several selected sessions, drag sessions onto it, or start a session while it is selected. A workstream holding a single session shows as a group only on the desktop that created it
 - `nim wiki publish` copies a project's local wiki into a team project for review while the files stay the source: each publish updates the team pages, never overwrites a page someone edited there, and moves pages deleted locally to the team Trash. Reviewers are invited with the new Commenter project role, which reads and comments on that one project but cannot edit pages, and `nim wiki comments` lists their open comments with the local file each belongs to (requires the updated sync server)
 
@@ -23,6 +24,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 <!-- Bug fixes go here -->
+- "Create Branch..." in the Git panel's commit menu did nothing; it now opens a form to name the branch
 - In Files mode, the chat's "Context:" label kept naming a file after its tab was closed; it now follows the active tab and disappears when no tab is open
 - Moving a session under another session on desktop, by dragging or with "Move under...", recorded the new parent as its manager; a move now leaves the manager as it was unless the session leaves its manager's tree
 - On the SQLite backend, database backups no longer stop rotating after the database shrinks to under half its previous size while still holding its sessions; a smaller backup is now rejected only when it also holds fewer sessions than the current one

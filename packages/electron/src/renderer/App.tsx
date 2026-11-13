@@ -78,7 +78,7 @@ import {
   setSelectedWorkstreamAtom,
   initSessionList,
 } from './store/atoms/sessions';
-import { dispatchCreateNewSession } from './store/actions/sessionHistoryActions';
+import { dispatchCreateNewSession, openWorktreeSessionActionAtom } from './store/actions/sessionHistoryActions';
 import { openSessionInOwningProject } from './store/actions/sessionNotificationNavigation';
 import { NavigationGutter } from './components/NavigationGutter';
 // NOTE: useTabs and useTabNavigation removed - EditorMode manages tabs now
@@ -2345,6 +2345,23 @@ export default function App() {
 
     window.addEventListener('open-ai-session', handleOpenAiSession as unknown as EventListener);
     return () => window.removeEventListener('open-ai-session', handleOpenAiSession as unknown as EventListener);
+  }, [setActiveMode]);
+
+  // #1959: the Git panel's branch switcher asks to open the worktree session
+  // that already has a branch checked out, instead of switching to it.
+  useEffect(() => {
+    const handleOpenWorktreeSession = async (event: CustomEvent<{ worktreeId?: string }>) => {
+      const worktreeId = event.detail?.worktreeId;
+      if (!worktreeId) return;
+      try {
+        const sessionId = await store.set(openWorktreeSessionActionAtom, worktreeId);
+        if (sessionId) setActiveMode('agent');
+      } catch (error) {
+        console.error('[App] Failed to open worktree session:', error);
+      }
+    };
+    window.addEventListener('nimbalyst:open-worktree-session', handleOpenWorktreeSession as unknown as EventListener);
+    return () => window.removeEventListener('nimbalyst:open-worktree-session', handleOpenWorktreeSession as unknown as EventListener);
   }, [setActiveMode]);
 
   // Receive explicit git-extension selections and seed a new standalone commit session.
