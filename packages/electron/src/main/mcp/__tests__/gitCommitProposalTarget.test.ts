@@ -214,3 +214,34 @@ it('always asks for manual approval for a sibling worktree target, even with aut
   await answerWidget({ action: 'cancelled' });
   await pending;
 });
+
+it('#1955: a flagged file under an expanded directory turns auto-commit into manual review and is stored for the widget', async () => {
+  mocks.target.mockResolvedValue({
+    workspacePath: '/worktree', repoPath: '/worktree',
+    files: ['/worktree/design/a.txt', '/worktree/design/b.txt', '/worktree/notes.md'],
+    fileDetails: [
+      { path: '/worktree/design/a.txt', status: 'added', fromDirectory: 'design/' },
+      { path: '/worktree/design/b.txt', status: 'deleted', fromDirectory: 'design/', otherSession: { ownership: 'other-session', sessionId: 'other', sessionTitle: 'Other work' } },
+      { path: '/worktree/notes.md' },
+    ],
+    expansion: { requestedPaths: ['/worktree/design', '/worktree/notes.md'], excludePaths: ['design/x'], expandedFrom: { 'design/': 2 }, unmatchedExcludes: ['design/x'] },
+  });
+  const pending = handleGitCommitProposal({ filesToStage: ['design', { path: 'notes.md', status: 'modified' }], excludePaths: ['design/x'], commitMessage: 'test', reasoning: 'r' }, 'session', '/parent', {});
+  await vi.waitFor(() => expect(proposalRow()).toBeDefined());
+  expect(mocks.target).toHaveBeenCalledWith('session', '/parent', ['design', 'notes.md'], undefined, { excludePaths: ['design/x'] });
+  expect(mocks.commit).not.toHaveBeenCalled();
+  expect(proposalRow()).toMatchObject({
+    autoApproved: false,
+    filesToStage: [
+      { path: '/worktree/design/a.txt', status: 'added', fromDirectory: 'design/' },
+      { path: '/worktree/design/b.txt', status: 'deleted', fromDirectory: 'design/', otherSession: { sessionId: 'other', sessionTitle: 'Other work' } },
+      { path: '/worktree/notes.md', status: 'modified' },
+    ],
+    requestedPaths: ['/worktree/design', '/worktree/notes.md'],
+    excludePaths: ['design/x'],
+    expandedFrom: { 'design/': 2 },
+    manualReviewReason: expect.stringContaining('edited by another session'),
+  });
+  await answerWidget({ action: 'committed', commitHash: 'abc', filesCommitted: ['/worktree/design/a.txt'] });
+  expect(text(await pending)).toContain('excludePaths matched nothing: design/x.');
+});

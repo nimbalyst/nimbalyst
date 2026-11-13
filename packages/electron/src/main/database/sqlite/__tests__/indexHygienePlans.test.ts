@@ -25,6 +25,7 @@ vi.mock('electron', async () => ({
 
 import { SQLiteDatabase } from '../SQLiteDatabase';
 import { latestAssistantTextSql } from '../../../tray/sessionSnippets';
+import { createPGLiteSessionFileStore } from '../../../services/PGLiteSessionFileStore';
 
 const SCHEMA_DIR = path.resolve(__dirname, '..', 'schemas');
 
@@ -137,6 +138,30 @@ describe('tray snippet query', () => {
 });
 
 describe('session_files readers', () => {
+  // #1955: commit-proposal ownership flags look up every expanded file in one query.
+  it('getSessionsByFiles runs on better-sqlite3 and seeks a (workspace_id, file_path) index', async () => {
+    const store = createPGLiteSessionFileStore(sqlite);
+    const link = (sessionId: string, workspaceId: string, filePath: string, linkType: 'edited' | 'read' = 'edited') =>
+      store.addFileLink({ sessionId, workspaceId, filePath, linkType, timestamp: Date.now(), metadata: {} });
+    await link('own-1', '/proj', '/proj/a.txt');
+    await link('own-2', '/proj/wt', '/proj/wt/b.txt');
+    await link('own-3', '/proj', '/proj/a.txt', 'read');
+    await link('own-4', '/elsewhere', '/proj/a.txt');
+    await link('own-5', '/proj', '/proj/c.txt');
+
+    const rows = await store.getSessionsByFiles!(['/proj', '/proj/wt'], ['/proj/a.txt', '/proj/wt/b.txt', '/proj/missing.txt'], 'edited');
+    expect(rows.map(row => `${row.sessionId}:${row.filePath}`).sort()).toEqual(['own-1:/proj/a.txt', 'own-2:/proj/wt/b.txt']);
+
+    const plan = await planFor(
+      `SELECT DISTINCT session_id, file_path FROM session_files
+        WHERE workspace_id = ANY($1::text[]) AND file_path = ANY($2::text[]) AND link_type = $3`,
+      [['/proj', '/proj/wt'], ['/proj/a.txt', '/proj/wt/b.txt'], 'edited'],
+    );
+    // Seeks on all three equality columns; the IN lists become index probes, not a table scan.
+    expectSearch(plan, 'session_files', 'idx_session_files_uncommitted_lookup');
+    expect(plan).toContain('(workspace_id=? AND link_type=? AND file_path=?)');
+  });
+
   it('per-session edited rows (ToolCallMatcher) use idx_session_files_unique', async () => {
     const plan = await planFor(
       `SELECT id, file_path, EXTRACT(EPOCH FROM timestamp) * 1000 AS timestamp_ms, metadata

@@ -22,11 +22,13 @@ This skill is for the "Commit with AI" feature which provides an interactive com
 
 2. **Get session-edited files (fallback only)**
    Only if no file list was provided in the prompt:
-   Call `mcp__nimbalyst__get_session_edited_files` to get ALL files you edited during this AI session, then cross-reference with git status.
+   Call `mcp__nimbalyst__get_session_edited_files` to get ALL files you edited during this AI session, then cross-reference with `git status --porcelain -uall` (`-uall` lists every untracked file instead of collapsing a folder to `dir/`).
 
 3. **Propose the commit**
    Call `mcp__nimbalyst__developer_git_commit_proposal` with:
    - `filesToStage`: ALL session-edited files that have changes (do not cherry-pick a subset)
+     A directory path is allowed: it expands to every modified, deleted and untracked non-ignored file under it, like `git add <dir>`. The user sees the expanded list, and files under it edited only by other sessions arrive unchecked (files this session also edited stay checked).
+   - `excludePaths` (optional): literal files or directory prefixes to leave out after expansion. No globs.
    - `commitMessage`: A well-crafted commit message following the guidelines below
    - `reasoning`: Explanation of why these files were selected
 

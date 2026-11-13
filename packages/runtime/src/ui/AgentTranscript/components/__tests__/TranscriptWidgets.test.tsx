@@ -1408,9 +1408,9 @@ describe('GitCommitConfirmationWidget', () => {
       ' line6',
     ].join('\n') + '\n';
 
-    async function renderWithDiffs(overrides: Record<string, unknown> = {}) {
+    async function renderWithDiffs(overrides: Record<string, unknown> = {}, args?: Record<string, unknown>) {
       const { interactiveWidgetHostAtom } = await import('../../../../store/atoms/interactiveWidgetHost');
-      const message = makeToolMessage('git_commit_proposal', {
+      const message = makeToolMessage('git_commit_proposal', args ?? {
         commitMessage: 'perf: only my hunk',
         filesToStage: [{ path: 'shared.txt', status: 'modified' }],
       });
@@ -1442,17 +1442,21 @@ describe('GitCommitConfirmationWidget', () => {
         ...overrides,
       });
 
-      render(
+      const view = (msg: typeof message) => (
         <JotaiProvider store={testStore}>
           <GitCommitConfirmationWidget
-            message={message}
+            message={msg}
             isExpanded={false}
             onToggle={() => {}}
             sessionId="hunk-session"
           />
         </JotaiProvider>
       );
-      return { gitCommit };
+      const { rerender } = render(view(message));
+      /** Same tool call, new authoritative arguments (e.g. the host's expanded list replacing the raw model args). */
+      const rerenderArgs = (next: Record<string, unknown>) =>
+        rerender(view({ ...message, toolCall: { ...message.toolCall!, arguments: next } }));
+      return { gitCommit, rerenderArgs };
     }
 
     it('pre-selects the session\'s own hunk and says how many it excluded', async () => {
@@ -1492,6 +1496,75 @@ describe('GitCommitConfirmationWidget', () => {
       await waitFor(() => expect(gitCommit).toHaveBeenCalled());
       // Whole file again, so no hunk refs are sent at all.
       expect(gitCommit.mock.calls[0][3]).toBeUndefined();
+    });
+
+    // #1955 (D-A2): a file under an expanded directory that another session edited starts unchecked.
+    it('leaves another session\'s file out of the commit until the user checks it', async () => {
+      const { gitCommit } = await renderWithDiffs({ gitFileDiff: vi.fn().mockResolvedValue(null), sessionFileDiff: vi.fn().mockResolvedValue(null) }, {
+        commitMessage: 'feat: snapshot',
+        expandedFrom: { 'snap/': 2 },
+        filesToStage: [
+          { path: 'snap/mine.txt', status: 'added', fromDirectory: 'snap/' },
+          { path: 'snap/theirs.txt', status: 'added', fromDirectory: 'snap/', otherSession: { ownership: 'other-session', sessionId: 'o', sessionTitle: 'Other' } },
+        ],
+      });
+      expect(screen.getByTestId('git-commit-selected-count').textContent).toBe('(1 selected of 2)');
+
+      fireEvent.click(screen.getByTestId('git-commit-confirm'));
+      await waitFor(() => expect(gitCommit).toHaveBeenCalledTimes(1));
+      expect(gitCommit.mock.calls[0][1]).toEqual(['snap/mine.txt']);
+    });
+
+    it('commits another session\'s file once the user checks it', async () => {
+      const { gitCommit } = await renderWithDiffs({ gitFileDiff: vi.fn().mockResolvedValue(null), sessionFileDiff: vi.fn().mockResolvedValue(null) }, {
+        commitMessage: 'feat: snapshot',
+        filesToStage: [
+          { path: 'snap/mine.txt', status: 'added', fromDirectory: 'snap/' },
+          { path: 'snap/theirs.txt', status: 'added', fromDirectory: 'snap/', otherSession: { ownership: 'other-session', sessionId: 'o' } },
+        ],
+      });
+      const theirs = screen.getByTestId('git-commit-file-other-session').closest('button')!;
+      fireEvent.click(theirs);
+      await waitFor(() => expect(screen.getByTestId('git-commit-selected-count').textContent).toBe('(2 selected of 2)'));
+      fireEvent.click(screen.getByTestId('git-commit-confirm'));
+      await waitFor(() => expect(gitCommit).toHaveBeenCalledTimes(1));
+      expect([...gitCommit.mock.calls[0][1]].sort()).toEqual(['snap/mine.txt', 'snap/theirs.txt']);
+    });
+
+    // #1955 review: selection used to be computed once on mount, so raw directory args
+    // replaced by the expanded list left the stale directory path selected.
+    it('reconciles the selection when raw directory args are replaced by the expanded list', async () => {
+      const noDiffs = { gitFileDiff: vi.fn().mockResolvedValue(null), sessionFileDiff: vi.fn().mockResolvedValue(null) };
+      const { gitCommit, rerenderArgs } = await renderWithDiffs(noDiffs, { commitMessage: 'feat: snapshot', filesToStage: ['snap/', 'notes.md'] });
+      rerenderArgs({
+        commitMessage: 'feat: snapshot',
+        expandedFrom: { 'snap/': 2 },
+        filesToStage: [
+          'notes.md',
+          { path: 'snap/mine.txt', status: 'added', fromDirectory: 'snap/' },
+          { path: 'snap/theirs.txt', status: 'added', fromDirectory: 'snap/', otherSession: { ownership: 'other-session', sessionId: 'o' } },
+        ],
+      });
+      await waitFor(() => expect(screen.getByTestId('git-commit-selected-count').textContent).toBe('(2 selected of 3)'));
+      fireEvent.click(screen.getByTestId('git-commit-confirm'));
+      await waitFor(() => expect(gitCommit).toHaveBeenCalledTimes(1));
+      expect([...gitCommit.mock.calls[0][1]].sort()).toEqual(['notes.md', 'snap/mine.txt']);
+    });
+
+    it('unchecks a newly flagged file unless the user checked it', async () => {
+      const noDiffs = { gitFileDiff: vi.fn().mockResolvedValue(null), sessionFileDiff: vi.fn().mockResolvedValue(null) };
+      const files = (flagged: string[]) => ['snap/a.txt', 'snap/b.txt'].map(path => ({
+        path, status: 'added', fromDirectory: 'snap/',
+        ...(flagged.includes(path) ? { otherSession: { ownership: 'other-session', sessionId: 'o' } } : {}),
+      }));
+      const { gitCommit, rerenderArgs } = await renderWithDiffs(noDiffs, { commitMessage: 'm', filesToStage: files(['snap/b.txt']) });
+      // The user deliberately checks b, then the host flags a as well.
+      fireEvent.click(screen.getAllByTestId('git-commit-file-other-session')[0].closest('button')!);
+      rerenderArgs({ commitMessage: 'm', filesToStage: files(['snap/a.txt', 'snap/b.txt']) });
+      await waitFor(() => expect(screen.getByTestId('git-commit-selected-count').textContent).toBe('(1 selected of 2)'));
+      fireEvent.click(screen.getByTestId('git-commit-confirm'));
+      await waitFor(() => expect(gitCommit).toHaveBeenCalledTimes(1));
+      expect(gitCommit.mock.calls[0][1]).toEqual(['snap/b.txt']);
     });
 
     it('stages the whole file when the session cannot be attributed', async () => {

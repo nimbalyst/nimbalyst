@@ -21,7 +21,7 @@
 
 import { runCommitProposalOnce, commitProposalIdentity } from '../services/ai/CommitProposalExecution';
 import { resolveGitCommitProposalPromptId } from '../services/ai/gitCommitProposalPromptUtils';
-import { resolveProposalCommitPaths } from '../services/ai/proposalCommitTarget';
+import { assertProposalIdentityPair, explainProposalCommitFailure, resolveProposalCommitPaths } from '../services/ai/proposalCommitTarget';
 import { ipcMain } from 'electron';
 import type { SimpleGit } from 'simple-git';
 import { createGit } from '../services/gitClient';
@@ -1196,13 +1196,16 @@ export function registerGitHandlers(): void {
       // A worktree session commits against the worktree path, which owns no
       // attached folders -- they are keyed by the parent workspace. Without
       // this every attached-folder file resolves to no repo and is dropped.
+      // #1955: one id without the other would skip the proposal checks below.
+      assertProposalIdentityPair(sessionId, proposalId);
       const canonicalProposalId = sessionId && proposalId
         ? await resolveGitCommitProposalPromptId(sessionId, proposalId, false)
         : undefined;
       // #1756 / #1529: a proposal commits where its stored record says (a
       // sibling worktree is re-checked first); the caller's paths are ignored.
+      // #1955: and only files the stored proposal lists may be committed.
       const proposalPaths = sessionId && canonicalProposalId
-        ? await resolveProposalCommitPaths(sessionId, canonicalProposalId)
+        ? await resolveProposalCommitPaths(sessionId, canonicalProposalId, filesToStage)
         : null;
       const commitPath = proposalPaths?.workspacePath ?? workspacePath;
       const commitRepoPath = proposalPaths ? proposalPaths.repoPath : repoPath;
@@ -1228,9 +1231,13 @@ export function registerGitHandlers(): void {
         result => result.commitHash ? `[${result.commitHash}] commit created` : undefined,
       );
 
-      const result = sessionId && canonicalProposalId
+      const executed = sessionId && canonicalProposalId
         ? await runCommitProposalOnce(sessionId, canonicalProposalId, commitProposalIdentity(commitPath, message, filesToStage, hunkSelections, commitRepoPath), execute)
         : await execute();
+      // D-A4: a listed file that changed after the proposal names itself and says to propose again.
+      const result = canonicalProposalId && !executed.success
+        ? { ...executed, error: explainProposalCommitFailure(executed.error) }
+        : executed;
 
       if (sessionId) {
         // Record every commit the operation produced. A selection spanning two

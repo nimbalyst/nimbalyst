@@ -4,7 +4,7 @@ description: Create a git commit with concise, bullet-point commit message
 ---
 Prepare a git commit following these steps:
 
-1. Run `git status` and `git diff` to see changes
+1. Run `git status --porcelain -uall` and `git diff` to see changes (`-uall` lists every untracked file instead of collapsing a folder to `dir/`)
 2. Review recent commits (`git log --oneline -5`) to match the style
 3. Update `CHANGELOG.md` — this is the **only** point at which it should be edited
   - Add the entry now, as part of preparing this commit; never during implementation
@@ -23,6 +23,7 @@ Prepare a git commit following these steps:
   - No emojis
 6. Run the `developer_git_commit_proposal` tool to propose the commit to the user
   - Do NOT run `git add` - the widget handles staging when the user confirms
+  - A directory path is allowed: it expands to every changed, non-ignored file under it, and files under it edited only by other sessions arrive unchecked (files this session also edited stay checked). Use `excludePaths` to leave files or subfolders out
 
 **Commit Message Guidelines:**
 - Lead with the problem solved or capability added, not the technique used

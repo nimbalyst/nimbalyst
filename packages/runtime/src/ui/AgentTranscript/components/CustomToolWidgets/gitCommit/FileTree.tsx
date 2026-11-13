@@ -3,7 +3,7 @@ import { MaterialSymbol } from '../../../../icons/MaterialSymbol';
 import { HunkList } from './HunkList';
 import { directoryCheckboxState, fileCheckboxState, type FileHunkState } from './selectionModel';
 import { getStatusColorClass, getStatusLabel, type FileStatus } from './fileStatus';
-import type { DirectoryNode } from '../GitCommitConfirmationWidget';
+import type { DirectoryNode, OtherSessionOwner } from '../GitCommitConfirmationWidget';
 
 /**
  * Everything the tree rows need from the widget. Bundled into one prop so the
@@ -17,6 +17,8 @@ export interface FileTreeContext {
   expandedFolders: ReadonlySet<string>;
   loadingHunks: ReadonlySet<string>;
   fileStatusMap: ReadonlyMap<string, FileStatus>;
+  /** #1955: files under an expanded directory that another session edited. */
+  otherSessionMap?: ReadonlyMap<string, OtherSessionOwner>;
   siblingSessionLabel: string | null;
   isCommitting: boolean;
   peekSupported: boolean;
@@ -43,6 +45,7 @@ export function FileTree({ tree, ctx }: { tree: DirectoryNode; ctx: FileTreeCont
     expandedFolders,
     loadingHunks,
     fileStatusMap,
+    otherSessionMap,
     siblingSessionLabel,
     isCommitting,
     peekSupported,
@@ -68,6 +71,7 @@ export function FileTree({ tree, ctx }: { tree: DirectoryNode; ctx: FileTreeCont
     const isPartial = checkState === 'partial';
     const fileName = getFilePathBasename(filePath);
     const status = fileStatusMap.get(filePath) || 'modified';
+    const otherSession = otherSessionMap?.get(filePath);
     const isPinned = isActive(filePath);
     const hunkState = hunkStates.get(filePath);
     const isExpanded = expandedFiles.has(filePath);
@@ -132,6 +136,15 @@ export function FileTree({ tree, ctx }: { tree: DirectoryNode; ctx: FileTreeCont
               {fileName}
             </span>
           </div>
+          {otherSession && (
+            <span
+              data-testid="git-commit-file-other-session"
+              className="git-commit-widget__other-session shrink-0 max-w-[50%] overflow-hidden text-ellipsis whitespace-nowrap px-1 py-0.5 rounded text-[9px] border border-[var(--nim-warning)] text-[var(--nim-warning)]"
+              title={`Edited by another session: ${otherSession.sessionTitle ?? otherSession.sessionId}`}
+            >
+              edited by: {otherSession.sessionTitle ?? 'another session'}
+            </span>
+          )}
           {isPartial && hunkState && (
             <span className="git-commit-widget__hunk-count shrink-0 px-1 py-0.5 bg-[var(--nim-bg-tertiary)] rounded text-[9px] text-[var(--nim-text-faint)]">
               {hunkState.selected.size}/{hunkState.hunks.length} hunks

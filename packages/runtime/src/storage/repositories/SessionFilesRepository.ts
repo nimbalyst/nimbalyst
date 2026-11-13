@@ -14,6 +14,8 @@ export interface SessionFileStore {
    */
   getFilesBySessionMany?(sessionIds: string[], linkType?: FileLinkType): Promise<FileLink[]>;
   getSessionsByFile(workspaceId: string, filePath: string, linkType?: FileLinkType): Promise<string[]>;
+  /** Batch form of getSessionsByFile: one query for many files, across one or more workspace ids. */
+  getSessionsByFiles?(workspaceIds: string[], filePaths: string[], linkType?: FileLinkType): Promise<Array<{ sessionId: string; filePath: string }>>;
   deleteFileLink(id: string): Promise<void>;
   deleteSessionLinks(sessionId: string): Promise<void>;
   hasFileLink(sessionId: string, filePath: string, linkType: FileLinkType): Promise<boolean>;
@@ -144,6 +146,25 @@ export const SessionFilesRepository = {
    */
   async getSessionsByFile(workspaceId: string, filePath: string, linkType?: FileLinkType): Promise<string[]> {
     return await requireStore().getSessionsByFile(workspaceId, filePath, linkType);
+  },
+
+  /**
+   * Which sessions link to each of `filePaths`, in one query. `workspaceId`
+   * may list several ids because link rows are keyed by the path the session
+   * ran in (a worktree path or its parent project).
+   */
+  async getSessionsByFiles(
+    workspaceId: string | string[],
+    filePaths: string[],
+    linkType?: FileLinkType,
+  ): Promise<Array<{ sessionId: string; filePath: string }>> {
+    const workspaceIds = [...new Set(Array.isArray(workspaceId) ? workspaceId : [workspaceId])];
+    if (filePaths.length === 0 || workspaceIds.length === 0) return [];
+    const store = requireStore();
+    if (!store.getSessionsByFiles) {
+      throw new Error('Session file store does not support batched lookups');
+    }
+    return await store.getSessionsByFiles(workspaceIds, filePaths, linkType);
   },
 
   /**

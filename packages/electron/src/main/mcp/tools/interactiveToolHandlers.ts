@@ -144,6 +144,8 @@ export function getInteractiveToolSchemas(sessionId: string | undefined) {
 
 IMPORTANT: First call get_session_edited_files, cross-reference with git status, and include ALL session-edited files that have uncommitted changes — do not cherry-pick a subset.
 
+A directory path stages every modified, deleted and untracked non-ignored file under it, like \`git add <dir>\`. The user sees the expanded list. Files under the directory edited only by other sessions arrive unchecked; files this session also edited stay checked. Use excludePaths to leave out specific files or subfolders. An ignored directory, a directory with no changes, a nested repository, or more than 2000 files is rejected.
+
 Relative paths target the session's checkout (its worktree when linked). Absolute paths may also target attached repositories. Files outside these roots are rejected. If the work lives in another worktree of the session's repository (listed by \`git worktree list\`), pass that worktree's absolute path as workingDirectory; all files must be in it, and the user always approves that commit by hand.
 
 ONE REPOSITORY PER CALL. A commit cannot span repositories. If the files you are committing live in more than one repository (a workspace can have attached folders that are their own checkouts), call this tool once per repository — each call with only that repository's files and a commit message describing that repository's change. A call whose files span repositories is rejected.
@@ -176,7 +178,13 @@ Commit message: type prefix (feat:/fix:/refactor:/docs:/test:/chore:), title sta
               ],
             },
             description:
-              "Array of file paths (strings) or file objects with path and status (added/modified/deleted)",
+              "Array of file or directory paths (strings) or file objects with path and status (added/modified/deleted). A directory expands to the changed, non-ignored files under it.",
+          },
+          excludePaths: {
+            type: "array",
+            items: { type: "string" },
+            description:
+              "Optional. Literal files or directory prefixes (relative to the session checkout, or absolute) to leave out after directories are expanded. No globs.",
           },
           commitMessage: {
             type: "string",
@@ -484,6 +492,7 @@ async function runGitCommitProposal(
         commitMessage?: string;
         reasoning?: string;
         workingDirectory?: unknown;
+        excludePaths?: unknown;
       }
     | undefined;
 
@@ -540,12 +549,15 @@ async function runGitCommitProposal(
       workspacePath,
       proposalArgs.filesToStage.map(file => typeof file === "string" ? file : file.path),
       proposalArgs.workingDirectory,
+      ...(proposalArgs.excludePaths === undefined ? [] : [{ excludePaths: proposalArgs.excludePaths }]),
     );
     // Persist absolute paths so consumers of the durable proposal do not
     // reinterpret relative files against the parent MCP configuration root.
-    proposalArgs.filesToStage = proposalArgs.filesToStage.map((file, index) =>
-      typeof file === "string" ? target.files[index] : { ...file, path: target.files[index] }
-    );
+    proposalArgs.filesToStage = target.fileDetails
+      ? proposalFilesFromExpansion(proposalArgs.filesToStage, target)
+      : proposalArgs.filesToStage.map((file, index) =>
+          typeof file === "string" ? target.files[index] : { ...file, path: target.files[index] }
+        );
   } catch (error) {
     return {
       content: [{ type: "text", text: `Error: ${error instanceof Error ? error.message : String(error)}` }],
@@ -599,6 +611,27 @@ async function runGitCommitProposal(
   }
   // #1756: a commit into a sibling worktree is always approved by hand.
   if (target.worktree) isAutoCommit = false;
+  // #1955 (D-A2): auto-approve never commits a file edited only by another session.
+  const otherSessionFileCount = target.fileDetails?.filter(file => file.otherSession).length ?? 0;
+  const manualReviewReason = isAutoCommit && otherSessionFileCount > 0
+    ? `Auto-commit paused: ${otherSessionFileCount} file(s) under the proposed directory were edited by another session.`
+    : undefined;
+  if (manualReviewReason) {
+    isAutoCommit = false;
+    console.log(`[MCP Server] ${manualReviewReason} Proposal ${proposalId} waits for manual review.`);
+  }
+  if (target.expansion) {
+    console.log(`[MCP Server] Commit proposal ${proposalId} expanded ${JSON.stringify(target.expansion.expandedFrom)} to ${target.files.length} file(s); ${otherSessionFileCount} flagged as another session's.`);
+  }
+  const expansionRecord = target.expansion
+    ? {
+        requestedPaths: target.expansion.requestedPaths,
+        excludePaths: target.expansion.excludePaths,
+        expandedFrom: target.expansion.expandedFrom,
+        ...(manualReviewReason ? { manualReviewReason } : {}),
+      }
+    : {};
+  const expansionNote = expansionResultNote(target);
 
   // Persist the proposal to database for durability
   try {
@@ -637,6 +670,8 @@ async function runGitCommitProposal(
               // #1890: the host's decision, so the widget never shows the
               // auto-commit spinner for a proposal waiting on the user.
               autoApproved: isAutoCommit,
+              // #1955: what the agent asked for and how it expanded, so a reload renders the same widget.
+              ...expansionRecord,
             },
           }),
           hidden: false,
@@ -671,6 +706,7 @@ async function runGitCommitProposal(
         targetWorktree: target.worktree,
         // workspacePath above is the validated session checkout; git:commit refuses records without this.
         commitTargetVersion: COMMIT_TARGET_VERSION,
+        ...expansionRecord,
         timestamp: now.getTime(),
         status: "pending",
       }),
@@ -856,7 +892,7 @@ async function runGitCommitProposal(
               response.commitDate
                 ? `\nCommit date: ${response.commitDate}`
                 : ""
-            }\nCommit message: ${commitMessage}`,
+            }\nCommit message: ${commitMessage}${expansionNote}`,
           },
         ],
         isError: false,
@@ -1010,7 +1046,7 @@ async function runGitCommitProposal(
                   : ""
               }\nCommit message: ${
                 result.commitMessage || proposalArgs.commitMessage
-              }`,
+              }${expansionNote}`,
             },
           ],
           isError: false,
@@ -1096,6 +1132,49 @@ async function runGitCommitProposal(
       reasoning: proposalArgs.reasoning,
     });
   });
+}
+
+/**
+ * #1955: the stored file list for a proposal that named a directory. Explicit
+ * files keep the agent's own entry (and status); expanded files carry the
+ * status git reported, the directory they came from, and the other session
+ * that edited them, so a reload renders the same widget.
+ */
+function proposalFilesFromExpansion(
+  requested: Array<string | { path: string; status: "added" | "modified" | "deleted" }>,
+  target: Awaited<ReturnType<typeof resolveGitCommitProposalTarget>>,
+): Array<string | {
+  path: string;
+  status: "added" | "modified" | "deleted";
+  fromDirectory?: string;
+  otherSession?: { ownership: "other-session"; sessionId: string; sessionTitle?: string };
+}> {
+  const requestedByAbsolute = new Map<string, string | { path: string; status: "added" | "modified" | "deleted" }>();
+  target.expansion!.requestedPaths.forEach((absolute, index) => requestedByAbsolute.set(absolute, requested[index]));
+  return target.fileDetails!.map(file => {
+    if (!file.fromDirectory) {
+      const original = requestedByAbsolute.get(file.path);
+      return original && typeof original !== "string" ? { ...original, path: file.path } : file.path;
+    }
+    return {
+      path: file.path,
+      status: file.status ?? "modified",
+      fromDirectory: file.fromDirectory,
+      ...(file.otherSession ? { otherSession: file.otherSession } : {}),
+    };
+  });
+}
+
+/** Text appended to the tool result: what directories expanded to, and excludes that matched nothing. */
+function expansionResultNote(target: Awaited<ReturnType<typeof resolveGitCommitProposalTarget>>): string {
+  if (!target.expansion) return "";
+  const lines: string[] = [];
+  const expanded = Object.entries(target.expansion.expandedFrom);
+  if (expanded.length) lines.push(`Expanded: ${expanded.map(([dir, count]) => `${dir} (${count} files)`).join(", ")}.`);
+  if (target.expansion.unmatchedExcludes.length) {
+    lines.push(`excludePaths matched nothing: ${target.expansion.unmatchedExcludes.join(", ")}.`);
+  }
+  return lines.length ? `\n${lines.join("\n")}` : "";
 }
 
 // ============================================================

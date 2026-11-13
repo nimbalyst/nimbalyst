@@ -137,6 +137,25 @@ export function createPGLiteSessionFileStore(db: PGliteLike, ensureDbReady?: Ens
       return rows.map(row => row.session_id);
     },
 
+    async getSessionsByFiles(workspaceIds: string[], filePaths: string[], linkType?: FileLinkType): Promise<Array<{ sessionId: string; filePath: string }>> {
+      if (workspaceIds.length === 0 || filePaths.length === 0) return [];
+      await ensureReady();
+
+      const params: any[] = [workspaceIds, filePaths];
+      let sql = `
+        SELECT DISTINCT session_id, file_path FROM session_files
+        WHERE workspace_id = ANY($1::text[]) AND file_path = ANY($2::text[])
+      `;
+
+      if (linkType) {
+        sql += ` AND link_type = $3`;
+        params.push(linkType);
+      }
+
+      const { rows } = await db.query<{ session_id: string; file_path: string }>(sql, params);
+      return rows.map(row => ({ sessionId: row.session_id, filePath: row.file_path }));
+    },
+
     async deleteFileLink(id: string): Promise<void> {
       await ensureReady();
       await db.query('DELETE FROM session_files WHERE id = $1', [id]);

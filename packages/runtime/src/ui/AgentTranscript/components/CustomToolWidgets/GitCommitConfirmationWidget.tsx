@@ -14,7 +14,7 @@
  * - tool.result containing "cancelled" means user cancelled
  */
 
-import React, { useState, useCallback, useMemo, useEffect } from 'react';
+import React, { useState, useCallback, useMemo, useEffect, useRef } from 'react';
 import { useAtomValue } from 'jotai';
 import { usePostHog } from 'posthog-js/react';
 import { MaterialSymbol } from '../../../icons/MaterialSymbol';
@@ -45,9 +45,57 @@ import {
 import { getStatusColorClass, type FileStatus } from './gitCommit/fileStatus';
 export type { FileStatus };
 
+/** #1955: another session edited this file, which came from an expanded directory. */
+export interface OtherSessionOwner {
+  sessionId: string;
+  sessionTitle?: string;
+}
+
 interface FileWithStatus {
   path: string;
   status: FileStatus;
+  /** #1955: repo-relative directory (trailing slash) this file was expanded from. */
+  fromDirectory?: string;
+  otherSession?: OtherSessionOwner;
+}
+
+/** #1955: above this many files the folders start collapsed. */
+const COLLAPSE_FOLDERS_ABOVE = 50;
+
+/**
+ * #1955 (D-A2): files flagged as another session's start unchecked; the user
+ * may check them. Everything else starts checked, as before.
+ */
+export function initialSelectedFiles(files: ReadonlyArray<{ path: string; otherSession?: unknown }>): string[] {
+  return files.filter(file => !file.otherSession).map(file => file.path);
+}
+
+/**
+ * #1955: the proposal's arguments can be replaced after mount (the model's raw
+ * directory args by the host's expanded list, or new ownership flags). Keep the
+ * user's choices where they still apply: drop paths no longer listed, give newly
+ * listed paths their default, and uncheck a newly flagged file unless the user
+ * explicitly checked it.
+ */
+export function reconcileSelectedFiles(
+  selected: ReadonlySet<string>,
+  previous: ReadonlyArray<{ path: string; otherSession?: unknown }>,
+  next: ReadonlyArray<{ path: string; otherSession?: unknown }>,
+  userChecked: ReadonlySet<string>,
+): Set<string> {
+  const before = new Map(previous.map(file => [file.path, !!file.otherSession]));
+  const result = new Set<string>();
+  for (const file of next) {
+    const flagged = !!file.otherSession;
+    if (!before.has(file.path)) {
+      if (!flagged || userChecked.has(file.path)) result.add(file.path);
+      continue;
+    }
+    if (!selected.has(file.path)) continue;
+    if (flagged && !before.get(file.path) && !userChecked.has(file.path)) continue;
+    result.add(file.path);
+  }
+  return result;
 }
 
 type FileInput = string | FileWithStatus;
@@ -378,6 +426,23 @@ export const GitCommitConfirmationWidget: React.FC<CustomToolWidgetProps> = ({
     () => new Map(filesWithStatus.map(f => [f.path, f.status])),
     [filesWithStatus]
   );
+  const otherSessionMap = useMemo(
+    () => new Map(filesWithStatus.filter(f => f.otherSession).map(f => [f.path, f.otherSession!])),
+    [filesWithStatus]
+  );
+  const initiallySelected: string[] = useMemo(
+    () => initialSelectedFiles(filesWithStatus),
+    [filesWithStatus]
+  );
+  // #1955: how each requested directory expanded, and why auto-commit paused.
+  const expandedFrom: Array<[string, number]> = useMemo(
+    () => (args.expandedFrom && typeof args.expandedFrom === 'object'
+      ? Object.entries(args.expandedFrom as Record<string, unknown>).filter((entry): entry is [string, number] => typeof entry[1] === 'number')
+      : []),
+    [args.expandedFrom]
+  );
+  const manualReviewReason: string | undefined =
+    typeof args.manualReviewReason === 'string' ? args.manualReviewReason : undefined;
   const initialCommitMessage: string = args.commitMessage || '';
   const reasoning: string = args.reasoning || '';
   const rawToolResult = toolCall.result;
@@ -504,7 +569,16 @@ export const GitCommitConfirmationWidget: React.FC<CustomToolWidgetProps> = ({
   const isPending = !isCompleted;
 
   // Local state for editing
-  const [filesToStage, setFilesToStage] = useState<Set<string>>(new Set(initialFilesToStage));
+  const [filesToStage, setFilesToStage] = useState<Set<string>>(new Set(initiallySelected));
+  // Files the user deliberately checked; a later ownership flag never unchecks these.
+  const userCheckedRef = useRef<Set<string>>(new Set());
+  const previousFilesRef = useRef(filesWithStatus);
+  useEffect(() => {
+    const previous = previousFilesRef.current;
+    if (previous === filesWithStatus) return;
+    previousFilesRef.current = filesWithStatus;
+    setFilesToStage(prev => reconcileSelectedFiles(prev, previous, filesWithStatus, userCheckedRef.current));
+  }, [filesWithStatus]);
   const [commitMessage, setCommitMessage] = useState(initialCommitMessage);
   const [isCommitting, setIsCommitting] = useState(false);
   const [hasResponded, setHasResponded] = useState(false);
@@ -564,11 +638,15 @@ export const GitCommitConfirmationWidget: React.FC<CustomToolWidgetProps> = ({
     return buildFileDirectoryTree(initialFilesToStage, displayPathFor);
   }, [initialFilesToStage, displayPathFor]);
 
-  // Auto-expand all folders on mount
+  // Auto-expand all folders on mount, unless the list is large (#1955).
   useEffect(() => {
+    if (initialFilesToStage.length > COLLAPSE_FOLDERS_ABOVE) {
+      setExpandedFolders(new Set());
+      return;
+    }
     const allPaths = getFileDirectoryPaths(directoryTree);
     setExpandedFolders(new Set(allPaths));
-  }, [directoryTree]);
+  }, [directoryTree, initialFilesToStage.length]);
 
 
   // Determine which result to show (tool result wins once available; local is only for pending UI)
@@ -593,6 +671,7 @@ export const GitCommitConfirmationWidget: React.FC<CustomToolWidgetProps> = ({
     // A partially-selected file deselects entirely on click, matching the
     // folder checkbox: the tri-state is a readout, not a third click target.
     if (fileCheckboxState(filePath, filesToStage, hunkStates) === 'none') {
+      userCheckedRef.current.add(filePath);
       setFilesToStage((prev) => new Set(prev).add(filePath));
       selectAllHunksFor([filePath]);
     } else {
@@ -630,6 +709,7 @@ export const GitCommitConfirmationWidget: React.FC<CustomToolWidgetProps> = ({
     const filesInDir = getFilesInNode(node);
     const deselect = directoryCheckboxState(filesInDir, filesToStage, hunkStates) !== 'none';
 
+    if (!deselect) filesInDir.forEach(f => userCheckedRef.current.add(f));
     setFilesToStage((prev) => {
       const next = new Set(prev);
       if (deselect) {
@@ -972,8 +1052,26 @@ export const GitCommitConfirmationWidget: React.FC<CustomToolWidgetProps> = ({
         {/* Files to Stage */}
         <div className="git-commit-widget__files flex flex-col gap-1.5">
           <div className="text-[0.6875rem] font-semibold uppercase tracking-wide text-[var(--nim-text-muted)]">
-            Files to Stage ({stagedFiles.length}/{initialFilesToStage.length})
+            Files to Stage <span data-testid="git-commit-selected-count">({stagedFiles.length} selected of {initialFilesToStage.length})</span>
           </div>
+          {manualReviewReason && (
+            <div className="git-commit-widget__manual-review flex items-start gap-1.5 px-2 py-1 rounded border-l-2 border-[var(--nim-warning)] bg-[var(--nim-bg)] text-[0.6875rem] leading-snug text-[var(--nim-text)] select-text">
+              <MaterialSymbol icon="pan_tool" size={12} className="shrink-0 mt-px text-[var(--nim-warning)]" />
+              <span className="flex-1 min-w-0">{manualReviewReason}</span>
+            </div>
+          )}
+          {expandedFrom.length > 0 && (
+            <div className="git-commit-widget__expanded-from flex flex-col gap-0.5 text-[0.6875rem] text-[var(--nim-text-muted)] select-text">
+              {expandedFrom.map(([dir, count]) => (
+                <div key={dir}><code>{dir}</code>: {count} file{count !== 1 ? 's' : ''}</div>
+              ))}
+              {otherSessionMap.size > 0 && (
+                <div className="text-[var(--nim-warning)]">
+                  {otherSessionMap.size} file{otherSessionMap.size !== 1 ? 's' : ''} edited by another session left unchecked
+                </div>
+              )}
+            </div>
+          )}
           {staleHunkNotice && (
             <div
               data-testid="git-commit-stale-hunks"
@@ -993,6 +1091,7 @@ export const GitCommitConfirmationWidget: React.FC<CustomToolWidgetProps> = ({
                 expandedFolders,
                 loadingHunks,
                 fileStatusMap,
+                otherSessionMap,
                 siblingSessionLabel,
                 isCommitting,
                 peekSupported,
