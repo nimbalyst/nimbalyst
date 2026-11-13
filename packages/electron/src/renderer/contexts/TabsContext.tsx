@@ -1019,6 +1019,25 @@ export function useHasActiveTab(): boolean {
   return store.activeTabId !== null;
 }
 
+/**
+ * Subscribe to the active tab's file path and display name only. Selects
+ * primitives so the caller re-renders when the active file changes, not on
+ * every tab-store notification (content, dirty, reorder).
+ */
+export function useActiveTabFileInfo(): { filePath: string | null; fileName: string | null } {
+  const context = useContext(TabsContext);
+  if (!context) {
+    throw new Error('useActiveTabFileInfo must be used within a TabsProvider');
+  }
+  const activeTab = () => {
+    const store = context.getSnapshot();
+    return store.activeTabId ? store.tabs.get(store.activeTabId) : undefined;
+  };
+  const filePath = useSyncExternalStore(context.subscribe, () => activeTab()?.filePath || null);
+  const fileName = useSyncExternalStore(context.subscribe, () => activeTab()?.fileName || null);
+  return { filePath, fileName };
+}
+
 // Dirty state subscription system - allows individual tabs to subscribe to their dirty state
 // without causing the entire tab bar to re-render
 const dirtyStateListeners = new Map<string, Set<(isDirty: boolean) => void>>();

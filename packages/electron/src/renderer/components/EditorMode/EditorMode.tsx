@@ -3,7 +3,7 @@ import React, { useCallback, useEffect, useRef, useState, useImperativeHandle, f
 import { useSetAtom, useAtomValue, useAtom } from 'jotai';
 import type { ConfigTheme } from '@nimbalyst/runtime';
 import { asTeamJwt } from '@nimbalyst/runtime/auth/jwtScopes';
-import { useTabsActions, useTabNavigationShortcuts, type TabData } from '../../contexts/TabsContext';
+import { useActiveTabFileInfo, useTabsActions, useTabNavigationShortcuts, type TabData } from '../../contexts/TabsContext';
 import { useRepresentedFileSync } from '../../hooks/useRepresentedFileSync';
 import { store, editorDirtyAtom, makeEditorKey } from '@nimbalyst/runtime/store';
 import { fileDeletedAtomFamily } from '../../store/atoms/fileWatch';
@@ -401,22 +401,11 @@ const EditorMode = forwardRef<EditorModeRef, EditorModeProps>(function EditorMod
   }, []); // No dependencies - uses refs for all mutable state
 
 
-  // Get current file info imperatively from tabsActions
-  // Note: This doesn't subscribe to changes - TabContent will subscribe and pass data down
-  const getCurrentFileInfo = useCallback(() => {
-    const store = tabsActions.getSnapshot();
-    if (!store.activeTabId) return { filePath: null, fileName: null };
-    const activeTab = store.tabs.get(store.activeTabId);
-    return {
-      filePath: activeTab?.filePath || null,
-      fileName: activeTab?.fileName || null
-    };
-  }, [tabsActions]);
-
-  // For effects that need current file path, we read it imperatively
-  const currentFileInfo = getCurrentFileInfo();
-  const currentFilePath = currentFileInfo.filePath;
-  const currentFileName = currentFileInfo.fileName;
+  // Subscribed, not read imperatively: the chat sidebar's "Context: <file>"
+  // indicator comes from this value, and an imperative read went stale after
+  // the last tab closed or the file was deleted (EditorMode did not re-render).
+  // Selects only path and name, so tab content and dirty changes don't re-render.
+  const { filePath: currentFilePath, fileName: currentFileName } = useActiveTabFileInfo();
 
   // Expose current document path and workspace path to window for image paste/rendering
   // __workspacePath is read by EmbedFrame, the document-link plugin and the
