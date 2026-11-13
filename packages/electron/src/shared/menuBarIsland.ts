@@ -23,6 +23,46 @@ import type { TrayIdleSummary, TrayPanelFeed } from './traySessions';
 export const ISLAND_EXPANDED_WIDTH = 420;
 
 /**
+ * The expanded panel's size, which the user sets by dragging its edges.
+ *
+ * `listHeight` caps the scrolling session list rather than fixing the panel's
+ * height: a quiet fleet still renders a short panel instead of a tall empty one.
+ * `ISLAND_EXPANDED_WIDTH` and `ISLAND_LIST_DEFAULT_HEIGHT` are the defaults.
+ */
+export interface IslandPanelSize {
+  width: number;
+  listHeight: number;
+}
+
+export const ISLAND_LIST_DEFAULT_HEIGHT = 340;
+export const ISLAND_PANEL_MIN_WIDTH = 320;
+export const ISLAND_PANEL_MAX_WIDTH = 760;
+export const ISLAND_LIST_MIN_HEIGHT = 160;
+export const ISLAND_LIST_MAX_HEIGHT = 900;
+
+/** Height of the collapsed pill, which is also the strip atop the open panel. */
+export const ISLAND_STRIP_HEIGHT = 30;
+/** Room reserved for the footer row below the list. */
+export const ISLAND_FOOTER_ALLOWANCE = 40;
+/** Transparent canvas kept around the panel so its drop shadow is not clipped. */
+export const ISLAND_CANVAS_PAD = 40;
+
+export const DEFAULT_ISLAND_PANEL_SIZE: IslandPanelSize = {
+  width: ISLAND_EXPANDED_WIDTH,
+  listHeight: ISLAND_LIST_DEFAULT_HEIGHT,
+};
+
+/** Clamp a stored or requested size to the fixed bounds. Bad input falls back to the default. */
+export function clampIslandPanelSize(size: Partial<IslandPanelSize> | null | undefined): IslandPanelSize {
+  const width = Number.isFinite(size?.width) ? size!.width! : DEFAULT_ISLAND_PANEL_SIZE.width;
+  const listHeight = Number.isFinite(size?.listHeight) ? size!.listHeight! : DEFAULT_ISLAND_PANEL_SIZE.listHeight;
+  return {
+    width: Math.round(Math.min(Math.max(width, ISLAND_PANEL_MIN_WIDTH), ISLAND_PANEL_MAX_WIDTH)),
+    listHeight: Math.round(Math.min(Math.max(listHeight, ISLAND_LIST_MIN_HEIGHT), ISLAND_LIST_MAX_HEIGHT)),
+  };
+}
+
+/**
  * Which edge of the island window the island itself is pinned to.
  *
  * `center` is the ordinary menu bar. `notch-left` is a display with a camera
@@ -139,6 +179,8 @@ export interface MenuBarIslandState {
    * TrayManager carrying it -- the fleet has no opinion about the notch.
    */
   anchor: IslandAnchor;
+  /** The user's panel size. Main owns it because the window canvas is sized from it. */
+  panelSize: IslandPanelSize;
 }
 
 export const MENU_BAR_ISLAND_CHANNELS = {
@@ -204,6 +246,16 @@ export const MENU_BAR_ISLAND_CHANNELS = {
    * because each window only accepts IPC from its own renderer.
    */
   clearAllUnread: 'menu-bar-island:clear-all-unread',
+  /**
+   * island → main: a press started on one of the open panel's resize grips.
+   *
+   * Main holds the panel open and grows the transparent canvas to its largest
+   * size for the duration, so the panel has room to grow into. The renderer
+   * sizes the panel live; main only hears the result.
+   */
+  resizeStart: 'menu-bar-island:resize-start',
+  /** island → main: the resize ended with this size. Main clamps, saves, and re-fits the canvas. */
+  resizeEnd: 'menu-bar-island:resize-end',
 } as const;
 
 /** Island rect in window coordinates, as the renderer measured it. */

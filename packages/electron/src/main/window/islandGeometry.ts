@@ -12,8 +12,14 @@
  */
 
 import {
-  ISLAND_EXPANDED_WIDTH,
+  DEFAULT_ISLAND_PANEL_SIZE,
+  ISLAND_CANVAS_PAD,
+  ISLAND_FOOTER_ALLOWANCE,
+  ISLAND_LIST_MAX_HEIGHT,
+  ISLAND_PANEL_MAX_WIDTH,
+  ISLAND_STRIP_HEIGHT,
   type IslandAnchor,
+  type IslandPanelSize,
   type IslandDisplayPreference,
   type IslandRect,
 } from '../../shared/menuBarIsland';
@@ -28,6 +34,32 @@ import {
  */
 export const ISLAND_WINDOW_WIDTH = 760;
 export const ISLAND_WINDOW_HEIGHT = 460;
+
+/**
+ * Window size for a given panel size.
+ *
+ * Never smaller than the original fixed canvas, and grown when the user has
+ * dragged the panel larger than that canvas holds. While a resize is in
+ * progress the canvas is the largest the panel can become, capped at the
+ * display's height, so the panel has room to grow under the cursor; it shrinks
+ * back to fit when the drag ends, because the open panel captures every click
+ * on the canvas and a needlessly large one blocks the screen beneath it.
+ */
+export function islandCanvasSize(
+  panel: IslandPanelSize,
+  displayHeight: number,
+  resizing = false,
+): { width: number; height: number } {
+  const panelWidth = resizing ? ISLAND_PANEL_MAX_WIDTH : panel.width;
+  const listHeight = resizing ? ISLAND_LIST_MAX_HEIGHT : panel.listHeight;
+  const width = Math.max(ISLAND_WINDOW_WIDTH, panelWidth + ISLAND_CANVAS_PAD * 2);
+  const wanted = Math.max(
+    ISLAND_WINDOW_HEIGHT,
+    ISLAND_STRIP_HEIGHT + listHeight + ISLAND_FOOTER_ALLOWANCE + ISLAND_CANVAS_PAD,
+  );
+  const height = Math.max(ISLAND_WINDOW_HEIGHT, Math.min(wanted, displayHeight));
+  return { width, height };
+}
 
 /** Don't collapse the instant the cursor clips an edge mid-transition. */
 export const ISLAND_EXIT_GRACE_MS = 260;
@@ -175,16 +207,21 @@ export function isNotchedDisplay(display: DisplayInfo): boolean {
  * transparent click-through canvas, and `enableLargerThanScreen` is what lets
  * the frame keep the negative origin.
  */
-export function islandPlacement(display: DisplayInfo): IslandPlacement {
+export function islandPlacement(
+  display: DisplayInfo,
+  panel: IslandPanelSize = DEFAULT_ISLAND_PANEL_SIZE,
+  resizing = false,
+): IslandPlacement {
   const displayBounds = display.bounds;
   const y = displayBounds.y;
+  const canvas = islandCanvasSize(panel, displayBounds.height, resizing);
 
   if (!isNotchedDisplay(display)) {
     return {
-      x: Math.round(displayBounds.x + displayBounds.width / 2 - ISLAND_WINDOW_WIDTH / 2),
+      x: Math.round(displayBounds.x + displayBounds.width / 2 - canvas.width / 2),
       y,
-      width: ISLAND_WINDOW_WIDTH,
-      height: ISLAND_WINDOW_HEIGHT,
+      width: canvas.width,
+      height: canvas.height,
       anchor: 'center',
     };
   }
@@ -195,16 +232,19 @@ export function islandPlacement(display: DisplayInfo): IslandPlacement {
   // the wider of the two and is what would run off the left edge on a narrow
   // display. On a very narrow one the clamp wins and the island ends up nearer
   // the notch than the clearance asks for, which is still visible.
+  //
+  // Uses the saved width even mid-resize, not the enlarged canvas width, so the
+  // island does not jump sideways when a drag starts.
   const islandRight = Math.max(
-    displayBounds.x + ISLAND_EXPANDED_WIDTH,
+    displayBounds.x + panel.width,
     notchLeft - NOTCH_CLEARANCE,
   );
 
   return {
-    x: Math.round(islandRight - ISLAND_WINDOW_WIDTH),
+    x: Math.round(islandRight - canvas.width),
     y,
-    width: ISLAND_WINDOW_WIDTH,
-    height: ISLAND_WINDOW_HEIGHT,
+    width: canvas.width,
+    height: canvas.height,
     anchor: 'notch-left',
   };
 }

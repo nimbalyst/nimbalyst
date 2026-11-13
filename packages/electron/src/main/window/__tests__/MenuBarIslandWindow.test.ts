@@ -111,6 +111,8 @@ vi.mock('../../utils/store', () => ({
   // No saved choice, so placement follows the primary until a drag says otherwise.
   getIslandDisplay: () => null,
   setIslandDisplay: setIslandDisplayMock,
+  getIslandPanelSize: () => ({ width: 420, listHeight: 340 }),
+  setIslandPanelSize: vi.fn(),
 }));
 vi.mock('../../utils/logger', () => ({ logger: { main: { warn: vi.fn(), error: vi.fn(), info: vi.fn() } } }));
 vi.mock('../../utils/dockIcon', () => ({ applyDockIcon: applyDockIconMock }));

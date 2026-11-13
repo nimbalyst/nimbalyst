@@ -2,12 +2,20 @@ import { app, BrowserWindow, screen } from 'electron';
 import { join } from 'path';
 import { safeHandle, safeOn } from '../utils/ipcRegistry';
 import { getPreloadPath } from '../utils/appPaths';
-import { getIslandDisplay, getTheme, setIslandDisplay } from '../utils/store';
+import {
+  getIslandDisplay,
+  getIslandPanelSize,
+  getTheme,
+  setIslandDisplay,
+  setIslandPanelSize,
+} from '../utils/store';
 import { logger } from '../utils/logger';
 import { applyDockIcon } from '../utils/dockIcon';
 import { loadTrayGlyphDataUri } from '../tray/trayGlyph';
 import {
   MENU_BAR_ISLAND_CHANNELS,
+  clampIslandPanelSize,
+  type IslandPanelSize,
   type IslandRect,
   type MenuBarIslandSettingChange,
   type MenuBarIslandState,
@@ -59,8 +67,10 @@ let pinned = false;
  */
 let dragging: { origin: { x: number; y: number }; displayId: number } | null = null;
 let ignoringMouse = true;
+/** True while the user is dragging a resize grip; holds the panel open like `dragging`. */
+let resizing = false;
 /** The fleet's half of the frame. `expanded` and `anchor` are main's, added on push. */
-let latestState: Omit<MenuBarIslandState, 'expanded' | 'anchor'> | null = null;
+let latestState: Omit<MenuBarIslandState, 'expanded' | 'anchor' | 'panelSize'> | null = null;
 /** Set once the app is quitting; never cleared, the process is on its way out. */
 let shutDown = false;
 let onSelectSession: ((sessionId: string, workspacePath: string) => void) | null = null;
@@ -126,13 +136,13 @@ function targetDisplay(): Electron.Display {
  * out from behind a notch that was not there before.
  */
 function targetPlacement(): IslandPlacement {
-  return islandPlacement(targetDisplay());
+  return islandPlacement(targetDisplay(), getIslandPanelSize(), resizing);
 }
 
 /** Move the window onto a display, and tell the renderer which edge to hug. */
 function applyPlacement(display: Electron.Display): void {
   if (!islandWindow || islandWindow.isDestroyed()) return;
-  const { anchor: _anchor, ...bounds } = islandPlacement(display);
+  const { anchor: _anchor, ...bounds } = islandPlacement(display, getIslandPanelSize(), resizing);
   islandWindow.setBounds(bounds);
   // The anchor rides on the frame, and crossing onto a notched display changes
   // it -- so this push is not merely cosmetic, it is what stops the island
@@ -216,6 +226,7 @@ function createIslandWindow(): BrowserWindow {
     hover = { hovered: false, outsideSince: 0 };
     pinned = false;
     dragging = null;
+    resizing = false;
     ignoringMouse = true;
     islandRendererReady = false;
     window.destroy();
@@ -277,7 +288,7 @@ function pollCursor(): void {
   // cursor leaves the island the instant it starts moving, the poll collapses
   // it and makes the window click-through again, and the press the user is
   // still holding stops being delivered -- the drag dies a few pixels in.
-  const next = nextHoverState(hover, { inside, pinned: pinned || !!dragging, now: Date.now() });
+  const next = nextHoverState(hover, { inside, pinned: pinned || !!dragging || resizing, now: Date.now() });
   const changed = next.hovered !== hover.hovered;
   hover = next;
   if (!changed) return;
@@ -355,7 +366,12 @@ function pushState(): void {
 /** The frame as the renderer should see it: the fleet, plus what main owns. */
 function currentFrame(): MenuBarIslandState | null {
   if (!latestState) return null;
-  return { ...latestState, expanded: hover.hovered, anchor: targetPlacement().anchor };
+  return {
+    ...latestState,
+    expanded: hover.hovered,
+    anchor: targetPlacement().anchor,
+    panelSize: getIslandPanelSize(),
+  };
 }
 
 /**
@@ -389,7 +405,7 @@ function handleDisplayChange(): void {
  * fleet collapses the strip to a bare glyph instead, which is the same one small
  * mark the tray item was, in the place the user is now looking.
  */
-export function showMenuBarIsland(state: Omit<MenuBarIslandState, 'expanded' | 'anchor'>): void {
+export function showMenuBarIsland(state: Omit<MenuBarIslandState, 'expanded' | 'anchor' | 'panelSize'>): void {
   if (!isMenuBarIslandSupported()) return;
 
   // A window built mid-quit keeps Electron from ever finishing the quit.
@@ -418,6 +434,7 @@ export function closeMenuBarIsland(): void {
   hover = { hovered: false, outsideSince: 0 };
   pinned = false;
   dragging = null;
+  resizing = false;
   ignoringMouse = true;
   islandRendererReady = false;
   islandRect = { left: 0, top: 0, width: 0, height: 0 };
@@ -521,6 +538,33 @@ export function setupMenuBarIslandHandlers(dependencies: {
     // rather than forcing either state: the cursor may have been released on
     // the island or well away from it.
     hover = { hovered: true, outsideSince: Date.now() };
+  });
+
+  safeOn(MENU_BAR_ISLAND_CHANNELS.resizeStart, (event) => {
+    if (!isIslandSender(event) || !islandWindow || islandWindow.isDestroyed()) return;
+    resizing = true;
+    hover = { hovered: true, outsideSince: 0 };
+    setIgnoreMouse(false);
+    // Grow the transparent canvas to its largest size so the panel has room to
+    // follow the cursor. The island is positioned against the canvas centre (or
+    // its right edge by the notch), and the placement keeps both where they
+    // were, so the visible panel does not move.
+    const { anchor: _anchor, ...bounds } = targetPlacement();
+    islandWindow.setBounds(bounds);
+  });
+
+  safeOn(MENU_BAR_ISLAND_CHANNELS.resizeEnd, (event, size: Partial<IslandPanelSize>) => {
+    if (!isIslandSender(event) || !resizing) return;
+    resizing = false;
+    setIslandPanelSize(clampIslandPanelSize(size));
+    if (islandWindow && !islandWindow.isDestroyed()) {
+      const { anchor: _anchor, ...bounds } = targetPlacement();
+      islandWindow.setBounds(bounds);
+    }
+    // Same hand-back as the end of a move: the poll decides whether the cursor
+    // is still on the island.
+    hover = { hovered: true, outsideSince: Date.now() };
+    pushState();
   });
 
   safeOn(MENU_BAR_ISLAND_CHANNELS.dismiss, (event) => {

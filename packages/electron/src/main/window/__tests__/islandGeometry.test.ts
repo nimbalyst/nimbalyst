@@ -5,6 +5,7 @@ import {
   ISLAND_WINDOW_HEIGHT,
   ISLAND_WINDOW_WIDTH,
   NOTCH_WIDTH_RATIO,
+  islandCanvasSize,
   islandPlacement,
   isCursorOverIsland,
   isDragGesture,
@@ -119,6 +120,37 @@ describe('islandPlacement', () => {
     const placement = islandPlacement(narrow);
     const islandLeft = placement.x + ISLAND_WINDOW_WIDTH - ISLAND_EXPANDED_WIDTH;
     expect(islandLeft).toBeGreaterThanOrEqual(narrow.bounds.x);
+  });
+});
+
+describe('island canvas sizing', () => {
+  it('grows the canvas to fit a panel larger than the default', () => {
+    // The panel is a div inside a fixed canvas; a saved size the canvas cannot
+    // hold would be clipped at the window edge.
+    const canvas = islandCanvasSize({ width: 740, listHeight: 700 }, 1152);
+    expect(canvas.width).toBeGreaterThanOrEqual(740 + 80);
+    expect(canvas.height).toBeGreaterThanOrEqual(30 + 700 + 40);
+  });
+
+  it('never exceeds the display height, even mid-resize', () => {
+    const canvas = islandCanvasSize({ width: 420, listHeight: 340 }, 600, true);
+    expect(canvas.height).toBe(600);
+  });
+
+  it('keeps the island right edge in place by the notch when a resize enlarges the canvas', () => {
+    // The island hugs the canvas's right edge there; if that edge moved when
+    // the canvas grew, the panel would jump sideways under the cursor.
+    const panel = { width: 420, listHeight: 340 };
+    const resting = islandPlacement(notchedDisplay, panel);
+    const resizing = islandPlacement(notchedDisplay, panel, true);
+    expect(resizing.x + resizing.width).toBe(resting.x + resting.width);
+  });
+
+  it('keeps a centred island centred when a resize enlarges the canvas', () => {
+    const panel = { width: 420, listHeight: 340 };
+    const resting = islandPlacement(studioDisplay, panel);
+    const resizing = islandPlacement(studioDisplay, panel, true);
+    expect(resizing.x + resizing.width / 2).toBe(resting.x + resting.width / 2);
   });
 });
 

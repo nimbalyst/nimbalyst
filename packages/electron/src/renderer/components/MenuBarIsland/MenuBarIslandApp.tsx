@@ -3,8 +3,12 @@ import { useAtomValue } from 'jotai';
 import { MaterialSymbol } from '@nimbalyst/runtime/ui/icons/MaterialSymbol';
 import { FLEET_STRIP_COLORS as STRIP_COLORS } from '../../../shared/fleetStripColors';
 import {
-  ISLAND_EXPANDED_WIDTH,
+  DEFAULT_ISLAND_PANEL_SIZE,
+  ISLAND_CANVAS_PAD,
+  ISLAND_FOOTER_ALLOWANCE,
+  ISLAND_STRIP_HEIGHT,
   MENU_BAR_ISLAND_CHANNELS,
+  type IslandPanelSize,
   type MenuBarIslandState,
 } from '../../../shared/menuBarIsland';
 import {
@@ -20,6 +24,7 @@ import {
 } from '../TrayPanel/traySessionSections';
 import { getRelativeTimeString } from '../../utils/dateFormatting';
 import { MenuBarIslandSettingsPanel } from './MenuBarIslandSettings';
+import { IslandResizeHandles } from './IslandResizeHandles';
 
 /**
  * The menu bar island.
@@ -43,7 +48,7 @@ import { MenuBarIslandSettingsPanel } from './MenuBarIslandSettings';
 const FOCUS_RING = 'focus:outline-none focus-visible:outline-2 focus-visible:outline-[var(--nim-border-focus)] focus-visible:outline-offset-[-2px]';
 
 /** Menu bar row height. The collapsed pill fills it exactly. */
-const STRIP_HEIGHT = 30;
+const STRIP_HEIGHT = ISLAND_STRIP_HEIGHT;
 
 function CountPair({ color, count }: { color: string; count: number }) {
   return (
@@ -227,6 +232,23 @@ export function MenuBarIslandApp() {
   const [settingsOpen, setSettingsOpen] = useState(false);
 
   /*
+   * The size being dragged right now. Held after release until main's next
+   * frame carries the saved size, so the panel does not flash back to the old
+   * size for the frame in between.
+   */
+  const [liveSize, setLiveSize] = useState<{ size: IslandPanelSize; dragging: boolean } | null>(null);
+  useEffect(() => {
+    setLiveSize((live) => (live && !live.dragging ? null : live));
+  }, [state]);
+  const panelSize = liveSize?.size ?? state.panelSize ?? DEFAULT_ISLAND_PANEL_SIZE;
+  const resizing = !!liveSize?.dragging;
+  // A saved height taller than this display leaves room for the footer anyway.
+  const listMaxHeight = Math.min(
+    panelSize.listHeight,
+    window.innerHeight - ISLAND_STRIP_HEIGHT - ISLAND_FOOTER_ALLOWANCE - ISLAND_CANVAS_PAD,
+  );
+
+  /*
    * Settings do not survive the panel closing.
    *
    * Hover is the ordinary way in and out of this panel, so re-opening it a
@@ -281,10 +303,14 @@ export function MenuBarIslandApp() {
     };
     publish();
     node.addEventListener('transitionend', publish);
+    // The canvas itself changes size around a resize drag, which moves the
+    // island in window coordinates without changing its own size.
+    window.addEventListener('resize', publish);
     const observer = new ResizeObserver(publish);
     observer.observe(node);
     return () => {
       node.removeEventListener('transitionend', publish);
+      window.removeEventListener('resize', publish);
       observer.disconnect();
     };
   }, [expanded, strip, feed, settingsOpen]);
@@ -341,7 +367,10 @@ export function MenuBarIslandApp() {
          * housing, so the island grows leftward and stays out from under it --
          * centring on a notched display hides the collapsed strip completely.
          */
-        className={`menu-bar-island absolute top-0 flex flex-col overflow-hidden rounded-b-[13px] bg-black transition-[width,height,box-shadow] duration-[260ms] ease-[cubic-bezier(.22,1,.36,1)] ${
+        className={`menu-bar-island absolute top-0 flex flex-col overflow-hidden rounded-b-[13px] bg-black ${
+          // The expand animation would make the panel trail the cursor while resizing.
+          resizing ? '' : 'transition-[width,height,box-shadow] duration-[260ms] ease-[cubic-bezier(.22,1,.36,1)]'
+        } ${
           anchor === 'notch-left' ? 'right-0' : 'left-1/2 -translate-x-1/2'
         } ${
           expanded ? 'shadow-[0_10px_34px_rgba(0,0,0,0.55)]' : 'w-max'
@@ -354,12 +383,19 @@ export function MenuBarIslandApp() {
          */
         style={{
           height: expanded ? undefined : STRIP_HEIGHT,
-          width: expanded ? ISLAND_EXPANDED_WIDTH : undefined,
+          width: expanded ? panelSize.width : undefined,
         }}
         data-testid="menu-bar-island"
         data-component="MenuBarIslandApp"
         data-expanded={expanded}
       >
+        {expanded && (
+          <IslandResizeHandles
+            anchor={anchor}
+            size={panelSize}
+            onLiveSize={(size, final) => setLiveSize(size ? { size, dragging: !final } : null)}
+          />
+        )}
         {/*
           * The pill is both the pin toggle and the drag handle for moving the
           * island to another display's menu bar. The renderer does not choose
@@ -411,7 +447,13 @@ export function MenuBarIslandApp() {
             <div
               // `bg-nim` is the surface token (--nim-bg). `bg-nim-primary` is the
               // brand accent, not a background -- it paints the panel bright blue.
-              className="menu-bar-island-body max-h-[340px] overflow-y-auto border-t border-nim bg-nim pb-1 text-nim"
+              className="menu-bar-island-body overflow-y-auto border-t border-nim bg-nim pb-1 text-nim"
+              /*
+               * The saved height caps the list rather than fixing it, so a quiet
+               * fleet still gets a short panel. While dragging it is the height,
+               * or dragging the bottom edge of a short list would do nothing.
+               */
+              style={resizing ? { height: listMaxHeight } : { maxHeight: listMaxHeight }}
               data-testid="menu-bar-island-list"
             >
               {settingsOpen ? (

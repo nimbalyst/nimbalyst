@@ -14,7 +14,7 @@ import { store } from '@nimbalyst/runtime/store/store';
 import { getBaseThemeColors } from '@nimbalyst/runtime/editor/themes/palette';
 import type { ExtendedThemeColors } from '@nimbalyst/runtime/editor/themes/types';
 import { CSS_VAR_MAP } from '../../utils/themeCssVars';
-import { MENU_BAR_ISLAND_CHANNELS, type MenuBarIslandState } from '../../../shared/menuBarIsland';
+import { DEFAULT_ISLAND_PANEL_SIZE, MENU_BAR_ISLAND_CHANNELS, type MenuBarIslandState } from '../../../shared/menuBarIsland';
 import { emptyTrayPanelFeed } from '../../../shared/traySessions';
 
 export function emptyMenuBarIslandState(): MenuBarIslandState {
@@ -35,6 +35,7 @@ export function emptyMenuBarIslandState(): MenuBarIslandState {
     // Main overrides this with the real display's anchor on the first frame.
     // Centring is the safe placeholder: nothing is painted yet either way.
     anchor: 'center',
+    panelSize: DEFAULT_ISLAND_PANEL_SIZE,
     // Only ever on screen for the frame before main's first push. The island is
     // by definition the live style if this renderer is running at all.
     settings: {

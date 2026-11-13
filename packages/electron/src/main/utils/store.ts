@@ -10,7 +10,12 @@ import * as path from 'path';
 import { RecentItem, SessionState, SessionWindow } from '../types';
 import { logger } from './logger';
 import { type EffortLevel, type ThinkingMode, parseEffortLevel, parseThinkingMode } from '@nimbalyst/runtime/ai/server/effortLevels';
-import type { FleetStatusStyle, IslandDisplayPreference } from '../../shared/menuBarIsland';
+import {
+  clampIslandPanelSize,
+  type FleetStatusStyle,
+  type IslandDisplayPreference,
+  type IslandPanelSize,
+} from '../../shared/menuBarIsland';
 import type { OnboardingConfig } from '../../shared/types/workspace';
 import { DEFAULT_ONBOARDING_CONFIG } from '../../shared/types/workspace';
 import { AlphaFeatureTag, getDefaultAlphaFeatures, ALPHA_FEATURES } from '../../shared/alphaFeatures';
@@ -316,6 +321,9 @@ interface AppStoreSchema {
   // primary display, which is also the fallback when this names a monitor that
   // is no longer connected.
   islandDisplay?: IslandDisplayPreference;
+  // Size of the menu bar island's expanded panel, set by dragging its edges.
+  // Absent means the default size.
+  islandPanelSize?: IslandPanelSize;
   // Advanced: V8 heap memory limit in MB (default: 4096 = 4GB)
   // Increase if you experience OOM crashes with large sessions
   maxHeapSizeMB?: number;
@@ -1933,6 +1941,15 @@ export function getIslandDisplay(): IslandDisplayPreference | null {
 
 export function setIslandDisplay(preference: IslandDisplayPreference): void {
   getAppStore().set('islandDisplay', preference);
+}
+
+/** The island panel size, clamped and defaulted so old or hand-edited stores stay valid. */
+export function getIslandPanelSize(): IslandPanelSize {
+  return clampIslandPanelSize(getAppStore().get('islandPanelSize'));
+}
+
+export function setIslandPanelSize(size: IslandPanelSize): void {
+  getAppStore().set('islandPanelSize', clampIslandPanelSize(size));
 }
 
 // Completion Sound Settings
