@@ -14,36 +14,37 @@ const BRANCHES = [
   'remotes/origin/release',
 ];
 
-function renderPicker() {
+function renderPicker(props: Partial<React.ComponentProps<typeof WorktreeBaseBranchPicker>> = {}) {
   return render(
     <WorktreeBaseBranchPicker
       isOpen
       repoPath="/workspace"
       onCreate={vi.fn().mockResolvedValue(undefined)}
       onCancel={vi.fn()}
+      {...props}
     />,
   );
 }
+
+beforeEach(() => {
+  Object.defineProperty(window, 'electronAPI', {
+    configurable: true,
+    value: {
+      invoke: vi.fn(async (channel: string) => {
+        if (channel === 'git:branches') return { branches: BRANCHES, current: 'main' };
+        return undefined;
+      }),
+    },
+  });
+});
+
+afterEach(cleanup);
 
 function typeQuery(value: string) {
   fireEvent.change(screen.getByTestId('worktree-base-branch-search'), { target: { value } });
 }
 
 describe('WorktreeBaseBranchPicker branch search', () => {
-  beforeEach(() => {
-    Object.defineProperty(window, 'electronAPI', {
-      configurable: true,
-      value: {
-        invoke: vi.fn(async (channel: string) => {
-          if (channel === 'git:branches') return { branches: BRANCHES, current: 'main' };
-          return undefined;
-        }),
-      },
-    });
-  });
-
-  afterEach(cleanup);
-
   it('filters local and remote branches in the same pass', async () => {
     renderPicker();
     await screen.findByTestId('worktree-base-branch-item-main');
@@ -109,5 +110,48 @@ describe('WorktreeBaseBranchPicker branch search', () => {
       expect(screen.queryByTestId('worktree-base-branch-item-main')).toBeNull();
     });
     expect(screen.getByTestId('worktree-branch-preview').textContent).toContain('from main');
+  });
+});
+
+describe('WorktreeBaseBranchPicker worktree name', () => {
+  function typeName(value: string) {
+    fireEvent.change(screen.getByTestId('worktree-name-input'), { target: { value } });
+  }
+
+  it('previews the exact branch of a typed name, and the folder it gets', async () => {
+    renderPicker();
+    await screen.findByTestId('worktree-base-branch-item-main');
+
+    typeName('feat/x');
+
+    const preview = screen.getByTestId('worktree-branch-preview').textContent;
+    expect(preview).toContain('worktree/feat/x');
+    expect(preview).toContain('folder feat-x');
+  });
+
+  it('shows the rule a typed name breaks and keeps it from being created', async () => {
+    renderPicker();
+    await screen.findByTestId('worktree-base-branch-item-main');
+
+    typeName('feat..x');
+
+    expect(screen.getByTestId('worktree-name-error').textContent).toContain('..');
+    expect((screen.getByTestId('worktree-base-branch-create') as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  // An unedited name from a tracker item keeps the -N renaming on a
+  // conflict; a name the user typed or edited becomes the branch exactly.
+  it.each([
+    ['an unedited suggested name', undefined, { name: 'nim-12-fix-login', nameSource: 'suggested' }],
+    ['an edited suggested name', 'nim-12-fix/login', { name: 'nim-12-fix/login', nameSource: 'user' }],
+  ])('reports %s with its source', async (_label, typed, expected) => {
+    const onCreate = vi.fn().mockResolvedValue(undefined);
+    renderPicker({ initialName: 'nim-12-fix-login', onCreate });
+    await screen.findByTestId('worktree-base-branch-item-main');
+    if (typed) typeName(typed);
+
+    fireEvent.click(screen.getByTestId('worktree-base-branch-create'));
+
+    await waitFor(() => expect(onCreate).toHaveBeenCalledWith({ baseBranch: 'main', ...expected }));
   });
 });
