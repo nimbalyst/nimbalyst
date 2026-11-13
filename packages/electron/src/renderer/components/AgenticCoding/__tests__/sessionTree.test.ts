@@ -4,6 +4,7 @@ import {
   buildSessionTree,
   MAX_TREE_DEPTH,
   mergedTreeHeader,
+  rendersAsSessionTree,
   sessionMoveError,
   sessionTreeRootId,
   treeIndent,
@@ -51,6 +52,11 @@ describe('session tree projection', () => {
     ]);
     expect(roots.flatMap((n) => n.ids).sort()).toEqual(['a', 'b', 'foreign', 'orphan']);
     expect(treeIndent(8)).toEqual({ level: 3, rail: true });
+  });
+  it('renders an empty workstream container through the tree path, not as a plain session', () => {
+    expect(rendersAsSessionTree({ sessionType: 'workstream', childCount: 0 })).toBe(true);
+    expect(rendersAsSessionTree({ sessionType: 'session', childCount: 2 })).toBe(true);
+    expect(rendersAsSessionTree({ sessionType: 'session', childCount: 0 })).toBe(false);
   });
   it('range selection follows rendered sibling order and excludes collapsed descendants and merged wrappers', () => {
     const rows = [

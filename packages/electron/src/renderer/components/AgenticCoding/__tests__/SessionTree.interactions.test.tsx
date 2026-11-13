@@ -220,6 +220,17 @@ describe('tree interactions', () => {
       'Sessions not moved', expect.stringContaining('is empty')));
   });
 
+  it('highlights the selected empty workstream although it is never the active session', () => {
+    const ws = row('ws', null, { sessionType: 'workstream', userWorkstream: true });
+    store.set(sessionRegistryAtom, new Map([[ws.id, ws]]));
+    store.set(setSelectedWorkstreamAtom, { workspacePath: '/project', selection: { type: 'workstream', id: 'ws' } });
+    render(<Provider store={store}><SessionTree root={ws} sessions={[]} activeSessionId={null}
+      projectPath="/project" onSessionSelect={vi.fn()} /></Provider>);
+    const header = screen.getByText('ws').closest('.session-list-item')!;
+    expect(header.getAttribute('data-session-type')).toBe('workstream');
+    expect(header.classList.contains('active')).toBe(true);
+  });
+
   it('opens the title editor on a newly created workstream and saves the typed name', () => {
     const ws = row('ws', null, { sessionType: 'workstream', userWorkstream: true, title: 'New Workstream' });
     store.set(sessionRegistryAtom, new Map([[ws.id, ws]]));

@@ -6,6 +6,7 @@ import {
   sessionProcessingAtom,
   sessionUnreadAtom,
   sessionHasPendingInteractivePromptAtom,
+  selectedWorkstreamAtom,
   type SessionMeta,
 } from '../../store/atoms/sessions';
 import { workspaceSessionTurnActivityAtom } from '../../store/atoms/sessionActivity';
@@ -166,6 +167,15 @@ export function SessionTreeRow(props: SessionTreeRowHandlers & VisibleSessionTre
     [isSelected, props.selectedSessionIds]
   );
   const isContainer = isWorkstreamContainer(row);
+  // A container is never the active session; it shows as active while it is the
+  // selection and none of its sessions is open (the empty-workstream state).
+  const isSelectedContainer = useAtomValue(
+    useMemo(
+      () => atom((get) => isContainer && get(selectedWorkstreamAtom(props.projectPath || row.workspaceId || ''))?.id === row.id),
+      [isContainer, props.projectPath, row.workspaceId, row.id]
+    )
+  );
+  const isActive = row.id === activeSessionId || (isSelectedContainer && !node.ids.includes(activeSessionId ?? ''));
   // SessionListItem's memo compares these by reference; build them only when
   // their inputs change so an unrelated list render does not repaint every row.
   // Inline on the metadata line; a separate row per parent cost a line of height each.
@@ -211,7 +221,7 @@ export function SessionTreeRow(props: SessionTreeRowHandlers & VisibleSessionTre
         {...row}
         isPinned={pinSession.isPinned}
         title={row.title || 'Untitled Session'}
-        isActive={row.id === activeSessionId}
+        isActive={isActive}
         treeContext
         projectPath={props.projectPath || row.workspaceId}
         isWorkstream={isContainer || hasChildren}

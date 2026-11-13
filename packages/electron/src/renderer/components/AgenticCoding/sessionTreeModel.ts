@@ -87,6 +87,11 @@ export function isWorkstreamContainer(session: Pick<TreeSession, 'sessionType'>)
   return session.sessionType === 'workstream';
 }
 
+/** The sidebar renders a row as a tree when it groups sessions; an empty workstream still does. */
+export function rendersAsSessionTree(session: { sessionType?: string; childCount?: number }): boolean {
+  return isWorkstreamContainer(session) || (session.childCount ?? 0) > 0;
+}
+
 /**
  * Wrappers the app created automatically before the session tree carry no meaning
  * with one session in them, so they are hidden behind that session. A workstream
