@@ -29,13 +29,13 @@ cd packages/electron
 pnpm run build:worker
 cd ../..
 
-# Start vite dev server for renderer only
-# We use a minimal vite config instead of electron-vite because:
-# 1. electron-vite always starts Electron which crashes or conflicts in containers
+# Start only the renderer dev server, from the real electron.vite.config.ts
+# (scripts/renderer-dev-server.mjs, the same server dev-loop uses), because:
+# 1. electron-vite dev always starts Electron, which crashes or conflicts in containers
 # 2. The main and preload are already built by post-create.sh
 # Playwright launches Electron separately with --no-sandbox flag
 echo "Starting Vite dev server for renderer..."
-pnpm exec vite --config .devcontainer/e2e-vite.config.ts > /tmp/vite-e2e.log 2>&1 &
+(cd packages/electron && NIMBALYST_RENDERER_HOST=127.0.0.1 VITE_PORT=5273 node ./scripts/renderer-dev-server.mjs) > /tmp/vite-e2e.log 2>&1 &
 DEV_PID=$!
 
 # Wait for dev server to be accessible (try both IPv4 and IPv6)
@@ -57,6 +57,10 @@ for i in $(seq 1 60); do
     fi
     sleep 1
 done
+
+# A cold server compiles the renderer graph and re-optimizes dependencies on
+# the first page load; do that before Electron loads the page.
+node packages/electron/scripts/warm-renderer.mjs http://127.0.0.1:5273
 
 # Run tests
 echo ""
