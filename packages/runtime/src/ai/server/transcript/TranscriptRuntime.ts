@@ -245,6 +245,13 @@ export class TranscriptRuntime {
   private cache = new Map<string, InMemoryTranscriptEventStore>();
   private mru: string[] = [];
   private cacheCap: number;
+  /**
+   * Sessions with a call in flight. A rebuild writes page by page through
+   * `storeFor`; evicting the session between pages gave the rest a new store
+   * and generation, and the cache kept only the tail (#919). Busy sessions
+   * are never evicted, so the cache can exceed its cap until they go idle.
+   */
+  private busy = new Map<string, { calls: number; idle: Promise<void>; settle: () => void }>();
   private metadataStore = new InMemoryMetadataStore();
   private routingStore: RoutingStore;
   private transformer: TranscriptTransformer;
@@ -275,8 +282,10 @@ export class TranscriptRuntime {
     provider: string,
     options?: { eventTypes?: TranscriptEventType[]; limit?: number; offset?: number },
   ): Promise<TranscriptEvent[]> {
-    await this.transformer.ensureUpToDate(sessionId, provider);
-    return this.routingStore.getSessionEvents(sessionId, options);
+    return this.whileBusy(sessionId, async () => {
+      await this.transformer.ensureUpToDate(sessionId, provider);
+      return this.routingStore.getSessionEvents(sessionId, options);
+    });
   }
 
   async getViewMessages(sessionId: string, provider: string): Promise<TranscriptViewMessage[]> {
@@ -286,11 +295,11 @@ export class TranscriptRuntime {
   }
 
   async ensureTransformed(sessionId: string, provider: string): Promise<void> {
-    await this.transformer.ensureUpToDate(sessionId, provider);
+    await this.whileBusy(sessionId, () => this.transformer.ensureUpToDate(sessionId, provider));
   }
 
   async processNewMessages(sessionId: string, provider: string): Promise<TranscriptEvent[]> {
-    return this.transformer.processNewMessages(sessionId, provider);
+    return this.whileBusy(sessionId, () => this.transformer.processNewMessages(sessionId, provider));
   }
 
   async getTailEvents(
@@ -299,8 +308,10 @@ export class TranscriptRuntime {
     count: number,
     options?: { excludeEventTypes?: TranscriptEventType[] },
   ): Promise<TranscriptEvent[]> {
-    await this.transformer.ensureUpToDate(sessionId, provider);
-    return this.routingStore.getTailEvents(sessionId, count, options);
+    return this.whileBusy(sessionId, async () => {
+      await this.transformer.ensureUpToDate(sessionId, provider);
+      return this.routingStore.getTailEvents(sessionId, count, options);
+    });
   }
 
   /**
@@ -316,8 +327,13 @@ export class TranscriptRuntime {
    * Evict the session from the in-memory cache so the next read rebuilds
    * from the raw log. Replaces the previous "drop ai_transcript_events
    * rows" implementation now that canonical events live only in memory.
+   * Waits for the session's calls in flight first, so a running rebuild is
+   * not split (#919); never await it from inside one of those calls.
    */
   async forceReparseSession(sessionId: string, _provider: string): Promise<boolean> {
+    for (let entry = this.busy.get(sessionId); entry; entry = this.busy.get(sessionId)) {
+      await entry.idle;
+    }
     this.evict(sessionId);
     return true;
   }
@@ -333,8 +349,10 @@ export class TranscriptRuntime {
     providerToolCallId: string,
     provider: string,
   ): Promise<TranscriptEvent | null> {
-    await this.transformer.ensureUpToDate(sessionId, provider);
-    return this.routingStore.findByProviderToolCallId(providerToolCallId, sessionId);
+    return this.whileBusy(sessionId, async () => {
+      await this.transformer.ensureUpToDate(sessionId, provider);
+      return this.routingStore.findByProviderToolCallId(providerToolCallId, sessionId);
+    });
   }
 
   /**
@@ -355,12 +373,32 @@ export class TranscriptRuntime {
     this.mru.push(sessionId);
   }
 
-  private ensureCap(): void {
-    while (this.mru.length > this.cacheCap) {
-      const stale = this.mru.shift();
-      if (stale != null) {
-        this.evict(stale);
+  /** Run one call on a session; the session is not evicted until it returns. */
+  private async whileBusy<T>(sessionId: string, fn: () => Promise<T>): Promise<T> {
+    let entry = this.busy.get(sessionId);
+    if (!entry) {
+      let settle!: () => void;
+      const idle = new Promise<void>((resolve) => { settle = resolve; });
+      entry = { calls: 0, idle, settle };
+      this.busy.set(sessionId, entry);
+    }
+    entry.calls++;
+    try {
+      return await fn();
+    } finally {
+      if (--entry.calls === 0) {
+        this.busy.delete(sessionId);
+        entry.settle();
+        this.ensureCap();
       }
+    }
+  }
+
+  private ensureCap(): void {
+    // Least recently used first, skipping busy sessions (#919).
+    const idle = this.mru.filter((sessionId) => !this.busy.has(sessionId));
+    while (this.mru.length > this.cacheCap && idle.length > 0) {
+      this.evict(idle.shift()!);
     }
   }
 

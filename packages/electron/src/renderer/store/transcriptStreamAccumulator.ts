@@ -25,7 +25,7 @@
  */
 
 import { TranscriptProjector } from '@nimbalyst/runtime/ai/server/transcript/TranscriptProjector';
-import { latestTranscriptGeneration, preserveTranscriptMessageIdentity, reconcileTranscriptMessages } from './transcriptReconciliation';
+import { latestTranscriptGeneration, preserveTranscriptMessageIdentity, reconcileTranscriptMessages, warnOnDuplicateUserPrompt } from './transcriptReconciliation';
 import type {
   TranscriptViewMessage,
 } from '@nimbalyst/runtime/ai/server/transcript/TranscriptProjector';
@@ -196,7 +196,8 @@ export class TranscriptStreamAccumulator {
     state.patchedSinceFlush = false;
     this.observeSnapshot(sessionId, state);
 
-    if (state.needsRebuild || state.currentMessages.length === 0) {
+    const rebuilt = state.needsRebuild || state.currentMessages.length === 0;
+    if (rebuilt) {
       this.rebuild(sessionId, state);
       state.needsRebuild = false;
     }
@@ -204,6 +205,8 @@ export class TranscriptStreamAccumulator {
     // An unchanged rebuild returns the atom's own array; publishing it would
     // still replace the session object and re-render every subscriber.
     if (this.opts.readDbMessages(sessionId) === state.currentMessages) return;
+    // Text patches only touch assistant messages, so only a rebuild can add a prompt.
+    if (rebuilt) warnOnDuplicateUserPrompt(sessionId, 'stream', state.currentMessages);
     this.opts.emit({ sessionId, messages: state.currentMessages });
     // The atom normally holds this exact array after our synchronous emit.
     // Do not treat our own publication as a new external snapshot next frame.

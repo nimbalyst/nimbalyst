@@ -21,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 <!-- Bug fixes go here -->
+- With many sessions busy at once, an agent transcript could lose its opening prompt and earlier messages until the session was reopened; the whole transcript is now kept
 - Moving a session under another session on desktop, by dragging or with "Move under...", recorded the new parent as its manager; a move now leaves the manager as it was unless the session leaves its manager's tree
 - On the SQLite backend, database backups no longer stop rotating after the database shrinks to under half its previous size while still holding its sessions; a smaller backup is now rejected only when it also holds fewer sessions than the current one
 - The daily cleanup of old tool output could skip past recent rows and never return to them once they aged; it now stops at the first row still inside the retention window and resumes there the next day
