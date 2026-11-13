@@ -90,6 +90,12 @@ const transcriptAccumulator = new TranscriptStreamAccumulator({
   // Keep events while a load is in flight: its snapshot may predate them.
   isSessionTracked: (sessionId) =>
     isSessionDataResident(store.get(sessionStoreAtom(sessionId))) || isSessionLoadInFlight(sessionId),
+  // A rebuild held behind the on-screen transcript (#919) is released by a
+  // reload; some writers never send one.
+  requestSnapshot: (sessionId) => {
+    const workspacePath = store.get(sessionStoreAtom(sessionId))?.workspacePath;
+    if (workspacePath) void store.set(reloadSessionDataAtom, { sessionId, workspacePath });
+  },
   // requestAnimationFrame caps flushes at the display refresh rate (~60 Hz)
   // and gives the JS thread a chance to do other work between frames.
   // Falls back to setTimeout in non-DOM environments (Vitest, headless).
