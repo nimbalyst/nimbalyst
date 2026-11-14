@@ -34,9 +34,10 @@ export type DriveReason =
   | 'safety-sweep'
   | 'drain-follow-up';
 
-/** Why an attempt could not dispatch. All of these are retryable except workspace-missing. */
+/** Why an attempt could not dispatch. Retrying queue-stopped never authorizes it. */
 export type BlockedReason =
   | 'no-window'
+  | 'queue-stopped'
   | 'session-busy'
   | 'workspace-missing'
   | 'db-not-ready'
@@ -101,6 +102,7 @@ interface SessionDriveState {
 }
 
 const WAKE_REASON: Record<BlockedReason, DriveReason> = {
+  'queue-stopped': 'renderer-trigger',
   'no-window': 'window-available',
   'session-busy': 'session-idle',
   'workspace-missing': 'safety-sweep',

@@ -375,7 +375,7 @@ export const META_AGENT_TOOL_DEFS: Array<{
   {
     name: "send_prompt",
     description:
-      "Queue a follow-up prompt for a session. An instruction to an idle session starts processing immediately; a report or status never wakes it and is read on its next turn. Do not message the session that started you unless it asked for reports.",
+      "Queue a follow-up prompt for a session. An instruction to an idle session requests processing; a user Stop keeps it queued unless explicitly resumed. A report or status never wakes an idle session and is read on its next turn. processingTriggered means some queued input dispatched, not necessarily this prompt; deferredReason explains a held queue. Do not message the session that started you unless it asked for reports.",
     inputSchema: {
       type: "object",
       properties: {
@@ -395,7 +395,7 @@ export const META_AGENT_TOOL_DEFS: Array<{
         interrupt: {
           type: "boolean",
           description:
-            "Optional. If true, stop the session's current turn and start processing the queue immediately instead of waiting for the turn to finish. The interrupted turn's work is lost, so use this only when the new prompt makes the current one obsolete. Ignored for a session waiting on an interactive prompt (use respond_to_prompt) or a terminal-backed CLI session; the result reports interrupted/interruptSkippedReason. The queue drains oldest-first, so if the session already has queued prompts this delivers the oldest one, not necessarily yours.",
+            "Optional. If true, interrupt the current turn and request queue processing instead of waiting for it to finish. For an instruction, this also explicitly resumes an idle queue held by Stop. Use only when authorized to interrupt or resume the target. Ignored for a session waiting on an interactive prompt (use respond_to_prompt) or a terminal-backed CLI session; the result reports interrupted/interruptSkippedReason. The queue drains oldest-first, so if the session already has queued prompts this delivers the oldest one, not necessarily yours. A later Stop takes precedence.",
         },
       },
       required: ["sessionId", "prompt"],

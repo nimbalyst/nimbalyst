@@ -3,6 +3,40 @@ import { describe, expect, it } from 'vitest';
 import { beginQueueStopRequest, captureQueueAuthorization, holdQueueAfterStop, isQueueStopped } from '../stoppedQueueHold';
 
 describe('explicit Stop queue hold', () => {
+  it('lets concurrent authorizations share one Stop generation without mistaking another Send for a newer Stop', () => {
+    const sessionId = 'shared-resume-generation';
+    holdQueueAfterStop(sessionId);
+    const first = captureQueueAuthorization(sessionId);
+    const second = captureQueueAuthorization(sessionId);
+    expect(first()).toBe(true);
+    expect(second()).toBe(true);
+    holdQueueAfterStop(sessionId);
+    expect(first()).toBe(false);
+    expect(second()).toBe(false);
+    captureQueueAuthorization(sessionId)();
+  });
+  it.each([false, true])('does not restore a withdrawn overlapping Stop (newerFirst=%s)', newerFirst => {
+    const sessionId = `withdrawn-overlap-${newerFirst}`;
+    const first = beginQueueStopRequest(sessionId);
+    const second = beginQueueStopRequest(sessionId);
+    for (const request of newerFirst ? [second, first] : [first, second]) {
+      request.restorePreviousHold();
+      request.finishLookup();
+    }
+    expect(isQueueStopped(sessionId)).toBe(false);
+  });
+  it('invalidates an older authorization when a newer failed lookup restores the old hold', () => {
+    const sessionId = 'restore-aba';
+    holdQueueAfterStop(sessionId);
+    const oldSave = captureQueueAuthorization(sessionId);
+    const stop = beginQueueStopRequest(sessionId);
+    stop.restorePreviousHold();
+    stop.finishLookup();
+    oldSave();
+    expect(isQueueStopped(sessionId)).toBe(true);
+    captureQueueAuthorization(sessionId)();
+    expect(isQueueStopped(sessionId)).toBe(false);
+  });
   it('fences provider lookup even after a later send authorizes recovery', () => {
     const sessionId = 'stop-lookup';
     const stop = beginQueueStopRequest(sessionId);

@@ -41,6 +41,7 @@ import { extractMessageText, extractUserPrompts } from './metaAgentMessageText';
 import type { NotificationOptions, NotificationResult } from './NotificationService';
 import type { MobilePushResult } from '@nimbalyst/runtime/sync/types';
 import { composeNotificationTitle } from '../../shared/notificationTitle';
+import { captureQueueAuthorization, isQueueStopped } from './ai/stoppedQueueHold';
 
 type SessionStatusValue = 'idle' | 'running' | 'waiting_for_input' | 'error' | 'interrupted';
 type PromptType = 'permission_request' | 'ask_user_question_request' | 'exit_plan_mode_request';
@@ -943,6 +944,10 @@ export class MetaAgentService {
       throw new Error('prompt is required');
     }
 
+    // Receipt precedes asynchronous lookup/save. A later Stop must win even
+    // when this explicit Send Now finishes saving afterward.
+    const authorizeQueue = captureQueueAuthorization(sessionId);
+
     const session = await AISessionsRepository.get(sessionId);
     if (!session || !sameWorkspaceIdentity(session.workspacePath, workspaceId)) {
       throw new Error(`Session ${sessionId} not found`);
@@ -983,23 +988,32 @@ export class MetaAgentService {
       undefined,
       { promptProvenance },
     );
-    const status = (statusRow?.status || 'idle') as SessionStatusValue;
+    // Queue persistence can outlive a turn or the registration of a question.
+    // Decide interruption from the current state, not the pre-save snapshot.
+    const currentStatusRow = await this.getSessionStatusRow(sessionId, sessionWorkspaceKey);
+    const status = (currentStatusRow?.status || 'idle') as SessionStatusValue;
     const workspaceForDrive = session.worktreePath || session.workspacePath || workspaceId;
     // A report never wakes an idle recipient: it waits for that session's next
     // turn, where drain-time coalescing folds it in with whatever else arrived.
     const idle = status === 'idle' || status === 'interrupted' || status === 'error';
-    const heldForNextTurn = idle && !interrupt && (messageKind === 'report' || messageKind === 'status');
+    const informational = messageKind === 'report' || messageKind === 'status';
+    const heldForNextTurn = idle && informational;
     const idleEnoughToDrive = idle && !heldForNextTurn;
-    const interruptSkippedReason = interrupt
-      ? this.reasonToSkipInterrupt(status, session.provider)
+    let interruptSkippedReason = interrupt
+      ? informational ? 'informational-message' : this.reasonToSkipInterrupt(status, session.provider)
       : null;
-    const shouldInterrupt = interrupt && !interruptSkippedReason;
+    const resumeRequested = interrupt && messageKind === 'instruction'
+      && interruptSkippedReason !== 'waiting-for-input' && interruptSkippedReason !== 'terminal-session';
+    const resumeSuperseded = resumeRequested && !authorizeQueue();
+    if (resumeSuperseded) interruptSkippedReason = 'superseded-by-stop';
+    const shouldInterrupt = interrupt && !informational && !interruptSkippedReason;
 
-    let processingTriggered = idleEnoughToDrive;
+    let processingTriggered = false;
     let interrupted = false;
     let interruptMethod: string | null = null;
     let interruptDeferred: string | null = null;
     let driveOutcome: string | null = null;
+    let deferredReason: string | null = null;
 
     if (shouldInterrupt) {
       const result = await this.aiService.interruptCurrentTurn(sessionId);
@@ -1014,22 +1028,25 @@ export class MetaAgentService {
       // opened to receive the prompt, matching the lightning bolt.
       const outcome = await this.aiService.driveQueuedPrompts(sessionId, workspaceForDrive, 'send-now');
       driveOutcome = outcome.kind;
+      if (outcome.kind === 'deferred') deferredReason = outcome.reason;
       // A deferred drive is not a failure: the interrupt may not have settled
       // yet, and the driver arms a session-idle wake to dispatch when it does.
       processingTriggered = outcome.kind === 'dispatched';
-    } else if (idleEnoughToDrive) {
-      await this.aiService.triggerQueuedPromptProcessingForSession(
-        sessionId,
-        workspaceForDrive,
-        'meta-agent'
+    } else if (idleEnoughToDrive && !resumeSuperseded) {
+      const outcome = await this.aiService.driveQueuedPrompts(
+        sessionId, workspaceForDrive, resumeRequested ? 'send-now' : 'meta-agent',
       );
+      driveOutcome = outcome.kind;
+      if (outcome.kind === 'deferred') deferredReason = outcome.reason;
+      processingTriggered = outcome.kind === 'dispatched';
     }
+    if (!processingTriggered && (resumeSuperseded || isQueueStopped(sessionId))) deferredReason = 'queue-stopped';
 
     return JSON.stringify({
       sessionId,
       queuedPromptId: queued.id,
       prompt: queued.prompt,
-      statusBeforeQueue: status,
+      statusBeforeQueue,
       processingTriggered,
       interrupted,
       ...(heldForNextTurn ? { heldForNextTurn } : {}),
@@ -1037,6 +1054,7 @@ export class MetaAgentService {
       ...(interruptSkippedReason ? { interruptSkippedReason } : {}),
       ...(interruptDeferred ? { interruptDeferred } : {}),
       ...(driveOutcome ? { driveOutcome } : {}),
+      ...(deferredReason ? { deferredReason } : {}),
     }, null, 2);
   }
 

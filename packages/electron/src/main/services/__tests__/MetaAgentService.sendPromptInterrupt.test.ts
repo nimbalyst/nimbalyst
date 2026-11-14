@@ -56,6 +56,8 @@ vi.mock('../ai/claudeCliLauncherSingleton', () => ({
 
 import { AISessionsRepository } from '@nimbalyst/runtime/storage/repositories/AISessionsRepository';
 import { MetaAgentService } from '../MetaAgentService';
+import { captureQueueAuthorization, holdQueueAfterStop, isQueueStopped } from '../ai/stoppedQueueHold';
+import { runQueueDriveAttempt } from '../ai/queueDriveAttempt';
 
 const WORKSPACE = '/workspace/path';
 const TARGET = 'target-session';
@@ -101,6 +103,7 @@ describe('send_prompt interrupt', () => {
   beforeEach(() => {
     vi.restoreAllMocks();
     vi.mocked(AISessionsRepository.get).mockReset();
+    captureQueueAuthorization(TARGET)();
   });
 
   it('interrupts a running session and drives the queue', async () => {
@@ -156,13 +159,122 @@ describe('send_prompt interrupt', () => {
     expect(result.interruptSkippedReason).toBe('terminal-session');
   });
 
-  it('skips the interrupt on an idle session and uses the normal idle drive', async () => {
-    const h = setup({ status: 'idle' });
+  it('resumes a stopped idle queue with explicit Send Now without aborting a provider', async () => {
+    const h = setup({ status: 'idle', provider: 'openai-codex' });
+    holdQueueAfterStop(TARGET);
+    h.driveQueuedPrompts.mockImplementation(async () => isQueueStopped(TARGET)
+      ? { kind: 'deferred', reason: 'queue-stopped' }
+      : { kind: 'dispatched', promptId: 'older-steering' });
     const result = await send(h, true);
 
     expect(h.interruptCurrentTurn).not.toHaveBeenCalled();
-    expect(h.triggerQueuedPromptProcessingForSession).toHaveBeenCalledWith(TARGET, WORKSPACE, 'meta-agent');
+    expect(h.driveQueuedPrompts).toHaveBeenCalledWith(TARGET, WORKSPACE, 'send-now');
     expect(result.interrupted).toBe(false);
     expect(result.processingTriggered).toBe(true);
+  });
+
+  it('reports an ordinary idle instruction as deferred when Stop still holds it', async () => {
+    const h = setup({ status: 'idle', provider: 'openai-codex' });
+    holdQueueAfterStop(TARGET);
+    h.driveQueuedPrompts.mockResolvedValue({ kind: 'deferred', reason: 'queue-stopped' });
+    h.triggerQueuedPromptProcessingForSession.mockResolvedValue(false);
+    const result = await send(h);
+    expect(result).toMatchObject({ processingTriggered: false, driveOutcome: 'deferred', deferredReason: 'queue-stopped' });
+    expect(isQueueStopped(TARGET)).toBe(true);
+  });
+
+  it('does not authorize a later Stop while the requested resume is saving', async () => {
+    const h = setup({ status: 'idle', provider: 'openai-codex' });
+    holdQueueAfterStop(TARGET);
+    h.service.aiService.queuePromptForSession.mockImplementation(async () => {
+      holdQueueAfterStop(TARGET);
+      return { id: 'queued-1', prompt: 'do the thing' };
+    });
+    h.driveQueuedPrompts.mockImplementation(async () => isQueueStopped(TARGET)
+      ? { kind: 'deferred', reason: 'queue-stopped' } : { kind: 'dispatched' });
+    expect(await send(h, true)).toMatchObject({ processingTriggered: false, deferredReason: 'queue-stopped' });
+    expect(isQueueStopped(TARGET)).toBe(true);
+  });
+
+  it('retains Stop if durable enqueue fails', async () => {
+    const h = setup({ status: 'idle', provider: 'openai-codex' });
+    holdQueueAfterStop(TARGET);
+    h.service.aiService.queuePromptForSession.mockRejectedValue(new Error('save failed'));
+    await expect(send(h, true)).rejects.toThrow('save failed');
+    expect(isQueueStopped(TARGET)).toBe(true);
+    expect(h.driveQueuedPrompts).not.toHaveBeenCalled();
+  });
+
+  it('does not interrupt a running target when a newer Stop superseded the saved resume', async () => {
+    const h = setup({ status: 'running', provider: 'openai-codex' });
+    h.service.aiService.queuePromptForSession.mockImplementation(async () => {
+      holdQueueAfterStop(TARGET);
+      return { id: 'new-resume', prompt: 'do the thing' };
+    });
+    expect(await send(h, true)).toMatchObject({ processingTriggered: false, interruptSkippedReason: 'superseded-by-stop', deferredReason: 'queue-stopped' });
+    expect(h.interruptCurrentTurn).not.toHaveBeenCalled();
+    expect(h.driveQueuedPrompts).not.toHaveBeenCalled();
+  });
+
+  it('explains a held instruction even while a stopped target still reports running', async () => {
+    const h = setup({ status: 'running', provider: 'openai-codex' });
+    holdQueueAfterStop(TARGET);
+    expect(await send(h)).toMatchObject({ processingTriggered: false, deferredReason: 'queue-stopped' });
+    expect(h.driveQueuedPrompts).not.toHaveBeenCalled();
+  });
+
+  it('resumes the existing oldest steering through the real drive decision', async () => {
+    const h = setup({ status: 'idle', provider: 'openai-codex' });
+    holdQueueAfterStop(TARGET);
+    const delivered: string[] = [];
+    const pending = ['existing-steering', 'existing-recovery'];
+    h.service.aiService.queuePromptForSession.mockImplementation(async () => {
+      pending.push('new-resume');
+      return { id: 'new-resume', prompt: 'do the thing' };
+    });
+    h.driveQueuedPrompts.mockImplementation(async (sessionId, workspacePath, reason) => runQueueDriveAttempt({
+      listPendingIds: async () => [...pending], isChainActive: () => false, isSessionBusy: () => false,
+      resolveWindow: async () => ({ kind: 'window', window: {}, opened: false }),
+      failAllPending: async () => 0, logWarn: vi.fn(),
+      dispatch: async () => { delivered.push(pending.shift()!); return true; },
+    }, { sessionId, workspacePath, reason }));
+    expect(await send(h, true)).toMatchObject({ processingTriggered: true, driveOutcome: 'dispatched' });
+    expect(delivered).toEqual(['existing-steering']);
+    expect(pending).toEqual(['existing-recovery', 'new-resume']);
+  });
+
+  it.each(['report', 'status'] as const)('does not release Stop for an informational %s even with interrupt set', async kind => {
+    const h = setup({ status: 'idle', provider: 'openai-codex' });
+    holdQueueAfterStop(TARGET);
+    h.driveQueuedPrompts.mockResolvedValue({ kind: 'deferred', reason: 'queue-stopped' });
+    await h.service.sendPromptToSession('origin', TARGET, WORKSPACE, 'info', true, kind);
+    expect(isQueueStopped(TARGET)).toBe(true);
+    expect(h.interruptCurrentTurn).not.toHaveBeenCalled();
+  });
+
+  it.each(['report', 'status'] as const)('does not wake or interrupt an unheld session for an informational %s', async kind => {
+    for (const status of ['idle', 'running']) {
+      const h = setup({ status });
+      const result = JSON.parse(await h.service.sendPromptToSession('origin', TARGET, WORKSPACE, 'info', true, kind));
+      expect(result).toMatchObject({ processingTriggered: false, interruptSkippedReason: 'informational-message' });
+      expect(h.interruptCurrentTurn).not.toHaveBeenCalled();
+      expect(h.driveQueuedPrompts).not.toHaveBeenCalled();
+    }
+  });
+
+  it('preserves a question that appeared while the prompt was being saved', async () => {
+    const h = setup({ status: 'running', provider: 'openai-codex' });
+    h.service.getSessionStatusRow.mockResolvedValueOnce({ status: 'running' }).mockResolvedValueOnce({ status: 'waiting_for_input' });
+    const result = await send(h, true);
+    expect(result).toMatchObject({ statusBeforeQueue: 'running', interruptSkippedReason: 'waiting-for-input', processingTriggered: false });
+    expect(h.interruptCurrentTurn).not.toHaveBeenCalled();
+    expect(h.driveQueuedPrompts).not.toHaveBeenCalled();
+  });
+
+  it('keeps the existing terminal-backed idle queue consumer', async () => {
+    const h = setup({ status: 'idle', provider: 'claude-code-cli' });
+    expect(await send(h, true)).toMatchObject({ processingTriggered: true, interruptSkippedReason: 'terminal-session' });
+    expect(h.interruptCurrentTurn).not.toHaveBeenCalled();
+    expect(h.driveQueuedPrompts).toHaveBeenCalledWith(TARGET, WORKSPACE, 'meta-agent');
   });
 });

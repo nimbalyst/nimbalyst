@@ -360,6 +360,20 @@ describe('captured desktop turn interruption', () => {
     expect(result).toMatchObject({ success: true, warning: expect.stringContaining('turn stopped') });
   });
 
+  it('names the explicit resume action when Stop holds queued steering', async () => {
+    const options = fixture(null);
+    holdQueueAfterStop(options.sessionId);
+    const result = await performTurnInterruption({
+      ...options, mode: 'stop',
+      drive: async () => ({ kind: 'deferred', reason: 'queue-stopped' }) as any,
+    });
+    expect(result.success).toBe(true);
+    expect(result.warning).toContain('Send Now');
+    expect(result.warning).not.toContain('will start when');
+    expect(isQueueStopped(options.sessionId)).toBe(true);
+    captureQueueAuthorization(options.sessionId)();
+  });
+
   it.each(['sweep', 'drive'] as const)('keeps Stop success truthful when post-retirement %s fails', async stage => {
     const options = fixture(null);
     options[stage].mockRejectedValueOnce(new Error(`${stage} unavailable`));

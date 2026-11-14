@@ -7,6 +7,8 @@ import {
 } from '../QueueDriveService';
 import { clearLiveInteractivePrompt, noteLiveInteractivePrompt, onInteractivePromptsCleared } from '../../../mcp/tools/interactivePromptLiveness';
 import { beginCommitProposalCall, isCommitProposalInFlight, onCommitProposalsSettled } from '@nimbalyst/runtime/ai/server/commitProposalInFlight';
+import { captureQueueAuthorization, holdQueueAfterStop } from '../stoppedQueueHold';
+import { runQueueDriveAttempt } from '../queueDriveAttempt';
 
 function createHarness(attemptImpl: QueueDriveDeps['attempt']) {
   const windowListeners: Array<{ workspacePath: string; listener: () => void }> = [];
@@ -68,6 +70,34 @@ function createHarness(attemptImpl: QueueDriveDeps['attempt']) {
 const flush = () => new Promise<void>((resolve) => setImmediate(resolve));
 
 describe('QueueDriveService', () => {
+  it('backs off a stopped queue without spinning or dispatching, then resumes once after authorization', async () => {
+    const sessionId = 'stopped-backoff';
+    holdQueueAfterStop(sessionId);
+    const pending = ['steering'];
+    const dispatch = vi.fn(async () => { pending.shift(); return true; });
+    const attempt = vi.fn((input: Parameters<QueueDriveDeps['attempt']>[0]) => runQueueDriveAttempt({
+      listPendingIds: async () => [...pending], isChainActive: () => false, isSessionBusy: () => false,
+      resolveWindow: async () => ({ kind: 'window', window: {}, opened: false }),
+      failAllPending: async () => 0, logWarn: vi.fn(), dispatch,
+    }, input));
+    const h = createHarness(attempt);
+    try {
+      await h.service.drive(sessionId, '/ws', 'renderer-trigger');
+      await flush();
+      expect(attempt).toHaveBeenCalledTimes(1);
+      expect(h.idleListeners).toHaveLength(0);
+      expect(h.timerCalls.map(call => call.ms)).toEqual([2000]);
+      h.timerCalls[0].fn();
+      await flush();
+      expect(attempt).toHaveBeenCalledTimes(2);
+      expect(h.timerCalls.map(call => call.ms)).toEqual([2000, 5000]);
+      expect(dispatch).not.toHaveBeenCalled();
+      captureQueueAuthorization(sessionId)();
+      await Promise.all([h.service.drive(sessionId, '/ws', 'send-now'), h.service.drive(sessionId, '/ws', 'send-now')]);
+      await flush();
+      expect(dispatch).toHaveBeenCalledOnce();
+    } finally { h.service.dispose(); captureQueueAuthorization(sessionId)(); }
+  });
   beforeEach(() => {
     vi.clearAllMocks();
   });

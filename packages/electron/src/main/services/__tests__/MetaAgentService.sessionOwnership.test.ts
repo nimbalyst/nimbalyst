@@ -102,7 +102,7 @@ const OWNED_CALLER = {
 
 function service() {
   const svc = MetaAgentService.getInstance();
-  const aiService = { queuePromptForSession: vi.fn(), triggerQueuedPromptProcessingForSession: vi.fn() };
+  const aiService = { queuePromptForSession: vi.fn(), driveQueuedPrompts: vi.fn().mockResolvedValue({ kind: 'dispatched' }) };
   (svc as any).aiService = aiService;
   return { svc, aiService };
 }
@@ -219,10 +219,10 @@ describe('MetaAgentService session ownership', () => {
 
     const report = JSON.parse(await (svc as any).sendPromptToSession('child', 'parent', '/workspace/path', 'paths released', false, 'report'));
     expect(report).toMatchObject({ processingTriggered: false, heldForNextTurn: true });
-    expect(aiService.triggerQueuedPromptProcessingForSession).not.toHaveBeenCalled();
+    expect(aiService.driveQueuedPrompts).not.toHaveBeenCalled();
 
     await (svc as any).sendPromptToSession('child', 'parent', '/workspace/path', 'do this next', false, 'instruction');
-    expect(aiService.triggerQueuedPromptProcessingForSession).toHaveBeenCalledTimes(1);
+    expect(aiService.driveQueuedPrompts).toHaveBeenCalledTimes(1);
   });
 
   it('an owner-routed child settle queues no [Child Session Update] on the parent', async () => {
@@ -240,7 +240,7 @@ describe('MetaAgentService session ownership', () => {
     }
 
     expect(aiService.queuePromptForSession).not.toHaveBeenCalled();
-    expect(aiService.triggerQueuedPromptProcessingForSession).not.toHaveBeenCalled();
+    expect(aiService.driveQueuedPrompts).not.toHaveBeenCalled();
     expect(database.query).not.toHaveBeenCalled();
   });
 });

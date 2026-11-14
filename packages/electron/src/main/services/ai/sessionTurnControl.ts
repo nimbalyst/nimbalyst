@@ -346,7 +346,9 @@ export function performTurnInterruption(options: TurnControlOptions, progress: {
       if (driven?.kind === 'failed' || driven?.kind === 'deferred') {
         const message = driven.kind === 'failed'
           ? 'The turn stopped, but the queued message could not start because the project is unavailable.'
-          : 'The turn stopped. Your message is still queued and will start when the session is ready.';
+          : driven.reason === 'queue-stopped'
+            ? 'The turn stopped. Your message is still queued. Use Send Now or send a new message to resume.'
+            : 'The turn stopped. Your message is still queued and will start when the session is ready.';
         return stopRequested
           ? { success: true, method: 'abort', warning: message }
           : { success: false, error: message };

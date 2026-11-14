@@ -32,7 +32,7 @@ describe('runQueueDriveAttempt', () => {
     const deps = createDeps({ canDispatchIntoDrain: () => true });
     holdQueueAfterStop('s1');
     try {
-      expect(await run(deps, reason)).toEqual({ kind: 'deferred', reason: 'session-busy' });
+      expect(await run(deps, reason)).toEqual({ kind: 'deferred', reason: 'queue-stopped' });
       expect(deps.dispatch).not.toHaveBeenCalled();
       expect(deps.resolveWindow).not.toHaveBeenCalled();
       expect(isQueueStopped('s1')).toBe(true);
