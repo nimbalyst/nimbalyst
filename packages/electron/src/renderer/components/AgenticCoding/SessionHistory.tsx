@@ -13,7 +13,7 @@ import { CollapsibleGroup } from './CollapsibleGroup';
 import { WorktreeBaseBranchPicker } from './WorktreeBaseBranchPicker';
 import { SessionListItem } from './SessionListItem';
 import { SessionTreeRow, useVisibleSessionTreeRows, type VisibleSessionTreeRow } from './SessionTree.tsx';
-import { visibleSessionTreeIds, sessionTreeRootId, rendersAsSessionTree } from './sessionTreeModel';
+import { visibleSessionTreeIds, sessionTreeRootId, rendersAsSessionTree, treeParentIds } from './sessionTreeModel';
 import { resolveSessionArchiveSelection, sessionArchiveSubtreeIds } from './sessionArchiveSelection';
 import { WorkstreamGroup } from './WorkstreamGroup';
 import { BlitzGroup } from './BlitzGroup';
@@ -46,7 +46,7 @@ import {
 import { alphaFeatureEnabledAtom, worktreesFeatureAvailableAtom } from '../../store/atoms/appSettings';
 import { activeWorkspacePathAtom } from '../../store/atoms/openProjects';
 import { useGitRepoProbe } from '../../hooks/useGitRepoProbe';
-import { workstreamStateAtom } from '../../store/atoms/workstreamState';
+import { workstreamStateAtom, setTreeExpandedForAtom } from '../../store/atoms/workstreamState';
 import { sessionProcessingAtom, sessionUnreadAtom, sessionHasPendingInteractivePromptAtom, activeSessionIdAtom as globalActiveSessionIdAtom, sessionPinnedUpdateAtom, createWorkstreamAtom } from '../../store/atoms/sessions';
 import { collapsedGroupsAtom, compactRowsAtom, setCompactRowsAtom, showContextUsageAtom, setShowContextUsageAtom, sortOrderAtom, setCollapsedGroupsAtom, setSortOrderAtom } from '../../store/atoms/agentMode';
 import {
@@ -2385,6 +2385,23 @@ const SessionHistoryComponent: React.FC = () => {
   }, [groupKeys, groupedItems, collapsedGroups, sessionRegistry]);
   const workstreamTreeRows = useVisibleSessionTreeRows(workstreamTrees, activeSessionId, workspacePath);
 
+  // Every parent with children in the list, expanded or not, for Collapse all / Expand all.
+  const allTreeParentIds = useMemo(() => {
+    const ids: string[] = [];
+    for (const groupKey of groupKeys) {
+      for (const item of groupedItems[groupKey]) {
+        if (item.type === 'workstream') {
+          const root = sessionRegistry.get(item.session.id) ?? item.session;
+          ids.push(...treeParentIds([root, ...item.sessions]));
+        } else if (item.type === 'worktree') {
+          ids.push(...treeParentIds(item.sessions));
+        }
+      }
+    }
+    return ids;
+  }, [groupKeys, groupedItems, sessionRegistry]);
+  const setTreeExpandedFor = useSetAtom(setTreeExpandedForAtom);
+
   const flatVirtuosoItems = useMemo(() => {
     const flat: FlatVirtuosoItem[] = [];
     for (const groupKey of groupKeys) {
@@ -3191,6 +3208,26 @@ const SessionHistoryComponent: React.FC = () => {
             <path d="M6 8h4" stroke="currentColor" strokeWidth="1.25" strokeLinecap="round"/>
           </svg>
         </button>
+        {allTreeParentIds.length > 0 && (
+          <>
+        <button
+          className="session-history-collapse-all flex items-center justify-center px-1 py-1 text-xs rounded border border-[var(--nim-border)] bg-[var(--nim-bg-secondary)] text-[var(--nim-text-faint)] cursor-pointer transition-all duration-150 outline-none hover:bg-[var(--nim-bg-tertiary)] hover:border-[var(--nim-primary)] hover:text-[var(--nim-text)]"
+          onClick={() => setTreeExpandedFor({ ids: allTreeParentIds, expanded: false })}
+          title="Collapse all"
+          aria-label="Collapse all"
+        >
+          <MaterialSymbol icon="unfold_less" size={14} />
+        </button>
+        <button
+          className="session-history-expand-all flex items-center justify-center px-1 py-1 text-xs rounded border border-[var(--nim-border)] bg-[var(--nim-bg-secondary)] text-[var(--nim-text-faint)] cursor-pointer transition-all duration-150 outline-none hover:bg-[var(--nim-bg-tertiary)] hover:border-[var(--nim-primary)] hover:text-[var(--nim-text)]"
+          onClick={() => setTreeExpandedFor({ ids: allTreeParentIds, expanded: true })}
+          title="Expand all"
+          aria-label="Expand all"
+        >
+          <MaterialSymbol icon="unfold_more" size={14} />
+        </button>
+          </>
+        )}
         {(() => {
           const hasFilter = searchQuery.trim().length > 0 || tagFilter.tags.length > 0;
           const visibleCount = sessions.length;

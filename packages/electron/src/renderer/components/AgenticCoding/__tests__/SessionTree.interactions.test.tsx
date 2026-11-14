@@ -27,6 +27,7 @@ import {
 import {
   initWorkstreamState,
   workstreamStateAtom,
+  setTreeExpandedForAtom,
   loadWorkstreamStates,
 } from '../../../store/atoms/workstreamState';
 import { errorNotificationService } from '../../../services/ErrorNotificationService';
@@ -297,6 +298,23 @@ describe('tree interactions', () => {
     expect(visible()).toEqual([['root', 0], ['middle', 1], ['leaf', 2]]);
     act(() => store.set(workstreamStateAtom('middle'), { treeExpanded: false }));
     expect(visible()).toEqual([['root', 0], ['middle', 1]]);
+  });
+
+  it('collapse all and expand all set every parent, overriding auto-expand from unread children', () => {
+    const trees = [{ key: 'root', rows: rows.slice(0, 3) }];
+    const parents = ['root', 'middle'];
+    act(() => store.set(sessionUnreadAtom('leaf'), true));
+    const { result } = renderHook(() => useVisibleSessionTreeRows(trees, null, '/project'), {
+      wrapper: ({ children }) => <Provider store={store}>{children}</Provider>,
+    });
+    const ids = () => result.current.get('root')!.map((r) => r.node.session.id);
+    expect(ids()).toEqual(['root', 'middle', 'leaf']);
+    act(() => store.set(setTreeExpandedForAtom, { ids: parents, expanded: false }));
+    expect(ids()).toEqual(['root']);
+    act(() => store.set(setTreeExpandedForAtom, { ids: [...parents, 'root'], expanded: true }));
+    expect(ids()).toEqual(['root', 'middle', 'leaf']);
+    expect(store.get(workstreamStateAtom('middle')).treeExpanded).toBe(true);
+    expect(store.get(workstreamStateAtom('target')).treeExpanded).toBeNull();
   });
 
   it.each([false, true])('pins and unpins a merged header using the wrapper placement identity (pinned=%s)', (isPinned) => {
