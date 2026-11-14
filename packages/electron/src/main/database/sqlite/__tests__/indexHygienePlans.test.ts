@@ -152,9 +152,16 @@ describe('session_files readers', () => {
     const rows = await store.getSessionsByFiles!(['/proj', '/proj/wt'], ['/proj/a.txt', '/proj/wt/b.txt', '/proj/missing.txt'], 'edited');
     expect(rows.map(row => `${row.sessionId}:${row.filePath}`).sort()).toEqual(['own-1:/proj/a.txt', 'own-2:/proj/wt/b.txt']);
 
+    // A second edit of the same file reports the newest time as epoch ms, so stale edits can be told apart.
+    await store.addFileLink({ sessionId: 'own-1', workspaceId: '/proj', filePath: '/proj/a.txt', linkType: 'edited', timestamp: 1_700_000_000_000, metadata: {} });
+    await store.addFileLink({ sessionId: 'own-1', workspaceId: '/proj', filePath: '/proj/a.txt', linkType: 'edited', timestamp: 1_900_000_000_000, metadata: {} });
+    const [latest] = await store.getSessionsByFiles!(['/proj'], ['/proj/a.txt'], 'edited');
+    expect(latest.lastLinkedAt).toBe(1_900_000_000_000);
+
     const plan = await planFor(
-      `SELECT DISTINCT session_id, file_path FROM session_files
-        WHERE workspace_id = ANY($1::text[]) AND file_path = ANY($2::text[]) AND link_type = $3`,
+      `SELECT session_id, file_path, MAX(timestamp) AS last_linked_at FROM session_files
+        WHERE workspace_id = ANY($1::text[]) AND file_path = ANY($2::text[]) AND link_type = $3
+        GROUP BY session_id, file_path`,
       [['/proj', '/proj/wt'], ['/proj/a.txt', '/proj/wt/b.txt'], 'edited'],
     );
     // Seeks on all three equality columns; the IN lists become index probes, not a table scan.

@@ -15,7 +15,8 @@ export interface SessionFileStore {
   getFilesBySessionMany?(sessionIds: string[], linkType?: FileLinkType): Promise<FileLink[]>;
   getSessionsByFile(workspaceId: string, filePath: string, linkType?: FileLinkType): Promise<string[]>;
   /** Batch form of getSessionsByFile: one query for many files, across one or more workspace ids. */
-  getSessionsByFiles?(workspaceIds: string[], filePaths: string[], linkType?: FileLinkType): Promise<Array<{ sessionId: string; filePath: string }>>;
+  /** `lastLinkedAt` is the newest link row's time (ms) for that session and file. */
+  getSessionsByFiles?(workspaceIds: string[], filePaths: string[], linkType?: FileLinkType): Promise<Array<{ sessionId: string; filePath: string; lastLinkedAt?: number }>>;
   deleteFileLink(id: string): Promise<void>;
   deleteSessionLinks(sessionId: string): Promise<void>;
   hasFileLink(sessionId: string, filePath: string, linkType: FileLinkType): Promise<boolean>;
@@ -157,7 +158,7 @@ export const SessionFilesRepository = {
     workspaceId: string | string[],
     filePaths: string[],
     linkType?: FileLinkType,
-  ): Promise<Array<{ sessionId: string; filePath: string }>> {
+  ): Promise<Array<{ sessionId: string; filePath: string; lastLinkedAt?: number }>> {
     const workspaceIds = [...new Set(Array.isArray(workspaceId) ? workspaceId : [workspaceId])];
     if (filePaths.length === 0 || workspaceIds.length === 0) return [];
     const store = requireStore();

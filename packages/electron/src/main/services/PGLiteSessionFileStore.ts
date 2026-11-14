@@ -137,13 +137,13 @@ export function createPGLiteSessionFileStore(db: PGliteLike, ensureDbReady?: Ens
       return rows.map(row => row.session_id);
     },
 
-    async getSessionsByFiles(workspaceIds: string[], filePaths: string[], linkType?: FileLinkType): Promise<Array<{ sessionId: string; filePath: string }>> {
+    async getSessionsByFiles(workspaceIds: string[], filePaths: string[], linkType?: FileLinkType): Promise<Array<{ sessionId: string; filePath: string; lastLinkedAt?: number }>> {
       if (workspaceIds.length === 0 || filePaths.length === 0) return [];
       await ensureReady();
 
       const params: any[] = [workspaceIds, filePaths];
       let sql = `
-        SELECT DISTINCT session_id, file_path FROM session_files
+        SELECT session_id, file_path, MAX(timestamp) AS last_linked_at FROM session_files
         WHERE workspace_id = ANY($1::text[]) AND file_path = ANY($2::text[])
       `;
 
@@ -151,9 +151,13 @@ export function createPGLiteSessionFileStore(db: PGliteLike, ensureDbReady?: Ens
         sql += ` AND link_type = $3`;
         params.push(linkType);
       }
+      sql += ` GROUP BY session_id, file_path`;
 
-      const { rows } = await db.query<{ session_id: string; file_path: string }>(sql, params);
-      return rows.map(row => ({ sessionId: row.session_id, filePath: row.file_path }));
+      const { rows } = await db.query<{ session_id: string; file_path: string; last_linked_at: unknown }>(sql, params);
+      return rows.map(row => {
+        const lastLinkedAt = toMillis(row.last_linked_at);
+        return { sessionId: row.session_id, filePath: row.file_path, ...(lastLinkedAt != null ? { lastLinkedAt } : {}) };
+      });
     },
 
     async deleteFileLink(id: string): Promise<void> {

@@ -8,7 +8,7 @@ import { assertGitSandbox, gitSandboxEnv, FIXTURE_AUTHOR } from '../testSupport/
 
 const state = vi.hoisted(() => ({
   session: null as any,
-  edits: [] as Array<{ sessionId: string; filePath: string }>,
+  edits: [] as Array<{ sessionId: string; filePath: string; lastLinkedAt?: number }>,
   titles: {} as Record<string, string>,
   lookups: 0,
 }));
@@ -162,6 +162,24 @@ it('flags files under an expanded directory that only another session edited, wi
   const flagged = target.fileDetails!.filter(file => file.otherSession).map(file => [file.path, file.otherSession]);
   // b.txt was also edited here, and an explicitly listed file is never flagged.
   expect(flagged).toEqual([[join(repo, 'design/snap/a.txt'), { ownership: 'other-session', sessionId: 'other', sessionTitle: 'Refactor tokens' }]]);
+});
+
+it('ignores another session\'s edits that a later commit of the file already contains', async () => {
+  const hourAgo = Date.now() - 3_600_000;
+  seedSnapshot();
+  state.edits = [
+    // Committed by the seed commit: stale, must not pause auto-commit.
+    { sessionId: 'old', filePath: join(repo, 'design/snap/a.txt'), lastLinkedAt: hourAgo },
+    // Newer than the file's last commit: still another session's work.
+    { sessionId: 'other', filePath: join(repo, 'design/snap/b.txt'), lastLinkedAt: Date.now() + 5_000 },
+    // Never committed (untracked), any age counts.
+    { sessionId: 'old', filePath: join(repo, 'design/snap/new1.txt'), lastLinkedAt: hourAgo },
+  ];
+  const target = await resolveGitCommitProposalTarget('me', repo, ['design/snap/']);
+  expect(target.fileDetails!.filter(file => file.otherSession).map(file => [file.path, file.otherSession!.sessionId])).toEqual([
+    [join(repo, 'design/snap/b.txt'), 'other'],
+    [join(repo, 'design/snap/new1.txt'), 'old'],
+  ]);
 });
 
 // Review: after `git rm -r`, the index has no entries under the path, so it fell through as a file.
