@@ -115,6 +115,13 @@ interface SessionEntry {
   state: BrowserNavigationState;
   /** Agent-owned session parked in the shared off-screen host window. */
   headless: boolean;
+  /**
+   * Set while an editor-backed view is moved into the shared off-screen host
+   * window because its placeholder lies entirely outside `hostWindow` (e.g. an
+   * editor that HiddenTabManager mounted for an AI tool). `hostWindow` stays the
+   * owner so the view returns there once the placeholder is on screen again.
+   */
+  parkedIn: BrowserWindow | null;
   /** `Date.now()` of the last operation on this session; drives idle reaping. */
   lastUsedAt: number;
 }
@@ -180,6 +187,17 @@ export function clampBounds(
   const width = Math.max(0, Math.min(Math.floor(bounds.width), container.width - x));
   const height = Math.max(0, Math.min(Math.floor(bounds.height), container.height - y));
   return { x, y, width, height };
+}
+
+/**
+ * True when `bounds` lies entirely above or left of the window's content area,
+ * which is where hidden placeholders are parked (HiddenTabManager uses
+ * -9999px). `clampBounds` would shift such a rect to the top-left corner and
+ * paint the page over the window. A rect past the right or bottom edge needs
+ * no special case: `clampBounds` already gives it zero size.
+ */
+export function liesAboveOrLeftOfWindow(bounds: BrowserSessionBounds): boolean {
+  return bounds.x + bounds.width <= 0 || bounds.y + bounds.height <= 0;
 }
 
 /**
@@ -301,12 +319,13 @@ export class BrowserSessionService extends EventEmitter {
   private windowCloseListeners = new Map<number, Set<string>>();
 
   /**
-   * Shared host window for headless (agent-owned) sessions. Created lazily on
-   * the first headless session and *shown* so Chromium actually composits the
-   * child views (a hidden/`show:false` window suspends painting, which fails
-   * capturePage()), but held at opacity 0 so the user never sees it. Torn down
-   * when the last headless session goes away, or when the idle reaper collects
-   * the last leaked session.
+   * Shared host window for headless (agent-owned) sessions and for parked
+   * editor-backed views whose placeholder is off screen. Created lazily and
+   * *shown* so Chromium actually composits the child views (a
+   * hidden/`show:false` window suspends painting, which fails capturePage()),
+   * but held at opacity 0 so the user never sees it. Torn down when the last
+   * headless or parked session goes away, or when the idle reaper collects the
+   * last leaked headless session.
    */
   private headlessHostWindow: BrowserWindow | null = null;
 
@@ -402,6 +421,7 @@ export class BrowserSessionService extends EventEmitter {
       bounds: null,
       requestedBounds: null,
       headless,
+      parkedIn: null,
       lastUsedAt: Date.now(),
       state: {
         sessionId: opts.sessionId,
@@ -448,15 +468,18 @@ export class BrowserSessionService extends EventEmitter {
     const entry = this.sessions.get(sessionId);
     if (!entry) return;
 
+    const wasParked = entry.parkedIn !== null;
+    this.releaseParking(entry);
     if (entry.hostWindow && !entry.hostWindow.isDestroyed()) {
-      try {
-        entry.hostWindow.contentView.removeChildView(entry.view);
-      } catch (err) {
-        // removeChildView throws if the view is not a child; ignore -- we are
-        // tearing down regardless.
-        logger.main.debug(
-          `[BrowserSessionService] removeChildView during destroy threw for ${sessionId}: ${(err as Error)?.message}`,
-        );
+      if (!wasParked) {
+        try {
+          entry.hostWindow.contentView.removeChildView(entry.view);
+        } catch (err) {
+          // Throws if the view is not a child; we are tearing down regardless.
+          logger.main.debug(
+            `[BrowserSessionService] removeChildView during destroy threw for ${sessionId}: ${(err as Error)?.message}`,
+          );
+        }
       }
       this.removeWindowCloseListener(entry.hostWindow.id, sessionId);
     }
@@ -503,15 +526,20 @@ export class BrowserSessionService extends EventEmitter {
     // If we're already attached to a different window, detach first so we
     // never end up parented in two trees simultaneously.
     if (entry.hostWindow && entry.hostWindow !== hostWindow && !entry.hostWindow.isDestroyed()) {
-      try {
-        entry.hostWindow.contentView.removeChildView(entry.view);
-      } catch {
-        // ignore -- detach is best-effort
+      if (!entry.parkedIn) {
+        try {
+          entry.hostWindow.contentView.removeChildView(entry.view);
+        } catch {
+          // ignore -- detach is best-effort
+        }
       }
       this.removeWindowCloseListener(entry.hostWindow.id, sessionId);
     }
 
-    hostWindow.contentView.addChildView(entry.view);
+    // A parked view stays off screen until setBounds sees an on-screen rect.
+    if (!entry.parkedIn) {
+      hostWindow.contentView.addChildView(entry.view);
+    }
     entry.hostWindow = hostWindow;
     this.installWindowCloseListener(hostWindow, sessionId);
 
@@ -521,19 +549,24 @@ export class BrowserSessionService extends EventEmitter {
   public detachFromWindow(sessionId: string): void {
     const entry = this.sessions.get(sessionId);
     if (!entry || !entry.hostWindow) return;
+    const wasParked = entry.parkedIn !== null;
+    this.releaseParking(entry);
     if (!entry.hostWindow.isDestroyed()) {
-      try {
-        entry.hostWindow.contentView.removeChildView(entry.view);
-      } catch (err) {
-        logger.main.debug(
-          `[BrowserSessionService] detach removeChildView threw for ${sessionId}: ${(err as Error)?.message}`,
-        );
+      if (!wasParked) {
+        try {
+          entry.hostWindow.contentView.removeChildView(entry.view);
+        } catch (err) {
+          logger.main.debug(
+            `[BrowserSessionService] detach removeChildView threw for ${sessionId}: ${(err as Error)?.message}`,
+          );
+        }
       }
       this.removeWindowCloseListener(entry.hostWindow.id, sessionId);
     }
     entry.hostWindow = null;
     entry.bounds = null;
     entry.requestedBounds = null;
+    if (wasParked) this.maybeTeardownHeadlessHost();
   }
 
   /** `bounds` are the renderer's CSS pixels; see the coordinate note up top. */
@@ -543,10 +576,68 @@ export class BrowserSessionService extends EventEmitter {
 
     entry.requestedBounds = bounds;
     const scaled = scaleBoundsForZoom(bounds, entry.hostWindow.webContents.getZoomFactor());
+    if (!entry.headless && liesAboveOrLeftOfWindow(scaled)) {
+      this.parkOffscreen(entry, scaled);
+      return;
+    }
     const [containerWidth, containerHeight] = entry.hostWindow.getContentSize();
     const clamped = clampBounds(scaled, { width: containerWidth, height: containerHeight });
     entry.bounds = clamped;
     entry.view.setBounds(clamped);
+    if (entry.parkedIn) {
+      this.releaseParking(entry);
+      entry.hostWindow.contentView.addChildView(entry.view);
+      this.maybeTeardownHeadlessHost();
+    }
+  }
+
+  /**
+   * Moves an editor-backed view whose placeholder is entirely off screen into
+   * the shared off-screen host window. Leaving it in its owner would paint the
+   * page over the owner's top-left corner (see `liesAboveOrLeftOfWindow`), while
+   * detaching it would stop it painting and break `capturePage()` for AI tools
+   * driving an editor that HiddenTabManager mounted off screen.
+   */
+  private parkOffscreen(entry: SessionEntry, scaled: BrowserSessionBounds): void {
+    const owner = entry.hostWindow;
+    if (!owner) return;
+    const size = {
+      width: Math.max(1, Math.floor(scaled.width)),
+      height: Math.max(1, Math.floor(scaled.height)),
+    };
+    const host = this.getOrCreateHeadlessHostWindow(size);
+    if (entry.parkedIn !== host) {
+      if (entry.parkedIn) {
+        this.releaseParking(entry);
+      } else {
+        try {
+          owner.contentView.removeChildView(entry.view);
+        } catch (err) {
+          logger.main.debug(
+            `[BrowserSessionService] park removeChildView threw for ${entry.sessionId}: ${(err as Error)?.message}`,
+          );
+        }
+      }
+      host.contentView.addChildView(entry.view);
+      entry.parkedIn = host;
+    }
+    entry.bounds = { x: 0, y: 0, ...size };
+    entry.view.setBounds(entry.bounds);
+  }
+
+  /** Takes a parked view out of the off-screen host; the caller decides where it goes next. */
+  private releaseParking(entry: SessionEntry): void {
+    const host = entry.parkedIn;
+    if (!host) return;
+    entry.parkedIn = null;
+    if (host.isDestroyed()) return;
+    try {
+      host.contentView.removeChildView(entry.view);
+    } catch (err) {
+      logger.main.debug(
+        `[BrowserSessionService] unpark removeChildView threw for ${entry.sessionId}: ${(err as Error)?.message}`,
+      );
+    }
   }
 
   /**
@@ -606,8 +697,7 @@ export class BrowserSessionService extends EventEmitter {
 
   public async captureScreenshot(sessionId: string): Promise<Buffer> {
     const entry = this.requireEntry(sessionId);
-    // Both attached and headless views render into a window (headless ones into
-    // the shared off-screen host window), so capturePage() grabs live pixels.
+    // Attached, parked, and headless views all paint into a window, so capturePage() grabs live pixels.
     const nativeImage = await entry.view.webContents.capturePage();
     return nativeImage.toPNG();
   }
@@ -848,11 +938,13 @@ export class BrowserSessionService extends EventEmitter {
     return win;
   }
 
-  /** Destroy the headless host window once no headless sessions remain. */
+  /** Destroy the headless host window once no headless or parked sessions remain. */
   private maybeTeardownHeadlessHost(): void {
     if (!this.headlessHostWindow) return;
-    const stillHeadless = [...this.sessions.values()].some((e) => e.headless);
-    if (stillHeadless) return;
+    const stillInUse = [...this.sessions.values()].some(
+      (e) => e.headless || (e.parkedIn !== null && !e.parkedIn.isDestroyed()),
+    );
+    if (stillInUse) return;
     this.stopHeadlessReaper();
     if (!this.headlessHostWindow.isDestroyed()) {
       this.headlessHostWindow.destroy();

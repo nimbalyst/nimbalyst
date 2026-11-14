@@ -67,6 +67,23 @@ describe('BrowserSurface attachment lifecycle', () => {
     expect(detachBrowserSession).toHaveBeenCalledTimes(2);
   });
 
+  it('reports a placeholder inside the hidden-editor container as off screen, even while it is laid out on screen', async () => {
+    vi.mocked(attachBrowserSession).mockResolvedValue(undefined);
+    const shown = render(<BrowserSurface sessionId="shown" visible />);
+    await act(async () => frame(0));
+    const hiddenEditors = document.createElement('div');
+    hiddenEditors.id = 'hidden-editors';
+    document.body.appendChild(hiddenEditors);
+    const hidden = render(<BrowserSurface sessionId="hidden" visible />, { container: hiddenEditors });
+    await act(async () => frame(0));
+
+    expect(attachBrowserSession).toHaveBeenCalledWith('shown', { x: 20, y: 40, width: 640, height: 480 });
+    expect(attachBrowserSession).toHaveBeenCalledWith('hidden', { x: -640, y: -480, width: 640, height: 480 });
+    shown.unmount();
+    hidden.unmount();
+    hiddenEditors.remove();
+  });
+
   it('retries a rejected attach at the same bounds', async () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     vi.mocked(attachBrowserSession)
