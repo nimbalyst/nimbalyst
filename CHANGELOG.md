@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 <!-- Bug fixes go here -->
+- With many sessions busy at once, an agent transcript no longer loses its opening prompt and earlier messages until the session is reopened.
 - Delayed session-status refreshes no longer hide Cancel during a newer turn or show it after completion, including when opening a running session.
 
 ### Removed
