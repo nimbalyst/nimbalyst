@@ -54,8 +54,11 @@ function authorLabel(author: Author | null, resolveSessionTitle?: (id: string) =
   if (!author) return 'system';
   if (author.kind === 'user') return 'user';
   if (!author.originSessionId) return 'agent';
+  // The short id stays beside the title so two sessions with the same name
+  // remain distinguishable.
+  const shortId = author.originSessionId.slice(0, 8);
   const title = resolveSessionTitle?.(author.originSessionId)?.replace(/[\r\n\[\]]/g, ' ').trim();
-  return `session: ${title || author.originSessionId.slice(0, 8)}`;
+  return `session: ${title ? `${title} (${shortId})` : shortId}`;
 }
 
 /**
@@ -157,7 +160,7 @@ function escapeLabelLines(text: string): string {
 
 export interface CoalescedMessage {
   prompt: string;
-  /** `user`, `session: <title or short id>`, `agent`, or `system`. */
+  /** `user`, `session: <title> (<short id>)` or `session: <short id>`, `agent`, or `system`. */
   author: string;
   createdAt?: number;
 }

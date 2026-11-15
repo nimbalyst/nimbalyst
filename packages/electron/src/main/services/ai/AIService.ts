@@ -81,6 +81,7 @@ import { registerModelHandlers } from './ipc/registerModelHandlers';
 import { registerProjectSettingsHandlers } from './ipc/registerProjectSettingsHandlers';
 import { registerExtensionChatHandlers } from './ipc/registerExtensionChatHandlers';
 import { SessionProcessingGuard, tryClaimAndDispatchNextQueuedPrompt } from './queuedPromptDispatcher';
+import { AISessionsRepository } from '@nimbalyst/runtime/storage/repositories/AISessionsRepository';
 import {
   QueueDriveService,
   type DriveOutcome,
@@ -966,10 +967,7 @@ export class AIService {
       logError: (message, error) => logger.main.error(message, error),
       logInfo: (message) => logger.main.info(message),
       resolveLiveWindow: findWindowByWorkspace,
-      resolveSessionTitle: async (id) => {
-        const { AISessionsRepository } = await import('@nimbalyst/runtime/storage/repositories/AISessionsRepository');
-        return (await AISessionsRepository.get(id))?.title ?? undefined;
-      },
+      resolveSessionTitle: async (id) => (await AISessionsRepository.get(id))?.title ?? undefined,
       canBypassChainGuard: () => canDispatchIntoDrain(sessionId),
       isLeadTurnPending: () => isLeadTurnPending(sessionId),
       onAfterSettled: async () => {
