@@ -19,6 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - With many sessions busy at once, an agent transcript no longer loses its opening prompt and earlier messages until the session is reopened.
 - Delayed session-status refreshes no longer hide Cancel during a newer turn or show it after completion, including when opening a running session.
 - With many sessions busy at once, an agent transcript now stays on screen while the app reloads the session, instead of going blank and replaying from older messages.
+- The new tracker item popup no longer pushes its title field off screen in fullscreen when many items are waiting to publish; the list of saved items now scrolls.
 
 ### Removed
 <!-- Removed features go here -->
