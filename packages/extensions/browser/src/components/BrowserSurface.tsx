@@ -6,6 +6,9 @@ import {
   setBrowserSessionBounds,
 } from '../browserClient';
 
+/** Container in which HiddenTabManager mounts editors for AI tools; never meant to be seen. */
+const HIDDEN_EDITORS_SELECTOR = '#hidden-editors';
+
 interface BrowserSurfaceProps {
   sessionId: string;
   /** When false, the surface unmounts the view (e.g. tab inactive). */
@@ -102,6 +105,8 @@ export function BrowserSurface({ sessionId, visible }: BrowserSurfaceProps): JSX
       const width = Math.max(0, Math.round(rect.width));
       const height = Math.max(0, Math.round(rect.height));
       if (width === 0 || height === 0) return null;
+      // HiddenTabManager briefly moves its container on screen behind the app; keep the page off screen but painting.
+      if (el.closest(HIDDEN_EDITORS_SELECTOR)) return { x: -width, y: -height, width, height };
       // If a host menu/popover/tooltip is open over us, hide the view so the
       // overlay isn't clipped by the native layer.
       if (overlayCoversSurface({ left: x, top: y, right: x + width, bottom: y + height })) {
