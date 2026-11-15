@@ -121,6 +121,7 @@ Twelve built-in provider lanes, plus any agent an extension contributes. Every l
 - Suggested next prompt for Claude Code sessions (on by default, toggle under Agent Features): shown in the empty input after a turn you started, Tab fills it in; skipped for turns started by agents or automations
 - Model-aware reasoning effort selector, including Ultra for supported Codex models
 - Model selector (per-session or per-workstream)
+- Codex model list includes models reported by the bundled codex binary's catalog (`model/list`), so a model it supports appears before Nimbalyst's built-in list is updated
 - Context window usage display with pace tracking
 - Optional context-usage bar under each session-list row (session list menu, **Show context usage**, off by default; providers that report a context window only)
 - Files-edited sidebar with per-session scope

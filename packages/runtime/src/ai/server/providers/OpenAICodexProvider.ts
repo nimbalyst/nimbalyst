@@ -31,6 +31,8 @@ import { ToolPermissionService } from '../permissions/ToolPermissionService';
 import { PermissionMode, TrustChecker, PermissionPatternSaver, PermissionPatternChecker, SecurityLogger } from './ProviderPermissionMixin';
 import { CodexSdkModuleLike, loadCodexSdkModule } from './codex/codexSdkLoader';
 import { resolvePackagedCodexBinaryPath } from './codex/codexBinaryPath';
+import { resolveCodexBinaryPath } from '../protocols/codexAppServer/codexAppServerBinary';
+import { listCodexCatalogModels, type CodexCatalogModel } from '../protocols/codexAppServer/modelCatalog';
 import { buildCodexSystemPrompt } from './codex/codexSystemPrompt';
 import { McpConfigService } from '../services/McpConfigService';
 import { getMcpConfigService } from '../services/mcpServerConfig';
@@ -86,6 +88,8 @@ interface OpenAICodexProviderDeps {
 
 interface OpenAICodexModelDiscoveryDeps {
   loadSdkModule?: () => Promise<CodexSdkModuleLike>;
+  /** Reads the bundled codex binary's `model/list` catalog. */
+  listCatalogModels?: (apiKey?: string) => Promise<CodexCatalogModel[]>;
 }
 
 interface PendingAskUserQuestionEntry {
@@ -579,9 +583,63 @@ export class OpenAICodexProvider extends BaseAgentProvider {
     apiKey?: string,
     deps?: OpenAICodexModelDiscoveryDeps,
   ): Promise<AIModel[]> {
-    const sdkModels = await OpenAICodexProvider.getModelsFromSdk(apiKey, deps);
-    const apiModels = await OpenAICodexProvider.getModelsFromOpenAI(apiKey);
-    return OpenAICodexProvider.getPreferredModels(sdkModels, apiModels);
+    const [catalogModels, sdkModels, apiModels] = await Promise.all([
+      OpenAICodexProvider.getModelsFromCatalog(apiKey, deps),
+      OpenAICodexProvider.getModelsFromSdk(apiKey, deps),
+      OpenAICodexProvider.getModelsFromOpenAI(apiKey),
+    ]);
+    return OpenAICodexProvider.mergeCatalogModels(
+      catalogModels,
+      OpenAICodexProvider.getPreferredModels(sdkModels, apiModels),
+    );
+  }
+
+  /**
+   * Read the bundled codex binary's own model catalog (#1891). An injected
+   * `loadSdkModule` without `listCatalogModels` means the caller is exercising
+   * the legacy SDK path, the same convention the constructor uses to pick the
+   * transport, so no app-server child is spawned for it.
+   */
+  private static async getModelsFromCatalog(
+    apiKey?: string,
+    deps?: OpenAICodexModelDiscoveryDeps,
+  ): Promise<CodexCatalogModel[]> {
+    const lister = deps?.listCatalogModels
+      ?? (deps?.loadSdkModule
+        ? undefined
+        : (key?: string) => listCodexCatalogModels({
+          binaryPath: resolveCodexBinaryPath(resolvePackagedCodexBinaryPath),
+          apiKey: key,
+        }));
+    if (!lister) return [];
+    try {
+      return await lister(apiKey);
+    } catch (error) {
+      console.warn('[OpenAICodexProvider] codex model/list unavailable; using the built-in model list:', error);
+      return [];
+    }
+  }
+
+  /**
+   * Add catalog models the built-in list does not know yet, ahead of the
+   * built-in list, so a model shipped in a newer codex is selectable without
+   * a Nimbalyst release. Hidden catalog entries stay hidden. Built-in models
+   * absent from the catalog are kept: codex hides older models from its
+   * picker but still runs them, and existing sessions may use them.
+   */
+  static mergeCatalogModels(catalogModels: CodexCatalogModel[], builtInModels: AIModel[]): AIModel[] {
+    const known = new Set(builtInModels.map((model) => OpenAICodexProvider.toRawModelId(model.id)));
+    const extras: AIModel[] = [];
+    for (const catalogModel of catalogModels) {
+      if (catalogModel.hidden || known.has(catalogModel.id)) continue;
+      known.add(catalogModel.id);
+      extras.push({
+        id: ModelIdentifier.create('openai-codex', catalogModel.id).combined,
+        name: catalogModel.displayName || catalogModel.id,
+        provider: 'openai-codex' as AIProviderType,
+      });
+    }
+    return [...extras, ...builtInModels];
   }
 
   private static getFallbackModels() {

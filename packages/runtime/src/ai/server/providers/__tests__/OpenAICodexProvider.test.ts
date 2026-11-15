@@ -5,6 +5,7 @@ import path from 'path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { OpenAICodexProvider } from '../OpenAICodexProvider';
 import { OpenAICodexACPProvider } from '../OpenAICodexACPProvider';
+import { parseCodexModelListPage } from '../../protocols/codexAppServer/modelCatalog';
 import { configureMcpServers } from '../../services/mcpServerConfig';
 import * as codexBinaryPath from '../codex/codexBinaryPath';
 import * as codexSdkLoader from '../codex/codexSdkLoader';
@@ -288,6 +289,60 @@ describe('OpenAICodexProvider', () => {
     expect(acpModels.map((model) => model.id)).toEqual(
       expectedAcpModelIds.map((modelId) => `openai-codex-acp:${modelId}`)
     );
+  });
+
+  // #1891: a model the bundled codex supports must be selectable before the
+  // built-in list is updated.
+  it('adds models from the codex model/list catalog that the built-in list does not know', async () => {
+    const listCatalogModels = vi.fn(async () => [
+      { id: 'gpt-6.2-nova', displayName: 'GPT-6.2 Nova', hidden: false, isDefault: false },
+      { id: 'gpt-6.1-sol', displayName: 'GPT-6.1-Sol', hidden: false, isDefault: true },
+      { id: 'gpt-6-internal', displayName: 'Internal', hidden: true, isDefault: false },
+    ]);
+
+    const models = await OpenAICodexProvider.getModels(undefined, { listCatalogModels });
+    const ids = models.map((model) => model.id);
+
+    expect(listCatalogModels).toHaveBeenCalledTimes(1);
+    expect(models[0]).toEqual({
+      id: 'openai-codex:gpt-6.2-nova',
+      name: 'GPT-6.2 Nova',
+      provider: 'openai-codex',
+    });
+    expect(ids).not.toContain('openai-codex:gpt-6-internal');
+    expect(ids.filter((id) => id === 'openai-codex:gpt-6.1-sol')).toHaveLength(1);
+    // Built-in models the catalog omits stay selectable.
+    expect(ids).toContain('openai-codex:gpt-5.4-mini');
+  });
+
+  it('falls back to the built-in Codex model list when model/list fails', async () => {
+    const models = await OpenAICodexProvider.getModels(undefined, {
+      listCatalogModels: async () => {
+        throw new Error('codex app-server failed to start');
+      },
+    });
+
+    expect(models[0].id).toBe('openai-codex:gpt-6.1-sol');
+    expect(models.map((model) => model.id)).toContain('openai-codex:gpt-5.4-mini');
+  });
+
+  it('parses model/list pages, preferring the runnable model id and skipping malformed entries', () => {
+    expect(parseCodexModelListPage({
+      data: [
+        { id: 'catalog-key', model: 'gpt-6.2-nova', displayName: 'Nova', hidden: false, isDefault: true },
+        { id: 'gpt-6-luna', hidden: true },
+        { displayName: 'no id' },
+        null,
+      ],
+      nextCursor: 'page-2',
+    })).toEqual({
+      models: [
+        { id: 'gpt-6.2-nova', displayName: 'Nova', hidden: false, isDefault: true },
+        { id: 'gpt-6-luna', displayName: undefined, hidden: true, isDefault: false },
+      ],
+      nextCursor: 'page-2',
+    });
+    expect(parseCodexModelListPage(undefined)).toEqual({ models: [], nextCursor: null });
   });
 
   it('normalizes legacy codex default aliases to the GPT-6.1 Sol default', () => {
