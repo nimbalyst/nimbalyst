@@ -20,9 +20,11 @@ import {
   setSessionWorkspaceOpenAtom,
   sessionHasPendingInteractivePromptAtom,
   sessionProcessingAtom,
+  sessionProcessingStateAtom,
   sessionPendingPromptsAtom,
   sessionRegistryAtom,
   sessionChildrenAtom,
+  cleanupSessionAtom,
   sessionLastActivityAtom,
   sessionListWorkspaceAtom,
   selectedWorkstreamAtom,
@@ -107,6 +109,151 @@ function makeApi() {
   };
 }
 
+describe('processing snapshots preserve newer turn state', () => {
+  beforeEach(() => { vi.useFakeTimers(); });
+  afterEach(() => { vi.useRealTimers(); });
+
+  it.each(['openai-codex', 'claude-code'])('keeps a newer %s start cancellable after an old idle snapshot', async provider => {
+    const sid = uniqueSessionId('new-start');
+    seedRegistry([{ id: sid, provider }]);
+    const respond = await beginDelayedProcessingSnapshot();
+    handlers.get('ai-session-state:event')!({ type: 'session:started', sessionId: sid, workspacePath: WS });
+    await respond([]);
+    expect(store.get(sessionProcessingAtom(sid))).toBe(true);
+  });
+
+  it.each(['openai-codex', 'claude-code'])('keeps a newer %s completion idle after an old running snapshot', async provider => {
+    const sid = uniqueSessionId('new-completion');
+    seedRegistry([{ id: sid, provider }]);
+    store.set(sessionProcessingAtom(sid), true);
+    const respond = await beginDelayedProcessingSnapshot();
+    handlers.get('ai-session-state:event')!({ type: 'session:completed', sessionId: sid, workspacePath: WS });
+    await respond([sid]);
+    expect(store.get(sessionProcessingAtom(sid))).toBe(false);
+  });
+
+  it('protects optimistic writes even when the boolean returns to its original value', async () => {
+    const sid = uniqueSessionId('optimistic-aba');
+    seedRegistry([{ id: sid }]);
+    const respond = await beginDelayedProcessingSnapshot();
+    store.set(sessionProcessingAtom(sid), true);
+    store.set(sessionProcessingAtom(sid), false);
+    await respond([sid]);
+    expect(store.get(sessionProcessingAtom(sid))).toBe(false);
+  });
+
+  it('protects a same-value lifecycle write without starving an unrelated stray', async () => {
+    const active = uniqueSessionId('same-value-start');
+    const stray = uniqueSessionId('unrelated-stray');
+    seedRegistry([{ id: active }, { id: stray }]);
+    store.set(sessionProcessingAtom(active), true);
+    store.set(sessionProcessingAtom(stray), true);
+    const respond = await beginDelayedProcessingSnapshot();
+    handlers.get('ai-session-state:event')!({ type: 'session:started', sessionId: active, workspacePath: WS });
+    await respond([]);
+    expect(store.get(sessionProcessingAtom(active))).toBe(true);
+    expect(store.get(sessionProcessingAtom(stray))).toBe(false);
+  });
+
+  it('ignores an older snapshot that resolves after a newer snapshot', async () => {
+    const sid = uniqueSessionId('snapshot-order');
+    seedRegistry([{ id: sid }]);
+    const older = await beginDelayedProcessingSnapshot();
+    const newer = await beginDelayedProcessingSnapshot();
+    await newer([sid]);
+    await older([]);
+    expect(store.get(sessionProcessingAtom(sid))).toBe(true);
+  });
+
+  it('does not resurrect processing after the listener is disposed', async () => {
+    const sid = uniqueSessionId('disposed-snapshot');
+    seedRegistry([{ id: sid }]);
+    const respond = await beginDelayedProcessingSnapshot();
+    cleanup?.(); cleanup = null;
+    await respond([sid]);
+    expect(store.get(sessionProcessingAtom(sid))).toBe(false);
+  });
+
+  it('does not overwrite a recreated processing atom after session cleanup', async () => {
+    const sid = uniqueSessionId('removed-snapshot');
+    seedRegistry([{ id: sid }]);
+    const respond = await beginDelayedProcessingSnapshot();
+    store.set(cleanupSessionAtom, sid);
+    expect(store.get(sessionProcessingAtom(sid))).toBe(false);
+    await respond([sid]);
+    expect(store.get(sessionProcessingAtom(sid))).toBe(false);
+  });
+
+  it('still restores a snapshot-only running session and preserves prompt flags', async () => {
+    const sid = uniqueSessionId('snapshot-only');
+    const waiting = uniqueSessionId('waiting');
+    seedRegistry([{ id: waiting }]);
+    store.set(sessionHasPendingInteractivePromptAtom(waiting), true);
+    const respond = await beginDelayedProcessingSnapshot();
+    await respond([sid]);
+    expect(store.get(sessionProcessingAtom(sid))).toBe(true);
+    expect(store.get(sessionHasPendingInteractivePromptAtom(waiting))).toBe(true);
+    store.set(sessionProcessingAtom(sid), value => !value);
+    expect(store.get(sessionProcessingAtom(sid))).toBe(false);
+  });
+
+  it('records same-value updater writes without notifying boolean subscribers', () => {
+    const sid = uniqueSessionId('same-value-updater');
+    const processing = sessionProcessingAtom(sid);
+    const onChange = vi.fn();
+    const unsubscribe = store.sub(processing, onChange);
+    try {
+      const before = store.get(sessionProcessingStateAtom(sid));
+      store.set(processing, value => value);
+      expect(store.get(sessionProcessingStateAtom(sid))).not.toBe(before);
+      expect(store.get(processing)).toBe(false);
+      expect(onChange).not.toHaveBeenCalled();
+    } finally { unsubscribe(); }
+  });
+
+  it('does not recreate removed family entries through a retained subscriber', async () => {
+    const sid = uniqueSessionId('retained-subscriber');
+    seedRegistry([{ id: sid }]);
+    const processing = sessionProcessingAtom(sid);
+    const unsubscribe = store.sub(processing, () => {});
+    try {
+      const respond = await beginDelayedProcessingSnapshot();
+      store.set(cleanupSessionAtom, sid);
+      store.set(processing, true);
+      await respond([sid]);
+      expect([...sessionProcessingStateAtom.getParams()]).not.toContain(sid);
+      expect([...sessionProcessingAtom.getParams()]).not.toContain(sid);
+    } finally { unsubscribe(); }
+  });
+
+  it('preserves a newly instantiated local state absent from the requested snapshot', async () => {
+    const sid = uniqueSessionId('created-during-snapshot');
+    const respond = await beginDelayedProcessingSnapshot();
+    store.set(sessionProcessingAtom(sid), false);
+    await respond([sid]);
+    expect(store.get(sessionProcessingAtom(sid))).toBe(false);
+  });
+
+  it('restores a running session that was only read while the snapshot was pending', async () => {
+    const sid = uniqueSessionId('read-during-snapshot');
+    const respond = await beginDelayedProcessingSnapshot();
+    expect(store.get(sessionProcessingAtom(sid))).toBe(false);
+    await respond([sid]);
+    expect(store.get(sessionProcessingAtom(sid))).toBe(true);
+  });
+
+  it('discards an older restore even when it resolves before the newer snapshot', async () => {
+    const sid = uniqueSessionId('read-between-snapshots');
+    const older = await beginDelayedProcessingSnapshot();
+    expect(store.get(sessionProcessingAtom(sid))).toBe(false);
+    const newer = await beginDelayedProcessingSnapshot();
+    await older([sid]);
+    expect(store.get(sessionProcessingAtom(sid))).toBe(false);
+    await newer([]);
+    expect(store.get(sessionProcessingAtom(sid))).toBe(false);
+  });
+});
+
 let uniqueCounter = 0;
 function uniqueSessionId(prefix: string): string {
   uniqueCounter += 1;
@@ -114,6 +261,21 @@ function uniqueSessionId(prefix: string): string {
 }
 
 const WS = '/ws/test-project';
+
+async function beginDelayedProcessingSnapshot() {
+  let resolve!: (value: { success: boolean; sessionIds: string[] }) => void;
+  const response = new Promise<{ success: boolean; sessionIds: string[] }>(done => { resolve = done; });
+  vi.mocked(window.electronAPI.sessionState.getRunningSessionIds).mockReturnValueOnce(response);
+  handlers.get('ai-session-state:event')!({
+    type: 'session:completed', sessionId: uniqueSessionId('reconcile-trigger'), workspacePath: WS,
+  });
+  await vi.advanceTimersByTimeAsync(600);
+  return async (sessionIds: string[]) => {
+    resolve({ success: true, sessionIds });
+    await response;
+    await Promise.resolve();
+  };
+}
 
 beforeEach(async () => {
   handlers = new Map();
