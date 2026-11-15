@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 <!-- New features go here -->
+- Collapse all and Expand all buttons in the agent session list close or open every parent session and workstream at once
 
 ### Changed
 <!-- Changes to existing functionality go here -->

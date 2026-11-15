@@ -92,6 +92,18 @@ export function rendersAsSessionTree(session: { sessionType?: string; childCount
   return isWorkstreamContainer(session) || (session.childCount ?? 0) > 0;
 }
 
+/** Ids of every node that has children, whether or not it is currently expanded. */
+export function treeParentIds<T extends TreeSession>(rows: readonly T[]): string[] {
+  const ids: string[] = [];
+  const visit = (node: SessionTreeNode<T>) => {
+    if (!node.children.length) return;
+    ids.push(node.session.id);
+    node.children.forEach(visit);
+  };
+  buildSessionTree(rows).forEach(visit);
+  return ids;
+}
+
 /**
  * Wrappers the app created automatically before the session tree carry no meaning
  * with one session in them, so they are hidden behind that session. A workstream
