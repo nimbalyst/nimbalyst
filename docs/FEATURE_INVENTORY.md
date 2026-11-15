@@ -99,7 +99,7 @@ Twelve built-in provider lanes, plus any agent an extension contributes. Every l
 
 ## Workstreams
 
-- Nested session trees within a workspace or worktree, with collapsible orchestrators and subtree activity, unread, and uncommitted-file rollups
+- Nested session trees within a workspace or worktree, with collapsible orchestrators, Collapse all / Expand all controls in the session list header, and subtree activity, unread, and uncommitted-file rollups
 - Workstream containers: a named group with a folder icon that holds peer sessions with no parent or manager among them; created from the create menu or "Move to workstream..." (one or several selected sessions), filled by moving or dragging sessions in or by starting a session while it is selected
 - Workstream editor tabs (multi-file editing per session)
 - Workstream session tabs (switch between child sessions)
