@@ -122,6 +122,20 @@ async function findRegisteredWorktree(checkout: string, candidate: string): Prom
   return { path: requested, branch: registered.branch };
 }
 
+/**
+ * #1968: whether `root` is the toplevel of the very checkout `dir` sits in.
+ * Same toplevel and same per-checkout git dir; a shared common dir alone only
+ * proves the same repository, not the same checkout.
+ */
+async function isOwnCheckoutRoot(dir: string, root: string): Promise<boolean> {
+  try {
+    const [inner, outer] = await Promise.all([repoIdentity(dir), repoIdentity(root)]);
+    return inner.toplevel === root && inner.toplevel === outer.toplevel && inner.gitDir === outer.gitDir;
+  } catch {
+    return false;
+  }
+}
+
 /** The checkout a session commits from: its bound worktree, else its workspace. */
 export async function getSessionCommitCheckout(sessionId: string): Promise<string> {
   const session = await AISessionsRepository.get(sessionId);
@@ -185,6 +199,13 @@ export async function resolveGitCommitProposalTarget(
       const groups = groupFilesByRepo(requested, files, []);
       const outside = [...groups].filter(([repo]) => !repo || realpathOrNull(repo) !== requested).flatMap(([, list]) => list);
       if (outside.length) throw new Error(`Selected files are outside the worktree ${requested}: ${outside.join(', ')}. Call developer_git_commit_proposal once per checkout.`);
+      // #1968: a session opened on a subfolder of a checkout that names that
+      // checkout's root is committing in its own checkout, not a sibling. Keep
+      // the session checkout as the record's workspace (execution re-checks it)
+      // and commit in the root, without the sibling marker that forces manual approval.
+      if (await isOwnCheckoutRoot(workspacePath, requested)) {
+        return expandTarget({ workspacePath, repoPath: requested, files }, sessionId, [session.workspacePath, workspacePath], excludePaths);
+      }
       return expandTarget(
         { workspacePath: requested, repoPath: requested, files, worktree: { path: requested, branch: registered.branch } },
         sessionId, [session.workspacePath, requested], excludePaths,

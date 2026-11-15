@@ -33,6 +33,17 @@ it('takes an ordinary proposal\'s checkout and repo from its stored record', asy
   expect(mocks.revalidate).not.toHaveBeenCalled();
 });
 
+// #1968: a subfolder session that named its own checkout root stores the subfolder as its
+// checkout and the root as its repo; confirm must accept root files outside the subfolder.
+it('commits a subfolder session\'s own-root proposal in the root without the sibling path', async () => {
+  mocks.rows = [row({
+    proposalId: 'p1', commitTargetVersion: 2, workspacePath: '/session-worktree', repoPath: '/repo',
+    filesToStage: ['/repo/shared.txt', '/session-worktree/inner.txt'],
+  })];
+  expect(await resolveProposalCommitPaths('s1', 'p1', ['/repo/shared.txt'])).toEqual({ workspacePath: '/session-worktree', repoPath: '/repo' });
+  expect(mocks.revalidate).not.toHaveBeenCalled();
+});
+
 // Re-review repro: builds before the Sept 15 checkout fix stored the PARENT workspace while
 // the widget committed in the session's worktree; trusting the record moved the commit to /main.
 it('refuses a legacy or mismatched record instead of guessing its checkout', async () => {
