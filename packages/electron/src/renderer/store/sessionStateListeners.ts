@@ -1097,9 +1097,9 @@ export function initSessionStateListeners(): () => void {
           const currentAtom = sessionProcessingStateAtom(sessionId);
           if (currentAtom !== captured.stateAtom || store.get(currentAtom) !== captured.state) continue;
         } else if (instantiated.has(sessionId)) {
-          // Discovered during the await: its newer local state wins. A running
-          // ID known only to the snapshot can still be restored as before.
-          continue;
+          // A newer write wins, but merely mounting/reading a session during
+          // the await must not delay restoring its live Cancel control.
+          if (store.get(sessionProcessingStateAtom(sessionId)).hasLocalWrite) continue;
         }
         const processing = running.has(sessionId);
         if (store.get(sessionProcessingAtom(sessionId)) === processing) continue;

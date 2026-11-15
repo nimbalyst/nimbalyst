@@ -233,6 +233,25 @@ describe('processing snapshots preserve newer turn state', () => {
     await respond([sid]);
     expect(store.get(sessionProcessingAtom(sid))).toBe(false);
   });
+
+  it('restores a running session that was only read while the snapshot was pending', async () => {
+    const sid = uniqueSessionId('read-during-snapshot');
+    const respond = await beginDelayedProcessingSnapshot();
+    expect(store.get(sessionProcessingAtom(sid))).toBe(false);
+    await respond([sid]);
+    expect(store.get(sessionProcessingAtom(sid))).toBe(true);
+  });
+
+  it('discards an older restore even when it resolves before the newer snapshot', async () => {
+    const sid = uniqueSessionId('read-between-snapshots');
+    const older = await beginDelayedProcessingSnapshot();
+    expect(store.get(sessionProcessingAtom(sid))).toBe(false);
+    const newer = await beginDelayedProcessingSnapshot();
+    await older([sid]);
+    expect(store.get(sessionProcessingAtom(sid))).toBe(false);
+    await newer([]);
+    expect(store.get(sessionProcessingAtom(sid))).toBe(false);
+  });
 });
 
 let uniqueCounter = 0;

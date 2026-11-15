@@ -110,7 +110,7 @@ export const activeSessionIdAtom = atom<string | null>(null);
 // Each write gets a fresh identity, including same-value lifecycle writes.
 // Async reconciliation uses it to avoid overwriting newer turn/composer state.
 export const sessionProcessingStateAtom = atomFamily((_sessionId: string) =>
-  atom<Readonly<{ processing: boolean }>>({ processing: false })
+  atom<Readonly<{ processing: boolean; hasLocalWrite: boolean }>>({ processing: false, hasLocalWrite: false })
 );
 
 export const sessionProcessingAtom = atomFamily((sessionId: string) => {
@@ -119,7 +119,7 @@ export const sessionProcessingAtom = atomFamily((sessionId: string) => {
     get => get(state).processing,
     (get, set, update: boolean | ((previous: boolean) => boolean)) => {
       const processing = typeof update === 'function' ? update(get(state).processing) : update;
-      set(state, { processing });
+      set(state, { processing, hasLocalWrite: true });
     },
   );
 });
