@@ -1399,6 +1399,11 @@ function getLocalOrgBinding(workspacePath: string): { orgId: string; teamProject
   }
 }
 
+/** Whether this workspace was ever bound to an org on this machine. Readable signed out. */
+export function hasLocalOrgBinding(workspacePath: string): boolean {
+  return getLocalOrgBinding(workspacePath) !== null;
+}
+
 function setLocalOrgBinding(workspacePath: string, orgId: string, teamProjectId?: string): void {
   updateWorkspaceState(workspacePath, (state) => {
     state.localOrgBinding = teamProjectId ? { orgId, teamProjectId } : { orgId };

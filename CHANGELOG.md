@@ -23,6 +23,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - With many sessions busy at once, an agent transcript now stays on screen while the app reloads the session, instead of going blank and replaying from older messages.
 - The new tracker item popup no longer pushes its title field off screen in fullscreen when many items are waiting to publish; the list of saved items now scrolls.
 - When an agent works with a local HTML file that is not open in a tab, its page no longer appears as a box over the top-left of the window that cannot be closed.
+- In a project with no team, new bug, decision, milestone and release items no longer show a "team sync is not connected" publication notice with a Retry that cannot succeed. This includes items created before this fix.
+- Deleting tracker items now shows an error when a delete fails, including how many items failed in a multi-select delete, instead of failing silently.
 - With auto-approve on, a commit proposal from a session opened on a subfolder of a git checkout that names that checkout's root is now auto-approved instead of waiting for approval as if it targeted another worktree.
 
 ### Removed

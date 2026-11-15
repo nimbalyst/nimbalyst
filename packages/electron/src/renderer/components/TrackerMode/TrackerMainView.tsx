@@ -884,14 +884,18 @@ export const TrackerMainView: React.FC<TrackerMainViewProps> = ({
         }
       } else {
         console.error('[TrackerMainView] Failed to delete item:', result.error);
+        errorNotificationService.showError('Could not delete item', result.error || 'The item was not deleted.');
       }
     } catch (error) {
       console.error('[TrackerMainView] Failed to delete item:', error);
+      errorNotificationService.showError('Could not delete item', error instanceof Error ? error.message : String(error));
     }
   }, [selectedItemId, setModeLayout]);
 
   /** Bulk delete for multi-select context menu */
   const handleDeleteItems = useCallback(async (itemIds: string[]) => {
+    let failed = 0;
+    let firstError: string | undefined;
     for (const itemId of itemIds) {
       const wikiRecord = store.get(trackerItemsMapAtom).get(itemId);
       if (wikiRecord && isLocalWikiRecord(wikiRecord)) {
@@ -899,13 +903,27 @@ export const TrackerMainView: React.FC<TrackerMainViewProps> = ({
         continue;
       }
       try {
-        await window.electronAPI.documentService.deleteTrackerItem({ itemId });
+        const result = await window.electronAPI.documentService.deleteTrackerItem({ itemId });
+        if (!result.success) {
+          console.error('[TrackerMainView] Failed to delete item:', itemId, result.error);
+          failed++;
+          firstError ??= result.error;
+          continue;
+        }
         if (selectedItemId === itemId) {
           setModeLayout({ selectedItemId: null });
         }
       } catch (error) {
         console.error('[TrackerMainView] Failed to delete item:', error);
+        failed++;
+        firstError ??= error instanceof Error ? error.message : String(error);
       }
+    }
+    if (failed > 0) {
+      errorNotificationService.showError(
+        failed === 1 ? 'Could not delete 1 item' : `Could not delete ${failed} items`,
+        firstError || 'The items were not deleted.',
+      );
     }
   }, [selectedItemId, setModeLayout]);
 
