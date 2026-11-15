@@ -10,14 +10,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 <!-- New features go here -->
-- Collapse all and Expand all buttons in the agent session list close or open every parent session and workstream at once
-- The Codex model picker also lists models reported by the bundled Codex CLI, so newly released Codex models can be selected before Nimbalyst's built-in list includes them
 
 ### Changed
 <!-- Changes to existing functionality go here -->
 
 ### Fixed
 <!-- Bug fixes go here -->
+
+### Removed
+<!-- Removed features go here -->
+
+## [0.84.1] - 2026-11-15
+
+
+### Added
+<!-- New features go here -->
+- Collapse all and Expand all buttons in the agent session list close or open every parent session and workstream at once
+- The Codex model picker also lists models reported by the bundled Codex CLI, so newly released Codex models can be selected before Nimbalyst's built-in list includes them
+
+### Changed
+<!-- Changes to existing functionality go here -->
+- Queued messages delivered in one turn each open with the time they were queued and who sent them; same-named senders are distinguishable.
+- The Extension Dev indicator moved to the outer project rail, and the navigation button menus use the shared floating menu positioning.
+
+### Fixed
+<!-- Bug fixes go here -->
+- Sessions started in a subfolder that names its own checkout root keep commit auto-approval.
+- Projects without a team no longer show tracker publish notices that cannot be resolved.
 - With many sessions busy at once, an agent transcript no longer loses its opening prompt and earlier messages until the session is reopened.
 - Delayed session-status refreshes no longer hide Cancel during a newer turn or show it after completion, including when opening a running session.
 - With many sessions busy at once, an agent transcript now stays on screen while the app reloads the session, instead of going blank and replaying from older messages.
