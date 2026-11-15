@@ -15,6 +15,8 @@ import {
 } from '../../store/atoms/appSettings';
 import { permissionsChangedVersionAtom } from '../../store/atoms/permissions';
 import { HelpTooltip } from '../../help';
+import { useFloatingMenu, FloatingPortal } from '../../hooks/useFloatingMenu';
+import { useMergeRefs } from '@floating-ui/react';
 import { getProjectTrustPresentation } from '../ProjectTrustToast/projectTrustChoices';
 
 export interface TrustStatus {
@@ -36,7 +38,6 @@ export const TrustIndicator: React.FC<TrustIndicatorProps> = ({
 }) => {
   const [menuOpen, setMenuOpen] = useState(false);
   const buttonRef = useRef<HTMLButtonElement>(null);
-  const menuRef = useRef<HTMLDivElement>(null);
 
   // Get the atom for this workspace (or a placeholder if no workspace)
   const permissionsAtom = useMemo(
@@ -77,23 +78,15 @@ export const TrustIndicator: React.FC<TrustIndicatorProps> = ({
     fetchStatus();
   }, [fetchStatus, permissionsVersion]);
 
-  // Close menu when clicking outside
-  useEffect(() => {
-    const handleClickOutside = (event: MouseEvent) => {
-      if (
-        menuOpen &&
-        menuRef.current &&
-        buttonRef.current &&
-        !menuRef.current.contains(event.target as Node) &&
-        !buttonRef.current.contains(event.target as Node)
-      ) {
-        setMenuOpen(false);
-      }
-    };
-
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, [menuOpen]);
+  // Same positioning as the other nav button menus: portaled so the gutter
+  // cannot clip it; useDismiss handles outside clicks and Escape.
+  const menu = useFloatingMenu({
+    placement: 'right-end',
+    offsetPx: 8,
+    open: menuOpen,
+    onOpenChange: setMenuOpen,
+  });
+  const setButtonRef = useMergeRefs([buttonRef, menu.refs.setReference]);
 
   // Don't render if no workspace
   if (!workspacePath) {
@@ -237,7 +230,7 @@ export const TrustIndicator: React.FC<TrustIndicatorProps> = ({
     <div className="trust-indicator-container relative">
       <HelpTooltip testId="gutter-permissions-button" placement="right">
         <button
-          ref={buttonRef}
+          ref={setButtonRef}
           className={`trust-indicator nav-button relative w-9 h-9 flex items-center justify-center bg-transparent border-none rounded-md cursor-pointer transition-all duration-150 p-0 hover:bg-nim-tertiary active:scale-95 focus-visible:outline-2 focus-visible:outline-[var(--nim-primary)] focus-visible:outline-offset-2 ${getStatusClass()} ${getIndicatorColorClass()}`}
           onClick={() => setMenuOpen(!menuOpen)}
           aria-label={getStatusLabel()}
@@ -253,27 +246,14 @@ export const TrustIndicator: React.FC<TrustIndicatorProps> = ({
       </HelpTooltip>
 
       {menuOpen && (
+        <FloatingPortal>
         <div
-          ref={menuRef}
-          className="trust-menu absolute bottom-0 left-[calc(100%+8px)] w-[280px] bg-[var(--nim-bg-secondary)] border border-[var(--nim-border)] rounded-lg shadow-[0_4px_12px_rgba(0,0,0,0.15)] z-[100] animate-[trust-menu-appear_0.15s_ease-out]"
+          ref={menu.refs.setFloating}
+          style={menu.floatingStyles}
+          {...menu.getFloatingProps()}
+          className="trust-menu w-[280px] overflow-y-auto bg-[var(--nim-bg-secondary)] border border-[var(--nim-border)] rounded-lg shadow-[0_4px_12px_rgba(0,0,0,0.15)] z-[100]"
           role="menu"
-          style={{
-            // Inline keyframe animation fallback
-            animation: 'trust-menu-appear 0.15s ease-out',
-          }}
         >
-          <style>{`
-            @keyframes trust-menu-appear {
-              from {
-                opacity: 0;
-                transform: translateX(-4px);
-              }
-              to {
-                opacity: 1;
-                transform: translateX(0);
-              }
-            }
-          `}</style>
           <div className="trust-menu-header flex items-center justify-between px-3 pt-3 pb-2">
             <span className="trust-menu-title text-[13px] font-semibold text-[var(--nim-text)]">
               Agent Permissions
@@ -326,6 +306,7 @@ export const TrustIndicator: React.FC<TrustIndicatorProps> = ({
             </button>
           </div>
         </div>
+        </FloatingPortal>
       )}
     </div>
   );

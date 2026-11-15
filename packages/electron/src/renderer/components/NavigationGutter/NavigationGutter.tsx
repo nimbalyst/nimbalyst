@@ -494,7 +494,7 @@ export const NavigationGutter: React.FC<NavigationGutterProps> = ({
       render: () => <GeminiUsageIndicator />,
     },
     {
-      id: 'extension-dev', section: 'indicators', icon: 'extension', label: 'Extension Dev', hideable: true,
+      id: 'extension-dev', section: 'indicators', icon: 'extension', label: 'Extension Dev', hideable: true, scope: 'app',
       render: () => <ExtensionDevIndicator onOpenSettings={onOpenSettings} />,
     },
     {

@@ -7,6 +7,8 @@ import {
 } from '../../hooks/useTheme';
 import { themeListChangedVersionAtom } from '../../store/atoms/themeList';
 import { HelpTooltip } from '../../help';
+import { useFloatingMenu, FloatingPortal } from '../../hooks/useFloatingMenu';
+import { useMergeRefs } from '@floating-ui/react';
 
 type BuiltInTheme = 'light' | 'dark';
 
@@ -24,7 +26,6 @@ export const ThemeToggleButton: React.FC<ThemeToggleButtonProps> = ({ className 
     name: string;
     isDark: boolean;
   }>>([]);
-  const menuRef = useRef<HTMLDivElement>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
 
   // Load available themes; refresh when extensions register/unregister
@@ -47,24 +48,15 @@ export const ThemeToggleButton: React.FC<ThemeToggleButtonProps> = ({ className 
     };
   }, [themeListVersion]);
 
-  // Close menu when clicking outside
-  useEffect(() => {
-    if (!isMenuOpen) return;
-
-    const handleClickOutside = (event: MouseEvent) => {
-      if (
-        menuRef.current &&
-        !menuRef.current.contains(event.target as Node) &&
-        buttonRef.current &&
-        !buttonRef.current.contains(event.target as Node)
-      ) {
-        setIsMenuOpen(false);
-      }
-    };
-
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, [isMenuOpen]);
+  // The menu portals out of the gutter/rail so their overflow clipping cannot
+  // cut it off. useDismiss handles outside clicks and Escape.
+  const menu = useFloatingMenu({
+    placement: 'right-end',
+    offsetPx: 8,
+    open: isMenuOpen,
+    onOpenChange: setIsMenuOpen,
+  });
+  const setButtonRef = useMergeRefs([buttonRef, menu.refs.setReference]);
 
   const selectTheme = useCallback((themeId: string) => {
     setIsMenuOpen(false);
@@ -116,7 +108,7 @@ export const ThemeToggleButton: React.FC<ThemeToggleButtonProps> = ({ className 
     <div className="relative">
       <HelpTooltip testId="gutter-theme-button" placement="right">
         <button
-          ref={buttonRef}
+          ref={setButtonRef}
           className={`theme-toggle-button nav-button relative w-9 h-9 flex items-center justify-center bg-transparent border-none rounded-md text-nim-muted cursor-pointer transition-all duration-150 p-0 hover:bg-nim-tertiary hover:text-nim active:scale-95 focus-visible:outline-2 focus-visible:outline-[var(--nim-primary)] focus-visible:outline-offset-2 ${className}`}
           onClick={() => setIsMenuOpen(!isMenuOpen)}
           aria-label="Change theme"
@@ -129,9 +121,12 @@ export const ThemeToggleButton: React.FC<ThemeToggleButtonProps> = ({ className 
       </HelpTooltip>
 
       {isMenuOpen && (
+        <FloatingPortal>
         <div
-          ref={menuRef}
-          className="theme-menu absolute bottom-0 left-full ml-2 bg-nim-secondary border border-nim rounded-md p-1 min-w-[200px] shadow-lg z-[1000]"
+          ref={menu.refs.setFloating}
+          style={menu.floatingStyles}
+          {...menu.getFloatingProps()}
+          className="theme-menu overflow-y-auto bg-nim-secondary border border-nim rounded-md p-1 min-w-[200px] shadow-lg z-[1000]"
           role="menu"
           aria-label="Theme selection"
         >
@@ -154,6 +149,7 @@ export const ThemeToggleButton: React.FC<ThemeToggleButtonProps> = ({ className 
             </button>
           ))}
         </div>
+        </FloatingPortal>
       )}
     </div>
   );

@@ -136,7 +136,7 @@ describe('App-wide gutter items with the multi-project rail', () => {
   const placementOf = (container: HTMLElement, id: string) =>
     container.querySelector(`[data-gutter-item="${id}"]`)?.closest('.navigation-gutter, .project-rail-global-items')?.className.split(' ')[0];
 
-  it('moves usage, theme, feedback and the account button to the rail and keeps project items in the gutter', () => {
+  it('moves usage, extension dev, theme, feedback and the account button to the rail and keeps project items in the gutter', () => {
     const store = createStore();
     const slot = document.createElement('div');
     slot.className = 'project-rail-global-items';
@@ -144,10 +144,10 @@ describe('App-wide gutter items with the multi-project rail', () => {
     store.set(projectRailGlobalSlotAtom, slot);
     renderGutter(store);
 
-    for (const id of ['claude-usage', 'codex-usage', 'theme-toggle', 'feedback']) {
+    for (const id of ['claude-usage', 'codex-usage', 'extension-dev', 'theme-toggle', 'feedback']) {
       expect(placementOf(document.body, id)).toBe('project-rail-global-items');
     }
-    for (const id of ['voice-mode', 'trust-indicator', 'extension-dev']) {
+    for (const id of ['voice-mode', 'trust-indicator']) {
       expect(placementOf(document.body, id)).toBe('navigation-gutter');
     }
     expect(slot.contains(screen.getByTestId('gutter-user-button'))).toBe(true);

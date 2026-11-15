@@ -4,6 +4,8 @@ import { MaterialSymbol } from '@nimbalyst/runtime/ui/icons/MaterialSymbol';
 import { ExtensionErrorConsole } from './ExtensionErrorConsole';
 import { extensionDevToolsEnabledAtom } from '../../store/atoms/appSettings';
 import { HelpTooltip } from '../../help';
+import { useFloatingMenu, FloatingPortal } from '../../hooks/useFloatingMenu';
+import { useMergeRefs } from '@floating-ui/react';
 
 /**
  * Format a timestamp as a relative time string (e.g., "5m ago", "2h ago")
@@ -71,7 +73,6 @@ export const ExtensionDevIndicator: React.FC<ExtensionDevIndicatorProps> = ({
   const [rebuildNotice, setRebuildNotice] = useState<RebuildNotice | null>(null);
   const rebuildInProgress = useRef(false);
   const buttonRef = useRef<HTMLButtonElement>(null);
-  const menuRef = useRef<HTMLDivElement>(null);
   const rebuildSubmenuRef = useRef<HTMLDivElement>(null);
 
   // Check for errors periodically
@@ -128,25 +129,18 @@ export const ExtensionDevIndicator: React.FC<ExtensionDevIndicatorProps> = ({
     return () => clearInterval(interval);
   }, [processStartTime]);
 
-  // Close menu when clicking outside
-  useEffect(() => {
-    const handleClickOutside = (event: MouseEvent) => {
-      if (
-        menuOpen &&
-        menuRef.current &&
-        buttonRef.current &&
-        !menuRef.current.contains(event.target as Node) &&
-        !buttonRef.current.contains(event.target as Node) &&
-        !rebuildSubmenuRef.current?.contains(event.target as Node)
-      ) {
-        setMenuOpen(false);
-        setRebuildSubmenuOpen(false);
-      }
-    };
-
-    document.addEventListener('mousedown', handleClickOutside);
-    return () => document.removeEventListener('mousedown', handleClickOutside);
-  }, [menuOpen]);
+  // The menu portals out of the gutter/rail so their overflow clipping cannot
+  // cut it off. useDismiss handles outside clicks and Escape.
+  const menu = useFloatingMenu({
+    placement: 'right-end',
+    offsetPx: 8,
+    open: menuOpen,
+    onOpenChange: setMenuOpen,
+    dismiss: {
+      outsidePress: (event) => !rebuildSubmenuRef.current?.contains(event.target as Node),
+    },
+  });
+  const setButtonRef = useMergeRefs([buttonRef, menu.refs.setReference]);
 
   // Fetch installed extensions when menu opens
   useEffect(() => {
@@ -184,41 +178,16 @@ export const ExtensionDevIndicator: React.FC<ExtensionDevIndicatorProps> = ({
     fetchExtensions();
   }, [menuOpen]);
 
-  // Position the rebuild submenu to stay on screen
-  useEffect(() => {
-    if (!rebuildSubmenuOpen || !rebuildSubmenuRef.current || !menuRef.current) return;
-
-    const submenu = rebuildSubmenuRef.current;
-    const parentMenu = menuRef.current;
-    const parentRect = parentMenu.getBoundingClientRect();
-    const submenuWidth = 224; // w-56 = 14rem = 224px
-    const gap = 4;
-
-    // Calculate ideal position (to the right of parent menu)
-    let left = parentRect.right + gap;
-    let top = parentRect.top;
-
-    // Check if submenu would go off the right edge
-    if (left + submenuWidth > window.innerWidth - 16) {
-      // Position to the left of parent menu instead
-      left = parentRect.left - submenuWidth - gap;
-    }
-
-    // Check if submenu would go off the bottom edge
-    const submenuHeight = submenu.offsetHeight;
-    if (top + submenuHeight > window.innerHeight - 16) {
-      // Align bottom of submenu with bottom of viewport (with padding)
-      top = window.innerHeight - submenuHeight - 16;
-    }
-
-    // Ensure it doesn't go above the viewport
-    if (top < 16) {
-      top = 16;
-    }
-
-    submenu.style.left = `${left}px`;
-    submenu.style.top = `${top}px`;
-  }, [rebuildSubmenuOpen, extensions]);
+  // The rebuild submenu portals too, anchored to its trigger row.
+  // The main menu's useDismiss treats clicks inside it as inside (see above).
+  const submenu = useFloatingMenu({
+    placement: 'right-start',
+    offsetPx: 8,
+    open: rebuildSubmenuOpen,
+    onOpenChange: setRebuildSubmenuOpen,
+    dismiss: { enabled: false },
+  });
+  const setSubmenuRef = useMergeRefs([rebuildSubmenuRef, submenu.refs.setFloating]);
 
   // Don't render if not enabled
   if (!isEnabled) {
@@ -292,7 +261,7 @@ export const ExtensionDevIndicator: React.FC<ExtensionDevIndicatorProps> = ({
     <div className="extension-dev-indicator-container relative">
       <HelpTooltip testId="gutter-extension-dev-button" placement="right">
         <button
-          ref={buttonRef}
+          ref={setButtonRef}
           className="extension-dev-indicator nav-button relative w-9 h-9 flex items-center justify-center bg-transparent border-none rounded-md cursor-pointer transition-all duration-150 p-0 hover:bg-nim-tertiary active:scale-95 focus-visible:outline-2 focus-visible:outline-[var(--nim-primary)] focus-visible:outline-offset-2 text-nim-muted hover:text-nim"
           onClick={() => setMenuOpen(!menuOpen)}
           aria-label="Extension Development Mode"
@@ -306,9 +275,12 @@ export const ExtensionDevIndicator: React.FC<ExtensionDevIndicatorProps> = ({
       </HelpTooltip>
 
       {menuOpen && (
+        <FloatingPortal>
         <div
-          ref={menuRef}
-          className="extension-dev-menu absolute bottom-0 left-[calc(100%+8px)] w-60 bg-[var(--nim-bg-secondary)] border border-[var(--nim-border)] rounded-lg shadow-lg z-[100] animate-[extension-dev-menu-appear_0.15s_ease-out]"
+          ref={menu.refs.setFloating}
+          style={menu.floatingStyles}
+          {...menu.getFloatingProps()}
+          className="extension-dev-menu w-60 overflow-y-auto bg-[var(--nim-bg-secondary)] border border-[var(--nim-border)] rounded-lg shadow-lg z-[100]"
           role="menu"
         >
           <div className="extension-dev-menu-header flex items-center justify-between pt-3 px-3 pb-2">
@@ -407,6 +379,7 @@ export const ExtensionDevIndicator: React.FC<ExtensionDevIndicatorProps> = ({
             {/* Rebuild Extensions submenu */}
             <div className="relative">
               <button
+                ref={submenu.refs.setReference}
                 className="extension-dev-menu-action flex items-center justify-between w-full p-2 border-none bg-transparent text-[var(--nim-text)] text-[13px] font-inherit text-left rounded cursor-pointer transition-colors duration-100 hover:bg-[var(--nim-bg-hover)] [&_.material-symbols-outlined]:text-[var(--nim-text-muted)]"
                 onClick={() => setRebuildSubmenuOpen(!rebuildSubmenuOpen)}
                 role="menuitem"
@@ -421,16 +394,15 @@ export const ExtensionDevIndicator: React.FC<ExtensionDevIndicatorProps> = ({
               </button>
 
               {rebuildSubmenuOpen && (
+                <FloatingPortal>
                 <div
-                  ref={rebuildSubmenuRef}
-                  className="fixed w-56 bg-[var(--nim-bg-secondary)] border border-[var(--nim-border)] rounded-lg shadow-lg z-[101] animate-[extension-dev-menu-appear_0.1s_ease-out]"
+                  ref={setSubmenuRef}
+                  style={submenu.floatingStyles}
+                  {...submenu.getFloatingProps()}
+                  className="extension-dev-rebuild-submenu flex flex-col w-56 bg-[var(--nim-bg-secondary)] border border-[var(--nim-border)] rounded-lg shadow-lg z-[101]"
                   role="menu"
-                  style={{
-                    // Position will be calculated by useEffect
-                    maxHeight: 'calc(100vh - 32px)',
-                  }}
                 >
-                  <div className="p-1 max-h-[calc(100vh-48px)] overflow-y-auto">
+                  <div className="p-1 min-h-0 overflow-y-auto">
                     <button
                       className="extension-dev-menu-action flex items-center gap-2 w-full p-2 border-none bg-transparent text-[var(--nim-text)] text-[13px] font-inherit text-left rounded cursor-pointer transition-colors duration-100 hover:enabled:bg-[var(--nim-bg-hover)] disabled:text-[var(--nim-text-faint)] disabled:cursor-not-allowed [&_.material-symbols-outlined]:text-[var(--nim-text-muted)]"
                       onClick={() => handleRebuild(extensions, 'all')}
@@ -468,6 +440,7 @@ export const ExtensionDevIndicator: React.FC<ExtensionDevIndicatorProps> = ({
                     )}
                   </div>
                 </div>
+                </FloatingPortal>
               )}
             </div>
 
@@ -482,6 +455,7 @@ export const ExtensionDevIndicator: React.FC<ExtensionDevIndicatorProps> = ({
             </button>
           </div>
         </div>
+        </FloatingPortal>
       )}
     </div>
     </>

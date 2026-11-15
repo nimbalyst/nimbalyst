@@ -23,6 +23,29 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
+describe('ExtensionDevIndicator menu placement', () => {
+  it('renders the menu outside the clipping rail container', async () => {
+    Object.defineProperty(window, 'electronAPI', {
+      configurable: true,
+      value: {
+        extensionDevTools: {
+          getLogs: vi.fn().mockResolvedValue({ logs: [] }),
+          getProcessInfo: vi.fn().mockResolvedValue({ startTime: Date.now() }),
+        },
+        extensions: { listInstalled: vi.fn().mockResolvedValue([]), devReload: vi.fn() },
+      },
+    });
+    const store = createStore();
+    store.set(advancedSettingsAtom, { ...store.get(advancedSettingsAtom), extensionDevToolsEnabled: true });
+    const { container } = render(
+      <Provider store={store}><div style={{ overflow: 'hidden' }}><ExtensionDevIndicator /></div></Provider>,
+    );
+    fireEvent.click(screen.getByTestId('gutter-extension-dev-button'));
+    const menu = await screen.findByRole('menu');
+    expect(container.contains(menu)).toBe(false);
+  });
+});
+
 describe('ExtensionDevIndicator rebuild feedback', () => {
   it.each(['returned failure', 'rejected request'])('reinstalls only stale extensions and retains %s for retry', async (failureMode) => {
     vi.spyOn(console, 'error').mockImplementation(() => {});
