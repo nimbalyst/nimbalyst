@@ -966,6 +966,10 @@ export class AIService {
       logError: (message, error) => logger.main.error(message, error),
       logInfo: (message) => logger.main.info(message),
       resolveLiveWindow: findWindowByWorkspace,
+      resolveSessionTitle: async (id) => {
+        const { AISessionsRepository } = await import('@nimbalyst/runtime/storage/repositories/AISessionsRepository');
+        return (await AISessionsRepository.get(id))?.title ?? undefined;
+      },
       canBypassChainGuard: () => canDispatchIntoDrain(sessionId),
       isLeadTurnPending: () => isLeadTurnPending(sessionId),
       onAfterSettled: async () => {

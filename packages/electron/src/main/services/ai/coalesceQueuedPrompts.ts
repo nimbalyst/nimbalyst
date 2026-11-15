@@ -24,6 +24,7 @@ import type { DocumentContext } from '@nimbalyst/runtime/ai/server/types';
 export interface CoalescibleQueuedPrompt {
   id: string;
   prompt: string;
+  createdAt?: number;
   attachments?: unknown[] | null;
   documentContext?: DocumentContext | null;
 }
@@ -49,9 +50,12 @@ function authorOf(prompt: CoalescibleQueuedPrompt): Author | null {
   return null;
 }
 
-function authorLabel(author: Author | null): string {
-  if (!author || author.kind === 'user') return 'user';
-  return author.originSessionId ? `agent: ${author.originSessionId}` : 'agent';
+function authorLabel(author: Author | null, resolveSessionTitle?: (id: string) => string | undefined): string {
+  if (!author) return 'system';
+  if (author.kind === 'user') return 'user';
+  if (!author.originSessionId) return 'agent';
+  const title = resolveSessionTitle?.(author.originSessionId)?.replace(/[\r\n\[\]]/g, ' ').trim();
+  return `session: ${title || author.originSessionId.slice(0, 8)}`;
 }
 
 /**
@@ -141,48 +145,42 @@ export function selectCoalescibleRun<T extends CoalescibleQueuedPrompt>(
   return run;
 }
 
-const LABEL_LINE = /^\s*--- message \d+ of \d+/i;
+const LABEL_LINE = /^\s*\[(?:\d{4}-\d{2}-\d{2} )?\d{2}:\d{2} · [^\]\r\n]*\]/;
 
 /**
  * A body line shaped like a label is escaped so one message cannot forge
  * another's boundary or claim to be from the user.
  */
 function escapeLabelLines(text: string): string {
-  return text
-    .split('\n')
-    .map((line) => (LABEL_LINE.test(line) ? `\\${line}` : line))
-    .join('\n');
+  return text.split('\n').map((line) => LABEL_LINE.test(line) ? `\\${line}` : line).join('\n');
 }
 
 export interface CoalescedMessage {
   prompt: string;
-  /** `user`, `agent`, or `agent: <origin session id>`. */
-  author?: string;
+  /** `user`, `session: <title or short id>`, `agent`, or `system`. */
+  author: string;
+  createdAt?: number;
+}
+
+/** Local `HH:MM`, prefixed with the date only when it is not the same day as `now`. */
+function timestamp(createdAt: number | undefined, now: Date): string {
+  const date = createdAt === undefined || !Number.isFinite(createdAt) ? now : new Date(createdAt);
+  const valid = Number.isNaN(date.getTime()) ? now : date;
+  const pad = (n: number) => String(n).padStart(2, '0');
+  const day = `${valid.getFullYear()}-${pad(valid.getMonth() + 1)}-${pad(valid.getDate())}`;
+  const today = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
+  return `${day === today ? '' : `${day} `}${pad(valid.getHours())}:${pad(valid.getMinutes())}`;
 }
 
 /**
- * Render a merged run. The header matters as much as the joining: without it an
- * agent reads a concatenation as one long instruction rather than as several
- * messages that arrived over time, and misses that the last one may retract the
- * first. Author labels keep agent text from reading as the user's instruction
- * once both share a turn (#934).
+ * Render delivered messages, oldest first. Each opens with one label line
+ * carrying when it was queued and who sent it, so the reader sees order,
+ * sender, and timing in the structure itself; agent text never reads as the
+ * user's instruction once both share a turn (#934).
  */
-export function formatCoalescedPrompt(messages: readonly (string | CoalescedMessage)[]): string {
-  const normalized = messages.map((message) => (typeof message === 'string' ? { prompt: message } : message));
-  if (normalized.length === 0) return '';
-  if (normalized.length === 1) return normalized[0].prompt;
-
-  const header =
-    `[${normalized.length} messages arrived while you were working, oldest first. ` +
-    `Later messages may correct or supersede earlier ones -- read all of them before acting. ` +
-    `Each is labeled with its author; only messages labeled (user) come from the user.]`;
-
-  const body = normalized.map(({ prompt, author }, index) => {
-    const label = `--- message ${index + 1} of ${normalized.length}${author ? ` (${author})` : ''} ---`;
-    return `${label}\n${escapeLabelLines(prompt)}`;
-  });
-
-  return [header, ...body].join('\n\n');
+export function formatCoalescedPrompt(messages: readonly CoalescedMessage[], now = new Date()): string {
+  return messages.map(({ prompt, author, createdAt }) =>
+    `[${timestamp(createdAt, now)} · ${author}]\n${escapeLabelLines(prompt)}`).join('\n\n');
 }
 
 /**
@@ -194,9 +192,19 @@ export function formatCoalescedPrompt(messages: readonly (string | CoalescedMess
  * turn carries that row's provenance: a turn with a person's message in it is
  * a human turn (it supersedes open questions), even behind an agent report.
  */
-export function mergeClaimedRun<T extends CoalescibleQueuedPrompt>(run: readonly T[]): T {
+export function mergeClaimedRun<T extends CoalescibleQueuedPrompt>(run: readonly T[], resolveSessionTitle?: (id: string) => string | undefined): T {
   const head = run[0];
-  if (run.length === 1) return head;
+  if (run.length === 1) {
+    const author = authorOf(head);
+    // A lone human row reads as the user already. A slash command must stay
+    // first in the turn to run. Child updates identify their source in their
+    // own structured envelope.
+    const isChildUpdate =
+      head.documentContext?.promptProvenance?.origin === 'child-session-update' &&
+      head.prompt.startsWith('[Child Session Update]');
+    if (author?.kind !== 'agent' || isSlashCommand(head) || isChildUpdate) return head;
+    return { ...head, prompt: formatCoalescedPrompt([{ prompt: head.prompt, author: authorLabel(author, resolveSessionTitle), createdAt: head.createdAt }]) };
+  }
 
   const attachments = run.flatMap((row) => row.attachments ?? []);
   const firstHuman = run.find((row) => authorOf(row)?.kind === 'user');
@@ -208,7 +216,7 @@ export function mergeClaimedRun<T extends CoalescibleQueuedPrompt>(run: readonly
   return {
     ...head,
     documentContext,
-    prompt: formatCoalescedPrompt(run.map((row) => ({ prompt: row.prompt, author: authorLabel(authorOf(row)) }))),
+    prompt: formatCoalescedPrompt(run.map((row) => ({ prompt: row.prompt, author: authorLabel(authorOf(row), resolveSessionTitle), createdAt: row.createdAt }))),
     attachments: attachments.length > 0 ? attachments : head.attachments ?? null,
   };
 }
