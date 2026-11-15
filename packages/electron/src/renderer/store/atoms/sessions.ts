@@ -107,9 +107,22 @@ export const activeSessionIdAtom = atom<string | null>(null);
  * Set when AI is actively generating a response.
  * SessionListItem subscribes to show processing indicator.
  */
-export const sessionProcessingAtom = atomFamily((_sessionId: string) =>
-  atom(false)
+// Each write gets a fresh identity, including same-value lifecycle writes.
+// Async reconciliation uses it to avoid overwriting newer turn/composer state.
+export const sessionProcessingStateAtom = atomFamily((_sessionId: string) =>
+  atom<Readonly<{ processing: boolean }>>({ processing: false })
 );
+
+export const sessionProcessingAtom = atomFamily((sessionId: string) => {
+  const state = sessionProcessingStateAtom(sessionId);
+  return atom(
+    get => get(state).processing,
+    (get, set, update: boolean | ((previous: boolean) => boolean)) => {
+      const processing = typeof update === 'function' ? update(get(state).processing) : update;
+      set(state, { processing });
+    },
+  );
+});
 
 /**
  * Per-session unread state.
@@ -1881,6 +1894,7 @@ export const cleanupSessionAtom = atom(null, (get, set, sessionId: string) => {
   sessionModelAtom.remove(sessionId);
   sessionArchivedAtom.remove(sessionId);
   sessionProcessingAtom.remove(sessionId);
+  sessionProcessingStateAtom.remove(sessionId);
   sessionUnreadAtom.remove(sessionId);
   sessionPendingPromptAtom.remove(sessionId);
   sessionHasPendingInteractivePromptAtom.remove(sessionId);

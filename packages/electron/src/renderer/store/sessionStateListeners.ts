@@ -26,6 +26,7 @@ import { canvasWorkingSetRegistry } from '@nimbalyst/runtime/canvas/canvasPresen
 import { store } from '@nimbalyst/runtime/store';
 import {
   sessionProcessingAtom,
+  sessionProcessingStateAtom,
   pruneClosedSessionDataAtom,
   sessionDataReleaseListenersAtom,
   reloadSessionDataAtom,
@@ -243,6 +244,8 @@ export function initSessionStateListeners(): () => void {
   // reconcile function is defined below). Fired on terminal session events so a
   // stuck spinner clears within ~1s instead of waiting for the slow interval.
   let scheduleProcessingReconcile: (() => void) | undefined;
+  let processingReconcileDisposed = false;
+  let processingReconcileRequestId = 0;
 
   // Wire reconciliation against multi-project rail state so subscriptions
   // include every warm project, not just the visible one.
@@ -1058,12 +1061,22 @@ export function initSessionStateListeners(): () => void {
     const api = window.electronAPI.sessionState;
     if (!api.getRunningSessionIds) return;
     try {
-      const result = await api.getRunningSessionIds();
-      if (!result?.success) return;
-      const running = new Set(result.sessionIds);
-      for (const sessionId of running) {
-        store.set(sessionProcessingAtom(sessionId), true);
+      const requestId = ++processingReconcileRequestId;
+      const candidates = new Set(sessionProcessingStateAtom.getParams());
+      for (const parentId of store.get(sessionRegistryAtom).keys()) {
+        candidates.add(parentId);
+        const children = store.get(sessionChildrenAtom(parentId));
+        if (Array.isArray(children)) {
+          for (const childId of children) candidates.add(childId);
+        }
       }
+      const before = new Map([...candidates].map(sessionId => {
+        const stateAtom = sessionProcessingStateAtom(sessionId);
+        return [sessionId, { stateAtom, state: store.get(stateAtom) }] as const;
+      }));
+      const result = await api.getRunningSessionIds();
+      if (!result?.success || processingReconcileDisposed || requestId !== processingReconcileRequestId) return;
+      const running = new Set(result.sessionIds);
       // Heal strays across the SAME superset the meta-agent header aggregates
       // over (sessionOrChildProcessingAtom = self OR any child). The header reads
       // children from sessionChildrenAtom too, and a meta-agent child can sit in
@@ -1072,19 +1085,26 @@ export function initSessionStateListeners(): () => void {
       // sessions:list). Iterating the registry alone left such a child's stuck
       // processing atom unhealed, pinning the header until the user clicked the
       // child. Union the registry keys with every parent's loaded children.
-      const candidates = new Set<string>(store.get(sessionRegistryAtom).keys());
-      for (const parentId of store.get(sessionRegistryAtom).keys()) {
-        const children = store.get(sessionChildrenAtom(parentId));
-        if (Array.isArray(children)) {
-          for (const childId of children) candidates.add(childId);
-        }
-      }
+      for (const sessionId of running) candidates.add(sessionId);
+      const instantiated = new Set(sessionProcessingStateAtom.getParams());
       let healed = 0;
       for (const sessionId of candidates) {
-        if (!running.has(sessionId) && store.get(sessionProcessingAtom(sessionId))) {
-          store.set(sessionProcessingAtom(sessionId), false);
-          healed++;
+        const captured = before.get(sessionId);
+        if (captured) {
+          // Check membership before calling the creating atomFamily API. A
+          // removed/recreated session must not be resurrected by this response.
+          if (!instantiated.has(sessionId)) continue;
+          const currentAtom = sessionProcessingStateAtom(sessionId);
+          if (currentAtom !== captured.stateAtom || store.get(currentAtom) !== captured.state) continue;
+        } else if (instantiated.has(sessionId)) {
+          // Discovered during the await: its newer local state wins. A running
+          // ID known only to the snapshot can still be restored as before.
+          continue;
         }
+        const processing = running.has(sessionId);
+        if (store.get(sessionProcessingAtom(sessionId)) === processing) continue;
+        store.set(sessionProcessingAtom(sessionId), processing);
+        if (!processing) healed++;
       }
       if (healed > 0) {
         console.debug(
@@ -1176,6 +1196,7 @@ export function initSessionStateListeners(): () => void {
 
   // Return cleanup function
   return () => {
+    processingReconcileDisposed = true;
     // Clear all pending throttle timers
     for (const timer of reloadThrottleTimers.values()) {
       clearTimeout(timer);
