@@ -38,17 +38,18 @@ interface UsageSectionProps {
  * Calculate the percentage of time elapsed in the current window.
  * Returns a value between 0-100.
  */
-function calculateTimeElapsedPercent(resetsAt: string | null, windowDurationMs: number): number {
-  if (!resetsAt) return 0;
+function calculateTimeElapsedPercent(resetsAt: string | null, windowDurationMs: number): number | null {
+  if (!resetsAt || !Number.isFinite(windowDurationMs) || windowDurationMs <= 0) return null;
 
   const resetTime = new Date(resetsAt).getTime();
+  if (!Number.isFinite(resetTime)) return null;
   const now = Date.now();
   const windowStartTime = resetTime - windowDurationMs;
   const elapsedMs = now - windowStartTime;
 
   // Clamp to 0-100
   const percent = (elapsedMs / windowDurationMs) * 100;
-  return Math.max(0, Math.min(100, percent));
+  return Number.isFinite(percent) ? Math.max(0, Math.min(100, percent)) : null;
 }
 
 const UsageSection: React.FC<UsageSectionProps> = ({
@@ -68,7 +69,7 @@ const UsageSection: React.FC<UsageSectionProps> = ({
 
   const colors = colorClasses[color] || colorClasses.muted;
   const timeElapsedPercent = calculateTimeElapsedPercent(resetsAt, windowDurationMs);
-  const isOverPacing = utilization > timeElapsedPercent;
+  const isOverPacing = timeElapsedPercent !== null && utilization > timeElapsedPercent;
 
   return (
     <div className="claude-usage-section mb-4 last:mb-0">
@@ -89,15 +90,15 @@ const UsageSection: React.FC<UsageSectionProps> = ({
           style={{ width: `${Math.min(utilization, 100)}%` }}
         />
         {/* Pace marker - vertical line showing where you "should be" based on time elapsed */}
-        <div
+        {timeElapsedPercent !== null && <div
           className={`absolute top-0 h-full w-0.5 transition-all duration-300 ${isOverPacing ? 'bg-red-400' : 'bg-nim-text-muted'}`}
           style={{ left: `${timeElapsedPercent}%` }}
           title={`${Math.round(timeElapsedPercent)}% of window elapsed`}
-        />
+        />}
       </div>
       <div className="flex items-center gap-1 text-[11px] text-nim-muted">
         <MaterialSymbol icon="schedule" size={12} className="opacity-70" />
-        <span>Resets in {formatResetTime(resetsAt)}</span>
+        <span>Resets in {formatResetTime(resetsAt)}{timeElapsedPercent !== null ? ` [${Math.round(timeElapsedPercent)}% passed]` : ''}</span>
       </div>
     </div>
   );
