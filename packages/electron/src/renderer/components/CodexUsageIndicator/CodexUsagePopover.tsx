@@ -5,6 +5,7 @@
  */
 
 import React, { useEffect, RefObject } from 'react';
+import { limitRatio, formatLimitRatio, LIMIT_RATIO_EXPLANATION } from '../limitRatio';
 import { useAtomValue, useSetAtom } from 'jotai';
 import { MaterialSymbol } from '@nimbalyst/runtime/ui/icons/MaterialSymbol';
 import {
@@ -64,6 +65,8 @@ const UsageSection: React.FC<UsageSectionProps> = ({
 
   const colors = colorClasses[color] || colorClasses.muted;
   const timeElapsedPercent = calculateTimeElapsedPercent(resetsAt, windowDurationMs);
+  const remainingMs = resetsAt ? Date.parse(resetsAt) - Date.now() : NaN;
+  const ratio = limitRatio(windowDurationMs !== null && remainingMs > 0 && remainingMs <= windowDurationMs ? timeElapsedPercent : null, utilization);
   const isOverPacing = timeElapsedPercent !== null && utilization > timeElapsedPercent;
 
   return (
@@ -94,6 +97,7 @@ const UsageSection: React.FC<UsageSectionProps> = ({
           <span>{resetsAt ? `Resets in ${formatResetTime(resetsAt)}${timeElapsedPercent !== null ? ` [${Math.round(timeElapsedPercent)}% passed]` : ''}` : 'Reset time unavailable'}</span>
         </span>
       </div>
+      <div className="text-[11px] text-nim-muted" title={LIMIT_RATIO_EXPLANATION}>Limit ratio: {formatLimitRatio(ratio)}</div>
     </div>
   );
 };

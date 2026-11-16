@@ -9,6 +9,7 @@ import { GeminiUsagePopover } from '../GeminiUsageIndicator/GeminiUsagePopover';
 import { claudeUsageAtom } from '../../store/atoms/claudeUsageAtoms';
 import { codexUsageAtom } from '../../store/atoms/codexUsageAtoms';
 import { geminiUsageAtom } from '../../store/atoms/geminiUsageAtoms';
+import { limitRatio, formatLimitRatio } from '../limitRatio';
 
 vi.mock('@nimbalyst/runtime/ui/icons/MaterialSymbol', () => ({ MaterialSymbol: () => null }));
 vi.mock('@nimbalyst/runtime/ui/icons/ProviderIcons', () => ({ ProviderIcon: () => null }));
@@ -36,6 +37,17 @@ function expectWindowElapsed(root: Element | null, percent: number) {
   expect(root?.querySelector(`[title="${percent}% of window elapsed"]`)).not.toBeNull();
 }
 
+it('calculates the historical ratio without rounding inputs and handles invalid values', () => {
+  expect(limitRatio(30, 10)).toBe(3);
+  expect(limitRatio(49.6, 20)).toBe(2.48);
+  expect(formatLimitRatio(limitRatio(49.6, 20))).toBe('2.5×');
+  expect(formatLimitRatio(limitRatio(30, 0))).toBe('∞');
+  expect(limitRatio(0, 0)).toBeNull();
+  expect(limitRatio(0, 20)).toBe(0);
+  for (const bad of [-1, NaN, Infinity]) expect(limitRatio(30, bad)).toBeNull();
+  expect(limitRatio(null, 10)).toBeNull();
+});
+
 describe('usage popover elapsed time', () => {
   it('shows elapsed text for every rendered Claude window', () => {
     const store = createStore();
@@ -50,6 +62,7 @@ describe('usage popover elapsed time', () => {
     render(<Provider store={store}><ClaudeUsagePopover {...popoverProps} /></Provider>);
     for (const heading of ['Session', 'Weekly', 'Fable (Weekly)', 'Opus (Weekly)']) {
       expectWindowElapsed(screen.getByText(heading).closest('.claude-usage-section'), 49);
+      expect(screen.getByText(heading).closest('.claude-usage-section')?.textContent).toContain('Limit ratio: 2.5×');
     }
   });
 
@@ -68,8 +81,11 @@ describe('usage popover elapsed time', () => {
     const sections = [...document.querySelectorAll('.codex-usage-section')];
     expectWindowElapsed(sections[0], 0);
     expectWindowElapsed(sections[1], 50);
+    expect(sections[0].textContent).toContain('Limit ratio: 0.0×');
+    expect(sections[1].textContent).toContain('Limit ratio: 2.5×');
     for (const section of sections.slice(2)) {
       expect(section.textContent).not.toMatch(/passed/);
+      expect(section.textContent).toContain('Limit ratio: unavailable');
       expect(section.querySelector('[title$="of window elapsed"]')).toBeNull();
     }
   });
@@ -84,6 +100,7 @@ describe('usage popover elapsed time', () => {
     render(<Provider store={store}><GeminiUsagePopover {...popoverProps} /></Provider>);
     expectWindowElapsed(screen.getByText('Session').closest('.mb-4'), 49);
     expectWindowElapsed(screen.getByText('Secondary').closest('.mb-4'), 49);
+    expect(screen.getAllByText('Limit ratio: 2.5×')).toHaveLength(2);
   });
 
   it('clamps elapsed time at both reset boundaries and omits invalid reset data', () => {
@@ -98,6 +115,7 @@ describe('usage popover elapsed time', () => {
     const sections = document.querySelectorAll('.claude-usage-section');
     expectWindowElapsed(sections[0], 0);
     expectWindowElapsed(sections[1], 100);
+    expect(sections[1].textContent).toContain('Limit ratio: unavailable');
     const invalid = screen.getByText('Invalid (Weekly)').closest('.claude-usage-section');
     expect(invalid?.querySelector('[title$="of window elapsed"]')).toBeNull();
     expect(invalid?.textContent).not.toMatch(/passed/);
