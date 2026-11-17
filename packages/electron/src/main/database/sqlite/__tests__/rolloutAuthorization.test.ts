@@ -258,7 +258,7 @@ describe('shipped defaults', () => {
   it('accepts only the shipped versions, so a later ceiling needs a reviewed build', () => {
     // Adding a version here is the ramp; it must be a deliberate, reviewed
     // commit. A payload naming the next cohort before that commit fails closed.
-    expect(ACCEPTED_CONFIG_VERSIONS).toEqual(['sqlite-ramp-1', 'sqlite-builtin-1gib']);
+    expect(ACCEPTED_CONFIG_VERSIONS).toEqual(['sqlite-ramp-1', 'sqlite-builtin-1gib', 'sqlite-builtin-3gib']);
 
     expect(
       evaluateRolloutAuthorization({ raw: payload(), nowMs: DURING_MS, buildChannel: 'alpha' }).authorized,

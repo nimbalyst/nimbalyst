@@ -58,7 +58,9 @@
  * completed, 2 failed before copying anything, and none of the migrated
  * installs went back to PGLite. Every flag evaluation was billed, so the
  * remote kill switch was retired and the build itself now delivers the
- * payload (`builtInRolloutConfigSource`): 1 GiB automatic, consent above.
+ * payload (`builtInRolloutConfigSource`). The 1 GiB built-in band
+ * (`sqlite-builtin-1gib`, from 0.82.8) reached 162 automatic outcomes with no
+ * unrecovered failure, so the built-in ceiling is now 3 GiB, consent above.
  * The payload still passes through `evaluateRolloutAuthorization`, so every
  * structural rule above still holds; what is gone is the ability to stop it
  * without shipping a build.
@@ -111,13 +113,18 @@ export const ROLLOUT_FLAG_KEYS: Readonly<Record<ReleaseChannel, string>> = {
  * The ramp gates require a new version for every material change to the
  * ceiling or channel policy, so a payload can never silently reuse a version
  * whose meaning has moved. `BUILT_IN_CONFIG_VERSION` is the build-delivered
- * 1 GiB configuration; its distinct name also gives every install a fresh
- * `migration_rollout_decision`, which is reported once per version.
- * `sqlite-ramp-1` stays accepted for the Playwright payload file.
+ * 3 GiB configuration; its distinct name also gives every install a fresh
+ * `migration_rollout_decision`, which is reported once per version, so the
+ * 1-3 GiB band is measured on its own. `sqlite-ramp-1` stays accepted for the
+ * Playwright payload file, and `sqlite-builtin-1gib` so its history reads.
  */
-export const BUILT_IN_CONFIG_VERSION = 'sqlite-builtin-1gib';
+export const BUILT_IN_CONFIG_VERSION = 'sqlite-builtin-3gib';
 
-export const ACCEPTED_CONFIG_VERSIONS: readonly string[] = ['sqlite-ramp-1', BUILT_IN_CONFIG_VERSION];
+export const ACCEPTED_CONFIG_VERSIONS: readonly string[] = [
+  'sqlite-ramp-1',
+  'sqlite-builtin-1gib',
+  BUILT_IN_CONFIG_VERSION,
+];
 
 /**
  * The largest `maxSourceBytes` any remote payload may request. See rule 3
@@ -130,10 +137,11 @@ export const MAX_REMOTE_SOURCE_BYTES = 3 * GIB;
 export const FIRST_COHORT_MAX_SOURCE_BYTES = 256 * MIB;
 
 /**
- * The built-in automatic ceiling: 1 GiB. Larger sources are offered a
- * consented migration instead (`assessCohort` -> `offer_consent`).
+ * The built-in automatic ceiling: 3 GiB, the largest a payload may name.
+ * Larger sources are the measured tail and stay consent-only: they are
+ * offered a consented migration instead (`assessCohort` -> `offer_consent`).
  */
-export const BUILT_IN_MAX_SOURCE_BYTES = 1 * GIB;
+export const BUILT_IN_MAX_SOURCE_BYTES = 3 * GIB;
 
 /** Validity window stamped on the built-in payload; re-minted every launch. */
 const BUILT_IN_PAYLOAD_TTL_MS = 24 * 60 * 60 * 1000;
@@ -425,7 +433,7 @@ export interface RolloutConfigSource {
 }
 
 /**
- * The build-delivered rollout configuration: enabled, 1 GiB, for the channel
+ * The build-delivered rollout configuration: enabled, 3 GiB, for the channel
  * this build runs on. Minted fresh on each fetch so the expiry rule in
  * `evaluateRolloutAuthorization` is satisfied without a remote clock.
  */

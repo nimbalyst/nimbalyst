@@ -16,7 +16,7 @@
  * `forceMigrationFlag: true` into `database-backend.json`. That field is now
  * `@deprecated Never read` (`BackendSelector.ts`). Boot migration asks
  * `authorizeRollout()` on the launch that would migrate. Production builds
- * deliver that payload themselves (1 GiB automatic, consent above); under
+ * deliver that payload themselves (3 GiB automatic, consent above); under
  * Playwright nothing is delivered unless the payload file below says so.
  *
  * Most of this spec drives the user-directed path: `db:migration:start` and

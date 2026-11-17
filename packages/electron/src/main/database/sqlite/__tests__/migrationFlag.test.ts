@@ -72,7 +72,7 @@ afterEach(() => {
 });
 
 describe('authorizeRollout on a production launch', () => {
-  it('authorizes the built-in 1 GiB configuration without asking any remote service', async () => {
+  it('authorizes the built-in 3 GiB configuration without asking any remote service', async () => {
     // The PostHog flags are gone; the build itself is the authorization.
     const result = await authorizeRollout(tmp);
 
@@ -87,13 +87,15 @@ describe('authorizeRollout on a production launch', () => {
     });
   });
 
-  it('migrates sources up to 1 GiB automatically and offers consent above it', async () => {
+  it('migrates sources up to 3 GiB automatically and offers consent above it', async () => {
     const result = await authorizeRollout(tmp);
     if (!result.authorized) throw new Error('expected the built-in configuration to authorize');
 
+    expect(result.snapshot.configVersion).toBe('sqlite-builtin-3gib');
     expect(assessCohort(512 * 1024 * 1024, result.snapshot)).toEqual({ withinCohort: true });
-    expect(assessCohort(GIB, result.snapshot)).toEqual({ withinCohort: true });
-    expect(assessCohort(GIB + 1, result.snapshot)).toEqual({
+    expect(assessCohort(2 * GIB, result.snapshot)).toEqual({ withinCohort: true });
+    expect(assessCohort(3 * GIB, result.snapshot)).toEqual({ withinCohort: true });
+    expect(assessCohort(3 * GIB + 1, result.snapshot)).toEqual({
       withinCohort: false,
       reason: 'source_above_ceiling',
     });

@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 <!-- Changes to existing functionality go here -->
+- Existing databases up to 3 GiB (previously 1 GiB) now migrate to SQLite automatically at startup
 
 ### Fixed
 <!-- Bug fixes go here -->

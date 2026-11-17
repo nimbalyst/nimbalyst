@@ -12,7 +12,7 @@
  * launch that would migrate. Those evaluations were billed, and the band's
  * results did not justify the cost of keeping the switch, so the build now
  * delivers the payload itself (`builtInRolloutConfigSource`): sources up to
- * 1 GiB migrate automatically and larger ones are offered a consented
+ * 3 GiB migrate automatically and larger ones are offered a consented
  * migration. Stopping the rollout now means shipping a build.
  *
  * Installs with analytics turned off used to be kept out of automatic
