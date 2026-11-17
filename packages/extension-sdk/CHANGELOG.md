@@ -23,6 +23,12 @@ The SDK is versioned independently of the Nimbalyst app. Each release declares i
 
 ## [Unreleased]
 
+### Added
+
+- `ctx.services.terminals.createCommandTerminal()` lets a backend module run a command in a terminal tab Nimbalyst owns and follow its output, read its log as plain text, stop its process group, and reveal the tab. Requires the new `terminals` permission.
+- Manifest field `requiresDeveloperMode` hides an extension's panels and keeps its backend modules stopped while Developer Mode is off.
+- Gutter badge tones `success` and `error`, in `host.setGutterBadge` and `ctx.services.panels.setGutterBadge`. Bottom-placement panels now show their gutter badge.
+
 ## [0.7.2] - 2026-11-10
 
 Requires Nimbalyst 0.79.0. The new APIs are optional; hosts that lack them omit them.

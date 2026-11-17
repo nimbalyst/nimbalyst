@@ -28,6 +28,27 @@ export interface TerminalInstance {
   historyFile?: string;
   cols?: number;
   rows?: number;
+  /**
+   * `'command'`: the tab shows one command an extension started through
+   * `ctx.services.terminals`. It has no shell of its own.
+   */
+  kind?: 'command';
+  /** Owner of a command terminal; `panelId` is the owning extension's panel, if any. */
+  owner?: { extensionId: string; key: string; panelId?: string };
+  /** Pinned tabs sort ahead of ordinary terminals. */
+  pinned?: boolean;
+  /** Command line of a command terminal. */
+  command?: string;
+  /** Status dot the owning extension set on the tab. */
+  statusTone?: 'success' | 'warning' | 'error';
+}
+
+/**
+ * Tab order for display: pinned tabs first, each group in its stored order.
+ */
+export function orderTerminalTabs(terminals: TerminalInstance[]): TerminalInstance[] {
+  if (!terminals.some((t) => t.pinned)) return terminals;
+  return [...terminals.filter((t) => t.pinned), ...terminals.filter((t) => !t.pinned)];
 }
 
 /**

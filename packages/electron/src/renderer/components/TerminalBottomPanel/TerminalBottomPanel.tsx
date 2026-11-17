@@ -30,8 +30,11 @@ import {
   initTerminalListeners,
   setTerminalCommandRunning,
   terminalCommandRunningAtom,
+  orderTerminalTabs,
   type TerminalInstance,
 } from '../../store/atoms/terminals';
+import { activeExtensionBottomPanelAtom } from '../../store/atoms/extensionPanels';
+import { usePanelsByPlacement } from '../../extensions/panels/usePanels';
 import { selectedWorkstreamAtom, sessionWorktreeIdAtom } from '../../store/atoms/sessions';
 
 interface TerminalBottomPanelProps {
@@ -74,6 +77,10 @@ const TerminalTabWrapper: React.FC<TerminalTabWrapperProps> = ({
   );
 };
 
+const TabSeparator: React.FC = () => (
+  <span className="terminal-bottom-panel-tab-separator w-px h-4 mx-1 bg-[var(--nim-border)] shrink-0" aria-hidden="true" />
+);
+
 export const TerminalBottomPanel: React.FC<TerminalBottomPanelProps> = ({
   workspacePath,
   minHeight = 150,
@@ -89,9 +96,18 @@ export const TerminalBottomPanel: React.FC<TerminalBottomPanelProps> = ({
   const loadedTerminals = useAtomValue(terminalListAtom);
   const terminalListWorkspace = useAtomValue(terminalListWorkspaceAtom);
   const terminals = useMemo(
-    () => terminalsForWorkspace(loadedTerminals, terminalListWorkspace, workspacePath),
+    () => orderTerminalTabs(terminalsForWorkspace(loadedTerminals, terminalListWorkspace, workspacePath)),
     [loadedTerminals, terminalListWorkspace, workspacePath]
   );
+  // Extension bottom panels that own a command terminal here get a tab that
+  // leads back to them, since opening a command's log leaves that panel.
+  const bottomPanels = usePanelsByPlacement('bottom');
+  const ownerPanels = useMemo(() => {
+    const ownerIds = new Set(terminals.map((t) => t.owner?.panelId).filter((id): id is string => !!id));
+    return bottomPanels.filter((panel) => ownerIds.has(panel.id));
+  }, [terminals, bottomPanels]);
+  const setActiveExtensionBottomPanel = useSetAtom(activeExtensionBottomPanelAtom);
+  const pinnedCount = useMemo(() => terminals.filter((t) => t.pinned).length, [terminals]);
   const activeTerminalId = useAtomValue(activeTerminalIdAtom);
   const [isResizing, setIsResizing] = useState(false);
   const resizeStartY = useRef<number>(0);
@@ -262,6 +278,12 @@ export const TerminalBottomPanel: React.FC<TerminalBottomPanelProps> = ({
     closePanel();
   }, [closePanel]);
 
+  // Bottom panels are mutually exclusive: opening the owner's panel closes this one.
+  const handleOpenOwnerPanel = useCallback((panelId: string) => {
+    setActiveExtensionBottomPanel(panelId);
+    closePanel();
+  }, [setActiveExtensionBottomPanel, closePanel]);
+
   // Resize handling
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
@@ -325,9 +347,23 @@ export const TerminalBottomPanel: React.FC<TerminalBottomPanelProps> = ({
       <div className="terminal-bottom-panel flex flex-col h-full bg-[var(--nim-bg)] overflow-hidden">
         <div className="terminal-bottom-panel-header flex items-center justify-between h-8 px-1.5 bg-[var(--nim-bg-secondary)] border-b border-[var(--nim-border)] shrink-0">
           <div className="terminal-bottom-panel-tabs flex gap-0.5 items-center overflow-x-auto flex-1 min-w-0 [&::-webkit-scrollbar]:h-1 [&::-webkit-scrollbar-thumb]:bg-[var(--nim-bg-tertiary)] [&::-webkit-scrollbar-thumb]:rounded-sm">
+            {ownerPanels.map((panel) => (
+              <button
+                key={panel.id}
+                className="terminal-bottom-panel-owner-tab flex items-center gap-1.5 px-2 py-1 border-none bg-transparent text-xs text-[var(--nim-text-muted)] cursor-pointer rounded whitespace-nowrap shrink-0 transition-colors duration-150 hover:bg-[var(--nim-bg-hover)] hover:text-[var(--nim-text)]"
+                onClick={() => handleOpenOwnerPanel(panel.id)}
+                title={`Back to ${panel.title}`}
+                data-panel-id={panel.id}
+              >
+                <MaterialSymbol icon={panel.icon} size={14} />
+                {panel.title}
+              </button>
+            ))}
+            {ownerPanels.length > 0 && <TabSeparator />}
             {terminals.map((terminal, index) => (
+              <React.Fragment key={terminal.id}>
+              {index === pinnedCount && pinnedCount > 0 && <TabSeparator />}
               <TerminalTabWrapper
-                key={terminal.id}
                 terminal={terminal}
                 isActive={activeTerminalId === terminal.id}
                 isActiveWorktree={!!activeWorktreeId && terminal.worktreeId === activeWorktreeId}
@@ -339,6 +375,7 @@ export const TerminalBottomPanel: React.FC<TerminalBottomPanelProps> = ({
                 onCloseAll={handleCloseAll}
                 onCloseToRight={() => handleCloseToRight(terminal.id)}
               />
+              </React.Fragment>
             ))}
             <button
               className="terminal-bottom-panel-new-tab flex items-center justify-center w-6 h-6 p-0 bg-transparent border-none text-[var(--nim-text-muted)] cursor-pointer rounded shrink-0 transition-colors duration-150 hover:bg-[var(--nim-bg-hover)] hover:text-[var(--nim-text)]"
@@ -368,6 +405,7 @@ export const TerminalBottomPanel: React.FC<TerminalBottomPanelProps> = ({
                 workspacePath={workspacePath}
                 isActive={activeTerminalId === terminal.id}
                 panelVisible={visible}
+                launchMode={terminal.kind === 'command' ? 'command' : 'shell'}
                 onExit={(exitCode) => handleTerminalExit(terminal.id, exitCode)}
               />
             </div>

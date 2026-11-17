@@ -53,7 +53,30 @@ export interface TerminalInstance {
   cursorY?: number;
   /** Last known visible screen contents, one entry per terminal row */
   screenLines?: string[];
+  /**
+   * `'command'`: the tab shows one command an extension started through
+   * `ctx.services.terminals`. It never gets an interactive shell: when the
+   * command is not running the tab only shows its saved output.
+   */
+  kind?: 'command';
+  /** Owner of a command terminal: the extension and that extension's own key for it. */
+  owner?: TerminalOwner;
+  /** Pinned tabs sort before ordinary terminals. */
+  pinned?: boolean;
+  /** The command line of a command terminal, for display. */
+  command?: string;
+  /** Status dot the owner put on the tab. Absent means no dot. */
+  statusTone?: TerminalStatusTone;
 }
+
+export interface TerminalOwner {
+  extensionId: string;
+  key: string;
+  /** Full id of the owning extension's panel, if it has one to return to. */
+  panelId?: string;
+}
+
+export type TerminalStatusTone = 'success' | 'warning' | 'error';
 
 /**
  * Per-workspace terminal state
@@ -193,6 +216,28 @@ export function createTerminalInstance(
     }
     // Always set the newly created terminal as active
     state.activeTerminalId = terminal.id;
+  }).terminals[terminal.id];
+}
+
+/**
+ * Add a terminal instance at a given tab position without making it the
+ * active tab. Used for terminals the user did not ask to look at (a command an
+ * extension started). An out-of-range or absent index appends.
+ */
+export function insertTerminalInstance(
+  workspacePath: string,
+  terminal: TerminalInstance,
+  index?: number
+): TerminalInstance {
+  return updateWorkspaceTerminalState(workspacePath, (state) => {
+    state.terminals[terminal.id] = terminal;
+    state.tabOrder = state.tabOrder.filter((id) => id !== terminal.id);
+    if (index === undefined || index < 0 || index >= state.tabOrder.length) {
+      state.tabOrder.push(terminal.id);
+    } else {
+      state.tabOrder.splice(index, 0, terminal.id);
+    }
+    if (!state.activeTerminalId) state.activeTerminalId = terminal.id;
   }).terminals[terminal.id];
 }
 

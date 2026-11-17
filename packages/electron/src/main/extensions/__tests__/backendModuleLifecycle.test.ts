@@ -18,7 +18,7 @@ vi.mock('../../ipc/ExtensionHandlers', () => ({
   listExtensionBackendModules: vi.fn(),
   resolveExtensionBackendModules: vi.fn(),
 }));
-vi.mock('../../utils/store', () => ({ getExtensionEnabled: vi.fn() }));
+vi.mock('../../utils/store', () => ({ getExtensionEnabled: vi.fn(), isDeveloperMode: vi.fn() }));
 vi.mock('../../mcp/mcpWorkspaceResolver', () => ({ getRegisteredWorkspacePaths: vi.fn() }));
 vi.mock('../../mcp/backendToolRegistry', () => ({ clearBackendToolsForModule: vi.fn(), clearBackendTools: vi.fn() }));
 vi.mock('../../file/GitWatcherLifecycle', () => ({ isGitRepositoryInUse: vi.fn() }));
@@ -32,6 +32,7 @@ import {
   stopExtensionBackendModules,
   startWorkspaceBackendModules,
   syncEnabledBackendModulesOnStartup,
+  syncDeveloperModeBackendModules,
   retryBackendModulesAwaitingTrust,
   type BackendModuleLifecycleDeps,
   type ResolvedBackendModules,
@@ -56,6 +57,7 @@ function makeDeps(overrides: Partial<BackendModuleLifecycleDeps> = {}): BackendM
     listBackendModuleExtensions: vi.fn(async () => [resolved()]),
     resolveBackendModules: vi.fn(async () => resolved()),
     isExtensionEnabled: vi.fn(() => true),
+    isDeveloperMode: vi.fn(() => true),
     collectWorkspaces: vi.fn(() => ['/ws/a', '/ws/b']),
     startModule: vi.fn(async (args) => ({
       extensionId: args.extensionId,
@@ -346,4 +348,62 @@ it('releases running siblings without waiting for unanswered consent, including 
     answer();
     await Promise.all([opening, closing, reopening]);
   }
+});
+
+describe('requiresDeveloperMode extensions', () => {
+  const DEV_EXT = 'com.nimbalyst.run';
+  const gated = () => resolved({ extensionId: DEV_EXT, requiresDeveloperMode: true });
+
+  it('does not start a gated extension on startup, workspace open, or enable while Developer Mode is off', async () => {
+    const deps = makeDeps({
+      isDeveloperMode: vi.fn(() => false),
+      listBackendModuleExtensions: vi.fn(async () => [gated(), resolved()]),
+      resolveBackendModules: vi.fn(async () => gated()),
+    });
+    await syncEnabledBackendModulesOnStartup(deps);
+    await startWorkspaceBackendModules('/ws/c', deps);
+    await startExtensionBackendModules(DEV_EXT, deps);
+
+    const started = vi.mocked(deps.startModule).mock.calls.map(([args]) => args.extensionId);
+    expect(started).not.toContain(DEV_EXT);
+    // The ungated extension is unaffected.
+    expect(started.filter((id) => id === EXT)).toHaveLength(3);
+  });
+
+  it('starts gated extensions in every open workspace when Developer Mode is turned on', async () => {
+    const deps = makeDeps({
+      listBackendModuleExtensions: vi.fn(async () => [gated(), resolved()]),
+    });
+    await syncDeveloperModeBackendModules(deps);
+    expect(vi.mocked(deps.startModule).mock.calls.map(([a]) => [a.extensionId, a.workspacePath])).toEqual([
+      [DEV_EXT, '/ws/a'],
+      [DEV_EXT, '/ws/b'],
+    ]);
+    expect(deps.stopModule).not.toHaveBeenCalled();
+  });
+
+  it('stops gated extensions and clears their tools when Developer Mode is turned off', async () => {
+    const handles = [
+      { extensionId: DEV_EXT, moduleId: MOD, workspacePath: '/ws/a', state: { status: 'running' } },
+      { extensionId: EXT, moduleId: MOD, workspacePath: '/ws/a', state: { status: 'running' } },
+    ] as ModuleHandle[];
+    const deps = makeDeps({
+      isDeveloperMode: vi.fn(() => false),
+      listBackendModuleExtensions: vi.fn(async () => [gated(), resolved()]),
+      listModuleHandles: vi.fn(() => handles),
+    });
+    await syncDeveloperModeBackendModules(deps);
+    expect(vi.mocked(deps.stopModule).mock.calls).toEqual([[DEV_EXT, MOD, '/ws/a']]);
+    expect(deps.clearBackendToolsForModule).toHaveBeenCalledWith(DEV_EXT, MOD);
+    expect(deps.startModule).not.toHaveBeenCalled();
+  });
+
+  it('leaves a disabled gated extension stopped when Developer Mode is turned on', async () => {
+    const deps = makeDeps({
+      isExtensionEnabled: vi.fn(() => false),
+      listBackendModuleExtensions: vi.fn(async () => [gated()]),
+    });
+    await syncDeveloperModeBackendModules(deps);
+    expect(deps.startModule).not.toHaveBeenCalled();
+  });
 });

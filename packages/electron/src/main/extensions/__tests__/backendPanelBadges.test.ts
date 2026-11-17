@@ -56,6 +56,14 @@ describe('setBackendPanelGutterBadge', () => {
     expect(listBackendPanelGutterBadges()).toEqual([]);
   });
 
+  it('accepts the success and error state tones and rejects an unknown tone', async () => {
+    await setBackendPanelGutterBadge(ctx(), 'desk', 0, 'success');
+    await setBackendPanelGutterBadge(ctx(), 'desk', 0, 'error');
+    expect(sent.map((s) => (s.payload as { tone: string }).tone)).toEqual(['success', 'error']);
+    await expect(setBackendPanelGutterBadge(ctx(), 'desk', 0, 'purple')).rejects.toThrow(/Invalid tone/);
+    expect(sent).toHaveLength(2);
+  });
+
   it('rejects a panel the calling extension does not declare, including another extension\'s full id', async () => {
     await expect(setBackendPanelGutterBadge(ctx(), 'com.other.ext.panel', 1, undefined)).rejects.toThrow(
       /not declared by extension com\.example\.owner/

@@ -52,6 +52,7 @@ import {
 } from './ai/claudeCliInterrupt';
 import { detectCliPickerInChunk } from './ai/claudeCliInteractiveCommands';
 import { broadcastClaudeCliRevealTerminal } from './ai/claudeCliRevealTerminal';
+import type { TerminalOutputState } from './terminalText';
 import {
   getTerminalInstance,
   updateTerminalInstance,
@@ -128,10 +129,35 @@ export interface TerminalProcess {
   /** Monotonic sequence number for PTY output ordering */
   outputSequence: number;
   /**
+   * Code units trimmed off the front of `scrollbackBuffer` at the size cap.
+   * `outputBase + scrollbackBuffer.length` is the absolute offset of the next
+   * byte of output, which is what read cursors are measured in.
+   */
+  outputBase: number;
+  /**
    * Optional teardown invoked when the PTY exits (e.g. the Claude CLI PID-state
    * watcher). Shell terminals leave this unset.
    */
   cleanup?: (exitCode: number) => void;
+}
+
+/** A PTY that runs one specific executable instead of an interactive shell. */
+export interface ProcessTerminalOptions {
+  cwd: string;
+  executable: string;
+  args: string[];
+  env: NodeJS.ProcessEnv;
+  /** Name stored as the terminal's shell name (`claude`, `run`, ...). */
+  shellName: string;
+  /** Stored on the synthetic ShellInfo; identifies what kind of process this is. */
+  provider?: string;
+  workspacePath?: string;
+  cols?: number;
+  rows?: number;
+  /** Called with every chunk of PTY output, before it is broadcast. */
+  onData?: (data: string) => void;
+  /** Called when the PTY exits, while the terminal's scrollback is still readable. */
+  onExit?: (exitCode: number) => void;
 }
 
 export interface TerminalRestoreSnapshot {
@@ -405,6 +431,14 @@ export class TerminalSessionManager {
     return lastState;
   }
 
+  /** Cap the scrollback, counting what is cut so read cursors stay absolute. */
+  private trimScrollback(terminal: TerminalProcess): void {
+    const excess = terminal.scrollbackBuffer.length - MAX_SCROLLBACK_SIZE;
+    if (excess <= 0) return;
+    terminal.scrollbackBuffer = terminal.scrollbackBuffer.slice(excess);
+    terminal.outputBase += excess;
+  }
+
   private async persistScrollback(sessionId: string, options: { force?: boolean } = {}): Promise<void> {
     const terminal = this.terminals.get(sessionId);
     if (!terminal) {
@@ -420,9 +454,7 @@ export class TerminalSessionManager {
     terminal.isPersisting = true;
 
     try {
-      if (terminal.scrollbackBuffer.length > MAX_SCROLLBACK_SIZE) {
-        terminal.scrollbackBuffer = terminal.scrollbackBuffer.slice(-MAX_SCROLLBACK_SIZE);
-      }
+      this.trimScrollback(terminal);
       await this.persistTerminalState(sessionId, terminal, { force: options.force });
     } catch (error) {
       console.error(`[TerminalSessionManager] Error persisting scrollback for ${sessionId}:`, error);
@@ -854,6 +886,7 @@ export class TerminalSessionManager {
       pendingForcePersist: false,
       workspacePath: options.workspacePath,
       outputSequence: 0,
+      outputBase: 0,
     };
 
     await this.registerTerminalProcess(terminalId, terminalProcess);
@@ -879,9 +912,7 @@ export class TerminalSessionManager {
 
       // Append to scrollback buffer (with size limit)
       terminalProcess.scrollbackBuffer += data;
-      if (terminalProcess.scrollbackBuffer.length > MAX_SCROLLBACK_SIZE) {
-        terminalProcess.scrollbackBuffer = terminalProcess.scrollbackBuffer.slice(-MAX_SCROLLBACK_SIZE);
-      }
+      this.trimScrollback(terminalProcess);
 
       // Check for OSC 7 escape sequences to track CWD changes
       const newCwd = this.extractCwdFromOsc7(data);
@@ -983,46 +1014,109 @@ export class TerminalSessionManager {
     }
 
     const { spawnConfig } = options;
-    // A stale cwd (e.g. deleted worktree) makes posix_spawnp fail before exec.
-    const cwd = existsSync(options.cwd) ? options.cwd : (options.workspacePath || os.homedir());
-    const cols = options.cols || 80;
-    const rows = options.rows || 30;
-
-    // Synthetic ShellInfo so the shared TerminalProcess shape is satisfied; the
-    // CLI is not a shell, so there is no bootstrapMode / history handling.
-    const shell: ShellInfo = {
-      path: spawnConfig.executable,
-      name: 'claude',
-      args: spawnConfig.args,
-      provider: 'claude-code-cli',
-    };
-
-    console.log(`[TerminalSessionManager] Creating Claude CLI terminal ${terminalId}:`, {
-      executable: spawnConfig.executable,
-      args: JSON.stringify(spawnConfig.args),
-      cwd,
-    });
-
-    const ptyProcess = pty.spawn(spawnConfig.executable, spawnConfig.args, {
-      name: 'xterm-256color',
-      cols,
-      rows,
-      cwd,
-      env: spawnConfig.env as NodeJS.ProcessEnv,
-    });
 
     // NIM-810 (secondary detection): sniff the raw PTY stream for a native picker
     // rendering and ask the renderer to reveal the drawer. Best-effort net behind
     // input-side detection — catches model-initiated / directly-typed pickers.
     // Throttled because a picker redraws on every keypress; reveal is idempotent.
     let lastPickerRevealAt = 0;
-    ptyProcess.onData((data: string) => {
+    const sniffPicker = (data: string) => {
       if (!detectCliPickerInChunk(data)) return;
       const now = Date.now();
       if (now - lastPickerRevealAt < 1500) return;
       lastPickerRevealAt = now;
       broadcastClaudeCliRevealTerminal({ sessionId: terminalId, interactive: true, source: 'output' });
+    };
+
+    // Drive turn-level state off the CLI's PID file. node-pty's `pid` is the
+    // spawned `claude` process, which is the pid the CLI writes its state file
+    // under (`~/.claude/sessions/{pid}.json`). Torn down on exit.
+    let stopPidWatcher: (() => void) | undefined;
+    let exited = false;
+    const onExit = options.onExit;
+
+    const pid = await this.createProcessTerminal(terminalId, {
+      cwd: options.cwd,
+      executable: spawnConfig.executable,
+      args: spawnConfig.args,
+      env: spawnConfig.env as NodeJS.ProcessEnv,
+      shellName: 'claude',
+      provider: 'claude-code-cli',
+      workspacePath: options.workspacePath,
+      cols: options.cols,
+      rows: options.rows,
+      onData: sniffPicker,
+      // Compose the PID-watcher teardown with any caller teardown (proxy stop).
+      onExit: (exitCode) => {
+        exited = true;
+        stopPidWatcher?.();
+        onExit?.(exitCode);
+      },
     });
+
+    // A CLI that exited while it was being registered has nothing to watch.
+    if (options.onTurnState && typeof pid === 'number' && !exited) {
+      stopPidWatcher = watchClaudePidState({
+        pid,
+        onTurnState: options.onTurnState,
+      });
+    }
+  }
+
+  /**
+   * Spawn one specific executable as a PTY-backed terminal, with the same
+   * output / scrollback / exit wiring as a shell terminal. The genuine `claude`
+   * CLI and extension command terminals (`ctx.services.terminals`) both come
+   * through here.
+   *
+   * Unlike a shell terminal there is no shell bootstrap, history file or OSC
+   * rc-file: the process owns its own terminal. The caller builds the full
+   * `{ executable, args, env }`.
+   *
+   * Returns the PTY child's pid, or undefined if the terminal already existed.
+   * The child leads its own process group, so the pid is also the group id.
+   */
+  async createProcessTerminal(
+    terminalId: string,
+    options: ProcessTerminalOptions
+  ): Promise<number | undefined> {
+    if (this.terminals.has(terminalId)) {
+      console.log(`[TerminalSessionManager] Process terminal ${terminalId} already exists`);
+      return undefined;
+    }
+
+    // A stale cwd (e.g. deleted worktree) makes posix_spawnp fail before exec.
+    const cwd = existsSync(options.cwd) ? options.cwd : (options.workspacePath || os.homedir());
+    const cols = options.cols || 80;
+    const rows = options.rows || 30;
+
+    // Synthetic ShellInfo so the shared TerminalProcess shape is satisfied; the
+    // process is not a shell, so there is no bootstrapMode / history handling.
+    const shell: ShellInfo = {
+      path: options.executable,
+      name: options.shellName,
+      args: options.args,
+      ...(options.provider ? { provider: options.provider } : {}),
+    };
+
+    console.log(`[TerminalSessionManager] Creating ${options.shellName} process terminal ${terminalId}:`, {
+      executable: options.executable,
+      args: JSON.stringify(options.args),
+      cwd,
+    });
+
+    const ptyProcess = pty.spawn(options.executable, options.args, {
+      name: 'xterm-256color',
+      cols,
+      rows,
+      cwd,
+      env: options.env,
+    });
+
+    if (options.onData) {
+      const onData = options.onData;
+      ptyProcess.onData((data: string) => onData(data));
+    }
 
     const terminalProcess: TerminalProcess = {
       pty: ptyProcess,
@@ -1041,28 +1135,29 @@ export class TerminalSessionManager {
       pendingForcePersist: false,
       workspacePath: options.workspacePath,
       outputSequence: 0,
+      outputBase: 0,
     };
 
-    // Drive turn-level state off the CLI's PID file. node-pty's `pid` is the
-    // spawned `claude` process, which is the pid the CLI writes its state file
-    // under (`~/.claude/sessions/{pid}.json`). Torn down on exit via `cleanup`.
-    let stopPidWatcher: (() => void) | undefined;
-    if (options.onTurnState && typeof ptyProcess.pid === 'number') {
-      stopPidWatcher = watchClaudePidState({
-        pid: ptyProcess.pid,
-        onTurnState: options.onTurnState,
-      });
-    }
-    // Compose the PID-watcher teardown with any caller teardown (proxy stop).
-    const onExit = options.onExit;
-    if (stopPidWatcher || onExit) {
-      terminalProcess.cleanup = (exitCode: number) => {
-        stopPidWatcher?.();
-        onExit?.(exitCode);
-      };
-    }
+    if (options.onExit) terminalProcess.cleanup = options.onExit;
 
     await this.registerTerminalProcess(terminalId, terminalProcess);
+    return typeof ptyProcess.pid === 'number' ? ptyProcess.pid : undefined;
+  }
+
+  /**
+   * A live terminal's scrollback and how much of it has been trimmed, for
+   * cursor-based reads (`readTerminalOutput`). Null once the PTY has exited.
+   */
+  getOutputState(terminalId: string): TerminalOutputState | null {
+    const terminal = this.terminals.get(terminalId);
+    if (!terminal) return null;
+    return { buffer: terminal.scrollbackBuffer, base: terminal.outputBase };
+  }
+
+  /** Pid of a live terminal's PTY child (also its process-group id). */
+  getTerminalPid(terminalId: string): number | undefined {
+    const pid = this.terminals.get(terminalId)?.pty.pid;
+    return typeof pid === 'number' ? pid : undefined;
   }
 
   /**

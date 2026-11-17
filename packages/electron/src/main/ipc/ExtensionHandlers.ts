@@ -308,6 +308,8 @@ export interface ResolvedExtensionBackendModules {
    * first use of the provider.
    */
   agentProviderModuleIds: string[];
+  /** Manifest `requiresDeveloperMode`: the modules run only while Developer Mode is on. */
+  requiresDeveloperMode?: boolean;
 }
 
 /**
@@ -378,6 +380,7 @@ export async function listExtensionBackendModules(): Promise<ResolvedExtensionBa
           extensionPath,
           modules,
           agentProviderModuleIds,
+          ...(manifest.requiresDeveloperMode === true ? { requiresDeveloperMode: true } : {}),
         });
       } catch {
         // Skip directories without a valid manifest

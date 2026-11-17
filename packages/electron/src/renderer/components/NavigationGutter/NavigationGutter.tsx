@@ -353,6 +353,7 @@ export const NavigationGutter: React.FC<NavigationGutterProps> = ({
           {panel.isAlpha && (
             <AlphaBadge size="dot" className="absolute top-0 right-0.5 pointer-events-none" />
           )}
+          <PanelGutterBadgeBubble panelId={panel.id} />
         </button>
       </HelpTooltip>
     );

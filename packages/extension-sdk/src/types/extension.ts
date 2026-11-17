@@ -245,6 +245,15 @@ export interface ExtensionManifest {
   defaultEnabled?: boolean;
 
   /**
+   * Show this extension's surfaces only while Developer Mode is on. With it
+   * off, the extension's panels and their gutter buttons are hidden and its
+   * backend modules are not started, so their MCP tools are not offered to
+   * agents. The extension still appears in Settings > Extensions, where it can
+   * be turned off independently of Developer Mode.
+   */
+  requiresDeveloperMode?: boolean;
+
+  /**
    * Marketplace metadata for publishing to the extension marketplace.
    * Only used when packaging extensions for distribution.
    */

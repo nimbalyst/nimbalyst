@@ -8,7 +8,10 @@
 import type { ComponentType } from 'react';
 import { getExtensionLoader, type LoadedPanel, type PanelHostProps, type PanelGutterButtonProps } from '@nimbalyst/runtime';
 import { registerCommand, unregisterExtension } from '../commands/ExtensionCommandRegistry';
+import { store } from '@nimbalyst/runtime/store';
 import { prunePanelGutterBadges } from './panelGutterBadges';
+import { panelsVisibleInMode } from './panelVisibility';
+import { developerModeAtom } from '../../store/atoms/appSettings';
 
 // ============================================================================
 // Types
@@ -89,6 +92,9 @@ export function initializePanelRegistry(): void {
 
   // Subscribe to extension changes
   loader.subscribe(syncPanels);
+
+  // Panels of `requiresDeveloperMode` extensions come and go with the setting.
+  store.sub(developerModeAtom, syncPanels);
 }
 
 /**
@@ -131,7 +137,11 @@ const panelToggleCommandExtensions = new Set<string>();
 
 function syncPanels(): void {
   const loader = getExtensionLoader();
-  const loadedPanels = loader.getPanels();
+  const loadedPanels = panelsVisibleInMode(
+    loader.getPanels(),
+    loader.getLoadedExtensions().map((ext) => ext.manifest),
+    store.get(developerModeAtom)
+  );
 
   // Unregister toggle commands for extensions no longer loaded
   const currentExtensionIds = new Set(loadedPanels.map(p => p.extensionId));

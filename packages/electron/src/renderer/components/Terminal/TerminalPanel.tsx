@@ -38,8 +38,13 @@ export interface TerminalPanelProps {
    * `terminal:initialize`; `'claude-cli'` launches the genuine `claude` CLI on the
    * subscription via `claude-cli:ensure-session` (terminalId IS the session id).
    * All other channels (output/write/resize/scrollback) are identical.
+   *
+   * `'command'` attaches to a command an extension started
+   * (`ctx.services.terminals`). The tab never starts a process itself: main
+   * answers `terminal:initialize` without spawning a shell, and an exit is
+   * final here because only the owning extension can start the command again.
    */
-  launchMode?: 'shell' | 'claude-cli';
+  launchMode?: 'shell' | 'claude-cli' | 'command';
   /** Resolved `--model` value passed to the CLI when `launchMode === 'claude-cli'`. */
   claudeCliModel?: string;
   /**
@@ -152,6 +157,9 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
   const [isInitialized, setIsInitialized] = useState(false);
   const [hasExited, setHasExited] = useState(false);
   const hasExitedRef = useRef(false); // Ref to track exit state for callbacks
+  // Read inside the init effect's callbacks, which outlive the render that created them.
+  const ownsProcessRef = useRef(launchMode !== 'command');
+  ownsProcessRef.current = launchMode !== 'command';
   const hasAutoRestartedRef = useRef(false); // Track if we've already auto-restarted (prevent loops)
   const lateInitRecoveredRef = useRef(false); // NIM-817: one-shot auto-retry when the backend comes up after the init timeout
   const initStartTimeRef = useRef<number>(0); // Track when initialization started
@@ -686,7 +694,7 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
               const timeSinceInit = Date.now() - initStartTimeRef.current;
               const QUICK_EXIT_THRESHOLD_MS = 2000;
 
-              if (timeSinceInit < QUICK_EXIT_THRESHOLD_MS && !hasAutoRestartedRef.current) {
+              if (ownsProcessRef.current && timeSinceInit < QUICK_EXIT_THRESHOLD_MS && !hasAutoRestartedRef.current) {
                 hasAutoRestartedRef.current = true;
                 hasExitedRef.current = false;
                 // Restart after a brief delay to let things settle
@@ -711,7 +719,7 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
             if (!disposed) {
               // If terminal has exited and user presses Enter, restart it
               if (hasExitedRef.current && data === '\r') {
-                handleRestart();
+                if (ownsProcessRef.current) handleRestart();
               } else if (!hasExitedRef.current) {
                 window.electronAPI.terminal.write(sessionId, data);
               }
@@ -1060,20 +1068,22 @@ export const TerminalPanel: React.FC<TerminalPanelProps> = ({
           <span>
             Process exited with code {exitCode ?? 0}.
           </span>
-          <button
-            onClick={handleRestart}
-            style={{
-              padding: '4px 8px',
-              backgroundColor: 'var(--nim-bg-tertiary)',
-              border: 'none',
-              borderRadius: '4px',
-              color: 'var(--nim-text)',
-              fontSize: '12px',
-              cursor: 'pointer',
-            }}
-          >
-            Restart
-          </button>
+          {launchMode !== 'command' && (
+            <button
+              onClick={handleRestart}
+              style={{
+                padding: '4px 8px',
+                backgroundColor: 'var(--nim-bg-tertiary)',
+                border: 'none',
+                borderRadius: '4px',
+                color: 'var(--nim-text)',
+                fontSize: '12px',
+                cursor: 'pointer',
+              }}
+            >
+              Restart
+            </button>
+          )}
         </div>
       )}
     </div>

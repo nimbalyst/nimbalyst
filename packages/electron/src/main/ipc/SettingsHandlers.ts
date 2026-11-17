@@ -78,6 +78,10 @@ import {
 import { purgeOfflineCollabAccounts } from '../services/CollabOfflineAccountLifecycle';
 import { listPersonalSyncDevices, updatePersonalSyncDevices } from '../services/PersonalSyncDevicesService';
 import { recordProjectWalkOriginator } from '../services/ProjectWalkClaim';
+import {
+  getDefaultBackendModuleLifecycleDeps,
+  syncDeveloperModeBackendModules,
+} from '../extensions/backendModuleLifecycle';
 
 // Track if we've subscribed to sync status changes
 let syncStatusListenerSetup = false;
@@ -714,6 +718,13 @@ export function registerSettingsHandlers() {
         for (const win of BrowserWindow.getAllWindows()) {
             if (win.isDestroyed() || win.webContents.id === event.sender.id) continue;
             win.webContents.send('app-settings:changed', { key: 'developerMode', value: enabled });
+        }
+        // Extensions that declare `requiresDeveloperMode` run their backend
+        // modules only while it is on. Fire-and-forget, like extension enable.
+        if (before !== enabled) {
+            void syncDeveloperModeBackendModules(getDefaultBackendModuleLifecycleDeps()).catch((err) =>
+                logger.main.error('[SettingsHandlers] backend-module sync for Developer Mode failed:', err)
+            );
         }
     });
 
