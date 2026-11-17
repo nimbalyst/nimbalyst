@@ -69,6 +69,7 @@ import {
 } from '../../store/atoms/appSettings';
 import { shouldShowDirectChatProviderSettings } from '../../utils/chatProviderVisibility';
 import { teamsConfiguredAtom } from '../../store/atoms/settingsDomains';
+import { dbActiveBackendAtom } from '../../store/atoms/dbMigration';
 import { omitModelsField } from '@nimbalyst/runtime/ai/server/utils/modelConfigUtils';
 import {
   AccountDevicesSettingsPanel,
@@ -280,6 +281,7 @@ export function SettingsView({
   const posthog = usePostHog();
   const developerMode = useAtomValue(developerModeAtom);
   const teamsConfigured = useAtomValue(teamsConfiguredAtom);
+  const pgliteActive = useAtomValue(dbActiveBackendAtom) === 'pglite';
 
   const normalizedInitialScope: SettingsScope = initialScope === 'user'
     ? 'application'
@@ -421,6 +423,7 @@ export function SettingsView({
       developerMode,
       showDirectChatProviders,
       teamsConfigured,
+      pgliteActive,
     }, extensionSettingsRoutes).map((route) => route.id);
     // Extension-contributed agent providers (e.g. antigravity-gemini-agent) are
     // valid selectable categories too; don't bounce the user off them.
@@ -441,6 +444,7 @@ export function SettingsView({
     extensionSettingsRoutes,
     showDirectChatProviders,
     teamsConfigured,
+    pgliteActive,
   ]);
 
   useEffect(() => {

@@ -107,6 +107,11 @@ export interface SettingsAvailabilityContext {
   showDirectChatProviders: boolean;
   /** Teams beta gate — see `teamsConfiguredAtom`. Hides org/sharing routes. */
   teamsConfigured: boolean;
+  /**
+   * This install still runs PGLite, so Settings > Database is where it can
+   * migrate to SQLite. Absent means unknown, which hides the route.
+   */
+  pgliteActive?: boolean;
 }
 
 export interface BuiltinSettingsRoute {
@@ -137,6 +142,8 @@ export type SettingsRoute = BuiltinSettingsRoute | ExtensionSettingsRoute;
 const developerOnly = ({ developerMode }: SettingsAvailabilityContext) => developerMode;
 const directChatProvidersVisible = ({ showDirectChatProviders }: SettingsAvailabilityContext) =>
   showDirectChatProviders;
+const developerOrPglite = ({ developerMode, pgliteActive }: SettingsAvailabilityContext) =>
+  developerMode || pgliteActive === true;
 const teamsVisible = ({ teamsConfigured }: SettingsAvailabilityContext) => teamsConfigured;
 
 const builtinSettingsRouteDefinitions: readonly Omit<BuiltinSettingsRoute, 'source'>[] = [
@@ -147,7 +154,7 @@ const builtinSettingsRouteDefinitions: readonly Omit<BuiltinSettingsRoute, 'sour
   { id: 'agent-features', scope: 'application', group: 'Application', label: 'Agent Features', icon: 'science', isAlpha: true },
   { id: 'cloudflare-sandboxes', scope: 'application', group: 'Application', label: 'Cloudflare Sandboxes', icon: 'cloud', isAlpha: true, isAvailable: developerOnly },
   { id: 'advanced', scope: 'application', group: 'Application', label: 'Advanced', icon: 'settings' },
-  { id: 'database', scope: 'application', group: 'Application', label: 'Database', icon: 'database', isAlpha: true, isAvailable: developerOnly },
+  { id: 'database', scope: 'application', group: 'Application', label: 'Database', icon: 'database', isAvailable: developerOrPglite },
   { id: 'beta-features', scope: 'application', group: 'Application', label: 'Beta Features', icon: 'biotech', isAvailable: () => false },
   { id: 'provider-credentials', scope: 'application', group: 'Agent Providers', label: 'Saved API keys', icon: 'key' },
   { id: 'claude-code', scope: 'application', group: 'Agent Providers', label: 'Claude Agent', icon: 'smart_toy' },
