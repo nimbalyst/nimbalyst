@@ -23,7 +23,7 @@ Built-in, developer-mode extension for a project's long-running processes: dev s
 
 ## How a run works
 
-Each start calls `ctx.services.terminals.createCommandTerminal` with the target id as the key, so the host replaces the target's previous tab and the log starts empty. The terminal tab is the log; `run_logs` reads it through the handle's `read()`. Stopping goes through the handle's `stop()`: SIGTERM to the process group, SIGKILL after 5 seconds, then a check that the group is gone. The host stops every terminal the module owns when the module stops, and on quit, restart and update install (2 second grace there). Limits: a process that leaves the group (`setsid`) is not signalled, nothing is stopped if the app is killed, and on Windows the stop is `taskkill /T` with only the leader checked afterwards.
+Each start calls `ctx.services.terminals.createCommandTerminal` with the target id as the key, so the host replaces the target's previous tab and the log starts empty. The terminal tab is the log; `run_logs` reads it through the handle's `read()`. Stopping goes through the handle's `stop()`: SIGTERM to the process group, SIGKILL after 5 seconds, then a check that the group is gone. The host stops every terminal the module owns when the module stops, and on quit, restart and update install (2 second grace there). Limits: a process that leaves the group (`setsid`) is not signalled, nothing is stopped if the app is killed or a second Quit cuts the shutdown cleanup short, and on Windows the stop is `taskkill /T` with only the leader checked afterwards.
 
 Readiness is a TCP probe on `port`, else `readyPattern` matched against the output with ANSI sequences removed, else "running once spawned".
 

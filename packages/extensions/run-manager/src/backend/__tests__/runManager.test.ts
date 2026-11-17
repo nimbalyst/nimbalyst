@@ -450,6 +450,26 @@ describe('a start whose terminal is still being created', () => {
     expect(statusOf(manager, 'plain')).toBe('stopped');
   });
 
+  it('is cancelled by a stop that arrives while the port is still being checked', async () => {
+    let release!: (open: boolean) => void;
+    const checking = new Promise<boolean>((resolve) => {
+      release = resolve;
+    });
+    const manager = makeManager({ isPortOpen: () => checking });
+    configText = JSON.stringify(CONFIG);
+    await manager.reloadConfig();
+
+    const starting = manager.start('web');
+    starting.catch(() => {});
+    await flush();
+    await manager.stop('web');
+
+    release(false);
+    await expect(starting).rejects.toThrow(/stopped while it was starting/);
+    expect(terminals).toHaveLength(0);
+    expect(statusOf(manager, 'web')).toBe('stopped');
+  });
+
   it('is cancelled when its target is removed from the config', async () => {
     const { manager, release } = await withHeldCreate();
     const starting = manager.start('plain');

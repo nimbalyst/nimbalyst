@@ -40,6 +40,8 @@ let nextId: number;
 const groups = new Map<number, { ignoresTerm: boolean; ignoresKill?: boolean }>();
 /** When set, the PTY spawn waits for it: a create that is still in flight. */
 let holdSpawn: Promise<void> | null = null;
+/** When set, the next command's shell exits before the spawn returns its pid, leaving its group alive. */
+let exitDuringSpawn = false;
 /** Called when a held spawn has been reached. */
 let onSpawnHeld: (() => void) | null = null;
 
@@ -96,6 +98,10 @@ function install(): void {
         const pid = nextPid++;
         spawned.set(terminalId, { pid, options, buffer: '' });
         groups.set(pid, { ignoresTerm: false });
+        if (exitDuringSpawn) {
+          exitDuringSpawn = false;
+          options.onExit?.(0);
+        }
         return pid;
       },
       getOutputState: (terminalId) => {
@@ -180,6 +186,7 @@ beforeEach(() => {
   nextPid = 5000;
   nextId = 1;
   holdSpawn = null;
+  exitDuringSpawn = false;
   onSpawnHeld = null;
   groups.clear();
   signals.length = 0;
@@ -415,6 +422,14 @@ describe('stopping', () => {
   it('stops what a command left running in its process group after its shell exited', async () => {
     const { terminalId, pid } = await start();
     exitPty(terminalId, 0, undefined, true);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(signals.filter(([, s]) => s !== 0)).toEqual([[-pid, 'SIGTERM']]);
+    expect(groups.has(pid)).toBe(false);
+  });
+
+  it('stops what a command left running when its shell exited before the spawn returned', async () => {
+    exitDuringSpawn = true;
+    const { pid } = await start();
     await new Promise((resolve) => setImmediate(resolve));
     expect(signals.filter(([, s]) => s !== 0)).toEqual([[-pid, 'SIGTERM']]);
     expect(groups.has(pid)).toBe(false);

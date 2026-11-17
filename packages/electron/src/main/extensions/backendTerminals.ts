@@ -241,6 +241,21 @@ function groupAlive(record: OwnedTerminal): boolean {
 
 const CREATE_CANCELLED = 'The extension stopped while the command was starting';
 
+/**
+ * The shell is gone. Anything it started that is still in its process group (a
+ * backgrounded server, a child that ignored the hangup) has nothing left to
+ * supervise it and may still hold the port, so it is stopped with the command.
+ */
+function stopLeftovers(record: OwnedTerminal): void {
+  if (record.pid <= 1 || !groupAlive(record)) return;
+  logger.main.warn(
+    `[backendTerminals] "${record.key}" exited but processes it started are still running; stopping them`
+  );
+  void stopRecord(record, undefined).catch((error) =>
+    logger.main.error(`[backendTerminals] failed to stop what "${record.key}" left behind:`, error)
+  );
+}
+
 async function createCommandTerminal(
   ctx: OwnerContext,
   args: Record<string, unknown>,
@@ -337,18 +352,7 @@ async function createCommandTerminal(
             (signal ? ` on signal ${signal}` : '')
         );
         emit(record, TERMINALS_EXIT_EVENT, { terminalId, exitCode, ...(signal ? { signal } : {}) });
-        // The shell is gone. Anything it started that is still in its process
-        // group (a backgrounded server, a child that ignored the hangup) has
-        // nothing left to supervise it and may still hold the port, so it is
-        // stopped with the command.
-        if (record.pid > 1 && groupAlive(record)) {
-          logger.main.warn(
-            `[backendTerminals] "${record.key}" exited but processes it started are still running; stopping them`
-          );
-          void stopRecord(record, undefined).catch((error) =>
-            logger.main.error(`[backendTerminals] failed to stop what "${record.key}" left behind:`, error)
-          );
-        }
+        stopLeftovers(record);
       },
     });
   } catch (error) {
@@ -365,6 +369,9 @@ async function createCommandTerminal(
   record.pid = pid;
   owned.set(terminalId, record);
   listChanged(ctx.workspacePath);
+  // The shell can exit before its pid got here; the exit handler could not
+  // check the group then.
+  if (record.exited) stopLeftovers(record);
   if (pending.cancelled) {
     // The module stopped (or the app began quitting) while the process was
     // being spawned. Nothing else knows about this terminal yet: stop it here.

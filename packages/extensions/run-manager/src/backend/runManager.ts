@@ -393,7 +393,10 @@ export class RunManager {
 
     // Claimed before the first await, so a second start (the panel and an
     // agent at once) is refused instead of spawning a second copy.
+    // The generation is claimed here too, so a stop, a removal or a shutdown
+    // during the checks below cancels this start by moving it on.
     record.preparing = true;
+    const generation = ++record.generation;
     try {
       // A cancelled start may still be handing its terminal back.
       if (record.spawning) await record.spawning;
@@ -412,11 +415,13 @@ export class RunManager {
       if (this.disposed || !this.targets.some((t) => t.id === id)) {
         throw new Error(`"${target.name}" is no longer a run target`);
       }
+      if (record.generation !== generation) {
+        throw new Error(`"${target.name}" was stopped while it was starting`);
+      }
       record.status = nextStatus(record.status, { type: 'start' }) as RunRecord['status'];
     } finally {
       record.preparing = false;
     }
-    const generation = ++record.generation;
     record.startedAt = this.now();
     record.exitCode = undefined;
     record.error = undefined;
@@ -511,6 +516,12 @@ export class RunManager {
 
   private stopRecord(id: string, record: RunRecord): Promise<void> {
     if (record.stopping) return record.stopping;
+    if (record.preparing) {
+      // Still checking the port, before anything was spawned. Cancel the start.
+      record.generation += 1;
+      this.deps.log('info', `[run] "${id}" was stopped before it started`);
+      return Promise.resolve();
+    }
     if (!isLive(record.status)) return Promise.resolve();
     if (record.spawning) {
       // Its terminal is still being created, so there is nothing to signal
