@@ -1837,6 +1837,18 @@ export function dismissRosettaWarning(): void {
   getAppStore().set('rosettaWarningDismissed', true);
 }
 
+/**
+ * The user answered the launch prompt offering to migrate a database above the
+ * automatic SQLite ceiling (either way). Once set, the prompt never shows again.
+ */
+export function isSqliteMigrationConsentAnswered(): boolean {
+  return getAppStore().get('sqliteMigrationConsentAnswered', false);
+}
+
+export function markSqliteMigrationConsentAnswered(): void {
+  getAppStore().set('sqliteMigrationConsentAnswered', true);
+}
+
 export function shouldShowRosettaWarning(): boolean {
   if (process.platform !== 'darwin') return false;
   if (isRosettaWarningDismissed()) return false;
