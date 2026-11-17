@@ -296,15 +296,16 @@ async function createCommandTerminal(
         record.written += data.length;
         emit(record, TERMINALS_OUTPUT_EVENT, { terminalId, data, cursor: record.written });
       },
-      onExit: (exitCode) => {
+      onExit: (exitCode, signal) => {
         record.exited = true;
         record.exitCode = exitCode;
         record.finalOutput = h.manager.getOutputState(terminalId) ?? undefined;
         if (record.pid > 1) groupAlive(record);
         logger.main.info(
-          `[backendTerminals] ${record.extensionId} "${record.key}" (${terminalId}) exited with code ${exitCode}`
+          `[backendTerminals] ${record.extensionId} "${record.key}" (${terminalId}) exited with code ${exitCode}` +
+            (signal ? ` on signal ${signal}` : '')
         );
-        emit(record, TERMINALS_EXIT_EVENT, { terminalId, exitCode });
+        emit(record, TERMINALS_EXIT_EVENT, { terminalId, exitCode, ...(signal ? { signal } : {}) });
       },
     });
   } catch (error) {

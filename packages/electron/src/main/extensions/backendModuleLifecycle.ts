@@ -26,6 +26,7 @@ import {
 } from '../ipc/ExtensionHandlers';
 import { getExtensionEnabled, isDeveloperMode } from '../utils/store';
 import { getRegisteredWorkspacePaths } from '../mcp/mcpWorkspaceResolver';
+import { listOpenWorkspacePaths } from '../window/windowState';
 import { clearBackendToolsForModule, clearBackendTools } from '../mcp/backendToolRegistry';
 import { logger } from '../utils/logger';
 import { isGitRepositoryInUse } from '../file/GitWatcherLifecycle';
@@ -333,7 +334,11 @@ export function getDefaultBackendModuleLifecycleDeps(): BackendModuleLifecycleDe
     resolveBackendModules: (extensionId) => resolveExtensionBackendModules(extensionId),
     isExtensionEnabled: (extensionId) => getExtensionEnabled(extensionId),
     isDeveloperMode: () => isDeveloperMode(),
-    collectWorkspaces: () => getRegisteredWorkspacePaths(),
+    // A workspace is registered for MCP routing only once its window reports an
+    // open file or runs an agent turn. A window that has done neither is still
+    // an open project: turning an extension on (or Developer Mode, for an
+    // extension that requires it) must start its modules there too.
+    collectWorkspaces: () => [...new Set([...getRegisteredWorkspacePaths(), ...listOpenWorkspacePaths()])],
     isWorkspaceInUse: workspacePath => isGitRepositoryInUse(workspacePath, new Set([workspacePath])),
     clearBackendTools,
     startModule: (args) => getPrivilegedExtensionHost().startModule(args),

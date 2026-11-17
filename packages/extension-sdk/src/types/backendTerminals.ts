@@ -59,6 +59,8 @@ export interface BackendTerminalOutputChunk {
 
 export interface BackendTerminalExit {
   exitCode: number;
+  /** Number of the signal that ended the shell, when a signal did (15 for SIGTERM). */
+  signal?: number;
 }
 
 export interface BackendTerminalReadOptions {

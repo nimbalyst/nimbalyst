@@ -278,6 +278,15 @@ export const PLAYWRIGHT_TEST_SELECTORS = {
   customSelect: '.custom-select',
   customSelectTrigger: '.custom-select-trigger',
   customSelectValue: '.custom-select-value',
+
+  // Run Manager (built-in developer-mode extension) and command terminals
+  runsGutterButton: '[data-panel-id="com.nimbalyst.run.runs"]',
+  runsGutterBadge: '[data-panel-id="com.nimbalyst.run.runs"] .extension-panel-gutter-badge',
+  runsPanel: '[data-testid="runs-panel"]',
+  runsAddTargetButton: '.run-manager-add-target',
+  runsTargetForm: '.run-manager-form',
+  commandTerminalTab: '[data-terminal-kind="command"]',
+  terminalOwnerTab: '.terminal-bottom-panel-owner-tab',
 };
 
 /**

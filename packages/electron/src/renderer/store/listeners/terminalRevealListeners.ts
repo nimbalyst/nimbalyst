@@ -13,7 +13,7 @@
 import { store } from '@nimbalyst/runtime/store';
 import { activeWorkspacePathAtom } from '../atoms/openProjects';
 import { activeExtensionBottomPanelAtom } from '../atoms/extensionPanels';
-import { loadTerminals, openTerminalPanelAtom, setActiveTerminal } from '../atoms/terminals';
+import { loadTerminals, openTerminalPanelAtom, setActiveTerminal, terminalListAtom } from '../atoms/terminals';
 
 const REVEAL_CHANNEL = 'terminal:reveal';
 
@@ -31,6 +31,28 @@ export async function revealTerminal(request: TerminalRevealRequest): Promise<vo
   setActiveTerminal(request.terminalId);
   store.set(activeExtensionBottomPanelAtom, null);
   store.set(openTerminalPanelAtom);
+}
+
+/**
+ * Reveal the command terminal an extension owns under `key` (a run target's
+ * id), whichever terminal id it has now: each start of a command replaces its
+ * tab with a new terminal, so an id remembered in a transcript goes stale.
+ * Resolves false when the project has no such tab.
+ */
+export async function revealOwnedTerminal(request: {
+  workspacePath: string;
+  extensionId: string;
+  key: string;
+}): Promise<boolean> {
+  if (!request?.workspacePath || request.workspacePath !== store.get(activeWorkspacePathAtom)) return false;
+  await loadTerminals(request.workspacePath);
+  if (request.workspacePath !== store.get(activeWorkspacePathAtom)) return false;
+  const terminal = store
+    .get(terminalListAtom)
+    .find((item) => item.owner?.extensionId === request.extensionId && item.owner.key === request.key);
+  if (!terminal) return false;
+  await revealTerminal({ workspacePath: request.workspacePath, terminalId: terminal.id });
+  return true;
 }
 
 export function initTerminalRevealListeners(): () => void {

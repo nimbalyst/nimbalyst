@@ -95,10 +95,13 @@ export function createBackendTerminalsClient(
     route(p.terminalId, { kind: 'output', chunk: { data: p.data, cursor: p.cursor } });
   });
   transport.onExit((payload) => {
-    const p = payload as { terminalId?: unknown; exitCode?: unknown } | null;
+    const p = payload as { terminalId?: unknown; exitCode?: unknown; signal?: unknown } | null;
     route(p?.terminalId, {
       kind: 'exit',
-      exit: { exitCode: typeof p?.exitCode === 'number' ? p.exitCode : -1 },
+      exit: {
+        exitCode: typeof p?.exitCode === 'number' ? p.exitCode : -1,
+        ...(typeof p?.signal === 'number' && p.signal > 0 ? { signal: p.signal } : {}),
+      },
     });
   });
 

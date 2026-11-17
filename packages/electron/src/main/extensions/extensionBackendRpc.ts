@@ -286,7 +286,7 @@ export const SESSIONS_SETTLED_EVENT: SessionsSettledEventName = 'sessions:settle
 /**
  * `broker-event` names the host uses to deliver a command terminal's output and
  * exit to the module that created it (`ctx.services.terminals`). Payloads:
- * `{ terminalId, data, cursor }` and `{ terminalId, exitCode }`.
+ * `{ terminalId, data, cursor }` and `{ terminalId, exitCode, signal? }`.
  */
 export type TerminalsOutputEventName = 'terminals:output';
 export const TERMINALS_OUTPUT_EVENT: TerminalsOutputEventName = 'terminals:output';

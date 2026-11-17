@@ -1870,6 +1870,34 @@ importers:
         specifier: ^7.3.6
         version: 7.3.6(@types/node@20.19.43)(jiti@2.7.0)(terser@5.46.1)(yaml@2.8.3)
 
+  packages/extensions/run-manager:
+    dependencies:
+      react:
+        specifier: ^18.2.0 || ^19.0.0
+        version: 19.2.7
+      react-dom:
+        specifier: ^18.2.0 || ^19.0.0
+        version: 19.2.7(patch_hash=ae8a3da582fb1e2f191ccdf6230837b3647f17abb2c7c203bd45dcd04b8e8e2e)(react@19.2.7)
+    devDependencies:
+      '@nimbalyst/extension-sdk':
+        specifier: workspace:*
+        version: link:../../extension-sdk
+      '@types/react':
+        specifier: ^19.2.17
+        version: 19.2.17
+      '@types/react-dom':
+        specifier: ^19.2.3
+        version: 19.2.3(@types/react@19.2.17)
+      '@vitejs/plugin-react':
+        specifier: ^4.2.0
+        version: 4.7.0(supports-color@10.2.2)(vite@7.3.6(@types/node@20.19.43)(jiti@2.7.0)(terser@5.46.1)(yaml@2.8.3))
+      typescript:
+        specifier: ^6.0.3
+        version: 6.0.3
+      vite:
+        specifier: ^7.3.6
+        version: 7.3.6(@types/node@20.19.43)(jiti@2.7.0)(terser@5.46.1)(yaml@2.8.3)
+
   packages/extensions/sqlite-browser:
     dependencies:
       react:

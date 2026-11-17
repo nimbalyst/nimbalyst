@@ -47,6 +47,15 @@ export const INTERNAL_MCP_TOOLS: readonly string[] = [
   'mcp__nimbalyst-host__get_workstream_overview',
   'mcp__nimbalyst-host__list_recent_sessions',
   'mcp__nimbalyst-host__get_workstream_edited_files',
+  // Run Manager (built-in developer-mode extension, server `nimbalyst-run`).
+  // These act only on targets already in the project's `.nimbalyst/run.json`.
+  // `run_configure` is deliberately absent: it defines a command that will
+  // execute, so it stays on the normal permission path.
+  'mcp__nimbalyst-run__run_list',
+  'mcp__nimbalyst-run__run_start',
+  'mcp__nimbalyst-run__run_stop',
+  'mcp__nimbalyst-run__run_restart',
+  'mcp__nimbalyst-run__run_logs',
 ];
 
 export const TEAM_TOOLS: readonly string[] = [

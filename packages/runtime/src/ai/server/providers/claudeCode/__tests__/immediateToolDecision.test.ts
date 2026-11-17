@@ -164,6 +164,27 @@ describe('resolveImmediateToolDecision', () => {
       });
     }
 
+    // Run Manager: acting on a configured target needs no prompt, defining
+    // one does (it names a command that will run).
+    it('auto-allows starting a configured run target but not configuring one', async () => {
+      const deps = createDeps({
+        internalMcpTools: INTERNAL_MCP_TOOLS as readonly string[] as string[],
+        getCurrentMode: () => 'agent',
+      });
+      for (const tool of ['run_list', 'run_start', 'run_stop', 'run_restart', 'run_logs']) {
+        const allowed = await resolveImmediateToolDecision(
+          deps,
+          createParams({ toolName: `mcp__nimbalyst-run__${tool}`, input: { id: 'web' } })
+        );
+        assertZodCompliantAllow(allowed);
+      }
+      const configure = await resolveImmediateToolDecision(
+        deps,
+        createParams({ toolName: 'mcp__nimbalyst-run__run_configure', input: { id: 'web', command: 'x' } })
+      );
+      expect(configure).toBeNull();
+    });
+
     it('does NOT broaden to third-party MCP tools in non-auto modes', async () => {
       const deps = createDeps({
         internalMcpTools: INTERNAL_MCP_TOOLS as readonly string[] as string[],

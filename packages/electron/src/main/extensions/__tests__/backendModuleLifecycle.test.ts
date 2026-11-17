@@ -20,6 +20,7 @@ vi.mock('../../ipc/ExtensionHandlers', () => ({
 }));
 vi.mock('../../utils/store', () => ({ getExtensionEnabled: vi.fn(), isDeveloperMode: vi.fn() }));
 vi.mock('../../mcp/mcpWorkspaceResolver', () => ({ getRegisteredWorkspacePaths: vi.fn() }));
+vi.mock('../../window/windowState', () => ({ listOpenWorkspacePaths: vi.fn(() => []) }));
 vi.mock('../../mcp/backendToolRegistry', () => ({ clearBackendToolsForModule: vi.fn(), clearBackendTools: vi.fn() }));
 vi.mock('../../file/GitWatcherLifecycle', () => ({ isGitRepositoryInUse: vi.fn() }));
 vi.mock('../../utils/logger', () => ({
@@ -34,10 +35,13 @@ import {
   syncEnabledBackendModulesOnStartup,
   syncDeveloperModeBackendModules,
   retryBackendModulesAwaitingTrust,
+  getDefaultBackendModuleLifecycleDeps,
   type BackendModuleLifecycleDeps,
   type ResolvedBackendModules,
 } from '../backendModuleLifecycle';
 import type { ModuleHandle } from '../PrivilegedExtensionHost';
+import { getRegisteredWorkspacePaths } from '../../mcp/mcpWorkspaceResolver';
+import { listOpenWorkspacePaths } from '../../window/windowState';
 
 const EXT = 'com.nimbalyst.memory';
 const MOD = 'memory-engine';
@@ -405,5 +409,19 @@ describe('requiresDeveloperMode extensions', () => {
     });
     await syncDeveloperModeBackendModules(deps);
     expect(deps.startModule).not.toHaveBeenCalled();
+  });
+});
+
+describe('default workspace lookup', () => {
+  // A project window that has never opened a file or run an agent turn is not
+  // registered for MCP routing, but turning an extension on must reach it.
+  it('covers open project windows as well as workspaces registered for MCP routing', () => {
+    vi.mocked(getRegisteredWorkspacePaths).mockReturnValue(['/ws/registered', '/ws/both']);
+    vi.mocked(listOpenWorkspacePaths).mockReturnValue(['/ws/both', '/ws/window-only']);
+    expect(getDefaultBackendModuleLifecycleDeps().collectWorkspaces()).toEqual([
+      '/ws/registered',
+      '/ws/both',
+      '/ws/window-only',
+    ]);
   });
 });

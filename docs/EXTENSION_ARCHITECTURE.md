@@ -734,7 +734,7 @@ const terminal = await ctx.services.terminals.createCommandTerminal({
 | --- | --- |
 | `id`, `pid` | The tab id, and the pid of the shell that runs the command. The shell leads the command's process group. |
 | `onOutput(handler)` | Raw PTY chunks with a `cursor`. Output that arrived before the first subscriber is replayed to it. |
-| `onExit(handler)` | Fires once when the shell exits; a handler added after the exit is called immediately. |
+| `onExit(handler)` | Fires once when the shell exits, with `{ exitCode, signal? }` (`signal` is the number of the signal that ended it, 15 for SIGTERM, so a stop can be told from a crash); a handler added after the exit is called immediately. |
 | `kill(signal?)` | Signals the whole process group (`SIGTERM` default; `SIGKILL`, `SIGINT`, `SIGHUP`). |
 | `stop({ graceMs? })` | `SIGTERM` to the group, `SIGKILL` after `graceMs` (default 5000), then confirms the group is gone. Returns `{ escalated, groupGone }`. |
 | `read({ tail? \| since?, maxChars? })` | The log as plain text: ANSI stripped, `\r` progress bars collapsed, full-screen output dropped (`renderTerminalText` in `main/services/terminalText.ts`). Returns a `cursor` to pass as `since`; `gap: true` means the cursor fell behind the 500 KB scrollback. Works after the command has exited. |

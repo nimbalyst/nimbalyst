@@ -443,6 +443,9 @@ Companion app; pairs with a desktop over encrypted sync. Voice mode is not inclu
 - Nested settings panel contribution plus first-class application/project settings routes with project context
 - Tracker importer contribution (`trackerImporters`) — external-source importers backed by a backend module
 - Extension-driven AI sessions (`ai-sessions` permission): a backend module can create sessions with a system-prompt directive (agent providers only), queue prompts, read status, results, and token usage, and receive settle events for the sessions it owns and their descendants; panels can embed a session transcript with its composer and set a gutter badge, including from the backend while the panel is closed
+- Command terminals for backend modules (`terminals` permission): a module runs a command in a terminal tab it owns, follows the output, reads the log as plain text, sets a status dot on the tab, and stops the whole process group; the host stops the terminals when the module stops or the app quits
+- Developer-mode extensions (`requiresDeveloperMode`): panels, gutter button and agent tools exist only while developer mode is on
+- Gutter badge colors for panel buttons: default, warning, success, error
 - Extension hot reload
 - Extension developer kit with scaffolding
 - Extension marketplace (alpha)
@@ -474,6 +477,7 @@ Companion app; pairs with a desktop over encrypted sync. Voice mode is not inclu
 - Media Viewer — `.mp4` playback in a tab
 - Project Graph — navigable whole-project graph of plans, trackers, sessions, commits, and files, with a horizontally scrollable **Timeline mode** (time ranges down to the last 24 hours with an hourly ruler; phase-colored lifecycle bars per item; collapse items into per-tag activity lanes), plus **Atlas**, **Pulse**, and **Evidence Trails** for exploring a project across broader source coverage, with saved views and linked source exploration
 - SQLite Browser
+- Run Manager (Alpha) -- developer mode only; a Runs bottom panel for a project's long-running processes (dev server, worker, watcher). Run targets are named commands in the committed `.nimbalyst/run.json`; each runs in a pinned terminal tab that is its log. The panel shows status (stopped, starting, running, crashed, or external when another process holds the port), port/URL link and uptime, with start, stop, restart and logs; the gutter button shows the aggregate status color. Agent tools `run_list`, `run_start`, `run_stop`, `run_restart`, `run_logs` and the permission-gated `run_configure`. Nothing starts automatically; runs stop when the app quits or the extension is turned off
 - RTL Support -- automatic or forced right-to-left text direction for transcripts, prompts, and Markdown, with per-block detection and a toggle shortcut
 
 ## MCP Servers (Internal)

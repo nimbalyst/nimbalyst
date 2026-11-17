@@ -136,9 +136,10 @@ export interface TerminalProcess {
   outputBase: number;
   /**
    * Optional teardown invoked when the PTY exits (e.g. the Claude CLI PID-state
-   * watcher). Shell terminals leave this unset.
+   * watcher). Shell terminals leave this unset. `signal` is the signal number
+   * that ended the process, when a signal did.
    */
-  cleanup?: (exitCode: number) => void;
+  cleanup?: (exitCode: number, signal?: number) => void;
 }
 
 /** A PTY that runs one specific executable instead of an interactive shell. */
@@ -156,8 +157,11 @@ export interface ProcessTerminalOptions {
   rows?: number;
   /** Called with every chunk of PTY output, before it is broadcast. */
   onData?: (data: string) => void;
-  /** Called when the PTY exits, while the terminal's scrollback is still readable. */
-  onExit?: (exitCode: number) => void;
+  /**
+   * Called when the PTY exits, while the terminal's scrollback is still
+   * readable. `signal` is set when a signal ended the process.
+   */
+  onExit?: (exitCode: number, signal?: number) => void;
 }
 
 export interface TerminalRestoreSnapshot {
@@ -944,12 +948,12 @@ export class TerminalSessionManager {
     });
 
     // Handle PTY exit
-    ptyProcess.onExit(async ({ exitCode }) => {
+    ptyProcess.onExit(async ({ exitCode, signal }) => {
       console.log(`[TerminalSessionManager] Terminal ${terminalId} exited with code ${exitCode}`);
 
       // Run any per-terminal teardown (e.g. Claude CLI PID-state watcher).
       try {
-        terminalProcess.cleanup?.(exitCode);
+        terminalProcess.cleanup?.(exitCode, signal || undefined);
       } catch (error) {
         console.warn(`[TerminalSessionManager] cleanup failed for ${terminalId}:`, error);
       }

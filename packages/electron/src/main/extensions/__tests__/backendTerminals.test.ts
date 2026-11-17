@@ -54,9 +54,9 @@ function esrch(): Error {
 }
 
 /** The PTY child exits: what node-pty's onExit does in the real manager. */
-function exitPty(terminalId: string, exitCode: number): void {
+function exitPty(terminalId: string, exitCode: number, signal?: number): void {
   const entry = spawned.get(terminalId)!;
-  entry.options.onExit?.(exitCode);
+  entry.options.onExit?.(exitCode, signal);
   spawned.delete(terminalId);
 }
 
@@ -122,7 +122,7 @@ function install(): void {
           groups.delete(pid);
           // The shell dies with its group.
           for (const [terminalId, entry] of spawned) {
-            if (entry.pid === pid) exitPty(terminalId, 143);
+            if (entry.pid === pid) exitPty(terminalId, 0, signal === 'SIGKILL' ? 9 : 15);
           }
         }
         return true;
@@ -229,6 +229,15 @@ describe('output and exit events', () => {
       { owner: scope, event: 'terminals:output', payload: { terminalId, data: 'GET /\r\n', cursor: 14 } },
       { owner: scope, event: 'terminals:exit', payload: { terminalId, exitCode: 1 } },
     ]);
+  });
+
+  it('reports the signal that ended the command', async () => {
+    const { terminalId } = await start();
+    await dispatchBackendTerminalsOp(owner(), 'kill', { terminalId, signal: 'SIGTERM' });
+    expect(events.at(-1)).toMatchObject({
+      event: 'terminals:exit',
+      payload: { terminalId, exitCode: 0, signal: 15 },
+    });
   });
 
   it('keeps the log readable after the process has exited', async () => {

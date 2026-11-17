@@ -125,6 +125,7 @@ import { TrackerToolWidget } from './TrackerToolWidget';
 import { PageUpdateWidget } from './PageUpdateWidget';
 import { MemoryToolWidget } from './MemoryToolWidget';
 import { CrossSessionToolWidget } from './CrossSessionToolWidget';
+import { RunToolWidget } from './RunToolWidget';
 
 import {
   getTranscriptToolWidget,
@@ -240,6 +241,12 @@ const BUILT_IN_TOOL_WIDGETS: CustomToolWidgetRegistry = {
   'get_session_result': CrossSessionToolWidget,
   'list_queued_prompts': CrossSessionToolWidget,
   'list_spawned_sessions': CrossSessionToolWidget,
+
+  // Run Manager (built-in extension) - one line with the target, its status
+  // transition and a link to its log tab.
+  'run_start': RunToolWidget,
+  'run_stop': RunToolWidget,
+  'run_restart': RunToolWidget,
 };
 
 // Identifier used when the host registers built-in widgets to the runtime

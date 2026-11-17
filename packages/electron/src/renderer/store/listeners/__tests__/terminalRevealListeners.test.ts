@@ -17,7 +17,7 @@ import {
   terminalListAtom,
   terminalPanelVisibleAtom,
 } from '../../atoms/terminals';
-import { initTerminalRevealListeners } from '../terminalRevealListeners';
+import { initTerminalRevealListeners, revealOwnedTerminal } from '../terminalRevealListeners';
 
 let reveal: (request: unknown) => void;
 let cleanup: () => void;
@@ -28,7 +28,7 @@ beforeEach(() => {
   getWorkspaceState.mockResolvedValue({
     terminals: {
       shell: { id: 'shell', title: 'zsh' },
-      run: { id: 'run', title: 'Web dev server', kind: 'command' },
+      run: { id: 'run', title: 'Web dev server', kind: 'command', owner: { extensionId: 'com.nimbalyst.run', key: 'web' } },
     },
     tabOrder: ['shell', 'run'],
     activeTerminalId: 'shell',
@@ -70,5 +70,18 @@ describe('terminal reveal listener', () => {
     expect(getWorkspaceState).not.toHaveBeenCalled();
     expect(store.get(terminalPanelVisibleAtom)).toBe(false);
     expect(store.get(activeExtensionBottomPanelAtom)).toBe('com.nimbalyst.run.runs');
+  });
+
+  // A transcript's "Show logs" link knows the run target, not the terminal id
+  // of its current tab (each start replaces the tab).
+  it('reveals the tab an extension owns under a key, and reports when there is none', async () => {
+    await expect(revealOwnedTerminal({ workspacePath: '/a', extensionId: 'com.nimbalyst.run', key: 'web' })).resolves.toBe(true);
+    expect(store.get(activeTerminalIdAtom)).toBe('run');
+    expect(store.get(terminalPanelVisibleAtom)).toBe(true);
+
+    store.set(terminalPanelVisibleAtom, false);
+    await expect(revealOwnedTerminal({ workspacePath: '/a', extensionId: 'com.nimbalyst.run', key: 'worker' })).resolves.toBe(false);
+    await expect(revealOwnedTerminal({ workspacePath: '/a', extensionId: 'other.extension', key: 'web' })).resolves.toBe(false);
+    expect(store.get(terminalPanelVisibleAtom)).toBe(false);
   });
 });
