@@ -22,7 +22,7 @@ import {
   type TargetDraft,
 } from './runsModel';
 import {
-  ChevronDownIcon,
+  MinusIcon,
   LogsIcon,
   PinIcon,
   PlayBadgeIcon,
@@ -429,11 +429,11 @@ export function RunsPanel({ host }: PanelHostProps) {
           <button
             type="button"
             className="run-manager-icon-btn"
-            title="Hide the Runs panel"
+            title="Hide panel"
             aria-label="Hide the Runs panel"
             onClick={() => host.close()}
           >
-            <ChevronDownIcon />
+            <MinusIcon />
           </button>
         </div>
       </div>

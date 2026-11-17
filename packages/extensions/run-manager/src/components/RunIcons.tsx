@@ -51,8 +51,8 @@ export const PinIcon = () => (
   </svg>
 );
 
-export const ChevronDownIcon = () => (
+export const MinusIcon = () => (
   <svg viewBox="0 0 24 24" {...stroke}>
-    <path d="M6 9l6 6 6-6" />
+    <path d="M5 12h14" />
   </svg>
 );
