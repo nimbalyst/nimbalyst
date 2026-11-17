@@ -144,9 +144,9 @@ export function getInteractiveToolSchemas(sessionId: string | undefined) {
 
 IMPORTANT: First call get_session_edited_files, cross-reference with git status, and include ALL session-edited files that have uncommitted changes — do not cherry-pick a subset.
 
-A directory path stages every modified, deleted and untracked non-ignored file under it, like \`git add <dir>\`. The user sees the expanded list. Files under the directory edited only by other sessions arrive unchecked; files this session also edited stay checked. Use excludePaths to leave out specific files or subfolders. An ignored directory, a directory with no changes, a nested repository, or more than 2000 files is rejected.
+A directory path stages every modified, deleted and untracked non-ignored file under it, like \`git add <dir>\`. The user sees the expanded list. When the user reviews by hand, files under the directory edited only by other sessions arrive unchecked; with auto-commit on, every expanded file is committed. Use excludePaths to leave out specific files or subfolders. An ignored directory, a directory with no changes, a nested repository, or more than 2000 files is rejected.
 
-Relative paths target the session's checkout (its worktree when linked). Absolute paths may also target attached repositories. Files outside these roots are rejected. If the work lives in another worktree of the session's repository (listed by \`git worktree list\`), pass that worktree's absolute path as workingDirectory; all files must be in it, and the user always approves that commit by hand.
+Relative paths target the session's checkout (its worktree when linked). Absolute paths may also target attached repositories. Files outside these roots are rejected. If the work lives in another worktree of the session's repository (listed by \`git worktree list\`), pass that worktree's absolute path as workingDirectory; all files must be in it.
 
 ONE REPOSITORY PER CALL. A commit cannot span repositories. If the files you are committing live in more than one repository (a workspace can have attached folders that are their own checkouts), call this tool once per repository — each call with only that repository's files and a commit message describing that repository's change. A call whose files span repositories is rejected.
 
@@ -609,17 +609,11 @@ async function runGitCommitProposal(
   } catch {
     // If we can't read settings, fall through to manual mode
   }
-  // #1756: a commit into a sibling worktree is always approved by hand.
-  if (target.worktree) isAutoCommit = false;
-  // #1955 (D-A2): auto-approve never commits a file edited only by another session.
+  // #1968: the auto-commit setting is the only thing that decides this. A
+  // validated sibling worktree target (#1756) and files another session also
+  // edited (#1955) used to force manual approval, which stopped every commit
+  // for agents that work in their own worktrees. Do not add a pause here.
   const otherSessionFileCount = target.fileDetails?.filter(file => file.otherSession).length ?? 0;
-  const manualReviewReason = isAutoCommit && otherSessionFileCount > 0
-    ? `Auto-commit paused: ${otherSessionFileCount} file(s) under the proposed directory were edited by another session.`
-    : undefined;
-  if (manualReviewReason) {
-    isAutoCommit = false;
-    console.log(`[MCP Server] ${manualReviewReason} Proposal ${proposalId} waits for manual review.`);
-  }
   if (target.expansion) {
     console.log(`[MCP Server] Commit proposal ${proposalId} expanded ${JSON.stringify(target.expansion.expandedFrom)} to ${target.files.length} file(s); ${otherSessionFileCount} flagged as another session's.`);
   }
@@ -628,7 +622,6 @@ async function runGitCommitProposal(
         requestedPaths: target.expansion.requestedPaths,
         excludePaths: target.expansion.excludePaths,
         expandedFrom: target.expansion.expandedFrom,
-        ...(manualReviewReason ? { manualReviewReason } : {}),
       }
     : {};
   const expansionNote = expansionResultNote(target);

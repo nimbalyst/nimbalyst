@@ -44,7 +44,7 @@ export interface GitCommitProposalTarget {
   workspacePath: string;
   repoPath: string;
   files: string[];
-  /** Set only for an explicit sibling worktree; such a commit always needs manual approval. */
+  /** Set only for an explicit sibling worktree; the widget names it, and voice and mobile approvals defer to desktop. */
   worktree?: CommitProposalWorktree;
   /** #1955: set only when a directory was expanded or excludePaths were given; parallel to `files`. */
   fileDetails?: ProposalFileDetail[];
@@ -202,7 +202,7 @@ export async function resolveGitCommitProposalTarget(
       // #1968: a session opened on a subfolder of a checkout that names that
       // checkout's root is committing in its own checkout, not a sibling. Keep
       // the session checkout as the record's workspace (execution re-checks it)
-      // and commit in the root, without the sibling marker that forces manual approval.
+      // and commit in the root, without the sibling marker.
       if (await isOwnCheckoutRoot(workspacePath, requested)) {
         return expandTarget({ workspacePath, repoPath: requested, files }, sessionId, [session.workspacePath, workspacePath], excludePaths);
       }
@@ -270,7 +270,7 @@ async function lastCommitTimes(
 /**
  * #1955: expand directory entries into concrete files, then flag files under an
  * expanded directory that another session edited and this one did not. Those
- * arrive unchecked in the widget and stop auto-commit (D-A2). An all-file
+ * arrive unchecked in the manual widget; auto-commit commits them (#1968). An all-file
  * proposal without excludes comes back unchanged.
  */
 async function expandTarget(

@@ -192,8 +192,8 @@ Twelve built-in provider lanes, plus any agent an extension contributes. Every l
 - Git operations panel with a Changes list where users select files and commit directly or ask AI to write the message
 - AI-assisted commit message generation
 - Interactive git commit proposal widget with individual-hunk selection to commit only the intended lines of a shared file
-- Commit proposals accept folder paths (with optional excludes), expanded to the changed files under them for review; files under a folder that only another session edited start unchecked, and auto-commit, voice and mobile approvals defer those proposals to desktop review
-- Commit proposals can target another registered worktree of the session's repository; the widget names its branch and path, and these commits always need approval on desktop, even with auto-commit on
+- Commit proposals accept folder paths (with optional excludes), expanded to the changed files under them for review; files under a folder that only another session edited start unchecked in manual review, and voice and mobile approvals defer those proposals to desktop review; auto-commit commits the whole expansion
+- Commit proposals can target another registered worktree of the session's repository; the widget names its branch and path, and auto-commit applies to them; voice and mobile approvals defer to desktop
 - Commit history view with ahead/behind tracking and links to the AI sessions that produced commits
 - Branch switcher in the Git panel: searchable local and remote-only branches, new branch from a branch or commit, confirmation when uncommitted changes or a running agent session are in the checkout, and "Open session" for branches checked out in another worktree; the Log follows the checked-out branch unless pinned
 - Per-repository status, branches, file lists, and commit controls for multi-folder projects; Commit with AI proposes separate commits per repository; the title-bar branch, Git panel and new-worktree dialog follow the file open in the editor
