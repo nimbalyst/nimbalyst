@@ -18,6 +18,7 @@ import path from 'path';
 import { getHostEnvironment } from '../../../../host/hostEnvironment';
 import { ClaudeCodeDeps } from './dependencyInjection';
 import { CLAUDE_TASK_TOOLS, createClaudeSystemPrompt } from './sdkCompatibility';
+import { INTERNAL_MCP_TOOLS } from './toolPolicy';
 import { wantsPromptSuggestion } from './promptSuggestionWait';
 import { resolveClaudeAgentCliPath } from './cliPathResolver';
 import { hasEnterpriseManagedMcpConfig } from './enterpriseMcpConfig';
@@ -270,7 +271,10 @@ export async function buildSdkOptions(
     // the whole prefix. See ClaudeCodeProvider.buildSystemPrompt / NIM-1988.
     systemPrompt: createClaudeSystemPrompt(systemPrompt, isMetaAgent),
     // Meta-agent tool availability is restricted by its profile in turnPrologue.
-    ...(!isMetaAgent && { allowedTools: [...CLAUDE_TASK_TOOLS] }),
+    // INTERNAL_MCP_TOOLS are CLI allow rules too, not only canUseTool decisions:
+    // a forked command (e.g. /review) cannot prompt, so the CLI denies "ask"
+    // tools there without ever calling canUseTool (NIM-7758).
+    ...(!isMetaAgent && { allowedTools: [...CLAUDE_TASK_TOOLS, ...INTERNAL_MCP_TOOLS] }),
     settingSources: explicitOnly ? [] : settingSources,
     // Agent Features toggle, human-sent prompts only. The SDK then emits one `prompt_suggestion`
     // frame after each turn's `result`; see promptSuggestionWait.ts for how it is read.

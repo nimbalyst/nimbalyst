@@ -43,6 +43,7 @@ export const INTERNAL_MCP_TOOLS: readonly string[] = [
   'mcp__nimbalyst-trackers__tracker_delete_type',
   // Host (`nimbalyst-host`) — session-context reads.
   'mcp__nimbalyst-host__get_session_summary',
+  'mcp__nimbalyst-host__get_session_result',
   'mcp__nimbalyst-host__get_workstream_overview',
   'mcp__nimbalyst-host__list_recent_sessions',
   'mcp__nimbalyst-host__get_workstream_edited_files',
