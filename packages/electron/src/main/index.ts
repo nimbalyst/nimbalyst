@@ -28,6 +28,7 @@ import { createApplicationMenu } from './menu/ApplicationMenu';
 import { updateNativeTheme, updateWindowTitleBars } from './theme/ThemeManager';
 import { restoreSessionState, saveSessionState } from './session/SessionState';
 import { createRestartShutdown } from './session/restartShutdown';
+import { resumeBackendTerminalsAfterAbortedQuit, stopAllBackendTerminals } from './extensions/backendTerminals';
 import { setSafeModeSessionStateProtection } from './session/safeModeSessionState';
 import { isSafeModeArgument } from './session/startupSafeMode';
 import { getRestartSignalPath } from './utils/appPaths';
@@ -3315,6 +3316,13 @@ const shutdownForRestart = createRestartShutdown({
     },
     stopExternalSessions: stopExternalSessionService,
     saveSessionState,
+    // The normal quit cleanup below never runs on restart. Without this the
+    // process groups of extension-started commands outlive the app and keep
+    // their ports. A failure here must not block the restart.
+    stopCommandTerminals: () => stopAllBackendTerminals().catch((error) => {
+        console.error('[QUIT] Error stopping extension command terminals for restart:', error);
+    }),
+    restartAborted: resumeBackendTerminalsAfterAbortedQuit,
     flushPendingBackups: flushPendingCollabBackups,
     quit: () => {
         console.log('[QUIT] Session state saved for restart');
@@ -3415,6 +3423,14 @@ app.on('before-quit', async (event) => {
 
     // Mark app as quitting to prevent interval operations
     isAppQuitting = true;
+
+    // Start stopping extension-started commands now (the quit can no longer be
+    // cancelled) so their grace period overlaps the rest of the cleanup instead
+    // of starting late in the force-quit budget. shutdownTerminalHandlers()
+    // awaits this same stop before destroying PTYs.
+    void stopAllBackendTerminals().catch((error) => {
+        console.error('[QUIT] Error stopping extension command terminals:', error);
+    });
 
     // Revoke source readers and drain their commits before database shutdown.
     await stopExternalSessionService();

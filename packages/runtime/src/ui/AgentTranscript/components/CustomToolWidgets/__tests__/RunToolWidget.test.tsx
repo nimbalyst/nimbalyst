@@ -65,7 +65,7 @@ describe('run tool line', () => {
       toolName: 'mcp__nimbalyst-run__run_restart',
       status: 'completed',
       arguments: { id: 'worker' },
-      result: JSON.stringify({ action: 'restart', previousStatus: 'running', id: 'worker', name: 'Queue worker', status: 'crashed', exitCode: 1 }),
+      result: JSON.stringify({ action: 'restart', previousStatus: 'running', id: 'worker', name: 'Queue worker', status: 'crashed', lastExitCode: 1 }),
     });
     expect(crashed.container.querySelector('.run-tool-line')?.getAttribute('data-outcome')).toBe('failed');
     expect(crashed.container.textContent).toContain('running → crashed (exit 1)');

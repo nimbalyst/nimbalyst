@@ -186,10 +186,21 @@ async function startModulesAcrossWorkspaces(
             `[backendModuleLifecycle] start ${resolved.extensionId}/${module.id} ` +
               `@ ${workspacePath} -> ${handle.state.status}`
           );
-          // Consent or process startup may have finished after the last owner left.
-          if (!deps.isWorkspaceInUse(workspacePath)) {
+          // Consent or process startup may have finished after the last owner
+          // left, after the extension was disabled, or after Developer Mode was
+          // turned off. The stop for those ran while this start was in flight
+          // and may have found nothing to stop, so undo the start here.
+          const stillWanted =
+            deps.isWorkspaceInUse(workspacePath) &&
+            deps.isExtensionEnabled(resolved.extensionId) &&
+            (!resolved.requiresDeveloperMode || deps.isDeveloperMode());
+          if (!stillWanted) {
             await deps.stopModule(resolved.extensionId, module.id, workspacePath);
             deps.clearBackendTools(workspacePath, resolved.extensionId, module.id);
+            logger.main.info(
+              `[backendModuleLifecycle] stopped ${resolved.extensionId}/${module.id} @ ${workspacePath}: ` +
+                `no longer wanted by the time it started`
+            );
           }
         });
       } catch (error) {

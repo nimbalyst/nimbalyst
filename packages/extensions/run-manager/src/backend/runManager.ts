@@ -56,7 +56,12 @@ export interface RunManagerDeps {
   readPackageInfo: () => Promise<{ packageJson: string | null; packageManager: PackageManager }>;
   isPortOpen: (port: number) => Promise<boolean>;
   findListenerPid: (port: number) => Promise<number | undefined>;
-  stopExternalProcess: (pid: number) => Promise<boolean>;
+  /**
+   * SIGTERM, then SIGKILL after the grace period unless `stillTarget` says the
+   * pid is no longer the process the user agreed to stop. Resolves whether the
+   * pid is gone.
+   */
+  stopExternalProcess: (pid: number, stillTarget: () => Promise<boolean>) => Promise<boolean>;
   log: (level: LogLevel, message: string) => void;
   now?: () => number;
   sleep?: (ms: number) => Promise<void>;
@@ -76,6 +81,13 @@ interface RunRecord {
   externalPid?: number;
   outputWindow: string;
   stopping?: Promise<void>;
+  /**
+   * Set from the moment a start is accepted until its terminal handle exists
+   * (or the spawn failed, or a cancelled spawn has been stopped). Never rejects.
+   */
+  spawning?: Promise<void>;
+  /** A start is past its checks but has not marked the target `starting` yet. */
+  preparing?: boolean;
   /** Resolved when the current start leaves `starting`. */
   settleWaiters: Array<() => void>;
 }
@@ -108,6 +120,7 @@ export class RunManager {
   private readonly records = new Map<string, RunRecord>();
   private disposed = false;
   private loading: Promise<void> | null = null;
+  private configEdits: Promise<void> = Promise.resolve();
 
   constructor(private readonly deps: RunManagerDeps) {}
 
@@ -188,9 +201,18 @@ export class RunManager {
     return loading;
   }
 
-  private async editConfig(edit: (text: string | null) => string): Promise<void> {
-    await this.deps.config.write(edit(await this.deps.config.read()));
-    await this.reloadConfig();
+  /**
+   * One edit at a time: each reads the file, changes it and writes it back, so
+   * two running together would each write a file without the other's change.
+   */
+  private editConfig(edit: (text: string | null) => string): Promise<void> {
+    const run = async () => {
+      await this.deps.config.write(edit(await this.deps.config.read()));
+      await this.reloadConfig();
+    };
+    const result = this.configEdits.then(run, run);
+    this.configEdits = result.catch(() => {});
+    return result;
   }
 
   async saveTarget(target: RunTarget, replaceId?: string): Promise<void> {
@@ -362,22 +384,38 @@ export class RunManager {
     const target = this.requireTarget(id);
     const record = this.record(id);
     const previousStatus = this.view(target).status;
-    if (isLive(record.status)) {
-      throw new Error(`"${target.name}" is already ${record.status}. Use restart to start it again.`);
-    }
-
-    // A second copy would fail on the port and bury the real one's state.
-    if (target.port && (await this.deps.isPortOpen(target.port))) {
-      const pid = await this.deps.findListenerPid(target.port);
-      record.externalPid = pid ?? 0;
-      this.changed();
+    if (isLive(record.status) || record.preparing) {
       throw new Error(
-        `Port ${target.port} is already in use${pid ? ` by pid ${pid}` : ''}, by a process Nimbalyst did not start. ` +
-          `"${target.name}" was not started.`
+        `"${target.name}" is already ${record.preparing ? 'starting' : record.status}. Use restart to start it again.`
       );
     }
+    if (this.disposed) throw new Error('The run manager is shutting down');
 
-    record.status = nextStatus(record.status, { type: 'start' }) as RunRecord['status'];
+    // Claimed before the first await, so a second start (the panel and an
+    // agent at once) is refused instead of spawning a second copy.
+    record.preparing = true;
+    try {
+      // A cancelled start may still be handing its terminal back.
+      if (record.spawning) await record.spawning;
+
+      // A second copy would fail on the port and bury the real one's state.
+      if (target.port && (await this.deps.isPortOpen(target.port))) {
+        const pid = await this.deps.findListenerPid(target.port);
+        record.externalPid = pid ?? 0;
+        this.changed();
+        throw new Error(
+          `Port ${target.port} is already in use${pid ? ` by pid ${pid}` : ''}, by a process Nimbalyst did not start. ` +
+            `"${target.name}" was not started.`
+        );
+      }
+      // The target may have been removed, or the module stopped, meanwhile.
+      if (this.disposed || !this.targets.some((t) => t.id === id)) {
+        throw new Error(`"${target.name}" is no longer a run target`);
+      }
+      record.status = nextStatus(record.status, { type: 'start' }) as RunRecord['status'];
+    } finally {
+      record.preparing = false;
+    }
     const generation = ++record.generation;
     record.startedAt = this.now();
     record.exitCode = undefined;
@@ -385,6 +423,16 @@ export class RunManager {
     record.externalPid = undefined;
     record.outputWindow = '';
     this.changed();
+
+    let spawned!: () => void;
+    const spawning = new Promise<void>((resolve) => {
+      spawned = resolve;
+    });
+    record.spawning = spawning;
+    const finishSpawning = () => {
+      if (record.spawning === spawning) record.spawning = undefined;
+      spawned();
+    };
 
     let terminal: BackendCommandTerminal;
     try {
@@ -405,14 +453,26 @@ export class RunManager {
         this.settle(record);
         this.changed();
       }
+      finishSpawning();
       throw error;
     }
     if (record.generation !== generation) {
-      // Superseded while spawning (the module is shutting down).
-      void terminal.stop().catch(() => {});
+      // Stopped, removed or shut down while the terminal was being created:
+      // there was no handle to stop then, so stop it now that there is one.
+      try {
+        const result = await terminal.stop({ graceMs: STOP_GRACE_MS });
+        if (!result.groupGone) {
+          this.deps.log('error', `[run] "${id}" was cancelled while starting and some of its processes survived SIGKILL`);
+        }
+      } catch (error) {
+        this.deps.log('error', `[run] could not stop "${id}" after its start was cancelled: ${String(error)}`);
+      } finally {
+        finishSpawning();
+      }
       throw new Error(`"${target.name}" was stopped while it was starting`);
     }
     record.terminal = terminal;
+    finishSpawning();
     this.deps.log('info', `[run] started "${id}" (pid ${terminal.pid}): ${target.command}`);
     this.setTabStatus(record);
 
@@ -451,7 +511,20 @@ export class RunManager {
 
   private stopRecord(id: string, record: RunRecord): Promise<void> {
     if (record.stopping) return record.stopping;
-    if (!isLive(record.status) || !record.terminal) return Promise.resolve();
+    if (!isLive(record.status)) return Promise.resolve();
+    if (record.spawning) {
+      // Its terminal is still being created, so there is nothing to signal
+      // yet. Cancel the start: it stops the terminal as soon as it has one.
+      const spawning = record.spawning;
+      record.generation += 1;
+      record.status = 'stopped';
+      record.startedAt = undefined;
+      this.deps.log('info', `[run] "${id}" was stopped while it was starting`);
+      this.settle(record);
+      this.changed();
+      return spawning;
+    }
+    if (!record.terminal) return Promise.resolve();
     const terminal = record.terminal;
     const generation = record.generation;
     record.status = nextStatus(record.status, { type: 'stop' }) as RunRecord['status'];
@@ -511,19 +584,39 @@ export class RunManager {
     return { ...result, previousStatus };
   }
 
-  /** Stop a process started outside Nimbalyst that holds a target's port. The panel confirms first. */
+  /**
+   * Stop a process started outside Nimbalyst that holds a target's port. The
+   * panel confirms first, naming `pid`. That confirmation is for the process
+   * that held the port when the row was drawn, so the port is looked up again
+   * here, and again before a force-kill: a pid that no longer holds the port
+   * is not signalled.
+   */
   async stopExternal(id: string, pid: number): Promise<void> {
     const target = this.requireTarget(id);
     const record = this.record(id);
+    const port = target.port;
     // Only the pid this module itself reported for this target can be stopped.
-    if (!Number.isInteger(pid) || pid <= 1 || record.externalPid !== pid) {
+    if (!port || !Number.isInteger(pid) || pid <= 1 || record.externalPid !== pid) {
       throw new Error(`pid ${String(pid)} is not the process holding the port of "${target.name}"`);
     }
-    const gone = await this.deps.stopExternalProcess(pid);
-    this.deps.log(gone ? 'info' : 'error', `[run] external pid ${pid} for "${id}" ${gone ? 'stopped' : 'did not stop'}`);
-    if (!gone) throw new Error(`pid ${pid} did not stop`);
-    record.externalPid = undefined;
+    const holdsPort = async () => (await this.deps.findListenerPid(port)) === pid;
+    if (!(await holdsPort())) {
+      await this.detectExternal(target);
+      this.changed();
+      throw new Error(
+        `The process on port ${port} is no longer pid ${pid}. Nothing was stopped; check the row and try again.`
+      );
+    }
+    const gone = await this.deps.stopExternalProcess(pid, holdsPort);
+    // Not gone, but it let go of the port: it is shutting down on its own.
+    const released = gone || !(await this.deps.isPortOpen(port));
+    this.deps.log(
+      released ? 'info' : 'error',
+      `[run] external pid ${pid} for "${id}" ${gone ? 'stopped' : released ? 'released the port' : 'did not stop'}`
+    );
+    await this.detectExternal(target);
     this.changed();
+    if (!released) throw new Error(`pid ${pid} did not stop`);
   }
 
   // ─── Logs ────────────────────────────────────────────────────────────────

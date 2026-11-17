@@ -46,36 +46,63 @@ function run(file: string, args: string[]): Promise<string> {
   });
 }
 
-/** First pid in `lsof -t` output. */
-export function parseLsofPids(output: string): number | undefined {
+/** Distinct pids in `lsof -t` output. */
+export function parseLsofPids(output: string): number[] {
+  const pids = new Set<number>();
   for (const line of output.split('\n')) {
     const pid = Number.parseInt(line.trim(), 10);
-    if (Number.isInteger(pid) && pid > 1) return pid;
+    if (Number.isInteger(pid) && pid > 1) pids.add(pid);
   }
-  return undefined;
+  return [...pids];
 }
 
-/** Pid of the LISTENING row for `port` in `netstat -ano -p tcp` output. */
-export function parseNetstatPid(output: string, port: number): number | undefined {
+/** Distinct pids of the LISTENING rows for `port` in `netstat -ano -p tcp` output. */
+export function parseNetstatPids(output: string, port: number): number[] {
+  const pids = new Set<number>();
   for (const line of output.split('\n')) {
     const columns = line.trim().split(/\s+/);
     if (columns.length < 5 || columns[3] !== 'LISTENING') continue;
     if (!columns[1].endsWith(`:${port}`)) continue;
     const pid = Number.parseInt(columns[4], 10);
-    if (Number.isInteger(pid) && pid > 1) return pid;
+    if (Number.isInteger(pid) && pid > 1) pids.add(pid);
   }
-  return undefined;
+  return [...pids];
 }
 
-/** The process listening on a TCP port, if one can be found. */
+/** Every process listening on a TCP port (one per interface is possible). */
+export async function findListenerPids(
+  port: number,
+  platform: NodeJS.Platform = process.platform
+): Promise<number[]> {
+  if (platform === 'win32') {
+    return parseNetstatPids(await run('netstat', ['-ano', '-p', 'tcp']), port);
+  }
+  return parseLsofPids(await run('lsof', ['-nP', `-iTCP:${port}`, '-sTCP:LISTEN', '-t']));
+}
+
+/**
+ * The one process listening on a TCP port. Undefined when none can be found
+ * and when more than one process listens on it (different interfaces): then
+ * there is no single owner to name, and nothing this app should offer to stop.
+ */
 export async function findListenerPid(
   port: number,
   platform: NodeJS.Platform = process.platform
 ): Promise<number | undefined> {
-  if (platform === 'win32') {
-    return parseNetstatPid(await run('netstat', ['-ano', '-p', 'tcp']), port);
-  }
-  return parseLsofPids(await run('lsof', ['-nP', `-iTCP:${port}`, '-sTCP:LISTEN', '-t']));
+  const pids = await findListenerPids(port, platform);
+  return pids.length === 1 ? pids[0] : undefined;
+}
+
+export interface StopExternalOptions {
+  graceMs?: number;
+  /**
+   * Asked before SIGKILL: is this pid still the process the user agreed to
+   * stop? A pid that gave up the port is on its way out, or is no longer the
+   * same process; either way it is not force-killed.
+   */
+  stillTarget?: () => Promise<boolean>;
+  kill?: (pid: number, signal: NodeJS.Signals | 0) => unknown;
+  sleep?: (ms: number) => Promise<void>;
 }
 
 /**
@@ -83,13 +110,11 @@ export async function findListenerPid(
  * it is still there after `graceMs`. Only the one pid: this app did not start
  * it and knows nothing about its process group. Returns whether it is gone.
  */
-export async function stopExternalProcess(
-  pid: number,
-  graceMs = 5000,
-  kill: (pid: number, signal: NodeJS.Signals | 0) => unknown = process.kill.bind(process),
-  sleep: (ms: number) => Promise<void> = (ms) => new Promise((resolve) => setTimeout(resolve, ms))
-): Promise<boolean> {
+export async function stopExternalProcess(pid: number, options: StopExternalOptions = {}): Promise<boolean> {
   if (!Number.isInteger(pid) || pid <= 1) throw new Error(`Refusing to stop pid ${String(pid)}`);
+  const graceMs = options.graceMs ?? 5000;
+  const kill = options.kill ?? process.kill.bind(process);
+  const sleep = options.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   const alive = () => {
     try {
       kill(pid, 0);
@@ -104,6 +129,7 @@ export async function stopExternalProcess(
     await sleep(100);
     if (!alive()) return true;
   }
+  if (options.stillTarget && !(await options.stillTarget())) return !alive();
   kill(pid, 'SIGKILL');
   await sleep(200);
   return !alive();

@@ -26,6 +26,21 @@ describe('renderTerminalText', () => {
     expect(renderTerminalText(raw)).toBe('before\n[full-screen program output omitted]\nafter');
   });
 
+  // A tab inside a full-screen program's output used to loop forever: the
+  // column never advances while that output is being dropped. This runs in
+  // the main process, so the loop froze the app.
+  it('returns for a tab inside alternate-screen output', () => {
+    expect(renderTerminalText('before\n\x1b[?1049h\tmenu\titem\x1b[?1049l\nafter\tdone\n')).toBe(
+      'before\n[full-screen program output omitted]\n\nafter   done'
+    );
+  });
+
+  it('caps a cursor-column jump so one sequence cannot pad a line without bound', () => {
+    const rendered = renderTerminalText('\x1b[999999999Gx\n');
+    expect(rendered.length).toBeLessThanOrEqual(2001);
+    expect(rendered.endsWith('x')).toBe(true);
+  });
+
   it('ignores an escape sequence cut off at the end of the buffer', () => {
     expect(renderTerminalText('ready\r\n\x1b[3')).toBe('ready');
     expect(renderTerminalText('ready\r\n\x1b]0;half a title')).toBe('ready');

@@ -1,7 +1,7 @@
 // @vitest-environment node
 import { describe, expect, it, vi } from 'vitest';
 import { packageManagerFor, suggestTargets } from '../suggestions';
-import { parseLsofPids, parseNetstatPid, stopExternalProcess } from '../probes';
+import { parseLsofPids, parseNetstatPids, stopExternalProcess } from '../probes';
 
 describe('suggestTargets', () => {
   const pkg = JSON.stringify({
@@ -37,20 +37,21 @@ describe('packageManagerFor', () => {
 });
 
 describe('listener pid parsing', () => {
-  it('takes the first pid from lsof -t', () => {
-    expect(parseLsofPids('48213\n48213\n')).toBe(48213);
-    expect(parseLsofPids('')).toBeUndefined();
+  it('lists each pid once from lsof -t, so two listeners on one port are seen as two', () => {
+    expect(parseLsofPids('48213\n48213\n')).toEqual([48213]);
+    expect(parseLsofPids('48213\n50001\n')).toEqual([48213, 50001]);
+    expect(parseLsofPids('')).toEqual([]);
   });
 
-  it('finds the LISTENING row for the port in netstat output', () => {
+  it('finds the LISTENING rows for the port in netstat output', () => {
     const output = [
       '  Proto  Local Address          Foreign Address        State           PID',
       '  TCP    0.0.0.0:135            0.0.0.0:0              LISTENING       1040',
       '  TCP    127.0.0.1:8787         0.0.0.0:0              LISTENING       9120',
       '  TCP    127.0.0.1:58787        127.0.0.1:8787         ESTABLISHED     7000',
     ].join('\r\n');
-    expect(parseNetstatPid(output, 8787)).toBe(9120);
-    expect(parseNetstatPid(output, 3000)).toBeUndefined();
+    expect(parseNetstatPids(output, 8787)).toEqual([9120]);
+    expect(parseNetstatPids(output, 3000)).toEqual([]);
   });
 });
 
@@ -63,7 +64,7 @@ describe('stopExternalProcess', () => {
       if (!alive) throw Object.assign(new Error('ESRCH'), { code: 'ESRCH' });
       if (signal === 'SIGTERM') alive = false;
     });
-    expect(await stopExternalProcess(4000, 5000, kill, noSleep)).toBe(true);
+    expect(await stopExternalProcess(4000, { graceMs: 5000, kill, sleep: noSleep })).toBe(true);
     expect(kill.mock.calls.map(([, signal]) => signal).filter((s) => s !== 0)).toEqual(['SIGTERM']);
   });
 
@@ -73,13 +74,24 @@ describe('stopExternalProcess', () => {
       if (!alive) throw Object.assign(new Error('ESRCH'), { code: 'ESRCH' });
       if (signal === 'SIGKILL') alive = false;
     });
-    expect(await stopExternalProcess(4000, 300, kill, noSleep)).toBe(true);
+    expect(await stopExternalProcess(4000, { graceMs: 300, kill, sleep: noSleep })).toBe(true);
     expect(kill.mock.calls.map(([, signal]) => signal).filter((s) => s !== 0)).toEqual(['SIGTERM', 'SIGKILL']);
+  });
+
+  // The user agreed to stop the process that held the port. If the pid has
+  // let go of the port by the time SIGTERM's grace runs out, it is not that
+  // process any more (or it is already leaving): no force-kill.
+  it('does not force-kill a pid that no longer holds the port', async () => {
+    const kill = vi.fn();
+    const stillTarget = vi.fn(async () => false);
+    expect(await stopExternalProcess(4000, { graceMs: 300, stillTarget, kill, sleep: noSleep })).toBe(false);
+    expect(stillTarget).toHaveBeenCalledTimes(1);
+    expect(kill.mock.calls.map(([, signal]) => signal).filter((s) => s !== 0)).toEqual(['SIGTERM']);
   });
 
   it('refuses pid 0 and 1', async () => {
     const kill = vi.fn();
-    await expect(stopExternalProcess(1, 10, kill, noSleep)).rejects.toThrow(/Refusing/);
+    await expect(stopExternalProcess(1, { graceMs: 10, kill, sleep: noSleep })).rejects.toThrow(/Refusing/);
     expect(kill).not.toHaveBeenCalled();
   });
 });

@@ -402,6 +402,32 @@ describe('requiresDeveloperMode extensions', () => {
     expect(deps.startModule).not.toHaveBeenCalled();
   });
 
+  // The stop for "Developer Mode off" runs while the start is in flight and
+  // finds no module to stop; the start must not leave one running after it.
+  it.each([
+    ['Developer Mode is turned off', 'isDeveloperMode'],
+    ['the extension is disabled', 'isExtensionEnabled'],
+  ] as const)('stops a gated module that finishes starting after %s', async (_label, flag) => {
+    let on = true;
+    const deps = makeDeps({
+      collectWorkspaces: vi.fn(() => ['/ws/a']),
+      resolveBackendModules: vi.fn(async () => gated()),
+      [flag]: vi.fn(() => on),
+      startModule: vi.fn(async (args) => {
+        on = false;
+        return {
+          extensionId: args.extensionId,
+          moduleId: args.module.id,
+          workspacePath: args.workspacePath,
+          state: { status: 'running', startedAt: 0, methods: [] },
+        } as ModuleHandle;
+      }),
+    });
+    await startExtensionBackendModules(DEV_EXT, deps);
+    expect(vi.mocked(deps.stopModule).mock.calls).toEqual([[DEV_EXT, MOD, '/ws/a']]);
+    expect(deps.clearBackendTools).toHaveBeenCalledWith('/ws/a', DEV_EXT, MOD);
+  });
+
   it('leaves a disabled gated extension stopped when Developer Mode is turned on', async () => {
     const deps = makeDeps({
       isExtensionEnabled: vi.fn(() => false),

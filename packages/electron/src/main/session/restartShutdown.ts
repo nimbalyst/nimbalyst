@@ -1,6 +1,10 @@
 interface RestartShutdownDependencies {
   beginRestart(): void;
   stopExternalSessions(): Promise<void>;
+  /** Stop extension-started commands; nothing else on this path would, and their process groups would outlive the app. */
+  stopCommandTerminals(): Promise<void>;
+  /** A step failed and the app is staying open. */
+  restartAborted?(): void;
   saveSessionState(): Promise<void>;
   flushPendingBackups(): Promise<void>;
   quit(): void;
@@ -20,10 +24,13 @@ export function createRestartShutdown(deps: RestartShutdownDependencies) {
     pending = true;
     try {
       deps.beginRestart();
-      await Promise.all([deps.stopExternalSessions(), deps.saveSessionState()]);
+      await Promise.all([deps.stopExternalSessions(), deps.saveSessionState(), deps.stopCommandTerminals()]);
       await deps.flushPendingBackups();
       readyToQuit = true;
       deps.quit();
+    } catch (error) {
+      deps.restartAborted?.();
+      throw error;
     } finally {
       pending = false;
     }

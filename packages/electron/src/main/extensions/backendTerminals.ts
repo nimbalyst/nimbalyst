@@ -114,9 +114,28 @@ interface OwnedTerminal {
 
 type OwnerContext = Pick<BackendRuntimeContext, 'extensionId' | 'moduleId' | 'workspacePath'>;
 
+/**
+ * A `create` that has not produced a terminal yet. A terminal becomes `owned`
+ * only once its process exists, so a module stop (or app quit) that happens
+ * first would otherwise never see it. Cancelling the pending create makes it
+ * stop its own terminal the moment it has one.
+ */
+interface PendingCreate {
+  owner: OwnerContext;
+  cancelled: boolean;
+  /** Grace for the stop of a cancelled create. */
+  graceMs?: number;
+  /** Settles when the create has finished, cleanup of a cancelled one included. Never rejects. */
+  done: Promise<void>;
+}
+
 let deps: BackendTerminalsHostDeps | null = null;
 let eventSink: BackendTerminalEventSink | null = null;
 const owned = new Map<string, OwnedTerminal>();
+const pendingCreates = new Set<PendingCreate>();
+/** The app is quitting: no new command may start. */
+let shuttingDown = false;
+let quitDrain: Promise<void> | null = null;
 
 export function installBackendTerminalsHost(next: BackendTerminalsHostDeps | null): void {
   deps = next;
@@ -171,12 +190,20 @@ async function resolveCwd(workspacePath: string, cwd: unknown): Promise<string> 
     throw new Error(`cwd must stay inside the project: ${String(cwd)}`);
   }
   let stat;
+  let realCwd: string;
   try {
     stat = await fs.stat(resolved);
+    realCwd = await fs.realpath(resolved);
   } catch {
     throw new Error(`cwd does not exist: ${String(cwd)}`);
   }
   if (!stat.isDirectory()) throw new Error(`cwd is not a directory: ${String(cwd)}`);
+  // The lexical check above passes a symlink inside the project that points
+  // out of it. Compare where the paths really lead.
+  const realRoot = await fs.realpath(root);
+  if (realCwd !== realRoot && !realCwd.startsWith(realRoot + path.sep)) {
+    throw new Error(`cwd must stay inside the project: ${String(cwd)}`);
+  }
   return resolved;
 }
 
@@ -212,9 +239,12 @@ function groupAlive(record: OwnedTerminal): boolean {
   return true;
 }
 
+const CREATE_CANCELLED = 'The extension stopped while the command was starting';
+
 async function createCommandTerminal(
   ctx: OwnerContext,
-  args: Record<string, unknown>
+  args: Record<string, unknown>,
+  pending: PendingCreate
 ): Promise<{ terminalId: string; pid: number }> {
   const h = host();
   const key = requireString(args.key, 'key');
@@ -223,6 +253,7 @@ async function createCommandTerminal(
   if (command.length > MAX_COMMAND_LENGTH) throw new Error('command is too long');
   if (args.panelId !== undefined && typeof args.panelId !== 'string') throw new Error('panelId must be a string');
   const cwd = await resolveCwd(ctx.workspacePath, args.cwd);
+  if (pending.cancelled) throw new Error(CREATE_CANCELLED);
   const baseEnv = h.baseEnv();
   const env = resolveEnv(baseEnv, args.env);
   const platform = h.platform ?? process.platform;
@@ -297,15 +328,27 @@ async function createCommandTerminal(
         emit(record, TERMINALS_OUTPUT_EVENT, { terminalId, data, cursor: record.written });
       },
       onExit: (exitCode, signal) => {
+        if (record.exited) return;
         record.exited = true;
         record.exitCode = exitCode;
         record.finalOutput = h.manager.getOutputState(terminalId) ?? undefined;
-        if (record.pid > 1) groupAlive(record);
         logger.main.info(
           `[backendTerminals] ${record.extensionId} "${record.key}" (${terminalId}) exited with code ${exitCode}` +
             (signal ? ` on signal ${signal}` : '')
         );
         emit(record, TERMINALS_EXIT_EVENT, { terminalId, exitCode, ...(signal ? { signal } : {}) });
+        // The shell is gone. Anything it started that is still in its process
+        // group (a backgrounded server, a child that ignored the hangup) has
+        // nothing left to supervise it and may still hold the port, so it is
+        // stopped with the command.
+        if (record.pid > 1 && groupAlive(record)) {
+          logger.main.warn(
+            `[backendTerminals] "${record.key}" exited but processes it started are still running; stopping them`
+          );
+          void stopRecord(record, undefined).catch((error) =>
+            logger.main.error(`[backendTerminals] failed to stop what "${record.key}" left behind:`, error)
+          );
+        }
       },
     });
   } catch (error) {
@@ -322,6 +365,15 @@ async function createCommandTerminal(
   record.pid = pid;
   owned.set(terminalId, record);
   listChanged(ctx.workspacePath);
+  if (pending.cancelled) {
+    // The module stopped (or the app began quitting) while the process was
+    // being spawned. Nothing else knows about this terminal yet: stop it here.
+    logger.main.info(
+      `[backendTerminals] ${ctx.extensionId} "${key}" (${terminalId}) pid ${pid} started after its owner stopped; stopping it`
+    );
+    await stopAndRelease(record, pending.graceMs);
+    throw new Error(CREATE_CANCELLED);
+  }
   logger.main.info(
     `[backendTerminals] ${ctx.extensionId} started "${key}" (${terminalId}) pid ${pid} in ${cwd}`
   );
@@ -367,8 +419,21 @@ export async function dispatchBackendTerminalsOp(
 ): Promise<unknown> {
   const args = (rawArgs ?? {}) as Record<string, unknown>;
   switch (op) {
-    case 'create':
-      return createCommandTerminal(ctx, args);
+    case 'create': {
+      if (shuttingDown) throw new Error('Nimbalyst is quitting; no command can be started');
+      const pending: PendingCreate = { owner: ctx, cancelled: false, done: Promise.resolve() };
+      const creating = createCommandTerminal(ctx, args, pending);
+      pending.done = creating.then(
+        () => {},
+        () => {}
+      );
+      pendingCreates.add(pending);
+      try {
+        return await creating;
+      } finally {
+        pendingCreates.delete(pending);
+      }
+    }
     case 'kill': {
       const record = requireOwned(ctx, args.terminalId);
       const signal = (args.signal ?? 'SIGTERM') as ProcessGroupSignal;
@@ -413,7 +478,10 @@ export async function dispatchBackendTerminalsOp(
     }
     case 'dispose': {
       const record = requireOwned(ctx, args.terminalId);
-      await stopRecord(record, undefined);
+      const stopped = await stopRecord(record, undefined);
+      if (!stopped.groupGone) {
+        throw new Error(`"${record.key}" still has running processes after SIGKILL; its tab was kept`);
+      }
       if (host().manager.isTerminalActive(record.terminalId)) {
         await host().manager.destroyTerminal(record.terminalId);
       }
@@ -428,12 +496,15 @@ export async function dispatchBackendTerminalsOp(
 }
 
 async function stopAndRelease(record: OwnedTerminal, graceMs: number | undefined): Promise<void> {
+  let groupGone = false;
   try {
-    await stopRecord(record, graceMs);
+    groupGone = (await stopRecord(record, graceMs)).groupGone;
   } catch (error) {
     logger.main.error(`[backendTerminals] failed to stop "${record.key}" (pid ${record.pid}):`, error);
   }
-  owned.delete(record.terminalId);
+  // A group that survived stays on the books: forgetting it would leave
+  // nothing able to stop it later (a retry, or the stop at app quit).
+  if (groupGone) owned.delete(record.terminalId);
   try {
     // The owner that kept this dot current is gone.
     host().store.updateTerminalInstance(record.workspacePath, record.terminalId, { statusTone: undefined });
@@ -451,12 +522,15 @@ export async function stopBackendTerminalsForModule(
   moduleId: string,
   workspacePath: string
 ): Promise<void> {
-  const records = [...owned.values()].filter(
-    (r) =>
-      r.extensionId === extensionId &&
-      r.moduleId === moduleId &&
-      sameWorkspaceIdentity(r.workspacePath, workspacePath)
-  );
+  const ownedBy = (r: OwnerContext) =>
+    r.extensionId === extensionId && r.moduleId === moduleId && sameWorkspaceIdentity(r.workspacePath, workspacePath);
+  // Commands still being spawned are not in `owned` yet. Cancel them and wait:
+  // each stops its own terminal once the process exists.
+  const starting = [...pendingCreates].filter((pending) => ownedBy(pending.owner));
+  for (const pending of starting) pending.cancelled = true;
+  await Promise.all(starting.map((pending) => pending.done));
+
+  const records = [...owned.values()].filter(ownedBy);
   if (records.length === 0) return;
   logger.main.info(
     `[backendTerminals] stopping ${records.length} command(s) of ${extensionId}/${moduleId} in ${workspacePath}`
@@ -465,12 +539,46 @@ export async function stopBackendTerminalsForModule(
   if (deps) listChanged(workspacePath);
 }
 
-/** Stop every extension-owned command. Called on app quit, before PTYs are destroyed. */
-export async function stopAllBackendTerminals(options: { graceMs?: number } = {}): Promise<void> {
+/**
+ * Stop every extension-owned command and refuse new ones. Called on every path
+ * that ends the process (quit, restart, update install) before PTYs are
+ * destroyed. The first call does the work; later calls return the same
+ * promise, so a path can start the stop early and await it again later
+ * without paying the grace period twice.
+ */
+export function stopAllBackendTerminals(options: { graceMs?: number } = {}): Promise<void> {
+  quitDrain ??= drainForQuit(options.graceMs ?? QUIT_STOP_GRACE_MS);
+  return quitDrain;
+}
+
+async function drainForQuit(graceMs: number): Promise<void> {
+  shuttingDown = true;
+  const starting = [...pendingCreates];
+  for (const pending of starting) {
+    pending.cancelled = true;
+    pending.graceMs = graceMs;
+  }
   const records = [...owned.values()];
-  if (records.length === 0) return;
-  logger.main.info(`[backendTerminals] stopping ${records.length} command(s) for app quit`);
-  await Promise.all(records.map((record) => stopAndRelease(record, options.graceMs ?? QUIT_STOP_GRACE_MS)));
+  if (records.length + starting.length > 0) {
+    logger.main.info(
+      `[backendTerminals] stopping ${records.length} command(s) for app quit` +
+        (starting.length > 0 ? ` and ${starting.length} still starting` : '')
+    );
+  }
+  await Promise.all([
+    ...records.map((record) => stopAndRelease(record, graceMs)),
+    ...starting.map((pending) => pending.done),
+  ]);
+}
+
+/**
+ * The quit, restart or update that called `stopAllBackendTerminals` did not
+ * go through and the app is staying open. Commands that were stopped stay
+ * stopped; this only lets new ones start again.
+ */
+export function resumeBackendTerminalsAfterAbortedQuit(): void {
+  shuttingDown = false;
+  quitDrain = null;
 }
 
 /**
@@ -481,8 +589,9 @@ export async function stopAllBackendTerminals(options: { graceMs?: number } = {}
 export async function stopCommandTerminalForTabClose(terminalId: string): Promise<boolean> {
   const record = owned.get(terminalId);
   if (!record) return false;
-  await stopRecord(record, undefined);
-  owned.delete(terminalId);
+  const result = await stopRecord(record, undefined);
+  // Kept when something survived, so the stop at app quit tries again.
+  if (result.groupGone) owned.delete(terminalId);
   return true;
 }
 
@@ -505,6 +614,9 @@ export function withLiveCommandTerminalStatus(state: WorkspaceTerminalState): Wo
 /** Test-only. */
 export function _resetBackendTerminals(): void {
   owned.clear();
+  pendingCreates.clear();
+  shuttingDown = false;
+  quitDrain = null;
   deps = null;
   eventSink = null;
 }

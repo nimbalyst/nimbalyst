@@ -95,7 +95,9 @@ export const RunToolWidget: React.FC<CustomToolWidgetProps> = ({ message, sessio
 
   const verb = callRunning ? VERBS[action].running : callFailed ? VERBS[action].failed : VERBS[action].done;
   const from = statusText(payload?.previousStatus, undefined);
-  const to = statusText(status, payload?.exitCode);
+  // Field names follow the extension's tool result (`describeRun` in
+  // packages/extensions/run-manager/src/backend/runTools.ts).
+  const to = statusText(status, payload?.lastExitCode);
   const transition = from && to ? `${from} → ${to}` : to;
   const tone =
     outcome === 'failed'

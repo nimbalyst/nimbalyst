@@ -9,7 +9,7 @@
  * the module stops (extension disabled, project closed, app quit).
  */
 import { existsSync, unwatchFile, watchFile } from 'node:fs';
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import type {
   BackendMcpToolDefinition,
@@ -60,6 +60,7 @@ export async function activate(ctx: ActivateCtx) {
   }
   const configFile = join(workspacePath, RUN_CONFIG_PATH);
 
+  let tempCounter = 0;
   let lastBadge: RunsBadge | null = null;
   const publishBadge = () => {
     if (!panels) return;
@@ -80,9 +81,14 @@ export async function activate(ctx: ActivateCtx) {
         // Write beside the file and rename over it, so a crash mid-write
         // cannot leave a truncated config.
         await mkdir(dirname(configFile), { recursive: true });
-        const temp = `${configFile}.${process.pid}.tmp`;
-        await writeFile(temp, text, 'utf-8');
-        await rename(temp, configFile);
+        const temp = `${configFile}.${process.pid}.${(tempCounter += 1)}.tmp`;
+        try {
+          await writeFile(temp, text, 'utf-8');
+          await rename(temp, configFile);
+        } catch (error) {
+          await rm(temp, { force: true }).catch(() => {});
+          throw error;
+        }
       },
     },
     readPackageInfo: async () => ({
@@ -93,7 +99,7 @@ export async function activate(ctx: ActivateCtx) {
     }),
     isPortOpen,
     findListenerPid,
-    stopExternalProcess,
+    stopExternalProcess: (pid, stillTarget) => stopExternalProcess(pid, { stillTarget }),
     log: (level, message) => log(level, message),
     onChange: publishBadge,
   });

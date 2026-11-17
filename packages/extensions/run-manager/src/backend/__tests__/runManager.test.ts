@@ -32,6 +32,7 @@ let configText: string | null;
 let openPorts: Set<number>;
 let listenerPids: Map<number, number>;
 let externalStops: number[];
+let externalStillTarget: (() => Promise<boolean>) | undefined;
 let changes: number;
 let time: number;
 let timers: Array<{ at: number; resolve: () => void }>;
@@ -133,8 +134,9 @@ function makeManager(overrides: Partial<RunManagerDeps> = {}): RunManager {
     }),
     isPortOpen: async (port) => openPorts.has(port),
     findListenerPid: async (port) => listenerPids.get(port),
-    stopExternalProcess: async (pid) => {
+    stopExternalProcess: async (pid, stillTarget) => {
       externalStops.push(pid);
+      externalStillTarget = stillTarget;
       for (const [port, owner] of listenerPids) {
         if (owner === pid) {
           listenerPids.delete(port);
@@ -176,6 +178,7 @@ beforeEach(() => {
   openPorts = new Set();
   listenerPids = new Map();
   externalStops = [];
+  externalStillTarget = undefined;
   changes = 0;
   time = 1_000_000;
   timers = [];
@@ -378,9 +381,110 @@ describe('external processes', () => {
     expect(externalStops).toEqual([48213]);
     expect(statusOf(manager, 'web')).toBe('stopped');
   });
+
+  // The confirmation named the process that held the port when the row was
+  // drawn. By the click it can be a different process, or none.
+  it('signals nothing when the port has changed hands since the row was drawn', async () => {
+    const manager = await loaded();
+    openPorts.add(5173);
+    listenerPids.set(5173, 4321);
+    await manager.snapshot();
+
+    listenerPids.set(5173, 9876);
+    await expect(manager.stopExternal('web', 4321)).rejects.toThrow(/no longer pid 4321. Nothing was stopped/);
+    expect(externalStops).toEqual([]);
+    expect(manager.views().find((v) => v.target.id === 'web')).toMatchObject({ status: 'external', externalPid: 9876 });
+  });
+
+  it('lets the stop force-kill only while the pid still holds the port', async () => {
+    const manager = await loaded();
+    openPorts.add(5173);
+    listenerPids.set(5173, 4321);
+    await manager.snapshot();
+    await manager.stopExternal('web', 4321);
+
+    listenerPids.set(5173, 4321);
+    expect(await externalStillTarget!()).toBe(true);
+    listenerPids.set(5173, 9876);
+    expect(await externalStillTarget!()).toBe(false);
+  });
+});
+
+describe('a start whose terminal is still being created', () => {
+  /** A manager whose terminal creation waits until `release()` is called. */
+  async function withHeldCreate() {
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const manager = makeManager({
+      terminals: {
+        createCommandTerminal: async (options) => {
+          await held;
+          const terminal = makeTerminal(options);
+          terminals.push(terminal);
+          return terminal;
+        },
+      },
+    });
+    configText = JSON.stringify(CONFIG);
+    await manager.reloadConfig();
+    return { manager, release };
+  }
+
+  it('is cancelled by stop, and the terminal is stopped as soon as it exists', async () => {
+    const { manager, release } = await withHeldCreate();
+    const starting = manager.start('plain');
+    starting.catch(() => {});
+    await flush();
+    expect(statusOf(manager, 'plain')).toBe('starting');
+
+    const stopping = manager.stop('plain');
+    await flush();
+    expect(statusOf(manager, 'plain')).toBe('stopped');
+
+    release();
+    await expect(starting).rejects.toThrow(/stopped while it was starting/);
+    await stopping;
+    expect(terminals[0].stopCalls).toEqual([{ graceMs: 5000 }]);
+    expect(statusOf(manager, 'plain')).toBe('stopped');
+  });
+
+  it('is cancelled when its target is removed from the config', async () => {
+    const { manager, release } = await withHeldCreate();
+    const starting = manager.start('plain');
+    starting.catch(() => {});
+    await flush();
+
+    const removing = manager.removeTarget('plain');
+    await flush();
+    release();
+    await expect(starting).rejects.toThrow(/stopped while it was starting/);
+    await removing;
+    expect(terminals[0].stopCalls).toHaveLength(1);
+    expect(manager.views().some((v) => v.target.id === 'plain')).toBe(false);
+  });
+
+  it('refuses a second start instead of spawning a second copy', async () => {
+    const { manager, release } = await withHeldCreate();
+    const first = manager.start('web');
+    await expect(manager.start('web')).rejects.toThrow(/already starting/);
+    release();
+    await first;
+    expect(terminals).toHaveLength(1);
+  });
 });
 
 describe('config', () => {
+  it('keeps both targets when two are saved at the same time', async () => {
+    const manager = await loaded({ targets: [] });
+    await Promise.all([
+      manager.saveTarget({ id: 'a', name: 'A', command: 'node a.js' }),
+      manager.saveTarget({ id: 'b', name: 'B', command: 'node b.js' }),
+    ]);
+    expect(JSON.parse(configText!).targets.map((t: { id: string }) => t.id)).toEqual(['a', 'b']);
+  });
+
   it('offers package.json suggestions only when there is no config file', async () => {
     const none = await loaded(null);
     expect((await none.snapshot()).suggestions).toEqual([{ id: 'dev', name: 'dev', command: 'pnpm run dev' }]);
@@ -473,6 +577,16 @@ describe('agent tools', () => {
       status: 'running',
       terminalId: 'term-1',
     });
+  });
+
+  // The transcript line shows "crashed (exit N)" from this field.
+  it('run_start reports a crash with the exit code as lastExitCode', async () => {
+    const manager = await loaded();
+    const tools = createRunToolHandlers(manager, () => time);
+    const pending = tools.start({ id: 'worker' });
+    await flush();
+    terminals[0].emitExit(1);
+    expect(await pending).toMatchObject({ action: 'start', id: 'worker', name: 'Wrangler', status: 'crashed', lastExitCode: 1 });
   });
 
   it('run_configure adds, edits by merging, clears a field, and removes', async () => {

@@ -19,6 +19,8 @@
 const ESC = '\x1b';
 const ALT_SCREEN_MODES = new Set(['47', '1047', '1049']);
 const ALT_SCREEN_NOTE = '[full-screen program output omitted]';
+/** Widest column a cursor-positioning sequence may move to. */
+const MAX_RENDERED_COLUMN = 2000;
 
 /** Default cap on rendered text returned by one read; the tail is kept. */
 export const DEFAULT_TERMINAL_READ_MAX_CHARS = 20_000;
@@ -80,7 +82,8 @@ export function renderTerminalText(raw: string): string {
         } else if (final === 'G' && !inAltScreen) {
           // Cursor to column N (1-based); spinners use it instead of `\r`.
           const target = Number.parseInt(params || '1', 10);
-          col = Number.isFinite(target) ? Math.max(0, target - 1) : 0;
+          // Capped: the next character pads the line out to this column.
+          col = Number.isFinite(target) ? Math.min(MAX_RENDERED_COLUMN, Math.max(0, target - 1)) : 0;
         }
         i = j + 1;
         continue;
@@ -122,8 +125,12 @@ export function renderTerminalText(raw: string): string {
     } else if (ch === '\b') {
       col = Math.max(0, col - 1);
     } else if (ch === '\t') {
-      const stop = (Math.floor(col / 8) + 1) * 8;
-      while (col < stop) put(' ');
+      // `put` writes nothing inside an alternate-screen span, so the column
+      // would never reach the stop there.
+      if (!inAltScreen) {
+        const stop = (Math.floor(col / 8) + 1) * 8;
+        while (col < stop) put(' ');
+      }
     } else if (ch.charCodeAt(0) >= 0x20 && ch !== '\x7f') {
       put(ch);
     }

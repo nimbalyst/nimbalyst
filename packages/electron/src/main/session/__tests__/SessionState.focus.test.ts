@@ -148,8 +148,10 @@ describe('restoreSessionState window activation', () => {
     });
     const flushPendingBackups = vi.fn(() => backups.promise);
     const stopExternalSessions = vi.fn(() => drain.promise);
+    const commands = deferred();
+    const stopCommandTerminals = vi.fn(() => commands.promise);
     const shutdown = createRestartShutdown({
-      beginRestart: vi.fn(), stopExternalSessions, saveSessionState, flushPendingBackups, quit,
+      beginRestart: vi.fn(), stopExternalSessions, saveSessionState, stopCommandTerminals, flushPendingBackups, quit,
     });
     app.on('before-quit', (event) => { handlers.push(shutdown(event)); });
 
@@ -157,6 +159,10 @@ describe('restoreSessionState window activation', () => {
     quit(); // Another request while the first is waiting must not tear down windows.
     const projectsDuringDrain = mocks.windowStates.size;
     drain.resolve();
+    // The restart waits for extension-started commands to stop as well.
+    await vi.advanceTimersByTimeAsync(0);
+    expect(flushPendingBackups).not.toHaveBeenCalled();
+    commands.resolve();
     await vi.waitFor(() => expect(flushPendingBackups).toHaveBeenCalledOnce());
     const projectsDuringBackup = mocks.windowStates.size;
     backups.resolve();
@@ -170,17 +176,20 @@ describe('restoreSessionState window activation', () => {
     expect(projectsDuringBackup).toBe(3);
     expect(mocks.windowStates.size).toBe(0);
     expect(stopExternalSessions).toHaveBeenCalledOnce();
+    expect(stopCommandTerminals).toHaveBeenCalledOnce();
     expect(mocks.saveSessionState).toHaveBeenCalledOnce();
     expect(quit).toHaveBeenCalledTimes(3); // Two requests and the final permitted quit.
   });
 
-  it.each(['saveSessionState', 'stopExternalSessions', 'flushPendingBackups'] as const)(
+  it.each(['saveSessionState', 'stopExternalSessions', 'stopCommandTerminals', 'flushPendingBackups'] as const)(
     'keeps windows open when %s fails and allows an explicit retry',
     async (failedStep) => {
       const deps = {
         beginRestart: vi.fn(),
         stopExternalSessions: vi.fn(async () => undefined),
         saveSessionState: vi.fn(async () => undefined),
+        stopCommandTerminals: vi.fn(async () => undefined),
+        restartAborted: vi.fn(),
         flushPendingBackups: vi.fn(async () => undefined),
         quit: vi.fn(),
       };
@@ -192,6 +201,7 @@ describe('restoreSessionState window activation', () => {
       await expect(shutdown(firstEvent)).rejects.toBe(error);
       expect(firstEvent.preventDefault).toHaveBeenCalledOnce();
       expect(deps.quit).not.toHaveBeenCalled();
+      expect(deps.restartAborted).toHaveBeenCalledOnce();
 
       const retryEvent = { preventDefault: vi.fn() };
       await shutdown(retryEvent);

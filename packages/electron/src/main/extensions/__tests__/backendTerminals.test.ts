@@ -23,6 +23,7 @@ import {
   dispatchBackendTerminalsOp,
   installBackendTerminalsHost,
   setBackendTerminalEventSink,
+  resumeBackendTerminalsAfterAbortedQuit,
   stopAllBackendTerminals,
   stopBackendTerminalsForModule,
   stopCommandTerminalForTabClose,
@@ -36,7 +37,23 @@ let nextPid: number;
 let nextId: number;
 
 /** Live process groups by pid, and every signal sent to a group. */
-const groups = new Map<number, { ignoresTerm: boolean }>();
+const groups = new Map<number, { ignoresTerm: boolean; ignoresKill?: boolean }>();
+/** When set, the PTY spawn waits for it: a create that is still in flight. */
+let holdSpawn: Promise<void> | null = null;
+/** Called when a held spawn has been reached. */
+let onSpawnHeld: (() => void) | null = null;
+
+/** Hold the next PTY spawn. `reached` resolves once a create is waiting in it. */
+function holdNextSpawn(): { reached: Promise<void>; release: () => void } {
+  let release!: () => void;
+  holdSpawn = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const reached = new Promise<void>((resolve) => {
+    onSpawnHeld = resolve;
+  });
+  return { reached, release };
+}
 const signals: Array<[number, string | number]> = [];
 const spawned = new Map<string, { pid: number; options: ProcessTerminalOptions; buffer: string }>();
 const states = new Map<string, WorkspaceTerminalState>();
@@ -53,9 +70,16 @@ function esrch(): Error {
   return Object.assign(new Error('ESRCH'), { code: 'ESRCH' });
 }
 
-/** The PTY child exits: what node-pty's onExit does in the real manager. */
-function exitPty(terminalId: string, exitCode: number, signal?: number): void {
-  const entry = spawned.get(terminalId)!;
+/**
+ * The PTY child exits: what node-pty's onExit does in the real manager. The
+ * rest of its process group goes with it unless `leavesGroup` is set (the
+ * shell exited but something it started is still running).
+ */
+function exitPty(terminalId: string, exitCode: number, signal?: number, leavesGroup = false): void {
+  const entry = spawned.get(terminalId);
+  if (!entry) return;
+  if (!leavesGroup) groups.delete(entry.pid);
+  // The scrollback is still readable while the exit is being handled.
   entry.options.onExit?.(exitCode, signal);
   spawned.delete(terminalId);
 }
@@ -65,6 +89,10 @@ function install(): void {
   installBackendTerminalsHost({
     manager: {
       createProcessTerminal: async (terminalId, options) => {
+        if (holdSpawn) {
+          onSpawnHeld?.();
+          await holdSpawn;
+        }
         const pid = nextPid++;
         spawned.set(terminalId, { pid, options, buffer: '' });
         groups.set(pid, { ignoresTerm: false });
@@ -118,10 +146,10 @@ function install(): void {
         const group = groups.get(pid);
         if (!group) throw esrch();
         signals.push([target, signal]);
-        if (signal === 'SIGKILL' || (signal === 'SIGTERM' && !group.ignoresTerm)) {
+        if ((signal === 'SIGKILL' && !group.ignoresKill) || (signal === 'SIGTERM' && !group.ignoresTerm)) {
           groups.delete(pid);
           // The shell dies with its group.
-          for (const [terminalId, entry] of spawned) {
+          for (const [terminalId, entry] of [...spawned]) {
             if (entry.pid === pid) exitPty(terminalId, 0, signal === 'SIGKILL' ? 9 : 15);
           }
         }
@@ -151,6 +179,8 @@ beforeEach(() => {
   fs.mkdirSync(path.join(workspace, 'packages', 'web'), { recursive: true });
   nextPid = 5000;
   nextId = 1;
+  holdSpawn = null;
+  onSpawnHeld = null;
   groups.clear();
   signals.length = 0;
   spawned.clear();
@@ -192,6 +222,17 @@ describe('create', () => {
     await expect(start('web', { cwd: 'missing-dir' })).rejects.toThrow(/does not exist/);
     expect(stateFor(workspace).tabOrder).toEqual([]);
     expect(spawned.size).toBe(0);
+  });
+
+  it('rejects a cwd that is a link inside the project to a folder outside it', async () => {
+    const outside = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'backend-terminals-outside-')));
+    try {
+      fs.symlinkSync(outside, path.join(workspace, 'linked-folder'), 'dir');
+      await expect(start('web', { cwd: 'linked-folder' })).rejects.toThrow(/inside the project/);
+      expect(spawned.size).toBe(0);
+    } finally {
+      fs.rmSync(outside, { recursive: true, force: true });
+    }
   });
 
   it('refuses to start a key that is still running', async () => {
@@ -311,6 +352,85 @@ describe('stopping', () => {
     await expect(dispatchBackendTerminalsOp(owner(), 'read', { terminalId: mine.terminalId })).rejects.toThrow(
       /Unknown terminal/
     );
+  });
+
+  // A terminal is only tracked once its process exists. A module that stops
+  // while one is being spawned must not leave that process behind.
+  it('stops a command whose spawn finishes after its module was stopped', async () => {
+    const { reached, release } = holdNextSpawn();
+    const creating = start('web');
+    creating.catch(() => {});
+    await reached;
+
+    let stopped = false;
+    const stopping = stopBackendTerminalsForModule('com.example.runs', 'core', workspace).then(() => {
+      stopped = true;
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(stopped).toBe(false);
+
+    release();
+    await expect(creating).rejects.toThrow(/stopped while the command was starting/);
+    await stopping;
+    expect(signals.filter(([, s]) => s !== 0)).toEqual([[-5000, 'SIGTERM']]);
+    expect(groups.size).toBe(0);
+  });
+
+  it('stops a command still being spawned at app quit, and starts nothing after that', async () => {
+    const { reached, release } = holdNextSpawn();
+    const creating = start('web');
+    creating.catch(() => {});
+    await reached;
+
+    const quitting = stopAllBackendTerminals();
+    release();
+    await quitting;
+    await expect(creating).rejects.toThrow(/stopped while the command was starting/);
+    expect(signals.filter(([, s]) => s !== 0)).toEqual([[-5000, 'SIGTERM']]);
+    expect(groups.size).toBe(0);
+
+    holdSpawn = null;
+    await expect(start('worker')).rejects.toThrow(/quitting/);
+    expect(spawned.size).toBe(0);
+  });
+
+  // Quit starts the stop early and awaits it again before PTYs are destroyed.
+  it('signals each command once when the stop at quit is asked for twice', async () => {
+    const { pid } = await start();
+    await Promise.all([stopAllBackendTerminals(), stopAllBackendTerminals()]);
+    await stopAllBackendTerminals();
+    expect(signals.filter(([, s]) => s !== 0)).toEqual([[-pid, 'SIGTERM']]);
+  });
+
+  it('starts commands again after a quit that did not go through', async () => {
+    await stopAllBackendTerminals();
+    await expect(start('web')).rejects.toThrow(/quitting/);
+    resumeBackendTerminalsAfterAbortedQuit();
+    const { pid } = await start('web');
+    await stopAllBackendTerminals();
+    expect(groups.has(pid)).toBe(false);
+  });
+
+  // `sh -lc 'server & exit'`: the shell is gone, the server still holds the port.
+  it('stops what a command left running in its process group after its shell exited', async () => {
+    const { terminalId, pid } = await start();
+    exitPty(terminalId, 0, undefined, true);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(signals.filter(([, s]) => s !== 0)).toEqual([[-pid, 'SIGTERM']]);
+    expect(groups.has(pid)).toBe(false);
+  });
+
+  it('keeps a group that survived SIGKILL on the books so the stop at quit tries again', async () => {
+    const { terminalId, pid } = await start();
+    groups.set(pid, { ignoresTerm: true, ignoresKill: true });
+    expect(await stopCommandTerminalForTabClose(terminalId)).toBe(true);
+    expect(groups.has(pid)).toBe(true);
+
+    groups.set(pid, { ignoresTerm: false });
+    signals.length = 0;
+    await stopAllBackendTerminals();
+    expect(signals.filter(([, s]) => s !== 0)).toEqual([[-pid, 'SIGTERM']]);
+    expect(groups.has(pid)).toBe(false);
   });
 
   it('stops every command on app quit', async () => {

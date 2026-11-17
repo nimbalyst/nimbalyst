@@ -118,7 +118,11 @@ export const RUN_PANEL_TOOL_DESCRIPTORS: RunToolDescriptor[] = Object.values(RUN
 type Params = Record<string, unknown>;
 export type RunToolHandler = (params: Params) => Promise<unknown>;
 
-/** What an agent sees for one target. */
+/**
+ * What an agent sees for one target. The transcript line for start, stop and
+ * restart reads `name`, `status` and `lastExitCode` from this shape
+ * (RunToolWidget in packages/runtime); keep the names in step.
+ */
 function describeRun(view: RunView, now: number): Record<string, unknown> {
   const { target } = view;
   return {

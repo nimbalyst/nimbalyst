@@ -71,6 +71,46 @@ describe('stopProcessGroup', () => {
   });
 });
 
+describe('stopProcessGroup on Windows', () => {
+  // taskkill without /F fails for most console programs. That is a failed
+  // request, not proof that the tree is gone.
+  it('forces the kill when the polite taskkill fails and the process is still there', async () => {
+    let alive = true;
+    const taskkill = vi.fn((_pid: number, force: boolean) => {
+      if (force) alive = false;
+      return force;
+    });
+    const kill = vi.fn(() => {
+      if (!alive) throw esrch();
+      return true;
+    });
+    const result = await stopProcessGroup(900, { graceMs: 5000 }, { platform: 'win32', kill, taskkill, now: () => 0, sleep: async () => {} });
+    expect(taskkill.mock.calls).toEqual([
+      [900, false],
+      [900, true],
+    ]);
+    expect(result).toEqual({ escalated: true, groupGone: true });
+  });
+
+  it('does not report the tree gone when the forced kill fails too', async () => {
+    let now = 0;
+    const result = await stopProcessGroup(
+      900,
+      { graceMs: 100, killWaitMs: 300 },
+      {
+        platform: 'win32',
+        kill: () => true,
+        taskkill: () => false,
+        now: () => now,
+        sleep: async (ms) => {
+          now += ms;
+        },
+      }
+    );
+    expect(result).toEqual({ escalated: true, groupGone: false });
+  });
+});
+
 describe('signalProcessGroup', () => {
   it('falls back to the single pid when there is no such group', () => {
     const calls: Array<[number, string | number]> = [];

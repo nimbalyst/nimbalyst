@@ -92,7 +92,13 @@ export function signalProcessGroup(
   }
 }
 
-/** Whether any process is left in the group led by `pid`. */
+/**
+ * Whether any process is left in the group led by `pid`.
+ *
+ * Windows has no process groups, so there this only says whether the leader is
+ * alive. `taskkill /T` ends the leader's tree, but nothing here can confirm
+ * that a descendant which outlived the leader is gone.
+ */
 export function isProcessGroupAlive(pid: number, deps: ProcessGroupDeps = {}): boolean {
   assertStoppablePid(pid);
   const platform = deps.platform ?? process.platform;
@@ -138,8 +144,16 @@ export async function stopProcessGroup(
   const killWaitMs = options.killWaitMs ?? 2000;
 
   if (!isProcessGroupAlive(pid, deps)) return { escalated: false, groupGone: true };
-  if (!signalProcessGroup(pid, 'SIGTERM', deps)) return { escalated: false, groupGone: true };
-  if (await waitUntilGone(pid, graceMs, pollMs, deps)) return { escalated: false, groupGone: true };
+  const signalled = signalProcessGroup(pid, 'SIGTERM', deps);
+  if (!signalled) {
+    // Nothing took the signal. On POSIX that means the group is gone. On
+    // Windows it also covers taskkill failing (a console program refuses the
+    // polite request, taskkill timed out), which says nothing about the tree:
+    // look again, and go straight to the forced kill if it is still there.
+    if (!isProcessGroupAlive(pid, deps)) return { escalated: false, groupGone: true };
+  } else if (await waitUntilGone(pid, graceMs, pollMs, deps)) {
+    return { escalated: false, groupGone: true };
+  }
 
   signalProcessGroup(pid, 'SIGKILL', deps);
   return { escalated: true, groupGone: await waitUntilGone(pid, killWaitMs, pollMs, deps) };

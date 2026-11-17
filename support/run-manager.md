@@ -55,12 +55,12 @@ Nimbalyst reloads the file when it changes. A target with a mistake is skipped a
 
 - **Start** runs the command in a new pinned terminal tab. That tab is the log: you can read it, scroll it and type into it. Each start begins with an empty log.
 - A target is **starting** until its port accepts connections, or its `readyPattern` appears in the output, or, with neither, as soon as the process is spawned. Then it is **running**.
-- **Stop** sends SIGTERM to the command and everything it started. If anything is still alive after 5 seconds it is sent SIGKILL. Closing the target's terminal tab stops it the same way.
+- **Stop** sends SIGTERM to the command's process group, which covers the processes it started unless one of them moved itself into a different group or session. Anything in the group still alive after 5 seconds is sent SIGKILL. On Windows the process tree is ended with `taskkill` instead, and only the command itself is checked afterwards. Closing the target's terminal tab stops it the same way.
 - **Restart** stops the target and starts it again.
 - **Logs** opens the target's terminal tab. The **Runs** tab at the left of the terminal panel leads back.
 - A target that exits before it is ready, or exits with a non-zero code, is **crashed**; the exit code is shown.
 
-Nothing starts by itself. Every run stops when you quit Nimbalyst, close the project, or turn the extension off.
+Nothing starts by itself. Nimbalyst stops every run when you quit, restart or update it, close the project, or turn the extension or developer mode off. At quit a run gets 2 seconds to exit before SIGKILL. If Nimbalyst crashes or is force-quit, runs are not stopped; a target with a port shows as **external** the next time.
 
 ## A process you started somewhere else
 
