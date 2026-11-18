@@ -3,7 +3,12 @@ import React from 'react';
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it } from 'vitest';
 import { SelectionChips } from '../SelectionChips';
-import { clearTextSelection, getTextSelection, setTextSelection } from '../TextSelectionIndicator';
+import {
+  clearTextSelection,
+  getTextSelection,
+  setTextSelection,
+  transcriptSelectionKey,
+} from '../TextSelectionIndicator';
 import {
   clearEditorContext,
   getActiveEditorContextItems,
@@ -76,6 +81,15 @@ describe('SelectionChips', () => {
     render(<SelectionChips currentFilePath={FILE} />);
 
     act(() => setTextSelection('selection from another doc', OTHER_FILE));
+    expect(screen.queryByText('Selection')).toBeNull();
+  });
+
+  it('shows a chat transcript selection only in its own session panel, with no document open', () => {
+    const { rerender } = render(<SelectionChips sessionId="s1" />);
+    act(() => setTextSelection('selected in chat', transcriptSelectionKey('s1'), { author: 'assistant' }));
+    screen.getByText('Selection');
+
+    rerender(<SelectionChips sessionId="s2" currentFilePath={FILE} />);
     expect(screen.queryByText('Selection')).toBeNull();
   });
 

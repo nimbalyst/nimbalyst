@@ -632,6 +632,7 @@ export const TranscriptToolCard = React.memo(function TranscriptToolCard({
     return (
       <div
         data-transcript-tool-id={depth === 0 && !superseded ? tool.providerToolCallId : undefined}
+        data-transcript-tool-index={toolIndex}
         className={`rich-transcript-tool-container mb-2 ${depth > 0 ? 'nested ml-0' : ''}`}
         style={{ marginLeft: depth > 0 ? '1rem' : '0' }}
       >
@@ -654,6 +655,7 @@ export const TranscriptToolCard = React.memo(function TranscriptToolCard({
   if (editEntries.length > 0) {
     return (
       <div
+        data-transcript-tool-index={toolIndex}
         className={`rich-transcript-tool-container mb-2 ${depth > 0 ? 'nested ml-0' : ''}`}
         style={{ marginLeft: depth > 0 ? '1rem' : '0' }}
       >
@@ -692,9 +694,9 @@ export const TranscriptToolCard = React.memo(function TranscriptToolCard({
         : 'rich-transcript-tool-card rounded border border-[var(--nim-border)] overflow-hidden bg-[var(--nim-bg-secondary)]';
 
   return (
-    <div className={`rich-transcript-tool-container mb-2 ${depth > 0 ? 'nested ml-0' : ''}`} style={{ marginLeft: depth > 0 ? '1rem' : '0' }}>
+    <div data-transcript-tool-index={toolIndex} className={`rich-transcript-tool-container mb-2 ${depth > 0 ? 'nested ml-0' : ''}`} style={{ marginLeft: depth > 0 ? '1rem' : '0' }}>
       <div className={cardClass}>
-        <button onClick={onToggle} className="rich-transcript-tool-button w-full py-1 px-2 flex items-center gap-1.5 text-left border-none cursor-pointer text-sm bg-transparent">
+        <button onClick={onToggle} className="rich-transcript-tool-button select-none w-full py-1 px-2 flex items-center gap-1.5 text-left border-none cursor-pointer text-sm bg-transparent">
           {isTeammate ? (
             // Group icon for team teammates
             <MaterialSymbol icon="group" size={16} className="rich-transcript-tool-icon sub-agent-icon w-4 h-4 text-[var(--nim-primary)] shrink-0" />

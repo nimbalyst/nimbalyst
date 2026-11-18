@@ -1,7 +1,7 @@
 import { useMemo } from 'react';
 import type { TabData } from '../contexts/TabsContext';
 import { getTextSelection } from '../components/UnifiedAI/TextSelectionIndicator';
-import type { MockupSelection, EditorContextItem } from '@nimbalyst/runtime';
+import type { MockupSelection, EditorContextItem, TranscriptSelection } from '@nimbalyst/runtime';
 import { getActiveEditorContextItems } from '../stores/editorContextStore';
 import {
   collabFileTypeFor,
@@ -50,6 +50,8 @@ export interface SerializableDocumentContext {
     timestamp: number;
   };
   textSelectionTimestamp?: number;
+  /** Text selected in the chat transcript; sent even when no document is open. */
+  transcriptSelection?: TranscriptSelection;
   mockupSelection?: MockupSelection;
   mockupDrawing?: string;
   editorContextItems?: EditorContextItem[];
