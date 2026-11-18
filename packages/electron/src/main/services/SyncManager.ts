@@ -36,6 +36,7 @@ import { timeStartupPhase } from '../utils/startupTiming';
 import { resolveWorkspaceAttachmentStagingDirectory } from './attachments/attachmentStagingRoot';
 // Side effect: registers the mobile-sync image compressor and display_to_user image loader.
 import './sync/mobileSyncImages';
+import { aesGcmDecrypt } from '@nimbalyst/runtime/sync/aesGcm';
 
 function loadSyncModule() {
   return syncModule;
@@ -1128,11 +1129,7 @@ export async function decryptMobileAttachments(
       const iv = Buffer.from(att.iv, 'base64');
 
       // Decrypt using AES-GCM (same format as iOS CryptoManager: ciphertext + tag concatenated)
-      const decrypted = await crypto.subtle.decrypt(
-        { name: 'AES-GCM', iv },
-        key,
-        ciphertext,
-      );
+      const decrypted = await aesGcmDecrypt(key, iv, ciphertext);
 
       const imageBuffer = Buffer.from(decrypted);
       const result = await attachmentService.saveAttachment(

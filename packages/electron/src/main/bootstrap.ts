@@ -32,6 +32,10 @@ import { createUncaughtExceptionHandler } from './uncaughtException';
 // first, so a body statement here would lose the race to `./index.js` below.
 // This import must stay above that one.
 import './hostEnvironment';
+// Personal sync AES-GCM uses node:crypto in main, not WebCrypto, which can
+// abort the process natively on this Node version (#1979). Must also stay
+// above `./index.js`.
+import './services/sync/nodeAesGcm';
 
 // CRITICAL: Strip inherited API keys from process.env before ANY downstream code
 // (SDKs, providers, services) can observe them. See CLAUDE.md, section

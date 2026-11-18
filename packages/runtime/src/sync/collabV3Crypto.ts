@@ -1,5 +1,6 @@
 import type { PersonalJwt } from '../auth/jwtScopes';
 import { decodeNodeAccessTokenClaims, isNodeAccessToken } from './nodeCredentialToken';
+import { aesGcmDecrypt, aesGcmEncrypt } from './aesGcm';
 
 /**
  * Credential decoding, base64 and AES-GCM helpers for the CollabV3 personal
@@ -102,14 +103,10 @@ export async function encrypt(
   const encoder = new TextEncoder();
   const data = encoder.encode(content);
 
-  const encrypted = await crypto.subtle.encrypt(
-    { name: 'AES-GCM', iv },
-    key,
-    data
-  );
+  const encrypted = await aesGcmEncrypt(key, iv, data);
 
   return {
-    encrypted: uint8ArrayToBase64(new Uint8Array(encrypted)),
+    encrypted: uint8ArrayToBase64(encrypted),
     iv: uint8ArrayToBase64(iv),
   };
 }
@@ -122,11 +119,7 @@ export async function decrypt(
   const encryptedBytes = base64ToUint8Array(encrypted);
   const ivBytes = base64ToUint8Array(iv);
 
-  const decrypted = await crypto.subtle.decrypt(
-    { name: 'AES-GCM', iv: ivBytes },
-    key,
-    encryptedBytes
-  );
+  const decrypted = await aesGcmDecrypt(key, ivBytes, encryptedBytes);
 
   return new TextDecoder().decode(decrypted);
 }

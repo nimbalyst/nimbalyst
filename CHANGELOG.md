@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 <!-- Bug fixes go here -->
+- Desktop personal sync now encrypts with a different crypto API, avoiding a runtime bug that could abort the app with no crash report when an earlier unrelated encryption error, such as an unreadable saved credential, was still pending (#1979)
 
 ### Removed
 <!-- Removed features go here -->
