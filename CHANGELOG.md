@@ -10,6 +10,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 <!-- New features go here -->
+
+### Changed
+<!-- Changes to existing functionality go here -->
+
+### Fixed
+<!-- Bug fixes go here -->
+
+### Removed
+<!-- Removed features go here -->
+
+## [0.84.2] - 2026-11-18
+
+
+### Added
+<!-- New features go here -->
 - Databases too large to migrate to SQLite automatically now get a one-time prompt at launch to migrate, with the size, the disk space needed, and progress
 - Run Manager (alpha), in developer mode: a Runs panel that starts, stops and restarts a project's dev servers from named commands in `.nimbalyst/run.json`, shows each one's status, link and uptime, and keeps its log in a pinned terminal tab; agents can list, start, stop and restart the same targets and read their logs
 
@@ -17,11 +32,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 <!-- Changes to existing functionality go here -->
 - Existing databases up to 3 GiB (previously 1 GiB) now migrate to SQLite automatically at startup
 - Settings > Database is now shown to every install still on PGLite, not only in developer mode, so larger databases can be migrated from there
+- Extensions can run commands in terminal tabs and show colored status badges on their gutter buttons, gated on developer mode
+- The Terminal and Runs bottom panels use the same dash hide button as the Git panel
 
 ### Fixed
 <!-- Bug fixes go here -->
 - Claude Agent skills that run as a forked command, such as `/review`, are no longer denied the Nimbalyst session-summary and session-result tools
 - With auto-commit on, commit proposals into another worktree of the session's repository, and folder proposals containing files another session also edited, are now committed automatically instead of waiting for manual approval
+- The PGLite to SQLite cutover retries a briefly locked database folder instead of failing immediately
+- Run Manager stops its processes on restart and update, and Stop cancels a start that is still checking its port
 
 ### Removed
 <!-- Removed features go here -->
