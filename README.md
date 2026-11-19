@@ -93,8 +93,10 @@ Download the latest version for your platform:
 | macOS Apple Silicon | [Download .dmg](https://github.com/Nimbalyst/nimbalyst/releases/latest/download/Nimbalyst-macOS-arm64.dmg) | macOS Apple Silicon 12+ |
 | macOS Intel | [Download .dmg](https://github.com/Nimbalyst/nimbalyst/releases/latest/download/Nimbalyst-macOS-x64.dmg) | macOS Intel 12+ |
 | Windows | [Download .exe](https://github.com/Nimbalyst/nimbalyst/releases/latest/download/Nimbalyst-Windows.exe) | Windows 10+ |
-| Linux (Debian, Ubuntu) | [Download .deb](https://github.com/Nimbalyst/nimbalyst/releases/latest/download/Nimbalyst-Linux.deb) | Debian, Ubuntu, or a derivative |
-| Linux (other) | [Download AppImage](https://github.com/Nimbalyst/nimbalyst/releases/latest/download/Nimbalyst-Linux.AppImage) | Linux — on Ubuntu 24.04+ see [Linux installation](docs/LINUX_INSTALL.md) |
+| Linux x86-64 (Debian, Ubuntu) | [Download .deb](https://github.com/Nimbalyst/nimbalyst/releases/latest/download/Nimbalyst-Linux-x64.deb) | Debian, Ubuntu, or a derivative |
+| Linux arm64 (Debian, Ubuntu) | [Download .deb](https://github.com/Nimbalyst/nimbalyst/releases/latest/download/Nimbalyst-Linux-arm64.deb) | Debian, Ubuntu, or a derivative |
+| Linux x86-64 (other) | [Download AppImage](https://github.com/Nimbalyst/nimbalyst/releases/latest/download/Nimbalyst-Linux-x64.AppImage) | Linux — on Ubuntu 24.04+ see [Linux installation](docs/LINUX_INSTALL.md) |
+| Linux arm64 (other) | [Download AppImage](https://github.com/Nimbalyst/nimbalyst/releases/latest/download/Nimbalyst-Linux-arm64.AppImage) | Linux — on Ubuntu 24.04+ see [Linux installation](docs/LINUX_INSTALL.md) |
 
 ## Getting Started
 
