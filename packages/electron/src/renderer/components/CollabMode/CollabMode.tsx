@@ -772,7 +772,7 @@ export const CollabModeInner = forwardRef<CollabModeRef, CollabModeInnerProps>(f
       }
     },
     reopenLastClosedTab: async () => {
-      await tabsActions.reopenLastClosedTab(async () => {});
+      await tabsActions.reopenLastClosedTab();
     },
     getActiveDocumentPath: () => {
       if (!activeTabId) return null;

@@ -185,7 +185,13 @@ interface TabsContextValue {
   getTabState: (tabId: string) => TabData | undefined;
   closeAllTabs: () => void;
   closeSavedTabs: () => void;
-  reopenLastClosedTab: (fileSelectFn: (filePath: string) => Promise<void>) => Promise<void>;
+  /**
+   * Reopen the most recently closed tab. Files mode passes `fileSelectFn` so a
+   * file reopens through its normal open path; without it (Pages mode, whose
+   * tabs are collab, tracker, type, personal and Local wiki file tabs) every
+   * closed tab is re-added directly with its last-known title.
+   */
+  reopenLastClosedTab: (fileSelectFn?: (filePath: string) => Promise<void>) => Promise<void>;
 }
 
 const TabsContext = createContext<TabsContextValue | null>(null);
@@ -633,7 +639,7 @@ export function TabsProvider({
   }, [removeTab]);
 
   // Reopen last closed tab
-  const reopenLastClosedTab = useCallback(async (fileSelectFn: (filePath: string) => Promise<void>): Promise<void> => {
+  const reopenLastClosedTab = useCallback(async (fileSelectFn?: (filePath: string) => Promise<void>): Promise<void> => {
     const slotState = slotRef.current;
     if (slotState.reopening) return;
 
@@ -652,7 +658,7 @@ export function TabsProvider({
 
         if (!existingTab) {
           try {
-            if (isCollabUri(candidateTab.filePath)) {
+            if (!fileSelectFn || isCollabUri(candidateTab.filePath)) {
               const reopenedTabId = addTab(
                 candidateTab.filePath,
                 '',
