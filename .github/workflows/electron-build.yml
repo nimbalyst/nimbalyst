@@ -206,7 +206,15 @@ jobs:
 
           # validate-extra-resources.js checks the binaries inside these during
           # the build; here we only need the target package to be present.
-          for PKG in "@openai/codex-${NPM_PLATFORM}-${TARGET_ARCH}" "@zed-industries/codex-acp-${NPM_PLATFORM}-${TARGET_ARCH}"; do
+          # Sharp (loaded by Memory's local embedder) is copied with a filtered
+          # `../../node_modules` entry, which validate-extra-resources.js cannot
+          # check, so its target binding is checked here. Windows has no
+          # separate libvips package.
+          CROSS_PKGS=("@openai/codex-${NPM_PLATFORM}-${TARGET_ARCH}" "@zed-industries/codex-acp-${NPM_PLATFORM}-${TARGET_ARCH}" "@img/sharp-${NPM_PLATFORM}-${TARGET_ARCH}")
+          if [ "$NPM_PLATFORM" != "win32" ]; then
+            CROSS_PKGS+=("@img/sharp-libvips-${NPM_PLATFORM}-${TARGET_ARCH}")
+          fi
+          for PKG in "${CROSS_PKGS[@]}"; do
             if [ ! -d "node_modules/${PKG}" ]; then
               echo "::error::Cross-arch package not found at node_modules/${PKG}"
               ls -la "node_modules/$(dirname "${PKG}")/" || true
