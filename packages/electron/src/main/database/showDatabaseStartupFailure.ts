@@ -1,4 +1,5 @@
-import { app, clipboard, dialog } from "electron";
+import { app, dialog } from "electron";
+import { writeClipboardText } from "../utils/systemClipboard";
 import { systemShell } from "../utils/systemShell";
 import { logger } from "../utils/logger";
 import { database } from "./PGLiteDatabaseWorker";
@@ -130,7 +131,7 @@ export async function showDatabaseStartupFailure(
               reconcileAttempts: 0,
             });
         },
-        copyDiagnostics: (text) => clipboard.writeText(text),
+        copyDiagnostics: (text) => writeClipboardText(text),
         rollback: async (source) => {
           await recoverPreMigrationDatabase({
             userDataPath,

@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 <!-- Changes to existing functionality go here -->
 - New Codex sessions default to GPT-6.2 Sol, the model Codex itself selects by default; GPT-6.2 Sol and GPT-6.2 Astra are now listed in the Codex model picker
+- Nimbalyst now runs on Electron 45 and requires macOS 13 Ventura or later on Mac. Macs on macOS 12 Monterey are not offered the update and can keep using 0.84.2.
 
 ### Fixed
 <!-- Bug fixes go here -->

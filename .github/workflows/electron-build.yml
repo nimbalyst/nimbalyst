@@ -795,6 +795,17 @@ jobs:
             fi
             echo "latest-linux.yml lists ${name}"
           done
+          # Both Mac channel files must carry the macOS floor. Without it the
+          # updater on a macOS 12 install downloads a build that cannot launch.
+          for feed in release/latest-mac.yml release/alpha-mac.yml; do
+            [ -e "$feed" ] || continue
+            if ! grep -q "^minimumSystemVersion: 22\.0\.0$" "$feed"; then
+              echo "::error::${feed} is missing minimumSystemVersion: 22.0.0"
+              cat "$feed"
+              exit 1
+            fi
+            echo "${feed} declares minimumSystemVersion 22.0.0"
+          done
           # Copy generated yml files back to release-files
           cp release/*.yml ../../release-files/ 2>/dev/null || true
           cp release/*.yaml ../../release-files/ 2>/dev/null || true

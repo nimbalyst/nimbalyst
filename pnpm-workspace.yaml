@@ -58,6 +58,9 @@ minimumReleaseAgeExclude:
   - '@openai/codex@0.171.0-linux-x64'
   - '@openai/codex@0.171.0-win32-arm64'
   - '@openai/codex@0.171.0-win32-x64'
+  # 2026-11-20: Electron 45.4.1 (desktop runtime upgrade, published 2026-11-19 02:04 UTC).
+  # Remove once it clears the cooldown (2026-11-22).
+  - 'electron@45.4.1'
 
 # `pnpm run` should not silently start an install: parallel agent sessions share
 # a checkout, and two concurrent installs corrupt node_modules.
@@ -107,6 +110,10 @@ overrides:
   lodash-es: ^4.18.1
   '@excalidraw/excalidraw>nanoid': ^3.3.18
   '@excalidraw/mermaid-to-excalidraw>nanoid': ^5.1.16
+  # @electron/rebuild 4.2.0 resolves node-abi 4.33.0, which has no ABI entry for
+  # Electron 45 and throws during the native rebuild. 4.36.0 is the first release
+  # that maps Electron 45 to ABI 150. Remove when @electron/rebuild pulls it in.
+  '@electron/rebuild>node-abi': 4.36.0
 
 patchedDependencies:
   '@lexical/yjs@0.53.0': patches/@lexical__yjs@0.53.0.patch

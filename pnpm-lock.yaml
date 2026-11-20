@@ -175,6 +175,7 @@ overrides:
   lodash-es: ^4.18.1
   '@excalidraw/excalidraw>nanoid': ^3.3.18
   '@excalidraw/mermaid-to-excalidraw>nanoid': ^5.1.16
+  '@electron/rebuild>node-abi': 4.36.0
 
 patchedDependencies:
   '@lexical/yjs@0.53.0': ad48e26bbd354e0d891e179bccdb522621907671cf8f6967fd33c900a227399f
@@ -657,7 +658,7 @@ importers:
         version: 0.3.14
       '@electron-toolkit/utils':
         specifier: ^4.0.0
-        version: 4.0.0(electron@43.8.5(supports-color@10.2.2))
+        version: 4.0.0(electron@45.4.1(supports-color@10.2.2))
       '@excalidraw/excalidraw':
         specifier: 0.18.1
         version: 0.18.1(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(immer@11.1.8)(react-dom@19.2.7(patch_hash=ae8a3da582fb1e2f191ccdf6230837b3647f17abb2c7c203bd45dcd04b8e8e2e)(react@19.2.7))(react@19.2.7)
@@ -978,8 +979,8 @@ importers:
         specifier: ^16.6.1
         version: 16.6.1
       electron:
-        specifier: 43.8.5
-        version: 43.8.5(supports-color@10.2.2)
+        specifier: 45.4.1
+        version: 45.4.1(supports-color@10.2.2)
       electron-builder:
         specifier: ^26.0.12
         version: 26.15.3(electron-builder-squirrel-windows@26.15.3)(supports-color@10.2.2)
@@ -6838,8 +6839,8 @@ packages:
     resolution: {integrity: sha512-bO3y10YikuUwUuDUQRM4KfwNkKhnpVO7IPdbsrejwN9/AABJzzTQ4GeHwyzNSrVO+tEH3/Np255a3sVZpZDjvg==}
     engines: {node: '>=8.0.0'}
 
-  electron@43.8.5:
-    resolution: {integrity: sha512-lE6ySvSCZlwFLqdpSY/7qoSZRhbJ49EnBjVmeQ1m2dzbah2aWhQoYMVVOPLnEt1CNKeHTDV2B/5O7s6YadZE0g==}
+  electron@45.4.1:
+    resolution: {integrity: sha512-DjsJ/eQhovkjf1vYFFyh5GB8NMx+L5bdYaonvGOlWselg3DQ0fwIF0N/+2hrPsoS4whmmNswh21ym/8dgt1y5Q==}
     engines: {node: '>= 22.12.0'}
     hasBin: true
 
@@ -8344,8 +8345,8 @@ packages:
     resolution: {integrity: sha512-8Ofs/AUQh8MaEcrlq5xOX0CQ9ypTF5dl78mjlMNfOK08fzpgTHQRQPBxcPlEtIw0yRpws+Zo/3r+5WRby7u3Gg==}
     engines: {node: '>= 0.6'}
 
-  node-abi@4.33.0:
-    resolution: {integrity: sha512-vLBWCKb+7LWsX+TbfzWOkw0W81m377tyx3hOweBTjO43CXZnRGS1/JPWs20fr0PgZyDXk6ROYrylsEycK8raDA==}
+  node-abi@4.36.0:
+    resolution: {integrity: sha512-zrvE1Qy5ElbZVqmJFSiNfwzNZzUCepasgp/4dw0Z0fsn40LJkAk9FA9oMh2SKMeNFRRe/3IfeOKvWwWr8u4SmQ==}
     engines: {node: '>=22.12.0'}
 
   node-addon-api@7.1.1:
@@ -10831,9 +10832,9 @@ snapshots:
 
   '@electron-internal/extract-zip@1.0.3': {}
 
-  '@electron-toolkit/utils@4.0.0(electron@43.8.5(supports-color@10.2.2))':
+  '@electron-toolkit/utils@4.0.0(electron@45.4.1(supports-color@10.2.2))':
     dependencies:
-      electron: 43.8.5(supports-color@10.2.2)
+      electron: 45.4.1(supports-color@10.2.2)
 
   '@electron/asar@3.4.1':
     dependencies:
@@ -10897,7 +10898,7 @@ snapshots:
     dependencies:
       '@malept/cross-spawn-promise': 2.0.0
       debug: 4.4.3(supports-color@10.2.2)
-      node-abi: 4.33.0
+      node-abi: 4.36.0
       node-api-version: 0.2.1
       node-gyp: 12.4.0
       read-binary-file-arch: 1.0.6(supports-color@10.2.2)
@@ -14622,7 +14623,7 @@ snapshots:
     transitivePeerDependencies:
       - supports-color
 
-  electron@43.8.5(supports-color@10.2.2):
+  electron@45.4.1(supports-color@10.2.2):
     dependencies:
       '@electron-internal/extract-zip': 1.0.3
       '@electron/get': 5.0.0(supports-color@10.2.2)
@@ -16573,7 +16574,7 @@ snapshots:
 
   negotiator@1.0.0: {}
 
-  node-abi@4.33.0:
+  node-abi@4.36.0:
     dependencies:
       semver: 7.8.5
 
