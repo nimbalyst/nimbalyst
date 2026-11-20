@@ -23,6 +23,6 @@
   "devDependencies": {
     "@nimbalyst/extension-sdk": "workspace:*",
     "typescript": "^6.0.3",
-    "yjs": "13.6.32"
+    "yjs": "13.6.33"
   }
 }

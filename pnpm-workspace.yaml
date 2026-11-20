@@ -83,11 +83,11 @@ ignoredOptionalDependencies:
 overrides:
   '@anthropic-ai/claude-agent-sdk': 0.3.321
   prismjs: ^1.30.0
-  vite: ^7.3.6
-  zod: ^4.0.0
-  concurrently>shell-quote: ^1.8.4
+  vite: 7.3.7
+  zod: 4.6.7
+  concurrently>shell-quote: 1.12.0
   minimatch@^10.0.0: ^10.2.5
-  dompurify: ^3.4.14
+  dompurify: 3.4.17
   # GHSA-238p-pmpm-9mq7 (fixed in 0.18.2). mermaid 11, rehype-katex and
   # micromark-extension-math still declare ^0.16; mermaid 12 moved to ^0.18.
   katex: ^0.18.11

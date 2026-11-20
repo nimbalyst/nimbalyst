@@ -411,7 +411,7 @@
     "recharts": "^3.5.0",
     "remark-gfm": "^4.0.1",
     "remark-parse": "^11.0.0",
-    "shell-quote": "^1.8.4",
+    "shell-quote": "1.12.0",
     "unified": "^11.0.5",
     "uuid": "^14.0.0",
     "vega": "^6.4.0",
@@ -424,7 +424,7 @@
     "y-protocols": "^1.0.6",
     "y-websocket": "^1.5.4",
     "yaml": "^2.8.2",
-    "yjs": "13.6.32"
+    "yjs": "13.6.33"
   },
   "peerDependencies": {
     "@lexical/clipboard": "^0.53.0",

@@ -114,7 +114,7 @@
     "typescript": "^6.0.3",
     "vite": "^7.1.12",
     "@vitejs/plugin-react": "^5.1.2",
-    "yjs": "13.6.32",
+    "yjs": "13.6.33",
     "y-protocols": "^1.0.5"
   },
   "keywords": [
