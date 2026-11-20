@@ -2,15 +2,15 @@
  * Session List Filter Atoms
  *
  * Renderer-only filter state for the sessions list panel. Mirrors the tag
- * picker behavior the kanban view already provides (see sessionKanban.ts), but
- * scoped to the list and without phase/showComplete since the list has its
- * own time grouping and archive toggle.
+ * picker behavior the kanban view already provides (see sessionKanban.ts), plus
+ * per-phase visibility toggles scoped to the list.
  *
  * Session-only state -- clears on reload, like the kanban filter.
  */
 
 import { atom } from 'jotai';
 import type { SessionMeta } from '@nimbalyst/runtime';
+import { getEffectiveSessionPhase, type SessionPhase } from './sessionKanban';
 
 // Virtual tags are renderer-only predicates. They are never persisted in a
 // session's metadata.tags array.
@@ -59,3 +59,20 @@ export interface SessionListFilter {
 }
 
 export const sessionListTagFilterAtom = atom<SessionListFilter>({ tags: [] });
+
+/** Phases hidden from the sessions list. Complete sessions are hidden by default. */
+export const sessionListHiddenPhasesAtom = atom<SessionPhase[]>(['complete']);
+
+/**
+ * Whether a root session survives the phase toggles. Sessions without a phase
+ * are never hidden: the toggles only narrow sessions that have one.
+ */
+export function matchesSessionListPhases(
+  session: SessionMeta,
+  hiddenPhases: readonly SessionPhase[],
+  registry: ReadonlyMap<string, SessionMeta>,
+): boolean {
+  if (hiddenPhases.length === 0) return true;
+  const phase = getEffectiveSessionPhase(session, registry);
+  return !phase || !hiddenPhases.includes(phase as SessionPhase);
+}
