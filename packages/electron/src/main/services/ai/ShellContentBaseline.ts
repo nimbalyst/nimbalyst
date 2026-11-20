@@ -40,7 +40,26 @@ export async function prepareShellContentBaseline(root: string, captureGit: Git,
   for (const file of paths.slice(512)) before.set(file, undefined);
   for (let start = 0; start < Math.min(paths.length, 512); start += 16)
     await Promise.all(paths.slice(start, start + 16).map(async file => before.set(file, await fingerprint(file))));
-  return async (candidates: CheckoutCandidate[], observedRoot = root): Promise<Map<string, 'edit' | 'unchanged'>> => {
+  /**
+   * Pre-command content of a file. For a file tracked and clean at capture,
+   * the pinned revision's blob. For a dirty or untracked file only a
+   * fingerprint was kept, so the answer is whichever `observed` content
+   * matches it exactly; anything else (no match, unfingerprinted) is undefined.
+   */
+  const baselineContent = async (relative: string, observed: readonly string[] = []): Promise<string | undefined> => {
+    if (before.has(relative)) {
+      const expected = before.get(relative);
+      return expected ? observed.find((content) => contentFingerprint(content) === expected) : undefined;
+    }
+    if (!revision) return undefined;
+    try {
+      const content = await git(root, ['show', `${revision}:${relative}`]);
+      return content.length > 1_000_000 ? undefined : content;
+    } catch {
+      return undefined;
+    }
+  };
+  return Object.assign(async (candidates: CheckoutCandidate[], observedRoot = root): Promise<Map<string, 'edit' | 'unchanged'>> => {
     const [tree, diff] = await Promise.all([
       revision ? git(root, ['ls-tree', '-r', '--name-only', '-z', revision]) : Promise.resolve(''),
       revision ? git(root, ['diff', '--no-ext-diff', '--no-textconv', '--name-only', '-z', revision, '--']) : Promise.resolve(''),
@@ -61,5 +80,5 @@ export async function prepareShellContentBaseline(root: string, captureGit: Git,
       else if (after === candidate.fingerprint) results.set(candidate.filePath, 'edit');
     }
     return results;
-  };
+  }, { baselineContent });
 }

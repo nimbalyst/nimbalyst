@@ -263,3 +263,33 @@ it.each(['alone', 'external session', 'overlapping shell'])('ignores cold-cache 
     await fs.rm(root, { recursive: true, force: true });
   }
 });
+
+// A shell-attributed link needs a "before" for its diff. Clean tracked files
+// have an exact one (the pinned revision's blob); dirty files only a fingerprint.
+it('supplies pre-command content only for files that were tracked and clean at capture', async () => {
+  const root = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), 'nim-checkout-content-')));
+  const git = (...args: string[]) => execFileSync('git', ['-C', root, ...args], { encoding: 'utf8' });
+  try {
+    git('init', '-q');
+    git('config', 'user.email', 'fixture@example.invalid');
+    git('config', 'user.name', 'Fixture');
+    expect(await fs.realpath(git('rev-parse', '--show-toplevel').trim())).toBe(root);
+    await fs.writeFile(path.join(root, 'clean.ts'), 'committed\n');
+    await fs.writeFile(path.join(root, 'dirty.ts'), 'committed\n');
+    git('add', '.'); git('commit', '-qm', 'baseline');
+    await fs.writeFile(path.join(root, 'dirty.ts'), 'uncommitted\n');
+
+    const baseline = (await prepareShellCheckoutBaseline(root))!;
+    // The command rewrites the clean file after capture.
+    await fs.writeFile(path.join(root, 'clean.ts'), 'edited by the command\n');
+
+    expect(await baseline.baselineContent!(path.join(root, 'clean.ts'))).toBe('committed\n');
+    expect(await baseline.baselineContent!(path.join(root, 'dirty.ts'))).toBeUndefined();
+    // A dirty file accepts only observed content matching its window-start
+    // fingerprint; the committed blob a cold cache falls back to is rejected.
+    expect(await baseline.baselineContent!(path.join(root, 'dirty.ts'), ['committed\n'])).toBeUndefined();
+    expect(await baseline.baselineContent!(path.join(root, 'dirty.ts'), ['committed\n', 'uncommitted\n'])).toBe('uncommitted\n');
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});

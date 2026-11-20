@@ -20,6 +20,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Reopen Closed Tab (Cmd+Shift+T) in Wiki mode now reopens Local wiki pages, item pages and type pages; before, it only reopened shared documents
 - When the SQLite database worker exits unexpectedly, it is now restarted automatically (up to 5 times in 10 minutes) instead of leaving database access broken until the app restarts, and agent messages that had not reached the database while it restarted are held and written afterwards instead of being dropped (#1988)
 - On Windows, Import earlier sessions no longer fails with "Invalid external session cursor" for session files whose file ID is above 2^53; sessions left empty by that failure are shown as needing update and preselected for retry, and the import dialog now shows the underlying error instead of "Failed to import sessions" (#1989)
+- Files a Claude Code session changes through a Bash command (for example a python heredoc or `sed -i`) are now listed in its edited files even when the command never names the file's path, and a Codex session running in the same project no longer stops them from being listed; when two sessions' commands overlap, the file is listed as a withheld edit instead of being linked to either session
 
 ### Removed
 <!-- Removed features go here -->

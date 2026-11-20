@@ -102,6 +102,11 @@ export interface WorkspaceFileEditMatchInput {
   filePath: string;
   fileTimestamp: number;
   candidateSessionIds: string[];
+  /**
+   * Sessions that count as rivals but may not win: their Bash edits are linked
+   * by hook windows, so a fuzzy row for them would be a second, guessed link.
+   */
+  ineligibleSessionIds?: string[];
 }
 
 export interface WorkspaceFileEditCandidate {
@@ -909,6 +914,11 @@ class ToolCallMatcherImpl {
       }
 
       const winner = sessionCandidates[0];
+      // The best explanation is a hook-window session's own tool; it is not
+      // this matcher's to assign, and no lower-scored session may take it.
+      if (input.ineligibleSessionIds?.includes(winner.sessionId)) {
+        return { winner: null, candidates: sessionCandidates, reason: 'shell_window_owner' };
+      }
       if (winner.score < WORKSPACE_MIN_CONFIDENCE_SCORE) {
         logger.main.debug('[ToolCallMatcher] Workspace attribution rejected (low confidence):', {
           filePath: input.filePath,

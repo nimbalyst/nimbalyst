@@ -5,7 +5,7 @@ import { historyManager } from '../HistoryManager';
 import { getSubscriberIds } from '../file/WorkspaceEventBus';
 import { getSessionStateManager } from '@nimbalyst/runtime/ai/server/SessionStateManager';
 import { logger } from '../utils/logger';
-import { pathContainsExcludedDir } from '../utils/fileFilters';
+import { shouldExcludePath } from '../utils/fileFilters';
 import { sessionEditQuota } from './SessionEditQuota';
 import { workspaceAttributionThrottle } from './WorkspaceAttributionThrottle';
 import { toolCallMatcher } from './ToolCallMatcher';
@@ -23,6 +23,11 @@ export interface WorkspaceFileEditEvent {
 
 interface WorkspaceQueueState {
   queue: WorkspaceFileEditEvent[];
+  /** Over the burst budget; moved to `queue` as tokens refill. */
+  deferred: WorkspaceFileEditEvent[];
+  deferTimer: ReturnType<typeof setTimeout> | null;
+  droppedSinceWarn: number;
+  lastDropWarnAt: number;
   processing: boolean;
   recentByFile: Map<string, { ingestedAt: number; eventTimestamp: number }>;
   processedEventKeys: Map<string, number>;
@@ -32,6 +37,8 @@ const EVENT_DEDUPE_WINDOW_MS = 250;
 const EVENT_TTL_MS = 30_000;
 const MAX_QUEUE_SIZE = 500;
 const CODEX_WINDOW_SETTLE_MS = 40;
+const MAX_DEFERRED = 2_000;
+const DROP_WARN_COOLDOWN_MS = 5_000;
 
 /** Per-workspace attribution counters for observability. */
 interface AttributionCounters {
@@ -78,13 +85,7 @@ class WorkspaceFileEditAttributionServiceImpl {
   ingestWatcherEvent(rawEvent: WorkspaceFileEditEvent): void {
     const workspacePath = path.resolve(rawEvent.workspacePath);
     const filePath = path.resolve(rawEvent.filePath);
-    if (pathContainsExcludedDir(filePath)) {
-      return;
-    }
-    // Burst guard: if the workspace is producing watcher events faster than
-    // a human + AI realistically can, assume it's a build or codegen dump
-    // and drop the event before it costs PGLite anything.
-    if (!workspaceAttributionThrottle.tryAcquire(workspacePath)) {
+    if (shouldExcludePath(filePath)) {
       return;
     }
     const event: WorkspaceFileEditEvent = {
@@ -127,6 +128,15 @@ class WorkspaceFileEditAttributionServiceImpl {
       ingestedAt: now,
       eventTimestamp: event.timestamp,
     });
+
+    // Burst guard, after dedupe so every session watcher reporting the same
+    // change spends one token, not one each. Over budget, the event waits for
+    // tokens instead of being dropped: a real edit in the same second as a
+    // build's output used to vanish with it.
+    if (state.deferred.length > 0 || !workspaceAttributionThrottle.tryAcquire(workspacePath)) {
+      this.defer(workspacePath, state, event);
+      return;
+    }
     state.queue.push(event);
 
     logger.main.debug('[WorkspaceFileEditAttributionService] Ingested watcher event:', {
@@ -145,12 +155,48 @@ class WorkspaceFileEditAttributionServiceImpl {
 
     const state: WorkspaceQueueState = {
       queue: [],
+      deferred: [],
+      deferTimer: null,
+      droppedSinceWarn: 0,
+      lastDropWarnAt: 0,
       processing: false,
       recentByFile: new Map(),
       processedEventKeys: new Map(),
     };
     this.stateByWorkspace.set(workspacePath, state);
     return state;
+  }
+
+  private defer(workspacePath: string, state: WorkspaceQueueState, event: WorkspaceFileEditEvent): void {
+    if (state.deferred.length >= MAX_DEFERRED) {
+      state.deferred.shift();
+      state.droppedSinceWarn++;
+      const now = Date.now();
+      if (now - state.lastDropWarnAt >= DROP_WARN_COOLDOWN_MS) {
+        logger.main.warn('[WorkspaceFileEditAttributionService] Deferred queue full; dropped oldest events:', {
+          workspacePath,
+          dropped: state.droppedSinceWarn,
+        });
+        state.lastDropWarnAt = now;
+        state.droppedSinceWarn = 0;
+      }
+    }
+    state.deferred.push(event);
+    this.scheduleDeferred(workspacePath, state);
+  }
+
+  private scheduleDeferred(workspacePath: string, state: WorkspaceQueueState): void {
+    if (state.deferTimer || state.deferred.length === 0) return;
+    const delay = Math.max(10, workspaceAttributionThrottle.msUntilToken(workspacePath));
+    state.deferTimer = setTimeout(() => {
+      state.deferTimer = null;
+      while (state.deferred.length > 0 && workspaceAttributionThrottle.tryAcquire(workspacePath)) {
+        state.queue.push(state.deferred.shift()!);
+      }
+      void this.processQueue(workspacePath);
+      this.scheduleDeferred(workspacePath, state);
+    }, delay);
+    if (typeof state.deferTimer === 'object' && state.deferTimer && 'unref' in state.deferTimer) state.deferTimer.unref();
   }
 
   private cleanupState(state: WorkspaceQueueState, now: number): void {
@@ -253,6 +299,10 @@ class WorkspaceFileEditAttributionServiceImpl {
         return;
       }
 
+      // Hook-window sessions stay in the candidate set as rivals but may not
+      // win: their Bash edits are linked by their own tracker.
+      const ineligibleSessionIds = candidateSessionIds.filter((id) => workspaceFileAttributionPolicy.isShellWindow(id));
+
       // App-server fileChange items are the authoritative edit stream. Disable
       // pooled listener attribution for the entire workspace while any such
       // session's turn is running: a filesystem event has no reliable origin,
@@ -292,6 +342,7 @@ class WorkspaceFileEditAttributionServiceImpl {
             filePath: event.filePath,
             fileTimestamp: event.timestamp,
             candidateSessionIds,
+            ineligibleSessionIds,
           });
 
       const counters = this.getCounters(event.workspacePath);

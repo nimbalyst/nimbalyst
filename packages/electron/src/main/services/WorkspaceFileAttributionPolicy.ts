@@ -12,8 +12,9 @@ interface SessionAttributionPolicy {
  * Tracks how watcher events may be attributed while an agent session is
  * active. A session whose provider reports `'structured'` file changes uses
  * `disabled`: those items are authoritative, so filesystem listeners must
- * never attribute edits to the session on top of them. Everything else
- * retains the legacy matcher modes. See `providerFileTracking.ts` for who
+ * never attribute edits to the session on top of them. A `shell-window`
+ * session is linked by its hook-window tracker and is never a candidate for
+ * the fuzzy matcher. Everything else retains the legacy matcher modes. See `providerFileTracking.ts` for who
  * earns which mode.
  */
 class WorkspaceFileAttributionPolicyRegistry {
@@ -42,6 +43,11 @@ class WorkspaceFileAttributionPolicyRegistry {
       const rel = path.relative(policy.workspacePath, filePath);
       return !!rel && rel !== '..' && !rel.startsWith('..' + path.sep) && !path.isAbsolute(rel);
     }).map(([id]) => id);
+  }
+
+  /** Bash edits come only from hook windows; the fuzzy matcher must not pick this session. */
+  isShellWindow(sessionId: string): boolean {
+    return this.policies.get(sessionId)?.mode === 'shell-window';
   }
 
   isDisabled(sessionId: string, workspacePath: string): boolean {

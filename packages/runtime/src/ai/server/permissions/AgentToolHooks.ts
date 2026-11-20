@@ -18,6 +18,7 @@ import { generateToolPattern, buildToolDescription } from './toolPermissionHelpe
 import { getPatternDisplayName } from '../types';
 import type { TrustChecker } from '../providers/ProviderPermissionMixin';
 import { agentToolActivity } from '../agentToolActivity';
+import { claudeShellPost, claudeShellPre, isClaudeShellTrackingActive } from '../claudeShellTracking';
 import { exitPlanModeDenialReason, type ExitPlanModeResponse } from '../../exitPlanModeDeferral';
 
 /** Identifies one exact tool call so the model's retry can be matched to the approval. */
@@ -260,6 +261,10 @@ export class AgentToolHooks {
       const toolName = input.tool_name;
       const toolInput = input.tool_input;
       if (this.sessionId) agentToolActivity.started(this.sessionId, toolUseID, toolName, toolInput);
+      // Open the shell attribution window before any early return below can
+      // allow the command. This never gates the tool: a tracker failure leaves
+      // the window abstaining and the command runs as before.
+      if (toolName === 'Bash') await claudeShellPre(this.sessionId, toolUseID, toolInput);
 
       // TeamDelete should be validated by the SDK against active team members.
       // Do not pre-clean teammates here, or TeamDelete will incorrectly succeed.
@@ -579,6 +584,11 @@ export class AgentToolHooks {
 
       // Handle Bash file operations
       if (toolName === 'Bash') {
+        claudeShellPost(this.sessionId, toolUseID);
+        // With hook windows, the turn-end snapshot list comes from the files
+        // the tracker actually linked (ClaudeCodeProvider merges them in), not
+        // from parsing the command text.
+        if (isClaudeShellTrackingActive(this.sessionId)) return {};
         const command = (toolInput?.command as string) || '';
         const cwd = this.workspacePath || process.cwd();
 
@@ -625,7 +635,12 @@ export class AgentToolHooks {
    * Called at the end of the agent's turn, before yielding completion
    */
   async createTurnEndSnapshots(): Promise<void> {
-    for (const filePath of this.editedFilesThisTurn) {
+    await this.createSnapshotsForFiles(this.editedFilesThisTurn);
+  }
+
+  /** 'ai-edit' snapshots of the given files' current content, attributed to this session. */
+  async createSnapshotsForFiles(files: Iterable<string>): Promise<void> {
+    for (const filePath of files) {
       try {
         // Read the final content after all edits this turn
         let finalContent = '';

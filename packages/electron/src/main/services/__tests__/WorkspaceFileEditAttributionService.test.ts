@@ -36,15 +36,16 @@ vi.mock('../../utils/logger', () => ({
 }));
 
 vi.mock('../../utils/fileFilters', () => ({
-  pathContainsExcludedDir: vi.fn(() => false),
+  shouldExcludePath: vi.fn(() => false),
 }));
 
 vi.mock('../SessionEditQuota', () => ({
   sessionEditQuota: { tryReserve: vi.fn(() => Promise.resolve(true)) },
 }));
 
+const throttle = vi.hoisted(() => ({ tryAcquire: vi.fn(() => true), msUntilToken: vi.fn(() => 0) }));
 vi.mock('../WorkspaceAttributionThrottle', () => ({
-  workspaceAttributionThrottle: { tryAcquire: vi.fn(() => true) },
+  workspaceAttributionThrottle: throttle,
 }));
 
 vi.mock('../ToolCallMatcher', () => ({
@@ -68,6 +69,8 @@ import { workspaceFileEditAttributionService } from '../WorkspaceFileEditAttribu
 describe('WorkspaceFileEditAttributionService', () => {
   afterEach(() => {
     workspaceFileAttributionPolicy.__resetForTests();
+    throttle.tryAcquire.mockReset();
+    throttle.tryAcquire.mockReturnValue(true);
     matchWorkspaceFileEdit.mockReset();
     addFileLink.mockReset();
     debug.mockReset();
@@ -115,6 +118,40 @@ describe('WorkspaceFileEditAttributionService', () => {
       expect(matchWorkspaceFileEdit).toHaveBeenCalledWith(
         expect.objectContaining({ filePath: '/workspace/src/other.ts' }),
       );
+    });
+  });
+
+  // Claude Code Bash edits are linked by hook windows. Its sessions remain
+  // rivals for the matcher, but a fuzzy row for them would be a second guess.
+  it('marks hook-window sessions ineligible to win and is not blanked by them', async () => {
+    workspaceFileAttributionPolicy.set('legacy-session', '/workspace', 'shell-window');
+    getRunningSessionIds.mockReturnValue(['legacy-session']);
+    matchWorkspaceFileEdit.mockResolvedValue({ winner: null, candidates: [], reason: 'shell_window_owner' });
+
+    workspaceFileEditAttributionService.ingestWatcherEvent({
+      workspacePath: '/workspace', filePath: '/workspace/src/shell.ts', timestamp: Date.now(), beforeContent: 'before',
+    });
+
+    await vi.waitFor(() => {
+      expect(matchWorkspaceFileEdit).toHaveBeenCalledWith(expect.objectContaining({
+        filePath: '/workspace/src/shell.ts',
+        ineligibleSessionIds: ['legacy-session'],
+      }));
+    });
+  });
+
+  // A real edit in the same second as a build's output used to vanish with it.
+  it('defers an over-budget event and processes it once tokens refill', async () => {
+    matchWorkspaceFileEdit.mockResolvedValue({ winner: null, candidates: [], reason: 'no-candidates' });
+    throttle.tryAcquire.mockReturnValueOnce(false);
+
+    workspaceFileEditAttributionService.ingestWatcherEvent({
+      workspacePath: '/workspace', filePath: '/workspace/src/deferred.ts', timestamp: Date.now(), beforeContent: 'before',
+    });
+    expect(matchWorkspaceFileEdit).not.toHaveBeenCalled();
+
+    await vi.waitFor(() => {
+      expect(matchWorkspaceFileEdit).toHaveBeenCalledWith(expect.objectContaining({ filePath: '/workspace/src/deferred.ts' }));
     });
   });
 });

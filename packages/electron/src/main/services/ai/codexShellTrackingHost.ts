@@ -16,7 +16,10 @@ import { sessionEditQuota } from '../SessionEditQuota';
 import { workspaceAttributionThrottle } from '../WorkspaceAttributionThrottle';
 import { notifySessionFilesUpdated } from '../sessionFilesNotify';
 import { logger } from '../../utils/logger';
-import { ExcludedShellCandidate, ShellFileAttribution } from './ShellFileAttribution';
+import { ExcludedShellCandidate, ShellFileAttribution, type ShellFileEvidence, type ShellPersistContext } from './ShellFileAttribution';
+import { historyManager } from '../../HistoryManager';
+import { recordClaudeShellAttributedFile } from '@nimbalyst/runtime/ai/server/claudeShellTracking';
+import { shellBeforeContentLedger } from './shellBeforeContentLedger';
 import { prepareShellCheckoutBaseline } from './ShellCheckoutBaseline';
 import { ShellTrackingCoverage } from './ShellTrackingCoverage';
 import { createShellCoverageStore } from './shellCoverageStore';
@@ -94,8 +97,10 @@ export const shellFileAttribution = new ShellFileAttribution({
   otherWriter: (sessionId, filePath, observedAt) => agentToolActivity.writerEvidence(sessionId, filePath, observedAt),
   report: (generation, reason, turnId, toolUseId, hook) => shellTrackingCoverage.record(generation, reason, turnId, toolUseId, hook),
   currentTurn: (generation) => shellTrackingCoverage.currentTurn(generation),
-  persist: async (evidence) => {
-    if (!workspaceAttributionThrottle.tryAcquire(evidence.workspacePath)) return 'throttled';
+  persist: async (evidence, context) => {
+    // Per session: one session's build output must not spend another's budget.
+    // Excluded paths never reach here (`read` rejects them first).
+    if (!workspaceAttributionThrottle.tryAcquire('session:' + evidence.sessionId)) return 'throttled';
     if (!(await sessionEditQuota.tryReserve(evidence.sessionId, evidence.filePath))) return 'quota';
     await SessionFilesRepository.addFileLink({
       sessionId: evidence.sessionId,
@@ -115,10 +120,48 @@ export const shellFileAttribution = new ShellFileAttribution({
         },
       },
     });
+    await tagShellBaseline(evidence, context);
+    recordClaudeShellAttributedFile(evidence.sessionId, evidence.filePath);
     notifySessionFilesUpdated(evidence.sessionId);
     return 'persisted';
   },
 });
+
+/**
+ * Pending-review baseline for a shell-attributed file, so its diff has a
+ * "before". Exact for files that were tracked and clean when the window
+ * opened (the pinned revision's blob); for files already dirty, the content
+ * the session's own watcher held just before the window's first change. No
+ * baseline means no tag, the same as a new file. Never fails the link.
+ */
+async function tagShellBaseline(evidence: ShellFileEvidence, context: ShellPersistContext | undefined): Promise<void> {
+  if (!context) return;
+  try {
+    const pending = await historyManager.getPendingTags(evidence.filePath);
+    // An earlier Edit/Write or command in this session already holds the baseline.
+    if (pending?.some((tag) => tag.sessionId === evidence.sessionId)) return;
+    // In a Git checkout the window-start fingerprint decides; a ledger entry
+    // that does not match it (committed-blob fallback, an evicted or earlier
+    // change) gives no tag rather than a wrong one.
+    const before = context.checkout
+      ? await context.checkout.baselineContent?.(evidence.filePath, shellBeforeContentLedger.observed(evidence.sessionId, evidence.filePath))
+      : shellBeforeContentLedger.beforeWindow(evidence.sessionId, evidence.filePath, context.windowStart);
+    if (before === undefined) return;
+    await historyManager.createTag(
+      evidence.workspacePath,
+      evidence.filePath,
+      `ai-edit-pending-${evidence.sessionId}-${evidence.toolUseId}`,
+      before,
+      evidence.sessionId,
+      evidence.toolUseId,
+      // Inferred from a hook window, not observed at the write; an
+      // authoritative writer may replace it.
+      { speculative: true },
+    );
+  } catch (error) {
+    logger.main.warn('[ShellTracking] Baseline tag failed:', error);
+  }
+}
 
 /** One loopback endpoint per owned Codex process; no port-wide cleanup. */
 export async function prepareShellTracking(sessionId: string, workspace: string) {

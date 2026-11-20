@@ -880,6 +880,34 @@ describe('ToolCallMatcher', () => {
       expect(result.winner).toBeNull();
       expect(result.reason).toBe('competing_writer');
     });
+
+    // A hook-window session owns its Bash edits through its own tracker. When
+    // its tool is the best explanation, no lower-scored session may take it.
+    it('gives no winner when the best match belongs to an ineligible hook-window session', async () => {
+      (database.query as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+        rows: [
+          {
+            session_id: 'claude-shell', id: 31, created_at_ms: baseTime,
+            content: JSON.stringify({ type: 'item.completed', item: { type: 'file_change', id: 'item-c', changes: [{ path: '/workspace/src/c.ts', kind: 'update' }] } }),
+          },
+          {
+            session_id: 'opencode', id: 32, created_at_ms: baseTime + 50,
+            content: JSON.stringify({ type: 'item.completed', item: { type: 'command_execution', id: 'item-o', command: 'echo test >> c.ts' } }),
+          },
+        ],
+      });
+
+      const result = await toolCallMatcher.matchWorkspaceFileEdit({
+        workspacePath: '/workspace',
+        filePath: '/workspace/src/c.ts',
+        fileTimestamp: baseTime + 70,
+        candidateSessionIds: ['claude-shell', 'opencode'],
+        ineligibleSessionIds: ['claude-shell'],
+      });
+
+      expect(result.winner).toBeNull();
+      expect(result.reason).toBe('shell_window_owner');
+    });
   });
 
   describe('getDiffsForToolCall (Codex synthetic ID lookup)', () => {

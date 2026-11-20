@@ -141,8 +141,9 @@ import type Store from 'electron-store';
 import type { AIService } from './AIService';
 import type { HooklessAgentFileWatcher } from './HooklessAgentFileWatcher';
 import type { WorkspaceFileAttributionMode } from '../WorkspaceFileAttributionPolicy';
+import { isShellWindowLifecycleConfigured } from './HooklessAgentFileWatcher';
 import {
-  attributionModeForFileChangeFidelity,
+  attributionModeForProvider,
   fileChangeFidelityForProviderType,
   isProviderEditTool,
   type FileChangeFidelity,
@@ -164,8 +165,9 @@ function resolveWorkspaceFileAttributionMode(
   const liveProvider = provider as (AIProvider & {
     getFileChangeFidelity?: () => FileChangeFidelity;
   }) | null | undefined;
+  const shellWindow = isShellWindowLifecycleConfigured();
   const live = liveProvider?.getFileChangeFidelity?.();
-  if (live) return attributionModeForFileChangeFidelity(live);
+  if (live) return attributionModeForProvider(providerName, live, shellWindow);
 
   // Codex is the only provider whose fidelity is a user-selected setting: the
   // legacy SDK transport has no `fileChange` item. Without a live instance to
@@ -178,7 +180,7 @@ function resolveWorkspaceFileAttributionMode(
     return 'fuzzy';
   }
 
-  return attributionModeForFileChangeFidelity(fileChangeFidelityForProviderType(providerName));
+  return attributionModeForProvider(providerName, fileChangeFidelityForProviderType(providerName), shellWindow);
 }
 
 export type SendMessageHandler = (

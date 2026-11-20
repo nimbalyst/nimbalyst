@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { AgentToolHooks } from '../AgentToolHooks';
 import type { AgentToolHooksOptions } from '../AgentToolHooks';
 import { agentToolActivity } from '../../agentToolActivity';
+import { __resetClaudeShellTrackingForTests, claudeShellEndTurn, setClaudeShellTrackingSink } from '../../claudeShellTracking';
 import { parseExitPlanModeDeferral, type ExitPlanModeResponse } from '../../../exitPlanModeDeferral';
 
 // Mock fs module
@@ -141,6 +142,39 @@ describe('AgentToolHooks', () => {
     expect(agentToolActivity.writerEvidence('activity-session', file, Date.now())).toBe('possible');
     await hooks.createPostToolUseHook()(input, 'activity-bash', { signal });
     expect(agentToolActivity.writerEvidence('activity-session', file, Date.now() + 10_000)).toBe('idle');
+  });
+
+  // Hook windows bracket every Bash call so a file it writes is linked to the
+  // session even when the command never names the file.
+  it('opens a shell window before Bash runs and keeps a backgrounded one open past its acknowledgement', async () => {
+    const calls: string[] = [];
+    setClaudeShellTrackingSink({
+      isTracking: (id) => id === 'shell-session',
+      pre: async (_id, toolUseId) => { calls.push('pre:' + toolUseId); },
+      post: async (_id, toolUseId) => { calls.push('post:' + toolUseId); },
+      endTurn: async () => { calls.push('endTurn'); },
+      drain: async () => {},
+    });
+    try {
+      const hooks = new AgentToolHooks(createMockOptions({ sessionId: 'shell-session' }));
+      const signal = new AbortController().signal;
+      const foreground = { tool_name: 'Bash', tool_input: { command: "python3 - <<'EOF'\np='x.ts'\nEOF" } };
+      const background = { tool_name: 'Bash', tool_input: { command: 'pnpm test', run_in_background: true } };
+
+      expect(await hooks.createPreToolUseHook()(foreground, 'fg', { signal })).toEqual({});
+      expect(calls).toEqual(['pre:fg']);
+      await hooks.createPostToolUseHook()(foreground, 'fg', { signal });
+      await hooks.createPreToolUseHook()(background, 'bg', { signal });
+      await hooks.createPostToolUseHook()(background, 'bg', { signal });
+      expect(calls).toEqual(['pre:fg', 'post:fg', 'pre:bg']);
+      // Turn-end snapshots come from linked files, not parsed command text.
+      expect(hooks.getEditedFiles().size).toBe(0);
+
+      claudeShellEndTurn('shell-session');
+      expect(calls).toEqual(['pre:fg', 'post:fg', 'pre:bg', 'endTurn']);
+    } finally {
+      __resetClaudeShellTrackingForTests();
+    }
   });
 
   describe('Bash post-tool hook: editedFilesThisTurn tracking', () => {

@@ -157,6 +157,7 @@ import { buildTurnQuery, prepareTurnAttachments, resolveTurnPaths } from './clau
 import { buildTurnCompleteUsage, finishTurn, handleTurnError, type TurnEpilogueHost } from './claudeCode/turnEpilogue';
 import { fromDbBoolean } from '../../../core/dbBoolean';
 import { agentToolActivity } from '../agentToolActivity';
+import { claudeShellEndTurn, claudeShellPost, takeClaudeShellAttributedFiles } from '../claudeShellTracking';
 import { applyTaskListMutation, sortTaskList, type TaskListItem } from './claudeCode/taskListReconstruct';
 import { exitPlanModeDenialReason, type ExitPlanModeResponse } from '../../exitPlanModeDeferral';
 
@@ -1262,6 +1263,7 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
               case 'tool_result': {
                 // A failed or denied call may never reach PostToolUse.
                 if (sessionId) agentToolActivity.finished(sessionId, item.toolUseId);
+                claudeShellPost(sessionId, item.toolUseId, { failed: item.isError === true });
                 const toolCall = state.toolCallsById.get(item.toolUseId);
                 if (toolCall) {
                   const { isDuplicate, isBackgroundAck } = applyToolResultToToolCall(toolCall, item.content, item.isError);
@@ -1509,6 +1511,9 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
             await this.flushPendingWrites();
             if (sessionId) await this.processTranscriptMessages(sessionId);
 
+            if (this.toolHooksService) {
+              for (const file of await takeClaudeShellAttributedFiles(sessionId)) this.toolHooksService.getEditedFiles().add(file);
+            }
             if (this.toolHooksService && this.toolHooksService.getEditedFiles().size > 0) {
               await this.toolHooksService.createTurnEndSnapshots();
             }
@@ -1709,6 +1714,13 @@ export class ClaudeCodeProvider extends BaseAgentProvider {
     this.leadQuery = null;
     // Background commands drained with the turn; nothing it started is still running.
     if (sessionId) agentToolActivity.endTurn(sessionId);
+    // Backgrounded commands close here, after the result's snapshot pass; their
+    // links persist once the windows reconcile, so snapshot those files then.
+    const hooksForShellSnapshots = this.toolHooksService;
+    void claudeShellEndTurn(sessionId)
+      .then(() => takeClaudeShellAttributedFiles(sessionId))
+      .then((files) => files.length > 0 ? hooksForShellSnapshots?.createSnapshotsForFiles(files) : undefined)
+      .catch((error) => console.warn('[CLAUDE-CODE] Turn-end shell snapshots failed:', error));
     ClaudeCodeProvider.streamingInstances.delete(this);
     this.abortController = null;
     this.wasInterrupted = false;

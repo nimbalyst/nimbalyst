@@ -75,7 +75,7 @@ Twelve built-in provider lanes, plus any agent an extension contributes. Every l
 **Cross-provider behavior**
 
 - Extension-contributed agent providers — an extension can register its own agent lane alongside the built-ins
-- Per-provider file-change fidelity (`providerFileTracking.ts`) — each lane declares how well it can report the files it changed (`structured` / `tool-args` / `none`), and the filesystem watcher is switched off only for lanes that report authoritatively. Lanes with no delete or move tool (Grok Build, Gemini) deliberately keep the watcher on so `rm` inside a shell command still shows up in the files-edited sidebar
+- Per-provider file-change fidelity (`providerFileTracking.ts`) — each lane declares how well it can report the files it changed (`structured` / `tool-args` / `none`), and the filesystem watcher is switched off only for lanes that report authoritatively. Lanes with no delete or move tool (Grok Build, Gemini) deliberately keep the watcher on so `rm` inside a shell command still shows up in the files-edited sidebar. Claude Code Bash commands are bracketed by its pre/post tool hooks, so a file a command changes is linked to the session even when the command never names it (python heredocs, codegen); when two sessions' commands overlap the file is left unlinked and the sidebar lists it as withheld
 - Per-project AI provider overrides (Project settings) on top of application-level provider config
 
 ## AI Sessions
