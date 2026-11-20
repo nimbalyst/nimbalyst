@@ -25,6 +25,7 @@ import { createMigrationBridgeReader, deserializeBridgeError } from './migration
 import { parentPort } from 'worker_threads';
 import { performance } from 'node:perf_hooks';
 import inspector from 'node:inspector';
+import v8 from 'node:v8';
 import * as path from 'path';
 import * as fs from 'fs';
 import { v4 as uuidv4 } from 'uuid';
@@ -112,6 +113,44 @@ let workerHighEluStreak = 0;
 const WORKER_PROFILE_TTL_MS = 60_000;
 const WORKER_PROFILE_DURATION_MS = 5_000;
 const WORKER_ELU_THRESHOLD = 0.8;
+/**
+ * Heap-fraction thresholds that log once per upward crossing (GitHub #1988:
+ * the worker died with ERR_WORKER_OUT_OF_MEMORY after hours of use and we had
+ * no heap numbers). The latest sample also goes to main, because a worker
+ * dying of OOM cannot reliably send a final message.
+ */
+const WORKER_HEAP_WARN_FRACTIONS = [0.7, 0.85];
+let workerHeapWarnLevel = 0;
+
+function sampleWorkerHeap(): void {
+  try {
+    const mem = process.memoryUsage();
+    const limit = v8.getHeapStatistics().heap_size_limit;
+    const fraction = limit > 0 ? mem.heapUsed / limit : 0;
+    const sample = {
+      at: Date.now(),
+      heapUsedBytes: mem.heapUsed,
+      heapTotalBytes: mem.heapTotal,
+      heapLimitBytes: limit,
+      externalBytes: mem.external,
+      arrayBuffersBytes: mem.arrayBuffers,
+      // rss is process-wide (main + every worker), not this thread's.
+      processRssBytes: mem.rss,
+    };
+    let level = 0;
+    while (level < WORKER_HEAP_WARN_FRACTIONS.length && fraction >= WORKER_HEAP_WARN_FRACTIONS[level]) level++;
+    if (level > workerHeapWarnLevel) {
+      log('warn', '[SQLiteWorker] heap usage crossed threshold', {
+        ...sample,
+        fraction: Number(fraction.toFixed(3)),
+      });
+    }
+    workerHeapWarnLevel = level;
+    parentPort?.postMessage({ event: 'heapSample', payload: sample });
+  } catch {
+    // Sampling must never take the worker down.
+  }
+}
 const WORKER_ELU_TRIGGER_SAMPLES = 2;
 
 async function captureWorkerCpuProfile(triggerElu: number): Promise<void> {
@@ -186,6 +225,7 @@ function startWorkerCpuMonitor(): void {
     } else {
       workerHighEluStreak = 0;
     }
+    sampleWorkerHeap();
   }, 10_000);
   if (typeof timer.unref === 'function') timer.unref();
 }
