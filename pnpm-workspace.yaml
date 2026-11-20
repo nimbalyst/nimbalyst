@@ -37,17 +37,27 @@ engineStrict: true
 # Release cooldown: never resolve a version published less than 72 hours ago.
 minimumReleaseAge: 4320
 minimumReleaseAgeExclude:
-  # 2026-11-09: claude-agent-sdk 0.3.321 (first release that knows claude-fable-5-2).
-  # Remove once it clears the cooldown (2026-11-12).
-  - '@anthropic-ai/claude-agent-sdk@0.3.321'
-  - '@anthropic-ai/claude-agent-sdk-darwin-arm64@0.3.321'
-  - '@anthropic-ai/claude-agent-sdk-darwin-x64@0.3.321'
-  - '@anthropic-ai/claude-agent-sdk-linux-arm64@0.3.321'
-  - '@anthropic-ai/claude-agent-sdk-linux-arm64-musl@0.3.321'
-  - '@anthropic-ai/claude-agent-sdk-linux-x64@0.3.321'
-  - '@anthropic-ai/claude-agent-sdk-linux-x64-musl@0.3.321'
-  - '@anthropic-ai/claude-agent-sdk-win32-arm64@0.3.321'
-  - '@anthropic-ai/claude-agent-sdk-win32-x64@0.3.321'
+  # 2026-11-20: claude-agent-sdk 0.3.329 (background-agent interrupt status fix, idle-session memory release).
+  # Remove once it clears the cooldown (2026-11-22).
+  - '@anthropic-ai/claude-agent-sdk@0.3.329'
+  - '@anthropic-ai/claude-agent-sdk-darwin-arm64@0.3.329'
+  - '@anthropic-ai/claude-agent-sdk-darwin-x64@0.3.329'
+  - '@anthropic-ai/claude-agent-sdk-linux-arm64@0.3.329'
+  - '@anthropic-ai/claude-agent-sdk-linux-arm64-musl@0.3.329'
+  - '@anthropic-ai/claude-agent-sdk-linux-x64@0.3.329'
+  - '@anthropic-ai/claude-agent-sdk-linux-x64-musl@0.3.329'
+  - '@anthropic-ai/claude-agent-sdk-win32-arm64@0.3.329'
+  - '@anthropic-ai/claude-agent-sdk-win32-x64@0.3.329'
+  # 2026-11-20: codex-sdk 0.171.0 (GPT-6.2 model catalog, approval and permission-profile fixes).
+  # Remove once it clears the cooldown (2026-11-23).
+  - '@openai/codex-sdk@0.171.0'
+  - '@openai/codex@0.171.0'
+  - '@openai/codex@0.171.0-darwin-arm64'
+  - '@openai/codex@0.171.0-darwin-x64'
+  - '@openai/codex@0.171.0-linux-arm64'
+  - '@openai/codex@0.171.0-linux-x64'
+  - '@openai/codex@0.171.0-win32-arm64'
+  - '@openai/codex@0.171.0-win32-x64'
 
 # `pnpm run` should not silently start an install: parallel agent sessions share
 # a checkout, and two concurrent installs corrupt node_modules.
@@ -84,7 +94,7 @@ overrides:
   # Transformers 3.8.1 declares Sharp 0.34, which bundles vulnerable native image libraries.
   # Remove when a Transformers release supports patched Sharp and our Intel Mac target.
   '@huggingface/transformers@3.8.1>sharp': 0.35.5
-  '@anthropic-ai/claude-agent-sdk': 0.3.321
+  '@anthropic-ai/claude-agent-sdk': 0.3.329
   prismjs: ^1.30.0
   vite: 7.3.7
   zod: 4.6.7
