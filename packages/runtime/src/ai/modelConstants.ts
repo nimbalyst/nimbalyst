@@ -581,7 +581,7 @@ export const DEFAULT_MODELS = {
   // CLAUDE_CODE_SAFE_FALLBACK_MODEL.
   'claude-code': 'claude-code:opus',
   'claude-code-cli': 'claude-code-cli:opus',
-  'openai-codex': 'openai-codex:gpt-6.1-sol',
+  'openai-codex': 'openai-codex:gpt-6.2-sol',
   // The deprecated ACP transport runs an older codex build with no GPT-6
   // catalog entries, so it stays on GPT-5.6.
   'openai-codex-acp': 'openai-codex-acp:gpt-5.6-sol',

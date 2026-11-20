@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 <!-- Changes to existing functionality go here -->
+- New Codex sessions default to GPT-6.2 Sol, the model Codex itself selects by default; GPT-6.2 Sol and GPT-6.2 Astra are now listed in the Codex model picker
 
 ### Fixed
 <!-- Bug fixes go here -->

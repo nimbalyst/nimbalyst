@@ -30,6 +30,7 @@ import { buildDocumentAttachmentPromptText } from '../providers/codex/documentAt
 import { describeCodexConfigError } from './codexConfigError';
 import { resolveCodexPermissionProfile } from './codexPermissionProfile';
 import { clampEffortLevel, parseEffortLevel } from '../effortLevels';
+import { DEFAULT_MODELS } from '../../modelConstants';
 import {
   AgentProtocol,
   ProtocolSession,
@@ -405,7 +406,9 @@ export class CodexSDKProtocol implements AgentProtocol {
     );
 
     const baseOptions = {
-      model: options.model || 'gpt-5',
+      // Same default codex's own catalog selects; the provider normally
+      // resolves a model before this, so this only covers a missing one.
+      model: options.model || DEFAULT_MODELS['openai-codex'].replace(/^openai-codex:/, ''),
       workingDirectory: options.workspacePath,
       skipGitRepoCheck: true,
       approvalPolicy: permissionProfile.approvalPolicy,

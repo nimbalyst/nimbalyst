@@ -81,6 +81,8 @@ describe('per-model effort ceilings', () => {
   // nothing else in the tree records which model stops where.
   it.each([
     ['gpt-6-astra', 'ultra'],
+    ['gpt-6.2-sol', 'ultra'],
+    ['gpt-6.2-astra', 'ultra'],
     ['gpt-6.1-sol', 'ultra'],
     ['gpt-6.1-terra', 'ultra'],
     ['gpt-6-sol', 'ultra'],
