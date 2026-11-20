@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-11-20T20:24:09.734Z",
+  "generatedAt": "2026-11-20T20:30:08.988Z",
   "scope": {
     "workspaceRoots": [
       "packages/electron",
@@ -820,9 +820,9 @@
       "noticeFiles": []
     },
     {
-      "id": "@hono/node-server@1.19.17",
+      "id": "@hono/node-server@2.1.6",
       "name": "@hono/node-server",
-      "version": "1.19.17",
+      "version": "2.1.6",
       "rawLicense": "MIT",
       "selectedLicense": "MIT",
       "reviewRequired": false,
@@ -12331,9 +12331,9 @@
       "noticeFiles": []
     },
     {
-      "id": "hono@4.13.7",
+      "id": "hono@4.13.16",
       "name": "hono",
-      "version": "4.13.7",
+      "version": "4.13.16",
       "rawLicense": "MIT",
       "selectedLicense": "MIT",
       "reviewRequired": false,

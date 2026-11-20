@@ -2285,7 +2285,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 
 ================================================================================
-@hono/node-server@1.19.17
+@hono/node-server@2.1.6
 Selected license: MIT
 Declared license: MIT
 Install paths: node_modules/@hono/node-server
@@ -18060,7 +18060,7 @@ Issues: No license file found in package directory
 No license file found.
 
 ================================================================================
-hono@4.13.7
+hono@4.13.16
 Selected license: MIT
 Declared license: MIT
 Install paths: node_modules/hono
