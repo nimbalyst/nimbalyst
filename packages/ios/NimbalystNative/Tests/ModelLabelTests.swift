@@ -126,6 +126,8 @@ final class ModelLabelTests: XCTestCase {
 
     func testCodexIncludesUnderlyingModel() {
         XCTAssertEqual(ModelLabel.shortLabel(provider: "openai-codex", model: "openai-codex:gpt-5.4"), "Codex GPT-5.4")
+        XCTAssertEqual(ModelLabel.shortLabel(provider: "openai-codex", model: "openai-codex:gpt-6.2-sol"), "Codex GPT-6.2 Sol")
+        XCTAssertEqual(ModelLabel.shortLabel(provider: "openai-codex", model: "openai-codex:gpt-6.2-astra"), "Codex GPT-6.2 Astra")
         XCTAssertEqual(ModelLabel.shortLabel(provider: "openai-codex", model: "openai-codex:gpt-5-mini"), "Codex GPT-5 Mini")
     }
 
