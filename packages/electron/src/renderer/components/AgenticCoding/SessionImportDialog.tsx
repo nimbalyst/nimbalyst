@@ -126,7 +126,7 @@ export const SessionImportDialog: React.FC<SessionImportDialogProps> = ({
       onClose();
     } catch (err) {
       console.error('[SessionImportDialog] Failed to import sessions:', err);
-      setError('Failed to import sessions');
+      setError(err instanceof Error && err.message ? err.message : 'Failed to import sessions');
     } finally {
       setImporting(false);
     }

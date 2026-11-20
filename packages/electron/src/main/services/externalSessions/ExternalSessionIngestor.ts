@@ -602,7 +602,7 @@ export async function readLegacyExternalMessages(
   return rows.map((row) => ({ ...row, createdAt: row.created_at }));
 }
 
-function isImportedSessionConfig(config: unknown): boolean {
+export function isImportedSessionConfig(config: unknown): boolean {
   return (
     !!config &&
     typeof config === "object" &&

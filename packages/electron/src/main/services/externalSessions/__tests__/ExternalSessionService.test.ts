@@ -127,6 +127,21 @@ describe("ExternalSessionService opt-in lifecycle", () => {
 });
 
 describe("manual selections", () => {
+  it("offers interrupted external imports for retry even when timestamps match", async () => {
+    const ref = { providerId: "claude-code", externalId: "external", workspacePath: "/workspace", filePath: "/log", updatedAt: 10 };
+    const local = { id: "local", updatedAt: 10, providerConfig: { imported: true }, metadata: { externalIngestionOwner: "external" } };
+    const emptyImportIds = vi.fn(async () => new Set(["local"]));
+    const service = new ExternalSessionService({
+      createSources: () => [{ discoverPage: async () => ({ sessions: [ref], hasMore: false }), dispose: vi.fn() }],
+      getRoutes: async () => [],
+      sessions: { get: async () => local },
+      persistence: { resolveSessionId: async () => local.id, emptyImportIds },
+    } as any);
+    expect((await service.scan())[0].syncStatus).toBe("needs-update");
+    local.metadata.externalIngestionOwner = "nimbalyst";
+    expect((await service.scan())[0].syncStatus).toBe("up-to-date");
+    expect(emptyImportIds).toHaveBeenCalledTimes(1);
+  });
   it("skips an ambiguously opened worktree while listing and syncing other sessions", async () => {
     const refs = ["/repoA/worktreeW", "/repoA"].map((workspacePath, index) => ({
       providerId: "claude-code",

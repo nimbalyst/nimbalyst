@@ -6,6 +6,7 @@ import {
   BoundedDiscovery,
   AcceptedHeaderCache,
   contentMarkerAt,
+  cursorInode,
   cursorContentMatches,
   DEFAULT_LINE_BYTES,
   type JsonlEntry,
@@ -444,7 +445,7 @@ export class CodexSource implements ExternalSessionSource {
     if (
       group &&
       (group.anchor !== anchor ||
-        group.inode !== stat.ino ||
+        group.inode !== cursorInode(stat.ino) ||
         stat.size < group.scan.fileSize ||
         (group.done &&
           (group.scan.fileSize !== stat.size ||
