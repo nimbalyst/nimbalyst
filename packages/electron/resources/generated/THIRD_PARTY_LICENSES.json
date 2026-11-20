@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-11-20T20:07:29.415Z",
+  "generatedAt": "2026-11-20T20:24:09.734Z",
   "scope": {
     "workspaceRoots": [
       "packages/electron",
@@ -19949,9 +19949,9 @@
       "noticeFiles": []
     },
     {
-      "id": "sharp@0.34.5",
+      "id": "sharp@0.35.5",
       "name": "sharp",
-      "version": "0.34.5",
+      "version": "0.35.5",
       "rawLicense": "Apache-2.0",
       "selectedLicense": "Apache-2.0",
       "reviewRequired": false,

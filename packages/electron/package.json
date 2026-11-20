@@ -335,7 +335,19 @@
       },
       {
         "from": "../../node_modules/@huggingface/transformers",
-        "to": "node_modules/@huggingface/transformers"
+        "to": "node_modules/@huggingface/transformers",
+        "filter": ["**/*", "!node_modules/**"]
+      },
+      {
+        "from": "../../node_modules",
+        "to": "node_modules",
+        "filter": [
+          "sharp/**/*",
+          "detect-libc/**/*",
+          "semver/**/*",
+          "@img/colour/**/*",
+          "@img/sharp-*-${arch}/**/*"
+        ]
       },
       {
         "from": "../../node_modules/onnxruntime-node",

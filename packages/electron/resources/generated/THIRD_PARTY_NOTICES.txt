@@ -37960,7 +37960,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
 ================================================================================
-sharp@0.34.5
+sharp@0.35.5
 Selected license: Apache-2.0
 Declared license: Apache-2.0
 Install paths: node_modules/sharp
