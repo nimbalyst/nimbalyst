@@ -277,10 +277,6 @@
         "to": "node-pty"
       },
       {
-        "from": "../../node_modules/@img",
-        "to": "app.asar.unpacked/node_modules/@img"
-      },
-      {
         "from": "../../node_modules/@vscode/ripgrep",
         "to": "app.asar.unpacked/node_modules/@vscode/ripgrep"
       },

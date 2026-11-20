@@ -50,7 +50,7 @@ describe("shouldSign", () => {
     `${RELEASE_DIR}\\win-unpacked\\resources\\app.asar.unpacked\\node_modules\\@openai\\codex-win32-x64\\vendor\\x86_64-pc-windows-msvc\\codex-path\\rg.exe`,
     `${RELEASE_DIR}\\win-unpacked\\resources\\app.asar.unpacked\\node_modules\\@anthropic-ai\\claude-agent-sdk-win32-x64\\claude.exe`,
     `${RELEASE_DIR}\\win-unpacked\\swiftshader\\vk_swiftshader.dll`,
-    `${RELEASE_DIR}\\win-unpacked\\resources\\app.asar.unpacked\\node_modules\\@img\\sharp-win32-x64\\lib\\libvips-42.dll`,
+    `${RELEASE_DIR}\\win-unpacked\\resources\\node_modules\\@img\\sharp-win32-x64\\lib\\libvips-42.dll`,
   ])("skips bundled binary %s", (filePath) => {
     expect(shouldSign(filePath)).toBe(false);
   });
