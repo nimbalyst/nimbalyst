@@ -39,6 +39,7 @@ import {
 } from './utils/appActionLinks';
 import { createWorkspaceManagerWindow, getWorkspaceManagerWindow, openOrFocusWorkspaceWindow, setupWorkspaceManagerHandlers, wasWorkspaceManagerManuallyClosed } from './window/WorkspaceManagerWindow.ts';
 import { initializeApplicationWindowRecovery } from './window/ApplicationWindowRecovery';
+import { handleSecondInstance } from './window/secondInstanceActivation';
 import { createTeamManagementWindow, setupTeamManagementHandlers } from './window/TeamManagementWindow';
 import { setupTrayPanelHandlers } from './window/TrayPanelWindow';
 import { setupMenuBarIslandHandlers } from './window/MenuBarIslandWindow';
@@ -802,33 +803,13 @@ if (!allowMultipleInstances) {
         // We are the primary instance. When a second instance tries to launch,
         // extract any deep link URL or file path and handle it here.
         app.on('second-instance', (_event, argv, workingDirectory) => {
-            logger.main.info('[SingleInstance] second-instance event, argv:', argv);
-
-            // On Windows the protocol URL is passed as the last argument
-            const deepLinkUrl = argv.find(arg => arg.startsWith('nimbalyst://'));
-            if (deepLinkUrl) {
-                logger.main.info('[SingleInstance] Found deep link in argv:', summarizeDeepLink(deepLinkUrl));
-                handleDeepLink(deepLinkUrl);
-            }
-
-            // A file or folder path: Windows/Linux file opens, and the
-            // `nimbalyst` shell command, whose relative paths are resolved
-            // against the terminal's directory.
-            const launchTarget = resolveLaunchTarget(argv.slice(userArgsStart(app.isPackaged)), workingDirectory);
-            if (launchTarget) {
-                // A terminal launch leaves the terminal frontmost; bring
-                // Nimbalyst forward before the target window is focused.
-                if (process.platform === 'darwin') app.focus({ steal: true });
-                if (openLaunchTarget(launchTarget)) return;
-            }
-
-            // Focus an existing window so the user sees the result
-            const windows = BrowserWindow.getAllWindows();
-            if (windows.length > 0) {
-                const win = windows[0];
-                if (win.isMinimized()) win.restore();
-                win.focus();
-            }
+            handleSecondInstance(argv, workingDirectory, {
+                handleDeepLink: (deepLinkUrl) => {
+                    logger.main.info('[SingleInstance] Found deep link in argv:', summarizeDeepLink(deepLinkUrl));
+                    handleDeepLink(deepLinkUrl);
+                },
+                openLaunchTarget,
+            });
         });
     }
 }

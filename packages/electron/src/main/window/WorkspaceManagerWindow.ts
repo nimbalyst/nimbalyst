@@ -43,6 +43,7 @@ import {
   notifyStartupWindowRevealed,
   registerStartupWindow,
 } from './StartupActivation';
+import { recoverAfterProjectWindowClosed } from './ApplicationWindowRecovery';
 
 let workspaceManagerWindow: BrowserWindow | null = null;
 
@@ -271,13 +272,18 @@ export function createWorkspaceManagerWindow(options: WorkspaceManagerWindowOpti
 
   // Clean up when closed
   workspaceManagerWindow.on('closed', () => {
+    const closedByUser = !workspaceManagerClosingForProject;
     // If not closing for project selection, mark as manually closed by user
-    if (!workspaceManagerClosingForProject) {
+    if (closedByUser) {
       workspaceManagerManuallyClosed = true;
     }
     // Reset the project selection flag now that the window is closed
     workspaceManagerClosingForProject = false;
     workspaceManagerWindow = null;
+    // A hidden helper window (the capture window) keeps window-all-closed from
+    // firing, so make the quit decision a project-window close makes. A close
+    // for a project pick hands off to a project window and decides nothing.
+    if (closedByUser) recoverAfterProjectWindowClosed();
   });
 
   return workspaceManagerWindow;
