@@ -15,8 +15,10 @@ import {
 import { deliverCodexQuestionAnswer } from "../codexQuestionDelivery";
 import { hasPersistedTerminalResult } from "../questionTerminalResultLookup";
 import { sessionFallbackMayCarryAnswer } from "../../../mcp/tools/interactivePromptFallback";
-import { hasLiveInteractivePrompt } from "../../../mcp/tools/interactivePromptLiveness";
-import { queueAnswerUntilTurnEnds } from "../requestUserInputOrphanedAnswer";
+import {
+  queueAnswerUntilTurnEnds,
+  shouldQueueAnswerUntilTurnEnds,
+} from "../requestUserInputOrphanedAnswer";
 import type { AIServiceContext } from "./AIServiceContext";
 
 export function registerAskUserQuestionAnswerHandler(
@@ -231,20 +233,24 @@ export function registerAskUserQuestionAnswerHandler(
           .join("\n");
         const resumeMessage = `[Resuming after answering a question]\n\n${answerText}`;
 
-        // Another prompt is blocking the turn right now; resuming would abort
-        // it (sendMessage replaces the running request). The answer is already
-        // this card's terminal result above, and reaches the agent through the
-        // prompt queue when the turn ends (NIM-7649).
-        if (hasLiveInteractivePrompt(resolvedSessionId)) {
+        // A turn is running, or another prompt is blocking it; resuming would
+        // abort it (sendMessage replaces the running request). The answer is
+        // already this card's terminal result above, and reaches the agent
+        // through the prompt queue when the turn ends (NIM-7649).
+        if (shouldQueueAnswerUntilTurnEnds(resolvedSessionId)) {
           logger.main.info(
-            `[AIService] AskUserQuestion ${questionId} has no live handler but another prompt is live; queuing the answer: ${resolvedSessionId}`
+            `[AIService] AskUserQuestion ${questionId} has no live handler but the turn is still running; queuing the answer: ${resolvedSessionId}`
           );
+          const { workspacePath } = session;
           try {
             await queueAnswerUntilTurnEnds({
               sessionId: resolvedSessionId,
               promptId: questionId,
               message: resumeMessage,
               publish: (id) => ctx.publishQueueStateToSync(id),
+              drive: workspacePath
+                ? () => ctx.driveQueuedPrompts(resolvedSessionId, workspacePath, "session-idle")
+                : undefined,
             });
           } catch (err) {
             logger.main.error(`[AIService] Failed to queue the AskUserQuestion answer for ${questionId}: ${err}`);

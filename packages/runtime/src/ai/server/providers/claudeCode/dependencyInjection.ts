@@ -63,6 +63,17 @@ export type HistoryManagerPort = {
  */
 export type GitContextLoader = (workspacePath: string) => Promise<string | null>;
 
+/**
+ * Widget answers queued for a session while its turn was running, claimed so
+ * the turn-end dispatch cannot also send them. `settle(true)` once they reached
+ * the turn; `settle(false)` puts them back in the queue.
+ */
+export interface LateAnswerBatch {
+  text: string;
+  settle(delivered: boolean): Promise<void>;
+}
+export type LateAnswerLoader = (sessionId: string) => Promise<LateAnswerBatch | null>;
+
 // ---- Dependency Store ----
 
 /**
@@ -133,6 +144,9 @@ export const ClaudeCodeDeps = {
   // the prompt cache; this loader supplies a Nimbalyst-owned replacement that
   // the provider resolves once and never re-reads.
   gitContextLoader: null as GitContextLoader | null,
+
+  // Hands answers that reached no live waiter mid-turn to the running turn.
+  lateAnswerLoader: null as LateAnswerLoader | null,
 
   // Returns additional directories Claude should have access to based on workspace context
   // (e.g., SDK docs when working on an extension project)
@@ -227,6 +241,10 @@ export const ClaudeCodeDeps = {
 
   setGitContextLoader(loader: GitContextLoader | null): void {
     this.gitContextLoader = loader;
+  },
+
+  setLateAnswerLoader(loader: LateAnswerLoader | null): void {
+    this.lateAnswerLoader = loader;
   },
 
   setAdditionalDirectoriesLoader(loader: AdditionalDirectoriesLoader | null): void {
