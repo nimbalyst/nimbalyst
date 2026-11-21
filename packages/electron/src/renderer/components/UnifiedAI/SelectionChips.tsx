@@ -6,7 +6,7 @@ import {
   subscribeEditorContext,
   getEditorContextSnapshot,
 } from '../../stores/editorContextStore';
-import { getTextSelection, clearTextSelection } from './TextSelectionIndicator';
+import { getTextSelection, clearTextSelection, transcriptSelectionKey } from './TextSelectionIndicator';
 import { clearMockupAnnotationsForFile } from './MockupAnnotationIndicator';
 
 interface SelectionChipsProps {
@@ -14,6 +14,8 @@ interface SelectionChipsProps {
   currentFilePath?: string;
   /** Human-readable title for documents whose paths contain internal IDs. */
   currentFileName?: string;
+  /** The panel's session; a selection in its chat transcript is shown here too. */
+  sessionId?: string;
 }
 
 /** A single removable chip descriptor. */
@@ -65,7 +67,7 @@ function getCombinedSnapshot(): number {
  * reversible "N hidden — restore" affordance; dropping resets when the editor
  * pushes a new selection.
  */
-export const SelectionChips: React.FC<SelectionChipsProps> = ({ currentFilePath, currentFileName }) => {
+export const SelectionChips: React.FC<SelectionChipsProps> = ({ currentFilePath, currentFileName, sessionId }) => {
   useSyncExternalStore(subscribeAll, getCombinedSnapshot);
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(() => new Set());
 
@@ -107,8 +109,8 @@ export const SelectionChips: React.FC<SelectionChipsProps> = ({ currentFilePath,
   const textMatchesFile =
     !!textSelection &&
     textSelection.text.trim().length > 0 &&
-    !!currentFilePath &&
-    textSelection.filePath === currentFilePath;
+    ((!!currentFilePath && textSelection.filePath === currentFilePath) ||
+      (!!sessionId && textSelection.filePath === transcriptSelectionKey(sessionId)));
   if (textMatchesFile && textSelection) {
     const normalizedText = textSelection.text.replace(/\s+/g, ' ').trim();
     const preview = normalizedText.length > 80 ? normalizedText.slice(0, 80) + '…' : normalizedText;

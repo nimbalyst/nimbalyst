@@ -227,7 +227,7 @@ const CodeBlockCopyButton: React.FC<{ codeString: string }> = ({ codeString }) =
   return (
     <button
       type="button"
-      className={`code-block-copy-button p-0.5 rounded-md bg-[var(--nim-bg-secondary)] border border-[var(--nim-border)] cursor-pointer transition-all flex items-center justify-center hover:bg-[var(--nim-bg-hover)]`}
+      className={`code-block-copy-button select-none p-0.5 rounded-md bg-[var(--nim-bg-secondary)] border border-[var(--nim-border)] cursor-pointer transition-all flex items-center justify-center hover:bg-[var(--nim-bg-hover)]`}
       data-testid="code-block-copy-button"
       onClick={handleCopy}
       title="Copy code"
