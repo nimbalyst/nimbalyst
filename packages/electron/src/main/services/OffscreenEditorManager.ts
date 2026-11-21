@@ -16,6 +16,7 @@ import { join } from 'path';
 import { logger } from '../utils/logger';
 import { getPreloadPath } from '../utils/appPaths';
 import { findWindowByWorkspace } from '../window/WindowManager';
+import { getResolvedThemeSync } from '../utils/store';
 import {
   registerCaptureWindowMount,
   unregisterCaptureWindowMount,
@@ -281,8 +282,14 @@ export class OffscreenEditorManager {
 
     const captureWin = await this.getCaptureWindow();
 
+    // The capture window skips initializeTheme(), so it has no app theme of its
+    // own. Without an explicit theme, render with the app's current one, or the
+    // capture comes out unthemed (dark text on a dark background). The capture
+    // renderer only applies 'light' and 'dark'.
+    const captureTheme = theme ?? (getResolvedThemeSync() === 'light' ? 'light' : 'dark');
+
     // Capture from the hidden window -- editor is positioned at 0,0 there
-    const result = await this.captureFromWindow(captureWin, filePath, selector, theme);
+    const result = await this.captureFromWindow(captureWin, filePath, selector, captureTheme);
 
     if (!wasMounted) {
       this.unmountOffscreen(filePath);
