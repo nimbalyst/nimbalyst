@@ -54,8 +54,9 @@ function unwrap<T>(res: { success: boolean; error?: string; data?: T }, label: s
 }
 
 export class RendererPullRequestService {
-  async detectRemote(workspacePath: string): Promise<PrRemote | null> {
-    const res = await requireApi().prDetectRemote(workspacePath);
+  /** The GitHub remote of `repoPath`, one of the workspace's repositories; the workspace root's when omitted */
+  async detectRemote(workspacePath: string, repoPath?: string): Promise<PrRemote | null> {
+    const res = await requireApi().prDetectRemote(workspacePath, repoPath);
     if (!res.success) {
       throw new Error(res.error || 'detectRemote failed');
     }
@@ -219,8 +220,9 @@ export class RendererPullRequestService {
     workspaceId: string,
     remote: string,
     number: number,
+    repoPath?: string,
   ): Promise<{ id: string; name: string; path: string; branch: string }> {
-    const res = await requireApi().prOpenWorktree(workspaceId, remote, number);
+    const res = await requireApi().prOpenWorktree(workspaceId, remote, number, repoPath);
     return unwrap(res, 'pr:open-worktree');
   }
 

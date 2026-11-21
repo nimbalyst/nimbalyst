@@ -15,6 +15,7 @@
 import { BrowserWindow } from 'electron';
 import fs from 'node:fs';
 import { createGit } from '../services/gitClient';
+import path from 'node:path';
 import log from 'electron-log/main';
 import { safeHandle, safeOn } from '../utils/ipcRegistry';
 import { ghCliDetector, type GhCliStatus } from '../services/GhCliDetector';
@@ -31,6 +32,7 @@ import { createWorktreeStore, type Worktree } from '../services/WorktreeStore';
 import { gitOperationLock } from '../services/GitOperationLock';
 import { gitRefWatcher } from '../file/GitRefWatcher';
 import { getDatabase } from '../database/initialize';
+import { listWorkspaceRepos } from '../services/workspaceRepos';
 import {
   getEffectiveGhAccount,
   getPrReviewDefaultGhAccount,
@@ -82,6 +84,21 @@ function emitPrListUpdated(workspacePath: string, remote: string): void {
   }
 }
 
+
+/**
+ * The repository a PR request is about: one of the project's repositories
+ * (`listWorkspaceRepos`), the project root when none is named. A path that is
+ * not one of them is refused rather than read.
+ */
+async function resolvePrRepo(workspacePath: string, repoPath?: string): Promise<string> {
+  if (!repoPath) return workspacePath;
+  const repos = await listWorkspaceRepos(workspacePath);
+  const match = repos.find((repo) => path.resolve(repo) === path.resolve(repoPath));
+  if (!match) {
+    throw new Error(`${repoPath} is not a repository of this project`);
+  }
+  return match;
+}
 
 /** Resolve the PR's web URL from cache, falling back to a constructed github.com URL. */
 function resolvePrUrl(cached: PullRequestRow | null, remote: string, number: number): string {
@@ -193,12 +210,13 @@ export function registerPullRequestHandlers(): void {
     async (
       _event,
       workspacePath: string,
+      repoPath?: string,
     ): Promise<IPCResponse<{ remote: string; host: string } | null>> => {
       if (!workspacePath) {
         return { success: false, error: 'workspacePath required' };
       }
       try {
-        const result = await gitStatusService.parseGitHubRemote(workspacePath);
+        const result = await gitStatusService.parseGitHubRemote(await resolvePrRepo(workspacePath, repoPath));
         return { success: true, data: result };
       } catch (error: unknown) {
         logger.error('pr:detect-remote failed', error);
@@ -547,11 +565,15 @@ export function registerPullRequestHandlers(): void {
       workspacePath: string,
       remote: string,
       number: number,
+      repoPath?: string,
     ): Promise<IPCResponse<Worktree>> => {
       if (!workspacePath || !remote || !number) {
         return { success: false, error: 'workspacePath, remote, number required' };
       }
       try {
+        // The repository the panel points at; its worktree is still the
+        // project's, like any worktree branched from one of its repos
+        const sourceRepo = await resolvePrRepo(workspacePath, repoPath);
         const db = getDatabase();
         if (!db) {
           throw new Error('Database not initialized');
@@ -569,10 +591,10 @@ export function registerPullRequestHandlers(): void {
         // Fetch the PR head into a unique local branch. Done in its own lock,
         // released before createWorktree acquires its own (avoids re-entrancy).
         const branchName = await gitOperationLock.withLock(
-          workspacePath,
+          sourceRepo,
           'pr-fetch',
           async () => {
-            const git = createGit(workspacePath);
+            const git = createGit(sourceRepo);
             const local = await git.branchLocal();
             let candidate = `pr-${number}`;
             let suffix = 2;
@@ -587,10 +609,11 @@ export function registerPullRequestHandlers(): void {
 
         // Create the worktree on a branch based off the fetched PR head, then
         // persist + start the ref watcher (mirrors worktree:create).
-        const worktree = await gitWorktreeService.createWorktree(workspacePath, {
+        const created = await gitWorktreeService.createWorktree(sourceRepo, {
           name: `pr-${number}`,
           baseBranch: branchName,
         });
+        const worktree = { ...created, projectPath: workspacePath, sourceFolderPath: sourceRepo };
         await worktreeStore.create(worktree);
         gitRefWatcher.start(worktree.path, undefined, workspacePath).catch((err) => {
           logger.error('Failed to start GitRefWatcher for PR worktree:', err);
