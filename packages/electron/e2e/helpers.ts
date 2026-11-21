@@ -86,7 +86,9 @@ async function clearTestState(options?: {
 }
 
 async function findDevServerUrl(): Promise<string> {
-  const devServerUrls = ['http://127.0.0.1:5273', 'http://[::1]:5273'];
+  // scripts/e2e-host.sh serves the renderer on its own port and names it here.
+  const override = process.env.NIMBALYST_E2E_DEV_SERVER_URL;
+  const devServerUrls = override ? [override] : ['http://127.0.0.1:5273', 'http://[::1]:5273'];
   let lastError: Error | null = null;
 
   for (const url of devServerUrls) {
@@ -102,10 +104,10 @@ async function findDevServerUrl(): Promise<string> {
 
   throw new Error(
     `\n\n❌ Dev server is not running!\n\n` +
-    `Playwright tests require the Vite dev server to be running on port 5273.\n` +
-    `Please start it in a separate terminal:\n\n` +
-    `  cd packages/electron && npm run dev\n\n` +
-    `Then run the tests again.\n\n` +
+    `Playwright tests require the Vite dev server (${devServerUrls[0]}).\n` +
+    `Start it in a separate terminal:\n\n` +
+    `  cd packages/electron && pnpm run dev\n\n` +
+    `or run the specs without it: ./scripts/e2e-host.sh <spec>\n\n` +
     `Original error: ${lastError?.message ?? 'Unknown error'}\n`
   );
 }
