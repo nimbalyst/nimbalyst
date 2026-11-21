@@ -107,7 +107,7 @@ import {
 } from '../../store/actions/sessionHistoryActions';
 import { setTrackerFavoriteAtom } from '../../store/atoms/trackerPersonalState';
 import { activeWorkspacePathAtom } from '../../store/atoms/openProjects';
-import { WorktreeBaseBranchPicker } from '../AgenticCoding/WorktreeBaseBranchPicker';
+import { WorktreeBaseBranchPicker, type WorktreePickerCreateOptions } from '../AgenticCoding/WorktreeBaseBranchPicker';
 import {
   assertTrackerItemInWorkspace,
   buildTrackerLaunchContext,
@@ -512,7 +512,7 @@ export const TrackerMainView: React.FC<TrackerMainViewProps> = ({
   }, [workspacePath]);
 
   const handleCreateTrackerWorktree = useCallback(async (
-    options: { baseBranch: string; name?: string },
+    options: WorktreePickerCreateOptions,
   ) => {
     if (!pendingWorktreeLaunch) return;
 
