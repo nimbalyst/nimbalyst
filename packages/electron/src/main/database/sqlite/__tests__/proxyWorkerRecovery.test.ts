@@ -44,6 +44,20 @@ class FakeWorker extends EventEmitter {
     this.exited = true;
     this.emit('exit', code);
   }
+  /**
+   * Answer a held request, then die out of memory, all before main runs the
+   * awaiting continuation. With main busy, a real out-of-memory death
+   * delivers the answer, `error` and `exit` in one callback.
+   */
+  replyThenDie(msg: Posted): void {
+    this.emit('message', { id: msg.id, success: true, data: { rows: [] } });
+    this.exited = true;
+    this.emit('error', Object.assign(
+      new Error('Worker terminated due to reaching memory limit: JS heap out of memory'),
+      { code: 'ERR_WORKER_OUT_OF_MEMORY' },
+    ));
+    this.emit('exit', 1);
+  }
   async terminate(): Promise<number> {
     if (!this.exited) this.crash(1);
     return 1;
@@ -240,5 +254,85 @@ describe('SQLiteDatabaseProxy worker recovery', () => {
     expect(spawned[1].exited).toBe(true);
     await vi.advanceTimersByTimeAsync(60_000);
     expect(spawned).toHaveLength(2);
+  });
+
+  // The replacement worker answers its recovery `init` and dies before main
+  // runs the continuation of that `await`. Its `exit` cannot start a second
+  // recovery while the first is running, so the attempt itself must notice.
+  it('does not end initialized with no worker when a recovery worker answers init and then exits', async () => {
+    const proxy = await liveProxy();
+    behavior = (w, msg) => {
+      if (w === spawned[1] && msg.type === 'init') {
+        queueMicrotask(() => {
+          w.emit('message', { id: msg.id, success: true, data: { rows: [] } });
+          w.crash(1);
+        });
+        return 'hang';
+      }
+      return 'reply';
+    };
+    spawned[0].crash(1);
+    await vi.advanceTimersByTimeAsync(300);
+    await vi.advanceTimersByTimeAsync(60_000);
+
+    await expect(proxy.query('SELECT 1')).resolves.toEqual({ rows: [] });
+    expect(proxy.isInitialized()).toBe(true);
+  });
+
+  it('counts a recovery worker that answers init and dies out of memory as a failed attempt, and serves waiting requests from the next attempt', async () => {
+    const proxy = await liveProxy();
+    behavior = (w, msg) => {
+      if (w === spawned[1] && msg.type === 'init') {
+        queueMicrotask(() => w.replyThenDie(msg));
+        return 'hang';
+      }
+      return 'reply';
+    };
+    spawned[0].crash(1);
+    const waiting = proxy.query('SELECT 1').then((v) => v, (e: Error) => e);
+    await vi.advanceTimersByTimeAsync(300);
+    expect(types(spawned[1])).toEqual(['init']);
+    expect(proxy.isInitialized()).toBe(false);
+
+    // The second attempt runs after its 1s backoff.
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(await waiting).toEqual({ rows: [] });
+    expect(spawned).toHaveLength(3);
+    expect(types(spawned[2])).toEqual(['init', 'query']);
+    expect(proxy.isInitialized()).toBe(true);
+  });
+
+  it('fails a waiting request with the recovery error when every recovery worker answers init and dies, then rate-limits initialize', async () => {
+    const proxy = await liveProxy();
+    behavior = (w, msg) => {
+      if (w !== spawned[0] && msg.type === 'init') {
+        queueMicrotask(() => w.replyThenDie(msg));
+        return 'hang';
+      }
+      return 'reply';
+    };
+    spawned[0].crash(1);
+    const waiting = proxy.query('INSERT INTO t VALUES (1)').then(() => null, (e: Error) => e);
+    // Five attempts: 250 + 1000 + 4000 + 15000 + 30000 ms of backoff, inside
+    // the request's own 60s timeout.
+    await vi.advanceTimersByTimeAsync(51_000);
+
+    const err = (await waiting) as (Error & { code?: string; cause?: Error }) | null;
+    expect(err?.message).toMatch(/not sent: worker recovery failed/);
+    expect(err?.code).toBe(DB_REQUEST_NOT_SUBMITTED);
+    expect(err?.cause?.message).toMatch(/recovery failed after 5 attempts/);
+    expect(spawned).toHaveLength(6);
+    // The write was never posted to any worker, so the caller may retry it.
+    expect(spawned.slice(1).map(types)).toEqual(Array(5).fill(['init']));
+    expect(proxy.isInitialized()).toBe(false);
+
+    await expect(proxy.initialize()).rejects.toMatchObject({ code: DB_REQUEST_NOT_SUBMITTED });
+    expect(spawned).toHaveLength(6);
+
+    behavior = () => 'reply';
+    await vi.advanceTimersByTimeAsync(60_000);
+    await proxy.initialize();
+    expect(spawned).toHaveLength(7);
+    await expect(proxy.query('SELECT 1')).resolves.toEqual({ rows: [] });
   });
 });

@@ -729,9 +729,17 @@ export class SQLiteDatabaseProxy {
       }
       try {
         this.createWorker();
+        const worker = this.worker;
         await this.post('init', this.initPayload(), 120_000);
         if (this.closing) {
           throw transportError('SQLiteDatabaseProxy closed during recovery', DB_REQUEST_NOT_SUBMITTED);
+        }
+        if (this.worker !== worker) {
+          // The new worker answered `init` and died before this ran: with main
+          // busy, an out-of-memory death delivers the answer, `error` and
+          // `exit` in one callback. Its exit could not start a recovery while
+          // this one runs, so this attempt failed.
+          throw new Error('SQLite worker died right after answering recovery init');
         }
         this.initialized = true;
         return;
