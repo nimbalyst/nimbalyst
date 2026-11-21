@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 <!-- Bug fixes go here -->
+- Launching Nimbalyst again while it is already running no longer starts a second copy of the app that shows a window for about five seconds and then disappears. On Windows and Linux the extra launch now hands over to the running app and exits at once, and on every platform it no longer opens the shared database or replaces the running app's logs.
 
 ### Removed
 <!-- Removed features go here -->

@@ -69,6 +69,8 @@ import { registerPermissionHandlers } from './ipc/PermissionHandlers';
 import { registerGitStatusHandlers } from './ipc/GitStatusHandlers';
 import { registerShellCommandHandlers } from './shellCommand/shellCommandActions';
 import { resolveLaunchTarget, statPathKind, userArgsStart, type LaunchTarget } from './shellCommand/launchTarget';
+import { markSingleInstanceLockLost, ownerOnly, ownsAppLifecycle } from './singleInstance/lifecycleOwnership';
+import { planLosingInstance } from './singleInstance/losingInstancePlan';
 import { registerGitHandlers } from './ipc/GitHandlers';
 import { registerProjectSelectionHandlers } from './ipc/ProjectSelectionHandlers';
 import { registerProjectAppearanceHandlers } from './ipc/ProjectAppearanceHandlers';
@@ -748,34 +750,44 @@ if (!allowMultipleInstances) {
     const gotTheLock = app.requestSingleInstanceLock();
 
     if (!gotTheLock) {
-        // Another instance holds the lock. On macOS, when the OS launches the
-        // packaged app to open a file, the path comes via Apple Events which
-        // Electron delivers as the open-file event. But open-file only fires
-        // once the event loop is running. We must NOT quit synchronously or the
-        // event is lost. Instead, stay alive, wait for open-file, relay the
-        // path via a signal file, then exit.
+        // Another instance holds the lock. This process only hands its launch
+        // over and quits; it must not boot the app, open the shared database
+        // or run the quit cleanup (#1188, #1070). Recorded before any
+        // app.quit(), which emits before-quit synchronously.
+        markSingleInstanceLockLost();
         const pendingOpenFilePath = path.join(app.getPath('userData'), '.pending-open-file');
 
-        logger.main.info(`[SingleInstance] Second instance launched, waiting for open-file. argv=${JSON.stringify(process.argv)}`);
+        logger.main.info(`[SingleInstance] Second instance launched. argv=${JSON.stringify(process.argv)}`);
 
-        // Also check argv for file paths (Windows/Linux, or CLI open --args).
-        // A folder (`nimbalyst .`) reaches the primary through its
-        // second-instance event, which carries this process's argv and cwd.
+        // A file in argv (Windows/Linux, or CLI open --args) is relayed through
+        // a signal file. A folder (`nimbalyst .`), a missing path or a deep link
+        // reaches the primary through its second-instance event, which carries
+        // this process's argv and cwd.
         const launchTarget = resolveLaunchTarget(process.argv.slice(userArgsStart(app.isPackaged)), process.cwd());
-        const fileArg = launchTarget?.kind === 'file' ? launchTarget.path : null;
-        if (launchTarget && launchTarget.kind !== 'file') {
-            logger.main.info(`[SingleInstance] Second instance has ${launchTarget.kind} target, quitting: ${launchTarget.path}`);
+        const plan = planLosingInstance({
+            platform: process.platform,
+            launchTarget,
+            hasDeepLink: process.argv.some(arg => arg.startsWith('nimbalyst://')),
+        });
+        if (plan.action === 'relay-file-and-quit') {
+            logger.main.info(`[SingleInstance] Found file in argv: ${plan.filePath}`);
+            try { writeFileSync(pendingOpenFilePath, plan.filePath, 'utf-8'); } catch (_) {}
             app.quit();
-        } else if (fileArg) {
-            logger.main.info(`[SingleInstance] Found file in argv: ${fileArg}`);
-            try { writeFileSync(pendingOpenFilePath, fileArg, 'utf-8'); } catch (_) {}
-            app.quit();
-        } else if (process.argv.find(arg => arg.startsWith('nimbalyst://'))) {
-            // Primary instance will handle via second-instance event; quit immediately
-            logger.main.info('[SingleInstance] Second instance has deep link arg, quitting immediately');
+        } else if (plan.action === 'quit') {
+            const why = plan.reason === 'no-target'
+                ? 'no file, folder or deep link to hand over'
+                : plan.reason === 'deep-link'
+                    ? 'a deep link arg'
+                    : `a ${plan.reason} target (${launchTarget?.path})`;
+            logger.main.info(`[SingleInstance] Another instance holds the lock and this launch has ${why}, quitting now`);
             app.quit();
         } else {
-            // No file in argv -- wait for open-file Apple Event
+            // macOS only: when the OS launches the packaged app to open a
+            // file, the path comes via Apple Events, which Electron delivers
+            // as open-file once the event loop is running. Quitting
+            // synchronously would lose it, so wait, relay the path via the
+            // signal file, then quit.
+            logger.main.info('[SingleInstance] Waiting for open-file');
             let gotFile = false;
             app.on('open-file', (event, filePath) => {
                 event.preventDefault();
@@ -796,7 +808,7 @@ if (!allowMultipleInstances) {
                     logger.main.info('[SingleInstance] No open-file after timeout, quitting');
                     app.quit();
                 }
-            }, 5000);
+            }, plan.timeoutMs);
         }
     } else {
         // We are the primary instance. When a second instance tries to launch,
@@ -843,7 +855,9 @@ if (!allowMultipleInstances) {
 // Workaround for dev mode: watch a signal file that the second instance writes.
 // Currently only works for CLI invocations where the path is in argv.
 // For Finder double-click during dev, quit the packaged app first.
-{
+// Only the lock owner watches: a second instance would consume the signal it
+// just wrote, or one meant for the primary, and open the file itself (#1188).
+if (ownsAppLifecycle()) {
     const pendingOpenFilePath = path.join(app.getPath('userData'), '.pending-open-file');
 
     // Check for a stale signal file on startup (second instance may have written
@@ -1001,7 +1015,7 @@ function summarizeDeepLink(url: string): { host: string; pathname: string; param
 }
 
 // Handle deep link URLs (nimbalyst://...)
-app.on('open-url', (event, url) => {
+app.on('open-url', ownerOnly('open-url', (event, url) => {
     event.preventDefault();
     logger.main.info('[DeepLink] open-url event:', summarizeDeepLink(url));
 
@@ -1011,7 +1025,7 @@ app.on('open-url', (event, url) => {
         // Store the URL to handle after app is ready
         pendingDeepLinkUrl = url;
     }
-});
+}));
 
 function handleAppActionLink(
     url: string,
@@ -1321,8 +1335,8 @@ async function openTrackerFromDeepLink(
     return true;
 }
 
-// Handle file open from OS (macOS)
-app.on('open-file', (event, path) => {
+// Handle file open from OS (macOS). A second instance relays it instead (above).
+app.on('open-file', ownerOnly('open-file', (event, path) => {
     event.preventDefault();
     logger.main.info(`open-file event received: ${path}`);
 
@@ -1342,7 +1356,7 @@ app.on('open-file', (event, path) => {
         // Store the file path to open after app is ready
         pendingFilePath = path;
     }
-});
+}));
 
 /**
  * Open what a launch asked for in the running app. Returns false when there
@@ -1529,8 +1543,9 @@ BrowserWindow.prototype.focus = function(this: BrowserWindow) {
 };
 // --- END ACTIVATION DEBUGGING ---
 
-// App ready handler
-app.whenReady().then(async () => {
+// App ready handler. Electron emits ready even after an early app.quit(), so a
+// second instance must skip this explicitly (#1188).
+app.whenReady().then(ownerOnly('app initialisation', async () => {
     workspaceBackendLifecycle.observeModuleStarts();
     checkpoint('app-ready');
 
@@ -3291,16 +3306,20 @@ app.whenReady().then(async () => {
             });
         }
     });
-});
+}));
 
-initializeApplicationWindowRecovery({
-    // quit-and-install strips before-quit, so isAppQuitting never flips on that path.
-    isQuitting: () => isAppQuitting || isAppRestarting || AutoUpdaterService.isUpdatingApp(),
-    getPreferredProjectWindow: getMostRecentlyFocusedWorkspaceWindow,
-    getWorkspaceManagerWindow,
-    createWorkspaceManagerWindow,
-    wasWorkspaceManagerManuallyClosed,
-});
+// Its activate and window-all-closed handlers open the Project Manager, which a
+// second instance waiting for open-file on macOS must not do (#1188).
+if (ownsAppLifecycle()) {
+    initializeApplicationWindowRecovery({
+        // quit-and-install strips before-quit, so isAppQuitting never flips on that path.
+        isQuitting: () => isAppQuitting || isAppRestarting || AutoUpdaterService.isUpdatingApp(),
+        getPreferredProjectWindow: getMostRecentlyFocusedWorkspaceWindow,
+        getWorkspaceManagerWindow,
+        createWorkspaceManagerWindow,
+        wasWorkspaceManagerManuallyClosed,
+    });
+}
 
 let migrationQuitDraining = false;
 const shutdownForRestart = createRestartShutdown({
@@ -3333,7 +3352,9 @@ const shutdownForRestart = createRestartShutdown({
         app.quit();
     },
 });
-app.on('before-quit', async (event) => {
+// A second instance never booted the app, so it has nothing of its own to
+// clean up: this cleanup would back up and close the primary's database (#1188).
+app.on('before-quit', ownerOnly('quit cleanup', async (event) => {
     if (migrationQuitDraining || migrationNeedsQuitDrain()) {
         event.preventDefault();
         if (!migrationQuitDraining) {
@@ -3969,7 +3990,7 @@ app.on('before-quit', async (event) => {
         console.log(`[QUIT] [${t16}] Calling app.exit(0) (${t16-t15}ms after timeout set)`);
         try { app.exit(0); } catch {}
     }, 50);
-});
+}));
 
 // Windows-specific shutdown signal handlers
 // Windows sends different signals than Unix systems during forced shutdowns
