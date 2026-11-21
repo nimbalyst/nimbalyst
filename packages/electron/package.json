@@ -1,6 +1,6 @@
 {
   "name": "@nimbalyst/electron",
-  "version": "0.84.2",
+  "version": "0.84.3",
   "private": true,
   "license": "MIT",
   "author": "Nimbalyst Team",
@@ -332,7 +332,10 @@
       {
         "from": "../../node_modules/@huggingface/transformers",
         "to": "node_modules/@huggingface/transformers",
-        "filter": ["**/*", "!node_modules/**"]
+        "filter": [
+          "**/*",
+          "!node_modules/**"
+        ]
       },
       {
         "from": "../../node_modules",
