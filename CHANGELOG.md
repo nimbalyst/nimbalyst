@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 <!-- Bug fixes go here -->
+- If the database worker crashes again right after Nimbalyst restarts it, Nimbalyst now tries again instead of leaving every database action failing until you restart the app.
 
 ### Removed
 <!-- Removed features go here -->
