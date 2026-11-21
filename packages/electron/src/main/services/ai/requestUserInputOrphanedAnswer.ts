@@ -16,9 +16,12 @@
  */
 
 import { createHash } from 'node:crypto';
+import { getSessionStateManager } from '@nimbalyst/runtime/ai/server/SessionStateManager';
 import { persistInteractivePromptTerminalResult } from './askUserQuestionFallbackResolution';
+import { isLeadTurnPending } from './drainFollowUp';
 import { hasLiveInteractivePrompt } from '../../mcp/tools/interactivePromptLiveness';
 import { getQueuedPromptsStore } from '../RepositoryManager';
+import type { QueuedPrompt } from '../PGLiteQueuedPromptsStore';
 
 export type ResumeSessionWithAnswer = (args: {
   event: Electron.IpcMainInvokeEvent;
@@ -33,9 +36,26 @@ let resumeSession: ResumeSessionWithAnswer | null = null;
 export function configureRequestUserInputResume(
   value: ResumeSessionWithAnswer,
   publish?: (sessionId: string) => Promise<void>,
+  drive?: (sessionId: string, workspacePath: string) => Promise<unknown>,
 ): void {
   resumeSession = value;
   publishQueue = publish;
+  driveQueue = drive;
+}
+
+/**
+ * True when resuming the session now would replace a turn, because sendMessage
+ * aborts the running request: another prompt is blocking the turn, the turn
+ * is running or streaming, or the provider has emitted a wake for a
+ * turn it is about to start. A replaced Claude Code turn is left unanswered in
+ * the CLI transcript, and the resumed CLI fills it with a synthetic
+ * "No response requested." reply that the agent then reads as its own.
+ */
+export function shouldQueueAnswerUntilTurnEnds(sessionId: string): boolean {
+  if (hasLiveInteractivePrompt(sessionId)) return true;
+  const live = getSessionStateManager().getSessionState(sessionId);
+  if (live && (live.status === 'running' || live.isStreaming)) return true;
+  return isLeadTurnPending(sessionId);
 }
 
 /**
@@ -53,18 +73,75 @@ export async function queueAnswerUntilTurnEnds(args: {
   promptId: string;
   message: string;
   publish?: (sessionId: string) => Promise<void>;
+  /**
+   * Asks the queue driver to look at the row. The turn's own end dispatches
+   * the queue, but it may have ended before the row existed; a drive while the
+   * turn still runs just waits for it to go idle.
+   */
+  drive?: () => Promise<unknown>;
 }): Promise<void> {
-  const { sessionId, promptId, message, publish } = args;
-  const id = `answer-${createHash('sha256').update(JSON.stringify([sessionId, promptId])).digest('hex')}`;
+  const { sessionId, promptId, message, publish, drive } = args;
+  const id = `${ANSWER_ID_PREFIX}${createHash('sha256').update(JSON.stringify([sessionId, promptId])).digest('hex')}`;
   const queue = getQueuedPromptsStore();
   if (!(await queue.get(id))) {
     // Not a human turn: it must not supersede other open questions.
     await queue.create({ id, sessionId, prompt: message, documentContext: { promptOrigin: 'interactive-question' } });
   }
   await publish?.(sessionId);
+  await drive?.();
 }
 
 let publishQueue: ((sessionId: string) => Promise<void>) | undefined;
+let driveQueue: ((sessionId: string, workspacePath: string) => Promise<unknown>) | undefined;
+
+/** Queue rows created by queueAnswerUntilTurnEnds, and only those. */
+const ANSWER_ID_PREFIX = 'answer-';
+const RESUME_HEADER = /^\[Resuming after [^\]\n]*\]\n+/;
+export const LATE_ANSWER_PREAMBLE =
+  "[The user answered one of your earlier questions while you were working. The call that asked it had already ended, so the answer arrives as this message rather than as that call's result.]";
+
+/**
+ * Claims the answers queued for a running Claude Code turn so the runtime's
+ * late-answer hook can hand them to the turn at its next tool boundary. The
+ * claim keeps the turn-end dispatch from sending them a second time, and an
+ * answer the dispatch already took is skipped. `settle(true)` completes them;
+ * `settle(false)` puts them back in the queue for the turn end.
+ */
+export async function takeLateAnswersForRunningTurn(
+  sessionId: string,
+  notifyClaimed?: (promptId: string) => void,
+): Promise<{ text: string; settle(delivered: boolean): Promise<void> } | null> {
+  const queue = getQueuedPromptsStore();
+  const claimed: QueuedPrompt[] = [];
+  for (const row of await queue.listPending(sessionId)) {
+    if (!row.id.startsWith(ANSWER_ID_PREFIX)) continue;
+    const taken = await queue.claim(row.id);
+    if (taken) claimed.push(taken);
+  }
+  if (claimed.length === 0) return null;
+
+  return {
+    text: [LATE_ANSWER_PREAMBLE, ...claimed.map((row) => row.prompt.replace(RESUME_HEADER, ''))].join('\n\n'),
+    settle: async (delivered) => {
+      for (const row of claimed) {
+        try {
+          if (delivered) {
+            await queue.complete(row.id);
+            notifyClaimed?.(row.id);
+          } else {
+            // Same id, so a repeat answer still cannot queue it twice.
+            await queue.delete(row.id);
+            await queue.create({ id: row.id, sessionId, prompt: row.prompt, documentContext: row.documentContext });
+          }
+        } catch (err) {
+          console.error(`[SessionHandlers] Failed to settle queued answer ${row.id} (delivered=${delivered}): ${err}`);
+        }
+      }
+      console.log(`[SessionHandlers] ${claimed.length} queued answer(s) ${delivered ? 'handed to the running turn' : 'returned to the queue'}: ${sessionId}`);
+      await publishQueue?.(sessionId).catch((err) => console.error(`[SessionHandlers] Failed to publish the queue after a late answer: ${err}`));
+    },
+  };
+}
 
 export function buildRequestUserInputResumeMessage(answers: Record<string, unknown>): string {
   return `[Resuming after the user submitted a PromptForUserInput form]\n\n${JSON.stringify({ answers }, null, 2)}`;
@@ -96,13 +173,20 @@ export async function settleOrphanedRequestUserInput(args: {
     console.warn(`[SessionHandlers] No live waiter for PromptForUserInput on claude-code-cli; not auto-resuming: ${sessionId}`);
     return;
   }
-  // Another prompt is blocking the turn right now (the answer was for an older
-  // card). Resuming would abort that turn, since sendMessage replaces the
-  // running request; the answer is queued for when it ends (NIM-7649).
-  if (hasLiveInteractivePrompt(sessionId)) {
-    console.warn(`[SessionHandlers] PromptForUserInput ${promptId} has no live waiter but another prompt is live; queuing the answer: ${sessionId}`);
-    await queueAnswerUntilTurnEnds({ sessionId, promptId, message: buildRequestUserInputResumeMessage(answers), publish: publishQueue })
-      .catch((err) => console.error(`[SessionHandlers] Failed to queue the PromptForUserInput answer for ${promptId}: ${err}`));
+  // A turn is running or blocked on another prompt (the answer was for an
+  // older card). Resuming would abort that turn, since sendMessage replaces
+  // the running request; the answer is queued for when it ends (NIM-7649).
+  if (shouldQueueAnswerUntilTurnEnds(sessionId)) {
+    console.warn(`[SessionHandlers] PromptForUserInput ${promptId} has no live waiter but the turn is still running; queuing the answer: ${sessionId}`);
+    const { workspacePath } = session;
+    const drive = driveQueue;
+    await queueAnswerUntilTurnEnds({
+      sessionId,
+      promptId,
+      message: buildRequestUserInputResumeMessage(answers),
+      publish: publishQueue,
+      drive: drive && workspacePath ? () => drive(sessionId, workspacePath) : undefined,
+    }).catch((err) => console.error(`[SessionHandlers] Failed to queue the PromptForUserInput answer for ${promptId}: ${err}`));
     return;
   }
   if (!resumeSession) {
