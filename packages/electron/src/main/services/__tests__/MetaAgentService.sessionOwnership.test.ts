@@ -180,22 +180,22 @@ describe('MetaAgentService session ownership', () => {
       }
     });
 
-    it('final makes the final response the report and asks for no messages', async () => {
+    it('final preserves automatic delivery and permits an explicitly requested actionable return', async () => {
       const { metadata, prompt } = await childPrompt({ reporting: 'final' });
       expect(metadata.notifyParent).toBeUndefined();
       expect(prompt.slice(prompt.indexOf('Your final response'))).toMatchInlineSnapshot(`
-        "Your final response is delivered to the session that started you (caller) as your report. Do not send it status or acknowledgement messages.
+        "Your final response is delivered to the session that started you (caller) as your report. Do not send it status or acknowledgement messages. If your brief explicitly authorizes or requires parent inspection, a decision, or continuation that the automatic final report will not satisfy, send one ordinary send_prompt with messageKind=instruction and interrupt=false, stating the requested action and exact artifact link. Do not send a manual return merely to duplicate automatic final delivery.
 
         </addendum>
         "
       `);
     });
 
-    it('messages is the only setting that mentions send_prompt, and defers to the brief', async () => {
+    it('messages distinguishes informational reports from explicitly requested actionable returns', async () => {
       const { metadata, prompt } = await childPrompt({ reporting: 'messages' });
       expect(metadata.notifyParent).toBeUndefined();
       expect(prompt.slice(prompt.indexOf('The session that started you'))).toMatchInlineSnapshot(`
-        "The session that started you (caller) asked for reports: send each material change once with send_prompt messageKind=report, unless your brief says otherwise. Your final response is delivered to it automatically.
+        "The session that started you (caller) asked for reports: send each material change once with send_prompt messageKind=report, unless your brief says otherwise. Manual send_prompt reports are informational and do not wake an idle parent. Your final response is delivered to it automatically. If your brief explicitly authorizes or requires parent inspection, a decision, or continuation that the automatic final report will not satisfy, send one ordinary send_prompt with messageKind=instruction and interrupt=false, stating the requested action and exact artifact link. Do not send a manual return merely to duplicate automatic final delivery.
 
         </addendum>
         "
