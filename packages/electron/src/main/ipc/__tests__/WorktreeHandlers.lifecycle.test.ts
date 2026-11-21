@@ -7,6 +7,8 @@ const mocks = vi.hoisted(() => ({
   getWorktreeStatus: vi.fn(),
   fetch: vi.fn(),
   raw: vi.fn(),
+  /** The directory each git instance was created in. */
+  gitDirs: [] as unknown[],
   store: { create: vi.fn().mockResolvedValue(undefined), getByPath: vi.fn() },
   start: vi.fn().mockResolvedValue(undefined),
   inUse: true,
@@ -17,7 +19,14 @@ vi.mock('electron', () => ({
 }));
 vi.mock('electron-log/main', () => ({ default: { scope: () => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn() }) } }));
 vi.mock('../../services/GitWorktreeService', () => ({ GitWorktreeService: class { createWorktree = mocks.createWorktree; getWorktreeStatus = mocks.getWorktreeStatus; } }));
-vi.mock('simple-git', () => ({ simpleGit: () => ({ fetch: mocks.fetch, raw: mocks.raw }) }));
+vi.mock('simple-git', () => ({
+  simpleGit: (dir: unknown) => {
+    mocks.gitDirs.push(dir);
+    const git: Record<string, unknown> = { fetch: mocks.fetch, raw: mocks.raw };
+    git.env = () => git;
+    return git;
+  },
+}));
 vi.mock('../../utils/ipcRegistry', () => ({ safeHandle: (name: string, fn: (...args: any[]) => Promise<any>) => mocks.handlers.set(name, fn) }));
 vi.mock('../../utils/store', () => ({ getWorktreeDefaultBase: vi.fn(), setWorktreeDefaultBase: vi.fn() }));
 vi.mock('../../services/WorktreeStore', () => ({ createWorktreeStore: () => mocks.store }));
@@ -32,13 +41,18 @@ vi.mock('../../services/TerminalSessionManager', () => ({ getTerminalSessionMana
 vi.mock('../../utils/terminalStore', () => ({ getTerminalsByWorktreeId: vi.fn(), deleteTerminalInstance: vi.fn() }));
 vi.mock('../../file/GitRefWatcher', () => ({ gitRefWatcher: { start: mocks.start } }));
 vi.mock('../../file/GitWatcherLifecycle', () => ({ isGitRepositoryInUse: () => mocks.inUse }));
-vi.mock('../../services/workspaceRepos', () => ({ listReposForRoot: () => [], resolveDefaultRepo: () => null }));
+// Discovery is async; a gitignored clone named as the source is its own root.
+vi.mock('../../services/workspaceRepos', () => ({
+  listReposForRoot: async (root: string) => (root === '/project/api' ? ['/project/api'] : []),
+  resolveDefaultRepo: async () => null,
+}));
 vi.mock('../../services/GitOperationLock', () => ({ gitOperationLock: {} }));
 vi.mock('../../services/ai/archiveSessionProviderLifecycle', () => ({ archiveSessionsAndDestroyProviders: vi.fn() }));
 import { registerWorktreeHandlers } from '../WorktreeHandlers';
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mocks.gitDirs.length = 0;
   mocks.inUse = true;
   registerWorktreeHandlers();
 });
@@ -89,4 +103,21 @@ it('fetches the remote branch, not the remote ref, for a remote-ref base', async
   await mocks.handlers.get('worktree:get-status')!({}, '/project_worktrees/branch', { fetchFirst: true });
 
   expect(mocks.fetch).toHaveBeenCalledWith(['--', 'origin', 'main']);
+});
+
+// The base picker names the active file's repo, which can be a gitignored
+// clone inside the project; its default base comes from the clone, not the umbrella.
+it('resolves the default base in a nested clone named as the source', async () => {
+  mocks.raw.mockImplementation(async (args: string[]) => {
+    if (args[0] === 'remote') return 'origin\n';
+    if (args[0] === 'symbolic-ref' && args.includes('refs/remotes/origin/HEAD')) return 'refs/remotes/origin/main\n';
+    if (args[0] === 'symbolic-ref') return 'refs/heads/feature\n';
+    if (args[0] === 'rev-parse') return 'abc123\n';
+    return '';
+  });
+
+  const result = await mocks.handlers.get('worktree:resolve-default-base')!({}, '/project', '/project/api');
+
+  expect(result).toMatchObject({ success: true, resolved: { displayRef: 'origin/main' }, currentBranch: 'feature' });
+  expect(mocks.gitDirs).toEqual(['/project/api']);
 });
