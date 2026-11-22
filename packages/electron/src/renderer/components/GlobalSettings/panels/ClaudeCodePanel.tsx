@@ -1,4 +1,5 @@
 import { ClaudeRuntimeStatus } from './ClaudeRuntimeStatus';
+import { DetectAccountModelsButton } from './DetectAccountModelsButton';
 import React, { useState, useEffect, useCallback } from 'react';
 import { useAtomValue, useSetAtom } from 'jotai';
 import { activeWorkspacePathAtom } from '../../../store/atoms/openProjects';
@@ -36,6 +37,8 @@ interface ClaudeCodePanelProps {
   scope?: 'user' | 'project';
   /** Workspace path required when scope is 'project'. */
   workspacePath?: string;
+  /** Reloads the model list after "Detect account models" saved new models. */
+  onRefreshModels?: () => Promise<void>;
 }
 
 type AuthMethod = 'login' | 'api-key';
@@ -122,6 +125,7 @@ export function ClaudeCodePanel({
   cli,
   scope = 'user',
   workspacePath,
+  onRefreshModels,
 }: ClaudeCodePanelProps) {
   // Prefer the project override path; otherwise fall back to the workspace
   // currently focused in this window so the login terminal opens in the project.
@@ -614,6 +618,8 @@ export function ClaudeCodePanel({
               )}
             </div>
           </div>
+
+          <DetectAccountModelsButton onDetected={onRefreshModels} />
 
           <AvailableModelsSection
             models={availableModels}

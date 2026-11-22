@@ -130,6 +130,7 @@ import {
     runMigrations,
     getAppSetting,
     getClaudeCodeSettings,
+    getClaudeCodeDiscoveredModels,
     getAttachmentStagingConfig,
     getOpenCodeModelCatalogCache,
     getAiSettingsStore,
@@ -335,6 +336,7 @@ import { registerHeapSnapshotHandlers } from './ipc/HeapSnapshotHandlers';
 import { getPermissionService } from './services/PermissionService';
 import { ClaudeSettingsManager } from './services/ClaudeSettingsManager';
 import { setClaudeModelPickerSource } from '@nimbalyst/runtime/ai/claudeCustomModels';
+import { mergePickerWithDiscovered } from './services/ai/claudeAccountModels';
 import { TrayManager } from './tray/TrayManager';
 import { pathToFileURL } from 'url';
 import { registerLinuxAppImageProtocolHandler } from './services/LinuxProtocolRegistration';
@@ -2178,8 +2180,12 @@ app.whenReady().then(async () => {
         const settingsManager = ClaudeSettingsManager.getInstance();
         return settingsManager.getUserLevelEnv();
     });
-    // Custom gateway models from Claude settings `modelPicker` for the picker.
-    setClaudeModelPickerSource((workspacePath) => ClaudeSettingsManager.getInstance().getModelPicker(workspacePath));
+    // Custom gateway models from Claude settings `modelPicker` for the picker, plus the
+    // models the last "Detect account models" run found (settings entries win).
+    setClaudeModelPickerSource(async (workspacePath) => mergePickerWithDiscovered(
+        await ClaudeSettingsManager.getInstance().getModelPicker(workspacePath),
+        getClaudeCodeDiscoveredModels(),
+    ));
     OpenAICodexProvider.setClaudeSettingsEnvLoader(async () => {
         const settingsManager = ClaudeSettingsManager.getInstance();
         return settingsManager.getUserLevelEnv();

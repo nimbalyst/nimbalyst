@@ -6,7 +6,10 @@ import { query } from '@anthropic-ai/claude-agent-sdk';
 import { logger } from '../utils/logger';
 import { setupClaudeCodeEnvironment, resolveClaudeCodeExecutablePath, resolveNativeBinaryPath, findOrphanedClaudeUpdateFiles, describeMissingClaudeRuntime } from '@nimbalyst/runtime/electron/claudeCodeEnvironment';
 import { AnalyticsService } from "../services/analytics/AnalyticsService.ts";
-import { shouldShowClaudeCodeWindowsWarning, dismissClaudeCodeWindowsWarning } from '../utils/store';
+import { shouldShowClaudeCodeWindowsWarning, dismissClaudeCodeWindowsWarning, getClaudeCodeDiscoveredModels, setClaudeCodeDiscoveredModels } from '../utils/store';
+import { claudeUsageService } from '../services/ClaudeUsageService';
+import { detectAccountModels } from '../services/ai/claudeAccountModels';
+import { ModelRegistry } from '@nimbalyst/runtime/ai/server/ModelRegistry';
 import os from "os";
 import { safeHandle, safeOn } from '../utils/ipcRegistry';
 
@@ -73,6 +76,18 @@ export function registerClaudeCodeHandlers() {
     const status = await claudeCodeDetector.getStatus();
     return status;
   });
+  // Ask Anthropic which models the signed-in Claude account can use, and save the ones
+  // the built-in list lacks. Runs only when the user clicks "Detect account models".
+  safeHandle('claude-code:detect-account-models', async () => {
+    return detectAccountModels({
+      getToken: () => claudeUsageService.getAccessTokenForApi(),
+      fetchImpl: fetch,
+      save: setClaudeCodeDiscoveredModels,
+      clearModelCache: () => ModelRegistry.clearCache(),
+      getSaved: getClaudeCodeDiscoveredModels,
+    });
+  });
+
   // Check login status
   safeHandle('claude-code:check-login', async () => {
     try {

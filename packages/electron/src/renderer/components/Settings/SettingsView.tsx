@@ -908,6 +908,7 @@ export function SettingsView({
             }}
             scope={scope === 'project' ? 'project' : 'user'}
             workspacePath={scope === 'project' ? workspacePath ?? undefined : undefined}
+            onRefreshModels={() => fetchModels('claude-code')}
           />,
         );
       case 'openai':

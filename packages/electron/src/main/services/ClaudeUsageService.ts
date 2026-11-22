@@ -238,6 +238,15 @@ class ClaudeUsageServiceImpl {
     return { ...process.env, ...shellEnv, ...settingsEnv };
   }
 
+  /**
+   * The Claude Code sign-in token for one outgoing Anthropic API call, or null when the
+   * user is signed out. Uses the same env and lookup as `doRefresh`. The caller must send
+   * the token only to Anthropic and must never log or store it.
+   */
+  async getAccessTokenForApi(): Promise<string | null> {
+    return this.getAccessToken(await this.resolveClaudeEnv());
+  }
+
   private getAccessToken(env: ClaudeEnv): string | null {
     if (process.platform === 'darwin') {
       const keychainToken = this.getAccessTokenFromKeychain(env);
@@ -283,7 +292,11 @@ class ClaudeUsageServiceImpl {
 
       return token;
     } catch (error) {
-      logger.main.warn('[ClaudeUsageService] Error reading credentials file:', error);
+      // Log the error name and code only. A JSON parse error quotes the start of the
+      // file, and that file holds the credential.
+      const name = error instanceof Error ? error.name : typeof error;
+      const code = (error as NodeJS.ErrnoException | undefined)?.code;
+      logger.main.warn(`[ClaudeUsageService] Error reading credentials file: ${name}${code ? ` (${code})` : ''}`);
       return null;
     }
   }
@@ -313,7 +326,11 @@ class ClaudeUsageServiceImpl {
         return null;
       }
       // Log other errors but continue to try fallback
-      logger.main.warn(`[ClaudeUsageService] Error reading keychain entry ${serviceName}:`, error);
+      // Log the error name and code only. A JSON parse error quotes the start of the
+      // keychain entry, and that entry is the credential.
+      const name = error instanceof Error ? error.name : typeof error;
+      const code = (error as NodeJS.ErrnoException | undefined)?.code;
+      logger.main.warn(`[ClaudeUsageService] Error reading keychain entry ${serviceName}: ${name}${code ? ` (${code})` : ''}`);
       return null;
     }
   }

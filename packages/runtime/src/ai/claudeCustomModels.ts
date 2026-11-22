@@ -31,6 +31,11 @@ export interface ClaudeCustomModelOption {
   description?: string;
   /** Full Anthropic model id whose capabilities this model shares. */
   behavesAs?: string;
+  /**
+   * Context window in tokens, when the source of the option knows it (for example the
+   * account model list). Wins over the window implied by `behavesAs`.
+   */
+  contextWindow?: number;
 }
 
 /** True when a Claude Code model segment (the part after `provider:`) is custom. */
@@ -194,9 +199,12 @@ export async function withClaudeCustomModels(
       name: `${prefix} · ${option.label ?? option.model}`,
       provider,
       maxTokens: 8192,
-      // Without behavesAs we cannot know the window; 200k is the conservative seed
-      // the runtime corrects from the SDK's reported usage.
-      contextWindow: variant ? baseContextWindowForVariant(variant) : 200_000,
+      // The option's own window wins. Without it or behavesAs we cannot know the
+      // window; 200k is the conservative seed the runtime corrects from the SDK's
+      // reported usage.
+      contextWindow: option.contextWindow && option.contextWindow > 0
+        ? option.contextWindow
+        : variant ? baseContextWindowForVariant(variant) : 200_000,
       ...(option.behavesAs ? { behavesAs: option.behavesAs } : {}),
     };
   });

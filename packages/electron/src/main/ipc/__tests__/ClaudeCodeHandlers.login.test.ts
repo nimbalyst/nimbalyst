@@ -53,6 +53,10 @@ vi.mock('../../services/analytics/AnalyticsService.ts', () => ({
   AnalyticsService: { getInstance: () => ({ sendEvent: mocks.sendEvent }) },
 }));
 
+// The handlers file imports the usage service for the account-model button; it needs
+// the real `electron` and `fs`, which this test mocks narrowly. The login path never uses it.
+vi.mock('../../services/ClaudeUsageService', () => ({ claudeUsageService: {} }));
+
 vi.mock('../../utils/store', () => ({
   shouldShowClaudeCodeWindowsWarning: vi.fn(() => false),
   dismissClaudeCodeWindowsWarning: vi.fn(),

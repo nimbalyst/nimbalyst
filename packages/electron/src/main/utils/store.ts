@@ -30,6 +30,7 @@ import { omitModelsField } from '@nimbalyst/runtime/ai/server/utils/modelConfigU
 import { planWorkstreamStatePrune } from './workstreamStatePrune';
 import type { WorktreeDefaultBaseSetting } from '../services/worktreeBaseBranch';
 import type { OpenCodeModelCatalogCache } from '@nimbalyst/runtime/ai/server';
+import type { ClaudeCustomModelOption } from '@nimbalyst/runtime/ai/claudeCustomModels';
 
 // Theme can be a built-in theme or an extension theme ID (format: "extensionId:themeId")
 export type AppTheme = 'dark' | 'light' | 'system' | 'auto' | 'crystal-dark' | string;
@@ -224,6 +225,12 @@ interface AppStoreSchema {
     // SECURITY: the target receives the CLI's subscription OAuth token + prompt
     // content, so only loopback hosts are accepted (see setClaudeCodeApiUpstreamUrl).
     apiUpstreamUrl?: string;
+    // Models found by "Detect account models" (Settings -> Claude Agent). Each run
+    // replaces the whole list. Holds only model ids, labels, behavesAs and
+    // contextWindow, never the sign-in token. See claudeAccountModels.ts.
+    discoveredModels?: ClaudeCustomModelOption[];
+    // ISO time of the last successful detection run.
+    discoveredModelsAt?: string;
   };
   attachmentStaging?: AttachmentStagingConfig;
   // OpenAI Codex settings
@@ -2432,6 +2439,21 @@ export function getClaudeCodeSettings(): {
     userCommandsEnabled: settings.userCommandsEnabled ?? true,
     apiUpstreamUrl: settings.apiUpstreamUrl,
   };
+}
+
+/** Models the last "Detect account models" run found, or an empty list. */
+export function getClaudeCodeDiscoveredModels(): ClaudeCustomModelOption[] {
+  return getAppStore().get('claudeCode', {}).discoveredModels ?? [];
+}
+
+/** Replace the saved account models with the list from the latest run. */
+export function setClaudeCodeDiscoveredModels(models: ClaudeCustomModelOption[]): void {
+  const settings = getAppStore().get('claudeCode', {});
+  getAppStore().set('claudeCode', {
+    ...settings,
+    discoveredModels: models,
+    discoveredModelsAt: new Date().toISOString(),
+  });
 }
 
 export function getAttachmentStagingConfig(): AttachmentStagingConfig {

@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 <!-- New features go here -->
+- Settings > Claude Agent has a "Detect account models" button that asks Anthropic which models your Claude account can use and adds the ones Nimbalyst does not list yet, such as Claude Mythos, to the model list and the chat model picker.
 
 ### Changed
 <!-- Changes to existing functionality go here -->
