@@ -89,7 +89,7 @@ describe('claude-code:detect-account-models', () => {
 
   it('reads the saved list, so only new models are reported, then saves and clears the cache', async () => {
     mocks.getClaudeCodeDiscoveredModels.mockReturnValue([{ model: 'claude-mythos-5-2', label: 'Claude Mythos 5.2' }]);
-    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify(ACCOUNT_LIST), { status: 200 })));
+    vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify(ACCOUNT_LIST), { status: 200, headers: { 'content-type': 'application/json' } })));
 
     const result = await invokeDetect();
 

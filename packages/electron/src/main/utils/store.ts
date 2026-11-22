@@ -229,8 +229,6 @@ interface AppStoreSchema {
     // replaces the whole list. Holds only model ids, labels, behavesAs and
     // contextWindow, never the sign-in token. See claudeAccountModels.ts.
     discoveredModels?: ClaudeCustomModelOption[];
-    // ISO time of the last successful detection run.
-    discoveredModelsAt?: string;
   };
   attachmentStaging?: AttachmentStagingConfig;
   // OpenAI Codex settings
@@ -2449,11 +2447,7 @@ export function getClaudeCodeDiscoveredModels(): ClaudeCustomModelOption[] {
 /** Replace the saved account models with the list from the latest run. */
 export function setClaudeCodeDiscoveredModels(models: ClaudeCustomModelOption[]): void {
   const settings = getAppStore().get('claudeCode', {});
-  getAppStore().set('claudeCode', {
-    ...settings,
-    discoveredModels: models,
-    discoveredModelsAt: new Date().toISOString(),
-  });
+  getAppStore().set('claudeCode', { ...settings, discoveredModels: models });
 }
 
 export function getAttachmentStagingConfig(): AttachmentStagingConfig {

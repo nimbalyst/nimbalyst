@@ -3,13 +3,15 @@
  *
  * The Claude Agent SDK only lists the short aliases (opus, sonnet, fable, haiku), so a
  * model such as Claude Mythos never shows up on its own. When the user clicks "Detect
- * account models", this module asks Anthropic's `/v1/models` list, keeps the models the
- * built-in rows do not cover, and hands them to the picker as custom model options
- * (`claude-code:custom/<id>`). Nothing here runs at start-up or on a timer.
+ * account models", this module asks Anthropic's model list (through the Anthropic SDK),
+ * keeps the models the built-in rows do not cover, and hands them to the picker as custom
+ * model options (`claude-code:custom/<id>`). Nothing here runs at start-up or on a timer.
  *
- * The sign-in token is used only for the one request. It is never logged, returned or saved.
+ * The sign-in token is used only for the one request, and only to api.anthropic.com. It is
+ * never logged, returned or saved.
  */
 
+import Anthropic from '@anthropic-ai/sdk';
 import { z } from 'zod';
 import {
   type ClaudeCustomModelOption,
@@ -18,8 +20,21 @@ import {
 import { CLAUDE_CODE_PINNED_SDK_MODELS, type ClaudeCodeVariant } from '@nimbalyst/runtime/ai/modelConstants';
 import { logger } from '../../utils/logger';
 
-const MODELS_URL = 'https://api.anthropic.com/v1/models?limit=1000';
+/** The beta flag Anthropic expects on a request that carries a Claude sign-in (OAuth) token. */
+export const CLAUDE_OAUTH_BETA = 'oauth-2025-04-20';
+
+const API_BASE_URL = 'https://api.anthropic.com';
 const REQUEST_TIMEOUT_MS = 15_000;
+/** Most rows read from the account list. Also the page size asked for. */
+const MAX_ROWS = 1000;
+const MAX_CONTEXT_WINDOW = 10_000_000;
+
+/**
+ * A model id is passed word for word to `claude --model <id>`. It may hold only letters,
+ * digits, `.`, `_`, `-`, `[` and `]` (the last two for a name such as `opus[1m]`), and it may
+ * not start with `-`, or the command would read it as an option.
+ */
+const MODEL_ID_PATTERN = /^(?!-)[A-Za-z0-9._[\]-]{1,128}$/;
 
 /** Model lines that already map to a built-in variant. Any other line behaves like Opus. */
 const KNOWN_LINES: readonly ClaudeCodeVariant[] = ['opus', 'sonnet', 'haiku', 'fable'];
@@ -34,14 +49,6 @@ const ERROR_MESSAGES: Record<AccountModelsErrorCode, string> = {
   network: 'Could not reach Anthropic. Check your connection and try again.',
   'bad-response': 'Anthropic sent an answer Nimbalyst could not read.',
 };
-
-/** Thrown when the account model list cannot be read. */
-export class AccountModelsError extends Error {
-  constructor(public readonly code: AccountModelsErrorCode) {
-    super(ERROR_MESSAGES[code]);
-    this.name = 'AccountModelsError';
-  }
-}
 
 /** One model row from the account list, with only the fields Nimbalyst uses. */
 export type AccountModel = {
@@ -63,31 +70,25 @@ export interface DetectAccountModelsDeps {
   fetchImpl: typeof fetch;
   save: (models: ClaudeCustomModelOption[]) => void;
   clearModelCache: () => void;
-  /** The list saved by the last run. Used only to tell which models are new. Defaults to empty. */
-  getSaved?: () => ClaudeCustomModelOption[];
+  /** The list saved by the last run. Used only to tell which models are new. */
+  getSaved: () => ClaudeCustomModelOption[];
 }
 
-// Unknown keys pass through. A field with the wrong type fails the row, and the row is skipped.
+// The SDK checks the shape of the answer. It does not know the `line` and `lifecycle` fields,
+// and it does not check the id, so this check covers those. Unknown keys pass through.
+// A row that fails the check is skipped. A bad context window is dropped, and the row stays.
 const AccountModelRowSchema = z.looseObject({
-  id: z.string().min(1),
+  id: z.string().regex(MODEL_ID_PATTERN),
   display_name: z.string().optional(),
   line: z.string().optional(),
-  max_input_tokens: z.number().optional(),
   lifecycle: z.string().optional(),
+  max_input_tokens: z.number().int().min(1).max(MAX_CONTEXT_WINDOW).optional().catch(undefined),
 });
 
-const AccountModelsResponseSchema = z.looseObject({ data: z.array(z.unknown()) });
-
-/**
- * Read the `/v1/models` answer. Rows that do not fit the shape are skipped.
- * Throws `AccountModelsError('bad-response')` when `data` is missing.
- */
-export function parseAccountModelsResponse(json: unknown): AccountModel[] {
-  const envelope = AccountModelsResponseSchema.safeParse(json);
-  if (!envelope.success) throw new AccountModelsError('bad-response');
-
+/** Read the rows of the account list. A row that does not fit the shape is skipped. */
+export function parseAccountModelRows(rows: readonly unknown[]): AccountModel[] {
   const models: AccountModel[] = [];
-  for (const raw of envelope.data.data) {
+  for (const raw of rows) {
     const row = AccountModelRowSchema.safeParse(raw);
     if (!row.success) continue;
     models.push({
@@ -145,6 +146,55 @@ function failure(code: AccountModelsErrorCode): DetectAccountModelsResult {
 }
 
 /**
+ * Turn an error from the SDK into the code the user sees and a line for the log.
+ * The log line holds a status or an error name only. An SDK error message can quote the
+ * answer, and the request holds the token.
+ */
+function describeFailure(error: unknown): { code: AccountModelsErrorCode; log: string } {
+  if (error instanceof Anthropic.AuthenticationError || error instanceof Anthropic.PermissionDeniedError) {
+    return { code: 'sign-in-expired', log: `Models request returned HTTP ${error.status}` };
+  }
+  if (error instanceof Anthropic.APIConnectionError) {
+    const kind = error instanceof Anthropic.APIConnectionTimeoutError ? 'APIConnectionTimeoutError' : 'APIConnectionError';
+    const cause = (error as { cause?: unknown }).cause;
+    return { code: 'network', log: `Request failed (${kind}, cause ${cause instanceof Error ? cause.name : 'unknown'})` };
+  }
+  if (error instanceof Anthropic.APIError) {
+    return { code: 'network', log: `Models request returned HTTP ${error.status}` };
+  }
+  return {
+    code: 'bad-response',
+    log: `Could not read the models answer (${error instanceof Error ? error.name : 'unknown error'})`,
+  };
+}
+
+/**
+ * Read the account list from Anthropic. `for await` follows the list's pages. It stops at
+ * `MAX_ROWS`, so an answer that keeps promising more pages cannot keep the loop running.
+ */
+async function readAccountModelRows(deps: DetectAccountModelsDeps, token: string): Promise<unknown[]> {
+  const client = new Anthropic({
+    // Fixed address. Without it the SDK would send the token to the ANTHROPIC_BASE_URL variable.
+    baseURL: API_BASE_URL,
+    authToken: token,
+    // `null`, not left out: the SDK then sends no x-api-key and reads no ANTHROPIC_API_KEY variable.
+    apiKey: null,
+    defaultHeaders: { 'anthropic-beta': CLAUDE_OAUTH_BETA },
+    timeout: REQUEST_TIMEOUT_MS,
+    maxRetries: 0,
+    // Refuse every redirect, so the token never goes to a second address.
+    fetch: (input, init) => deps.fetchImpl(input, { ...init, redirect: 'error' }),
+  });
+
+  const rows: unknown[] = [];
+  for await (const row of client.models.list({ limit: MAX_ROWS })) {
+    rows.push(row);
+    if (rows.length >= MAX_ROWS) break;
+  }
+  return rows;
+}
+
+/**
  * Ask Anthropic which models the signed-in account can use and save the ones the built-in
  * list lacks. `save` and `clearModelCache` run only when the whole run succeeded, so a
  * failed run never wipes a list saved earlier.
@@ -153,36 +203,13 @@ export async function detectAccountModels(deps: DetectAccountModelsDeps): Promis
   const token = await deps.getToken();
   if (!token) return failure('not-signed-in');
 
-  let response: Response;
-  try {
-    response = await deps.fetchImpl(MODELS_URL, {
-      method: 'GET',
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'anthropic-beta': 'oauth-2025-04-20',
-        'anthropic-version': '2023-06-01',
-      },
-      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-    });
-  } catch (error) {
-    // Log the error name only: a message can quote the request, and the request holds the token.
-    logger.main.warn(`[claudeAccountModels] Request failed (${error instanceof Error ? error.name : 'unknown error'})`);
-    return failure('network');
-  }
-
-  if (!response.ok) {
-    // Log the status only, never the body, the request or the headers.
-    logger.main.warn(`[claudeAccountModels] Models request returned HTTP ${response.status}`);
-    if (response.status === 401 || response.status === 403) return failure('sign-in-expired');
-    return failure('network');
-  }
-
   let models: AccountModel[];
   try {
-    models = parseAccountModelsResponse(await response.json());
+    models = parseAccountModelRows(await readAccountModelRows(deps, token));
   } catch (error) {
-    logger.main.warn(`[claudeAccountModels] Could not read the models answer (${error instanceof Error ? error.name : 'unknown error'})`);
-    return failure('bad-response');
+    const { code, log } = describeFailure(error);
+    logger.main.warn(`[claudeAccountModels] ${log}`);
+    return failure(code);
   }
 
   // An account always has models. An empty list means the answer is wrong, and saving it
@@ -193,7 +220,7 @@ export async function detectAccountModels(deps: DetectAccountModelsDeps): Promis
   }
 
   const discovered = toDiscoveredOptions(models);
-  const previous = new Set((deps.getSaved?.() ?? []).map((option) => option.model));
+  const previous = new Set(deps.getSaved().map((option) => option.model));
   deps.save(discovered);
   deps.clearModelCache();
   return {

@@ -14,11 +14,11 @@ vi.mock('../../../utils/privateSettingsStore', () => ({
   },
 }));
 
+import http from 'node:http';
 import {
-  AccountModelsError,
   detectAccountModels,
   mergePickerWithDiscovered,
-  parseAccountModelsResponse,
+  parseAccountModelRows,
   toDiscoveredOptions,
 } from '../claudeAccountModels';
 import { toClaudeCustomModelSegment } from '@nimbalyst/runtime/ai/claudeCustomModels';
@@ -38,9 +38,9 @@ const FIXTURE = {
   ],
 };
 
-describe('parseAccountModelsResponse', () => {
+describe('parseAccountModelRows', () => {
   it('returns the rows that have an id and skips the rest', () => {
-    const models = parseAccountModelsResponse(FIXTURE);
+    const models = parseAccountModelRows(FIXTURE.data);
     expect(models).toHaveLength(5);
     expect(models[0]).toEqual({
       id: 'claude-mythos-5-2',
@@ -51,18 +51,27 @@ describe('parseAccountModelsResponse', () => {
     });
   });
 
-  it('throws bad-response when data is missing', () => {
-    expect(() => parseAccountModelsResponse({})).toThrow(AccountModelsError);
-    try {
-      parseAccountModelsResponse({});
-    } catch (error) {
-      expect((error as AccountModelsError).code).toBe('bad-response');
-    }
+  it('skips a row whose id could be read as a command option or a shell command', () => {
+    // The id goes word for word to `claude --model <id>`, so it must look like a plain model name.
+    const goodIds = ['claude-opus-4-5[1m]', 'Fast.v2_beta', 'a'.repeat(128)];
+    const badIds = ['x & calc', '--help', '-x', 'a b', 'a/b', 'a;b', '$(id)', 'a\nb', 'a'.repeat(129), ''];
+    const rows = [...goodIds, ...badIds].map((id) => ({ id, display_name: id }));
+    expect(parseAccountModelRows(rows).map((m) => m.id)).toEqual(goodIds);
+  });
+
+  it('keeps the row but drops a context window that is not a whole number from 1 to 10 million', () => {
+    const windows = [1, 10_000_000, 0, -5, 1.5, 10_000_001, '1000000', null, true];
+    const rows = windows.map((window, index) => ({ id: `model-${index}`, max_input_tokens: window }));
+    const models = parseAccountModelRows(rows);
+    expect(models.map((m) => m.id)).toEqual(rows.map((r) => r.id));
+    expect(models.map((m) => m.maxInputTokens)).toEqual([
+      1, 10_000_000, undefined, undefined, undefined, undefined, undefined, undefined, undefined,
+    ]);
   });
 });
 
 describe('toDiscoveredOptions', () => {
-  const options = toDiscoveredOptions(parseAccountModelsResponse(FIXTURE));
+  const options = toDiscoveredOptions(parseAccountModelRows(FIXTURE.data));
 
   it('keeps models without a built-in row and drops the ones that have one', () => {
     expect(options.map((o) => o.model)).toEqual(['claude-mythos-5-2', 'claude-mythos-5-1', 'claude-opus-4-5-20251101']);
@@ -88,7 +97,7 @@ describe('toDiscoveredOptions', () => {
 });
 
 describe('mergePickerWithDiscovered', () => {
-  const discovered = toDiscoveredOptions(parseAccountModelsResponse(FIXTURE));
+  const discovered = toDiscoveredOptions(parseAccountModelRows(FIXTURE.data));
 
   it('lets a settings entry win over a discovered entry with the same model', () => {
     const merged = mergePickerWithDiscovered(
@@ -115,12 +124,13 @@ describe('discovered models in the store', () => {
     setClaudeCodeDiscoveredModels([a, b]);
     setClaudeCodeDiscoveredModels([a]);
     expect(getClaudeCodeDiscoveredModels()).toEqual([a]);
-    expect((storeData.claudeCode as { discoveredModelsAt?: string }).discoveredModelsAt).toEqual(expect.any(String));
+    // Only the models are saved, with no extra fields beside them.
+    expect(storeData.claudeCode).toEqual({ discoveredModels: [a] });
   });
 
   it('keeps a model the user hid hidden when it comes back', () => {
     // The id comes from the real pipeline, so a change to how rows are built shows here.
-    const [mythos] = toDiscoveredOptions(parseAccountModelsResponse(FIXTURE));
+    const [mythos] = toDiscoveredOptions(parseAccountModelRows(FIXTURE.data));
     const id = `claude-code:${toClaudeCustomModelSegment(mythos.model)}`;
     expect(id).toBe('claude-code:custom/claude-mythos-5-2');
 
@@ -138,10 +148,20 @@ describe('detectAccountModels', () => {
     const save = vi.fn();
     const clearModelCache = vi.fn();
     const getToken = vi.fn(async () => token);
-    return { deps: { getToken, fetchImpl, save, clearModelCache }, save, clearModelCache };
+    return { deps: { getToken, fetchImpl, save, clearModelCache, getSaved: () => [] }, save, clearModelCache };
   };
+  // Anthropic answers with a JSON content type, and the SDK reads the body by that type.
+  const jsonResponse = (status: number, body: unknown) =>
+    new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
   const answer = (status: number, body: unknown = FIXTURE) =>
-    vi.fn(async () => new Response(JSON.stringify(body), { status })) as unknown as typeof fetch;
+    vi.fn(async () => jsonResponse(status, body)) as unknown as typeof fetch;
+  /** The request the SDK sent on its n-th call: the address and the headers. */
+  const sentRequest = (fetchImpl: typeof fetch, call = 0) => {
+    const [url, init] = (fetchImpl as unknown as ReturnType<typeof vi.fn>).mock.calls[call] as [string, RequestInit];
+    return { url: String(url), init, headers: new Headers(init.headers) };
+  };
+  /** Rows with plain ids, for the tests about how many rows are kept. */
+  const manyRows = (count: number) => Array.from({ length: count }, (_, i) => ({ id: `model-${i}`, display_name: `Model ${i}` }));
 
   it('saves the new models and reports them on a 200 answer', async () => {
     const fetchImpl = answer(200);
@@ -160,15 +180,32 @@ describe('detectAccountModels', () => {
     expect(save).toHaveBeenCalledTimes(1);
     expect(clearModelCache).toHaveBeenCalledTimes(1);
 
-    const [url, init] = (fetchImpl as unknown as ReturnType<typeof vi.fn>).mock.calls[0] as [string, RequestInit];
+    const { url, headers } = sentRequest(fetchImpl);
     expect(url).toBe('https://api.anthropic.com/v1/models?limit=1000');
-    expect(init.headers).toMatchObject({
-      Authorization: `Bearer ${TOKEN}`,
-      'anthropic-beta': 'oauth-2025-04-20',
-      'anthropic-version': '2023-06-01',
-    });
+    expect(headers.get('authorization')).toBe(`Bearer ${TOKEN}`);
+    expect(headers.get('anthropic-beta')).toBe('oauth-2025-04-20');
+    expect(headers.get('anthropic-version')).toBe('2023-06-01');
+    expect(headers.get('x-api-key')).toBeNull();
     expect(JSON.stringify(result)).not.toContain(TOKEN);
     expect(JSON.stringify(save.mock.calls)).not.toContain(TOKEN);
+  });
+
+  it('sends only the sign-in token to api.anthropic.com, whatever the environment variables say', async () => {
+    // A shell that sets these must not change where the token goes or how it is sent.
+    vi.stubEnv('ANTHROPIC_API_KEY', 'env-api-key-must-not-be-sent');
+    vi.stubEnv('ANTHROPIC_AUTH_TOKEN', 'env-auth-token-must-not-be-sent');
+    vi.stubEnv('ANTHROPIC_BASE_URL', 'https://other-host.example.com');
+    try {
+      const fetchImpl = answer(200);
+      await detectAccountModels(setup(fetchImpl).deps);
+
+      const { url, headers } = sentRequest(fetchImpl);
+      expect(url).toBe('https://api.anthropic.com/v1/models?limit=1000');
+      expect(headers.get('x-api-key')).toBeNull();
+      expect(headers.get('authorization')).toBe(`Bearer ${TOKEN}`);
+    } finally {
+      vi.unstubAllEnvs();
+    }
   });
 
   it('lists only models that the last saved list lacked', async () => {
@@ -202,14 +239,17 @@ describe('detectAccountModels', () => {
     expect(JSON.stringify(result)).not.toContain(TOKEN);
   });
 
-  it('answers network on status 500 and keeps the saved list', async () => {
-    const { deps, save } = setup(answer(500, {}));
+  it.each([404, 429, 500])('answers network on status %i and keeps the saved list', async (status) => {
+    const fetchImpl = answer(status, {});
+    const { deps, save } = setup(fetchImpl);
     const result = await detectAccountModels(deps);
     expect(result).toMatchObject({
       ok: false,
       error: 'network',
       message: 'Could not reach Anthropic. Check your connection and try again.',
     });
+    // One try only: the SDK must not retry on its own.
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
     expect(save).not.toHaveBeenCalled();
     expect(JSON.stringify(result)).not.toContain(TOKEN);
   });
@@ -222,6 +262,15 @@ describe('detectAccountModels', () => {
     expect(result).toMatchObject({ ok: false, error: 'network' });
     expect(save).not.toHaveBeenCalled();
     expect(JSON.stringify(result)).not.toContain(TOKEN);
+  });
+
+  it('answers network when the request times out', async () => {
+    const { deps, save } = setup(vi.fn(async () => {
+      throw Object.assign(new Error('The operation was aborted'), { name: 'AbortError' });
+    }) as unknown as typeof fetch);
+    const result = await detectAccountModels(deps);
+    expect(result).toMatchObject({ ok: false, error: 'network' });
+    expect(save).not.toHaveBeenCalled();
   });
 
   it('answers bad-response when the body has no data list', async () => {
@@ -246,6 +295,88 @@ describe('detectAccountModels', () => {
     expect(clearModelCache).not.toHaveBeenCalled();
   });
 
+  describe('the token goes to one address only', () => {
+    it('asks fetch to refuse redirects', async () => {
+      const fetchImpl = answer(200);
+      await detectAccountModels(setup(fetchImpl).deps);
+      expect(sentRequest(fetchImpl).init.redirect).toBe('error');
+    });
+
+    it('answers network on a 302 answer and makes no second request', async () => {
+      const fetchImpl = vi.fn(async () =>
+        new Response(null, { status: 302, headers: { location: 'https://other-host.example.com/v1/models' } }),
+      ) as unknown as typeof fetch;
+      const { deps, save } = setup(fetchImpl);
+      const result = await detectAccountModels(deps);
+      expect(result).toMatchObject({ ok: false, error: 'network' });
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+      expect(save).not.toHaveBeenCalled();
+    });
+
+    it('does not follow a real redirect, so the second server never sees the token', async () => {
+      const seenBySecondServer: string[] = [];
+      const listen = (server: http.Server) =>
+        new Promise<number>((resolve) => server.listen(0, '127.0.0.1', () => resolve((server.address() as { port: number }).port)));
+      const second = http.createServer((req, res) => {
+        seenBySecondServer.push(`${req.url} ${req.headers.authorization ?? ''}`);
+        res.setHeader('content-type', 'application/json').end(JSON.stringify(FIXTURE));
+      });
+      const secondPort = await listen(second);
+      const first = http.createServer((_req, res) => {
+        res.writeHead(302, { location: `http://127.0.0.1:${secondPort}/stolen` }).end();
+      });
+      const firstPort = await listen(first);
+      try {
+        // The real fetch talks to the first local server in place of api.anthropic.com.
+        const toFirstServer = ((_url: string, init?: RequestInit) =>
+          fetch(`http://127.0.0.1:${firstPort}/v1/models`, init)) as unknown as typeof fetch;
+        const { deps, save } = setup(toFirstServer);
+        const result = await detectAccountModels(deps);
+
+        expect(result).toMatchObject({ ok: false, error: 'network' });
+        expect(seenBySecondServer).toEqual([]);
+        expect(save).not.toHaveBeenCalled();
+      } finally {
+        first.close();
+        second.close();
+      }
+    });
+  });
+
+  describe('what is kept from the answer', () => {
+    it('never saves a model id that could act as a command option or a shell command', async () => {
+      const rows = [{ id: 'x & calc' }, { id: '--help' }, { id: 'claude-mythos-5-2', display_name: 'Claude Mythos 5.2' }];
+      const { deps, save } = setup(answer(200, { data: rows }));
+      const result = await detectAccountModels(deps);
+
+      expect(result).toMatchObject({ ok: true, totalFromAccount: 1 });
+      expect((save.mock.calls[0][0] as { model: string }[]).map((o) => o.model)).toEqual(['claude-mythos-5-2']);
+    });
+
+    it('saves at most 1000 models, even when the answer holds more', async () => {
+      const { deps, save } = setup(answer(200, { data: manyRows(1500) }));
+      const result = await detectAccountModels(deps);
+
+      expect(result.ok).toBe(true);
+      expect(save.mock.calls[0][0]).toHaveLength(1000);
+    });
+
+    it('reads every page of the list', async () => {
+      const pages = [
+        { data: [{ id: 'model-a' }, { id: 'model-b' }], has_more: true, first_id: 'model-a', last_id: 'model-b' },
+        { data: [{ id: 'model-c' }], has_more: false, first_id: 'model-c', last_id: 'model-c' },
+      ];
+      let call = 0;
+      const fetchImpl = vi.fn(async () => jsonResponse(200, pages[call++])) as unknown as typeof fetch;
+      const { deps, save } = setup(fetchImpl);
+      await detectAccountModels(deps);
+
+      expect(fetchImpl).toHaveBeenCalledTimes(2);
+      expect(sentRequest(fetchImpl, 1).url).toContain('after_id=model-b');
+      expect((save.mock.calls[0][0] as { model: string }[]).map((o) => o.model)).toEqual(['model-a', 'model-b', 'model-c']);
+    });
+  });
+
   describe('warning log', () => {
     const warn = vi.spyOn(logger.main, 'warn').mockImplementation(() => {});
     beforeEach(() => warn.mockClear());
@@ -263,19 +394,31 @@ describe('detectAccountModels', () => {
       expect(logged()).not.toContain('secret');
     });
 
-    it('names only the error name when fetch throws', async () => {
+    it('names only the HTTP status on a sign-in answer', async () => {
+      const { deps } = setup(answer(401, { error: { message: `secret ${TOKEN}` } }));
+      await detectAccountModels(deps);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(logged()).toContain('401');
+      expect(logged()).not.toContain(TOKEN);
+      expect(logged()).not.toContain('secret');
+    });
+
+    it('names only the error names when fetch throws', async () => {
       const { deps } = setup(vi.fn(async () => {
         throw new TypeError(`fetch failed for Bearer ${TOKEN}`);
       }) as unknown as typeof fetch);
       await detectAccountModels(deps);
       expect(warn).toHaveBeenCalledTimes(1);
+      expect(logged()).toContain('APIConnectionError');
       expect(logged()).toContain('TypeError');
       expect(logged()).not.toContain(TOKEN);
     });
 
     it('names only the error name when the body cannot be read', async () => {
-      const { deps } = setup(vi.fn(async () => new Response(`not json ${TOKEN}`, { status: 200 })) as unknown as typeof fetch);
-      await detectAccountModels(deps);
+      const unreadable = vi.fn(async () =>
+        new Response(`not json ${TOKEN}`, { status: 200, headers: { 'content-type': 'application/json' } }),
+      ) as unknown as typeof fetch;
+      await detectAccountModels(setup(unreadable).deps);
       expect(warn).toHaveBeenCalledTimes(1);
       expect(logged()).toContain('SyntaxError');
       expect(logged()).not.toContain(TOKEN);
