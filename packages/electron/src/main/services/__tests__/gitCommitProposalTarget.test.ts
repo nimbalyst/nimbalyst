@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, realpathSync, renameSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { assertGitSandbox, createScratchRepo } from '../testSupport/gitTestSandbox';
+import { assertGitSandbox, createScratchRepo, FIXTURE_AUTHOR, gitSandboxEnv } from '../testSupport/gitTestSandbox';
 
 const state = vi.hoisted(() => ({ session: null as any, worktree: null as any, attached: [] as string[] }));
 vi.mock('@nimbalyst/runtime/storage/repositories/AISessionsRepository', () => ({ AISessionsRepository: { get: async () => state.session } }));

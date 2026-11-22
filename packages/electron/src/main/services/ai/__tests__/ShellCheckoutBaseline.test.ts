@@ -3,7 +3,7 @@ import { it, expect, vi } from 'vitest';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { execFile, type ExecFileOptionsWithStringEncoding } from 'node:child_process';
+import { execFile, execFileSync, type ExecFileOptionsWithStringEncoding } from 'node:child_process';
 import { ShellFileAttribution, type ShellFileEvidence } from '../ShellFileAttribution';
 import { prepareShellCheckoutBaseline } from '../ShellCheckoutBaseline';
 import { SHELL_BASELINE_CAPTURE_MS } from '../ShellContentBaseline';
