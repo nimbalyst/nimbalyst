@@ -27,7 +27,8 @@ export const CHECK_LIST_REGEX = /^(\s*)(?:-\s)?\s?(\[(\s|x)?\])\s/i;
  * Configuration for list import/export
  */
 export interface ListConfig {
-  // Number of spaces per indent level for export (default: 2)
+  // Minimum spaces a nested list is indented past its parent on export (default: 2);
+  // ordered parents always indent children past their full marker, e.g. 3 under `1. `
   exportIndentSize?: number;
   // Minimum spaces to count as one indent level for import (default: 2)
   importMinIndentSize?: number;
@@ -112,6 +113,52 @@ export function getIndentLevel(whitespaces: string, isImport: boolean = true): n
   return indent;
 }
 
+function $isNestedListWrapper(node: LexicalNode): boolean {
+  return (
+    $isListItemNode(node) &&
+    node.getChildrenSize() === 1 &&
+    $isListNode(node.getFirstChild())
+  );
+}
+
+/**
+ * Append an imported item `indent` levels deep under the last item of
+ * `rootList`, creating nested lists as needed. A new nested ordered list starts
+ * at the item's own marker number rather than copying the parent list's start,
+ * which is what Lexical's `setIndent()` does (#1937).
+ */
+function $appendNestedListItem(
+  rootList: ListNode,
+  indent: number,
+  listType: ListType,
+  start: number | undefined,
+  listItem: ListItemNode,
+): void {
+  let list = rootList;
+  for (let level = 1; level <= indent; level++) {
+    const last = list.getLastChild();
+    const nested =
+      $isListItemNode(last) && last.getChildrenSize() === 1
+        ? last.getFirstChild()
+        : null;
+    const wantedType =
+      level === indent ? listType : $isListNode(nested) ? nested.getListType() : listType;
+    if ($isListNode(nested) && nested.getListType() === wantedType) {
+      list = nested;
+      continue;
+    }
+    const wrapper = $createListItemNode();
+    const nestedList = $createListNode(
+      wantedType,
+      wantedType === 'number' ? (level === indent ? start : 1) : undefined,
+    );
+    wrapper.append(nestedList);
+    list.append(wrapper);
+    list = nestedList;
+  }
+  list.append(listItem);
+}
+
 /**
  * Create the list replace function for a specific list type
  */
@@ -122,11 +169,17 @@ export function createListReplace(listType: ListType): ElementTransformer['repla
     const listItem = $createListItemNode(
       listType === 'check' ? match[3] === 'x' : undefined,
     );
+    const start = listType === 'number' ? Number(match[2]) : undefined;
 
     // Calculate indent FIRST, before adding to list
     const indent = getIndentLevel(match[1], true);
+    let needsSetIndent = indent > 0;
 
-    if ($isListNode(nextNode) && nextNode.getListType() === listType) {
+    if (isImport && indent > 0 && $isListNode(previousNode)) {
+      $appendNestedListItem(previousNode, indent, listType, start, listItem);
+      parentNode.remove();
+      needsSetIndent = false;
+    } else if ($isListNode(nextNode) && nextNode.getListType() === listType) {
       const firstChild = nextNode.getFirstChild();
       if (firstChild !== null) {
         firstChild.insertBefore(listItem);
@@ -139,13 +192,19 @@ export function createListReplace(listType: ListType): ElementTransformer['repla
       $isListNode(previousNode) &&
       previousNode.getListType() === listType
     ) {
+      // A list holding only nested items (an indented item after a blank line
+      // starts one) takes its number from its first top-level item.
+      if (
+        isImport &&
+        start !== undefined &&
+        previousNode.getChildren().every($isNestedListWrapper)
+      ) {
+        previousNode.setStart(start);
+      }
       previousNode.append(listItem);
       parentNode.remove();
     } else {
-      const list = $createListNode(
-        listType,
-        listType === 'number' ? Number(match[2]) : undefined,
-      );
+      const list = $createListNode(listType, start);
       list.append(listItem);
       parentNode.replace(list);
     }
@@ -155,26 +214,39 @@ export function createListReplace(listType: ListType): ElementTransformer['repla
       listItem.select(0, 0);
     }
 
-    // Set the indent level on the list item
-    if (indent > 0) {
+    // Items without a preceding list to nest under keep the old behavior
+    if (needsSetIndent) {
       listItem.setIndent(indent);
     }
   };
 }
 
 /**
- * Export a list node to markdown with configurable indentation
+ * Width of the marker that a nested child must be indented past to stay inside
+ * this item under CommonMark: `1. ` is 3, `10. ` is 4, `- ` is 2. A check item's
+ * `[ ]` is item content, so its children only clear the `- `. See #1937.
+ */
+function getNestingMarkerWidth(listType: ListType, itemNumber: number): number {
+  return listType === 'number' ? `${itemNumber}. `.length : 2;
+}
+
+/**
+ * Export a list node to markdown. Nested lists are indented past their parent
+ * item's marker (at least `exportIndentSize` spaces) so CommonMark parsers keep
+ * them nested.
  */
 export function listExport(
   listNode: ListNode,
   exportChildren: (node: ElementNode) => string,
   depth: number = 0,
   config?: ListConfig,
+  baseIndent: string = '',
 ): string {
   const mergedConfig = { ...globalListConfig, ...config };
   const indentSize = mergedConfig.exportIndentSize ?? 2;
   const output = [];
   const children = listNode.getChildren();
+  const listType = listNode.getListType();
   let index = 0;
 
   for (const listItemNode of children) {
@@ -189,17 +261,25 @@ export function listExport(
       if (listItemNode.getChildrenSize() === 1) {
         const firstChild = listItemNode.getFirstChild();
         if ($isListNode(firstChild)) {
-          output.push(listExport(firstChild, exportChildren, depth + 1, config));
+          // The parent is the item emitted just before this wrapper.
+          const parentNumber = listNode.getStart() + Math.max(index - 1, 0);
+          const childOffset = Math.max(
+            indentSize,
+            getNestingMarkerWidth(listType, parentNumber),
+          );
+          output.push(
+            listExport(
+              firstChild,
+              exportChildren,
+              depth + 1,
+              config,
+              baseIndent + ' '.repeat(childOffset),
+            ),
+          );
           continue;
         }
       }
 
-      // Use the item's indent level if available, otherwise use depth
-      const itemIndent = listItemNode.getIndent();
-      const actualDepth = itemIndent !== undefined ? itemIndent : depth;
-      const indent = ' '.repeat(actualDepth * indentSize);
-
-      const listType = listNode.getListType();
       const prefix =
         listType === 'number'
           ? `${listNode.getStart() + index}. `
@@ -207,7 +287,7 @@ export function listExport(
           ? `- [${listItemNode.getChecked() ? 'x' : ' '}] `
           : '- ';
 
-      output.push(indent + prefix + exportChildren(listItemNode));
+      output.push(baseIndent + prefix + exportChildren(listItemNode));
       index++;
     }
   }

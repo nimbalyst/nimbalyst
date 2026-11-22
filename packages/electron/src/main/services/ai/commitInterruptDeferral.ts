@@ -1,5 +1,6 @@
 import {
   afterCommitProposalSettles,
+  closeWaitingCommitProposals,
   isCommitProposalInFlight,
 } from '@nimbalyst/runtime/ai/server/commitProposalInFlight';
 
@@ -32,4 +33,16 @@ export function deferInterruptDuringCommit(sessionId: string, deps: DeferredSend
     deps.logWarn(`[AIService] deferred send-now after commit proposal failed for ${sessionId}: ${error instanceof Error ? error.message : String(error)}`);
   });
   return true;
+}
+
+/**
+ * NIM-7642: the user's own send-now. A proposal still waiting on the user is
+ * closed first instead of holding their message until they answer it; the
+ * send-now is then deferred only until that call returns, or for as long as a
+ * commit they already confirmed runs. Meta-agent and teammate interrupts use
+ * `deferInterruptDuringCommit` and still wait for the user.
+ */
+export async function deferUserSendNowDuringCommit(sessionId: string, deps: DeferredSendNowDeps): Promise<boolean> {
+  await closeWaitingCommitProposals(sessionId);
+  return deferInterruptDuringCommit(sessionId, deps);
 }

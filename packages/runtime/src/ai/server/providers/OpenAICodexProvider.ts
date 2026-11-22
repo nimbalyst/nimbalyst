@@ -1,5 +1,7 @@
 import { codexSessionConfigurationKey } from '../protocols/codexAppServer/windowsSandbox';
 import path from 'path';
+import fs from 'fs';
+import os from 'os';
 import crypto from 'crypto';
 import OpenAI from 'openai';
 import { BaseAgentProvider } from './BaseAgentProvider';
@@ -29,6 +31,8 @@ import { ToolPermissionService } from '../permissions/ToolPermissionService';
 import { PermissionMode, TrustChecker, PermissionPatternSaver, PermissionPatternChecker, SecurityLogger } from './ProviderPermissionMixin';
 import { CodexSdkModuleLike, loadCodexSdkModule } from './codex/codexSdkLoader';
 import { resolvePackagedCodexBinaryPath } from './codex/codexBinaryPath';
+import { resolveCodexBinaryPath } from '../protocols/codexAppServer/codexAppServerBinary';
+import { listCodexCatalogModels, type CodexCatalogModel } from '../protocols/codexAppServer/modelCatalog';
 import { buildCodexSystemPrompt } from './codex/codexSystemPrompt';
 import { McpConfigService } from '../services/McpConfigService';
 import { getMcpConfigService } from '../services/mcpServerConfig';
@@ -38,6 +42,7 @@ import { AskUserQuestionPrompt, AskUserQuestionPromptOption } from './shared/ask
 import { AgentProtocolTranscriptAdapter } from './agentProtocol/AgentProtocolTranscriptAdapter';
 import { buildCodexToolLookupId } from '../toolLookupIds';
 import { reverseCodexPatch, type CodexPatchKind } from './codex/patchReverse';
+import { createCodexApprovalBindings, type CodexApprovalTurn } from './codex/codexApprovalBindings';
 
 /**
  * Codex transport selection.
@@ -83,6 +88,8 @@ interface OpenAICodexProviderDeps {
 
 interface OpenAICodexModelDiscoveryDeps {
   loadSdkModule?: () => Promise<CodexSdkModuleLike>;
+  /** Reads the bundled codex binary's `model/list` catalog. */
+  listCatalogModels?: (apiKey?: string) => Promise<CodexCatalogModel[]>;
 }
 
 interface PendingAskUserQuestionEntry {
@@ -122,9 +129,14 @@ export class OpenAICodexProvider extends BaseAgentProvider {
     maxTokens: number;
   }> = [
     // GPT-6 catalog entries require codex >= 0.153.0 (Astra), >= 0.155.0
-    // (Sol, Luna), and >= 0.159.1 (6.1 Sol); the catalog lists a 272k default
-    // context window for all of them.
+    // (Sol, Luna), >= 0.159.1 (6.1 Sol), >= 0.165.0 (6.1 Terra), and
+    // >= 0.171.0 (6.2 Sol, 6.2 Astra; 6.2 Sol is codex's own default). The
+    // catalog lists a 272k default context window for all of them except
+    // 6.1 Terra and 6.2 Sol, which default to 500k.
+    { id: 'gpt-6.2-sol', name: 'GPT-6.2 Sol', contextWindow: 500000, maxTokens: 128000 },
+    { id: 'gpt-6.2-astra', name: 'GPT-6.2 Astra', contextWindow: 272000, maxTokens: 128000 },
     { id: 'gpt-6.1-sol', name: 'GPT-6.1 Sol', contextWindow: 272000, maxTokens: 128000 },
+    { id: 'gpt-6.1-terra', name: 'GPT-6.1 Terra', contextWindow: 500000, maxTokens: 128000 },
     { id: 'gpt-6-sol', name: 'GPT-6 Sol', contextWindow: 272000, maxTokens: 128000 },
     { id: 'gpt-6-astra', name: 'GPT-6 Astra', contextWindow: 272000, maxTokens: 128000 },
     { id: 'gpt-6-luna', name: 'GPT-6 Luna', contextWindow: 272000, maxTokens: 128000 },
@@ -136,7 +148,9 @@ export class OpenAICodexProvider extends BaseAgentProvider {
     { id: 'gpt-5.4-mini', name: 'GPT-5.4 Mini', contextWindow: 400000, maxTokens: 128000 },
   ];
   private static readonly MODEL_FALLBACK_PRIORITY: ReadonlyArray<string> = [
+    'gpt-6.2-sol',
     'gpt-6.1-sol',
+    'gpt-6.1-terra',
     'gpt-6-sol',
     'gpt-6-luna',
     'gpt-5.6-sol',
@@ -178,6 +192,13 @@ export class OpenAICodexProvider extends BaseAgentProvider {
   private readonly permissionService: ToolPermissionService;
   private readonly mcpConfigService: McpConfigService;
   private readonly pendingAskUserQuestions = new Map<string, PendingAskUserQuestionEntry>();
+  /** Running turns by Nimbalyst session id, for Codex approval requests (#1884). */
+  private readonly codexApprovalTurns = new Map<string, CodexApprovalTurn>();
+  private readonly codexApprovals = createCodexApprovalBindings({
+    permissionService: () => this.permissionService,
+    turnFor: (sessionId) => this.codexApprovalTurns.get(sessionId),
+    logAgentMessage: (sessionId, content) => this.logAgentMessageBestEffort(sessionId, 'output', content),
+  });
   /** Latest MCP startup status per server name, for the session MCP chip (NIM-2962). */
   private readonly appServerMcpStatuses = new Map<string, { name: string; status: string; error?: string }>();
   private appServerMcpSessionId: string | undefined;
@@ -371,7 +392,7 @@ export class OpenAICodexProvider extends BaseAgentProvider {
       this.protocol = new CodexAppServerProtocol({
         apiKey,
         resolveCodexPathOverride: resolvePackagedCodexBinaryPath,
-        host: OpenAICodexProvider.appServerHostBindings ?? undefined,
+        host: { ...this.codexApprovals.bindings, ...OpenAICodexProvider.appServerHostBindings },
         clientInfo: { name: 'nimbalyst', version: process.env.NIMBALYST_VERSION ?? '0.0.0' },
       });
     } else if (deps?.loadSdkModule || deps?.resolveCodexPathOverride) {
@@ -407,7 +428,11 @@ export class OpenAICodexProvider extends BaseAgentProvider {
         patternSaver: BaseAgentProvider.permissionPatternSaver as PermissionPatternSaver,
         patternChecker: BaseAgentProvider.permissionPatternChecker as PermissionPatternChecker,
         securityLogger: BaseAgentProvider.securityLogger ?? undefined,
-        emit: this.emit.bind(this),
+        emit: (event: string, data: any) => {
+          // Log the Codex approval card only when the user is really asked.
+          if (event === 'toolPermission:pending') this.codexApprovals.onPermissionPrompt(data);
+          this.emit(event, data);
+        },
       });
     }
 
@@ -562,9 +587,63 @@ export class OpenAICodexProvider extends BaseAgentProvider {
     apiKey?: string,
     deps?: OpenAICodexModelDiscoveryDeps,
   ): Promise<AIModel[]> {
-    const sdkModels = await OpenAICodexProvider.getModelsFromSdk(apiKey, deps);
-    const apiModels = await OpenAICodexProvider.getModelsFromOpenAI(apiKey);
-    return OpenAICodexProvider.getPreferredModels(sdkModels, apiModels);
+    const [catalogModels, sdkModels, apiModels] = await Promise.all([
+      OpenAICodexProvider.getModelsFromCatalog(apiKey, deps),
+      OpenAICodexProvider.getModelsFromSdk(apiKey, deps),
+      OpenAICodexProvider.getModelsFromOpenAI(apiKey),
+    ]);
+    return OpenAICodexProvider.mergeCatalogModels(
+      catalogModels,
+      OpenAICodexProvider.getPreferredModels(sdkModels, apiModels),
+    );
+  }
+
+  /**
+   * Read the bundled codex binary's own model catalog (#1891). An injected
+   * `loadSdkModule` without `listCatalogModels` means the caller is exercising
+   * the legacy SDK path, the same convention the constructor uses to pick the
+   * transport, so no app-server child is spawned for it.
+   */
+  private static async getModelsFromCatalog(
+    apiKey?: string,
+    deps?: OpenAICodexModelDiscoveryDeps,
+  ): Promise<CodexCatalogModel[]> {
+    const lister = deps?.listCatalogModels
+      ?? (deps?.loadSdkModule
+        ? undefined
+        : (key?: string) => listCodexCatalogModels({
+          binaryPath: resolveCodexBinaryPath(resolvePackagedCodexBinaryPath),
+          apiKey: key,
+        }));
+    if (!lister) return [];
+    try {
+      return await lister(apiKey);
+    } catch (error) {
+      console.warn('[OpenAICodexProvider] codex model/list unavailable; using the built-in model list:', error);
+      return [];
+    }
+  }
+
+  /**
+   * Add catalog models the built-in list does not know yet, ahead of the
+   * built-in list, so a model shipped in a newer codex is selectable without
+   * a Nimbalyst release. Hidden catalog entries stay hidden. Built-in models
+   * absent from the catalog are kept: codex hides older models from its
+   * picker but still runs them, and existing sessions may use them.
+   */
+  static mergeCatalogModels(catalogModels: CodexCatalogModel[], builtInModels: AIModel[]): AIModel[] {
+    const known = new Set(builtInModels.map((model) => OpenAICodexProvider.toRawModelId(model.id)));
+    const extras: AIModel[] = [];
+    for (const catalogModel of catalogModels) {
+      if (catalogModel.hidden || known.has(catalogModel.id)) continue;
+      known.add(catalogModel.id);
+      extras.push({
+        id: ModelIdentifier.create('openai-codex', catalogModel.id).combined,
+        name: catalogModel.displayName || catalogModel.id,
+        provider: 'openai-codex' as AIProviderType,
+      });
+    }
+    return [...extras, ...builtInModels];
   }
 
   private static getFallbackModels() {
@@ -1068,6 +1147,15 @@ export class OpenAICodexProvider extends BaseAgentProvider {
         return;
       }
 
+      if (sessionId) {
+        this.codexApprovalTurns.set(sessionId, {
+          workspacePath,
+          permissionsPath,
+          signal: abortController.signal,
+          agentVerified: permissionDecision.agentVerified === true,
+        });
+      }
+
       // Get or create protocol session.
       //
       // Order of preference:
@@ -1445,6 +1533,9 @@ export class OpenAICodexProvider extends BaseAgentProvider {
     } finally {
       if (this.abortController === abortController) {
         this.abortController = null;
+      }
+      if (sessionId && this.codexApprovalTurns.get(sessionId)?.signal === abortController.signal) {
+        this.codexApprovalTurns.delete(sessionId);
       }
       if (sessionId) {
         const remainingTurns = Math.max(
@@ -1900,14 +1991,96 @@ export class OpenAICodexProvider extends BaseAgentProvider {
     const resolved = parsed ? parsed.model : configured.replace(/^openai-codex:/, '');
     const normalized = resolved.toLowerCase();
     if (normalized === 'openai-codex-cli' || normalized === 'default' || normalized === 'cli') {
-      return 'gpt-6.1-sol';
+      return OpenAICodexProvider.toBedrockModelId(OpenAICodexProvider.DEFAULT_MODEL.replace(/^openai-codex:/, ''));
     }
 
     // Pass the model directly to the Codex SDK without pre-validation.
     // The openai.models.list() API does not include all Codex-available models
     // (e.g., gpt-5.4 works via the SDK but isn't listed in the API).
     // The SDK itself will fail with a proper error if the model doesn't exist.
-    return OpenAICodexProvider.MODEL_REPLACEMENTS.get(normalized) || resolved;
+    const finalModel = OpenAICodexProvider.MODEL_REPLACEMENTS.get(normalized) || resolved;
+    return OpenAICodexProvider.toBedrockModelId(finalModel);
+  }
+
+  /**
+   * Bedrock's OpenAI-compatible endpoint (bedrock-mantle) namespaces OpenAI
+   * models as `openai.<id>` (e.g. `openai.gpt-5.6-luna`). When Codex is
+   * configured with `model_provider = "amazon-bedrock"` (in the shared
+   * `~/.codex/config.toml`), sending the bare id (`gpt-5.6-luna`) yields a
+   * 404 "model does not exist" from bedrock-mantle.
+   *
+   * We auto-detect that provider from the same config file Codex itself reads,
+   * so no user-facing setting is required: on Bedrock we namespace bare OpenAI
+   * model ids; on the public OpenAI API (or when the provider can't be
+   * determined) we leave them bare. Model ids are matched by pattern
+   * (`gpt-`, `o<n>`, `codex`) rather than a hardcoded list, so new models are
+   * handled automatically.
+   */
+  private static toBedrockModelId(modelId: string): string {
+    if (!OpenAICodexProvider.isBedrockCodexProvider()) {
+      return modelId;
+    }
+    // Already Bedrock-namespaced (openai./amazon./anthropic. etc.) or a
+    // provider-qualified id ("openai-codex:..."): leave untouched. We match an
+    // explicit known-provider prefix rather than any "." because model ids like
+    // "gpt-5.6-luna" legitimately contain a dot in the version.
+    if (/^(openai|amazon|anthropic|meta|mistral|cohere|deepseek)\./i.test(modelId)
+        || modelId.includes(':')) {
+      return modelId;
+    }
+    if (/^(gpt-|o[0-9]|codex)/i.test(modelId)) {
+      return `openai.${modelId}`;
+    }
+    return modelId;
+  }
+
+  /** Cached result of the config-file provider probe (undefined = not yet read). */
+  private static bedrockProviderCache: boolean | undefined;
+
+  /**
+   * Test/override hook. When set, its return value replaces the config-file
+   * probe (mirrors the other static loader/resolver hooks on this class).
+   * Lets unit tests pin the provider without touching the developer's real
+   * ~/.codex/config.toml.
+   */
+  static bedrockDetectionOverride: (() => boolean) | null = null;
+
+  /**
+   * Returns true when the shared Codex config declares
+   * `model_provider = "amazon-bedrock"`. Reads `$CODEX_HOME/config.toml`
+   * (default `~/.codex/config.toml`). Fails open (returns false) when the file
+   * is missing or unreadable, so the public OpenAI path is never affected.
+   * Result is cached for the process lifetime (or supplied via the override).
+   */
+  private static isBedrockCodexProvider(): boolean {
+    if (OpenAICodexProvider.bedrockDetectionOverride) {
+      return OpenAICodexProvider.bedrockDetectionOverride();
+    }
+    if (OpenAICodexProvider.bedrockProviderCache !== undefined) {
+      return OpenAICodexProvider.bedrockProviderCache;
+    }
+    let detected = false;
+    try {
+      const codexHome = process.env.CODEX_HOME || path.join(os.homedir(), '.codex');
+      const raw = fs.readFileSync(path.join(codexHome, 'config.toml'), 'utf8');
+      detected = OpenAICodexProvider.codexConfigSelectsBedrock(raw);
+    } catch {
+      detected = false;
+    }
+    OpenAICodexProvider.bedrockProviderCache = detected;
+    return detected;
+  }
+
+  /**
+   * True when the top-level table of a Codex config.toml sets
+   * `model_provider = "amazon-bedrock"`. Only keys before the first `[table]`
+   * header count: the same key inside an inactive `[profiles.*]` table does not
+   * select Bedrock, and namespacing ids there would break a working OpenAI setup.
+   */
+  static codexConfigSelectsBedrock(raw: string): boolean {
+    const firstTable = raw.search(/^\s*\[/m);
+    const topLevel = firstTable === -1 ? raw : raw.slice(0, firstTable);
+    return /^\s*model_provider\s*=\s*["']amazon-bedrock["']\s*(#.*)?$/m.test(topLevel);
   }
 
   private buildCodexPrompt(options: {
@@ -3095,10 +3268,15 @@ export class OpenAICodexProvider extends BaseAgentProvider {
         };
       }
 
-      // Codex does not expose Nimbalyst's per-tool permission callback. Permit
-      // only project modes that authorize the turn; Agent-verified bypass is
-      // narrowed downstream to Codex's native sandbox plus automatic reviewer.
-      if (trustStatus.mode === 'bypass-all' || trustStatus.mode === 'allow-all') {
+      // The app-server transport routes Codex's approval requests to the
+      // permission prompt (#1884), so every mode can run there; Ask mode uses
+      // a read-only sandbox so each write comes to the user. The legacy SDK
+      // transport has no approval callback and still refuses Ask mode.
+      if (
+        trustStatus.mode === 'bypass-all'
+        || trustStatus.mode === 'allow-all'
+        || (trustStatus.mode === 'ask' && this.transport === 'app-server')
+      ) {
         return {
           decision: 'allow',
           permissionMode: trustStatus.mode,

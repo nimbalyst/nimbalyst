@@ -49,6 +49,12 @@ vi.mock('../../utils/logger', () => ({
   },
 }));
 
+// The app theme the hidden capture window must inherit when no theme is requested.
+const resolvedTheme = vi.hoisted(() => ({ value: 'dark' as string }));
+vi.mock('../../utils/store', () => ({
+  getResolvedThemeSync: vi.fn(() => resolvedTheme.value),
+}));
+
 import { OffscreenEditorManager } from '../OffscreenEditorManager';
 
 describe('OffscreenEditorManager', () => {
@@ -174,6 +180,30 @@ describe('OffscreenEditorManager', () => {
     expect(secondUsed).not.toEqual(firstUsed);
     expect(secondUsed!.getTime()).toBeGreaterThan(firstUsed!.getTime());
 
+    vi.useRealTimers();
+  });
+  // The capture window skips initializeTheme(), so a capture with no theme
+  // rendered unthemed (dark text on a dark background).
+  it.each([
+    { requested: undefined, app: 'dark', sent: 'dark' },
+    { requested: undefined, app: 'crystal-dark', sent: 'dark' },
+    { requested: undefined, app: 'light', sent: 'light' },
+    { requested: 'light', app: 'dark', sent: 'light' },
+  ])('sends theme $sent to the capture window (requested $requested, app $app)', async ({ requested, app, sent }) => {
+    vi.useFakeTimers();
+    resolvedTheme.value = app;
+    const send = vi
+      .spyOn(manager as any, 'sendCaptureRequest')
+      .mockResolvedValue({ success: true, imageBase64: 'AA==' });
+
+    const capture = manager.captureScreenshot('/test/readme.md', '/test', undefined, requested);
+    await vi.advanceTimersByTimeAsync(5000);
+    await capture;
+
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(send.mock.calls[0][3]).toBe(sent);
+
+    send.mockRestore();
     vi.useRealTimers();
   });
 });

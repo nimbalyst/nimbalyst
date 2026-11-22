@@ -83,3 +83,9 @@
 .monaco-code-editor[data-diff-mode="true"] .editor.original .margin-view-overlays {
   background-color: var(--nim-bg-tertiary) !important;
 }
+
+/* Uncommitted dictation text injected at the caret (monacoDictationTarget.ts). */
+.dictation-pending-decoration {
+  color: var(--nim-text-muted);
+  font-style: italic;
+}

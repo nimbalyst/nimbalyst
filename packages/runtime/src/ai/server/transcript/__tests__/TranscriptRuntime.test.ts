@@ -1,3 +1,4 @@
+// @vitest-environment node
 /**
  * Tests for TranscriptRuntime -- the in-memory canonical event runtime
  * that replaces the persisted ai_transcript_events table.
@@ -12,7 +13,7 @@
 import { describe, it, expect } from 'vitest';
 import { TranscriptRuntime } from '../TranscriptRuntime';
 import { InMemoryTranscriptEventStore } from '../InMemoryTranscriptEventStore';
-import type { IRawMessageStore, RawMessage } from '../TranscriptTransformer';
+import { RAW_MESSAGE_PAGE_SIZE, type IRawMessageStore, type RawMessage } from '../TranscriptTransformer';
 
 function makeRawStore(messages: RawMessage[]): IRawMessageStore {
   // Hold the live array so tests that push after construction see new rows.
@@ -36,6 +37,84 @@ function userInput(id: number, sessionId: string, text: string, createdAt = new 
 }
 
 describe('TranscriptRuntime', () => {
+  describe('Codex commit proposal identity', () => {
+    for (const nativeFirst of [false, true]) {
+      it(`keeps one completed card across batches and replay (nativeFirst=${nativeFirst})`, async () => {
+        const rows: RawMessage[] = [];
+        const runtime = new TranscriptRuntime(makeRawStore(rows));
+        const append = async (content: unknown, metadata?: Record<string, unknown>) => {
+          rows.push({ id: rows.length + 1, sessionId: 'commit', source: 'openai-codex',
+            direction: 'output', content: JSON.stringify(content), metadata,
+            createdAt: new Date(1792862293000 + rows.length) });
+          await runtime.processNewMessages('commit', 'openai-codex');
+        };
+        // Reused raw IDs must still produce separate proposals in later turns.
+        for (const turn of [1, 2]) {
+          const id = 'item_0';
+          const args = { commitMessage: `commit ${turn}`, filesToStage: ['file.ts'] };
+          const enriched = { ...args, filesToStage: ['/repo/file.ts'], repoPath: '/repo',
+            targetWorktree: { path: '/repo', branch: 'feature' } };
+          const hostStart = { type: 'nimbalyst_tool_use', id,
+            name: 'developer_git_commit_proposal', input: enriched };
+          const item = { type: 'mcpToolCall', id, server: 'nimbalyst',
+            tool: 'developer_git_commit_proposal', arguments: args, status: 'inProgress' };
+          const metadata = { transport: 'app-server', editGroupId: `nimtc|item_0|1792862293286|${turn}` };
+          const start = { method: 'item/started', params: { turnId: `turn-${turn}`, item } };
+          if (nativeFirst) { await append(start, metadata); await append(hostStart); }
+          else { await append(hostStart); await append(start, metadata); }
+          const pending = await runtime.getViewMessages('commit', 'openai-codex');
+          expect(pending.filter(m => m.type === 'tool_call')).toHaveLength(turn);
+          expect(pending.at(-1)?.toolCall?.arguments).toEqual(enriched);
+          await append({ method: 'item/completed', params: { turnId: `turn-${turn}`, item: { ...item,
+            status: 'completed', result: { content: [{ type: 'text', text: `Commit hash: abc123${turn}` }] },
+          } } }, metadata);
+          const completed = await runtime.getViewMessages('commit', 'openai-codex');
+          expect(completed.filter(m => m.type === 'tool_call')).toHaveLength(turn);
+          expect(completed.at(-1)?.toolCall).toMatchObject({ status: 'completed', result: `Commit hash: abc123${turn}` });
+        }
+        await runtime.forceReparseSession('commit', 'openai-codex');
+        const replayed = await runtime.getViewMessages('commit', 'openai-codex');
+        expect(replayed.filter(m => m.type === 'tool_call')).toHaveLength(2);
+        expect(replayed.filter(m => m.type === 'tool_call').map(m => m.toolCall?.status)).toEqual(['completed', 'completed']);
+      });
+    }
+  });
+
+  // #1890: the host's row carries the resolved targetWorktree the widget needs
+  // to show the manual-approval card. It must reach the event whichever row
+  // the parser sees first, in one batch or across batches.
+  describe('Claude commit proposal host arguments', () => {
+    const id = 'toolu_commit';
+    const args = { commitMessage: 'commit', filesToStage: ['file.ts'] };
+    const enriched = { ...args, filesToStage: ['/wt/file.ts'], repoPath: '/wt',
+      targetWorktree: { path: '/wt', branch: 'feature' }, autoApproved: false };
+    const sdkStart = { type: 'assistant', message: { id: 'msg_1', model: 'claude-opus-4-6', content: [
+      { type: 'tool_use', id, name: 'mcp__nimbalyst-mcp__developer_git_commit_proposal', input: args },
+    ] } };
+    const hostStart = { type: 'nimbalyst_tool_use', id, name: 'developer_git_commit_proposal', input: enriched };
+    const cases: Array<[string, unknown[][]]> = [
+      ['SDK first, same batch', [[sdkStart, hostStart]]],
+      ['SDK first, earlier batch', [[sdkStart], [hostStart]]],
+      ['host first', [[hostStart], [sdkStart]]],
+    ];
+    for (const [name, batches] of cases) {
+      it(`exposes the host arguments on one card (${name})`, async () => {
+        const rows: RawMessage[] = [];
+        const runtime = new TranscriptRuntime(makeRawStore(rows));
+        for (const batch of batches) {
+          for (const content of batch) {
+            rows.push({ id: rows.length + 1, sessionId: 'c', source: 'claude-code', direction: 'output',
+              content: JSON.stringify(content), createdAt: new Date(1792862293000 + rows.length) });
+          }
+          await runtime.processNewMessages('c', 'claude-code');
+        }
+        const calls = (await runtime.getViewMessages('c', 'claude-code')).filter(m => m.type === 'tool_call');
+        expect(calls).toHaveLength(1);
+        expect(calls[0].toolCall?.arguments).toEqual(enriched);
+      });
+    }
+  });
+
   it('builds canonical events on first access for an unseen session', async () => {
     const raw = makeRawStore([userInput(1, 's1', 'hello world')]);
     const runtime = new TranscriptRuntime(raw);
@@ -194,6 +273,242 @@ describe('TranscriptRuntime', () => {
     expect(events).toHaveLength(toolCalls);
     expect(events.every((e) => e.payload.status === 'completed')).toBe(true);
     expect(elapsed).toBeLessThan(2000);
+  });
+
+  // The SQLite worker rejects any single response over 256 MB. Reading a whole
+  // raw log in one query left a 57k-row session stuck on "Session not found".
+  describe('paged raw-log reads', () => {
+    const prompts = (from: number, count: number) =>
+      Array.from({ length: count }, (_, i) => `prompt ${from + i}`);
+
+    function guardedStore(messages: RawMessage[], failReadAfterId?: { id: number | null }) {
+      const reads: number[] = [];
+      const store: IRawMessageStore = {
+        async getMessages(sessionId, afterId, limit) {
+          if (failReadAfterId && afterId === failReadAfterId.id) {
+            failReadAfterId.id = null;
+            throw new Error('database closed');
+          }
+          const rows = messages.filter((m) => m.sessionId === sessionId && m.id > (afterId ?? 0)).slice(0, limit);
+          // Stand-in for the worker's response size guard.
+          if (rows.length > RAW_MESSAGE_PAGE_SIZE) throw new Error('Query result is too large to return');
+          reads.push(rows.length);
+          return rows;
+        },
+      };
+      return { store, reads };
+    }
+
+    it('rebuilds and processes new messages one bounded page at a time', async () => {
+      const total = RAW_MESSAGE_PAGE_SIZE * 2 + 7;
+      const messages = prompts(1, total).map((text, i) => userInput(i + 1, 's1', text));
+      const { store, reads } = guardedStore(messages);
+      const runtime = new TranscriptRuntime(store);
+
+      const events = await runtime.getCanonicalEvents('s1', 'claude-code');
+      expect(events.map((e) => e.searchableText)).toEqual(prompts(1, total));
+      expect(reads).toEqual([RAW_MESSAGE_PAGE_SIZE, RAW_MESSAGE_PAGE_SIZE, 7]);
+
+      const added = RAW_MESSAGE_PAGE_SIZE + 3;
+      prompts(total + 1, added).forEach((text, i) => messages.push(userInput(total + i + 1, 's1', text)));
+      const newEvents = await runtime.processNewMessages('s1', 'claude-code');
+      expect(newEvents.map((e) => e.searchableText)).toEqual(prompts(total + 1, added));
+      expect(await runtime.processNewMessages('s1', 'claude-code')).toEqual([]);
+    });
+
+    it('resumes after the last finished page when a later page read fails', async () => {
+      const messages = [userInput(1, 's1', 'prompt 1')];
+      const failure = { id: null as number | null };
+      const { store } = guardedStore(messages, failure);
+      const runtime = new TranscriptRuntime(store);
+      await runtime.getCanonicalEvents('s1', 'claude-code');
+
+      const added = RAW_MESSAGE_PAGE_SIZE + 5;
+      prompts(2, added).forEach((text, i) => messages.push(userInput(i + 2, 's1', text)));
+      failure.id = 1 + RAW_MESSAGE_PAGE_SIZE;
+      await expect(runtime.processNewMessages('s1', 'claude-code')).rejects.toThrow('database closed');
+
+      const rest = await runtime.processNewMessages('s1', 'claude-code');
+      expect(rest.map((e) => e.searchableText)).toEqual(prompts(2 + RAW_MESSAGE_PAGE_SIZE, 5));
+      const all = await runtime.getCanonicalEvents('s1', 'claude-code');
+      expect(all.map((e) => e.searchableText)).toEqual(prompts(1, 1 + added));
+    });
+
+    // A tool call whose start is on one page and whose result is on the next
+    // must still end up as one completed card, on a rebuild and when the rows
+    // arrive as new messages.
+    it('completes tool calls whose result is on the next page', async () => {
+      const messages: RawMessage[] = [];
+      const push = (method: string, item: Record<string, unknown>) => messages.push({
+        id: messages.length + 1, sessionId: 's1', source: 'openai-codex', direction: 'output',
+        content: JSON.stringify({ method, params: { item, threadId: 't', turnId: 'u' } }),
+        createdAt: new Date('2026-01-01'), metadata: { transport: 'app-server' },
+      });
+      const calls = Math.ceil(RAW_MESSAGE_PAGE_SIZE * 0.6);
+      const item = (i: number) => ({ type: 'mcpToolCall', id: `exec-${i}`, server: 'nimbalyst', tool: 'x', arguments: {} });
+      // Every start first, then every result, so later results land on page 2.
+      for (let i = 0; i < calls; i++) push('item/started', { ...item(i), status: 'inProgress', result: null });
+      for (let i = 0; i < calls; i++) {
+        push('item/completed', { ...item(i), status: 'completed', result: { content: [{ type: 'text', text: `ok ${i}` }] } });
+      }
+
+      const { store, reads } = guardedStore(messages);
+      const rebuilt = await new TranscriptRuntime(store).getCanonicalEvents('s1', 'openai-codex');
+      expect(reads.length).toBeGreaterThan(1);
+      expect(rebuilt).toHaveLength(calls);
+      expect(rebuilt.every((e) => e.payload.status === 'completed')).toBe(true);
+
+      const live: RawMessage[] = [];
+      const runtime = new TranscriptRuntime(guardedStore(live).store);
+      await runtime.getCanonicalEvents('s1', 'openai-codex');
+      live.push(...messages);
+      await runtime.processNewMessages('s1', 'openai-codex');
+      const streamed = await runtime.getCanonicalEvents('s1', 'openai-codex');
+      expect(streamed).toHaveLength(calls);
+      expect(streamed.every((e) => e.payload.status === 'completed')).toBe(true);
+    });
+  });
+
+  // GitHub #919: a session evicted while its own rebuild was paging got a new
+  // store for the remaining pages. The rebuild split across two generations and
+  // the cache kept only the tail: 602 of 1,101 messages, starting at "Reply 500".
+  describe('eviction while a rebuild is paging', () => {
+    const codexRow = (id: number, sessionId: string, item: Record<string, unknown>, createdAt = new Date(id)): RawMessage => ({
+      id, sessionId, source: 'openai-codex', direction: 'output', createdAt, metadata: { transport: 'app-server' },
+      content: JSON.stringify({ method: 'item/completed', params: { threadId: 't', turnId: 'u', item } }),
+    });
+    const codexPrompt = (id: number, sessionId: string, text: string): RawMessage => ({
+      id, sessionId, source: 'openai-codex', direction: 'input', content: JSON.stringify({ prompt: text }), createdAt: new Date(0),
+    });
+
+    /**
+     * Session A holds a prompt and 1,100 items (three raw pages); every other
+     * session holds one prompt. `hooks.midRebuild` runs once, inside the read
+     * of A's second page.
+     */
+    function setup(cacheCap: number, others: string[]) {
+      const raw: RawMessage[] = [
+        codexPrompt(1, 'A', 'Long request'),
+        ...Array.from({ length: 1100 }, (_, i) => codexRow(i + 2, 'A', i % 2 === 0
+          ? { type: 'agentMessage', id: `message-${i}`, text: `Reply ${i}` }
+          : { type: 'commandExecution', id: `tool-${i}`, command: `step ${i}`, status: 'completed', aggregatedOutput: 'ok' })),
+        ...others.map((sid, i) => codexPrompt(5000 + i, sid, `Prompt ${sid}`)),
+      ];
+      const hooks: { midRebuild: (() => Promise<unknown> | void) | null } = { midRebuild: null };
+      const runtime = new TranscriptRuntime({
+        async getMessages(sessionId, afterId = 0, limit) {
+          if (sessionId === 'A' && afterId >= RAW_MESSAGE_PAGE_SIZE && hooks.midRebuild) {
+            const hook = hooks.midRebuild;
+            hooks.midRebuild = null;
+            await hook();
+          }
+          const rows = raw.filter((r) => r.sessionId === sessionId && r.id > afterId);
+          return limit === undefined ? rows : rows.slice(0, limit);
+        },
+      }, { cacheCap });
+      const generationsWritten = new Map<number, number>();
+      runtime.setOnEventWritten((e) => {
+        if (e.sessionId === 'A') generationsWritten.set(e.transcriptGeneration!, (generationsWritten.get(e.transcriptGeneration!) ?? 0) + 1);
+      });
+      const appendToA = () => raw.push(codexRow(1200, 'A', { type: 'agentMessage', id: 'tail', text: 'Newest' }, new Date(5000)));
+      const cached = async (sessionIds: string[]) => {
+        const out: string[] = [];
+        for (const sid of sessionIds) if (!(await runtime.needsTransformation(sid))) out.push(sid);
+        return out;
+      };
+      return { runtime, hooks, generationsWritten, appendToA, cached };
+    }
+
+    it('keeps the rebuild in one generation when another session is touched mid-rebuild', async () => {
+      const { runtime, hooks, generationsWritten, appendToA } = setup(1, ['B', 'C']);
+      const complete = (await runtime.getViewMessages('A', 'openai-codex')).length;
+      expect(complete).toBe(1101);
+      await runtime.getCanonicalEvents('B', 'openai-codex'); // evicts A
+      generationsWritten.clear();
+      hooks.midRebuild = () => runtime.getCanonicalEvents('C', 'openai-codex');
+      appendToA();
+
+      await runtime.processNewMessages('A', 'openai-codex');
+      const after = await runtime.getViewMessages('A', 'openai-codex');
+
+      expect(after).toHaveLength(complete + 1);
+      expect(after[0]).toMatchObject({ type: 'user_message', text: 'Long request' });
+      expect(after.at(-1)?.text).toBe('Newest');
+      expect([...generationsWritten.keys()]).toHaveLength(1);
+      expect(new Set(after.map((m) => m.transcriptGeneration))).toEqual(new Set(generationsWritten.keys()));
+    });
+
+    it('evicts down to the cap once the rebuild finishes', async () => {
+      const { runtime, hooks, appendToA, cached } = setup(1, ['B', 'C', 'D']);
+      const all = ['A', 'B', 'C', 'D'];
+      await runtime.getViewMessages('A', 'openai-codex');
+      await runtime.getCanonicalEvents('B', 'openai-codex'); // evicts A
+      let cachedMidRebuild: string[] = [];
+      let cEvents = 0;
+      hooks.midRebuild = async () => {
+        cEvents = (await runtime.getCanonicalEvents('C', 'openai-codex')).length;
+        cachedMidRebuild = await cached(all);
+      };
+      appendToA();
+
+      await runtime.processNewMessages('A', 'openai-codex');
+
+      // C was read in full, then evicted once idle; A stayed although older.
+      expect(cEvents).toBe(1);
+      expect(cachedMidRebuild).toEqual(['A']);
+      expect(await cached(all)).toEqual(['A']);
+      // A is evictable again now that its rebuild finished.
+      await runtime.getCanonicalEvents('D', 'openai-codex');
+      expect(await cached(all)).toEqual(['D']);
+      expect(await runtime.getViewMessages('A', 'openai-codex')).toHaveLength(1102);
+      expect(await cached(all)).toEqual(['A']);
+    });
+
+    it('waits for a running rebuild before a forced reparse evicts the session', async () => {
+      const { runtime, hooks, generationsWritten, appendToA } = setup(1, ['B']);
+      await runtime.getViewMessages('A', 'openai-codex');
+      await runtime.getCanonicalEvents('B', 'openai-codex'); // evicts A
+      generationsWritten.clear();
+      let reparse: Promise<boolean> | null = null;
+      hooks.midRebuild = () => { reparse = runtime.forceReparseSession('A', 'openai-codex'); };
+      appendToA();
+
+      await runtime.processNewMessages('A', 'openai-codex');
+      expect([...generationsWritten.keys()]).toHaveLength(1);
+      const [rebuildGeneration] = generationsWritten.keys();
+      expect(await reparse).toBe(true);
+      expect(await runtime.needsTransformation('A')).toBe(true);
+
+      const reparsed = await runtime.getViewMessages('A', 'openai-codex');
+      expect(reparsed).toHaveLength(1102);
+      expect(reparsed[0]).toMatchObject({ type: 'user_message', text: 'Long request' });
+      expect(reparsed[0].transcriptGeneration).toBeGreaterThan(rebuildGeneration);
+    });
+
+    it('releases a session whose call failed, so a forced reparse and the next read still run', async () => {
+      const { runtime, hooks, appendToA, cached } = setup(1, ['B']);
+      await runtime.getViewMessages('A', 'openai-codex');
+      await runtime.getCanonicalEvents('B', 'openai-codex'); // evicts A
+      hooks.midRebuild = () => { throw new Error('database closed'); };
+      appendToA();
+
+      await expect(runtime.processNewMessages('A', 'openai-codex')).rejects.toThrow('database closed');
+      await runtime.forceReparseSession('A', 'openai-codex');
+      expect(await cached(['A', 'B'])).toEqual([]);
+      expect(await runtime.getViewMessages('A', 'openai-codex')).toHaveLength(1102);
+    });
+
+    // Same window after the build: each read evicted the other session between
+    // its build and its read, so both returned no events.
+    it('reads each session in full when two are built at once past the cap', async () => {
+      const { runtime } = setup(1, ['B', 'C']);
+      const [b, c] = await Promise.all([
+        runtime.getCanonicalEvents('B', 'openai-codex'),
+        runtime.getCanonicalEvents('C', 'openai-codex'),
+      ]);
+      expect(b.map((e) => e.searchableText)).toEqual(['Prompt B']);
+      expect(c.map((e) => e.searchableText)).toEqual(['Prompt C']);
+    });
   });
 });
 

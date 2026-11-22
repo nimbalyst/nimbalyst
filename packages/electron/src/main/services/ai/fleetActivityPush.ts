@@ -38,10 +38,10 @@ export async function sendFleetActivity(
   if (!syncProvider?.sendFleetActivity) return;
 
   try {
-    // Publishes are coalesced to at most one per 15s, so one line each is cheap,
-    // and it is the only desktop-side evidence of whether the server was told.
+    // Keep delivery breadcrumbs available for targeted debugging without
+    // logging an ambient snapshot on every fleet transition by default.
     const sent = await syncProvider.sendFleetActivity(activity, shownOnDesktop);
-    logger.main.info(
+    logger.main.debug(
       `[fleetActivityPush] ${sent ? 'Sent' : 'Dropped (index socket not open)'}: ` +
         `running=${activity.running} approval=${activity.needsApproval} decision=${activity.needsDecision} ` +
         `failed=${activity.failed} stalled=${activity.stalled} unread=${activity.unread}`,

@@ -12,6 +12,8 @@ import { clearMockupAnnotationsForFile } from './MockupAnnotationIndicator';
 interface SelectionChipsProps {
   /** Current document file path */
   currentFilePath?: string;
+  /** Human-readable title for documents whose paths contain internal IDs. */
+  currentFileName?: string;
 }
 
 /** A single removable chip descriptor. */
@@ -19,6 +21,7 @@ interface Chip {
   key: string;
   icon?: string;
   label: string;
+  preview?: string;
   tooltip?: string;
   groupLabel?: string;
   onRemove: () => void;
@@ -62,7 +65,7 @@ function getCombinedSnapshot(): number {
  * reversible "N hidden — restore" affordance; dropping resets when the editor
  * pushes a new selection.
  */
-export const SelectionChips: React.FC<SelectionChipsProps> = ({ currentFilePath }) => {
+export const SelectionChips: React.FC<SelectionChipsProps> = ({ currentFilePath, currentFileName }) => {
   useSyncExternalStore(subscribeAll, getCombinedSnapshot);
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(() => new Set());
 
@@ -107,12 +110,13 @@ export const SelectionChips: React.FC<SelectionChipsProps> = ({ currentFilePath 
     !!currentFilePath &&
     textSelection.filePath === currentFilePath;
   if (textMatchesFile && textSelection) {
-    const preview =
-      textSelection.text.length > 60 ? textSelection.text.slice(0, 60) + '…' : textSelection.text;
+    const normalizedText = textSelection.text.replace(/\s+/g, ' ').trim();
+    const preview = normalizedText.length > 80 ? normalizedText.slice(0, 80) + '…' : normalizedText;
     otherChips.push({
       key: 'text-selection',
       icon: 'text_select_start',
       label: 'Selection',
+      preview,
       tooltip: `Selected text will be included: "${preview}"`,
       onRemove: () => clearTextSelection(),
     });
@@ -164,7 +168,7 @@ export const SelectionChips: React.FC<SelectionChipsProps> = ({ currentFilePath 
 
   const chips = [...visibleExtensionChips, ...otherChips];
 
-  if (chips.length === 0 && dismissedCount === 0) {
+  if (!currentFilePath && chips.length === 0 && dismissedCount === 0) {
     return null;
   }
 
@@ -179,6 +183,16 @@ export const SelectionChips: React.FC<SelectionChipsProps> = ({ currentFilePath 
         marginBottom: '4px',
       }}
     >
+      {currentFilePath && (
+        <div
+          className="document-context-indicator flex min-w-0 max-w-full items-center gap-1 rounded border border-nim bg-nim-secondary px-2 py-1 text-xs text-nim-muted"
+          title={`Included with your message: ${currentFilePath}`}
+        >
+          <span className="material-symbols-outlined shrink-0" style={{ fontSize: '14px' }} aria-hidden="true">description</span>
+          <span className="shrink-0 text-nim-faint">Context:</span>
+          <span className="truncate text-nim">{currentFileName || currentFilePath.split(/[\\/]/).pop() || currentFilePath}</span>
+        </div>
+      )}
       {chips.map((chip) => (
         <div
           key={chip.key}
@@ -188,7 +202,8 @@ export const SelectionChips: React.FC<SelectionChipsProps> = ({ currentFilePath 
             display: 'inline-flex',
             alignItems: 'center',
             gap: '4px',
-            maxWidth: '220px',
+            maxWidth: '100%',
+            minWidth: 0,
             padding: '2px 4px 2px 8px',
             fontSize: '12px',
             color: 'var(--nim-text-muted)',
@@ -209,7 +224,7 @@ export const SelectionChips: React.FC<SelectionChipsProps> = ({ currentFilePath 
               whiteSpace: 'nowrap',
             }}
           >
-            {chip.label}
+            {chip.label}{chip.preview && <span className="selection-chip-preview text-nim">: “{chip.preview}”</span>}
           </span>
           <button
             type="button"
@@ -221,6 +236,7 @@ export const SelectionChips: React.FC<SelectionChipsProps> = ({ currentFilePath 
               alignItems: 'center',
               justifyContent: 'center',
               width: '16px',
+              flexShrink: 0,
               height: '16px',
               padding: 0,
               border: 'none',

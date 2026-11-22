@@ -639,6 +639,9 @@ export const ensureSessionHistoryVisibleAtom = atom(
 // Initialization
 // ============================================================
 
+// Count overlapping rail and AgentMode restores independently for each project.
+export const pendingAgentModeRestoresAtom = atomFamily((_workspacePath: string) => atom(0));
+
 /**
  * Initialize agent mode layout from workspace state.
  * Call this when workspace path is known (typically in useEffect).
@@ -653,10 +656,18 @@ export async function initAgentModeLayout(
   workspacePath: string,
   options: { setActive?: boolean } = {}
 ): Promise<void> {
+  const pending = pendingAgentModeRestoresAtom(workspacePath);
+  store.set(pending, count => count + 1);
   const { setActive = true } = options;
   if (setActive) {
     store.set(activeWorkspacePathAtom, workspacePath);
   }
+
+  // A rail switch runs this restore while a notification click may already
+  // be selecting a session in the same project. If the selection moved while
+  // `workspace:get-state` was in flight, the persisted value is older than it
+  // and must not overwrite it.
+  const selectionBeforeLoad = store.get(selectedWorkstreamAtom(workspacePath));
 
   try {
     const workspaceState = await window.electronAPI.invoke(
@@ -669,11 +680,16 @@ export async function initAgentModeLayout(
     const restoredLayout = mergeWithDefaults(persisted);
     store.set(agentModeLayoutAtomFamily(workspacePath), restoredLayout);
 
-    if (agenticState?.selectedWorkstream) {
+    if (
+      agenticState?.selectedWorkstream &&
+      store.get(selectedWorkstreamAtom(workspacePath)) === selectionBeforeLoad
+    ) {
       const selection = agenticState.selectedWorkstream as { type: WorkstreamType; id: string };
       store.set(selectedWorkstreamAtom(workspacePath), selection);
     }
   } catch (err) {
     console.error('[agentMode] Failed to load layout:', err);
+  } finally {
+    store.set(pending, count => count - 1);
   }
 }

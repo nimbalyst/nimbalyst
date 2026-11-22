@@ -908,6 +908,64 @@ it("finds the first prompt after a large header across bounded reads and preserv
   expect(next.title ?? title).toBe(title);
 });
 
+it("titles a rollout from the first real prompt, skipping injected environment and AGENTS.md context (GitHub #1825)", async () => {
+  const file = path.join(dir, "2026/09/14/rollout-injected.jsonl");
+  const line = (value: unknown) => JSON.stringify(value) + "\n";
+  const user = (...texts: string[]) =>
+    line({
+      type: "response_item",
+      payload: {
+        type: "message",
+        role: "user",
+        content: texts.map((text) => ({ type: "input_text", text })),
+      },
+    });
+  await fs.writeFile(
+    file,
+    line({ type: "session_meta", payload: { id: "injected", cwd } }) +
+      user(
+        "# AGENTS.md instructions for /workspace/project\n\n<INSTRUCTIONS>\nrules\n</INSTRUCTIONS>",
+        "<environment_context>\n  <cwd>/workspace/project</cwd>\n</environment_context>"
+      ) +
+      user("<environment_context>\n  <current_date>2026-09-14</current_date>\n</environment_context>") +
+      user("Fix the login bug")
+  );
+  const ref = (await source.identify(file, [cwd]))!;
+  expect(ref.title).toBe("Fix the login bug...");
+  let cursor = null;
+  let title: string | undefined;
+  for (let i = 0; i < 10; i++) {
+    const page = await source.readSince(ref, cursor);
+    cursor = page.cursor;
+    title = page.title ?? title;
+    if (!page.hasMore) break;
+  }
+  expect(title).toBe("Fix the login bug...");
+});
+
+it("keeps the prompt that follows an injected preamble in the same text block (GitHub #1825)", async () => {
+  const file = path.join(dir, "2026/09/14/rollout-combined.jsonl");
+  const line = (value: unknown) => JSON.stringify(value) + "\n";
+  await fs.writeFile(
+    file,
+    line({ type: "session_meta", payload: { id: "combined", cwd } }) +
+      line({
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "user",
+          content: [
+            {
+              type: "input_text",
+              text: "<environment_context>\n  <cwd>/workspace/project</cwd>\n</environment_context>\nFix login",
+            },
+          ],
+        },
+      })
+  );
+  expect((await source.identify(file, [cwd]))!.title).toBe("Fix login...");
+});
+
 it("reuses accepted headers on append and revalidates rewritten cwd and symlink paths", async () => {
   const file = path.join(dir, "2026/09/14/rollout-cache.jsonl");
   const header =

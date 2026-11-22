@@ -118,6 +118,14 @@ describe('WriteCoordinator hot lane', () => {
   });
 });
 
+describe('WriteCoordinator observer containment', () => {
+  it('a throwing onBatch does not fail the writes or stall the next batch (#1810)', async () => {
+    const { coordinator } = makeCoordinator({ onBatch: () => { throw new Error('observer down'); } });
+    await expect(coordinator.write(() => 1)).resolves.toBe(1);
+    await expect(coordinator.write(() => 2)).resolves.toBe(2);
+  });
+});
+
 describe('WriteCoordinator background lane', () => {
   it('runs chunks until done and resolves with the final result', async () => {
     const { db, coordinator } = makeCoordinator();
@@ -199,6 +207,22 @@ describe('WriteCoordinator background lane', () => {
 
     expect(onSlowChunk).toHaveBeenCalled();
     expect(onSlowChunk.mock.calls[0][0].name).toBe('slow');
+  });
+
+  it('a throwing observer or logger does not reject a chunk that committed (#1810)', async () => {
+    const boom = () => { throw new Error('observer down'); };
+    const { db, coordinator } = makeCoordinator({
+      slowChunkWarnMs: 0,
+      onChunk: boom,
+      onSlowChunk: boom,
+      log: boom,
+    });
+
+    await expect(coordinator.runBackground<string>({
+      name: 'committed',
+      chunk: () => ({ done: true, result: 'ok' }),
+    })).resolves.toBe('ok');
+    expect(db.commits).toEqual([{ size: 0, succeeded: true }]);
   });
 
   it('queues bg ops serially', async () => {

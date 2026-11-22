@@ -26,6 +26,7 @@ import { canvasWorkingSetRegistry } from '@nimbalyst/runtime/canvas/canvasPresen
 import { store } from '@nimbalyst/runtime/store';
 import {
   sessionProcessingAtom,
+  sessionProcessingStateAtom,
   pruneClosedSessionDataAtom,
   sessionDataReleaseListenersAtom,
   reloadSessionDataAtom,
@@ -47,6 +48,7 @@ import {
   sessionDraftLocalModifiedAtAtom,
   type PendingPrompt,
 } from './atoms/sessions';
+import { windowFocusedAtom } from './atoms/windowFocus';
 import { workstreamActiveChildAtom, workstreamStateAtom } from './atoms/workstreamState';
 import { triggerWorktreeRefreshAtom } from './atoms/gitOperations';
 import { activeWorkspacePathAtom, multiProjectModeAtom, openProjectsAtom } from './atoms/openProjects';
@@ -89,6 +91,12 @@ const transcriptAccumulator = new TranscriptStreamAccumulator({
   // Keep events while a load is in flight: its snapshot may predate them.
   isSessionTracked: (sessionId) =>
     isSessionDataResident(store.get(sessionStoreAtom(sessionId))) || isSessionLoadInFlight(sessionId),
+  // A rebuild held behind the on-screen transcript (#919) is released by a
+  // reload; some writers never send one.
+  requestSnapshot: (sessionId) => {
+    const workspacePath = store.get(sessionStoreAtom(sessionId))?.workspacePath;
+    if (workspacePath) void store.set(reloadSessionDataAtom, { sessionId, workspacePath });
+  },
   // requestAnimationFrame caps flushes at the display refresh rate (~60 Hz)
   // and gives the JS thread a chance to do other work between frames.
   // Falls back to setTimeout in non-DOM environments (Vitest, headless).
@@ -194,6 +202,36 @@ function ensureMultiProjectSubscribers(): void {
 }
 
 /**
+ * The session the user is looking at in `workspacePath`: the selected
+ * workstream's active child, or the selected session itself.
+ */
+function getCurrentlyViewedSessionId(workspacePath: string): string | null {
+  const selectedWorkstream = store.get(selectedWorkstreamAtom(workspacePath));
+  if (!selectedWorkstream) return null;
+  return store.get(workstreamActiveChildAtom(selectedWorkstream.id)) || selectedWorkstream.id;
+}
+
+function isSessionBeingViewed(sessionId: string, workspacePath: string): boolean {
+  const visibleWorkspacePath = store.get(activeWorkspacePathAtom);
+  return store.get(windowFocusedAtom)
+    && (visibleWorkspacePath === null || visibleWorkspacePath === workspacePath)
+    && getCurrentlyViewedSessionId(workspacePath) === sessionId;
+}
+
+function markBackgroundSessionUnread(sessionId: string, workspacePath: string): void {
+  const pendingReadTimer = readStateSyncTimers.get(sessionId);
+  if (pendingReadTimer) clearTimeout(pendingReadTimer);
+  readStateSyncTimers.delete(sessionId);
+  store.set(sessionUnreadAtom(sessionId), true);
+  store.set(markSessionUnreadAtom, { sessionId, workspacePath });
+  window.electronAPI?.invoke('ai:updateSessionMetadata', sessionId, {
+    metadata: { hasUnread: true },
+  }).catch((err: Error) => {
+    console.error('[sessionStateListeners] Failed to persist unread state:', err);
+  });
+}
+
+/**
  * Initialize global session state listeners.
  * Should be called once at app startup (or when AgentMode mounts).
  *
@@ -212,6 +250,8 @@ export function initSessionStateListeners(): () => void {
   // reconcile function is defined below). Fired on terminal session events so a
   // stuck spinner clears within ~1s instead of waiting for the slow interval.
   let scheduleProcessingReconcile: (() => void) | undefined;
+  let processingReconcileDisposed = false;
+  let processingReconcileRequestId = 0;
 
   // Wire reconciliation against multi-project rail state so subscriptions
   // include every warm project, not just the visible one.
@@ -395,6 +435,10 @@ export function initSessionStateListeners(): () => void {
       case 'session:completed':
       case 'session:error':
       case 'session:interrupted':
+        // Completion may follow the last output after the user switches away.
+        if (type === 'session:completed' && !isSessionBeingViewed(sessionId, resolvedWorkspacePath)) {
+          markBackgroundSessionUnread(sessionId, resolvedWorkspacePath);
+        }
         // The three atoms cleared in the unconditional terminal-event block
         // above (processing, pendingInteractivePrompt, streaming) cover this
         // case. We intentionally do NOT re-clear them here; the streaming
@@ -627,31 +671,10 @@ export function initSessionStateListeners(): () => void {
       store.set(updateSessionStoreAtom, { sessionId, updates: { isArchived: false } });
     }
 
-    // Mark as unread if this is an output message (agent response) and the session
-    // is not currently being viewed
+    // Focus or project restoration alone does not read a background answer.
     if (direction === 'output') {
-      const selectedWorkstream = store.get(selectedWorkstreamAtom(workspacePath));
-
-      // Determine the currently viewed session ID
-      // For a single session, it's the workstream ID itself
-      // For a workstream/worktree, it's the active child within it
-      let currentlyViewedSessionId: string | null = null;
-      if (selectedWorkstream) {
-        const activeChild = store.get(workstreamActiveChildAtom(selectedWorkstream.id));
-        currentlyViewedSessionId = activeChild || selectedWorkstream.id;
-      }
-
-      // If this message is for a session that's not currently viewed, mark it as unread
-      if (sessionId !== currentlyViewedSessionId) {
-        store.set(sessionUnreadAtom(sessionId), true);
-        store.set(markSessionUnreadAtom, { sessionId, workspacePath });
-
-        // Persist to database metadata for cross-device sync
-        window.electronAPI?.invoke('ai:updateSessionMetadata', sessionId, {
-          metadata: { hasUnread: true },
-        }).catch((err: Error) => {
-          console.error('[sessionStateListeners] Failed to persist unread state:', err);
-        });
+      if (!isSessionBeingViewed(sessionId, workspacePath)) {
+        markBackgroundSessionUnread(sessionId, workspacePath);
       } else {
         // Session IS currently viewed - push lastReadAt (debounced) so other
         // devices (iOS) know the user is reading these messages in real time.
@@ -664,6 +687,7 @@ export function initSessionStateListeners(): () => void {
         }
         readStateSyncTimers.set(sessionId, setTimeout(() => {
           readStateSyncTimers.delete(sessionId);
+          if (!isSessionBeingViewed(sessionId, workspacePath)) return;
           window.electronAPI?.invoke('ai:updateSessionMetadata', sessionId, {
             metadata: { hasUnread: false, lastReadAt: Date.now() },
           }).catch((err: Error) => {
@@ -1043,12 +1067,22 @@ export function initSessionStateListeners(): () => void {
     const api = window.electronAPI.sessionState;
     if (!api.getRunningSessionIds) return;
     try {
-      const result = await api.getRunningSessionIds();
-      if (!result?.success) return;
-      const running = new Set(result.sessionIds);
-      for (const sessionId of running) {
-        store.set(sessionProcessingAtom(sessionId), true);
+      const requestId = ++processingReconcileRequestId;
+      const candidates = new Set(sessionProcessingStateAtom.getParams());
+      for (const parentId of store.get(sessionRegistryAtom).keys()) {
+        candidates.add(parentId);
+        const children = store.get(sessionChildrenAtom(parentId));
+        if (Array.isArray(children)) {
+          for (const childId of children) candidates.add(childId);
+        }
       }
+      const before = new Map([...candidates].map(sessionId => {
+        const stateAtom = sessionProcessingStateAtom(sessionId);
+        return [sessionId, { stateAtom, state: store.get(stateAtom) }] as const;
+      }));
+      const result = await api.getRunningSessionIds();
+      if (!result?.success || processingReconcileDisposed || requestId !== processingReconcileRequestId) return;
+      const running = new Set(result.sessionIds);
       // Heal strays across the SAME superset the meta-agent header aggregates
       // over (sessionOrChildProcessingAtom = self OR any child). The header reads
       // children from sessionChildrenAtom too, and a meta-agent child can sit in
@@ -1057,19 +1091,26 @@ export function initSessionStateListeners(): () => void {
       // sessions:list). Iterating the registry alone left such a child's stuck
       // processing atom unhealed, pinning the header until the user clicked the
       // child. Union the registry keys with every parent's loaded children.
-      const candidates = new Set<string>(store.get(sessionRegistryAtom).keys());
-      for (const parentId of store.get(sessionRegistryAtom).keys()) {
-        const children = store.get(sessionChildrenAtom(parentId));
-        if (Array.isArray(children)) {
-          for (const childId of children) candidates.add(childId);
-        }
-      }
+      for (const sessionId of running) candidates.add(sessionId);
+      const instantiated = new Set(sessionProcessingStateAtom.getParams());
       let healed = 0;
       for (const sessionId of candidates) {
-        if (!running.has(sessionId) && store.get(sessionProcessingAtom(sessionId))) {
-          store.set(sessionProcessingAtom(sessionId), false);
-          healed++;
+        const captured = before.get(sessionId);
+        if (captured) {
+          // Check membership before calling the creating atomFamily API. A
+          // removed/recreated session must not be resurrected by this response.
+          if (!instantiated.has(sessionId)) continue;
+          const currentAtom = sessionProcessingStateAtom(sessionId);
+          if (currentAtom !== captured.stateAtom || store.get(currentAtom) !== captured.state) continue;
+        } else if (instantiated.has(sessionId)) {
+          // A newer write wins, but merely mounting/reading a session during
+          // the await must not delay restoring its live Cancel control.
+          if (store.get(sessionProcessingStateAtom(sessionId)).hasLocalWrite) continue;
         }
+        const processing = running.has(sessionId);
+        if (store.get(sessionProcessingAtom(sessionId)) === processing) continue;
+        store.set(sessionProcessingAtom(sessionId), processing);
+        if (!processing) healed++;
       }
       if (healed > 0) {
         console.debug(
@@ -1161,6 +1202,7 @@ export function initSessionStateListeners(): () => void {
 
   // Return cleanup function
   return () => {
+    processingReconcileDisposed = true;
     // Clear all pending throttle timers
     for (const timer of reloadThrottleTimers.values()) {
       clearTimeout(timer);

@@ -13,6 +13,8 @@
  *       * `node:worker_threads` (when running as a worker)
  *       * the typed RPC contract types (type-only imports)
  *       * the extension SDK type for ExtensionPermissionId (type-only)
+ *       * `./backendTerminalsClient`, which has no imports of its own and is
+ *         bundled into this entry
  *
  * The bootstrap:
  *   1. Establishes the right messaging primitive (parentPort vs process.parentPort)
@@ -39,10 +41,14 @@ import type {
   BrokerResults,
   HostToBackendMessage,
   SessionsSettledEventName,
+  TerminalsExitEventName,
+  TerminalsOutputEventName,
 } from './extensionBackendRpc';
+import { createBackendTerminalsClient } from './backendTerminalsClient';
 import type {
   BackendPanelsService,
   BackendSessionsService,
+  BackendTerminalsService,
   BackendToolCallContext,
   ExtensionPermissionId,
   OwnedSessionSettledEvent,
@@ -237,6 +243,13 @@ export interface BackendServices {
    * No permission required.
    */
   panels: BackendPanelsService;
+
+  /**
+   * Run commands in terminal tabs this extension owns, follow their output,
+   * and stop them. The host stops them when this module stops.
+   * Requires: `terminals`.
+   */
+  terminals: BackendTerminalsService;
 }
 
 class PermissionDeniedInRuntime extends Error {
@@ -422,6 +435,8 @@ function buildServices(ctx: BackendRuntimeContext, send: SendToHost): BackendSer
       },
     },
 
+    terminals: buildTerminalsService(assert, send),
+
     // Per Q7: emitEvent / requestPermission / askUserQuestion are NOT injected
     // here. Providers that need them layer their own bridge atop this object.
   };
@@ -458,6 +473,26 @@ function buildSessionsService(
       );
     },
   };
+}
+
+// Must equal the TERMINALS_*_EVENT constants in extensionBackendRpc (type-checked).
+const TERMINALS_OUTPUT: TerminalsOutputEventName = 'terminals:output';
+const TERMINALS_EXIT: TerminalsExitEventName = 'terminals:exit';
+
+function buildTerminalsService(
+  assert: (permissionId: ExtensionPermissionId) => void,
+  send: SendToHost
+): BackendTerminalsService {
+  return createBackendTerminalsClient({
+    // Every op round-trips as one `terminals` broker call; the host derives
+    // the owning extension and workspace from the runtime, never from these args.
+    call: async (op, args) => {
+      assert('terminals');
+      return (await makeBrokerCall(send, 'terminals', { op, args })).result;
+    },
+    onOutput: (handler) => _subscribeBrokerEvent(TERMINALS_OUTPUT, handler),
+    onExit: (handler) => _subscribeBrokerEvent(TERMINALS_EXIT, handler),
+  });
 }
 
 /**

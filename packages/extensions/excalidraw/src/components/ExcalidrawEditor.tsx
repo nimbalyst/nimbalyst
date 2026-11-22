@@ -398,6 +398,8 @@ export const ExcalidrawEditor = forwardRef<any, EditorHostProps>(function Excali
         excalidrawDomRef.current
           ? { excalidrawDom: excalidrawDomRef.current, undoManager }
           : undefined,
+        // Read live: a commenter's or demoted editor's write ends the session.
+        { isReadOnly: () => host.readOnly === true },
       );
       bindingRef.current = binding;
       return {

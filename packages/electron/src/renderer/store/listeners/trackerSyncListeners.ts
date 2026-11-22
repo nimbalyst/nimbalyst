@@ -211,7 +211,8 @@ export function initTrackerSyncListeners(): () => void {
         if (
           data.code !== 'staleKeyEpoch' &&
           data.code !== 'rotationLocked' &&
-          data.code !== 'custodyUnavailable'
+          data.code !== 'custodyUnavailable' &&
+          data.code !== 'recoveryConflict'
         ) {
           console.error('[trackerSyncListeners] tracker-sync rejection (non-banner)', data);
           return;

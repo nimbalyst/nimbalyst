@@ -11,6 +11,12 @@
  *   value that is an email address), unless `keepIdentity`;
  * - the wiki's own bookkeeping: trash, activity logs, sidecars, absolute paths.
  *
+ * Tracker items the app keeps (questions, decisions, `USR.64`) are carried
+ * when an exported page links to one and `trackerItems` can look it up: each
+ * gets an item page with its fields and body, and the link points there. Only
+ * items the pages link to, not the items those link to; their person fields
+ * are stripped like any other, and comments and activity are never read.
+ *
  * The site is built in a sibling folder and swapped in at the end, so a failed
  * export never leaves half a site. An earlier export in the target is kept as
  * `<dir>.previous`; a target that holds anything else is refused.
@@ -18,8 +24,10 @@
 import { existsSync, statSync } from 'node:fs';
 import { cp, mkdir, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import * as path from 'node:path';
+import { isExportOptOut, stripIdentity } from './visibility.js';
 import { HTML_EMBED_SHELL_CSP, HTML_EMBED_SHELL_HTML } from '@nimbalyst/collab-protocol';
 import {
+  findLinks,
   NIMBALYST_MARK_SVG,
   NIMBALYST_SITE_URL,
   STATIC_SITE_DATA_DIR,
@@ -34,9 +42,9 @@ import {
   type StaticSiteManifest,
 } from '@nimbalyst/local-wiki';
 import { typeDefinitions, WIKI_API_VERSION } from '../serve/api.js';
-import { rewriteBodyLinks, type LinkIssue, type OutsideRefs } from './bodyLinks.js';
+import { rewriteBodyLinks, trackerRef, type LinkIssue, type OutsideRefs } from './bodyLinks.js';
 import { describe, escapeHtml, pageHref, renderBodyHtml, renderShell, type PrerenderSite } from './prerender.js';
-import { assignSitePaths, rootPrefix } from './sitePaths.js';
+import { assignSitePaths, normalizeBasePath, rootPrefix } from './sitePaths.js';
 
 export interface StaticExportOptions {
   wiki: LocalWiki;
@@ -46,13 +54,36 @@ export interface StaticExportOptions {
   nimVersion: string;
   /** Site title; default the Home page's title. */
   title?: string;
+  /** URL path where the output folder will be hosted; defaults to `/`. */
+  base?: string;
   outsideRefs?: OutsideRefs;
   keepIdentity?: boolean;
   /** Export only this page and what is under it. */
   rootPageId?: string;
-  /** Types left out: their typed pages, table rows and type pages. */
+  /** Types left out: their typed pages, table rows and type pages, and carried tracker items. */
   excludeTypes?: readonly string[];
+  /** Looks up the tracker items exported pages link to; without it those links stay text. */
+  trackerItems?: TrackerItemSource;
   now?: () => Date;
+}
+
+/** A tracker item from the app, as the export carries it. */
+export interface CarriedTrackerItem {
+  id: string;
+  /** `USR.64`; null when the item has none. */
+  issueKey: string | null;
+  type: string;
+  title: string;
+  fields: Record<string, unknown>;
+  /** Markdown; empty when the item has no body. */
+  body: string;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface TrackerItemSource {
+  /** The item an issue key or id names; null when there is none. */
+  find(ref: string): Promise<CarriedTrackerItem | null>;
 }
 
 export interface ExcludedPage {
@@ -68,6 +99,8 @@ export interface StaticExportReport {
   pages: number;
   typedPages: number;
   rows: number;
+  /** Tracker items carried because a page links to them. */
+  trackerItems: number;
   types: number;
   files: number;
   excluded: ExcludedPage[];
@@ -77,32 +110,17 @@ export interface StaticExportReport {
 
 export class StaticExportError extends Error {}
 
-const IDENTITY_FIELD = /^(owners?|assignees?|authors?|reporters?|created_?by|updated_?by|emails?|contacts?|members?)$/i;
-const EMAIL = /[^\s@<>()]+@[^\s@<>()]+\.[a-z]{2,}/i;
 const MANIFEST = path.posix.join(STATIC_SITE_DATA_DIR, 'manifest.json');
-
-function hasEmail(value: unknown): boolean {
-  if (typeof value === 'string') return EMAIL.test(value);
-  if (Array.isArray(value)) return value.some(hasEmail);
-  return false;
-}
-
-/** Fields with person fields removed; `userFields` are the type's `user` fields. */
-function stripIdentity(fields: Record<string, unknown>, userFields: ReadonlySet<string>, keep: boolean): { fields: Record<string, unknown>; removed: number } {
-  if (keep) return { fields, removed: 0 };
-  const out: Record<string, unknown> = {};
-  let removed = 0;
-  for (const [name, value] of Object.entries(fields)) {
-    if (IDENTITY_FIELD.test(name) || userFields.has(name) || hasEmail(value)) removed++;
-    else out[name] = value;
-  }
-  return { fields: out, removed };
-}
 
 function relationIds(value: unknown): string[] {
   if (typeof value === 'string') return value.split(',').map((part) => part.trim()).filter(Boolean);
   if (Array.isArray(value)) return value.flatMap(relationIds);
-  if (value && typeof value === 'object' && typeof (value as { id?: unknown }).id === 'string') return [(value as { id: string }).id];
+  // A wiki relationship holds `{ id }`; one from the app's tracker holds `{ itemId }`.
+  if (value && typeof value === 'object') {
+    const { id, itemId } = value as { id?: unknown; itemId?: unknown };
+    if (typeof id === 'string') return [id];
+    if (typeof itemId === 'string') return [itemId];
+  }
   return [];
 }
 
@@ -133,6 +151,10 @@ function dataName(id: string): string {
 
 export async function exportStaticSite(options: StaticExportOptions): Promise<StaticExportReport> {
   const { wiki } = options;
+  let basePath: string;
+  try { basePath = normalizeBasePath(options.base); } catch (error) {
+    throw new StaticExportError((error as Error).message);
+  }
   const outDir = path.resolve(options.outDir);
   const outsideRefs = options.outsideRefs ?? 'text';
   const keepIdentity = options.keepIdentity ?? false;
@@ -165,7 +187,7 @@ export async function exportStaticSite(options: StaticExportOptions): Promise<St
   const visit = (page: LocalPage, hidden: boolean) => {
     if (visited.has(page.id)) return;
     visited.add(page.id);
-    const optedOut = page.fields.export === false || page.fields.export === 'false';
+    const optedOut = isExportOptOut(page.fields);
     if (hidden) excluded.push({ id: page.id, title: page.title, reason: 'under-excluded' });
     else if (optedOut) excluded.push({ id: page.id, title: page.title, reason: 'export-false' });
     else if (page.malformed) excluded.push({ id: page.id, title: page.title, reason: 'malformed' });
@@ -204,7 +226,64 @@ export async function exportStaticSite(options: StaticExportOptions): Promise<St
   const home = exportedPages
     .filter((page) => page.parentId === null)
     .sort((a, b) => (a.order ?? Infinity) - (b.order ?? Infinity) || a.title.localeCompare(b.title))[0] ?? null;
-  const sitePaths = assignSitePaths(exportedPages, rows, typeDefs.map((def) => def.typeId), home?.id ?? null);
+  // ---------------------------------------------------------------- bodies, read once
+  const rawBodies = new Map<string, ReadBodyResult>();
+  for (const page of exportedPages) {
+    if (page.bodySource === 'none' && page.documentType === 'markdown') continue;
+    const body = await wiki.readBody(page.id);
+    if (!body.malformed) rawBodies.set(page.id, body);
+  }
+
+  // ---------------------------------------------------------------- carried tracker items
+  const carried = new Map<string, CarriedTrackerItem>();
+  /** Reference as written (`USR.64`, an id) to the carried item's id. */
+  const carriedByRef = new Map<string, string>();
+  if (options.trackerItems) {
+    const refs = new Set<string>();
+    for (const [id, body] of rawBodies) {
+      if (live.get(id)?.documentType !== 'markdown') continue;
+      for (const link of findLinks(body.markdown)) {
+        const ref = trackerRef(link.path);
+        if (ref && !included.has(ref)) refs.add(ref);
+      }
+    }
+    for (const ref of refs) {
+      const item = await options.trackerItems.find(ref);
+      if (!item || included.has(item.id) || excludedTypes.has(item.type)) continue;
+      carried.set(item.id, item);
+      carriedByRef.set(ref, item.id);
+    }
+  }
+  // Their types: a wiki type in the export takes them in; any other is defined from its type file,
+  // or, for a built-in type with no file here, from the fields its items have.
+  const carriedTypeDefs: typeof typeDefs = [];
+  for (const typeId of new Set([...carried.values()].map((item) => item.type))) {
+    if (typeById.has(typeId)) continue;
+    const known = allTypeDefs.find((def) => def.typeId === typeId);
+    const fieldNames = new Set([...carried.values()].filter((item) => item.type === typeId).flatMap((item) => Object.keys(item.fields)));
+    const label = typeId.charAt(0).toUpperCase() + typeId.slice(1).replace(/[-_]/g, ' ');
+    const def = known
+      ? { ...known, storage: 'pages' as const, problems: [] }
+      : { typeId, displayName: label, displayNamePlural: `${label}s`, storage: 'pages' as const, wikiType: false, fields: [...fieldNames].map((name) => ({ name, type: 'string' })), titleField: 'title', definition: null, problems: [] };
+    carriedTypeDefs.push(def);
+    typeById.set(typeId, def);
+  }
+  const siteTypeDefs = [...typeDefs, ...carriedTypeDefs];
+  const carriedRows: LocalTrackerItem[] = [...carried.values()].map((item) => ({
+    id: item.id,
+    type: item.type,
+    title: item.title,
+    fields: item.fields,
+    storage: 'pages',
+    path: null,
+    parentId: null,
+    parentKind: null,
+    order: null,
+    createdAt: item.createdAt,
+    updatedAt: item.updatedAt,
+  }));
+
+  const sitePaths = assignSitePaths(exportedPages, [...rows, ...carriedRows], siteTypeDefs.map((def) => def.typeId), home?.id ?? null);
   const title = options.title?.trim() || home?.title || 'Wiki';
 
   // ---------------------------------------------------------------- bodies
@@ -219,7 +298,11 @@ export async function exportStaticSite(options: StaticExportOptions): Promise<St
       return false;
     }
   };
-  const linkContext = { pages: live, included, outsideRefs, fileExists };
+  const trackerItem = (ref: string) => {
+    const id = carriedByRef.get(ref) ?? (carried.has(ref) ? ref : undefined);
+    return id ? { id, href: `${basePath}${sitePaths.pages[id].split('/').map(encodeURIComponent).join('/')}/` } : null;
+  };
+  const linkContext = { pages: live, included, outsideRefs, fileExists, trackerItem };
   const bodies = new Map<string, ReadBodyResult>();
   const linkIssues: LinkIssue[] = [];
   const files = new Set<string>();
@@ -229,41 +312,43 @@ export async function exportStaticSite(options: StaticExportOptions): Promise<St
     list.push(link);
     links.set(id, list);
   };
-  const titleOf = (id: string) => live.get(id)?.title ?? rows.find((row) => row.id === id)?.title ?? id;
-  const typeOf = (id: string) => live.get(id)?.type ?? rows.find((row) => row.id === id)?.type ?? 'page';
+  const titleOf = (id: string) => live.get(id)?.title ?? rows.find((row) => row.id === id)?.title ?? carried.get(id)?.title ?? id;
+  const typeOf = (id: string) => live.get(id)?.type ?? rows.find((row) => row.id === id)?.type ?? carried.get(id)?.type ?? 'page';
+  const carriedPage = (item: CarriedTrackerItem) => ({ id: item.id, title: item.title, path: null, dir: '' });
 
-  for (const page of exportedPages) {
-    if (page.bodySource === 'none' && page.documentType === 'markdown') continue;
-    const body = await wiki.readBody(page.id);
-    if (body.malformed) continue;
-    if (page.documentType !== 'markdown') {
-      bodies.set(page.id, body);
-      continue;
-    }
-    const rewritten = rewriteBodyLinks(page, body.markdown, linkContext);
-    bodies.set(page.id, { markdown: rewritten.markdown, version: body.version });
-    linkIssues.push(...rewritten.issues);
+  const rewrite = (source: { id: string; title: string; path: string | null; dir: string; type: string | null }, markdown: string, version: string, inTrackerItem = false) => {
+    const rewritten = rewriteBodyLinks(source, markdown, linkContext);
+    bodies.set(source.id, { markdown: rewritten.markdown, version });
+    linkIssues.push(...(inTrackerItem ? rewritten.issues.map((issue) => ({ ...issue, inTrackerItem })) : rewritten.issues));
     for (const file of rewritten.files) files.add(file);
     const seen = new Set<string>();
     for (const out of rewritten.outgoing) {
-      if (out.targetId === page.id || seen.has(out.targetId)) continue;
+      if (out.targetId === source.id || seen.has(out.targetId)) continue;
       seen.add(out.targetId);
       const base = { predicateId: null, relationshipTypeKey: 'link', otherIssueKey: null, sentence: out.sentence || null, sourceFieldId: 'body:link' };
-      addLink(page.id, { ...base, direction: 'out', otherItemId: out.targetId, otherTitle: titleOf(out.targetId), otherTypeId: typeOf(out.targetId) });
-      addLink(out.targetId, { ...base, direction: 'in', otherItemId: page.id, otherTitle: page.title, otherTypeId: page.type ?? 'page' });
+      addLink(source.id, { ...base, direction: 'out', otherItemId: out.targetId, otherTitle: titleOf(out.targetId), otherTypeId: typeOf(out.targetId) });
+      addLink(out.targetId, { ...base, direction: 'in', otherItemId: source.id, otherTitle: source.title, otherTypeId: source.type ?? 'page' });
     }
+  };
+  for (const page of exportedPages) {
+    const body = rawBodies.get(page.id);
+    if (!body) continue;
+    if (page.documentType !== 'markdown') bodies.set(page.id, body);
+    else rewrite(page, body.markdown, body.version);
   }
+  for (const item of carried.values()) rewrite({ ...carriedPage(item), type: item.type }, item.body, String(item.updatedAt), true);
 
   // Relationship fields, read before identity fields are stripped (a relation is not a person).
   const fieldSources: Array<{ id: string; type: string; title: string; fields: Record<string, unknown> }> = [
     ...exportedPages.filter((page) => page.type).map((page) => ({ id: page.id, type: page.type!, title: page.title, fields: page.fields })),
     ...rows.map((row) => ({ id: row.id, type: row.type, title: row.title, fields: row.fields })),
+    ...carriedRows.map((row) => ({ id: row.id, type: row.type, title: row.title, fields: row.fields })),
   ];
   for (const source of fieldSources) {
     for (const field of typeById.get(source.type)?.fields ?? []) {
       if (field.type !== 'relationship') continue;
       for (const targetId of relationIds(source.fields[field.name])) {
-        if (!included.has(targetId) && !rowIds.has(targetId)) continue;
+        if (!included.has(targetId) && !rowIds.has(targetId) && !carried.has(targetId)) continue;
         const base = { predicateId: null, relationshipTypeKey: null, otherIssueKey: null, sentence: null, sourceFieldId: field.name };
         addLink(source.id, { ...base, direction: 'out', otherItemId: targetId, otherTitle: titleOf(targetId), otherTypeId: typeOf(targetId) });
         addLink(targetId, { ...base, direction: 'in', otherItemId: source.id, otherTitle: source.title, otherTypeId: source.type });
@@ -280,6 +365,7 @@ export async function exportStaticSite(options: StaticExportOptions): Promise<St
   };
   const pageFields = new Map(exportedPages.map((page) => [page.id, strip(page.fields, page.type)]));
   const exportedRows = rows.map((row) => ({ ...row, fields: strip(row.fields, row.type) }));
+  const exportedCarried = carriedRows.map((row) => ({ ...row, fields: strip(row.fields, row.type) }));
 
   // ---------------------------------------------------------------- write
   const stage = `${outDir}.export-${process.pid}-${Date.now()}`;
@@ -320,12 +406,13 @@ export async function exportStaticSite(options: StaticExportOptions): Promise<St
     };
     await writeJson(data('snapshot.json'), exportedSnapshot);
     // The type files' absolute paths stay on this machine.
-    await writeJson(data('types.json'), { types: typeDefs.map((def) => ({ ...def, problems: [] })) });
-    for (const def of typeDefs) {
-      const trackers = trackerSnapshots.get(def.typeId)!;
+    await writeJson(data('types.json'), { types: siteTypeDefs.map((def) => ({ ...def, problems: [] })) });
+    for (const def of siteTypeDefs) {
+      const trackers = trackerSnapshots.get(def.typeId) ?? { typeId: def.typeId, storage: 'pages' as const, items: [], version: null };
       const items = def.storage === 'table'
         ? exportedRows.filter((row) => row.type === def.typeId)
         : trackers.items.filter((item) => included.has(item.id)).map((item) => ({ ...item, fields: pageFields.get(item.id) ?? {} }));
+      items.push(...exportedCarried.filter((row) => row.type === def.typeId));
       await writeJson(data(`trackers/${dataName(def.typeId)}.json`), { ...trackers, items });
     }
     for (const [id, body] of bodies) await writeJson(data(`bodies/${dataName(id)}.json`), body);
@@ -342,6 +429,7 @@ export async function exportStaticSite(options: StaticExportOptions): Promise<St
         fields: pageFields.get(page.id) ?? {},
       })),
       ...exportedRows.map((row) => ({ id: row.id, title: row.title, kind: 'row' as const, type: row.type, path: row.path, body: '', fields: row.fields })),
+      ...exportedCarried.map((row) => ({ id: row.id, title: row.title, kind: 'row' as const, type: row.type, path: null, body: bodies.get(row.id)?.markdown ?? '', fields: row.fields })),
     ];
     await writeJson(data('search.json'), searchDocs);
     await writeJson(data('links.json'), Object.fromEntries(links));
@@ -361,11 +449,11 @@ export async function exportStaticSite(options: StaticExportOptions): Promise<St
     await writeText(path.join(stage, 'html-embed', 'shell', 'index.html'), shell);
 
     // ---------------------------------------------------------------- pages
-    const config: StaticSiteConfig = { format: STATIC_SITE_FORMAT, dataPath: `/${STATIC_SITE_DATA_DIR}/` };
-    const site: PrerenderSite = { pages: live, included, sitePaths: sitePaths.pages };
+    const config: StaticSiteConfig = { format: STATIC_SITE_FORMAT, dataPath: `${basePath}${STATIC_SITE_DATA_DIR}/`, basePath };
+    const site: PrerenderSite = { pages: live, included, sitePaths: sitePaths.pages, basePath };
     const writePage = (sitePath: string, pageTitle: string, description: string, content: string) =>
       writeText(path.join(stage, ...sitePath.split('/').filter(Boolean), 'index.html'), renderShell(template, title, { sitePath, title: pageTitle, description, content }, config));
-    const nav = (prefix: string, current: string | null) => renderNav(prefix, current, exportedPages, children, included, sitePaths.pages, typeDefs, sitePaths.types);
+    const nav = (prefix: string, current: string | null) => renderNav(prefix, current, exportedPages, children, included, sitePaths.pages, siteTypeDefs, sitePaths.types);
 
     const fieldLink = (prefix: string) => (id: string) =>
       sitePaths.pages[id] ? `<a href="${escapeHtml(pageHref(prefix, sitePaths.pages[id]))}">${escapeHtml(titleOf(id))}</a>` : null;
@@ -386,17 +474,29 @@ export async function exportStaticSite(options: StaticExportOptions): Promise<St
       const fields = renderFields(row.fields, typeById.get(row.type)?.fields ?? [], fieldLink(prefix));
       await writePage(sitePath, row.title, '', layout(nav(prefix, null), `<h1>${escapeHtml(row.title)}</h1>\n${fields}\n${renderBacklinks(links.get(row.id) ?? [], prefix, sitePaths.pages)}`));
     }
-    for (const def of typeDefs) {
+    for (const item of exportedCarried) {
+      const source = carried.get(item.id)!;
+      const sitePath = sitePaths.pages[item.id];
+      const prefix = rootPrefix(sitePath);
+      const markdown = bodies.get(item.id)?.markdown ?? '';
+      const heading = `<h1>${escapeHtml(item.title || 'Untitled')}</h1>${source.issueKey ? `\n<p class="wiki-static-fields">${escapeHtml(source.issueKey)}</p>` : ''}`;
+      const fields = renderFields(item.fields, typeById.get(item.type)?.fields ?? [], fieldLink(prefix));
+      const content = [heading, fields, markdown ? renderBodyHtml(markdown, carriedPage(source), site, prefix) : '', renderBacklinks(links.get(item.id) ?? [], prefix, sitePaths.pages)].join('\n');
+      await writePage(sitePath, item.title, describe(markdown), layout(nav(prefix, null), content));
+    }
+    for (const def of siteTypeDefs) {
       const sitePath = sitePaths.types[def.typeId];
       const prefix = rootPrefix(sitePath);
-      const items = def.storage === 'table' ? exportedRows.filter((row) => row.type === def.typeId) : exportedPages.filter((page) => page.type === def.typeId);
+      const items = def.storage === 'table'
+        ? exportedRows.filter((row) => row.type === def.typeId)
+        : [...exportedPages.filter((page) => page.type === def.typeId), ...exportedCarried.filter((row) => row.type === def.typeId)];
       const list = items.length
         ? `<ul>${items.map((item) => `<li><a href="${escapeHtml(pageHref(prefix, sitePaths.pages[item.id]))}">${escapeHtml(item.title || 'Untitled')}</a></li>`).join('')}</ul>`
         : '<p>No items.</p>';
       await writePage(sitePath, def.displayNamePlural, '', layout(nav(prefix, null), `<h1>${escapeHtml(def.displayNamePlural)}</h1>\n${list}`));
     }
     await writePage('search', 'Search', '', layout(nav('../', null), '<h1>Search</h1>\n<p>Search runs in the page once its scripts load.</p>'));
-    const typesList = typeDefs.map((def) => `<li><a href="../${escapeHtml(sitePaths.types[def.typeId])}/">${escapeHtml(def.displayNamePlural)}</a></li>`).join('');
+    const typesList = siteTypeDefs.map((def) => `<li><a href="../${escapeHtml(sitePaths.types[def.typeId])}/">${escapeHtml(def.displayNamePlural)}</a></li>`).join('');
     await writePage('types', 'Types', '', layout(nav('../', null), `<h1>Types</h1>\n<ul>${typesList}</ul>`));
     if (!home) await writePage('', title, '', layout(nav('./', null), `<h1>${escapeHtml(title)}</h1>\n<p>This wiki has no pages.</p>`));
     // Hosts that serve `404.html` for unknown paths boot the app there, which says the page is not in the wiki.
@@ -419,7 +519,8 @@ export async function exportStaticSite(options: StaticExportOptions): Promise<St
       pages: exportedPages.filter((page) => !page.type).length,
       typedPages: exportedPages.filter((page) => page.type).length,
       rows: exportedRows.length,
-      types: typeDefs.length,
+      trackerItems: exportedCarried.length,
+      types: siteTypeDefs.length,
       files: files.size,
       excluded,
       strippedFields,

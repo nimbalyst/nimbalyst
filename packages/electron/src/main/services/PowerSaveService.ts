@@ -19,6 +19,10 @@ let blockerId: number | null = null;
 let currentMode: PreventSleepMode = 'off';
 let syncConnected = false;
 let batteryListenersRegistered = false;
+let disconnectGraceTimer: NodeJS.Timeout | null = null;
+
+/** How long a sync disconnect may last before the blocker is released. */
+const DISCONNECT_GRACE_MS = 5 * 60_000;
 
 /**
  * Set the sleep prevention mode and update blocker state accordingly.
@@ -56,6 +60,7 @@ export function getSleepPreventionMode(): PreventSleepMode {
  * Shutdown: stop all blockers and remove listeners.
  */
 export function shutdownSleepPrevention(): void {
+  cancelDisconnectGrace();
   stopBlocker();
   currentMode = 'off';
   syncConnected = false;
@@ -75,8 +80,7 @@ export function stopPreventingSleep(): void {
 
 // -- Internal --
 
-function shouldBeBlocking(): boolean {
-  if (!syncConnected) return false;
+function modeWantsBlocking(): boolean {
   if (currentMode === 'off') return false;
   if (currentMode === 'always') return true;
   if (currentMode === 'pluggedIn') {
@@ -85,14 +89,36 @@ function shouldBeBlocking(): boolean {
   return false;
 }
 
-function reconcile(): void {
-  const shouldBlock = shouldBeBlocking();
-  const isBlocking = isPreventingSleep();
+function cancelDisconnectGrace(): void {
+  if (!disconnectGraceTimer) return;
+  clearTimeout(disconnectGraceTimer);
+  disconnectGraceTimer = null;
+}
 
-  if (shouldBlock && !isBlocking) {
-    startBlocker();
-  } else if (!shouldBlock && isBlocking) {
+function reconcile(): void {
+  if (!modeWantsBlocking()) {
+    cancelDisconnectGrace();
     stopBlocker();
+    return;
+  }
+
+  if (syncConnected) {
+    cancelDisconnectGrace();
+    if (!isPreventingSleep()) startBlocker();
+    return;
+  }
+
+  // Sync is down but the mode still wants the hold. Release only if it stays
+  // down: with the display off and the idle timer expired, macOS sleeps the
+  // moment the assertion is gone, and a blocker restarted seconds later on
+  // reconnect cannot wake it. The 1006 socket drops seen in main.log reconnect
+  // within a few seconds.
+  if (isPreventingSleep() && !disconnectGraceTimer) {
+    disconnectGraceTimer = setTimeout(() => {
+      disconnectGraceTimer = null;
+      if (!syncConnected) stopBlocker();
+    }, DISCONNECT_GRACE_MS);
+    disconnectGraceTimer.unref?.();
   }
 }
 

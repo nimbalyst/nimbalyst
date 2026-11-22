@@ -5,7 +5,9 @@
  * text, so neither the app nor the prerendered HTML shows a dead link:
  *
  * - a page left out of the export, or one the wiki does not have;
- * - `nimbalyst://` and `collab://` references, which open only in the app;
+ * - `nimbalyst://` and `collab://` references, which open only in the app,
+ *   except a tracker item the export carries (`nimbalyst://USR.64`), which
+ *   links to that item's page;
  * - console links to tracker items and team pages, unless the export keeps
  *   them (`outsideRefs: 'console'`). A console link to an item that is in the
  *   export is pointed at that item's page instead.
@@ -23,6 +25,8 @@ export interface LinkIssue {
   href: string;
   /** `outside-wiki`: a relative link that leaves the wiki folder, such as a repository doc. */
   kind: 'excluded-page' | 'missing-page' | 'outside-wiki' | 'app-only' | 'outside' | 'missing-file';
+  /** In the body of a carried tracker item, not a wiki page. */
+  inTrackerItem?: boolean;
 }
 
 export interface OutgoingLink {
@@ -38,15 +42,41 @@ export interface LinkContext {
   outsideRefs: OutsideRefs;
   /** Whether a wiki-relative file exists (attachments, images). */
   fileExists: (rel: string) => boolean;
+  /**
+   * The site URL (`/items/<id>/`) and id of a tracker item the export carries,
+   * for a reference from `trackerRef`; null when it does not carry it.
+   */
+  trackerItem?: (ref: string) => { id: string; href: string } | null;
 }
 
 const CONSOLE_HOST = /^https?:\/\/console\.nimbalyst\.com\//i;
 const APP_ONLY = /^(nimbalyst|collab):/i;
 const SCHEME = /^[a-z][a-z0-9+.-]*:/i;
+const TRACKER_URN = /^nimbalyst:\/\/(?!doc\/)([^/?#\s]+)\/?$/i;
 const IMAGE = /!\[[^\]\n]*\]\(\s*<?([^\s)<>]+)>?(?:\s+"[^"]*")?\s*\)/g;
 
+/** Last path segment of a console URL: `.../page/item/<key>`, `.../app/item/<id>`, `.../document/<id>`. */
+function consoleTarget(href: string): string {
+  try {
+    return decodeURIComponent(href.replace(/[?#].*$/, '').replace(/\/+$/, '').split('/').pop() ?? '');
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * The tracker item a link names, as an issue key or id: `nimbalyst://USR.64`,
+ * or a console item URL. Null for anything else, including `nimbalyst://doc/`.
+ */
+export function trackerRef(href: string): string | null {
+  const urn = TRACKER_URN.exec(href.trim());
+  if (urn) return urn[1];
+  if (CONSOLE_HOST.test(href) && /\/item\//i.test(href)) return consoleTarget(href) || null;
+  return null;
+}
+
 /** Folder a page's links are written relative to (as `linkBaseDir` in the library). */
-export function linkBase(page: LocalPage): string {
+export function linkBase(page: Pick<LocalPage, 'path' | 'dir'>): string {
   return page.path ? path.posix.dirname(page.path).replace(/^\.$/, '') : page.dir;
 }
 
@@ -88,7 +118,8 @@ export interface RewrittenBody {
   files: string[];
 }
 
-export function rewriteBodyLinks(page: LocalPage, body: string, ctx: LinkContext): RewrittenBody {
+/** `page`: a wiki page, or a carried tracker item, which has no file (`path: null, dir: ''`). */
+export function rewriteBodyLinks(page: Pick<LocalPage, 'id' | 'title' | 'path' | 'dir'>, body: string, ctx: LinkContext): RewrittenBody {
   const base = linkBase(page);
   const outgoing: OutgoingLink[] = [];
   const issues: LinkIssue[] = [];
@@ -114,14 +145,20 @@ export function rewriteBodyLinks(page: LocalPage, body: string, ctx: LinkContext
       }
       continue;
     }
+    const tracker = trackerRef(link.path);
+    const carried = tracker !== null && !ctx.included.has(tracker) ? ctx.trackerItem?.(tracker) ?? null : null;
+    if (carried) {
+      edits.push({ start: link.start, end: link.end, text: `[${link.text}](${carried.href})` });
+      outgoing.push({ targetId: carried.id, sentence: sentenceAround(body, link.start) });
+      continue;
+    }
     if (APP_ONLY.test(link.path)) {
       issue(href, 'app-only');
       asText(link);
       continue;
     }
     if (CONSOLE_HOST.test(link.path)) {
-      // `.../page/item/<key>`, `.../app/item/<id>`, `.../document/<id>`: the last segment names the target.
-      const last = decodeURIComponent(link.path.replace(/[?#].*$/, '').replace(/\/+$/, '').split('/').pop() ?? '');
+      const last = consoleTarget(link.path);
       const target = ctx.included.has(last) ? ctx.pages.get(last) : undefined;
       if (target?.path) {
         const relative = path.posix.relative(base || '.', target.path);

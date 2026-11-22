@@ -9,6 +9,7 @@ import { logger } from '../utils/logger';
 import { sameWorkspaceIdentity } from '../utils/workspaceIdentity';
 import { setOwnedSessionEventSink } from '../services/extensionSessions/extensionSessionsService';
 import { SESSIONS_SETTLED_EVENT, type HostToBackendMessage } from './extensionBackendRpc';
+import { setBackendTerminalEventSink, stopBackendTerminalsForModule } from './backendTerminals';
 import {
   clearBackendPanelGutterBadgesForModule,
   registerBackendPanelBadgeHandlers,
@@ -65,11 +66,28 @@ export function installExtensionHostWiring(deps: ExtensionHostWiringDeps): void 
     },
   });
 
+  // A command terminal's output and exit go to the one module that created it.
+  setBackendTerminalEventSink((owner, event, payload) => {
+    for (const m of deps.listModules()) {
+      if (m.args.extensionId !== owner.extensionId || m.args.module.id !== owner.moduleId) continue;
+      if (m.state.status !== 'running' && m.state.status !== 'starting') continue;
+      if (!m.runtime || !sameWorkspaceIdentity(m.args.workspacePath, owner.workspacePath)) continue;
+      m.runtime.send({ kind: 'broker-event', event, payload });
+    }
+  });
+
   registerBackendPanelBadgeHandlers();
-  // A module that is gone can no longer keep its badge current.
+  // A module that is gone can no longer keep its badge current, and nothing is
+  // left to supervise the commands it started.
   deps.onStateChanged((handle) => {
     if (TERMINAL_STATES.has(handle.state.status)) {
       clearBackendPanelGutterBadgesForModule(handle.extensionId, handle.moduleId, handle.workspacePath);
+      void stopBackendTerminalsForModule(handle.extensionId, handle.moduleId, handle.workspacePath).catch((err) =>
+        logger.main.error(
+          `[PrivilegedExtensionHost] failed to stop terminals of ${handle.extensionId}/${handle.moduleId}:`,
+          err
+        )
+      );
     }
   });
 }

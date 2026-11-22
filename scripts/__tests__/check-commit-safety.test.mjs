@@ -160,7 +160,7 @@ test('a normal --no-ff merge passes while a merge that drags in nimbalyst-local 
   assert.equal(git(['log', '--format=%s', '-1']).trim(), 'Merge pull request #1 from ada/feature');
 });
 
-test('the commit hooks run the shared script and let a commit through when node is missing', (t) => {
+test('the commit hooks run the shared script and let a commit through when node is missing', { skip: process.platform === 'win32' }, (t) => {
   for (const hook of ['pre-commit', 'pre-merge-commit']) {
     assert.match(readFileSync(path.join(HOOKS_DIR, hook), 'utf8'), /scripts\/check-commit-safety\.mjs/);
   }

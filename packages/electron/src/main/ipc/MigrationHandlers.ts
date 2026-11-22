@@ -49,6 +49,8 @@ import { AnalyticsService } from '../services/analytics/AnalyticsService';
 import { randomUUID } from 'crypto';
 import { beginDatabaseMaintenance, databaseRequiresRestart } from '../database/databaseMaintenance';
 import * as fs from 'fs';
+import { claimConsentPrompt } from '../database/sqlite/migrationConsentOffer';
+import { isSqliteMigrationConsentAnswered, markSqliteMigrationConsentAnswered } from '../utils/store';
 
 /**
  * Every handler below runs under `withDatabaseOperationLock`.
@@ -123,6 +125,27 @@ export function registerMigrationHandlers(): void {
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
+  });
+
+  // The launch prompt for a database above the automatic ceiling. The first
+  // window to ask on a launch gets `show: true`; see migrationConsentOffer.ts.
+  safeHandle('db:migration:claim-consent-prompt', async () => {
+    try {
+      return claimConsentPrompt({
+        answered: isSqliteMigrationConsentAnswered(),
+        activeBackend: resolveBackend({ userDataPath: getUserDataPath() }).backend,
+        operationRunning: currentDatabaseOperation() !== null,
+        requiresRestart: databaseRequiresRestart(),
+      });
+    } catch (err) {
+      logger.main.warn('[Migration] consent prompt check failed', err);
+      return { show: false };
+    }
+  });
+
+  safeHandle('db:migration:answer-consent-prompt', async () => {
+    markSqliteMigrationConsentAnswered();
+    return { success: true };
   });
 
   safeHandle('db:migration:restart', async () => {

@@ -34,6 +34,15 @@
  */
 export const DEFAULT_STREAM_STALL_MS = 600_000;
 
+/** The stall window is measured in ticks of at most this length. */
+export const STALL_TICK_MS = 15_000;
+
+/**
+ * A tick that arrives more than this long after the previous one means the
+ * machine slept (or the process was frozen); that gap is not stream silence.
+ */
+export const STALL_MAX_TICK_GAP_MS = 60_000;
+
 /**
  * Resolve the stall window, allowing an env override so tests can use a short
  * window without waiting two minutes. Invalid / non-positive values fall back to
@@ -76,7 +85,7 @@ export function shouldArmStreamStallWatchdog(params: {
  *   rejection when a stall/interrupt wins the race.
  * - Resolves to `interrupted` when the interrupt promise fires.
  * - Resolves to `stalled` when `watchdogActive` and neither of the above happens
- *   within `stallMs`.
+ *   within `stallMs` of awake time (system sleep does not count).
  *
  * The stall timer is always cleared before returning so it can't leak or fire
  * after the loop moved on.
@@ -101,11 +110,30 @@ export async function raceNextChunkWithStallWatchdog<T>(params: {
 
   const racers: Array<Promise<ChunkRaceOutcome<T>>> = [chunkRacer, interruptRacer];
 
+  // Count only awake time. A single setTimeout(stallMs) also counts system sleep:
+  // after a 15-min sleep it fires the moment the machine wakes and reaps a healthy
+  // turn whose stream was silent for only seconds of awake time. Ticking in short
+  // steps lets a tick that arrives far too late (sleep, frozen process) be skipped.
   let stallTimer: ReturnType<typeof setTimeout> | null = null;
   if (watchdogActive) {
     racers.push(
       new Promise<ChunkRaceOutcome<T>>(resolve => {
-        stallTimer = setTimeout(() => resolve({ kind: 'stalled' }), stallMs);
+        let awakeMs = 0;
+        let last = Date.now();
+        const tick = (): void => {
+          const now = Date.now();
+          const gap = now - last;
+          last = now;
+          // A negative gap is the wall clock being set back; skip it rather than
+          // let it subtract from the awake silence already counted.
+          if (gap >= 0 && gap <= STALL_MAX_TICK_GAP_MS) awakeMs += gap;
+          if (awakeMs >= stallMs) {
+            resolve({ kind: 'stalled' });
+            return;
+          }
+          stallTimer = setTimeout(tick, Math.min(STALL_TICK_MS, stallMs - awakeMs));
+        };
+        stallTimer = setTimeout(tick, Math.min(STALL_TICK_MS, stallMs));
       }),
     );
   }

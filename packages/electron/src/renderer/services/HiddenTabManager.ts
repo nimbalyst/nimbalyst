@@ -71,6 +71,7 @@ class HiddenTabManager {
     if (this.hiddenContainer) return;
 
     this.hiddenContainer = document.createElement('div');
+    // BrowserSurface keys on this id to keep its native page off screen.
     this.hiddenContainer.id = 'hidden-editors';
     this.hiddenContainer.style.position = 'absolute';
     this.hiddenContainer.style.left = '-9999px';
@@ -129,10 +130,13 @@ class HiddenTabManager {
     // whose active tab happens to be a built-in-editor file. Returning here lets the
     // tool run with editorAPI === undefined; the bridge tolerates that and the tool's
     // own handler decides whether it needs an editor API. See issue #217.
+    // An extensionless path (a folder, or a virtual:// tab no visible editor
+    // owns) can never be mounted either; browser tools given an explicit
+    // sessionId receive the workspace folder as filePath (#1885).
     const fileName = filePath.split('/').pop() || filePath;
     const firstDotIndex = fileName.indexOf('.');
     const fileExtension = firstDotIndex >= 0 ? fileName.slice(firstDotIndex) : '';
-    if (fileExtension && !getExtensionLoader().findEditorForExtension(fileExtension)) {
+    if (!fileExtension || !getExtensionLoader().findEditorForExtension(fileExtension)) {
       return;
     }
 

@@ -273,7 +273,7 @@ type InviteMemberRole = 'owner' | 'admin' | 'member' | 'viewer' | 'guest';
  */
 export interface InviteProjectGrant {
   teamProjectId: string;
-  projectRole: 'project-admin' | 'project-editor' | 'project-viewer';
+  projectRole: 'project-admin' | 'project-editor' | 'project-commenter' | 'project-viewer';
 }
 
 export interface InviteMemberOutcome {
@@ -1397,6 +1397,11 @@ function getLocalOrgBinding(workspacePath: string): { orgId: string; teamProject
     logger.main.warn('[TeamService] Could not read the local org binding:', err);
     return null;
   }
+}
+
+/** Whether this workspace was ever bound to an org on this machine. Readable signed out. */
+export function hasLocalOrgBinding(workspacePath: string): boolean {
+  return getLocalOrgBinding(workspacePath) !== null;
 }
 
 function setLocalOrgBinding(workspacePath: string, orgId: string, teamProjectId?: string): void {

@@ -49,6 +49,7 @@ const hostSingletons = [
   'lexical',
   '@lexical/code',
   '@lexical/code-core',
+  '@lexical/code-prism',
   '@lexical/extension',
   '@lexical/hashtag',
   '@lexical/headless',
@@ -165,6 +166,9 @@ export default defineConfig(({ command, mode }) => {
   base: '/',
   plugins: [react(), pinnedExtensionBundleEntries(editorBundles, { parseAst })],
   define: pinnedExtensionDefines(editorBundles),
+  // JS chunks (including lazy preloads) and CSS resolve assets relative to
+  // themselves. The exporter rebases the HTML entry URLs for its mount path.
+  experimental: { renderBuiltUrl: (_filename, { hostType }) => ({ relative: hostType !== 'html' }) },
   resolve: {
     dedupe: hostSingletons,
     alias: [

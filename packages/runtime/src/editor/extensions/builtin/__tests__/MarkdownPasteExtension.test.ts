@@ -7,19 +7,22 @@ import {
   PASTE_COMMAND,
   type LexicalEditor,
 } from 'lexical';
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { rewriteClipboardHtmlImages } from '../MarkdownPasteExtension';
 import type { UploadedEditorAsset } from '../../../EditorConfig';
 import { buildNimbalystRootExtension } from '../../NimbalystEditorExtensions';
 import { createTransformers } from '../../../markdown';
 
-function createCollabEditor(): LexicalEditor & { dispose(): void } {
+function createCollabEditor(
+  onUploadAsset?: (file: File) => Promise<UploadedEditorAsset>,
+): LexicalEditor & { dispose(): void } {
   return buildEditorFromExtensions(
     buildNimbalystRootExtension({
       collaboration: true,
       extensionDependencies: [RichTextExtension],
       markdownTransformers: createTransformers(),
+      onUploadAsset,
       $initialEditorState: () => {
         const paragraph = $createParagraphNode();
         $getRoot().append(paragraph);
@@ -162,6 +165,48 @@ describe('MarkdownPasteExtension link paste', () => {
 
       expect(readClickableLinks(editor)).toEqual([]);
       expect(readTextContent(editor)).toBe('Notes [draft] (not a link)');
+    } finally {
+      editor.dispose();
+    }
+  });
+});
+
+describe('empty paste under WSL', () => {
+  // WSLg hands Linux apps an empty text entry for an image copied in Windows,
+  // so the editor asks the host for the Windows clipboard image instead.
+  const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  const readWindowsClipboardImage = vi.fn(async () => ({ mimeType: 'image/png', data: png }));
+
+  afterEach(() => {
+    readWindowsClipboardImage.mockClear();
+    delete (window as any).electronAPI;
+  });
+
+  it('uploads the Windows clipboard image like a pasted image file', async () => {
+    (window as any).electronAPI = { readWindowsClipboardImage };
+    const upload = uploader();
+    const editor = createCollabEditor(upload);
+    try {
+      const event = pastePlainText(editor, '');
+
+      expect(event.defaultPrevented).toBe(true);
+      await vi.waitFor(() => expect(upload).toHaveBeenCalledTimes(1));
+      const file = upload.mock.calls[0][0];
+      expect(file.type).toBe('image/png');
+      expect(file.size).toBe(png.length);
+    } finally {
+      editor.dispose();
+    }
+  });
+
+  it('pastes text as before without asking for the Windows image', () => {
+    (window as any).electronAPI = { readWindowsClipboardImage };
+    const editor = createCollabEditor();
+    try {
+      pastePlainText(editor, 'plain words');
+
+      expect(readTextContent(editor)).toBe('plain words');
+      expect(readWindowsClipboardImage).not.toHaveBeenCalled();
     } finally {
       editor.dispose();
     }

@@ -30,6 +30,26 @@ describe('buildDatabaseFailureDialog', () => {
     expect(handlers.retryStartup).toHaveBeenCalledOnce();
   });
 
+  it('waits for an async diagnostics copy before resolving, and survives a rejected copy', async () => {
+    const content = buildDatabaseFailureDialog([], { diagnostics: 'details' });
+    const choice = content.buttons.indexOf('Copy diagnostics');
+    let finishCopy!: () => void;
+    const copyDiagnostics = vi.fn(() => new Promise<void>((resolve) => { finishCopy = resolve; }));
+    let settled = false;
+    const pending = applyDatabaseFailureChoice(content, choice, { restore: vi.fn(), reveal: vi.fn(), copyDiagnostics })
+      .then((outcome) => { settled = true; return outcome; });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    finishCopy();
+    await expect(pending).resolves.toMatchObject({ reportedAction: 'copy_diagnostics' });
+
+    vi.spyOn(console, 'error').mockImplementation(() => {});
+    const failed = await applyDatabaseFailureChoice(content, choice, {
+      restore: vi.fn(), reveal: vi.fn(), copyDiagnostics: vi.fn(async () => { throw new Error('denied'); }),
+    });
+    expect(failed).toMatchObject({ reportedAction: 'copy_diagnostics', restored: false });
+  });
+
   it('offers the recorded pre-migration source as an explicit rollback choice', async () => {
     const rollbackSource = backup('pglite-db.migrated-recorded', 5000);
     const content = buildDatabaseFailureDialog([], { rollbackSource });

@@ -1,7 +1,8 @@
-import { BrowserWindow, shell, nativeImage, app, powerMonitor } from 'electron';
+import { BrowserWindow, nativeImage, app, powerMonitor } from 'electron';
+import { systemShell } from '../utils/systemShell';
 import { safeHandle, safeOn } from '../utils/ipcRegistry';
 import { windowStates, windows, getWindowId } from '../window/WindowManager';
-import { syncRepresentedFilename, getWindowProjectPaths } from '../window/windowState';
+import { syncRepresentedFilename, getInitialRailState, resolveActiveWorkspacePath } from '../window/windowState';
 import { basename, join } from 'path';
 import { writeFileSync, existsSync, mkdirSync } from 'fs';
 import { tmpdir } from 'os';
@@ -42,17 +43,14 @@ export function registerWindowHandlers() {
         if (!state) return null;
 
         if (state.mode === 'workspace' && state.workspacePath) {
-            const openProjectPaths = getWindowProjectPaths(state);
-            const activeWorkspacePath =
-                state.activeWorkspacePath && openProjectPaths.includes(state.activeWorkspacePath)
-                    ? state.activeWorkspacePath
-                    : state.workspacePath;
+            const { openProjectPaths, activeWorkspacePath } = getInitialRailState(state, state.workspacePath);
             return {
                 mode: 'workspace',
                 workspacePath: state.workspacePath,
                 workspaceName: basename(state.workspacePath),
                 activeWorkspacePath,
                 openProjectPaths,
+                restorePreviousProjects: state.restorePreviousProjects,
             };
         }
 
@@ -69,7 +67,7 @@ export function registerWindowHandlers() {
     safeHandle('open-external', async (event, url: string) => {
         if (url && typeof url === 'string') {
             if (routeConsoleLink(url, event.sender)) return;
-            await shell.openExternal(url);
+            await systemShell.openExternal(url);
         }
     });
 
@@ -77,7 +75,7 @@ export function registerWindowHandlers() {
     // back into the app (that would reopen the doc the user is already on).
     safeHandle('open-in-browser', async (_event, url: string) => {
         if (typeof url === 'string' && /^https?:\/\//i.test(url)) {
-            await shell.openExternal(url);
+            await systemShell.openExternal(url);
         }
     });
 
@@ -90,7 +88,7 @@ export function registerWindowHandlers() {
             return { success: false, error: `Third-party notices file not found at: ${noticesPath}` };
         }
 
-        const result = await shell.openPath(noticesPath);
+        const result = await systemShell.openPath(noticesPath);
         if (result) {
             return { success: false, error: result };
         }
@@ -109,9 +107,11 @@ export function registerWindowHandlers() {
         const state = windowStates.get(windowId);
         if (!state || state.mode !== 'workspace') return null;
 
+        // The project on screen, not the window's first rail project.
+        const activeWorkspacePath = resolveActiveWorkspacePath(state);
         return {
-            path: state.workspacePath,
-            name: state.workspacePath ? basename(state.workspacePath) : null
+            path: activeWorkspacePath,
+            name: activeWorkspacePath ? basename(activeWorkspacePath) : null
         };
     });
     // Set document edited state
@@ -148,7 +148,7 @@ export function registerWindowHandlers() {
             if (imagePath.startsWith('data:')) {
                 const tempPath = await createTempFileFromDataURL(imagePath, workspacePathForEvent(event));
                 if (tempPath) {
-                    await shell.openPath(tempPath);
+                    await systemShell.openPath(tempPath);
                     return { success: true };
                 } else {
                     return { success: false, error: 'Failed to create temp file from data URL' };
@@ -167,7 +167,7 @@ export function registerWindowHandlers() {
             }
 
             // Open in default application
-            const result = await shell.openPath(filePath);
+            const result = await systemShell.openPath(filePath);
             if (result) {
                 // openPath returns an error string if it failed, empty string on success
                 return { success: false, error: result };
@@ -327,7 +327,7 @@ function workspacePathForEvent(event: Electron.IpcMainInvokeEvent): string | und
     if (!window) return undefined;
     const windowId = getWindowId(window);
     if (windowId === null) return undefined;
-    return windowStates.get(windowId)?.workspacePath ?? undefined;
+    return resolveActiveWorkspacePath(windowStates.get(windowId)) ?? undefined;
 }
 
 async function createTempFileFromDataURL(dataURL: string, workspacePath?: string): Promise<string | null> {

@@ -14,7 +14,7 @@ Three places where `SYNC_JWT_MODEL.md` is now **out of date** — trust this doc
 
 - Its "Room → scope map" lists five rooms. The system has eight room types (`packages/collabv3/src/index.ts:312-379`). ConversationRoom, TeamInboxRoom, and ProjectSyncRoom are missing.
 - It says the branded types make a mix-up "a compile error". True on the personal side only, plus the new org-scope brand — see [The two JWTs](#2-the-two-jwts).
-- Its whole "What users see (the migration gate)" section describes a migration modal, an acknowledgement checkbox, and a `legacy-e2e` status chip. **All of that is gone.** There is no migration path any more; see [Encryption and key custody](#6-encryption-and-key-custody).
+- Its whole "What users see (the migration gate)" section describes a migration modal, an acknowledgement checkbox, and a `legacy-e2e` status chip. **That retired flow is gone.** An explicit admin recovery flow now preserves existing identities; see [Encryption and key custody](#6-encryption-and-key-custody).
 
 ---
 
@@ -202,7 +202,7 @@ Two more that look dead and are not:
 
 ### The unmigrated population
 
-Cutover is admin-gated and one-way (`legacy-e2e` is explicitly rejected as a target: `teamKeyCustody.ts:56-58`). New orgs are marked server-managed at creation (`TeamService.ts`). There is no longer any client-driven migration: an organization that was never converted has to be set up again.
+Cutover is admin-gated and one-way (`legacy-e2e` is explicitly rejected as a target: `teamKeyCustody.ts:56-58`). New orgs are marked server-managed at creation (`TeamService.ts`). Populated legacy organizations use [in-place recovery](LEGACY_ORG_RECOVERY.md): admin-scoped read-only diagnostics, encrypted source bundles, durable write fences, identity-preserving restoration, and independent-client readback before the one-way marker changes. The marker-only endpoint refuses populated legacy orgs. This does not restore the retired client-encryption sync lane. Retained historical keys can be read only by the explicit offline recovery collector; startup no longer deletes those source files.
 
 The census tooling (`packages/collabv3/src/custodyCensus.ts`, `packages/collabv3/scripts/custody-census*.{mjs,ts}`) and the read-only `/internal/get-key-custody-mode` diagnostic are retained so the remaining population can be identified; the diagnostic still reports the legacy string for exactly that purpose.
 

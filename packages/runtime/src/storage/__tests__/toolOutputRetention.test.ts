@@ -87,15 +87,31 @@ describe('tombstoneRawContent', () => {
 });
 
 describe('tombstoneClaudeCodeChunk', () => {
-  it('keeps image blocks while discarding text', () => {
-    const image = { type: 'image', source: { type: 'base64', data: 'A'.repeat(2000) } };
+  it('replaces an aged image with a text marker naming its type and size', () => {
+    const image = { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'A'.repeat(2000) } };
     const chunk = JSON.parse(toolResultRow([{ type: 'text', text: BIG_OUTPUT }, image]));
 
     const out = tombstoneClaudeCodeChunk(chunk, DATE) as typeof chunk;
     const blocks = out.message.content[0].content;
 
     expect(isTombstoned(blocks[0].text)).toBe(true);
-    expect(blocks[1]).toEqual(image);
+    expect(blocks[1].type).toBe('text');
+    expect(isTombstoned(blocks[1].text)).toBe(true);
+    expect(blocks[1].text).toContain('image/png');
+    // A second pass has nothing left to do.
+    expect(tombstoneClaudeCodeChunk(out, DATE)).toBeNull();
+  });
+
+  it('discards an array sidecar whole, including the second copy of an image', () => {
+    const image = { type: 'image', source: { type: 'base64', media_type: 'image/png', data: 'A'.repeat(2000) } };
+    const chunk = JSON.parse(toolResultRow([image]));
+    chunk.tool_use_result = [{ type: 'text', text: 'ok' }, image];
+
+    const out = tombstoneClaudeCodeChunk(chunk, DATE) as typeof chunk;
+
+    expect(isTombstoned(out.tool_use_result)).toBe(true);
+    expect(JSON.stringify(out)).not.toContain('AAAA');
+    expect(tombstoneClaudeCodeChunk(out, DATE)).toBeNull();
   });
 
   it('does not mutate its input', () => {

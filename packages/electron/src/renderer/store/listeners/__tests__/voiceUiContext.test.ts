@@ -8,7 +8,9 @@ import {
 } from '@nimbalyst/runtime/store';
 import { activeSessionIdAtom } from '../../atoms/sessions';
 import { windowModeAtom } from '../../atoms/windowMode';
-import { getCurrentVoiceFilePath } from '../voiceModeListeners';
+import { buildVoiceUiContextResponse, getCurrentVoiceFilePath } from '../voiceModeListeners';
+import { activeWorkspacePathAtom, openProjectsAtom } from '../../atoms/openProjects';
+import { voiceActiveSessionIdAtom, voiceWorkspacePathAtom } from '../../atoms/voiceModeState';
 
 afterEach(() => {
   store.set(windowModeAtom, 'files');
@@ -47,5 +49,31 @@ describe('getCurrentVoiceFilePath', () => {
     );
 
     expect(getCurrentVoiceFilePath()).toBeNull();
+  });
+});
+
+describe('buildVoiceUiContextResponse', () => {
+  afterEach(() => {
+    store.set(voiceActiveSessionIdAtom, null);
+    store.set(voiceWorkspacePathAtom, null);
+  });
+
+  // Voice runs in project B; the user switched the rail to project A. The
+  // active session and file on screen are A's, not B's.
+  it('refuses to report another rail project\'s screen as the voice project\'s', () => {
+    store.set(openProjectsAtom, [
+      { path: '/projects/a', name: 'a', openedAt: 0 },
+      { path: '/projects/b', name: 'b', openedAt: 0 },
+    ]);
+    store.set(activeWorkspacePathAtom, '/projects/a');
+    store.set(voiceActiveSessionIdAtom, 'voice-1');
+    store.set(voiceWorkspacePathAtom, '/projects/b');
+    store.set(windowModeAtom, 'agent');
+    store.set(activeSessionIdAtom, 'session-in-a');
+
+    const response = buildVoiceUiContextResponse({ workspacePath: '/projects/b', resultChannel: 'r' });
+
+    expect(response.context).toBeUndefined();
+    expect(response.error).toMatch(/another project/);
   });
 });

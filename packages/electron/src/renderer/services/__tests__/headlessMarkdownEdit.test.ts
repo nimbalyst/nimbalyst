@@ -34,7 +34,10 @@ import {
   createThread,
 } from '@nimbalyst/runtime/editor/commenting';
 import { CommentCollabProvider } from '@nimbalyst/runtime/editor/commenting/CommentCollabProvider';
-import { createCollabCommentController } from '@nimbalyst/runtime/editor/commenting/CollabCommentControllerRegistry';
+import {
+  collectMarkIds,
+  createCollabCommentController,
+} from '@nimbalyst/runtime/editor/commenting/CollabCommentControllerRegistry';
 import { $approveDiffs } from '@nimbalyst/runtime/editor/plugins/DiffPlugin/core/diffPluginUtils';
 import {
   $getDiffState,
@@ -387,6 +390,10 @@ function commentedDecisionDoc(): Y.Doc {
 function readCommentAttachment(doc: Y.Doc) {
   return withCommentEditor(doc, ({ controller, headless }) => ({
     threads: controller.list().threads,
+    // The real anchor. `anchorState` alone cannot show it: a thread with no
+    // MarkNode whose quote occurs exactly once is reported attached, because
+    // the editor draws it by quote.
+    markIds: [...collectMarkIds(headless.editor)].sort(),
     decisionTypes: headless.editor.getEditorState().read(() =>
       $getRoot()
         .getChildren()
@@ -510,6 +517,7 @@ describe('headless edit comment attachment through the Lexical/Yjs bridge', () =
     const doc = commentedDecisionDoc();
     const initial = readCommentAttachment(doc);
     expect(initial.threads[0].anchorState).toBe('attached');
+    expect(initial.markIds).toEqual([COMMENT_THREAD]);
     try {
       const markdown = MarkdownCollabContentAdapter.exportToFile(doc) as string;
       MarkdownCollabContentAdapter.applyFromFile(
@@ -517,16 +525,25 @@ describe('headless edit comment attachment through the Lexical/Yjs bridge', () =
         markdown.replace('current layout', 'revised layout')
       );
       const after = readCommentAttachment(doc);
-      expect(after.threads).toEqual(
-        initial.threads.map((thread) => ({
-          ...thread,
-          anchorState: 'orphaned',
-        }))
-      );
+      // The rebuild drops the MarkNode; the thread data survives unchanged.
+      expect(after.markIds).toEqual([]);
+      // Still reported attached, by quote: it occurs exactly once, so the
+      // editor highlights it without a MarkNode.
+      expect(after.threads).toEqual(initial.threads);
       expect(MarkdownCollabContentAdapter.exportToFile(doc)).toContain(
         COMMENT_QUOTE
       );
       expect(after.decisionTypes).toEqual(['decision']);
+
+      // A rebuild that also rewrites the quote leaves nothing to find it by.
+      MarkdownCollabContentAdapter.applyFromFile(
+        doc,
+        (MarkdownCollabContentAdapter.exportToFile(doc) as string).replace(
+          COMMENT_QUOTE,
+          'now says gamma'
+        )
+      );
+      expect(readCommentAttachment(doc).threads[0].anchorState).toBe('orphaned');
     } finally {
       doc.destroy();
     }

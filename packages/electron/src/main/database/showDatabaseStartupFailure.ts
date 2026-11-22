@@ -1,4 +1,6 @@
-import { app, clipboard, dialog, shell } from "electron";
+import { app, dialog } from "electron";
+import { writeClipboardText } from "../utils/systemClipboard";
+import { systemShell } from "../utils/systemShell";
 import { logger } from "../utils/logger";
 import { database } from "./PGLiteDatabaseWorker";
 import { stopPeriodicBackupTimer } from "./initialize";
@@ -129,7 +131,7 @@ export async function showDatabaseStartupFailure(
               reconcileAttempts: 0,
             });
         },
-        copyDiagnostics: (text) => clipboard.writeText(text),
+        copyDiagnostics: (text) => writeClipboardText(text),
         rollback: async (source) => {
           await recoverPreMigrationDatabase({
             userDataPath,
@@ -178,7 +180,7 @@ export async function showDatabaseStartupFailure(
         },
         reveal: (revealPath) => {
           try {
-            shell.showItemInFolder(revealPath);
+            systemShell.showItemInFolder(revealPath);
           } catch (revealErr) {
             logger.main.warn(
               "[Database] Could not reveal backup folder",

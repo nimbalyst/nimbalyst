@@ -7,7 +7,7 @@ import { launchElectronApp, waitForAppReady } from '../helpers';
 import { dismissAPIKeyDialog } from '../utils/testHelpers';
 test.skip(() => !process.env.RUN_REAL_CODEX, 'Requires Codex CLI auth + RUN_REAL_CODEX=1');
 test.setTimeout(480_000);
-test('production Codex shell hooks resolve overlapping and sequential owners after a failed MCP lookup', async ({}, testInfo) => {
+test('production Codex shell hooks withhold overlapping edits and resolve sequential owners after a failed MCP lookup', async ({}, testInfo) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'nim-shell-implementation-')),
     workspace = path.join(root, 'workspace'),
     database = path.join(root, 'database'),
@@ -154,9 +154,15 @@ test('production Codex shell hooks resolve overlapping and sequential owners aft
     evidence.overlapWriterLinks = await page.evaluate(async ({ workspace, filePath }) =>
       (window as any).electronAPI.invoke('sessions:get-by-file', workspace, filePath),
       { workspace, filePath: path.join(workspace, 'overlap-writer.ts') });
-    expect(evidence.overlapWriterLinks.map((owner: any) => owner.id)).toEqual([overlap.writer]);
+    // Both sessions had a shell command running when the file changed, and a
+    // command's text is not evidence of what it wrote: neither gets the link,
+    // and both record the withheld edit without a coverage fault.
+    expect(evidence.overlapWriterLinks).toEqual([]);
     for (const turn of evidence.overlapTurns) {
-      expect(turn.coverage).toEqual([expect.objectContaining({ sessionId: turn.sessionId, state: 'no-detected-fault' })]);
+      expect(turn.coverage).toEqual([expect.objectContaining({
+        sessionId: turn.sessionId, state: 'no-detected-fault',
+        reasons: expect.objectContaining({ competingOwners: expect.any(Number) }),
+      })]);
       expect(JSON.parse(turn.durable.rows[0].data).pendingTools).toEqual({});
     }
     for (const marker of ['first', 'second']) {

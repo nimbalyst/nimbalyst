@@ -16,6 +16,7 @@ import * as path from 'node:path';
 import yaml from 'js-yaml';
 import { findLinks, rewriteFileLinks, type LocalPage, type LocalWiki } from '@nimbalyst/local-wiki';
 import { buildTree, livePages } from './tree.js';
+import { isExportOptOut, stripIdentity } from '../staticExport/visibility.js';
 
 export interface ImportPage {
   localId: string;
@@ -24,6 +25,8 @@ export interface ImportPage {
   order?: number;
   kind: 'page' | 'typedPage' | 'editorPage';
   typeId?: string;
+  /** A table row: it sits under its type in the team tree, not under `parentLocalId`. */
+  underType?: boolean;
   /** An editor page's document type, file extension and the extension that edits it. */
   documentType?: string;
   fileExtension?: string;
@@ -63,10 +66,19 @@ export interface ImportType {
   definition: unknown;
 }
 
+/** Where a type sits in the team page tree: under an imported page, or at the top. */
+export interface ImportTypePlacement {
+  typeId: string;
+  parentLocalId: string | null;
+  order?: number;
+}
+
 export interface SkippedPage {
   localId: string;
   title: string;
   reason: string;
+  /** Left out on purpose (`export: false`), not for want of an editor; a publish removes its team copy. */
+  excluded?: true;
 }
 
 /** Where a page sits, for resolving path-only links. */
@@ -85,6 +97,12 @@ export interface CollectOptions {
   wikiPrefix?: string;
   /** The wiki folder's absolute path, for canvas cards that name a file by absolute path or `file://` URL. */
   wikiDir?: string;
+  /**
+   * A publish for reviewers (`publishToTeam.ts`): pages with `export: false`
+   * and everything under them are left out, and person fields are stripped,
+   * as the static export does (`staticExport/visibility.ts`).
+   */
+  publish?: boolean;
 }
 
 export interface LocalWikiExport {
@@ -97,15 +115,28 @@ export interface LocalWikiExport {
   wikiPrefix: string;
   wikiDir: string | null;
   types: ImportType[];
+  /** Every exported type that has pages or a table, placed where its table is, else at the top. */
+  typePlacements: ImportTypePlacement[];
   skipped: SkippedPage[];
   /** The page the banner goes on: the root page titled Home, else the first root page. */
   homeLocalId: string | null;
+  /** The root page titled Home, which becomes the team project's Home page. */
+  projectHomeLocalId: string | null;
   locations: Map<string, PageLocation>;
   /**
    * Relationship field values by page, as local ids. They are left out of each
    * page's `fields` and sent once every target has its team id.
    */
   relations: Map<string, Record<string, string | string[]>>;
+  /** Person fields left out (publish only). */
+  strippedFields: number;
+  /**
+   * Publish only: page files whose frontmatter does not parse (wiki-relative
+   * paths) and table types whose file does not parse. They are left out, and
+   * their team copies are not removed: the scanner gives a malformed page a
+   * derived id, so its real id is unknown until the file is fixed.
+   */
+  malformed: { paths: string[]; tableTypes: string[] };
 }
 
 /** A stored relationship value as local ids: an id, a list of ids, or `{ itemId }` forms of either. */
@@ -130,6 +161,16 @@ function splitRelations(
   }
   return { fields: plain, relations };
 }
+
+/** The only fields a team page outside a type stores; the server refuses a patch with any other key. */
+const TEAM_PAGE_FIELD_KEYS = new Set(['owner', 'status', 'summary', 'tags']);
+
+/**
+ * Largest editor page (drawing, canvas, mockup) a team room can hold. The room
+ * stores the content as one update and cannot compact a document past 1 MB, so
+ * a larger file is refused (SQLITE_TOOBIG) after the page row was created.
+ */
+export const MAX_TEAM_EDITOR_PAGE_BYTES = 1024 * 1024;
 
 export const MIGRATION_BANNER_PREFIX = 'This wiki moved to the team project:';
 
@@ -166,10 +207,44 @@ export async function collectLocalWiki(wiki: LocalWiki, options: CollectOptions 
   const byId = new Map(live.map((page) => [page.id, page]));
   const skipped: SkippedPage[] = [];
   const skipReasons = new Map(live.map((page) => [page.id, editorSkipReason(page, options.editorTypes)]));
+  // A publish leaves out `export: false` pages and everything under them; a move takes the whole wiki.
+  const hidden = new Set<string>();
+  if (options.publish) {
+    const hiddenAbove = (page: LocalPage): boolean => {
+      const seen = new Set<string>();
+      for (let at: LocalPage | undefined = page; at && !seen.has(at.id); at = at.parentId ? byId.get(at.parentId) : undefined) {
+        seen.add(at.id);
+        if (isExportOptOut(at.fields)) return true;
+      }
+      return false;
+    };
+    for (const page of live) {
+      if (!hiddenAbove(page)) continue;
+      hidden.add(page.id);
+      skipReasons.set(page.id, isExportOptOut(page.fields) ? 'export: false' : 'under a page with export: false');
+    }
+  }
+  const malformedPaths: string[] = [];
+  const malformedTables = new Set<string>();
+  if (options.publish) {
+    for (const page of live) {
+      if (!page.malformed || hidden.has(page.id)) continue;
+      skipReasons.set(page.id, 'its frontmatter does not parse; fix the file and publish again');
+      if (page.path) malformedPaths.push(page.path);
+    }
+    for (const table of snapshot.tables ?? []) if (table.malformed) malformedTables.add(table.typeId);
+  }
+  for (const page of live) {
+    if (page.documentType === 'markdown' || skipReasons.get(page.id) !== null) continue;
+    const bytes = Buffer.byteLength((await wiki.readBody(page.id)).markdown);
+    if (bytes > MAX_TEAM_EDITOR_PAGE_BYTES) {
+      skipReasons.set(page.id, `${(bytes / (1024 * 1024)).toFixed(1)} MB, over the 1 MB a team page's content can hold; it stays local`);
+    }
+  }
   const included = (page: LocalPage) => skipReasons.get(page.id) === null;
   for (const page of live) {
     const reason = skipReasons.get(page.id);
-    if (reason) skipped.push({ localId: page.id, title: page.title, reason });
+    if (reason) skipped.push({ localId: page.id, title: page.title, reason, ...(hidden.has(page.id) ? { excluded: true as const } : {}) });
   }
 
   /** The nearest ancestor that is imported; a skipped editor page passes its children up. */
@@ -193,20 +268,54 @@ export async function collectLocalWiki(wiki: LocalWiki, options: CollectOptions 
   const pagePaths = new Set(live.flatMap((page) => (page.path ? [page.path.toLowerCase()] : [])));
   const locations = new Map<string, PageLocation>();
   const usedTypes = new Set<string>();
+  const definedTypes = new Set(wiki.typeDefs().map((def) => def.typeId));
   const relationFieldsByType = new Map(
     wiki.typeDefs().map((def) => [def.typeId, new Set(def.fields.filter((f) => f.type === 'relationship').map((f) => f.name))]),
   );
   const relations = new Map<string, Record<string, string | string[]>>();
+  /** Table types, placed where the table sits in the local tree. */
+  const tablePlacements = new Map<string, ImportTypePlacement>();
+  const userFieldsByType = new Map(
+    wiki.typeDefs().map((def) => [def.typeId, new Set(def.fields.filter((f) => f.type === 'user').map((f) => f.name))]),
+  );
+  let strippedFields = 0;
   const withFields = (localId: string, typeId: string | null, all: Record<string, unknown>) => {
-    const split = splitRelations(all, typeId ? relationFieldsByType.get(typeId) : undefined);
+    let fields = all;
+    if (options.publish) {
+      const { export: _optOut, ...rest } = all;
+      const stripped = stripIdentity(rest, (typeId ? userFieldsByType.get(typeId) : undefined) ?? new Set());
+      strippedFields += stripped.removed;
+      fields = stripped.fields;
+    }
+    if (!typeId) {
+      // `paths` and any other local-only frontmatter would make the server refuse the whole field set.
+      fields = Object.fromEntries(Object.entries(fields).filter(([key]) => TEAM_PAGE_FIELD_KEYS.has(key)));
+    }
+    const split = splitRelations(fields, typeId ? relationFieldsByType.get(typeId) : undefined);
+    // A relation to a page the publish leaves out is dropped, not reported as a target that failed.
+    if (hidden.size) {
+      for (const [key, value] of Object.entries(split.relations)) {
+        const kept = Array.isArray(value) ? value.filter((id) => !hidden.has(id)) : hidden.has(value) ? undefined : value;
+        if (kept === undefined || (Array.isArray(kept) && !kept.length)) delete split.relations[key];
+        else split.relations[key] = kept;
+      }
+    }
     if (Object.keys(split.relations).length) relations.set(localId, split.relations);
     return Object.keys(split.fields).length ? { fields: split.fields } : {};
   };
   for (const node of buildTree(snapshot)) {
     if (node.kind === 'type') {
+      const tableParent = node.parentNodeId ? node.parentNodeId.replace(/^(document|item):/, '') : null;
+      // A table under a page the publish leaves out goes with it.
+      if (tableParent && hidden.has(tableParent)) continue;
+      if (malformedTables.has(node.id)) {
+        skipped.push({ localId: `type:${node.id}`, title: node.id, reason: 'its table file does not parse; fix the file and publish again' });
+        continue;
+      }
       const tracker = await wiki.trackerSnapshot(node.id);
-      const parentLocalId = importedParent(node.parentNodeId ? node.parentNodeId.replace(/^(document|item):/, '') : null);
+      const parentLocalId = importedParent(tableParent);
       usedTypes.add(node.id);
+      tablePlacements.set(node.id, { typeId: node.id, parentLocalId, ...(node.sortOrder !== null ? { order: node.sortOrder } : {}) });
       tracker.items.forEach((item, index) => {
         pages.push({
           localId: item.id,
@@ -215,6 +324,7 @@ export async function collectLocalWiki(wiki: LocalWiki, options: CollectOptions 
           order: item.order ?? (index + 1) * 1000,
           kind: 'typedPage',
           typeId: node.id,
+          underType: true,
           ...withFields(item.id, node.id, item.fields),
           body: '',
         });
@@ -243,15 +353,17 @@ export async function collectLocalWiki(wiki: LocalWiki, options: CollectOptions 
     }
     const files = await linkedFilesOf(wiki, page.id, markdown, { path: page.path, dir: page.dir }, pagePaths);
     if (files.length) linkedFiles.set(page.id, files);
-    if (page.type) usedTypes.add(page.type);
+    // `type: page` names the plain page type (as static export reads it), not a tracker type.
+    const typeId = page.type && (page.type !== 'page' || definedTypes.has('page')) ? page.type : null;
+    if (typeId) usedTypes.add(typeId);
     pages.push({
       localId: page.id,
       parentLocalId: importedParent(page.parentId),
       title: page.title,
       ...(page.order !== null ? { order: page.order } : {}),
-      kind: page.type ? 'typedPage' : 'page',
-      ...(page.type ? { typeId: page.type } : {}),
-      ...withFields(page.id, page.type, page.fields),
+      kind: typeId ? 'typedPage' : 'page',
+      ...(typeId ? { typeId } : {}),
+      ...withFields(page.id, typeId, page.fields),
       body: stripMigrationBanner(markdown),
     });
   }
@@ -262,10 +374,29 @@ export async function collectLocalWiki(wiki: LocalWiki, options: CollectOptions 
     types.push({ id: def.typeId, name: def.displayName, definition: readTypeDefinition(def.sourcePath) });
   }
 
+  // A type used only by typed pages has no tree node locally; in the team it needs one to show, so it goes at the top.
+  const typePlacements = types
+    .filter((type) => usedTypes.has(type.id))
+    .map((type) => tablePlacements.get(type.id) ?? { typeId: type.id, parentLocalId: null });
+
   const roots = pages.filter((page) => page.parentLocalId === null && page.kind === 'page');
-  const home = roots.find((page) => page.title.trim().toLowerCase() === 'home') ?? roots[0] ?? null;
+  const projectHome = roots.find((page) => page.title.trim().toLowerCase() === 'home') ?? null;
+  const home = projectHome ?? roots[0] ?? null;
   return {
-    pages, editorFiles, linkedFiles, wikiPrefix: options.wikiPrefix ?? '', wikiDir: options.wikiDir ?? null, types, skipped, homeLocalId: home?.localId ?? null, locations, relations,
+    pages,
+    editorFiles,
+    linkedFiles,
+    wikiPrefix: options.wikiPrefix ?? '',
+    wikiDir: options.wikiDir ?? null,
+    types,
+    typePlacements,
+    skipped,
+    homeLocalId: home?.localId ?? null,
+    projectHomeLocalId: projectHome?.localId ?? null,
+    locations,
+    relations,
+    strippedFields,
+    malformed: { paths: malformedPaths, tableTypes: [...malformedTables] },
   };
 }
 
@@ -358,6 +489,110 @@ export function rewriteFileLinksForTeam(
     return href ?? null;
   }, { raw: true });
   return { body: next, rewritten };
+}
+
+/** A link alone on its line, which the editor renders as an embed when it names an editor page. */
+const BLOCK_LINK = /^([ \t]*)\[((?:[^[\]\\\n]|\\.)*)\]\([ \t]*(<[^<>\n]*>|[^\s()<>]+)(?:[ \t]+"((?:[^"\\\n]|\\.)*)")?[ \t]*\)([ \t]*)$/;
+/** `key=value` pairs of an embed link's title, as `parseEmbedAttrs` in the runtime reads them. */
+const TITLE_ATTR = /([A-Za-z_][A-Za-z0-9_-]*)=(?:"[^"]*"|'[^']*'|\S+)/g;
+
+/** A team embed: the page's `nimbalyst://doc` link and the file extension its title names as `embedType`. */
+export interface TeamEmbed {
+  uri: string;
+  fileExtension: string;
+}
+
+/**
+ * Rewrites each embed (a link to an editor page alone on its line, outside
+ * code fences) into the form a team page embeds, as the desktop's share
+ * writes it (`rewriteEmbeddedDocumentLinks`): the page's `nimbalyst://doc`
+ * link with `embedType` added to the title's size and other attributes. A
+ * link opted out with `embed=false`, or to a page with no team embed, is left
+ * for the link rewrites.
+ */
+export function rewriteEmbedsForTeam(
+  body: string,
+  from: PageLocation,
+  byPath: Map<string, string>,
+  embedFor: (localId: string) => TeamEmbed | undefined,
+): { body: string; rewritten: number } {
+  const parts = body.split(/(\r?\n)/);
+  let fence: string | null = null;
+  let rewritten = 0;
+  for (let i = 0; i < parts.length; i += 2) {
+    const line = parts[i];
+    const marker = /^ {0,3}(`{3,}|~{3,})/.exec(line)?.[1];
+    if (fence) {
+      if (marker && marker[0] === fence[0] && marker.length >= fence.length && line.trim() === marker) fence = null;
+      continue;
+    }
+    if (marker) {
+      fence = marker;
+      continue;
+    }
+    const match = BLOCK_LINK.exec(line);
+    if (!match) continue;
+    const [, leading, label, rawDest, title = '', trailing] = match;
+    const attrs = [...title.matchAll(TITLE_ATTR)].map(([pair, key]) => ({ key, pair }));
+    if (attrs.some(({ pair }) => pair === 'embed=false')) continue;
+    const dest = rawDest.startsWith('<') ? rawDest.slice(1, -1) : rawDest;
+    const pathPart = dest.split('#')[0];
+    let targetId = attrs.find(({ key }) => key === 'id')?.pair.slice(3);
+    if (!targetId && pathPart && !/^[a-z][a-z0-9+.-]*:/i.test(pathPart) && !pathPart.startsWith('/')) {
+      let decoded = pathPart;
+      try {
+        decoded = decodeURIComponent(pathPart);
+      } catch {
+        // A malformed escape is matched as written.
+      }
+      const resolved = resolveRelative(linkBase(from), decoded);
+      targetId = resolved === null ? undefined : byPath.get(resolved);
+    }
+    const embed = targetId ? embedFor(targetId) : undefined;
+    if (!embed) continue;
+    const kept = attrs.filter(({ key }) => key !== 'id' && key !== 'embedType').map(({ pair }) => pair);
+    parts[i] = `${leading}[${label}](${embed.uri} "${[...kept, `embedType=${embed.fileExtension}`].join(' ')}")${trailing}`;
+    rewritten++;
+  }
+  return rewritten ? { body: parts.join(''), rewritten } : { body, rewritten: 0 };
+}
+
+const HTML_HREF = /(\bhref\s*=\s*)(?:"([^"]*)"|'([^']*)')/gi;
+
+/**
+ * Points each relative `href` in an HTML page that names a page of this wiki
+ * at that page's team link, keeping its `#fragment`. In a team the HTML page
+ * resolves a relative link by page titles, which local file names do not
+ * match. Web links, in-page anchors and links to no imported page are left
+ * as written.
+ */
+export function rewriteHtmlPageLinks(
+  html: string,
+  from: PageLocation,
+  byPath: Map<string, string>,
+  linkFor: (localId: string) => string | undefined,
+): { text: string; rewritten: number } {
+  let rewritten = 0;
+  const text = html.replace(HTML_HREF, (whole, prefix: string, doubleQuoted: string | undefined, singleQuoted: string | undefined) => {
+    const href = doubleQuoted ?? singleQuoted ?? '';
+    if (!href || href.startsWith('#') || href.startsWith('/') || /^[a-z][a-z0-9+.-]*:/i.test(href)) return whole;
+    const hash = href.indexOf('#');
+    const pathPart = href.split(/[?#]/)[0];
+    let decoded = pathPart;
+    try {
+      decoded = decodeURIComponent(pathPart);
+    } catch {
+      return whole;
+    }
+    const resolved = resolveRelative(linkBase(from), decoded);
+    const targetId = resolved === null ? undefined : byPath.get(resolved);
+    const link = targetId ? linkFor(targetId) : undefined;
+    if (!link) return whole;
+    rewritten++;
+    const quote = doubleQuoted !== undefined ? '"' : "'";
+    return `${prefix}${quote}${link}${hash >= 0 ? href.slice(hash) : ''}${quote}`;
+  });
+  return { text, rewritten };
 }
 
 /** `NIMBALYST_CANVAS_NAMESPACE` in `packages/runtime/src/canvas/CanvasDocument.ts`, which nim does not bundle. */

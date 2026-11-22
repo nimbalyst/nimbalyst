@@ -20,7 +20,7 @@
     "@vitejs/plugin-react": "^4.2.0",
     "typescript": "^6.0.3",
     "vite": "^7.0.0",
-    "yjs": "13.6.32",
+    "yjs": "13.6.33",
     "y-protocols": "^1.0.5"
   },
   "peerDependencies": {

@@ -31,6 +31,8 @@ import type { BackendRuntimeContext } from './extensionBackendRpc';
 export const PANEL_GUTTER_BADGE_CHANNEL = 'extension-panels:gutter-badge';
 export const GET_PANEL_GUTTER_BADGES_CHANNEL = 'extension-panels:get-gutter-badges';
 
+const PANEL_GUTTER_BADGE_TONES: readonly PanelGutterBadgeTone[] = ['default', 'warning', 'success', 'error'];
+
 /** Wire payload. `panelId` is the full `<extensionId>.<panelId>` id; `value: null` clears. */
 export interface PanelGutterBadgeUpdate {
   workspacePath: string;
@@ -78,7 +80,7 @@ export async function setBackendPanelGutterBadge(
   if (value !== null && (typeof value !== 'number' || !Number.isFinite(value))) {
     throw new Error('value must be a finite number or null');
   }
-  if (tone !== undefined && tone !== 'default' && tone !== 'warning') {
+  if (tone !== undefined && !PANEL_GUTTER_BADGE_TONES.includes(tone as PanelGutterBadgeTone)) {
     throw new Error(`Invalid tone "${String(tone)}"`);
   }
   // Read at call time: badge updates are rare, and a dev rebuild can change
@@ -90,7 +92,7 @@ export async function setBackendPanelGutterBadge(
     workspacePath: ctx.workspacePath,
     panelId: `${ctx.extensionId}.${panelId}`,
     value: value === null ? null : Math.max(0, Math.floor(value as number)),
-    tone: tone ?? 'default',
+    tone: (tone as PanelGutterBadgeTone | undefined) ?? 'default',
   };
   const key = cacheKey(update.workspacePath, update.panelId);
   if (update.value === null) badges.delete(key);

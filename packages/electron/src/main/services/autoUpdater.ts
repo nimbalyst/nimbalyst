@@ -9,6 +9,7 @@ import { AnalyticsService } from './analytics/AnalyticsService';
 import { hasActiveStreamingSessions } from '../ipc/SessionStateHandlers';
 import { getSessionStateManager } from '@nimbalyst/runtime/ai/server/SessionStateManager';
 import { getDatabase } from '../database/initialize';
+import { stopAllBackendTerminals } from '../extensions/backendTerminals';
 import {
   categorizeDownloadDuration,
   classifyUpdateError,
@@ -395,6 +396,15 @@ export class AutoUpdaterService {
           log.info('Session state saved before quit-and-install');
         } catch (saveErr) {
           log.error('Failed to save session state before quit-and-install:', saveErr);
+        }
+
+        // Removing the `before-quit` listener below also skips the stop of
+        // extension-started commands. Do it here, or their process groups
+        // outlive the app and keep their ports through the update.
+        try {
+          await stopAllBackendTerminals();
+        } catch (stopErr) {
+          log.error('Failed to stop extension command terminals before quit-and-install:', stopErr);
         }
 
         await this.closeDatabaseBeforeQuit();

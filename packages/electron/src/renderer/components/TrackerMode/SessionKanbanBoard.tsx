@@ -120,21 +120,18 @@ function ChildRunStateBar({ sessionId }: { sessionId: string }) {
 // Card Type Icon (inline, matches session history list icons)
 // ============================================================
 
-function CardTypeIcon({ type, provider }: { type: KanbanCardType; provider?: string }) {
+function CardTypeIcon({ type, provider, isContainer }: { type: KanbanCardType; provider?: string; isContainer?: boolean }) {
   if (type === 'worktree') {
     return (
       <WorktreeIcon size={14} className="shrink-0 mt-px text-[#a78bfa]" />
     );
   }
-  if (type === 'workstream') {
+  // Only the workstream container is a folder; a session with children keeps its provider icon.
+  if (isContainer) {
     return (
-      <svg width="14" height="14" viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" className="shrink-0 mt-px text-[#60a5fa]">
-        <circle cx="8" cy="4" r="1.5" fill="currentColor"/>
-        <circle cx="4" cy="12" r="1.5" fill="currentColor"/>
-        <circle cx="12" cy="12" r="1.5" fill="currentColor"/>
-        <line x1="7.5" y1="5.2" x2="4.5" y2="10.8" stroke="currentColor" strokeWidth="1" strokeLinecap="round"/>
-        <line x1="8.5" y1="5.2" x2="11.5" y2="10.8" stroke="currentColor" strokeWidth="1" strokeLinecap="round"/>
-      </svg>
+      <span className="shrink-0 mt-px flex items-center text-[var(--nim-primary)]">
+        <MaterialSymbol icon="folder" size={14} />
+      </span>
     );
   }
   // Regular session: show provider icon
@@ -386,7 +383,7 @@ function SessionKanbanCard({ session, onSelect, onArchive, onRename, phaseColor,
       >
         {/* Title row: type/provider icon + title + unread dot */}
         <div className="flex items-start gap-1.5 mb-1.5">
-          <CardTypeIcon type={cardType} provider={session.provider} />
+          <CardTypeIcon type={cardType} provider={session.provider} isContainer={session.sessionType === 'workstream'} />
           <div className="flex-1 min-w-0">
             {isRenaming ? (
               <input

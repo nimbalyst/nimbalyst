@@ -10,15 +10,365 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 <!-- New features go here -->
+
+### Changed
+<!-- Changes to existing functionality go here -->
+
+### Fixed
+<!-- Bug fixes go here -->
+- The New Worktree dialog no longer spends over a minute refreshing remote branches when the remote can't be reached; the fetch now gives up after 15 seconds and the dialog shows the local branches
+- Archiving a worktree shows a "Checking for unsaved work" notice when that check takes more than a second, instead of nothing happening on screen
+
+### Removed
+<!-- Removed features go here -->
+
+## [0.84.3] - 2026-11-20
+
+
+### Added
+<!-- New features go here -->
+
+### Changed
+<!-- Changes to existing functionality go here -->
+- New Codex sessions default to GPT-6.2 Sol, the model Codex itself selects by default; GPT-6.2 Sol and GPT-6.2 Astra are now listed in the Codex model picker
+- Nimbalyst now runs on Electron 45 and requires macOS 13 Ventura or later on Mac. Macs on macOS 12 Monterey are not offered the update and can keep using 0.84.2.
+
+### Fixed
+<!-- Bug fixes go here -->
+- Desktop builds now include the patched image decoder that Memory needs to load local embedding models.
+- Desktop personal sync now encrypts with a different crypto API, avoiding a runtime bug that could abort the app with no crash report when an earlier unrelated encryption error, such as an unreadable saved credential, was still pending (#1979)
+- Reopen Closed Tab (Cmd+Shift+T) in Wiki mode now reopens Local wiki pages, item pages and type pages; before, it only reopened shared documents
+- When the SQLite database worker exits unexpectedly, it is now restarted automatically (up to 5 times in 10 minutes) instead of leaving database access broken until the app restarts, and agent messages that had not reached the database while it restarted are held and written afterwards instead of being dropped (#1988)
+- On Windows, Import earlier sessions no longer fails with "Invalid external session cursor" for session files whose file ID is above 2^53; sessions left empty by that failure are shown as needing update and preselected for retry, and the import dialog now shows the underlying error instead of "Failed to import sessions" (#1989)
+- Files a Claude Code session changes through a Bash command (for example a python heredoc or `sed -i`) are now listed in its edited files even when the command never names the file's path, and a Codex session running in the same project no longer stops them from being listed; when two sessions' commands overlap, the file is listed as a withheld edit instead of being linked to either session
+
+### Removed
+<!-- Removed features go here -->
+
+## [0.84.2] - 2026-11-18
+
+
+### Added
+<!-- New features go here -->
+- Databases too large to migrate to SQLite automatically now get a one-time prompt at launch to migrate, with the size, the disk space needed, and progress
+- Run Manager (alpha), in developer mode: a Runs panel that starts, stops and restarts a project's dev servers from named commands in `.nimbalyst/run.json`, shows each one's status, link and uptime, and keeps its log in a pinned terminal tab; agents can list, start, stop and restart the same targets and read their logs
+
+### Changed
+<!-- Changes to existing functionality go here -->
+- Existing databases up to 3 GiB (previously 1 GiB) now migrate to SQLite automatically at startup
+- Settings > Database is now shown to every install still on PGLite, not only in developer mode, so larger databases can be migrated from there
+- Extensions can run commands in terminal tabs and show colored status badges on their gutter buttons, gated on developer mode
+- The Terminal and Runs bottom panels use the same dash hide button as the Git panel
+
+### Fixed
+<!-- Bug fixes go here -->
+- Claude Agent skills that run as a forked command, such as `/review`, are no longer denied the Nimbalyst session-summary and session-result tools
+- With auto-commit on, commit proposals into another worktree of the session's repository, and folder proposals containing files another session also edited, are now committed automatically instead of waiting for manual approval
+- The PGLite to SQLite cutover retries a briefly locked database folder instead of failing immediately
+- Run Manager stops its processes on restart and update, and Stop cancels a start that is still checking its port
+
+### Removed
+<!-- Removed features go here -->
+
+## [0.84.1] - 2026-11-15
+
+
+### Added
+<!-- New features go here -->
+- Collapse all and Expand all buttons in the agent session list close or open every parent session and workstream at once
+- The Codex model picker also lists models reported by the bundled Codex CLI, so newly released Codex models can be selected before Nimbalyst's built-in list includes them
+
+### Changed
+<!-- Changes to existing functionality go here -->
+- Queued messages delivered in one turn each open with the time they were queued and who sent them; same-named senders are distinguishable.
+- The Extension Dev indicator moved to the outer project rail, and the navigation button menus use the shared floating menu positioning.
+
+### Fixed
+<!-- Bug fixes go here -->
+- Sessions started in a subfolder that names its own checkout root keep commit auto-approval.
+- Projects without a team no longer show tracker publish notices that cannot be resolved.
+- With many sessions busy at once, an agent transcript no longer loses its opening prompt and earlier messages until the session is reopened.
+- Delayed session-status refreshes no longer hide Cancel during a newer turn or show it after completion, including when opening a running session.
+- With many sessions busy at once, an agent transcript now stays on screen while the app reloads the session, instead of going blank and replaying from older messages.
+- The new tracker item popup no longer pushes its title field off screen in fullscreen when many items are waiting to publish; the list of saved items now scrolls.
+- When an agent works with a local HTML file that is not open in a tab, its page no longer appears as a box over the top-left of the window that cannot be closed.
+- In a project with no team, new bug, decision, milestone and release items no longer show a "team sync is not connected" publication notice with a Retry that cannot succeed. This includes items created before this fix.
+- Deleting tracker items now shows an error when a delete fails, including how many items failed in a multi-select delete, instead of failing silently.
+- With auto-approve on, a commit proposal from a session opened on a subfolder of a git checkout that names that checkout's root is now auto-approved instead of waiting for approval as if it targeted another worktree.
+
+### Removed
+<!-- Removed features go here -->
+
+## [0.84.0] - 2026-11-14
+
+
+### Added
+<!-- New features go here -->
+- Switch branches from the Git panel, including remote-only branches and new branches.
+- Workstreams: a named folder in the session list that groups peer sessions.
+- `nim wiki publish` copies a local wiki into a team project for review, with a Commenter role (requires the updated sync server).
+
+### Changed
+<!-- Changes to existing functionality go here -->
+- Commit proposals can name a folder, which expands to its changed files for review.
+- New worktrees start from the remote's default branch instead of the main checkout's branch.
+- The open menu bar island can be resized by dragging its edges.
+- Daily tool-output cleanup now also replaces aged images and drops the duplicate result copy.
+- Team guests see only the projects they are granted (requires the updated sync server).
+
+### Fixed
+<!-- Bug fixes go here -->
+- "Create Branch..." in the Git panel's commit menu now opens a name form.
+- Files-mode chat "Context:" label clears when the file's tab is closed.
+- Moving a session under another no longer changes its manager unless it leaves the manager's tree.
+- SQLite backups keep rotating after the database shrinks to under half its size.
+- Tool-output cleanup no longer skips recent rows that age into the window later.
+- Agent edits next to a comment on part of bold or inline code no longer write broken markdown.
+
+### Removed
+<!-- Removed features go here -->
+
+## [0.83.0] - 2026-11-09
+
+
+### Added
+<!-- New features go here -->
+- A file tree subfolder cut off at the 200-entry limit now ends with a row saying how many items are hidden ("51 more items", or "N or more" when skipped symlinks were not checked). The workspace root folder and folders loaded on expand do not show it yet
+- Claude Fable 5.2 is now available in the model picker, with Fable 5.1 and Fable 5 kept as selectable previous-generation options
+
+### Changed
+<!-- Changes to existing functionality go here -->
+- Messages queued while an agent is working, typed by you or sent by other sessions, are now delivered together in one turn, each opening with the time it was queued and who sent it (you, or the sending session by name); slash commands and messages with a different document context still go as their own turn, and Send Now delivers everything that can share a turn in one press
+- On macOS and Linux, processes Nimbalyst starts (agent sessions, MCP servers, CLIs, git) now put the login shell's PATH ahead of the system defaults, so tools from version managers such as mise are found before `/usr/bin` versions, and PATH is deduplicated per folder
+
+### Fixed
+<!-- Bug fixes go here -->
+- The weekly history in the Claude and Codex usage popovers now charts the main weekly limit by default instead of a per-model limit such as Fable
+- Nested lists under numbered items are saved indented past the parent's number (3 spaces under `2. `, 4 under `10. `), so other Markdown tools keep them nested, and a nested numbered list under an item numbered 10 starts at 1 instead of 10
+- Creating a local wiki page whose content starts with its own frontmatter now writes one frontmatter block with those fields and type, instead of adding a second block above it
+- A question card (AskUserQuestion or PromptForUserInput) that a PreToolUse hook denies now shows as blocked with the hook's reason, instead of as answered or as a form that can still be submitted
+- The `consume_session_inbox` tool is now listed on the `nimbalyst-host` MCP server, so orchestrating agents can call it as their instructions describe
+- The Agent Sessions search is cleared when you switch workspace in the same window, and a search still running for the previous workspace no longer replaces the new workspace's list or shows its error there
+- A prompt queued after you clear the document no longer merges into a turn with the older document content
+- The session machine picker labels the local machine with its device name, followed by "(this device)", instead of "This Mac" on every platform
+- When a workspace has more than 5,000 uncommitted files, the session list skips matching sessions to those files instead of sending every path to the database in one query. Git status still lists every untracked file, so this does not remove all memory growth in very large workspaces
+
+### Removed
+<!-- Removed features go here -->
+
+## [0.82.8] - 2026-11-09
+
+
+### Added
+<!-- New features go here -->
+- macOS: an optional `nimbalyst` terminal command (Nimbalyst menu > Install 'nimbalyst' Command in PATH, or Settings > Advanced) opens a folder as a project with `nimbalyst .`, or a file with `nimbalyst <file>`
+- With multiple projects per window enabled, drag a project from one window's project rail to another window's rail to move it, or drop it outside every window to open it in its own window
+- Projects switcher (Cmd+Shift+P) has an Open Folder as Project row for opening a folder that isn't in the recent list
+- Dictation: speak into the agent input, markdown editor or code editor with the mic button or Ctrl+Option+Space. On a Mac it starts macOS dictation; you can choose on-device speech recognition or OpenAI transcription with your OpenAI key in Settings > Dictation instead, where you can also turn it off to hide it
+
+### Changed
+<!-- Changes to existing functionality go here -->
+- Moving a project from the Project Manager runs in the background: the Project Manager stays usable and shows the move's progress, and moves on the same disk rename the folder instead of copying it
+- With multiple projects per window enabled, the usage indicators, theme toggle, feedback button and account menu sit at the bottom of the project rail instead of in each project's navigation gutter
+- Project rail icons no longer show a close button on hover, which was easy to hit when selecting a project; close a project from its right-click menu or by middle-clicking it
+- The selected project in the project rail fills with its color and the other projects dim until hovered, replacing the ring and edge bar
+- Project rail badges use the same colors as the Agent mode bubble: orange when a session is waiting for your input, green while sessions are running, blue for unread, and stay visible on the selected project
+- The transcript's prompts menu also lists your answers to agent questions and jumps to the question card; prompts sent by other sessions are shown muted and no longer count toward the badge
+
+### Fixed
+<!-- Bug fixes go here -->
+- With multiple projects per window enabled, opening the terminal panel in one project no longer opens it in the other projects in the rail
+- With multiple projects per window enabled, restarting Nimbalyst reopens each window with all of its rail projects and the project it was showing, instead of only the window's first project
+- Moving or renaming a project no longer requires deleting its worktrees first; the project's worktrees folder moves with it and git's worktree links are repaired
+- With multiple projects per window enabled, clicking a session in the menu bar panel switches the window to that session's project instead of opening the session under the project currently shown
+- With multiple projects per window enabled, session links, Cmd+L picks, wakeup notifications, and files opened from Finder or the `nimbalyst` command open in the project they belong to instead of the project currently shown
+- With multiple projects per window enabled, new documents, chat attachments, pasted images, recent files and Cmd+N use the project currently shown instead of the first project in the rail
+- A session started from the mobile app for a project that wasn't matched exactly could be created in another open project whose path contained the same text; it now goes only to the exact project
+- With multiple projects per window enabled, picking a project that isn't open in any window from the Projects switcher (Cmd+Shift+P) now adds it to the current window's project rail instead of opening a new window
+- Projects switcher (Cmd+Shift+P) now tags a project as Open when it is in any window's project rail, not only when it is the project that window started with
+- Images generated by Codex's built-in image tool now show in the transcript instead of as a block of base64 text
+- Dictation: the macOS shortcut starts dictation on key press instead of waiting for every key to be released, and the first words are no longer lost
+- Overlapping or superseded Claude turns in one session no longer close or replace the newer turn's live query
+- With multiple projects per window enabled, switching rail projects shows the cached session list while it reloads, and project document sync stays connected for the projects that remain open
+- The sleep blocker stays on through brief sync drops, and the menu bar session panel recovers after its renderer is lost
+
+### Removed
+<!-- Removed features go here -->
+
+## [0.82.7] - 2026-11-04
+
+
+### Added
+<!-- New features go here -->
+
+### Changed
+<!-- Changes to existing functionality go here -->
+
+### Fixed
+<!-- Bug fixes go here -->
+- New tracker items get local numbers (like `NIM.75`) again; items created since early October without one are numbered on the next launch. A tracker type can opt out with `localNumbers: false`
+- The pull request panel no longer reports the GitHub CLI as signed out when `gh auth status` is slow to answer.
+- After you start a new session to implement a plan, the planning session's plan card says "Deferred to new session" instead of "Denied"
+- A session that fails to load now says why and offers Try again, instead of showing "Session not found"
+- Plan-approval and question dialogs no longer fail with "PreToolUse hook did not respond before its timeout" when you step away
+- Very long sessions open again instead of showing "Session not found" once their history grew too large to load in one read
+
+### Removed
+<!-- Removed features go here -->
+
+## [0.82.6] - 2026-11-03
+
+
+### Added
+<!-- New features go here -->
+- Colored text and highlight colors in Markdown documents, from a seven-color picker in the selection toolbar, saved as HTML spans that Obsidian also displays
+- Claude in Chrome for Claude Code sessions: an Agent Features setting (off by default) that lets the agent control your Chrome browser through the Claude in Chrome extension
+- Weekly usage history in the Claude and Codex usage popovers: a chart of each week's usage against an even pace, and past weeks' final percentages, recorded while Nimbalyst is running
+
+### Changed
+<!-- Changes to existing functionality go here -->
+
+### Fixed
+<!-- Bug fixes go here -->
+- Extension tabs on `virtual://` paths no longer show a "File updates delayed" warning or retry file registration every minute
+- Browser agent tools no longer fail with "File has no extension" when given a folder path alongside a browser session
+- Clicking a meta agent's child session in the session list or on the Sessions board opens that child instead of the meta agent
+- Windows: git commands Nimbalyst runs in the background, including Project Graph indexing, no longer flash console windows
+- Windows: commit proposals whose file paths use forward slashes (`C:/...`) now commit to the right repository instead of failing with "None of the selected files are in a git repository"
+- Windows: the Claude Code CLI provider starts in "Ask every time" mode instead of exiting with "Settings file not found"
+- Files an agent changes through shell commands show up in its session's edited files again after a Codex session has run in the same project, instead of going untracked until restart
+- With auto-approve commits on, a commit proposed into another worktree shows the Confirm/Cancel card instead of spinning on "Committing changes..."
+- Checking for updates in the first minute after a release is published no longer fails with "Cannot download ... status 404"; releases now go public only after every download is uploaded
+- Deleted Codex and Claude Code sessions stay deleted instead of being re-imported, and imported Codex sessions are no longer titled with their `<environment_context>` text
+- The session list shows only the current project's sessions, and "Session not found" names the project a session belongs to
+
+### Removed
+<!-- Removed features go here -->
+
+## [0.82.5] - 2026-10-31
+
+
+### Added
+<!-- New features go here -->
+- GPT-6.1 Terra is available in the OpenAI Codex model picker
+
+### Changed
+<!-- Changes to existing functionality go here -->
+- Existing databases up to 1 GiB now move from PGLite to SQLite automatically at startup on every install; larger databases stay on PGLite until you choose Migrate to SQLite in Database settings
+- Cancelling a Claude Code agent's question card now tells the agent you dismissed the question and lets it keep working, instead of stopping the turn; the Stop button still stops it
+
+### Fixed
+<!-- Bug fixes go here -->
+- Meta-agent sessions can no longer call Claude Code built-in tools that were added after their blocked-tool list, such as PowerShell and LSP
+- A review session started from the GitHub Pull Requests panel now shows in the PR's chat pane when you come back to the PR, including for PRs with no tracker item; sessions started before this fix are found and linked the next time you open their PR
+- An agent can no longer start an independent top-level session that also reports its result back; a worker whose result the agent needs now nests under it in the session tree instead (#1876)
+- OpenAI Codex commands and edits that Codex wants approved now show the approval prompt instead of being rejected with "blocked by policy"; Codex also runs in Ask every time mode, and a declined command says so on its card (#1884)
+- On Windows, a file in a subfolder that an agent edits now gets its content from the start of the session as the diff baseline; the git lookup used to fail and the file was treated as if it had not existed (#1889)
+- Agent diffs for a file whose name has a space or non-ASCII character, and that had uncommitted changes when the session started, no longer count those earlier changes as the agent's
+- Closing a window that had opened a file from Finder or the terminal no longer throws an "Object has been destroyed" error in the main process
+- Find highlights in a markdown document are redrawn when the editor's width changes (window or side panel resize), instead of staying where the text used to be
+- The dashboard screenshot in the tutorial project's first sample session now displays, instead of a broken image, in tutorial projects created after this update
+- A backslash written before punctuation in a markdown document, such as `Cmd+\)`, is no longer removed when the editor saves the file
+- On Claude plans without a 5-hour session limit, the Claude usage popover no longer shows an empty Session bar (0%, "Resets in Unknown"), and the gutter ring shows weekly usage instead of 0%
+
+### Removed
+<!-- Removed features go here -->
+
+## [0.82.4] - 2026-10-27
+
+
+### Added
+<!-- New features go here -->
+
+### Changed
+<!-- Changes to existing functionality go here -->
+
+### Fixed
+<!-- Bug fixes go here -->
+- In a folder with more than 200 entries, the file tree now shows the first 200 in sorted order (folders first), instead of whichever 200 the disk listed first
+- Opening a file from Finder or the terminal that starts a new project window now shows the file, instead of an empty window
+- Opening the same file again from outside the app (Finder, a terminal link, `open`) now shows it, instead of doing nothing until a different file was opened
+- Typing a short query in the find bar on a long markdown page no longer stalls the editor while match highlights are drawn; highlights are now drawn for up to 1000 matches around the current one.
+- A transcript image opened in the image viewer no longer sometimes gets stuck at full size with Fit and zoom doing nothing
+- Sending a message now while a commit proposal waits for approval closes the proposal and sends the message, instead of holding it until the proposal is answered
+- A Claude Code turn that was running when the computer went to sleep is no longer aborted as stalled the moment the computer wakes
+- Answering or cancelling an older Claude Code question card now closes that card instead of reaching the question the agent is waiting on, and no longer interrupts the running turn (the answer reaches the agent when that turn ends); a form whose tool call was denied no longer stays open.
+- Codex sessions now work when Codex is configured to use Amazon Bedrock (`model_provider = "amazon-bedrock"` in `~/.codex/config.toml`), instead of failing with "model does not exist" (#1371)
+- Markdown files inside a Claude plugin's `node_modules` folder are no longer listed as plugin commands, so exporting skills to Codex no longer writes a folder for each dependency README into the project (#1786)
+- Extension backend tools that could not start because the project was not yet trusted now start once you trust it, instead of staying unavailable until the project is reopened (#1767)
+- Agent browser tools can now type and click in headless browser sessions and in browser tabs that are not in the foreground, instead of the input being dropped (#1726)
+- In-app agents can now read and edit the body of a team-shared typed page; the `collab://tracker-content/<id>` address the tools suggested was rejected as invalid, and reads could return an older copy of the body (#1879)
+- Updating or creating plans, bugs and tasks on team-shared trackers through agent tools no longer fails with `unknown_type` (needs the updated sync server) (#1880)
+
+### Removed
+<!-- Removed features go here -->
+
+## [0.82.3] - 2026-10-25
+
+
+### Added
+- Admins can recover a legacy-encryption team organization in place from Settings > Security & Encryption, keeping ticket numbers (needs the updated sync server).
+
+### Fixed
+- Opening a rail project in a new window now shows the selected project even when restoring previous projects is enabled.
+- Automatic CPU profiles no longer accumulate and fill disk space.
+- Codex sessions no longer list files edited by concurrent sessions; edits of unknown origin are named in the file tracking notice.
+- Codex sessions no longer show duplicate commit cards, and automatic commits show success only after the result arrives.
+- Moving a session under another in the sidebar no longer appoints a manager or sends either session a message.
+- Images copied in Windows can now be pasted into agent chat and documents when Nimbalyst runs under WSL.
+- Wiki start and team skills load their descriptions correctly, and malformed skill metadata logs concise warnings.
+- Development builds no longer stop responding when React inspects props containing sandboxed HTML embed windows.
+- Scrolling past an agent-displayed image or editor screenshot in a transcript no longer jumps back to it.
+- A pasted image that finishes saving after you undo or switch sessions no longer reverts prompt edits.
+- Unchanged transcript rows are no longer re-rendered while a session runs or reloads.
+
+### Removed
+<!-- Removed features go here -->
+
+## [0.82.1] - 2026-10-23
+
+
+### Added
+<!-- New features go here -->
+
+### Changed
+<!-- Changes to existing functionality go here -->
+- Child sessions no longer send informational reports to their parent by default; the spawning session chooses what it hears back.
+- Document sync skips git worktrees nested inside a project, such as `.claude/worktrees`.
+
+### Fixed
+<!-- Bug fixes go here -->
+- Creating a session from iPhone or iPad no longer fails with "The desktop did not confirm session creation" on desktops using SQLite.
+- A malformed field on one session no longer hides that session on iOS.
+- Links, files, and folders opened from WSL fall back to Windows when no Linux handler works; executables are revealed instead of launched.
+- Sessions that finish in a background project or window now show as unread.
+- Clicking "Always" on one waiting permission prompt now also covers the other waiting prompts.
+- Permission prompts answered while settings were loading stay answered after reload.
+- A notification click opens its session instead of the one previously open in that project.
+- The saved session is restored before the fallback session is chosen on project switch.
+- Single-choice decisions that allow written answers show an Other choice with a text box.
+- Moving a local wiki to a team keeps embeds, map links, Home and types.
+- Document sync with a large upload backlog sends it in ~1 MB pieces instead of dropping and retrying every ~17 seconds; repeated drops back off up to 30 seconds.
+
+### Removed
+<!-- Removed features go here -->
+
+## [0.82.0] - 2026-10-23
+
+
+### Added
+<!-- New features go here -->
 - Agents can propose a commit into another worktree of the session's repository; the commit card shows its branch and path and always asks for approval on desktop
 - In the iOS and Android apps, a synced Markdown file now shows an embedded `.html` diagram live instead of as a link; document sync now carries `.html` files so the phone has them
 - The Project Graph timeline has a "24 hours" time range with an hourly ruler and times in its tooltips
 - The session list can show a thin bar under each session with how full its context window is; turn it on with "Show context usage" in the session list's sort menu. Sessions from agents that don't report a context window show no bar
 - The GitHub pull request and issue lists can be searched by author: typing a login matches it, and `author:login` shows only that person's items. Pull request search also matches labels now
-- `nim wiki export --static <dir>` exports a local wiki as a static website for any static host, served from the root of a site: each page gets its own URL and readable HTML, and the browser view shows it read-only with charts, diagrams, embedded editor pages, backlinks and search. Pages marked `export: false` and person fields are left out by default
+- `nim wiki export --static <dir>` exports a local wiki as a static website for any static host, served from the root of a site or a subdirectory with `--base /docs/`: each page gets its own URL and readable HTML, and the browser view shows it read-only with charts, diagrams, embedded editor pages, backlinks and search. Tracker items a page links to get their own read-only page in the export when the Nimbalyst app is on the machine. Pages marked `export: false` and person fields are left out by default
 
 ### Changed
 <!-- Changes to existing functionality go here -->
+- Chat now shows the file or page name being included as context and a short preview of selected text, including on Local and Personal wiki pages
+- Going Back or Forward in Pages, with the buttons, keyboard or a trackpad swipe, now returns a page to where it was scrolled instead of its top
 - Opening a local wiki page from Quick Open or from a file link in an AI transcript now shows it in Pages mode instead of Files
 - On the SQLite database, tool output older than 30 days in agent transcripts is now replaced with a placeholder by a daily background pass; your prompts, agent replies and tool calls are kept. Shrinking the file on disk is still the Vacuum action in the database dashboard
 - Completed and failed queued prompts older than 30 days are now deleted automatically
@@ -33,8 +383,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 <!-- Bug fixes go here -->
-- The New Worktree dialog no longer spends over a minute refreshing remote branches when the remote can't be reached; the fetch now gives up after 15 seconds and the dialog shows the local branches
-- Archiving a worktree shows a "Checking for unsaved work" notice when that check takes more than a second, instead of nothing happening on screen
+- Typing into a text cell in a tracker table no longer replaces the first typed character with the second (#1199)
+- Video, audio, WebP, AVIF and HEIC files are now read as binary instead of being decoded as text, and encoding detection for large non-UTF-8 text files only scans a bounded sample
+- Creating a session from mobile now waits for confirmation that it is available in sync, and reconnecting a phone restores missing session-list entries from the desktop.
+- In Claude Agent sessions with automatic review on, approving a tool call the automatic review blocked now lets that call run instead of being blocked again; "Always" approvals saved to the project's local Claude settings now apply to tools such as sub-agents, and an approval prompt whose turn already ended now shows as cancelled instead of staying clickable
+- `@` file mentions and Quick Open file and content search return results in large repositories instead of nothing.
 - In Claude Agent sessions on Opus 5.5 and Fable 5, the short summary the model returns in place of text written between tool calls now shows as a visible line in the transcript instead of inside a collapsed Thinking box; the full original text is not returned by the API and still can't be shown
 - The background scan for Claude Code and Codex session files now waits before retrying a file that failed to import, starting at 1 minute and growing to 30, instead of retrying it on every pass; a file that changes on disk is still retried right away
 - Files deleted from a synced project, including a whole deleted folder or files deleted while Nimbalyst was closed, are now removed from document sync instead of being written back to disk on the next sync; a file edited on another device since is still restored
@@ -55,6 +408,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A prompt whose send failed, or a retried copy of it, no longer stays at the bottom of the transcript below later replies
 - The macOS Window menu now drops a project when you close its window and checks the window that has focus
 - The Pages sidebar now highlights the open page when it is a typed page in a local wiki or sits under a typed page, opening the collapsed rows above it
+- Cursor Agent sessions now receive attached text documents and the file paths of pasted images and PDFs, which the agent opens itself
+- On iPhone and iPad, a new session is no longer sent to an offline record of your computer, which left the request unanswered; the connection dot now reflects the selected computer, the picker and Settings mark offline computers, and choosing one shows an error instead of failing silently
+- With several projects on the rail, the Tracker board no longer shows another project's items after a switch, and starting a session from a tracker item that belongs to a different project is refused instead of running the agent in the wrong project's folder
+- The terminal no longer stops starting after many project switches in one window, because a closed terminal now frees its memory; when it cannot start, it shows the real reason instead of "Failed to fetch" and writes it to the app log
+- Editor errors, such as a file that failed to save or an editor that crashed, are now written to the app log instead of being dropped
+- Switching projects in one window no longer restarts the previous project's terminals inside the new project
+- Clicking a notification for a session in another open project opens that session, instead of the session that was open there before.
+- Choosing "Always" on one of several tool permission prompts that are waiting at once now approves the others too, instead of asking again
 
 ### Removed
 <!-- Removed features go here -->

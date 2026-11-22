@@ -1462,7 +1462,7 @@ export class TeammateManager {
         CLAUDE_CODE_AGENT_TYPE: agentType,
       },
       hooks: {
-        'PreToolUse': [{ hooks: [this.deps.createPreToolUseHook(cwd, sessionId, permissionsPath, { isTeammateSession: true })] }],
+        'PreToolUse': [{ hooks: [this.deps.createPreToolUseHook(cwd, sessionId, permissionsPath, { isTeammateSession: true })], timeout: 86400 }],
         'PostToolUse': [{ hooks: [this.deps.createPostToolUseHook(cwd, sessionId)] }],
       },
       canUseTool: this.deps.createCanUseToolHandler(sessionId, cwd, permissionsPath, name, permissionMode),

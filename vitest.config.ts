@@ -1,12 +1,24 @@
 import { defineConfig } from 'vitest/config';
 import react from '@vitejs/plugin-react';
+import fs from 'fs';
 import path from 'path';
 import {createRequire} from 'module';
 
 const runtimeRequire = createRequire(
   path.resolve(__dirname, './packages/runtime/package.json'),
 );
-const lexicalDir = path.dirname(runtimeRequire.resolve('lexical'));
+// The package root, not the entry's directory: since Lexical 0.51 the entry
+// lives in `dist/`, and `package.json` is not in the exports map.
+function packageRoot(entry: string): string {
+  let dir = path.dirname(entry);
+  while (!fs.existsSync(path.join(dir, 'package.json'))) {
+    const parent = path.dirname(dir);
+    if (parent === dir) throw new Error(`No package.json above ${entry}`);
+    dir = parent;
+  }
+  return dir;
+}
+const lexicalDir = packageRoot(runtimeRequire.resolve('lexical'));
 const lexicalScopeDir = path.join(path.dirname(lexicalDir), '@lexical');
 
 // `monaco-editor`'s ESM entry statically imports `.css`, which vitest's node
@@ -95,8 +107,11 @@ const alias = [
     find: /^lexical$/,
     replacement: lexicalDir,
   },
+  // Bare package names only: since 0.51 subpaths such as
+  // `@lexical/react/LexicalComposerContext` exist only in the exports map, so
+  // they must resolve normally (to the same hoisted copy).
   {
-    find: /^@lexical\/(.*)$/,
+    find: /^@lexical\/([^/]+)$/,
     replacement: `${lexicalScopeDir}/$1`,
   },
 ];

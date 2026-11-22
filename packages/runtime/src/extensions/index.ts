@@ -128,6 +128,7 @@ export type {
   EditorContext,
   EditorContextItem,
   EditorViewport,
+  DictationTarget,
   DiffConfig,
   DiffResult,
   CollaborationContext,

@@ -3,8 +3,10 @@
  * Spawning a bare `'rg'` instead depends on the user having ripgrep on PATH.
  */
 
+import { spawn } from 'child_process';
 import { app } from 'electron';
 import fs, { existsSync } from 'fs';
+import { createInterface } from 'readline';
 import os from 'os';
 import path from 'path';
 
@@ -63,4 +65,48 @@ export function getRipgrepPath(): string {
     console.warn('[SEARCH] Could not find bundled ripgrep, falling back to system rg. Probed:', possibleRgPaths);
     cachedRgPath = 'rg';
     return 'rg';
+}
+
+/**
+ * Streams ripgrep's stdout because a buffered `execFile` fails outright once
+ * output passes `maxBuffer`. Return `false` from `onLine` to stop early.
+ * Exit code 1 (nothing matched) resolves. Exit code 2 with output also
+ * resolves: ripgrep reports an unreadable directory that way while still
+ * listing the rest of the tree.
+ */
+export function streamRipgrepLines(args: string[], onLine: (line: string) => boolean): Promise<void> {
+    return new Promise((resolve, reject) => {
+        const rg = spawn(getRipgrepPath(), args, { stdio: ['ignore', 'pipe', 'pipe'] });
+        let stopped = false;
+        let sawOutput = false;
+        let stderr = '';
+        rg.stderr.setEncoding('utf8');
+        rg.stderr.on('data', (chunk: string) => {
+            if (stderr.length < 4096) stderr += chunk;
+        });
+
+        const lines = createInterface({ input: rg.stdout, crlfDelay: Infinity });
+        lines.on('line', line => {
+            // readline can still deliver lines buffered before close().
+            if (stopped || !line) return;
+            sawOutput = true;
+            if (onLine(line) === false) {
+                stopped = true;
+                lines.close();
+                rg.kill();
+            }
+        });
+
+        rg.on('error', reject);
+        rg.on('close', code => {
+            if (stopped || code === 0 || code === 1) {
+                resolve();
+            } else if (code === 2 && sawOutput) {
+                console.warn('[SEARCH] ripgrep skipped paths it could not read:', stderr.trim());
+                resolve();
+            } else {
+                reject(new Error(`ripgrep exited with code ${code}: ${stderr.trim()}`));
+            }
+        });
+    });
 }

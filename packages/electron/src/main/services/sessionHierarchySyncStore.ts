@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { SessionStore, HierarchySyncIntent, HierarchySnapshotResult } from '@nimbalyst/runtime/ai/adapters/sessionStore';
 import { parseJsonObjectColumn } from '../utils/jsonColumn';
-import { assertHierarchyPlacement, HIERARCHY_METADATA_SQL, readHierarchy, withHierarchyWrite, publishHierarchyMove, managerReassignmentMetadata, type HierarchyDatabase, type HierarchyRow, type HierarchyStatement } from './sessionHierarchy';
+import { assertHierarchyPlacement, HIERARCHY_METADATA_SQL, readHierarchy, withHierarchyWrite, publishHierarchyMove, managerReassignmentMetadata, managerAfterMove, type HierarchyDatabase, type HierarchyRow, type HierarchyStatement } from './sessionHierarchy';
 import { sessionMetadataMergeSql } from './sessionMetadataMerge';
 
 /** Result error for index entries whose session does not exist on this desktop. */
@@ -56,7 +56,7 @@ export function createHierarchySyncMethods(db: HierarchyDatabase, ensureReady: (
         if (intent && (entry.createdBySessionId === undefined || !matches(intent, entry.parentSessionId, entry.createdBySessionId))) { protectedIds.add(row.id); continue; }
         if (intent && matches(intent, row.parent_session_id ?? null, row.created_by_session_id ?? null)) confirmedIds.add(row.id);
         const moved = (row.parent_session_id ?? null) !== entry.parentSessionId;
-        proposed.set(row.id, { ...row, parent_session_id: entry.parentSessionId, created_by_session_id: moved ? entry.parentSessionId : row.created_by_session_id });
+        proposed.set(row.id, { ...row, parent_session_id: entry.parentSessionId });
       }
       // Read a workspace graph only when the snapshot moves a row in it.
       const graphs = new Map<string, HierarchyRow[]>();
@@ -70,6 +70,11 @@ export function createHierarchySyncMethods(db: HierarchyDatabase, ensureReady: (
       try {
         for (const rows of graphs.values()) {
           const finalGraph = rows.map(row => proposed.get(row.id) ?? row);
+          for (const row of finalGraph) {
+            if (proposed.has(row.id) && (current.get(row.id)?.parent_session_id ?? null) !== (row.parent_session_id ?? null)) {
+              proposed.set(row.id, { ...row, created_by_session_id: managerAfterMove(finalGraph, row.created_by_session_id ?? null, row.parent_session_id ?? null) });
+            }
+          }
           // Only moved rows need checking: each check walks the row's ancestors and
           // its whole subtree, so it covers every unmoved row it could affect.
           // Validating every snapshot entry rebuilt the workspace graph per row

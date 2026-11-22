@@ -52,6 +52,7 @@ import { AISessionsRepository } from '@nimbalyst/runtime/storage/repositories/AI
 import { resolveClaudeCodeParentContextWindow } from '@nimbalyst/runtime/ai/modelConstants';
 import { accumulateClaudeCodeTurnUsage, accumulateProviderTurnUsage } from './tokenUsageAccumulation';
 import { provisionalTitleForFirstMessage } from './provisionalSessionTitle';
+import { sessionNotFoundMessage } from './sessionNotFoundMessage';
 import {
   buildMcpSessionStatusSnapshot,
   type McpSessionStatusInput,
@@ -140,8 +141,9 @@ import type Store from 'electron-store';
 import type { AIService } from './AIService';
 import type { HooklessAgentFileWatcher } from './HooklessAgentFileWatcher';
 import type { WorkspaceFileAttributionMode } from '../WorkspaceFileAttributionPolicy';
+import { isShellWindowLifecycleConfigured } from './HooklessAgentFileWatcher';
 import {
-  attributionModeForFileChangeFidelity,
+  attributionModeForProvider,
   fileChangeFidelityForProviderType,
   isProviderEditTool,
   type FileChangeFidelity,
@@ -163,8 +165,9 @@ function resolveWorkspaceFileAttributionMode(
   const liveProvider = provider as (AIProvider & {
     getFileChangeFidelity?: () => FileChangeFidelity;
   }) | null | undefined;
+  const shellWindow = isShellWindowLifecycleConfigured();
   const live = liveProvider?.getFileChangeFidelity?.();
-  if (live) return attributionModeForFileChangeFidelity(live);
+  if (live) return attributionModeForProvider(providerName, live, shellWindow);
 
   // Codex is the only provider whose fidelity is a user-selected setting: the
   // legacy SDK transport has no `fileChange` item. Without a live instance to
@@ -177,7 +180,7 @@ function resolveWorkspaceFileAttributionMode(
     return 'fuzzy';
   }
 
-  return attributionModeForFileChangeFidelity(fileChangeFidelityForProviderType(providerName));
+  return attributionModeForProvider(providerName, fileChangeFidelityForProviderType(providerName), shellWindow);
 }
 
 export type SendMessageHandler = (
@@ -435,7 +438,7 @@ export class MessageStreamingHandler {
 
     if (!session) {
       trackSendBlocked('session_not_found');
-      throw new Error(`Session ${sessionId} not found`);
+      throw new Error(sessionNotFoundMessage(sessionId, workspacePath, await AISessionsRepository.get(sessionId).catch(() => null)));
     }
 
 
@@ -444,6 +447,11 @@ export class MessageStreamingHandler {
       console.error(`[AIService] CRITICAL ERROR: Requested session ${sessionId} but got session ${session.id}!`);
       trackSendBlocked('session_mismatch', session.provider);
       throw new Error(`Session mismatch: requested ${sessionId} but got ${session.id}`);
+    }
+
+    // A workstream container only groups sessions; it has no agent of its own.
+    if (session.sessionType === 'workstream') {
+      throw new Error(`Cannot send a message to workstream ${sessionId}; start a session inside it instead`);
     }
 
     if (session.providerConfig && 'imported' in session.providerConfig && session.providerConfig.imported === true) {

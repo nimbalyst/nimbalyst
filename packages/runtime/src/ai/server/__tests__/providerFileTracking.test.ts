@@ -5,6 +5,7 @@ import {
   BUILTIN_FILE_CHANGE_FIDELITY,
   PROVIDER_EDIT_TOOL_NAMES,
   attributionModeForFileChangeFidelity,
+  attributionModeForProvider,
   fileChangeFidelityForProviderType,
   isProviderEditTool,
 } from '../providerFileTracking';
@@ -23,6 +24,15 @@ describe('providerFileTracking', () => {
     expect(attributionModeForFileChangeFidelity('structured')).toBe('disabled');
     expect(attributionModeForFileChangeFidelity('tool-args')).toBe('fuzzy');
     expect(attributionModeForFileChangeFidelity('none')).toBe('fuzzy');
+  });
+
+  it('moves Claude Code Bash onto hook windows only when the host has a shell tracker', () => {
+    expect(attributionModeForProvider('claude-code', 'tool-args', true)).toBe('shell-window');
+    expect(attributionModeForProvider('claude-code', 'tool-args', false)).toBe('fuzzy');
+    // The PTY-driven CLI reports no tool calls, so it has no hooks to bracket commands.
+    expect(attributionModeForProvider('claude-code-cli', 'none', true)).toBe('fuzzy');
+    expect(attributionModeForProvider('opencode', 'tool-args', true)).toBe('fuzzy');
+    expect(attributionModeForProvider('openai-codex', 'structured', true)).toBe('disabled');
   });
 
   it('keeps per-provider edit vocabularies from cross-talking', () => {

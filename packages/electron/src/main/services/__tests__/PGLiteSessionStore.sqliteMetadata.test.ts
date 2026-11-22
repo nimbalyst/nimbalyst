@@ -135,7 +135,7 @@ it('applies a phone move through desktop invariants and republishes both accepte
   const publish = vi.fn(async () => {});
   const authority = { get: store.get.bind(store), updateMetadata: store.updateMetadata.bind(store), publish };
   expect(await applyMobileSessionParent(authority, 'worker', 'second')).toEqual({ accepted: true });
-  expect(publish).toHaveBeenLastCalledWith('worker', { parentSessionId: 'second', createdBySessionId: 'second' });
+  expect(publish).toHaveBeenLastCalledWith('worker', { parentSessionId: 'second', createdBySessionId: null });
   expect(await applyMobileSessionParent(authority, 'second', 'worker')).toMatchObject({ accepted: false });
   expect(publish).toHaveBeenLastCalledWith('second', { parentSessionId: null, createdBySessionId: null });
   expect((await store.get('worker'))?.metadata).toMatchObject({ originalSpawnerSessionId: 'first', managerReassignedByUser: true });
@@ -190,11 +190,11 @@ it('routes phone snapshots through production authority and publishes canonical 
   }
   try {
     expect(await phoneMove('child', 'root')).toMatchObject({ parentSessionId: 'root', createdBySessionId: 'root' });
-    expect(await phoneMove('child', 'other')).toMatchObject({ parentSessionId: 'other', createdBySessionId: 'other' });
-    expect((await store.get('child'))?.createdBySessionId).toBe('other');
+    expect(await phoneMove('child', 'other')).toMatchObject({ parentSessionId: 'other', createdBySessionId: null });
+    expect((await store.get('child'))?.createdBySessionId).toBeNull();
     expect(await phoneMove('other', 'child')).toMatchObject({ parentSessionId: null, createdBySessionId: null });
     expect((await store.get('other'))?.parentSessionId).toBeNull();
-    expect(await phoneMove('child', 'foreign')).toMatchObject({ parentSessionId: 'other', createdBySessionId: 'other' });
+    expect(await phoneMove('child', 'foreign')).toMatchObject({ parentSessionId: 'other', createdBySessionId: null });
     expect(await phoneMove('child', null)).toMatchObject({ parentSessionId: null, createdBySessionId: null });
     expect((await store.get('child'))?.createdBySessionId).toBeNull();
     expect(await phoneMove('child', `deep-${MAX_SESSION_DEPTH}`)).toMatchObject({ parentSessionId: null, createdBySessionId: null });
@@ -283,6 +283,22 @@ it('carries the persisted context fill from list and search through both list pr
     expect(registry.has('spent')).toBe(true);
     expect(registry.get('spent')).toBeUndefined();
   }
+});
+
+it('carries the user-created workstream marker from stored metadata to the registry row', async () => {
+  const insert = (id: string, sessionType: string, metadata: object) => sqlite.query(
+    `INSERT INTO ai_sessions (id, provider, workspace_id, title, session_type, metadata) VALUES ($1, 'claude-code', '/p', $1, $2, $3)`,
+    [id, sessionType, JSON.stringify(metadata)],
+  );
+  await insert('made', 'workstream', { userWorkstream: true, isWorkstreamRoot: true });
+  // Pre-October auto wrappers carry no marker and stay mergeable.
+  await insert('legacy', 'workstream', { isWorkstreamRoot: true });
+  await insert('spoofed', 'workstream', { userWorkstream: 'yes' });
+  const store = createPGLiteSessionStore(createSQLiteStoreAdapter(sqlite));
+  const registry = new Map(projectSessionList(await store.list('/p'), new Map()).map(s => [s.id, sessionListMetadata(s, '/p')]));
+  expect(registry.get('made')?.userWorkstream).toBe(true);
+  expect(registry.get('legacy')?.userWorkstream).toBeUndefined();
+  expect(registry.get('spoofed')?.userWorkstream).toBeUndefined();
 });
 
 it('lists and searches sessions from projected metadata, never the whole blob', async () => {

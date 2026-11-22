@@ -165,3 +165,24 @@ describe('buildSdkOptions MCP config (NIM-2372)', () => {
     expect(Object.keys(options.mcpServers!)).toEqual(['nimbalyst']);
   });
 });
+
+describe('buildSdkOptions Claude in Chrome', () => {
+  afterEach(() => { setHostEnvironment(null); ClaudeCodeDeps.setClaudeInChromeEnabledLoader(null); });
+  beforeEach(() => { __resetEnterpriseManagedMcpConfigCache(); });
+
+  it('passes --chrome to the CLI only when the setting is on', async () => {
+    const off = await buildSdkOptions(makeDeps(), makeParams());
+    expect(off.options.extraArgs?.chrome).toBeUndefined();
+
+    ClaudeCodeDeps.setClaudeInChromeEnabledLoader(() => true);
+    const on = await buildSdkOptions(makeDeps(), makeParams());
+    expect(on.options.extraArgs).toHaveProperty('chrome', null);
+  });
+
+  it('never lets a headless explicit-only run drive the browser', async () => {
+    setHostEnvironment({ isPackaged: () => false, getAppPath: () => '/app', agentConfiguration: 'explicit-only' } as any);
+    ClaudeCodeDeps.setClaudeInChromeEnabledLoader(() => true);
+    const { options } = await buildSdkOptions(makeDeps(), makeParams());
+    expect(options.extraArgs?.chrome).toBeUndefined();
+  });
+});

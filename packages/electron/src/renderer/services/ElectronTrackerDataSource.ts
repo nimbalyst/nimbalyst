@@ -94,7 +94,7 @@ export class ElectronTrackerDataSource implements TrackerDataSource {
   async snapshot(): Promise<TrackerDataSnapshot> {
     this.assertActive();
     const [itemsValue, savedViewsValue, presenceValue, statusValue] = await Promise.all([
-      this.ipc.invoke('document-service:tracker-items-list'),
+      this.ipc.invoke('document-service:tracker-items-list', this.workspacePath),
       this.ipc.invoke('tracker-saved-views:list', this.workspacePath),
       this.ipc.invoke('tracker-sync:get-presence', { workspacePath: this.workspacePath }),
       this.ipc.invoke('tracker-sync:get-status', {
@@ -157,7 +157,7 @@ export class ElectronTrackerDataSource implements TrackerDataSource {
     this.assertActive();
     switch (command.type) {
       case 'list-items': {
-        const value = await this.ipc.invoke('document-service:tracker-items-list');
+        const value = await this.ipc.invoke('document-service:tracker-items-list', this.workspacePath);
         return {
           ok: true,
           items: Array.isArray(value) ? (value as TrackerItem[]) : [],
@@ -340,7 +340,7 @@ export class ElectronTrackerDataSource implements TrackerDataSource {
     }
     this.reloadInFlight = true;
     try {
-      const value = await this.ipc.invoke('document-service:tracker-items-list');
+      const value = await this.ipc.invoke('document-service:tracker-items-list', this.workspacePath);
       if (!this.disposed) {
         this.emit({
           type: 'items-replaced',

@@ -83,4 +83,38 @@ describe('useCollaborativeEditor offline replica binding', () => {
     awareness.destroy();
     yDoc.destroy();
   });
+  it('never seeds an empty room from a read-only host (commenter), and still binds', async () => {
+    const yDoc = new Y.Doc();
+    const awareness = new Awareness(yDoc);
+    const loadInitialContent = vi.fn(async () => 'seed content');
+    const seed = vi.fn();
+    const bind = vi.fn(() => ({ destroy: vi.fn() }));
+    const host = {
+      readOnly: true,
+      collaboration: {
+        yDoc,
+        awareness,
+        user: { id: 'commenter', name: 'Commenter', color: '#123456' },
+        getStatus: () => 'connected',
+        onStatusChange: () => () => {},
+        loadInitialContent,
+        flushWithAck: vi.fn(async () => true),
+      },
+    } as unknown as EditorHost;
+
+    const { unmount } = renderHook(() => useCollaborativeEditor(host, {
+      isEmpty: doc => doc.getMap('nodes').size === 0,
+      initializeFromContent: seed,
+      createBinding: bind,
+    }));
+
+    await waitFor(() => expect(bind).toHaveBeenCalledTimes(1));
+    expect(loadInitialContent).not.toHaveBeenCalled();
+    expect(seed).not.toHaveBeenCalled();
+    expect(yDoc.getMap('nodes').size).toBe(0);
+
+    unmount();
+    awareness.destroy();
+    yDoc.destroy();
+  });
 });

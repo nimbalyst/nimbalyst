@@ -75,10 +75,10 @@
     "jotai-family": "^1.1.0"
   },
   "peerDependencies": {
-    "@lexical/yjs": "^0.44.0",
+    "@lexical/yjs": "^0.53.0",
     "@revolist/react-datagrid": "4.21.4",
     "@revolist/revogrid": "4.21.4",
-    "lexical": "^0.44.0",
+    "lexical": "^0.53.0",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
     "y-protocols": "^1.0.6",
@@ -99,7 +99,7 @@
     "react-dom": "^19.2.7",
     "typescript": "^6.0.3",
     "vite": "^7.1.12",
-    "vitest": "4.1.11",
-    "yjs": "13.6.32"
+    "vitest": "4.1.12",
+    "yjs": "13.6.33"
   }
 }

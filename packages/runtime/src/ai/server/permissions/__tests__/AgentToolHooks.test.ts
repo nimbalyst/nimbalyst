@@ -1,6 +1,9 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { AgentToolHooks } from '../AgentToolHooks';
 import type { AgentToolHooksOptions } from '../AgentToolHooks';
+import { agentToolActivity } from '../../agentToolActivity';
+import { __resetClaudeShellTrackingForTests, claudeShellEndTurn, setClaudeShellTrackingSink } from '../../claudeShellTracking';
+import { parseExitPlanModeDeferral, type ExitPlanModeResponse } from '../../../exitPlanModeDeferral';
 
 // Mock fs module
 vi.mock('fs', () => ({
@@ -127,6 +130,51 @@ describe('AgentToolHooks', () => {
       expect(options.logAgentMessage).not.toHaveBeenCalled();
       expect(pending.size).toBe(0);
     });
+  });
+
+  it('reports a shell command as a possible writer only while it runs', async () => {
+    const hooks = new AgentToolHooks(createMockOptions({ sessionId: 'activity-session' }));
+    const signal = new AbortController().signal;
+    const input = { tool_name: 'Bash', tool_input: { command: 'node generate.js' } };
+    const file = '/test/workspace/generated.ts';
+    expect(agentToolActivity.writerEvidence('activity-session', file, Date.now())).toBe('idle');
+    await hooks.createPreToolUseHook()(input, 'activity-bash', { signal });
+    expect(agentToolActivity.writerEvidence('activity-session', file, Date.now())).toBe('possible');
+    await hooks.createPostToolUseHook()(input, 'activity-bash', { signal });
+    expect(agentToolActivity.writerEvidence('activity-session', file, Date.now() + 10_000)).toBe('idle');
+  });
+
+  // Hook windows bracket every Bash call so a file it writes is linked to the
+  // session even when the command never names the file.
+  it('opens a shell window before Bash runs and keeps a backgrounded one open past its acknowledgement', async () => {
+    const calls: string[] = [];
+    setClaudeShellTrackingSink({
+      isTracking: (id) => id === 'shell-session',
+      pre: async (_id, toolUseId) => { calls.push('pre:' + toolUseId); },
+      post: async (_id, toolUseId) => { calls.push('post:' + toolUseId); },
+      endTurn: async () => { calls.push('endTurn'); },
+      drain: async () => {},
+    });
+    try {
+      const hooks = new AgentToolHooks(createMockOptions({ sessionId: 'shell-session' }));
+      const signal = new AbortController().signal;
+      const foreground = { tool_name: 'Bash', tool_input: { command: "python3 - <<'EOF'\np='x.ts'\nEOF" } };
+      const background = { tool_name: 'Bash', tool_input: { command: 'pnpm test', run_in_background: true } };
+
+      expect(await hooks.createPreToolUseHook()(foreground, 'fg', { signal })).toEqual({});
+      expect(calls).toEqual(['pre:fg']);
+      await hooks.createPostToolUseHook()(foreground, 'fg', { signal });
+      await hooks.createPreToolUseHook()(background, 'bg', { signal });
+      await hooks.createPostToolUseHook()(background, 'bg', { signal });
+      expect(calls).toEqual(['pre:fg', 'post:fg', 'pre:bg']);
+      // Turn-end snapshots come from linked files, not parsed command text.
+      expect(hooks.getEditedFiles().size).toBe(0);
+
+      claudeShellEndTurn('shell-session');
+      expect(calls).toEqual(['pre:fg', 'post:fg', 'pre:bg', 'endTurn']);
+    } finally {
+      __resetClaudeShellTrackingForTests();
+    }
   });
 
   describe('Bash post-tool hook: editedFilesThisTurn tracking', () => {
@@ -330,6 +378,120 @@ describe('AgentToolHooks', () => {
         expect.objectContaining({ response: { decision: 'deny', scope: 'once' } })
       );
     });
+
+    // retry:true alone sends the call back through the classifier, which
+    // blocked it again, so the approved tool never ran.
+    it.each(['once', 'session'] as const)(
+      'lets the approved retry skip the classifier (scope=%s)',
+      async (scope) => {
+        const pending = new Map<string, any>();
+        const sessionApprovedPatterns = new Set<string>();
+        const options = createMockOptions({
+          getCurrentMode: () => 'auto',
+          getPendingToolPermissions: () => pending,
+          getSessionApprovedPatterns: () => sessionApprovedPatterns,
+        });
+        const hooks = new AgentToolHooks(options);
+        const agentCall = { tool_name: 'Agent', tool_input: { prompt: 'deploy', description: 'ship it' } };
+
+        const denied = hooks.createPermissionDeniedHook()(
+          { ...agentCall, reason: '[Production Deploy]' },
+          'tool-use-denied-5',
+          { signal: new AbortController().signal }
+        );
+        await Promise.resolve();
+        await Promise.resolve();
+        Array.from(pending.values())[0].resolve({ decision: 'allow', scope });
+        await denied;
+
+        const preToolUse = hooks.createPreToolUseHook();
+        const signal = new AbortController().signal;
+        await expect(preToolUse(agentCall, 'tool-use-retry', { signal })).resolves.toMatchObject({
+          hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow' },
+        });
+        // A one-time approval covers only the retry.
+        const next = await preToolUse(agentCall, 'tool-use-next', { signal });
+        if (scope === 'once') {
+          expect(next).toEqual({});
+        } else {
+          expect(next).toMatchObject({ hookSpecificOutput: { permissionDecision: 'allow' } });
+        }
+      }
+    );
+
+    it('matches a one-time approval to the exact retried call, including compound Bash', async () => {
+      const pending = new Map<string, any>();
+      const hooks = new AgentToolHooks(createMockOptions({
+        getCurrentMode: () => 'auto',
+        getPendingToolPermissions: () => pending,
+        getSessionApprovedPatterns: () => new Set<string>(),
+      }));
+      const bashCall = { tool_name: 'Bash', tool_input: { command: 'git add -A && git push' } };
+      const denied = hooks.createPermissionDeniedHook()(
+        { ...bashCall, reason: 'push' },
+        'tool-use-denied-7',
+        { signal: new AbortController().signal }
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+      Array.from(pending.values())[0].resolve({ decision: 'allow', scope: 'once' });
+      await denied;
+
+      const preToolUse = hooks.createPreToolUseHook();
+      const signal = new AbortController().signal;
+      const other = { tool_name: 'Bash', tool_input: { command: 'git add -A && git push --force' } };
+      await expect(preToolUse(other, 'tool-use-other', { signal })).resolves.toEqual({});
+      await expect(preToolUse(bashCall, 'tool-use-retry', { signal })).resolves.toMatchObject({
+        hookSpecificOutput: { permissionDecision: 'allow' },
+      });
+    });
+
+    it('honours a saved project-local allow rule only in auto mode', async () => {
+      let mode: 'agent' | 'auto' = 'auto';
+      const localAllowRuleChecker = vi.fn(async (_workspacePath: string, pattern: string) => pattern === 'Agent');
+      const preToolUse = new AgentToolHooks(createMockOptions({
+        getCurrentMode: () => mode,
+        getSessionApprovedPatterns: () => new Set<string>(),
+        localAllowRuleChecker,
+      })).createPreToolUseHook();
+      const signal = new AbortController().signal;
+      const agentCall = { tool_name: 'Agent', tool_input: { prompt: 'deploy' } };
+
+      await expect(preToolUse(agentCall, 'tool-use-1', { signal })).resolves.toMatchObject({
+        hookSpecificOutput: { permissionDecision: 'allow' },
+      });
+      expect(localAllowRuleChecker).toHaveBeenCalledWith('/test/workspace', 'Agent');
+      await expect(preToolUse({ tool_name: 'Skill', tool_input: {} }, 'tool-use-2', { signal })).resolves.toEqual({});
+
+      mode = 'agent';
+      await expect(preToolUse(agentCall, 'tool-use-3', { signal })).resolves.toEqual({});
+    });
+
+    it('marks the prompt cancelled when the turn aborts before the user answers', async () => {
+      const pending = new Map<string, any>();
+      const options = createMockOptions({
+        getCurrentMode: () => 'auto',
+        getPendingToolPermissions: () => pending,
+        getSessionApprovedPatterns: () => new Set<string>(),
+      });
+      const controller = new AbortController();
+      const resultPromise = new AgentToolHooks(options).createPermissionDeniedHook()(
+        { tool_name: 'mcp__tracker__create', tool_input: {}, reason: '[Production Deploy]' },
+        'tool-use-denied-6',
+        { signal: controller.signal }
+      );
+      await Promise.resolve();
+      await Promise.resolve();
+      const requestId = Array.from(pending.keys())[0];
+
+      controller.abort();
+      await expect(resultPromise).resolves.toEqual({});
+
+      const persisted = (options.logAgentMessage as any).mock.calls.map((call: any[]) => JSON.parse(call[3]));
+      const result = persisted.find((p: any) => p.type === 'nimbalyst_tool_result');
+      expect(result).toMatchObject({ tool_use_id: requestId });
+      expect(JSON.parse(result.result)).toMatchObject({ decision: 'deny', cancelled: true });
+    });
   });
 
   describe('ExitPlanMode pre-tool hook', () => {
@@ -400,6 +562,31 @@ describe('AgentToolHooks', () => {
           permissionDecision: 'allow',
         }
       });
+    });
+
+    it('records a plan handed to a new session so the plan card can show it', async () => {
+      const pending = new Map<string, { resolve: (value: ExitPlanModeResponse) => void; reject: (error: Error) => void }>();
+      const options = createMockOptions({
+        getCurrentMode: () => 'planning',
+        getPendingExitPlanModeConfirmations: () => pending as any,
+      });
+      const preToolHook = new AgentToolHooks(options).createPreToolUseHook();
+
+      const resultPromise = preToolHook(
+        { tool_name: 'ExitPlanMode', tool_input: { plan: 'p', planFilePath: 'plans/feature-plan.md' } },
+        'tool-use-exit-3',
+        { signal: new AbortController().signal }
+      );
+      await Promise.resolve();
+      const deferredTo = { kind: 'session' as const };
+      pending.get('tool-use-exit-3')!.resolve({ approved: false, deferredTo });
+
+      const result = await resultPromise;
+      expect(result.hookSpecificOutput.permissionDecision).toBe('deny');
+      expect(parseExitPlanModeDeferral(result.hookSpecificOutput.permissionDecisionReason)).toEqual(deferredTo);
+      // Older transcript bundles (shipped mobile apps) hide the plan card unless
+      // the result reads as a denial to their keyword match.
+      expect(result.hookSpecificOutput.permissionDecisionReason.toLowerCase()).toContain('cancelled');
     });
   });
 });

@@ -130,6 +130,14 @@ describe('buildSdkOptions env-key hardening', () => {
     }
   });
 
+  it('registers the PreToolUse hook with a timeout long enough for a human to answer a dialog', async () => {
+    const { options } = await buildSdkOptions(makeDeps(), makeParams());
+
+    // The plan/question dialogs run inside this hook; the CLI default of 600s
+    // kills the hook while the user is away.
+    expect(options.hooks!.PreToolUse![0].timeout).toBeGreaterThanOrEqual(86400);
+  });
+
   it('removes ANTHROPIC_API_KEY when no configured key is provided', async () => {
     process.env.ANTHROPIC_API_KEY = 'sk-ant-leaked-from-shell';
     process.env.OPENAI_API_KEY = 'sk-leaked-from-shell';
@@ -303,5 +311,18 @@ describe('buildSdkOptions env-key hardening', () => {
     );
 
     expect(options.env!.ENABLE_TOOL_SEARCH).toBe('false');
+  });
+
+  it('pre-allows Nimbalyst session-read tools so forked skills that cannot prompt still get them', async () => {
+    // A forked command (e.g. /review) cannot show a permission prompt, so the
+    // CLI denies any "ask" tool without calling canUseTool. Our auto-allow list
+    // must therefore also be CLI allow rules.
+    const { options } = await buildSdkOptions(makeDeps(), makeParams());
+
+    expect(options.allowedTools).toEqual(expect.arrayContaining([
+      'TaskCreate',
+      'mcp__nimbalyst-host__get_session_summary',
+      'mcp__nimbalyst-host__get_session_result',
+    ]));
   });
 });

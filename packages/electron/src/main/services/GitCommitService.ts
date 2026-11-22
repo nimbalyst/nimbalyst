@@ -315,7 +315,7 @@ function applyPatchToIndex(
     const child = execFile(
       'git',
       ['--literal-pathspecs', 'apply', '--cached', '--whitespace=nowarn', '-'],
-      { cwd, env },
+      { windowsHide: true, cwd, env },
       (error, _stdout, stderr) => {
         if (error) {
           const detail = (typeof stderr === 'string' ? stderr : '').trim();

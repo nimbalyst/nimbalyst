@@ -78,3 +78,29 @@ export async function readClipboard(): Promise<string> {
   // Fallback for non-Electron contexts
   return navigator.clipboard.readText();
 }
+
+/**
+ * True when a paste carries no files and no text. Under WSL this is how an
+ * image copied in Windows arrives: WSLg passes only text to Linux apps, so the
+ * paste holds an empty text entry and no image.
+ */
+export function isEmptyPaste(data: Pick<DataTransfer, 'files' | 'getData'>): boolean {
+  return data.files.length === 0 && !data.getData('text/plain') && !data.getData('text/html');
+}
+
+/**
+ * The image on the Windows clipboard, read by the host when it runs under WSL,
+ * as the File a browser paste would give. Null off WSL, outside Electron, or
+ * when Windows holds no image.
+ */
+export async function readWindowsClipboardImage(): Promise<File | null> {
+  const electronAPI = (window as any).electronAPI;
+  if (!electronAPI?.readWindowsClipboardImage) return null;
+  try {
+    const image: { mimeType: string; data: Uint8Array<ArrayBuffer> } | null = await electronAPI.readWindowsClipboardImage();
+    return image ? new File([image.data], 'image.png', { type: image.mimeType }) : null;
+  } catch (error) {
+    console.warn('[clipboard] Could not read the Windows clipboard image', error);
+    return null;
+  }
+}

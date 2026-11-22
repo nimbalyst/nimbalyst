@@ -25,6 +25,29 @@
 import * as Y from 'yjs';
 import type { DocumentDecisionCommand, DocumentDecisionDeliveryState, DocumentDecisionAuthority, DocumentDecisionResult } from '@nimbalyst/collab-protocol';
 import type { DocumentSyncConfig, DocumentSyncStatus, AwarenessState } from './documentSyncTypes';
+/**
+ * The room's refusal of a commenter update that changed more than the comment
+ * threads. Mirrors collabv3 `documentBody/commentOnlyUpdate.ts`.
+ */
+export declare const COMMENT_UPDATE_REFUSED_CODE = "document_comment_update_refused";
+export declare const COMMENT_UPDATE_REFUSED_CLOSE = 4009;
+/**
+ * Sent on an open socket when its user is demoted from editor to commenter.
+ * Mirrors collabv3 `COMMENT_ONLY_VERDICT_CODE`.
+ */
+export declare const COMMENT_ONLY_VERDICT_CODE = "document_comment_only";
+/**
+ * Sent on an open socket when its user gains body write (a commenter granted
+ * project-editor). May be resent after hibernation to a socket that already
+ * writes.
+ */
+export declare const WRITABLE_VERDICT_CODE = "document_writable";
+/** The room's per-connection verdict from `docSyncResponse`. */
+export interface DocumentAccessVerdict {
+    canWrite: boolean;
+    /** Null from a server that predates the comment tier. */
+    canComment: boolean | null;
+}
 export declare class DocumentSyncProvider {
     private ydoc;
     private readonly ownsYDoc;
@@ -38,6 +61,28 @@ export declare class DocumentSyncProvider {
     private cursorLagRecordedForConnection;
     private synced;
     private lastWriterUserId;
+    /**
+     * The room's write verdict from the latest sync response; null until one
+     * arrives or from a server that predates it. False for read-only viewers and
+     * commenters, whose `docCompact` the room refuses (a commenter's with
+     * `document_comment_forbidden`; the socket stays open, but the compaction
+     * is wasted).
+     */
+    private serverCanWrite;
+    /** The room's comment verdict from the latest sync response; null when absent. */
+    private serverCanComment;
+    private accessVerdictListeners;
+    /**
+     * Set when the room refused a commenter's update for changing more than the
+     * comment threads (`document_comment_update_refused`, close 4009). Terminal
+     * for this provider: Yjs updates from one clientID are clock-sequential, so
+     * every later update from this Y.Doc depends on the refused structs and the
+     * room can never integrate it. The provider stops and never reconnects or
+     * resends; the host discards the local copy and reopens with a fresh Y.Doc.
+     */
+    private commentUpdateRefused;
+    private commentRefusalListeners;
+    private commentRefusalSettling;
     private lastUpdatedAt;
     private updateObserverDispose;
     private awarenessStates;
@@ -239,6 +284,25 @@ export declare class DocumentSyncProvider {
      */
     onStatusChange(listener: (status: DocumentSyncStatus) => void): () => void;
     /**
+     * The room's latest write/comment verdict for this connection, or null until
+     * a sync response carries one (or from a server that predates it).
+     */
+    getServerAccessVerdict(): DocumentAccessVerdict | null;
+    /**
+     * Called with every verdict a sync response carries, and immediately with
+     * the current one if already known. The room is the authority: a host's own
+     * role projection can be stale.
+     */
+    onAccessVerdict(listener: (verdict: DocumentAccessVerdict) => void): () => void;
+    /** True once the room refused a commenter update; see `commentUpdateRefused`. */
+    isCommentUpdateRefused(): boolean;
+    /**
+     * Called once when the room refuses a commenter update (immediately if it
+     * already has). The provider has stopped; the host should discard the local
+     * copy and reopen the document with a fresh provider and Y.Doc.
+     */
+    onCommentUpdateRefused(listener: () => void): () => void;
+    /**
      * Force the provider to treat the current Y.Doc as local state that should
      * be persisted upstream.
      *
@@ -326,6 +390,8 @@ export declare class DocumentSyncProvider {
     private schedulePendingPersist;
     private flushPendingPersistImmediately;
     private persistLegacyPendingUpdate;
+    private setServerAccessVerdict;
+    private markCommentUpdateRefused;
     private handleDisconnect;
     private hasPendingLocalUpdates;
     private hasUnsettledPendingWrites;

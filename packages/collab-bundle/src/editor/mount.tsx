@@ -27,7 +27,6 @@ import {
 } from './BrowserEditorSurface';
 import './browserChrome.css';
 import { applyBrowserEditorChrome } from './browserChrome';
-import { deriveCollabEditorCommentsState } from './commenting';
 import { resolveCollabEditorUser } from './presence';
 import { createCollabDocumentSession } from './session';
 import { acquireCollabAssetImageResolver } from './collabAssetImages';
@@ -97,6 +96,7 @@ export function mountCollabEditor(options: CollabEditorMountOptions): CollabEdit
   let readyReported = false;
 
   const hostCanComment = (): boolean => options.comments?.canComment?.() ?? true;
+  const hostCanEditBody = (): boolean => options.comments?.canEditBody?.() ?? true;
 
   /**
    * Serves the document's `collab-asset://` images. Only a team room has an
@@ -135,6 +135,7 @@ export function mountCollabEditor(options: CollabEditorMountOptions): CollabEdit
     readOnly: options.readOnly,
     lifecycleElement: options.element,
     hostCanComment,
+    hostCanEditBody,
     onStateChange: options.onStateChange,
     onPresenceChange: (presence) => options.onPresenceChange?.(presence),
     onWriteRejected: options.onWriteRejected,
@@ -160,6 +161,7 @@ export function mountCollabEditor(options: CollabEditorMountOptions): CollabEdit
 
   let renderedReadOnly = session.getState().readOnly;
   let renderedCanComment = session.canComment();
+  let renderedCanEditBody = session.canEditBody();
   /**
    * Re-render when what the editor is *allowed* to do has drifted from what is
    * on screen.
@@ -177,7 +179,8 @@ export function mountCollabEditor(options: CollabEditorMountOptions): CollabEdit
     // Composer configuration is initial state; update the already mounted editor too.
     lexicalEditor?.setEditable(!session.getState().readOnly);
     if (session.getState().readOnly === renderedReadOnly
-      && session.canComment() === renderedCanComment) return;
+      && session.canComment() === renderedCanComment
+      && session.canEditBody() === renderedCanEditBody) return;
     renderEditor();
   }
 
@@ -219,6 +222,7 @@ export function mountCollabEditor(options: CollabEditorMountOptions): CollabEdit
     },
     refreshCommentAccess() {
       if (destroyed) return;
+      session.refreshHostAccess();
       syncEditorSurface();
     },
     markClean: () => session.markClean(),
@@ -266,6 +270,7 @@ export function mountCollabEditor(options: CollabEditorMountOptions): CollabEdit
     const state = session.getState();
     renderedReadOnly = state.readOnly;
     renderedCanComment = session.canComment();
+    renderedCanEditBody = session.canEditBody();
     const config: EditorConfig = {
       isRichText: true,
       editable: !state.readOnly,
@@ -287,12 +292,9 @@ export function mountCollabEditor(options: CollabEditorMountOptions): CollabEdit
         // desktop uses the rotating per-binding editorDoc, which this bridge keeps converged.
         getYDoc: () => sharedDocument,
         isHydrated: () => session.hasConnectedOnce(),
-        getCapabilities: () => deriveCollabEditorCommentsState({
-          connection: session.getState().connection,
-          serverAccess: session.getState().serverAccess,
-          hasConnectedOnce: session.hasConnectedOnce(),
-          hostCanComment: hostCanComment(),
-        }).capabilities,
+        // Includes `editBody`: false for a commenter, from the room's verdict
+        // or the host's answer, which makes the runtime editor comment-only.
+        getCapabilities: () => session.commentCapabilities(),
       } : undefined,
       // With no room (the local wiki browser view, the public wiki) there is no
       // one to collect answers from or vote with, so a decision runs as on a

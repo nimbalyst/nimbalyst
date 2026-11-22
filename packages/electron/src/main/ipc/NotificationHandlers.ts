@@ -4,6 +4,7 @@
 
 import { BrowserWindow } from 'electron';
 import { notificationService } from '../services/NotificationService';
+import type { SessionNotificationNavigationTarget } from '../../shared/sessionNotificationNavigation';
 import { logger } from '../utils/logger';
 import {
   isOSNotificationsEnabled,
@@ -55,6 +56,16 @@ export function registerNotificationHandlers(): void {
       logger.main.error('[NotificationHandlers] Error clearing all notifications:', error);
       return { success: false, error: String(error) };
     }
+  });
+
+  // A renderer that cannot show a session's project (project rail off) hands
+  // the session to the window for that project.
+  safeHandle('notifications:navigate-to-session', async (_event, target: SessionNotificationNavigationTarget) => {
+    if (!target?.sessionId || !target?.workspacePath) {
+      throw new Error('notifications:navigate-to-session requires sessionId and workspacePath');
+    }
+    notificationService.navigateToSession(target);
+    return { success: true };
   });
 
   safeHandle('notifications:consume-pending-navigation', async (_event, workspacePath: string) => {

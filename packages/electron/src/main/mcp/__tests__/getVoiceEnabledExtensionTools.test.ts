@@ -17,6 +17,7 @@ vi.mock('../../services/WorktreeStore', () => ({
 import {
   registerExtensionTools,
   getVoiceEnabledExtensionTools,
+  getAvailableExtensionTools,
   type ExtensionToolDefinition,
 } from '../mcpWorkspaceResolver';
 
@@ -47,5 +48,20 @@ describe('getVoiceEnabledExtensionTools', () => {
   it('returns an empty array for an unknown workspace or undefined path', async () => {
     expect(await getVoiceEnabledExtensionTools('/tmp/never-registered')).toEqual([]);
     expect(await getVoiceEnabledExtensionTools(undefined)).toEqual([]);
+  });
+});
+
+// #1885: a required filePath on global tools made agents pass a folder as one.
+describe('getAvailableExtensionTools filePath injection', () => {
+  it('requires filePath only on editor-scoped tools', async () => {
+    const ws = '/tmp/filepath-injection-workspace';
+    const browser = { ...tool('browser_open_session', undefined), inputSchema: { type: 'object' as const, properties: { url: { type: 'string' } }, required: ['url'] } };
+    const sheet = { ...tool('csv.read_range', undefined), scope: 'editor' as const };
+    registerExtensionTools(ws, [browser, sheet], new Map());
+
+    const [global, editor] = await getAvailableExtensionTools(ws, undefined);
+    expect(global.inputSchema.required).toEqual(['url']);
+    expect(global.inputSchema.properties.filePath).toBeDefined();
+    expect(editor.inputSchema.required).toEqual(['filePath']);
   });
 });

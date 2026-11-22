@@ -334,9 +334,9 @@ export function DatabasePanel(): React.ReactElement {
         </h3>
         <p className="provider-panel-description text-sm leading-relaxed text-[var(--nim-text-muted)]">
           Local storage engine for sessions, trackers, and document history.
-          New installs start on SQLite. Installs that already have a PGLite database
-          stay on it: automatic migration is turned off while the migration is being
-          reworked, so nothing moves unless you start it from this panel.
+          New installs start on SQLite, and existing PGLite databases up to 3 GB move to
+          SQLite automatically at startup. Larger databases stay on PGLite until you
+          migrate them from this panel; your PGLite database is kept as a recovery copy.
         </p>
       </div>
 

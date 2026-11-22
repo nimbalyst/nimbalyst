@@ -13,6 +13,7 @@
  */
 
 import type { ComponentType } from 'react';
+import type { PanelGutterBadgeTone } from './backendPanels.js';
 
 // ============================================================================
 // Panel Contribution Types (for manifest.json)
@@ -447,14 +448,14 @@ export interface PanelHost {
 
   /**
    * Show a badge on this panel's gutter button. `null` clears it, `0` shows a
-   * dot, a positive number shows the count. `tone: 'warning'` renders it in
-   * the warning color instead of the default.
+   * dot, a positive number shows the count. `tone` picks the color: `warning`,
+   * `success` or `error` instead of the default attention color.
    *
    * The host keeps the last value after the panel unmounts (a fullscreen panel
    * unmounts when the user leaves it), and clears it when the extension is
    * disabled or unloaded. A panel can only update it while it is mounted.
    */
-  setGutterBadge(value: number | null, options?: { tone?: 'default' | 'warning' }): void;
+  setGutterBadge(value: number | null, options?: { tone?: PanelGutterBadgeTone }): void;
 
   // ============ PANES ============
 

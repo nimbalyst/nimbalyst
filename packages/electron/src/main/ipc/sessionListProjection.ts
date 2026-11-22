@@ -56,6 +56,7 @@ export function projectSessionList(
       branchedFromSessionId: entry.branchedFromSessionId,
       branchPointMessageId: entry.branchPointMessageId,
       branchedAt: entry.branchedAt,
+      ...(entry.userWorkstream === true && { userWorkstream: true }),
       // Kanban board phase and tags
       phase: (entry as any).phase || undefined,
       tags: (entry as any).tags || undefined,

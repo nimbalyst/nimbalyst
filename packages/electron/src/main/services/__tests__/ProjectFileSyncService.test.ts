@@ -23,8 +23,10 @@ const dbBaselineStore = vi.hoisted(() => new Map<string, {
 const hashedPaths = vi.hoisted(() => [] as string[]);
 vi.mock('../ProjectManifestHasher', async (importOriginal) => {
   const real = await importOriginal<typeof import('../ProjectManifestHasher')>();
+  const { scanProjectSyncCandidatesInline } = await import('../sync/projectSyncScan');
   return {
     ...real,
+    scanProjectSyncCandidates: scanProjectSyncCandidatesInline,
     hashProjectFiles: vi.fn(async (files: string[]) => {
       hashedPaths.push(...files);
       return real.__hashInlineForTests(files);
@@ -492,6 +494,27 @@ describe('ProjectFileSyncService.buildManifest', () => {
     const manifest = await (service as any).buildManifest(tmpDir, 'proj-enc', { seedBaseline: true });
     const syncId = syncIdFromPath(rel);
     expect(manifest.some((f: any) => f.syncId === syncId)).toBe(true);
+  });
+
+  it('leaves out git worktrees wherever they sit, but keeps submodules and a workspace that is itself a worktree', async () => {
+    const fsp = await import('fs/promises');
+    const put = async (rel: string, content: string) => {
+      await fsp.mkdir(path.dirname(path.join(tmpDir, rel)), { recursive: true });
+      await writeFile(path.join(tmpDir, rel), content, 'utf-8');
+    };
+    await put('.git', 'gitdir: /elsewhere/repo/.git/worktrees/this-one\n');
+    await put('doc.md', '# root\n');
+    await put('.claude/worktrees/agent-1/.git', 'gitdir: /elsewhere/repo/.git/worktrees/agent-1\n');
+    await put('.claude/worktrees/agent-1/doc.md', '# copy\n');
+    await put('scratch/by-hand/.git', 'gitdir: ../../.git/worktrees/by-hand\n');
+    await put('scratch/by-hand/notes.md', '# copy\n');
+    await put('vendor/lib/.git', 'gitdir: ../../.git/modules/lib\n');
+    await put('vendor/lib/README.md', '# submodule\n');
+
+    const manifest = await (service as any).buildManifest(tmpDir, 'proj-enc', { seedBaseline: true });
+    expect(manifest.map((f: any) => f.syncId).sort()).toEqual(
+      ['doc.md', path.join('vendor', 'lib', 'README.md')].map(syncIdFromPath).sort(),
+    );
   });
 
   it('leaves out a file whose encrypted form exceeds the server row cap, warning once (NIM-7337)', async () => {

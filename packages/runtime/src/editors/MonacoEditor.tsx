@@ -19,6 +19,7 @@ import type * as Y from 'yjs';
 import { MonacoCodeEditor } from './MonacoCodeEditor';
 import { createMonacoCollabBinding } from './monacoCollabBinding';
 import { waitForMonacoModel } from './monacoModelReady';
+import { createMonacoDictationTarget } from './monacoDictationTarget';
 import { useCollaborativeEditor } from '../extensions/useCollaborativeEditor';
 import type { EditorHost } from '../extensions/editorHost';
 // Deep path, not the `../editor` barrel: that barrel is the Lexical editor's
@@ -296,10 +297,19 @@ export function MonacoEditor({
     onGetContentProp?.(getContentFn);
   }, [onGetContentProp]);
 
+  // Accept dictated text at the cursor (see monacoDictationTarget.ts).
+  const [dictationEditor, setDictationEditor] = useState<MonacoEditorType.IStandaloneCodeEditor | null>(null);
+  useEffect(() => {
+    if (!dictationEditor || !host.registerDictationTarget || host.readOnly) return;
+    host.registerDictationTarget(createMonacoDictationTarget(dictationEditor));
+    return () => host.registerDictationTarget?.(null);
+  }, [dictationEditor, host]);
+
   // Handle editor ready (Monaco wrapper with diff controls)
   const handleEditorReady = useCallback(
     (editorWrapper: any) => {
       editorWrapperRef.current = editorWrapper;
+      setDictationEditor(editorWrapper?.editor ?? null);
       // Unblock any pending collab binding waiting for the model to exist.
       editorReadyRef.current?.resolve(editorWrapper);
       onEditorReady?.(editorWrapper);

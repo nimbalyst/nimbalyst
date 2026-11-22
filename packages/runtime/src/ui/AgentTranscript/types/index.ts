@@ -24,9 +24,24 @@ export interface TranscriptSettings {
  * Prompt marker for navigation sidebar
  */
 export interface PromptMarker {
+  /** Unique within the session's marker list; also the React key. */
   id: number;
   sessionId: string;
+  /**
+   * `prompt` is a message the user typed. `agentPrompt` was sent by another
+   * session (send_prompt, child-session reports). `answer` is the user's
+   * response to a question tool (AskUserQuestion, PromptForUserInput).
+   * Absent means `prompt`.
+   */
+  kind?: 'prompt' | 'agentPrompt' | 'answer';
+  /** 1-based count among the user's own prompts; only set for `prompt`. */
+  promptNumber?: number;
+  /** For `prompt`/`agentPrompt` the message text; for `answer` the question. */
   promptText: string;
+  /** For `answer`: a one-line summary of what the user chose. */
+  answerText?: string;
+  /** For `answer`: the question tool call's id, to reveal its card. */
+  toolCallId?: string;
   outputIndex: number;
   outputLine?: number;
   timestamp: string;

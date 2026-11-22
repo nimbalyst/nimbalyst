@@ -79,9 +79,19 @@ export const INGESTED_ALWAYS = [
   'migration_completed',
   'migration_failed',
   'migration_refused',
+  // The consent dialog for databases above the automatic SQLite ceiling: at
+  // most one shown and one answered per install. Added here 2026-11-17; the
+  // PostHog transformation must gain the same names before any of it arrives.
+  'migration_consent_prompt_shown',
+  'migration_consent_prompt_answered',
   'database_recovery_started',
   'database_recovery_succeeded',
   'database_recovery_failed',
+  // Dictation adoption: one start and at most one insert per dictation. Added
+  // here 2026-11-09; the PostHog transformation must gain the same names
+  // before any of it arrives.
+  'dictation_started',
+  'dictation_inserted',
 ] as const;
 
 /**

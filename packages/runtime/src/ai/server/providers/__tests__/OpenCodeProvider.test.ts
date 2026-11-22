@@ -572,6 +572,37 @@ describe('OpenCodeProvider', () => {
     expect(patternSaver).toHaveBeenCalledWith('/project', 'OpenCode(external_directory:/tmp/*)');
   });
 
+  it('writes a result row for a waiting prompt that another "Always" answer settled', async () => {
+    OpenCodeProvider.setTrustChecker(() => ({ trusted: true, mode: 'ask' }));
+    OpenCodeProvider.setPermissionPatternSaver(vi.fn(async () => {}));
+    OpenCodeProvider.setPermissionPatternChecker(async () => false);
+    const protocol = createMockProtocol();
+    const provider = new OpenCodeProvider({ protocol });
+    const logged = vi.spyOn(provider as any, 'logAgentMessageBestEffort').mockResolvedValue(undefined);
+    const pending = vi.fn();
+    provider.on('toolPermission:pending', pending);
+    const ask = (id: string) => protocol.getPermissionHost().resolvePermission({
+      id, sessionId: 'oc-session-1', permission: 'external_directory',
+      patterns: ['/tmp/*'], always: ['/tmp/*'], metadata: {},
+    }, {
+      sessionId: 'nim-session-1', workspacePath: '/workspace', permissionsPath: '/project',
+      signal: new AbortController().signal,
+    });
+    const first = ask('permission-1');
+    const second = ask('permission-2');
+    await vi.waitFor(() => expect(pending).toHaveBeenCalledTimes(2));
+
+    provider.resolveToolPermission('permission-1', { decision: 'allow', scope: 'always' }, 'nim-session-1');
+    await first;
+    await expect(second).resolves.toEqual({ decision: 'allow', scope: 'session' });
+
+    // Without this row the second prompt card would look unanswered after a reload.
+    const releasedRows = logged.mock.calls.filter(([, , content]) => String(content).includes('permission-2'));
+    expect(releasedRows).toHaveLength(1);
+    expect(releasedRows[0][0]).toBe('nim-session-1');
+    expect(JSON.parse(JSON.parse(releasedRows[0][2] as string).result)).toMatchObject({ decision: 'allow', scope: 'session' });
+  });
+
   it('streams text chunks from protocol text events', async () => {
     const protocol = createMockProtocol([
       { type: 'text', content: 'hello from opencode' },

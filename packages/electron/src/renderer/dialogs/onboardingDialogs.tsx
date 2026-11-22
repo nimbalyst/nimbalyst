@@ -10,6 +10,7 @@ import { registerDialog } from '../contexts/DialogContext';
 import type { DialogConfig } from '../contexts/DialogContext.types';
 import { WindowsClaudeCodeWarning } from '../components/WindowsClaudeCodeWarning/WindowsClaudeCodeWarning';
 import { RosettaWarning } from '../components/RosettaWarning/RosettaWarning';
+import { MigrationConsentDialog } from '../components/MigrationConsent/MigrationConsentDialog';
 import {
   UnifiedOnboarding,
   type OnboardingData,
@@ -30,6 +31,10 @@ export interface RosettaWarningData {
   onClose: () => void;
   onDismiss: () => void;
   onDownload: () => void;
+}
+
+export interface MigrationConsentData {
+  onAnswer: (accepted: boolean) => void;
 }
 
 export interface UnifiedOnboardingData {
@@ -100,6 +105,18 @@ function UnifiedOnboardingWrapper({
       forcedMode={data.forcedMode}
     />
   );
+}
+
+function MigrationConsentWrapper({
+  isOpen,
+  onClose,
+  data,
+}: {
+  isOpen: boolean;
+  onClose: () => void;
+  data: MigrationConsentData;
+}) {
+  return <MigrationConsentDialog isOpen={isOpen} onClose={onClose} onAnswer={data.onAnswer} />;
 }
 
 function RosettaWarningWrapper({
@@ -182,6 +199,14 @@ export function registerOnboardingDialogs() {
     component:
       RosettaWarningWrapper as DialogConfig<RosettaWarningData>['component'],
     priority: 190,
+  });
+
+  registerDialog<MigrationConsentData>({
+    id: DIALOG_IDS.MIGRATION_CONSENT,
+    group: 'onboarding',
+    component:
+      MigrationConsentWrapper as DialogConfig<MigrationConsentData>['component'],
+    priority: 180,
   });
 
   registerDialog<ExtensionProjectIntroData>({

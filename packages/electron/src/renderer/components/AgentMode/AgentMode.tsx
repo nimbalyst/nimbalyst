@@ -19,6 +19,8 @@ import { SessionHistory } from '../AgenticCoding/SessionHistory';
 import { SessionKanbanBoard } from '../TrackerMode/SessionKanbanBoard';
 import { useSuperLoopInit } from '../../hooks/useSuperLoop';
 import { AgentWorkstreamPanel, type AgentWorkstreamPanelRef } from './AgentWorkstreamPanel';
+import { WorkstreamEmptyState } from '../AgenticCoding/WorkstreamEmptyState';
+import { sessionRegistryAtom, selectedActiveSessionIdAtom, workstreamSessionsAtom } from '../../store/atoms/sessions';
 import {
   selectedWorkstreamAtom,
   setSelectedWorkstreamAtom,
@@ -213,8 +215,11 @@ export const AgentMode = forwardRef<AgentModeRef, AgentModeProps>(function Agent
   );
   const activeChildId = useAtomValue(activeChildAtom);
 
-  // The actual active session is either the active child OR the workstream parent
-  const actualActiveSessionId = activeChildId || selectedWorkstream?.id || null;
+  // The active child, else the selected row; never a workstream container, which
+  // has no transcript (voice and other global consumers read this).
+  const actualActiveSessionId = useAtomValue(
+    useMemo(() => (selectedWorkstream ? selectedActiveSessionIdAtom(selectedWorkstream.id) : atom<string | null>(null)), [selectedWorkstream?.id])
+  );
 
   // Sync the active session to the global atom so nav gutter components
   // (VoiceModeButton) can read it without workstream context. The global
@@ -454,9 +459,9 @@ export const AgentMode = forwardRef<AgentModeRef, AgentModeProps>(function Agent
 
   // React to `blitz:analysis-created` events broadcast by main when all blitz
   // children complete. The IPC event is handled centrally in
-  // store/listeners/blitzListeners.ts which writes blitzAnalysisCreatedAtom;
-  // we register the analysis session and trigger queue processing only for
-  // events matching our workspacePath, skipping the initial-mount value.
+  // store/listeners/blitzListeners.ts which writes blitzAnalysisCreatedAtom
+  // and starts the analysis; we register the analysis session only for events
+  // matching our workspacePath, skipping the initial-mount value.
   const blitzAnalysisCreated = useAtomValue(blitzAnalysisCreatedAtom);
   const initialBlitzAnalysisCreatedRef = useRef(blitzAnalysisCreated);
   useEffect(() => {
@@ -483,12 +488,7 @@ export const AgentMode = forwardRef<AgentModeRef, AgentModeProps>(function Agent
       uncommittedCount: 0,
     });
 
-    // Trigger queue processing to start the analysis
-    window.electronAPI.invoke('ai:triggerQueueProcessing', data.analysisSessionId, workspacePath)
-      .catch((error: Error) => {
-        console.error('[AgentMode] Failed to trigger analysis session queue processing:', error);
-      });
-
+    // blitzListeners starts the analysis, also for a non-active rail project.
     refreshSessions();
   }, [blitzAnalysisCreated, workspacePath, addSession, refreshSessions]);
 
@@ -507,7 +507,7 @@ export const AgentMode = forwardRef<AgentModeRef, AgentModeProps>(function Agent
   // does not churn.
   useImperativeHandle(ref, () => ({
     createNewSession: (initialDraft?: string) =>
-      dispatchCreateNewSession({ initialDraft, launchSource: 'new_session_button' }),
+      dispatchCreateNewSession({ initialDraft, launchSource: 'new_session_button', intoSelectedWorkstream: true }),
     createNewWorktreeSession: async (options?: { baseBranch?: string; name?: string }) => {
       await dispatchCreateNewWorktreeSession(options);
     },
@@ -576,9 +576,25 @@ export const AgentMode = forwardRef<AgentModeRef, AgentModeProps>(function Agent
     onOpenQuickSearch?.();
   }, [sessionQuickOpenRequested, onOpenQuickSearch]);
 
+  // A workstream container with no visible (unarchived) sessions has nothing to
+  // show; it gets its own empty state instead of the session panel.
+  const isEmptyWorkstreamSelected = useAtomValue(
+    useMemo(
+      () =>
+        atom((get) =>
+          !!selectedWorkstreamId &&
+          get(sessionRegistryAtom).get(selectedWorkstreamId)?.sessionType === 'workstream' &&
+          get(workstreamSessionsAtom(selectedWorkstreamId)).length === 0
+        ),
+      [selectedWorkstreamId]
+    )
+  );
+
   // Content for the right side
   const rightContent = selectedWorkstream ? (
-    isSelectedMetaAgent ? (
+    isEmptyWorkstreamSelected ? (
+      <WorkstreamEmptyState key={selectedWorkstream.id} workstreamId={selectedWorkstream.id} />
+    ) : isSelectedMetaAgent ? (
       <MetaAgentMode
         key={selectedWorkstream.id}
         workspacePath={workspacePath}

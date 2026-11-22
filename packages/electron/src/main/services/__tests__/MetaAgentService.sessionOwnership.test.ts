@@ -86,6 +86,7 @@ import { AISessionsRepository } from '@nimbalyst/runtime/storage/repositories/AI
 import { AgentMessagesRepository } from '@nimbalyst/runtime/storage/repositories/AgentMessagesRepository';
 import { database } from '../../database/PGLiteDatabaseWorker';
 import { MetaAgentService } from '../MetaAgentService';
+import { buildClaudeCodeSystemPrompt } from '@nimbalyst/runtime/ai/prompt';
 
 const ROUTED_OWNER = { extensionId: 'com.example.owner', key: 'ada', routeChildUpdatesToOwner: true };
 const OWNED_CALLER = {
@@ -148,13 +149,80 @@ describe('MetaAgentService session ownership', () => {
     expect(AISessionsRepository.create).not.toHaveBeenCalled();
   });
 
-  it('an unowned notify-on-complete spawn carries neither an owner nor notifyParent', async () => {
+  it('an unowned notify-on-complete spawn carries no owner and no notifyParent opt-out', async () => {
     const { svc } = service();
     vi.mocked(AISessionsRepository.get).mockResolvedValue({ ...OWNED_CALLER, metadata: {} } as any);
 
     await (svc as any).spawnSession('caller', '/workspace/path', { prompt: 'x', notifyOnComplete: true });
 
-    expect((vi.mocked(AISessionsRepository.create).mock.calls[0][0] as any).metadata).toEqual({});
+    const metadata = (vi.mocked(AISessionsRepository.create).mock.calls[0][0] as any).metadata;
+    expect(Object.keys(metadata)).toEqual(['sessionDirective']);
+  });
+
+  describe('child reporting', () => {
+    // The child's real system prompt for each spawn setting, so a wording change
+    // that tells a quiet child to message its parent shows up here.
+    async function childPrompt(spawnArgs: Record<string, unknown>, via: 'spawnSession' | 'createChildSession' = 'spawnSession') {
+      const { svc } = service();
+      vi.mocked(AISessionsRepository.get).mockResolvedValue({ ...OWNED_CALLER, metadata: {} } as any);
+      await (svc as any)[via]('caller', '/workspace/path', { prompt: 'x', ...spawnArgs });
+      const metadata = (vi.mocked(AISessionsRepository.create).mock.calls[0][0] as any).metadata;
+      return { metadata, prompt: buildClaudeCodeSystemPrompt({ hasSessionNaming: true, sessionDirective: metadata.sessionDirective }) };
+    }
+
+    it('none (the default for spawn_session and create_session) adds nothing and suppresses the completion notification', async () => {
+      for (const via of ['spawnSession', 'createChildSession'] as const) {
+        vi.mocked(AISessionsRepository.create).mockReset();
+        const { metadata, prompt } = await childPrompt({}, via);
+        expect(metadata).toEqual({ notifyParent: false });
+        expect(prompt).toBe(buildClaudeCodeSystemPrompt({ hasSessionNaming: true }));
+        expect(prompt).not.toMatch(/send_prompt|messageKind|consume_session_inbox|sibling/);
+      }
+    });
+
+    it('final makes the final response the report and asks for no messages', async () => {
+      const { metadata, prompt } = await childPrompt({ reporting: 'final' });
+      expect(metadata.notifyParent).toBeUndefined();
+      expect(prompt.slice(prompt.indexOf('Your final response'))).toMatchInlineSnapshot(`
+        "Your final response is delivered to the session that started you (caller) as your report. Do not send it status or acknowledgement messages.
+
+        </addendum>
+        "
+      `);
+    });
+
+    it('messages is the only setting that mentions send_prompt, and defers to the brief', async () => {
+      const { metadata, prompt } = await childPrompt({ reporting: 'messages' });
+      expect(metadata.notifyParent).toBeUndefined();
+      expect(prompt.slice(prompt.indexOf('The session that started you'))).toMatchInlineSnapshot(`
+        "The session that started you (caller) asked for reports: send each material change once with send_prompt messageKind=report, unless your brief says otherwise. Your final response is delivered to it automatically.
+
+        </addendum>
+        "
+      `);
+    });
+
+    it('rejects an unknown setting before creating anything', async () => {
+      const { svc } = service();
+      vi.mocked(AISessionsRepository.get).mockResolvedValue({ ...OWNED_CALLER, metadata: {} } as any);
+      await expect((svc as any).spawnSession('caller', '/workspace/path', { prompt: 'x', reporting: 'chatty' })).rejects.toThrow(/Invalid reporting/);
+      expect(AISessionsRepository.create).not.toHaveBeenCalled();
+    });
+  });
+
+  it('a report to an idle session is queued without waking it; an instruction still wakes it', async () => {
+    const { svc, aiService } = service();
+    vi.spyOn(svc as any, 'shouldBypassChildAgentExecutionForTests').mockReturnValue(false);
+    vi.spyOn(svc as any, 'getSessionStatusRow').mockResolvedValue({ status: 'idle' });
+    aiService.queuePromptForSession.mockResolvedValue({ id: 'q1', prompt: 'p' });
+    vi.mocked(AISessionsRepository.get).mockResolvedValue({ id: 'parent', workspacePath: '/workspace/path' } as any);
+
+    const report = JSON.parse(await (svc as any).sendPromptToSession('child', 'parent', '/workspace/path', 'paths released', false, 'report'));
+    expect(report).toMatchObject({ processingTriggered: false, heldForNextTurn: true });
+    expect(aiService.triggerQueuedPromptProcessingForSession).not.toHaveBeenCalled();
+
+    await (svc as any).sendPromptToSession('child', 'parent', '/workspace/path', 'do this next', false, 'instruction');
+    expect(aiService.triggerQueuedPromptProcessingForSession).toHaveBeenCalledTimes(1);
   });
 
   it('an owner-routed child settle queues no [Child Session Update] on the parent', async () => {

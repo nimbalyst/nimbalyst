@@ -1615,6 +1615,7 @@ class PGLiteWorker {
           confirmed_sync_id BIGINT,
           last_rejection JSONB
         );
+        ALTER TABLE tracker_transactions ADD COLUMN IF NOT EXISTS base_sync_id BIGINT;
         CREATE INDEX IF NOT EXISTS idx_tracker_txn_workspace_state ON tracker_transactions(workspace_path, state);
         CREATE INDEX IF NOT EXISTS idx_tracker_txn_item ON tracker_transactions(item_id);
       `);

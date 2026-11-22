@@ -171,4 +171,36 @@ describe('database maintenance settings', () => {
     expect(getToolOutputRetentionCursor()).toBe(4242);
     expect(getDatabaseMaintenanceSettings().toolOutputRetentionDays).toBe(14);
   });
+
+  it('ignores a cursor an older build stored, so the pass walks once from the start', async () => {
+    // Older builds could leave this far past rows the pass never examined.
+    backing.databaseMaintenance = { toolOutputRetentionCursor: 3712306 };
+    const { getToolOutputRetentionCursor } = await import('../store');
+    expect(getToolOutputRetentionCursor()).toBe(0);
+  });
+});
+
+describe('setWorkspaceTrusted classifier flag', () => {
+  beforeEach(async () => {
+    backing = {};
+    const { invalidateWorkspaceStoreCache } = await import('../store');
+    invalidateWorkspaceStoreCache();
+  });
+
+  it('keeps the stored classifier opt-in when the caller omits it, and overrides it when given', async () => {
+    const { getWorkspaceState, setWorkspaceTrusted } = await import('../store');
+
+    setWorkspaceTrusted(WORKSPACE, true, 'bypass-all', true);
+    setWorkspaceTrusted(WORKSPACE, true, 'allow-all');
+    expect(getWorkspaceState(WORKSPACE).agentPermissions).toEqual({
+      permissionMode: 'allow-all',
+      allowAllUsesClassifier: true,
+    });
+
+    setWorkspaceTrusted(WORKSPACE, true, 'bypass-all', false);
+    expect(getWorkspaceState(WORKSPACE).agentPermissions).toEqual({
+      permissionMode: 'bypass-all',
+      allowAllUsesClassifier: false,
+    });
+  });
 });

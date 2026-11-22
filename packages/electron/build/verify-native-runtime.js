@@ -37,6 +37,26 @@ assert.deepStrictEqual(row, { value: 1 });
 const pty = require('node-pty');
 assert.strictEqual(typeof pty.spawn, 'function', 'node-pty did not expose spawn()');
 
-console.log(
-  `Native runtime verified: Electron ${process.versions.electron}, Node ${process.versions.node}, ABI ${process.versions.modules}`,
-);
+// Loading the module is not enough: a pty.node built for the wrong ABI or
+// missing its spawn helper only fails when a terminal child actually starts.
+const marker = 'nimbalyst-pty-ok';
+const [shell, args] = process.platform === 'win32'
+  ? [process.env.ComSpec || 'cmd.exe', ['/d', '/c', `echo ${marker}`]]
+  : ['/bin/sh', ['-c', `echo ${marker}`]];
+const child = pty.spawn(shell, args, { name: 'xterm', cols: 80, rows: 24, cwd: process.cwd(), env: process.env });
+let output = '';
+child.onData((data) => {
+  output += data;
+});
+const timeout = setTimeout(() => {
+  console.error(`node-pty child did not exit within 10s. Output so far: ${JSON.stringify(output)}`);
+  process.exit(1);
+}, 10000);
+child.onExit(({ exitCode }) => {
+  clearTimeout(timeout);
+  assert.strictEqual(exitCode, 0, `node-pty child exited with ${exitCode}`);
+  assert.ok(output.includes(marker), `node-pty child output did not include the marker: ${JSON.stringify(output)}`);
+  console.log(
+    `Native runtime verified: Electron ${process.versions.electron}, Node ${process.versions.node}, ABI ${process.versions.modules}, SQLite query and PTY child OK`,
+  );
+});

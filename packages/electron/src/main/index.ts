@@ -19,16 +19,16 @@ import { appendFileSync, existsSync, renameSync, unlinkSync, writeFileSync } fro
 import {
     createWindow,
     documentServices,
-    findWindowByFilePath,
     findWindowByWorkspace,
     getMostRecentlyFocusedWorkspaceWindow,
 } from './window/WindowManager';
 import { beginStartupActivation, finishStartupWindowCreation } from './window/StartupActivation';
-import { loadFileIntoWindow } from './file/FileOperations';
+import { loadFileIntoWindow, loadFileIntoWorkspaceWindow, reloadIntoWindowWithFile } from './file/FileOperations';
 import { createApplicationMenu } from './menu/ApplicationMenu';
 import { updateNativeTheme, updateWindowTitleBars } from './theme/ThemeManager';
 import { restoreSessionState, saveSessionState } from './session/SessionState';
 import { createRestartShutdown } from './session/restartShutdown';
+import { resumeBackendTerminalsAfterAbortedQuit, stopAllBackendTerminals } from './extensions/backendTerminals';
 import { setSafeModeSessionStateProtection } from './session/safeModeSessionState';
 import { isSafeModeArgument } from './session/startupSafeMode';
 import { getRestartSignalPath } from './utils/appPaths';
@@ -37,7 +37,7 @@ import {
     dispatchAppActionLink,
     type AppAction,
 } from './utils/appActionLinks';
-import { createWorkspaceManagerWindow, getWorkspaceManagerWindow, setupWorkspaceManagerHandlers, wasWorkspaceManagerManuallyClosed } from './window/WorkspaceManagerWindow.ts';
+import { createWorkspaceManagerWindow, getWorkspaceManagerWindow, openOrFocusWorkspaceWindow, setupWorkspaceManagerHandlers, wasWorkspaceManagerManuallyClosed } from './window/WorkspaceManagerWindow.ts';
 import { initializeApplicationWindowRecovery } from './window/ApplicationWindowRecovery';
 import { createTeamManagementWindow, setupTeamManagementHandlers } from './window/TeamManagementWindow';
 import { setupTrayPanelHandlers } from './window/TrayPanelWindow';
@@ -67,6 +67,8 @@ import { getExternalSessionService, stopExternalSessionService } from './service
 import { registerNotificationHandlers } from './ipc/NotificationHandlers';
 import { registerPermissionHandlers } from './ipc/PermissionHandlers';
 import { registerGitStatusHandlers } from './ipc/GitStatusHandlers';
+import { registerShellCommandHandlers } from './shellCommand/shellCommandActions';
+import { resolveLaunchTarget, statPathKind, userArgsStart, type LaunchTarget } from './shellCommand/launchTarget';
 import { registerGitHandlers } from './ipc/GitHandlers';
 import { registerProjectSelectionHandlers } from './ipc/ProjectSelectionHandlers';
 import { registerProjectAppearanceHandlers } from './ipc/ProjectAppearanceHandlers';
@@ -209,6 +211,7 @@ import { registerMockupHandlers } from './ipc/MockupHandlers';
 import { registerOffscreenEditorHandlers } from './ipc/OffscreenEditorHandlers';
 import { initVoiceModeService } from './services/voice/VoiceModeService';
 import { initVoiceModeSettingsHandler } from './services/voice/VoiceModeSettingsHandler';
+import { initDictationService } from './services/dictation/DictationService';
 import { registerWalkthroughHandlers } from './ipc/WalkthroughHandlers';
 import { registerDataModelHandlers } from './ipc/DataModelHandlers';
 import { registerClaudeUsageHandlers } from './ipc/ClaudeUsageHandlers';
@@ -240,6 +243,8 @@ import { configureMcpServers } from '@nimbalyst/runtime/ai/server';
 import { matchesAllowPattern } from '@nimbalyst/runtime/ai/server/permissions/toolPermissionHelpers';
 import { resolveCodexPreEditHookScriptPath } from './services/ai/codexPreEditHookPath';
 import {configureCodexShellTracking} from './services/ai/codexShellTrackingHost';
+import {configureClaudeShellTracking, registerClaudeShellSession, releaseClaudeShellSession} from './services/ai/claudeShellTrackingHost';
+import {setShellWindowLifecycle} from './services/ai/HooklessAgentFileWatcher';
 import { createGrokAskUserQuestionHandler } from './services/ai/grokAskUserQuestionHandler';
 import { executeGeminiTool } from './services/ai/geminiToolExecutor';
 import { sessionFileTracker } from './services/SessionFileTracker';
@@ -315,7 +320,8 @@ import {
 } from './window/windowState';
 import { getRecentItems } from './utils/store';
 import { registerTeamCustodyHandlers } from './services/TeamCustodyService';
-import { purgeLegacyKeyFiles } from './services/LegacyKeyFilePurge';
+import { registerTeamRecoveryHandlers } from './services/TeamRecoveryService';
+import { findLegacyRecoveryKeyFiles } from './services/LegacyRecoveryKeyFiles';
 import { registerDocumentSyncHandlers } from './ipc/DocumentSyncHandlers';
 import { registerCollabTestIdentityHandlers } from './ipc/CollabTestIdentityHandlers';
 import { getCollabOutboxDrainCoordinator } from './services/CollabOutboxDrainerService';
@@ -752,13 +758,15 @@ if (!allowMultipleInstances) {
 
         logger.main.info(`[SingleInstance] Second instance launched, waiting for open-file. argv=${JSON.stringify(process.argv)}`);
 
-        // Also check argv for file paths (Windows/Linux, or CLI open --args)
-        const fileArg = process.argv.find(arg =>
-            !arg.startsWith('-') &&
-            arg !== process.argv[0] &&
-            path.isAbsolute(arg)
-        );
-        if (fileArg) {
+        // Also check argv for file paths (Windows/Linux, or CLI open --args).
+        // A folder (`nimbalyst .`) reaches the primary through its
+        // second-instance event, which carries this process's argv and cwd.
+        const launchTarget = resolveLaunchTarget(process.argv.slice(userArgsStart(app.isPackaged)), process.cwd());
+        const fileArg = launchTarget?.kind === 'file' ? launchTarget.path : null;
+        if (launchTarget && launchTarget.kind !== 'file') {
+            logger.main.info(`[SingleInstance] Second instance has ${launchTarget.kind} target, quitting: ${launchTarget.path}`);
+            app.quit();
+        } else if (fileArg) {
             logger.main.info(`[SingleInstance] Found file in argv: ${fileArg}`);
             try { writeFileSync(pendingOpenFilePath, fileArg, 'utf-8'); } catch (_) {}
             app.quit();
@@ -793,7 +801,7 @@ if (!allowMultipleInstances) {
     } else {
         // We are the primary instance. When a second instance tries to launch,
         // extract any deep link URL or file path and handle it here.
-        app.on('second-instance', (_event, argv, _workingDirectory) => {
+        app.on('second-instance', (_event, argv, workingDirectory) => {
             logger.main.info('[SingleInstance] second-instance event, argv:', argv);
 
             // On Windows the protocol URL is passed as the last argument
@@ -803,18 +811,15 @@ if (!allowMultipleInstances) {
                 handleDeepLink(deepLinkUrl);
             }
 
-            // Check argv for file paths (Windows/Linux pass files as args)
-            const fileArg = argv.find(arg =>
-                !arg.startsWith('-') &&
-                !arg.startsWith('nimbalyst://') &&
-                arg !== argv[0] &&
-                path.isAbsolute(arg) &&
-                existsSync(arg) &&
-                fs.statSync(arg).isFile()
-            );
-            if (fileArg) {
-                logger.main.info(`[SingleInstance] Opening file from argv: ${fileArg}`);
-                openFileWithWorkspaceDetection(fileArg);
+            // A file or folder path: Windows/Linux file opens, and the
+            // `nimbalyst` shell command, whose relative paths are resolved
+            // against the terminal's directory.
+            const launchTarget = resolveLaunchTarget(argv.slice(userArgsStart(app.isPackaged)), workingDirectory);
+            if (launchTarget) {
+                // A terminal launch leaves the terminal frontmost; bring
+                // Nimbalyst forward before the target window is focused.
+                if (process.platform === 'darwin') app.focus({ steal: true });
+                if (openLaunchTarget(launchTarget)) return;
             }
 
             // Focus an existing window so the user sees the result
@@ -1321,6 +1326,16 @@ app.on('open-file', (event, path) => {
     event.preventDefault();
     logger.main.info(`open-file event received: ${path}`);
 
+    // `open -a Nimbalyst <folder>` and folders dropped on the Dock icon.
+    if (statPathKind(path) === 'directory') {
+        if (app.isReady()) {
+            openLaunchTarget({ kind: 'directory', path });
+        } else {
+            pendingWorkspacePath = path;
+        }
+        return;
+    }
+
     if (app.isReady()) {
         openFileWithWorkspaceDetection(path);
     } else {
@@ -1329,43 +1344,56 @@ app.on('open-file', (event, path) => {
     }
 });
 
+/**
+ * Open what a launch asked for in the running app. Returns false when there
+ * was nothing to open, so the caller falls back to focusing a window.
+ */
+function openLaunchTarget(target: LaunchTarget): boolean {
+    if (target.kind === 'directory') {
+        logger.main.info(`[LaunchTarget] Opening folder: ${target.path}`);
+        openOrFocusWorkspaceWindow(target.path);
+        updateTrackerSchemaWorkspace(target.path);
+        return true;
+    }
+    if (target.kind === 'file') {
+        logger.main.info(`[LaunchTarget] Opening file: ${target.path}`);
+        void openFileWithWorkspaceDetection(target.path);
+        return true;
+    }
+    logger.main.warn(`[LaunchTarget] Path does not exist: ${target.path}`);
+    return false;
+}
+
 // Helper function to open a file with workspace detection
 async function openFileWithWorkspaceDetection(filePath: string): Promise<void> {
-    // Check if file is already open in a window
-    const existingWindow = findWindowByFilePath(filePath);
-    if (existingWindow) {
-        // Window is already open - no need to focus, let macOS handle window ordering
+    // Detect which workspace this file belongs to
+    const workspacePath = detectFileWorkspace(filePath);
+
+    // The window whose rail holds the project may be showing another rail
+    // project; it switches to the file's project before the file opens. This
+    // also covers a file that window already has open.
+    if (workspacePath && loadFileIntoWorkspaceWindow(workspacePath, filePath)) {
         return;
     }
 
-    // Detect which workspace this file belongs to
-    const workspacePath = detectFileWorkspace(filePath);
+    // Check if file is already open in a window
+    if (reloadIntoWindowWithFile(filePath)) {
+        return;
+    }
 
     if (workspacePath) {
         // File belongs to a known workspace
         logger.main.info(`File belongs to workspace: ${workspacePath}`);
 
-        // Find or create workspace window
-        let workspaceWindow = findWindowByWorkspace(workspacePath);
-
-        if (workspaceWindow) {
-            // Workspace window exists, use it - no need to focus, let macOS handle window ordering
-            await loadFileIntoWindow(workspaceWindow, filePath);
-        } else {
-            // Create new workspace window for this workspace
-            workspaceWindow = createWindow(false, true, workspacePath, undefined, {
-                startupReveal: true,
-                startupFrontmost: true,
-            });
-            updateTrackerSchemaWorkspace(workspacePath);
-            // createWindow reveals the window itself — inactive while this runs
-            // during launch, activating for a file opened later.
-            workspaceWindow.once('ready-to-show', async () => {
-                // Window state is already set by createWindow with workspace path
-                // Just load the file
-                await loadFileIntoWindow(workspaceWindow!, filePath);
-            });
-        }
+        // No open window holds the project: create a workspace window for it
+        const workspaceWindow = createWindow(false, true, workspacePath, undefined, {
+            startupReveal: true,
+            startupFrontmost: true,
+        });
+        updateTrackerSchemaWorkspace(workspacePath);
+        // createWindow reveals the window itself — inactive while this runs
+        // during launch, activating for a file opened later.
+        loadFileIntoWindow(workspaceWindow, filePath);
     } else {
         // File is not in a known workspace - open it in the frontmost workspace window as an external file
         logger.main.info(`File not in known workspace, opening as external file in frontmost window`);
@@ -1384,9 +1412,7 @@ async function openFileWithWorkspaceDetection(filePath: string): Promise<void> {
                     startupFrontmost: true,
                 });
                 updateTrackerSchemaWorkspace(suggestedWorkspace);
-                newWindow.once('ready-to-show', async () => {
-                    await loadFileIntoWindow(newWindow, filePath);
-                });
+                loadFileIntoWindow(newWindow, filePath);
             } else {
                 // No project root detected - use the file's directory as workspace
                 const fileDir = path.dirname(filePath);
@@ -1397,9 +1423,7 @@ async function openFileWithWorkspaceDetection(filePath: string): Promise<void> {
                     startupFrontmost: true,
                 });
                 updateTrackerSchemaWorkspace(fileDir);
-                newWindow.once('ready-to-show', async () => {
-                    await loadFileIntoWindow(newWindow, filePath);
-                });
+                loadFileIntoWindow(newWindow, filePath);
             }
         }
     }
@@ -1430,17 +1454,20 @@ function parseCommandLineArgs() {
         } else if (arg.startsWith('nimbalyst://')) {
             pendingDeepLinkUrl = arg;
             logger.main.info(`[SingleInstance] Found deep link in argv: ${arg.substring(0, 60)}...`);
-        } else if (!arg.startsWith('--') && !arg.startsWith('-')) {
-            // Handle plain file path argument (e.g., "preditor file.md")
-            const argExists = existsSync(arg);
-            const argIsMarkdown = arg.endsWith('.md');
-            logger.main.info(`  Potential file: exists=${argExists}, isMarkdown=${argIsMarkdown}`);
-
-            if (argExists && argIsMarkdown) {
-                pendingFilePath = arg;
-                logger.main.info(`✓ File path from CLI: ${pendingFilePath}`);
-            }
         }
+    }
+
+    // Plain path argument: `nimbalyst .`, `nimbalyst notes.md`, or a file the
+    // OS passes as an argument on Windows/Linux.
+    const launchTarget = resolveLaunchTarget(args, process.cwd());
+    if (launchTarget?.kind === 'directory' && !pendingWorkspacePath) {
+        pendingWorkspacePath = launchTarget.path;
+        logger.main.info(`✓ Folder from CLI: ${pendingWorkspacePath}`);
+    } else if (launchTarget?.kind === 'file') {
+        pendingFilePath = launchTarget.path;
+        logger.main.info(`✓ File path from CLI: ${pendingFilePath}`);
+    } else if (launchTarget?.kind === 'missing') {
+        logger.main.warn(`Path from CLI does not exist: ${launchTarget.path}`);
     }
 
     // Validate --file requires --workspace
@@ -1762,6 +1789,7 @@ app.whenReady().then(async () => {
     geminiUsageService.initialize();
     registerPermissionHandlers();
     registerGitStatusHandlers();
+    registerShellCommandHandlers();
     registerGitHandlers();
     registerWorktreeHandlers();
     registerPullRequestHandlers();
@@ -1824,9 +1852,9 @@ app.whenReady().then(async () => {
     registerFeedbackRequestHandlers();
     registerOrgSettingsHandlers();
     registerTeamCustodyHandlers();
-    // Team custody is server-managed; drop the client key material the retired
-    // lane left in userData (some of it plaintext where safeStorage was off).
-    purgeLegacyKeyFiles();
+    registerTeamRecoveryHandlers();
+    // Custody retirement does not prove every old organization was recovered.
+    findLegacyRecoveryKeyFiles();
     registerCollabConversionClient();
     registerDocumentSyncHandlers();
     // No-op outside an unpackaged Playwright run with the collab harness env.
@@ -2382,6 +2410,8 @@ app.whenReady().then(async () => {
     // diff text in item/completed and does not need this hook.
     OpenAICodexProvider.setPreEditHookScriptPathResolver(resolveCodexPreEditHookScriptPath);
     configureCodexShellTracking();
+    configureClaudeShellTracking();
+    setShellWindowLifecycle({ register: registerClaudeShellSession, release: releaseClaudeShellSession });
     OpenAICodexProvider.setPreEditSidecarDirResolver((sessionId: string) => {
       if (!sessionId) return undefined;
       const safeId = sessionId.replace(/[^A-Za-z0-9_-]/g, '_');
@@ -2472,6 +2502,12 @@ app.whenReady().then(async () => {
 
     ClaudeCodeProvider.setClaudeSettingsPatternSaver(patternSaver);
     ClaudeCodeProvider.setClaudeSettingsPatternChecker(patternChecker);
+    // Project-local rules only: "Always" approvals land there, while committed
+    // project settings stay under the CLI's auto-mode filter.
+    ClaudeCodeProvider.setClaudeLocalAllowRuleChecker(async (workspacePath, pattern) => {
+      const local = await claudeSettingsManager.getLocalPatterns(workspacePath);
+      return (local?.allow ?? []).some((allow) => matchesAllowPattern(pattern, allow));
+    });
     ClaudeCodeProvider.setTrustChecker(trustChecker);
 
     OpenAICodexProvider.setPermissionPatternSaver(patternSaver);
@@ -2690,6 +2726,7 @@ app.whenReady().then(async () => {
     });
     initVoiceModeService();
     initVoiceModeSettingsHandler();
+    initDictationService();
     registerWalkthroughHandlers();
 
     // Start MCP SSE server
@@ -3283,6 +3320,13 @@ const shutdownForRestart = createRestartShutdown({
     },
     stopExternalSessions: stopExternalSessionService,
     saveSessionState,
+    // The normal quit cleanup below never runs on restart. Without this the
+    // process groups of extension-started commands outlive the app and keep
+    // their ports. A failure here must not block the restart.
+    stopCommandTerminals: () => stopAllBackendTerminals().catch((error) => {
+        console.error('[QUIT] Error stopping extension command terminals for restart:', error);
+    }),
+    restartAborted: resumeBackendTerminalsAfterAbortedQuit,
     flushPendingBackups: flushPendingCollabBackups,
     quit: () => {
         console.log('[QUIT] Session state saved for restart');
@@ -3383,6 +3427,14 @@ app.on('before-quit', async (event) => {
 
     // Mark app as quitting to prevent interval operations
     isAppQuitting = true;
+
+    // Start stopping extension-started commands now (the quit can no longer be
+    // cancelled) so their grace period overlaps the rest of the cleanup instead
+    // of starting late in the force-quit budget. shutdownTerminalHandlers()
+    // awaits this same stop before destroying PTYs.
+    void stopAllBackendTerminals().catch((error) => {
+        console.error('[QUIT] Error stopping extension command terminals:', error);
+    });
 
     // Revoke source readers and drain their commits before database shutdown.
     await stopExternalSessionService();

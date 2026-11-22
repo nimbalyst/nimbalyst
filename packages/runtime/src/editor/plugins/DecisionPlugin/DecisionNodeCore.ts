@@ -87,6 +87,12 @@ export class DecisionNode extends DecoratorNode<JSX.Element | null> {
     };
   }
 
+  // Block-level: Lexical 0.53 wraps inline children of the root in a
+  // paragraph, and DecoratorNode defaults to inline.
+  isInline(): false {
+    return false;
+  }
+
   createDOM(_config: EditorConfig, _editor: LexicalEditor): HTMLElement {
     const div = document.createElement('div');
     addClassNamesToElement(div, 'decision-container');

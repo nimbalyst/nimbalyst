@@ -1,6 +1,7 @@
+// @vitest-environment node
 import { describe, it, expect, vi } from 'vitest';
 import { resolveImmediateToolDecision, type ToolDecision } from '../immediateToolDecision';
-import { INTERNAL_MCP_TOOLS } from '../toolPolicy';
+import { INTERNAL_MCP_TOOLS, metaAgentBlockedNativeTools } from '../toolPolicy';
 
 function createDeps(overrides?: Partial<Parameters<typeof resolveImmediateToolDecision>[0]>) {
   return {
@@ -163,6 +164,27 @@ describe('resolveImmediateToolDecision', () => {
       });
     }
 
+    // Run Manager: acting on a configured target needs no prompt, defining
+    // one does (it names a command that will run).
+    it('auto-allows starting a configured run target but not configuring one', async () => {
+      const deps = createDeps({
+        internalMcpTools: INTERNAL_MCP_TOOLS as readonly string[] as string[],
+        getCurrentMode: () => 'agent',
+      });
+      for (const tool of ['run_list', 'run_start', 'run_stop', 'run_restart', 'run_logs']) {
+        const allowed = await resolveImmediateToolDecision(
+          deps,
+          createParams({ toolName: `mcp__nimbalyst-run__${tool}`, input: { id: 'web' } })
+        );
+        assertZodCompliantAllow(allowed);
+      }
+      const configure = await resolveImmediateToolDecision(
+        deps,
+        createParams({ toolName: 'mcp__nimbalyst-run__run_configure', input: { id: 'web', command: 'x' } })
+      );
+      expect(configure).toBeNull();
+    });
+
     it('does NOT broaden to third-party MCP tools in non-auto modes', async () => {
       const deps = createDeps({
         internalMcpTools: INTERNAL_MCP_TOOLS as readonly string[] as string[],
@@ -251,5 +273,18 @@ describe('resolveImmediateToolDecision', () => {
       const result = await resolveImmediateToolDecision(deps, params);
       expect(result).toBeNull();
     });
+  });
+});
+
+describe('metaAgentBlockedNativeTools (NIM-7668)', () => {
+  it('blocks SDK built-ins missing from SDK_NATIVE_TOOLS, keeps the allowlist and host-handled tools open', () => {
+    const blocked = metaAgentBlockedNativeTools(
+      ['TaskCreate', 'mcp__nimbalyst__update_session_meta'],
+      ['Read', 'PowerShell', 'LSP', 'TaskCreate', 'ScheduleWakeup'],
+    );
+    expect(blocked).toEqual(expect.arrayContaining(['Read', 'Bash', 'PowerShell', 'LSP']));
+    expect(blocked).not.toContain('TaskCreate');
+    expect(blocked).not.toContain('ScheduleWakeup');
+    expect(new Set(blocked).size).toBe(blocked.length);
   });
 });

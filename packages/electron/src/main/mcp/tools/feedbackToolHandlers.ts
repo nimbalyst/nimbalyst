@@ -4,7 +4,8 @@
  */
 
 import os from 'os';
-import { app, shell } from 'electron';
+import { app } from 'electron';
+import { systemShell } from '../../utils/systemShell';
 import { anonymize } from '../../services/feedback/LogAnonymizer';
 import {
   buildIssueUrl,
@@ -122,7 +123,7 @@ export async function handleFeedbackOpenGithubIssue(args: any): Promise<McpToolR
   const built = buildIssueUrl({ kind, title, body });
 
   try {
-    await shell.openExternal(built.url);
+    await systemShell.openExternal(built.url);
   } catch (err) {
     return jsonResult(
       {

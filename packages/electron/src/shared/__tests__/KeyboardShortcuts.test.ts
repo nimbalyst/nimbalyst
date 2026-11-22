@@ -107,6 +107,15 @@ describe('toggleExpandedTab binding', () => {
   });
 });
 
+describe('dictation holdToTalk binding', () => {
+  it('does not collide with any other application shortcut', () => {
+    const others = Object.entries(KeyboardShortcuts)
+      .filter(([group]) => group !== 'dictation')
+      .flatMap(([, shortcuts]) => Object.values(shortcuts));
+    expect(others).not.toContain(KeyboardShortcuts.dictation.holdToTalk);
+  });
+});
+
 describe('getElectronAccelerator', () => {
   it('rewrites Cmd to CmdOrCtrl so Electron handles platform mapping', () => {
     expect(getElectronAccelerator('Cmd+S')).toBe('CmdOrCtrl+S');

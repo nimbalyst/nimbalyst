@@ -8,6 +8,54 @@ import { selectSessionsForIndexSync } from '../selectSessionsForIndexSync';
 import { reconcileSessionIndex } from '../indexReconciliation';
 import { createTranscriptBackfill } from '../transcriptBackfill';
 
+it('recovers list entries while leaving held and already-owned transcripts with full backfill', async () => {
+  const row = (id: string, workspaceId: string) => ({ id, workspaceId, provider: 'claude-code', title: id, messageCount: 1, createdAt: 1000, updatedAt: 9000 });
+  const rows = [row('held', '/held'), row('owed', '/on'), row('fresh', '/on')];
+  let state = { projects: ['/held'], sessions: ['owed'] };
+  const backfill = createTranscriptBackfill({ read: () => state, write: next => { state = next; } }, path => path);
+  const publish = vi.fn(async () => ({ published: true, publishedSessionIds: rows.map(item => item.id) }));
+  await reconcileSessionIndex({ onlyMissing: true, syncSessionsToIndex: publish,
+    serverIndex: { complete: true, indexProtocolVersion: 2, sessions: [], projects: [] },
+    loadLocalSessions: async () => rows, getMessagesForSync: vi.fn(),
+    isProjectEnabled: () => true, isMidTurn: () => false, backfill, now: 10000,
+  });
+  expect(publish).toHaveBeenCalledWith(rows, expect.objectContaining({
+    syncMessages: true, messageSyncRequests: [{ sessionId: 'fresh', sinceTimestamp: 0 }],
+  }));
+  expect(state).toEqual({ projects: ['/held'], sessions: ['owed'] });
+});
+
+it('awaits missing-row recovery and preserves newer existing server metadata and tombstones', async () => {
+  const local = (id: string, title: string) => ({ id, workspaceId: '/p', provider: 'claude-code', title,
+    messageCount: 0, createdAt: 1000, updatedAt: 9000 });
+  const missing = local('phone-created', 'Current local title');
+  const server = new Map([['existing', { sessionId: 'existing', projectId: '/p', provider: 'claude-code', title: 'Newer remote title', updatedAt: 10000, lastMessageAt: 10000, createdAt: 1000, messageCount: 0 }]]);
+  let commit!: () => void;
+  const accepted = new Promise<void>(resolve => { commit = resolve; });
+  const publish = vi.fn(async (rows: typeof missing[]) => {
+    await accepted;
+    for (const row of rows) server.set(row.id, { ...row, sessionId: row.id, projectId: row.workspaceId, lastMessageAt: row.updatedAt });
+    return { published: true, publishedSessionIds: rows.map(row => row.id) };
+  });
+  const backfill = createTranscriptBackfill({ read: () => undefined, write: () => {} }, path => path);
+  let complete = false;
+  const recovery = reconcileSessionIndex({ onlyMissing: true,
+    syncSessionsToIndex: publish, serverIndex: { complete: true, indexProtocolVersion: 2,
+      sessions: [...server.values()], projects: [], deletedSessionIds: ['deleted'] },
+    loadLocalSessions: async () => [missing, local('existing', 'Older local title'), local('deleted', 'Do not revive')],
+    getMessagesForSync: vi.fn(), isProjectEnabled: () => true, isMidTurn: () => false, backfill, now: 10000,
+  }).then(() => { complete = true; });
+  await vi.waitFor(() => expect(publish).toHaveBeenCalledTimes(1));
+  expect(complete).toBe(false);
+  commit();
+  await recovery;
+  // Read the server fixture after committed publication, not the outgoing payload.
+  expect(server.get(missing.id)?.title).toBe('Current local title');
+  expect(server.get('existing')?.title).toBe('Newer remote title');
+  expect(server.has('deleted')).toBe(false);
+  expect(publish.mock.calls[0][0]).toEqual([missing]);
+});
+
 it('heals a stale manager after process restart even when parent and activity timestamps match', () => {
   const local = { id: 'child', workspaceId: '/p', provider: 'claude-code', title: 'Child', messageCount: 0, createdAt: 10000, updatedAt: 10000, parentSessionId: 'root', createdBySessionId: 'root' };
   const remote = { ...local, sessionId: 'child', projectId: '/p', lastMessageAt: 10000, createdBySessionId: 'previous-manager' };

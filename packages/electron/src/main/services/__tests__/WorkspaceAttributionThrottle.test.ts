@@ -64,4 +64,13 @@ describe('WorkspaceAttributionThrottle', () => {
     // B is still full.
     expect(workspaceAttributionThrottle.tryAcquire(wsB)).toBe(true);
   });
+
+  // Deferring callers schedule their retry from this instead of polling.
+  it('reports how long until an empty bucket admits the next event', () => {
+    for (let i = 0; i < 20; i++) workspaceAttributionThrottle.tryAcquire('session:a');
+    expect(workspaceAttributionThrottle.msUntilToken('session:a')).toBe(50);
+    now += 50;
+    expect(workspaceAttributionThrottle.msUntilToken('session:a')).toBe(0);
+    expect(workspaceAttributionThrottle.tryAcquire('session:a')).toBe(true);
+  });
 });

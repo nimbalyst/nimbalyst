@@ -19,6 +19,10 @@ concurrency:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  # onnxruntime-node downloads its CUDA build from a GitHub release on Linux x64
+  # during postinstall; that asset 404s for 1.21.0 (2026-11-18) and nothing
+  # uses the CUDA provider, so skip it.
+  ONNXRUNTIME_NODE_INSTALL_CUDA: skip
   # Make pnpm resilient to transient registry socket drops (ECONNRESET) on the
   # cache-miss path: retry individual failed requests instead of aborting the
   # whole install. (Cache hits skip the install and make no registry calls.)

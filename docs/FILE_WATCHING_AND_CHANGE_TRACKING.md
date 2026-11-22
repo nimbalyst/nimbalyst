@@ -246,6 +246,16 @@ Correlates file edits with specific AI tool calls using a scoring heuristic:
 
 Results stored in `ai_tool_call_file_edits` table.
 
+### Bash edits by provider
+
+Which mechanism links a file changed by a shell command depends on the provider's attribution mode ([providerFileTracking.ts](../packages/runtime/src/ai/server/providerFileTracking.ts)):
+
+- `'shell-window'` (Claude Code): the hook-window tracker links any file changed inside the session's Bash window, named in the command or not. Overlapping windows of two sessions abstain and the sidebar lists the file as withheld. See [CODEX_SHELL_TRACKING.md](./CODEX_SHELL_TRACKING.md#claude-code-bash).
+- `'disabled'` (Codex app-server): structured `fileChange` items plus the same hook-window tracker for shell commands. While such a session's turn runs, the fuzzy watcher path is off for `'fuzzy'` sessions in that workspace.
+- `'fuzzy'` (OpenCode, Codex SDK transport, Claude CLI, others): `WorkspaceFileEditAttributionService` scores watcher events against tool calls within 10 seconds, and `trackBashEditsFromCommand` scrapes paths from the command text.
+
+The fuzzy path's burst throttle (20 events per second per workspace) runs after exclusion and dedupe; over-budget events wait in a bounded deferred queue instead of being dropped.
+
 ---
 
 ## 4. Database Schema

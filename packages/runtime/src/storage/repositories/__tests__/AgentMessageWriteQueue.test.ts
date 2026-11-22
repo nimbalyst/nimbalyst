@@ -9,6 +9,8 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
   AgentMessageWriteQueue,
+  DB_REQUEST_NOT_SUBMITTED,
+  DB_REQUEST_OUTCOME_UNKNOWN,
   type MessagesLoggedBatchEvent,
 } from '../AgentMessageWriteQueue';
 import type { CreateAgentMessageInput } from '../../../ai/server/types';
@@ -452,5 +454,148 @@ describe('AgentMessageWriteQueue — pressure telemetry', () => {
     expect(warnSpy).toHaveBeenCalledTimes(1);
     expect(warnSpy.mock.calls[0][0]).toContain('WRITE_QUEUE_PRESSURE');
     expect(warnSpy.mock.calls[0][0]).toContain('rows=2');
+  });
+});
+
+function codedError(code: string, message = 'SQLite worker not running'): Error {
+  return Object.assign(new Error(message), { code });
+}
+
+/**
+ * GitHub #1988: when the database worker died, every failed batch was
+ * discarded, so minutes of transcript never reached history. A batch that
+ * provably never reached the worker is now held and retried; one whose reply
+ * was lost is not replayed, because it may already have committed.
+ */
+describe('AgentMessageWriteQueue — database outage retention', () => {
+  it('holds a not-submitted batch in order and persists it once the database is back', async () => {
+    vi.useFakeTimers();
+    try {
+      let down = true;
+      const written: string[] = [];
+      const writer = vi.fn(async (messages: CreateAgentMessageInput[]) => {
+        if (down) throw codedError(DB_REQUEST_NOT_SUBMITTED);
+        written.push(...messages.map((m) => m.content));
+      });
+      const queue = new AgentMessageWriteQueue({ idleFlushMs: 10, writer, logger: { warn: () => {} }, retryBaseMs: 100 });
+      let settled = 0;
+      const promises = ['a', 'b', 'c'].map((content) =>
+        queue.enqueue(makeMessage({ content })).then(() => { settled += 1; }));
+
+      await vi.advanceTimersByTimeAsync(10);
+      expect(writer).toHaveBeenCalledTimes(1);
+      // A row arriving during the outage waits with the held ones, behind them.
+      const late = queue.enqueue(makeMessage({ content: 'd' }));
+      await vi.advanceTimersByTimeAsync(100);
+      expect(writer).toHaveBeenCalledTimes(2);
+      expect(settled).toBe(0);
+
+      down = false;
+      await vi.advanceTimersByTimeAsync(200);
+      await Promise.all([...promises, late]);
+      expect(written).toEqual(['a', 'b', 'c', 'd']);
+      // No per-row fallback storm during the outage.
+      expect(writer.mock.calls.every((call) => call[0].length > 1)).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not replay a batch whose outcome is unknown, and skips the per-row fallback', async () => {
+    const writer = vi.fn(async () => {
+      throw codedError(DB_REQUEST_OUTCOME_UNKNOWN, 'SQLite worker exited (code 1)');
+    });
+    const queue = new AgentMessageWriteQueue({ idleFlushMs: 60_000, writer, logger: { warn: () => {} } });
+    const results = await Promise.allSettled([
+      queue.enqueue(makeMessage({ content: 'a' })),
+      queue.enqueue(makeMessage({ content: 'b' })),
+      queue.flushAll(),
+    ]);
+
+    expect(writer).toHaveBeenCalledTimes(1);
+    expect(results.slice(0, 2).map((r) => r.status)).toEqual(['rejected', 'rejected']);
+    expect(queue.size()).toBe(0);
+  });
+
+  it('rejects the oldest held rows past the row limit, and flushAll returns after one retry', async () => {
+    const writer = vi.fn(async () => {
+      throw codedError(DB_REQUEST_NOT_SUBMITTED);
+    });
+    const queue = new AgentMessageWriteQueue({
+      idleFlushMs: 60_000,
+      writer,
+      logger: { warn: () => {} },
+      maxRetainedRows: 3,
+      retryBaseMs: 60_000,
+    });
+    const outcomes: string[] = [];
+    for (const content of ['a', 'b', 'c', 'd', 'e']) {
+      queue.enqueue(makeMessage({ content })).then(
+        () => outcomes.push(`${content}:ok`),
+        () => outcomes.push(`${content}:dropped`),
+      );
+    }
+    const stall = queue.whenStalled();
+
+    await queue.flushAll();
+    await stall.promise;
+    await Promise.resolve();
+
+    expect(writer).toHaveBeenCalledTimes(2);
+    expect(outcomes).toEqual(['a:dropped', 'b:dropped']);
+    expect(queue.retainedCount()).toBe(3);
+
+    await queue.close();
+    await Promise.resolve();
+    expect(outcomes.slice(2)).toEqual(['c:dropped', 'd:dropped', 'e:dropped']);
+  });
+
+  it('drains a large held backlog in threshold-sized INSERTs', async () => {
+    let down = true;
+    const sizes: number[] = [];
+    const writer = vi.fn(async (messages: CreateAgentMessageInput[]) => {
+      if (down) throw codedError(DB_REQUEST_NOT_SUBMITTED);
+      sizes.push(messages.length);
+    });
+    const queue = new AgentMessageWriteQueue({
+      idleFlushMs: 60_000,
+      rowFlushThreshold: 200,
+      writer,
+      logger: { warn: () => {} },
+      retryBaseMs: 60_000,
+    });
+    const all = Array.from({ length: 450 }, (_, i) => queue.enqueue(makeMessage({ content: `r${i}` })));
+    await queue.flushAll();
+    down = false;
+    await queue.flushAll();
+    await Promise.all(all);
+
+    expect(sizes).toEqual([200, 200, 50]);
+  });
+
+  it('stops writing once close() returns during an outage', async () => {
+    vi.useFakeTimers();
+    try {
+      // Each write takes a tick, like a real worker round trip.
+      const writer = vi.fn(async () => {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+        throw codedError(DB_REQUEST_NOT_SUBMITTED);
+      });
+      const queue = new AgentMessageWriteQueue({ idleFlushMs: 10, rowFlushThreshold: 2, writer, logger: { warn: () => {} } });
+      const rows = ['a', 'b', 'c', 'd', 'e'].map((content) => queue.enqueue(makeMessage({ content })).catch(() => 'dropped'));
+
+      const closing = queue.close();
+      await vi.advanceTimersByTimeAsync(100);
+      await closing;
+      const callsAtClose = writer.mock.calls.length;
+      // The original flush plus the single retry close() allows.
+      expect(callsAtClose).toBe(2);
+      await vi.advanceTimersByTimeAsync(60_000);
+
+      expect(writer.mock.calls.length).toBe(callsAtClose);
+      expect(await Promise.all(rows)).toEqual(['dropped', 'dropped', 'dropped', 'dropped', 'dropped']);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

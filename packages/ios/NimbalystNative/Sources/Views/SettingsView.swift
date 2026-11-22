@@ -76,7 +76,7 @@ public struct SettingsView: View {
             }
 
             if !connectedDevices.isEmpty {
-                DisclosureGroup("Connected Devices (\(connectedDevices.count))") {
+                DisclosureGroup("Recent Devices (\(connectedDevices.count))") {
                     ForEach(connectedDevices, id: \.deviceId) { device in
                         HStack {
                             Image(systemName: deviceIcon(for: device.type))
@@ -84,7 +84,7 @@ public struct SettingsView: View {
                             VStack(alignment: .leading, spacing: 2) {
                                 Text(device.name)
                                     .font(.body)
-                                Text(device.platform)
+                                Text("\(device.platform) · \(device.isOnline == false ? "Offline" : "Connected")")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                             }

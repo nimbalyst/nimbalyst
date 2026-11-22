@@ -283,6 +283,12 @@ function Shell({
   useEffect(() => {
     if (!openPageId) return undefined;
     setWorkspaceFileLinkOpener((href) => {
+      // A published wiki writes links to the items it carries from the app's tracker as site paths (`/items/<id>/`).
+      if (published && href.startsWith('/') && !href.startsWith('//')) {
+        const [pathname, search = ''] = href.split('?');
+        navigate(parseStaticLocation(pathname, search ? `?${search}` : ''));
+        return;
+      }
       const target = host.resolveLink(openPageId, href);
       // An attachment or other file beside the page opens from the server, as the browser shows it.
       if (target.kind === 'outside' && !/\.md$/i.test(target.path) && !/^[a-z][a-z0-9+.-]*:/i.test(href)) {

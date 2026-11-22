@@ -6,7 +6,7 @@ import * as path from 'path';
 import { createRequire } from 'module';
 
 const require_ = createRequire(import.meta.url);
-const { prebuildsForTarget, pruneSqlitePrebuilds, pruneNodePtyPrebuilds, pruneOnnxRuntimeBinaries } =
+const { prebuildsForTarget, pruneSqlitePrebuilds, pruneNodePtyPrebuilds, pruneOnnxRuntimeBinaries, validatePackagedRipgrep } =
   require_('../afterPack.js');
 
 const ALL_PREBUILDS = [
@@ -208,5 +208,51 @@ describe('pruneOnnxRuntimeBinaries', () => {
     expect(() => pruneOnnxRuntimeBinaries(root, 'darwin', 'arm64')).toThrow(
       /silently fall back to keyword-only/,
     );
+  });
+});
+
+// GitHub #1889: a truncated rg.exe passed the existence checks and shipped a
+// search that could not run. The packaged binary is executed when the build host
+// matches the target, which release CI does for both Windows architectures.
+describe('validatePackagedRipgrep', () => {
+  function makeRipgrep(contents: string | null): { resourcesDir: string; rgPath: string } {
+    const resourcesDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nim-afterpack-rg-'));
+    created.push(resourcesDir);
+    const rgPath = path.join(resourcesDir, 'app.asar.unpacked/node_modules/@vscode/ripgrep/bin/rg.exe');
+    if (contents !== null) {
+      fs.mkdirSync(path.dirname(rgPath), { recursive: true });
+      fs.writeFileSync(rgPath, contents);
+    }
+    return { resourcesDir, rgPath };
+  }
+  const host = { hostPlatform: 'win32', hostArch: 'x64' };
+
+  it('runs the packaged binary directly and accepts a working one', () => {
+    const { resourcesDir, rgPath } = makeRipgrep('exe');
+    const calls: Array<[string, string[]]> = [];
+    const run = (file: string, args: string[]) => {
+      calls.push([file, args]);
+      return { status: 0, stdout: 'ripgrep 14.1.1\n', stderr: '' };
+    };
+    expect(validatePackagedRipgrep(resourcesDir, 'win32', 'x64', { ...host, run })).toBe(true);
+    expect(calls).toEqual([[rgPath, ['--version']]]);
+  });
+
+  it('fails the build when the binary is missing', () => {
+    const { resourcesDir } = makeRipgrep(null);
+    expect(() => validatePackagedRipgrep(resourcesDir, 'win32', 'x64', { ...host, run: () => ({ status: 0 }) }))
+      .toThrow(/ripgrep/);
+  });
+
+  it('fails the build when the binary does not run', () => {
+    const { resourcesDir } = makeRipgrep('truncated');
+    const run = () => ({ status: null, error: new Error('spawn UNKNOWN'), stdout: '', stderr: '' });
+    expect(() => validatePackagedRipgrep(resourcesDir, 'win32', 'x64', { ...host, run })).toThrow(/spawn UNKNOWN/);
+  });
+
+  it('checks only presence when cross-building for another architecture', () => {
+    const { resourcesDir } = makeRipgrep('exe');
+    const run = () => { throw new Error('must not execute a foreign binary'); };
+    expect(validatePackagedRipgrep(resourcesDir, 'win32', 'arm64', { ...host, run })).toBe(false);
   });
 });

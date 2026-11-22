@@ -20,14 +20,18 @@ const MIME_TYPES: Record<string, string> = {
   'bmp': 'image/bmp'
 };
 
+function inlineSrc(image: DisplayImageContent): string | null {
+  return image.data ? imageSrc(image) : null;
+}
+
 /**
  * Resolve an image to a loadable src. The thumbnail and the lightbox must share
  * this: `nim-asset://` only serves workspace roots, so a path elsewhere (e.g.
  * /tmp) only renders through the bytes `readFile` returns.
  */
 export function useImageSource(image: DisplayImageContent, readFile?: ReadFile) {
-  const [imageData, setImageData] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
+  const [imageData, setImageData] = useState<string | null>(() => inlineSrc(image));
+  const [loading, setLoading] = useState(() => !image.data);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -44,13 +48,13 @@ export function useImageSource(image: DisplayImageContent, readFile?: ReadFile) 
           const result = await readFile(image.path);
           if (result.success && result.content) {
             // Check if content is already base64 or needs conversion
-            if (result.content.startsWith('data:')) {
-              setImageData(result.content);
-            } else {
+            let src = result.content;
+            if (!src.startsWith('data:')) {
               const ext = image.path.split('.').pop()?.toLowerCase();
               const mimeType = MIME_TYPES[ext || ''] || 'image/png';
-              setImageData(`data:${mimeType};base64,${result.content}`);
+              src = `data:${mimeType};base64,${result.content}`;
             }
+            setImageData(src);
             setLoading(false);
             return;
           } else if (result.error) {

@@ -278,7 +278,27 @@ export class SQLiteDatabase {
         }
       }
     });
-    run();
+    // Instrumented under the first statement's shape: agent-message batches
+    // now persist through here, and they are the hottest write path.
+    const label = statements[0].sql;
+    const stack = captureStack();
+    const inFlight = this.instrumentation.beginInFlight(label, stack);
+    const t0 = performance.now();
+    try {
+      run();
+      this.instrumentation.recordQuery({ sql: label, kind: 'write', durationMs: performance.now() - t0, stack });
+    } catch (err) {
+      this.instrumentation.recordQuery({
+        sql: label,
+        kind: 'write',
+        durationMs: performance.now() - t0,
+        error: err as Error,
+        stack,
+      });
+      throw err;
+    } finally {
+      inFlight.end();
+    }
   }
 
   /**

@@ -28,7 +28,7 @@ describe('providerPayloadSlots -- claude-code', () => {
     ]));
   });
 
-  it('never offers an image block as a slot', () => {
+  it('offers an image block as its own kind of slot, so policy stays with the caller', () => {
     const chunk = {
       type: 'user',
       message: {
@@ -42,9 +42,11 @@ describe('providerPayloadSlots -- claude-code', () => {
       },
     };
 
-    const found = paths(chunk, 'claude-code');
-    expect(found).toContain('message.content[0].content[0].text');
-    expect(found.some((p) => p.includes('[1]'))).toBe(false);
+    const slots = providerPayloadSlots(chunk, 'claude-code');
+    expect(slots.map((s) => [s.path, s.kind])).toEqual([
+      ['message.content[0].content[0].text', 'claudeToolResult'],
+      ['message.content[0].content[1]', 'toolResultImage'],
+    ]);
   });
 
   it('offers no slots on a tool_use call, whatever it carries', () => {

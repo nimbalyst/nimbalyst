@@ -43,6 +43,33 @@ describe('accumulateClaudeCodeTurnUsage', () => {
     );
     expect(next).toMatchObject({ totalTokens: 152, cacheReadInputTokens: 10, cacheCreationInputTokens: 5 });
   });
+
+  it('accumulates the 5m/1h cache-write split only from turns that report it', () => {
+    const split = (fiveMin: number, oneHour: number) => {
+      const turn = claudeTurn(1, 1, 0, fiveMin + oneHour);
+      return {
+        ...turn,
+        usage: {
+          ...turn.usage,
+          cache_creation_ephemeral_5m_input_tokens: fiveMin,
+          cache_creation_ephemeral_1h_input_tokens: oneHour,
+        },
+      };
+    };
+    const first = accumulateClaudeCodeTurnUsage(undefined, split(100, 800));
+    // An older CLI reports no split: the total grows, the split carries over unchanged.
+    const second = accumulateClaudeCodeTurnUsage(first, claudeTurn(1, 1, 0, 300));
+    const third = accumulateClaudeCodeTurnUsage(second, split(20, 0));
+
+    expect(third).toMatchObject({
+      cacheCreationInputTokens: 1_220,
+      cacheCreationEphemeral5mInputTokens: 120,
+      cacheCreationEphemeral1hInputTokens: 800,
+    });
+    const neverReported = accumulateClaudeCodeTurnUsage(undefined, claudeTurn(1, 1, 0, 300));
+    expect(neverReported).not.toHaveProperty('cacheCreationEphemeral5mInputTokens');
+    expect(neverReported).not.toHaveProperty('cacheCreationEphemeral1hInputTokens');
+  });
 });
 
 const codexTurn = (uncachedInput: number, cached: number, output: number): ProviderTurnUsageInput => ({

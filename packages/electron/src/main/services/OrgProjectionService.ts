@@ -23,7 +23,7 @@ import type {
 
 export type OrgFlavor = 'personal' | 'team';
 export type OrgRole = 'owner' | 'admin' | 'member' | 'viewer' | 'guest';
-export type ProjectRole = 'project-admin' | 'project-editor' | 'project-viewer';
+export type ProjectRole = 'project-admin' | 'project-editor' | 'project-commenter' | 'project-viewer';
 
 export interface ProjectionDb {
   query<T = unknown>(sql: string, params?: unknown[]): Promise<{ rows: T[] }>;

@@ -14,6 +14,9 @@ import {
 } from "../askUserQuestionFallbackResolution";
 import { deliverCodexQuestionAnswer } from "../codexQuestionDelivery";
 import { hasPersistedTerminalResult } from "../questionTerminalResultLookup";
+import { sessionFallbackMayCarryAnswer } from "../../../mcp/tools/interactivePromptFallback";
+import { hasLiveInteractivePrompt } from "../../../mcp/tools/interactivePromptLiveness";
+import { queueAnswerUntilTurnEnds } from "../requestUserInputOrphanedAnswer";
 import type { AIServiceContext } from "./AIServiceContext";
 
 export function registerAskUserQuestionAnswerHandler(
@@ -122,8 +125,12 @@ export function registerAskUserQuestionAnswerHandler(
         });
       }
 
+      // A Claude Code card with no waiter on its own channel has no live
+      // waiter; a fallback listener would be a different question.
       const sessionFallbackChannel = `ask-user-question:${resolvedSessionId}`;
       const hasSessionFallbackWaiter =
+        !hasMcpWaiter &&
+        sessionFallbackMayCarryAnswer(session.provider, questionId) &&
         ipcMain.listenerCount(sessionFallbackChannel) > 0;
       if (hasSessionFallbackWaiter) {
         logger.main.info(
@@ -223,6 +230,27 @@ export function registerAskUserQuestionAnswerHandler(
           .map(([question, answer]) => `${question}: ${answer}`)
           .join("\n");
         const resumeMessage = `[Resuming after answering a question]\n\n${answerText}`;
+
+        // Another prompt is blocking the turn right now; resuming would abort
+        // it (sendMessage replaces the running request). The answer is already
+        // this card's terminal result above, and reaches the agent through the
+        // prompt queue when the turn ends (NIM-7649).
+        if (hasLiveInteractivePrompt(resolvedSessionId)) {
+          logger.main.info(
+            `[AIService] AskUserQuestion ${questionId} has no live handler but another prompt is live; queuing the answer: ${resolvedSessionId}`
+          );
+          try {
+            await queueAnswerUntilTurnEnds({
+              sessionId: resolvedSessionId,
+              promptId: questionId,
+              message: resumeMessage,
+              publish: (id) => ctx.publishQueueStateToSync(id),
+            });
+          } catch (err) {
+            logger.main.error(`[AIService] Failed to queue the AskUserQuestion answer for ${questionId}: ${err}`);
+          }
+          return { success: true };
+        }
 
         logger.main.info(
           `[AIService] No live handler for AskUserQuestion, auto-resuming session: ${resolvedSessionId}`

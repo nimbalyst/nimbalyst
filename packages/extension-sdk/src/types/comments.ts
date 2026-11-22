@@ -64,6 +64,15 @@ export type CollaborativeCommentsSnapshot = ReadonlyArray<
 export interface CommentCapabilities {
   read: boolean;
   comment: boolean;
+  /**
+   * Whether the user may change the document body. Absent means true.
+   * `editBody: false` means the server refuses any change outside the
+   * comments array and ends the session on the first one. Extension editors
+   * do not support that mode yet: hosts give such users a read-only editor
+   * with `comment: false`, so an extension never receives `editBody: false`
+   * together with `comment: true`.
+   */
+  editBody?: boolean;
 }
 
 export interface CommentMember {

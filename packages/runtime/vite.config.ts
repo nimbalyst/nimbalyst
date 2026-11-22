@@ -120,6 +120,7 @@ export default defineConfig(({ mode }) => ({
       '@lexical/list',
       '@lexical/link',
       '@lexical/code',
+      '@lexical/code-prism',
       '@lexical/table',
       '@lexical/selection',
       '@lexical/clipboard',

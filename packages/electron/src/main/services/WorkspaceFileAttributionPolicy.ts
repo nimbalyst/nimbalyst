@@ -12,8 +12,9 @@ interface SessionAttributionPolicy {
  * Tracks how watcher events may be attributed while an agent session is
  * active. A session whose provider reports `'structured'` file changes uses
  * `disabled`: those items are authoritative, so filesystem listeners must
- * never attribute edits to the session on top of them. Everything else
- * retains the legacy matcher modes. See `providerFileTracking.ts` for who
+ * never attribute edits to the session on top of them. A `shell-window`
+ * session is linked by its hook-window tracker and is never a candidate for
+ * the fuzzy matcher. Everything else retains the legacy matcher modes. See `providerFileTracking.ts` for who
  * earns which mode.
  */
 class WorkspaceFileAttributionPolicyRegistry {
@@ -44,16 +45,32 @@ class WorkspaceFileAttributionPolicyRegistry {
     }).map(([id]) => id);
   }
 
+  /** Bash edits come only from hook windows; the fuzzy matcher must not pick this session. */
+  isShellWindow(sessionId: string): boolean {
+    return this.policies.get(sessionId)?.mode === 'shell-window';
+  }
+
   isDisabled(sessionId: string, workspacePath: string): boolean {
     const policy = this.policies.get(sessionId);
     return policy?.mode === 'disabled'
       && policy.workspacePath === path.resolve(workspacePath);
   }
 
-  hasDisabledSession(workspacePath: string): boolean {
+  /**
+   * Whether a disabled session is blocking listener attribution in this
+   * workspace. `isRunning` limits it to sessions whose turn is in progress: the
+   * policy is only released by `HooklessAgentFileWatcher.stopForSession`, and a
+   * turn that exits without reaching it would otherwise silence attribution for
+   * every other session in the workspace until restart.
+   */
+  hasDisabledSession(workspacePath: string, isRunning?: (sessionId: string) => boolean): boolean {
     const normalizedWorkspacePath = path.resolve(workspacePath);
-    for (const policy of this.policies.values()) {
-      if (policy.mode === 'disabled' && policy.workspacePath === normalizedWorkspacePath) {
+    for (const [sessionId, policy] of this.policies) {
+      if (
+        policy.mode === 'disabled'
+        && policy.workspacePath === normalizedWorkspacePath
+        && (!isRunning || isRunning(sessionId))
+      ) {
         return true;
       }
     }

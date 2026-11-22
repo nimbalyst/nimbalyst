@@ -4,7 +4,8 @@
  * Handles OS-level notifications for AI/agent completion events.
  */
 
-import { Notification, BrowserWindow, app, ipcMain, shell } from 'electron';
+import { Notification, BrowserWindow, app, ipcMain } from 'electron';
+import { systemShell } from '../utils/systemShell';
 import { logger } from '../utils/logger';
 import { isOSNotificationsEnabled, isNotifyWhenFocusedEnabled, isSessionBlockedNotificationsEnabled } from '../utils/store';
 import {
@@ -344,7 +345,7 @@ class NotificationService {
       throw new Error('Opening notification settings is not supported on this platform');
     }
 
-    await shell.openExternal(target);
+    await systemShell.openExternal(target);
   }
 
   /**
@@ -371,6 +372,23 @@ class NotificationService {
       );
       return options.workspacePath;
     }
+  }
+
+  /**
+   * Open a session in its project's window, the same routing a notification
+   * click uses: focus the window that holds the project and select the session
+   * there, or open the project and queue the selection for its renderer. With
+   * the project rail off a window shows one project, so a session link to
+   * another project has to land in another window.
+   */
+  navigateToSession(target: SessionNotificationNavigationTarget): void {
+    this.handleNotificationClick({
+      title: '',
+      body: '',
+      sessionId: target.sessionId,
+      workspacePath: target.workspacePath,
+      sourceLabel: target.sourceLabel,
+    });
   }
 
   /**

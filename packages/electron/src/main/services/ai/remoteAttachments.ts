@@ -3,6 +3,7 @@ import { relative, isAbsolute } from "node:path";
 import type { ChatAttachment } from "@nimbalyst/runtime/ai/server/types";
 import type { EncryptedAttachment } from "@nimbalyst/runtime/sync/types";
 import { resolveWorkspaceAttachmentStagingDirectory } from "../attachments/attachmentStagingRoot";
+import { aesGcmEncrypt } from "@nimbalyst/runtime/sync/aesGcm";
 
 /** Only already-staged project attachments can leave this machine. */
 export async function encryptRemoteAttachments(
@@ -33,11 +34,7 @@ export async function encryptRemoteAttachments(
       if (bytes.length !== stat.size)
         throw new Error("The attachment changed. Attach it again.");
       const iv = crypto.getRandomValues(new Uint8Array(12));
-      const encrypted = await crypto.subtle.encrypt(
-        { name: "AES-GCM", iv },
-        key,
-        bytes
-      );
+      const encrypted = await aesGcmEncrypt(key, iv, bytes);
       result.push({
         id: attachment.id,
         filename: attachment.filename,

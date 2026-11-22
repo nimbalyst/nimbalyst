@@ -32,6 +32,9 @@ import releaseYaml from './builtins/release.yaml?raw';
 import sourceYaml from './builtins/source.yaml?raw';
 import captureYaml from './builtins/capture.yaml?raw';
 import citationYaml from './builtins/citation.yaml?raw';
+// Unlisted overlays the GitHub panel writes for issues and pull requests.
+import githubIssueYaml from './builtins/github-issue.yaml?raw';
+import githubPrYaml from './builtins/github-pr.yaml?raw';
 // import featureYaml from './builtins/feature.yaml?raw';
 // import automationYaml from './builtins/automation.yaml?raw';
 
@@ -52,6 +55,8 @@ export const BUILTIN_TRACKER_YAML: ReadonlyArray<{ type: string; yaml: string }>
   { type: 'source', yaml: sourceYaml },
   { type: 'capture', yaml: captureYaml },
   { type: 'citation', yaml: citationYaml },
+  { type: 'github-issue', yaml: githubIssueYaml },
+  { type: 'github-pr', yaml: githubPrYaml },
   // { type: 'feature', yaml: featureYaml },
   // { type: 'automation', yaml: automationYaml },
 ];

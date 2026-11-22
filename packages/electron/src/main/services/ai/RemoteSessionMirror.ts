@@ -10,6 +10,7 @@ import { isSessionConnectionRefused } from '@nimbalyst/runtime/sync/SyncedSessio
 
 type IndexEntry = NonNullable<Awaited<ReturnType<NonNullable<SyncProvider['fetchIndex']>>>>['sessions'][number];
 import type { RemoteSessionSnapshot } from '../../../shared/remoteSessions';
+import { aesGcmDecrypt } from '@nimbalyst/runtime/sync/aesGcm';
 export type { RemoteSessionSnapshot } from '../../../shared/remoteSessions';
 interface Observation {
   entry: IndexEntry;
@@ -326,11 +327,16 @@ export class RemoteSessionMirror {
         if (provider !== this.provider) return reject(new Error('Session sync changed.'));
         const payload = message.payload;
         if (typeof payload.encrypted !== 'string' || payload.encrypted.length > 1024 * 1024 || typeof payload.iv !== 'string') return reject(new Error('Invalid remote workspace response.'));
-        void crypto.subtle.decrypt({name: 'AES-GCM', iv: Buffer.from(payload.iv, 'base64')}, key, Buffer.from(payload.encrypted, 'base64'))
+        void aesGcmDecrypt(key, Buffer.from(payload.iv, 'base64'), Buffer.from(payload.encrypted, 'base64'))
           .then(data => { if (provider !== this.provider) throw new Error('Session sync changed.'); return JSON.parse(new TextDecoder().decode(data)); }).then(resolve, reject);
       });
       void provider.sendSessionControlMessage!({sessionId: id, type: 'workspace-context-request', targetDeviceId: entry.hostDeviceId, sentByDeviceId: provider.getLocalDeviceInfo?.()?.deviceId, sentBy: 'desktop', timestamp: Date.now(), payload: {requestId}}).catch(error => {clearTimeout(timer); off(); reject(error);});
     });
+  }
+
+  /** The name other devices see for this machine in session sync, or null when sync is off or the name is blank. */
+  localDeviceName(): string | null {
+    return this.provider?.getLocalDeviceInfo?.()?.name?.trim() || null;
   }
 
   async hosts(workspace: string): Promise<DeviceInfo[]> {

@@ -82,7 +82,7 @@ describe('initTrackerSyncListeners project switch (NIM-668)', () => {
 
     // Initial load resolves through the get-initial-state promise chain.
     await vi.waitFor(() => {
-      expect(invoke).toHaveBeenCalledWith('document-service:tracker-items-list');
+      expect(invoke).toHaveBeenCalledWith('document-service:tracker-items-list', '/ws/A');
     });
 
     const listCallsBeforeSwitch = invoke.mock.calls.filter(
@@ -105,7 +105,7 @@ describe('initTrackerSyncListeners project switch (NIM-668)', () => {
       syncStatus: 'local', system: { workspace: '/ws/A', createdAt: 'x', updatedAt: 'x' }, fields: { title: 'Acme' } } as TrackerRecord;
     cleanup = initTrackerSyncListeners();
     await vi.waitFor(() => {
-      expect(invoke).toHaveBeenCalledWith('document-service:tracker-items-list');
+      expect(invoke).toHaveBeenCalledWith('document-service:tracker-items-list', '/ws/A');
     });
     mergeLocalWikiRecords('/ws/A', [wikiItem]);
     expect(store.get(trackerItemsMapAtom).has('wiki-a')).toBe(true);
@@ -129,7 +129,7 @@ describe('initTrackerSyncListeners project switch (NIM-668)', () => {
     }]);
     cleanup = initTrackerSyncListeners();
     await vi.waitFor(() => {
-      expect(invoke).toHaveBeenCalledWith('document-service:tracker-items-list');
+      expect(invoke).toHaveBeenCalledWith('document-service:tracker-items-list', '/ws/A');
     });
 
     store.set(activeWorkspacePathAtom, '/ws/B');
@@ -164,7 +164,7 @@ describe('initTrackerSyncListeners project switch (NIM-668)', () => {
   it('routes an agent body write through the open editor provider before acknowledging it', async () => {
     cleanup = initTrackerSyncListeners();
     await vi.waitFor(() => {
-      expect(invoke).toHaveBeenCalledWith('document-service:tracker-items-list');
+      expect(invoke).toHaveBeenCalledWith('document-service:tracker-items-list', '/ws/A');
       expect(handlers['tracker-body:apply-markdown']).toBeTypeOf('function');
     });
 

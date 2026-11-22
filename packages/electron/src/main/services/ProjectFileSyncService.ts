@@ -21,10 +21,10 @@ import { timeStartupPhase } from '../utils/startupTiming';
 import { database } from '../database/PGLiteDatabaseWorker';
 import { dirtyEditorRegistry } from './DirtyEditorRegistry';
 import { getPersonalSessionJwt } from './StytchAuthService';
-import { hashProjectFiles } from './ProjectManifestHasher';
+import { hashProjectFiles, scanProjectSyncCandidates } from './ProjectManifestHasher';
 import { exceedsProjectSyncLimit, OversizedFileWarnings, projectSyncTitle, storedSyncIds } from './projectFileSyncLimits';
 import { keepDivergedRemoteCopy } from './projectFileSyncConflicts';
-import { isInWiki, isInWikiTrash, isProjectSyncPath, isWikiMarkerPath, ProjectSyncWikiRules, wikiMarkerFirst } from './sync/projectSyncWikiRules';
+import { isInWiki, isProjectSyncPath, isWikiMarkerPath, PROJECT_SYNC_CANDIDATES, ProjectSyncWikiRules, wikiMarkerFirst } from './sync/projectSyncWikiRules';
 import { parseDiskStamp, persistDiskStamps, stampMatches, type DiskStamp, type ScannedFile } from './projectFileSyncDiskCache';
 
 interface SyncedFileState {
@@ -492,7 +492,7 @@ export class ProjectFileSyncService {
         // baseline so a later legitimate remote edit isn't wrongly rejected as
         // locally-diverged.
         await this.setBaselinesForStored(projectId, outcome, filesToPush);
-        logger.main.info(`[ProjectFileSync] Pushed ${filesToPush.length} files to server (${outcome.stored.length} stored) in ${Date.now() - networkStart}ms`);
+        logger.main.info(`[ProjectFileSync] Pushed ${filesToPush.length} files to server (${outcome.stored.length} stored, ${outcome.rejected.length} rejected, ${outcome.unconfirmed.length} unconfirmed) in ${Date.now() - networkStart}ms`);
       }
     }
 
@@ -921,51 +921,19 @@ export class ProjectFileSyncService {
 
   // MARK: - File Scanning
 
-  private async scanSyncFiles(dir: string): Promise<ScannedFile[]> {
+  /** The walk and its stats run on the manifest worker; the sync rules apply here. */
+  private async scanSyncFiles(root: string): Promise<ScannedFile[]> {
+    const candidates = await scanProjectSyncCandidates({ root, ...PROJECT_SYNC_CANDIDATES });
     const results: ScannedFile[] = [];
-    await this.walkDir(dir, results, dir);
-    return results;
-  }
-
-  private async walkDir(dir: string, results: ScannedFile[], root: string): Promise<void> {
-    const basename = path.basename(dir);
-
-    // Skip common non-content directories (the report folders hold generated .html)
-    const skipDirs = new Set([
-      'node_modules', '.git', '.nimbalyst', 'dist', 'build', '.build',
-      'out', '.next', '.nuxt', '.svelte-kit', 'coverage', '.cache',
-      'playwright-report', 'test-results', 'htmlcov', 'storybook-static',
-      '.turbo', '.vercel', '.output', '__pycache__', '.venv', 'venv',
-      'target', 'Pods', '.gradle', 'DerivedData',
-    ]);
-    if (skipDirs.has(basename) || basename.startsWith('.build') || isInWikiTrash(dir, root)) {
-      return;
-    }
-
-    let entries;
-    try {
-      entries = await fs.readdir(dir, { withFileTypes: true });
-    } catch {
-      return; // Permission denied or other error
-    }
-
-    for (const entry of entries) {
-      const fullPath = path.join(dir, entry.name);
-      if (entry.isDirectory()) {
-        await this.walkDir(fullPath, results, root);
-      } else if (entry.isFile() && isProjectSyncPath(fullPath, root)) {
-        try {
-          const stat = await fs.stat(fullPath);
-          if (!exceedsProjectSyncLimit(stat.size, path.relative(root, fullPath))) {
-            results.push({ filePath: fullPath, size: stat.size, mtime: Math.floor(stat.mtimeMs) });
-          } else {
-            this.oversizedWarnings.warn(fullPath, stat.size);
-          }
-        } catch {
-          // Skip files we can't stat
-        }
+    for (const file of candidates) {
+      if (!isProjectSyncPath(file.filePath, root)) continue;
+      if (exceedsProjectSyncLimit(file.size, path.relative(root, file.filePath))) {
+        this.oversizedWarnings.warn(file.filePath, file.size);
+        continue;
       }
+      results.push(file);
     }
+    return results;
   }
 
   // MARK: - Stats

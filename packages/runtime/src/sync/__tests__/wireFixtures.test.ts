@@ -4,6 +4,7 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { expect, it } from 'vitest';
 import { assertValidIndexChange } from '../indexChangeValidation';
+import { buildClientMetadataFromRaw, mergeBulkClientMetadata } from '../sessionClientMetadata';
 import type { IndexChange, IndexPageRequestMessage, IndexPageResponseMessage } from '../../../../collab-protocol/src/indexReplication';
 import type { ProjectConfig, SyncedSettings } from '../types';
 import type { EncryptedMessage, ClientMetadata, ClientMessage, ServerMessage, SessionIndexEntry, SessionMetadata, IndexChangeWire, IndexPageResponseWire, PersonalStatePageResponseWire } from '../collabV3WireTypes';
@@ -219,4 +220,19 @@ it('validates manifest metadata and binds every JSON file to its exhaustive witn
     if ('fixture' in entry) expect(fixtures[entry.fixture]).toHaveProperty('type', type);
     else expect(entry.reason.trim().length).toBeGreaterThan(0);
   }
+});
+
+// The fixture above is checked against the TypeScript type, and the type said
+// boolean while a SQLite row delivered 0/1 at runtime; iOS then hid the session.
+// Run the real producer on database-shaped input and hold every value to the
+// fixture's JSON type, which the Swift and Kotlin decoders are tested against.
+it('the bulk client metadata producer emits the fixture JSON types from SQLite-shaped rows', () => {
+  const fixture = JSON.parse(readFileSync(resolve(fixtureDir, 'clientMetadata.desktop.json'), 'utf8')) as Record<string, unknown>;
+  const raw = { tokenUsage: { totalTokens: 12000, contextWindow: 200000 }, phase: 'implementing', tags: ['sync'], draftInput: 'Review the queued changes', draftUpdatedAt: 1789232406000 };
+  const produced = JSON.parse(JSON.stringify(mergeBulkClientMetadata(
+    buildClientMetadataFromRaw(raw, { hasBeenNamed: 1 as unknown as boolean }), undefined, true, true,
+  ))) as Record<string, unknown>;
+  expect(Object.keys(produced).sort()).toEqual(Object.keys(fixture).sort());
+  const jsonType = (value: unknown) => Array.isArray(value) ? 'array' : value === null ? 'null' : typeof value;
+  for (const key of Object.keys(fixture)) expect(jsonType(produced[key]), key).toBe(jsonType(fixture[key]));
 });

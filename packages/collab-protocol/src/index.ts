@@ -25,6 +25,7 @@ export * from "./teamDocumentHistory.js";
 export * from "./teamTracker.js";
 export * from "./pageFields.js";
 export * from "./teamRoom.js";
+export * from "./teamRecovery.js";
 export * from "./projectSync.js";
 
 export * from "./documentDecision.js";

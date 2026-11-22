@@ -4,8 +4,10 @@ import React from 'react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   TabsProvider,
+  useActiveTabFileInfo,
   useTabNavigationShortcuts,
   useTabs,
+  useTabsActions,
 } from '../TabsContext';
 
 const nextTabListeners = new Set<() => void>();
@@ -72,5 +74,31 @@ describe('useTabNavigationShortcuts', () => {
     rerender({ isActive: false });
     expect(nextTabListeners.size).toBe(0);
     expect(previousTabListeners.size).toBe(0);
+  });
+});
+
+describe('useActiveTabFileInfo', () => {
+  // The Files-mode chat shows "Context: <file>" from this value. It must follow
+  // tab close without the caller re-rendering for some other reason.
+  it('follows the active tab and clears when the last tab closes', () => {
+    const { result } = renderHook(
+      () => ({ actions: useTabsActions(), info: useActiveTabFileInfo() }),
+      { wrapper },
+    );
+    expect(result.current.info.filePath).toBeNull();
+
+    let firstId: string | null = null;
+    let secondId: string | null = null;
+    act(() => {
+      firstId = result.current.actions.addTab('collab://documents/first');
+      secondId = result.current.actions.addTab('collab://documents/second');
+    });
+    expect(result.current.info.filePath).toBe('collab://documents/second');
+
+    act(() => result.current.actions.removeTab(secondId!));
+    expect(result.current.info.filePath).toBe('collab://documents/first');
+
+    act(() => result.current.actions.removeTab(firstId!));
+    expect(result.current.info).toEqual({ filePath: null, fileName: null });
   });
 });

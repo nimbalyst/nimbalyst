@@ -110,7 +110,7 @@ import { ArchiveWorktreeDialog } from './ArchiveWorktreeDialog';
 import { useArchiveWorktreeDialog } from '../../hooks/useArchiveWorktreeDialog';
 import { detectFileType, type SerializableDocumentContext } from '../../hooks/useDocumentContext';
 import { getTextSelection } from '../UnifiedAI/TextSelectionIndicator';
-import { terminalListAtom, setActiveTerminal, loadTerminals } from '../../store/atoms/terminals';
+import { terminalListAtom, terminalListWorkspaceAtom, terminalsForWorkspace, setActiveTerminal, loadTerminals } from '../../store/atoms/terminals';
 import {
   sessionKanbanTagsAtom,
   setSessionTagsAtom,
@@ -1256,8 +1256,11 @@ export const AgentWorkstreamPanel = React.memo(React.forwardRef<AgentWorkstreamP
     await confirmArchive(workspacePath, onWorktreeArchived);
   }, [workspacePath, onWorktreeArchived, confirmArchive]);
 
-  // Get terminal list for checking existing terminals
-  const terminals = useAtomValue(terminalListAtom);
+  // Get terminal list for checking existing terminals. Right after a project
+  // switch the shared list still holds the old project's terminals (#1818).
+  const loadedTerminals = useAtomValue(terminalListAtom);
+  const terminalListWorkspace = useAtomValue(terminalListWorkspaceAtom);
+  const terminals = terminalsForWorkspace(loadedTerminals, terminalListWorkspace, workspacePath);
 
   // Open a terminal in the worktree directory (reuses existing if available)
   const handleOpenTerminal = useCallback(async () => {
