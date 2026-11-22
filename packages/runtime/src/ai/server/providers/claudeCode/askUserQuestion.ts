@@ -1,5 +1,28 @@
 import { AskUserQuestionPrompt } from '../shared/askUserQuestionTypes';
 
+/**
+ * CLI capability (system/init `capabilities`) that lets an AskUserQuestion
+ * answer carry `annotations[question].unanswered`. An older CLI on a strict
+ * host refuses the whole answer when the field is present, so it is sent only
+ * when advertised.
+ */
+export const ASK_USER_QUESTION_UNANSWERED_CAPABILITY = 'ask_user_question_unanswered_v1';
+
+/**
+ * Rejection reason for a question the user explicitly closed without answering
+ * (the widget's cancel, desktop or mobile). An abort or turn teardown rejects
+ * with a plain Error instead: that turn is ending and there is no answer to send.
+ */
+/** What the model reads for a question the user closed without answering. */
+export const DISMISSED_ANSWER_TEXT = 'The user dismissed this question without answering.';
+
+export class AskUserQuestionDismissedError extends Error {
+  constructor(message = 'User cancelled the question') {
+    super(message);
+    this.name = 'AskUserQuestionDismissedError';
+  }
+}
+
 export interface PendingAskUserQuestionEntry {
   resolve: (answers: Record<string, string>) => void;
   reject: (error: Error) => void;
@@ -16,6 +39,8 @@ interface HandleAskUserQuestionDeps {
   pendingAskUserQuestions: Map<string, PendingAskUserQuestionEntry>;
   pollForResponse: (sessionId: string, questionId: string, signal: AbortSignal) => Promise<void>;
   sessionId: string | undefined;
+  /** True when the running CLI advertised `ask_user_question_unanswered_v1`. */
+  supportsUnansweredAnnotation?: () => boolean;
 }
 
 interface HandleAskUserQuestionParams {
@@ -143,6 +168,27 @@ export async function handleAskUserQuestionTool(
       timestamp: Date.now()
     });
 
+    // A dismissal is an answer the CLI understands, so the model is told the
+    // user closed the question rather than seeing a permission denial. The
+    // model never sees `unanswered`; it reads only the `answers` text.
+    if (error instanceof AskUserQuestionDismissedError && deps.supportsUnansweredAnnotation?.()) {
+      const answers: Record<string, string> = {};
+      const annotations: Record<string, { unanswered: 'dismissed' }> = {};
+      for (const q of questions) {
+        if (typeof q?.question !== 'string') continue;
+        answers[q.question] = DISMISSED_ANSWER_TEXT;
+        annotations[q.question] = { unanswered: 'dismissed' };
+      }
+      return {
+        behavior: 'allow',
+        updatedInput: {
+          ...input,
+          answers,
+          annotations: { ...(input?.annotations ?? {}), ...annotations }
+        }
+      };
+    }
+
     return {
       behavior: 'deny',
       message: error instanceof Error ? error.message : 'Question cancelled'
@@ -218,7 +264,7 @@ export async function pollForAskUserQuestionResponse(
             const pending = deps.pendingAskUserQuestions.get(questionId);
             if (pending) {
               if (content.cancelled) {
-                pending.reject(new Error('User cancelled the question'));
+                pending.reject(new AskUserQuestionDismissedError());
                 deps.pendingAskUserQuestions.delete(questionId);
                 deps.logCancelled(questionId, content.respondedBy);
               } else {

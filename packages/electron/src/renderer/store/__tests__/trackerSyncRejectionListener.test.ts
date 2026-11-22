@@ -74,6 +74,7 @@ beforeEach(async () => {
     staleKeyEpoch: null,
     rotationLocked: null,
     custodyUnavailable: null,
+    recoveryConflict: null,
   });
   const mod = await import('../listeners/trackerSyncListeners');
   cleanup = mod.initTrackerSyncListeners();
@@ -116,6 +117,16 @@ describe('tracker-sync:mutation-rejected routing', () => {
     const state = store.get(trackerSyncRejectionAtom);
     expect(state.staleKeyEpoch?.itemId).toBe('item-2');
     expect(state.rotationLocked?.itemId).toBe('item-3');
+  });
+
+  it('surfaces recoveryConflict so a refused queued edit is not silently dropped', () => {
+    fireRejection({ workspacePath: WS, itemId: 'item-6', code: 'recoveryConflict', message: 'queued before recovery' });
+
+    expect(store.get(trackerSyncRejectionAtom).recoveryConflict).toMatchObject({
+      workspacePath: WS,
+      code: 'recoveryConflict',
+      itemId: 'item-6',
+    });
   });
 
   it('keeps forbidden/malformed off the banner atom', () => {

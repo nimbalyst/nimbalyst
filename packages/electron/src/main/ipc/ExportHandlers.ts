@@ -1,4 +1,5 @@
-import { dialog, BrowserWindow, clipboard } from 'electron';
+import { dialog, BrowserWindow } from 'electron';
+import { writeClipboardText } from '../utils/systemClipboard';
 import { safeHandle } from '../utils/ipcRegistry';
 import { writeFile } from 'fs/promises';
 import { logger } from '../utils/logger';
@@ -345,7 +346,7 @@ export function registerExportHandlers() {
           lines.push('');
         }
 
-        clipboard.writeText(lines.join('\n'));
+        await writeClipboardText(lines.join('\n'));
 
         // Track successful session export to clipboard
         AnalyticsService.getInstance().sendEvent('session_exported', {

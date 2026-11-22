@@ -166,11 +166,14 @@ export function stopRootWatcher(windowId: number, rootPath: string) {
 }
 
 // Stop watching a workspace
-export function stopWorkspaceWatcher(windowId: number) {
+// keepProjectFileSync: a rail switch keeps doc sync for the window's projects
+// connected. Restarting it rescans every synced file of the project on each
+// switch; a closed rail project is stopped by its own path instead.
+export function stopWorkspaceWatcher(windowId: number, opts: { keepProjectFileSync?: boolean } = {}) {
     // Stop project file sync for any workspace this window referenced
     // (primary or rail-warm additional paths) when no other window still
     // references it.
-    const state = windowStates.get(windowId);
+    const state = opts.keepProjectFileSync ? undefined : windowStates.get(windowId);
     if (state) {
         const referencedPaths = new Set<string>();
         if (state.workspacePath) referencedPaths.add(state.workspacePath);
@@ -331,7 +334,7 @@ export function pushNewDocumentToSync(filePath: string, workspacePath: string): 
 /**
  * Stop project file sync for a workspace.
  */
-function stopProjectFileSync(workspacePath: string): void {
+export function stopProjectFileSync(workspacePath: string): void {
   const subscriberId = projectSyncSubscriptions.get(workspacePath);
   if (!subscriberId) return;
 

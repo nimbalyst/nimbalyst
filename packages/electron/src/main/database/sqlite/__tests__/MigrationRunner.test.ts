@@ -16,6 +16,7 @@ import * as path from 'path';
 import { Worker } from 'node:worker_threads';
 import { getMigrations, runMigrations, type Migration } from '../MigrationRunner';
 import { SQLiteDatabase } from '../SQLiteDatabase';
+import { diskStampUpsertSql, parseDiskStamp } from '../../../services/projectFileSyncDiskCache';
 
 /**
  * Stage a no-op .sql for every migration the runner expects, and return their
@@ -247,6 +248,72 @@ describe('runMigrations against the real schema dir', () => {
           'quarantined_at',
         ]),
       );
+    } finally {
+      await sqlite.close();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('applies 0055 once across reopens and round-trips tracker_transactions.base_sync_id', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nim-mig-0055-'));
+    const open = async () => {
+      const sqlite = new SQLiteDatabase({ dbDir: tmpDir, schemaDir: path.resolve(__dirname, '..', 'schemas'), slowQueryThresholdMs: 1000, sampleRate: 0 });
+      await sqlite.initialize();
+      return sqlite;
+    };
+    let sqlite = await open();
+    try {
+      await sqlite.query(
+        `INSERT INTO tracker_transactions (client_mutation_id, item_id, workspace_path, state, kind, payload, base_sync_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+        ['m1', 'item', '/workspace', 'queued', 'update', '{}', 42],
+      );
+      // A second launch must neither re-run the ALTER (duplicate column) nor lose the value.
+      await sqlite.close();
+      sqlite = await open();
+      const handle = sqlite.getRawHandle()!;
+      expect(handle.prepare(`SELECT COUNT(*) AS n FROM _migrations WHERE version = 55`).get()).toEqual({ n: 1 });
+      const { rows } = await sqlite.query<{ base_sync_id: number | null }>(`SELECT base_sync_id FROM tracker_transactions WHERE client_mutation_id = $1`, ['m1']);
+      expect(rows.map(row => Number(row.base_sync_id))).toEqual([42]);
+    } finally {
+      await sqlite.close();
+      fs.rmSync(tmpDir, { recursive: true, force: true });
+    }
+  });
+
+  it('applies 0054: the stamp upsert moves only the disk columns of an existing baseline row', async () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'nim-mig-0054-'));
+    const sqlite = new SQLiteDatabase({
+      dbDir: tmpDir,
+      schemaDir: path.resolve(__dirname, '..', 'schemas'),
+      slowQueryThresholdMs: 1000,
+      sampleRate: 0,
+    });
+    try {
+      await sqlite.initialize();
+      await sqlite.query(
+        `INSERT INTO project_file_sync_baseline (project_id, sync_id, content_hash, last_synced_mtime, updated_at)
+         VALUES ($1, $2, $3, $4, $5)`,
+        ['p', 's1', 'agreed', 100, new Date()],
+      );
+      // Two rows in one statement: one existing, one without a baseline yet.
+      await sqlite.query(diskStampUpsertSql(2), [
+        'p', 's1', 'ignored', 999, new Date(), 'disk-1', 12, 200,
+        'p', 's2', 'base-2', 300, new Date(), 'disk-2', 34, 300,
+      ]);
+      const { rows } = await sqlite.query<Record<string, unknown>>(
+        `SELECT sync_id, content_hash, last_synced_mtime, disk_hash, disk_size, disk_mtime
+         FROM project_file_sync_baseline WHERE project_id = $1 ORDER BY sync_id`,
+        ['p'],
+      );
+      expect(rows.map((r) => [r.sync_id, r.content_hash, Number(r.last_synced_mtime)])).toEqual([
+        ['s1', 'agreed', 100],
+        ['s2', 'base-2', 300],
+      ]);
+      expect(rows.map((r) => parseDiskStamp(r))).toEqual([
+        { hash: 'disk-1', size: 12, mtime: 200 },
+        { hash: 'disk-2', size: 34, mtime: 300 },
+      ]);
     } finally {
       await sqlite.close();
       fs.rmSync(tmpDir, { recursive: true, force: true });

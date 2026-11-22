@@ -59,6 +59,26 @@ describe("interactive response polling", () => {
     expect(response?.answers).toEqual({ choice: "latest" });
   });
 
+  it("never takes another card's answer for a Claude Code tool_use waiter, even when matching any id", () => {
+    const rows = [
+      {
+        createdAt: new Date(3_000),
+        content: JSON.stringify({ type: "request_user_input_response", promptId: "toolu_stale", answers: { ok: "stale" } }),
+      },
+    ];
+    const poll = (acceptedId: string) => findFreshInteractiveResponse(rows, {
+      expectedType: "request_user_input_response",
+      idFields: ["promptId", "rawPromptId"],
+      acceptedIds: new Set([acceptedId]),
+      notBefore: 2_000,
+      matchAnyId: true,
+    });
+
+    expect(poll("toolu_live")).toBeNull();
+    // NIM-1981: a Codex waiter whose id does not line up still takes it.
+    expect(poll("exec-67e90371")?.answers).toEqual({ ok: "stale" });
+  });
+
   it("ignores rows without a trustworthy creation time", () => {
     const response = findFreshInteractiveResponse([
       {

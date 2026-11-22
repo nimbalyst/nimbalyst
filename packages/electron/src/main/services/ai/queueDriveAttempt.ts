@@ -36,6 +36,11 @@ export interface QueueDriveAttemptDeps<W> {
    * explicit send-now goes past it.
    */
   isAwaitingUserInput?(sessionId: string): boolean;
+  /**
+   * #1682: a `developer_git_commit_proposal` call is in flight. Holds the queue
+   * even for send-now; the deferred send-now replays once the call settles.
+   */
+  isCommitProposalInFlight?(sessionId: string): boolean;
   resolveWindow(workspacePath: string, allowAutoOpen: boolean): Promise<WindowResolution<W>>;
   failAllPending(sessionId: string, errorMessage: string): Promise<number>;
   dispatch(input: { sessionId: string; workspacePath: string; window: W; reason: DriveReason }): Promise<boolean>;
@@ -60,6 +65,10 @@ export async function runQueueDriveAttempt<W>(
   const pendingIds = await deps.listPendingIds(sessionId);
   if (pendingIds.length === 0) {
     return { kind: 'nothing-pending' };
+  }
+
+  if (deps.isCommitProposalInFlight?.(sessionId)) {
+    return { kind: 'deferred', reason: 'session-busy' };
   }
 
   if (reason !== 'send-now' && deps.isAwaitingUserInput?.(sessionId)) {

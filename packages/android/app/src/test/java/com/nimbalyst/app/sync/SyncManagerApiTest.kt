@@ -402,7 +402,21 @@ class SyncManagerApiTest {
     }
 
     @Test
-    fun `edits made while offline are saved locally and republished once, from the row, after reconnect`() = runBlocking<Unit> {
+    fun `edits made while offline are saved locally and republished once, from the row, after index catch-up`() = runBlocking<Unit> {
+        suspend fun catchUp() {
+            // A legacy server rejects the v2 probe, then answers the full-index request.
+            deliver("error") {
+                addProperty("code", "unknown_message_type")
+                addProperty("message", "Unknown message type")
+            }
+            deliver("indexSyncResponse") {
+                add("projects", JsonArray())
+                add("sessions", JsonArray().apply {
+                    add(entry("s1") { clientMetadata("""{"phase":"implementing","futureField":7}""") })
+                })
+            }
+        }
+
         broadcast(entry("s1") { addProperty("hostDeviceId", "desk-1"); clientMetadata("""{"phase":"planning"}""") })
         index.fail(401)
 
@@ -422,11 +436,19 @@ class SyncManagerApiTest {
         index = factory.sockets.last().also { it.open() }
         withTimeout(10_000) { manager.awaitIngestionIdle() }
 
+        assertTrue("metadata waits for index catch-up", sent("indexClientMetadataPatch").isEmpty())
+        assertTrue("archive waits for index catch-up", sent("sessionControl").isEmpty())
+        assertTrue("reparent waits for index catch-up", sent("indexUpdate").isEmpty())
+        catchUp()
+
         val patches = sent("indexClientMetadataPatch").map { it.getAsJsonObject("patch") }
         val drafts = patches.filter { it.has("encryptedClientMetadata") }
         assertEquals("a burst of offline drafts publishes once", 1, drafts.size)
         val blob = crypto.decrypt(drafts.single().get("encryptedClientMetadata").asString, drafts.single().get("clientMetadataIv").asString)
-        assertTrue(blob.contains("\"second\""))
+        val metadata = JsonParser.parseString(blob).asJsonObject
+        assertEquals("second", metadata.get("draftInput").asString)
+        assertEquals("implementing", metadata.get("phase").asString)
+        assertEquals(7, metadata.get("futureField").asInt)
         assertEquals(700L, patches.single { it.has("lastReadAt") }.get("lastReadAt").asLong)
         val controls = sent("sessionControl").map { it.getAsJsonObject("message") }
         assertEquals(listOf("archive"), controls.map { it.get("messageType").asString })
@@ -443,6 +465,8 @@ class SyncManagerApiTest {
             answered++
         }
         reconnectIndex()
+        catchUp()
         assertTrue(sent("indexClientMetadataPatch").isEmpty() && sent("sessionControl").isEmpty())
+        assertTrue(sent("indexUpdate").isEmpty())
     }
 }

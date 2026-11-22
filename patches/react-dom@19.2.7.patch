@@ -1,0 +1,108 @@
+diff --git a/cjs/react-dom-client.development.js b/cjs/react-dom-client.development.js
+index 8c860aca7db6a1ca74788209d100f10ae5f085fa..0df52f0faea10339419a7ccf132c9b3896e8297e 100644
+--- a/cjs/react-dom-client.development.js
++++ b/cjs/react-dom-client.development.js
+@@ -3780,13 +3780,32 @@
+       }
+       return kind;
+     }
++    // Nimbalyst: Performance Track diagnostics must not abort React's commit
++    // loop when a prop contains a sandboxed Window or a throwing getter/proxy.
++    // Guard enumeration, value inspection AND diffing (including `in` checks).
++    // Upstream: https://github.com/facebook/react/issues/36430
++    // Keep these guards confined to diagnostics; component errors still throw.
+     function addObjectToProperties(object, properties, indent, prefix) {
++      try {
++        addObjectToPropertiesImpl(object, properties, indent, prefix);
++      } catch {
++        properties.push([prefix + "\u00a0\u00a0".repeat(indent) + "\u2026", "[Unreadable properties]"]);
++      }
++    }
++    function addObjectToPropertiesImpl(object, properties, indent, prefix) {
+       for (var key in object)
+         hasOwnProperty.call(object, key) &&
+           "_" !== key[0] &&
+           addValueToProperties(key, object[key], properties, indent, prefix);
+     }
+-    function addValueToProperties(
++    function addValueToProperties(propertyName, value, properties, indent, prefix) {
++      try {
++        addValueToPropertiesImpl(propertyName, value, properties, indent, prefix);
++      } catch {
++        properties.push([prefix + "\u00a0\u00a0".repeat(indent) + propertyName, "[Unreadable value]"]);
++      }
++    }
++    function addValueToPropertiesImpl(
+       propertyName,
+       value,
+       properties,
+@@ -3955,6 +3974,15 @@
+       ]);
+     }
+     function addObjectDiffToProperties(prev, next, properties, indent) {
++      try {
++        return addObjectDiffToPropertiesImpl(prev, next, properties, indent);
++      } catch {
++        properties.push(["\u00a0\u00a0".repeat(indent) + "\u2026", "[Unreadable prop diff]"]);
++        // An unreadable diff cannot establish deep equality.
++        return false;
++      }
++    }
++    function addObjectDiffToPropertiesImpl(prev, next, properties, indent) {
+       var isDeeplyEqual = !0;
+       for (key in prev)
+         key in next ||
+diff --git a/cjs/react-dom-profiling.development.js b/cjs/react-dom-profiling.development.js
+index 0df4ce8bc7ab7574e6c18fc0356d85303f4970aa..2b56ed7cf40bbdc5bb3a3045ae07e3b257133b05 100644
+--- a/cjs/react-dom-profiling.development.js
++++ b/cjs/react-dom-profiling.development.js
+@@ -3788,13 +3788,32 @@
+       }
+       return kind;
+     }
++    // Nimbalyst: Performance Track diagnostics must not abort React's commit
++    // loop when a prop contains a sandboxed Window or a throwing getter/proxy.
++    // Guard enumeration, value inspection AND diffing (including `in` checks).
++    // Upstream: https://github.com/facebook/react/issues/36430
++    // Keep these guards confined to diagnostics; component errors still throw.
+     function addObjectToProperties(object, properties, indent, prefix) {
++      try {
++        addObjectToPropertiesImpl(object, properties, indent, prefix);
++      } catch {
++        properties.push([prefix + "\u00a0\u00a0".repeat(indent) + "\u2026", "[Unreadable properties]"]);
++      }
++    }
++    function addObjectToPropertiesImpl(object, properties, indent, prefix) {
+       for (var key in object)
+         hasOwnProperty.call(object, key) &&
+           "_" !== key[0] &&
+           addValueToProperties(key, object[key], properties, indent, prefix);
+     }
+-    function addValueToProperties(
++    function addValueToProperties(propertyName, value, properties, indent, prefix) {
++      try {
++        addValueToPropertiesImpl(propertyName, value, properties, indent, prefix);
++      } catch {
++        properties.push([prefix + "\u00a0\u00a0".repeat(indent) + propertyName, "[Unreadable value]"]);
++      }
++    }
++    function addValueToPropertiesImpl(
+       propertyName,
+       value,
+       properties,
+@@ -3963,6 +3982,15 @@
+       ]);
+     }
+     function addObjectDiffToProperties(prev, next, properties, indent) {
++      try {
++        return addObjectDiffToPropertiesImpl(prev, next, properties, indent);
++      } catch {
++        properties.push(["\u00a0\u00a0".repeat(indent) + "\u2026", "[Unreadable prop diff]"]);
++        // An unreadable diff cannot establish deep equality.
++        return false;
++      }
++    }
++    function addObjectDiffToPropertiesImpl(prev, next, properties, indent) {
+       var isDeeplyEqual = !0;
+       for (key in prev)
+         key in next ||

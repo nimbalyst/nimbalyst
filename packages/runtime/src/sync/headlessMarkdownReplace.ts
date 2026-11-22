@@ -24,6 +24,7 @@ import type { LexicalEditor } from 'lexical';
 
 import { $convertToEnhancedMarkdownString } from '../editor/markdown/EnhancedMarkdownExport';
 import { applyMarkdownReplace, type TextReplacement } from '../editor/plugins/DiffPlugin/core/diffUtils';
+import { readEditorWithoutCommentMarks } from './commentMarkExport';
 
 export interface HeadlessTextReplacement {
   /** Absent or empty: replace the whole document. */
@@ -36,9 +37,13 @@ export function applyMarkdownReplacementsToHeadlessEditor(
   replacements: readonly HeadlessTextReplacement[],
   transformers: Transformer[],
 ): void {
-  const originalMarkdown = editor
-    .getEditorState()
-    .read(() => $convertToEnhancedMarkdownString(transformers));
+  // Matched against with `oldText` and compared for no-op, so it is the
+  // mark-free export a reader sees (see commentMarkExport.ts). The diff itself
+  // runs against the live tree, marks included, and `preserveCommentMarks`
+  // carries them onto the result.
+  const originalMarkdown = readEditorWithoutCommentMarks(editor, () =>
+    $convertToEnhancedMarkdownString(transformers),
+  );
   // An absent `oldText` means "replace the whole document", the same
   // normalization the mounted command handler applies.
   const normalized: TextReplacement[] = replacements.map((replacement) => ({

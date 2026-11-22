@@ -4,7 +4,7 @@
  * body (local files, shared pages, typed pages), so they offer the same
  * actions in the same place.
  */
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   FloatingPortal,
   autoUpdate,
@@ -45,12 +45,28 @@ function readHeadings(editor: TableOfContentsEditor): TocItem[] {
   return items;
 }
 
-const LEVEL_CLASS: Record<number, string> = {
-  1: 'toc-level-1 font-semibold pl-3',
-  2: 'toc-level-2 pl-6',
-  3: 'toc-level-3 pl-9 text-[13px]',
-  4: 'toc-level-4 pl-12 text-[13px]',
+/**
+ * Outline depth of each heading: the number of shallower headings it sits
+ * under. A page that starts at H2 is not indented a step for nothing, and an
+ * H2 followed directly by an H4 reads as its child, not its grandchild.
+ */
+export function tocDepths(levels: number[]): number[] {
+  const open: number[] = [];
+  return levels.map((level) => {
+    while (open.length > 0 && open[open.length - 1] >= level) open.pop();
+    open.push(level);
+    return open.length - 1;
+  });
+}
+
+const INDENT_BASE_PX = 12;
+const INDENT_STEP_PX = 16;
+
+const DEPTH_CLASS: Record<number, string> = {
+  0: 'py-2 text-sm font-semibold text-[var(--nim-text)]',
+  1: 'py-1.5 text-[13px] text-[var(--nim-text)]',
 };
+const DEEP_CLASS = 'py-1 text-xs text-[var(--nim-text-muted)]';
 
 export const HeaderTableOfContents: React.FC<{ editor: TableOfContentsEditor }> = ({ editor }) => {
   const [open, setOpen] = useState(false);
@@ -68,6 +84,7 @@ export const HeaderTableOfContents: React.FC<{ editor: TableOfContentsEditor }> 
     refresh();
     return editor.registerUpdateListener(refresh);
   }, [editor, open]);
+  const depths = useMemo(() => tocDepths(items.map((item) => item.level)), [items]);
 
   const floating = useFloating({
     open,
@@ -110,19 +127,24 @@ export const HeaderTableOfContents: React.FC<{ editor: TableOfContentsEditor }> 
           >
             {items.length > 0 ? (
               <ul className="toc-list list-none m-0 py-1 px-0">
-                {items.map((item) => (
-                  <li
-                    key={item.key}
-                    role="menuitem"
-                    className={`toc-item py-2 px-3 cursor-pointer text-sm leading-snug whitespace-nowrap overflow-hidden text-ellipsis transition-colors duration-150 text-[var(--nim-text)] hover:bg-[var(--nim-bg-hover)] ${LEVEL_CLASS[item.level] ?? 'toc-level-5 pl-[60px] text-xs text-[var(--nim-text-muted)]'}`}
-                    onClick={() => {
-                      editor.getElementByKey(item.key)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                      setOpen(false);
-                    }}
-                  >
-                    {item.text}
-                  </li>
-                ))}
+                {items.map((item, i) => {
+                  const depth = depths[i];
+                  return (
+                    <li
+                      key={item.key}
+                      role="menuitem"
+                      data-depth={depth}
+                      className={`toc-item toc-level-${item.level} pr-3 cursor-pointer leading-snug whitespace-nowrap overflow-hidden text-ellipsis transition-colors duration-150 hover:bg-[var(--nim-bg-hover)] ${DEPTH_CLASS[depth] ?? DEEP_CLASS}`}
+                      style={{ paddingLeft: INDENT_BASE_PX + depth * INDENT_STEP_PX }}
+                      onClick={() => {
+                        editor.getElementByKey(item.key)?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                        setOpen(false);
+                      }}
+                    >
+                      {item.text}
+                    </li>
+                  );
+                })}
               </ul>
             ) : (
               <div className="toc-empty py-4 px-3 text-center text-[13px] text-[var(--nim-text-muted)]">No headings in document</div>

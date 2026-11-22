@@ -7,9 +7,9 @@
   "private": true,
   "scripts": {
     "build": "tsc",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "node ../../scripts/tsc-native.mjs --noEmit"
   },
   "devDependencies": {
-    "typescript": "^5.3.0"
+    "typescript": "^6.0.3"
   }
 }

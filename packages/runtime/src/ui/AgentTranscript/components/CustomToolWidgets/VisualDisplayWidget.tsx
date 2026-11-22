@@ -37,6 +37,7 @@ type ToolCall = NonNullable<TranscriptViewMessage['toolCall']>;
 import { isDarkThemeAtom } from '../../../../store/atoms/theme';
 import { GifPlayer } from './GifPlayer';
 import { useImageSource } from './displayImageSource';
+import { useRememberedImageHeight } from './rememberedImageHeight';
 import { useTranscriptImageGallery } from '../transcriptImageGalleryContext';
 import { displayImageKey, type DisplayImageContent } from '../../utils/transcriptImages';
 
@@ -528,48 +529,59 @@ const ImageDisplay: React.FC<{
   className?: string;
 }> = ({ image, description, readFile, className }) => {
   const { imageData, loading, error, setError } = useImageSource(image, readFile);
+  const height = useRememberedImageHeight(image.path || null);
 
-  if (loading) {
+  const renderContent = () => {
+    if (loading) {
+      return (
+        <div className="flex items-center justify-center p-4 bg-nim-secondary rounded-md border border-nim">
+          <span className="text-nim-muted text-sm">Loading...</span>
+        </div>
+      );
+    }
+
+    if (error) {
+      return (
+        <div className="flex flex-col items-center gap-2 p-4 bg-nim-secondary rounded-md border border-nim">
+          <span className="text-nim-error text-sm">{error}</span>
+          <span className="font-mono text-xs text-nim-faint break-all">{image.path}</span>
+        </div>
+      );
+    }
+
+    const isGif = image.path.toLowerCase().endsWith('.gif');
+
     return (
-      <div className="flex items-center justify-center p-4 bg-nim-secondary rounded-md border border-nim">
-        <span className="text-nim-muted text-sm">Loading...</span>
+      <div className="overflow-hidden rounded-md">
+        {isGif && imageData ? (
+          <GifPlayer
+            src={imageData}
+            alt={description || 'Animated GIF'}
+            className="max-w-full"
+          />
+        ) : (
+          <img
+            src={imageData || ''}
+            alt={description || 'Image'}
+            className={`max-w-full h-auto block ${className || ''}`.trim()}
+            onLoad={height.onImageLoad}
+            onError={(e) => {
+              console.error('[VisualDisplayWidget] Image element failed to load:', {
+                path: image.path,
+                src: imageData?.substring(0, 100) + (imageData && imageData.length > 100 ? '...' : '')
+              });
+              height.onImageError();
+              setError(`Failed to render image from: ${image.path}`);
+            }}
+          />
+        )}
       </div>
     );
-  }
-
-  if (error) {
-    return (
-      <div className="flex flex-col items-center gap-2 p-4 bg-nim-secondary rounded-md border border-nim">
-        <span className="text-nim-error text-sm">{error}</span>
-        <span className="font-mono text-xs text-nim-faint break-all">{image.path}</span>
-      </div>
-    );
-  }
-
-  const isGif = image.path.toLowerCase().endsWith('.gif');
+  };
 
   return (
-    <div className="overflow-hidden rounded-md">
-      {isGif && imageData ? (
-        <GifPlayer
-          src={imageData}
-          alt={description || 'Animated GIF'}
-          className="max-w-full"
-        />
-      ) : (
-        <img
-          src={imageData || ''}
-          alt={description || 'Image'}
-          className={`max-w-full h-auto block ${className || ''}`.trim()}
-          onError={(e) => {
-            console.error('[VisualDisplayWidget] Image element failed to load:', {
-              path: image.path,
-              src: imageData?.substring(0, 100) + (imageData && imageData.length > 100 ? '...' : '')
-            });
-            setError(`Failed to render image from: ${image.path}`);
-          }}
-        />
-      )}
+    <div ref={height.ref} style={height.style} className="visual-display-image">
+      {renderContent()}
     </div>
   );
 };

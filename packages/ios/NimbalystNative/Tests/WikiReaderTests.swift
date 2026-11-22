@@ -188,6 +188,20 @@ final class WikiReaderTests: XCTestCase {
         XCTAssertEqual(target("https://example.com", "kb/wiki/Home.md"), .external(URL(string: "https://example.com")!))
     }
 
+    /// An embedded `.html` resolves beside the page that embeds it, and never opens as a document.
+    func testHtmlEmbedsResolveBesideTheirPageAndStayOutOfTheFileList() {
+        XCTAssertEqual(WikiDocuments.embedPath(src: "diagrams/flow.html", fromRelativePath: "kb/wiki/Home.md"), "kb/wiki/diagrams/flow.html")
+        XCTAssertEqual(WikiDocuments.embedPath(src: "<../My%20Map.html>", fromRelativePath: "kb/wiki/Docs/Guide.md"), "kb/wiki/My Map.html")
+        XCTAssertEqual(WikiDocuments.embedPath(src: "./a.html#top", fromRelativePath: "README.md"), "a.html")
+        XCTAssertNil(WikiDocuments.embedPath(src: "../../escape.html", fromRelativePath: "kb/Home.md"))
+        XCTAssertNil(WikiDocuments.embedPath(src: "/etc/a.html", fromRelativePath: "Home.md"))
+        XCTAssertNil(WikiDocuments.embedPath(src: "https://example.com/a.html", fromRelativePath: "Home.md"))
+        XCTAssertNil(WikiDocuments.embedPath(src: "notes.md", fromRelativePath: "Home.md"))
+
+        XCTAssertTrue(WikiDocuments.isEmbedOnlyFile("docs/Flow.HTML"))
+        XCTAssertFalse(WikiDocuments.isEmbedOnlyFile("docs/flow.md"))
+    }
+
     /// Block scalars match js-yaml, or the file reads as malformed; never an altered value.
     func testBlockScalarsMatchOrAreRejected() throws {
         XCTAssertEqual(try WikiYAML.parseMapping("a: |+\n  x\n")["a"], .string("x\n"))

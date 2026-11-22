@@ -42,6 +42,10 @@ on:
 
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+  # onnxruntime-node downloads its CUDA build from a GitHub release on Linux x64
+  # during postinstall; that asset 404s for 1.21.0 (2026-11-18) and nothing
+  # uses the CUDA provider, so skip it.
+  ONNXRUNTIME_NODE_INSTALL_CUDA: skip
   # Make pnpm resilient to transient registry socket drops (ECONNRESET): retry
   # individual failed requests instead of aborting the whole install.
   pnpm_config_fetch_retries: '5'
@@ -202,7 +206,15 @@ jobs:
 
           # validate-extra-resources.js checks the binaries inside these during
           # the build; here we only need the target package to be present.
-          for PKG in "@openai/codex-${NPM_PLATFORM}-${TARGET_ARCH}" "@zed-industries/codex-acp-${NPM_PLATFORM}-${TARGET_ARCH}"; do
+          # Sharp (loaded by Memory's local embedder) is copied with a filtered
+          # `../../node_modules` entry, which validate-extra-resources.js cannot
+          # check, so its target binding is checked here. Windows has no
+          # separate libvips package.
+          CROSS_PKGS=("@openai/codex-${NPM_PLATFORM}-${TARGET_ARCH}" "@zed-industries/codex-acp-${NPM_PLATFORM}-${TARGET_ARCH}" "@img/sharp-${NPM_PLATFORM}-${TARGET_ARCH}")
+          if [ "$NPM_PLATFORM" != "win32" ]; then
+            CROSS_PKGS+=("@img/sharp-libvips-${NPM_PLATFORM}-${TARGET_ARCH}")
+          fi
+          for PKG in "${CROSS_PKGS[@]}"; do
             if [ ! -d "node_modules/${PKG}" ]; then
               echo "::error::Cross-arch package not found at node_modules/${PKG}"
               ls -la "node_modules/$(dirname "${PKG}")/" || true
@@ -783,6 +795,17 @@ jobs:
             fi
             echo "latest-linux.yml lists ${name}"
           done
+          # Both Mac channel files must carry the macOS floor. Without it the
+          # updater on a macOS 12 install downloads a build that cannot launch.
+          for feed in release/latest-mac.yml release/alpha-mac.yml; do
+            [ -e "$feed" ] || continue
+            if ! grep -q "^minimumSystemVersion: 22\.0\.0$" "$feed"; then
+              echo "::error::${feed} is missing minimumSystemVersion: 22.0.0"
+              cat "$feed"
+              exit 1
+            fi
+            echo "${feed} declares minimumSystemVersion 22.0.0"
+          done
           # Copy generated yml files back to release-files
           cp release/*.yml ../../release-files/ 2>/dev/null || true
           cp release/*.yaml ../../release-files/ 2>/dev/null || true
@@ -895,19 +918,43 @@ jobs:
       # can discover it through the public releases feed. Re-running the
       # workflow with create_github_release=true updates that same release and
       # clears the prerelease flag, making it the stable release.
+      #
+      # A new release is created as a draft and only made public after every
+      # asset has uploaded. Publishing first exposed the *-mac.yml manifests
+      # ~30s before the zips finished, and clients that checked in that window
+      # got "Cannot download ... status 404". An existing release (the promote
+      # re-run) is never re-drafted so it stays visible throughout.
+      - name: Check for existing GitHub Release
+        id: existing_release
+        if: github.ref_type == 'tag'
+        run: |
+          if gh release view "${{ steps.get_version.outputs.VERSION }}" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "exists=true" >> $GITHUB_OUTPUT
+          else
+            echo "exists=false" >> $GITHUB_OUTPUT
+          fi
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Publish GitHub Release
         if: github.ref_type == 'tag'
         uses: softprops/action-gh-release@de2c0eb89ae2a093876385947365aca7b0e5f844 # v1 (v0.1.15)
         with:
           tag_name: ${{ steps.get_version.outputs.VERSION }}
           name: Release ${{ steps.get_version.outputs.VERSION }}
-          draft: false
+          draft: ${{ steps.existing_release.outputs.exists != 'true' }}
           prerelease: ${{ !(inputs.create_github_release == true || inputs.create_github_release == 'true') }}
           files: release-files/*
           generate_release_notes: false
           body_path: release-files/GITHUB_RELEASE_BODY.md
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Make GitHub Release public after all assets uploaded
+        if: github.ref_type == 'tag' && steps.existing_release.outputs.exists != 'true'
+        run: gh release edit "${{ steps.get_version.outputs.VERSION }}" --repo "$GITHUB_REPOSITORY" --draft=false
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Release Complete
         run: |

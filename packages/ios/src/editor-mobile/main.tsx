@@ -11,6 +11,8 @@
  *       answers saveResult(revision, ok)
  *     - dirty: whether the editor differs from what native confirmed, or a save is in flight
  *     - linkClicked: a link was tapped ({ href, title }); native decides where it goes
+ *     - readEmbedFile: { requestId, src } the text of an embedded `.html` file, `src`
+ *       as written in the link; native answers embedFileResult
  *     - error: JS error occurred
  *
  *   Only the body goes through Lexical. The frontmatter text is kept as loaded
@@ -28,6 +30,7 @@
  *     - setReadOnly(readonly: boolean): toggle read-only mode
  *     - getContent(): string: get current markdown content
  *     - formatText(format: string): apply text format (bold, italic, underline, strikethrough, code)
+ *     - embedFileResult(requestId, content | null, error?): the answer to readEmbedFile
  *
  * CRITICAL: All hooks must come BEFORE any early returns.
  * WKWebView swallows JS errors silently -- a hooks violation
@@ -54,6 +57,7 @@ import type { LexicalEditor, TextFormatType } from 'lexical';
 import { joinFrontmatter, splitFrontmatter } from './frontmatter';
 import { PendingSave } from './pendingSave';
 import { authoredLinkHref } from './linkHref';
+import { installMobileHtmlEmbeds } from '@nimbalyst/runtime/ui/htmlEmbed/mobileHtmlFileEmbeds';
 import './styles.css';
 
 /** Update tag for content loaded from native; such updates are not user edits. */
@@ -84,6 +88,13 @@ function postErrorToNative(error: Error | string, context?: string): void {
 function isBenignWindowErrorMessage(message: string): boolean {
   return message === 'ResizeObserver loop completed with undelivered notifications.';
 }
+
+// `.html` embeds: native reads the synced file and serves the sandbox shell.
+const htmlEmbeds = installMobileHtmlEmbeds({
+  requestFile: (requestId, src) => postToNative({ type: 'readEmbedFile', requestId, src }),
+  shellUrl: 'nimbalyst-embed://shell',
+  openLink: (href) => postToNative({ type: 'linkClicked', href, title: null }),
+});
 
 // Global error handler
 window.onerror = (message, _source, _lineno, _colno, error) => {
@@ -272,6 +283,10 @@ function EditorApp(): React.ReactElement {
         if (editor) {
           editor.dispatchCommand(FORMAT_TEXT_COMMAND, format);
         }
+      },
+
+      embedFileResult: (requestId: number, content: string | null, error?: string) => {
+        htmlEmbeds.resolve(requestId, content, error);
       },
     };
 

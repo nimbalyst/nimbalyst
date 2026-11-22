@@ -47,6 +47,13 @@ describe('Topology descriptor', () => {
     expect(CORE_ALWAYS_LOAD_TOOLS).not.toContain('get_session_edited_files');
   });
 
+  it('exposes consume_session_inbox on the host endpoint only', () => {
+    // #1941: the meta-agent prompt tells agents to call it, so the host endpoint must advertise it.
+    expect(FIRST_PARTY_TOOL_TO_SERVER.get('consume_session_inbox')).toBe(MCP_HOST);
+    const owners = MCP_FIRST_PARTY_TOPOLOGY.filter((e) => e.tools.includes('consume_session_inbox'));
+    expect(owners.map((e) => e.configKey)).toEqual([MCP_HOST]);
+  });
+
   it('gives every first-party server a unique config-key and endpoint path', () => {
     const keys = MCP_FIRST_PARTY_TOPOLOGY.map((e) => e.configKey);
     const paths = MCP_FIRST_PARTY_TOPOLOGY.map((e) => e.endpointPath);

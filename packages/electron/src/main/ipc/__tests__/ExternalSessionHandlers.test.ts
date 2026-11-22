@@ -50,6 +50,15 @@ describe("External session IPC", () => {
     ).toMatchObject({ success: true, successCount: 1, failureCount: 0 });
     expect(h.sync).toHaveBeenCalledWith([selection], undefined);
   });
+  it("returns the first failure's error when only some selections fail (GitHub #1989)", async () => {
+    h.sync.mockResolvedValue([
+      { ...selection, success: true, messagesAdded: 2 },
+      { ...selection, sessionId: "b", success: false, messagesAdded: 0, error: "Invalid external session cursor" },
+    ]);
+    expect(
+      await h.handlers.get("external-sessions:sync")!({}, { sessions: [selection] })
+    ).toMatchObject({ success: true, successCount: 1, failureCount: 1, error: "Invalid external session cursor" });
+  });
   it("rejects unsupported providers and renderer supplied file paths before service access", async () => {
     const handler = h.handlers.get("external-sessions:sync");
     expect(handler).toBeTypeOf("function");

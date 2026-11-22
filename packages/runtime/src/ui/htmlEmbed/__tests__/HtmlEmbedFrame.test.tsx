@@ -86,3 +86,31 @@ describe('HtmlEmbedFrame', () => {
     expect(posted).toHaveBeenLastCalledWith(envelope({ type: 'theme', theme: light }), '*');
   });
 });
+
+describe('installMobileHtmlEmbeds', () => {
+  it('makes .html links embeddable and renders the file native returns', async () => {
+    const { installMobileHtmlEmbeds } = await import('../mobileHtmlFileEmbeds');
+    const { isEmbeddableUrl } = await import('../../../editor/plugins/EmbedPlugin/embeddableExtensions');
+    const { getEmbedPluginCallbacks } = await import('../../../editor/plugins/EmbedPlugin/EmbedPluginCallbacks');
+    const requestFile = vi.fn();
+    const embeds = installMobileHtmlEmbeds({ requestFile, shellUrl: 'about:blank', openLink: vi.fn() });
+
+    expect(isEmbeddableUrl('diagrams/flow.html')).toBe(true);
+    expect(isEmbeddableUrl('notes.md')).toBe(false);
+
+    const Embed = getEmbedPluginCallbacks().renderEmbed!;
+    const ok = render(<Embed src="diagrams/flow.html" label="Flow" attrs={{ height: '400' }} nodeKey="1" />);
+    const missing = render(<Embed src="gone.html" label="Gone" attrs={{}} nodeKey="2" />);
+    expect(requestFile.mock.calls).toEqual([[1, 'diagrams/flow.html'], [2, 'gone.html']]);
+
+    await act(async () => {
+      embeds.resolve(99, '<p>stray</p>');
+      embeds.resolve(1, '<p>flow</p>');
+      embeds.resolve(2, null, 'Not synced to this device');
+    });
+    const iframe = ok.container.querySelector('iframe') as HTMLIFrameElement;
+    expect(iframe.style.height).toBe('400px');
+    expect(missing.container.querySelector('iframe')).toBeNull();
+    expect(missing.container.textContent).toContain('Not synced to this device');
+  });
+});

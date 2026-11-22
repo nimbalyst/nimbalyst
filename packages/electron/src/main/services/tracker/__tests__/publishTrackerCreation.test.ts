@@ -16,6 +16,9 @@ const mocks = vi.hoisted(() => ({
   ensureRoom: vi.fn(),
   initialize: vi.fn(),
   team: vi.fn(),
+  resolveTeam: vi.fn(),
+  authenticated: vi.fn(),
+  binding: vi.fn(),
   load: vi.fn(),
   enqueue: vi.fn(),
   drain: vi.fn(),
@@ -41,9 +44,14 @@ vi.mock('../../MainBodyDocService', () => ({
   ensureHeadlessBodyRoom: mocks.ensureRoom,
   initializeHeadlessBodyMarkdown: mocks.initialize,
 }));
-vi.mock('../../TeamService', () => ({ findTeamForWorkspace: mocks.team }));
+vi.mock('../../TeamService', () => ({
+  findTeamForWorkspace: mocks.team,
+  resolveTeamForWorkspace: mocks.resolveTeam,
+  hasLocalOrgBinding: mocks.binding,
+}));
 vi.mock('../../StytchAuthService', () => ({
   getPersonalUserId: () => 'account-1',
+  isAuthenticated: mocks.authenticated,
 }));
 vi.mock('../../CollabAssetStore', () => ({
   getCollabAssetStore: () => ({
@@ -76,6 +84,9 @@ beforeEach(async () => {
     rows: [{ content: JSON.stringify(body) }],
   }));
   mocks.team.mockResolvedValue({ orgId: 'team-1' });
+  mocks.resolveTeam.mockResolvedValue({ team: { orgId: 'team-1' }, complete: true });
+  mocks.authenticated.mockReturnValue(true);
+  mocks.binding.mockReturnValue(false);
   deps.getItem.mockImplementation(async (id) => ({
     id,
     workspace,
@@ -113,6 +124,59 @@ describe('creation publication', () => {
     );
     expect(mocks.initialize).not.toHaveBeenCalled();
     expect(mocks.sync).not.toHaveBeenCalled();
+  });
+
+  it('reports a teamless workspace as local without rewriting its pending receipt (#1960)', async () => {
+    mocks.active.mockReturnValue(false);
+    mocks.resolveTeam.mockResolvedValue({ team: null, complete: true });
+    expect(await publishTrackerCreation(workspace, 'item', deps)).toEqual({
+      itemId: 'item',
+      status: 'local',
+    });
+    expect(await getTrackerCreationPublication(workspace, 'item')).toEqual({
+      itemId: 'item',
+      status: 'local',
+    });
+    // The receipt must stay pending so joining a team later still publishes it.
+    expect(mocks.setStatus).not.toHaveBeenCalled();
+    expect(mocks.sync).not.toHaveBeenCalled();
+
+    // An incomplete lookup is not "no team": keep the retry.
+    mocks.resolveTeam.mockResolvedValue({ team: null, complete: false });
+    expect(await publishTrackerCreation(workspace, 'item', deps)).toMatchObject(
+      { status: 'pending', error: expect.stringContaining('not connected') },
+    );
+    expect(
+      await getTrackerCreationPublication(workspace, 'item'),
+    ).toMatchObject({ status: 'pending', savedContent: body });
+  });
+
+  it('treats a signed-out workspace as teamless only when it has no team history', async () => {
+    mocks.active.mockReturnValue(false);
+    mocks.authenticated.mockReturnValue(false);
+    const keyed = { value: false };
+    mocks.query.mockImplementation(async (sql: string) =>
+      sql.includes('issue_key')
+        ? { rows: keyed.value ? [{ '?column?': 1 }] : [] }
+        : { rows: [{ content: JSON.stringify(body) }] },
+    );
+    // Never on a team: the creation is simply local.
+    expect(await publishTrackerCreation(workspace, 'item', deps)).toEqual({
+      itemId: 'item',
+      status: 'local',
+    });
+    expect(mocks.resolveTeam).not.toHaveBeenCalled();
+    // An expired team session still shows the pending publication.
+    keyed.value = true;
+    expect(await getTrackerCreationPublication(workspace, 'item')).toMatchObject(
+      { status: 'pending', savedContent: body },
+    );
+    keyed.value = false;
+    mocks.binding.mockReturnValue(true);
+    expect(await publishTrackerCreation(workspace, 'item', deps)).toMatchObject(
+      { status: 'pending', error: expect.stringContaining('not connected') },
+    );
+    expect(mocks.setStatus).not.toHaveBeenCalledWith(workspace, 'item', 'local');
   });
 
   it('retains the original snapshot after metadata succeeds but body acknowledgment fails', async () => {

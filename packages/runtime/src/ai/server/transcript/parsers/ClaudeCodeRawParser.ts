@@ -19,7 +19,7 @@ import type {
   CanonicalEventDescriptor,
 } from './IRawMessageParser';
 import { stagedAttachmentRegistry } from '../../attachments/stagedAttachmentRegistry';
-import { isBackgroundedToolAck, isInteractiveWidgetTool } from '../../interactivePromptTools';
+import { isBackgroundedToolAck, isInteractiveWidgetTool, stripMcpPrefix } from '../../interactivePromptTools';
 
 const ATTACHMENT_DENY_MESSAGE = 'File is in a directory that is denied by your permission settings.';
 
@@ -42,6 +42,23 @@ export class ClaudeCodeRawParser implements IRawMessageParser {
    * Scoped to this parser instance (one per batch).
    */
   private processedTextMessageIds = new Set<string>();
+
+  /**
+   * API message id of the most recent thinking block. Opus 5.5 and Fable 5
+   * return text written between tool calls as a second thinking block in the
+   * same message, holding a summary of that text (a "progress update",
+   * #1801). The transformer carries this across incremental batches because
+   * the two blocks usually arrive as separate rows.
+   */
+  private lastThinkingMessageId: string | undefined;
+
+  setLastThinkingMessageId(messageId: string | undefined): void {
+    this.lastThinkingMessageId = messageId;
+  }
+
+  getLastThinkingMessageId(): string | undefined {
+    return this.lastThinkingMessageId;
+  }
 
   /**
    * When true, result chunk text is always suppressed.
@@ -225,7 +242,7 @@ export class ClaudeCodeRawParser implements IRawMessageParser {
                 createdAt: msg.createdAt,
                 ...(turnModel ? { model: turnModel } : {}),
               });
-            } else if (block.type === 'thinking' && (block.thinking || block.text)) {
+            } else if (block.type === 'thinking') {
               // Extended-thinking output. Persist as an assistant_message
               // with empty text and the thinking content on the side-channel
               // so we don't have to migrate the event_type CHECK constraint.
@@ -235,6 +252,8 @@ export class ClaudeCodeRawParser implements IRawMessageParser {
                   : typeof block.text === 'string'
                     ? block.text
                     : '';
+              const progressUpdate = !!messageId && this.lastThinkingMessageId === messageId;
+              if (messageId) this.lastThinkingMessageId = messageId;
               if (!thinkingText) continue;
               const thinkingSignature: string | undefined =
                 typeof block.signature === 'string' ? block.signature : undefined;
@@ -242,6 +261,7 @@ export class ClaudeCodeRawParser implements IRawMessageParser {
                 type: 'assistant_message',
                 text: '',
                 thinking: thinkingText,
+                ...(progressUpdate ? { progressUpdate: true } : {}),
                 ...(thinkingSignature ? { thinkingSignature } : {}),
                 ...(turnModel ? { model: turnModel } : {}),
                 createdAt: msg.createdAt,
@@ -380,6 +400,11 @@ export class ClaudeCodeRawParser implements IRawMessageParser {
       } else if (parsed.type === 'git_commit_proposal_response' && parsed.proposalId) {
         const responseDescriptors = await this.parseGitCommitProposalResponse(parsed, context);
         descriptors.push(...responseDescriptors);
+      } else if (
+        (parsed.type === 'ask_user_question_response' && typeof parsed.questionId === 'string')
+        || (parsed.type === 'request_user_input_response' && typeof parsed.promptId === 'string')
+      ) {
+        descriptors.push(...await this.parseQuestionResponse(parsed, context));
       } else if (parsed.type === 'nimbalyst_tool_result') {
         const results = await this.parseToolResult({
           tool_use_id: parsed.tool_use_id || parsed.id,
@@ -629,7 +654,10 @@ export class ClaudeCodeRawParser implements IRawMessageParser {
     // with the same ID that was processed before this nimbalyst_tool_use message.
     // Check in-memory map first, then fall back to DB lookup (covers the case
     // where the assistant tool_use was processed in a prior incremental batch).
-    if (parsed.id) {
+    // Exception (#1890): the commit proposal's host row carries arguments the
+    // SDK row lacks (targetWorktree, repoPath); processDescriptor merges them
+    // into the existing event instead of creating a second one.
+    if (parsed.id && parsed.name !== 'developer_git_commit_proposal') {
       if (context.hasToolCall(parsed.id)) return [];
       const existing = await context.findByProviderToolCallId(parsed.id);
       if (existing) return [];
@@ -691,6 +719,50 @@ export class ClaudeCodeRawParser implements IRawMessageParser {
       status: isCommitted ? 'completed' : 'error',
       result: JSON.stringify(resultPayload),
       isError: !isCommitted,
+    }];
+  }
+
+  // Persisted when the user answers an AskUserQuestion / PromptForUserInput
+  // card, keyed by that card's own id. Normally the waiting MCP call also
+  // writes a tool_result, but when no live waiter took the answer (stale card,
+  // interrupted turn, app restart) the response row is the only record and the
+  // answered card would reopen on every reload. Complete only the card the row
+  // names, only if it is the matching question tool, and only while it has no
+  // result yet: a real tool_result always wins, whichever arrives first.
+  private async parseQuestionResponse(
+    parsed: any,
+    context: ParseContext,
+  ): Promise<CanonicalEventDescriptor[]> {
+    const isForm = parsed.type === 'request_user_input_response';
+    const cardId: string = isForm ? parsed.promptId : parsed.questionId;
+    const existing = await context.findByProviderToolCallId(cardId);
+    const payload = existing?.payload as Record<string, any> | undefined;
+    if (!payload) return [];
+
+    const bareName = typeof payload.toolName === 'string' ? stripMcpPrefix(payload.toolName) : '';
+    const matchesTool = isForm
+      ? bareName === 'PromptForUserInput' || bareName === 'RequestUserInput'
+      : bareName === 'AskUserQuestion';
+    if (!matchesTool) return [];
+    // A backgrounded (#1341) acknowledgement is not a result: the projector
+    // blanks it and the card stays answerable, so the answer still closes it.
+    const hasResult = payload.result !== undefined && payload.result !== null && payload.result !== '';
+    if (hasResult && !isBackgroundedToolAck(payload.result)) return [];
+
+    const cancelled = parsed.cancelled === true;
+    const answers = parsed.answers && typeof parsed.answers === 'object' ? parsed.answers : {};
+    return [{
+      type: 'tool_call_completed',
+      providerToolCallId: cardId,
+      status: cancelled ? 'error' : 'completed',
+      result: JSON.stringify({
+        answers: cancelled ? {} : answers,
+        cancelled,
+        ...(typeof parsed.reason === 'string' ? { reason: parsed.reason } : {}),
+        ...(typeof parsed.respondedBy === 'string' ? { respondedBy: parsed.respondedBy } : {}),
+        ...(typeof parsed.respondedAt === 'number' ? { respondedAt: parsed.respondedAt } : {}),
+      }),
+      isError: cancelled,
     }];
   }
 

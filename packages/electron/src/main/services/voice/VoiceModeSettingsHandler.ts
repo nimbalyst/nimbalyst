@@ -2,7 +2,8 @@
  * IPC handlers for Voice Mode settings
  */
 
-import { BrowserWindow, systemPreferences, shell } from 'electron';
+import { BrowserWindow, systemPreferences } from 'electron';
+import { systemShell } from '../../utils/systemShell';
 import Store from '../../utils/privateSettingsStore';
 import { safeHandle } from '../../utils/ipcRegistry';
 import {
@@ -159,7 +160,7 @@ export function initVoiceModeSettingsHandler() {
   safeHandle('voice-mode:open-mic-settings', async () => {
     const settingsUrl = getMicrophoneSettingsUrl(process.platform);
     if (settingsUrl) {
-      await shell.openExternal(settingsUrl);
+      await systemShell.openExternal(settingsUrl);
       return { success: true };
     }
     return { success: false, error: `unsupported platform: ${process.platform}` };

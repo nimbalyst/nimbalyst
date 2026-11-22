@@ -124,6 +124,17 @@ export interface DocSyncResponseMessage {
    * as unknown, never as a refusal.
    */
   canWrite?: boolean;
+  /**
+   * Whether this connection may write comment threads, as the room resolved it
+   * for this request. `canWrite: false, canComment: true` is a commenter
+   * (`project-commenter`): the room accepts an update from them only when it
+   * changes nothing but the body Y.Doc's `comments` array. Any other docUpdate
+   * is refused with `document_comment_update_refused` and the socket closes
+   * 4009 (terminal for that Y.Doc); a docCompact is refused with
+   * `document_comment_forbidden` and the socket stays open. Absent means the server predates
+   * the field; read `canWrite` alone, as before.
+   */
+  canComment?: boolean;
 }
 
 /** Broadcast an encrypted Yjs update to other connections */

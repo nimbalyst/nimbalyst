@@ -71,24 +71,25 @@ describe('ensureWorkspaceLocalNumbers', () => {
     expect(mockAssignMissingLocalKeys).toHaveBeenCalledTimes(2);
   });
 
-  // Numbers are opt-in per type. The sweep is what would quietly re-number
-  // every new item on the next window open if it stopped asking the type.
-  it('numbers only types whose YAML opts in to local numbers', async () => {
+  // Numbers are on unless a type opts out. When they were opt-in, no type
+  // opted in and every new item went unnumbered; this pins the default from
+  // real YAML through the registry to the sweep's predicate.
+  it('numbers every registered type except one whose YAML opts out', async () => {
     const model = (type: string, localNumbers?: boolean) => parseTrackerYAML(
       `type: ${type}\ndisplayName: X\ndisplayNamePlural: Xs\nicon: bug\ncolor: '#000'\nidPrefix: x\n`
-      + `modes:\n  inline: true\n${localNumbers ? 'localNumbers: true\n' : ''}fields:\n  - name: title\n    type: string\n`,
+      + `modes:\n  inline: true\n${localNumbers === false ? 'localNumbers: false\n' : ''}fields:\n  - name: title\n    type: string\n`,
     );
     globalRegistry.register(model('lknplain'));
-    globalRegistry.register(model('lknopted', true));
+    globalRegistry.register(model('lknoptedout', false));
 
     await ensureWorkspaceLocalNumbers('/src/solo');
     const isNumberedType = mockAssignMissingLocalKeys.mock.calls[0][3] as (type: string) => boolean;
 
-    expect(isNumberedType('lknplain')).toBe(false);
-    expect(isNumberedType('lknopted')).toBe(true);
+    expect(isNumberedType('lknplain')).toBe(true);
+    expect(isNumberedType('lknoptedout')).toBe(false);
     expect(isNumberedType('lknunregistered')).toBe(false);
     globalRegistry.unregister('lknplain');
-    globalRegistry.unregister('lknopted');
+    globalRegistry.unregister('lknoptedout');
   });
 
   it('ignores an empty workspace path', async () => {

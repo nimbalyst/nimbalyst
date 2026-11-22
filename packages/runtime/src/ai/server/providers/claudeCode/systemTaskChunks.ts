@@ -75,6 +75,39 @@ export function recordBackgroundEvidence(
   return changed;
 }
 
+/**
+ * Finished tasks kept in `activeTasks` and in `metadata.currentTasks`.
+ *
+ * The CLI reports every Bash call as a task, so an unbounded map grew one
+ * session's metadata row to 993KB, and the session list re-read and parsed that
+ * column for every session on each refresh until main ran out of heap.
+ */
+export const FINISHED_TASK_RETENTION = 20;
+
+/**
+ * Drop the oldest finished tasks beyond `keep`, in place. Running tasks are
+ * never dropped: the drain and wake logic only reads running ones, and a
+ * finished task's held notification is only released by an acknowledgement
+ * that arrives right after its launch, well inside the retention window.
+ * Returns true when anything was removed.
+ */
+export function pruneFinishedTasks(tasks: Map<string, TrackedSystemTask>, keep = FINISHED_TASK_RETENTION): boolean {
+  const finished = [...tasks.values()].filter(task => task.status !== 'running');
+  if (finished.length <= keep) return false;
+  // Persisted entries from older builds may lack startedAt; treat them as oldest.
+  finished.sort((a, b) => (Number(a.startedAt) || 0) - (Number(b.startedAt) || 0));
+  for (const task of finished.slice(0, finished.length - keep)) tasks.delete(task.taskId);
+  return true;
+}
+
+/**
+ * The persisted form of the task list. The held notification is in-memory
+ * bookkeeping for the wake path and duplicated half of each entry on disk.
+ */
+export function persistedTasks(tasks: Iterable<TrackedSystemTask>): Array<Omit<TrackedSystemTask, 'pendingTerminalNotification'>> {
+  return Array.from(tasks, ({ pendingTerminalNotification: _held, ...task }) => task);
+}
+
 export interface ApplySystemTaskChunkParams {
   subtype: string;
   chunk: any;

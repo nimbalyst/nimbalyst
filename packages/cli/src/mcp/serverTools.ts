@@ -29,7 +29,9 @@ export const LOCAL_SERVER_INSTRUCTIONS =
   'For "what did we decide" or "why did we", call `listMarks` first. ' +
   'After changing code, call `pagesForFiles` and update or flag the pages it returns; after deciding something, follow the `capture` skill from the nimbalyst-wiki plugin. ' +
   'Before writing or changing any wiki page, including architecture or product maps, diagrams, HTML pages and other visuals, load the `update` skill from the nimbalyst-wiki plugin and follow it. ' +
-  'Every result names the wiki folder in use; if the session has moved to another project, call `useLocalWiki` with that project folder first.';
+  'Every result names the wiki folder in use; if the session has moved to another project, call `useLocalWiki` with that project folder first. ' +
+  'To open the wiki in a browser, call `openWikiInBrowser`; to see which version of these tools is running and how it was installed, call `wikiDoctor`. ' +
+  "A `nim` command on the shell's PATH is a separate install that may be a different version from this server; do not use it for the wiki or to judge what this server runs.";
 
 export function localWikiContext(startDir: string, location?: string): LocalWikiContext {
   // One LocalWiki per folder for the life of the server, re-scanned per call.

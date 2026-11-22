@@ -1,5 +1,7 @@
 {
   "compilerOptions": {
+    "noUncheckedSideEffectImports": false,
+    "types": ["*"],
     "target": "ES2020",
     "module": "ESNext",
     "moduleResolution": "bundler",

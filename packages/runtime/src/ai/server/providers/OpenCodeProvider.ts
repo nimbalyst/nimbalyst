@@ -607,6 +607,15 @@ export class OpenCodeProvider extends BaseAgentProvider {
       patternChecker: BaseAgentProvider.permissionPatternChecker,
       securityLogger: BaseAgentProvider.securityLogger ?? undefined,
       emit: this.emit.bind(this),
+      // A prompt that another answer settled still needs its card closed in the transcript.
+      // The service does not say who gave the answer, so this records it as the desktop.
+      recordReleasedPermission: (sessionId, requestId, response) => {
+        void this.logAgentMessageBestEffort(
+          sessionId,
+          'output',
+          this.createPermissionResultMessage(requestId, response, 'desktop'),
+        );
+      },
     });
   }
 

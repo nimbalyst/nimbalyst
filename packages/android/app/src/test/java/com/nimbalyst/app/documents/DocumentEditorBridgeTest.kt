@@ -121,6 +121,45 @@ class DocumentEditorBridgeTest {
         assertNull(EditorBridgeMessage.parse("not json"))
     }
 
+    /** `.html` embeds: the bundle asks for a file by its link text and is answered by request id, strings JSON-encoded. */
+    @Test
+    fun embedFileRequestsParseAndAreAnsweredAsStringLiterals() {
+        assertEquals(
+            EditorBridgeMessage.ReadEmbedFile(7, "<../My%20Map.html>"),
+            EditorBridgeMessage.parse("""{"type":"readEmbedFile","requestId":7,"src":"<../My%20Map.html>"}"""),
+        )
+        assertNull("An answer needs a request id", EditorBridgeMessage.parse("""{"type":"readEmbedFile","src":"a.html"}"""))
+        assertNull(EditorBridgeMessage.parse("""{"type":"readEmbedFile","requestId":7}"""))
+
+        val html = "<script>alert(\"x\")</script>\n\\"
+        val js = EditorCommands.embedFileResult(7, html, null)
+        assertTrue(js.startsWith("window.nimbalystEditor && window.nimbalystEditor.embedFileResult(7, "))
+        assertFalse("</script>" in js)
+        assertEquals(html, EditorCommands.decodeContent(js.substringAfter("embedFileResult(7, ").removeSuffix(")")))
+        assertEquals(
+            "window.nimbalystEditor && window.nimbalystEditor.embedFileResult(8, null, \"a.html has not synced\")",
+            EditorCommands.embedFileResult(8, null, "a.html has not synced"),
+        )
+    }
+
+    /** The sandbox shell is served only at its own URL, with its CSP as a response header. */
+    @Test
+    fun theEmbedShellIsServedWithItsCspHeader() {
+        val assets = mapOf(
+            "editor-dist/html-embed-shell.html" to "<html></html>".toByteArray(),
+            "editor-dist/html-embed-shell.csp" to "sandbox allow-scripts allow-popups; default-src 'none'\n".toByteArray(),
+        )
+        val response = embedShellResponse(DocumentEditorLinks.EMBED_SHELL_URL) { assets[it] }!!
+        assertEquals("text/html", response.mimeType)
+        assertEquals("sandbox allow-scripts allow-popups; default-src 'none'", response.responseHeaders["Content-Security-Policy"])
+        assertEquals("<html></html>", response.data.readBytes().decodeToString())
+        assertNull(embedShellResponse("https://nimbalyst-embed.invalid/other") { assets[it] })
+        assertNull(embedShellResponse(DocumentEditorLinks.EDITOR_URL) { assets[it] })
+        assertNull("No shell without its CSP", embedShellResponse(DocumentEditorLinks.EMBED_SHELL_URL) { null })
+        assertTrue(DocumentEditorLinks.isEmbedShellUrl(DocumentEditorLinks.EMBED_SHELL_URL))
+        assertFalse(DocumentEditorLinks.isEmbedShellUrl("https://nimbalyst-embed.invalid.example.com/shell"))
+    }
+
     @Test
     fun markdownIsPassedToJavascriptAsAStringLiteral() {
         val markdown = "a \"quote\" \\ back\nline </script>  "

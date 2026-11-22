@@ -2,7 +2,11 @@ import { watch as watchDir, type FSWatcher } from "fs";
 import * as path from "path";
 import { logger } from "../../utils/logger";
 import { supportsRecursiveWatch } from "../../file/WorkspaceNativeWatcher";
-import type { ExternalSessionRef, ExternalSessionSource } from "./types";
+import {
+  ExternalIngestQueueFullError,
+  type ExternalSessionRef,
+  type ExternalSessionSource,
+} from "./types";
 import type {
   ExternalSessionIngestor,
   ExternalWorkspaceRoute,
@@ -23,6 +27,15 @@ interface Dependencies {
   intervalMs?: number;
   scopeIsCurrent?: (scope: ExternalScope) => boolean;
 }
+// GitHub #1812: when a session file fails to import, leave it alone for a while
+// instead of trying it again on every scan. The first wait is one minute. The
+// wait doubles after each failure in a row, up to 30 minutes. A file that has
+// changed on disk, or that imports successfully, starts over with no wait.
+const RETRY_BACKOFF_BASE_MS = 60_000;
+const RETRY_BACKOFF_MAX_MS = 30 * 60_000;
+// Same size limit as the settled-file list below: the oldest entry goes first.
+const MAX_FAILING_FILES = 8192;
+
 /** Bounded discovery is also the recovery path for dropped events, absent roots,
  * new workspaces and Codex date rollover. No filesystem work occurs before start. */
 export class ExternalSessionWatcher {
@@ -52,6 +65,19 @@ export class ExternalSessionWatcher {
   // Discovery is the recovery path for missed events; revisiting these every
   // pass re-read and re-queried every log in the project.
   private settled = new Map<string, string>();
+  // Files whose last import failed. Each entry remembers what the file looked
+  // like at the time (so a change is noticed), how many failures in a row, and
+  // when the next try is allowed.
+  private failing = new Map<
+    string,
+    {
+      /** Discovery-time stamp, when the source reports one. */
+      stamp?: string;
+      updatedAt: number;
+      failures: number;
+      retryAt: number;
+    }
+  >();
   constructor(private readonly deps: Dependencies) {}
 
   start(): Promise<void> {
@@ -73,6 +99,7 @@ export class ExternalSessionWatcher {
     await Promise.all(this.deps.sources.map((source) => source.dispose()));
     this.changed.clear();
     this.settled.clear();
+    this.failing.clear();
     this.pendingDiscovery = undefined;
     this.routes.clear();
     this.roots.clear();
@@ -130,6 +157,39 @@ export class ExternalSessionWatcher {
           );
       }
     }
+  }
+  /** True while a file that failed to import is unchanged and its wait is not over. */
+  private isBackingOff(ref: ExternalSessionRef, stamp?: string): boolean {
+    const failure = this.failing.get(ref.filePath);
+    if (!failure || Date.now() >= failure.retryAt) return false;
+    // A file that changed since the failure may import now, so try it at once.
+    return failure.stamp === stamp && failure.updatedAt === ref.updatedAt;
+  }
+  /** Remembers a failure and returns when the next try is allowed. */
+  private recordFailure(ref: ExternalSessionRef, stamp?: string) {
+    const previous = this.failing.get(ref.filePath);
+    // A file that changed since its last failure starts over at one.
+    const failures =
+      previous &&
+      previous.stamp === stamp &&
+      previous.updatedAt === ref.updatedAt
+        ? previous.failures + 1
+        : 1;
+    const wait = Math.min(
+      RETRY_BACKOFF_BASE_MS * 2 ** (failures - 1),
+      RETRY_BACKOFF_MAX_MS
+    );
+    const retryAt = Date.now() + wait;
+    this.failing.delete(ref.filePath);
+    this.failing.set(ref.filePath, {
+      stamp,
+      updatedAt: ref.updatedAt,
+      failures,
+      retryAt,
+    });
+    if (this.failing.size > MAX_FAILING_FILES)
+      this.failing.delete(this.failing.keys().next().value!);
+    return { failures, retryAt };
   }
   private onEvent(root: string, filename: string | null): void {
     if (!this.enabled || !filename) return;
@@ -272,6 +332,8 @@ export class ExternalSessionWatcher {
         const ref = page.refs[page.next++];
         remaining--;
         if (path.resolve(ref.workspacePath) !== page.cwd) continue;
+        const stamp = page.stamps.get(ref.filePath);
+        if (this.isBackingOff(ref, stamp)) continue;
         try {
           const result = await this.deps.ingestor.ingest(
             page.source,
@@ -284,7 +346,7 @@ export class ExternalSessionWatcher {
           );
           if (result.hasMore && this.changed.size < 512)
             this.changed.add(ref.filePath);
-          const stamp = page.stamps.get(ref.filePath);
+          this.failing.delete(ref.filePath);
           this.settled.delete(ref.filePath);
           if (result.settled && stamp) {
             this.settled.set(ref.filePath, stamp);
@@ -293,9 +355,23 @@ export class ExternalSessionWatcher {
           }
         } catch (error) {
           this.settled.delete(ref.filePath);
+          if (error instanceof ExternalIngestQueueFullError) {
+            // A full queue says nothing about the file, so it earns no wait.
+            logger.main.warn(
+              "[ExternalSessions] Import queue full; next scoped scan retries",
+              { filePath: ref.filePath }
+            );
+            continue;
+          }
+          const { failures, retryAt } = this.recordFailure(ref, stamp);
           logger.main.warn(
-            "[ExternalSessions] Import batch failed; next scoped scan retries",
-            error
+            "[ExternalSessions] Import batch failed; retrying after a wait",
+            error,
+            {
+              filePath: ref.filePath,
+              failures,
+              nextRetryAt: new Date(retryAt).toISOString(),
+            }
           );
         }
       }

@@ -100,9 +100,9 @@ it('retains a durable offline desktop move across store/provider recreation and 
     stopHierarchy = registerMobileHierarchyAuthority(provider);
     await bootstrap(provider, connected.socket, [entry('A', null, 1), entry('B', null, 2), entry('child', 'A', 3)]);
     expect((await recreated.get('child'))?.parentSessionId).toBe('B');
-    expect((await recreated.get('child'))?.createdBySessionId).toBe('B');
+    expect((await recreated.get('child'))?.createdBySessionId ?? null).toBeNull();
     const intents = () => AISessionsRepository.getStore().listPendingHierarchyIntents!();
-    expect(await intents()).toEqual([expect.objectContaining({sessionId: 'child', parentSessionId: 'B', createdBySessionId: 'B'})]);
+    expect(await intents()).toEqual([expect.objectContaining({sessionId: 'child', parentSessionId: 'B', createdBySessionId: null})]);
     const published = () => connected.socket.send.mock.calls.map(([p]) => JSON.parse(p))
       .find(p => p.type === 'indexUpdate' && p.session.sessionId === 'child' && p.session.parentSessionId === 'B');
     await vi.waitFor(() => expect(published()).toBeDefined());
@@ -149,7 +149,7 @@ it('a newer incoming row wins while an older snapshot waits in the authoritative
     release();
     await Promise.all([lane, older, newer]);
     expect((await local.store.get('child'))?.parentSessionId).toBe('B');
-    expect((await local.store.get('child'))?.createdBySessionId).toBe('B');
+    expect((await local.store.get('child'))?.createdBySessionId ?? null).toBeNull();
     expect(provider.getCachedIndexEntry?.('child')?.parentSessionId).toBe('B');
     expect(socket.send.mock.calls.map(([p]) => JSON.parse(p)).filter(p => p.type === 'indexUpdate' && p.session.parentSessionId === 'A')).toEqual([]);
   } finally { release(); stopHierarchy(); stopPublication(); provider.disconnectAll(); await local.cleanup(); }
@@ -183,7 +183,7 @@ it('confirms a connected local move with an authoritative pull when the server n
     });
     await synced.updateMetadata('child', {parentSessionId: 'B'});
     await vi.waitFor(async () => expect(await synced.listPendingHierarchyIntents!()).toHaveLength(0));
-    expect(changes.at(-1).session).toMatchObject({parentSessionId: 'B', createdBySessionId: 'B'});
+    expect(changes.at(-1).session).toMatchObject({parentSessionId: 'B', createdBySessionId: null});
     expect(socket.send.mock.calls.map(([p]) => JSON.parse(p)).some(p => p.type === 'indexPageRequest' && p.mode === 'delta')).toBe(true);
     // Confirmation releases local priority so a subsequent phone move can apply.
     await socket.receive({type: 'indexBroadcast', session: {...changes.at(-1).session, parentSessionId: 'A', createdBySessionId: 'A'}});

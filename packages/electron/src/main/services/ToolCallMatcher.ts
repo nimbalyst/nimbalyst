@@ -25,6 +25,7 @@ import { logger } from '../utils/logger';
 import { TranscriptMigrationRepository } from '@nimbalyst/runtime/storage/repositories/TranscriptMigrationRepository';
 import { AISessionsRepository } from '@nimbalyst/runtime';
 import type { TranscriptEvent, ToolCallPayload } from '@nimbalyst/runtime/ai/server/transcript/types';
+import { toolWriteEffect } from '@nimbalyst/runtime/ai/server/agentToolActivity';
 import {
   MAX_HISTORY_DIFF_INPUT_BYTES,
   computeBoundedHistoryDiff,
@@ -101,6 +102,11 @@ export interface WorkspaceFileEditMatchInput {
   filePath: string;
   fileTimestamp: number;
   candidateSessionIds: string[];
+  /**
+   * Sessions that count as rivals but may not win: their Bash edits are linked
+   * by hook windows, so a fuzzy row for them would be a second, guessed link.
+   */
+  ineligibleSessionIds?: string[];
 }
 
 export interface WorkspaceFileEditCandidate {
@@ -908,6 +914,11 @@ class ToolCallMatcherImpl {
       }
 
       const winner = sessionCandidates[0];
+      // The best explanation is a hook-window session's own tool; it is not
+      // this matcher's to assign, and no lower-scored session may take it.
+      if (input.ineligibleSessionIds?.includes(winner.sessionId)) {
+        return { winner: null, candidates: sessionCandidates, reason: 'shell_window_owner' };
+      }
       if (winner.score < WORKSPACE_MIN_CONFIDENCE_SCORE) {
         logger.main.debug('[ToolCallMatcher] Workspace attribution rejected (low confidence):', {
           filePath: input.filePath,
@@ -928,6 +939,22 @@ class ToolCallMatcherImpl {
           scoreDelta: winner.score - runnerUp.score,
         });
         return { winner: null, candidates: sessionCandidates, reason: 'ambiguous' };
+      }
+
+      // A Bash window scores only on command text, and `cat x.ts` names x.ts as
+      // plainly as `sed -i x.ts` does. When another session ran a tool in range
+      // that may write unnamed files, that text cannot tell which one wrote it.
+      if (winner.toolName === 'Bash') {
+        const rival = [...sessionWindows].find(([sessionId, windows]) => sessionId !== winner.sessionId &&
+          windows.some(w => w.toolName !== 'file_change' && toolWriteEffect(w.toolName, w.args, input.workspacePath).kind === 'unknown'));
+        if (rival) {
+          logger.main.debug('[ToolCallMatcher] Workspace attribution rejected (competing writer):', {
+            filePath: input.filePath,
+            winnerSessionId: winner.sessionId,
+            rivalSessionId: rival[0],
+          });
+          return { winner: null, candidates: sessionCandidates, reason: 'competing_writer' };
+        }
       }
 
       logger.main.debug('[ToolCallMatcher] Workspace attribution winner selected:', {

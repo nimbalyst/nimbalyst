@@ -172,7 +172,8 @@ export class CollabAssetStore {
   }
 
   async loadAsset(
-    identity: CollabAssetIdentity
+    identity: CollabAssetIdentity,
+    options: { readOnly?: boolean } = {}
   ): Promise<LoadedCollabAsset | null> {
     const result = await this.db.query<AssetRow>(
       `SELECT account_id, org_id, document_id, asset_id, encrypted_asset,
@@ -188,9 +189,9 @@ export class CollabAssetStore {
       identity,
       row.encoding_version,
       row.encrypted_asset,
-      row.asset_checksum
+      row.asset_checksum, options.readOnly
     );
-    await this.db.query(
+    if (!options.readOnly) await this.db.query(
       `UPDATE collab_document_assets SET last_accessed_at = $5
        WHERE account_id = $1 AND org_id = $2 AND document_id = $3 AND asset_id = $4`,
       [...this.identityParams(identity), new Date()]
@@ -547,7 +548,8 @@ export class CollabAssetStore {
     identity: CollabAssetIdentity,
     encodingVersion: number,
     stored: Uint8Array,
-    expectedChecksum: string
+    expectedChecksum: string,
+    readOnly = false
   ): Promise<Uint8Array> {
     const bytes = Buffer.from(stored);
     if (checksum(bytes) !== expectedChecksum)
@@ -557,7 +559,10 @@ export class CollabAssetStore {
         `unsupported cached asset encoding version ${encodingVersion}`
       );
     }
-    const key = Buffer.from(await this.keyProvider.getKey(identity.accountId));
+    if (readOnly && !this.keyProvider.getExistingKey) throw new Error("Read-only device key access unavailable");
+    const key = Buffer.from(await (readOnly
+      ? this.keyProvider.getExistingKey!(identity.accountId)
+      : this.keyProvider.getKey(identity.accountId)));
     const decipher = createDecipheriv(
       "aes-256-gcm",
       key,

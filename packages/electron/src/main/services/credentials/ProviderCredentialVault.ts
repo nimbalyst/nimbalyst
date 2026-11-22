@@ -373,7 +373,13 @@ export class ProviderCredentialVault {
       );
       return record ? record.value ?? "" : undefined;
     } catch (error) {
-      if (error instanceof CredentialStorageError) return undefined;
+      if (error instanceof CredentialStorageError) {
+        // A failed safeStorage read can leave an OpenSSL error queued that
+        // aborted later WebCrypto AES on this Node version (#1979); logged so
+        // a report shows whether this path ran.
+        console.warn(`[ProviderCredentialVault] mobileOpenAIKey skipped: credential storage ${error.state}`);
+        return undefined;
+      }
       throw error;
     }
   }

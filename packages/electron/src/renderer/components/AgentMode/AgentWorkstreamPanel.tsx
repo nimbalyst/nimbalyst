@@ -38,6 +38,8 @@ import {
 } from '@nimbalyst/runtime';
 import { ModelIdentifier } from '@nimbalyst/runtime/ai/server/types';
 import type { TranscriptFileLocation } from '@nimbalyst/runtime/ui/AgentTranscript/components/MarkdownRenderer';
+import { revealEditorPosition } from '../TabEditor/editorRevealCommand';
+import { openFileAsWikiPage } from '../../utils/agentEditedPage';
 import { AgentWorkstreamLayout } from './AgentWorkstreamLayout';
 import { agentFilePlacementAtom } from '../../store/atoms/agentFilePlacement';
 import { fileViewerWidthAtom, revealWorkstreamEditorAtom } from '../../store/atoms/agentFileViewer';
@@ -108,7 +110,7 @@ import { ArchiveWorktreeDialog } from './ArchiveWorktreeDialog';
 import { useArchiveWorktreeDialog } from '../../hooks/useArchiveWorktreeDialog';
 import { detectFileType, type SerializableDocumentContext } from '../../hooks/useDocumentContext';
 import { getTextSelection } from '../UnifiedAI/TextSelectionIndicator';
-import { terminalListAtom, setActiveTerminal, loadTerminals } from '../../store/atoms/terminals';
+import { terminalListAtom, terminalListWorkspaceAtom, terminalsForWorkspace, setActiveTerminal, loadTerminals } from '../../store/atoms/terminals';
 import {
   sessionKanbanTagsAtom,
   setSessionTagsAtom,
@@ -1182,8 +1184,13 @@ export const AgentWorkstreamPanel = React.memo(React.forwardRef<AgentWorkstreamP
   // location too, so a `file.md:653` link survives the layout flip.
   const pendingFileOpenRef = useRef<{ filePath: string; location?: TranscriptFileLocation } | null>(null);
 
-  // File clicks open in the workstream editor tabs
-  const handleFileClick = useCallback((filePath: string, location?: TranscriptFileLocation) => {
+  // File clicks open in the workstream editor tabs, except a Local wiki page,
+  // which opens in Pages.
+  const handleFileClick = useCallback(async (filePath: string, location?: TranscriptFileLocation) => {
+    if (await openFileAsWikiPage(filePath, workspacePath, 'agent_tool')) {
+      if (location) revealEditorPosition(filePath, location);
+      return;
+    }
     revealEditor(workstreamId);
     if (editorTabsRef.current) {
       // Editor is mounted, open the file directly
@@ -1192,7 +1199,7 @@ export const AgentWorkstreamPanel = React.memo(React.forwardRef<AgentWorkstreamP
       // The worktree path is still resolving; replay after its editor mounts.
       pendingFileOpenRef.current = { filePath, location };
     }
-  }, [workstreamId, revealEditor]);
+  }, [workspacePath, workstreamId, revealEditor]);
 
   // Get document context from the workstream editor tabs (for AI selection/file context)
   // This is called on-demand when sending a message to capture fresh selection state
@@ -1249,8 +1256,11 @@ export const AgentWorkstreamPanel = React.memo(React.forwardRef<AgentWorkstreamP
     await confirmArchive(workspacePath, onWorktreeArchived);
   }, [workspacePath, onWorktreeArchived, confirmArchive]);
 
-  // Get terminal list for checking existing terminals
-  const terminals = useAtomValue(terminalListAtom);
+  // Get terminal list for checking existing terminals. Right after a project
+  // switch the shared list still holds the old project's terminals (#1818).
+  const loadedTerminals = useAtomValue(terminalListAtom);
+  const terminalListWorkspace = useAtomValue(terminalListWorkspaceAtom);
+  const terminals = terminalsForWorkspace(loadedTerminals, terminalListWorkspace, workspacePath);
 
   // Open a terminal in the worktree directory (reuses existing if available)
   const handleOpenTerminal = useCallback(async () => {

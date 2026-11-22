@@ -62,6 +62,12 @@ function isInside(root: string, filePath: string): boolean {
   return rel !== '' && !rel.startsWith('..') && !path.isAbsolute(rel);
 }
 
+/** True for a path inside this project's Local wiki folder. */
+export function isInWiki(filePath: string, workspacePath: string): boolean {
+  const root = wikiRootWithin(workspacePath);
+  return !!root && isInside(root, filePath);
+}
+
 /** True for the wiki's `.trash/` folder and anything under it. */
 export function isInWikiTrash(filePath: string, workspacePath: string): boolean {
   const root = wikiRootWithin(workspacePath);
@@ -71,13 +77,20 @@ export function isInWikiTrash(filePath: string, workspacePath: string): boolean 
 }
 
 /**
- * The one filter for the paths project file sync carries: markdown anywhere,
- * the marker at the wiki location, and `.csv` tables inside a wiki whose
- * marker exists; never the wiki's trash. The marker check is not cached, so a
- * table that arrives right after the marker in one batch is accepted.
+ * The one filter for the paths project file sync carries: markdown and `.html`
+ * anywhere (phones render a page's embedded `.html` diagrams from the synced
+ * copy), the marker at the wiki location, and `.csv` tables inside a wiki
+ * whose marker exists; never the wiki's trash. The marker check is not cached,
+ * so a table that arrives right after the marker in one batch is accepted.
  */
+/**
+ * What the workspace walk returns for {@link isProjectSyncPath} to judge: a
+ * superset of every file it can accept. Widen this with it.
+ */
+export const PROJECT_SYNC_CANDIDATES = { extensions: ['.md', '.html', '.csv'], names: [MARKER_FILE] };
+
 export function isProjectSyncPath(filePath: string, workspacePath: string): boolean {
-  if (filePath.endsWith('.md')) return !isInWikiTrash(filePath, workspacePath);
+  if (filePath.endsWith('.md') || filePath.endsWith('.html')) return !isInWikiTrash(filePath, workspacePath);
   if (path.basename(filePath) === MARKER_FILE) return isWikiMarkerPath(filePath, workspacePath);
   return isWikiTablePath(filePath, workspacePath) && existsSync(path.join(wikiRootWithin(workspacePath)!, MARKER_FILE));
 }

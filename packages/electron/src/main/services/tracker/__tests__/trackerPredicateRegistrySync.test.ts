@@ -176,12 +176,13 @@ describe('predicate registry on the team schema lane (NIM-6653)', () => {
       .filter(m => m.schemaType === TRACKER_PREDICATE_REGISTRY_SCHEMA_TYPE)).toHaveLength(1);
   });
 
-  it('publishes labels.yaml under __labels__, and two peers\' concurrent additions both survive', async () => {
+  it.each(['a-first', 'b-first'] as const)('publishes labels.yaml and preserves concurrent additions (%s)', async (order) => {
     const server = createFakeServer();
     const a = await connectPeer('a', server);
     const b = await connectPeer('b', server);
+    let automaticFlush = true;
     unregister.push(registerTrackerSchemaFlushHandler((ws) =>
-      peers.find(p => p.workspacePath === ws)?.engine.flushSchemas()));
+      automaticFlush ? peers.find(p => p.workspacePath === ws)?.engine.flushSchemas() : undefined));
     const labelsRow = () => server.room.getStoredSchemas().find(s => s.schemaType === TRACKER_LABEL_REGISTRY_SCHEMA_TYPE);
 
     const base: LabelRegistry = { labels: [{ id: 'capability', label: 'Capability' }], properties: [], claimProperties: {} };
@@ -189,9 +190,31 @@ describe('predicate registry on the team schema lane (NIM-6653)', () => {
     await waitUntil(() => b.appliedLabels.length > 0);
     expect(readWorkspaceLabelRegistry(b.workspacePath)).toEqual(base);
 
-    // Each peer adds a different label before seeing the other's.
-    await writeWorkspaceLabelRegistry(a.workspacePath, { ...base, labels: [...base.labels, { id: 'feature', label: 'Feature' }] });
-    await writeWorkspaceLabelRegistry(b.workspacePath, { ...base, labels: [...base.labels, { id: 'topic', label: 'Topic' }] });
+    await waitUntil(() => a.appliedLabels.length > 0);
+
+    // Hold room deliveries until both edits are on disk and published. Otherwise
+    // the debounce can deliver A's edit during B's write: a stale base then means
+    // a deletion, not the concurrent additions this test intends to exercise.
+    automaticFlush = false;
+    const roomDelivery = server.room as unknown as { deliver(ws: WebSocket, message: unknown): void };
+    const deliver = roomDelivery.deliver.bind(server.room);
+    const deliveries: Array<() => void> = [];
+    const hold = vi.spyOn(roomDelivery, 'deliver').mockImplementation((ws, message) => {
+      deliveries.push(() => deliver(ws, message));
+    });
+    try {
+      await writeWorkspaceLabelRegistry(a.workspacePath, { ...base, labels: [...base.labels, { id: 'feature', label: 'Feature' }] });
+      await writeWorkspaceLabelRegistry(b.workspacePath, { ...base, labels: [...base.labels, { id: 'topic', label: 'Topic' }] });
+      const orderedPeers = order === 'a-first' ? [a, b] : [b, a];
+      for (const peer of orderedPeers) await peer.engine.flushSchemas();
+      expect(deliveries).toHaveLength(4); // Each edit gets an ack and a peer delta.
+      expect(a.appliedLabels.at(-1)).toEqual(base);
+      expect(b.appliedLabels.at(-1)).toEqual(base);
+    } finally {
+      hold.mockRestore();
+      automaticFlush = true;
+    }
+    for (const delivery of deliveries) delivery();
 
     const ids = (registry: LabelRegistry | null) => (registry?.labels ?? []).map(l => l.id).sort();
     await waitUntil(() => {

@@ -27,6 +27,7 @@ import { PullRequestRow } from './PullRequestRow';
 import { getRecordStatus } from '@nimbalyst/runtime/plugins/TrackerPlugin/trackerRecordAccessors';
 import { usePrTrackerReferences, useSessionCountsByTrackerItem } from './usePrTrackerContext';
 import { GithubListToolbar, type GithubListSortOption } from './GithubListToolbar';
+import { matchesGithubListSearch } from './githubListSearch';
 
 interface PullRequestListViewProps {
   workspaceId: string;
@@ -110,11 +111,8 @@ export function PullRequestListView({
         return items?.some((item) => trackerStatusFilters.includes(getRecordStatus(item)));
       });
     }
-    const q = search.trim().toLowerCase();
-    if (q) {
-      rows = rows.filter(
-        (r) => r.title.toLowerCase().includes(q) || String(r.number).includes(q),
-      );
+    if (search.trim()) {
+      rows = rows.filter((r) => matchesGithubListSearch(r, search));
     }
     rows.sort((a, b) => {
       if (sortKey === 'number') return b.number - a.number;
@@ -138,7 +136,7 @@ export function PullRequestListView({
       <GithubListToolbar
         search={search}
         onSearchChange={setSearch}
-        searchPlaceholder="Search by title or number"
+        searchPlaceholder="Search title, number, label, or author:login"
         sortOptions={SORT_OPTIONS}
         sortKey={sortKey}
         onSortChange={(key) => setLayout({ sortKey: key })}

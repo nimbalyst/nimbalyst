@@ -17,6 +17,7 @@ import {
 } from '../../store/atoms/codexUsageAtoms';
 import { toggleGutterItemHiddenAtom } from '../../store/atoms/appSettings';
 import { useFloatingMenu, FloatingPortal } from '../../hooks/useFloatingMenu';
+import { WeeklyUsageHistory } from '../UsageHistory/WeeklyUsageHistory';
 
 interface CodexUsagePopoverProps {
   anchorRef: RefObject<HTMLElement | null>;
@@ -216,6 +217,8 @@ export const CodexUsagePopover: React.FC<CodexUsagePopoverProps> = ({
             </>
           )}
         </div>
+
+        <WeeklyUsageHistory history={usage.weeklyHistory} />
 
         {/* Footer */}
         <div className="px-4 py-2 border-t border-nim flex flex-col gap-1.5">

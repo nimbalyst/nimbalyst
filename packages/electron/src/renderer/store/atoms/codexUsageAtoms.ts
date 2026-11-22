@@ -7,6 +7,7 @@
 
 import { atom } from 'jotai';
 import { formatResetTime } from './claudeUsageAtoms';
+import type { UsageWeekRecord } from '../../../shared/usageHistory';
 
 export { formatResetTime };
 
@@ -53,6 +54,8 @@ export interface CodexUsageData {
   };
   limitsAvailable?: boolean;
   source?: 'account' | 'session';
+  /** Recorded weekly readings, attached by the main process; see shared/usageHistory.ts. */
+  weeklyHistory?: UsageWeekRecord[];
   lastUpdated: number;
   error?: string;
 }

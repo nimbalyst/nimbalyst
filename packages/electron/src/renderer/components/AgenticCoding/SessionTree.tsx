@@ -6,13 +6,14 @@ import {
   sessionProcessingAtom,
   sessionUnreadAtom,
   sessionHasPendingInteractivePromptAtom,
+  selectedWorkstreamAtom,
   type SessionMeta,
 } from '../../store/atoms/sessions';
 import { workspaceSessionTurnActivityAtom } from '../../store/atoms/sessionActivity';
 import { workstreamStateAtom } from '../../store/atoms/workstreamState';
 import { compactRowsAtom } from '../../store/atoms/agentMode';
 import { SessionListItem } from './SessionListItem';
-import { buildSessionTree, mergedTreeHeader, treeIndent, type SessionTreeNode } from './sessionTreeModel';
+import { buildSessionTree, isWorkstreamContainer, mergedTreeHeader, treeIndent, type SessionTreeNode } from './sessionTreeModel';
 
 export interface SessionTreeProps {
   sessions: SessionMeta[];
@@ -26,6 +27,8 @@ export interface SessionTreeProps {
   onSessionPinToggle?: (id: string, pinned: boolean) => void;
   onSessionRename?: (id: string, title: string) => void;
   onSessionBranch?: (id: string) => void;
+  /** The sidebar's multi-selection; move and archive actions on a selected row apply to all of it. */
+  selectedSessionIds?: ReadonlySet<string>;
 }
 
 export type SessionTreeRowHandlers = Omit<SessionTreeProps, 'sessions' | 'root'>;
@@ -142,14 +145,12 @@ export function SessionTreeRow(props: SessionTreeRowHandlers & VisibleSessionTre
       () =>
         atom((get) => {
           let running = 0;
-          let unread = 0;
           let review = 0;
           for (const id of node.ids) {
             if (get(sessionProcessingAtom(id))) running++;
-            if (get(sessionUnreadAtom(id))) unread++;
             if (get(sessionHasPendingInteractivePromptAtom(id))) review++;
           }
-          return { running, unread, review, expanded: readTreeExpanded(get, { id: row.id, ids: node.ids }, activeSessionId) };
+          return { running, review, expanded: readTreeExpanded(get, { id: row.id, ids: node.ids }, activeSessionId) };
         }),
       // Keyed by content, not node identity, so a re-sorted list never mints a new atom.
       // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -160,20 +161,34 @@ export function SessionTreeRow(props: SessionTreeRowHandlers & VisibleSessionTre
   const indent = treeIndent(node.depth - baseDepth);
   const hasChildren = node.children.length > 0;
   const hiddenCount = node.ids.length - 1;
+  const isSelected = !!props.selectedSessionIds?.has(row.id);
+  const selectedIds = useMemo(
+    () => (isSelected && props.selectedSessionIds ? [...props.selectedSessionIds] : undefined),
+    [isSelected, props.selectedSessionIds]
+  );
+  const isContainer = isWorkstreamContainer(row);
+  // A container is never the active session; it shows as active while it is the
+  // selection and none of its sessions is open (the empty-workstream state).
+  const isSelectedContainer = useAtomValue(
+    useMemo(
+      () => atom((get) => isContainer && get(selectedWorkstreamAtom(props.projectPath || row.workspaceId || ''))?.id === row.id),
+      [isContainer, props.projectPath, row.workspaceId, row.id]
+    )
+  );
+  const isActive = row.id === activeSessionId || (isSelectedContainer && !node.ids.includes(activeSessionId ?? ''));
   // SessionListItem's memo compares these by reference; build them only when
   // their inputs change so an unrelated list render does not repaint every row.
   // Inline on the metadata line; a separate row per parent cost a line of height each.
   const details = useMemo(() => hasChildren && (
     <span className="session-tree-rollup inline-flex shrink-0 gap-1.5 whitespace-nowrap text-[10px] text-[var(--nim-text-muted)]">
       {status.running > 0 && <span className="text-[var(--nim-primary)]">{status.running} running</span>}
-      {status.unread > 0 && <span>{status.unread} unread</span>}
       {status.review > 0 && <span>{status.review} need review</span>}
       {node.uncommittedCount > 0 && (
         <span className="text-[var(--nim-warning)]">{node.uncommittedCount} uncommitted</span>
       )}
       {!expanded && <span>{hiddenCount} sessions</span>}
     </span>
-  ), [hasChildren, status.running, status.unread, status.review, node.uncommittedCount, expanded, hiddenCount]);
+  ), [hasChildren, status.running, status.review, node.uncommittedCount, expanded, hiddenCount]);
   const leading = useMemo(() => (
     hasChildren ? (
       <button
@@ -206,10 +221,13 @@ export function SessionTreeRow(props: SessionTreeRowHandlers & VisibleSessionTre
         {...row}
         isPinned={pinSession.isPinned}
         title={row.title || 'Untitled Session'}
-        isActive={row.id === activeSessionId}
+        isActive={isActive}
         treeContext
         projectPath={props.projectPath || row.workspaceId}
-        isWorkstream={hasChildren}
+        isWorkstream={isContainer || hasChildren}
+        isExpanded={hasChildren && expanded}
+        isSelected={isSelected}
+        selectedSessionIds={selectedIds}
         treeLeading={leading}
         treeDetails={details}
         compact={compact}
@@ -220,7 +238,7 @@ export function SessionTreeRow(props: SessionTreeRowHandlers & VisibleSessionTre
         onUnarchive={props.onSessionUnarchive && (() => props.onSessionUnarchive!(row.id))}
         onPinToggle={props.onSessionPinToggle && ((pinned) => props.onSessionPinToggle!(pinSession.id, pinned))}
         onRename={props.onSessionRename && ((title) => props.onSessionRename!(row.id, title))}
-        onBranch={props.onSessionBranch && (() => props.onSessionBranch!(row.id))}
+        onBranch={props.onSessionBranch && !isContainer ? () => props.onSessionBranch!(row.id) : undefined}
       />
     </div>
   );

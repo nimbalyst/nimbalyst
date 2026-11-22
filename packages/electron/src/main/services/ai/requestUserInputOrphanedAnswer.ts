@@ -15,7 +15,10 @@
  * then resume the session with the answers in the message.
  */
 
+import { createHash } from 'node:crypto';
 import { persistInteractivePromptTerminalResult } from './askUserQuestionFallbackResolution';
+import { hasLiveInteractivePrompt } from '../../mcp/tools/interactivePromptLiveness';
+import { getQueuedPromptsStore } from '../RepositoryManager';
 
 export type ResumeSessionWithAnswer = (args: {
   event: Electron.IpcMainInvokeEvent;
@@ -27,14 +30,42 @@ export type ResumeSessionWithAnswer = (args: {
 let resumeSession: ResumeSessionWithAnswer | null = null;
 
 /** Wired by AIService, which owns the send-message path. */
-export function configureRequestUserInputResume(value: ResumeSessionWithAnswer): void {
+export function configureRequestUserInputResume(
+  value: ResumeSessionWithAnswer,
+  publish?: (sessionId: string) => Promise<void>,
+): void {
   resumeSession = value;
+  publishQueue = publish;
 }
 
 /**
  * Same payload the live tool result carries, so the agent reads the answers
  * against the field ids of the PromptForUserInput call already in its history.
  */
+/**
+ * NIM-7649: an answer to an older card while another prompt blocks the turn.
+ * Resuming now would replace that turn (sendMessage aborts the running
+ * request), so the answer goes through the prompt queue and is sent when the
+ * turn ends. The id is derived from the card, so a repeat cannot queue it twice.
+ */
+export async function queueAnswerUntilTurnEnds(args: {
+  sessionId: string;
+  promptId: string;
+  message: string;
+  publish?: (sessionId: string) => Promise<void>;
+}): Promise<void> {
+  const { sessionId, promptId, message, publish } = args;
+  const id = `answer-${createHash('sha256').update(JSON.stringify([sessionId, promptId])).digest('hex')}`;
+  const queue = getQueuedPromptsStore();
+  if (!(await queue.get(id))) {
+    // Not a human turn: it must not supersede other open questions.
+    await queue.create({ id, sessionId, prompt: message, documentContext: { promptOrigin: 'interactive-question' } });
+  }
+  await publish?.(sessionId);
+}
+
+let publishQueue: ((sessionId: string) => Promise<void>) | undefined;
+
 export function buildRequestUserInputResumeMessage(answers: Record<string, unknown>): string {
   return `[Resuming after the user submitted a PromptForUserInput form]\n\n${JSON.stringify({ answers }, null, 2)}`;
 }
@@ -63,6 +94,15 @@ export async function settleOrphanedRequestUserInput(args: {
   // resumes from a stored provider session.
   if (session.provider === 'claude-code-cli') {
     console.warn(`[SessionHandlers] No live waiter for PromptForUserInput on claude-code-cli; not auto-resuming: ${sessionId}`);
+    return;
+  }
+  // Another prompt is blocking the turn right now (the answer was for an older
+  // card). Resuming would abort that turn, since sendMessage replaces the
+  // running request; the answer is queued for when it ends (NIM-7649).
+  if (hasLiveInteractivePrompt(sessionId)) {
+    console.warn(`[SessionHandlers] PromptForUserInput ${promptId} has no live waiter but another prompt is live; queuing the answer: ${sessionId}`);
+    await queueAnswerUntilTurnEnds({ sessionId, promptId, message: buildRequestUserInputResumeMessage(answers), publish: publishQueue })
+      .catch((err) => console.error(`[SessionHandlers] Failed to queue the PromptForUserInput answer for ${promptId}: ${err}`));
     return;
   }
   if (!resumeSession) {

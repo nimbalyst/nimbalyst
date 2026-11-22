@@ -44,6 +44,11 @@ export function recentDateRange(days: number, nowMs = Date.now()): TimelineDateR
   return { startMs: start.getTime(), endMs: end.getTime() };
 }
 
+/** A rolling window of the last `hours` hours, ending exactly at `nowMs`. */
+export function recentHoursRange(hours: number, nowMs = Date.now()): TimelineDateRange {
+  return { startMs: nowMs - hours * 60 * 60 * 1000, endMs: nowMs };
+}
+
 export function timeSpansOverlap(startMs: number, endMs: number, range: TimelineDateRange): boolean {
   return startMs <= range.endMs && endMs >= range.startMs;
 }

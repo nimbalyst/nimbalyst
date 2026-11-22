@@ -10,7 +10,12 @@ import * as path from 'path';
 import { RecentItem, SessionState, SessionWindow } from '../types';
 import { logger } from './logger';
 import { type EffortLevel, type ThinkingMode, parseEffortLevel, parseThinkingMode } from '@nimbalyst/runtime/ai/server/effortLevels';
-import type { FleetStatusStyle, IslandDisplayPreference } from '../../shared/menuBarIsland';
+import {
+  clampIslandPanelSize,
+  type FleetStatusStyle,
+  type IslandDisplayPreference,
+  type IslandPanelSize,
+} from '../../shared/menuBarIsland';
 import type { OnboardingConfig } from '../../shared/types/workspace';
 import { DEFAULT_ONBOARDING_CONFIG } from '../../shared/types/workspace';
 import { AlphaFeatureTag, getDefaultAlphaFeatures, ALPHA_FEATURES } from '../../shared/alphaFeatures';
@@ -23,6 +28,7 @@ import {
 } from '../../shared/orgProjectWalk';
 import { omitModelsField } from '@nimbalyst/runtime/ai/server/utils/modelConfigUtils';
 import { planWorkstreamStatePrune } from './workstreamStatePrune';
+import type { WorktreeDefaultBaseSetting } from '../services/worktreeBaseBranch';
 import type { OpenCodeModelCatalogCache } from '@nimbalyst/runtime/ai/server';
 
 // Theme can be a built-in theme or an extension theme ID (format: "extensionId:themeId")
@@ -72,19 +78,39 @@ export interface DatabaseMaintenanceSettings {
   backupIntervalHours: number;
   /**
    * Days of tool output to keep at full fidelity. Older tool results are
-   * rewritten to a placeholder. 0 disables the pass entirely. User prompts and
-   * agent text are never affected at any setting.
+   * rewritten to a placeholder by a daily background pass. 0 disables the pass
+   * entirely. User prompts and agent text are never affected at any setting.
    */
   toolOutputRetentionDays: number;
+}
+
+/**
+ * What is actually persisted under `databaseMaintenance`. Internal fields stay
+ * out of `DatabaseMaintenanceSettings`, which is the IPC shape.
+ */
+interface StoredDatabaseMaintenance extends Partial<DatabaseMaintenanceSettings> {
+  /**
+   * True only once a patch explicitly carried `toolOutputRetentionDays`. The
+   * setter persists the whole merged object, so every install that ever
+   * changed a backup option also stored the old default of 0 -- a stored 0
+   * without this flag is not a user choice and reads as the current default.
+   */
+  toolOutputRetentionDaysUserSet?: boolean;
+  /**
+   * Resume cursor for the scheduled retention pass; see `RetentionResult.lastId`.
+   * Stored under a new key since NIM-7735: the cursor kept under
+   * `toolOutputRetentionCursor` could sit far past rows the pass never
+   * examined, so that value is ignored and the pass walks once from the start.
+   */
+  toolOutputRetentionResumeId?: number;
 }
 
 export const DEFAULT_DATABASE_MAINTENANCE: DatabaseMaintenanceSettings = {
   backupCopiesKept: 2,
   backupIntervalHours: 12,
-  // Opt-in for now: the pass is destructive and irreversible, so it ships
-  // behind an explicit action in the database dashboard before it becomes a
-  // default. See the rollout in the storage plan.
-  toolOutputRetentionDays: 0,
+  // Without a default, tool output grew without bound (gigabytes on heavy
+  // installs). VACUUM stays an explicit user step; this only frees pages.
+  toolOutputRetentionDays: 30,
 };
 
 /** How the macOS menu bar fleet strip is drawn. See `getTrayStripStyle`. */
@@ -119,7 +145,7 @@ interface AppStoreSchema {
   completedSessionsWithTools?: number;
   // Local database maintenance. Each backup generation is a FULL copy of the
   // database, so `copiesKept` is a direct multiplier on disk usage (#1248).
-  databaseMaintenance?: DatabaseMaintenanceSettings;
+  databaseMaintenance?: StoredDatabaseMaintenance;
   // Sound notifications
   completionSoundEnabled?: boolean;
   completionSoundType?: CompletionSoundType;
@@ -296,6 +322,9 @@ interface AppStoreSchema {
   // primary display, which is also the fallback when this names a monitor that
   // is no longer connected.
   islandDisplay?: IslandDisplayPreference;
+  // Size of the menu bar island's expanded panel, set by dragging its edges.
+  // Absent means the default size.
+  islandPanelSize?: IslandPanelSize;
   // Advanced: V8 heap memory limit in MB (default: 4096 = 4GB)
   // Increase if you experience OOM crashes with large sessions
   maxHeapSizeMB?: number;
@@ -679,6 +708,9 @@ export interface WorkspaceState {
   // PR review: gh CLI account login override for this project. When set, it
   // wins over the global AppStoreSchema.prReviewDefaultGhAccount.
   prReviewGhAccountOverride?: string;
+  // Default base for new worktrees created without an explicit base (#1958).
+  // Unset means 'remote-default'. See services/worktreeBaseBranch.ts.
+  worktreeDefaultBase?: WorktreeDefaultBaseSetting;
   // Privileged extension capability grants scoped to this workspace.
   // Global-scope grants live on AppStoreSchema.extensionPermissionGrantsGlobal.
   // See packages/electron/src/main/extensions/permissionGrantStore.ts for the
@@ -1124,26 +1156,46 @@ export const store = {
  * these fields for every existing install, so each one is defaulted
  * individually rather than trusting the stored object to be complete.
  */
+function getStoredDatabaseMaintenance(): StoredDatabaseMaintenance | undefined {
+  return getAppStore().get('databaseMaintenance') as StoredDatabaseMaintenance | undefined;
+}
+
 export function getDatabaseMaintenanceSettings(): DatabaseMaintenanceSettings {
-  const stored = getAppStore().get('databaseMaintenance') as
-    | Partial<DatabaseMaintenanceSettings>
-    | undefined;
+  const stored = getStoredDatabaseMaintenance();
   return {
     backupCopiesKept:
       stored?.backupCopiesKept ?? DEFAULT_DATABASE_MAINTENANCE.backupCopiesKept,
     backupIntervalHours:
       stored?.backupIntervalHours ?? DEFAULT_DATABASE_MAINTENANCE.backupIntervalHours,
-    toolOutputRetentionDays:
-      stored?.toolOutputRetentionDays ?? DEFAULT_DATABASE_MAINTENANCE.toolOutputRetentionDays,
+    toolOutputRetentionDays: stored?.toolOutputRetentionDaysUserSet
+      ? stored.toolOutputRetentionDays ?? DEFAULT_DATABASE_MAINTENANCE.toolOutputRetentionDays
+      : DEFAULT_DATABASE_MAINTENANCE.toolOutputRetentionDays,
   };
 }
 
 export function setDatabaseMaintenanceSettings(
   patch: Partial<DatabaseMaintenanceSettings>,
 ): DatabaseMaintenanceSettings {
+  const stored = getStoredDatabaseMaintenance();
   const next = { ...getDatabaseMaintenanceSettings(), ...patch };
-  getAppStore().set('databaseMaintenance', next);
+  getAppStore().set('databaseMaintenance', {
+    ...stored,
+    ...next,
+    toolOutputRetentionDaysUserSet:
+      stored?.toolOutputRetentionDaysUserSet === true || patch.toolOutputRetentionDays !== undefined,
+  } satisfies StoredDatabaseMaintenance);
   return next;
+}
+
+export function getToolOutputRetentionCursor(): number {
+  return getStoredDatabaseMaintenance()?.toolOutputRetentionResumeId ?? 0;
+}
+
+export function setToolOutputRetentionCursor(lastId: number): void {
+  getAppStore().set('databaseMaintenance', {
+    ...getStoredDatabaseMaintenance(),
+    toolOutputRetentionResumeId: lastId,
+  } satisfies StoredDatabaseMaintenance);
 }
 
 export function getRecentItems(type: 'workspaces' | 'documents'): RecentItem[] {
@@ -1714,6 +1766,23 @@ export function savePrReviewGhAccountOverride(workspacePath: string, login: stri
   });
 }
 
+export function getWorktreeDefaultBase(workspacePath: string): WorktreeDefaultBaseSetting | undefined {
+  return getWorkspaceState(workspacePath).worktreeDefaultBase;
+}
+
+/** Replaces the whole setting; `undefined` clears it back to the remote default. */
+export function setWorktreeDefaultBase(workspacePath: string, setting: WorktreeDefaultBaseSetting | undefined): void {
+  updateWorkspaceState(workspacePath, workspace => {
+    if (setting) {
+      workspace.worktreeDefaultBase = setting.mode === 'custom'
+        ? { mode: 'custom', ref: setting.ref }
+        : { mode: setting.mode };
+    } else {
+      delete workspace.worktreeDefaultBase;
+    }
+  });
+}
+
 /** Resolve the effective gh account for a workspace: override ?? global default. */
 export function getEffectiveGhAccount(workspacePath?: string): string | undefined {
   if (workspacePath) {
@@ -1766,6 +1835,18 @@ export function isRosettaWarningDismissed(): boolean {
 
 export function dismissRosettaWarning(): void {
   getAppStore().set('rosettaWarningDismissed', true);
+}
+
+/**
+ * The user answered the launch prompt offering to migrate a database above the
+ * automatic SQLite ceiling (either way). Once set, the prompt never shows again.
+ */
+export function isSqliteMigrationConsentAnswered(): boolean {
+  return getAppStore().get('sqliteMigrationConsentAnswered', false);
+}
+
+export function markSqliteMigrationConsentAnswered(): void {
+  getAppStore().set('sqliteMigrationConsentAnswered', true);
 }
 
 export function shouldShowRosettaWarning(): boolean {
@@ -1893,6 +1974,15 @@ export function getIslandDisplay(): IslandDisplayPreference | null {
 
 export function setIslandDisplay(preference: IslandDisplayPreference): void {
   getAppStore().set('islandDisplay', preference);
+}
+
+/** The island panel size, clamped and defaulted so old or hand-edited stores stay valid. */
+export function getIslandPanelSize(): IslandPanelSize {
+  return clampIslandPanelSize(getAppStore().get('islandPanelSize'));
+}
+
+export function setIslandPanelSize(size: IslandPanelSize): void {
+  getAppStore().set('islandPanelSize', clampIslandPanelSize(size));
 }
 
 // Completion Sound Settings
@@ -2635,15 +2725,20 @@ export function isWorkspaceTrusted(workspacePath: string): boolean {
          getWorkspaceState(workspacePath).agentPermissions?.permissionMode !== undefined;
 }
 
-export function setWorkspaceTrusted(workspacePath: string, trusted: boolean, mode: 'ask' | 'allow-all' | 'bypass-all' = 'ask'): void {
+export function setWorkspaceTrusted(
+  workspacePath: string,
+  trusted: boolean,
+  mode: 'ask' | 'allow-all' | 'bypass-all' = 'ask',
+  allowAllUsesClassifier?: boolean,
+): void {
   updateWorkspaceState(workspacePath, (state) => {
     const existing = state.agentPermissions;
+    // Preserve the "Allow All" classifier opt-in across trust toggles (issue #628)
+    // unless the caller sets it explicitly.
+    const classifier = allowAllUsesClassifier ?? existing?.allowAllUsesClassifier;
     state.agentPermissions = {
       permissionMode: trusted ? mode : null,
-      // Preserve the "Allow All" classifier opt-in across trust toggles (issue #628).
-      ...(existing?.allowAllUsesClassifier !== undefined && {
-        allowAllUsesClassifier: existing.allowAllUsesClassifier,
-      }),
+      ...(classifier !== undefined && { allowAllUsesClassifier: classifier }),
     };
   });
 }

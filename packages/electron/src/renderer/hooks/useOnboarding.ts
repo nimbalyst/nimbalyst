@@ -3,7 +3,7 @@ import { useAtomValue, useSetAtom } from 'jotai';
 import { usePostHog } from 'posthog-js/react';
 import { dialogRef, dialogReadyAtom } from '../contexts/DialogContext';
 import { DIALOG_IDS } from '../dialogs';
-import type { OnboardingData, UnifiedOnboardingData, WindowsClaudeCodeWarningData, RosettaWarningData } from '../dialogs';
+import type { OnboardingData, UnifiedOnboardingData, WindowsClaudeCodeWarningData, RosettaWarningData, MigrationConsentData } from '../dialogs';
 import type { OnboardingIntent } from '../components/UnifiedOnboarding/UnifiedOnboarding';
 import OnboardingService from '../services/OnboardingService';
 import type { ContentMode } from '../types/WindowModeTypes';
@@ -97,6 +97,7 @@ export function useOnboarding({
     // After onboarding closes, check if we need to show platform warnings
     checkWindowsWarning();
     checkRosettaWarning();
+    checkMigrationConsent();
   }, [posthog]);
 
   // Check if we should show the Windows Claude Code warning
@@ -180,6 +181,31 @@ export function useOnboarding({
     }
   }, [workspaceMode, posthog]);
 
+  // Offer to migrate a database above the automatic SQLite ceiling. Main
+  // answers `show: true` to one window per launch, and only when boot decided
+  // `offer_consent`; see main/database/sqlite/migrationConsentOffer.ts.
+  const checkMigrationConsent = useCallback(async () => {
+    if ((window as any).PLAYWRIGHT) return;
+    if (!workspaceMode) return;
+    try {
+      const claim = (await window.electronAPI.invoke('db:migration:claim-consent-prompt')) as
+        | { show: true; sourceBytesBucket: string }
+        | { show: false };
+      if (!claim.show || !dialogRef.current) return;
+      posthog?.capture('migration_consent_prompt_shown', { source_bytes_bucket: claim.sourceBytesBucket });
+      dialogRef.current.open<MigrationConsentData>(DIALOG_IDS.MIGRATION_CONSENT, {
+        onAnswer: (accepted) => {
+          posthog?.capture('migration_consent_prompt_answered', {
+            answer: accepted ? 'accepted' : 'dismissed',
+            source_bytes_bucket: claim.sourceBytesBucket,
+          });
+        },
+      });
+    } catch (error) {
+      console.error('[useOnboarding] Error checking migration consent prompt:', error);
+    }
+  }, [workspaceMode, posthog]);
+
   // Check for unified onboarding on first launch
   // Wait for: initialization complete, dialog system ready, workspace mode
   useEffect(() => {
@@ -237,6 +263,7 @@ export function useOnboarding({
         // Onboarding already done, check platform warnings
         checkWindowsWarning();
         checkRosettaWarning();
+        checkMigrationConsent();
         return;
       }
 

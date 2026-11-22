@@ -87,26 +87,28 @@ export function sessionTitlesSql(sessionIds: readonly string[]): string | null {
  * Returns null when there is nothing to ask about, so the caller can skip the
  * round trip entirely rather than issuing `... IN ()`.
  *
- * Written as a join against a grouped max rather than a window function or a
- * correlated subquery: it is the shape both PGLite and better-sqlite3 plan the
- * same way off `idx_ai_agent_messages_session (session_id, id)`.
+ * One `ORDER BY id DESC LIMIT 1` probe per session, glued with UNION ALL, so
+ * each probe reads one entry of the partial index
+ * `idx_ai_agent_messages_latest_assistant_text (session_id, id DESC)` and stops.
+ * The earlier grouped-MAX join let the planner pick `message_kind = ?` off the
+ * user-prompts index instead (no ANALYZE stats, so `session_id IN (...)` looked
+ * costlier), which walked every assistant row in the database through the table
+ * on each refresh. The WHERE clause must keep repeating the index's three
+ * predicate terms or the partial index stops being eligible.
  */
 export function latestAssistantTextSql(sessionIds: readonly string[]): string | null {
   const ids = sessionIds.filter((id) => SAFE_ID.test(id));
   if (ids.length === 0) return null;
 
-  const list = ids.map((id) => `'${id}'`).join(', ');
-  return `
-    SELECT m.session_id, m.searchable_text
-    FROM ai_agent_messages m
-    JOIN (
-      SELECT session_id, MAX(id) AS id
+  return ids.map((id, i) => `
+    SELECT * FROM (
+      SELECT session_id, searchable_text
       FROM ai_agent_messages
-      WHERE session_id IN (${list})
+      WHERE session_id = '${id}'
         AND message_kind = 'assistant'
         AND searchable_text IS NOT NULL
         AND searchable_text <> ''
-      GROUP BY session_id
-    ) latest ON latest.session_id = m.session_id AND latest.id = m.id
-  `;
+      ORDER BY id DESC
+      LIMIT 1
+    ) AS latest_${i}`).join('\n    UNION ALL');
 }

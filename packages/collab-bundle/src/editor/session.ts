@@ -16,6 +16,7 @@
 
 import { encodeStateAsUpdate, type Doc } from 'yjs';
 
+import type { CommentCapabilities } from '@nimbalyst/runtime/editor/commenting/types';
 import { DocumentSyncProvider } from '@nimbalyst/runtime/sync/DocumentSync';
 import type {
   AwarenessState,
@@ -27,6 +28,7 @@ import { CollabPresenceSurface } from './presence';
 import {
   classifyDocumentClose,
   parseDocumentServerSignal,
+  serverAccessFromVerdict,
 } from './serverSignals';
 import type {
   CollabEditorFlushResult,
@@ -71,6 +73,8 @@ export interface CollabDocumentSessionOptions {
   lifecycleElement: HTMLElement;
   /** The host's role-derived comment answer; see `deriveCollabEditorCommentsState`. */
   hostCanComment?(): boolean;
+  /** The host's body-edit answer; omitted means permitted. */
+  hostCanEditBody?(): boolean;
 
   onStateChange?(state: CollabEditorState): void;
   onPresenceChange?: Parameters<CollabPresenceSurface['onPresenceChange']>[0];
@@ -99,6 +103,12 @@ export interface CollabDocumentSession {
   emitState(): void;
   /** Whether this user may author comments right now. */
   canComment(): boolean;
+  /** Whether this user may change the document body right now. */
+  canEditBody(): boolean;
+  /** The runtime comment capabilities, `editBody` included. Never cache. */
+  commentCapabilities(): CommentCapabilities;
+  /** Re-read the host's access answers and re-emit if read-only changed. */
+  refreshHostAccess(): void;
   hasConnectedOnce(): boolean;
   markDirty(): void;
   markClean(): void;
@@ -130,7 +140,7 @@ export function createCollabDocumentSession(
   const state: CollabEditorState = {
     connection: options.source.kind === 'in-memory' ? 'local' : 'disconnected',
     edit: 'clean',
-    readOnly: hostReadOnly,
+    readOnly: hostReadOnly || !(options.hostCanEditBody?.() ?? true),
     hostReadOnly,
     serverAccess: options.source.kind === 'in-memory' ? 'not-applicable' : 'unknown',
     termination: null,
@@ -142,17 +152,21 @@ export function createCollabDocumentSession(
     state.edit = 'dirty';
     emitState();
   };
+  const hostCanComment = (): boolean => options.hostCanComment?.() ?? true;
+  const hostCanEditBody = (): boolean => options.hostCanEditBody?.() ?? true;
   const updateEffectiveReadOnly = (): void => {
     state.readOnly = hostReadOnly
+      || !hostCanEditBody()
+      || state.serverAccess === 'comment-only'
       || state.serverAccess === 'read-only'
       || state.serverAccess === 'revoked';
   };
-  const hostCanComment = (): boolean => options.hostCanComment?.() ?? true;
   const commentsState = () => deriveCollabEditorCommentsState({
     connection: state.connection,
     serverAccess: state.serverAccess,
     hasConnectedOnce,
     hostCanComment: hostCanComment(),
+    hostCanEditBody: hostCanEditBody(),
   });
   const interruptFlushes = (result: CollabEditorFlushResult): void => {
     for (const resolve of flushInterruptWaiters) resolve(result);
@@ -204,7 +218,10 @@ export function createCollabDocumentSession(
           const signal = parseDocumentServerSignal(event.data);
           if (!signal) return;
           if (signal.type === 'write-acknowledged') {
-            setServerAccess('writable');
+            // A commenter's comment updates are acknowledged too; an ack
+            // proves the room accepted that update, not that the body is
+            // writable.
+            if (state.serverAccess !== 'comment-only') setServerAccess('writable');
             return;
           }
           // The sync response's verdict, unlike an ack, arrives without the
@@ -212,7 +229,25 @@ export function createCollabDocumentSession(
           // was attempted, so there is no flush to interrupt and no
           // clientUpdateId to correlate.
           if (signal.type === 'access-verdict') {
-            setServerAccess(signal.canWrite ? 'writable' : 'read-only');
+            setServerAccess(serverAccessFromVerdict(signal));
+            return;
+          }
+          if (signal.type === 'comment-only') {
+            setServerAccess('comment-only');
+            return;
+          }
+          if (signal.type === 'comment-update-refused') {
+            // Every later update from this Y.Doc's client depends on the
+            // refused one, so the room can never accept another. Terminal
+            // (the room also closes 4009); stop before DocumentSync
+            // reconnects and resends it.
+            setTermination({
+              reason: 'comment-update-refused',
+              closeCode: 4009,
+              message: signal.message,
+              ...(signal.clientUpdateId ? { clientUpdateId: signal.clientUpdateId } : {}),
+            });
+            networkProvider?.disconnect();
             return;
           }
           if (signal.type === 'read-only') {
@@ -268,7 +303,20 @@ export function createCollabDocumentSession(
         emitState();
       },
     });
-    presenceSurface = new CollabPresenceSurface(networkProvider);
+    const provider = networkProvider;
+    // Lexical's CollaborationPlugin calls connect() whenever it remounts, and
+    // the surface re-renders on termination. Without this guard a terminated
+    // session reconnects once more, and after a comment-update refusal it would
+    // resend the refused update the room can never accept.
+    presenceSurface = new CollabPresenceSurface({
+      getYDoc: () => provider.getYDoc(),
+      getStatus: () => provider.getStatus(),
+      connect: () => (state.termination ? Promise.resolve() : provider.connect()),
+      setLocalAwareness: (awareness) => provider.setLocalAwareness(awareness),
+      sendAwareness: (awareness) => provider.sendAwareness(awareness),
+      sendAwarenessDeparture: (user) => provider.sendAwarenessDeparture(user),
+      onAwarenessChange: (listener) => provider.onAwarenessChange(listener),
+    });
   } else {
     const sourceDocument = options.source.document;
     presenceSurface = new CollabPresenceSurface(
@@ -317,6 +365,14 @@ export function createCollabDocumentSession(
     getState: () => cloneState(state),
     emitState,
     canComment: () => commentsState().capabilities.comment,
+    canEditBody: () => commentsState().capabilities.editBody !== false,
+    commentCapabilities: () => commentsState().capabilities,
+    refreshHostAccess() {
+      if (destroyed) return;
+      const previous = state.readOnly;
+      updateEffectiveReadOnly();
+      if (state.readOnly !== previous) emitState();
+    },
     hasConnectedOnce: () => hasConnectedOnce,
     markDirty: setDirty,
     markClean() {

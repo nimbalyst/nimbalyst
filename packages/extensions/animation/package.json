@@ -10,14 +10,14 @@
   "scripts": {
     "dev": "vite build --watch",
     "build": "vite build",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "node ../../../scripts/tsc-native.mjs --noEmit"
   },
   "dependencies": {},
   "devDependencies": {
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^5.1.2",
-    "typescript": "^5.0.0",
+    "typescript": "^6.0.3",
     "vite": "^7.1.12"
   },
   "peerDependencies": {

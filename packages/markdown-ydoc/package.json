@@ -20,10 +20,10 @@
   },
   "scripts": {
     "build": "node scripts/build.mjs",
-    "typecheck": "tsc --noEmit -p tsconfig.json"
+    "typecheck": "node ../../scripts/tsc-native.mjs --noEmit -p tsconfig.json"
   },
   "devDependencies": {
     "esbuild": "^0.28.1",
-    "typescript": "^5.0.0"
+    "typescript": "^6.0.3"
   }
 }

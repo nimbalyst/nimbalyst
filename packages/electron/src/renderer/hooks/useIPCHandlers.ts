@@ -311,17 +311,6 @@ export function useIPCHandlers(props: UseIPCHandlersProps) {
       }));
     }
 
-    if (window.electronAPI.onOpenDocument) {
-      cleanupFns.push(window.electronAPI.onOpenDocument(async ({ path }) => {
-        // console.log('[DOCUMENT_LINK] Renderer received open-document for path:', path);
-        try {
-          await handlersRef.current.handleWorkspaceFileSelect(path);
-        } catch (error) {
-          console.error('[DOCUMENT_LINK] Failed to open document reference:', error);
-        }
-      }));
-    }
-
     // Handle workspace open from CLI
     if (window.electronAPI.onOpenWorkspaceFromCLI) {
       cleanupFns.push(window.electronAPI.onOpenWorkspaceFromCLI(async (workspacePath) => {

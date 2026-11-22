@@ -12,6 +12,7 @@ import { app } from 'electron';
 
 import { maybeAutoMigrate, type OrchestratorLike } from './sqlite/autoMigrate';
 import { authorizeRollout } from './sqlite/migrationFlag';
+import { recordConsentOffer } from './sqlite/migrationConsentOffer';
 import { getReleaseChannel } from '../utils/store';
 import type { ResolvedBackend } from './sqlite/BackendSelector';
 import type { SQLiteDatabaseProxy } from './sqlite/SQLiteDatabaseProxy';
@@ -125,6 +126,10 @@ async function forcedMigration(args: {
     onOutcome: emitMigrationOutcome,
     log: (level, msg, meta) => logger.main[level](msg, meta),
   });
+
+  // A source above the automatic ceiling is offered a consented migration;
+  // the renderer claims that prompt once this launch's window is up.
+  recordConsentOffer(outcome.decision);
 
   if (outcome.action === 'migrated') return true;
 

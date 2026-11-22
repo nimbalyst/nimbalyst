@@ -40,3 +40,10 @@ describe('mergeWithDefaults - sessionHistoryLayout.compactRows', () => {
     expect(mergeWithDefaults(undefined).sessionHistoryLayout.compactRows).toBe(false);
   });
 });
+
+describe('mergeWithDefaults - sessionHistoryLayout.showContextUsage', () => {
+  it('keeps a saved context-bar preference and defaults older layouts to off', () => {
+    expect(mergeWithDefaults({ sessionHistoryLayout: { showContextUsage: true } as never }).sessionHistoryLayout.showContextUsage).toBe(true);
+    expect(mergeWithDefaults({ sessionHistoryLayout: { compactRows: true } as never }).sessionHistoryLayout.showContextUsage).toBe(false);
+  });
+});

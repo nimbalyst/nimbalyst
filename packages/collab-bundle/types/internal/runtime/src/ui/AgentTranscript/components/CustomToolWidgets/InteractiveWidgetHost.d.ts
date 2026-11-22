@@ -300,6 +300,16 @@ export interface InteractiveWidgetHost {
      */
     openPage?(uri: string): Promise<void>;
     /**
+     * Open the terminal panel on the command terminal an extension owns under
+     * `key` (for a run target, its id): the tab that is its log. Resolves false
+     * when this project has no such tab. Optional: a host without a terminal
+     * panel (mobile) shows no "Show logs" link.
+     */
+    revealCommandTerminal?(owner: {
+        extensionId: string;
+        key: string;
+    }): Promise<boolean>;
+    /**
      * Track an analytics event
      */
     trackEvent(eventName: string, properties?: Record<string, unknown>): void;

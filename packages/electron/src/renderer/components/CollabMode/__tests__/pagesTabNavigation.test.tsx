@@ -2,7 +2,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import React from 'react';
 import { renderHook, act } from '@testing-library/react';
-import { TabsProvider, useTabs } from '../../../contexts/TabsContext';
+import { TabsProvider, useTabs, useTabsActions } from '../../../contexts/TabsContext';
 import { documentAvailability, isPagesEntryAvailable, planPagesOpen, type PagesEntryLookup } from '../pagesTabNavigation';
 
 const DOC_A = 'collab://org:org-a:doc:a';
@@ -121,6 +121,23 @@ describe('per-tab Back and Forward', () => {
     act(() => { stepped = result.current.stepTab(tabId, -1, () => false); });
     expect(stepped).toBe(false);
     expect(result.current.tabs[0].history?.back).toEqual([]);
+  });
+
+  it('returns Back and Forward to where each page was scrolled, and opens a clicked page at the top', () => {
+    const { result } = renderHook(() => ({ ...useTabs(), ...useTabsActions() }), { wrapper });
+    const scrolls = new Map<string, { scroller: string; top: number }>();
+    act(() => { result.current.setPageScrollReader((tabId) => scrolls.get(result.current.getSnapshot().tabs.get(tabId)!.filePath)); });
+    let tabId = '';
+    act(() => { tabId = result.current.addTab(DOC_A, '', true, 'Alpha')!; });
+    scrolls.set(DOC_A, { scroller: 'editor-scroller', top: 840 });
+    act(() => { result.current.navigateTab(tabId, 'tracker://T1', 'Diagram'); });
+    expect(result.current.tabs[0].restoreScroll).toBeUndefined();
+
+    scrolls.set('tracker://T1', { scroller: 'tracker-page', top: 120 });
+    act(() => { result.current.stepTab(tabId, -1); });
+    expect(result.current.tabs[0].restoreScroll).toEqual({ scroller: 'editor-scroller', top: 840 });
+    act(() => { result.current.stepTab(tabId, 1); });
+    expect(result.current.tabs[0].restoreScroll).toEqual({ scroller: 'tracker-page', top: 120 });
   });
 });
 

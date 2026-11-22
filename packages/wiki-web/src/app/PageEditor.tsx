@@ -30,6 +30,7 @@ import {
   type TrackerReferenceResolver,
 } from '@nimbalyst/collab-bundle/editor';
 import { wikiApi, wikiChanges } from '../api/client';
+import { isStaticSite } from '../api/staticSite';
 import { DraftStoreContext, type Conflict, type PageDraft, type SaveOutcome } from './drafts';
 import { pageImageResolver, pageUploadAsset } from './pageAssets';
 import { PageEditorServicesContext } from './pageEditorServices';
@@ -225,11 +226,12 @@ export function PageEditor({
         source: { kind: 'in-memory', document: doc },
         user: LOCAL_USER,
         // A file whose frontmatter does not parse is shown whole and not written until fixed by hand.
-        readOnly: body.malformed === true,
+        // A static export is a published copy: every page reads only.
+        readOnly: body.malformed === true || isStaticSite(),
         trackerReferences: trackerReferences ?? services?.trackerReferences,
         trackerReferenceAppearance: 'quiet',
         trackerReferenceSource,
-        onUploadAsset: pageUploadAsset(pageId),
+        onUploadAsset: isStaticSite() ? undefined : pageUploadAsset(pageId),
         resolveImageSrc: pageImageResolver(pageId),
         pageLinks: services?.pageLinks(pageId),
         renderFileEmbed: services ? (embed) => services.fileEmbed(pageId, embed) : undefined,
@@ -301,7 +303,8 @@ export function PageEditor({
   }, [save]);
 
   return (
-    <div className="wiki-web-page-editor flex min-h-0 flex-1 flex-col">
+    // A published page grows to its content so the page, with "Linked from" under it, scrolls as one.
+    <div className={`wiki-web-page-editor flex flex-col ${isStaticSite() ? 'flex-none' : 'min-h-0 flex-1'}`}>
       {malformed ? (
         <div className="wiki-web-banner mx-8 my-2 rounded border border-nim bg-nim-secondary px-3 py-2 text-xs text-nim-muted" role="status">
           This file&apos;s frontmatter does not parse, so it is shown whole and read-only. Fix it in an editor and it opens normally.
@@ -326,7 +329,7 @@ export function PageEditor({
       ) : null}
       {/* The console's editor surface (web-console collab/editorSurfaceStyles.ts): the editor fills the pane. */}
       <div ref={hostRef} className="wiki-web-editor-host collab-editor-surface flex min-h-[200px] flex-1 flex-col bg-nim" data-testid="wiki-web-editor" />
-      {onSaveState ? null : (
+      {onSaveState || isStaticSite() ? null : (
         <div className="wiki-web-save-state px-8 pb-2 text-[11px] text-nim-faint" data-save-state={saveState} aria-live="polite">
           {saveStateLabel(saveState, saveError)}
         </div>

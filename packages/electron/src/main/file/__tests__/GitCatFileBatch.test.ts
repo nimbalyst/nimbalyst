@@ -16,7 +16,8 @@ import type { ChildProcessWithoutNullStreams } from 'child_process';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { GitCatFileBatch } from '../GitCatFileBatch';
+import { GitCatFileBatch, toGitObjectPath } from '../GitCatFileBatch';
+import { parseDirtyPathsPorcelainZ } from '../FileSnapshotCache';
 import { createScratchRepo, type ScratchRepo } from '../../services/testSupport/gitTestSandbox';
 
 let scratch: ScratchRepo;
@@ -163,5 +164,42 @@ describe('GitCatFileBatch', () => {
     // Output the dead child had already written must not answer the replacement's read.
     child.stdout.emit('data', Buffer.from('0000000000000000000000000000000000000000 blob 6\n4a5800\n'));
     expect(await replacementRead).toBe('alpha\n');
+  });
+});
+
+describe('toGitObjectPath', () => {
+  // GitHub #1889: Windows hands `path.relative` output with backslashes to the
+  // `<rev>:<path>` lookup, which git reports as missing for any nested file.
+  it('converts a native Windows relative path into one git resolves', async () => {
+    expect(await make().read(sha, 'nested\\c.txt')).toBeNull();
+    expect(await make().read(sha, toGitObjectPath('nested\\c.txt', '\\'))).toBe('gamma\n');
+  });
+
+  it('keeps a literal backslash in a POSIX filename', () => {
+    expect(toGitObjectPath('dir/odd\\name.txt', '/')).toBe('dir/odd\\name.txt');
+  });
+});
+
+describe('parseDirtyPathsPorcelainZ', () => {
+  // Checked against real `git status -z` output rather than a hand-written
+  // string, so the parser cannot just agree with my reading of the format.
+  it('returns unquoted paths and skips the source of a rename', () => {
+    const statusRepo = createScratchRepo();
+    try {
+      const dir = statusRepo.path;
+      const git = statusRepo.git;
+      fs.writeFileSync(path.join(dir, 'old name.md'), 'x\n');
+      fs.writeFileSync(path.join(dir, 'tracked.md'), 'x\n');
+      git('add', '-A');
+      git('commit', '-qm', 'init');
+      git('mv', 'old name.md', 'new name.md');
+      fs.writeFileSync(path.join(dir, 'tracked.md'), 'changed\n');
+      fs.writeFileSync(path.join(dir, 'café.md'), 'new\n');
+
+      const stdout = git('--no-optional-locks', 'status', '--porcelain', '-z');
+      expect(parseDirtyPathsPorcelainZ(stdout).sort()).toEqual(['café.md', 'new name.md', 'tracked.md']);
+    } finally {
+      statusRepo.cleanup();
+    }
   });
 });

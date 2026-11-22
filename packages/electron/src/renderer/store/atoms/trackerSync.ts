@@ -40,8 +40,10 @@ export const trackerSyncConfigChangeAtom = atom<TrackerSyncConfigChange | null>(
  * compatibility with old servers. `custodyUnavailable` is the current
  * user-facing rejection -- the server could not load the team DEK (the
  * organization was never converted to server-managed custody).
+ * `recoveryConflict` means an edit queued before organization recovery was
+ * refused and retained in local history instead of being applied.
  */
-export type TrackerSyncRejectionCode = 'staleKeyEpoch' | 'rotationLocked' | 'custodyUnavailable';
+export type TrackerSyncRejectionCode = 'staleKeyEpoch' | 'rotationLocked' | 'custodyUnavailable' | 'recoveryConflict';
 
 export interface TrackerSyncRejection {
   workspacePath: string;
@@ -60,6 +62,7 @@ export const trackerSyncRejectionAtom = atom<TrackerSyncRejectionState>({
   staleKeyEpoch: null,
   rotationLocked: null,
   custodyUnavailable: null,
+  recoveryConflict: null,
 });
 
 /**

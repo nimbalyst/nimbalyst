@@ -99,15 +99,16 @@ function announceAgentPresence(
 /**
  * Apply `replacements` to the shared document at `documentUri`.
  *
- * Resolves only once the server has acknowledged the write. Throws otherwise --
- * see rule 3 in the module header.
+ * Resolves with the document's text after the edit, and only once the server
+ * has acknowledged the write. Throws otherwise -- see rule 3 in the module
+ * header.
  */
 export async function applyHeadlessCollabDocEdit(
   documentUri: string,
   workspacePath: string,
   replacements: TextReplacement[],
   options: HeadlessCollabDocEditOptions = {},
-): Promise<void> {
+): Promise<string> {
   if (!Array.isArray(replacements) || replacements.length === 0) {
     throw new HeadlessCollabDocumentError(
       'DOCUMENT_NOT_AVAILABLE',
@@ -137,7 +138,7 @@ export async function applyHeadlessCollabDocEdit(
     } else {
       const original = projectCollabDocContent(codec, acquisition.yDoc);
       const next = applyTextReplacementsToString(original, replacements);
-      if (next === original) return;
+      if (next === original) return original;
       codec.applyFromFile(acquisition.yDoc, next);
     }
 
@@ -150,6 +151,7 @@ export async function applyHeadlessCollabDocEdit(
         `The edit to ${documentUri} was applied locally but the server never acknowledged it, so other collaborators may not have received it.`,
       );
     }
+    return projectCollabDocContent(codec, acquisition.yDoc);
   } finally {
     endPresence();
     acquisition.release();

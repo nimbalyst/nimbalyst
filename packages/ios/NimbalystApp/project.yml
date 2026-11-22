@@ -113,7 +113,7 @@ targets:
           # Copy editor dist to Resources (clean first to remove stale hashed assets)
           rm -rf "${SRCROOT}/Resources/editor-dist"
           mkdir -p "${SRCROOT}/Resources/editor-dist"
-          cp dist-editor/editor.html "${SRCROOT}/Resources/editor-dist/"
+          cp dist-editor/editor.html dist-editor/html-embed-shell.html dist-editor/html-embed-shell.csp "${SRCROOT}/Resources/editor-dist/"
           cp -R dist-editor/assets "${SRCROOT}/Resources/editor-dist/"
         basedOnDependencyAnalysis: false
 

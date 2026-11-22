@@ -15,14 +15,14 @@
     }
   },
   "scripts": {
-    "typecheck": "tsc --noEmit"
+    "typecheck": "node ../../scripts/tsc-native.mjs --noEmit"
   },
   "peerDependencies": {
     "yjs": ">=13.5.42"
   },
   "devDependencies": {
     "@nimbalyst/extension-sdk": "workspace:*",
-    "typescript": "^5.0.0",
-    "yjs": "13.6.32"
+    "typescript": "^6.0.3",
+    "yjs": "13.6.33"
   }
 }

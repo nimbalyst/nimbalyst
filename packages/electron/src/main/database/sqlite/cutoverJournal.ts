@@ -299,6 +299,12 @@ export interface CutoverFs {
   exists(target: string): boolean;
   rename(from: string, to: string): void;
   isNonEmptyDir(target: string): boolean;
+  /**
+   * Waits between attempts when a rename is refused with a transient lock
+   * code. Production leaves it unset (`RENAME_RETRY_DELAYS_MS`); tests that
+   * inject a permanent lock pass zeros so they do not sleep through backoff.
+   */
+  renameRetryDelaysMs?: readonly number[];
 }
 
 export const realCutoverFs: CutoverFs = {

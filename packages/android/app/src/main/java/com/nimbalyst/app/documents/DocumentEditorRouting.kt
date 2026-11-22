@@ -63,10 +63,13 @@ internal sealed interface DocumentKind {
     data object Csv : DocumentKind
     /** A file in a wiki written by a newer format (or with an unreadable marker): shown, never saved. */
     data object Locked : DocumentKind
+    /** An `.html` file, which only backs embeds: shown as an embed of itself, never saved. */
+    data object Embed : DocumentKind
 }
 
 /** Mirrors iOS `WikiAwareDocumentView.resolve`: table types first, then CSV, then wiki pages. */
 internal fun classifyDocument(relativePath: String, folder: String?, snapshot: WikiSnapshot?): DocumentKind {
+    if (WikiDocuments.isEmbedOnlyFile(relativePath)) return DocumentKind.Embed
     val isCsv = relativePath.lowercase().endsWith(".csv")
     val path = folder?.let { WikiDocuments.wikiPath(relativePath, it) }
     if (path != null && snapshot != null) {
@@ -172,7 +175,7 @@ fun DocumentEditorScreen(
             // One call site for every editable kind: when the kind changes under an
             // open file (wiki config arriving, a page turning malformed) the same
             // editor gets the new permission and link handler instead of being rebuilt.
-            is DocumentKind.Page, DocumentKind.Plain, DocumentKind.Locked -> {
+            is DocumentKind.Page, DocumentKind.Plain, DocumentKind.Locked, DocumentKind.Embed -> {
                 val spec = editorSpec(resolved)
                 DocumentEditorContent(
                     projectId = projectId,
@@ -189,7 +192,7 @@ fun DocumentEditorScreen(
     }
 }
 
-/** How the editor shows a page, a plain file or a locked wiki file. */
+/** How the editor shows a page, a plain file, a locked wiki file or an `.html` file. */
 internal data class EditorSpec(
     val title: String?,
     val readOnly: Boolean,
@@ -209,7 +212,7 @@ internal fun editorSpec(kind: DocumentKind): EditorSpec = when (kind) {
         fields = kind.page.fields,
         snapshot = kind.snapshot,
     )
-    DocumentKind.Locked -> EditorSpec(null, readOnly = true, typeName = null, fields = emptyList(), snapshot = null)
+    DocumentKind.Locked, DocumentKind.Embed -> EditorSpec(null, readOnly = true, typeName = null, fields = emptyList(), snapshot = null)
     else -> EditorSpec(null, readOnly = false, typeName = null, fields = emptyList(), snapshot = null)
 }
 

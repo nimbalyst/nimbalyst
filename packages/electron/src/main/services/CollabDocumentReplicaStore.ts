@@ -34,6 +34,7 @@ type ReplicaPurpose = "replica" | "update" | "outbox";
 
 export interface ReplicaDeviceKeyProvider {
   getKey(accountId: string): Promise<Uint8Array>;
+  getExistingKey?(accountId: string): Promise<Uint8Array>;
   deleteKey?(accountId: string): Promise<void>;
 }
 
@@ -50,6 +51,14 @@ export class SafeStorageReplicaDeviceKeyProvider
       this.keys.set(accountId, pending);
     }
     return pending;
+  }
+
+  async getExistingKey(accountId: string): Promise<Uint8Array> {
+    if (!safeStorage.isEncryptionAvailable()) throw new Error("OS credential storage is unavailable");
+    const protectedKey = await fs.readFile(this.keyPath(accountId));
+    const raw = Buffer.from(safeStorage.decryptString(protectedKey), "base64");
+    if (raw.byteLength !== 32) throw new Error("invalid local replica device key length");
+    return raw;
   }
 
   async deleteKey(accountId: string): Promise<void> {
@@ -206,7 +215,8 @@ export class CollabDocumentReplicaStore implements LocalReplicaStore {
   ) {}
 
   async load(
-    identity: LocalReplicaIdentity
+    identity: LocalReplicaIdentity,
+    options: { readOnly?: boolean } = {}
   ): Promise<LoadedLocalReplica | null> {
     const startedAt = Date.now();
     const replicaResult = await this.db.query<ReplicaRow>(
@@ -269,7 +279,7 @@ export class CollabDocumentReplicaStore implements LocalReplicaStore {
       this.identityParams(identity)
     );
 
-    await this.db.query(
+    if (!options.readOnly) await this.db.query(
       `
       UPDATE collab_document_replicas SET last_accessed_at = $4
       WHERE account_id = $1 AND org_id = $2 AND document_id = $3
@@ -287,7 +297,7 @@ export class CollabDocumentReplicaStore implements LocalReplicaStore {
             "replica",
             row.encoding_version,
             row.encrypted_snapshot,
-            row.snapshot_checksum
+            row.snapshot_checksum, options.readOnly
           )
         : null;
       updates = await Promise.all(
@@ -298,7 +308,7 @@ export class CollabDocumentReplicaStore implements LocalReplicaStore {
             "update",
             item.encoding_version,
             item.encrypted_update,
-            item.update_checksum
+            item.update_checksum, options.readOnly
           ),
           source: item.source,
           serverSequence:
@@ -315,7 +325,7 @@ export class CollabDocumentReplicaStore implements LocalReplicaStore {
             "outbox",
             item.encoding_version,
             item.encrypted_update,
-            item.update_checksum
+            item.update_checksum, options.readOnly
           ),
           state: item.state,
           attemptCount: item.attempt_count,
@@ -325,7 +335,7 @@ export class CollabDocumentReplicaStore implements LocalReplicaStore {
         }))
       );
     } catch (error) {
-      await this.quarantine(
+      if (!options.readOnly) await this.quarantine(
         identity,
         error instanceof Error ? error.message : String(error)
       );
@@ -334,6 +344,22 @@ export class CollabDocumentReplicaStore implements LocalReplicaStore {
           error instanceof Error ? error.message : String(error)
         }`
       );
+    }
+
+    if (options.readOnly) {
+      const current = (await this.db.query<ReplicaRow>(
+        `SELECT snapshot_generation, last_server_seq, snapshot_checksum, encoding_version,
+                completeness, snapshot_commit_token, staged_snapshot_token
+         FROM collab_document_replicas WHERE account_id = $1 AND org_id = $2 AND document_id = $3`,
+        this.identityParams(identity)
+      )).rows[0];
+      if (!current || current.snapshot_generation !== row.snapshot_generation
+        || Number(current.last_server_seq) !== Number(row.last_server_seq)
+        || current.snapshot_checksum !== row.snapshot_checksum || current.encoding_version !== row.encoding_version
+        || current.completeness !== row.completeness || current.snapshot_commit_token !== row.snapshot_commit_token
+        || current.staged_snapshot_token !== row.staged_snapshot_token) {
+        throw new Error('Local replica changed during recovery source collection; retry after synchronization settles');
+      }
     }
 
     const loaded = {
@@ -1255,7 +1281,8 @@ export class CollabDocumentReplicaStore implements LocalReplicaStore {
     purpose: ReplicaPurpose,
     encodingVersion: number,
     stored: Uint8Array,
-    expectedChecksum: string | null
+    expectedChecksum: string | null,
+    readOnly = false
   ): Promise<Uint8Array> {
     const bytes = Buffer.from(stored);
     if (!expectedChecksum || checksum(bytes) !== expectedChecksum) {
@@ -1266,7 +1293,10 @@ export class CollabDocumentReplicaStore implements LocalReplicaStore {
         `unsupported local replica encoding version ${encodingVersion}`
       );
     }
-    const key = Buffer.from(await this.keyProvider.getKey(identity.accountId));
+    if (readOnly && !this.keyProvider.getExistingKey) throw new Error("Read-only device key access unavailable");
+    const key = Buffer.from(await (readOnly
+      ? this.keyProvider.getExistingKey!(identity.accountId)
+      : this.keyProvider.getKey(identity.accountId)));
     const decipher = createDecipheriv(
       "aes-256-gcm",
       key,

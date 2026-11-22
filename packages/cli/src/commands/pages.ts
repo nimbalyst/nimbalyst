@@ -57,6 +57,11 @@ export const PAGES_VERBS = {
 /** Team verbs that name their team with --org (and --project) and act on no repository's project. */
 export const TEAM_ADMIN_VERBS = new Set(['invite', 'invite-link']);
 
+/** `commenter` is short for the project role `project-commenter`, as `editor` and `viewer` are for theirs. */
+export function projectRoleArg(role: string | undefined): string | undefined {
+  return role === 'commenter' ? 'project-commenter' : role;
+}
+
 const MOVE_TO_TEAM_HINT = "To move a local wiki into the team project, run 'nim wiki move-to-team' (add --dry-run to see what would move).";
 
 type PagesVerb = keyof typeof PAGES_VERBS;
@@ -256,14 +261,14 @@ const BUILDERS: Record<ToolVerb, (args: ParsedArgs) => Record<string, unknown>> 
       emails,
       role: flagStr(args, 'role'),
       projectId: flagStr(args, 'project'),
-      projectRole: flagStr(args, 'project-role'),
+      projectRole: projectRoleArg(flagStr(args, 'project-role')),
     };
   },
   'invite-link': (args) => ({
     orgId: requireFlag(args, 'org', 'invite-link'),
     role: flagStr(args, 'role'),
     projectId: flagStr(args, 'project'),
-    projectRole: flagStr(args, 'project-role'),
+    projectRole: projectRoleArg(flagStr(args, 'project-role')),
     expiresIn: flagInt(args, 'expires-in'),
     maxUses: flagInt(args, 'max-uses'),
   }),

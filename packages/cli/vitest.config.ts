@@ -31,6 +31,25 @@ export default defineConfig({
         find: '@nimbalyst/runtime/core/pageMarkSyntax',
         replacement: path.join(repoRoot, 'packages/runtime/src/core/pageMarkSyntax.ts'),
       },
+      // The knowledge extension's server `nim hook session-inputs` runs; see src/types/wikiPlugin.d.ts.
+      {
+        find: '@nimbalyst/wiki-plugin/session-inputs',
+        replacement: path.join(repoRoot, 'packages/extensions/knowledge/src/sessionInputs/server.ts'),
+      },
+      {
+        find: '@nimbalyst/runtime/core/citationSyntax',
+        replacement: path.join(repoRoot, 'packages/runtime/src/core/citationSyntax.ts'),
+      },
+      // The static export's colored-text parser; see src/types/textColorSyntax.d.ts.
+      {
+        find: '@nimbalyst/runtime/core/textColorSyntax',
+        replacement: path.join(repoRoot, 'packages/runtime/src/core/textColorSyntax.ts'),
+      },
+      // The editor's comment quote matcher; see src/types/quoteMatch.d.ts.
+      {
+        find: '@nimbalyst/runtime/editor/commenting/quoteMatch',
+        replacement: path.join(repoRoot, 'packages/runtime/src/editor/commenting/quoteMatch.ts'),
+      },
       // The Pages tool contract: tool names and schemas for `nim mcp`.
       {
         find: '@nimbalyst/collab-protocol',

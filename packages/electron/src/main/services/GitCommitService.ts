@@ -315,7 +315,7 @@ function applyPatchToIndex(
     const child = execFile(
       'git',
       ['--literal-pathspecs', 'apply', '--cached', '--whitespace=nowarn', '-'],
-      { cwd, env },
+      { windowsHide: true, cwd, env },
       (error, _stdout, stderr) => {
         if (error) {
           const detail = (typeof stderr === 'string' ? stderr : '').trim();
@@ -362,6 +362,11 @@ export async function executeGitCommit(
      * the whole-file path unchanged.
      */
     hunkSelections?: HunkSelection[];
+    /**
+     * #1682: the caller's turn was stopped. Checked once the repo lock is held;
+     * a commit that has started runs to completion.
+     */
+    signal?: AbortSignal;
   }
 ): Promise<GitCommitExecutionResult> {
   const logContext = options?.logContext || '[git:commit]';
@@ -379,6 +384,9 @@ export async function executeGitCommit(
   }
 
   return gitOperationLock.withLock(workspacePath, 'git:commit', async () => {
+    if (options?.signal?.aborted) {
+      return { success: false, error: 'Commit cancelled before it started: the turn was stopped. No commit was made.' };
+    }
     let lastLockError: unknown;
     // Retry the whole commit body when git fails because another process holds
     // .git/index.lock. Each iteration re-reads status, so it is idempotent.

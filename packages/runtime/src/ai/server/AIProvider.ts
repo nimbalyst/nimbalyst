@@ -15,6 +15,7 @@ import {
 import type { AgentCapabilities } from './agentCapabilities';
 import { toolRegistry, toAnthropicTools, toOpenAITools } from '../tools/definitions';
 import { buildSystemPrompt } from '../prompt';
+import type { ExitPlanModeResponse } from '../exitPlanModeDeferral';
 import {
   AgentMessageWriteQueue,
   type MessagesLoggedBatchEvent,
@@ -38,13 +39,15 @@ export interface AskUserQuestionProvider {
   ): boolean;
 
   /**
-   * Reject a pending AskUserQuestion request (e.g., on cancel/abort)
+   * Reject a pending AskUserQuestion request (e.g., on cancel/abort).
+   * Returns 'dismissed' when the rejection is delivered to the agent as an
+   * answer, so the caller must not abort the turn that will read it.
    */
   rejectAskUserQuestion(
     questionId: string,
     error: Error,
     respondedBy?: 'desktop' | 'mobile'
-  ): void;
+  ): 'dismissed' | void;
 }
 
 /**
@@ -61,7 +64,7 @@ export function isAskUserQuestionProvider(provider: AIProvider): provider is AIP
 export interface ExitPlanModeConfirmationProvider {
   resolveExitPlanModeConfirmation(
     requestId: string,
-    response: { approved: boolean; clearContext?: boolean; feedback?: string },
+    response: ExitPlanModeResponse,
     sessionId?: string,
     respondedBy?: 'desktop' | 'mobile'
   ): void;
@@ -563,7 +566,27 @@ export abstract class BaseAIProvider extends EventEmitter implements AIProvider 
    */
   protected async flushPendingWrites(): Promise<void> {
     if (this.pendingWritePromises.size > 0) {
-      await Promise.all(this.pendingWritePromises);
+      // If the database is down, rows are held in the queue for retry and
+      // their promises stay pending for up to the retention window. Stop
+      // waiting once the queue reports it is stalled (the original failure
+      // plus one retry) so the turn can finish; the held rows keep retrying.
+      const queue = getSharedAgentMessageQueue();
+      const stall = queue.whenStalled();
+      let stalled = false;
+      try {
+        await Promise.race([
+          Promise.all(this.pendingWritePromises),
+          stall.promise.then(() => { stalled = true; }),
+        ]);
+      } finally {
+        stall.cancel();
+      }
+      if (stalled && this.pendingWritePromises.size > 0) {
+        console.warn(
+          `[BaseAIProvider] database unavailable; ${this.pendingWritePromises.size} message write(s) `
+          + `still held for retry at turn end (${queue.retainedCount()} row(s) retained in total)`,
+        );
+      }
     }
   }
 

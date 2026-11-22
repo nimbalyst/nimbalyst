@@ -28,6 +28,20 @@ export function tombstoneMarker(bytes: number, isoDate: string): string {
 }
 
 /**
+ * Marker for a discarded image. Shares the tombstone prefix so `isTombstoned`
+ * and a grep both find it, and names the media type so the card can still say
+ * what was there.
+ */
+export function imageTombstoneMarker(block: unknown, bytes: number, isoDate: string): string {
+  const b = block as { mimeType?: unknown; source?: { media_type?: unknown } } | null;
+  const mediaType = typeof b?.source?.media_type === 'string'
+    ? b.source.media_type
+    : typeof b?.mimeType === 'string' ? b.mimeType : 'image';
+  const day = isoDate.slice(0, 10);
+  return `[Output discarded to reclaim disk — ${mediaType}, ${formatBytes(bytes)}, ${day}]`;
+}
+
+/**
  * Already-tombstoned payloads must not be rewritten again (the pass has to be
  * idempotent so it can resume after a crash without compounding markers).
  */
@@ -74,6 +88,20 @@ function isRetentionEligible(kind: PayloadSlotKind): boolean {
  */
 function tombstoneSlot(slot: PayloadSlot, isoDate: string): boolean {
   const value = slot.value;
+
+  // An image block in a tool result. Replaced by a text block, which every
+  // transcript parser already renders inside a tool result, so the card keeps
+  // its place and says an image was here. Images are kept for the retention
+  // window like any other output and then go: a screenshot's purpose is being
+  // looked at, and nobody looks at a months-old one often enough to justify
+  // 300 KB each forever (decision 2026-11-12, NIM-7735 plan).
+  if (slot.kind === 'toolResultImage') {
+    if (!isImageBlock(value)) return false;
+    const bytes = utf8ByteLen(JSON.stringify(value));
+    if (bytes < TOMBSTONE_MIN_BYTES) return false;
+    slot.set({ type: 'text', text: imageTombstoneMarker(value, bytes, isoDate) });
+    return true;
+  }
 
   if (typeof value === 'string') {
     if (isTombstoned(value)) return false;

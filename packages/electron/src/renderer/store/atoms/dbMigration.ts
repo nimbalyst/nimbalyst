@@ -153,4 +153,11 @@ export const dbRecoveryOfferAtom = atom<RecoveryCandidateView | null>(null);
 
 export const dbMigratedCopiesAtom = atom<MigratedCopyView[]>([]);
 
+/**
+ * The backend this launch runs on, from `db:migration:get-status`. Null until
+ * the startup pull answers. Settings shows the Database route to PGLite
+ * installs so they can migrate.
+ */
+export const dbActiveBackendAtom = atom<'pglite' | 'sqlite' | null>(null);
+
 export const dbMigrationOperationAtom = atom<MigrationOperationSnapshot | null>(null);

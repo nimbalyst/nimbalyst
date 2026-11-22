@@ -14,6 +14,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { SQLiteDatabase } from '../SQLiteDatabase';
 import { createSQLiteStoreAdapter } from '../SQLiteStoreAdapter';
+import { createPGLiteAgentMessagesStore } from '../../../services/PGLiteAgentMessagesStore';
 
 const SCHEMA_DIR = path.resolve(__dirname, '../schemas');
 
@@ -41,6 +42,39 @@ describe('SQLiteStoreAdapter', () => {
   afterEach(async () => {
     await db.close();
     fs.rmSync(dbDir, { recursive: true, force: true });
+  });
+
+  it('writes an agent-message batch atomically: a failed session UPDATE leaves no message rows (#1988)', async () => {
+    // On SQLite, BEGIN/COMMIT used to be no-ops and each statement its own
+    // request, so the INSERT committed before the UPDATE failed, and the
+    // queue's per-row retry then duplicated the rows.
+    const adapter = createSQLiteStoreAdapter(db);
+    await adapter.query(
+      `INSERT INTO ai_sessions (id, workspace_id, title, provider) VALUES ($1, $2, $3, $4)`,
+      ['s1', 'ws1', 'Hello', 'claude'],
+    );
+    await db.exec(
+      `CREATE TRIGGER fail_session_update BEFORE UPDATE ON ai_sessions BEGIN SELECT RAISE(ABORT, 'session update failed'); END;`,
+    );
+    const store = createPGLiteAgentMessagesStore(adapter);
+    const message = (content: string) => ({
+      sessionId: 's1',
+      source: 'claude-code',
+      direction: 'output' as const,
+      content,
+      createdAt: new Date(1_000),
+    });
+
+    await expect(store.createMany!([message('a'), message('b')])).rejects.toThrow(/session update failed/);
+    await expect(store.create(message('c'))).rejects.toThrow(/session update failed/);
+
+    const { rows } = await adapter.query<{ n: number }>(`SELECT COUNT(*) AS n FROM ai_agent_messages`);
+    expect(Number(rows[0].n)).toBe(0);
+
+    await db.exec(`DROP TRIGGER fail_session_update;`);
+    await store.createMany!([message('a'), message('b')]);
+    const after = await adapter.query<{ content: string }>(`SELECT content FROM ai_agent_messages ORDER BY id`);
+    expect(after.rows.map((r) => r.content)).toEqual(['a', 'b']);
   });
 
   it('runs a basic SELECT with $1 param', async () => {

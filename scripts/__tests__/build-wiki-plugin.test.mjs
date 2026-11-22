@@ -1,18 +1,19 @@
 // @vitest-environment node
 // Covers the build script that generates the desktop wiki skills and the
-// nimbalyst-wiki plugin skills from one source, and the plugin's Stop-hook nudge.
+// nimbalyst-wiki plugin skills from one source, the plugin's generated configs,
+// and staging the nimbalyst-wiki repository. The hooks are tested with the CLI
+// that runs them (packages/cli/src/mcp/__tests__/wikiContext.test.ts).
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
-import { applyBranch, buildGeneratedFiles, checkGenerated, checkManifestVersions, checkToolNames, PLUGIN_DIR, TEAM_PLUGIN_DIR, writeGenerated } from '../build-wiki-plugin.mjs';
-import { unbumpedChanges } from '../stage-wiki-repo.mjs';
+import { applyBranch, buildGeneratedFiles, buildPluginConfigs, checkGenerated, checkManifestVersions, checkToolNames, cliSpec, PLUGIN_DIR, TEAM_PLUGIN_DIR, writeGenerated } from '../build-wiki-plugin.mjs';
+import { shimSpawnConfig } from '../package-manager.mjs';
+import { canRunPinnedCli, directoryLimitFindings, unbumpedChanges } from '../stage-wiki-repo.mjs';
 
-const NUDGE = fileURLToPath(new URL('../../plugins/nimbalyst-wiki/scripts/keeper-nudge.mjs', import.meta.url));
-const CONTEXT = fileURLToPath(new URL('../../plugins/nimbalyst-wiki/scripts/wiki-context.mjs', import.meta.url));
 const REMOTE_SKILLS = fileURLToPath(new URL('../../plugins/nimbalyst-wiki/skills', import.meta.url));
 const DESKTOP_SKILLS = fileURLToPath(new URL('../../packages/extensions/knowledge/claude-plugin/skills', import.meta.url));
 
@@ -95,7 +96,7 @@ test('generated files carry the generated marker, except references copied into 
   const sourceDir = fixtureSource(root, 'Follow `../setup/references/wiki-guide.md`, or run (`/wiki:setup`).\n');
   writeFileSync(path.join(sourceDir, 'setup', 'references', 'wiki-guide.md'), '# How we write this wiki\n');
   const targets = fixtureTargets(root);
-  writeGenerated({ sourceDir, targets, bundle: false });
+  writeGenerated({ sourceDir, targets, configs: false });
   // Each side's name, cross-references and command namespace.
   for (const [dir, update, setup, command] of [
     [targets.desktop, 'update', 'setup', '/wiki:setup'],
@@ -116,19 +117,71 @@ test('check mode reports drift in either target and either direction', (t) => {
   const root = tempRoot(t);
   const sourceDir = fixtureSource(root);
   const targets = fixtureTargets(root);
-  writeGenerated({ sourceDir, targets, bundle: false });
-  assert.deepEqual(checkGenerated({ sourceDir, targets, bundle: false }), []);
+  writeGenerated({ sourceDir, targets, configs: false });
+  assert.deepEqual(checkGenerated({ sourceDir, targets, configs: false }), []);
 
   appendFileSync(path.join(sourceDir, 'setup', 'SKILL.md'), 'Then call `tracker_get`.\n');
   writeFileSync(path.join(targets.remote, 'update', 'references', 'stray.yaml'), 'id: stray\n');
-  assert.deepEqual(checkGenerated({ sourceDir, targets, bundle: false }).sort(), [
+  assert.deepEqual(checkGenerated({ sourceDir, targets, configs: false }).sort(), [
     'changed: desktop:setup/SKILL.md',
     'changed: remote:setup/SKILL.md',
     'extra: remote:update/references/stray.yaml',
   ]);
 
-  writeGenerated({ sourceDir, targets, bundle: false });
-  assert.deepEqual(checkGenerated({ sourceDir, targets, bundle: false }), []);
+  writeGenerated({ sourceDir, targets, configs: false });
+  assert.deepEqual(checkGenerated({ sourceDir, targets, configs: false }), []);
+});
+
+test('CRLF skill sources generate the same content as LF sources', (t) => {
+  const sourceDir = fixtureSource(tempRoot(t), '<!-- desktop-only -->\nRead `readCollabDocComments`.\n<!-- /desktop-only -->\n<!-- remote-only -->\nCall `pages_status`.\n<!-- /remote-only -->\n<!-- local-only -->\nCall `wikiDoctor`.\n<!-- /local-only -->\n');
+  const expected = buildGeneratedFiles(sourceDir);
+  for (const skill of ['setup', 'update']) {
+    for (const rel of ['SKILL.md', 'references/kind.yaml']) {
+      const file = path.join(sourceDir, skill, rel);
+      writeFileSync(file, readFileSync(file, 'utf8').replace(/\n/g, '\r\n'));
+    }
+  }
+  assert.deepEqual(buildGeneratedFiles(sourceDir), expected);
+});
+
+test('CRLF generated skills pass check mode but content drift still fails', (t) => {
+  const root = tempRoot(t);
+  const sourceDir = fixtureSource(root);
+  const targets = fixtureTargets(root);
+  writeGenerated({ sourceDir, targets, configs: false });
+  for (const dir of Object.values(targets)) {
+    for (const skill of ['setup', 'update']) {
+      for (const rel of ['SKILL.md', 'references/kind.yaml']) {
+        const file = path.join(dir, skill, rel);
+        writeFileSync(file, readFileSync(file, 'utf8').replace(/\n/g, '\r\n'));
+      }
+    }
+  }
+  assert.deepEqual(checkGenerated({ sourceDir, targets, configs: false }), []);
+  appendFileSync(path.join(targets.remote, 'setup', 'SKILL.md'), 'Unexpected text.\r\n');
+  assert.deepEqual(checkGenerated({ sourceDir, targets, configs: false }), ['changed: remote:setup/SKILL.md']);
+});
+
+test('CRLF generated plugin configs pass check mode but content drift still fails', (t) => {
+  const root = tempRoot(t);
+  const sourceDir = fixtureSource(root);
+  const targets = fixtureTargets(root);
+  const pluginDir = path.join(root, 'plugin');
+  fixturePlugin(pluginDir, '1.2.3');
+  writeGenerated({ sourceDir, targets, configs: false });
+  for (const [rel, content] of buildPluginConfigs(pluginDir)) {
+    const file = path.join(pluginDir, rel);
+    mkdirSync(path.dirname(file), { recursive: true });
+    writeFileSync(file, content.replace(/\n/g, '\r\n'));
+  }
+  assert.deepEqual(checkGenerated({ sourceDir, targets, pluginDir }), []);
+  for (const [rel, content] of buildPluginConfigs(pluginDir)) {
+    const file = path.join(pluginDir, rel);
+    writeFileSync(file, content.replace('1.2.3', '9.9.9').replace(/\n/g, '\r\n'));
+    const label = path.relative(path.resolve(PLUGIN_DIR, '../..'), file);
+    assert.deepEqual(checkGenerated({ sourceDir, targets, pluginDir }), [`changed: ${label}`]);
+    writeFileSync(file, content.replace(/\n/g, '\r\n'));
+  }
 });
 
 test('the skill references the web console reads stay where it reads them', () => {
@@ -164,191 +217,50 @@ test('committed plugin skills cover the team project and the local wiki; desktop
   }
 });
 
-function toolUse(name, input) {
-  return JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', name, input }] } });
-}
-
-function runNudge(root, input, env = {}) {
-  const result = spawnSync(process.execPath, [NUDGE], {
-    input: typeof input === 'string' ? input : JSON.stringify(input),
-    encoding: 'utf8',
-    env: { ...process.env, NIMBALYST_WIKI_NUDGE_STATE_DIR: path.join(root, 'state'), NIMBALYST_WIKI_NUDGE_MIN_EDITS: '3', ...env },
-  });
-  assert.equal(result.status, 0, result.stderr);
-  return result.stdout.trim() ? JSON.parse(result.stdout) : null;
-}
-
-function transcript(root, name, lines) {
-  const file = path.join(root, `${name}.jsonl`);
-  writeFileSync(file, `${lines.join('\n')}\n`);
-  return file;
-}
-
-test('nudge blocks once per session, and only after substantive work', (t) => {
-  const root = tempRoot(t);
-  const edits = transcript(root, 'edits', [
-    toolUse('Read', { file_path: 'a.ts' }),
-    ...['a.ts', 'b.ts', 'c.ts'].map((file) => toolUse('Edit', { file_path: file })),
-  ]);
-  const first = runNudge(root, { session_id: 's1', transcript_path: edits, stop_hook_active: false });
-  assert.equal(first.decision, 'block');
-  assert.match(first.reason, /3 file edits.*\/nimbalyst-wiki:capture.*"nothing to record"/);
-  // The reason is shown to the agent and the user as one sentence; joined parts keep their spaces.
-  assert.doesNotMatch(first.reason, /\S(?:to record|If nothing)/);
-  assert.equal(runNudge(root, { session_id: 's1', transcript_path: edits }), null);
-
-  // The threshold is overridable, and below it nothing happens.
-  assert.equal(runNudge(root, { session_id: 's2', transcript_path: edits }, { NIMBALYST_WIKI_NUDGE_MIN_EDITS: '4' }), null);
-
-  const commit = transcript(root, 'commit', ['not json', toolUse('Bash', { command: 'git add x && git commit -m "x"' })]);
-  assert.match(runNudge(root, { session_id: 's3', transcript_path: commit }).reason, /1 git commit/);
-  const plan = transcript(root, 'plan', [toolUse('Write', { file_path: '/repo/nimbalyst-local/plans/thing.md' })]);
-  assert.match(runNudge(root, { session_id: 's4', transcript_path: plan }).reason, /a plan/);
-
-  // Already recorded through the plugin's Pages tools, or the desktop's: no nudge.
-  const writes = [
-    'mcp__plugin_nimbalyst-wiki_nimbalyst-team__applyCollabDocEdit',
-    'mcp__plugin_nimbalyst-wiki_nimbalyst-team__createSharedDoc',
-    'mcp__plugin_nimbalyst-wiki_nimbalyst-team__setPageType',
-    'mcp__plugin_nimbalyst-wiki_nimbalyst-team__moveSharedItem',
-    'mcp__plugin_nimbalyst-wiki_nimbalyst-team__tracker_create',
-    'mcp__nimbalyst-trackers__tracker_update',
-  ];
-  writes.forEach((name, i) => {
-    const captured = transcript(root, `captured-${i}`, [toolUse('Bash', { command: 'git commit -m x' }), toolUse(name, { id: 'X' })]);
-    assert.equal(runNudge(root, { session_id: `s5-${i}`, transcript_path: captured }), null, name);
-  });
-  // Reads, and the retired wiki_* names, are not a record.
-  for (const name of ['mcp__plugin_nimbalyst-wiki_nimbalyst-team__readCollabDoc', 'mcp__plugin_nimbalyst-wiki_nimbalyst-wiki__wiki_update_item']) {
-    const read = transcript(root, `read-${name.length}`, [toolUse('Bash', { command: 'git commit -m x' }), toolUse(name, { id: 'X' })]);
-    assert.equal(runNudge(root, { session_id: `s6-${name.length}`, transcript_path: read }).decision, 'block', name);
-  }
-});
-
-test('nudge stays quiet with no wiki to record into: no git remote and no local wiki', (t) => {
-  const root = tempRoot(t);
-  const commit = transcript(root, 'commit', [toolUse('Bash', { command: 'git commit -m x' })]);
-  const noRemote = path.join(root, 'no-remote');
-  mkdirSync(noRemote);
-  spawnSync('git', ['init', '-q'], { cwd: noRemote });
-  assert.equal(runNudge(root, { session_id: 'r1', transcript_path: commit, cwd: noRemote }), null);
-  assert.equal(runNudge(root, { session_id: 'r2', transcript_path: commit, cwd: path.join(root, 'not-a-repo') }), null);
-
-  const withRemote = path.join(root, 'with-remote');
-  mkdirSync(withRemote);
-  spawnSync('git', ['init', '-q'], { cwd: withRemote });
-  spawnSync('git', ['remote', 'add', 'origin', 'git@github.com:acme/widgets.git'], { cwd: withRemote });
-  assert.equal(runNudge(root, { session_id: 'r3', transcript_path: commit, cwd: withRemote }).decision, 'block');
-
-  // A local wiki is somewhere to record, remote or not.
-  const localWiki = path.join(root, 'local-wiki');
-  mkdirSync(path.join(localWiki, 'nimbalyst-local', 'wiki'), { recursive: true });
-  spawnSync('git', ['init', '-q'], { cwd: localWiki });
-  writeFileSync(path.join(localWiki, 'nimbalyst-local', 'wiki', '.nimbalyst-wiki.yaml'), 'formatVersion: 1\n');
-  assert.equal(runNudge(root, { session_id: 'r4', transcript_path: commit, cwd: localWiki }).decision, 'block');
-});
-
-test('nudge never blocks when stop_hook_active or on bad input', (t) => {
-  const root = tempRoot(t);
-  const commit = transcript(root, 'commit', [toolUse('Bash', { command: 'git commit -m x' })]);
-  assert.equal(runNudge(root, { session_id: 'a', transcript_path: commit, stop_hook_active: true }), null);
-  assert.equal(runNudge(root, '{not json'), null);
-  assert.equal(runNudge(root, ''), null);
-  assert.equal(runNudge(root, { session_id: 'b', transcript_path: path.join(root, 'missing.jsonl') }), null);
-  assert.equal(runNudge(root, { transcript_path: commit }), null);
-});
-
-test('nudge keeps its markers in a private per-user state dir, not the shared temp dir', (t) => {
-  const root = tempRoot(t);
-  const commit = transcript(root, 'commit', [toolUse('Bash', { command: 'git commit -m x' })]);
-
-  const xdg = path.join(root, 'xdg');
-  assert.equal(runNudge(root, { session_id: 'x1', transcript_path: commit }, { NIMBALYST_WIKI_NUDGE_STATE_DIR: '', XDG_STATE_HOME: xdg }).decision, 'block');
-  const xdgDir = path.join(xdg, 'nimbalyst-wiki');
-  assert.ok(existsSync(path.join(xdgDir, 'x1.nudged')));
-  if (process.platform !== 'win32') assert.equal(statSync(xdgDir).mode & 0o777, 0o700);
-
-  const home = path.join(root, 'home');
-  assert.equal(runNudge(root, { session_id: 'h1', transcript_path: commit }, { NIMBALYST_WIKI_NUDGE_STATE_DIR: '', XDG_STATE_HOME: '', HOME: home }).decision, 'block');
-  assert.ok(existsSync(path.join(home, '.claude', 'state', 'nimbalyst-wiki', 'h1.nudged')));
-});
-
-function gitRepo(dir) {
-  mkdirSync(dir, { recursive: true });
-  spawnSync('git', ['init', '-q'], { cwd: dir });
-  // Sandboxed: git runs in the temp repository, never this checkout.
-  assert.equal(realpathSync(spawnSync('git', ['rev-parse', '--show-toplevel'], { cwd: dir, encoding: 'utf8' }).stdout.trim()), realpathSync(dir));
-  return dir;
-}
-
-/** A project with a local wiki whose Sync page covers src/sync, and an uncommitted file there. */
-function wikiProject(dir) {
-  gitRepo(dir);
-  const wiki = path.join(dir, 'nimbalyst-local', 'wiki');
-  mkdirSync(wiki, { recursive: true });
-  writeFileSync(path.join(wiki, '.nimbalyst-wiki.yaml'), 'formatVersion: 1\n');
-  writeFileSync(path.join(wiki, 'Home.md'), '---\nid: home\nsummary: The widget project.\n---\n\nWelcome.\n');
-  writeFileSync(path.join(wiki, 'Sync protocol.md'), '---\nid: sync\npaths: [src/sync/**]\n---\n\n[Batch acks?]{open}\n');
-  // No id: a writer's scan would add one.
-  writeFileSync(path.join(wiki, 'Notes.md'), 'Loose notes.\n');
-  mkdirSync(path.join(dir, 'src', 'sync'), { recursive: true });
-  writeFileSync(path.join(dir, 'src', 'sync', 'a.ts'), 'a\n');
-  return dir;
-}
-
-function runContext(input, env = {}) {
-  const result = spawnSync(process.execPath, [CONTEXT], { input: JSON.stringify(input), encoding: 'utf8', env: { ...process.env, CLAUDE_PROJECT_DIR: '', ...env } });
-  assert.equal(result.status, 0, result.stderr);
-  return result.stdout;
-}
-
-test('session-start context describes the local wiki, under the cap, and leaves files alone', (t) => {
-  const project = wikiProject(path.join(tempRoot(t), 'project'));
-  const out = runContext({ hook_event_name: 'SessionStart', cwd: project });
-  const parsed = JSON.parse(out);
-  assert.equal(parsed.hookSpecificOutput.hookEventName, 'SessionStart');
-  const context = parsed.hookSpecificOutput.additionalContext;
-  assert.match(context, /local wiki in nimbalyst-local\/wiki/);
-  assert.match(context, /Home: The widget project\./);
-  assert.match(context, /1 open question/);
-  assert.match(context, /changed in the working tree: Sync protocol/);
-  assert.ok(context.length <= 1500, `${context.length} chars`);
-  // Read-only: the hook never repairs or writes the wiki.
-  assert.equal(readFileSync(path.join(project, 'nimbalyst-local', 'wiki', 'Notes.md'), 'utf8'), 'Loose notes.\n');
-  // CLAUDE_PROJECT_DIR wins over the hook's cwd.
-  assert.match(runContext({ cwd: path.join(project, 'src') }, { CLAUDE_PROJECT_DIR: project }), /widget project/);
-});
-
-test('session-start context prints nothing without a local wiki, or on bad input', (t) => {
-  const root = tempRoot(t);
-  assert.equal(runContext({ cwd: gitRepo(path.join(root, 'plain')) }), '');
-  assert.equal(runContext({ cwd: path.join(root, 'missing') }), '');
-  const broken = path.join(root, 'broken');
-  mkdirSync(path.join(broken, 'nimbalyst-local', 'wiki'), { recursive: true });
-  writeFileSync(path.join(broken, 'nimbalyst-local', 'wiki', '.nimbalyst-wiki.yaml'), 'formatVersion: 99\n');
-  assert.equal(runContext({ cwd: broken }), '');
-  const result = spawnSync(process.execPath, [CONTEXT], { input: '{not json', encoding: 'utf8', env: { ...process.env, CLAUDE_PROJECT_DIR: '' } });
-  assert.equal(result.status, 0);
-});
-
-test('nudge names the local wiki pages covering the files the session edited', (t) => {
-  const root = tempRoot(t);
-  const project = wikiProject(path.join(root, 'project'));
-  const covered = transcript(root, 'covered', ['a.ts', 'b.ts', 'c.ts'].map((file) => toolUse('Edit', { file_path: path.join(project, 'src', 'sync', file) })));
-  const reason = runNudge(root, { session_id: 'c1', transcript_path: covered, cwd: project }).reason;
-  assert.match(reason, /3 file edits/);
-  assert.match(reason, /covered by these wiki pages: Sync protocol\./);
-  assert.match(reason, /\/nimbalyst-wiki:capture.*"nothing to record"/);
-
-  // Edits outside every page's paths: the plain reminder.
-  const elsewhere = transcript(root, 'elsewhere', ['a.ts', 'b.ts', 'c.ts'].map((file) => toolUse('Edit', { file_path: path.join(project, 'lib', file) })));
-  assert.doesNotMatch(runNudge(root, { session_id: 'c2', transcript_path: elsewhere, cwd: project }).reason, /covered by/);
-});
-
-test('the plugin runs the context hook at session start', () => {
+test('the plugin runs its servers and hooks from @nimbalyst/cli pinned to its own version, and ships no scripts', () => {
+  const spec = cliSpec();
+  assert.equal(spec, `@nimbalyst/cli@${JSON.parse(readFileSync(path.join(PLUGIN_DIR, '.claude-plugin', 'plugin.json'), 'utf8')).version}`);
+  const mcp = JSON.parse(readFileSync(path.join(PLUGIN_DIR, '.mcp.json'), 'utf8')).mcpServers;
+  assert.deepEqual(mcp['nimbalyst-local'].args, ['--prefix', '/', '-y', spec, 'mcp', '--plugin-root', '${CLAUDE_PLUGIN_ROOT}']);
+  assert.deepEqual(mcp['nimbalyst-session'].args, ['--prefix', '/', '-y', spec, 'hook', 'session-inputs']);
+  // Codex expands no variables, and npx replaces PWD, so Codex starts the server in the project and names itself.
+  // Codex passes servers a filtered environment; a custom CODEX_HOME must be forwarded for the server to find its install.
+  const codex = JSON.parse(readFileSync(path.join(PLUGIN_DIR, '.codex-mcp.json'), 'utf8')).mcpServers['nimbalyst-local'];
+  assert.deepEqual(codex, { command: 'npx', env_vars: ['CODEX_HOME'], args: ['--prefix', '/', '-y', spec, 'mcp', '--plugin-agent', 'codex'] });
   const hooks = JSON.parse(readFileSync(path.join(PLUGIN_DIR, 'hooks', 'hooks.json'), 'utf8')).hooks;
-  assert.match(hooks.SessionStart[0].hooks[0].command, /scripts\/wiki-context\.mjs/);
-  assert.match(hooks.Stop[0].hooks[0].command, /scripts\/keeper-nudge\.mjs/);
+  assert.equal(hooks.SessionStart[0].hooks[0].command, `npx --prefix / -y ${spec} hook session-start`);
+  assert.equal(hooks.Stop[0].hooks[0].command, `npx --prefix / -y ${spec} hook stop`);
+  assert.ok(!existsSync(path.join(PLUGIN_DIR, 'scripts')), 'the plugin ships no scripts');
+});
+
+test('npx runs the published CLI even in a project that has its own @nimbalyst/cli at the pinned version', () => {
+  // This monorepo links packages/cli into node_modules at the plugin's version, so a bare npx ran its stale local build.
+  const project = mkdtempSync(path.join(tmpdir(), 'wiki-npx-'));
+  try {
+    const version = '0.0.0-local-only';
+    const pkg = path.join(project, 'node_modules', '@nimbalyst', 'cli');
+    mkdirSync(path.join(pkg, 'bin'), { recursive: true });
+    writeFileSync(path.join(pkg, 'package.json'), JSON.stringify({ name: '@nimbalyst/cli', version, bin: { nim: 'bin/nim.js' } }));
+    writeFileSync(path.join(pkg, 'bin', 'nim.js'), '#!/usr/bin/env node\nconsole.log("LOCAL COPY");\n', { mode: 0o755 });
+    mkdirSync(path.join(project, 'node_modules', '.bin'));
+    symlinkSync('../@nimbalyst/cli/bin/nim.js', path.join(project, 'node_modules', '.bin', 'nim'));
+    writeFileSync(path.join(project, 'package.json'), JSON.stringify({ name: 'host', private: true }));
+    const configs = buildPluginConfigs();
+    const args = JSON.parse(configs.get('.mcp.json')).mcpServers['nimbalyst-session'].args
+      .map((arg) => (arg === cliSpec() ? `@nimbalyst/cli@${version}` : arg));
+    // --offline: the fake version is in no registry, so npx fails unless it picks the project's copy.
+    const launch = shimSpawnConfig('npx');
+    const run = spawnSync(launch.command, [...launch.argsPrefix, '--offline', ...args], {
+      cwd: project,
+      encoding: 'utf8',
+      input: '',
+    });
+    assert.equal(run.error, undefined, run.error?.message);
+    assert.doesNotMatch(run.stderr, /not recognized|command not found|ENOENT/i);
+    assert.doesNotMatch(run.stdout, /LOCAL COPY/);
+  } finally {
+    rmSync(project, { recursive: true, force: true });
+  }
 });
 
 function fixturePlugin(dir, version, script = 'v1') {
@@ -410,4 +322,38 @@ test('staging refuses a changed plugin under the version already staged', (t) =>
   fixturePlugin(plugin, '0.6.0', 'v2');
   assert.deepEqual(unbumpedChanges(plugin, staged), [], 'a bumped version may change anything');
   assert.deepEqual(unbumpedChanges(plugin, path.join(root, 'empty')), [], 'a first staging has nothing to compare');
+});
+
+test('staging refuses what the plugin directory cannot validate and lists what holds a version for review', (t) => {
+  const root = tempRoot(t);
+  const write = (rel, bytes) => {
+    mkdirSync(path.dirname(path.join(root, rel)), { recursive: true });
+    writeFileSync(path.join(root, rel), Buffer.alloc(bytes, 0x61));
+  };
+  write('.git/objects/pack/big.pack', 6 * 1024 * 1024);
+  write('README.md', 100);
+  write('scripts/server.mjs', 300 * 1024);
+  write('docs/images/shot.webp', 300 * 1024);
+  assert.deepEqual(directoryLimitFindings(root), { blocking: [], held: ['scripts/server.mjs is 300 KiB; non-image files over 256 KiB are held for a reviewer'] }, '.git is not part of the plugin; images may exceed 256 KiB');
+
+  write('web/assets/ts.worker.js', 5 * 1024 * 1024);
+  write('skills/.DS_Store', 10);
+  const { blocking } = directoryLimitFindings(root);
+  assert.deepEqual(blocking.sort(), ['skills/.DS_Store is a system file the directory refuses', 'web/assets/ts.worker.js is 5.0 MiB; every file must be under 5 MiB']);
+});
+
+test('staging refuses a plugin until npx can install and run its pinned CLI', () => {
+  const calls = [];
+  const runs = (out) => (command, args, options) => {
+    calls.push({ command, args, cwd: options.cwd });
+    return out;
+  };
+  assert.equal(canRunPinnedCli('@nimbalyst/cli@1.2.3', runs('1.2.3\n')), true);
+  // What a user's plugin runs, with fresh registry metadata, from outside this repository (whose devEngines npm refuses).
+  assert.deepEqual(calls[0].args, ['-y', '--prefer-online', '@nimbalyst/cli@1.2.3', '--version']);
+  assert.equal(calls[0].command, 'npx');
+  assert.ok(!calls[0].cwd.startsWith(path.resolve(PLUGIN_DIR, '../..')), calls[0].cwd);
+  assert.equal(canRunPinnedCli('@nimbalyst/cli@1.2.3', runs('1.2.2\n')), false, 'a different version answered');
+  // Right after a publish the CLI resolves before its pinned wiki-web does: npx fails with ETARGET.
+  assert.equal(canRunPinnedCli('@nimbalyst/cli@1.2.3', () => { throw new Error('ETARGET'); }), false);
 });

@@ -125,6 +125,24 @@ class WikiNavigationTest {
         assertFalse(WikiDocuments.isWikiDataFile("$folder/Partners.csv", null))
     }
 
+    /** An embedded `.html` resolves beside the page that embeds it, and never opens as a document (iOS: same cases). */
+    @Test
+    fun htmlEmbedsResolveBesideTheirPageAndStayOutOfTheFileList() {
+        assertEquals("kb/wiki/diagrams/flow.html", WikiDocuments.embedPath("diagrams/flow.html", "kb/wiki/Home.md"))
+        assertEquals("kb/wiki/My Map.html", WikiDocuments.embedPath("<../My%20Map.html>", "kb/wiki/Docs/Guide.md"))
+        assertEquals("a.html", WikiDocuments.embedPath("./a.html#top", "README.md"))
+        assertNull(WikiDocuments.embedPath("../../escape.html", "kb/Home.md"))
+        assertNull(WikiDocuments.embedPath("/etc/a.html", "Home.md"))
+        assertNull(WikiDocuments.embedPath("https://example.com/a.html", "Home.md"))
+        assertNull(WikiDocuments.embedPath("notes.md", "Home.md"))
+
+        assertTrue(WikiDocuments.isEmbedOnlyFile("docs/Flow.HTML"))
+        assertFalse(WikiDocuments.isEmbedOnlyFile("docs/flow.md"))
+        assertEquals("An opened .html file shows as an embed of itself", "[Flow.html](<Flow.html>)", WikiDocuments.selfEmbedMarkdown("docs/Flow.html"))
+        assertEquals(DocumentKind.Embed, classifyDocument("$folder/Flow.html", folder, snapshot))
+        assertTrue(editorSpec(DocumentKind.Embed).readOnly)
+    }
+
     @Test
     fun documentsOpenAsTablePageCsvOrPlainMarkdown() {
         assertEquals("partner", (classifyDocument("$folder/Partners.csv", folder, snapshot) as DocumentKind.Table).table.typeId)

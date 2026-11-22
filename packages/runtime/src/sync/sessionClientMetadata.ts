@@ -25,7 +25,11 @@ export function buildClientMetadataFromRaw(
   const tags = metadata?.tags as string[] | undefined;
   const draftInput = metadata?.draftInput as string | undefined;
   const draftUpdatedAt = metadata?.draftUpdatedAt as number | undefined;
-  const hasBeenNamed = options.hasBeenNamed;
+  // SQLite stores the flag as 0/1. iOS decodes it strictly as Bool and skips
+  // the whole session when it is a number, so normalize at the wire boundary.
+  const hasBeenNamed = options.hasBeenNamed === undefined || options.hasBeenNamed === null
+    ? undefined
+    : !!options.hasBeenNamed;
   const hasTokenUsage = tokenUsage?.totalTokens && tokenUsage?.contextWindow;
   const hasPhaseOrTags = phase || (tags && tags.length > 0);
   // draftInput can be "" (explicit clear) - treat as meaningful

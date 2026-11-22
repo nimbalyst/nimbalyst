@@ -22,6 +22,8 @@ const mocks = vi.hoisted(() => ({
   stopPolling: vi.fn(),
   setFocus: vi.fn(),
   pollNow: vi.fn(),
+  getOrCreateOverlay: vi.fn(),
+  findReviewSessions: vi.fn(),
   emptyTrackerContext: { items: [], primary: null, sessions: [] as Array<{ id: string }> },
   trackerContextByPr: new Map<
     number,
@@ -44,6 +46,8 @@ vi.mock('../../../services/RendererPullRequestService', () => ({
     stopPolling: mocks.stopPolling,
     setFocus: mocks.setFocus,
     pollNow: mocks.pollNow,
+    getOrCreateOverlay: mocks.getOrCreateOverlay,
+    findReviewSessions: mocks.findReviewSessions,
   }),
 }));
 
@@ -160,6 +164,12 @@ describe('PullRequestMode review session action', () => {
     mocks.stopPolling.mockReset().mockResolvedValue(undefined);
     mocks.setFocus.mockReset();
     mocks.pollNow.mockReset().mockResolvedValue(undefined);
+    mocks.findReviewSessions.mockReset().mockResolvedValue([]);
+    mocks.getOrCreateOverlay.mockReset().mockResolvedValue({
+      id: 'overlay-1408',
+      prUrl: 'https://github.com/nimbalyst/nimbalyst/pull/1408',
+      created: true,
+    });
     invoke.mockReset().mockImplementation(async (channel: string) => {
       if (channel === 'workspace:get-state') {
         return {
@@ -219,10 +229,39 @@ describe('PullRequestMode review session action', () => {
       });
       expect(mocks.loadSession).toHaveBeenCalledWith('session-review');
     });
+    // NIM-7657: the session is also linked to the PR's overlay, so the pane
+    // finds it again even when no triage item references the PR.
+    expect(mocks.getOrCreateOverlay).toHaveBeenCalledWith('/workspace', expect.objectContaining({
+      prUrl: 'https://github.com/nimbalyst/nimbalyst/pull/1408',
+      title: 'Add PR chat context',
+    }));
+    expect(invoke).toHaveBeenCalledWith('tracker:link-session', {
+      trackerId: 'overlay-1408',
+      sessionId: 'session-review',
+    });
     expect(store.get(windowModeAtom)).toBe('pr-review');
     expect(
       screen.getByTestId('mock-chat-sidebar').getAttribute('data-collapsed'),
     ).toBe('false');
+  });
+
+  it('links a review session started before overlays existed when the PR shows none (NIM-7657)', async () => {
+    mocks.findReviewSessions.mockResolvedValue(['session-old']);
+    render(
+      <JotaiProvider store={store}>
+        <PullRequestMode workspacePath="/workspace" workspaceName="workspace" isActive />
+      </JotaiProvider>,
+    );
+
+    await waitFor(() => {
+      expect(invoke).toHaveBeenCalledWith('tracker:link-session', {
+        trackerId: 'overlay-1408',
+        sessionId: 'session-old',
+      });
+    });
+    expect(mocks.findReviewSessions).toHaveBeenCalledOnce();
+    expect(mocks.findReviewSessions).toHaveBeenCalledWith('/workspace', 'nimbalyst/nimbalyst', 1408);
+    expect(mocks.createSession).not.toHaveBeenCalled();
   });
 
   it('opens an already-linked session in the chat pane without leaving PR mode', async () => {

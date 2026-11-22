@@ -10,7 +10,7 @@
  */
 
 import type { JSX, RefObject } from 'react';
-import { useCallback, useEffect } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 import { useAtomValue, useSetAtom } from 'jotai';
 import { MaterialSymbol } from '@nimbalyst/runtime/ui/icons/MaterialSymbol';
 import {
@@ -20,7 +20,12 @@ import {
   prNavigateRequestAtom,
   type PrFilterChip,
 } from '../../store/atoms/pullRequests';
-import { getPullRequestService } from '../../services/RendererPullRequestService';
+import {
+  getPullRequestService,
+  type PullRequestRow,
+} from '../../services/RendererPullRequestService';
+import { buildPrUrl } from '@nimbalyst/runtime/plugins/TrackerPlugin/prReferences';
+import { findPrOverlay, planPrReviewOverlayWrite, resolveReviewStatus } from './prOverlay';
 import {
   dispatchCreateNewSession,
   dispatchOpenWorktreeSession,
@@ -147,16 +152,60 @@ export function usePullRequestPanel({
     selectedPr?.number ?? 0,
   );
 
-  const linkSessionToPrTrackers = useCallback((sessionId: string, prNumber: number) => {
-    const referencingItems = trackerReferences.get(prNumber) ?? [];
-    for (const item of referencingItems) {
-      void window.electronAPI
-        .invoke('tracker:link-session', { trackerId: item.id, sessionId })
-        .catch((err: unknown) =>
-          console.error('[usePullRequestPanel] Failed to link session to tracker item', err),
-        );
+  /**
+   * Link sessions to the PR's overlay (creating it on first use) and to every
+   * other tracker item already referencing the PR.
+   *
+   * The overlay is what lets the panel find the session again: without it a PR
+   * nobody had triaged kept no record of its review session, and the chat pane
+   * showed "No related AI session" once you came back to it (NIM-7657).
+   */
+  const linkSessionsToPrTrackers = useCallback(async (sessionIds: string[], pr: PullRequestRow) => {
+    if (!remote || sessionIds.length === 0) return;
+    const references = trackerReferences.get(pr.number) ?? [];
+    const itemIds = new Set(references.map((item) => item.id));
+    try {
+      const write = planPrReviewOverlayWrite(findPrOverlay(references), resolveReviewStatus());
+      const overlay = await getPullRequestService().getOrCreateOverlay(workspacePath, {
+        prUrl: buildPrUrl(remote, pr.number),
+        title: pr.title,
+        ...write,
+      });
+      // The fresh overlay is not in `trackerReferences` until the tracker
+      // change lands in the store, so link it by the id we just got.
+      itemIds.add(overlay.id);
+    } catch (err) {
+      console.error('[usePullRequestPanel] Failed to get or create PR overlay', err);
     }
-  }, [trackerReferences]);
+    for (const sessionId of sessionIds) {
+      for (const trackerId of itemIds) {
+        await window.electronAPI
+          .invoke('tracker:link-session', { trackerId, sessionId })
+          .catch((err: unknown) =>
+            console.error('[usePullRequestPanel] Failed to link session to tracker item', err),
+          );
+      }
+    }
+  }, [remote, workspacePath, trackerReferences]);
+
+  // Sessions started from this panel before it kept overlays have no link to
+  // their PR. The first time a PR shows no sessions, look for one by its
+  // opening prompt and link what turns up; after that the overlay finds it.
+  const hasPrSessions = prTrackerContext.sessions.length > 0;
+  const recoveryAttempted = useRef(new Set<string>()).current;
+  useEffect(() => {
+    if (!isActive || !selectedPr || !remote || hasPrSessions) return;
+    const key = `${workspacePath}|${remote.toLowerCase()}|${selectedPr.number}`;
+    if (recoveryAttempted.has(key)) return;
+    recoveryAttempted.add(key);
+    const pr = selectedPr;
+    getPullRequestService()
+      .findReviewSessions(workspacePath, remote, pr.number)
+      .then((sessionIds) => linkSessionsToPrTrackers(sessionIds, pr))
+      .catch((err: unknown) =>
+        console.error('[usePullRequestPanel] Failed to recover PR review sessions', err),
+      );
+  }, [isActive, selectedPr, remote, workspacePath, hasPrSessions, linkSessionsToPrTrackers, recoveryAttempted]);
 
   const handleOpenSessionInChat = useCallback((sessionId: string) => {
     chatRef.current?.openSession(sessionId);
@@ -169,9 +218,9 @@ export function usePullRequestPanel({
       launchSource: 'pull_request_panel',
     });
     if (!sessionId) return;
-    linkSessionToPrTrackers(sessionId, selectedPr.number);
+    await linkSessionsToPrTrackers([sessionId], selectedPr);
     chatRef.current?.openSession(sessionId);
-  }, [selectedPr, remote, linkSessionToPrTrackers, chatRef]);
+  }, [selectedPr, remote, linkSessionsToPrTrackers, chatRef]);
 
   // Create (or reuse) a worktree on the PR's head branch (the branch being
   // merged), then jump to Agent mode with that worktree selected so the dev
@@ -188,17 +237,16 @@ export function usePullRequestPanel({
       // selecting by worktree id alone leaves the agent view empty because the
       // selection id must be a session id.
       const sessionId = await dispatchOpenWorktreeSession(worktree.id);
-      // Close the triangle: link the session to every tracker item already
-      // referencing this PR (no auto-create — item creation belongs to the
-      // user or their triage workflows).
+      // Close the triangle: link the session to the PR's overlay and every
+      // tracker item already referencing this PR.
       if (sessionId) {
-        linkSessionToPrTrackers(sessionId, selectedPr.number);
+        await linkSessionsToPrTrackers([sessionId], selectedPr);
       }
       setWindowMode('agent');
     } catch (err) {
       console.error('[usePullRequestPanel] Failed to open PR worktree', err);
     }
-  }, [selectedPr, remote, workspacePath, setWindowMode, linkSessionToPrTrackers]);
+  }, [selectedPr, remote, workspacePath, setWindowMode, linkSessionsToPrTrackers]);
 
   return {
     sidebar: (

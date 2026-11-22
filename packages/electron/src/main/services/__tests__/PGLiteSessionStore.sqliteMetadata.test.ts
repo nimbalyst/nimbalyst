@@ -23,6 +23,9 @@ vi.mock('../ai/sessionHostAttribution', () => ({ getLocalHostDeviceId: () => 'de
 vi.mock('@nimbalyst/runtime/storage/repositories/AISessionsRepository', () => ({ AISessionsRepository: { get: vi.fn(), getStore: vi.fn(), updateMetadata: vi.fn() } }));
 import { SQLiteDatabase } from '../../database/sqlite/SQLiteDatabase';
 import { createPGLiteSessionStore } from '../PGLiteSessionStore';
+import { createSQLiteStoreAdapter } from '../../database/sqlite/SQLiteStoreAdapter';
+import { projectSessionList } from '../../ipc/sessionListProjection';
+import { sessionListMetadata } from '../../../renderer/store/atoms/sessionListMetadata';
 import { OWNER_METADATA_MERGE_SQL } from '../extensionSessions/sessionOwnership';
 import { migrateSessionTrees } from '../sessionTreeMigration';
 import { readSessionSubtree, findSessionTreeRoot, onHierarchyMove, MAX_SESSION_DEPTH } from '../sessionHierarchy';
@@ -132,7 +135,7 @@ it('applies a phone move through desktop invariants and republishes both accepte
   const publish = vi.fn(async () => {});
   const authority = { get: store.get.bind(store), updateMetadata: store.updateMetadata.bind(store), publish };
   expect(await applyMobileSessionParent(authority, 'worker', 'second')).toEqual({ accepted: true });
-  expect(publish).toHaveBeenLastCalledWith('worker', { parentSessionId: 'second', createdBySessionId: 'second' });
+  expect(publish).toHaveBeenLastCalledWith('worker', { parentSessionId: 'second', createdBySessionId: null });
   expect(await applyMobileSessionParent(authority, 'second', 'worker')).toMatchObject({ accepted: false });
   expect(publish).toHaveBeenLastCalledWith('second', { parentSessionId: null, createdBySessionId: null });
   expect((await store.get('worker'))?.metadata).toMatchObject({ originalSpawnerSessionId: 'first', managerReassignedByUser: true });
@@ -187,11 +190,11 @@ it('routes phone snapshots through production authority and publishes canonical 
   }
   try {
     expect(await phoneMove('child', 'root')).toMatchObject({ parentSessionId: 'root', createdBySessionId: 'root' });
-    expect(await phoneMove('child', 'other')).toMatchObject({ parentSessionId: 'other', createdBySessionId: 'other' });
-    expect((await store.get('child'))?.createdBySessionId).toBe('other');
+    expect(await phoneMove('child', 'other')).toMatchObject({ parentSessionId: 'other', createdBySessionId: null });
+    expect((await store.get('child'))?.createdBySessionId).toBeNull();
     expect(await phoneMove('other', 'child')).toMatchObject({ parentSessionId: null, createdBySessionId: null });
     expect((await store.get('other'))?.parentSessionId).toBeNull();
-    expect(await phoneMove('child', 'foreign')).toMatchObject({ parentSessionId: 'other', createdBySessionId: 'other' });
+    expect(await phoneMove('child', 'foreign')).toMatchObject({ parentSessionId: 'other', createdBySessionId: null });
     expect(await phoneMove('child', null)).toMatchObject({ parentSessionId: null, createdBySessionId: null });
     expect((await store.get('child'))?.createdBySessionId).toBeNull();
     expect(await phoneMove('child', `deep-${MAX_SESSION_DEPTH}`)).toMatchObject({ parentSessionId: null, createdBySessionId: null });
@@ -257,4 +260,88 @@ it('resumes interrupted migration using backed-up original manager containers', 
   expect(await migrateSessionTrees(sqlite)).toEqual({ moved: 1 });
   expect((await store.get('leaf'))?.parentSessionId).toBe('m0');
   expect((await store.get('leaf'))?.metadata?.preTreeParentSessionId).toBe('wrapper');
+});
+
+it('carries the persisted context fill from list and search through both list projections', async () => {
+  const insert = (id: string, title: string, metadata: object) => sqlite.query(
+    `INSERT INTO ai_sessions (id, provider, workspace_id, title, metadata) VALUES ($1, 'claude-code', '/p', $2, $3)`,
+    [id, title, JSON.stringify(metadata)],
+  );
+  await insert('filled', 'Context bar filled', {
+    tokenUsage: { totalTokens: 900_000, currentContext: { tokens: 124_000, contextWindow: 200_000, rawResponse: 'x'.repeat(1000) } },
+  });
+  // Spend without a snapshot (compacted or never reported) is not a fill.
+  await insert('spent', 'Context bar spent', { tokenUsage: { totalTokens: 50_000, contextWindow: 200_000 } });
+  // The production adapter supplies the FTS5 search helpers the SQLite path needs.
+  const store = createPGLiteSessionStore(createSQLiteStoreAdapter(sqlite));
+  const toRegistry = (entries: Awaited<ReturnType<typeof store.list>>) =>
+    new Map(projectSessionList(entries, new Map()).map(s => [s.id, sessionListMetadata(s, '/p').contextUsage]));
+
+  for (const entries of [await store.list('/p'), await store.search('/p', 'Context bar')]) {
+    const registry = toRegistry(entries);
+    expect(registry.get('filled')).toEqual({ tokens: 124_000, contextWindow: 200_000 });
+    expect(registry.has('spent')).toBe(true);
+    expect(registry.get('spent')).toBeUndefined();
+  }
+});
+
+it('carries the user-created workstream marker from stored metadata to the registry row', async () => {
+  const insert = (id: string, sessionType: string, metadata: object) => sqlite.query(
+    `INSERT INTO ai_sessions (id, provider, workspace_id, title, session_type, metadata) VALUES ($1, 'claude-code', '/p', $1, $2, $3)`,
+    [id, sessionType, JSON.stringify(metadata)],
+  );
+  await insert('made', 'workstream', { userWorkstream: true, isWorkstreamRoot: true });
+  // Pre-October auto wrappers carry no marker and stay mergeable.
+  await insert('legacy', 'workstream', { isWorkstreamRoot: true });
+  await insert('spoofed', 'workstream', { userWorkstream: 'yes' });
+  const store = createPGLiteSessionStore(createSQLiteStoreAdapter(sqlite));
+  const registry = new Map(projectSessionList(await store.list('/p'), new Map()).map(s => [s.id, sessionListMetadata(s, '/p')]));
+  expect(registry.get('made')?.userWorkstream).toBe(true);
+  expect(registry.get('legacy')?.userWorkstream).toBeUndefined();
+  expect(registry.get('spoofed')?.userWorkstream).toBeUndefined();
+});
+
+it('lists and searches sessions from projected metadata, never the whole blob', async () => {
+  await sqlite.query(
+    `INSERT INTO ai_sessions (id, provider, workspace_id, title, metadata) VALUES ('s1', 'claude-code', '/p', 'Projection probe', $1)`,
+    [JSON.stringify({
+      metadata: { hasUnread: true },
+      hasPendingPrompt: true,
+      externalSource: 'openai-codex',
+      externalLastActivityAt: 1792500000000,
+      phase: 'validating',
+      tags: ['bug-fix', 'electron'],
+      linkedTrackerItemIds: ['bug_1'],
+      tokenUsage: { totalTokens: 10, currentContext: { tokens: 5, contextWindow: 100 } },
+      currentTasks: Array.from({ length: 50 }, (_, i) => ({ taskId: `t${i}`, summary: 'x'.repeat(1000) })),
+    })],
+  );
+  const adapter = createSQLiteStoreAdapter(sqlite);
+  const returnedRows: any[] = [];
+  const store = createPGLiteSessionStore({
+    ...adapter,
+    query: async (sql: string, params?: any[]) => {
+      const result = await adapter.query(sql, params);
+      returnedRows.push(...result.rows);
+      return result;
+    },
+  } as typeof adapter);
+
+  const [listed] = await store.list('/p');
+  expect(listed).toMatchObject({
+    hasUnread: true,
+    hasPendingInteractivePrompt: true,
+    externalSource: 'openai-codex',
+    externalLastActivityAt: 1792500000000,
+    phase: 'validating',
+    tags: ['bug-fix', 'electron'],
+    linkedTrackerItemIds: ['bug_1'],
+    contextUsage: { tokens: 5, contextWindow: 100 },
+  });
+  const [found] = await store.search('/p', 'Projection probe');
+  expect(found.contextUsage).toEqual({ tokens: 5, contextWindow: 100 });
+
+  const withMetadata = returnedRows.filter(row => row.metadata != null);
+  expect(withMetadata.length).toBeGreaterThan(0);
+  expect(withMetadata.some(row => JSON.stringify(row.metadata).includes('currentTasks'))).toBe(false);
 });

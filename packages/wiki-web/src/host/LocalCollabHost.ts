@@ -16,6 +16,7 @@ import { builtInManifests, editorForFile, editorPageDescriptors } from '../edito
 import { ulidLike } from './ids';
 import type { PageLinkSource } from '@nimbalyst/collab-bundle/editor';
 import { wikiApi } from '../api/client';
+import { isStaticSite, staticRoutePath } from '../api/staticSite';
 import { resolveWikiLink, type LinkTarget } from './links';
 import { pageLinkOption, pageLinkOptions } from './pageLinks';
 import { LocalPagesDataSource } from './LocalPagesDataSource';
@@ -68,6 +69,7 @@ export type WikiRoute =
   | { kind: 'type'; typeId: string };
 
 export function routePath(route: WikiRoute): string {
+  if (isStaticSite()) return staticRoutePath(route);
   switch (route.kind) {
     case 'home':
       return '/';

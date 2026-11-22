@@ -60,8 +60,9 @@ export const sessionRefByIdAtom = atomFamily((id: string) =>
 
 /**
  * Ask the host to open a session by id. The Electron renderer listens for this
- * event in `App.tsx` (`handleOpenAiSession`). `workspacePath` is only needed to
- * seed a draft input, so opening an existing session works without it.
+ * event in `App.tsx` (`handleOpenAiSession`). The chip does not know which
+ * project owns the session; the host looks it up and switches to that project
+ * when it is not the active one (`openSessionInTabActionAtom`).
  */
 export function openSessionReference(sessionId: string): void {
   if (typeof window === 'undefined') return;

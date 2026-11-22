@@ -1,16 +1,30 @@
 {
   "mcpServers": {
     "nimbalyst-session": {
-      "command": "node",
-      "cwd": ".",
-      "env_vars": ["PWD"],
-      "args": ["./scripts/session-inputs.mjs"]
+      "command": "npx",
+      "args": [
+        "--prefix",
+        "/",
+        "-y",
+        "@nimbalyst/cli@0.12.7",
+        "hook",
+        "session-inputs"
+      ]
     },
     "nimbalyst-local": {
-      "command": "node",
-      "cwd": ".",
-      "env_vars": ["PWD"],
-      "args": ["./scripts/nim-local-mcp.mjs"]
+      "command": "npx",
+      "env_vars": [
+        "CODEX_HOME"
+      ],
+      "args": [
+        "--prefix",
+        "/",
+        "-y",
+        "@nimbalyst/cli@0.12.7",
+        "mcp",
+        "--plugin-agent",
+        "codex"
+      ]
     }
   }
 }

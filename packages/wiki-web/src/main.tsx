@@ -4,6 +4,7 @@ import './styles.css';
 import { createRoot } from 'react-dom/client';
 import { loadTrackerPage } from '@nimbalyst/collab-bundle/trackers-ui';
 import { WIKI_API_VERSION, wikiApi } from './api/client';
+import { isStaticSite, loadStaticSite } from './api/staticSite';
 import { LocalTrackerDataSource } from './host/LocalTrackerDataSource';
 import { applyWikiTypes, loadWikiSchema } from './host/schema';
 import { initializeTheme } from './theme';
@@ -22,6 +23,8 @@ function fatal(message: string): void {
 }
 
 async function boot(): Promise<void> {
+  // A static export resolves routes and file links from its manifest, so it loads first.
+  if (isStaticSite()) await loadStaticSite();
   const info = await wikiApi.info();
   if (info.apiVersion !== WIKI_API_VERSION) {
     fatal(`This browser app speaks wiki API ${WIKI_API_VERSION} and nim ${info.version} speaks ${info.apiVersion}. Install the matching @nimbalyst/wiki-web.`);
@@ -35,5 +38,5 @@ async function boot(): Promise<void> {
 
 boot().catch((error: unknown) => {
   const message = error instanceof Error ? error.message : String(error);
-  fatal(/401|unauthorized/i.test(message) ? 'Open the link `nim wiki serve` printed; it carries the access token.' : `The wiki could not load: ${message}`);
+  fatal(!isStaticSite() && /401|unauthorized/i.test(message) ? 'Open the link `nim wiki serve` printed; it carries the access token.' : `The wiki could not load: ${message}`);
 });

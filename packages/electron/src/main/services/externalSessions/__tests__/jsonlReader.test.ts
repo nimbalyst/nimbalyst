@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { afterEach, beforeEach, expect, it } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -11,6 +11,29 @@ beforeEach(async () => {
 });
 afterEach(async () => {
   await fs.rm(dir, { recursive: true, force: true });
+});
+
+it("resumes and detects rewrites when a Windows file ID exceeds integer precision", async () => {
+  const file = path.join(dir, "windows.jsonl");
+  await fs.writeFile(file, '{"uuid":"a"}\n');
+  const handle = await fs.open(file, "r");
+  const proto = Object.getPrototypeOf(handle);
+  await handle.close();
+  const original = proto.stat;
+  const stat = vi.spyOn(proto, "stat").mockImplementation(async function (this: fs.FileHandle) {
+    return Object.assign(await original.call(this), { ino: Number(32932572275167771n) });
+  });
+  try {
+    const first = await readJsonl(file, null);
+    expect(first.cursor.inode).toBeNull();
+    await fs.appendFile(file, '{"uuid":"b"}\n');
+    const next = await readJsonl(file, first.cursor);
+    expect(next.entries.map(entry => entry.entryId)).toEqual(["b"]);
+    await fs.writeFile(file, '{"uuid":"c"}\n{"uuid":"b"}\n');
+    expect((await readJsonl(file, next.cursor)).reset).toBe(true);
+  } finally {
+    stat.mockRestore();
+  }
 });
 
 it("commits only complete lines, retaining partial UTF8 and bounded unread data", async () => {
@@ -55,8 +78,9 @@ it("resets for truncation and inode replacement and preserves stable entry ident
   await fs.rename(file, file + ".old");
   await fs.writeFile(file, line);
   const c = await readJsonl(file, b.cursor);
-  expect(c.reset).toBe(true);
-  expect(c.entries[0].entryId).toBe(a.entries[0].entryId);
+  // Identical replacement bytes are distinguishable only with a usable prior file ID.
+  expect(c.reset).toBe(b.cursor.inode !== null);
+  expect(c.entries.map(entry => entry.entryId)).toEqual(c.reset ? [a.entries[0].entryId] : []);
 });
 
 it("bounds lines and batches without advancing past oversized or incomplete records", async () => {

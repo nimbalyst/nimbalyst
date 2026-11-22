@@ -28,6 +28,7 @@ import type { BodyDocConfigFactory } from '../BodyDocCache';
 interface MockedSyncProvider {
   config: Record<string, unknown>;
   destroyed: boolean;
+  refused: boolean;
   destroy(): void;
   setRoomMetadata?(meta: unknown): void;
   getYDoc(): { destroy(): void };
@@ -47,7 +48,9 @@ vi.mock('@nimbalyst/runtime/sync', () => {
       this.config = config;
       createdProviders.push(this as unknown as MockedSyncProvider);
     }
+    refused = false;
     destroy(): void { this.destroyed = true; }
+    isCommentUpdateRefused(): boolean { return this.refused; }
     setRoomMetadata(_meta: unknown): void { /* no-op */ }
     getYDoc(): { destroy(): void } { return this.ydoc; }
   }
@@ -120,6 +123,26 @@ describe('BodyDocCache', () => {
     expect(second!.syncProvider).toBe(initialProvider);
     expect(createdProviders.length).toBe(1);
     second!.release();
+  });
+
+  it('replaces a provider whose commenter update the room refused once nobody holds it', async () => {
+    const cache = new BodyDocCache({ idleTimeoutMs: 60_000 });
+    const factory = makeFactory();
+    const first = await cache.acquire('item-1', factory);
+    const second = await cache.acquire('item-1', factory);
+    createdProviders[0].refused = true;
+    first!.release();
+    // Still held by another panel: not torn down under it.
+    const held = await cache.acquire('item-1', factory);
+    expect(held!.syncProvider).toBe(second!.syncProvider);
+    held!.release();
+    second!.release();
+
+    const reopened = await cache.acquire('item-1', factory);
+    expect(createdProviders[0].destroyed).toBe(true);
+    expect(createdProviders).toHaveLength(2);
+    expect(reopened!.syncProvider).toBe(createdProviders[1]);
+    reopened!.release();
   });
 
   it('destroys the provider after the idle timeout with no acquirers', async () => {

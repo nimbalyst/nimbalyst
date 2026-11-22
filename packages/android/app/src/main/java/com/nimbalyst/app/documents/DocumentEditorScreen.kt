@@ -58,6 +58,7 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.nimbalyst.app.R
 import com.nimbalyst.app.ui.theme.NimbalystColors
+import com.nimbalyst.app.wiki.WikiDocuments
 import kotlinx.coroutines.launch
 
 private sealed interface EditorLoad {
@@ -108,6 +109,10 @@ internal class TeardownSaveGuard {
  * [DocumentEditorScreen] decides what wraps it: a wiki page's [title] and
  * [header], [readOnly] for pages the phone must not rewrite, and [onLink] for
  * links tapped in the document.
+ *
+ * An `.html` file shows as an embed of itself, never as editable markdown: it
+ * is read-only, ignores remote updates and never saves. Embeds in any document
+ * are answered from the synced copy beside it ([EditorBridgeMessage.ReadEmbedFile]).
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -141,9 +146,28 @@ internal fun DocumentEditorContent(
     // Read through State by the bridge handler and lifecycle observer, which are
     // registered once: the permission and link handler can change while the
     // editor stays open (wiki config arriving, a page turning malformed).
-    val canWrite by rememberUpdatedState(!readOnly)
+    val embedOnly = WikiDocuments.isEmbedOnlyFile(relativePath)
+    val canWrite by rememberUpdatedState(!readOnly && !embedOnly)
     val currentOnLink by rememberUpdatedState(onLink)
     val teardown = remember(projectId, relativePath) { TeardownSaveGuard() }
+
+    /** What the editor shows for this file: its text, or for an `.html` file an embed of itself. */
+    suspend fun editorMarkdown(): String? =
+        if (embedOnly) WikiDocuments.selfEmbedMarkdown(relativePath) else manager.documentContent(projectId, relativePath)
+
+    /** Answers the bundle's request for an embedded `.html` file with the synced copy. */
+    fun answerEmbedFile(requestId: Long, src: String) {
+        scope.launch {
+            val path = WikiDocuments.embedPath(src, relativePath)
+            val js = when {
+                path == null -> EditorCommands.embedFileResult(requestId, null, "Only .html files in this project can be embedded")
+                manager.document(projectId, path) == null -> EditorCommands.embedFileResult(requestId, null, "$path has not synced to this device")
+                else -> manager.documentContent(projectId, path)?.let { EditorCommands.embedFileResult(requestId, it, null) }
+                    ?: EditorCommands.embedFileResult(requestId, null, "$path could not be decrypted")
+            }
+            webView?.evaluateJavascript(js, null)
+        }
+    }
 
     fun loadIntoEditor(view: WebView, markdown: String) {
         teardown.onLoaded(markdown)
@@ -210,7 +234,7 @@ internal fun DocumentEditorContent(
                 DocumentAvailability.Waiting -> EditorLoad.Loading
                 DocumentAvailability.Missing -> EditorLoad.Missing
                 is DocumentAvailability.Failed -> EditorLoad.SyncFailed(availability.message)
-                is DocumentAvailability.Available -> manager.documentContent(projectId, relativePath)
+                is DocumentAvailability.Available -> editorMarkdown()
                     ?.let { EditorLoad.Loaded(it, availability.document.syncId) }
                     ?: EditorLoad.DecryptFailed
             }
@@ -233,10 +257,10 @@ internal fun DocumentEditorContent(
     LaunchedEffect(readOnly, editorReady, webView) {
         val view = webView ?: return@LaunchedEffect
         if (!editorReady) return@LaunchedEffect
-        view.evaluateJavascript(EditorCommands.setReadOnly(readOnly), null)
-        if (readOnly && dirty && contentPushed) {
+        view.evaluateJavascript(EditorCommands.setReadOnly(!canWrite), null)
+        if (!canWrite && dirty && contentPushed) {
             // Loading resets the bundle's confirmed body, so it reports clean.
-            manager.documentContent(projectId, relativePath)?.let { loadIntoEditor(view, it) }
+            editorMarkdown()?.let { loadIntoEditor(view, it) }
         }
     }
 
@@ -245,6 +269,8 @@ internal fun DocumentEditorContent(
     // frontmatter (the phone never edits it), a local save still wins for the
     // body (last write wins), and undoing the edits shows the remote body.
     LaunchedEffect(load) {
+        // The editor shows an `.html` file as an embed of itself, not its text.
+        if (embedOnly) return@LaunchedEffect
         val syncId = (load as? EditorLoad.Loaded)?.syncId ?: return@LaunchedEffect
         manager.remoteUpdates.collect { update ->
             if (update.projectId != projectId || update.syncId != syncId || !contentPushed) return@collect
@@ -266,6 +292,7 @@ internal fun DocumentEditorContent(
                 is EditorBridgeMessage.ContentChanged -> save(message.content, message.revision)
                 is EditorBridgeMessage.Error -> errorMessage = message.message
                 is EditorBridgeMessage.LinkClicked -> currentOnLink?.invoke(message.href, message.title)
+                is EditorBridgeMessage.ReadEmbedFile -> answerEmbedFile(message.requestId, message.src)
             }
         }
         onDispose { relay.handler = null }
@@ -305,8 +332,8 @@ internal fun DocumentEditorContent(
                                 .background(NimbalystColors.primary, CircleShape)
                         )
                     }
-                    val editable = load is EditorLoad.Loaded && editorReady && !readOnly
-                    if (!readOnly) Box {
+                    val editable = load is EditorLoad.Loaded && editorReady && canWrite
+                    if (canWrite) Box {
                         IconButton(onClick = { formatMenuOpen = true }, enabled = editable) {
                             Icon(Icons.Outlined.TextFormat, contentDescription = stringResource(R.string.document_editor_format))
                         }
@@ -327,7 +354,7 @@ internal fun DocumentEditorContent(
                             }
                         }
                     }
-                    if (!readOnly) IconButton(
+                    if (canWrite) IconButton(
                         onClick = { webView?.evaluateJavascript(EditorCommands.FLUSH, null) },
                         enabled = editable,
                     ) {

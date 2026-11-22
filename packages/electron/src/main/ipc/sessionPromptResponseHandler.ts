@@ -19,6 +19,7 @@ import { settleOrphanedRequestUserInput } from "../services/ai/requestUserInputO
 import {
   getRequestUserInputFallbackResponseChannel,
   getRequestUserInputResponseChannel,
+  sessionFallbackMayCarryAnswer,
 } from "../mcp/tools/interactivePromptFallback";
 
 export function registerSessionPromptResponseHandler(): void {
@@ -306,7 +307,12 @@ export function registerSessionPromptResponseHandler(): void {
 
           const fallbackChannel =
             getRequestUserInputFallbackResponseChannel(sessionId);
-          if (!notifiedWaiter && ipcMain.listenerCount(fallbackChannel) > 0) {
+          const formSession = await AISessionsRepository.get(sessionId);
+          if (
+            !notifiedWaiter &&
+            sessionFallbackMayCarryAnswer(formSession?.provider, canonicalPromptId) &&
+            ipcMain.listenerCount(fallbackChannel) > 0
+          ) {
             notifiedWaiter = true;
             ipcMain.emit(fallbackChannel, null, {
               promptId: canonicalPromptId,
@@ -332,7 +338,7 @@ export function registerSessionPromptResponseHandler(): void {
               answers: response.answers || {},
               cancelled: response.cancelled === true,
               respondedBy,
-              session: await AISessionsRepository.get(sessionId),
+              session: formSession,
             });
           }
           event.sender.send("ai:requestUserInputResolved", {

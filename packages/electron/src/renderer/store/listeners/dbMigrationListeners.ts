@@ -28,6 +28,7 @@ import {
   dbRecoveryCandidatesAtom,
   dbRecoveryLiveAtom,
   dbRecoveryOfferAtom,
+  dbActiveBackendAtom,
   type LiveDatabaseView,
   type MigratedCopyView,
   type MigrationBlockedState,
@@ -66,10 +67,16 @@ export async function refreshDbRecoveryState(): Promise<void> {
 
   try {
     const resp = (await window.electronAPI.invoke('db:migration:get-status')) as
-      | { success: true; migrationBlocked?: MigrationBlockedState | null; operation?: MigrationOperationSnapshot | null }
+      | {
+          success: true;
+          activeBackend?: 'pglite' | 'sqlite';
+          migrationBlocked?: MigrationBlockedState | null;
+          operation?: MigrationOperationSnapshot | null;
+        }
       | { success: false; error: string };
     if (resp.success) {
       store.set(dbMigrationBlockedAtom, resp.migrationBlocked ?? null);
+      store.set(dbActiveBackendAtom, resp.activeBackend ?? null);
       hydrateMigrationOperation(resp.operation);
     }
   } catch {

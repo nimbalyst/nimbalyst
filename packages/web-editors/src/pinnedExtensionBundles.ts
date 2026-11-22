@@ -55,10 +55,11 @@ export const PINNED_EXTENSION_MANIFESTS = ALL_PINNED_EXTENSION_MANIFESTS as Reco
 
 const loadedBundles = new Map<PinnedExtensionSlug, Promise<unknown>>();
 
-export function loadPinnedExtensionBundle(slug: PinnedExtensionSlug): Promise<unknown> {
+export function loadPinnedExtensionBundle(slug: PinnedExtensionSlug, basePath = '/'): Promise<unknown> {
   let bundle = loadedBundles.get(slug);
   if (!bundle) {
-    const url = PINNED_BUNDLE_URLS[slug];
+    const pinnedUrl = PINNED_BUNDLE_URLS[slug];
+    const url = pinnedUrl?.startsWith('/') ? `${basePath}${pinnedUrl.slice(1)}` : pinnedUrl;
     bundle = url ? import(/* @vite-ignore */ url) : Promise.reject(new Error(`The ${slug} editor is not built into this app`));
     loadedBundles.set(slug, bundle);
   }

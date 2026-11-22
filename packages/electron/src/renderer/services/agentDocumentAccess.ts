@@ -18,7 +18,7 @@
  */
 import type { TextReplacement } from '@nimbalyst/runtime';
 import { editorRegistry } from '@nimbalyst/runtime/ai/EditorRegistry';
-import { isCollabUri, parseCollabUri } from '@nimbalyst/collab-protocol';
+import { isCollabUri, parseCollabUri, parseTrackerBodyUri } from '@nimbalyst/collab-protocol';
 
 import {
   acquireHeadlessCollabDocument,
@@ -163,6 +163,26 @@ async function recordRevisionBeforeMountedCollabEdit(
 }
 
 /**
+ * Carry an agent's edit of a typed page's team body into the item's local copy.
+ *
+ * `tracker_get`, search and a cold detail view read that copy, and remote sync
+ * never writes it, so without this they keep the pre-edit body until someone
+ * opens the page (#1879). This is the save the body editor's autosave makes,
+ * which also bumps `bodyVersion` so other members' cold copies refresh.
+ *
+ * The room already holds the edit, so a failure here is not a failed edit:
+ * reporting one would make the agent apply it twice.
+ */
+async function keepLocalTypedPageBody(itemId: string, markdown: string): Promise<void> {
+  try {
+    const result = await window.electronAPI.documentService.updateTrackerItemContent({ itemId, content: markdown });
+    if (!result.success) throw new Error(result.error || 'unknown error');
+  } catch (error) {
+    console.error(`[agentDocumentAccess] The team body of ${itemId} was edited but its local copy was not updated`, error);
+  }
+}
+
+/**
  * Apply an agent's replacements to a markdown file or a shared document.
  *
  * Returns a result rather than throwing, because both callers report the
@@ -214,12 +234,14 @@ async function applyAgentDiffToTarget(
       };
     }
     try {
-      await applyHeadlessCollabDocEdit(
+      const edited = await applyHeadlessCollabDocEdit(
         targetFilePath,
         options.workspacePath,
         replacements,
         options.agent ? { agent: options.agent } : {},
       );
+      const typedPage = parseTrackerBodyUri(targetFilePath);
+      if (typedPage) await keepLocalTypedPageBody(typedPage.itemId, edited);
       return { success: true };
     } catch (error) {
       return {

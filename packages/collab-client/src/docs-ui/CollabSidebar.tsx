@@ -50,7 +50,7 @@ import {
 import { useFloatingMenu, FloatingPortal, virtualElement } from '../ui-primitives/useFloatingMenu';
 import { CollabSectionMenu, CollabTreeEmptyState, type CollabSectionMenuItem } from './CollabSectionRoot';
 import { CollabSidebarTrashEntry } from './CollabTrash';
-import { revealKeysFor } from './collabTreeReveal';
+import { itemRowIdForDocument, revealKeysFor } from './collabTreeReveal';
 import { usePageActionRequest, type CollabPageActionRequest } from './usePageActionRequest';
 
 const CYCLE_WARNING = 'A page cannot move inside one of its own child pages.';
@@ -433,7 +433,12 @@ export const CollabSidebar: React.FC<CollabSidebarProps> = ({
     () => sharedDocuments.find(document => document.documentId === activeDocumentId) ?? null,
     [activeDocumentId, sharedDocuments]
   );
-  const activeRow = useMemo(() => ({ itemId: activeItemId, typeId: activeTypeId }), [activeItemId, activeTypeId]);
+  // An open local typed page has no page row; its item row is the one to mark.
+  const activeItemRowId = useMemo(
+    () => activeItemId ?? itemRowIdForDocument(tree, activeDocumentId ?? null),
+    [activeDocumentId, activeItemId, tree]
+  );
+  const activeRow = useMemo(() => ({ itemId: activeItemRowId, typeId: activeTypeId }), [activeItemRowId, activeTypeId]);
 
   const folderById = useMemo(
     () => new Map(sharedFolders.map(f => [f.folderId, f])),
@@ -638,18 +643,22 @@ export const CollabSidebar: React.FC<CollabSidebarProps> = ({
     });
   }, [activeDocument, treePathOf]);
 
-  // The same for the open typed page or type, once per target: the tree
-  // re-renders on every item edit, and a row the user closes stays closed.
+  // The same for the open typed page, type, or a page under a typed item (the
+  // path walk above cannot open id-keyed item and type rows), once per target:
+  // the tree re-renders on every item edit, and a row the user closes stays closed.
   const revealedRowRef = useRef<string | null>(null);
   useEffect(() => {
-    const targetKey = activeItemId ? `item:${activeItemId}` : activeTypeId ? `type:${activeTypeId}` : null;
+    const targetKey = activeItemRowId ? `item:${activeItemRowId}`
+      : activeTypeId ? `type:${activeTypeId}`
+      : activeDocumentId ? `document:${activeDocumentId}`
+      : null;
     if (!targetKey || revealedRowRef.current === targetKey) return;
-    const keys = revealKeysFor(tree, { itemId: activeItemId, typeId: activeTypeId });
+    const keys = revealKeysFor(tree, { itemId: activeItemRowId, typeId: activeTypeId, documentId: activeDocumentId ?? null });
     if (!keys) return;
     revealedRowRef.current = targetKey;
     if (keys.length === 0) return;
     setExpandedFolders((current) => (keys.every((key) => current.has(key)) ? current : new Set([...current, ...keys])));
-  }, [activeItemId, activeTypeId, tree]);
+  }, [activeDocumentId, activeItemRowId, activeTypeId, tree]);
 
   const handleContextMenu = useCallback((e: React.MouseEvent, node: CollabTreeNode) => {
     e.preventDefault();

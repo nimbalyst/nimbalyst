@@ -9,7 +9,7 @@
   "types": "src/index.tsx",
   "scripts": {
     "build": "vite build && vite build --config vite.backend.config.ts",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "node ../../../scripts/tsc-native.mjs --noEmit",
     "test": "echo \"tests run via root vitest\""
   },
   "devDependencies": {

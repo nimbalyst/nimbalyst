@@ -18,6 +18,14 @@ const packageJson = require('../package.json');
 const version = packageJson.version;
 const productName = packageJson.build.productName || 'Preditor';
 
+// macOS floor for new releases, in the form electron-updater compares against.
+// The updater checks `minimumSystemVersion` with semver against os.release(),
+// which on macOS is the Darwin kernel version, not the marketing version.
+// Darwin 22 is macOS 13 Ventura, the minimum for Electron 44 and later; the
+// app bundle itself declares 13.0 (build.mac.minimumSystemVersion). Without
+// this, Monterey (Darwin 21) installs would download a build that cannot launch.
+const MAC_UPDATE_MINIMUM_DARWIN_VERSION = '22.0.0';
+
 // Release directory
 const releaseDir = path.join(__dirname, '..', 'release');
 
@@ -60,6 +68,36 @@ function duplicateChannelFile(sourceName, targetName) {
   fs.copyFileSync(sourcePath, targetPath);
   console.log(`Generated ${targetPath} from ${sourceName}`);
   return true;
+}
+
+/**
+ * Serialize latest-mac.yml. Kept separate from file discovery so tests can
+ * feed the output to the shipped electron-updater's OS check.
+ */
+function buildMacYmlString(yamlContent) {
+  let yamlString = `version: ${yamlContent.version}\n`;
+  yamlString += `files:\n`;
+  yamlContent.files.forEach(file => {
+    yamlString += `  - url: ${file.url}\n`;
+    yamlString += `    sha512: ${file.sha512}\n`;
+    yamlString += `    size: ${file.size}\n`;
+    if (file.arch) {
+      yamlString += `    arch: ${file.arch}\n`;
+    }
+  });
+  yamlString += `path: ${yamlContent.path}\n`;
+  yamlString += `sha512: ${yamlContent.sha512}\n`;
+  yamlString += `releaseDate: '${yamlContent.releaseDate}'\n`;
+  if (yamlContent.minimumSystemVersion) {
+    yamlString += `minimumSystemVersion: ${yamlContent.minimumSystemVersion}\n`;
+  }
+  // Add release notes as multi-line string
+  yamlString += `releaseNotes: |\n`;
+  yamlContent.releaseNotes.split('\n').forEach(line => {
+    yamlString += `  ${line}\n`;
+  });
+
+  return yamlString;
 }
 
 // Function to generate latest-mac.yml
@@ -143,28 +181,11 @@ function generateMacYml() {
     path: primaryFile.url,
     sha512: primaryFile.sha512,
     releaseDate: new Date().toISOString(),
-    releaseNotes: releaseNotes
+    releaseNotes: releaseNotes,
+    minimumSystemVersion: MAC_UPDATE_MINIMUM_DARWIN_VERSION
   };
 
-  // Convert to YAML format
-  let yamlString = `version: ${yamlContent.version}\n`;
-  yamlString += `files:\n`;
-  yamlContent.files.forEach(file => {
-    yamlString += `  - url: ${file.url}\n`;
-    yamlString += `    sha512: ${file.sha512}\n`;
-    yamlString += `    size: ${file.size}\n`;
-    if (file.arch) {
-      yamlString += `    arch: ${file.arch}\n`;
-    }
-  });
-  yamlString += `path: ${yamlContent.path}\n`;
-  yamlString += `sha512: ${yamlContent.sha512}\n`;
-  yamlString += `releaseDate: '${yamlContent.releaseDate}'\n`;
-  // Add release notes as multi-line string
-  yamlString += `releaseNotes: |\n`;
-  yamlContent.releaseNotes.split('\n').forEach(line => {
-    yamlString += `  ${line}\n`;
-  });
+  const yamlString = buildMacYmlString(yamlContent);
 
   // Write the file
   const outputPath = path.join(releaseDir, 'latest-mac.yml');
@@ -277,35 +298,43 @@ function generateLinuxYml() {
   return true;
 }
 
-// Check if release directory exists
-if (!fs.existsSync(releaseDir)) {
-  console.error('Release directory does not exist:', releaseDir);
-  process.exit(1);
+function main() {
+  // Check if release directory exists
+  if (!fs.existsSync(releaseDir)) {
+    console.error('Release directory does not exist:', releaseDir);
+    process.exit(1);
+  }
+
+  // Generate update files
+  console.log(`Generating update metadata files for version ${version}...`);
+
+  const macSuccess = generateMacYml();
+  const windowsSuccess = generateWindowsYml();
+  const linuxSuccess = generateLinuxYml();
+  const alphaMacSuccess = duplicateChannelFile('latest-mac.yml', 'alpha-mac.yml');
+  const alphaWindowsSuccess = duplicateChannelFile('latest.yml', 'alpha.yml');
+  const alphaLinuxSuccess = duplicateChannelFile('latest-linux.yml', 'alpha-linux.yml');
+
+  console.log('');
+  console.log('Generation results:');
+  console.log(`  latest-mac.yml: ${macSuccess ? 'OK' : 'SKIPPED (no macOS files found)'}`);
+  console.log(`  latest.yml (Windows): ${windowsSuccess ? 'OK' : 'SKIPPED (no Windows exe found)'}`);
+  console.log(`  latest-linux.yml: ${linuxSuccess ? 'OK' : 'SKIPPED (no Linux artifacts found)'}`);
+  console.log(`  alpha-mac.yml: ${alphaMacSuccess ? 'OK' : 'SKIPPED (no latest-mac.yml found)'}`);
+  console.log(`  alpha.yml (Windows): ${alphaWindowsSuccess ? 'OK' : 'SKIPPED (no latest.yml found)'}`);
+  console.log(`  alpha-linux.yml: ${alphaLinuxSuccess ? 'OK' : 'SKIPPED (no latest-linux.yml found)'}`);
+
+  if (!macSuccess && !windowsSuccess && !linuxSuccess) {
+    console.error('Failed to generate any update metadata files');
+    process.exit(1);
+  }
+
+  console.log('');
+  console.log('Update metadata files generated successfully');
 }
 
-// Generate update files
-console.log(`Generating update metadata files for version ${version}...`);
-
-const macSuccess = generateMacYml();
-const windowsSuccess = generateWindowsYml();
-const linuxSuccess = generateLinuxYml();
-const alphaMacSuccess = duplicateChannelFile('latest-mac.yml', 'alpha-mac.yml');
-const alphaWindowsSuccess = duplicateChannelFile('latest.yml', 'alpha.yml');
-const alphaLinuxSuccess = duplicateChannelFile('latest-linux.yml', 'alpha-linux.yml');
-
-console.log('');
-console.log('Generation results:');
-console.log(`  latest-mac.yml: ${macSuccess ? 'OK' : 'SKIPPED (no macOS files found)'}`);
-console.log(`  latest.yml (Windows): ${windowsSuccess ? 'OK' : 'SKIPPED (no Windows exe found)'}`);
-console.log(`  latest-linux.yml: ${linuxSuccess ? 'OK' : 'SKIPPED (no Linux artifacts found)'}`);
-console.log(`  alpha-mac.yml: ${alphaMacSuccess ? 'OK' : 'SKIPPED (no latest-mac.yml found)'}`);
-console.log(`  alpha.yml (Windows): ${alphaWindowsSuccess ? 'OK' : 'SKIPPED (no latest.yml found)'}`);
-console.log(`  alpha-linux.yml: ${alphaLinuxSuccess ? 'OK' : 'SKIPPED (no latest-linux.yml found)'}`);
-
-if (!macSuccess && !windowsSuccess && !linuxSuccess) {
-  console.error('Failed to generate any update metadata files');
-  process.exit(1);
+if (require.main === module) {
+  main();
 }
 
-console.log('');
-console.log('Update metadata files generated successfully');
+module.exports = { buildMacYmlString, MAC_UPDATE_MINIMUM_DARWIN_VERSION };

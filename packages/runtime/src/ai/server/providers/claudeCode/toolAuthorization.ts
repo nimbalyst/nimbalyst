@@ -1,6 +1,6 @@
 import { getPatternDisplayName } from '../../types';
 import { buildToolDescription, generateToolPattern } from '../../permissions/toolPermissionHelpers';
-import { constrainPermissionResponse, permissionPromptHints, type PermissionPromptHints } from '../../permissions/permissionPromptPolicy';
+import { constrainPermissionResponse, isHookAsk, permissionPromptHints, type PermissionPromptHints, type UserDecisionRequirement } from '../../permissions/permissionPromptPolicy';
 import { hasShellChainingOperators, splitOnShellOperators, stripHeredocs } from '../../permissions/BashCommandAnalyzer';
 
 export type ToolAuthorizationDecision = {
@@ -13,6 +13,8 @@ export interface ToolPermissionOptions extends PermissionPromptHints {
   signal: AbortSignal;
   suggestions?: any[];
   toolUseID?: string;
+  /** The SDK's reason this call reached canUseTool; 'hook' means a PreToolUse hook returned "ask". */
+  decisionReasonType?: string;
 }
 
 interface ServicePermissionDeps {
@@ -32,7 +34,7 @@ interface ServicePermissionDeps {
     warnings?: string[];
     signal: AbortSignal;
     teammateName?: string;
-    requiresUserDecision?: boolean;
+    requiresUserDecision?: UserDecisionRequirement;
   }) => Promise<{ decision: 'allow' | 'deny' }>;
 }
 
@@ -89,17 +91,19 @@ export function createCompoundPartPreApprovalCheck(
  * remaining one gets its own prompt, so "Session"/"Always" save a rule for
  * that sub-command rather than for the whole compound string.
  *
- * Returns null when the command is not compound, or when it has a newline
+ * Returns null when the command is not compound, when it has a newline
  * outside a heredoc (shell-quote reads newlines as whitespace, so splitting
- * would glue two commands together); the caller then prompts for the whole
- * command.
+ * would glue two commands together), or when a PreToolUse hook asked about it
+ * (the hook asked about the whole command, and parts approved earlier must not
+ * answer it, #1741); the caller then prompts for the whole command.
  */
 export async function authorizeCompoundBashCommand(
   deps: CompoundBashDeps,
-  input: any
+  input: any,
+  options?: { decisionReasonType?: string }
 ): Promise<ToolAuthorizationDecision | null> {
   const command = typeof input?.command === 'string' ? input.command : '';
-  if (!hasShellChainingOperators(command)) {
+  if (!hasShellChainingOperators(command) || isHookAsk(options)) {
     return null;
   }
   if (stripHeredocs(command).trim().includes('\n')) {
@@ -149,6 +153,8 @@ export async function handleToolPermissionWithService(
     const toolDescription = buildToolDescription(toolName, input);
     const isDestructive = ['Write', 'Edit', 'MultiEdit', 'Bash'].includes(toolName);
     const patternDisplay = getPatternDisplayName(pattern);
+    const userDecision: UserDecisionRequirement | undefined =
+      isHookAsk(options) ? 'hook-ask' : requiresUserDecision ? 'escalated' : undefined;
 
     deps.logSecurity('[canUseTool] Requesting permission via ToolPermissionService:', {
       toolName,
@@ -192,7 +198,7 @@ export async function handleToolPermissionWithService(
       warnings,
       signal: options.signal,
       teammateName,
-      ...(requiresUserDecision && { requiresUserDecision: true }),
+      ...(userDecision && { requiresUserDecision: userDecision }),
     });
 
     if (response.decision === 'allow') {
@@ -250,11 +256,13 @@ export async function handleToolPermissionFallback(
   const { toolName, input, options, sessionId, workspacePath, warnings = [] } = params;
 
   const pattern = generateToolPattern(toolName, input);
-  if (deps.permissions.sessionApprovedPatterns.has(pattern)) {
+  // A PreToolUse hook "ask" is answered by the user every time, never by a Session approval (#1741)
+  const hookAsked = isHookAsk(options);
+  if (!hookAsked && deps.permissions.sessionApprovedPatterns.has(pattern)) {
     deps.logSecurity('[canUseTool] Pattern already approved this session:', { pattern, toolName });
     return { behavior: 'allow', updatedInput: input };
   }
-  if (toolName === 'WebFetch' && deps.permissions.sessionApprovedPatterns.has('WebFetch')) {
+  if (!hookAsked && toolName === 'WebFetch' && deps.permissions.sessionApprovedPatterns.has('WebFetch')) {
     deps.logSecurity('[canUseTool] WebFetch wildcard approved this session:', { toolName });
     return { behavior: 'allow', updatedInput: input };
   }

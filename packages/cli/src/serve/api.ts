@@ -51,7 +51,8 @@ function segment(value: string): string {
   }
 }
 
-async function typeDefinitions(wiki: LocalWiki) {
+/** What GET /api/types returns; the static export writes the same list. */
+export async function typeDefinitions(wiki: LocalWiki) {
   const issues = (await wiki.snapshot()).issues.filter((issue) => issue.code === 'reserved-field');
   return Promise.all(
     wiki.typeDefs().map(async (def) => {

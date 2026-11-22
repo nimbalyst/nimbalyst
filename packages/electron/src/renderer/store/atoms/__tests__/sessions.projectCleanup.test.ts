@@ -77,3 +77,50 @@ describe('closed project conversation cache', () => {
     expect(store.get(sessionStoreAtom('late'))?.title).toBe('fresh');
   });
 });
+
+describe('rail project switch session list', () => {
+  it('shows the cached list for a project the window already loaded while it refetches', async () => {
+    const { store } = await import('@nimbalyst/runtime/store');
+    const { initSessionList, sessionListRootAtom, sessionListLoadingAtom } = await import('../sessions');
+    const row = (id: string, workspaceId: string) => ({ id, workspaceId, title: id, createdAt: 1, updatedAt: 1, sessionType: 'session' });
+    const pending = deferred();
+    const invoke = vi.fn()
+      .mockResolvedValueOnce({ success: true, sessions: [row('a1', '/a')] })
+      .mockResolvedValueOnce({ success: true, sessions: [row('b1', '/b')] })
+      .mockReturnValueOnce(pending.promise);
+    vi.stubGlobal('window', { electronAPI: { invoke } });
+
+    await initSessionList('/a');
+    await initSessionList('/b');
+    const back = initSessionList('/a');
+    expect(store.get(sessionListRootAtom).map(s => s.id)).toEqual(['a1']);
+    expect(store.get(sessionListLoadingAtom)).toBe(true);
+    pending.resolve({ success: true, sessions: [row('a1', '/a'), row('a2', '/a')] });
+    await back;
+    expect(store.get(sessionListRootAtom).map(s => s.id).sort()).toEqual(['a1', 'a2']);
+    expect(invoke).toHaveBeenCalledTimes(3);
+  });
+
+  it('keeps the visible project list when the user switches back before the other project loads', async () => {
+    const { store } = await import('@nimbalyst/runtime/store');
+    const { initSessionList, sessionListRootAtom, sessionListWorkspaceAtom } = await import('../sessions');
+    const row = (id: string, workspaceId: string) => ({ id, workspaceId, title: id, createdAt: 1, updatedAt: 1, sessionType: 'session' });
+    const slow = deferred();
+    const invoke = vi.fn(async (_channel: string, workspacePath: string) =>
+      workspacePath === '/d' && invoke.mock.calls.length === 2 ? slow.promise : { success: true, sessions: [row(`${workspacePath}1`, workspacePath)] });
+    vi.stubGlobal('window', { electronAPI: { invoke } });
+
+    await initSessionList('/c');
+    const toD = initSessionList('/d');
+    await initSessionList('/c');
+    slow.resolve({ success: true, sessions: [row('/d1', '/d')] });
+    await toD;
+    expect(store.get(sessionListWorkspaceAtom)).toBe('/c');
+    expect(store.get(sessionListRootAtom).map(s => s.id)).toEqual(['/c1']);
+
+    // The abandoned /d load must not count as initialized, or the next switch skips the fetch.
+    await initSessionList('/d');
+    expect(store.get(sessionListWorkspaceAtom)).toBe('/d');
+    expect(store.get(sessionListRootAtom).map(s => s.id)).toEqual(['/d1']);
+  });
+});

@@ -64,7 +64,7 @@ Overwhelmed and disorganized working with agents? Your agent distills what you w
 
 ## Watch the demo
 
-https://github.com/user-attachments/assets/95c89f65-98c8-461a-8429-0acefaa22c22
+https://github.com/user-attachments/assets/ee9437ab-bbeb-4f3d-9d65-78e9afe24f47
 
 <p align="center">
   <sub>The wiki in Claude Code and your browser, from installing the plugin to editing a page.</sub>
@@ -74,7 +74,7 @@ https://github.com/user-attachments/assets/95c89f65-98c8-461a-8429-0acefaa22c22
 
 ## Get started
 
-You need Node.js 22 or later on your `PATH`. You don't need the Nimbalyst app or an account.
+You need Node.js 22 or later on your `PATH`, with the npm that comes with it. You don't need the Nimbalyst app or an account.
 
 ### 1. Install the plugin
 
@@ -393,12 +393,22 @@ Two MCP servers, listed by `/mcp` in Claude Code and `codex mcp list` in Codex:
 
 | Server | What it does |
 | --- | --- |
-| `nimbalyst-local` | The local wiki and its browser view. Runs on your machine and needs nothing else installed. When you move the wiki to a team, it signs in to Nimbalyst to copy the pages. |
+| `nimbalyst-local` | The local wiki and its browser view. Runs on your machine. When you move the wiki to a team, it signs in to Nimbalyst to copy the pages. |
 | `nimbalyst-session` | Lets the agent cite what you typed in this session when it records a decision. Reads only this session's transcript, on your machine. |
 
 The team wiki's server, `nimbalyst-team`, is in a separate add-on plugin, `nimbalyst-wiki-team`, so a local wiki never asks you to sign in. `/nimbalyst-wiki:team` installs it when you share the wiki. If you used the team wiki with 0.7.0 or earlier, install the add-on once after updating.
 
 In Claude Code the plugin also adds two hooks. At the start of a session it tells the agent what the local wiki covers and which pages cover files you have changed. When a session with real work ends, it reminds the agent once to run `/nimbalyst-wiki:capture`, naming the pages the session's changes touched.
+
+The plugin itself holds no code. Both servers and both hooks run the [`@nimbalyst/cli`](https://www.npmjs.com/package/@nimbalyst/cli) package from npm through `npx`, pinned to the plugin's version, so its source is published with each release. The first session downloads it, including the browser app; later sessions use npm's cache and work offline.
+
+### What it connects to
+
+- **registry.npmjs.org**, through `npx`, to download `@nimbalyst/cli` at the plugin's version the first time, or after npm's cache is cleared. `npx` follows your npm configuration, including a company registry mirror.
+- **raw.githubusercontent.com**, at most once a day, to read the latest plugin version from this repository (see [Updating the plugin](#updating-the-plugin)).
+- **sync.nimbalyst.com** and **console.nimbalyst.com**, only for the team wiki: when you sign in, share or move the wiki to a team, or use the `nimbalyst-team` server.
+
+Your pages, your sessions and your code stay on your machine unless you move the wiki to a team.
 
 ### Which wiki the agent uses
 
@@ -453,7 +463,7 @@ A session that is already open keeps the version it started with: run `/reload-p
 
 Cursor, VS Code, Cowork, the Codex app and any other MCP agent.
 
-These agents use the wiki through `nim mcp`, the same local server the plugin bundles. Install the `nim` CLI, then add the server to your agent's MCP config:
+These agents use the wiki through `nim mcp`, the same local server the plugin runs. Install the `nim` CLI, then add the server to your agent's MCP config:
 
 ```sh
 npm install -g @nimbalyst/cli

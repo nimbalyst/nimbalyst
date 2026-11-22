@@ -27,6 +27,33 @@ object WikiDocuments {
         if (path.split('/').any { it.startsWith(".") }) return true
         return !path.lowercase().endsWith(".md")
     }
+
+    /**
+     * `.html` files sync so the editor can render the diagrams pages embed
+     * (`[Label](flow.html "height=400")`); opened on their own, the markdown
+     * editor would mangle them, so no list offers them.
+     */
+    fun isEmbedOnlyFile(relativePath: String): Boolean = relativePath.lowercase().endsWith(".html")
+
+    /**
+     * Project-relative path of the `.html` file a link in [fromRelativePath]
+     * embeds, resolved beside that file as desktop does; null for web, absolute
+     * or escaping paths and for anything that is not `.html`.
+     */
+    fun embedPath(src: String, fromRelativePath: String): String? {
+        val path = WikiFormat.link("", src.trim(' ', '\t'), null).path
+        if (!isEmbedOnlyFile(path) || path.startsWith("/") || EMBED_SCHEME.containsMatchIn(path)) return null
+        return WikiFormat.resolveLinkPath(WikiFormat.dirname(fromRelativePath), path)
+    }
+
+    /** An `.html` file shown on its own: one embed of itself, resolved beside itself. */
+    fun selfEmbedMarkdown(relativePath: String): String {
+        val name = WikiFormat.basename(relativePath)
+        val label = name.replace("[", "").replace("]", "")
+        return "[$label](<$name>)"
+    }
+
+    private val EMBED_SCHEME = Regex("^[a-z][a-z0-9+.-]*:", RegexOption.IGNORE_CASE)
 }
 
 /** Where a link tapped in the editor goes. */

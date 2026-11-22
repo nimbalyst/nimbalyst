@@ -24,10 +24,13 @@ struct DocumentListView: View {
         _searchText = searchText
     }
 
-    /// Wiki tables, the marker, sidecars and trash belong to the Wiki tab; the
-    /// editor here would only mangle them.
+    /// Wiki tables, the marker, sidecars and trash belong to the Wiki tab, and
+    /// `.html` files only back embeds; the editor here would mangle them.
     private var listedDocuments: [SyncedDocument] {
-        documents.filter { !WikiDocuments.isWikiDataFile($0.relativePath, folder: project.localWikiFolder) }
+        documents.filter {
+            !WikiDocuments.isWikiDataFile($0.relativePath, folder: project.localWikiFolder)
+                && !WikiDocuments.isEmbedOnlyFile($0.relativePath)
+        }
     }
 
     private var filteredDocuments: [SyncedDocument] {

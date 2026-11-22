@@ -74,6 +74,7 @@ const EXPECTED_NODE_TYPES = [
   'tablerow',
   'tabs',
   'text',
+  'text-color',
   'toc',
   'transclusion',
 ];

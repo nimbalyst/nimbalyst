@@ -5,7 +5,15 @@
  * Terminals are stored in a dedicated terminal store (not the AI sessions database).
  */
 
+import { BrowserWindow } from 'electron';
 import { getTerminalSessionManager } from '../services/TerminalSessionManager';
+import { getEnhancedPath } from '../services/shellEnvironment';
+import {
+  installBackendTerminalsHost,
+  stopAllBackendTerminals,
+  stopCommandTerminalForTabClose,
+  withLiveCommandTerminalStatus,
+} from '../extensions/backendTerminals';
 import { ensureClaudeCliSession, isClaudeCliInstalled } from '../services/ai/claudeCliLauncherSingleton';
 import { submitClaudeCliPromptProduction } from '../services/ai/claudeCliSubmitSingleton';
 import { switchClaudeCliModel } from '../services/ai/claudeCliModelSwitch';
@@ -19,6 +27,7 @@ import {
   createTerminalInstance,
   deleteTerminalInstance,
   getTerminalInstance,
+  insertTerminalInstance,
   listTerminals,
   setActiveTerminal,
   getActiveTerminalId,
@@ -70,6 +79,31 @@ export function registerTerminalHandlers(): void {
 
   handlersRegistered = true;
   const manager = getTerminalSessionManager();
+
+  // Command terminals that extension backend modules start
+  // (`ctx.services.terminals`) run on this same manager and tab store.
+  installBackendTerminalsHost({
+    manager,
+    store: {
+      getWorkspaceTerminalState,
+      insertTerminalInstance,
+      updateTerminalInstance,
+      deleteTerminalInstance,
+      setActiveTerminal,
+    },
+    baseEnv: () => ({
+      ...process.env,
+      PATH: getEnhancedPath(),
+      TERM: 'xterm-256color',
+      COLORTERM: 'truecolor',
+      LANG: process.env.LANG || 'en_US.UTF-8',
+    }),
+    broadcast: (channel, payload) => {
+      for (const window of BrowserWindow.getAllWindows()) {
+        if (!window.isDestroyed()) window.webContents.send(channel, payload);
+      }
+    },
+  });
 
   /**
    * Create a new terminal
@@ -230,6 +264,17 @@ export function registerTerminalHandlers(): void {
       }
       ) => {
       try {
+        // A command terminal shows one command an extension started. Its tab
+        // never gets an interactive shell: when the command is not running
+        // the tab only replays its saved output.
+        if (getTerminalInstance(options.workspacePath, terminalId)?.kind === 'command') {
+          const active = manager.isTerminalActive(terminalId);
+          if (active && options.cols && options.rows) {
+            manager.resizeTerminal(terminalId, options.cols, options.rows);
+          }
+          return { success: true, alreadyActive: true, commandRunning: active };
+        }
+
         // Check if already active
         if (manager.isTerminalActive(terminalId)) {
           if (options.cols && options.rows) {
@@ -505,7 +550,8 @@ export function registerTerminalHandlers(): void {
   safeHandle(
     'terminal:list',
     async (_event, workspacePath: string) => {
-      return listTerminals(workspacePath);
+      const live = withLiveCommandTerminalStatus(getWorkspaceTerminalState(workspacePath));
+      return listTerminals(workspacePath).map((terminal) => live.terminals[terminal.id] ?? terminal);
     }
   );
 
@@ -544,6 +590,9 @@ export function registerTerminalHandlers(): void {
   safeHandle(
     'terminal:delete',
     async (_event, workspacePath: string, terminalId: string) => {
+      // Closing a command terminal's tab stops the command, process group and
+      // all, before the PTY goes away.
+      await stopCommandTerminalForTabClose(terminalId);
       // Destroy PTY if active
       if (manager.isTerminalActive(terminalId)) {
         await manager.destroyTerminal(terminalId);
@@ -592,7 +641,7 @@ export function registerTerminalHandlers(): void {
   safeHandle(
     'terminal:get-workspace-state',
     async (_event, workspacePath: string) => {
-      return getWorkspaceTerminalState(workspacePath);
+      return withLiveCommandTerminalStatus(getWorkspaceTerminalState(workspacePath));
     }
   );
 
@@ -641,5 +690,13 @@ export function registerTerminalHandlers(): void {
  */
 export async function shutdownTerminalHandlers(): Promise<void> {
   const manager = getTerminalSessionManager();
+  // Destroying a PTY only signals its direct child. Stop extension-started
+  // commands by process group first so a dev server's children do not outlive
+  // the app holding their ports.
+  try {
+    await stopAllBackendTerminals();
+  } catch (error) {
+    console.error('[TerminalHandlers] Failed to stop extension command terminals:', error);
+  }
   await manager.destroyAllTerminals();
 }

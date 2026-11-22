@@ -9,6 +9,7 @@ import {setCodexShellTrackingHost} from '../codexAppServer/shellTracking';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
 import { PassThrough } from 'node:stream';
+import approvalCaptures from './fixtures/codexAppServerApprovals.captured.json';
 
 // IMPORTANT: mock `node:child_process` BEFORE importing the protocol so the
 // module under test picks up the stub.
@@ -28,7 +29,8 @@ vi.mock('../codexAppServer/codexAppServerBinary', () => ({
   getCodexVendorPathEntries: () => [],
 }));
 
-import { CodexAppServerProtocol } from '../CodexAppServerProtocol';
+import { CodexAppServerProtocol, type CodexAppServerHostBindings } from '../CodexAppServerProtocol';
+import { resolveCodexPermissionProfile } from '../codexPermissionProfile';
 import type { ProtocolEvent } from '../ProtocolInterface';
 
 class FakeChildProcess extends EventEmitter {
@@ -225,7 +227,7 @@ describe('CodexAppServerProtocol', () => {
     // thread/start round trip
     const startReq = await nextWrittenMatching(child, 'thread/start');
     expect((startReq.params as { sandbox: string }).sandbox).toBe('workspace-write');
-    expect((startReq.params as { approvalPolicy: string }).approvalPolicy).toBe('never');
+    expect((startReq.params as { approvalPolicy: string }).approvalPolicy).toBe('on-request');
     child.emitLine({ id: startReq.id, result: { thread: { id: 'thread-abc' } } });
 
     const session = await sessionPromise;
@@ -272,7 +274,9 @@ describe('CodexAppServerProtocol', () => {
     protocol.cleanupSession(session);
   });
 
-  it('keeps raw Allow everything on unrestricted access without reviews', async () => {
+  // #1884: under 'never' Codex rejects rm -rf even with full access; on-request
+  // routes the request to Nimbalyst, which accepts it in this mode.
+  it('runs raw Allow everything with full access, on-request approvals and no reviewer', async () => {
     const protocol = new CodexAppServerProtocol();
     const sessionPromise = protocol.createSession({
       workspacePath: '/tmp/ws',
@@ -294,13 +298,26 @@ describe('CodexAppServerProtocol', () => {
     const startReq = await nextWrittenMatching(child, 'thread/start');
     expect(startReq.params).toMatchObject({
       sandbox: 'danger-full-access',
-      approvalPolicy: 'never',
+      approvalPolicy: 'on-request',
     });
     expect(startReq.params).not.toHaveProperty('approvalsReviewer');
     child.emitLine({ id: startReq.id, result: { thread: { id: 'thread-allow-everything' } } });
 
     const session = await sessionPromise;
     protocol.cleanupSession(session);
+  });
+
+  it('maps each project mode to a Codex profile, keeping never on the legacy SDK transport', () => {
+    const appServer = { userApprovals: true };
+    expect(resolveCodexPermissionProfile('ask', false, appServer)).toEqual({ sandboxMode: 'read-only', approvalPolicy: 'on-request' });
+    expect(resolveCodexPermissionProfile('allow-all', false, appServer)).toEqual({ sandboxMode: 'workspace-write', approvalPolicy: 'on-request' });
+    expect(resolveCodexPermissionProfile('bypass-all', false, appServer)).toEqual({ sandboxMode: 'danger-full-access', approvalPolicy: 'on-request' });
+    expect(resolveCodexPermissionProfile('bypass-all', true, appServer))
+      .toEqual({ sandboxMode: 'workspace-write', approvalPolicy: 'on-request', approvalsReviewer: 'auto_review' });
+
+    const sdk = { userApprovals: false };
+    expect(resolveCodexPermissionProfile('allow-all', false, sdk)).toEqual({ sandboxMode: 'workspace-write', approvalPolicy: 'never' });
+    expect(resolveCodexPermissionProfile('bypass-all', false, sdk)).toEqual({ sandboxMode: 'danger-full-access', approvalPolicy: 'never' });
   });
 
   it('routes cleanup through the owned process-tree terminator exactly once', async () => {
@@ -835,7 +852,7 @@ describe('CodexAppServerProtocol', () => {
     expect(params.threadId).toBe('thread-resume-tools');
     expect(params.cwd).toBe('/tmp/ws');
     expect(params.sandbox).toBe('workspace-write');
-    expect(params.approvalPolicy).toBe('never');
+    expect(params.approvalPolicy).toBe('on-request');
     expect(params.developerInstructions).toBe('be helpful');
     expect(params.model).toBe('gpt-5.4');
     expect(params.config).toBeDefined();
@@ -1265,29 +1282,52 @@ describe('CodexAppServerProtocol', () => {
     protocol.cleanupSession(session);
   });
 
-  it('routes file-change approval RPCs through the host binding', async () => {
-    const approveFileChange = vi.fn().mockResolvedValue({ decision: 'denied' });
-    const protocol = new CodexAppServerProtocol({ host: { approveFileChange } });
-    const sessionPromise = protocol.createSession({ workspacePath: '/tmp/ws' });
-    const initReq = await nextWrittenMatching(child, 'initialize');
-    child.emitLine({ id: initReq.id, result: { codexHome: '/fake', platformFamily: 'unix', platformOs: 'macos', userAgent: 'fake/0' } });
-    const startReq = await nextWrittenMatching(child, 'thread/start');
-    child.emitLine({ id: startReq.id, result: { thread: { id: 't-1' } } });
-    await sessionPromise;
+  // #1884. Payloads captured from the real app-server; replies must match its v2 schema.
+  describe('approval requests', () => {
+    const captured = approvalCaptures as unknown as Record<string, Array<{ kind: string; method?: string; params?: Record<string, unknown>; item?: Record<string, unknown> }>>;
+    const capturedRequest = (name: string) => captured[name].find((e) => e.kind === 'serverRequest')!;
 
-    // Server-to-client request: file change approval.
-    child.emitLine({
-      id: 999,
-      method: 'item/fileChange/requestApproval',
-      params: { threadId: 't-1', turnId: 'turn-1', itemId: 'call_abc', changes: [] },
+    async function startSession(host?: CodexAppServerHostBindings) {
+      const protocol = new CodexAppServerProtocol({ host });
+      const sessionPromise = protocol.createSession({ workspacePath: '/tmp/ws', raw: { nimbalystSessionId: 'nim-1' } });
+      const initReq = await nextWrittenMatching(child, 'initialize');
+      child.emitLine({ id: initReq.id, result: { codexHome: '/fake', platformFamily: 'unix', platformOs: 'macos', userAgent: 'fake/0' } });
+      const startReq = await nextWrittenMatching(child, 'thread/start');
+      child.emitLine({ id: startReq.id, result: { thread: { id: 't-1' } } });
+      await sessionPromise;
+    }
+
+    async function replyTo(id: number, method: string, params: unknown) {
+      child.emitLine({ id, method, params });
+      await new Promise((r) => setTimeout(r, 20));
+      return (child.writtenLines.find((l) => (l as { id?: unknown }).id === id) as { result?: unknown } | undefined)?.result;
+    }
+
+    it('declines with v2-valid replies when no host binding is set', async () => {
+      await startSession();
+      const command = capturedRequest('write-onrequest-rm');
+      expect(await replyTo(901, command.method!, command.params)).toEqual({ decision: 'decline' });
+      const fileChange = capturedRequest('readonly-edit');
+      expect(await replyTo(902, fileChange.method!, fileChange.params)).toEqual({ decision: 'decline' });
+      expect(await replyTo(903, 'item/permissions/requestApproval', { threadId: 't-1', turnId: 'turn-1', itemId: 'p', reason: null, permissions: { network: null, fileSystem: null } }))
+        .toEqual({ permissions: {}, scope: 'turn' });
+      expect(await replyTo(904, 'execCommandApproval', {})).toEqual({ decision: { denied: { rejection: expect.any(String) } } });
     });
 
-    // Wait for the response written back by the protocol.
-    await new Promise((r) => setTimeout(r, 20));
-    const response = child.writtenLines.find((l) => (l as { id?: unknown }).id === 999);
-    expect(response).toBeDefined();
-    expect((response as { result?: { decision?: string } }).result?.decision).toBe('denied');
-    expect(approveFileChange).toHaveBeenCalledTimes(1);
+    it('passes the session and the file-change item paths to the host binding', async () => {
+      const approveFileChange = vi.fn().mockResolvedValue({ decision: 'accept' });
+      await startSession({ approveFileChange });
+      const fileChange = capturedRequest('readonly-edit');
+      const changes = [{ path: '/tmp/ws/hello.txt', kind: { type: 'add' }, diff: 'hi\n' }];
+      child.emitLine({ method: 'item/started', params: { threadId: 't-1', turnId: 'turn-1', item: { type: 'fileChange', id: fileChange.params!.itemId, changes, status: 'inProgress' } } });
+
+      expect(await replyTo(905, fileChange.method!, fileChange.params)).toEqual({ decision: 'accept' });
+      expect(approveFileChange).toHaveBeenCalledWith(fileChange.params, {
+        nimbalystSessionId: 'nim-1',
+        workspacePath: '/tmp/ws',
+        fileChanges: changes,
+      });
+    });
   });
 
   // Codex occasionally announces an MCP tool call via item/started and never

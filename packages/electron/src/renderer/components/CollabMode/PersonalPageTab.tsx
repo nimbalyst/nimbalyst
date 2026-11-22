@@ -69,9 +69,10 @@ export interface PersonalPageTabProps {
   workspacePath: string;
   /** Last-known title (the tab's), shown until the snapshot resolves. */
   fallbackTitle: string;
+  onGetContentReady?: (getContent: () => string) => void;
 }
 
-export const PersonalPageTab: React.FC<PersonalPageTabProps> = ({ documentId, workspacePath, fallbackTitle }) => {
+export const PersonalPageTab: React.FC<PersonalPageTabProps> = ({ documentId, workspacePath, fallbackTitle, onGetContentReady }) => {
   const info = usePersonalPage(workspacePath, documentId, fallbackTitle);
   const { title } = info;
   const scope = useMemo(() => getPersonalCollabHost(workspacePath).scope, [workspacePath]);
@@ -128,6 +129,7 @@ export const PersonalPageTab: React.FC<PersonalPageTabProps> = ({ documentId, wo
           className="flex min-h-0 flex-1 flex-col"
           documentHeader={documentHeader}
           onEditorReady={setEditor}
+          onGetContentReady={onGetContentReady}
         />
       ) : (
         <PersonalExtensionPageBody

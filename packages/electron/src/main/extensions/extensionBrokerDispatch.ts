@@ -23,6 +23,7 @@ import { registerBackendTools } from '../mcp/backendToolRegistry';
 import { dispatchExtensionSessionsOp } from '../services/extensionSessions/extensionSessionsService';
 import { CapabilityDeniedError } from './extensionCapabilityPolicy';
 import { setBackendPanelGutterBadge } from './backendPanelBadges';
+import { dispatchBackendTerminalsOp } from './backendTerminals';
 import type {
   BackendRuntimeContext,
   BrokerMethodName,
@@ -151,6 +152,14 @@ export async function dispatchBrokerMethod(
       // the badge is keyed and broadcast under ctx's extension and workspace.
       await setBackendPanelGutterBadge(ctx, payload.panelId, payload.value, payload.tone);
       const result: BrokerResults['panels'] = {};
+      return result;
+    }
+    case 'terminals': {
+      const payload = rawPayload as BrokerPayloads['terminals'];
+      // Scope comes from the runtime context, never from the payload.
+      const result: BrokerResults['terminals'] = {
+        result: await dispatchBackendTerminalsOp(ctx, payload.op, payload.args),
+      };
       return result;
     }
     default: {

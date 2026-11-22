@@ -124,6 +124,86 @@ describe('tool output retention pass', () => {
     expect(contentOf(db, id)).toContain('Output discarded to reclaim disk');
   });
 
+  it('resumes after startAfterId and reports the last id it examined', () => {
+    const db = makeDb();
+    const first = insert(db, {});
+    const second = insert(db, {});
+    const before = contentOf(db, first);
+
+    let result: any = null;
+    const work = createToolOutputRetentionWork(
+      { retentionDays: 30, now: () => NOW, startAfterId: first },
+      (r) => { result = r; },
+    );
+    for (let i = 0; i < 100 && !work.chunk(db).done; i++) { /* drive */ }
+
+    expect(contentOf(db, first)).toBe(before);
+    expect(result.rewritten).toBe(1);
+    expect(result.lastId).toBe(second);
+  });
+
+  it('stops at the first row still inside the window, so that row is reached once it ages', () => {
+    // Ids and timestamps do not rise together: an imported or copied row keeps
+    // its old timestamp at a new id. Advancing the cursor to that row skipped
+    // every younger row below it for good.
+    const db = makeDb();
+    const aged = insert(db, {});
+    const young = insert(db, { createdAt: RECENT });
+    const agedAtHighId = insert(db, {});
+
+    const run = (now: number, startAfterId: number) => {
+      let result: any = null;
+      const work = createToolOutputRetentionWork(
+        { retentionDays: 30, now: () => now, startAfterId },
+        (r) => { result = r; },
+      );
+      for (let i = 0; i < 100 && !work.chunk(db).done; i++) { /* drive */ }
+      return result;
+    };
+
+    const first = run(NOW, 0);
+    expect(first.lastId).toBe(aged);
+    expect(first.stoppedEarly).toBe(false);
+    expect(contentOf(db, aged)).toContain('Output discarded to reclaim disk');
+
+    const sixtyDaysLater = NOW + 60 * 24 * 60 * 60 * 1000;
+    const second = run(sixtyDaysLater, first.lastId);
+    expect(contentOf(db, young)).toContain('Output discarded to reclaim disk');
+    expect(contentOf(db, agedAtHighId)).toContain('Output discarded to reclaim disk');
+    expect(second.lastId).toBe(agedAtHighId);
+  });
+
+  it('walks past a row dated in the future instead of stopping at it forever', () => {
+    const db = makeDb();
+    insert(db, { createdAt: '2099-01-01T00:00:00.000Z' });
+    const aged = insert(db, {});
+
+    const result = runPass(db);
+
+    expect(contentOf(db, aged)).toContain('Output discarded to reclaim disk');
+    expect(result.lastId).toBe(aged);
+  });
+
+  it('tombstones codex command output under both the old meta and the new tool label', () => {
+    const db = makeDb();
+    const commandCompleted = JSON.stringify({
+      method: 'item/completed',
+      params: { item: { id: 'c1', type: 'commandExecution', command: 'ls', aggregatedOutput: BIG } },
+    });
+    const notYetBackfilled = insert(db, { source: 'openai-codex', kind: 'meta', content: commandCompleted });
+    const relabeled = insert(db, { source: 'openai-codex', kind: 'tool', content: commandCompleted });
+    // A lifecycle frame is `system` now and must never be read by this lane.
+    const lifecycle = JSON.stringify({ method: 'turn/completed', params: { usage: { blob: BIG } } });
+    const turnCompleted = insert(db, { source: 'openai-codex', kind: 'system', content: lifecycle });
+
+    const result = runPass(db);
+
+    expect(result.scanned).toBe(2);
+    expect(contentOf(db, notYetBackfilled)).toContain('Output discarded to reclaim disk');
+    expect(contentOf(db, relabeled)).toContain('Output discarded to reclaim disk');
+    expect(contentOf(db, turnCompleted)).toBe(lifecycle);
+  });
+
   it('never touches user prompts', () => {
     const db = makeDb();
     const id = insert(db, { direction: 'input', kind: 'user', content: toolResult(BIG) });

@@ -304,15 +304,16 @@ export const MonacoCodeEditor: React.FC<MonacoCodeEditorProps> = ({
     editorRef.current = editor;
     monacoRef.current = monaco;
 
-    // Disable TypeScript/JavaScript diagnostics globally
+    // Disable TypeScript/JavaScript diagnostics globally. A Monaco build without
+    // the TypeScript service (the wiki browser view) has no diagnostics to disable.
     try {
-      monaco.languages.typescript.typescriptDefaults.setDiagnosticsOptions({
+      monaco.languages.typescript?.typescriptDefaults.setDiagnosticsOptions({
         noSemanticValidation: true,
         noSyntaxValidation: true,
         noSuggestionDiagnostics: true,
       });
 
-      monaco.languages.typescript.javascriptDefaults.setDiagnosticsOptions({
+      monaco.languages.typescript?.javascriptDefaults.setDiagnosticsOptions({
         noSemanticValidation: true,
         noSyntaxValidation: true,
         noSuggestionDiagnostics: true,
@@ -417,13 +418,13 @@ export const MonacoCodeEditor: React.FC<MonacoCodeEditorProps> = ({
 
     // Disable diagnostics for diff editor too
     try {
-      monaco.languages.typescript.typescriptDefaults.setDiagnosticsOptions({
+      monaco.languages.typescript?.typescriptDefaults.setDiagnosticsOptions({
         noSemanticValidation: true,
         noSyntaxValidation: true,
         noSuggestionDiagnostics: true,
       });
 
-      monaco.languages.typescript.javascriptDefaults.setDiagnosticsOptions({
+      monaco.languages.typescript?.javascriptDefaults.setDiagnosticsOptions({
         noSemanticValidation: true,
         noSyntaxValidation: true,
         noSuggestionDiagnostics: true,

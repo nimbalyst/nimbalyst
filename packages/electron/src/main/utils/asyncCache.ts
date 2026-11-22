@@ -61,3 +61,35 @@ export function createTtlCache<K, V>(ttlMs: number): TtlCache<K, V> {
     },
   };
 }
+
+/**
+ * Like `createSingleFlight`, but every caller gets a result that STARTED after
+ * its own call. A caller arriving while a run is in flight joins one trailing
+ * run that starts when the current one settles, so a burst costs at most two
+ * runs and a refresh triggered by a write mid-run still sees that write.
+ */
+export function createTrailingSingleFlight<K, V>(): (key: K, fetcher: () => Promise<V>) => Promise<V> {
+  const running = new Map<K, Promise<V>>();
+  const trailing = new Map<K, Promise<V>>();
+
+  const start = (key: K, fetcher: () => Promise<V>): Promise<V> => {
+    const promise = fetcher().finally(() => {
+      if (running.get(key) === promise) running.delete(key);
+    });
+    running.set(key, promise);
+    return promise;
+  };
+
+  return (key: K, fetcher: () => Promise<V>): Promise<V> => {
+    const current = running.get(key);
+    if (!current) return start(key, fetcher);
+    const queued = trailing.get(key);
+    if (queued) return queued;
+    const next = current.then(() => undefined, () => undefined).then(() => {
+      trailing.delete(key);
+      return start(key, fetcher);
+    });
+    trailing.set(key, next);
+    return next;
+  };
+}

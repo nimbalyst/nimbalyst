@@ -332,7 +332,13 @@ export class CodexRawParser implements IRawMessageParser {
 
     const inBatch = this.inFlightSyntheticIds.get(rawItemId);
     if (inBatch) {
-      return inBatch;
+      // A host-created proposal can start in this parser and complete through
+      // the app-server parser. Its cached ID must not survive into the next
+      // call that reuses the raw item ID during a full transcript replay.
+      const existing = await context.findByProviderToolCallId(inBatch);
+      const status = (existing?.payload as Record<string, unknown> | undefined)?.status;
+      if (status !== 'completed' && status !== 'error') return inBatch;
+      this.inFlightSyntheticIds.delete(rawItemId);
     }
 
     try {

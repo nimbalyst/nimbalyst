@@ -14,10 +14,6 @@ process.stdin.on('end', () => {
     const p = JSON.parse(input),
       url = process.env.NIMBALYST_SHELL_HOOK_URL;
     if (!url) return;
-    const inputCommand = p.tool_name === 'Bash' ? p.tool_input?.command : undefined;
-    const command = typeof inputCommand === 'string' ? inputCommand.slice(0, 2000)
-      : Array.isArray(inputCommand) && inputCommand.every(value => typeof value === 'string')
-        ? inputCommand.join(' ').slice(0, 2000) : undefined;
     const req = http.request(url, { method: 'POST', timeout: 4500 }, (res) => {
       res.resume();
       res.on('end', () => process.stdout.write('{}'));
@@ -27,7 +23,6 @@ process.stdin.on('end', () => {
     req.end(JSON.stringify({
       event: p.hook_event_name, id: p.tool_use_id, tool: p.tool_name,
       session_id: p.session_id, turn_id: p.turn_id, agent_type: p.agent_type,
-      command,
     }));
   } catch {
     /* Missing/invalid observation is not permission to block a command. */

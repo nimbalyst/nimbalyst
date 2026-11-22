@@ -160,6 +160,22 @@ describe('answerSessionPromptForVoice', () => {
     expect(resolveVoicePromptResponse).not.toHaveBeenCalled();
   });
 
+  // #1756: voice never names the target branch, so it must not approve a commit into another worktree.
+  it('refuses to approve a commit into another worktree and leaves it open, but can still cancel it', async () => {
+    findWindowByWorkspace.mockReturnValue(makeWindow({ s1: { title: 'Commit', messages: [{
+      type: 'tool_call',
+      toolCall: {
+        toolName: 'mcp__nimbalyst__developer_git_commit_proposal', providerToolCallId: 'toolu_w', status: 'running',
+        arguments: { commitMessage: 'fix: w', filesToStage: ['a.ts'], targetWorktree: { path: '/repo_wt/feature', branch: 'feature' } },
+      },
+    }] } }));
+    const out = await answerSessionPromptForVoice(WS, 's1', 'approve');
+    expect(out).toMatchObject({ success: false, error: expect.stringMatching(/commit card on desktop/) });
+    expect(resolveVoicePromptResponse).not.toHaveBeenCalled();
+    expect((await answerSessionPromptForVoice(WS, 's1', 'no')).success).toBe(true);
+    expect(resolveVoicePromptResponse).toHaveBeenCalledWith('s1', expect.objectContaining({ response: { action: 'cancelled' } }));
+  });
+
   it('reports when there is no pending prompt to answer', async () => {
     findWindowByWorkspace.mockReturnValue(
       makeWindow({

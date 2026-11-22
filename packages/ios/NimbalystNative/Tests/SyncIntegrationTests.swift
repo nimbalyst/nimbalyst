@@ -20,6 +20,19 @@ final class SyncIntegrationTests: XCTestCase {
     }
 
     @MainActor
+    func testDeviceJoinedRefreshesExistingOfflineInventoryEntry() throws {
+        let sync = SyncManager(crypto: crypto, database: database, serverUrl: "https://invalid.example", userId: Self.userId, registerDeviceCallbacks: false)
+        var desktop: [String: Any] = ["deviceId": "desktop-1", "name": "Computer", "type": "desktop", "platform": "darwin", "connectedAt": 1, "lastActiveAt": 2, "isOnline": false]
+        sync.handleIndexMessage(try JSONSerialization.data(withJSONObject: ["type": "devicesList", "devices": [desktop]]))
+        desktop["isOnline"] = true
+        desktop["lastActiveAt"] = 3
+        sync.handleIndexMessage(try JSONSerialization.data(withJSONObject: ["type": "deviceJoined", "device": desktop]))
+        XCTAssertEqual(sync.connectedDevices.count, 1)
+        XCTAssertEqual(sync.connectedDevices.first?.isOnline, true)
+        XCTAssertEqual(sync.connectedDevices.first?.lastActiveAt, 3)
+    }
+
+    @MainActor
     func testPresenceFramesReachPickerAndMalformedRosterPreservesLastValidHosts() throws {
         let sync = SyncManager(crypto: crypto, database: database, serverUrl: "https://invalid.example", userId: Self.userId, registerDeviceCallbacks: false)
         let navigation = WorkspaceNavigationState()

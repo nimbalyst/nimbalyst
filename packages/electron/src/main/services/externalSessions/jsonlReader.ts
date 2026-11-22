@@ -16,6 +16,12 @@ export interface JsonlEntry {
   endByteOffset: number;
 }
 
+// Some Windows file IDs are rounded by numeric stat(). In that case the
+// durable cursor relies on file size and the sampled content marker.
+export function cursorInode(ino: number): number | null {
+  return Number.isSafeInteger(ino) && ino >= 0 ? ino : null;
+}
+
 export const DEFAULT_READ_BYTES = 256 * 1024;
 export const DEFAULT_LINE_BYTES = 8 * 1024 * 1024;
 export function positiveLimit(
@@ -87,7 +93,7 @@ export async function readJsonl(
     const stat = await handle.stat();
     if (!stat.isFile())
       throw new Error("External session source is not a file");
-    const inode = stat.ino;
+    const inode = cursorInode(stat.ino);
     if (
       cursor?.contentMarker !== undefined &&
       (typeof cursor.contentMarker !== "string" ||
@@ -362,7 +368,7 @@ export class AcceptedHeaderCache {
     }
     if (
       !stat?.isFile() ||
-      stat.ino !== cached.cursor.inode ||
+      cursorInode(stat.ino) !== cached.cursor.inode ||
       stat.size < cached.cursor.fileSize ||
       (stat.size === cached.cursor.fileSize &&
         stat.mtimeMs !== cached.mtimeMs) ||

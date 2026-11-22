@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-10-16T04:20:42.026Z",
+  "generatedAt": "2026-11-10T23:58:05.596Z",
   "extensions": [
     {
       "id": "com.nimbalyst.animation",
@@ -436,7 +436,7 @@
       "id": "com.nimbalyst.excalidraw",
       "name": "Excalidraw",
       "description": "Excalidraw diagram editor with AI-assisted editing",
-      "version": "1.0.4",
+      "version": "1.0.5",
       "author": "Nimbalyst",
       "categories": [
         "diagrams"
@@ -464,10 +464,10 @@
         "ai"
       ],
       "minimumAppVersion": "1.0.0",
-      "downloadUrl": "https://extensions.nimbalyst.com/dl/com.nimbalyst.excalidraw/1.0.4",
-      "checksum": "3b628683343fb238a19028350526425a6762ae88bf39fb653a98612e664a7364",
+      "downloadUrl": "https://extensions.nimbalyst.com/dl/com.nimbalyst.excalidraw/1.0.5",
+      "checksum": "be55912e7a565ff9457b74984cd30c3c98b63ac199a6a60b250001d872f9f1d1",
       "repositoryUrl": "",
-      "changelog": "1.0.4: Open shared drawings in the web console, agents can edit shared drawings without opening a tab, and embedded drawings hide editor chrome until selected.\n1.0.3: Shared drawings keep every edit.\n1.0.2: Share selected diagram elements with AI, with improved Mermaid imports and arrow labels.\n1.0.1: Shared-document collaboration fixes, Mermaid image import fix, and more reliable AI edits to open diagrams.",
+      "changelog": "1.0.5: A user who can only view or comment on a shared drawing no longer writes to it, so their session is not ended for an edit they did not make.\n1.0.4: Open shared drawings in the web console, agents can edit shared drawings without opening a tab, and embedded drawings hide editor chrome until selected.\n1.0.3: Shared drawings keep every edit.\n1.0.2: Share selected diagram elements with AI, with improved Mermaid imports and arrow labels.\n1.0.1: Shared-document collaboration fixes, Mermaid image import fix, and more reliable AI edits to open diagrams.",
       "tagline": "Hand-drawn style diagrams with AI-assisted editing",
       "longDescription": "Create architecture diagrams, flowcharts, wireframes, and freeform sketches using the Excalidraw canvas. The AI can create and modify diagrams from natural language descriptions, import Mermaid syntax, and lay out complex systems visually. Switch between the visual canvas and source mode for direct JSON editing.",
       "highlights": [
@@ -484,7 +484,7 @@
       "id": "com.nimbalyst.git",
       "name": "Git",
       "description": "Git log viewer with push, pull, and rebase support",
-      "version": "1.0.3",
+      "version": "1.0.4",
       "author": "Nimbalyst",
       "categories": [
         "developer-tools"
@@ -511,10 +511,10 @@
         "filesystem"
       ],
       "minimumAppVersion": "1.0.0",
-      "downloadUrl": "https://extensions.nimbalyst.com/dl/com.nimbalyst.git/1.0.3",
-      "checksum": "1b099a1bd209ea4f2fef4bc482d1fe0e6c8f49b1acc64725018434d1816e7bab",
+      "downloadUrl": "https://extensions.nimbalyst.com/dl/com.nimbalyst.git/1.0.4",
+      "checksum": "9db15a10e84d4e1d7d49d941fbb4de8e6e373bd8e6970914f4f2c4a45f5a6833",
       "repositoryUrl": "",
-      "changelog": "1.0.3: One flat Changes tab, per-repository git in projects that span several folders, the AI session behind each commit in the Log, running git commands shown in the title bar, and Refresh now reloads the Changes tab.\n1.0.2: Keep command output across reloads, search Git history more effectively, and group Windows paths consistently.\n1.0.1: Redesigned Changes pane with inline diff peek, per-workspace tab memory, detached-HEAD handling, and Output log fixes.",
+      "changelog": "1.0.4: The Log hover card no longer blinks while the cursor rests on it.\n1.0.3: One flat Changes tab, per-repository git in projects that span several folders, the AI session behind each commit in the Log, running git commands shown in the title bar, and Refresh now reloads the Changes tab.\n1.0.2: Keep command output across reloads, search Git history more effectively, and group Windows paths consistently.\n1.0.1: Redesigned Changes pane with inline diff peek, per-workspace tab memory, detached-HEAD handling, and Output log fixes.",
       "tagline": "Visual git log with push, pull, and branch management",
       "longDescription": "Browse your commit history in a visual log panel, inspect diffs, push and pull changes, and manage branches. Integrates into the bottom panel with a keyboard shortcut for quick access.",
       "highlights": [
@@ -757,7 +757,7 @@
       "id": "com.nimbalyst.mockuplm",
       "name": "MockupLM",
       "description": "Visual UX mockup creation with HTML/CSS for planning and design",
-      "version": "1.0.4",
+      "version": "1.0.5",
       "author": "Nimbalyst",
       "categories": [
         "diagrams"
@@ -786,10 +786,10 @@
         "ai"
       ],
       "minimumAppVersion": "1.0.0",
-      "downloadUrl": "https://extensions.nimbalyst.com/dl/com.nimbalyst.mockuplm/1.0.4",
-      "checksum": "d602b6df6a8a41b1442358e901436613233f7ef54eca0ab29456c7e0eab139e7",
+      "downloadUrl": "https://extensions.nimbalyst.com/dl/com.nimbalyst.mockuplm/1.0.5",
+      "checksum": "d2ce3f1a3fa92ac18a0a6c6c3feddb751085d59a254d745f54bf57b3b681ade3",
       "repositoryUrl": "",
-      "changelog": "1.0.4: Open shared mockups in the web console, comment on a spot in a shared mockup, and see the mockups a feedback request compares.\n1.0.3: Shared mockups keep every edit and gain a source pane. Sharing a mockup project is turned off until its screens sync.\n1.0.2: Share selected mockup screens with AI and render shared mockup links more reliably.\n1.0.1: Share to Team collaboration for mockups and projects, shared viewer and diff review fixes.",
+      "changelog": "1.0.5: A user who can only comment on a shared mockup no longer writes mockup pins, so their session is not ended when pins are collected or healed.\n1.0.4: Open shared mockups in the web console, comment on a spot in a shared mockup, and see the mockups a feedback request compares.\n1.0.3: Shared mockups keep every edit and gain a source pane. Sharing a mockup project is turned off until its screens sync.\n1.0.2: Share selected mockup screens with AI and render shared mockup links more reliably.\n1.0.1: Share to Team collaboration for mockups and projects, shared viewer and diff review fixes.",
       "tagline": "AI-generated UI mockups rendered as live HTML/CSS",
       "longDescription": "Design UI mockups by describing what you want in natural language. The AI generates complete HTML/CSS mockups that render as live previews in the editor. Iterate on designs visually or switch to source mode to hand-edit the HTML. Great for planning features, communicating designs, and rapid prototyping.",
       "highlights": [
@@ -892,7 +892,7 @@
       "id": "com.nimbalyst.planning",
       "name": "Planning",
       "description": "Structured planning and tracking with YAML frontmatter",
-      "version": "1.0.3",
+      "version": "1.0.4",
       "author": "Nimbalyst",
       "categories": [
         "ai-tools"
@@ -913,10 +913,10 @@
         "ai"
       ],
       "minimumAppVersion": "1.0.0",
-      "downloadUrl": "https://extensions.nimbalyst.com/dl/com.nimbalyst.planning/1.0.3",
-      "checksum": "4483fc3dd5a0086dd50081d27f8d6e32886cbb444715dfdce0c3128c55ba8ed3",
+      "downloadUrl": "https://extensions.nimbalyst.com/dl/com.nimbalyst.planning/1.0.4",
+      "checksum": "981476503d2ed934b0139c2d3d7efe8f0424db8d716793736a9a2024620fce8d",
       "repositoryUrl": "",
-      "changelog": "1.0.3: /implement keeps the plan checklist current as phases land, and the skill refers to the Wiki section by its new name.\n1.0.2: New /planning:nimbalyst-coach command reviews your project and recent sessions and suggests extensions, features, and agent-instruction changes.",
+      "changelog": "1.0.4: /launch-new-session nests a worker that reports back under the session that started it, and moving a session no longer appoints or messages a manager.\n1.0.3: /implement keeps the plan checklist current as phases land, and the skill refers to the Wiki section by its new name.\n1.0.2: New /planning:nimbalyst-coach command reviews your project and recent sessions and suggests extensions, features, and agent-instruction changes.",
       "tagline": "Structured plan, implement, and tracker workflows for AI sessions",
       "longDescription": "Planning adds the structured workflows behind Nimbalyst's design, implementation, and tracker commands. Use it to create plan documents, execute them with progress tracking, and manage bugs, tasks, and decisions with consistent YAML-backed structure.",
       "highlights": [

@@ -1,8 +1,9 @@
+import { usePendingFileOpen } from '../../hooks/usePendingFileOpen';
 import React, { useCallback, useEffect, useRef, useState, useImperativeHandle, forwardRef } from 'react';
 import { useSetAtom, useAtomValue, useAtom } from 'jotai';
 import type { ConfigTheme } from '@nimbalyst/runtime';
 import { asTeamJwt } from '@nimbalyst/runtime/auth/jwtScopes';
-import { useTabsActions, useTabNavigationShortcuts, type TabData } from '../../contexts/TabsContext';
+import { useActiveTabFileInfo, useTabsActions, useTabNavigationShortcuts, type TabData } from '../../contexts/TabsContext';
 import { useRepresentedFileSync } from '../../hooks/useRepresentedFileSync';
 import { store, editorDirtyAtom, makeEditorKey } from '@nimbalyst/runtime/store';
 import { fileDeletedAtomFamily } from '../../store/atoms/fileWatch';
@@ -45,6 +46,7 @@ import {
 import { refreshFileTree } from '../../store/listeners/fileTreeListeners';
 import { bindActiveFileToTabs } from '../../store/atoms/fileTree';
 import { requestConfirmation } from '../../dialogs/requestConfirmation';
+import { openFileAsWikiPage } from '../../utils/agentEditedPage';
 
 export interface EditorModeRef {
   closeActiveTab: () => void;
@@ -399,22 +401,11 @@ const EditorMode = forwardRef<EditorModeRef, EditorModeProps>(function EditorMod
   }, []); // No dependencies - uses refs for all mutable state
 
 
-  // Get current file info imperatively from tabsActions
-  // Note: This doesn't subscribe to changes - TabContent will subscribe and pass data down
-  const getCurrentFileInfo = useCallback(() => {
-    const store = tabsActions.getSnapshot();
-    if (!store.activeTabId) return { filePath: null, fileName: null };
-    const activeTab = store.tabs.get(store.activeTabId);
-    return {
-      filePath: activeTab?.filePath || null,
-      fileName: activeTab?.fileName || null
-    };
-  }, [tabsActions]);
-
-  // For effects that need current file path, we read it imperatively
-  const currentFileInfo = getCurrentFileInfo();
-  const currentFilePath = currentFileInfo.filePath;
-  const currentFileName = currentFileInfo.fileName;
+  // Subscribed, not read imperatively: the chat sidebar's "Context: <file>"
+  // indicator comes from this value, and an imperative read went stale after
+  // the last tab closed or the file was deleted (EditorMode did not re-render).
+  // Selects only path and name, so tab content and dirty changes don't re-render.
+  const { filePath: currentFilePath, fileName: currentFileName } = useActiveTabFileInfo();
 
   // Expose current document path and workspace path to window for image paste/rendering
   // __workspacePath is read by EmbedFrame, the document-link plugin and the
@@ -891,6 +882,8 @@ const EditorMode = forwardRef<EditorModeRef, EditorModeProps>(function EditorMod
     }
   }, [tabsActions]);
 
+  usePendingFileOpen(workspacePath, () => onModeChange?.('files'));
+
   // Handle workspace file selection
   // CRITICAL: Use tabsRef.current to avoid stale closure bug
   // The tabs object changes on every render, so capturing it in a useCallback
@@ -910,6 +903,12 @@ const EditorMode = forwardRef<EditorModeRef, EditorModeProps>(function EditorMod
       isInitializedRef
     });
   }, []); // No dependencies - uses refs for all mutable state
+
+  // A transcript link: a Local wiki page opens in Pages, anything else here.
+  const handleChatFileOpen = useCallback(async (filePath: string) => {
+    if (await openFileAsWikiPage(filePath, workspacePath, 'agent_tool')) return;
+    await handleWorkspaceFileSelect(filePath);
+  }, [workspacePath, handleWorkspaceFileSelect]);
 
   // Handle opening session - switches to Agent Mode since ChatSidebar manages its own single session
   const handleOpenSessionInChat = useCallback(async (sessionId: string) => {
@@ -1460,9 +1459,9 @@ const EditorMode = forwardRef<EditorModeRef, EditorModeProps>(function EditorMod
             onToggleCollapse={toggleAIChatCollapsed}
             width={aiChatWidth}
             onWidthChange={setAIChatWidth}
-            documentContext={{ filePath: currentFilePath || '' }}
+            documentContext={{ filePath: currentFilePath || '', fileName: currentFileName || undefined }}
             getDocumentContext={getDocumentContext}
-            onFileOpen={handleWorkspaceFileSelect}
+            onFileOpen={handleChatFileOpen}
             onSwitchToAgentMode={onSwitchToAgentMode ? (sid?: string) => onSwitchToAgentMode(undefined, sid) : undefined}
           />
         )}

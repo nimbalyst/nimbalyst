@@ -129,6 +129,15 @@ function baseSession(overrides: Record<string, any> = {}) {
 }
 
 describe('CollabV3 index publication gate', () => {
+  it('omits unknown recovery message counts on the v2 wire without clearing the cached count', async () => {
+    const { provider, indexSocket } = await createConnectedProvider();
+    try {
+      await publishBatch(provider, [baseSession({ messageCount: 9 })]);
+      await publishBatch(provider, [baseSession({ messageCount: 0, messageCountKnown: false })]);
+      expect(indexPackets(indexSocket).at(-1)?.session).not.toHaveProperty('messageCount');
+      expect(provider.getCachedIndexEntry?.('session-1')?.messageCount).toBe(9);
+    } finally { provider.disconnectAll(); }
+  });
   beforeEach(() => {
     vi.useFakeTimers({ toFake: ['Date'] });
     vi.setSystemTime(10000);

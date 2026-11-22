@@ -41,7 +41,13 @@ struct NimbalystAppMain: App {
 
     /// Launch with --transcript-test to show the TranscriptWebView with fake data
     /// (bypasses pairing/auth for testing transcript rendering).
-    private let isTranscriptTest = CommandLine.arguments.contains("--transcript-test")
+    private let isTranscriptTest: Bool = {
+        #if DEBUG
+        return CommandLine.arguments.contains("--transcript-test")
+        #else
+        return false
+        #endif
+    }()
 
     /// Launch with --screenshot-mode to show the app with realistic demo data
     /// for App Store screenshot capture. Combine with --screenshot-screen=<name>
@@ -75,7 +81,9 @@ struct NimbalystAppMain: App {
     var body: some Scene {
         WindowGroup {
             if isTranscriptTest {
+                #if DEBUG
                 TranscriptTestView()
+                #endif
             } else if isScreenshotMode {
                 #if DEBUG
                 ScreenshotHostView()
@@ -156,6 +164,7 @@ struct NimbalystAppMain: App {
 
 /// A standalone view that renders TranscriptWebView with hardcoded test data.
 /// Used for automated verification that the transcript bundle loads and renders.
+#if DEBUG
 #if canImport(UIKit)
 struct TranscriptTestView: View {
     private let testSession = Session(
@@ -232,4 +241,5 @@ struct TranscriptTestView: View {
         Text("Transcript test requires iOS")
     }
 }
+#endif
 #endif

@@ -28,6 +28,7 @@ import type {
   AgentMessage
 } from '@nimbalyst/runtime';
 import { filterSessionsForPersonalSync } from '@nimbalyst/runtime/sync';
+import { readSessionContextUsage } from '@nimbalyst/runtime/ai/sessionContextUsage';
 
 type PGliteLike = {
   query<T = any>(sql: string, params?: any[]): Promise<{ rows: T[] }>;
@@ -62,6 +63,27 @@ function buildSessionArchiveFilter(includeArchived: boolean, sessionAlias = 's',
 // Shared with other JSON-typed column readers; see ../utils/jsonColumn.ts
 // for the metadata-corruption postmortem.
 const normalizeJsonObject = parseJsonObjectColumn;
+
+/**
+ * The metadata keys the session list reads, projected in SQL. Selecting the
+ * whole column moved every session's blob (one row reached 993KB of task
+ * history) out of the database worker and through JSON.parse on each list
+ * refresh, which grew main to an out-of-memory abort. On SQLite this becomes
+ * `json_object(...)`; `->` keeps nested values as JSON on both backends.
+ * SQLite's `->` raises on malformed JSON text where the old JS parse yielded
+ * `{}`; every writer stores JSON.stringify or SQL JSON-function output.
+ */
+const SESSION_LIST_METADATA_KEYS = [
+  'hasUnread', 'hasPendingPrompt', 'externalSource', 'externalLastActivityAt',
+  'phase', 'tags', 'linkedTrackerItemIds', 'tokenUsage', 'userWorkstream',
+] as const;
+function sessionListMetadataSql(): string {
+  return `${buildMetadataProjectionSql('s.metadata', SESSION_LIST_METADATA_KEYS, [`'nestedHasUnread', s.metadata->'metadata'->'hasUnread'`])} AS metadata`;
+}
+/** Search reads only token usage from metadata. */
+function sessionSearchMetadataSql(): string {
+  return `${buildMetadataProjectionSql('s.metadata', ['tokenUsage'])} AS metadata`;
+}
 
 /** A metadata column SQL can merge into: absent, or a stored JSON object (not a string or array). */
 function isStoredJsonObject(value: unknown): boolean {
@@ -150,9 +172,14 @@ const SYNCED_METADATA_KEYS = [
  * safe SQLite translation, and an absent key must stay absent -- `draftInput`
  * distinguishes "" (explicit clear) from "not set".
  */
-export function buildSyncedMetadataProjectionSql(column: string): string {
-  const pairs = SYNCED_METADATA_KEYS.map((key) => `'${key}', ${column}->'${key}'`).join(', ');
+/** `jsonb_build_object` of the named top-level metadata keys; `json_object` on SQLite. */
+function buildMetadataProjectionSql(column: string, keys: readonly string[], extraPairs: readonly string[] = []): string {
+  const pairs = [...keys.map((key) => `'${key}', ${column}->'${key}'`), ...extraPairs].join(', ');
   return `jsonb_build_object(${pairs})`;
+}
+
+export function buildSyncedMetadataProjectionSql(column: string): string {
+  return buildMetadataProjectionSql(column, SYNCED_METADATA_KEYS);
 }
 
 function projectSyncedMetadata(metadata: Record<string, any> | undefined): Record<string, any> | undefined {
@@ -507,7 +534,7 @@ export function createPGLiteSessionStore(db: PGliteLike, ensureDbReady?: EnsureR
         `SELECT metadata, workspace_id FROM ai_sessions WHERE id = $1`,
         [payload.id],
       );
-      await assertSessionCreation(db, payload, existingRows[0]);
+      const createdBySessionId = await assertSessionCreation(db, payload, existingRows[0]);
       const existingMetadata = existingRows[0] ? normalizeJsonObject(existingRows[0].metadata) : null;
       if (existingMetadata && readSessionOwner(existingMetadata)) {
         createMetadata = {
@@ -566,7 +593,7 @@ export function createPGLiteSessionStore(db: PGliteLike, ensureDbReady?: EnsureR
           payload.sessionType ?? 'session',
           payload.mode ?? 'agent',
           payload.agentRole ?? 'standard',
-          payload.createdBySessionId ?? null,
+          createdBySessionId,
           payload.documentContext ?? null,
           payload.providerConfig ?? null,
           payload.providerSessionId ?? null,
@@ -766,7 +793,7 @@ export function createPGLiteSessionStore(db: PGliteLike, ensureDbReady?: EnsureR
         providerConfig: parseJsonColumn(row.provider_config) ?? undefined,
         providerSessionId: row.provider_session_id ?? undefined,
         lastReadMessageTimestamp: row.last_read_ms ? Number(row.last_read_ms) : undefined,
-        hasBeenNamed: row.has_been_named ?? false,
+        hasBeenNamed: !!row.has_been_named,
         isArchived: !!row.is_archived,
         isPinned: !!row.is_pinned,
         // Branch tracking fields - SEPARATE from hierarchical parentSessionId
@@ -826,7 +853,7 @@ export function createPGLiteSessionStore(db: PGliteLike, ensureDbReady?: EnsureR
           providerConfig: parseJsonColumn(row.provider_config) ?? undefined,
           providerSessionId: row.provider_session_id ?? undefined,
           lastReadMessageTimestamp: row.last_read_ms ? Number(row.last_read_ms) : undefined,
-          hasBeenNamed: row.has_been_named ?? false,
+          hasBeenNamed: !!row.has_been_named,
           isArchived: !!row.is_archived,
           isPinned: !!row.is_pinned,
           branchedFromSessionId: row.branched_from_session_id ?? undefined,
@@ -851,7 +878,7 @@ export function createPGLiteSessionStore(db: PGliteLike, ensureDbReady?: EnsureR
       const { rows } = await db.query<any>(
         `SELECT s.id, s.provider, s.model, s.session_type, s.mode, s.agent_role, s.created_by_session_id, s.title, s.workspace_id,
                 s.worktree_id, s.parent_session_id, s.created_at, s.updated_at, s.is_archived, s.is_pinned,
-                s.branched_from_session_id, s.branch_point_message_id, s.branched_at, s.metadata,
+                s.branched_from_session_id, s.branch_point_message_id, s.branched_at, ${sessionListMetadataSql()},
                 COALESCE(child_stats.child_count, 0) as child_count
          FROM ai_sessions s
          LEFT JOIN worktrees w ON s.worktree_id = w.id
@@ -906,7 +933,7 @@ export function createPGLiteSessionStore(db: PGliteLike, ensureDbReady?: EnsureR
           branchedFromSessionId: row.branched_from_session_id ?? undefined,
           branchPointMessageId: row.branch_point_message_id ? parseInt(row.branch_point_message_id) : undefined,
           branchedAt,
-          hasUnread: metadata.metadata?.hasUnread ?? metadata.hasUnread ?? false,
+          hasUnread: metadata.nestedHasUnread ?? metadata.hasUnread ?? false,
           // Authoritative pending-interactive-prompt bit. Written by
           // setSessionPendingPrompt() on every prompt open/resolve so the
           // sidebar indicator survives renderer reloads and reaches mobile.
@@ -917,11 +944,13 @@ export function createPGLiteSessionStore(db: PGliteLike, ensureDbReady?: EnsureR
             ? metadata.externalSource : undefined,
           externalLastActivityAt: typeof metadata.externalLastActivityAt === 'number' && Number.isFinite(metadata.externalLastActivityAt)
             ? metadata.externalLastActivityAt : undefined,
+          ...(metadata.userWorkstream === true && { userWorkstream: true }),
           // Kanban board phase and tags from metadata JSONB
           phase: metadata.phase ?? undefined,
           tags: Array.isArray(metadata.tags) ? metadata.tags : undefined,
           // Linked tracker item IDs from metadata JSONB
           linkedTrackerItemIds: Array.isArray(metadata.linkedTrackerItemIds) ? metadata.linkedTrackerItemIds : undefined,
+          contextUsage: readSessionContextUsage(metadata.tokenUsage),
         } satisfies SessionMeta & { hasPendingInteractivePrompt?: boolean; phase?: string; tags?: string[]; linkedTrackerItemIds?: string[] };
       });
       return sessions.sort((a, b) => b.updatedAt - a.updatedAt);
@@ -976,6 +1005,7 @@ export function createPGLiteSessionStore(db: PGliteLike, ensureDbReady?: EnsureR
             s.branched_from_session_id,
             s.branch_point_message_id,
             s.branched_at,
+            ${sessionSearchMetadataSql()},
             COALESCE(child_stats.child_count, 0) as child_count
           FROM ai_sessions s
           LEFT JOIN worktrees w ON s.worktree_id = w.id
@@ -1052,6 +1082,7 @@ export function createPGLiteSessionStore(db: PGliteLike, ensureDbReady?: EnsureR
           s.branched_from_session_id,
           s.branch_point_message_id,
           s.branched_at,
+          ${sessionSearchMetadataSql()},
           ts_rank_cd(to_tsvector('english', COALESCE(s.title, '')), plainto_tsquery('english', $2)) * 2 as rank,
           COALESCE(child_stats.child_count, 0) as child_count
         FROM ai_sessions s
@@ -1170,6 +1201,7 @@ export function createPGLiteSessionStore(db: PGliteLike, ensureDbReady?: EnsureR
           branchedFromSessionId: row.branched_from_session_id ?? undefined,
           branchPointMessageId: row.branch_point_message_id ? parseInt(row.branch_point_message_id) : undefined,
           branchedAt,
+          contextUsage: readSessionContextUsage(normalizeJsonObject(row.metadata).tokenUsage),
         } satisfies SessionMeta;
       });
     },

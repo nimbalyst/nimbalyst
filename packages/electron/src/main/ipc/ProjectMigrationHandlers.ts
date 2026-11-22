@@ -4,9 +4,36 @@
  * IPC handlers for project move/rename operations.
  */
 
+import { BrowserWindow } from 'electron';
 import { safeHandle } from '../utils/ipcRegistry';
-import { getProjectMigrationService } from '../services/ProjectMigrationService';
+import { getProjectMigrationService, type MovePhase } from '../services/ProjectMigrationService';
 import { logger } from '../utils/logger';
+
+/** A project move running (or just finished) in the background */
+export interface ProjectMoveJob {
+  oldPath: string;
+  newPath: string;
+  status: 'running' | 'succeeded' | 'failed';
+  phase: MovePhase | null;
+  error?: string;
+  warnings?: string[];
+}
+
+// Keyed by oldPath. Finished jobs stay until the next move of that path so a
+// Project Manager window opened after completion still sees the result.
+const moveJobs = new Map<string, ProjectMoveJob>();
+
+function broadcastMoveJob(job: ProjectMoveJob): void {
+  for (const window of BrowserWindow.getAllWindows()) {
+    if (!window.isDestroyed()) {
+      try {
+        window.webContents.send('project:move-progress', job);
+      } catch {
+        // ignore -- destroyed window
+      }
+    }
+  }
+}
 
 export function registerProjectMigrationHandlers() {
   /**
@@ -25,11 +52,15 @@ export function registerProjectMigrationHandlers() {
   });
 
   /**
-   * Move a project to a new location.
+   * Start moving a project to a new location in the background.
+   *
+   * Preconditions are checked before returning, so those errors come back
+   * here. The move itself runs after this resolves and reports through
+   * `project:move-progress` broadcasts.
    *
    * @param oldPath - Current project path
    * @param newPath - Full destination path (including project directory name)
-   * @returns MoveResult with success boolean and optional error/newPath
+   * @returns `{ started: true }`, or `{ started: false, error }`
    */
   safeHandle('project:move', async (_event, oldPath: string, newPath: string) => {
     if (!oldPath) {
@@ -39,10 +70,39 @@ export function registerProjectMigrationHandlers() {
       throw new Error('newPath is required');
     }
 
-    logger.main.info('[ProjectMigrationHandlers] Moving project:', oldPath, '->', newPath);
     const service = getProjectMigrationService();
-    return service.moveProject(oldPath, newPath);
+    const valid = await service.validateMove(oldPath, newPath);
+    if (!valid.canMove) {
+      return { started: false, error: valid.reason || 'Cannot move project' };
+    }
+
+    logger.main.info('[ProjectMigrationHandlers] Moving project in background:', oldPath, '->', newPath);
+    const job: ProjectMoveJob = { oldPath, newPath, status: 'running', phase: null };
+    moveJobs.set(oldPath, job);
+    broadcastMoveJob(job);
+
+    void service
+      .moveProject(oldPath, newPath, (phase) => {
+        job.phase = phase;
+        broadcastMoveJob({ ...job });
+      })
+      .then((result) => {
+        job.status = result.success ? 'succeeded' : 'failed';
+        job.error = result.error;
+        job.warnings = result.warnings;
+      })
+      .catch((error: any) => {
+        logger.main.error('[ProjectMigrationHandlers] Background move threw:', error);
+        job.status = 'failed';
+        job.error = error?.message || 'Failed to move project';
+      })
+      .finally(() => broadcastMoveJob({ ...job }));
+
+    return { started: true };
   });
+
+  /** Moves that are running or finished since launch, for a newly opened Project Manager */
+  safeHandle('project:move-jobs', async () => [...moveJobs.values()]);
 
   /**
    * Rename a project in place.

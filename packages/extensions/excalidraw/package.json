@@ -11,7 +11,7 @@
   "scripts": {
     "build": "vite build",
     "dev": "vite build --watch",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "node ../../../scripts/tsc-native.mjs --noEmit",
     "test": "vitest run",
     "test:watch": "vitest"
   },
@@ -26,10 +26,10 @@
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^4.2.0",
     "jsdom": "^27.4.0",
-    "typescript": "^5.3.0",
+    "typescript": "^6.0.3",
     "vite": "^7.0.0",
-    "vitest": "4.1.11",
-    "yjs": "13.6.32",
+    "vitest": "4.1.12",
+    "yjs": "13.6.33",
     "y-protocols": "^1.0.5"
   },
   "peerDependencies": {

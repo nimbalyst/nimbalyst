@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as os from 'os';
 import * as path from 'path';
@@ -14,15 +15,43 @@ vi.mock('../SyncManager', () => ({
 // shared by the mocked `database` below. Cleared per-test where it matters.
 const dbBaselineStore = vi.hoisted(() => new Map<string, {
   project_id: string; sync_id: string; content_hash: string; last_synced_mtime: number;
+  disk_hash?: string; disk_size?: number; disk_mtime?: number;
 }>());
+
+// Every path handed to the manifest hasher, so a test can count rehashes. The
+// real inline hasher still does the work.
+const hashedPaths = vi.hoisted(() => [] as string[]);
+vi.mock('../ProjectManifestHasher', async (importOriginal) => {
+  const real = await importOriginal<typeof import('../ProjectManifestHasher')>();
+  const { scanProjectSyncCandidatesInline } = await import('../sync/projectSyncScan');
+  return {
+    ...real,
+    scanProjectSyncCandidates: scanProjectSyncCandidatesInline,
+    hashProjectFiles: vi.fn(async (files: string[]) => {
+      hashedPaths.push(...files);
+      return real.__hashInlineForTests(files);
+    }),
+  };
+});
 
 vi.mock('../../database/PGLiteDatabaseWorker', () => ({
   database: {
     query: vi.fn(async (sql: string, params: any[] = []) => {
       const s = sql.trim();
+      if (s.startsWith('INSERT INTO project_file_sync_baseline') && s.includes('disk_hash')) {
+        // Stamp upsert: 8 params per row; only the stamp columns move on conflict.
+        for (let i = 0; i < params.length; i += 8) {
+          const [project_id, sync_id, content_hash, last_synced_mtime, , disk_hash, disk_size, disk_mtime] = params.slice(i, i + 8);
+          const key = `${project_id}|${sync_id}`;
+          const prev = dbBaselineStore.get(key) ?? { project_id, sync_id, content_hash, last_synced_mtime };
+          dbBaselineStore.set(key, { ...prev, disk_hash, disk_size, disk_mtime });
+        }
+        return { rows: [] };
+      }
       if (s.startsWith('INSERT INTO project_file_sync_baseline')) {
         const [project_id, sync_id, content_hash, last_synced_mtime] = params;
-        dbBaselineStore.set(`${project_id}|${sync_id}`, { project_id, sync_id, content_hash, last_synced_mtime });
+        const prev = dbBaselineStore.get(`${project_id}|${sync_id}`);
+        dbBaselineStore.set(`${project_id}|${sync_id}`, { ...prev, project_id, sync_id, content_hash, last_synced_mtime });
         return { rows: [] };
       }
       if (s.startsWith('SELECT') && s.includes('project_file_sync_baseline')) {
@@ -104,6 +133,29 @@ describe('ProjectFileSyncService.handleFileSaved', () => {
     // The new file must be discoverable by syncId so a later remote delete /
     // update from mobile can be applied to the correct local path.
     expect(cache.fileMap.get(syncId)).toBe(filePath);
+  });
+
+  it('does not push a save whose content equals the baseline, and stamps the new mtime', async () => {
+    const fsp = await import('fs/promises');
+    const filePath = path.join(tmpDir, 'same.md');
+    const syncId = syncIdFromPath('same.md');
+    await writeFile(filePath, '# Same\n', 'utf-8');
+    (service as any).projectStates.get('proj-enc').set(syncId, { syncId, contentHash: sha256('# Same\n'), lastSyncedMtime: 1 });
+
+    // A whole second: utimes takes fractional seconds, and reading a
+    // millisecond time back can land 1 ms low, so the stamp check flaked.
+    const touched = new Date(Math.floor((Date.now() + 5_000) / 1000) * 1000);
+    await fsp.utimes(filePath, touched, touched);
+    await service.handleFileSaved(filePath, tmpDir, 'proj-enc');
+
+    expect(pushFileContent).not.toHaveBeenCalled();
+    const stamp = (service as any).diskStamps.get('proj-enc').get(syncId);
+    expect(stamp).toEqual({ hash: sha256('# Same\n'), size: 7, mtime: Math.floor(touched.getTime()) });
+
+    // Changed content still pushes.
+    await writeFile(filePath, '# Changed\n', 'utf-8');
+    await service.handleFileSaved(filePath, tmpDir, 'proj-enc');
+    expect(pushFileContent).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -191,6 +243,39 @@ describe('ProjectFileSyncService remote-write conflict guard', () => {
 
     const after = await fsp.readFile(filePath, 'utf-8');
     expect(after).toBe(newContent);
+  });
+
+  it('sends a delete instead of restoring a file this desktop synced and then deleted (NIM-7587)', async () => {
+    const fsp = await import('fs/promises');
+    const deleteFile = vi.fn();
+    (service as any).provider.deleteFile = deleteFile;
+    const remoteFile = (relPath: string, content: string) => ({
+      syncId: syncIdFromPath(relPath), relativePath: relPath, title: path.basename(relPath, '.md'),
+      content, contentHash: sha256(content), lastModifiedAt: Date.now() - 60_000, hasYjs: false,
+    });
+    // Synced here, then removed with its folder (no per-file unlink reached sync).
+    const deletedRel = path.join('temptests', 'wt', 'README.md');
+    const { filePath: deletedPath, syncId: deletedId } = await seedSyncedFile(deletedRel, '# Readme\n', Date.now() - 60_000);
+    await rm(path.join(tmpDir, 'temptests'), { recursive: true, force: true });
+    // Never synced here: another device's new file still arrives.
+    const newRel = path.join('docs', 'from-phone.md');
+    // Synced here, deleted, then edited on another device: the edit wins.
+    const editedRel = path.join('docs', 'edited-elsewhere.md');
+    const { filePath: editedPath } = await seedSyncedFile(editedRel, 'before\n', Date.now() - 60_000);
+    await rm(editedPath);
+
+    await (service as any).handleSyncResponse('proj-enc', {
+      updatedFiles: [],
+      newFiles: [remoteFile(deletedRel, '# Readme\n'), remoteFile(newRel, 'hello\n'), remoteFile(editedRel, 'after\n')],
+      deletedSyncIds: [], needFromClient: [], yjsUpdates: [],
+    });
+
+    await expect(fsp.access(deletedPath)).rejects.toThrow();
+    expect(deleteFile).toHaveBeenCalledTimes(1);
+    expect(deleteFile).toHaveBeenCalledWith('proj-enc', deletedId);
+    expect((service as any).projectStates.get('proj-enc').has(deletedId)).toBe(false);
+    expect(await fsp.readFile(path.join(tmpDir, newRel), 'utf-8')).toBe('hello\n');
+    expect(await fsp.readFile(editedPath, 'utf-8')).toBe('after\n');
   });
 });
 
@@ -411,6 +496,27 @@ describe('ProjectFileSyncService.buildManifest', () => {
     expect(manifest.some((f: any) => f.syncId === syncId)).toBe(true);
   });
 
+  it('leaves out git worktrees wherever they sit, but keeps submodules and a workspace that is itself a worktree', async () => {
+    const fsp = await import('fs/promises');
+    const put = async (rel: string, content: string) => {
+      await fsp.mkdir(path.dirname(path.join(tmpDir, rel)), { recursive: true });
+      await writeFile(path.join(tmpDir, rel), content, 'utf-8');
+    };
+    await put('.git', 'gitdir: /elsewhere/repo/.git/worktrees/this-one\n');
+    await put('doc.md', '# root\n');
+    await put('.claude/worktrees/agent-1/.git', 'gitdir: /elsewhere/repo/.git/worktrees/agent-1\n');
+    await put('.claude/worktrees/agent-1/doc.md', '# copy\n');
+    await put('scratch/by-hand/.git', 'gitdir: ../../.git/worktrees/by-hand\n');
+    await put('scratch/by-hand/notes.md', '# copy\n');
+    await put('vendor/lib/.git', 'gitdir: ../../.git/modules/lib\n');
+    await put('vendor/lib/README.md', '# submodule\n');
+
+    const manifest = await (service as any).buildManifest(tmpDir, 'proj-enc', { seedBaseline: true });
+    expect(manifest.map((f: any) => f.syncId).sort()).toEqual(
+      ['doc.md', path.join('vendor', 'lib', 'README.md')].map(syncIdFromPath).sort(),
+    );
+  });
+
   it('leaves out a file whose encrypted form exceeds the server row cap, warning once (NIM-7337)', async () => {
     // 1.6 MB of plaintext is ~2.1 MB once encrypted and base64'd: over the 2 MB DO SQLite cap.
     await writeFile(path.join(tmpDir, 'huge.md'), 'x'.repeat(1_600_000), 'utf-8');
@@ -426,6 +532,58 @@ describe('ProjectFileSyncService.buildManifest', () => {
     expect((service as any).projectStates.get('proj-enc').has(syncIdFromPath('huge.md'))).toBe(false);
     expect(warn.mock.calls.filter(([msg]) => String(msg).includes('huge.md'))).toHaveLength(1);
     warn.mockRestore();
+  });
+
+  it('hashes nothing on a rebuild with unchanged files, and rehashes only a file whose mtime or size moved', async () => {
+    const fsp = await import('fs/promises');
+    const t0 = new Date(Date.now() - 60_000);
+    for (const name of ['a.md', 'b.md', 'c.md']) {
+      await writeFile(path.join(tmpDir, name), `# ${name}\n`, 'utf-8');
+      await fsp.utimes(path.join(tmpDir, name), t0, t0);
+    }
+    hashedPaths.length = 0;
+    const m1 = await (service as any).buildManifest(tmpDir, 'proj-enc', { seedBaseline: true });
+    expect(hashedPaths).toHaveLength(3);
+
+    hashedPaths.length = 0;
+    const m2 = await (service as any).buildManifest(tmpDir, 'proj-enc', { seedBaseline: false });
+    expect(hashedPaths).toEqual([]);
+    expect(m2).toEqual(m1);
+
+    // Same size, new mtime: rehashed.
+    const t1 = new Date(Date.now() - 30_000);
+    await writeFile(path.join(tmpDir, 'a.md'), '# A.md\n', 'utf-8');
+    await fsp.utimes(path.join(tmpDir, 'a.md'), t1, t1);
+    // Same mtime, new size: rehashed.
+    await writeFile(path.join(tmpDir, 'b.md'), '# b.md, longer\n', 'utf-8');
+    await fsp.utimes(path.join(tmpDir, 'b.md'), t0, t0);
+
+    hashedPaths.length = 0;
+    const m3 = await (service as any).buildManifest(tmpDir, 'proj-enc', { seedBaseline: false });
+    expect(hashedPaths.map((p) => path.basename(p)).sort()).toEqual(['a.md', 'b.md']);
+    expect(m3.find((f: any) => f.syncId === syncIdFromPath('a.md'))?.contentHash).toBe(sha256('# A.md\n'));
+    expect(m3.find((f: any) => f.syncId === syncIdFromPath('b.md'))?.contentHash).toBe(sha256('# b.md, longer\n'));
+
+    // An explicit full rehash reads everything again.
+    hashedPaths.length = 0;
+    await (service as any).buildManifest(tmpDir, 'proj-enc', { seedBaseline: false, fullRehash: true });
+    expect(hashedPaths).toHaveLength(3);
+  });
+
+  it('reuses persisted stamps after a restart', async () => {
+    dbBaselineStore.clear();
+    const fsp = await import('fs/promises');
+    const t0 = new Date(Date.now() - 60_000);
+    await writeFile(path.join(tmpDir, 'doc.md'), '# doc\n', 'utf-8');
+    await fsp.utimes(path.join(tmpDir, 'doc.md'), t0, t0);
+    await (service as any).buildManifest(tmpDir, 'proj-enc', { seedBaseline: true });
+
+    const restarted = new ProjectFileSyncService();
+    await (restarted as any).loadBaseline('proj-enc');
+    hashedPaths.length = 0;
+    const manifest = await (restarted as any).buildManifest(tmpDir, 'proj-enc', { seedBaseline: true });
+    expect(hashedPaths).toEqual([]);
+    expect(manifest[0].contentHash).toBe(sha256('# doc\n'));
   });
 });
 

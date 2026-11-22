@@ -21,7 +21,10 @@ extension SyncManager {
 
     func handleDeviceJoined(_ data: Data) {
         guard let msg = decodePresence(DeviceJoinedMessage.self, from: data, kind: "deviceJoined") else { return }
-        if !connectedDevices.contains(where: { $0.deviceId == msg.device.deviceId }) {
+        if let index = connectedDevices.firstIndex(where: { $0.deviceId == msg.device.deviceId }) {
+            // A remembered offline installation may reconnect without a full roster.
+            connectedDevices[index] = msg.device
+        } else {
             connectedDevices.append(msg.device)
         }
     }

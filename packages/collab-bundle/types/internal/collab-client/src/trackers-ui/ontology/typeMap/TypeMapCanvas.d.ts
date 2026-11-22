@@ -22,4 +22,4 @@ export interface TypeMapCanvasProps {
     }) => void;
     onHover: (selection: MapSelection) => void;
 }
-export declare const TypeMapCanvas: import("react").NamedExoticComponent<TypeMapCanvasProps>;
+export declare const TypeMapCanvas: import("react").MemoExoticComponent<({ layout, types, pairs, relationships, zoneTone, maxCount, lit, selection, onSelect, onHover }: TypeMapCanvasProps) => import("react").JSX.Element>;

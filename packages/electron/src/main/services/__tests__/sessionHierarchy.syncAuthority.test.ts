@@ -37,10 +37,10 @@ it('persists local intent with the move across store recreation and clears only 
   await store.updateMetadata('child', { parentSessionId: 'target' });
   const reopened = createPGLiteSessionStore(db);
   const [intent] = await reopened.listPendingHierarchyIntents!();
-  expect(intent).toMatchObject({ sessionId: 'child', parentSessionId: 'target', createdBySessionId: 'target', revision: expect.any(String) });
-  expect(await reopened.acknowledgeHierarchyIntent!('child', 'wrong', 'target', 'target')).toBe(false);
+  expect(intent).toMatchObject({ sessionId: 'child', parentSessionId: 'target', createdBySessionId: null, revision: expect.any(String) });
+  expect(await reopened.acknowledgeHierarchyIntent!('child', 'wrong', 'target', null)).toBe(false);
   expect(await reopened.acknowledgeHierarchyIntent!('child', intent.revision, null, null)).toBe(false);
-  expect(await reopened.acknowledgeHierarchyIntent!('child', intent.revision, 'target', 'target')).toBe(true);
+  expect(await reopened.acknowledgeHierarchyIntent!('child', intent.revision, 'target', null)).toBe(true);
   expect(await reopened.listPendingHierarchyIntents!()).toEqual([]);
 });
 
@@ -59,9 +59,9 @@ it('applies a final graph reversal atomically and protects an offline local inte
   expect(await store.listPendingHierarchyIntents!()).toEqual([]);
   await store.updateMetadata('A', { parentSessionId: 'target' });
   const stale = await store.applyRemoteHierarchySnapshot!([{ sessionId: 'A', parentSessionId: 'B', createdBySessionId: 'B' }], () => true);
-  expect(stale[0]).toMatchObject({ accepted: false, parentSessionId: 'target', createdBySessionId: 'target' });
+  expect(stale[0]).toMatchObject({ accepted: false, parentSessionId: 'target', createdBySessionId: null });
   expect(await store.listPendingHierarchyIntents!()).toHaveLength(1);
-  await store.applyRemoteHierarchySnapshot!([{ sessionId: 'A', parentSessionId: 'target', createdBySessionId: 'target' }], () => true);
+  await store.applyRemoteHierarchySnapshot!([{ sessionId: 'A', parentSessionId: 'target', createdBySessionId: null }], () => true);
   expect(await store.listPendingHierarchyIntents!()).toEqual([]);
 });
 
@@ -170,8 +170,8 @@ it('invalidates delayed wrapper sends when a confirmed local intent is followed 
   });
   const store = createSyncedSessionStore(base, { pushChange } as any, { autoConnect: false });
   await store.updateMetadata('child', { parentSessionId: 'A' });
-  await store.applyRemoteHierarchySnapshot!([{ sessionId: 'child', parentSessionId: 'A', createdBySessionId: 'A' }], () => true);
-  await store.applyRemoteHierarchySnapshot!([{ sessionId: 'child', parentSessionId: 'B', createdBySessionId: 'B' }], () => true);
+  await store.applyRemoteHierarchySnapshot!([{ sessionId: 'child', parentSessionId: 'A', createdBySessionId: null }], () => true);
+  await store.applyRemoteHierarchySnapshot!([{ sessionId: 'child', parentSessionId: 'B', createdBySessionId: null }], () => true);
   release(); await pushChange.mock.results[0].value;
   expect(sent).toEqual([]);
   expect((await store.get('child'))?.parentSessionId).toBe('B');

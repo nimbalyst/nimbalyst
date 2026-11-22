@@ -58,7 +58,8 @@ const backends: Record<string, Backend> = {
           enqueued_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
           started_at TIMESTAMPTZ,
           confirmed_sync_id BIGINT,
-          last_rejection JSONB
+          last_rejection JSONB,
+          base_sync_id BIGINT
         );
         CREATE TABLE IF NOT EXISTS tracker_items (
           id TEXT PRIMARY KEY,
@@ -269,6 +270,14 @@ describe.each(Object.entries(backends))('tracker outbox compaction (%s)', (_name
     expect(await ids(second.db)).toEqual(['a-1', 'a-2', 'b-1', 'b-2', 'b-delete']);
     expect((await second.store.loadPendingTransactions()).map(row => row.clientMutationId))
       .toEqual(['a-1', 'b-1', 'b-delete', 'a-2', 'b-2']);
+  });
+
+  it('retains the pre-edit server revision across restart for recovery-safe replay', async () => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'nim-recovery-outbox-'));
+    const first = await launch();
+    await first.store.enqueueTransaction({ clientMutationId: 'recovery-base', itemId: 'item', workspacePath: WS, state: 'queued', kind: 'delete', expectedSyncId: 41, enqueuedAt: Date.now() } as any);
+    const second = await launch();
+    expect(await second.store.loadPendingTransactions()).toMatchObject([{ clientMutationId: 'recovery-base', expectedSyncId: 41 }]);
   });
 
   it('retires older updates of the same item when the newest is acked', async () => {

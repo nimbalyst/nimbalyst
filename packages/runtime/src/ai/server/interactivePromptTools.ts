@@ -87,8 +87,13 @@ const ANSWER_RESUME_PREFIX = '[Resuming after answering a question]';
 function isHumanTurnBoundary(message: QuestionScanMessage): boolean {
   if (message.type !== 'user_message' || message.optimistic) return false;
   if (message.promptActor === 'agent' || message.promptActor === 'system') return false;
-  if (message.promptOrigin === 'interactive-question') return false;
-  return !message.text?.startsWith(ANSWER_RESUME_PREFIX);
+  return !isAnswerResumePrompt(message);
+}
+
+/** Whether a user message is the auto-resume sent after answering a question. */
+export function isAnswerResumePrompt(message: Pick<QuestionScanMessage, 'text' | 'promptOrigin'>): boolean {
+  if (message.promptOrigin === 'interactive-question') return true;
+  return !!message.text?.startsWith(ANSWER_RESUME_PREFIX);
 }
 
 /**

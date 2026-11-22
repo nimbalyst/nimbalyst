@@ -224,6 +224,24 @@ export class RendererPullRequestService {
     return unwrap(res, 'pr:open-worktree');
   }
 
+  /**
+   * Get or create the PR's local overlay item, so a session started from the
+   * panel has an item to link to. Resolves to the overlay's id.
+   */
+  async getOrCreateOverlay(
+    workspacePath: string,
+    input: { prUrl: string; title: string; status?: string; updates?: Record<string, unknown> },
+  ): Promise<{ id: string; prUrl: string; created: boolean }> {
+    const res = await requireApi().invoke('pr:overlay-get-or-create', workspacePath, input);
+    return unwrap(res, 'pr:overlay-get-or-create');
+  }
+
+  /** Sessions the panel started for this PR before it kept overlays (NIM-7657). */
+  async findReviewSessions(workspacePath: string, remote: string, number: number): Promise<string[]> {
+    const res = await requireApi().invoke('pr:find-review-sessions', workspacePath, remote, number);
+    return unwrap(res, 'pr:find-review-sessions');
+  }
+
   // ----- Per-project gh account selection -------------------
 
   async listAccounts(): Promise<Array<{ login: string; host: string; active: boolean }>> {

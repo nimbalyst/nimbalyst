@@ -1,6 +1,6 @@
 {
   "name": "@nimbalyst/extension-sdk",
-  "version": "0.7.1",
+  "version": "0.7.2",
   "description": "SDK for building Nimbalyst extensions",
   "repository": {
     "type": "git",
@@ -75,7 +75,7 @@
     "build": "tsc",
     "build:clean": "node -e \"fs.rmSync('dist',{recursive:true,force:true});fs.rmSync('.tsbuildinfo',{force:true})\" && tsc",
     "dev": "tsc --watch",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "node ../../scripts/tsc-native.mjs --noEmit",
     "prepublishOnly": "pnpm run build:clean"
   },
   "dependencies": {},
@@ -111,10 +111,10 @@
     "@types/node": "^20.0.0",
     "@types/react": "^19.2.17",
     "react": "^19.2.7",
-    "typescript": "^5.0.0",
+    "typescript": "^6.0.3",
     "vite": "^7.1.12",
     "@vitejs/plugin-react": "^5.1.2",
-    "yjs": "13.6.32",
+    "yjs": "13.6.33",
     "y-protocols": "^1.0.5"
   },
   "keywords": [

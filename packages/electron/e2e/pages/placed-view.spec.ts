@@ -63,12 +63,12 @@ const LANDSCAPE = [
 ].join('\n');
 
 async function competitorRealtime(title: string): Promise<unknown> {
-  return page.evaluate(async (wanted) => {
-    const items = await (window as any).electronAPI.invoke('document-service:tracker-items-list');
+  return page.evaluate(async ({ wanted, workspacePath }) => {
+    const items = await (window as any).electronAPI.invoke('document-service:tracker-items-list', workspacePath);
     const item = (items as Array<{ title?: string; customFields?: Record<string, unknown>; fields?: Record<string, unknown> }>)
       .find((entry) => entry.title === wanted);
     return item?.customFields?.realtime ?? item?.fields?.realtime;
-  }, title);
+  }, { wanted: title, workspacePath: workspaceDir });
 }
 
 test.beforeAll(async () => {

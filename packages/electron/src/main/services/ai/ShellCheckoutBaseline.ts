@@ -8,6 +8,11 @@ export interface CheckoutCandidate { filePath: string; fingerprint: string | nul
 export interface ShellCheckoutBaseline {
   defer(filePath: string): Promise<boolean>;
   finish(candidates: CheckoutCandidate[]): Promise<Map<string, 'edit' | 'initialization' | 'unchanged'>>;
+  /**
+   * Content at capture time: exact for a file tracked and clean then; for a
+   * dirty file, the entry of `observed` whose fingerprint matches. Undefined otherwise.
+   */
+  baselineContent?(filePath: string, observed?: readonly string[]): Promise<string | undefined>;
 }
 
 async function git(cwd: string, args: string[], deadline = Date.now() + SHELL_BASELINE_CAPTURE_MS): Promise<string> {
@@ -19,7 +24,7 @@ async function git(cwd: string, args: string[], deadline = Date.now() + SHELL_BA
     const timeout = Math.max(1, Math.floor(remaining / (attempt === 0 ? 2 : 1)));
     try {
       return await new Promise<string>((resolve, reject) => {
-        execFile('git', ['-C', cwd, ...args], { timeout, maxBuffer: 4 * 1024 * 1024, encoding: 'utf8' },
+        execFile('git', ['-C', cwd, ...args], { windowsHide: true, timeout, maxBuffer: 4 * 1024 * 1024, encoding: 'utf8' },
           (error, stdout) => error ? reject(error) : resolve(stdout));
       });
     } catch (error) {
@@ -116,6 +121,13 @@ export async function prepareShellCheckoutBaseline(workspace: string): Promise<S
       if (!revision) return false; // An unrelated nested repository is not a new worktree.
       staged.set(filePath, root);
       return true;
+    },
+    async baselineContent(filePath, observed) {
+      const root = staged.get(filePath) ?? await findRoot(path.dirname(filePath));
+      if (!root) return undefined;
+      const existing = content.get(await fs.realpath(root));
+      if (!existing) return undefined;
+      return existing.baselineContent(path.relative(root, filePath).split(path.sep).join('/'), observed);
     },
     async finish(candidates) {
       const result = new Map<string, 'edit' | 'initialization' | 'unchanged'>();

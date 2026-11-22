@@ -23,6 +23,7 @@ import { logger } from '../utils/logger';
 import { AnalyticsService } from '../services/analytics/AnalyticsService';
 import type { SessionStore } from '@nimbalyst/runtime';
 import { repositoryManager } from '../services/RepositoryManager';
+import { scheduleDatabaseRetention } from '../services/databaseRetentionMaintenance';
 import { DatabaseBackupService } from '../services/database/DatabaseBackupService';
 import { SQLiteBackupService } from '../services/database/SQLiteBackupService';
 import { createWorktreeStore } from '../services/WorktreeStore';
@@ -426,6 +427,11 @@ export async function initializeDatabase(): Promise<SessionStore> {
     const sessionStore = repositoryManager.getSessionStore();
     logger.main.info('[Database] All repositories initialized');
     acknowledgeCutover();
+    // Daily tool-output and queued-prompt retention, deferred past first-usable.
+    scheduleDatabaseRetention({
+      getToolRetentionRunner: () => sqliteDatabase,
+      queuedPromptsStore: repositoryManager.getQueuedPromptsStore(),
+    });
 
     // Finish worktree archives an earlier run left incomplete: the archive
     // consistency check, then the persisted archive queue replay. Both log

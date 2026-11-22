@@ -1,3 +1,4 @@
+// @vitest-environment node
 /**
  * Tests for searchableTextExtractor -- verifies that the per-row classifier
  * produces the same searchable text and kind the canonical parsers would
@@ -142,6 +143,37 @@ describe('searchableTextExtractor', () => {
       expect(r).toEqual({ searchableText: 'rate limit', messageKind: 'system' });
     });
 
+    it('keeps errored assistant echoes as meta, since the parser skips them', () => {
+      const r = extractSearchable({
+        source: 'claude-code',
+        direction: 'output',
+        content: JSON.stringify({
+          type: 'assistant',
+          error: 'rate_limit',
+          message: { content: [{ type: 'text', text: 'API Error' }] },
+        }),
+      });
+      expect(r).toEqual({ searchableText: null, messageKind: 'meta' });
+    });
+
+    it('keeps assistant frames with only empty thinking as meta', () => {
+      const r = extractSearchable({
+        source: 'claude-code',
+        direction: 'output',
+        content: JSON.stringify({ type: 'assistant', message: { content: [{ type: 'thinking', thinking: '' }] } }),
+      });
+      expect(r).toEqual({ searchableText: null, messageKind: 'meta' });
+    });
+
+    it('classifies a result frame without text as system', () => {
+      const r = extractSearchable({
+        source: 'claude-code',
+        direction: 'output',
+        content: JSON.stringify({ type: 'result', subtype: 'error_max_turns', num_turns: 30 }),
+      });
+      expect(r).toEqual({ searchableText: null, messageKind: 'system' });
+    });
+
     it('classifies nimbalyst_tool_use as tool', () => {
       const r = extractSearchable({
         source: 'claude-code',
@@ -212,7 +244,9 @@ describe('searchableTextExtractor', () => {
       expect(r).toEqual({ searchableText: 'streamed answer', messageKind: 'assistant' });
     });
 
-    it('classifies app-server reasoning items as meta (no assistant prose)', () => {
+    // Reasoning renders as thinking, but stays out of the index so the
+    // last-response readers never splice chain-of-thought into a reply.
+    it('classifies app-server reasoning as unindexed assistant', () => {
       const r = extractSearchable({
         source: 'openai-codex',
         direction: 'output',
@@ -221,19 +255,57 @@ describe('searchableTextExtractor', () => {
           params: { item: { type: 'reasoning', text: 'thinking out loud' } },
         }),
       });
-      expect(r).toEqual({ searchableText: null, messageKind: 'meta' });
+      expect(r).toEqual({ searchableText: null, messageKind: 'assistant' });
+    });
+  });
+
+  describe('openai-codex app-server message_kind', () => {
+    const appServer = (method: string, params: Record<string, unknown>, source = 'openai-codex') =>
+      extractSearchable({ source, direction: 'output', content: JSON.stringify({ method, params }) });
+
+    it.each([
+      ['commandExecution', { id: 'c1', type: 'commandExecution', command: 'ls', aggregatedOutput: 'a\nb' }],
+      ['mcpToolCall', { id: 'm1', type: 'mcpToolCall', server: 's', tool: 't', result: { content: [] } }],
+      ['fileChange', { id: 'f1', type: 'fileChange', changes: [] }],
+      ['generic tool-like', { id: 'w1', type: 'webSearch', query: 'q' }],
+    ])('item/completed for %s is tool', (_label, item) => {
+      expect(appServer('item/completed', { item })).toEqual({ searchableText: null, messageKind: 'tool' });
     });
 
-    it('classifies app-server turn/completed bookkeeping as meta', () => {
-      const r = extractSearchable({
-        source: 'openai-codex',
-        direction: 'output',
-        content: JSON.stringify({
-          method: 'turn/completed',
-          params: { usage: { input_tokens: 10, output_tokens: 20 } },
-        }),
-      });
-      expect(r).toEqual({ searchableText: null, messageKind: 'meta' });
+    it('item/started for a rendering tool item is tool', () => {
+      const item = { id: 'm1', type: 'mcpToolCall', server: 's', tool: 't', arguments: { big: 'x' } };
+      expect(appServer('item/started', { item }).messageKind).toBe('tool');
+    });
+
+    it('item/started for an item whose card waits for item/completed is meta', () => {
+      const item = { id: 'c1', type: 'commandExecution', command: 'ls' };
+      expect(appServer('item/started', { item }).messageKind).toBe('meta');
+    });
+
+    it.each([
+      'turn/started',
+      'turn/completed',
+      'thread/started',
+      'thread/tokenUsage/updated',
+      'account/rateLimits/updated',
+      'mcpServer/startupStatus/updated',
+      'skills/changed',
+    ])('%s is system', (method) => {
+      expect(appServer(method, {})).toEqual({ searchableText: null, messageKind: 'system' });
+    });
+
+    it('error carries its message as searchable system text', () => {
+      expect(appServer('error', { error: { message: 'stream disconnected' } }))
+        .toEqual({ searchableText: 'stream disconnected', messageKind: 'system' });
+    });
+
+    it('superseded deltas stay meta', () => {
+      expect(appServer('item/agentMessage/delta', { itemId: 'a1', delta: 'hi' }).messageKind).toBe('meta');
+    });
+
+    it('applies to every codex-shaped source', () => {
+      const item = { id: 'c1', type: 'commandExecution', aggregatedOutput: 'out' };
+      expect(appServer('item/completed', { item }, 'copilot-cli').messageKind).toBe('tool');
     });
   });
 

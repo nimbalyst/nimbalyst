@@ -11,6 +11,7 @@ import { describe, it, expect } from 'vitest';
 import { ClaudeCodeRawParser } from '../parsers/ClaudeCodeRawParser';
 import type { ParseContext, CanonicalEventDescriptor } from '../parsers/IRawMessageParser';
 import type { RawMessage } from '../TranscriptTransformer';
+import { projectRawMessagesToViewMessages } from '../projectRawMessages';
 import { stagedAttachmentRegistry } from '../../attachments/stagedAttachmentRegistry';
 
 const SESSION_ID = 'test-session';
@@ -946,6 +947,158 @@ describe('ClaudeCodeRawParser', () => {
         const descriptors = await parser.parseMessage(msg, context);
 
         expect(descriptors).toHaveLength(0);
+      });
+    });
+
+    // A saved answer must close its own card. The answer is persisted as an
+    // `ask_user_question_response` / `request_user_input_response` row keyed by
+    // the card's own id; when no live waiter wrote a tool_result for that id
+    // (session 723ddabd: the answer was routed to a different, live card) the
+    // answered card came back as open on every remount.
+    describe('question response rows', () => {
+      const askUse = (id: number, toolUseId: string, toolName = 'mcp__nimbalyst__PromptForUserInput') =>
+        makeRawMessage({
+          id,
+          content: JSON.stringify({
+            type: 'assistant',
+            message: {
+              id: `msg_${toolUseId}`,
+              role: 'assistant',
+              content: [{
+                type: 'tool_use',
+                id: toolUseId,
+                name: toolName,
+                input: toolName.endsWith('AskUserQuestion')
+                  ? { questions: [{ header: 'H', question: 'Q?', options: [{ label: 'A', description: 'a' }] }] }
+                  : { fields: [{ type: 'confirm', id: 'ok', label: 'OK?' }] },
+              }],
+            },
+          }),
+        });
+      const formResponse = (id: number, promptId: string, extra: Record<string, unknown> = {}) =>
+        makeRawMessage({
+          id,
+          source: 'nimbalyst',
+          content: JSON.stringify({
+            type: 'request_user_input_response',
+            promptId,
+            answers: { ok: { type: 'confirm', value: true } },
+            cancelled: false,
+            respondedAt: 1_000,
+            respondedBy: 'desktop',
+            ...extra,
+          }),
+        });
+      const toolResultRow = (id: number, toolUseId: string, result: string) =>
+        makeRawMessage({
+          id,
+          content: JSON.stringify({ type: 'nimbalyst_tool_result', tool_use_id: toolUseId, result }),
+        });
+      const cards = (messages: Awaited<ReturnType<typeof projectRawMessagesToViewMessages>>) =>
+        messages.filter((m) => m.type === 'tool_call');
+
+      it('closes the PromptForUserInput card the response names, and only that card', async () => {
+        const view = await projectRawMessagesToViewMessages([
+          askUse(1, 'toolu_stale'),
+          askUse(2, 'toolu_live'),
+          formResponse(3, 'toolu_stale'),
+        ], 'claude-code');
+
+        const byId = new Map(cards(view).map((m) => [m.toolCall!.providerToolCallId, m.toolCall!]));
+        expect(JSON.parse(byId.get('toolu_stale')!.result!)).toMatchObject({
+          cancelled: false,
+          answers: { ok: { type: 'confirm', value: true } },
+        });
+        expect(byId.get('toolu_live')!.result).toBeUndefined();
+      });
+
+      it('closes an AskUserQuestion card from its response row, cancelled included', async () => {
+        const view = await projectRawMessagesToViewMessages([
+          askUse(1, 'toolu_q1', 'mcp__nimbalyst__AskUserQuestion'),
+          askUse(2, 'toolu_q2', 'mcp__nimbalyst__AskUserQuestion'),
+          makeRawMessage({
+            id: 3,
+            content: JSON.stringify({ type: 'ask_user_question_response', questionId: 'toolu_q1', answers: { 'Q?': 'A' }, cancelled: false }),
+          }),
+          makeRawMessage({
+            id: 4,
+            content: JSON.stringify({ type: 'ask_user_question_response', questionId: 'toolu_q2', answers: {}, cancelled: true }),
+          }),
+        ], 'claude-code');
+
+        const [q1, q2] = cards(view).map((m) => m.toolCall!);
+        expect(JSON.parse(q1.result!)).toMatchObject({ answers: { 'Q?': 'A' }, cancelled: false });
+        expect(q1.isError).toBe(false);
+        expect(JSON.parse(q2.result!)).toMatchObject({ cancelled: true });
+        expect(q2.isError).toBe(true);
+      });
+
+      it('leaves the real tool_result in place whichever arrives first', async () => {
+        const real = JSON.stringify({ answers: { ok: { type: 'confirm', value: true } }, respondedBy: 'mobile', respondedAt: 2_000 });
+        const responseFirst = await projectRawMessagesToViewMessages([
+          askUse(1, 'toolu_a'),
+          formResponse(2, 'toolu_a'),
+          toolResultRow(3, 'toolu_a', real),
+        ], 'claude-code');
+        const resultFirst = await projectRawMessagesToViewMessages([
+          askUse(1, 'toolu_a'),
+          toolResultRow(2, 'toolu_a', real),
+          formResponse(3, 'toolu_a', { answers: { ok: { type: 'confirm', value: false } } }),
+        ], 'claude-code');
+
+        for (const view of [responseFirst, resultFirst]) {
+          expect(cards(view)).toHaveLength(1);
+          expect(cards(view)[0].toolCall!.result).toBe(real);
+        }
+      });
+
+      it('emits nothing for a card that already has a result', async () => {
+        const parser = new ClaudeCodeRawParser();
+        const context = makeContext({
+          findByProviderToolCallId: async (id) => id === 'toolu_done'
+            ? ({ id: 7, payload: { toolName: 'mcp__nimbalyst__PromptForUserInput', status: 'completed', result: '{"answers":{}}' } } as any)
+            : null,
+        });
+
+        expect(await parser.parseMessage(formResponse(1, 'toolu_done'), context)).toEqual([]);
+      });
+
+      it('closes a card whose stored result is a backgrounded acknowledgement, keeping the reason', async () => {
+        // #1341: the projector blanks this ack, so the card renders open; the
+        // answer must still close it rather than lose to the ack.
+        const parser = new ClaudeCodeRawParser();
+        const ack = 'MCP tool "nimbalyst - PromptForUserInput (MCP)" is still running after 120s. It was moved to the background as task t1 and keeps running.';
+        const context = makeContext({
+          findByProviderToolCallId: async () =>
+            ({ id: 7, payload: { toolName: 'mcp__nimbalyst__PromptForUserInput', status: 'completed', result: ack } } as any),
+        });
+
+        const [completed] = await parser.parseMessage(formResponse(1, 'toolu_bg', { answers: {}, cancelled: true, reason: 'superseded' }), context);
+
+        expect(completed).toMatchObject({ type: 'tool_call_completed', providerToolCallId: 'toolu_bg', isError: true });
+        expect(JSON.parse((completed as any).result)).toMatchObject({ cancelled: true, reason: 'superseded' });
+      });
+
+      it('never completes a tool call that is not the matching question tool', async () => {
+        const view = await projectRawMessagesToViewMessages([
+          makeRawMessage({
+            id: 1,
+            content: JSON.stringify({
+              type: 'assistant',
+              message: { id: 'msg_bash', role: 'assistant', content: [{ type: 'tool_use', id: 'toolu_bash', name: 'Bash', input: { command: 'ls' } }] },
+            }),
+          }),
+          askUse(2, 'toolu_form'),
+          formResponse(3, 'toolu_bash'),
+          makeRawMessage({
+            id: 4,
+            content: JSON.stringify({ type: 'ask_user_question_response', questionId: 'toolu_form', answers: { 'Q?': 'A' } }),
+          }),
+        ], 'claude-code');
+
+        for (const card of cards(view)) {
+          expect(card.toolCall!.result).toBeUndefined();
+        }
       });
     });
 

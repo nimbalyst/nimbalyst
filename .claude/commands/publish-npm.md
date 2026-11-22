@@ -43,12 +43,12 @@ If every group is up to date, say so and stop. With `--check`, stop here.
 
 Show the current and new version and confirm with AskUserQuestion before editing.
 
-- **cli**: set the same `version` in `packages/cli/package.json` and `packages/wiki-web/package.json`. `nim --version` comes from the CLI's package.json at build time; nothing else needs bumping.
+- **cli**: set the same `version` in `packages/cli/package.json`, `packages/wiki-web/package.json` and the four nimbalyst-wiki plugin manifests (`plugin.json` under `.claude-plugin/` and `.codex-plugin/` in `plugins/nimbalyst-wiki` and `plugins/nimbalyst-wiki-team`), then run `node scripts/build-wiki-plugin.mjs` so the plugin's `.mcp.json`, `.codex-mcp.json` and `hooks/hooks.json` pin `@nimbalyst/cli@X.Y.Z`. The plugin runs that exact CLI through npx, and `build-wiki-plugin.mjs --check` refuses a plugin and CLI on different versions. `nim --version` comes from the CLI's package.json at build time.
 - **sdk**: set `version` in `packages/extension-sdk/package.json`, add a section to `packages/extension-sdk/CHANGELOG.md` (what an extension author can now do, one line per change, from the commits in step 1), and add a row to its version table. Ask for the minimum app version if `nimbalyst.minAppVersion` should change.
 
 No entry in the root `CHANGELOG.md`: these packages release independently of the app.
 
-Commit only those files with `mcp__nimbalyst__developer_git_commit_proposal`, message `chore: release @nimbalyst/cli and @nimbalyst/wiki-web X.Y.Z` (or `chore: release @nimbalyst/extension-sdk X.Y.Z`). Then push, after asking, as in step 2.
+Commit only those files (for cli, with the regenerated plugin configs) with `mcp__nimbalyst__developer_git_commit_proposal`, message `chore: release @nimbalyst/cli and @nimbalyst/wiki-web X.Y.Z` (or `chore: release @nimbalyst/extension-sdk X.Y.Z`). Then push, after asking, as in step 2.
 
 Never create a `cli-v*` or `sdk-v*` git tag. The workflows are manual for that reason: a stray tag at the top of the repo's releases feed breaks the desktop app's update check.
 
@@ -59,10 +59,10 @@ Cheaper than a failed workflow run. For **cli**:
 ```bash
 pnpm --filter @nimbalyst/cli run typecheck && pnpm --filter @nimbalyst/cli run test
 pnpm --filter @nimbalyst/wiki-web run build      # ends with its size budget check
-node scripts/build-wiki-plugin.mjs --check       # the Claude Code plugin bundles nim mcp; it must match
+node scripts/build-wiki-plugin.mjs --check       # the plugin pins @nimbalyst/cli to its own version; they must match
 ```
 
-If the plugin check reports stale, run `pnpm build:wiki-plugin` and commit the result before publishing, so the plugin and the published CLI carry the same server.
+If the plugin check reports stale or a version mismatch, finish step 3's plugin part and commit the result before publishing, so the plugin pins the version being published.
 
 For **sdk**: `pnpm --filter @nimbalyst/extension-sdk run build`.
 
@@ -97,6 +97,6 @@ npm view @nimbalyst/cli@X.Y.Z version && npm view @nimbalyst/wiki-web@X.Y.Z vers
 npx -y @nimbalyst/cli@X.Y.Z --version
 ```
 
-The registry can take a minute to serve a new version. Report the version, the run URL, and the npm links (`https://www.npmjs.com/package/<name>/v/X.Y.Z`).
+The registry can take a few minutes to serve a new version. `npm view` can report the CLI while `npx -y --prefer-online @nimbalyst/cli@X.Y.Z --version` still fails with `ETARGET` on its pinned wiki-web; for 0.11.0 that lasted about 2.5 minutes. Wait until the npx command prints the version before staging the plugin mirror ([/ship](./ship.md)): the plugin runs that command for every user, and `stage-wiki-repo.mjs` refuses until it works. Report the version, the run URL, and the npm links (`https://www.npmjs.com/package/<name>/v/X.Y.Z`).
 
-**First publish, or an OIDC failure** (`ENEEDAUTH`, `404` on publish, "no trusted publisher"): Trusted Publishing must be configured on npmjs.com for each package, naming this repository, the workflow file and the `npm-publish` environment. A package that has never been published needs its first version published by hand before that is possible. That is the one step the user runs, because it needs their npm login and one-time password: build and pack as in step 4, then `npm publish <tarball> --access public` from outside the repo. Never add an npm token to the repository or the workflow as a workaround.
+**First publish, or an OIDC failure** (`ENEEDAUTH`, `404` on publish, "no trusted publisher"): Trusted Publishing must be configured on npmjs.com for each package, naming this repository, the workflow file and the `npm-publish` environment. A `403 ... OIDC permission denied for this action` with correct fields means the trusted publisher only allows staged publishing: tick direct publish under **Allowed actions** on that page (the default for publishers created since September 2026). A package that has never been published needs its first version published by hand before that is possible. That is the one step the user runs, because it needs their npm login and one-time password: build and pack as in step 4, then `npm publish <tarball> --access public` from outside the repo. Never add an npm token to the repository or the workflow as a workaround.

@@ -56,6 +56,9 @@ function promptFromToolCall(toolCall: any): InteractivePromptPayload | null {
         status: "pending",
         commitMessage: typeof args.commitMessage === "string" ? args.commitMessage : "",
         stagedFiles: stagedFilePaths(args.filesToStage),
+        ...(typeof args.targetWorktree?.path === "string"
+          ? { targetWorktree: { path: args.targetWorktree.path, branch: typeof args.targetWorktree.branch === "string" ? args.targetWorktree.branch : null } }
+          : {}),
       };
     default:
       return null;
