@@ -105,6 +105,8 @@ export interface TranscriptViewMessage {
 
   /** Extended-thinking content rendered by the assistant message UI as a collapsed-by-default block. */
   thinking?: string;
+  /** `thinking` is an API progress update; rendered visibly, not collapsed (#1801). */
+  progressUpdate?: boolean;
   /** Per-turn model id (Claude Code 2.1.x). */
   model?: string;
 
@@ -262,6 +264,7 @@ function projectEvent(
       base.text = event.searchableText ?? undefined;
       base.mode = p.mode;
       if (p.thinking !== undefined) base.thinking = p.thinking;
+      if (p.progressUpdate) base.progressUpdate = true;
       if (p.model !== undefined) base.model = p.model;
       break;
     }

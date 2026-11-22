@@ -10,14 +10,72 @@ import type { AgentMessagesStore } from '@nimbalyst/runtime/storage/repositories
 
 type PGliteLike = {
   query<T = any>(sql: string, params?: any[]): Promise<{ rows: T[] }>;
+  runTransaction?(statements: Array<{ sql: string; params?: any[] }>): Promise<void>;
 };
+
+type Statement = { sql: string; params: any[] };
+
+/**
+ * Run INSERT + session UPDATEs as one atomic unit.
+ *
+ * Prefer the adapter's `runTransaction`: it ships every statement to the
+ * database worker in ONE request, so the batch either committed, did not
+ * commit, or (reply lost) has an unknown outcome -- never half-written.
+ *
+ * The BEGIN/COMMIT fallback is only atomic on PGLite. On SQLite those are
+ * no-ops and each statement is its own worker request, so an INSERT can
+ * commit before a later UPDATE fails; with the queue's per-row fallback that
+ * duplicated rows (GitHub #1988 investigation reproduced 4 rows from 2
+ * inputs).
+ */
+async function writeAtomically(db: PGliteLike, statements: Statement[]): Promise<void> {
+  if (db.runTransaction) {
+    await db.runTransaction(statements);
+    return;
+  }
+  await db.query('BEGIN', []);
+  try {
+    for (const statement of statements) {
+      await db.query(statement.sql, statement.params);
+    }
+    await db.query('COMMIT', []);
+  } catch (error) {
+    try {
+      await db.query('ROLLBACK', []);
+    } catch (rollbackError) {
+      // Keep the original failure: a cleanup error (e.g. the worker already
+      // gone) must not replace the cause the caller classifies on.
+      console.warn('[PGLiteAgentMessagesStore] ROLLBACK failed after write error:', rollbackError);
+    }
+    throw error;
+  }
+}
+
+const INSERT_COLUMNS = `INSERT INTO ai_agent_messages (
+            session_id, source, direction, content, metadata, hidden, created_at, provider_message_id, searchable,
+            searchable_text, message_kind
+          )`;
+
+const UPDATE_SESSION_SQL = `UPDATE ai_sessions SET updated_at = $2, is_archived = FALSE WHERE id = $1`;
 
 type EnsureReadyFn = () => Promise<void>;
 
 export function createPGLiteAgentMessagesStore(db: PGliteLike, ensureDbReady?: EnsureReadyFn): AgentMessagesStore {
   const ensureReady = async () => {
-    if (ensureDbReady) {
+    if (!ensureDbReady) return;
+    try {
       await ensureDbReady();
+    } catch (error) {
+      // Readiness failed before any write was sent, so the write provably did
+      // not happen. Tag it so AgentMessageWriteQueue holds and retries the
+      // batch instead of discarding it (GitHub #1988). Same string as
+      // DB_REQUEST_NOT_SUBMITTED in SQLiteDatabaseProxy / AgentMessageWriteQueue.
+      const tagged = new Error(
+        `Database not ready: ${error instanceof Error ? error.message : String(error)}`,
+      ) as Error & { code?: string; cause?: unknown };
+      tagged.code = 'DB_REQUEST_NOT_SUBMITTED';
+      tagged.cause = error;
+      throw tagged;
     }
   };
 
@@ -35,18 +93,15 @@ export function createPGLiteAgentMessagesStore(db: PGliteLike, ensureDbReady?: E
         ? message.createdAt
         : new Date(message.createdAt);
 
-      // Insert the message and update the session's updated_at timestamp in one transaction
-      await db.query('BEGIN', []);
-
-      try {
-        await db.query(
-          `INSERT INTO ai_agent_messages (
-            session_id, source, direction, content, metadata, hidden, created_at, provider_message_id, searchable,
-            searchable_text, message_kind
-          ) VALUES (
+      // Insert the message and update the session's updated_at to the SAME
+      // timestamp, so local DB and sync agree. Sending a new message also
+      // unarchives the session: the user wants to continue the conversation.
+      await writeAtomically(db, [
+        {
+          sql: `${INSERT_COLUMNS} VALUES (
             $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11
           )`,
-          [
+          params: [
             message.sessionId,
             message.source,
             message.direction,
@@ -58,23 +113,10 @@ export function createPGLiteAgentMessagesStore(db: PGliteLike, ensureDbReady?: E
             message.searchable ?? false,
             message.searchableText ?? null,
             message.messageKind ?? null,
-          ]
-        );
-
-        // Update session's updated_at to SAME timestamp as message
-        // This ensures local DB and sync have identical timestamps
-        // Also unarchive the session if it was archived - sending a new message
-        // means the user wants to continue the conversation
-        await db.query(
-          `UPDATE ai_sessions SET updated_at = $2, is_archived = FALSE WHERE id = $1`,
-          [message.sessionId, timestamp]
-        );
-
-        await db.query('COMMIT', []);
-      } catch (error) {
-        await db.query('ROLLBACK', []);
-        throw error;
-      }
+          ],
+        },
+        { sql: UPDATE_SESSION_SQL, params: [message.sessionId, timestamp] },
+      ]);
     },
 
     async createMany(messages: CreateAgentMessageInput[]): Promise<void> {
@@ -126,31 +168,15 @@ export function createPGLiteAgentMessagesStore(db: PGliteLike, ensureDbReady?: E
         }
       }
 
-      await db.query('BEGIN', []);
-
-      try {
-        await db.query(
-          `INSERT INTO ai_agent_messages (
-            session_id, source, direction, content, metadata, hidden, created_at, provider_message_id, searchable,
-            searchable_text, message_kind
-          ) VALUES ${rowPlaceholders.join(', ')}`,
-          rowValues
-        );
-
-        // One UPDATE per affected session. Six concurrent sessions => six UPDATEs,
-        // not 200. The transaction is single-acquire on the writer lock.
-        for (const [sessionId, timestamp] of latestPerSession) {
-          await db.query(
-            `UPDATE ai_sessions SET updated_at = $2, is_archived = FALSE WHERE id = $1`,
-            [sessionId, timestamp]
-          );
-        }
-
-        await db.query('COMMIT', []);
-      } catch (error) {
-        await db.query('ROLLBACK', []);
-        throw error;
+      // One UPDATE per affected session. Six concurrent sessions => six UPDATEs,
+      // not 200.
+      const statements: Statement[] = [
+        { sql: `${INSERT_COLUMNS} VALUES ${rowPlaceholders.join(', ')}`, params: rowValues },
+      ];
+      for (const [sessionId, timestamp] of latestPerSession) {
+        statements.push({ sql: UPDATE_SESSION_SQL, params: [sessionId, timestamp] });
       }
+      await writeAtomically(db, statements);
     },
 
     async list(sessionId: string, options?: { limit?: number; offset?: number; includeHidden?: boolean }): Promise<AgentMessage[]> {

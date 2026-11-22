@@ -9,4 +9,4 @@ export interface TypeMapMinimapProps {
     /** Redraws the outline after the minimap reopens. */
     onShown: () => void;
 }
-export declare const TypeMapMinimap: import("react").NamedExoticComponent<TypeMapMinimapProps>;
+export declare const TypeMapMinimap: import("react").MemoExoticComponent<({ layout, types, zoneTone, viewRef, onJump, onShown }: TypeMapMinimapProps) => import("react").JSX.Element>;

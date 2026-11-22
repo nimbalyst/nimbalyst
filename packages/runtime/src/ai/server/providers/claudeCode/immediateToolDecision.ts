@@ -1,3 +1,5 @@
+import { isHookAsk } from '../../permissions/permissionPromptPolicy';
+
 export type ToolDecision = { behavior: 'allow' | 'deny'; updatedInput?: any; message?: string };
 
 interface TrustStatus {
@@ -29,7 +31,7 @@ interface ResolveImmediateToolDecisionDeps {
 interface ResolveImmediateToolDecisionParams {
   toolName: string;
   input: any;
-  options: { signal: AbortSignal; suggestions?: any[]; toolUseID?: string };
+  options: { signal: AbortSignal; suggestions?: any[]; toolUseID?: string; decisionReasonType?: string };
   sessionId: string | undefined;
   pathForTrust: string | undefined;
 }
@@ -41,8 +43,11 @@ export async function resolveImmediateToolDecision(
   params: ResolveImmediateToolDecisionParams
 ): Promise<ToolDecision | null> {
   const { toolName, input, options, sessionId, pathForTrust } = params;
+  // A PreToolUse hook "ask" always reaches the user; no shortcut answers it, not even
+  // for Nimbalyst's own tools (#1741)
+  const hookAsked = isHookAsk(options);
 
-  if (deps.internalMcpTools.includes(toolName)) {
+  if (!hookAsked && deps.internalMcpTools.includes(toolName)) {
     return { behavior: 'allow', updatedInput: input };
   }
 
@@ -53,7 +58,7 @@ export async function resolveImmediateToolDecision(
   // and skills are SDK-native; the CLI auto mode approves these without
   // prompting. Surfacing a Nimbalyst permission widget for `mcp__*` or `Skill`
   // calls would break the contract and frustrate users who chose auto mode.
-  if (deps.getCurrentMode?.() === 'auto' && (toolName.startsWith('mcp__') || toolName === 'Skill')) {
+  if (!hookAsked && deps.getCurrentMode?.() === 'auto' && (toolName.startsWith('mcp__') || toolName === 'Skill')) {
     deps.logSecurity('[canUseTool] Auto mode: auto-approving MCP/skill tool:', { toolName });
     return { behavior: 'allow', updatedInput: input };
   }
@@ -71,7 +76,7 @@ export async function resolveImmediateToolDecision(
     return deps.handleExitPlanMode(sessionId, input, options);
   }
 
-  if (deps.teamTools.includes(toolName)) {
+  if (!hookAsked && deps.teamTools.includes(toolName)) {
     if (toolName === 'TeamDelete') {
       const hasExplicitTeam =
         typeof input?.team_name === 'string' && input.team_name.trim().length > 0;
@@ -101,7 +106,7 @@ export async function resolveImmediateToolDecision(
       };
     }
 
-    if (trustStatus.mode === 'bypass-all') {
+    if (trustStatus.mode === 'bypass-all' && !hookAsked) {
       // In auto mode the SDK classifier is the decision-maker. When the
       // classifier escalates a tool call to canUseTool (uncertain / risky),
       // we must NOT short-circuit with bypass-all — that would silently
@@ -113,7 +118,7 @@ export async function resolveImmediateToolDecision(
       deps.logSecurity('[canUseTool] Auto mode: classifier escalated tool, skipping bypass-all shortcut:', { toolName });
     }
 
-    if (trustStatus.mode === 'allow-all' && ALLOW_ALL_FILE_EDIT_TOOLS.includes(toolName)) {
+    if (trustStatus.mode === 'allow-all' && !hookAsked && ALLOW_ALL_FILE_EDIT_TOOLS.includes(toolName)) {
       deps.logSecurity('[canUseTool] Allow-all mode, auto-approving file tool:', { toolName });
       return { behavior: 'allow', updatedInput: input };
     }

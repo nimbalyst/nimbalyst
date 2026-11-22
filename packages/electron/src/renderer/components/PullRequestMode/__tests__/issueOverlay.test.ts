@@ -7,6 +7,9 @@ import {
   type IssueOverlayAction,
   type IssueOverlaySeed,
 } from '../issues/issueOverlay';
+import { PR_OVERLAY_TYPE, planPrReviewOverlayWrite, resolveReviewStatus, resolveStartedStatus } from '../prOverlay';
+import { loadBuiltinTrackers } from '@nimbalyst/runtime/plugins/TrackerPlugin/models/ModelLoader';
+import { globalRegistry } from '@nimbalyst/tracker-schema';
 
 const SEED: IssueOverlaySeed = {
   issueUrl: 'https://github.com/nimbalyst/nimbalyst/issues/1187',
@@ -145,5 +148,63 @@ describe('github-issue overlay writes', () => {
     expect(plan('set-status', { status: 'ready' }, [adoptedBug])).toMatchObject({
       kind: 'create',
     });
+  });
+});
+
+describe('github-pr review overlay writes', () => {
+  const prRecord = (status: string) =>
+    record({ id: 'gp_1', primaryType: PR_OVERLAY_TYPE, typeTags: [PR_OVERLAY_TYPE], fields: { status } });
+
+  it('reads the review status from the active schema and never reopens a finished PR', () => {
+    loadBuiltinTrackers();
+    globalRegistry.clearWorkspaceSchema(PR_OVERLAY_TYPE);
+    expect(resolveReviewStatus()).toBe('reviewing');
+    expect(planPrReviewOverlayWrite(null, 'reviewing')).toEqual({ status: 'reviewing' });
+    expect(planPrReviewOverlayWrite(prRecord('to-review'), 'reviewing')).toEqual({ updates: { status: 'reviewing' } });
+    expect(planPrReviewOverlayWrite(prRecord('merged'), 'reviewing')).toEqual({});
+    expect(planPrReviewOverlayWrite(prRecord('closed'), 'reviewing')).toEqual({});
+
+    // A workspace triage schema with uncategorised statuses (this repo's).
+    const builtin = globalRegistry.get(PR_OVERLAY_TYPE)!;
+    globalRegistry.register({
+      ...builtin,
+      fields: builtin.fields.map((field) => field.name !== 'status' ? field : {
+        ...field,
+        default: 'backlog',
+        options: ['backlog', 'inspecting', 'needs-review', 'complete'].map((value) => ({ value, label: value })),
+      }),
+    });
+    try {
+      expect(resolveReviewStatus()).toBe('inspecting');
+      expect(planPrReviewOverlayWrite(prRecord('backlog'), 'inspecting')).toEqual({ updates: { status: 'inspecting' } });
+      expect(planPrReviewOverlayWrite(prRecord('complete'), 'inspecting')).toEqual({});
+    } finally {
+      globalRegistry.clearWorkspaceSchema(PR_OVERLAY_TYPE);
+    }
+  });
+});
+
+describe('github-issue investigate status', () => {
+  it('uses investigating from the builtin and leaves a triage-only schema alone', () => {
+    loadBuiltinTrackers();
+    globalRegistry.clearWorkspaceSchema(ISSUE_OVERLAY_TYPE);
+    const names = ['investigating', 'in-progress'];
+    expect(resolveStartedStatus(ISSUE_OVERLAY_TYPE, names)).toBe('investigating');
+
+    // This repo's triage schema has no investigating status and categorises none.
+    const builtin = globalRegistry.get(ISSUE_OVERLAY_TYPE)!;
+    globalRegistry.register({
+      ...builtin,
+      fields: builtin.fields.map((field) => field.name !== 'status' ? field : {
+        ...field,
+        default: 'needs-triage',
+        options: ['needs-triage', 'keep-accept', 'close-fixed', 'needs-info'].map((value) => ({ value, label: value })),
+      }),
+    });
+    try {
+      expect(resolveStartedStatus(ISSUE_OVERLAY_TYPE, names)).toBeUndefined();
+    } finally {
+      globalRegistry.clearWorkspaceSchema(ISSUE_OVERLAY_TYPE);
+    }
   });
 });

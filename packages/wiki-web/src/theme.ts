@@ -18,14 +18,27 @@ function apply(isDark: boolean): void {
 
 const themeListeners = new Set<(theme: 'dark' | 'light') => void>();
 
-/** Applies the theme before the first paint and follows the system setting after. */
+/** The reader's choice from the theme toggle; null follows the system. Kept for this tab only. */
+let chosen: 'dark' | 'light' | null = null;
+
+function applyAndNotify(isDark: boolean): void {
+  apply(isDark);
+  for (const listener of [...themeListeners]) listener(isDark ? 'dark' : 'light');
+}
+
+/** Applies the theme before the first paint and follows the system setting after, until the reader picks one. */
 export function initializeTheme(): void {
   const query = window.matchMedia('(prefers-color-scheme: dark)');
   apply(query.matches);
   query.addEventListener('change', (event) => {
-    apply(event.matches);
-    for (const listener of [...themeListeners]) listener(event.matches ? 'dark' : 'light');
+    if (chosen === null) applyAndNotify(event.matches);
   });
+}
+
+/** The theme toggle: light or dark from now on in this tab, editors included. */
+export function setTheme(theme: 'dark' | 'light'): void {
+  chosen = theme;
+  applyAndNotify(theme === 'dark');
 }
 
 /** The theme name extension editors are given (`host.theme`). */

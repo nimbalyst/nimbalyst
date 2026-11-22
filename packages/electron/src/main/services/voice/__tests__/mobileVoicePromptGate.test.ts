@@ -46,6 +46,12 @@ describe("exact mobile voice prompt answers", () => {
       exactVoiceResponse({ ...prompt, status: "resolved" }, "yes")
     ).toThrow(/no longer/);
   });
+  // #1756: voice never names the target branch, so it must not approve a commit into another worktree.
+  it("refuses to approve a commit into another worktree but can still cancel it", () => {
+    const worktree = { ...prompt, targetWorktree: { path: "/repo_wt/feature", branch: "feature" } };
+    expect(() => exactVoiceResponse(worktree, "approve")).toThrow(/commit card on desktop/);
+    expect(exactVoiceResponse(worktree, "cancel")).toMatchObject({ response: { action: "cancelled" } });
+  });
   it("requires same generation, source, exact version, playback receipt and unexpired lease", async () => {
     const records = new Map<string, VoicePromptLease>();
     let now = 0;

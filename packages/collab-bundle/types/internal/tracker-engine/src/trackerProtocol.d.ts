@@ -215,6 +215,8 @@ export type TrackerTransactionState = 'pendingApply' | 'created' | 'queued' | 'e
  * these; the renderer never touches them directly.
  */
 export interface TrackerTransactionRow {
+    /** Captured before the optimistic edit, retained across retries and restart. */
+    expectedSyncId?: number;
     /** Stable client-minted UUID. Echoed back in `TrackerMutationAckMessage`. */
     clientMutationId: string;
     /** Item this transaction operates on. */

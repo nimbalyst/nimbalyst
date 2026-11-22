@@ -5,26 +5,40 @@
  */
 
 import type { TaskListItem } from './taskListReconstruct';
+import { persistedTasks, pruneFinishedTasks, type TrackedSystemTask } from './systemTaskChunks';
 
 async function sessionsRepository() {
   const { AISessionsRepository } = await import('../../../../storage/repositories/AISessionsRepository');
   return AISessionsRepository;
 }
 
-/** Marks tasks persisted as 'running' by an earlier process as stopped. */
+/**
+ * Writes the task list. Only the `currentTasks` key is sent: the store merges
+ * it in SQL, so the session row is neither read nor rewritten here.
+ */
+export async function persistCurrentTasks(sessionId: string, tasks: Map<string, TrackedSystemTask>, onChanged: () => void): Promise<void> {
+  pruneFinishedTasks(tasks);
+  try {
+    const AISessionsRepository = await sessionsRepository();
+    await AISessionsRepository.updateMetadata(sessionId, { metadata: { currentTasks: persistedTasks(tasks.values()) } });
+    onChanged();
+  } catch (error) {
+    console.error('[CLAUDE-CODE] Failed to update session metadata with tasks:', error);
+  }
+}
+
+/** Marks tasks persisted as 'running' by an earlier process as stopped, and applies the retention bound. */
 export async function stopStaleRunningTasks(sessionId: string, onChanged: () => void): Promise<void> {
   try {
     const AISessionsRepository = await sessionsRepository();
     const currentSession = await AISessionsRepository.get(sessionId);
     const tasks = currentSession?.metadata?.currentTasks;
     if (Array.isArray(tasks) && tasks.some((t: any) => t.status === 'running')) {
-      const cleaned = tasks.map((t: any) =>
-        t.status === 'running' ? { ...t, status: 'stopped' } : t
-      );
-      await AISessionsRepository.updateMetadata(sessionId, {
-        metadata: { ...currentSession?.metadata, currentTasks: cleaned }
-      });
-      onChanged();
+      const cleaned = new Map<string, TrackedSystemTask>();
+      for (const t of tasks) {
+        if (t && typeof t.taskId === 'string') cleaned.set(t.taskId, t.status === 'running' ? { ...t, status: 'stopped' } : t);
+      }
+      await persistCurrentTasks(sessionId, cleaned, onChanged);
     }
   } catch {
     // Non-critical cleanup

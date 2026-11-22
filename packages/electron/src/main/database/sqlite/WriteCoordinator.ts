@@ -140,6 +140,19 @@ export class WriteCoordinator {
     }
   }
 
+  /**
+   * Run an observer hook or log call. They fire after the work has committed,
+   * so a throwing one must not reject the work or, inside the flush timer,
+   * leave `flushPromise` unresolved and stall every later write (#1810).
+   */
+  private observe(fn: () => void): void {
+    try {
+      fn();
+    } catch {
+      // Diagnostics only.
+    }
+  }
+
   private scheduleFlush(): void {
     if (this.flushScheduled) return;
     this.flushScheduled = true;
@@ -229,7 +242,7 @@ export class WriteCoordinator {
 
     this.flushing = false;
     const durationMs = performance.now() - t0;
-    this.onBatch?.({ batchSize: batch.length, durationMs, fsynced });
+    this.observe(() => this.onBatch?.({ batchSize: batch.length, durationMs, fsynced }));
 
     // If new writes arrived during this synchronous flush, schedule another.
     if (this.pending.length > 0) this.scheduleFlush();
@@ -260,13 +273,13 @@ export class WriteCoordinator {
           throw err;
         }
         const durationMs = performance.now() - chunkStart;
-        this.onChunk?.({ name: work.name, durationMs, chunkIndex });
+        this.observe(() => this.onChunk?.({ name: work.name, durationMs, chunkIndex }));
         if (durationMs > this.slowChunkWarnMs) {
-          this.onSlowChunk?.({ name: work.name, durationMs, chunkIndex });
-          this.log(
+          this.observe(() => this.onSlowChunk?.({ name: work.name, durationMs, chunkIndex }));
+          this.observe(() => this.log(
             'warn',
             `[WriteCoordinator] bg-lane chunk ${work.name}#${chunkIndex} ran ${durationMs.toFixed(1)}ms without yielding; consider a smaller chunkSize`,
-          );
+          ));
         }
         chunkIndex += 1;
         // outcome is assigned synchronously inside the transaction above.

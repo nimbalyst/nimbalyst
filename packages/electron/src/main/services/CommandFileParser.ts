@@ -176,7 +176,7 @@ export function parseCommandFile(
     }
 
     // Parse frontmatter and content
-    const { frontmatter, body } = parseFrontmatter(content);
+    const { frontmatter, body } = parseFrontmatter(content, filePath);
 
     return {
       name: commandName,
@@ -209,7 +209,7 @@ export function parseSkillFile(
 ): SlashCommand | null {
   try {
     const content = fs.readFileSync(filePath, 'utf-8');
-    const { frontmatter, body } = parseFrontmatter(content);
+    const { frontmatter, body } = parseFrontmatter(content, filePath);
 
     // Prefer explicit skill name from frontmatter, then fall back to the skill directory path.
     const fallbackName = deriveSkillFallbackName(filePath, relativePath);
@@ -250,7 +250,7 @@ export function parseSkillFile(
  * @param content Markdown content with optional frontmatter
  * @returns Parsed frontmatter and body content
  */
-function parseFrontmatter(content: string): { frontmatter: CommandFrontmatter; body: string } {
+function parseFrontmatter(content: string, filePath: string): { frontmatter: CommandFrontmatter; body: string } {
   const frontmatterRegex = /^---\s*\n([\s\S]*?)\n---\s*\n([\s\S]*)$/;
   const match = content.match(frontmatterRegex);
 
@@ -272,7 +272,15 @@ function parseFrontmatter(content: string): { frontmatter: CommandFrontmatter; b
       body
     };
   } catch (error) {
-    console.error('[CommandFileParser] Error parsing YAML frontmatter:', error);
+    if (error instanceof yaml.YAMLException) {
+      // Invalid user-authored YAML is actionable input feedback, not a runtime crash.
+      const location = error.mark
+        ? ` (line ${error.mark.line + 2}, column ${error.mark.column + 1})`
+        : '';
+      console.warn(`[CommandFileParser] Invalid YAML frontmatter in ${filePath}: ${error.reason}${location}`);
+    } else {
+      throw error;
+    }
     // Return content as body if frontmatter parsing fails
     return {
       frontmatter: {},

@@ -14,6 +14,7 @@ const mocks = vi.hoisted(() => {
     notifyWorkspaceUsageChanged: vi.fn(),
     startWorkspaceWatcher: vi.fn(),
     stopWorkspaceWatcher: vi.fn(),
+    stopProjectFileSync: vi.fn(),
     setFileSystemService: vi.fn(),
     clearFileSystemService: vi.fn(),
     setFileSystemServiceFor: vi.fn(),
@@ -28,6 +29,10 @@ const mocks = vi.hoisted(() => {
     getMcpConfigService: vi.fn(() => ({ stopWatchingWorkspaceConfig: vi.fn() })),
     restoreNavigationState: vi.fn(),
     fakeBrowserWindowId: 1,
+    windows: new Map<number, any>(),
+    openWorkspaceWindow: vi.fn().mockResolvedValue({ success: true }),
+    cursor: { x: 0, y: 0 },
+    windowBounds: [] as Array<{ x: number; y: number; width: number; height: number }>,
   };
 });
 
@@ -40,6 +45,7 @@ vi.mock('../../utils/ipcRegistry', () => ({
 vi.mock('../../file/WorkspaceWatcher.ts', () => ({
   startWorkspaceWatcher: mocks.startWorkspaceWatcher,
   stopWorkspaceWatcher: mocks.stopWorkspaceWatcher,
+  stopProjectFileSync: mocks.stopProjectFileSync,
 }));
 
 vi.mock('@nimbalyst/runtime', () => ({
@@ -72,8 +78,14 @@ vi.mock('../../window/WindowManager', () => ({
   getWindowId: (window: any) => window?.id ?? null,
 }));
 
+vi.mock('../../window/WorkspaceManagerWindow', () => ({
+  openWorkspaceWindow: mocks.openWorkspaceWindow,
+}));
+
 vi.mock('../../window/windowState', () => ({
   windowStates: mocks.windowStates,
+  windows: mocks.windows,
+  getWindowIdForWindow: (window: any) => window?.id ?? null,
   resolveActiveWorkspacePath: (state: WindowState | undefined) => {
     if (!state) return null;
     return state.activeWorkspacePath ?? state.workspacePath;
@@ -123,7 +135,14 @@ vi.mock('../../services/ElectronFileSystemService', () => ({
 vi.mock('electron', () => ({
   BrowserWindow: {
     fromWebContents: () => ({ id: mocks.fakeBrowserWindowId }),
+    getAllWindows: () => mocks.windowBounds.map(bounds => ({
+      isDestroyed: () => false,
+      isVisible: () => true,
+      isMinimized: () => false,
+      getBounds: () => bounds,
+    })),
   },
+  screen: { getCursorScreenPoint: () => mocks.cursor },
 }));
 
 vi.mock('../../file/GitWatcherLifecycle', () => ({ notifyWorkspaceUsageChanged: mocks.notifyWorkspaceUsageChanged, pruneUnusedGitWatchers: vi.fn().mockResolvedValue(undefined), releaseWhenWorkspaceUnused: (path: string, release: () => void) => { if (![...mocks.windowStates.values()].some(s => s.workspacePath === path || s.additionalWorkspacePaths?.includes(path))) release(); } }));
@@ -170,6 +189,7 @@ describe('MultiProjectRailHandlers', () => {
     mocks.windowStates.clear();
     mocks.startWorkspaceWatcher.mockReset();
     mocks.stopWorkspaceWatcher.mockReset();
+    mocks.stopProjectFileSync.mockReset();
     mocks.notifyWorkspaceUsageChanged.mockReset();
     mocks.setFileSystemService.mockReset();
     mocks.clearFileSystemService.mockReset();
@@ -254,7 +274,9 @@ describe('MultiProjectRailHandlers', () => {
       const result = await invoke('workspace:set-active', { workspacePath: '/ws/b' }, 1);
 
       expect(result).toMatchObject({ success: true });
-      expect(mocks.stopWorkspaceWatcher).toHaveBeenCalledWith(1);
+      // Doc sync for /ws/a stays connected: the project is still open in the rail,
+      // and restarting it rescans every synced file on each switch.
+      expect(mocks.stopWorkspaceWatcher).toHaveBeenCalledWith(1, { keepProjectFileSync: true });
       expect(mocks.startWorkspaceWatcher).toHaveBeenCalledWith(expect.anything(), '/ws/b');
       expect(mocks.setFileSystemService).toHaveBeenCalledTimes(1);
       expect(mocks.windowStates.get(1)?.activeWorkspacePath).toBe('/ws/b');
@@ -319,6 +341,7 @@ describe('MultiProjectRailHandlers', () => {
 
       expect(mocks.documentServices.has('/ws/warm')).toBe(true);
       expect(mocks.fileSystemServices.has('/ws/warm')).toBe(true);
+      expect(mocks.stopProjectFileSync).not.toHaveBeenCalled();
     });
 
     it('does not stop the watcher when the closed path was not active', async () => {
@@ -340,9 +363,70 @@ describe('MultiProjectRailHandlers', () => {
 
       await invoke('workspace:unregister-additional', { workspacePath: '/ws/warm' }, 1);
 
-      expect(mocks.stopWorkspaceWatcher).toHaveBeenCalledWith(1);
+      expect(mocks.stopWorkspaceWatcher).toHaveBeenCalledWith(1, { keepProjectFileSync: true });
       expect(mocks.clearFileSystemService).toHaveBeenCalled();
       expect(mocks.windowStates.get(1)?.activeWorkspacePath).toBeNull();
+      expect(mocks.stopProjectFileSync).toHaveBeenCalledWith('/ws/warm');
+    });
+  });
+
+  describe('dragging a rail project between windows', () => {
+    const sourceSend = vi.fn();
+
+    beforeEach(() => {
+      sourceSend.mockReset();
+      mocks.openWorkspaceWindow.mockClear();
+      mocks.windows.clear();
+      mocks.windows.set(1, { isDestroyed: () => false, webContents: { send: sourceSend } });
+      mocks.windowBounds = [{ x: 0, y: 0, width: 800, height: 600 }, { x: 900, y: 0, width: 800, height: 600 }];
+    });
+
+    it('releases the project from the source window when another window receives it', async () => {
+      await invoke('workspace:rail-drag-start', { workspacePath: '/ws/b' }, 1);
+      // The source's drag end can arrive before the target's report; it must not consume the drag.
+      mocks.cursor = { x: 1000, y: 100 };
+      await invoke('workspace:rail-drag-end', { workspacePath: '/ws/b', dropEffect: 'move', isOnlyProject: false }, 1);
+      const result = await invoke('workspace:rail-drag-received', { workspacePath: '/ws/b' }, 2);
+
+      expect(result).toMatchObject({ success: true });
+      expect(sourceSend).toHaveBeenCalledWith('workspace:rail-release-project', { workspacePath: '/ws/b' });
+      expect(mocks.openWorkspaceWindow).not.toHaveBeenCalled();
+    });
+
+    it('ignores a drop report from the window the drag started in', async () => {
+      await invoke('workspace:rail-drag-start', { workspacePath: '/ws/b' }, 1);
+      const result = await invoke('workspace:rail-drag-received', { workspacePath: '/ws/b' }, 1);
+
+      expect(result).toMatchObject({ success: false });
+      expect(sourceSend).not.toHaveBeenCalled();
+    });
+
+    it('tears the project off into a new window at the cursor when dropped outside every window', async () => {
+      mocks.cursor = { x: 850, y: 700 };
+      await invoke('workspace:rail-drag-start', { workspacePath: '/ws/b' }, 1);
+      const result = await invoke('workspace:rail-drag-end', { workspacePath: '/ws/b', dropEffect: 'none', isOnlyProject: false }, 1);
+
+      expect(result).toMatchObject({ success: true, action: 'torn-off' });
+      expect(mocks.openWorkspaceWindow).toHaveBeenCalledWith('/ws/b', { forceNewWindow: true, position: { x: 850, y: 700 } });
+      expect(sourceSend).toHaveBeenCalledWith('workspace:rail-release-project', { workspacePath: '/ws/b' });
+    });
+
+    it('keeps the project when a cancelled drag ends over a window', async () => {
+      mocks.cursor = { x: 400, y: 300 };
+      await invoke('workspace:rail-drag-start', { workspacePath: '/ws/b' }, 1);
+      await invoke('workspace:rail-drag-end', { workspacePath: '/ws/b', dropEffect: 'none', isOnlyProject: false }, 1);
+
+      expect(mocks.openWorkspaceWindow).not.toHaveBeenCalled();
+      expect(sourceSend).not.toHaveBeenCalled();
+    });
+
+    it('does not tear off the only project in a window', async () => {
+      mocks.cursor = { x: 850, y: 700 };
+      await invoke('workspace:rail-drag-start', { workspacePath: '/ws/b' }, 1);
+      await invoke('workspace:rail-drag-end', { workspacePath: '/ws/b', dropEffect: 'none', isOnlyProject: true }, 1);
+
+      expect(mocks.openWorkspaceWindow).not.toHaveBeenCalled();
+      expect(sourceSend).not.toHaveBeenCalled();
     });
   });
 });

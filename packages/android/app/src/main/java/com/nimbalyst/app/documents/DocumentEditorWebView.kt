@@ -11,12 +11,14 @@ import android.webkit.RenderProcessGoneDetail
 import android.webkit.WebChromeClient
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import com.google.gson.Gson
 import com.nimbalyst.app.R
 import com.nimbalyst.app.transcript.TranscriptExternalLinks
+import java.io.ByteArrayInputStream
 import java.net.URI
 
 /** Messages the editor bundle posts through `window.AndroidEditorBridge.postMessage(json)`. */
@@ -28,6 +30,8 @@ sealed interface EditorBridgeMessage {
     data class Error(val message: String) : EditorBridgeMessage
     /** A link tapped in the document; native decides where it goes ([DocumentEditorLinks.classifyHref]). */
     data class LinkClicked(val href: String, val title: String?) : EditorBridgeMessage
+    /** The text of an embedded `.html` file, [src] as written in the link; answer with [EditorCommands.embedFileResult]. */
+    data class ReadEmbedFile(val requestId: Long, val src: String) : EditorBridgeMessage
 
     companion object {
         private const val BENIGN_RESIZE_OBSERVER = "ResizeObserver loop completed with undelivered notifications."
@@ -47,6 +51,11 @@ sealed interface EditorBridgeMessage {
                     if (BENIGN_RESIZE_OBSERVER in message) null else Error(message)
                 }
                 "linkClicked" -> json.optString("href")?.takeIf { it.isNotEmpty() }?.let { LinkClicked(it, json.optString("title")) }
+                "readEmbedFile" -> {
+                    val requestId = json.get("requestId")?.takeIf { it.isJsonPrimitive && it.asJsonPrimitive.isNumber }?.asLong
+                    val src = json.optString("src")
+                    if (requestId != null && src != null) ReadEmbedFile(requestId, src) else null
+                }
                 else -> null
             }
         }
@@ -55,10 +64,21 @@ sealed interface EditorBridgeMessage {
 
 enum class EditorLinkAction { ALLOW_IN_WEBVIEW, OPEN_EXTERNALLY, BLOCK }
 
-/** Navigation policy: the WebView may only show the bundled editor; web and mail links leave the app. */
+/**
+ * Navigation policy: the WebView may only show the bundled editor; web and mail
+ * links leave the app. The one other page it loads is the `.html` embed sandbox
+ * shell, in a subframe, served by [embedShellResponse].
+ */
 object DocumentEditorLinks {
     const val EDITOR_ASSET_DIR = "/android_asset/editor-dist/"
     const val EDITOR_URL = "file:///android_asset/editor-dist/editor.html"
+    /** Never resolves (`.invalid`): the request is answered in `shouldInterceptRequest`. */
+    const val EMBED_SHELL_URL = "https://nimbalyst-embed.invalid/shell"
+
+    fun isEmbedShellUrl(url: String?): Boolean {
+        val uri = url?.let { runCatching { URI(it) }.getOrNull() } ?: return false
+        return uri.scheme == "https" && uri.host == "nimbalyst-embed.invalid" && uri.rawPath == "/shell"
+    }
 
     fun classify(url: String?): EditorLinkAction {
         val scheme = url?.substringBefore(':', missingDelimiterValue = "")?.lowercase()
@@ -101,6 +121,12 @@ object EditorCommands {
     const val FINAL_CONTENT = "window.nimbalystEditor ? window.nimbalystEditor.finalContent() : null"
     fun setReadOnly(readOnly: Boolean) = "window.nimbalystEditor && window.nimbalystEditor.setReadOnly($readOnly)"
     fun formatText(format: EditorFormat) = "window.nimbalystEditor && window.nimbalystEditor.formatText(${gson.toJson(format.command)})"
+    /** The answer to [EditorBridgeMessage.ReadEmbedFile]: the file's text, or null and why it is unavailable. */
+    fun embedFileResult(requestId: Long, content: String?, error: String?) = if (content != null) {
+        "window.nimbalystEditor && window.nimbalystEditor.embedFileResult($requestId, ${gson.toJson(content)})"
+    } else {
+        "window.nimbalystEditor && window.nimbalystEditor.embedFileResult($requestId, null, ${gson.toJson(error ?: "File not found")})"
+    }
 
     /** `evaluateJavascript` hands back the result JSON-encoded; null when the editor is not mounted. */
     fun decodeContent(result: String?): String? =
@@ -112,6 +138,21 @@ enum class EditorFormat(val command: String) {
     ITALIC("italic"),
     CODE("code"),
     STRIKETHROUGH("strikethrough"),
+}
+
+/**
+ * The HTML embed sandbox shell for a request to [DocumentEditorLinks.EMBED_SHELL_URL],
+ * with its Content-Security-Policy as a response header (a `<meta>` CSP cannot
+ * carry the `sandbox` directive); null for any other URL. [read] opens an APK
+ * asset; both files come from the editor bundle build (`vite.config.editor.ts`),
+ * generated from the shell in `@nimbalyst/collab-protocol` that desktop serves.
+ */
+internal fun embedShellResponse(url: String?, read: (assetPath: String) -> ByteArray?): WebResourceResponse? {
+    if (!DocumentEditorLinks.isEmbedShellUrl(url)) return null
+    val html = read("editor-dist/html-embed-shell.html") ?: return null
+    val csp = read("editor-dist/html-embed-shell.csp")?.decodeToString()?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+    val headers = mapOf("Content-Security-Policy" to csp, "Cache-Control" to "no-store")
+    return WebResourceResponse("text/html", "utf-8", 200, "OK", headers, ByteArrayInputStream(html))
 }
 
 /** The `@JavascriptInterface` object; decodes off the JS thread and delivers on the main thread. */
@@ -159,9 +200,13 @@ private fun WebView.configureForEditor(
     layoutParams = ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
     setBackgroundColor(android.graphics.Color.rgb(0x1A, 0x1A, 0x1A))
     webChromeClient = WebChromeClient()
+    val assets = context.applicationContext.assets
     webViewClient = object : WebViewClient() {
         override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
             val url = request.url?.toString()
+            // An embed's sandbox frame loads the shell; links inside it reach
+            // native through the bundle (`linkClicked`), never as navigations.
+            if (!request.isForMainFrame && DocumentEditorLinks.isEmbedShellUrl(url)) return false
             return when (DocumentEditorLinks.classify(url)) {
                 EditorLinkAction.ALLOW_IN_WEBVIEW -> false
                 EditorLinkAction.BLOCK -> true
@@ -169,6 +214,14 @@ private fun WebView.configureForEditor(
                     if (url != null) TranscriptExternalLinks.open(view.context, url)
                     true
                 }
+            }
+        }
+
+        override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? {
+            if (request.isForMainFrame) return null
+            // Called off the main thread: the asset manager is captured, not read from the view.
+            return embedShellResponse(request.url?.toString()) { path ->
+                runCatching { assets.open(path).use { it.readBytes() } }.getOrNull()
             }
         }
 

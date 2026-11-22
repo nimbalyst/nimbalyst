@@ -4,7 +4,9 @@ import { AgentMessagesRepository } from "@nimbalyst/runtime/storage/repositories
 import { logger } from "../../utils/logger";
 import { TrayManager } from "../../tray/TrayManager";
 import {
+  findGitCommitProposalWorktreeTarget,
   getGitCommitProposalResponseChannel,
+  loadGitCommitProposalRecord,
   resolveGitCommitProposalPromptId,
 } from "./gitCommitProposalPromptUtils";
 import { getGitSubprocessEnv } from "../gitEnv";
@@ -24,6 +26,11 @@ import {
   cancelCommitProposalOnce,
   acceptsCommitProposalResponse,
 } from "./CommitProposalExecution";
+import {
+  assertFilesInProposalRecord,
+  explainProposalCommitFailure,
+  proposalHasOtherSessionFiles,
+} from "./proposalCommitTarget";
 
 const log = logger.ai;
 interface GitCommitResponse {
@@ -150,6 +157,26 @@ export async function handleGitCommitResponse(
     return await emitProposalResponse({ action: "cancelled" });
   }
 
+  // #1756: a sibling-worktree commit is approved in the desktop widget, which
+  // shows its branch and path. Answer mobile without closing the proposal.
+  if (await findGitCommitProposalWorktreeTarget(sessionId, canonicalPromptId).catch(() => null)) {
+    return {
+      action: "error",
+      error: "This commit targets another worktree. Approve it in the Nimbalyst desktop app.",
+    };
+  }
+
+  // #1955 (D-A2): files edited only by another session arrive unchecked in the
+  // desktop widget. The phone cannot show that, so approval happens on desktop;
+  // the proposal stays open there. Files are never silently dropped.
+  const proposalRecord = await loadGitCommitProposalRecord(sessionId, canonicalPromptId).catch(() => null);
+  if (proposalHasOtherSessionFiles(proposalRecord)) {
+    return {
+      action: "error",
+      error: "This commit includes files another session edited. Review it in the Nimbalyst desktop app.",
+    };
+  }
+
   // For 'committed' action, we need to execute the git commit on desktop
   if (!response.files || !response.message) {
     log.error("GitCommit response missing files or message");
@@ -204,6 +231,16 @@ export async function handleGitCommitResponse(
       }
     }
 
+    // #1955: the phone may only commit files this proposal listed.
+    try {
+      if (!proposalRecord) throw new Error("Cannot find this commit proposal. Refresh the session before answering.");
+      assertFilesInProposalRecord(proposalRecord, response.files, workspacePath);
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      log.warn("[GitCommit mobile] Refused:", detail);
+      return await emitProposalResponse({ action: "error", error: detail });
+    }
+
     // Across-repos, not `executeGitCommit`: the single-repo path makes any file
     // outside `workspacePath` throw 'File is outside the repository', which
     // failed the WHOLE commit -- including the files that were committable.
@@ -228,7 +265,9 @@ export async function handleGitCommitResponse(
     );
     return await emitProposalResponse(
       createGitCommitProposalResponse(
-        commitResult,
+        commitResult.success
+          ? commitResult
+          : { ...commitResult, error: explainProposalCommitFailure(commitResult.error) },
         response.files,
         response.message
       )

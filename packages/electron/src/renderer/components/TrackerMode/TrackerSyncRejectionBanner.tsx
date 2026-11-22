@@ -10,6 +10,9 @@
  * - `custodyUnavailable`: the server could not load the team DEK -- the
  *   organization's encryption was never migrated to server-managed
  *   custody, so writes are refused. Persistent until dismissed.
+ * - `recoveryConflict`: an edit queued before organization recovery was
+ *   refused so it cannot overwrite restored content. It stays in local
+ *   transaction history, not in the item. Persistent until dismissed.
  * - `rotationLocked` (legacy, old servers only): team is mid-rotation;
  *   writes will resume in a moment. Auto-clears 30s after the last event.
  * - `staleKeyEpoch` (legacy, old servers only) with `refreshKey -> null`:
@@ -53,7 +56,7 @@ export const TrackerSyncRejectionBanner: React.FC<TrackerSyncRejectionBannerProp
   // (mutation-rejected is broadcast to all windows). A user with multiple
   // workspaces open shouldn't see a peer workspace's banner.
   const active = useMemo(() => {
-    const candidates = [state.custodyUnavailable, state.staleKeyEpoch, state.rotationLocked].filter(
+    const candidates = [state.custodyUnavailable, state.recoveryConflict, state.staleKeyEpoch, state.rotationLocked].filter(
       (r): r is NonNullable<typeof r> => r != null && (!workspacePath || r.workspacePath === workspacePath),
     );
     if (candidates.length === 0) return null;
@@ -61,6 +64,8 @@ export const TrackerSyncRejectionBanner: React.FC<TrackerSyncRejectionBannerProp
     // action and won't disappear on their own; rotationLocked auto-clears.
     const custody = candidates.find((r) => r.code === 'custodyUnavailable');
     if (custody) return custody;
+    const recovery = candidates.find((r) => r.code === 'recoveryConflict');
+    if (recovery) return recovery;
     const stale = candidates.find((r) => r.code === 'staleKeyEpoch');
     if (stale) return stale;
     return candidates[0];
@@ -118,6 +123,7 @@ export const TrackerSyncRejectionBanner: React.FC<TrackerSyncRejectionBannerProp
 
   const isRotation = active.code === 'rotationLocked';
   const isCustodyUnavailable = active.code === 'custodyUnavailable';
+  const isRecoveryConflict = active.code === 'recoveryConflict';
 
   return (
     <div
@@ -131,6 +137,13 @@ export const TrackerSyncRejectionBanner: React.FC<TrackerSyncRejectionBannerProp
           <MaterialSymbol icon="key_off" size={16} className="text-nim-warning" />
           <span className="flex-1">
             This organization's encryption isn't migrated, so your changes can't sync. Ask an organization admin to finish setting up the organization.
+          </span>
+        </>
+      ) : isRecoveryConflict ? (
+        <>
+          <MaterialSymbol icon="history" size={16} className="text-nim-warning" />
+          <span className="flex-1">
+            An edit made before this organization was recovered wasn't applied. Reopen the item and make the change again.
           </span>
         </>
       ) : isRotation ? (

@@ -43,9 +43,19 @@ export const INTERNAL_MCP_TOOLS: readonly string[] = [
   'mcp__nimbalyst-trackers__tracker_delete_type',
   // Host (`nimbalyst-host`) — session-context reads.
   'mcp__nimbalyst-host__get_session_summary',
+  'mcp__nimbalyst-host__get_session_result',
   'mcp__nimbalyst-host__get_workstream_overview',
   'mcp__nimbalyst-host__list_recent_sessions',
   'mcp__nimbalyst-host__get_workstream_edited_files',
+  // Run Manager (built-in developer-mode extension, server `nimbalyst-run`).
+  // These act only on targets already in the project's `.nimbalyst/run.json`.
+  // `run_configure` is deliberately absent: it defines a command that will
+  // execute, so it stays on the normal permission path.
+  'mcp__nimbalyst-run__run_list',
+  'mcp__nimbalyst-run__run_start',
+  'mcp__nimbalyst-run__run_stop',
+  'mcp__nimbalyst-run__run_restart',
+  'mcp__nimbalyst-run__run_logs',
 ];
 
 export const TEAM_TOOLS: readonly string[] = [
@@ -100,3 +110,16 @@ export const SDK_NATIVE_TOOLS: readonly string[] = [
 export const NIMBALYST_HANDLED_TOOLS: readonly string[] = [
   'ScheduleWakeup',
 ];
+
+/**
+ * Native tools a meta-agent session must not call. SDK_NATIVE_TOOLS lags the
+ * CLI, so the SDK's own BUILTIN_TOOL_NAMES is unioned in; otherwise built-ins
+ * added after our list (PowerShell, LSP, Artifact, ...) stay callable (NIM-7668).
+ */
+export function metaAgentBlockedNativeTools(
+  allowedTools: readonly string[],
+  sdkBuiltinTools: readonly string[],
+): string[] {
+  const open = new Set([...allowedTools, ...NIMBALYST_HANDLED_TOOLS]);
+  return [...new Set([...SDK_NATIVE_TOOLS, ...sdkBuiltinTools])].filter(t => !open.has(t));
+}

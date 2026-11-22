@@ -2,6 +2,7 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import { fileURLToPath, URL } from 'node:url';
 import { resolve } from 'node:path';
+import { HTML_EMBED_SHELL_CSP, HTML_EMBED_SHELL_HTML } from '../collab-protocol/src/htmlEmbedShell';
 
 /**
  * Vite config for building the mobile Lexical editor bundle.
@@ -47,6 +48,15 @@ export default defineConfig({
         '../runtime/**/*.{tsx,ts,jsx,js}',
       ],
     }),
+    // The HTML embed sandbox shell and its CSP, served by native at
+    // `nimbalyst-embed://shell` (HtmlEmbedShellSchemeHandler.swift).
+    {
+      name: 'html-embed-shell',
+      generateBundle() {
+        this.emitFile({ type: 'asset', fileName: 'html-embed-shell.html', source: HTML_EMBED_SHELL_HTML });
+        this.emitFile({ type: 'asset', fileName: 'html-embed-shell.csp', source: HTML_EMBED_SHELL_CSP });
+      },
+    },
     // Fix script tags for file:// loading in WKWebView:
     // - Strip crossorigin (CORS rejects file:// origin null)
     // - Replace type="module" with defer (modules enforce CORS; defer preserves execution order)

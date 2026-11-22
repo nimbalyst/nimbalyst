@@ -302,7 +302,12 @@ export function useCollaborativeEditor(
         // real content for every client (the "Untitled map" clobber).
         const undecoded = collab.hasUndecodedContent?.() === true;
 
-        if (connected && !undecoded && cfg.isEmpty(collab.yDoc)) {
+        // NEVER seed from a read-only host either: the room refuses the write,
+        // and for a commenter (`editBody: false`) the refusal ends the session.
+        // A writer's client seeds the room instead.
+        const readOnly = host.readOnly === true;
+
+        if (connected && !undecoded && !readOnly && cfg.isEmpty(collab.yDoc)) {
           try {
             const content = await collab.loadInitialContent();
             if (cancelled) return;

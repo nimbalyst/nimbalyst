@@ -75,6 +75,66 @@ export function resolveGitCommitProposalPromptIdFromRows(
   return null;
 }
 
+export interface ProposalWorktreeTarget {
+  path: string;
+  branch: string | null;
+}
+
+/**
+ * #1756: the sibling worktree recorded on this exact proposal when it was
+ * validated, or null for an ordinary proposal into the session checkout.
+ */
+/** The stored `git_commit_proposal` record with exactly this proposal id. */
+export function findProposalRecordInRows(
+  proposalId: string,
+  rows: Array<{ content: string }>,
+): Record<string, any> | null {
+  for (const row of rows) {
+    try {
+      const content = JSON.parse(row.content);
+      if (content?.type === 'git_commit_proposal' && content.proposalId === proposalId) return content;
+    } catch {
+      // Ignore malformed rows
+    }
+  }
+  return null;
+}
+
+export function findProposalWorktreeTargetInRows(
+  proposalId: string,
+  rows: Array<{ content: string }>,
+): ProposalWorktreeTarget | null {
+  const target = findProposalRecordInRows(proposalId, rows)?.targetWorktree;
+  if (!target || typeof target.path !== 'string') return null;
+  return { path: target.path, branch: typeof target.branch === 'string' ? target.branch : null };
+}
+
+export async function loadGitCommitProposalRecord(
+  sessionId: string,
+  proposalId: string,
+): Promise<Record<string, any> | null> {
+  const { database } = await import('../../database/PGLiteDatabaseWorker');
+  const { rows } = await database.query<{ content: string }>(
+    `SELECT content
+     FROM ai_agent_messages
+     WHERE session_id = $1
+       AND content LIKE '%"type":"git_commit_proposal"%'
+       AND content LIKE $2
+     ORDER BY created_at DESC
+     LIMIT 5`,
+    [sessionId, `%${JSON.stringify(proposalId)}%`],
+  );
+  return findProposalRecordInRows(proposalId, rows);
+}
+
+export async function findGitCommitProposalWorktreeTarget(
+  sessionId: string,
+  proposalId: string,
+): Promise<ProposalWorktreeTarget | null> {
+  const record = await loadGitCommitProposalRecord(sessionId, proposalId);
+  return record ? findProposalWorktreeTargetInRows(proposalId, [{ content: JSON.stringify(record) }]) : null;
+}
+
 /**
  * Resolve a git commit proposal prompt ID to the canonical proposalId stored in DB.
  *

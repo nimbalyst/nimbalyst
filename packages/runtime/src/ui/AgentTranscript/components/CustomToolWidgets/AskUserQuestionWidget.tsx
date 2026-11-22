@@ -29,6 +29,7 @@ import {
   WidgetOptionRow,
   WidgetStatusPill,
 } from './shared/InteractiveWidgetChrome';
+import { erroredQuestionOutcome, parseAnswers, parseCancelledResult } from './askUserQuestionResult';
 
 // Shared with the feedback surfaces via InteractiveWidgetChrome; the glyph
 // itself stays local because it is this widget's identity.
@@ -98,139 +99,6 @@ function parseQuestions(args: any): Question[] {
   return valid;
 }
 
-function parseAnswers(args: any, result: any): Record<string, string> {
-  // Check arguments first
-  if (args?.answers && typeof args.answers === 'object') {
-    return args.answers;
-  }
-
-  const parseFromUnknown = (value: unknown): Record<string, string> => {
-    if (!value) return {};
-
-    if (typeof value === 'string') {
-      try {
-        return parseFromUnknown(JSON.parse(value));
-      } catch {
-        // Try SDK string format: "question"="answer"
-        const answers: Record<string, string> = {};
-        const regex = /"([^"]+)"="([^"]+)"/g;
-        let match;
-        while ((match = regex.exec(value)) !== null) {
-          answers[match[1]] = match[2];
-        }
-        return answers;
-      }
-    }
-
-    // Handle MCP content arrays: [{ type: "text", text: "..." }]
-    if (Array.isArray(value)) {
-      for (const item of value) {
-        if (item && typeof item === 'object' && (item as any).type === 'text' && typeof (item as any).text === 'string') {
-          const nested = parseFromUnknown((item as any).text);
-          if (Object.keys(nested).length > 0) return nested;
-        }
-      }
-      return {};
-    }
-
-    if (typeof value !== 'object') {
-      return {};
-    }
-
-    const record = value as Record<string, unknown>;
-    if (record.answers && typeof record.answers === 'object' && !Array.isArray(record.answers)) {
-      const answers: Record<string, string> = {};
-      for (const [key, rawValue] of Object.entries(record.answers as Record<string, unknown>)) {
-        if (typeof rawValue === 'string') {
-          answers[key] = rawValue;
-        }
-      }
-      if (Object.keys(answers).length > 0) {
-        return answers;
-      }
-    }
-
-    if (record.result !== undefined) {
-      const nested = parseFromUnknown(record.result);
-      if (Object.keys(nested).length > 0) {
-        return nested;
-      }
-    }
-
-    if (record.content !== undefined) {
-      const nested = parseFromUnknown(record.content);
-      if (Object.keys(nested).length > 0) {
-        return nested;
-      }
-    }
-
-    if (record.text !== undefined) {
-      const nested = parseFromUnknown(record.text);
-      if (Object.keys(nested).length > 0) {
-        return nested;
-      }
-    }
-
-    return {};
-  };
-
-  const parsed = parseFromUnknown(result);
-  if (Object.keys(parsed).length > 0) {
-    return parsed;
-  }
-
-  return {};
-}
-
-interface CancelledState {
-  cancelled: boolean;
-  /** Why the prompt closed, e.g. `superseded` when the user sent a new message instead. */
-  reason?: string;
-}
-
-const NOT_CANCELLED: CancelledState = { cancelled: false };
-
-function parseCancelledResult(result: unknown): CancelledState {
-  if (!result) return NOT_CANCELLED;
-
-  if (typeof result === 'string') {
-    try {
-      return parseCancelledResult(JSON.parse(result));
-    } catch {
-      const lower = result.toLowerCase();
-      return { cancelled: lower.includes('cancelled') || lower.includes('canceled') };
-    }
-  }
-
-  // Handle MCP content arrays: [{ type: "text", text: "..." }]
-  if (Array.isArray(result)) {
-    for (const item of result) {
-      if (item && typeof item === 'object' && (item as any).type === 'text' && typeof (item as any).text === 'string') {
-        const nested = parseCancelledResult((item as any).text);
-        if (nested.cancelled) return nested;
-      }
-    }
-    return NOT_CANCELLED;
-  }
-
-  if (typeof result !== 'object') {
-    return NOT_CANCELLED;
-  }
-
-  const record = result as Record<string, unknown>;
-  if (record.cancelled === true || record.canceled === true) {
-    return { cancelled: true, reason: typeof record.reason === 'string' ? record.reason : undefined };
-  }
-
-  for (const nestedValue of [record.result, record.content, record.text]) {
-    if (nestedValue === undefined) continue;
-    const nested = parseCancelledResult(nestedValue);
-    if (nested.cancelled) return nested;
-  }
-
-  return NOT_CANCELLED;
-}
-
 // ============================================================
 // Widget Component
 // ============================================================
@@ -260,17 +128,34 @@ export const AskUserQuestionWidget: React.FC<CustomToolWidgetProps> = ({
 
   // Parse result to determine completion state
   const rawResult = toolCall.result;
-  const parsedAnswers = useMemo(() => parseAnswers(toolCall.arguments, rawResult), [toolCall.arguments, rawResult]);
+  // An errored result is never read for answers (#1577); see erroredQuestionOutcome.
+  const errored = useMemo(
+    () => erroredQuestionOutcome(toolCall),
+    [toolCall.isError, toolCall.status, rawResult],
+  );
+  const parsedAnswers = useMemo(
+    () => (errored ? {} : parseAnswers(toolCall.arguments, rawResult)),
+    [errored, toolCall.arguments, rawResult],
+  );
   const hasResult = rawResult !== undefined && rawResult !== null && rawResult !== '';
 
   // Check if cancelled
-  const cancelledState = useMemo(() => parseCancelledResult(rawResult), [rawResult]);
+  const cancelledState = useMemo(
+    () => (errored
+      ? { cancelled: errored.kind === 'cancelled', reason: errored.kind === 'cancelled' ? errored.reason : undefined }
+      : parseCancelledResult(rawResult)),
+    [errored, rawResult],
+  );
   const isCancelled = cancelledState.cancelled;
   // The user sent a new message instead of answering. Older transcripts have
   // no durable result for this, so the transcript also passes `superseded`.
   const isSkipped = cancelledState.reason === 'superseded' || (!hasResult && superseded === true);
 
-  const isCompleted = hasResult || isSkipped;
+  // The call failed before reaching the user (e.g. a PreToolUse hook denied
+  // it, #1577). Its error text is not an answer, and no prompt is pending.
+  const isBlocked = errored?.kind === 'blocked';
+
+  const isCompleted = hasResult || isSkipped || isBlocked;
   const isPending = !isCompleted;
 
   // Draft state lives in a jotai atomFamily keyed by questionId so it survives
@@ -439,6 +324,42 @@ export const AskUserQuestionWidget: React.FC<CustomToolWidgetProps> = ({
   // If no questions, show nothing
   if (questions.length === 0) {
     return null;
+  }
+
+  if (isBlocked) {
+    const reason = errored?.kind === 'blocked' ? errored.reason : '';
+    return (
+      <InteractiveWidgetCard
+        rootClassName="ask-user-question-widget"
+        testId="ask-user-question-widget"
+        state="blocked"
+        tone="resolved"
+      >
+        <InteractiveWidgetHeader
+          icon={<QuestionMarkIcon />}
+          title="Question Blocked"
+          trailing={
+            <WidgetStatusPill tone="muted" testId="ask-user-question-blocked">
+              Blocked
+            </WidgetStatusPill>
+          }
+        />
+        <InteractiveWidgetBody>
+          {reason && (
+            <WidgetNoteRow rootClassName="ask-user-question-blocked-reason" testId="ask-user-question-blocked-reason">
+              {reason}
+            </WidgetNoteRow>
+          )}
+          {questions.map((question, qIndex) => (
+            <WidgetBlock
+              key={qIndex}
+              tag={question.header}
+              question={question.question}
+            />
+          ))}
+        </InteractiveWidgetBody>
+      </InteractiveWidgetCard>
+    );
   }
 
   // Determine display result (local takes precedence while waiting)

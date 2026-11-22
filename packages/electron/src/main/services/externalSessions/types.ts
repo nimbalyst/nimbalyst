@@ -97,6 +97,14 @@ export interface ExternalSessionSource {
   dispose(): Promise<void>;
 }
 
+/** The ingestor is busy, not the file: callers retry on the next scan with no back-off. */
+export class ExternalIngestQueueFullError extends Error {
+  constructor() {
+    super("External ingestion queue is full; retry on next scan");
+    this.name = "ExternalIngestQueueFullError";
+  }
+}
+
 export interface ExternalSourceOptions {
   /** Provider log root (Claude projects directory or Codex sessions directory). */
   rootDir?: string;

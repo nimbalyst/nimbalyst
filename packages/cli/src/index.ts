@@ -5,11 +5,14 @@
  * stable exit codes. All command output goes to stdout; diagnostics to stderr.
  */
 import { fileURLToPath } from 'node:url';
-import { parseArgs, flagBool, type ParsedArgs } from './cli/parse.js';
+import { parseArgs, flagBool, flagStr, type ParsedArgs } from './cli/parse.js';
 import { terminalNotice, wantsTerminalNotice } from './cli/updateNotice.js';
 import { detectNpmInstall, startUpdateCheck } from './mcp/updateCheck.js';
+import { pluginServerSetup } from './mcp/pluginEntry.js';
+import { machineEnv } from './update/installs.js';
 import { runUpdate } from './commands/update.js';
 import { runDoctor } from './commands/doctor.js';
+import { runHookCommand } from './commands/hook.js';
 import { setColorEnabled } from './cli/colors.js';
 import { CliError, ExitCode } from './cli/exitCodes.js';
 import { safeText } from './cli/output.js';
@@ -43,7 +46,7 @@ Team wiki (Nimbalyst Teams sign-in; server = NIM_SERVER, default https://sync.ni
   nim wiki bind --org <id> --project <id>   (team admins: connect this repo's remote)
   nim wiki create-project --org <id> --name <n> [--bind]   (team admins)
   nim wiki team-create "<name>"              (a new team you administer; its first project is bound to this repo)
-  nim wiki invite --org <id> <email>... [--role member|admin] [--project <id> --project-role editor|viewer]   (team admins)
+  nim wiki invite --org <id> <email>... [--role member|admin] [--project <id> --project-role editor|commenter|viewer]   (team admins)
   nim wiki invite-link --org <id> [--project <id>] [--role R] [--project-role R] [--expires-in SECONDS] [--max-uses N]
   nim wiki pin --org <id> --project <id>    (writes .nimbalyst/wiki.json; one of the projects this repo resolves to)
   nim wiki list                             (the page tree, with links)
@@ -86,6 +89,7 @@ Nouns:
   workspace   list / show workspaces
   status      what nim is connected to (live or direct), schema, workspaces
   mcp         MCP server on stdio for agents: local wiki pages and typed pages (stdout is protocol only)
+  hook        the Nimbalyst Wiki plugin hooks: session-start, stop, session-inputs (stdin is the hook input)
   update      update nim and the Nimbalyst Wiki plugins for Claude Code and Codex
   doctor      which nim and browser app this is, how they were installed, and the installed plugins
 
@@ -143,6 +147,18 @@ Local wiki (a folder of markdown pages in this project):
   nim wiki move-to-team [--org <id> --project <id>] [--dry-run]
                                              (the whole wiki into this repo's team project; needs nim login;
                                               local files are kept, re-running resumes)
+  nim wiki publish [--dry-run] [--confirm-removals] [--json]
+                                             (copy the wiki one way into its team project for reviewers; the files
+                                              stay the source, team edits are refused and reported, pages deleted
+                                              here go to team Trash unless edited there)
+  nim wiki publish --init [--org <id>] [--project <id>] [--name N]
+                                             (choose or create the team project, record it, publish)
+  nim wiki comments [<page>] [--json]        (open comment threads on the published pages, by local file)
+  nim wiki publish-diff <page>               (a page edited in the team, as a diff against its file)
+  nim wiki export --static <dir> [--title T] [--base /docs/] [--subtree <page>] [--exclude-type a,b]
+                 [--outside-refs text|console] [--keep-identity] [--tracker-items linked|none]
+                                             (the wiki as a static website, read-only; pages with
+                                              export: false and person fields are left out)
   nim tracker list/get/show/create/update   use the local wiki for wiki types (storage: pages|table
                                              in the type's YAML) and items already there; --local forces it
   --location overrides the folder.
@@ -212,7 +228,14 @@ async function dispatch(args: ParsedArgs): Promise<number> {
         if (args.verb === 'serve') return await runWikiServe(args, { version: VERSION });
         return isLocalWikiCall(args) ? await runLocalWiki(args, VERSION) : await runPages(args);
       case 'mcp': {
-        // The plugin starts its server through mcp/pluginEntry.ts, which runs its own check.
+        const pluginFlags = { root: flagStr(args, 'plugin-root'), agent: flagStr(args, 'plugin-agent') };
+        if (pluginFlags.root || pluginFlags.agent) {
+          // The nimbalyst-wiki plugin's server; see mcp/pluginEntry.ts.
+          const setup = pluginServerSetup(machineEnv(), process.cwd(), pluginFlags, VERSION);
+          const check = setup.install.kind === 'plugin' ? startUpdateCheck({ install: setup.install }) : null;
+          const pluginArgs = { ...args, flags: { ...args.flags, workspace: setup.workspace } };
+          return await runMcp(VERSION, pluginArgs, { takeNotice: check?.takeNotice, install: setup.install, executable: ENTRY_FILE });
+        }
         const install = detectNpmInstall(ENTRY_FILE, VERSION);
         const check = install.kind === 'npm' ? startUpdateCheck({ install }) : null;
         return await runMcp(VERSION, args, { takeNotice: check?.takeNotice, install, executable: ENTRY_FILE });
@@ -221,6 +244,8 @@ async function dispatch(args: ParsedArgs): Promise<number> {
         return await runUpdate(args, { version: VERSION, entryFile: ENTRY_FILE });
       case 'doctor':
         return await runDoctor(args, { version: VERSION, entryFile: ENTRY_FILE });
+      case 'hook':
+        return await runHookCommand(args);
       default:
         process.stderr.write(`nim: unknown command '${args.noun}'. Run 'nim --help'.\n`);
         return ExitCode.USAGE;

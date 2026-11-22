@@ -12,6 +12,7 @@ export default defineConfig({
       { find: /^@nimbalyst\/runtime-source\//, replacement: `${path.resolve(here, '../runtime/src')}/` },
       // Their `node` exports point at builds; tests read the source.
       { find: /^@nimbalyst\/local-wiki$/, replacement: path.resolve(here, '../local-wiki/src/index.ts') },
+      { find: /^@nimbalyst\/local-wiki\/browser$/, replacement: path.resolve(here, '../local-wiki/src/browser.ts') },
       { find: /^@nimbalyst\/collab-protocol$/, replacement: path.resolve(here, '../collab-protocol/src/index.ts') },
     ],
   },

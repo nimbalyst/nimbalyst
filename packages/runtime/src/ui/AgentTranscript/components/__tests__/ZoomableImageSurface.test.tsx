@@ -77,6 +77,33 @@ describe('ZoomableImageSurface', () => {
     });
   });
 
+  it('measures an image that finished loading before its load listener ran', async () => {
+    // A ready data URL can decode before React's effects run, so the load
+    // event is gone by the time anything listens for it.
+    const proto = HTMLImageElement.prototype;
+    const restore = ['complete', 'naturalWidth', 'naturalHeight'].map((key) => [key, Object.getOwnPropertyDescriptor(proto, key)] as const);
+    Object.defineProperty(proto, 'complete', { configurable: true, get: () => true });
+    Object.defineProperty(proto, 'naturalWidth', { configurable: true, get: () => 800 });
+    Object.defineProperty(proto, 'naturalHeight', { configurable: true, get: () => 600 });
+    try {
+      render(
+        <div style={{ width: 400, height: 300 }}>
+          <ZoomableImageSurface src="data:image/png;base64,AAAA" alt="Test image" />
+        </div>
+      );
+
+      await waitFor(() => {
+        expect(screen.getByTestId('zoomable-image-zoom').textContent).toBe('50%');
+      });
+      expect((screen.getByTestId('zoomable-image') as HTMLImageElement).style.width).toBe('400px');
+    } finally {
+      for (const [key, descriptor] of restore) {
+        if (descriptor) Object.defineProperty(proto, key, descriptor);
+        else delete (proto as unknown as Record<string, unknown>)[key];
+      }
+    }
+  });
+
   it('zooms with a two-finger pinch and with trackpad ctrl+wheel', async () => {
     render(
       <div style={{ width: 400, height: 300 }}>

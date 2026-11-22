@@ -78,6 +78,9 @@ export class InMemoryTranscriptEventStore implements ITranscriptEventStore {
         ...this.events[idx],
         payload: { ...this.events[idx].payload, ...partialPayload },
       };
+      for (const alias of this.toolCallAliases(this.events[idx])) {
+        if (!this.toolCallPositions(alias).includes(idx)) this.addToolCallPosition(alias, idx);
+      }
     }
   }
 
@@ -114,7 +117,8 @@ export class InMemoryTranscriptEventStore implements ITranscriptEventStore {
     const positions = this.toolCallPositions(providerToolCallId);
     for (let i = positions.length - 1; i >= 0; i--) {
       const event = this.events[positions[i]];
-      if (event.providerToolCallId === providerToolCallId && event.sessionId === sessionId) {
+      if ((event.providerToolCallId === providerToolCallId || this.toolCallAliases(event).includes(providerToolCallId))
+        && event.sessionId === sessionId) {
         return event;
       }
     }
@@ -191,6 +195,7 @@ export class InMemoryTranscriptEventStore implements ITranscriptEventStore {
 
   private indexEvent(event: TranscriptEvent, position: number): void {
     this.indexById.set(event.id, position);
+    for (const alias of this.toolCallAliases(event)) this.addToolCallPosition(alias, position);
     const ptcid = event.providerToolCallId;
     if (!ptcid) return;
     this.addToolCallPosition(ptcid, position);
@@ -204,6 +209,11 @@ export class InMemoryTranscriptEventStore implements ITranscriptEventStore {
       }
       if (raw !== ptcid) this.addToolCallPosition(raw, position);
     }
+  }
+
+  private toolCallAliases(event: TranscriptEvent): string[] {
+    const aliases = (event.payload as Record<string, unknown>).providerToolCallAliases;
+    return Array.isArray(aliases) ? aliases.filter((id): id is string => typeof id === 'string') : [];
   }
 
   private addToolCallPosition(key: string, position: number): void {

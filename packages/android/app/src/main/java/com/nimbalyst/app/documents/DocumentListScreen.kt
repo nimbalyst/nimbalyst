@@ -95,8 +95,11 @@ fun DocumentListScreen(
         onDispose { lease.release() }
     }
 
+    // `.html` files only back embeds; the editor here would mangle them.
     val all = remember(documents, wikiFolder) {
-        documents?.filterNot { WikiDocuments.isWikiDataFile(it.relativePath, wikiFolder) }
+        documents?.filterNot {
+            WikiDocuments.isWikiDataFile(it.relativePath, wikiFolder) || WikiDocuments.isEmbedOnlyFile(it.relativePath)
+        }
     }
     Column(modifier = modifier.fillMaxSize()) {
         SearchField(query) { query = it }

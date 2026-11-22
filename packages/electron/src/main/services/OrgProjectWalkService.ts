@@ -291,6 +291,7 @@ export function cloneOrgProjectRepository(input: {
       'git',
       ['clone', '--progress', '--', remoteUrl, directoryPath],
       {
+        windowsHide: true,
         stdio: 'pipe',
         env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
       },

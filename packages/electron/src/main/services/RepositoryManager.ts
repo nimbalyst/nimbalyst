@@ -25,6 +25,10 @@ import { createPendingSubmissionStore, type PendingSubmissionStore } from './ai/
 import { runAgentMessagesBackfill } from './AgentMessagesBackfill';
 import { healArchivedWorkstreamChildren } from './healArchivedWorkstreamChildren';
 import { migrateSessionTrees } from './sessionTreeMigration';
+import { trimSessionCurrentTasks } from './sessionCurrentTasksTrim';
+import { AnalyticsService } from './analytics/AnalyticsService';
+import { app } from 'electron';
+import * as path from 'path';
 import { runWhenFirstUsable } from './startupMaintenanceGate';
 import { database } from '../database/PGLiteDatabaseWorker';
 import { createSQLiteStoreAdapter } from '../database/sqlite/SQLiteStoreAdapter';
@@ -35,7 +39,8 @@ import { initializeSync, shutdownSync, isSyncEnabled, reinitializeSync, getSyncP
 import { shutdownTrackerSync, initializeTrackerSync } from './TrackerSyncManager';
 import { ensureWorkspaceLocalNumbersInBackground } from './tracker/ensureWorkspaceLocalNumbers';
 import { onAuthStateChange } from './StytchAuthService';
-import { windows, windowStates } from '../window/WindowManager';
+import { windows } from '../window/WindowManager';
+import { listOpenWorkspacePaths } from '../window/windowState';
 
 class RepositoryManager {
   private sessionStore: SessionStore | null = null;
@@ -239,6 +244,19 @@ class RepositoryManager {
       // has not, since the replica identity needs an account id.
       runWhenFirstUsable('legacy-pending-update-drain', () => drainAllLegacyPendingUpdates());
 
+      // Bring task lists written before the provider bounded them down to the
+      // same bound, after exporting everything removed. Runs once.
+      runWhenFirstUsable('session-task-history-trim', async () => {
+        const result = await trimSessionCurrentTasks(dbAdapter, {
+          exportDir: path.join(app.getPath('userData'), 'session-task-history-exports'),
+          onBeforeTrim: summary => AnalyticsService.getInstance().sendEvent('session_task_history_trimmed', {
+            sessions: summary.sessions, entries: summary.entries, agentReports: summary.agentReports,
+          }),
+          log: message => logger.main.info(message),
+        });
+        if (result.status === 'export-unverified') logger.main.error(`[RepositoryManager] Session task history export did not verify; nothing trimmed: ${result.exportPath}`);
+      });
+
       // Subscribe to auth state changes to reinitialize sync when user authenticates
       // This handles the case where Stytch is lazy-initialized after repositories are ready
       this.authListenerUnsubscribe = onAuthStateChange((authState) => {
@@ -410,16 +428,15 @@ class RepositoryManager {
 
     // Also reinitialize tracker sync for all open workspaces
     // Tracker sync requires a workspace path (for project identity via git remote)
-    for (const state of windowStates.values()) {
-      if (state.workspacePath) {
-        initializeTrackerSync(state.workspacePath).catch(err => {
-          logger.main.error('[RepositoryManager] Failed to initialize tracker sync for workspace:', err);
-        });
-        // Usually a no-op -- the window already swept on open. It matters when
-        // that sweep failed because the database was not up yet: this is the
-        // only later trigger a single-window workspace gets.
-        ensureWorkspaceLocalNumbersInBackground(state.workspacePath);
-      }
+    // Every rail project of every window, not only each window's first one.
+    for (const workspacePath of listOpenWorkspacePaths()) {
+      initializeTrackerSync(workspacePath).catch(err => {
+        logger.main.error('[RepositoryManager] Failed to initialize tracker sync for workspace:', err);
+      });
+      // Usually a no-op -- the window already swept on open. It matters when
+      // that sweep failed because the database was not up yet: this is the
+      // only later trigger a single-window workspace gets.
+      ensureWorkspaceLocalNumbersInBackground(workspacePath);
     }
   }
 

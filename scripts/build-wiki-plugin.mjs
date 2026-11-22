@@ -21,17 +21,17 @@
 // desktop-only tool outside a desktop-only block fails the build, as does a
 // terminal-only tool outside a remote-only block.
 //
-// Also bundles the plugin's two local servers (the session-inputs helper and
-// `nim mcp` as `nimbalyst-local`) and its SessionStart hook into one file each,
-// since a plugin is installed from git with no `npm install`.
+// Also writes the plugin's .mcp.json, .codex-mcp.json and hooks/hooks.json. The
+// plugin ships no code of its own: its two local servers and both hooks run
+// `@nimbalyst/cli` (packages/cli) through npx, pinned to the plugin's version,
+// so the published plugin is readable source and the CLI is the one artifact.
 //
-//   node scripts/build-wiki-plugin.mjs          write both copies and the helper
+//   node scripts/build-wiki-plugin.mjs          write both copies and the plugin configs
 //   node scripts/build-wiki-plugin.mjs --check  exit 1 if any generated file is stale
 
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { buildSync } from 'esbuild';
 import { PAGE_TOOL_CONTRACT } from '../packages/collab-protocol/src/pageToolContract.ts';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -41,13 +41,6 @@ export const DEFAULT_TARGETS = {
   desktop: path.join(REPO_ROOT, 'packages/extensions/knowledge/claude-plugin/skills'),
   remote: path.join(REPO_ROOT, 'plugins/nimbalyst-wiki/skills'),
 };
-export const SESSION_HELPER_ENTRY = path.join(REPO_ROOT, 'packages/extensions/knowledge/src/sessionInputs/server.ts');
-export const SESSION_HELPER_OUT = path.join(REPO_ROOT, 'plugins/nimbalyst-wiki/scripts/session-inputs.mjs');
-export const LOCAL_SERVER_ENTRY = path.join(REPO_ROOT, 'packages/cli/src/mcp/pluginEntry.ts');
-export const LOCAL_SERVER_OUT = path.join(REPO_ROOT, 'plugins/nimbalyst-wiki/scripts/nim-local-mcp.mjs');
-/** The SessionStart hook; the Stop hook (keeper-nudge.mjs, hand-written) imports its page coverage too. */
-export const WIKI_CONTEXT_ENTRY = path.join(REPO_ROOT, 'packages/cli/src/mcp/wikiContextEntry.ts');
-export const WIKI_CONTEXT_OUT = path.join(REPO_ROOT, 'plugins/nimbalyst-wiki/scripts/wiki-context.mjs');
 export const PLUGIN_DIR = path.join(REPO_ROOT, 'plugins/nimbalyst-wiki');
 /**
  * The add-on that declares the `nimbalyst-team` HTTP server. It is a plugin of
@@ -123,9 +116,9 @@ export function checkToolNames(text, side) {
 }
 
 const BLOCK = {
-  desktop: /<!-- desktop-only -->\n([\s\S]*?)<!-- \/desktop-only -->\n/g,
-  remote: /<!-- remote-only -->\n([\s\S]*?)<!-- \/remote-only -->\n/g,
-  local: /<!-- local-only -->\n([\s\S]*?)<!-- \/local-only -->\n/g,
+  desktop: /<!-- desktop-only -->\r?\n([\s\S]*?)<!-- \/desktop-only -->\r?\n/g,
+  remote: /<!-- remote-only -->\r?\n([\s\S]*?)<!-- \/remote-only -->\r?\n/g,
+  local: /<!-- local-only -->\r?\n([\s\S]*?)<!-- \/local-only -->\r?\n/g,
 };
 const STRAY_MARKER = /<!-- \/?(?:desktop|remote|local)-only\b/;
 
@@ -144,7 +137,7 @@ export function applyBranch(text, side, fileLabel = '<text>') {
 }
 
 function injectSkillHeader(text, fileLabel) {
-  const match = /^---\n[\s\S]*?\n---\n/.exec(text);
+  const match = /^---\r?\n[\s\S]*?\r?\n---\r?\n/.exec(text);
   if (!match) throw new Error(`${fileLabel}: SKILL.md has no frontmatter`);
   const frontmatter = match[0];
   const body = text.slice(frontmatter.length).replace(/^\n+/, '');
@@ -205,75 +198,56 @@ export function buildGeneratedFiles(sourceDir = DEFAULT_SOURCE) {
     if (!rels.includes('SKILL.md')) throw new Error(`${skill}: missing SKILL.md in ${skillDir}`);
     for (const rel of rels) {
       const relPath = `${skill}/${rel}`;
-      const text = readFileSync(path.join(skillDir, rel), 'utf8');
+      const text = readFileSync(path.join(skillDir, rel), 'utf8').replace(/\r\n/g, '\n');
       for (const side of SIDES) files.set(`${side}:${names[side]}/${rel}`, transformFile(relPath, text, side));
     }
   }
   return files;
 }
 
-/**
- * The helper as one ESM file with no dependencies. The shared citation syntax
- * and console links are bundled from source, so its citations are the ones the
- * page editor reads back.
- */
-export function bundleSessionHelper() {
-  const result = buildSync({
-    absWorkingDir: REPO_ROOT,
-    entryPoints: [path.relative(REPO_ROOT, SESSION_HELPER_ENTRY)],
-    bundle: true,
-    write: false,
-    platform: 'node',
-    format: 'esm',
-    target: 'node20',
-    alias: {
-      '@nimbalyst/collab-protocol': './packages/collab-protocol/src/index.ts',
-      '@nimbalyst/runtime/core/citationSyntax': './packages/runtime/src/core/citationSyntax.ts',
-    },
-    banner: { js: `#!/usr/bin/env node\n// ${GENERATED_NOTE.replace(SOURCE_LABEL, 'packages/extensions/knowledge/src/sessionInputs')}` },
-    legalComments: 'none',
-    logLevel: 'silent',
-  });
-  return result.outputFiles[0].text;
+/** The npm package the plugin runs, pinned to the plugin's version. */
+export function cliSpec(pluginDir = PLUGIN_DIR) {
+  return `@nimbalyst/cli@${JSON.parse(readFileSync(path.join(pluginDir, '.claude-plugin/plugin.json'), 'utf8')).version}`;
 }
 
 /**
- * `nim mcp` (or another entry from packages/cli, such as the SessionStart hook)
- * as one ESM file. better-sqlite3 stays external: the wiki tools never load it,
- * and a plugin has no native modules to load.
+ * The plugin's server and hook configs, path relative to the plugin to content.
+ * Both agents start servers in the project. Claude Code passes the plugin root;
+ * Codex expands no variables in MCP args (and npx would replace a forwarded
+ * `PWD`), so it says `--plugin-agent codex` and the server finds its install
+ * by version (packages/cli/src/mcp/pluginEntry.ts). Codex runs no plugin hooks.
+ *
+ * `--prefix /` keeps npx from running a copy of the CLI in the project's own
+ * node_modules at the same version (this monorepo links packages/cli there, so
+ * a stale local build ran instead of the published one). The command still
+ * runs in the project folder.
  */
-export function bundleLocalServer(entry = LOCAL_SERVER_ENTRY) {
-  const cliPackage = JSON.parse(readFileSync(path.join(REPO_ROOT, 'packages/cli/package.json'), 'utf8'));
-  const result = buildSync({
-    absWorkingDir: REPO_ROOT,
-    entryPoints: [path.relative(REPO_ROOT, entry)],
-    bundle: true,
-    write: false,
-    platform: 'node',
-    format: 'esm',
-    target: 'node22',
-    external: ['better-sqlite3'],
-    define: { __NIM_VERSION__: JSON.stringify(cliPackage.version) },
-    alias: {
-      '@nimbalyst/tracker-core': './packages/tracker-core/src/index.ts',
-      '@nimbalyst/local-wiki': './packages/local-wiki/src/index.ts',
-      '@nimbalyst/collab-protocol': './packages/collab-protocol/src/index.ts',
-      // The app's mark parser; see packages/cli/src/types/pageMarkSyntax.d.ts.
-      '@nimbalyst/runtime/core/pageMarkSyntax': './packages/runtime/src/core/pageMarkSyntax.ts',
-    },
-    banner: { js: `#!/usr/bin/env node\n// ${GENERATED_NOTE.replace(SOURCE_LABEL, 'packages/cli/src/mcp')}` },
-    legalComments: 'none',
-    logLevel: 'silent',
-  });
-  return result.outputFiles[0].text;
+export function buildPluginConfigs(pluginDir = PLUGIN_DIR) {
+  const spec = cliSpec(pluginDir);
+  const json = (value) => `${JSON.stringify(value, null, 2)}\n`;
+  const npx = (...args) => ['--prefix', '/', '-y', spec, ...args];
+  const hook = (verb) => ({ hooks: [{ type: 'command', command: ['npx', ...npx('hook', verb)].join(' '), timeout: 30 }] });
+  return new Map([
+    ['.mcp.json', json({
+      mcpServers: {
+        'nimbalyst-session': { type: 'stdio', command: 'npx', args: npx('hook', 'session-inputs') },
+        'nimbalyst-local': { type: 'stdio', command: 'npx', args: npx('mcp', '--plugin-root', '${CLAUDE_PLUGIN_ROOT}') },
+      },
+    })],
+    ['.codex-mcp.json', json({
+      mcpServers: {
+        'nimbalyst-session': { command: 'npx', args: npx('hook', 'session-inputs') },
+        // Codex passes servers a filtered environment; a custom CODEX_HOME is where the server finds its install.
+        'nimbalyst-local': { command: 'npx', env_vars: ['CODEX_HOME'], args: npx('mcp', '--plugin-agent', 'codex') },
+      },
+    })],
+    ['hooks/hooks.json', json({
+      description: 'At session start, tell the agent what the project\'s local wiki covers. Once per session, after substantive work, ask the agent to record what it decided in the wiki. Both run the pinned @nimbalyst/cli through npx; the first run downloads it.',
+      // A first run downloads the package; a hook past its timeout fails open.
+      hooks: { SessionStart: [hook('session-start')], Stop: [hook('stop')] },
+    })],
+  ]);
 }
-
-/** The bundled files, output path to generator. */
-const BUNDLES = [
-  [SESSION_HELPER_OUT, () => bundleSessionHelper()],
-  [LOCAL_SERVER_OUT, () => bundleLocalServer()],
-  [WIKI_CONTEXT_OUT, () => bundleLocalServer(WIKI_CONTEXT_ENTRY)],
-];
 
 function outputSkills(side) {
   return Object.values(GENERATED_SKILLS).map((names) => names[side]);
@@ -285,13 +259,13 @@ function targetPath(targets, key) {
 }
 
 /** Lists generated paths that are missing, different, or no longer produced. */
-export function checkGenerated({ sourceDir = DEFAULT_SOURCE, targets = DEFAULT_TARGETS, bundle = true } = {}) {
+export function checkGenerated({ sourceDir = DEFAULT_SOURCE, targets = DEFAULT_TARGETS, configs = true, pluginDir = PLUGIN_DIR } = {}) {
   const expected = buildGeneratedFiles(sourceDir);
   const stale = [];
   for (const [key, content] of expected) {
     const onDisk = targetPath(targets, key);
     if (!existsSync(onDisk)) stale.push(`missing: ${key}`);
-    else if (readFileSync(onDisk, 'utf8') !== content) stale.push(`changed: ${key}`);
+    else if (readFileSync(onDisk, 'utf8').replace(/\r\n/g, '\n') !== content.replace(/\r\n/g, '\n')) stale.push(`changed: ${key}`);
   }
   for (const side of SIDES) {
     for (const skill of outputSkills(side)) {
@@ -300,11 +274,12 @@ export function checkGenerated({ sourceDir = DEFAULT_SOURCE, targets = DEFAULT_T
       }
     }
   }
-  if (bundle) {
-    for (const [out, generate] of BUNDLES) {
-      const rel = path.relative(REPO_ROOT, out);
-      if (!existsSync(out)) stale.push(`missing: ${rel}`);
-      else if (readFileSync(out, 'utf8') !== generate()) stale.push(`changed: ${rel}`);
+  if (configs) {
+    for (const [rel, content] of buildPluginConfigs(pluginDir)) {
+      const out = path.join(pluginDir, rel);
+      const label = path.relative(REPO_ROOT, out);
+      if (!existsSync(out)) stale.push(`missing: ${label}`);
+      else if (readFileSync(out, 'utf8').replace(/\r\n/g, '\n') !== content.replace(/\r\n/g, '\n')) stale.push(`changed: ${label}`);
     }
   }
   return stale;
@@ -312,12 +287,12 @@ export function checkGenerated({ sourceDir = DEFAULT_SOURCE, targets = DEFAULT_T
 
 /**
  * The plugin's Claude Code and Codex manifests must carry one version: each
- * agent's install reads its own, and the update check in the local server
- * compares against the published one (packages/cli/src/mcp/updateCheck.ts).
+ * agent's install reads its own, the generated configs pin `@nimbalyst/cli` to
+ * it, and the update check in the local server compares against the published one (packages/cli/src/mcp/updateCheck.ts).
  * The team add-on carries the same version, since that check only reads
  * nimbalyst-wiki's manifest.
  */
-export function checkManifestVersions(pluginDir = PLUGIN_DIR, teamDir = TEAM_PLUGIN_DIR) {
+export function checkManifestVersions(pluginDir = PLUGIN_DIR, teamDir = TEAM_PLUGIN_DIR, cliDir = pluginDir === PLUGIN_DIR ? path.join(REPO_ROOT, 'packages/cli') : null) {
   const read = (root, dir) => {
     const file = path.join(root, dir, 'plugin.json');
     return existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')).version : undefined;
@@ -331,10 +306,15 @@ export function checkManifestVersions(pluginDir = PLUGIN_DIR, teamDir = TEAM_PLU
   const plugin = read(pluginDir, '.claude-plugin');
   const team = read(teamDir, '.claude-plugin');
   if (team !== plugin) problems.push(`version mismatch: nimbalyst-wiki-team is ${team}, nimbalyst-wiki is ${plugin}`);
+  // The plugin runs @nimbalyst/cli@<its version>, so the two are released together.
+  if (cliDir) {
+    const cli = JSON.parse(readFileSync(path.join(cliDir, 'package.json'), 'utf8')).version;
+    if (cli !== plugin) problems.push(`version mismatch: nimbalyst-wiki is ${plugin}, packages/cli is ${cli}; the plugin runs @nimbalyst/cli@${plugin}`);
+  }
   return problems;
 }
 
-export function writeGenerated({ sourceDir = DEFAULT_SOURCE, targets = DEFAULT_TARGETS, bundle = true } = {}) {
+export function writeGenerated({ sourceDir = DEFAULT_SOURCE, targets = DEFAULT_TARGETS, configs = true } = {}) {
   const files = buildGeneratedFiles(sourceDir);
   // Only the generated skill directories are replaced; hand-written skills
   // (the plugin's `connect`) live beside them and are never touched.
@@ -347,9 +327,11 @@ export function writeGenerated({ sourceDir = DEFAULT_SOURCE, targets = DEFAULT_T
     writeFileSync(out, content);
   }
   const written = [...files.keys()];
-  if (bundle) {
-    for (const [out, generate] of BUNDLES) {
-      writeFileSync(out, generate(), { mode: 0o755 });
+  if (configs) {
+    for (const [rel, content] of buildPluginConfigs()) {
+      const out = path.join(PLUGIN_DIR, rel);
+      mkdirSync(path.dirname(out), { recursive: true });
+      writeFileSync(out, content);
       written.push(path.relative(REPO_ROOT, out));
     }
   }
@@ -363,7 +345,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
       console.error(`Generated wiki skills are stale:\n  ${stale.join('\n  ')}\nRun: node scripts/build-wiki-plugin.mjs`);
       process.exit(1);
     }
-    console.log('Generated wiki skills and the plugin servers are up to date.');
+    console.log('Generated wiki skills and the plugin configs are up to date.');
   } else {
     const written = writeGenerated();
     console.log(`Wrote ${written.length} files.`);

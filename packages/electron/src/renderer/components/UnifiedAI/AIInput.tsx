@@ -4,7 +4,8 @@ import { shouldAcceptPromptSuggestion } from './promptSuggestionKeys';
 import { GenericTypeahead, TypeaheadOption } from '../Typeahead/GenericTypeahead';
 import { extractTriggerMatch, getSlashTypeaheadScope, insertAtTrigger, type SlashTypeaheadScope, TriggerMatch } from '../Typeahead/typeaheadUtils';
 import { buildSlashCommandOptions, fetchSlashCommandEntries, type SlashCommandEntry } from '../Typeahead/slashCommandAutocomplete';
-import { readClipboard, encodeMarkdownLinkPath, type ChatAttachment } from '@nimbalyst/runtime';
+import { readClipboard, isEmptyPaste, encodeMarkdownLinkPath, type ChatAttachment } from '@nimbalyst/runtime';
+import { usePastedImage } from './usePastedImage';
 import type { TokenUsageCategory } from '@nimbalyst/runtime/ai/server/types';
 import type { EffortLevel, ThinkingMode } from '../../utils/modelUtils';
 import { AttachmentPreviewList } from '../AgenticCoding/AttachmentPreviewList';
@@ -38,6 +39,15 @@ import { parseMentionTokens } from './commandPills/parseMentionTokens';
 import { HighlightOverlay, type OverlayToken } from './commandPills/HighlightOverlay';
 import { CommandPillPopover } from './commandPills/CommandPillPopover';
 import { canPersistWorkspaceHydratedState } from '../../utils/workspaceHydration';
+import { DictationButton } from '../../dictation/DictationButton';
+import { registerDictationTarget } from '../../dictation/dictationTargets';
+import { getDictationController } from '../../dictation/dictationController';
+import {
+  applyDictationText,
+  clearDictationPartial,
+  pendingRange,
+  type TextareaDictationState,
+} from '../../dictation/textareaDictation';
 
 export interface AIInputRef {
   focus: () => void;
@@ -127,6 +137,7 @@ export interface AIInputProps {
 
   // Mockup annotation indicator support
   currentFilePath?: string;
+  currentFileName?: string;
 
   // Test ID for E2E testing
   testId?: string;
@@ -203,6 +214,7 @@ export const AIInput = forwardRef<AIInputRef, AIInputProps>(
     onQueue,
     queueCount = 0,
     currentFilePath,
+    currentFileName,
     testId,
     onLaunchActionInNewSession,
   }, ref) => {
@@ -232,6 +244,18 @@ export const AIInput = forwardRef<AIInputRef, AIInputProps>(
     const justSelectedRef = useRef(false);
     const lastSlashValueRef = useRef<string | null>(null);
 
+    // Dictation: speech lands at the caret through the normal onChange path.
+    // The pending partial is written into the draft and tracked so the next
+    // partial or the final replaces it in place; it is never auto-sent.
+    const fallbackDictationId = React.useId();
+    const dictationKey = `agent-input:${sessionId ?? fallbackDictationId}`;
+    const dictationStateRef = useRef<TextareaDictationState | null>(null);
+    const preDictationSnapshotRef = useRef<AIInputSnapshot | null>(null);
+    const dictationLiveRef = useRef({ value, onChange, attachments });
+    dictationLiveRef.current.value = value;
+    dictationLiveRef.current.onChange = onChange;
+    dictationLiveRef.current.attachments = attachments;
+
     // Voice mode state - derived from centralized atom
     const voiceActiveSessionId = useAtomValue(voiceActiveSessionIdAtom);
     const isVoiceActive = voiceActiveSessionId === sessionId;
@@ -240,6 +264,86 @@ export const AIInput = forwardRef<AIInputRef, AIInputProps>(
     // cursor; boundary events (paste, drop, typeahead, attachment add/remove,
     // history navigation) always create a new entry, while typing coalesces.
     const { pushSnapshot, undo, redo, clear: clearUndo, getUndoCount } = useAIInputUndo(sessionId);
+
+    const pushSnapshotRef = useRef(pushSnapshot);
+    pushSnapshotRef.current = pushSnapshot;
+    useEffect(() => {
+      const live = dictationLiveRef.current;
+      const applyResult = (result: { value: string; cursor: number }) => {
+        live.value = result.value; // events can outrun the re-render
+        live.onChange(result.value);
+        requestAnimationFrame(() => {
+          const ta = textareaRef.current;
+          if (!ta || document.activeElement !== ta) return;
+          try {
+            ta.setSelectionRange(result.cursor, result.cursor);
+          } catch {
+            // value not applied yet; best-effort caret placement
+          }
+        });
+      };
+      const currentSelection = () => {
+        const ta = textareaRef.current;
+        const end = live.value.length;
+        return { start: ta?.selectionStart ?? end, end: ta?.selectionEnd ?? end };
+      };
+      const rememberPreDictation = () => {
+        if (preDictationSnapshotRef.current) return;
+        const sel = currentSelection();
+        preDictationSnapshotRef.current = {
+          value: live.value,
+          attachments: live.attachments,
+          cursorStart: sel.start,
+          cursorEnd: sel.end,
+        };
+      };
+      const unregister = registerDictationTarget({
+        key: dictationKey,
+        surface: 'agent-input',
+        kind: 'rich-text',
+        hasFocus: () => !!textareaRef.current && document.activeElement === textareaRef.current,
+        showPartial: (text) => {
+          rememberPreDictation();
+          const r = applyDictationText(live.value, dictationStateRef.current, currentSelection(), text, 'partial');
+          dictationStateRef.current = r.state;
+          applyResult(r);
+        },
+        clearPartial: () => {
+          const r = clearDictationPartial(live.value, dictationStateRef.current);
+          if (r) {
+            dictationStateRef.current = r.state;
+            applyResult(r);
+          }
+          preDictationSnapshotRef.current = null;
+        },
+        commitFinal: (text) => {
+          rememberPreDictation();
+          const r = applyDictationText(live.value, dictationStateRef.current, currentSelection(), text, 'final');
+          dictationStateRef.current = r.state;
+          // One undo step per committed phrase, back to before it was spoken.
+          pushSnapshotRef.current(preDictationSnapshotRef.current!, { boundary: true });
+          preDictationSnapshotRef.current = null;
+          applyResult(r);
+        },
+      });
+      return () => {
+        unregister();
+        const controller = getDictationController();
+        if (controller.isRecording(dictationKey)) controller.stop(true);
+        dictationStateRef.current = null;
+      };
+    }, [dictationKey]);
+
+    // Sending or queueing ends dictation in this input. The text on screen,
+    // pending partial included, is what gets sent, so forget the dictation
+    // state first: the cancel then removes nothing, and no late final can land
+    // in the cleared input.
+    const endDictationForSubmit = useCallback(() => {
+      dictationStateRef.current = null;
+      preDictationSnapshotRef.current = null;
+      const controller = getDictationController();
+      if (controller.isRecording(dictationKey)) controller.stop(true);
+    }, [dictationKey]);
 
     // Track the undoCount captured at the start of each in-flight attachment
     // processing IPC. If undo() has advanced the count by the time the IPC
@@ -564,13 +668,23 @@ export const AIInput = forwardRef<AIInputRef, AIInputProps>(
 
     // Commands and mentions never overlap (different lead chars) but must be
     // handed to the overlay sorted by start.
+    // The pending dictation partial paints muted; tokens it overlaps yield to it.
+    const dictationPending = enableSlashCommands ? pendingRange(value, dictationStateRef.current) : null;
+    const dictationPendingStart = dictationPending?.start ?? -1;
+    const dictationPendingEnd = dictationPending?.end ?? -1;
     const overlayTokens = useMemo<OverlayToken[]>(
-      () =>
-        [
+      () => {
+        const tokens: OverlayToken[] = [
           ...commandTokens.map((t): OverlayToken => ({ kind: 'command', ...t })),
           ...mentionTokens,
-        ].sort((a, b) => a.start - b.start),
-      [commandTokens, mentionTokens]
+        ];
+        if (dictationPendingStart < 0) return tokens.sort((a, b) => a.start - b.start);
+        return [
+          ...tokens.filter((t) => t.end <= dictationPendingStart || t.start >= dictationPendingEnd),
+          { kind: 'dictationPending', start: dictationPendingStart, end: dictationPendingEnd } as OverlayToken,
+        ].sort((a, b) => a.start - b.start);
+      },
+      [commandTokens, mentionTokens, dictationPendingStart, dictationPendingEnd]
     );
 
     const handlePillClick = useCallback(
@@ -1040,6 +1154,7 @@ export const AIInput = forwardRef<AIInputRef, AIInputProps>(
       if (e.key === 'Enter' && !e.shiftKey && !isTypeaheadVisible && !e.nativeEvent.isComposing) {
         e.preventDefault();
         if (value.trim() && !disabled && processingAttachments.length === 0) {
+          endDictationForSubmit();
           onSend(value);
         }
       }
@@ -1057,6 +1172,7 @@ export const AIInput = forwardRef<AIInputRef, AIInputProps>(
       // past this paste/drop -- we drop the result on resolve.
       const undoCountAtStart = getUndoCount();
       pasteUndoCountRef.current.set(processingId, undoCountAtStart);
+      setProcessingAttachments(prev => [...prev, { id: processingId, filename: file.name }]);
 
       try {
         const validation = await window.electronAPI.invoke('attachment:validate', {
@@ -1066,14 +1182,12 @@ export const AIInput = forwardRef<AIInputRef, AIInputProps>(
         });
 
         if (!validation.valid) {
+          setProcessingAttachments(prev => prev.filter(p => p.id !== processingId));
           pasteUndoCountRef.current.delete(processingId);
           console.error('[AIInput] File validation failed:', validation.error);
           errorNotificationService.showError('Attachment Rejected', validation.error || 'Invalid file');
           return;
         }
-
-        // Add to processing state before starting compression
-        setProcessingAttachments(prev => [...prev, { id: processingId, filename: file.name }]);
 
         const arrayBuffer = await file.arrayBuffer();
         const uint8Array = new Uint8Array(arrayBuffer);
@@ -1100,7 +1214,8 @@ export const AIInput = forwardRef<AIInputRef, AIInputProps>(
         if (result.success && result.attachment) {
           onAttachmentAdd(result.attachment);
           const reference = `@${file.name} `;
-          onChange(value + (value ? ' ' : '') + reference);
+          const currentValue = textareaRef.current?.value ?? value;
+          onChange(currentValue + (currentValue ? ' ' : '') + reference);
         } else {
           console.error('[AIInput] Failed to save attachment:', result.error);
           errorNotificationService.showError('Attachment Failed', result.error || 'Failed to save attachment');
@@ -1113,6 +1228,10 @@ export const AIInput = forwardRef<AIInputRef, AIInputProps>(
         errorNotificationService.showError('Attachment Failed', 'Failed to attach file');
       }
     }, [onAttachmentAdd, sessionId, value, onChange, getUndoCount]);
+
+    const attachPastedImage = usePastedImage({
+      sessionId, getUndoCount, captureSnapshot, pushSnapshot, handleFileAttachment, setProcessingAttachments,
+    });
 
     // Drag and drop handlers
     const handleDragOver = useCallback((e: React.DragEvent) => {
@@ -1238,13 +1357,7 @@ export const AIInput = forwardRef<AIInputRef, AIInputProps>(
             e.preventDefault();
             const file = item.getAsFile();
             if (file) {
-              // Generate unique filename for pasted images (clipboard gives generic "image.png")
-              const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-              const ext = file.type.split('/')[1] || 'png';
-              const uniqueName = `pasted-image-${timestamp}.${ext}`;
-              const renamedFile = new File([file], uniqueName, { type: file.type });
-              pushSnapshot(captureSnapshot(), { boundary: true });
-              await handleFileAttachment(renamedFile);
+              await attachPastedImage(file);
             }
             return; // Exit early after handling image
           }
@@ -1253,7 +1366,15 @@ export const AIInput = forwardRef<AIInputRef, AIInputProps>(
 
       // Get pasted text for further processing
       const pastedText = e.clipboardData.getData('text');
-      if (!pastedText) return;
+      if (!pastedText) {
+        // Under WSL an image copied in Windows arrives as an empty text entry
+        // (WSLg passes only text to Linux apps); ask the host for the image.
+        if (onAttachmentAdd && isEmptyPaste(e.clipboardData)) {
+          e.preventDefault();
+          await attachPastedImage();
+        }
+        return;
+      }
 
       // Handle large text pastes as attachments (keeps transcript clean)
       if (onAttachmentAdd && sessionId) {
@@ -1285,7 +1406,7 @@ export const AIInput = forwardRef<AIInputRef, AIInputProps>(
       // Note: ordinary in-line text pastes fall through to the textarea's
       // native paste, which fires onChange and is recorded by the typing
       // path (with coalescing).
-    }, [onAttachmentAdd, handleFileAttachment, provider, value, onChange, sessionId, pushSnapshot, captureSnapshot]);
+    }, [onAttachmentAdd, handleFileAttachment, attachPastedImage, provider, value, onChange, sessionId, pushSnapshot, captureSnapshot]);
 
     // Handle attachment removal
     const handleRemoveAttachment = useCallback((attachmentId: string) => {
@@ -1325,12 +1446,14 @@ export const AIInput = forwardRef<AIInputRef, AIInputProps>(
 
     const handleSend = () => {
       if (value.trim() && !disabled && processingAttachments.length === 0) {
+        endDictationForSubmit();
         onSend(value);
       }
     };
 
     const handleQueue = () => {
       if (value.trim() && !disabled && onQueue) {
+        endDictationForSubmit();
         onQueue(value);
       }
     };
@@ -1407,6 +1530,7 @@ export const AIInput = forwardRef<AIInputRef, AIInputProps>(
             Each chip has an × so the user can drop it from the next prompt. */}
         <SelectionChips
           currentFilePath={currentFilePath}
+          currentFileName={currentFileName}
         />
 
         {/* Inline controls row - hidden in memory mode */}
@@ -1510,6 +1634,7 @@ export const AIInput = forwardRef<AIInputRef, AIInputProps>(
             />
           )}
           </div>
+          {!isMemoryMode && <DictationButton targetKey={dictationKey} disabled={disabled} />}
           {isMemoryMode ? (
             // Memory mode: show save button
             <MemorySaveButton

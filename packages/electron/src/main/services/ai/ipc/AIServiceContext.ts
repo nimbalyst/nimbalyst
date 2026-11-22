@@ -73,7 +73,7 @@ export interface AIServiceContext {
     reason: DriveReason,
   ): Promise<DriveOutcome>;
   forceSessionIdleOnCancel(sessionId: string): Promise<void>;
-  interruptCurrentTurn(sessionId: string): Promise<InterruptCurrentTurnResult>;
+  interruptCurrentTurn(sessionId: string, options?: { userSendNow?: boolean }): Promise<InterruptCurrentTurnResult>;
 
   // --- misc ---------------------------------------------------------------
   createToolHandler(

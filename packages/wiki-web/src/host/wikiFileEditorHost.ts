@@ -69,6 +69,8 @@ export interface WikiFileEditorHostOptions {
   autosaveDelayMs?: number;
   /** Shown inside another page (a canvas card) rather than as the page itself. */
   embedded?: boolean;
+  /** A static export: the editor is told so, and nothing is ever marked dirty or written. */
+  readOnly?: boolean;
 }
 
 /** A write the server refused because the file changed; the editor keeps its edits. */
@@ -84,6 +86,7 @@ const noop = () => {};
 export function createWikiFileEditorHost(options: WikiFileEditorHostOptions): WikiFileEditorHost {
   const { pageId, api, changes } = options;
   const autosaveDelayMs = options.autosaveDelayMs ?? 800;
+  const readOnly = options.readOnly ?? false;
   let theme = options.theme;
   let version: string | null = null;
   let state: WikiFileEditorState = { dirty: false, saving: false, conflict: null, error: null };
@@ -153,7 +156,7 @@ export function createWikiFileEditorHost(options: WikiFileEditorHostOptions): Wi
     },
     isActive: true,
     visible: true,
-    readOnly: false,
+    readOnly,
     embedded: options.embedded ?? false,
 
     async loadContent() {
@@ -181,6 +184,7 @@ export function createWikiFileEditorHost(options: WikiFileEditorHostOptions): Wi
     },
 
     setDirty(dirty) {
+      if (readOnly) return;
       if (dirty) dirtyMarks += 1;
       if (dirty === state.dirty) {
         if (dirty && !autosave && !state.conflict) autosave = setTimeout(() => void requestSave(), autosaveDelayMs);
@@ -192,6 +196,7 @@ export function createWikiFileEditorHost(options: WikiFileEditorHostOptions): Wi
     },
 
     saveContent(content) {
+      if (readOnly) return Promise.resolve();
       const text = typeof content === 'string' ? content : new TextDecoder().decode(content);
       const run = writing.catch(noop).then(async () => {
         if (state.conflict) throw new WikiFileConflictError();

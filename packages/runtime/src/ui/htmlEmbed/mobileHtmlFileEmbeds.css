@@ -1,0 +1,23 @@
+.mobile-html-embed {
+  margin: 8px 0;
+  border: 1px solid var(--nim-border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.mobile-html-embed__placeholder {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 24px 12px;
+  color: var(--nim-text-muted);
+  font-size: 13px;
+  text-align: center;
+}
+
+.mobile-html-embed__placeholder--error code {
+  color: var(--nim-text-faint);
+  font-size: 12px;
+  word-break: break-all;
+}

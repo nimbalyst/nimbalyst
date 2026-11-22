@@ -14,7 +14,7 @@
  */
 
 import type { BrowserWindow } from 'electron';
-import { explicitVoiceDecision } from './mobileVoicePromptContract';
+import { explicitVoiceDecision, VOICE_WORKTREE_COMMIT_REFUSAL } from './mobileVoicePromptContract';
 import { loadVoiceSession } from './voiceSessionLoader';
 import { pendingVoicePrompts } from './voicePendingPrompts';
 import { sessionHasLivePrompt } from './voicePromptLiveness';
@@ -110,6 +110,7 @@ function buildResponsePayload(
       if (decision && (!prompt.commitMessage?.trim() || !prompt.stagedFiles?.length)) {
         return { error: 'This commit proposal needs its app card.' };
       }
+      if (decision && prompt.targetWorktree) return { error: VOICE_WORKTREE_COMMIT_REFUSAL };
       return {
         payload: {
           promptType: 'git_commit',

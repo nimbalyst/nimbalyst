@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { SQLiteDatabase } from '../../../database/sqlite/SQLiteDatabase';
 import { runTransactionStatements } from '../../../database/transactionStatements';
 import { createPGLiteSessionStore } from '../../PGLiteSessionStore';
-import { ExternalSessionPersistence } from '../ExternalSessionPersistence';
+import { ExternalSessionPersistence, externalIdentityForSession } from '../ExternalSessionPersistence';
 import type { ExternalCursor } from '../types';
 
 const schemaDir = path.resolve(__dirname, '../../../database/sqlite/schemas');
@@ -48,6 +48,27 @@ describe.each(['pglite', 'sqlite'] as const)('ExternalSessionPersistence (%s)', 
   afterEach(async () => { await db?.close(); if (dir) rmSync(dir, { recursive: true, force: true }); });
   const append = (expectedCursor: ExternalCursor | null, next: ExternalCursor, ids: string[], target = ref) => persistence.appendAndAdvance({ ref: target, sessionId: 'local', expectedCursor, cursor: next, messages: ids.map(message) });
   async function ids() { return (await db.query<{ provider_message_id: string }>('SELECT provider_message_id FROM ai_agent_messages ORDER BY id')).rows.map(row => row.provider_message_id); }
+
+  it('recognizes an interrupted first import while accepting cursor-only and legacy message-only imports', async () => {
+    expect(await persistence.emptyImportIds(['local'])).toEqual(new Set(['local']));
+    await append(null, cursor(10), []);
+    expect(await persistence.emptyImportIds(['local'])).toEqual(new Set());
+    await append(cursor(10), cursor(20), ['legacy']);
+    await db.query('DELETE FROM external_session_cursors WHERE session_id = $1', ['local']);
+    expect(await persistence.emptyImportIds(['local'])).toEqual(new Set());
+  });
+
+  it('names a deleted session by the same identity ingestion resolves, including legacy rows keyed by id (GitHub #1825)', async () => {
+    await db.query('INSERT INTO ai_sessions (id,provider,provider_session_id,workspace_id) VALUES ($1,$2,NULL,$3)', ['legacy', 'claude-code-cli', ref.workspacePath]);
+    await db.query('INSERT INTO ai_sessions (id,provider,provider_session_id,workspace_id) VALUES ($1,$2,NULL,$3)', ['chat', 'claude', ref.workspacePath]);
+    expect(await externalIdentityForSession(db, 'local')).toEqual({ providerId: 'claude-code', externalId: 'external' });
+    const legacy = await externalIdentityForSession(db, 'legacy');
+    expect(legacy).toEqual({ providerId: 'claude-code', externalId: 'legacy' });
+    expect(await persistence.resolveSessionId({ ...ref, ...legacy! })).toBe('legacy');
+    // Providers with no external logs never need a deletion record.
+    expect(await externalIdentityForSession(db, 'chat')).toBeNull();
+    expect(await externalIdentityForSession(db, 'missing')).toBeNull();
+  });
 
   it('appends new entries, deduplicates replay and survives close/reopen with independent sidecar cursors', async () => {
     expect(await persistence.getCursor(ref)).toBeNull();

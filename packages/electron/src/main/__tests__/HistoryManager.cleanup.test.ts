@@ -146,3 +146,28 @@ describe('HistoryManager.cleanup', () => {
     await expect(new HistoryManager().cleanup()).resolves.toBeUndefined();
   });
 });
+
+describe('HistoryManager startup and snapshot scope', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    query.mockResolvedValue({ rows: [] });
+  });
+
+  it('initialize() does not run retention inline; it is scheduled after first-usable', async () => {
+    const { HistoryManager } = await import('../HistoryManager');
+    await new HistoryManager().initialize();
+    expect(sqlCalls().filter(s => s.startsWith('delete'))).toHaveLength(0);
+  });
+
+  it('never snapshots binary files, which gzip cannot shrink', async () => {
+    const { HistoryManager } = await import('../HistoryManager');
+    const manager = new HistoryManager();
+
+    await manager.createSnapshot('/ws/assets/Logo.PNG', '\u0089PNG\r\n', 'auto-save');
+    await manager.createSnapshot('/ws/demo.gif', 'GIF89a', 'ai-edit');
+    expect(sqlCalls().some(s => s.includes('insert into document_history'))).toBe(false);
+
+    await manager.createSnapshot('/ws/notes.md', '# notes', 'auto-save');
+    expect(sqlCalls().filter(s => s.includes('insert into document_history'))).toHaveLength(1);
+  });
+});

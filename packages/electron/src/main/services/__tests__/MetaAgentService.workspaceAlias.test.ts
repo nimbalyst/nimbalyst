@@ -305,6 +305,29 @@ describe('MetaAgentService workspace-alias resolution (#1551)', () => {
     expect(createdWorkspaceIds()).toEqual([fixture.alias]);
   });
 
+  // GitHub #1876: an isolated session is top-level, so one that reports back to
+  // its caller is a worker filed outside the caller's tree.
+  it('spawn_session rejects isolated with any reporting other than "none", before creating a row', async () => {
+    vi.mocked(AISessionsRepository.get).mockImplementation(async (id: string) =>
+      id === 'parent' ? sessionRow({ id: 'parent', workspacePath: fixture.alias }) : null,
+    );
+
+    for (const extra of [{ reporting: 'final' }, { reporting: 'messages' }, { notifyOnComplete: true }]) {
+      await expect(
+        service.spawnSession('parent', fixture.canonical, { prompt: CHILD_PROMPT, isolated: true, ...extra }),
+      ).rejects.toThrow(/omit isolated/);
+    }
+    expect(AISessionsRepository.create).not.toHaveBeenCalled();
+
+    // Non-isolated workers keep their reporting.
+    for (const extra of [{}, { besideCaller: true }]) {
+      const result = JSON.parse(
+        await service.spawnSession('parent', fixture.canonical, { prompt: CHILD_PROMPT, reporting: 'final', ...extra }),
+      );
+      expect(result.reporting).toBe('final');
+    }
+  });
+
   it('create_session files the child, the spawn gate, and the renderer refresh under the stored spelling', async () => {
     vi.mocked(AISessionsRepository.get).mockImplementation(async (id: string) =>
       id === 'meta' ? sessionRow({ id: 'meta', workspacePath: fixture.alias }) : null,

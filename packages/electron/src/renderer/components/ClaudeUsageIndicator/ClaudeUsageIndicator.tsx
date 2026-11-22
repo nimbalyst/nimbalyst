@@ -1,7 +1,8 @@
 /**
  * ClaudeUsageIndicator - Circular progress indicator for Claude Code usage
  *
- * Displays the 5-hour session utilization as a circular progress ring
+ * Displays the 5-hour session utilization (or weekly, on plans without a
+ * session limit) as a circular progress ring
  * in the navigation gutter. Clicking opens a popover with full details.
  */
 
@@ -14,6 +15,7 @@ import {
   formatResetTime,
 } from '../../store/atoms/claudeUsageAtoms';
 import { ClaudeUsagePopover } from './ClaudeUsagePopover';
+import { claudeUsageHeadline } from '../../../shared/claudeUsage';
 import { refreshClaudeUsage } from '../../store/listeners/claudeUsageListeners';
 
 const RING_RADIUS = 12;
@@ -44,7 +46,8 @@ export const ClaudeUsageIndicator: React.FC<ClaudeUsageIndicatorProps> = ({ clas
   }
 
   const hasLoadError = Boolean(usage?.error);
-  const utilization = hasLoadError ? 0 : usage?.fiveHour?.utilization ?? 0;
+  const headline = usage ? claudeUsageHeadline(usage) : null;
+  const utilization = hasLoadError ? 0 : headline?.utilization ?? 0;
   const strokeDashoffset = RING_CIRCUMFERENCE * (1 - utilization / 100);
 
   // Color mapping
@@ -60,10 +63,10 @@ export const ClaudeUsageIndicator: React.FC<ClaudeUsageIndicatorProps> = ({ clas
 
   const tooltipContent = usage?.error
     ? `Claude usage unavailable: ${usage.error}`
-    : usage
+    : headline
       ? [
-          `Session: ${Math.round(utilization)}% used (resets ${formatResetTime(usage.fiveHour.resetsAt)})`,
-          ...(usage.weeklyModelLimits ?? []).map(limit =>
+          `${headline.label}: ${Math.round(utilization)}% used (resets ${formatResetTime(headline.resetsAt)})`,
+          ...(usage?.weeklyModelLimits ?? []).map(limit =>
             `${limit.model}: ${Math.round(limit.utilization)}% used this week (resets ${formatResetTime(limit.resetsAt)})`
           ),
         ].join('\n')

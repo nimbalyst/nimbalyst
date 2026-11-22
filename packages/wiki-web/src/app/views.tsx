@@ -14,6 +14,8 @@ import {
 } from '@nimbalyst/collab-bundle/trackers-ui';
 import type { LocalSearchHit } from '@nimbalyst/local-wiki';
 import { wikiApi } from '../api/client';
+import { isStaticSite, staticLinks, staticPages, staticSiteTitle } from '../api/staticSite';
+import { routeForId, StaticBacklinks } from './staticViews';
 import type { WikiRoute } from '../host/LocalCollabHost';
 import type { LocalTrackerDataSource } from '../host/LocalTrackerDataSource';
 import { ExtensionPageEditor } from '../editors/ExtensionPageEditor';
@@ -29,7 +31,7 @@ type Navigate = (route: ViewRoute) => void;
 function usePageTitle(title: string | null): void {
   useEffect(() => {
     if (title === null) return;
-    document.title = `${title || 'Untitled'} · Local wiki`;
+    document.title = `${title || 'Untitled'} · ${isStaticSite() ? staticSiteTitle() : 'Local wiki'}`;
   }, [title]);
 }
 
@@ -124,14 +126,17 @@ export function PageView({ pageId, filePath, navigate }: { pageId: string; fileP
     <article className={`wiki-web-page flex flex-col ${editor ? 'min-h-0 flex-1' : 'min-h-full'}`} data-testid="wiki-web-page" data-page-id={pageId}>
       <ViewHeader
         crumbs={crumbs}
-        actions={markdown || editor ? (
+        actions={(markdown || editor) && !isStaticSite() ? (
           <span className="wiki-web-save-state px-1 text-[11px] text-nim-faint" data-save-state={save.state} aria-live="polite" title={filePath ?? undefined}>
             {saveStateLabel(save.state, save.error)}
           </span>
         ) : undefined}
       />
       {markdown ? (
-        <PageEditor key={pageId} pageId={pageId} onSaveState={onSaveState} />
+        <>
+          <PageEditor key={pageId} pageId={pageId} onSaveState={onSaveState} />
+          {isStaticSite() ? <StaticBacklinks pageId={pageId} navigate={navigate} /> : null}
+        </>
       ) : editor ? (
         <ExtensionPageEditor key={pageId} pageId={pageId} fileName={document.title} filePath={filePath ?? document.title} editor={editor} onSaveState={onSaveState} />
       ) : (
@@ -173,7 +178,7 @@ export function TypedPageView({ itemId, module, trackers, navigate }: { itemId: 
   }
   const typeInfo = item ? trackers.typeInfo(item.primaryType) : undefined;
   const storage = typeInfo?.storage ?? 'pages';
-  const editing = typedPageEditing(storage, {
+  const editing = typedPageEditing(storage, isStaticSite(), {
     update,
     archive: () => void command({ type: 'archive-item', itemId, archive: true }).then(() => navigate({ kind: 'home' })).catch(fail),
     fail,
@@ -199,15 +204,19 @@ export function TypedPageView({ itemId, module, trackers, navigate }: { itemId: 
                 <div className="text-xs text-nim-muted">
                   {typeInfo?.displayNamePlural ?? 'This type'} keeps every row in one CSV file. Convert the type to pages to give each row its own page with a body and child pages; ids and field values are kept.
                 </div>
-                <div><ConvertToPagesAction typeId={item.primaryType} plural={typeInfo?.displayNamePlural ?? item.primaryType} trackers={trackers} /></div>
+                {isStaticSite() ? null : <div><ConvertToPagesAction typeId={item.primaryType} plural={typeInfo?.displayNamePlural ?? item.primaryType} trackers={trackers} /></div>}
               </div>
             )
           : null)}
-        onOpenItem={(id) => navigate({ kind: 'item', id })}
+        linksSource={isStaticSite() ? STATIC_LINKS_SOURCE : undefined}
+        onOpenItem={(id) => navigate(isStaticSite() ? routeForId(id, staticPages()) : { kind: 'item', id })}
       />
     </div>
   );
 }
+
+/** A static export's Links section reads the links the export computed. */
+const STATIC_LINKS_SOURCE = { linksFor: (itemId: string) => staticLinks(itemId) };
 
 export function TypeTableView({ typeId, module, trackers, navigate }: { typeId: string; module: PageModule; trackers: LocalTrackerDataSource; navigate: Navigate }) {
   const { itemPlacements } = useCollabPagesState();
@@ -225,7 +234,7 @@ export function TypeTableView({ typeId, module, trackers, navigate }: { typeId: 
         actions={(
           <span className="inline-flex items-center gap-2">
             <span className="px-1 text-[11px] text-nim-faint">{info.storage === 'table' ? 'One CSV file' : 'One markdown page per item'}</span>
-            {info.storage === 'table' ? <ConvertToPagesAction typeId={typeId} plural={info.displayNamePlural} trackers={trackers} /> : null}
+            {info.storage === 'table' && !isStaticSite() ? <ConvertToPagesAction typeId={typeId} plural={info.displayNamePlural} trackers={trackers} /> : null}
           </span>
         )}
       />

@@ -1,5 +1,10 @@
+// @vitest-environment node
 import { describe, expect, it, vi } from 'vitest';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 import { createPGLiteQueuedPromptsStore } from '../PGLiteQueuedPromptsStore';
+import { SQLiteDatabase } from '../../database/sqlite/SQLiteDatabase';
 
 type DbStub = { query: <T = any>(sql: string, params?: any[]) => Promise<{ rows: T[] }> };
 
@@ -349,5 +354,64 @@ describe('PGLiteQueuedPromptsStore boot re-drive helpers', () => {
         'Project folder is no longer available at /gone',
       ),
     ).toBe(2);
+  });
+});
+
+describe('PGLiteQueuedPromptsStore.cleanup', () => {
+  // Runs against a real SQLite database: the old data-modifying CTE was
+  // Postgres-only, so the SQLite backend is the one that needs proving.
+  it('deletes only completed/failed rows older than the cutoff, on SQLite', async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'nim-queued-cleanup-'));
+    const dbDir = path.join(tmp, 'sqlite-db');
+    fs.mkdirSync(dbDir, { recursive: true });
+    const sqlite = new SQLiteDatabase({
+      dbDir,
+      schemaDir: path.resolve(__dirname, '..', '..', 'database', 'sqlite', 'schemas'),
+    });
+    try {
+      await sqlite.initialize();
+      const handle = sqlite.getRawHandle()!;
+      handle.prepare('INSERT INTO ai_sessions(id, provider, title) VALUES (?, ?, ?)').run('s1', 'claude', 't');
+      const old = new Date(Date.now() - 40 * 86_400_000).toISOString();
+      const recent = new Date(Date.now() - 86_400_000).toISOString();
+      const insert = handle.prepare(
+        'INSERT INTO queued_prompts(id, session_id, prompt, status, completed_at) VALUES (?, ?, ?, ?, ?)',
+      );
+      for (let i = 0; i < 1203; i++) insert.run(`old-done-${i}`, 's1', 'p', 'completed', old);
+      insert.run('old-failed', 's1', 'p', 'failed', old);
+      insert.run('recent-done', 's1', 'p', 'completed', recent);
+      insert.run('old-pending', 's1', 'p', 'pending', old);
+      insert.run('executing', 's1', 'p', 'executing', null);
+
+      const store = createPGLiteQueuedPromptsStore(sqlite as never);
+      const deleted = await store.cleanup(30 * 86_400_000);
+
+      expect(deleted).toBe(1204);
+      const left = handle.prepare('SELECT id FROM queued_prompts ORDER BY id').all() as Array<{ id: string }>;
+      expect(left.map(r => r.id)).toEqual(['executing', 'old-pending', 'recent-done']);
+    } finally {
+      try { await sqlite.close(); } catch { /* ignore */ }
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});
+
+describe('PGLiteQueuedPromptsStore.create', () => {
+  it('refuses to queue a prompt for a workstream container, which has no agent to run it', async () => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'nim-queued-container-'));
+    const sqlite = new SQLiteDatabase({ dbDir: tmp, schemaDir: path.resolve(__dirname, '..', '..', 'database', 'sqlite', 'schemas') });
+    try {
+      await sqlite.initialize();
+      const handle = sqlite.getRawHandle()!;
+      handle.prepare("INSERT INTO ai_sessions(id, provider, title, session_type) VALUES ('ws', 'claude-code', 'W', 'workstream')").run();
+      handle.prepare("INSERT INTO ai_sessions(id, provider, title) VALUES ('s', 'claude-code', 'S')").run();
+      const store = createPGLiteQueuedPromptsStore(sqlite as never);
+      await expect(store.create({ id: 'p1', sessionId: 'ws', prompt: 'hi' })).rejects.toThrow(/workstream/);
+      await expect(store.create({ id: 'p2', sessionId: 's', prompt: 'hi' })).resolves.toMatchObject({ id: 'p2' });
+      expect((handle.prepare('SELECT id FROM queued_prompts').all() as Array<{ id: string }>).map(r => r.id)).toEqual(['p2']);
+    } finally {
+      await sqlite.close();
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
   });
 });

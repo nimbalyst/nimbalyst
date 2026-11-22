@@ -1,5 +1,6 @@
 {
   "compilerOptions": {
+    "noUncheckedSideEffectImports": false,
     "target": "ES2022",
     "module": "ESNext",
     "moduleResolution": "bundler",

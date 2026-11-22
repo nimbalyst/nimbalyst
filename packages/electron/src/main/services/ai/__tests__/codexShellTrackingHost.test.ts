@@ -57,7 +57,8 @@ it('fences foreign identity through the executable hook and loopback host withou
     child.stdin.end(JSON.stringify({ hook_event_name: event, tool_use_id: 'foreign', tool_name: 'Bash', session_id: 'child-session', turn_id: 'child-turn', agent_type: 'worker', tool_input: { command: 'private command' } }));
   });
   await hook('PreToolUse');
-  expect(pre).toHaveBeenCalledWith(expect.any(String), 'foreign', 'Bash', { sessionId: 'child-session', turnId: 'child-turn', agentType: 'worker' }, 'private command');
+  // Command text is not forwarded: it is not evidence of which files a command wrote.
+  expect(pre).toHaveBeenCalledWith(expect.any(String), 'foreign', 'Bash', { sessionId: 'child-session', turnId: 'child-turn', agentType: 'worker' });
   expect(shellFileAttribution.getStats().activeWindows).toBe(0);
   fixture.observed!('change', '/workspace/excluded.ts', Date.now() + 1);
   await shellFileAttribution.flush();
@@ -76,40 +77,14 @@ it('accepts legacy hooks and rejects invalid optional identities at the HTTP bou
     method: 'POST', body: JSON.stringify({ event: 'PreToolUse', id: 'legacy', tool: 'Bash', ...fields }),
   });
   expect((await send({})).status).toBe(200);
-  const pre = vi.spyOn(shellFileAttribution, 'pre');
-  const command = '界'.repeat(2000);
-  expect((await send({ command })).status).toBe(200);
-  expect(pre).toHaveBeenLastCalledWith(expect.any(String), 'legacy', 'Bash', expect.any(Object), command);
-  expect((await send({ command: '\u0001'.repeat(1000) })).status).toBe(200); // Escaped JSON exceeds the old 4 KiB cap.
-  expect((await send({ command: 1 })).status).toBe(400);
-  expect((await send({ command: 'x'.repeat(2001) })).status).toBe(400);
+  // A hook script from an earlier version still sends `command`; accept and ignore it.
+  expect((await send({ command: 'x'.repeat(2000) })).status).toBe(200);
   expect((await send({ ignored: 'x'.repeat(8192) })).status).toBe(413);
   for (const field of ['session_id', 'turn_id', 'agent_type']) {
     expect((await send({ [field]: 1 })).status).toBe(400);
     expect((await send({ [field]: 'x'.repeat(257) })).status).toBe(400);
   }
   await shellTrackingCoverage.flush(['validation-test']);
-});
-
-it('forwards only bounded Bash commands through the executable hook', async () => {
-  registration = await prepareShellTracking('command-test', '/workspace');
-  const pre = vi.spyOn(shellFileAttribution, 'pre');
-  for (const [tool, command, expected] of [
-    ['Bash', 'x'.repeat(2100), 'x'.repeat(2000)],
-    ['Bash', ['printf', 'hello', './named.ts'], 'printf hello ./named.ts'],
-    ['Bash', 42, undefined],
-    ['mcp__test', 'not a shell command', undefined],
-  ] as const) {
-    await new Promise<void>((resolve, reject) => {
-      const child = spawn(process.execPath, [path.join(packageRoot.value, 'resources/codex-shell-hook.cjs')], {
-        env: { ...process.env, ...registration!.env }, stdio: ['pipe', 'pipe', 'pipe'],
-      });
-      child.on('error', reject);
-      child.on('exit', code => code === 0 ? resolve() : reject(new Error(`Hook exited ${code}`)));
-      child.stdin.end(JSON.stringify({ hook_event_name: 'PreToolUse', tool_use_id: 'command', tool_name: tool, tool_input: { command, ignored: 'x'.repeat(10_000) } }));
-    });
-    expect(pre).toHaveBeenLastCalledWith(expect.any(String), 'command', tool, expect.any(Object), expected);
-  }
 });
 
 it('passes MCP start typing to attribution without marking a pending writer', async () => {

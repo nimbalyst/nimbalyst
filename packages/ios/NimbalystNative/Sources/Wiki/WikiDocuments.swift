@@ -23,6 +23,24 @@ public enum WikiDocuments {
         return !path.lowercased().hasSuffix(".md")
     }
 
+    /// `.html` files sync so the editor can render the diagrams pages embed
+    /// (`[Label](flow.html "height=400")`); opened on their own, the markdown
+    /// editor would mangle them, so no list offers them.
+    public static func isEmbedOnlyFile(_ relativePath: String) -> Bool {
+        relativePath.lowercased().hasSuffix(".html")
+    }
+
+    /// Project-relative path of the `.html` file a link in `fromRelativePath`
+    /// embeds, resolved beside that file as desktop does; nil for web, absolute
+    /// or escaping paths and for anything that is not `.html`.
+    public static func embedPath(src: String, fromRelativePath: String) -> String? {
+        let link = WikiFormat.link(text: "", destination: src.trimmingCharacters(in: .whitespaces), title: nil)
+        let path = link.path
+        guard isEmbedOnlyFile(path), !path.hasPrefix("/"),
+              path.range(of: #"^[a-z][a-z0-9+.-]*:"#, options: [.regularExpression, .caseInsensitive]) == nil else { return nil }
+        return WikiFormat.resolveLinkPath(fromDir: WikiFormat.dirname(fromRelativePath), linkPath: path)
+    }
+
     /// What a synced file is to the wiki. Every way of opening a file (Files,
     /// Wiki, a link) goes through this, so a wiki this app cannot write is
     /// read-only everywhere.

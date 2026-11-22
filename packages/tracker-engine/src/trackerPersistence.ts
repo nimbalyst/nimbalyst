@@ -93,7 +93,8 @@ export interface TrackerAtomicMutation {
 
 /** Tracker mutation codes that cannot succeed by replaying the same payload. */
 export function isPermanentTrackerRejection(code: TrackerMutationRejectCode): boolean {
-  return code === 'forbidden'
+  return code === 'recoveryConflict'
+    || code === 'forbidden'
     || code === 'legacy_encryption_retired'
     || code === 'issueKeyPrefixConflict'
     || code === 'adminRequired'

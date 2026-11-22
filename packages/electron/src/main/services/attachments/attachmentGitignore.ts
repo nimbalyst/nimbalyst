@@ -14,7 +14,7 @@ export interface AttachmentGitignoreStatus {
 
 async function gitTopLevel(workspacePath: string): Promise<string | null> {
   try {
-    const { stdout } = await execFileAsync('git', ['-C', workspacePath, 'rev-parse', '--show-toplevel']);
+    const { stdout } = await execFileAsync('git', ['-C', workspacePath, 'rev-parse', '--show-toplevel'], { windowsHide: true });
     return normalize(stdout.trim());
   } catch {
     return null;
@@ -37,7 +37,7 @@ export async function getAttachmentGitignoreStatus(
       '--no-index',
       '-q',
       'nimbalyst-local/attachments/.nimbalyst-probe',
-    ]);
+    ], { windowsHide: true });
     return { isGitRepo: true, alreadyIgnored: true, shouldOffer: false };
   } catch {
     return { isGitRepo: true, alreadyIgnored: false, shouldOffer: true };

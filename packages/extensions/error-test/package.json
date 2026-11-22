@@ -10,7 +10,7 @@
   },
   "devDependencies": {
     "@nimbalyst/extension-sdk": "workspace:*",
-    "typescript": "^5.0.0",
+    "typescript": "^6.0.3",
     "vite": "^7.1.12"
   },
   "peerDependencies": {

@@ -255,7 +255,7 @@ Per the end-to-end-verification rule: if a bug requires `/restart` to test, the 
 ### Type checks
 
 - `pnpm run typecheck` at the root
-- Per-package `tsc --noEmit`
+- Per-package `pnpm run typecheck`. These run the native TypeScript 7 compiler through `scripts/tsc-native.mjs`. Plain `tsc` is TypeScript 6, which builds, typescript-eslint and the guard scripts use because 7.0 has no JS compiler API. The two read the same tsconfigs, so an error in one should appear in the other.
 - Type checks verify correctness, not feature correctness; don't conflate "tsc passes" with "the user can do the thing."
 
 ### Linting

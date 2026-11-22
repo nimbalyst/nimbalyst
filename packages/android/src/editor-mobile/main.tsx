@@ -11,6 +11,8 @@
  *     - contentChanged: { content, revision } a save to persist: after typing (debounced 500ms)
  *       or a flush; native answers saveResult(revision, ok). See pendingSave.ts.
  *     - linkClicked: a link was tapped ({ href, title }); native decides where it goes
+ *     - readEmbedFile: { requestId, src } the text of an embedded `.html` file, `src`
+ *       as written in the link; native answers embedFileResult
  *     - error: JS error occurred
  *
  *   Android -> JS: window.nimbalystEditor.*
@@ -23,6 +25,7 @@
  *     - setReadOnly(readonly: boolean): toggle read-only mode
  *     - getContent(): string: get current markdown content
  *     - formatText(format: string): apply text format (bold, italic, underline, strikethrough, code)
+ *     - embedFileResult(requestId, content | null, error?): the answer to readEmbedFile
  *
  * Only user edits are reported. Content set by loadMarkdown (the initial load
  * or a remote update) becomes the new baseline, so opening a file or receiving
@@ -56,6 +59,7 @@ import type { LexicalEditor, TextFormatType } from 'lexical';
 import { joinFrontmatter, splitFrontmatter } from './frontmatter';
 import { PendingSave } from './pendingSave';
 import { authoredLinkHref } from './linkHref';
+import { installMobileHtmlEmbeds } from '@nimbalyst/runtime/ui/htmlEmbed/mobileHtmlFileEmbeds';
 import './styles.css';
 
 const LOAD_TAG = 'nimbalyst-load';
@@ -85,6 +89,14 @@ function postErrorToNative(error: Error | string, context?: string): void {
 function isBenignWindowErrorMessage(message: string): boolean {
   return message === 'ResizeObserver loop completed with undelivered notifications.';
 }
+
+// `.html` embeds: native reads the synced file and serves the sandbox shell
+// (DocumentEditorWebView.kt shouldInterceptRequest; the host never resolves).
+const htmlEmbeds = installMobileHtmlEmbeds({
+  requestFile: (requestId, src) => postToNative({ type: 'readEmbedFile', requestId, src }),
+  shellUrl: 'https://nimbalyst-embed.invalid/shell',
+  openLink: (href) => postToNative({ type: 'linkClicked', href, title: null }),
+});
 
 window.onerror = (message, _source, _lineno, _colno, error) => {
   const normalizedMessage = error instanceof Error ? error.message : String(message);
@@ -266,6 +278,10 @@ function EditorApp(): React.ReactElement {
         if (editor) {
           editor.dispatchCommand(FORMAT_TEXT_COMMAND, format);
         }
+      },
+
+      embedFileResult: (requestId: number, content: string | null, error?: string) => {
+        htmlEmbeds.resolve(requestId, content, error);
       },
     };
 

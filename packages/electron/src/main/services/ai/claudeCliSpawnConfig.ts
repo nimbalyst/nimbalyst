@@ -111,20 +111,21 @@ export interface ClaudeCliSpawnInput {
    */
   allowedMcpServerNames?: string[];
   /**
-   * JSON string for `--settings` (NIM-806 Phase 4, Direction A). Used to register
-   * a `PreToolUse` permission hook so built-in Bash/Edit/Write requests route to
-   * a Nimbalyst ToolPermission widget instead of the native TUI prompt. (The
-   * interactive CLI ignores `--permission-prompt-tool`; a PreToolUse hook is the
-   * mechanism that works interactively.) The CLI accepts a JSON string or a file
-   * path here. Omit to keep the native gate.
+   * Path to a settings file for `--settings` (NIM-806 Phase 4, Direction A). Used
+   * to register a `PreToolUse` permission hook so built-in Bash/Edit/Write
+   * requests route to a Nimbalyst ToolPermission widget instead of the native TUI
+   * prompt. (The interactive CLI ignores `--permission-prompt-tool`; a PreToolUse
+   * hook is the mechanism that works interactively.) The CLI also accepts inline
+   * JSON, but that is unsafe through cmd.exe on Windows: the `|` in the hook
+   * matcher is read as a pipe (#1905). Omit to keep the native gate.
    */
-  settingsJson?: string;
+  settingsPath?: string;
   /**
    * Skip the CLI's permission gate entirely via its own
    * `--dangerously-skip-permissions` (NIM-806 Phase 4). Set only for workspaces the
    * user has explicitly trusted "allow-all"/"bypass-all": the genuine CLI then runs
    * every built-in tool without prompting, so we drop the PreToolUse hook
-   * (`settingsJson`) — the two are mutually exclusive (the launcher never sets both).
+   * (`settingsPath`) — the two are mutually exclusive (the launcher never sets both).
    * We still deny the built-in `AskUserQuestion` (MCP routing is unaffected by the
    * permission skip). Defaults to the gated path when unset/false.
    */
@@ -291,17 +292,24 @@ export function buildClaudeCliSpawnConfig(input: ClaudeCliSpawnInput): ClaudeCli
   }
   // Trusted "allow-all"/"bypass-all" workspaces skip the gate entirely via the
   // genuine CLI's own flag (NIM-806 Phase 4). Value-less boolean, safe before the
-  // variadics. The launcher never sets this together with `settingsJson` (the hook
+  // variadics. The launcher never sets this together with `settingsPath` (the hook
   // would prompt on top of the skip), but they're independent here for safety.
   if (input.dangerouslySkipPermissions) {
     args.push('--dangerously-skip-permissions');
+  } else if (!input.settingsPath) {
+    // Gated launch without the Nimbalyst hook (no hook script, no core server,
+    // or the settings file could not be written). Force the CLI's prompting mode
+    // so the user's own `permissions.defaultMode` (auto / acceptEdits /
+    // bypassPermissions) can't silently run tools with no prompt at all. `default`
+    // is accepted by every CLI version; newer ones also call it `manual`.
+    args.push('--permission-mode', 'default');
   }
   // Register the PreToolUse permission hook via --settings so built-in tool
   // prompts route to a Nimbalyst widget (NIM-806 Phase 4). Value-bearing flag —
   // MUST precede the `--allowedTools`/`--disallowedTools` variadics below so its
-  // single JSON value isn't swallowed by a variadic.
-  if (input.settingsJson) {
-    args.push('--settings', input.settingsJson);
+  // single value isn't swallowed by a variadic.
+  if (input.settingsPath) {
+    args.push('--settings', input.settingsPath);
   }
   // Pre-authorize reads of files OUTSIDE the workspace cwd (NIM-806). Pasted chat
   // attachments live under `<userData>/chat-attachments/...`; without `--add-dir`

@@ -208,7 +208,7 @@ const TOOLS = [
   {
     name: "workspace_set_trust",
     description:
-      "Set the agent trust mode for a workspace. Permission modes: 'ask' (smart per-tool permission prompts), 'allow-all' (auto-approve file edits), 'bypass-all' (Agent-verified when allowAllUsesClassifier is true; Allow everything otherwise). This tool preserves the classifier flag; selecting bypass-all does not disable automatic review. Read settings_get_overview to inspect it. Users can change it in Settings > Project > Agent Permissions. Set trusted=false to untrust. Bypass-all is powerful -- ask the user to confirm via AskUserQuestion before using it on unfamiliar projects.",
+      "Set the agent trust mode for a workspace. Permission modes: 'ask' (smart per-tool permission prompts), 'allow-all' (auto-approve file edits), 'bypass-all' (Agent-verified when allowAllUsesClassifier is true; Allow everything otherwise). The classifier flag is preserved unless allowAllUsesClassifier is passed; the loosest setting is mode='bypass-all' with allowAllUsesClassifier=false. The result reports permissionMode and allowAllUsesClassifier before and after. Users can change it in Settings > Project > Agent Permissions. Set trusted=false to untrust. Bypass-all is powerful -- ask the user to confirm via AskUserQuestion before using it on unfamiliar projects.",
     inputSchema: {
       type: "object",
       properties: {
@@ -221,6 +221,11 @@ const TOOLS = [
           type: "string",
           enum: ["ask", "allow-all", "bypass-all"],
           description: "Permission mode when trusted=true. Defaults to 'ask'. Ignored when trusted=false.",
+        },
+        allowAllUsesClassifier: {
+          type: "boolean",
+          description:
+            "Optional. true routes bypass-all through automatic review (Agent-verified); false makes bypass-all Allow everything. Omit to keep the current value.",
         },
       },
       required: ["workspacePath", "trusted"],
@@ -359,6 +364,7 @@ export async function dispatchSettingsTool(
             workspacePath: args.workspacePath,
             trusted: !!args.trusted,
             mode: args.mode,
+            allowAllUsesClassifier: args.allowAllUsesClassifier,
           }),
         );
 

@@ -7,7 +7,7 @@
  * required argument (no module-level "current workspace" fallback).
  */
 
-import { shell } from 'electron';
+import { systemShell } from '../utils/systemShell';
 import { safeHandle } from '../utils/ipcRegistry';
 import { logger } from '../utils/logger';
 import type { ImporterBinding, ImporterListFilter } from '@nimbalyst/extension-sdk';
@@ -123,7 +123,7 @@ export function registerTrackerImporterHandlers(): void {
       args: { workspacePath?: string; providerId: string; externalId: string; url?: string }
     ) => {
       if (args.url) {
-        await shell.openExternal(args.url);
+        await systemShell.openExternal(args.url);
         return { ok: true };
       }
       await registry.openExternal(

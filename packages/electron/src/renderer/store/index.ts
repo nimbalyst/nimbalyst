@@ -135,6 +135,7 @@ export {
   sessionThinkingModeRawAtom,
   sessionOpenCodeRoleAtom,
   sessionLoadingAtom,
+  sessionLoadErrorAtom,
   sessionModeAtom,
   sessionModelAtom,
   sessionArchivedAtom,

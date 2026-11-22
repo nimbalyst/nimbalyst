@@ -3,6 +3,7 @@ export { handleAskUserQuestion } from './askUserQuestionHandler';
 import { BrowserWindow, ipcMain } from "electron";
 import { AgentMessagesRepository } from "@nimbalyst/runtime/storage/repositories/AgentMessagesRepository";
 import { AISessionsRepository } from "@nimbalyst/runtime/storage/repositories/AISessionsRepository";
+import { TranscriptMigrationRepository } from "@nimbalyst/runtime/storage/repositories/TranscriptMigrationRepository";
 import { STRUCTURED_INPUT_FIELD_TYPES } from "@nimbalyst/collab-protocol";
 import { getSessionStateManager } from "@nimbalyst/runtime/ai/server/SessionStateManager";
 import { notificationService } from "../../services/NotificationService";
@@ -34,6 +35,10 @@ import { ClaudeSettingsManager } from "../../services/ClaudeSettingsManager";
 import { getPermissionService } from "../../services/PermissionService";
 import { SessionCommitService } from "../../services/SessionCommitService";
 import { resolveGitCommitProposalTarget } from "../../services/gitCommitProposalTarget";
+import { isGitLockFailure, noCommitNote, readProposalOutcome } from "../../services/commitOutcomeCheck";
+import { COMMIT_TARGET_VERSION } from "../../services/ai/proposalCommitTarget";
+import { cancelCommitProposalOnce, commitProposalIdentity, runCommitProposalOnce } from "../../services/ai/CommitProposalExecution";
+import { beginCommitProposalCall, registerWaitingCommitProposal } from "@nimbalyst/runtime/ai/server/commitProposalInFlight";
 import { findGitCommitProposalResponse, findToolPermissionResponse } from "./promptResponsePoll";
 import { findFreshInteractiveResponse } from "./interactiveResponsePolling";
 import { isInteractivePromptClosed } from "../../services/ai/questionTerminalResultLookup";
@@ -139,7 +144,9 @@ export function getInteractiveToolSchemas(sessionId: string | undefined) {
 
 IMPORTANT: First call get_session_edited_files, cross-reference with git status, and include ALL session-edited files that have uncommitted changes — do not cherry-pick a subset.
 
-Relative paths target the session's checkout (its worktree when linked). workingDirectory is unsupported; use a session in the intended checkout. Absolute paths may also target attached repositories. Files outside these roots are rejected.
+A directory path stages every modified, deleted and untracked non-ignored file under it, like \`git add <dir>\`. The user sees the expanded list. When the user reviews by hand, files under the directory edited only by other sessions arrive unchecked; with auto-commit on, every expanded file is committed. Use excludePaths to leave out specific files or subfolders. An ignored directory, a directory with no changes, a nested repository, or more than 2000 files is rejected.
+
+Relative paths target the session's checkout (its worktree when linked). Absolute paths may also target attached repositories. Files outside these roots are rejected. If the work lives in another worktree of the session's repository (listed by \`git worktree list\`), pass that worktree's absolute path as workingDirectory; all files must be in it.
 
 ONE REPOSITORY PER CALL. A commit cannot span repositories. If the files you are committing live in more than one repository (a workspace can have attached folders that are their own checkouts), call this tool once per repository — each call with only that repository's files and a commit message describing that repository's change. A call whose files span repositories is rejected.
 
@@ -171,7 +178,13 @@ Commit message: type prefix (feat:/fix:/refactor:/docs:/test:/chore:), title sta
               ],
             },
             description:
-              "Array of file paths (strings) or file objects with path and status (added/modified/deleted)",
+              "Array of file or directory paths (strings) or file objects with path and status (added/modified/deleted). A directory expands to the changed, non-ignored files under it.",
+          },
+          excludePaths: {
+            type: "array",
+            items: { type: "string" },
+            description:
+              "Optional. Literal files or directory prefixes (relative to the session checkout, or absolute) to leave out after directories are expanded. No globs.",
           },
           commitMessage: {
             type: "string",
@@ -182,6 +195,11 @@ Commit message: type prefix (feat:/fix:/refactor:/docs:/test:/chore:), title sta
             type: "string",
             description:
               "Explanation of why these files were selected and why this commit message is appropriate",
+          },
+          workingDirectory: {
+            type: "string",
+            description:
+              "Optional. Absolute path of another worktree of this session's repository (as listed by `git worktree list`) to commit into. Omit to commit in the session checkout.",
           },
         },
         required: ["filesToStage", "commitMessage", "reasoning"],
@@ -446,6 +464,24 @@ export async function handleGitCommitProposal(
   request: any,
   extra?: InteractivePromptCallExtra,
 ): Promise<McpToolResult> {
+  // Runs on every exit, including the manual path's late settle and a throw:
+  // a leaked in-flight mark would hold the session's interrupts forever (#1682).
+  const cleanups: Array<() => void> = [];
+  try {
+    return await runGitCommitProposal(args, sessionId, workspacePath, request, extra, cleanups);
+  } finally {
+    for (const cleanup of cleanups) cleanup();
+  }
+}
+
+async function runGitCommitProposal(
+  args: any,
+  sessionId: string | undefined,
+  workspacePath: string | undefined,
+  request: any,
+  extra: InteractivePromptCallExtra | undefined,
+  cleanups: Array<() => void>,
+): Promise<McpToolResult> {
   type FileToStage =
     | string
     | { path: string; status: "added" | "modified" | "deleted" };
@@ -456,6 +492,7 @@ export async function handleGitCommitProposal(
         commitMessage?: string;
         reasoning?: string;
         workingDirectory?: unknown;
+        excludePaths?: unknown;
       }
     | undefined;
 
@@ -512,12 +549,15 @@ export async function handleGitCommitProposal(
       workspacePath,
       proposalArgs.filesToStage.map(file => typeof file === "string" ? file : file.path),
       proposalArgs.workingDirectory,
+      ...(proposalArgs.excludePaths === undefined ? [] : [{ excludePaths: proposalArgs.excludePaths }]),
     );
     // Persist absolute paths so consumers of the durable proposal do not
     // reinterpret relative files against the parent MCP configuration root.
-    proposalArgs.filesToStage = proposalArgs.filesToStage.map((file, index) =>
-      typeof file === "string" ? target.files[index] : { ...file, path: target.files[index] }
-    );
+    proposalArgs.filesToStage = target.fileDetails
+      ? proposalFilesFromExpansion(proposalArgs.filesToStage, target)
+      : proposalArgs.filesToStage.map((file, index) =>
+          typeof file === "string" ? target.files[index] : { ...file, path: target.files[index] }
+        );
   } catch (error) {
     return {
       content: [{ type: "text", text: `Error: ${error instanceof Error ? error.message : String(error)}` }],
@@ -556,6 +596,10 @@ export async function handleGitCommitProposal(
       .substring(7)}`;
 
   const targetSessionId = sessionId || "unknown";
+  // #1682: meta-agent and teammate interrupts wait while this is set. The
+  // user's own send-now first closes the proposal if it is still waiting on
+  // them (NIM-7642, below), so it waits only for a commit they confirmed.
+  cleanups.push(beginCommitProposalCall(targetSessionId));
 
   // Decide before publishing: voice must never request approval for an automatic commit.
   let isAutoCommit = false;
@@ -565,6 +609,22 @@ export async function handleGitCommitProposal(
   } catch {
     // If we can't read settings, fall through to manual mode
   }
+  // #1968: the auto-commit setting is the only thing that decides this. A
+  // validated sibling worktree target (#1756) and files another session also
+  // edited (#1955) used to force manual approval, which stopped every commit
+  // for agents that work in their own worktrees. Do not add a pause here.
+  const otherSessionFileCount = target.fileDetails?.filter(file => file.otherSession).length ?? 0;
+  if (target.expansion) {
+    console.log(`[MCP Server] Commit proposal ${proposalId} expanded ${JSON.stringify(target.expansion.expandedFrom)} to ${target.files.length} file(s); ${otherSessionFileCount} flagged as another session's.`);
+  }
+  const expansionRecord = target.expansion
+    ? {
+        requestedPaths: target.expansion.requestedPaths,
+        excludePaths: target.expansion.excludePaths,
+        expandedFrom: target.expansion.expandedFrom,
+      }
+    : {};
+  const expansionNote = expansionResultNote(target);
 
   // Persist the proposal to database for durability
   try {
@@ -599,6 +659,12 @@ export async function handleGitCommitProposal(
               // Resolved here, not sent by the model. The widget reads the tool
               // input, so this is the only place it can reach it.
               repoPath: proposalRepoPath,
+              targetWorktree: target.worktree,
+              // #1890: the host's decision, so the widget never shows the
+              // auto-commit spinner for a proposal waiting on the user.
+              autoApproved: isAutoCommit,
+              // #1955: what the agent asked for and how it expanded, so a reload renders the same widget.
+              ...expansionRecord,
             },
           }),
           hidden: false,
@@ -629,12 +695,30 @@ export async function handleGitCommitProposal(
         // widget names it and renders paths relative to it -- an attached
         // folder's absolute path would otherwise render as a tree from `/`.
         repoPath: proposalRepoPath,
+        // #1756: set only for an explicit sibling worktree; the widget names its branch and path.
+        targetWorktree: target.worktree,
+        // workspacePath above is the validated session checkout; git:commit refuses records without this.
+        commitTargetVersion: COMMIT_TARGET_VERSION,
+        ...expansionRecord,
         timestamp: now.getTime(),
         status: "pending",
       }),
       hidden: false,
       createdAt: now,
     });
+    // #1890: the agent is blocked on this call, so no stream chunk or turn end
+    // will run the transcript step; the widget would never see the rows above.
+    if (TranscriptMigrationRepository.hasService()) {
+      try {
+        const session = await AISessionsRepository.get(targetSessionId);
+        await TranscriptMigrationRepository.getService().processNewMessages(
+          targetSessionId,
+          session?.provider ?? "claude-code"
+        );
+      } catch (err) {
+        console.warn("[MCP Server] processNewMessages after commit proposal failed:", err);
+      }
+    }
     if (commitWindow) {
       // Include the approval decision and proposal data so voice needs no settings/DB round-trip.
       commitWindow.webContents.send("ai:gitCommitProposal", {
@@ -644,6 +728,7 @@ export async function handleGitCommitProposal(
         commitMessage: proposalArgs.commitMessage,
         filesToStage: proposalArgs.filesToStage,
         workspacePath: target.workspacePath,
+        targetWorktree: target.worktree,
       });
     } else {
       console.warn("[MCP Server] No commitWindow found to send IPC event");
@@ -671,25 +756,47 @@ export async function handleGitCommitProposal(
       executeGitCommitAcrossRepos,
     } = await import("../../services/GitCommitService");
 
+    // #1682: heartbeat like the manual path, and honor a real Stop: an abort
+    // before the commit holds the repo lock means no commit at all.
+    const abortCommit = new AbortController();
+    cleanups.push(attachInteractivePromptCall({
+      request,
+      extra,
+      toolName: 'developer_git_commit_proposal',
+      onAbort: () => {
+        console.warn(`[MCP Server] Auto-commit call aborted by the client for proposal: ${proposalId}`);
+        abortCommit.abort();
+      },
+    }));
+
     let commitResult: {
       success: boolean;
       commitHash?: string;
       commitDate?: string;
       error?: string;
     };
-    try {
-      commitResult = await executeGitCommitAcrossRepos(
+    // #1682: run through the proposal's execution record, so its outcome is
+    // this proposal's own and never a look-alike commit.
+    commitResult = await runCommitProposalOnce(
+      targetSessionId,
+      proposalId,
+      commitProposalIdentity(target.workspacePath, commitMessage, filePaths, undefined, target.repoPath),
+      () => executeGitCommitAcrossRepos(
         target.workspacePath,
         commitMessage,
         filePaths,
-        { logContext: "[git:auto-commit]", env: getGitSubprocessEnv(), repoPath: target.repoPath }
-      );
-    } catch (error) {
-      console.error("[MCP Server] Auto-commit failed:", error);
-      commitResult = {
-        success: false,
-        error: error instanceof Error ? error.message : String(error),
-      };
+        { logContext: "[git:auto-commit]", env: getGitSubprocessEnv(), repoPath: target.repoPath, signal: abortCommit.signal }
+      ),
+    );
+
+    let outcomeNote = "";
+    if (!commitResult.success) {
+      const outcome = await readProposalOutcome(targetSessionId, proposalId);
+      if (outcome.kind === "committed") {
+        commitResult = { success: true, commitHash: outcome.commitHash, commitDate: outcome.commitDate };
+      } else {
+        outcomeNote = `\n${noCommitNote(outcome, { retryable: isGitLockFailure(commitResult.error) })}`;
+      }
     }
 
     const response = createGitCommitProposalResponse(
@@ -778,7 +885,7 @@ export async function handleGitCommitProposal(
               response.commitDate
                 ? `\nCommit date: ${response.commitDate}`
                 : ""
-            }\nCommit message: ${commitMessage}`,
+            }\nCommit message: ${commitMessage}${expansionNote}`,
           },
         ],
         isError: false,
@@ -791,7 +898,7 @@ export async function handleGitCommitProposal(
           type: "text" as const,
           text: `Auto-commit failed: ${
             response.error || "No changes were committed"
-          }`,
+          }${outcomeNote}`,
         },
       ],
       isError: true,
@@ -836,11 +943,46 @@ export async function handleGitCommitProposal(
       error?: string;
       filesCommitted?: string[];
       commitMessage?: string;
+      /** Closed because the user sent a new message instead of answering (NIM-7642). */
+      superseded?: boolean;
     };
+
+    // NIM-7642: the user sent a new message instead of answering. The cancel
+    // goes through the proposal's execution record, which a Commit press also
+    // claims: if the press won, its commit owns the proposal and the send-now
+    // keeps waiting (#1682); if the cancel won, a later press is refused.
+    const unregisterWaiting = registerWaitingCommitProposal(targetSessionId, async () => {
+      if (settled) return false;
+      if (!(await cancelCommitProposalOnce(targetSessionId, proposalId))) return false;
+      // The response row closes the card, now and after a restart.
+      try {
+        await AgentMessagesRepository.create({
+          sessionId: targetSessionId,
+          source: "nimbalyst",
+          direction: "output",
+          createdAt: new Date(),
+          content: JSON.stringify({
+            type: "git_commit_proposal_response",
+            proposalId,
+            action: "cancelled",
+            respondedAt: Date.now(),
+            respondedBy: "desktop",
+          }),
+        });
+      } catch (error) {
+        console.error(`[MCP Server] Failed to record the closed commit proposal ${proposalId}:`, error);
+      }
+      if (!commitWindow.isDestroyed()) {
+        commitWindow.webContents.send("ai:gitCommitProposalResolved", { sessionId: targetSessionId, proposalId });
+      }
+      settle({ action: "cancelled", superseded: true }, "superseded");
+      return true;
+    });
 
     const settle = (result: CommitResult, source: string) => {
       if (settled) return;
       settled = true;
+      unregisterWaiting();
       detachCall?.();
       if (targetSessionId) clearLiveInteractivePrompt(targetSessionId);
 
@@ -854,6 +996,16 @@ export async function handleGitCommitProposal(
       }
       ipcMain.removeListener(responseChannel, onResponse);
 
+      // #1682: a cancelled or failed answer can hide this proposal's own commit
+      // (a widget click still running when the client aborted). Ask its
+      // execution record, which waits for an execution still in progress.
+      if (result.action === "committed") return deliver(result, "");
+      void readProposalOutcome(targetSessionId, proposalId).then(outcome => outcome.kind === "committed"
+        ? deliver({ action: "committed", commitHash: outcome.commitHash, commitDate: outcome.commitDate, commitMessage: proposalArgs.commitMessage }, "")
+        : deliver(result, `\n${noCommitNote(outcome, { retryable: result.action === "error" && isGitLockFailure(result.error) })}`));
+    };
+
+    const deliver = (result: CommitResult, outcomeNote: string) => {
       if (result.action === "committed" && result.commitHash) {
         if (targetSessionId && targetSessionId !== "unknown") {
           // Record the sha -> session link for the Git Log panel
@@ -887,7 +1039,7 @@ export async function handleGitCommitProposal(
                   : ""
               }\nCommit message: ${
                 result.commitMessage || proposalArgs.commitMessage
-              }`,
+              }${expansionNote}`,
             },
           ],
           isError: false,
@@ -907,9 +1059,11 @@ export async function handleGitCommitProposal(
           content: [
             {
               type: "text",
-              text: result.error
+              text: (result.error
                 ? `Commit failed: ${result.error}`
-                : "User cancelled the commit proposal.",
+                : result.superseded
+                  ? "The user sent a new message instead of answering this commit proposal, so it was closed. Read their message before proposing a commit again."
+                  : "User cancelled the commit proposal.") + outcomeNote,
             },
           ],
           isError: result.error ? true : false,
@@ -971,6 +1125,49 @@ export async function handleGitCommitProposal(
       reasoning: proposalArgs.reasoning,
     });
   });
+}
+
+/**
+ * #1955: the stored file list for a proposal that named a directory. Explicit
+ * files keep the agent's own entry (and status); expanded files carry the
+ * status git reported, the directory they came from, and the other session
+ * that edited them, so a reload renders the same widget.
+ */
+function proposalFilesFromExpansion(
+  requested: Array<string | { path: string; status: "added" | "modified" | "deleted" }>,
+  target: Awaited<ReturnType<typeof resolveGitCommitProposalTarget>>,
+): Array<string | {
+  path: string;
+  status: "added" | "modified" | "deleted";
+  fromDirectory?: string;
+  otherSession?: { ownership: "other-session"; sessionId: string; sessionTitle?: string };
+}> {
+  const requestedByAbsolute = new Map<string, string | { path: string; status: "added" | "modified" | "deleted" }>();
+  target.expansion!.requestedPaths.forEach((absolute, index) => requestedByAbsolute.set(absolute, requested[index]));
+  return target.fileDetails!.map(file => {
+    if (!file.fromDirectory) {
+      const original = requestedByAbsolute.get(file.path);
+      return original && typeof original !== "string" ? { ...original, path: file.path } : file.path;
+    }
+    return {
+      path: file.path,
+      status: file.status ?? "modified",
+      fromDirectory: file.fromDirectory,
+      ...(file.otherSession ? { otherSession: file.otherSession } : {}),
+    };
+  });
+}
+
+/** Text appended to the tool result: what directories expanded to, and excludes that matched nothing. */
+function expansionResultNote(target: Awaited<ReturnType<typeof resolveGitCommitProposalTarget>>): string {
+  if (!target.expansion) return "";
+  const lines: string[] = [];
+  const expanded = Object.entries(target.expansion.expandedFrom);
+  if (expanded.length) lines.push(`Expanded: ${expanded.map(([dir, count]) => `${dir} (${count} files)`).join(", ")}.`);
+  if (target.expansion.unmatchedExcludes.length) {
+    lines.push(`excludePaths matched nothing: ${target.expansion.unmatchedExcludes.join(", ")}.`);
+  }
+  return lines.length ? `\n${lines.join("\n")}` : "";
 }
 
 // ============================================================

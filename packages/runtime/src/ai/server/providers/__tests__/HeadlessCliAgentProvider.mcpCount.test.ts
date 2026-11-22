@@ -1,11 +1,14 @@
 // @vitest-environment node
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { AgentProtocol, ProtocolSession } from '../../protocols/ProtocolInterface';
 import type { GrokACPProtocol } from '../../protocols/GrokACPProtocol';
 import { BaseAgentProvider } from '../BaseAgentProvider';
 import { GrokBuildProvider } from '../GrokBuildProvider';
 import { CursorAgentProvider } from '../CursorAgentProvider';
-import { CursorAgentProtocol } from '../../protocols/CursorAgentProtocol';
+import { CURSOR_INLINE_DOCUMENT_BUDGET, CursorAgentProtocol } from '../../protocols/CursorAgentProtocol';
 
 function protocolWithDelivery(
   deliveredMcpServerCount?: number,
@@ -99,6 +102,48 @@ it.each(['- fix the bug', '--plan'])('passes %j as prompt text after the option 
   for await (const _event of protocol.sendMessage(session, { content })) { /* drain */ }
   expect(args.slice(-2)).toEqual(['--', content]);
   expect(args.slice(0, -2)).toEqual(['--resume', 'cursor-session', '-p', '--output-format', 'stream-json', '--model', 'auto', '--force', '--trust']);
+});
+
+it('hands attachments to the Cursor CLI through the prompt, which has no file input flag', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'cursor-attachments-'));
+  try {
+    const shotPath = join(dir, 'shot.png');
+    const notesPath = join(dir, 'notes.md');
+    const logPath = join(dir, 'big.log');
+    writeFileSync(shotPath, 'png bytes');
+    writeFileSync(notesPath, 'release checklist body');
+    writeFileSync(logPath, 'x'.repeat(CURSOR_INLINE_DOCUMENT_BUDGET));
+    let args: string[] = [];
+    const protocol = new CursorAgentProtocol({
+      runNdjson: async function* (options) {
+        args = options.args;
+        yield { kind: 'record', value: { type: 'result', subtype: 'success', result: 'done' } };
+      },
+    });
+    const session = await protocol.resumeSession('cursor-session', { workspacePath: process.cwd() });
+    const attachment = { id: 'a', mimeType: '', size: 1, addedAt: 0 };
+    for await (const _event of protocol.sendMessage(session, {
+      content: 'what is in @shot.png?',
+      attachments: [
+        { ...attachment, type: 'image', filename: 'shot.png', filepath: shotPath },
+        { ...attachment, type: 'document', filename: 'notes.md', filepath: notesPath },
+        { ...attachment, type: 'document', filename: 'big.log', filepath: logPath },
+        { ...attachment, type: 'pdf', filename: 'gone.pdf', filepath: join(dir, 'gone.pdf') },
+      ],
+    })) { /* drain */ }
+    const prompt = args[args.length - 1];
+    expect(prompt.startsWith('what is in @shot.png?')).toBe(true);
+    expect(prompt).toContain(`- shot.png: ${shotPath}`);
+    expect(prompt).toContain('<file name="notes.md">\nrelease checklist body\n</file>');
+    // Over the argv budget: referenced by path, never inlined.
+    expect(prompt).toContain(`- big.log: ${logPath}`);
+    expect(prompt.length).toBeLessThan(CURSOR_INLINE_DOCUMENT_BUDGET);
+    // A staged file that is gone is explained, not handed over as a dead path.
+    expect(prompt).toMatch(/<file name="gone\.pdf" error="failed to read attachment: [^"]*ENOENT/);
+    expect(prompt).not.toContain('- gone.pdf:');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 describe('HeadlessCliAgentProvider MCP delivery count', () => {

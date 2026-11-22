@@ -15,10 +15,11 @@ import { awaitServerIssueKey } from '../../services/tracker/awaitServerIssueKey'
 import { isLocalIssueKey, resolveDisplayIssueKey } from '../../../shared/localIssueKey';
 import { applyHeadlessBodyMarkdown, initializeHeadlessBodyMarkdown } from '../../services/MainBodyDocService';
 import { initialTrackerBodyCache } from '../../services/tracker/trackerBodySnapshot';
+import { writeTrackerBodyCacheVersion } from '../../services/tracker/trackerBodyCacheRetention';
 import { recordTypedPageBodySnapshot } from '../../services/tracker/typedPageBodyHistory';
 import { applyRelationshipFieldWrites } from '../../services/tracker/relationshipFieldWrite';
 import { pinCitedRevisions } from '../../services/tracker/citationPins';
-import { appendActivity } from '../../services/tracker/trackerActivity';
+import { appendActivity } from '../../services/tracker/trackerActivityTrailCap';
 import { pushSharedTrackerItem, sharedTrackerItemTooLarge, trackerItemTooLargeForRoom } from '../../services/tracker/trackerItemShareGate';
 import { assignLocalKeysToRows } from '../../services/tracker/localKeyAllocator';
 import { typeHasLocalNumbers } from '../../services/tracker/localNumberTypes';
@@ -68,6 +69,7 @@ import {
 import { handleTrackerPublicationUpdate } from './trackerPublicationTool';
 import { prepareTrackerUpdateInput } from './trackerToolUpdateInput';
 import { handleGithubIssueOverlayCreate } from './githubIssueOverlayTool';
+import { handleGithubPrOverlayCreate } from './githubPrOverlayTool';
 import {
   bodyWriteFailure,
   DESTRUCTIVE_CONFIRM_PARAM_DESCRIPTION,
@@ -508,6 +510,22 @@ async function notifyTrackerItemUpdated(_workspacePath: string | undefined, item
       timestamp: new Date(),
     });
   }
+}
+
+/**
+ * Re-read a session's linked tracker ids and broadcast them, so the renderer's
+ * session registry sees a link written outside the MCP tools (the panel's
+ * `tracker:link-session` IPC). Without it, the PR and issue panels could not
+ * find a session they had just linked until the app reloaded (NIM-7657).
+ */
+export async function broadcastSessionLinkedTrackers(sessionId: string): Promise<void> {
+  const { getDatabase } = await import("../../database/initialize");
+  const result = await getDatabase().query<any>(
+    `SELECT metadata FROM ai_sessions WHERE id = $1`,
+    [sessionId]
+  );
+  if (result.rows.length === 0) return;
+  await notifySessionLinkedTrackerChanged(sessionId, readLinkedTrackerItemIds(result.rows[0].metadata));
 }
 
 /** Broadcast session metadata update to all windows */
@@ -1908,6 +1926,19 @@ export async function handleTrackerCreate(
     );
     if (issueOverlayResult) return issueOverlayResult;
 
+    const prOverlayResult = await handleGithubPrOverlayCreate(
+      args,
+      workspacePath,
+      Boolean(sessionId && args.linkSession === true),
+      {
+        linkSession: (itemId) =>
+          handleTrackerLinkSession({ trackerId: itemId }, sessionId, workspacePath),
+        notifyAdded: (itemId) => notifyTrackerItemAdded(workspacePath, itemId),
+        notifyUpdated: (itemId) => notifyTrackerItemUpdated(workspacePath, itemId),
+      },
+    );
+    if (prOverlayResult) return prOverlayResult;
+
     const { getDatabase } = await import("../../database/initialize");
     const db = getDatabase();
 
@@ -2772,12 +2803,7 @@ export async function handleTrackerUpdate(
         );
         const newBodyVersion = Number(bumpResult.rows[0]?.body_version ?? 0);
         if (newBodyVersion > 0) {
-          await db.query(
-            `INSERT INTO tracker_body_cache (item_id, body_version, content, cached_at)
-             VALUES ($1, $2, $3, NOW())
-             ON CONFLICT (item_id, body_version) DO NOTHING`,
-            [row.id, newBodyVersion, contentJson]
-          );
+          await writeTrackerBodyCacheVersion(db, row.id, newBodyVersion, contentJson);
         }
         localSnapshotStored = true;
         // This write bypasses updateTrackerItemContent, which carries the

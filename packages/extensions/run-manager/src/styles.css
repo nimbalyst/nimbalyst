@@ -1,0 +1,559 @@
+/* Run Manager: the Runs panel. Colors come from the host's --nim-* variables. */
+
+.run-manager-panel {
+  --run-manager-mono: ui-monospace, 'SF Mono', Monaco, 'Courier New', monospace;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  container-type: inline-size;
+  container-name: run-manager;
+  background: var(--nim-bg-secondary);
+  border-top: 1px solid var(--nim-border);
+  color: var(--nim-text);
+  font-size: 13px;
+  overflow: hidden;
+  user-select: none;
+}
+
+.run-manager-resize-handle {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 4px;
+  z-index: 10;
+  cursor: ns-resize;
+  background: transparent;
+  transition: background 0.15s;
+}
+
+.run-manager-resize-handle:hover {
+  background: var(--nim-primary);
+  opacity: 0.5;
+}
+
+/* Tab strip */
+
+.run-manager-tabs {
+  flex-shrink: 0;
+  height: 32px;
+  display: flex;
+  align-items: stretch;
+  padding-left: 4px;
+  border-bottom: 1px solid var(--nim-border);
+  overflow: hidden;
+}
+
+.run-manager-tab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 12px;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--nim-text-faint);
+  font: inherit;
+  font-size: 12px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.run-manager-tab:hover {
+  color: var(--nim-text-muted);
+}
+
+.run-manager-tab-active {
+  color: var(--nim-text);
+  border-bottom-color: var(--nim-primary);
+  cursor: default;
+}
+
+.run-manager-tab-active:hover {
+  color: var(--nim-text);
+}
+
+.run-manager-tab > svg {
+  width: 14px;
+  height: 14px;
+}
+
+.run-manager-tab-sep {
+  width: 1px;
+  margin: 7px 4px;
+  background: var(--nim-border);
+}
+
+.run-manager-run-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  border-radius: 3px;
+  background: var(--nim-bg-tertiary);
+  color: var(--nim-text-muted);
+}
+
+.run-manager-run-badge svg {
+  width: 9px;
+  height: 9px;
+}
+
+.run-manager-pin {
+  display: inline-flex;
+  color: var(--nim-text-disabled);
+}
+
+.run-manager-pin svg {
+  width: 11px;
+  height: 11px;
+}
+
+.run-manager-tab-actions {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding-right: 8px;
+}
+
+.run-manager-link-btn {
+  background: none;
+  border: none;
+  padding: 2px 4px;
+  color: var(--nim-text-faint);
+  font-family: var(--run-manager-mono);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.run-manager-link-btn:hover {
+  color: var(--nim-primary);
+}
+
+/* Status dots */
+
+.run-manager-dot {
+  display: inline-block;
+  flex-shrink: 0;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--nim-text-disabled);
+}
+
+.run-manager-dot-running {
+  background: var(--nim-success);
+}
+
+.run-manager-dot-starting,
+.run-manager-dot-stopping {
+  background: var(--nim-warning);
+}
+
+.run-manager-dot-crashed {
+  background: var(--nim-error);
+}
+
+.run-manager-dot-external {
+  width: 9px;
+  height: 9px;
+  background: transparent;
+  border: 2px solid var(--nim-primary);
+}
+
+/* Runs list */
+
+.run-manager-view {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 4px 0;
+}
+
+.run-manager-row {
+  display: grid;
+  grid-template-columns: 150px 140px minmax(160px, 1fr) 180px 64px 92px;
+  align-items: center;
+  column-gap: 12px;
+  height: 34px;
+  padding: 0 12px;
+  border-bottom: 1px solid color-mix(in srgb, var(--nim-border) 45%, transparent);
+}
+
+.run-manager-row:hover {
+  background: var(--nim-bg-hover);
+}
+
+.run-manager-row-header {
+  height: 26px;
+  color: var(--nim-text-faint);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  border-bottom: 1px solid var(--nim-border);
+}
+
+.run-manager-row-header:hover {
+  background: none;
+}
+
+.run-manager-state {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+  white-space: nowrap;
+  color: var(--nim-text-muted);
+}
+
+.run-manager-state-running {
+  color: var(--nim-success);
+}
+
+.run-manager-state-starting,
+.run-manager-state-stopping {
+  color: var(--nim-warning);
+}
+
+.run-manager-state-crashed {
+  color: var(--nim-error);
+}
+
+.run-manager-state-external {
+  color: var(--nim-primary);
+}
+
+.run-manager-name {
+  font-weight: 500;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.run-manager-cmd {
+  font-family: var(--run-manager-mono);
+  font-size: 12px;
+  color: var(--nim-text-faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.run-manager-note {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-style: italic;
+}
+
+.run-manager-port {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-family: var(--run-manager-mono);
+  font-size: 12px;
+}
+
+.run-manager-port a {
+  color: var(--nim-primary);
+  text-decoration: none;
+}
+
+.run-manager-port a:hover {
+  text-decoration: underline;
+}
+
+.run-manager-muted {
+  color: var(--nim-text-disabled);
+}
+
+.run-manager-uptime {
+  color: var(--nim-text-muted);
+  font-family: var(--run-manager-mono);
+  font-size: 12px;
+}
+
+.run-manager-uptime-none {
+  color: var(--nim-text-disabled);
+}
+
+.run-manager-actions {
+  display: flex;
+  gap: 2px;
+  justify-content: flex-end;
+}
+
+.run-manager-icon-btn {
+  width: 26px;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: 4px;
+  background: none;
+  color: var(--nim-text-muted);
+  cursor: pointer;
+}
+
+.run-manager-icon-btn svg {
+  width: 15px;
+  height: 15px;
+}
+
+.run-manager-icon-btn:hover {
+  background: var(--nim-bg-tertiary);
+  color: var(--nim-text);
+}
+
+.run-manager-icon-btn-start {
+  color: var(--nim-success);
+}
+
+.run-manager-icon-btn-stop:hover {
+  color: var(--nim-error);
+}
+
+.run-manager-icon-btn:disabled {
+  color: var(--nim-text-disabled);
+  cursor: default;
+}
+
+.run-manager-icon-btn:disabled:hover {
+  background: none;
+  color: var(--nim-text-disabled);
+}
+
+/* Notes under a row, banners, empty state */
+
+.run-manager-row-note {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px 6px 31px;
+  font-size: 12px;
+  border-bottom: 1px solid color-mix(in srgb, var(--nim-border) 45%, transparent);
+}
+
+.run-manager-row-confirm {
+  color: var(--nim-text-muted);
+  background: var(--nim-bg-hover);
+}
+
+.run-manager-row-confirm span {
+  flex: 1;
+  min-width: 0;
+}
+
+.run-manager-row-error {
+  color: var(--nim-error);
+  user-select: text;
+}
+
+.run-manager-banner {
+  padding: 6px 12px;
+  font-size: 12px;
+  user-select: text;
+}
+
+.run-manager-banner-error {
+  color: var(--nim-error);
+}
+
+.run-manager-banner-muted {
+  color: var(--nim-text-faint);
+}
+
+.run-manager-banner-warning {
+  color: var(--nim-warning);
+}
+
+.run-manager-empty {
+  padding: 14px 12px 2px;
+  max-width: 640px;
+  color: var(--nim-text-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.run-manager-empty code {
+  font-family: var(--run-manager-mono);
+  color: var(--nim-text);
+}
+
+/* Add run target */
+
+.run-manager-add-target {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin: 10px 12px;
+  padding: 5px 10px;
+  border: 1px dashed var(--nim-border);
+  border-radius: 4px;
+  background: none;
+  color: var(--nim-text-muted);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.run-manager-add-target:hover {
+  border-color: var(--nim-primary);
+  color: var(--nim-primary);
+}
+
+.run-manager-add-target svg {
+  width: 13px;
+  height: 13px;
+}
+
+.run-manager-form {
+  margin: 10px 12px;
+  padding: 10px;
+  border: 1px dashed var(--nim-border);
+  border-radius: 4px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.run-manager-form-fields {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 10px;
+}
+
+.run-manager-field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  flex: 1 1 150px;
+  min-width: 120px;
+  font-size: 11px;
+  color: var(--nim-text-faint);
+}
+
+.run-manager-field-wide {
+  flex: 2 1 240px;
+}
+
+.run-manager-field-narrow {
+  flex: 0 1 110px;
+  min-width: 90px;
+}
+
+.run-manager-field input {
+  height: 26px;
+  padding: 0 8px;
+  border: 1px solid var(--nim-border);
+  border-radius: 4px;
+  background: var(--nim-bg);
+  color: var(--nim-text);
+  font-size: 12px;
+  user-select: text;
+}
+
+.run-manager-field input:focus {
+  outline: none;
+  border-color: var(--nim-primary);
+}
+
+.run-manager-mono {
+  font-family: var(--run-manager-mono);
+}
+
+.run-manager-form-buttons {
+  display: flex;
+  gap: 6px;
+}
+
+.run-manager-btn {
+  height: 26px;
+  padding: 0 10px;
+  border: 1px solid var(--nim-border);
+  border-radius: 4px;
+  background: none;
+  color: var(--nim-text-muted);
+  font: inherit;
+  font-size: 12px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.run-manager-btn:hover {
+  background: var(--nim-bg-tertiary);
+  color: var(--nim-text);
+}
+
+.run-manager-btn:disabled {
+  color: var(--nim-text-disabled);
+  cursor: default;
+}
+
+.run-manager-btn-primary {
+  border-color: var(--nim-primary);
+  color: var(--nim-primary);
+}
+
+.run-manager-btn-danger {
+  border-color: var(--nim-error);
+  color: var(--nim-error);
+}
+
+.run-manager-form-error {
+  color: var(--nim-error);
+  font-size: 12px;
+}
+
+.run-manager-suggestions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+}
+
+.run-manager-muted-text {
+  color: var(--nim-text-faint);
+}
+
+.run-manager-chip {
+  padding: 2px 8px;
+  border: 1px solid var(--nim-border);
+  border-radius: 10px;
+  background: none;
+  color: var(--nim-text-muted);
+  font-family: var(--run-manager-mono);
+  font-size: 11px;
+  cursor: pointer;
+}
+
+.run-manager-chip:hover {
+  border-color: var(--nim-primary);
+  color: var(--nim-primary);
+}
+
+/* Narrow panels: drop the uptime column, then the command. */
+
+@container run-manager (max-width: 760px) {
+  .run-manager-row {
+    grid-template-columns: 140px 130px minmax(100px, 1fr) 150px 92px;
+  }
+
+  .run-manager-row > :nth-child(5) {
+    display: none;
+  }
+}
+
+@container run-manager (max-width: 560px) {
+  .run-manager-row {
+    grid-template-columns: 130px minmax(90px, 1fr) 130px 92px;
+  }
+
+  .run-manager-row > :nth-child(3) {
+    display: none;
+  }
+}

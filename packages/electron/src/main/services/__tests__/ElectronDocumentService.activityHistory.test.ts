@@ -83,7 +83,7 @@ function installStatefulTrackerRow(initialData: Record<string, unknown>) {
       };
       return { rows: [state.row] };
     }
-    if (normalized.startsWith('INSERT INTO tracker_body_cache')) {
+    if (normalized.startsWith('INSERT INTO tracker_body_cache') || normalized.startsWith('DELETE FROM tracker_body_cache')) {
       return { rows: [] };
     }
     throw new Error(`Unexpected query in test: ${normalized}`);
@@ -250,5 +250,27 @@ describe('direct UI tracker activity history', () => {
       newValue: 'critical',
       timestamp: 3_000,
     });
+  });
+
+  it('caps the values of legacy entries on the next write so the stored trail stops growing', async () => {
+    const longValue = 'x'.repeat(40_000);
+    const legacy = Array.from({ length: 120 }, (_, i) => ({
+      id: `activity_${i}`,
+      action: 'updated',
+      field: 'description',
+      oldValue: longValue,
+      newValue: longValue,
+      timestamp: i,
+    }));
+    const state = installStatefulTrackerRow({ title: 'Example bug', status: 'to-do', activity: legacy });
+
+    await service.updateTrackerItem('bug-1', { status: 'in-progress' });
+
+    const activity = JSON.parse(state.row.data).activity;
+    expect(activity).toHaveLength(100);
+    expect(activity[0].id).toBe('activity_21');
+    expect(activity.at(-1)).toMatchObject({ action: 'status_changed', newValue: 'in-progress' });
+    expect(Math.max(...activity.map((e: any) => (e.oldValue ?? '').length))).toBe(500);
+    expect(state.row.data.length).toBeLessThan(150_000);
   });
 });

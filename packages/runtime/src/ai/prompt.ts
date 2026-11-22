@@ -317,7 +317,8 @@ The user is interacting via voice mode. A voice assistant (GPT-4 Realtime) handl
     }
   }
 
-  prompt += `\nWhen coordinating sibling sessions, use consume_session_inbox when available at integration boundaries, after long validation, and before final synthesis. It consumes informational reports within the current turn; list_queued_prompts only inspects them and leaves them queued. Read the full batch before issuing follow-ups; yield at instruction boundaries. Never poll an empty inbox. Send informational handoffs with send_prompt messageKind=report, and keep instructions/questions/errors distinct. Use the final response for automatic completion notifications instead of sending it twice.\n`;
+  // No reporting guidance here: this addendum reaches every session, and a
+  // spawned child's reporting duty comes only from its spawn (the directive).
   const directive = sessionDirective?.trim();
   if (directive) {
     prompt += `\n${directive}\n`;
@@ -369,7 +370,7 @@ export function buildMetaAgentSystemPrompt(
 - ${listSpawnedSessionsTool}: List all sessions you created with status summaries
 - ${getSessionStatusTool}: Check if a child session is running, idle, waiting, or errored
 - ${getSessionResultTool}: Read a session's prompts, its full final response, recent messages, edited files, and pending prompts
-- ${consumeInboxTool} (when available): Receive reports during your active turn without replaying them later. Check before delegation/integration decisions, after long validation, and before final synthesis. Read all reports before acting. Yield at an instruction boundary. Never poll an empty inbox.
+- ${consumeInboxTool} (when available): Read reports queued during your current turn. Call it only when a decision depends on a report you are waiting for; never poll.
 - ${sendPromptTool}: Send follow-up instructions to a child session. Pass \`interrupt: true\` to stop the child's current turn and deliver immediately — only when the new instruction makes the running work obsolete (a wrong approach, a changed requirement, a stop order), never as a routine way to be heard sooner
 - ${respondToPromptTool}: Answer a child session's interactive prompt (permissions, questions, plan approval)
 - ${updateSessionMetaTool}: Name and tag your own session
@@ -386,7 +387,7 @@ Instructions in the project's CLAUDE.md files and the user's prompt always take 
 ## Core Behavior
 
 1. Delegate everything. Every coding, testing, reviewing, and debugging task goes to a child session.
-2. End your turn after spawning. You will be notified automatically when child sessions complete, error, or need input. Never poll or loop on ${getSessionStatusTool}.
+2. Pass \`reporting: "final"\` to ${createSessionTool} so you are notified when a child completes, errors, or needs input; its final response is its report. Use "messages" only when you must act on progress before the child finishes. End your turn after spawning. Never poll or loop on ${getSessionStatusTool}.
 3. Spawn the MINIMUM number of children. Use parallel children only for genuinely independent concerns (different files or modules). For a single question or one research/due-diligence target, spawn exactly ONE child; do not split it across several, and never spawn a second child for a question you already delegated.
 4. Use worktrees for isolation. Each parallel implementation task should get its own worktree unless the work is intentionally on the same branch.
 5. Keep child prompts self-contained AND deliverable-specified. Every child prompt must state: the exact artifact the child must produce (a file written via write_file, a list of call sites as file:line, a passing test, a concrete written answer), the acceptance criterion you will check on completion, known file paths and constraints, and whether to use a fresh or existing worktree. Never spawn a child with an open-ended verb alone ("investigate X", "look into Y", "explore Z"); always pair it with the deliverable that ends the task ("investigate X and return the root cause as file:line plus a one-line fix"). A child session has no knowledge of other child sessions or of the user's original request beyond what you put in its prompt, so restate the relevant context.

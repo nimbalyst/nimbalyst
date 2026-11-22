@@ -1,0 +1,2031 @@
+[
+  {
+    "type": "plan",
+    "displayName": "Plan",
+    "displayNamePlural": "Plans",
+    "icon": "flag",
+    "color": "#3b82f6",
+    "modes": {
+      "inline": true,
+      "fullDocument": true
+    },
+    "idPrefix": "pln",
+    "idFormat": "ulid",
+    "fields": [
+      {
+        "name": "planId",
+        "type": "string",
+        "required": true,
+        "displayInline": false
+      },
+      {
+        "name": "title",
+        "type": "string",
+        "required": true,
+        "displayInline": true
+      },
+      {
+        "name": "status",
+        "type": "select",
+        "required": true,
+        "default": "draft",
+        "displayInline": true,
+        "options": [
+          {
+            "value": "draft",
+            "label": "Draft",
+            "icon": "edit_note",
+            "color": "#64748b",
+            "category": "backlog"
+          },
+          {
+            "value": "ready-for-development",
+            "label": "Ready",
+            "icon": "check_circle",
+            "color": "#22c55e",
+            "category": "unstarted"
+          },
+          {
+            "value": "in-development",
+            "label": "In Development",
+            "icon": "construction",
+            "color": "#f59e0b",
+            "category": "started"
+          },
+          {
+            "value": "in-review",
+            "label": "In Review",
+            "icon": "rate_review",
+            "color": "#3b82f6",
+            "category": "started"
+          },
+          {
+            "value": "changes-requested",
+            "label": "Changes Requested",
+            "icon": "edit_note",
+            "color": "#f97316",
+            "category": "started"
+          },
+          {
+            "value": "approved",
+            "label": "Approved",
+            "icon": "verified",
+            "color": "#22c55e",
+            "category": "started"
+          },
+          {
+            "value": "completed",
+            "label": "Completed",
+            "icon": "task_alt",
+            "color": "#10b981",
+            "category": "done"
+          },
+          {
+            "value": "rejected",
+            "label": "Rejected",
+            "icon": "cancel",
+            "color": "#ef4444",
+            "category": "cancelled"
+          },
+          {
+            "value": "blocked",
+            "label": "Blocked",
+            "icon": "block",
+            "color": "#dc2626",
+            "category": "started"
+          }
+        ]
+      },
+      {
+        "name": "planType",
+        "type": "select",
+        "required": false,
+        "default": "feature",
+        "displayInline": true,
+        "options": [
+          {
+            "value": "system-design",
+            "label": "System Design"
+          },
+          {
+            "value": "feature",
+            "label": "Feature"
+          },
+          {
+            "value": "bug-fix",
+            "label": "Bug Fix"
+          },
+          {
+            "value": "refactor",
+            "label": "Refactor"
+          },
+          {
+            "value": "documentation",
+            "label": "Documentation"
+          },
+          {
+            "value": "research",
+            "label": "Research"
+          }
+        ]
+      },
+      {
+        "name": "priority",
+        "type": "select",
+        "required": false,
+        "default": "medium",
+        "displayInline": true,
+        "options": [
+          {
+            "value": "low",
+            "label": "Low",
+            "icon": "arrow_downward"
+          },
+          {
+            "value": "medium",
+            "label": "Medium",
+            "icon": "remove"
+          },
+          {
+            "value": "high",
+            "label": "High",
+            "icon": "arrow_upward"
+          },
+          {
+            "value": "critical",
+            "label": "Critical",
+            "icon": "priority_high"
+          }
+        ]
+      },
+      {
+        "name": "progress",
+        "type": "number",
+        "required": false,
+        "displayInline": false,
+        "min": 0,
+        "max": 100
+      },
+      {
+        "name": "owner",
+        "type": "user",
+        "required": false,
+        "displayInline": true
+      },
+      {
+        "name": "stakeholders",
+        "type": "array",
+        "required": false,
+        "displayInline": false,
+        "itemType": "string"
+      },
+      {
+        "name": "dependsOn",
+        "type": "relationship",
+        "required": false,
+        "displayInline": true,
+        "relationshipTypeKey": "depends-on",
+        "targetTrackerTypes": "*",
+        "multiValue": true,
+        "inverseFieldId": "blocks",
+        "inverseRelationshipTypeKey": "blocks"
+      },
+      {
+        "name": "blocks",
+        "type": "relationship",
+        "required": false,
+        "displayInline": true,
+        "relationshipTypeKey": "blocks",
+        "targetTrackerTypes": "*",
+        "multiValue": true,
+        "inverseFieldId": "dependsOn",
+        "inverseRelationshipTypeKey": "depends-on"
+      },
+      {
+        "name": "collection",
+        "type": "relationship",
+        "required": false,
+        "displayInline": true,
+        "relationshipTypeKey": "in-collection",
+        "targetTrackerTypes": [
+          "milestone",
+          "release"
+        ],
+        "multiValue": true,
+        "inverseFieldId": "items",
+        "inverseRelationshipTypeKey": "has-item"
+      },
+      {
+        "name": "goal",
+        "type": "relationship",
+        "required": false,
+        "displayInline": true,
+        "relationshipTypeKey": "contributed-by",
+        "targetTrackerTypes": [
+          "goal"
+        ],
+        "multiValue": true,
+        "inverseFieldId": "contributes",
+        "inverseRelationshipTypeKey": "contributes-to"
+      },
+      {
+        "name": "tags",
+        "type": "array",
+        "required": false,
+        "displayInline": false,
+        "itemType": "string"
+      },
+      {
+        "name": "created",
+        "type": "datetime",
+        "required": false,
+        "displayInline": false,
+        "readOnly": true
+      },
+      {
+        "name": "updated",
+        "type": "datetime",
+        "required": false,
+        "displayInline": false,
+        "readOnly": true
+      },
+      {
+        "name": "startDate",
+        "type": "date",
+        "required": false,
+        "displayInline": false
+      },
+      {
+        "name": "agentSessions",
+        "type": "array",
+        "required": false,
+        "displayInline": false,
+        "itemType": "object"
+      }
+    ],
+    "statusBarLayout": [
+      {
+        "row": [
+          {
+            "field": "status",
+            "width": 200
+          },
+          {
+            "field": "priority",
+            "width": 150
+          },
+          {
+            "field": "progress",
+            "width": 100
+          }
+        ]
+      },
+      {
+        "row": [
+          {
+            "field": "owner",
+            "width": 200
+          },
+          {
+            "field": "tags",
+            "width": "auto"
+          }
+        ]
+      }
+    ],
+    "inlineTemplate": "{icon} {title} {status} {priority}",
+    "roles": {
+      "title": "title",
+      "workflowStatus": "status",
+      "priority": "priority",
+      "assignee": "owner",
+      "tags": "tags",
+      "progress": "progress",
+      "startDate": "startDate"
+    },
+    "sharing": "team",
+    "draftByDefault": true
+  },
+  {
+    "type": "decision",
+    "displayName": "Decision",
+    "displayNamePlural": "Decisions",
+    "icon": "gavel",
+    "color": "#8b5cf6",
+    "modes": {
+      "inline": true,
+      "fullDocument": true
+    },
+    "idPrefix": "dec",
+    "idFormat": "ulid",
+    "fields": [
+      {
+        "name": "decisionId",
+        "type": "string",
+        "required": true,
+        "displayInline": false
+      },
+      {
+        "name": "title",
+        "type": "string",
+        "required": true,
+        "displayInline": true
+      },
+      {
+        "name": "status",
+        "type": "select",
+        "required": false,
+        "default": "to-do",
+        "displayInline": true,
+        "options": [
+          {
+            "value": "to-do",
+            "label": "To Decide",
+            "icon": "help",
+            "category": "unstarted"
+          },
+          {
+            "value": "in-progress",
+            "label": "Evaluating",
+            "icon": "psychology",
+            "category": "started"
+          },
+          {
+            "value": "decided",
+            "label": "Decided",
+            "icon": "check_circle",
+            "category": "done"
+          },
+          {
+            "value": "implemented",
+            "label": "Implemented",
+            "icon": "done_all",
+            "category": "done"
+          }
+        ]
+      },
+      {
+        "name": "chosen",
+        "type": "string",
+        "required": false,
+        "displayInline": true
+      },
+      {
+        "name": "priority",
+        "type": "select",
+        "required": false,
+        "default": "medium",
+        "displayInline": true,
+        "options": [
+          {
+            "value": "low",
+            "label": "Low"
+          },
+          {
+            "value": "medium",
+            "label": "Medium"
+          },
+          {
+            "value": "high",
+            "label": "High"
+          },
+          {
+            "value": "critical",
+            "label": "Critical"
+          }
+        ]
+      },
+      {
+        "name": "owner",
+        "type": "user",
+        "required": false,
+        "displayInline": false
+      },
+      {
+        "name": "stakeholders",
+        "type": "array",
+        "required": false,
+        "displayInline": false,
+        "itemType": "string"
+      },
+      {
+        "name": "dependsOn",
+        "type": "relationship",
+        "required": false,
+        "displayInline": true,
+        "relationshipTypeKey": "depends-on",
+        "targetTrackerTypes": "*",
+        "multiValue": true,
+        "inverseFieldId": "blocks",
+        "inverseRelationshipTypeKey": "blocks"
+      },
+      {
+        "name": "blocks",
+        "type": "relationship",
+        "required": false,
+        "displayInline": true,
+        "relationshipTypeKey": "blocks",
+        "targetTrackerTypes": "*",
+        "multiValue": true,
+        "inverseFieldId": "dependsOn",
+        "inverseRelationshipTypeKey": "depends-on"
+      },
+      {
+        "name": "collection",
+        "type": "relationship",
+        "required": false,
+        "displayInline": true,
+        "relationshipTypeKey": "in-collection",
+        "targetTrackerTypes": [
+          "milestone",
+          "release"
+        ],
+        "multiValue": true,
+        "inverseFieldId": "items",
+        "inverseRelationshipTypeKey": "has-item"
+      },
+      {
+        "name": "tags",
+        "type": "array",
+        "required": false,
+        "displayInline": false,
+        "itemType": "string"
+      },
+      {
+        "name": "created",
+        "type": "datetime",
+        "required": false,
+        "displayInline": false,
+        "readOnly": true
+      },
+      {
+        "name": "updated",
+        "type": "datetime",
+        "required": false,
+        "displayInline": false,
+        "readOnly": true
+      }
+    ],
+    "statusBarLayout": [
+      {
+        "row": [
+          {
+            "field": "status",
+            "width": 200
+          },
+          {
+            "field": "chosen",
+            "width": 300
+          },
+          {
+            "field": "priority",
+            "width": 150
+          }
+        ]
+      }
+    ],
+    "inlineTemplate": "{icon} {title} {status}",
+    "roles": {
+      "title": "title",
+      "workflowStatus": "status",
+      "priority": "priority",
+      "assignee": "owner",
+      "tags": "tags"
+    },
+    "sharing": "team",
+    "draftByDefault": false
+  },
+  {
+    "type": "bug",
+    "displayName": "Bug",
+    "displayNamePlural": "Bugs",
+    "icon": "bug_report",
+    "color": "#dc2626",
+    "modes": {
+      "inline": true,
+      "fullDocument": false
+    },
+    "idPrefix": "bug",
+    "idFormat": "ulid",
+    "fields": [
+      {
+        "name": "title",
+        "type": "string",
+        "required": true,
+        "displayInline": true
+      },
+      {
+        "name": "status",
+        "type": "select",
+        "required": false,
+        "default": "to-do",
+        "displayInline": true,
+        "options": [
+          {
+            "value": "to-do",
+            "label": "To Do",
+            "icon": "circle",
+            "category": "unstarted"
+          },
+          {
+            "value": "in-progress",
+            "label": "In Progress",
+            "icon": "motion_photos_on",
+            "category": "started"
+          },
+          {
+            "value": "in-review",
+            "label": "In Review",
+            "icon": "rate_review",
+            "color": "#3b82f6",
+            "category": "started"
+          },
+          {
+            "value": "changes-requested",
+            "label": "Changes Requested",
+            "icon": "edit_note",
+            "color": "#f97316",
+            "category": "started"
+          },
+          {
+            "value": "approved",
+            "label": "Approved",
+            "icon": "verified",
+            "color": "#22c55e",
+            "category": "started"
+          },
+          {
+            "value": "done",
+            "label": "Done",
+            "icon": "check_circle",
+            "category": "done"
+          },
+          {
+            "value": "wont-do",
+            "label": "Won't Do",
+            "icon": "do_not_disturb_on",
+            "color": "#64748b",
+            "category": "cancelled"
+          },
+          {
+            "value": "duplicate",
+            "label": "Duplicate",
+            "icon": "content_copy",
+            "color": "#64748b",
+            "category": "cancelled"
+          }
+        ]
+      },
+      {
+        "name": "priority",
+        "type": "select",
+        "required": false,
+        "default": "medium",
+        "displayInline": true,
+        "options": [
+          {
+            "value": "low",
+            "label": "Low"
+          },
+          {
+            "value": "medium",
+            "label": "Medium"
+          },
+          {
+            "value": "high",
+            "label": "High"
+          },
+          {
+            "value": "critical",
+            "label": "Critical"
+          }
+        ]
+      },
+      {
+        "name": "owner",
+        "type": "user",
+        "required": false,
+        "displayInline": true
+      },
+      {
+        "name": "description",
+        "type": "text",
+        "required": false,
+        "displayInline": true
+      },
+      {
+        "name": "dependsOn",
+        "type": "relationship",
+        "required": false,
+        "displayInline": true,
+        "relationshipTypeKey": "depends-on",
+        "targetTrackerTypes": "*",
+        "multiValue": true,
+        "inverseFieldId": "blocks",
+        "inverseRelationshipTypeKey": "blocks"
+      },
+      {
+        "name": "blocks",
+        "type": "relationship",
+        "required": false,
+        "displayInline": true,
+        "relationshipTypeKey": "blocks",
+        "targetTrackerTypes": "*",
+        "multiValue": true,
+        "inverseFieldId": "dependsOn",
+        "inverseRelationshipTypeKey": "depends-on"
+      },
+      {
+        "name": "collection",
+        "type": "relationship",
+        "required": false,
+        "displayInline": true,
+        "relationshipTypeKey": "in-collection",
+        "targetTrackerTypes": [
+          "milestone",
+          "release"
+        ],
+        "multiValue": true,
+        "inverseFieldId": "items",
+        "inverseRelationshipTypeKey": "has-item"
+      },
+      {
+        "name": "goal",
+        "type": "relationship",
+        "required": false,
+        "displayInline": true,
+        "relationshipTypeKey": "contributed-by",
+        "targetTrackerTypes": [
+          "goal"
+        ],
+        "multiValue": true,
+        "inverseFieldId": "contributes",
+        "inverseRelationshipTypeKey": "contributes-to"
+      },
+      {
+        "name": "tags",
+        "type": "array",
+        "required": false,
+        "displayInline": false,
+        "itemType": "string"
+      }
+    ],
+    "inlineTemplate": "{icon} {title} {status} {priority}",
+    "roles": {
+      "title": "title",
+      "workflowStatus": "status",
+      "priority": "priority",
+      "assignee": "owner",
+      "tags": "tags"
+    },
+    "sharing": "team",
+    "draftByDefault": false
+  },
+  {
+    "type": "task",
+    "displayName": "Task",
+    "displayNamePlural": "Tasks",
+    "icon": "task_alt",
+    "color": "#2563eb",
+    "modes": {
+      "inline": true,
+      "fullDocument": false
+    },
+    "idPrefix": "tsk",
+    "idFormat": "ulid",
+    "fields": [
+      {
+        "name": "title",
+        "type": "string",
+        "required": true,
+        "displayInline": true
+      },
+      {
+        "name": "status",
+        "type": "select",
+        "required": false,
+        "default": "to-do",
+        "displayInline": true,
+        "options": [
+          {
+            "value": "to-do",
+            "label": "To Do",
+            "icon": "circle",
+            "category": "unstarted"
+          },
+          {
+            "value": "in-progress",
+            "label": "In Progress",
+            "icon": "motion_photos_on",
+            "category": "started"
+          },
+          {
+            "value": "in-review",
+            "label": "In Review",
+            "icon": "rate_review",
+            "color": "#3b82f6",
+            "category": "started"
+          },
+          {
+            "value": "changes-requested",
+            "label": "Changes Requested",
+            "icon": "edit_note",
+            "color": "#f97316",
+            "category": "started"
+          },
+          {
+            "value": "approved",
+            "label": "Approved",
+            "icon": "verified",
+            "color": "#22c55e",
+            "category": "started"
+          },
+          {
+            "value": "done",
+            "label": "Done",
+            "icon": "check_circle",
+            "category": "done"
+          },
+          {
+            "value": "wont-do",
+            "label": "Won't Do",
+            "icon": "do_not_disturb_on",
+            "color": "#64748b",
+            "category": "cancelled"
+          },
+          {
+            "value": "duplicate",
+            "label": "Duplicate",
+            "icon": "content_copy",
+            "color": "#64748b",
+            "category": "cancelled"
+          }
+        ]
+      },
+      {
+        "name": "priority",
+        "type": "select",
+        "required": false,
+        "default": "medium",
+        "displayInline": true,
+        "options": [
+          {
+            "value": "low",
+            "label": "Low"
+          },
+          {
+            "value": "medium",
+            "label": "Medium"
+          },
+          {
+            "value": "high",
+            "label": "High"
+          },
+          {
+            "value": "critical",
+            "label": "Critical"
+          }
+        ]
+      },
+      {
+        "name": "owner",
+        "type": "user",
+        "required": false,
+        "displayInline": true
+      },
+      {
+        "name": "description",
+        "type": "text",
+        "required": false,
+        "displayInline": true
+      },
+      {
+        "name": "dependsOn",
+        "type": "relationship",
+        "required": false,
+        "displayInline": true,
+        "relationshipTypeKey": "depends-on",
+        "targetTrackerTypes": "*",
+        "multiValue": true,
+        "inverseFieldId": "blocks",
+        "inverseRelationshipTypeKey": "blocks"
+      },
+      {
+        "name": "blocks",
+        "type": "relationship",
+        "required": false,
+        "displayInline": true,
+        "relationshipTypeKey": "blocks",
+        "targetTrackerTypes": "*",
+        "multiValue": true,
+        "inverseFieldId": "dependsOn",
+        "inverseRelationshipTypeKey": "depends-on"
+      },
+      {
+        "name": "collection",
+        "type": "relationship",
+        "required": false,
+        "displayInline": true,
+        "relationshipTypeKey": "in-collection",
+        "targetTrackerTypes": [
+          "milestone",
+          "release"
+        ],
+        "multiValue": true,
+        "inverseFieldId": "items",
+        "inverseRelationshipTypeKey": "has-item"
+      },
+      {
+        "name": "goal",
+        "type": "relationship",
+        "required": false,
+        "displayInline": true,
+        "relationshipTypeKey": "contributed-by",
+        "targetTrackerTypes": [
+          "goal"
+        ],
+        "multiValue": true,
+        "inverseFieldId": "contributes",
+        "inverseRelationshipTypeKey": "contributes-to"
+      },
+      {
+        "name": "tags",
+        "type": "array",
+        "required": false,
+        "displayInline": false,
+        "itemType": "string"
+      }
+    ],
+    "inlineTemplate": "{icon} {title} {status} {owner}",
+    "roles": {
+      "title": "title",
+      "workflowStatus": "status",
+      "priority": "priority",
+      "assignee": "owner",
+      "tags": "tags"
+    },
+    "sharing": "team",
+    "draftByDefault": false
+  },
+  {
+    "type": "idea",
+    "displayName": "Idea",
+    "displayNamePlural": "Ideas",
+    "icon": "lightbulb",
+    "color": "#ca8a04",
+    "modes": {
+      "inline": true,
+      "fullDocument": false
+    },
+    "idPrefix": "id",
+    "idFormat": "ulid",
+    "fields": [
+      {
+        "name": "title",
+        "type": "string",
+        "required": true,
+        "displayInline": true
+      },
+      {
+        "name": "status",
+        "type": "select",
+        "required": false,
+        "default": "new",
+        "displayInline": true,
+        "options": [
+          {
+            "value": "new",
+            "label": "New",
+            "icon": "fiber_new",
+            "category": "backlog"
+          },
+          {
+            "value": "considering",
+            "label": "Considering",
+            "icon": "psychology",
+            "category": "started"
+          },
+          {
+            "value": "accepted",
+            "label": "Accepted",
+            "icon": "thumb_up",
+            "category": "started"
+          },
+          {
+            "value": "rejected",
+            "label": "Rejected",
+            "icon": "thumb_down",
+            "category": "cancelled"
+          }
+        ]
+      },
+      {
+        "name": "dependsOn",
+        "type": "relationship",
+        "required": false,
+        "displayInline": true,
+        "relationshipTypeKey": "depends-on",
+        "targetTrackerTypes": "*",
+        "multiValue": true,
+        "inverseFieldId": "blocks",
+        "inverseRelationshipTypeKey": "blocks"
+      },
+      {
+        "name": "blocks",
+        "type": "relationship",
+        "required": false,
+        "displayInline": true,
+        "relationshipTypeKey": "blocks",
+        "targetTrackerTypes": "*",
+        "multiValue": true,
+        "inverseFieldId": "dependsOn",
+        "inverseRelationshipTypeKey": "depends-on"
+      },
+      {
+        "name": "collection",
+        "type": "relationship",
+        "required": false,
+        "displayInline": true,
+        "relationshipTypeKey": "in-collection",
+        "targetTrackerTypes": [
+          "milestone",
+          "release"
+        ],
+        "multiValue": true,
+        "inverseFieldId": "items",
+        "inverseRelationshipTypeKey": "has-item"
+      },
+      {
+        "name": "tags",
+        "type": "array",
+        "required": false,
+        "displayInline": false,
+        "itemType": "string"
+      }
+    ],
+    "inlineTemplate": "{icon} {title} {status}",
+    "roles": {
+      "title": "title",
+      "workflowStatus": "status",
+      "tags": "tags"
+    },
+    "sharing": "personal",
+    "draftByDefault": false
+  },
+  {
+    "type": "milestone",
+    "displayName": "Milestone",
+    "displayNamePlural": "Milestones",
+    "icon": "flag",
+    "color": "#8b5cf6",
+    "modes": {
+      "inline": false,
+      "fullDocument": true
+    },
+    "idPrefix": "mst",
+    "idFormat": "ulid",
+    "fields": [
+      {
+        "name": "title",
+        "type": "string",
+        "required": true,
+        "displayInline": true
+      },
+      {
+        "name": "status",
+        "type": "select",
+        "required": false,
+        "default": "planned",
+        "displayInline": true,
+        "options": [
+          {
+            "value": "planned",
+            "label": "Planned",
+            "icon": "schedule",
+            "color": "#6b7280",
+            "category": "unstarted"
+          },
+          {
+            "value": "active",
+            "label": "Active",
+            "icon": "play_circle",
+            "color": "#eab308",
+            "category": "started"
+          },
+          {
+            "value": "done",
+            "label": "Done",
+            "icon": "check_circle",
+            "color": "#22c55e",
+            "category": "done"
+          },
+          {
+            "value": "cancelled",
+            "label": "Cancelled",
+            "icon": "cancel",
+            "color": "#ef4444",
+            "category": "cancelled"
+          }
+        ]
+      },
+      {
+        "name": "owner",
+        "type": "user",
+        "required": false,
+        "displayInline": true
+      },
+      {
+        "name": "startDate",
+        "type": "date",
+        "required": false,
+        "displayInline": true
+      },
+      {
+        "name": "targetDate",
+        "type": "date",
+        "required": false,
+        "displayInline": true
+      },
+      {
+        "name": "description",
+        "type": "text",
+        "required": false,
+        "displayInline": true
+      },
+      {
+        "name": "items",
+        "type": "relationship",
+        "required": false,
+        "displayInline": true,
+        "relationshipTypeKey": "has-item",
+        "targetTrackerTypes": "*",
+        "multiValue": true,
+        "inverseFieldId": "collection",
+        "inverseRelationshipTypeKey": "in-collection",
+        "childRelationship": true
+      },
+      {
+        "name": "tags",
+        "type": "array",
+        "required": false,
+        "displayInline": false,
+        "itemType": "string"
+      }
+    ],
+    "tableView": {
+      "defaultColumns": [
+        "title",
+        "status",
+        "owner",
+        "targetDate"
+      ],
+      "sortable": true,
+      "filterable": true,
+      "exportable": true
+    },
+    "roles": {
+      "title": "title",
+      "workflowStatus": "status",
+      "assignee": "owner",
+      "startDate": "startDate",
+      "dueDate": "targetDate",
+      "tags": "tags"
+    },
+    "sharing": "team",
+    "draftByDefault": false
+  },
+  {
+    "type": "release",
+    "displayName": "Release",
+    "displayNamePlural": "Releases",
+    "icon": "rocket_launch",
+    "color": "#0ea5e9",
+    "modes": {
+      "inline": false,
+      "fullDocument": true
+    },
+    "idPrefix": "rel",
+    "idFormat": "ulid",
+    "fields": [
+      {
+        "name": "title",
+        "type": "string",
+        "required": true,
+        "displayInline": true
+      },
+      {
+        "name": "status",
+        "type": "select",
+        "required": false,
+        "default": "planned",
+        "displayInline": true,
+        "options": [
+          {
+            "value": "planned",
+            "label": "Planned",
+            "icon": "schedule",
+            "color": "#6b7280",
+            "category": "unstarted"
+          },
+          {
+            "value": "in-progress",
+            "label": "In Progress",
+            "icon": "play_circle",
+            "color": "#eab308",
+            "category": "started"
+          },
+          {
+            "value": "released",
+            "label": "Released",
+            "icon": "rocket_launch",
+            "color": "#22c55e",
+            "category": "done"
+          },
+          {
+            "value": "cancelled",
+            "label": "Cancelled",
+            "icon": "cancel",
+            "color": "#ef4444",
+            "category": "cancelled"
+          }
+        ]
+      },
+      {
+        "name": "version",
+        "type": "string",
+        "required": false,
+        "displayInline": true
+      },
+      {
+        "name": "gitTag",
+        "type": "string",
+        "required": false,
+        "displayInline": true
+      },
+      {
+        "name": "channel",
+        "type": "select",
+        "required": false,
+        "displayInline": true,
+        "options": [
+          {
+            "value": "alpha",
+            "label": "Alpha"
+          },
+          {
+            "value": "stable",
+            "label": "Stable"
+          }
+        ]
+      },
+      {
+        "name": "releasedAt",
+        "type": "datetime",
+        "required": false,
+        "displayInline": true
+      },
+      {
+        "name": "owner",
+        "type": "user",
+        "required": false,
+        "displayInline": true
+      },
+      {
+        "name": "description",
+        "type": "text",
+        "required": false,
+        "displayInline": true
+      },
+      {
+        "name": "items",
+        "type": "relationship",
+        "required": false,
+        "displayInline": true,
+        "relationshipTypeKey": "has-item",
+        "targetTrackerTypes": "*",
+        "multiValue": true,
+        "inverseFieldId": "collection",
+        "inverseRelationshipTypeKey": "in-collection",
+        "childRelationship": true
+      },
+      {
+        "name": "tags",
+        "type": "array",
+        "required": false,
+        "displayInline": false,
+        "itemType": "string"
+      }
+    ],
+    "tableView": {
+      "defaultColumns": [
+        "title",
+        "status",
+        "version",
+        "channel",
+        "releasedAt"
+      ],
+      "sortable": true,
+      "filterable": true,
+      "exportable": true
+    },
+    "roles": {
+      "title": "title",
+      "workflowStatus": "status",
+      "assignee": "owner",
+      "tags": "tags"
+    },
+    "sharing": "team",
+    "draftByDefault": false
+  },
+  {
+    "type": "source",
+    "displayName": "Source",
+    "displayNamePlural": "Sources",
+    "icon": "menu_book",
+    "color": "#0891b2",
+    "modes": {
+      "inline": true,
+      "fullDocument": false
+    },
+    "idPrefix": "src",
+    "idFormat": "ulid",
+    "fields": [
+      {
+        "name": "title",
+        "type": "string",
+        "required": true,
+        "displayInline": true
+      },
+      {
+        "name": "status",
+        "type": "select",
+        "required": false,
+        "default": "active",
+        "displayInline": true,
+        "options": [
+          {
+            "value": "active",
+            "label": "Active",
+            "icon": "check_circle",
+            "category": "started"
+          },
+          {
+            "value": "superseded",
+            "label": "Superseded",
+            "icon": "history",
+            "category": "done"
+          },
+          {
+            "value": "unavailable",
+            "label": "Unavailable",
+            "icon": "link_off",
+            "category": "cancelled"
+          }
+        ]
+      },
+      {
+        "name": "url",
+        "type": "url",
+        "required": false,
+        "displayInline": true
+      },
+      {
+        "name": "publisher",
+        "type": "string",
+        "required": false,
+        "displayInline": true
+      },
+      {
+        "name": "sourceKind",
+        "type": "select",
+        "required": false,
+        "default": "web-page",
+        "displayInline": true,
+        "options": [
+          {
+            "value": "web-page",
+            "label": "Web page",
+            "icon": "language"
+          },
+          {
+            "value": "document",
+            "label": "Document",
+            "icon": "description"
+          },
+          {
+            "value": "repository",
+            "label": "Repository",
+            "icon": "code"
+          },
+          {
+            "value": "dataset",
+            "label": "Dataset",
+            "icon": "dataset"
+          },
+          {
+            "value": "media",
+            "label": "Audio or video",
+            "icon": "play_circle"
+          },
+          {
+            "value": "conversation",
+            "label": "Conversation",
+            "icon": "forum"
+          },
+          {
+            "value": "test-result",
+            "label": "Test result",
+            "icon": "fact_check"
+          }
+        ]
+      },
+      {
+        "name": "aliases",
+        "type": "array",
+        "required": false,
+        "displayInline": false,
+        "itemType": "string"
+      },
+      {
+        "name": "tags",
+        "type": "array",
+        "required": false,
+        "displayInline": false,
+        "itemType": "string"
+      },
+      {
+        "name": "created",
+        "type": "datetime",
+        "required": false,
+        "displayInline": false,
+        "readOnly": true
+      },
+      {
+        "name": "updated",
+        "type": "datetime",
+        "required": false,
+        "displayInline": false,
+        "readOnly": true
+      }
+    ],
+    "statusBarLayout": [
+      {
+        "row": [
+          {
+            "field": "status",
+            "width": 160
+          },
+          {
+            "field": "sourceKind",
+            "width": 160
+          },
+          {
+            "field": "publisher",
+            "width": 220
+          }
+        ]
+      }
+    ],
+    "inlineTemplate": "{icon} {title}",
+    "hiddenUntilType": "claim",
+    "roles": {
+      "title": "title",
+      "workflowStatus": "status",
+      "tags": "tags"
+    },
+    "sharing": "personal",
+    "draftByDefault": false
+  },
+  {
+    "type": "capture",
+    "displayName": "Capture",
+    "displayNamePlural": "Captures",
+    "icon": "photo_camera",
+    "color": "#0d9488",
+    "modes": {
+      "inline": true,
+      "fullDocument": false
+    },
+    "idPrefix": "cap",
+    "idFormat": "ulid",
+    "fields": [
+      {
+        "name": "title",
+        "type": "string",
+        "required": true,
+        "displayInline": true
+      },
+      {
+        "name": "status",
+        "type": "select",
+        "required": false,
+        "default": "recorded",
+        "displayInline": true,
+        "options": [
+          {
+            "value": "recorded",
+            "label": "Recorded",
+            "icon": "check_circle",
+            "category": "done"
+          },
+          {
+            "value": "stale",
+            "label": "Stale",
+            "icon": "schedule",
+            "category": "started"
+          },
+          {
+            "value": "unresolvable",
+            "label": "Unresolvable",
+            "icon": "link_off",
+            "category": "cancelled"
+          }
+        ]
+      },
+      {
+        "name": "source",
+        "type": "relationship",
+        "required": false,
+        "displayInline": true,
+        "relationshipTypeKey": "captured-from",
+        "targetTrackerTypes": [
+          "source"
+        ],
+        "multiValue": false
+      },
+      {
+        "name": "capturedAt",
+        "type": "datetime",
+        "required": false,
+        "displayInline": true
+      },
+      {
+        "name": "resolvedUrl",
+        "type": "url",
+        "required": false,
+        "displayInline": false
+      },
+      {
+        "name": "contentType",
+        "type": "string",
+        "required": false,
+        "displayInline": false
+      },
+      {
+        "name": "digest",
+        "type": "string",
+        "required": false,
+        "displayInline": false
+      },
+      {
+        "name": "outcome",
+        "type": "select",
+        "required": false,
+        "default": "retrieved",
+        "displayInline": true,
+        "options": [
+          {
+            "value": "retrieved",
+            "label": "Retrieved",
+            "icon": "download_done"
+          },
+          {
+            "value": "partial",
+            "label": "Partial",
+            "icon": "hourglass_bottom"
+          },
+          {
+            "value": "not-found",
+            "label": "Not found",
+            "icon": "search_off"
+          },
+          {
+            "value": "forbidden",
+            "label": "Forbidden",
+            "icon": "block"
+          },
+          {
+            "value": "error",
+            "label": "Error",
+            "icon": "error"
+          }
+        ]
+      },
+      {
+        "name": "tags",
+        "type": "array",
+        "required": false,
+        "displayInline": false,
+        "itemType": "string"
+      },
+      {
+        "name": "created",
+        "type": "datetime",
+        "required": false,
+        "displayInline": false,
+        "readOnly": true
+      },
+      {
+        "name": "updated",
+        "type": "datetime",
+        "required": false,
+        "displayInline": false,
+        "readOnly": true
+      }
+    ],
+    "statusBarLayout": [
+      {
+        "row": [
+          {
+            "field": "status",
+            "width": 160
+          },
+          {
+            "field": "outcome",
+            "width": 160
+          },
+          {
+            "field": "capturedAt",
+            "width": 200
+          }
+        ]
+      }
+    ],
+    "inlineTemplate": "{icon} {title}",
+    "hiddenUntilType": "claim",
+    "roles": {
+      "title": "title",
+      "workflowStatus": "status",
+      "tags": "tags"
+    },
+    "sharing": "personal",
+    "draftByDefault": false
+  },
+  {
+    "type": "citation",
+    "displayName": "Citation",
+    "displayNamePlural": "Citations",
+    "icon": "format_quote",
+    "color": "#7c3aed",
+    "modes": {
+      "inline": true,
+      "fullDocument": false
+    },
+    "idPrefix": "cit",
+    "idFormat": "ulid",
+    "fields": [
+      {
+        "name": "title",
+        "type": "string",
+        "required": true,
+        "displayInline": true
+      },
+      {
+        "name": "status",
+        "type": "select",
+        "required": false,
+        "default": "asserted",
+        "displayInline": true,
+        "options": [
+          {
+            "value": "asserted",
+            "label": "Asserted",
+            "icon": "check_circle",
+            "category": "started"
+          },
+          {
+            "value": "verified",
+            "label": "Verified",
+            "icon": "verified",
+            "category": "done"
+          },
+          {
+            "value": "stale",
+            "label": "Stale",
+            "icon": "schedule",
+            "category": "started"
+          },
+          {
+            "value": "broken",
+            "label": "Broken",
+            "icon": "link_off",
+            "category": "cancelled"
+          }
+        ]
+      },
+      {
+        "name": "claim",
+        "type": "relationship",
+        "required": false,
+        "displayInline": true,
+        "relationshipTypeKey": "cites",
+        "targetTrackerTypes": "*",
+        "multiValue": false
+      },
+      {
+        "name": "capture",
+        "type": "relationship",
+        "required": false,
+        "displayInline": true,
+        "relationshipTypeKey": "read-from",
+        "targetTrackerTypes": [
+          "capture"
+        ],
+        "multiValue": false
+      },
+      {
+        "name": "relation",
+        "type": "select",
+        "required": false,
+        "default": "supports",
+        "displayInline": true,
+        "options": [
+          {
+            "value": "supports",
+            "label": "Supports",
+            "icon": "thumb_up"
+          },
+          {
+            "value": "challenges",
+            "label": "Challenges",
+            "icon": "thumb_down"
+          },
+          {
+            "value": "context",
+            "label": "Context",
+            "icon": "info"
+          }
+        ]
+      },
+      {
+        "name": "locator",
+        "type": "object",
+        "required": false,
+        "displayInline": false,
+        "objectShape": "citation-locator"
+      },
+      {
+        "name": "excerpt",
+        "type": "text",
+        "required": false,
+        "displayInline": false
+      },
+      {
+        "name": "explanation",
+        "type": "text",
+        "required": false,
+        "displayInline": false
+      },
+      {
+        "name": "tags",
+        "type": "array",
+        "required": false,
+        "displayInline": false,
+        "itemType": "string"
+      },
+      {
+        "name": "created",
+        "type": "datetime",
+        "required": false,
+        "displayInline": false,
+        "readOnly": true
+      },
+      {
+        "name": "updated",
+        "type": "datetime",
+        "required": false,
+        "displayInline": false,
+        "readOnly": true
+      }
+    ],
+    "statusBarLayout": [
+      {
+        "row": [
+          {
+            "field": "status",
+            "width": 160
+          },
+          {
+            "field": "relation",
+            "width": 160
+          }
+        ]
+      }
+    ],
+    "inlineTemplate": "{icon} {title} {relation}",
+    "hiddenUntilType": "claim",
+    "roles": {
+      "title": "title",
+      "workflowStatus": "status",
+      "tags": "tags"
+    },
+    "sharing": "personal",
+    "draftByDefault": false
+  },
+  {
+    "type": "github-issue",
+    "displayName": "GitHub Issue",
+    "displayNamePlural": "GitHub Issues",
+    "icon": "adjust",
+    "color": "#f97316",
+    "modes": {
+      "inline": false,
+      "fullDocument": false
+    },
+    "idPrefix": "ghi",
+    "idFormat": "ulid",
+    "fields": [
+      {
+        "name": "title",
+        "type": "string",
+        "required": true,
+        "displayInline": true
+      },
+      {
+        "name": "status",
+        "type": "select",
+        "required": false,
+        "default": "needs-triage",
+        "displayInline": true,
+        "options": [
+          {
+            "value": "needs-triage",
+            "label": "Needs Triage",
+            "icon": "inbox",
+            "category": "unstarted"
+          },
+          {
+            "value": "investigating",
+            "label": "Investigating",
+            "icon": "search",
+            "color": "#eab308",
+            "category": "started"
+          },
+          {
+            "value": "needs-info",
+            "label": "Needs Info",
+            "icon": "help",
+            "color": "#eab308",
+            "category": "started"
+          },
+          {
+            "value": "keep-accept",
+            "label": "Keep / Accept",
+            "icon": "check_circle",
+            "color": "#22c55e",
+            "category": "started"
+          },
+          {
+            "value": "adopted",
+            "label": "Adopted",
+            "icon": "move_item",
+            "color": "#3b82f6",
+            "category": "done"
+          },
+          {
+            "value": "close-fixed",
+            "label": "Close: Already Fixed",
+            "icon": "verified",
+            "color": "#3b82f6",
+            "category": "done"
+          },
+          {
+            "value": "close-duplicate",
+            "label": "Close: Duplicate",
+            "icon": "content_copy",
+            "color": "#8b5cf6",
+            "category": "cancelled"
+          },
+          {
+            "value": "close-wontfix",
+            "label": "Close: Won't Do",
+            "icon": "do_not_disturb_on",
+            "color": "#64748b",
+            "category": "cancelled"
+          }
+        ]
+      },
+      {
+        "name": "priority",
+        "type": "select",
+        "required": false,
+        "default": "medium",
+        "displayInline": true,
+        "options": [
+          {
+            "value": "low",
+            "label": "Low"
+          },
+          {
+            "value": "medium",
+            "label": "Medium"
+          },
+          {
+            "value": "high",
+            "label": "High"
+          },
+          {
+            "value": "critical",
+            "label": "Critical"
+          }
+        ]
+      },
+      {
+        "name": "issueUrl",
+        "type": "url",
+        "required": true,
+        "displayInline": true
+      },
+      {
+        "name": "issueNumber",
+        "type": "number",
+        "required": false,
+        "displayInline": true
+      },
+      {
+        "name": "repo",
+        "type": "string",
+        "required": false,
+        "displayInline": true
+      },
+      {
+        "name": "author",
+        "type": "string",
+        "required": false,
+        "displayInline": true
+      },
+      {
+        "name": "adoptedItemId",
+        "type": "string",
+        "required": false,
+        "displayInline": true
+      },
+      {
+        "name": "notes",
+        "type": "text",
+        "required": false,
+        "displayInline": true
+      },
+      {
+        "name": "ghLabels",
+        "type": "array",
+        "required": false,
+        "displayInline": false,
+        "itemType": "string"
+      }
+    ],
+    "listed": false,
+    "tableView": {
+      "defaultColumns": [
+        "issueNumber",
+        "title",
+        "status",
+        "priority",
+        "author"
+      ],
+      "sortable": true,
+      "filterable": true,
+      "exportable": false
+    },
+    "roles": {
+      "title": "title",
+      "workflowStatus": "status",
+      "priority": "priority",
+      "tags": "ghLabels"
+    },
+    "sharing": "personal",
+    "draftByDefault": false
+  },
+  {
+    "type": "github-pr",
+    "displayName": "GitHub PR",
+    "displayNamePlural": "GitHub PRs",
+    "icon": "merge_type",
+    "color": "#8b5cf6",
+    "modes": {
+      "inline": false,
+      "fullDocument": false
+    },
+    "idPrefix": "ghp",
+    "idFormat": "ulid",
+    "fields": [
+      {
+        "name": "title",
+        "type": "string",
+        "required": true,
+        "displayInline": true
+      },
+      {
+        "name": "status",
+        "type": "select",
+        "required": false,
+        "default": "to-review",
+        "displayInline": true,
+        "options": [
+          {
+            "value": "to-review",
+            "label": "To Review",
+            "icon": "inbox",
+            "category": "unstarted"
+          },
+          {
+            "value": "reviewing",
+            "label": "Reviewing",
+            "icon": "search",
+            "color": "#eab308",
+            "category": "started"
+          },
+          {
+            "value": "approved",
+            "label": "Approved",
+            "icon": "verified",
+            "color": "#22c55e",
+            "category": "started"
+          },
+          {
+            "value": "merged",
+            "label": "Merged",
+            "icon": "merge",
+            "color": "#8b5cf6",
+            "category": "done"
+          },
+          {
+            "value": "closed",
+            "label": "Closed",
+            "icon": "cancel",
+            "color": "#64748b",
+            "category": "cancelled"
+          }
+        ]
+      },
+      {
+        "name": "prUrl",
+        "type": "url",
+        "required": true,
+        "displayInline": true
+      },
+      {
+        "name": "prNumber",
+        "type": "number",
+        "required": false,
+        "displayInline": true
+      },
+      {
+        "name": "repo",
+        "type": "string",
+        "required": false,
+        "displayInline": true
+      },
+      {
+        "name": "author",
+        "type": "string",
+        "required": false,
+        "displayInline": true
+      },
+      {
+        "name": "headBranch",
+        "type": "string",
+        "required": false,
+        "displayInline": true
+      },
+      {
+        "name": "baseBranch",
+        "type": "string",
+        "required": false,
+        "displayInline": true
+      },
+      {
+        "name": "notes",
+        "type": "text",
+        "required": false,
+        "displayInline": true
+      },
+      {
+        "name": "tags",
+        "type": "array",
+        "required": false,
+        "displayInline": false,
+        "itemType": "string"
+      }
+    ],
+    "listed": false,
+    "tableView": {
+      "defaultColumns": [
+        "prNumber",
+        "title",
+        "status",
+        "author"
+      ],
+      "sortable": true,
+      "filterable": true,
+      "exportable": false
+    },
+    "roles": {
+      "title": "title",
+      "workflowStatus": "status",
+      "tags": "tags"
+    },
+    "sharing": "personal",
+    "draftByDefault": false
+  }
+]

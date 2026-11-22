@@ -1,17 +1,20 @@
 // @vitest-environment node
 /**
  * The SessionStart context: what an agent is told about the local wiki before
- * its first prompt. Nothing without a wiki, never more than the cap.
+ * its first prompt. Nothing without a wiki, never more than the cap. And the
+ * plugin's two hooks as `nim hook` runs them.
  */
+import assert from 'node:assert/strict';
 import { afterEach, describe, expect, it } from 'vitest';
-import { execFileSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 import { writeMigratedTo } from '../../localWiki/locate.js';
 import { initLocalWiki } from '../../localWiki/open.js';
 import { buildWikiContext, CONTEXT_MAX_CHARS } from '../wikiContext.js';
-import { coveredPages } from '../wikiContextEntry.js';
+import { coveredPages } from '../pluginHooks.js';
+import { runHook } from '../../commands/hook.js';
 
 const dirs: string[] = [];
 afterEach(() => {
@@ -103,5 +106,191 @@ describe('buildWikiContext', () => {
     expect(text).toContain('- Topic 000');
     expect(text).toMatch(/and \d+ more top-level pages/);
     expect(text).toContain('/nimbalyst-wiki:capture');
+  });
+});
+
+function tempRoot(): string {
+  const root = realpathSync(mkdtempSync(path.join(tmpdir(), 'nim-hook-')));
+  dirs.push(root);
+  return root;
+}
+
+describe('nim hook, the plugin hooks', () => {
+  function toolUse(name: string, input: Record<string, unknown>): string {
+    return JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', name, input }] } });
+  }
+
+  async function runNudge(root: string, input: unknown, env: NodeJS.ProcessEnv = {}) {
+    const out = await runHook('stop', typeof input === 'string' ? input : JSON.stringify(input), {
+      ...process.env,
+      NIMBALYST_WIKI_NUDGE_STATE_DIR: path.join(root, 'state'),
+      NIMBALYST_WIKI_NUDGE_MIN_EDITS: '3',
+      ...env,
+    });
+    return out ? JSON.parse(out) : null;
+  }
+
+  function transcript(root: string, name: string, lines: string[]): string {
+    const file = path.join(root, `${name}.jsonl`);
+    writeFileSync(file, `${lines.join('\n')}\n`);
+    return file;
+  }
+
+  it('nudge blocks once per session, and only after substantive work', async () => {
+    const root = tempRoot();
+    const edits = transcript(root, 'edits', [
+      toolUse('Read', { file_path: 'a.ts' }),
+      ...['a.ts', 'b.ts', 'c.ts'].map((file) => toolUse('Edit', { file_path: file })),
+    ]);
+    const first = await runNudge(root, { session_id: 's1', transcript_path: edits, stop_hook_active: false });
+    assert.equal(first.decision, 'block');
+    assert.match(first.reason, /3 file edits.*\/nimbalyst-wiki:capture.*"nothing to record"/);
+    // The reason is shown to the agent and the user as one sentence; joined parts keep their spaces.
+    assert.doesNotMatch(first.reason, /\S(?:to record|If nothing)/);
+    assert.equal(await runNudge(root, { session_id: 's1', transcript_path: edits }), null);
+
+    // The threshold is overridable, and below it nothing happens.
+    assert.equal(await runNudge(root, { session_id: 's2', transcript_path: edits }, { NIMBALYST_WIKI_NUDGE_MIN_EDITS: '4' }), null);
+
+    const commit = transcript(root, 'commit', ['not json', toolUse('Bash', { command: 'git add x && git commit -m "x"' })]);
+    assert.match((await runNudge(root, { session_id: 's3', transcript_path: commit })).reason, /1 git commit/);
+    const plan = transcript(root, 'plan', [toolUse('Write', { file_path: '/repo/nimbalyst-local/plans/thing.md' })]);
+    assert.match((await runNudge(root, { session_id: 's4', transcript_path: plan })).reason, /a plan/);
+
+    // Already recorded through the plugin's Pages tools, or the desktop's: no nudge.
+    const writes = [
+      'mcp__plugin_nimbalyst-wiki_nimbalyst-team__applyCollabDocEdit',
+      'mcp__plugin_nimbalyst-wiki_nimbalyst-team__createSharedDoc',
+      'mcp__plugin_nimbalyst-wiki_nimbalyst-team__setPageType',
+      'mcp__plugin_nimbalyst-wiki_nimbalyst-team__moveSharedItem',
+      'mcp__plugin_nimbalyst-wiki_nimbalyst-team__tracker_create',
+      'mcp__nimbalyst-trackers__tracker_update',
+    ];
+    for (const [i, name] of writes.entries()) {
+      const captured = transcript(root, `captured-${i}`, [toolUse('Bash', { command: 'git commit -m x' }), toolUse(name, { id: 'X' })]);
+      assert.equal(await runNudge(root, { session_id: `s5-${i}`, transcript_path: captured }), null, name);
+    }
+    // Reads, and the retired wiki_* names, are not a record.
+    for (const name of ['mcp__plugin_nimbalyst-wiki_nimbalyst-team__readCollabDoc', 'mcp__plugin_nimbalyst-wiki_nimbalyst-wiki__wiki_update_item']) {
+      const read = transcript(root, `read-${name.length}`, [toolUse('Bash', { command: 'git commit -m x' }), toolUse(name, { id: 'X' })]);
+      assert.equal((await runNudge(root, { session_id: `s6-${name.length}`, transcript_path: read })).decision, 'block', name);
+    }
+  });
+
+  it('nudge stays quiet with no wiki to record into: no git remote and no local wiki', async () => {
+    const root = tempRoot();
+    const commit = transcript(root, 'commit', [toolUse('Bash', { command: 'git commit -m x' })]);
+    const noRemote = path.join(root, 'no-remote');
+    mkdirSync(noRemote);
+    spawnSync('git', ['init', '-q'], { cwd: noRemote });
+    assert.equal(await runNudge(root, { session_id: 'r1', transcript_path: commit, cwd: noRemote }), null);
+    assert.equal(await runNudge(root, { session_id: 'r2', transcript_path: commit, cwd: path.join(root, 'not-a-repo') }), null);
+
+    const withRemote = path.join(root, 'with-remote');
+    mkdirSync(withRemote);
+    spawnSync('git', ['init', '-q'], { cwd: withRemote });
+    spawnSync('git', ['remote', 'add', 'origin', 'git@github.com:acme/widgets.git'], { cwd: withRemote });
+    assert.equal((await runNudge(root, { session_id: 'r3', transcript_path: commit, cwd: withRemote })).decision, 'block');
+
+    // A local wiki is somewhere to record, remote or not.
+    const localWiki = path.join(root, 'local-wiki');
+    mkdirSync(path.join(localWiki, 'nimbalyst-local', 'wiki'), { recursive: true });
+    spawnSync('git', ['init', '-q'], { cwd: localWiki });
+    writeFileSync(path.join(localWiki, 'nimbalyst-local', 'wiki', '.nimbalyst-wiki.yaml'), 'formatVersion: 1\n');
+    assert.equal((await runNudge(root, { session_id: 'r4', transcript_path: commit, cwd: localWiki })).decision, 'block');
+  });
+
+  it('nudge never blocks when stop_hook_active or on bad input', async () => {
+    const root = tempRoot();
+    const commit = transcript(root, 'commit', [toolUse('Bash', { command: 'git commit -m x' })]);
+    assert.equal(await runNudge(root, { session_id: 'a', transcript_path: commit, stop_hook_active: true }), null);
+    assert.equal(await runNudge(root, '{not json'), null);
+    assert.equal(await runNudge(root, ''), null);
+    assert.equal(await runNudge(root, { session_id: 'b', transcript_path: path.join(root, 'missing.jsonl') }), null);
+    assert.equal(await runNudge(root, { transcript_path: commit }), null);
+  });
+
+  it('nudge keeps its markers in a private per-user state dir, not the shared temp dir', async () => {
+    const root = tempRoot();
+    const commit = transcript(root, 'commit', [toolUse('Bash', { command: 'git commit -m x' })]);
+
+    const xdg = path.join(root, 'xdg');
+    assert.equal((await runNudge(root, { session_id: 'x1', transcript_path: commit }, { NIMBALYST_WIKI_NUDGE_STATE_DIR: '', XDG_STATE_HOME: xdg })).decision, 'block');
+    const xdgDir = path.join(xdg, 'nimbalyst-wiki');
+    assert.ok(existsSync(path.join(xdgDir, 'x1.nudged')));
+    if (process.platform !== 'win32') assert.equal(statSync(xdgDir).mode & 0o777, 0o700);
+
+    const home = path.join(root, 'home');
+    assert.equal((await runNudge(root, { session_id: 'h1', transcript_path: commit }, { NIMBALYST_WIKI_NUDGE_STATE_DIR: '', XDG_STATE_HOME: '', HOME: home })).decision, 'block');
+    assert.ok(existsSync(path.join(home, '.claude', 'state', 'nimbalyst-wiki', 'h1.nudged')));
+  });
+
+  function gitRepo(dir: string): string {
+    mkdirSync(dir, { recursive: true });
+    spawnSync('git', ['init', '-q'], { cwd: dir });
+    // Sandboxed: git runs in the temp repository, never this checkout.
+    assert.equal(realpathSync(spawnSync('git', ['rev-parse', '--show-toplevel'], { cwd: dir, encoding: 'utf8' }).stdout.trim()), realpathSync(dir));
+    return dir;
+  }
+
+  /** A project with a local wiki whose Sync page covers src/sync, and an uncommitted file there. */
+  function wikiProject(dir: string): string {
+    gitRepo(dir);
+    const wiki = path.join(dir, 'nimbalyst-local', 'wiki');
+    mkdirSync(wiki, { recursive: true });
+    writeFileSync(path.join(wiki, '.nimbalyst-wiki.yaml'), 'formatVersion: 1\n');
+    writeFileSync(path.join(wiki, 'Home.md'), '---\nid: home\nsummary: The widget project.\n---\n\nWelcome.\n');
+    writeFileSync(path.join(wiki, 'Sync protocol.md'), '---\nid: sync\npaths: [src/sync/**]\n---\n\n[Batch acks?]{open}\n');
+    // No id: a writer's scan would add one.
+    writeFileSync(path.join(wiki, 'Notes.md'), 'Loose notes.\n');
+    mkdirSync(path.join(dir, 'src', 'sync'), { recursive: true });
+    writeFileSync(path.join(dir, 'src', 'sync', 'a.ts'), 'a\n');
+    return dir;
+  }
+
+  async function runContext(input: unknown, env: NodeJS.ProcessEnv = {}): Promise<string> {
+    return (await runHook('session-start', JSON.stringify(input), { ...process.env, CLAUDE_PROJECT_DIR: '', ...env })) ?? '';
+  }
+
+  it('session-start context describes the local wiki, under the cap, and leaves files alone', async () => {
+    const project = wikiProject(path.join(tempRoot(), 'project'));
+    const out = await runContext({ hook_event_name: 'SessionStart', cwd: project });
+    const parsed = JSON.parse(out);
+    assert.equal(parsed.hookSpecificOutput.hookEventName, 'SessionStart');
+    const context = parsed.hookSpecificOutput.additionalContext;
+    assert.match(context, /local wiki in nimbalyst-local\/wiki/);
+    assert.match(context, /Home: The widget project\./);
+    assert.match(context, /1 open question/);
+    assert.match(context, /changed in the working tree: Sync protocol/);
+    assert.ok(context.length <= 1500, `${context.length} chars`);
+    // Read-only: the hook never repairs or writes the wiki.
+    assert.equal(readFileSync(path.join(project, 'nimbalyst-local', 'wiki', 'Notes.md'), 'utf8'), 'Loose notes.\n');
+    // CLAUDE_PROJECT_DIR wins over the hook's cwd.
+    assert.match(await runContext({ cwd: path.join(project, 'src') }, { CLAUDE_PROJECT_DIR: project }), /widget project/);
+  });
+
+  it('session-start context prints nothing without a local wiki, or on bad input', async () => {
+    const root = tempRoot();
+    assert.equal(await runContext({ cwd: gitRepo(path.join(root, 'plain')) }), '');
+    assert.equal(await runContext({ cwd: path.join(root, 'missing') }), '');
+    const broken = path.join(root, 'broken');
+    mkdirSync(path.join(broken, 'nimbalyst-local', 'wiki'), { recursive: true });
+    writeFileSync(path.join(broken, 'nimbalyst-local', 'wiki', '.nimbalyst-wiki.yaml'), 'formatVersion: 99\n');
+    assert.equal(await runContext({ cwd: broken }), '');
+    assert.equal(await runHook('session-start', '{not json', { ...process.env, CLAUDE_PROJECT_DIR: '' }), null);
+  });
+
+  it('nudge names the local wiki pages covering the files the session edited', async () => {
+    const root = tempRoot();
+    const project = wikiProject(path.join(root, 'project'));
+    const covered = transcript(root, 'covered', ['a.ts', 'b.ts', 'c.ts'].map((file) => toolUse('Edit', { file_path: path.join(project, 'src', 'sync', file) })));
+    const reason = (await runNudge(root, { session_id: 'c1', transcript_path: covered, cwd: project })).reason;
+    assert.match(reason, /3 file edits/);
+    assert.match(reason, /covered by these wiki pages: Sync protocol\./);
+    assert.match(reason, /\/nimbalyst-wiki:capture.*"nothing to record"/);
+
+    // Edits outside every page's paths: the plain reminder.
+    const elsewhere = transcript(root, 'elsewhere', ['a.ts', 'b.ts', 'c.ts'].map((file) => toolUse('Edit', { file_path: path.join(project, 'lib', file) })));
+    assert.doesNotMatch((await runNudge(root, { session_id: 'c2', transcript_path: elsewhere, cwd: project })).reason, /covered by/);
   });
 });

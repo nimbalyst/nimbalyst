@@ -22,7 +22,13 @@
  * about to rewrite the document is how you lose someone's work.
  */
 import { getCollabContentAdapter } from '@nimbalyst/collab-adapters';
-import { parseCollabUri, type DocumentDecisionCommand, type DocumentDecisionResult } from '@nimbalyst/collab-protocol';
+import {
+  parseCollabUri,
+  parseTrackerBodyUri,
+  TRACKER_BODY_DOCUMENT_PREFIX,
+  type DocumentDecisionCommand,
+  type DocumentDecisionResult,
+} from '@nimbalyst/collab-protocol';
 import type { Doc } from 'yjs';
 import type { CollaborationContext } from '@nimbalyst/runtime';
 import type { CollabDocumentConfig } from '../utils/collabDocumentOpener';
@@ -30,6 +36,7 @@ import type { CollabDocumentConfig } from '../utils/collabDocumentOpener';
 import {
   getSharedDocumentsForScopeKey,
   getTeamSyncProviderForScopeKey,
+  resolveDesktopCollabScope,
 } from '../store/atoms/collabDocuments';
 import { collaborativeEmbedProviderCache } from './CollaborativeEmbedProviderCache';
 import { getCollaborativeDocumentTypeCatalog } from './CollaborativeDocumentTypeCatalog';
@@ -135,6 +142,46 @@ async function waitUntil(
 }
 
 /**
+ * The org, room and index entry behind `documentUri`.
+ *
+ * A typed page's body room is not in the shared-docs index: it is the markdown
+ * room `tracker-content/<itemId>` on the project's team org, which the short
+ * URI agents are handed leaves implicit (#1879).
+ */
+async function resolveHeadlessTarget(
+  documentUri: string,
+  workspacePath: string,
+): Promise<{ orgId: string; documentId: string; document: HeadlessCollabDocumentAcquisition['document'] }> {
+  const body = parseTrackerBodyUri(documentUri);
+  if (body) {
+    const orgId = body.orgId ?? (await resolveDesktopCollabScope(workspacePath)).scope?.orgId;
+    if (!orgId) {
+      throw new HeadlessCollabDocumentError(
+        'DOCUMENT_NOT_AVAILABLE',
+        `${documentUri} is a team page body, and this project is not connected to a team.`,
+      );
+    }
+    const documentId = `${TRACKER_BODY_DOCUMENT_PREFIX}${body.itemId}`;
+    return {
+      orgId,
+      documentId,
+      document: { documentId, title: `Tracker ${body.itemId}`, documentType: 'markdown', fileExtension: '.md' },
+    };
+  }
+  const { orgId, documentId } = parseCollabUri(documentUri);
+  const document = getSharedDocumentsForScopeKey(workspacePath).find(
+    (candidate) => candidate.documentId === documentId,
+  );
+  if (!document) {
+    throw new HeadlessCollabDocumentError(
+      'DOCUMENT_NOT_AVAILABLE',
+      `The shared document ${documentId} is not available in this workspace.`,
+    );
+  }
+  return { orgId, documentId, document };
+}
+
+/**
  * Acquire `documentUri` as a hydrated Y.Doc with no editor mounted.
  *
  * Resolves through the authenticated embed provider cache, so the caller
@@ -146,22 +193,13 @@ export async function acquireHeadlessCollabDocument(
   workspacePath: string,
   options: HeadlessCollabDocumentOptions = {},
 ): Promise<HeadlessCollabDocumentAcquisition> {
-  const { orgId, documentId } = parseCollabUri(documentUri);
-  const document = getSharedDocumentsForScopeKey(workspacePath).find(
-    (candidate) => candidate.documentId === documentId,
-  );
-  if (!document) {
-    throw new HeadlessCollabDocumentError(
-      'DOCUMENT_NOT_AVAILABLE',
-      `The shared document ${documentId} is not available in this workspace.`,
-    );
-  }
+  const { orgId, documentId, document } = await resolveHeadlessTarget(documentUri, workspacePath);
 
   const catalog = getCollaborativeDocumentTypeCatalog();
   const resolution = catalog.resolveMetadata(
     document.documentType,
-    document.fileExtension,
-    document.editorId,
+    document.fileExtension ?? undefined,
+    document.editorId ?? undefined,
   );
   if (resolution.state !== 'ready') {
     throw new HeadlessCollabDocumentError(

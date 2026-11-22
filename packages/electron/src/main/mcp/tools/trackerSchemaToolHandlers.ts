@@ -170,7 +170,8 @@ export async function handleTrackerListTypes(
     const allSchemas = getAllTrackerSchemas();
     const registeredTypes = new Set(allSchemas.map((model) => model.type));
     const items = allSchemas
-      // Same rule as `globalRegistry.getListed()`: a type waiting on another is not offered.
+      // Same rule as `globalRegistry.getListed()`: unlisted types and types waiting on another are not offered.
+      .filter((model) => model.listed !== false)
       .filter((model) => !model.hiddenUntilType || registeredTypes.has(model.hiddenUntilType))
       .filter((model) => {
         const builtin = isBuiltinTrackerSchema(model.type);

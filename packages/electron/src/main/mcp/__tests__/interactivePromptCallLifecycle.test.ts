@@ -262,3 +262,49 @@ describe('AskUserQuestion in an SDK session', () => {
     }
   });
 });
+
+// Session 723ddabd: an answer to an older card arrived on the session fallback
+// and settled the live question, which was a different one.
+describe('AskUserQuestion session fallback', () => {
+  const questions = { questions: [{ header: 'Choice', question: 'Select', options: [{ label: 'A', description: 'Option A' }] }] };
+  const fallback = (sessionId: string, questionId: string, choice: string) =>
+    (ipcMain as unknown as EventEmitter).emit(`ask-user-question:${sessionId}`, null, { questionId, answers: { Choice: choice }, respondedBy: 'desktop' });
+
+  it('ignores an answer naming another card and still takes its own', async () => {
+    vi.clearAllMocks();
+    const sessionId = 'sdk-fallback-own-card';
+    seams.cli = false;
+    try {
+      let settled = false;
+      const live = handleAskUserQuestion(questions, sessionId, { params: { _meta: { toolUseId: 'toolu_live' } } })
+        .then((result) => { settled = true; return result; });
+      await new Promise<void>(resolve => setImmediate(resolve));
+
+      fallback(sessionId, 'toolu_stale', 'stale');
+      await new Promise<void>(resolve => setImmediate(resolve));
+      expect(settled).toBe(false);
+      expect(seams.persistResult).not.toHaveBeenCalled();
+
+      fallback(sessionId, 'toolu_live', 'A');
+      expect(JSON.parse((await live).content[0].text).answers).toEqual({ Choice: 'A' });
+    } finally {
+      seams.cli = true;
+      (ipcMain as unknown as EventEmitter).removeAllListeners();
+    }
+  });
+
+  it('still takes a cross-id answer when its id came from the JSON-RPC request', async () => {
+    vi.clearAllMocks();
+    const sessionId = 'sdk-fallback-jsonrpc-id';
+    seams.cli = false;
+    try {
+      const live = handleAskUserQuestion(questions, sessionId, { params: { _meta: { toolUseId: '7' } } });
+      await new Promise<void>(resolve => setImmediate(resolve));
+      fallback(sessionId, 'toolu_card', 'A');
+      expect(JSON.parse((await live).content[0].text).answers).toEqual({ Choice: 'A' });
+    } finally {
+      seams.cli = true;
+      (ipcMain as unknown as EventEmitter).removeAllListeners();
+    }
+  });
+});

@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { TranscriptTransformer } from '../TranscriptTransformer';
+import { TranscriptProjector } from '../TranscriptProjector';
 import type { IRawMessageStore, RawMessage, ISessionMetadataStore } from '../TranscriptTransformer';
 import type { ITranscriptEventStore, TranscriptEvent } from '../types';
 
@@ -1548,6 +1549,66 @@ describe('TranscriptTransformer', () => {
 
       const events = await transcriptStore.getSessionEvents(SESSION_ID);
       expect(events).toHaveLength(0);
+    });
+  });
+
+  describe('Claude Code progress updates (#1801)', () => {
+    // Opus 5.5 / Fable 5 return text written between tool calls as a second
+    // thinking block holding a summary, after an empty reasoning block with the
+    // same message id. The original text never arrives.
+    function assistantFrame(id: number, block: Record<string, unknown>): RawMessage {
+      return makeRawMessage({
+        id,
+        sessionId: SESSION_ID,
+        direction: 'output',
+        content: JSON.stringify({
+          type: 'assistant',
+          message: { id: 'msg_progress', role: 'assistant', model: 'claude-opus-5-5', content: [block] },
+        }),
+      });
+    }
+
+    it('marks the second thinking block of a message as a progress update', async () => {
+      const rawStore = createMockRawStore([
+        assistantFrame(1, { type: 'thinking', thinking: '' }),
+        assistantFrame(2, { type: 'thinking', thinking: 'Here are four options; picking one next.' }),
+        assistantFrame(3, { type: 'tool_use', id: 'toolu_ask', name: 'AskUserQuestion', input: { questions: [] } }),
+      ]);
+      const transformer = new TranscriptTransformer(rawStore, transcriptStore, metadataStore);
+
+      await transformer.ensureTransformed(SESSION_ID, PROVIDER);
+
+      const { messages } = TranscriptProjector.project(await transcriptStore.getSessionEvents(SESSION_ID));
+      const thinkingMessages = messages.filter((m) => m.thinking !== undefined);
+      expect(thinkingMessages).toHaveLength(1);
+      expect(thinkingMessages[0].thinking).toBe('Here are four options; picking one next.');
+      expect(thinkingMessages[0].progressUpdate).toBe(true);
+    });
+
+    it('recognizes a progress update that arrives in a later streaming batch', async () => {
+      const rows = [assistantFrame(1, { type: 'thinking', thinking: '' })];
+      const transformer = new TranscriptTransformer(createMockRawStore(rows), transcriptStore, metadataStore);
+      await transformer.processNewMessages(SESSION_ID, PROVIDER);
+
+      rows.push(assistantFrame(2, { type: 'thinking', thinking: 'Checked the parser; reading the projector next.' }));
+      await transformer.processNewMessages(SESSION_ID, PROVIDER);
+
+      const { messages } = TranscriptProjector.project(await transcriptStore.getSessionEvents(SESSION_ID));
+      expect(messages.find((m) => m.thinking !== undefined)?.progressUpdate).toBe(true);
+    });
+
+    it('does not mark a lone thinking block as a progress update', async () => {
+      const rawStore = createMockRawStore([
+        assistantFrame(1, { type: 'thinking', thinking: 'Reasoning summary.' }),
+        assistantFrame(2, { type: 'text', text: 'Answer.' }),
+      ]);
+      const transformer = new TranscriptTransformer(rawStore, transcriptStore, metadataStore);
+
+      await transformer.ensureTransformed(SESSION_ID, PROVIDER);
+
+      const { messages } = TranscriptProjector.project(await transcriptStore.getSessionEvents(SESSION_ID));
+      const thinkingMessage = messages.find((m) => m.thinking !== undefined);
+      expect(thinkingMessage?.progressUpdate).toBeUndefined();
     });
   });
 

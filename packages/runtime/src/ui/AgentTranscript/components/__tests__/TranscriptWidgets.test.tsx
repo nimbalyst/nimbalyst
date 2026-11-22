@@ -22,6 +22,10 @@ import * as rtl from '@testing-library/react';
 import { createStore, Provider as JotaiProvider } from 'jotai';
 import type { TranscriptViewMessage } from '../../../../ai/server/transcript/TranscriptProjector';
 import type { CustomToolWidgetProps } from '../CustomToolWidgets/index';
+import type { InteractiveWidgetHost } from '../CustomToolWidgets/InteractiveWidgetHost';
+import { exitPlanModeDenialReason } from '../../../../ai/exitPlanModeDeferral';
+import { store as globalStore } from '../../../../store/store';
+import { setInteractiveWidgetHost } from '../../../../store/atoms/interactiveWidgetHost';
 
 const { render, screen, fireEvent, waitFor } = rtl;
 
@@ -1255,6 +1259,52 @@ describe('GitCommitConfirmationWidget', () => {
     expect(screen.getByTestId('git-commit-error').textContent).toContain('HOOK_DETAIL: lint failed');
   });
 
+  it.each([
+    ['committed', 'Commit hash: abc1234', 'Changes Committed'],
+    ['error', 'Error: hook failed', 'Commit Failed'],
+  ])('waits for the server result before showing auto-commit %s', async (state, result, title) => {
+    const { interactiveWidgetHostAtom } = await import('../../../../store/atoms/interactiveWidgetHost');
+    const testStore = createStore();
+    const gitCommit = vi.fn();
+    testStore.set(interactiveWidgetHostAtom('auto-result'), {
+      autoCommitEnabled: true, gitCommit, trackEvent: vi.fn(),
+    } as unknown as import('../CustomToolWidgets/InteractiveWidgetHost').InteractiveWidgetHost);
+    const message = makeToolMessage('git_commit_proposal', {
+      commitMessage: 'fix: wait for result', filesToStage: ['file.ts'],
+    });
+    const tree = (msg: typeof message) => <JotaiProvider store={testStore}>
+      <GitCommitConfirmationWidget message={msg} isExpanded={false} onToggle={() => {}} sessionId="auto-result" />
+    </JotaiProvider>;
+    const { rerender } = render(tree(message));
+    expect(screen.queryByText('Changes Committed')).toBeNull();
+    expect(screen.getByTestId('git-commit-widget').dataset.state).toBe('committing');
+    expect(gitCommit).not.toHaveBeenCalled();
+    rerender(tree({ ...message, toolCall: { ...message.toolCall!, result,
+      ...(state === 'error' ? { isError: true } : {}) } }));
+    expect(screen.getByTestId('git-commit-widget').dataset.state).toBe(state);
+    expect(screen.getByText(title).textContent).toBe(title);
+    expect(gitCommit).not.toHaveBeenCalled();
+  });
+
+  // #1890: the host's recorded decision wins over the live preference.
+  it.each([
+    [true, false, 'pending'],
+    [false, true, 'committing'],
+  ])('renders from the host decision (preference=%s, autoApproved=%s)', async (pref, autoApproved, state) => {
+    const { interactiveWidgetHostAtom } = await import('../../../../store/atoms/interactiveWidgetHost');
+    const testStore = createStore();
+    testStore.set(interactiveWidgetHostAtom('host-decision'), {
+      autoCommitEnabled: pref, gitCommit: vi.fn(), trackEvent: vi.fn(),
+    } as unknown as import('../CustomToolWidgets/InteractiveWidgetHost').InteractiveWidgetHost);
+    const message = makeToolMessage('git_commit_proposal', {
+      commitMessage: 'fix: x', filesToStage: ['file.ts'], autoApproved,
+    });
+    render(<JotaiProvider store={testStore}>
+      <GitCommitConfirmationWidget message={message} isExpanded={false} onToggle={() => {}} sessionId="host-decision" />
+    </JotaiProvider>);
+    expect(screen.getByTestId('git-commit-widget').dataset.state).toBe(state);
+  });
+
   it('sends cancel through the interactive host', async () => {
     const { interactiveWidgetHostAtom } = await import('../../../../store/atoms/interactiveWidgetHost');
 
@@ -1358,9 +1408,9 @@ describe('GitCommitConfirmationWidget', () => {
       ' line6',
     ].join('\n') + '\n';
 
-    async function renderWithDiffs(overrides: Record<string, unknown> = {}) {
+    async function renderWithDiffs(overrides: Record<string, unknown> = {}, args?: Record<string, unknown>) {
       const { interactiveWidgetHostAtom } = await import('../../../../store/atoms/interactiveWidgetHost');
-      const message = makeToolMessage('git_commit_proposal', {
+      const message = makeToolMessage('git_commit_proposal', args ?? {
         commitMessage: 'perf: only my hunk',
         filesToStage: [{ path: 'shared.txt', status: 'modified' }],
       });
@@ -1392,17 +1442,21 @@ describe('GitCommitConfirmationWidget', () => {
         ...overrides,
       });
 
-      render(
+      const view = (msg: typeof message) => (
         <JotaiProvider store={testStore}>
           <GitCommitConfirmationWidget
-            message={message}
+            message={msg}
             isExpanded={false}
             onToggle={() => {}}
             sessionId="hunk-session"
           />
         </JotaiProvider>
       );
-      return { gitCommit };
+      const { rerender } = render(view(message));
+      /** Same tool call, new authoritative arguments (e.g. the host's expanded list replacing the raw model args). */
+      const rerenderArgs = (next: Record<string, unknown>) =>
+        rerender(view({ ...message, toolCall: { ...message.toolCall!, arguments: next } }));
+      return { gitCommit, rerenderArgs };
     }
 
     it('pre-selects the session\'s own hunk and says how many it excluded', async () => {
@@ -1442,6 +1496,75 @@ describe('GitCommitConfirmationWidget', () => {
       await waitFor(() => expect(gitCommit).toHaveBeenCalled());
       // Whole file again, so no hunk refs are sent at all.
       expect(gitCommit.mock.calls[0][3]).toBeUndefined();
+    });
+
+    // #1955 (D-A2): a file under an expanded directory that another session edited starts unchecked.
+    it('leaves another session\'s file out of the commit until the user checks it', async () => {
+      const { gitCommit } = await renderWithDiffs({ gitFileDiff: vi.fn().mockResolvedValue(null), sessionFileDiff: vi.fn().mockResolvedValue(null) }, {
+        commitMessage: 'feat: snapshot',
+        expandedFrom: { 'snap/': 2 },
+        filesToStage: [
+          { path: 'snap/mine.txt', status: 'added', fromDirectory: 'snap/' },
+          { path: 'snap/theirs.txt', status: 'added', fromDirectory: 'snap/', otherSession: { ownership: 'other-session', sessionId: 'o', sessionTitle: 'Other' } },
+        ],
+      });
+      expect(screen.getByTestId('git-commit-selected-count').textContent).toBe('(1 selected of 2)');
+
+      fireEvent.click(screen.getByTestId('git-commit-confirm'));
+      await waitFor(() => expect(gitCommit).toHaveBeenCalledTimes(1));
+      expect(gitCommit.mock.calls[0][1]).toEqual(['snap/mine.txt']);
+    });
+
+    it('commits another session\'s file once the user checks it', async () => {
+      const { gitCommit } = await renderWithDiffs({ gitFileDiff: vi.fn().mockResolvedValue(null), sessionFileDiff: vi.fn().mockResolvedValue(null) }, {
+        commitMessage: 'feat: snapshot',
+        filesToStage: [
+          { path: 'snap/mine.txt', status: 'added', fromDirectory: 'snap/' },
+          { path: 'snap/theirs.txt', status: 'added', fromDirectory: 'snap/', otherSession: { ownership: 'other-session', sessionId: 'o' } },
+        ],
+      });
+      const theirs = screen.getByTestId('git-commit-file-other-session').closest('button')!;
+      fireEvent.click(theirs);
+      await waitFor(() => expect(screen.getByTestId('git-commit-selected-count').textContent).toBe('(2 selected of 2)'));
+      fireEvent.click(screen.getByTestId('git-commit-confirm'));
+      await waitFor(() => expect(gitCommit).toHaveBeenCalledTimes(1));
+      expect([...gitCommit.mock.calls[0][1]].sort()).toEqual(['snap/mine.txt', 'snap/theirs.txt']);
+    });
+
+    // #1955 review: selection used to be computed once on mount, so raw directory args
+    // replaced by the expanded list left the stale directory path selected.
+    it('reconciles the selection when raw directory args are replaced by the expanded list', async () => {
+      const noDiffs = { gitFileDiff: vi.fn().mockResolvedValue(null), sessionFileDiff: vi.fn().mockResolvedValue(null) };
+      const { gitCommit, rerenderArgs } = await renderWithDiffs(noDiffs, { commitMessage: 'feat: snapshot', filesToStage: ['snap/', 'notes.md'] });
+      rerenderArgs({
+        commitMessage: 'feat: snapshot',
+        expandedFrom: { 'snap/': 2 },
+        filesToStage: [
+          'notes.md',
+          { path: 'snap/mine.txt', status: 'added', fromDirectory: 'snap/' },
+          { path: 'snap/theirs.txt', status: 'added', fromDirectory: 'snap/', otherSession: { ownership: 'other-session', sessionId: 'o' } },
+        ],
+      });
+      await waitFor(() => expect(screen.getByTestId('git-commit-selected-count').textContent).toBe('(2 selected of 3)'));
+      fireEvent.click(screen.getByTestId('git-commit-confirm'));
+      await waitFor(() => expect(gitCommit).toHaveBeenCalledTimes(1));
+      expect([...gitCommit.mock.calls[0][1]].sort()).toEqual(['notes.md', 'snap/mine.txt']);
+    });
+
+    it('unchecks a newly flagged file unless the user checked it', async () => {
+      const noDiffs = { gitFileDiff: vi.fn().mockResolvedValue(null), sessionFileDiff: vi.fn().mockResolvedValue(null) };
+      const files = (flagged: string[]) => ['snap/a.txt', 'snap/b.txt'].map(path => ({
+        path, status: 'added', fromDirectory: 'snap/',
+        ...(flagged.includes(path) ? { otherSession: { ownership: 'other-session', sessionId: 'o' } } : {}),
+      }));
+      const { gitCommit, rerenderArgs } = await renderWithDiffs(noDiffs, { commitMessage: 'm', filesToStage: files(['snap/b.txt']) });
+      // The user deliberately checks b, then the host flags a as well.
+      fireEvent.click(screen.getAllByTestId('git-commit-file-other-session')[0].closest('button')!);
+      rerenderArgs({ commitMessage: 'm', filesToStage: files(['snap/a.txt', 'snap/b.txt']) });
+      await waitFor(() => expect(screen.getByTestId('git-commit-selected-count').textContent).toBe('(1 selected of 2)'));
+      fireEvent.click(screen.getByTestId('git-commit-confirm'));
+      await waitFor(() => expect(gitCommit).toHaveBeenCalledTimes(1));
+      expect(gitCommit.mock.calls[0][1]).toEqual(['snap/b.txt']);
     });
 
     it('stages the whole file when the session cannot be attributed', async () => {
@@ -1530,6 +1653,40 @@ describe('ExitPlanModeWidget', () => {
     const widget = screen.getByTestId('exit-plan-mode-widget');
     expect(widget.dataset.state).toBe('denied');
     expect(screen.getByText('Continued Planning')).toBeDefined();
+  });
+
+  // Starting a new session stops this one with a non-approval, which used to
+  // read as "Denied". The recorded reason is the only record after a reload.
+  it('shows a plan handed to a new session as deferred, live and after a reload', async () => {
+    const host = { exitPlanModeStartNewSession: vi.fn().mockResolvedValue(undefined) };
+    setInteractiveWidgetHost('deferred-plan-live', host as unknown as InteractiveWidgetHost);
+    const live = render(
+      <JotaiProvider store={globalStore}>
+        <ExitPlanModeWidget
+          message={makeToolMessage('ExitPlanMode', { planFilePath: 'plan.md' })}
+          isExpanded={false}
+          onToggle={() => {}}
+          sessionId="deferred-plan-live"
+        />
+      </JotaiProvider>
+    );
+    await rtl.act(async () => { fireEvent.click(screen.getByTestId('exit-plan-mode-new-session')); });
+    expect(host.exitPlanModeStartNewSession).toHaveBeenCalledOnce();
+    expect(screen.getByTestId('exit-plan-mode-widget').dataset.state).toBe('deferred');
+    live.unmount();
+
+    const reason = exitPlanModeDenialReason({ approved: false, deferredTo: { kind: 'session' } });
+    render(
+      <Wrapper>
+        <ExitPlanModeWidget
+          message={makeToolMessage('ExitPlanMode', { planFilePath: 'plan.md' }, reason)}
+          isExpanded={false}
+          onToggle={() => {}}
+          sessionId="deferred-plan-reloaded"
+        />
+      </Wrapper>
+    );
+    expect(screen.getByTestId('exit-plan-mode-widget').dataset.state).toBe('deferred');
   });
 
   it('shows plan file path as clickable link', () => {
@@ -2365,5 +2522,40 @@ describe('VisualDisplayWidget', () => {
     const enlarged = await screen.findByTestId('zoomable-image');
     await waitFor(() => expect(enlarged.getAttribute('src')).toBe(`data:image/png;base64,${pixel}`));
     expect(readFile).toHaveBeenCalledWith('/tmp/arch-mock/b.png');
+  });
+
+  it('holds a remounted image row at its loaded height until the image is back', async () => {
+    // The virtual list unmounts rows that leave its buffer. A remount that
+    // shrank to the "Loading..." box made the list move the reader back to
+    // the image, so they could not reach the bottom.
+    const { VisualDisplayWidget } = await import('../CustomToolWidgets/VisualDisplayWidget');
+    const pixel = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';
+    let readCount = 0;
+    const readFile = vi.fn(() => (++readCount === 1
+      ? Promise.resolve({ success: true, content: pixel })
+      : new Promise<{ success: boolean; content?: string }>(() => {})));
+    const message = makeToolMessage(
+      'mcp__nimbalyst__display_to_user',
+      { items: [{ description: 'Remount shot', image: { path: '/tmp/remount-height/shot.png' } }] },
+      'ok',
+    );
+    const widget = (
+      <Wrapper>
+        <VisualDisplayWidget message={message} isExpanded={false} onToggle={() => {}} sessionId="visual-remount" readFile={readFile} />
+      </Wrapper>
+    );
+    const rect = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue({ height: 352 } as DOMRect);
+    try {
+      const first = render(widget);
+      fireEvent.load(await screen.findByAltText('Remount shot'));
+      first.unmount();
+
+      const second = render(widget);
+      screen.getByText('Loading...');
+      const row = second.container.querySelector('.visual-display-image') as HTMLElement;
+      expect(row.style.minHeight).toBe('352px');
+    } finally {
+      rect.mockRestore();
+    }
   });
 });

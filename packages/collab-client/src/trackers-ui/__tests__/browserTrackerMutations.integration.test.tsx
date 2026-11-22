@@ -44,7 +44,7 @@ function createSource(connect: () => WebSocket): BrowserTrackerDataSource {
     createWebSocket: () => {
       const socket = connect();
       const send = socket.send.bind(socket);
-      socket.send = ((data: string | ArrayBufferLike | Blob | ArrayBufferView) => {
+      socket.send = ((data: Parameters<WebSocket['send']>[0]) => {
         const text = typeof data === 'string' ? data : '';
         if (text.includes('"type":"trackerMutation"')) {
           setTimeout(() => send(data), 300);

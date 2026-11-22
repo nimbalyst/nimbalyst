@@ -25,7 +25,7 @@
  */
 
 import { TranscriptProjector } from '@nimbalyst/runtime/ai/server/transcript/TranscriptProjector';
-import { latestTranscriptGeneration, reconcileTranscriptMessages } from './transcriptReconciliation';
+import { latestTranscriptGeneration, preserveTranscriptMessageIdentity, reconcileTranscriptMessages, warnOnDuplicateUserPrompt } from './transcriptReconciliation';
 import type {
   TranscriptViewMessage,
 } from '@nimbalyst/runtime/ai/server/transcript/TranscriptProjector';
@@ -41,10 +41,29 @@ export interface AccumulatorOutput {
 
 export type Scheduler = (cb: () => void) => void;
 
+/**
+ * Longest a rebuild may stay held behind a complete older snapshot when no
+ * reload lands. Past it the rebuild is published as it stands. A 21k-row
+ * replay took about 30 s to rebuild under load.
+ */
+export const TRANSCRIPT_REBUILD_HOLD_LIMIT_MS = 60_000;
+
 interface SessionState {
   transcriptGeneration?: number;
   /** The atom array last seen; differs from our own publication only on snapshot loads. */
   observedSnapshot?: TranscriptViewMessage[];
+  /** Newest generation among the rows in the atom. */
+  snapshotGeneration?: number;
+  /** Canonical rows in the atom. */
+  snapshotCanonicalCount: number;
+  /** Messages projected from the live events at the last rebuild. */
+  liveMessageCount: number;
+  /** Canonical rows in `currentMessages`. */
+  currentCanonicalCount: number;
+  /** When the current hold began (see isRebuildingBehindSnapshot). */
+  holdStartedAt?: number;
+  /** Generation a reload was last requested for. */
+  snapshotRequestedFor?: number;
   /** Live canonical events keyed by id for O(1) lookup. */
   eventsById: Map<number, TranscriptEvent>;
   /** Last published merged messages array (DB messages + live messages, sorted by sequence). */
@@ -82,6 +101,14 @@ export interface AccumulatorOptions {
    * persisted transcript, and later events re-enter here.
    */
   isSessionTracked?: (sessionId: string) => boolean;
+  /**
+   * Reload the session's snapshot into the atom. Called once when a rebuild
+   * starts being held, since some writers (external CLI ingest, rows written
+   * while the agent is blocked) send no reload of their own.
+   */
+  requestSnapshot?: (sessionId: string) => void;
+  /** Clock for the hold limit. Defaults to `performance.now`. */
+  now?: () => number;
 }
 
 export class TranscriptStreamAccumulator {
@@ -169,6 +196,9 @@ export class TranscriptStreamAccumulator {
     if (!state) {
       state = {
         eventsById: new Map(),
+        snapshotCanonicalCount: 0,
+        liveMessageCount: 0,
+        currentCanonicalCount: 0,
         currentMessages: [],
         messageIndexById: new Map(),
         needsRebuild: false,
@@ -196,27 +226,73 @@ export class TranscriptStreamAccumulator {
     state.patchedSinceFlush = false;
     this.observeSnapshot(sessionId, state);
 
-    if (state.needsRebuild || state.currentMessages.length === 0) {
+    const rebuilt = state.needsRebuild || state.currentMessages.length === 0;
+    if (rebuilt) {
       this.rebuild(sessionId, state);
       state.needsRebuild = false;
     }
 
+    if (this.isRebuildingBehindSnapshot(state)) {
+      const now = this.opts.now?.() ?? performance.now();
+      state.holdStartedAt ??= now;
+      if (state.snapshotRequestedFor !== state.transcriptGeneration) {
+        state.snapshotRequestedFor = state.transcriptGeneration;
+        this.opts.requestSnapshot?.(sessionId);
+      }
+      if (now - state.holdStartedAt < TRANSCRIPT_REBUILD_HOLD_LIMIT_MS) {
+        // Check again next frame: the reload replaces the atom without an event.
+        state.dirty = true;
+        this.scheduleFlush(sessionId, state);
+        return;
+      }
+    }
+    state.holdStartedAt = undefined;
+
+    // An unchanged rebuild returns the atom's own array; publishing it would
+    // still replace the session object and re-render every subscriber.
+    if (this.opts.readDbMessages(sessionId) === state.currentMessages) return;
+    // Text patches only touch assistant messages, so only a rebuild can add a prompt.
+    if (rebuilt) warnOnDuplicateUserPrompt(sessionId, 'stream', state.currentMessages);
     this.opts.emit({ sessionId, messages: state.currentMessages });
     // The atom normally holds this exact array after our synchronous emit.
     // Do not treat our own publication as a new external snapshot next frame.
     // If an observer replaced it meanwhile, let observeSnapshot inspect that.
-    if (this.opts.readDbMessages(sessionId) === state.currentMessages)
+    if (this.opts.readDbMessages(sessionId) === state.currentMessages) {
       state.observedSnapshot = state.currentMessages;
+      state.snapshotGeneration = state.transcriptGeneration;
+      state.snapshotCanonicalCount = state.currentCanonicalCount;
+    }
   }
 
   private observeSnapshot(sessionId: string, state: SessionState): TranscriptViewMessage[] {
     const snapshot = this.opts.readDbMessages(sessionId);
     if (snapshot !== state.observedSnapshot) {
       state.observedSnapshot = snapshot;
-      this.acceptGeneration(state, latestTranscriptGeneration(snapshot));
+      state.snapshotGeneration = latestTranscriptGeneration(snapshot);
+      state.snapshotCanonicalCount = countCanonical(snapshot);
+      this.acceptGeneration(state, state.snapshotGeneration);
       state.needsRebuild = true;
     }
     return snapshot;
+  }
+
+  /**
+   * Main evicts a session from its transcript cache under multi-session load,
+   * and the next logged row rebuilds it from the first raw row in a new
+   * generation, streaming the events a page at a time (#919). Publishing that
+   * rebuild would collapse a complete transcript to its first pages and grow
+   * it back over many frames, remounting every row. Keep the complete older
+   * snapshot on screen until the rebuild has as many messages, or until a
+   * reload brings the new generation. The count is only a shortcut: the screen
+   * can show more messages than the rebuild ever will (subagent children that
+   * streamed in without their parent sit at top level), so the hold also asks
+   * for a reload, and gives up after TRANSCRIPT_REBUILD_HOLD_LIMIT_MS.
+   */
+  private isRebuildingBehindSnapshot(state: SessionState): boolean {
+    return state.snapshotGeneration !== undefined &&
+      state.transcriptGeneration !== undefined &&
+      state.snapshotGeneration < state.transcriptGeneration &&
+      state.liveMessageCount < state.snapshotCanonicalCount;
   }
 
   private acceptGeneration(state: SessionState, generation: number | undefined): void {
@@ -232,12 +308,16 @@ export class TranscriptStreamAccumulator {
     const dbMessages = this.observeSnapshot(sessionId, state);
     const events = Array.from(state.eventsById.values()).sort((a, b) => a.sequence - b.sequence || a.id - b.id);
     const liveMessages = TranscriptProjector.project(events).messages;
+    state.liveMessageCount = liveMessages.length;
     // Filter even when the current generation has no live events yet: a late
     // snapshot must never resurrect the retired generation in the atom.
     const current = dbMessages.filter(message => message.id < 0 ||
       state.transcriptGeneration === undefined || message.transcriptGeneration === state.transcriptGeneration);
     const merged = reconcileTranscriptMessages(current, liveMessages, { stream: true });
-    state.currentMessages = merged;
+    // Compare against the atom, not our last emission: a reload may have
+    // inserted the same rows since, and those are the objects on screen.
+    state.currentMessages = preserveTranscriptMessageIdentity(dbMessages, merged);
+    state.currentCanonicalCount = countCanonical(merged);
     state.messageIndexById = new Map();
     for (let i = 0; i < merged.length; i++) {
       state.messageIndexById.set(merged[i].id, i);
@@ -269,6 +349,13 @@ export class TranscriptStreamAccumulator {
 
     return true;
   }
+}
+
+/** Messages main projected from canonical events, as opposed to optimistic local input. */
+function countCanonical(messages: readonly TranscriptViewMessage[]): number {
+  let count = 0;
+  for (const message of messages) if (message.id >= 0) count++;
+  return count;
 }
 
 /**

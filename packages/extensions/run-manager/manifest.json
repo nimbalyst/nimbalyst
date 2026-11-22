@@ -1,0 +1,48 @@
+{
+  "id": "com.nimbalyst.run",
+  "name": "Run Manager (Alpha)",
+  "version": "0.1.0",
+  "description": "Start, stop and watch a project's long-running processes, such as dev servers. Each run target is a named command that runs in a terminal tab; agents can start it, read its log and stop it.",
+  "author": "Nimbalyst",
+  "main": "dist/index.js",
+  "styles": "dist/index.css",
+  "apiVersion": "1.0.0",
+  "defaultEnabled": true,
+  "requiresDeveloperMode": true,
+  "permissions": {
+    "filesystem": true
+  },
+  "contributions": {
+    "backendModules": [
+      {
+        "id": "run-manager",
+        "entry": "dist/backend.js",
+        "runtime": "utility-process",
+        "permissions": ["terminals", "workspace-files", "mcp-server-register"],
+        "enablement": {
+          "default": "disabled",
+          "promptOn": "firstUse",
+          "purpose": "Run this project's run targets in terminal tabs, check whether their ports are in use, and read and write the run targets file (.nimbalyst/run.json)."
+        }
+      }
+    ],
+    "panels": [
+      {
+        "id": "runs",
+        "title": "Runs",
+        "icon": "play_circle",
+        "placement": "bottom",
+        "order": 70,
+        "component": "RunsPanel",
+        "tooltip": "Start, stop and watch this project's long-running processes."
+      }
+    ]
+  },
+  "marketplace": {
+    "categories": ["developer-tools"],
+    "tags": ["run", "dev-server", "processes", "terminal", "alpha"],
+    "icon": "play_circle",
+    "featured": false,
+    "tagline": "Start, stop and watch a project's dev servers (alpha)"
+  }
+}

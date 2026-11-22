@@ -40,6 +40,8 @@ export interface DocumentContext {
  */
 export interface SerializableDocumentContext {
   filePath?: string;
+  /** Display title for the context indicator; the path remains the model's identity. */
+  fileName?: string;
   content?: string;
   fileType?: string;
   textSelection?: {

@@ -158,6 +158,7 @@ const EXPECTED_TEAM_CHANNELS = [
 // Both live in WorkspaceManagerWindow: opening a project is window work, and
 // TeamService only owns the membership check and the binding behind it.
 const TEAM_CHANNELS_REGISTERED_OUTSIDE_TEAM_SERVICE = [
+  'team:recovery', // Registered by TeamRecoveryService; its IPC authority is tested there.
   'team:open-project-workspace',
   'team:open-shared-project',
 ];

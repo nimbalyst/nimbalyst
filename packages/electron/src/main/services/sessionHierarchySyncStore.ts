@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { SessionStore, HierarchySyncIntent, HierarchySnapshotResult } from '@nimbalyst/runtime/ai/adapters/sessionStore';
 import { parseJsonObjectColumn } from '../utils/jsonColumn';
-import { assertHierarchyPlacement, readHierarchy, withHierarchyWrite, publishHierarchyMove, managerReassignmentMetadata, type HierarchyDatabase, type HierarchyRow, type HierarchyStatement } from './sessionHierarchy';
+import { assertHierarchyPlacement, HIERARCHY_METADATA_SQL, readHierarchy, withHierarchyWrite, publishHierarchyMove, managerReassignmentMetadata, managerAfterMove, type HierarchyDatabase, type HierarchyRow, type HierarchyStatement } from './sessionHierarchy';
 import { sessionMetadataMergeSql } from './sessionMetadataMerge';
 
 /** Result error for index entries whose session does not exist on this desktop. */
@@ -27,7 +27,7 @@ export function createHierarchySyncMethods(db: HierarchyDatabase, ensureReady: (
   return {
     async listPendingHierarchyIntents() {
       await ensureReady();
-      const { rows } = await db.query<HierarchyRow>("SELECT id, parent_session_id, created_by_session_id, metadata FROM ai_sessions WHERE metadata->'hierarchySyncIntent' IS NOT NULL");
+      const { rows } = await db.query<HierarchyRow>(`SELECT id, parent_session_id, created_by_session_id, ${HIERARCHY_METADATA_SQL} FROM ai_sessions WHERE metadata->'hierarchySyncIntent' IS NOT NULL`);
       return rows.map(intentFor).filter((intent): intent is HierarchySyncIntent => !!intent);
     },
     acknowledgeHierarchyIntent: (id, revision, parent, manager) => withHierarchyWrite(async () => {
@@ -44,7 +44,7 @@ export function createHierarchySyncMethods(db: HierarchyDatabase, ensureReady: (
       await ensureReady();
       if (!entries.length) return [];
       if (!db.runTransaction) throw new Error('Remote hierarchy reconciliation requires transactional storage');
-      const { rows: currentRows } = await db.query<HierarchyRow>(`SELECT id, workspace_id, parent_session_id, created_by_session_id, worktree_id, session_type, title, metadata FROM ai_sessions WHERE id IN (${entries.map((_, i) => `$${i + 1}`).join(',')})`, entries.map(entry => entry.sessionId));
+      const { rows: currentRows } = await db.query<HierarchyRow>(`SELECT id, workspace_id, parent_session_id, created_by_session_id, worktree_id, session_type, title, ${HIERARCHY_METADATA_SQL} FROM ai_sessions WHERE id IN (${entries.map((_, i) => `$${i + 1}`).join(',')})`, entries.map(entry => entry.sessionId));
       const current = new Map(currentRows.map(row => [row.id, row]));
       const proposed = new Map<string, HierarchyRow>();
       const protectedIds = new Set<string>();
@@ -56,7 +56,7 @@ export function createHierarchySyncMethods(db: HierarchyDatabase, ensureReady: (
         if (intent && (entry.createdBySessionId === undefined || !matches(intent, entry.parentSessionId, entry.createdBySessionId))) { protectedIds.add(row.id); continue; }
         if (intent && matches(intent, row.parent_session_id ?? null, row.created_by_session_id ?? null)) confirmedIds.add(row.id);
         const moved = (row.parent_session_id ?? null) !== entry.parentSessionId;
-        proposed.set(row.id, { ...row, parent_session_id: entry.parentSessionId, created_by_session_id: moved ? entry.parentSessionId : row.created_by_session_id });
+        proposed.set(row.id, { ...row, parent_session_id: entry.parentSessionId });
       }
       // Read a workspace graph only when the snapshot moves a row in it.
       const graphs = new Map<string, HierarchyRow[]>();
@@ -70,6 +70,11 @@ export function createHierarchySyncMethods(db: HierarchyDatabase, ensureReady: (
       try {
         for (const rows of graphs.values()) {
           const finalGraph = rows.map(row => proposed.get(row.id) ?? row);
+          for (const row of finalGraph) {
+            if (proposed.has(row.id) && (current.get(row.id)?.parent_session_id ?? null) !== (row.parent_session_id ?? null)) {
+              proposed.set(row.id, { ...row, created_by_session_id: managerAfterMove(finalGraph, row.created_by_session_id ?? null, row.parent_session_id ?? null) });
+            }
+          }
           // Only moved rows need checking: each check walks the row's ancestors and
           // its whole subtree, so it covers every unmoved row it could affect.
           // Validating every snapshot entry rebuilt the workspace graph per row

@@ -28,7 +28,7 @@ export interface InviteProjectOption {
 
 export interface InviteProjectGrant {
   teamProjectId: string;
-  projectRole: 'project-admin' | 'project-editor' | 'project-viewer';
+  projectRole: 'project-admin' | 'project-editor' | 'project-commenter' | 'project-viewer';
 }
 
 export type InviteRole = 'owner' | 'admin' | 'member' | 'viewer' | 'guest';

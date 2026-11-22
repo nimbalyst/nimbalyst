@@ -62,6 +62,8 @@ export interface TrackerSchemaPatch {
     draftByDefault?: boolean;
     /** Retire the tracker: items are kept and keyed, but become read-only. */
     archived?: boolean;
+    /** `false` stops local numbers (`NIM.75`) for a builtin type; see `TrackerDataModel.localNumbers`. */
+    localNumbers?: boolean;
     /** Structured schema history, using the same entry shape as tracker item activity. */
     activity?: unknown[];
     /** Shallow-merged onto the seed's roles map. */

@@ -1,6 +1,6 @@
 ---
 name: start
-description: Start using Nimbalyst Wiki: show how agents build a local wiki, capture decisions, track typed pages, open the local browser view, and optionally use a team wiki. Use when the user asks what this plugin does, which skills it has, or how to begin.
+description: "Start using Nimbalyst Wiki: show how agents build a local wiki, capture decisions, track typed pages, open the local browser view, and optionally use a team wiki. Use when the user asks what this plugin does, which skills it has, or how to begin."
 argument-hint: "[optional goal]"
 ---
 

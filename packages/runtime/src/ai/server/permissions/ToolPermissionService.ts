@@ -22,7 +22,17 @@ import {
   PendingPermission,
 } from '../providers/ProviderPermissionMixin';
 import { AgentMessagesRepository } from '../../../storage/repositories/AgentMessagesRepository';
-import { constrainPermissionResponse, permissionPromptHints, type PermissionPromptHints } from './permissionPromptPolicy';
+import { constrainPermissionResponse, permissionPromptHints, type PermissionPromptHints, type UserDecisionRequirement } from './permissionPromptPolicy';
+
+/**
+ * Called for each waiting request that another answer settled on its own.
+ * The caller can use it to mark that request's prompt card as answered in the transcript.
+ */
+export type ReleasedPermissionRecorder = (
+  sessionId: string,
+  requestId: string,
+  response: PermissionDecision,
+) => void;
 
 /**
  * Configuration options for ToolPermissionService
@@ -52,6 +62,13 @@ export interface ToolPermissionServiceOptions {
    * Event emitter function for notifying about permission events
    */
   emit: (event: string, data: any) => void;
+
+  /**
+   * Called for each waiting request that another answer settled on its own
+   * (for example "Always" on one of several identical tool calls). The caller
+   * can use it to mark that request's prompt card as answered in the transcript.
+   */
+  recordReleasedPermission?: ReleasedPermissionRecorder;
 }
 
 /**
@@ -128,12 +145,24 @@ export class ToolPermissionService {
   private readonly patternChecker: PermissionPatternChecker;
   private readonly securityLogger: SecurityLogger;
   private readonly emit: (event: string, data: any) => void;
+  private readonly recordReleasedPermission?: ReleasedPermissionRecorder;
 
   /**
    * Map of pending permission requests
    * Key: requestId, Value: promise resolve/reject functions
    */
   private readonly pendingPermissions = new Map<string, PendingPermission>();
+
+  /**
+   * What each waiting tool request asked for, so one answer can settle the others
+   * that ask for the same thing. Key: requestId. Cleared when the request ends.
+   */
+  private readonly waitingToolRequests = new Map<string, {
+    sessionId: string;
+    toolName: string;
+    pattern: string;
+    suppressAlwaysAllowRule?: boolean;
+  }>();
 
   /**
    * Session-level cache of approved patterns
@@ -147,6 +176,7 @@ export class ToolPermissionService {
     this.patternChecker = options.patternChecker;
     this.securityLogger = options.securityLogger ?? (() => {});
     this.emit = options.emit;
+    this.recordReleasedPermission = options.recordReleasedPermission;
   }
 
   /**
@@ -330,6 +360,36 @@ export class ToolPermissionService {
     return this.sessionApprovedPatterns;
   }
 
+  /** A Session approval or a saved Always rule that already covers this pattern. */
+  private async findRememberedApproval(workspacePath: string, toolName: string, pattern: string): Promise<PermissionDecision | null> {
+    if (this.sessionApprovedPatterns.has(pattern)) {
+      this.securityLogger('[ToolPermissionService] Pattern already approved this session', {
+        pattern,
+        toolName,
+      });
+      return { decision: 'allow', scope: 'session' };
+    }
+
+    // Check for wildcard patterns (e.g., 'WebFetch' matches any WebFetch call)
+    if (toolName === 'WebFetch' && this.sessionApprovedPatterns.has('WebFetch')) {
+      this.securityLogger('[ToolPermissionService] WebFetch wildcard approved this session', { toolName });
+      return { decision: 'allow', scope: 'session' };
+    }
+
+    // Check persisted settings
+    if (await this.isPatternApproved(workspacePath, pattern)) {
+      this.securityLogger('[ToolPermissionService] Pattern already approved in settings', {
+        pattern,
+        toolName,
+      });
+      // Add to session cache for fast lookups
+      this.sessionApprovedPatterns.add(pattern);
+      return { decision: 'allow', scope: 'always' };
+    }
+
+    return null;
+  }
+
   /**
    * Request permission for a tool call (Claude Code style)
    *
@@ -358,10 +418,11 @@ export class ToolPermissionService {
     /** Name of the teammate requesting permission (undefined for lead agent) */
     teammateName?: string;
     /**
-     * The caller already decided the user must answer (Agent-verified mode escalated
-     * the call, e.g. a PreToolUse hook returned "ask"), so bypass-all must not auto-approve.
+     * The caller already decided the user must answer. 'escalated' skips the bypass-all
+     * shortcut (#1740); 'hook-ask' also skips the allow-edits shortcut and every remembered
+     * Session or Always approval (#1741).
      */
-    requiresUserDecision?: boolean;
+    requiresUserDecision?: UserDecisionRequirement;
   }): Promise<PermissionDecision> {
     const {
       requestId,
@@ -381,6 +442,7 @@ export class ToolPermissionService {
     } = options;
 
     const pathForTrust = permissionsPath || workspacePath;
+    const hookAsked = requiresUserDecision === 'hook-ask';
 
     // Check trust status
     if (pathForTrust && this.trustChecker) {
@@ -400,8 +462,8 @@ export class ToolPermissionService {
         return { decision: 'allow', scope: 'once' };
       }
 
-      // Allow-all mode: auto-approve file edit operations
-      if (trustStatus.mode === 'allow-all') {
+      // Allow-all mode: auto-approve file edit operations, unless a hook asked (#1741)
+      if (trustStatus.mode === 'allow-all' && !hookAsked) {
         const fileEditTools = ['Edit', 'Write', 'MultiEdit', 'Read', 'Glob', 'Grep', 'LS', 'NotebookEdit'];
         if (fileEditTools.includes(toolName)) {
           this.securityLogger('[ToolPermissionService] Allow-all mode, auto-approving file tool', { toolName });
@@ -410,30 +472,27 @@ export class ToolPermissionService {
       }
     }
 
-    // Check session cache first
-    if (this.sessionApprovedPatterns.has(pattern)) {
-      this.securityLogger('[ToolPermissionService] Pattern already approved this session', {
+    // A hook "ask" is answered by the user every time, never by a remembered approval (#1741)
+    if (hookAsked) {
+      this.securityLogger('[ToolPermissionService] PreToolUse hook asked, skipping remembered approvals', { pattern, toolName });
+    } else {
+      const remembered = await this.findRememberedApproval(workspacePath, toolName, pattern);
+      if (remembered) {
+        return remembered;
+      }
+    }
+
+    // Looking up the saved settings took a moment. Another prompt in this session may have been
+    // answered "Always" in that time, and it could not release this request because it was not
+    // waiting yet. Look at the session cache once more before asking the user.
+    if (!hookAsked && this.isApprovedThisSession(toolName, pattern)) {
+      this.securityLogger('[ToolPermissionService] Pattern approved this session while settings were read', {
         pattern,
         toolName,
       });
-      return { decision: 'allow', scope: 'session' };
-    }
-
-    // Check for wildcard patterns (e.g., 'WebFetch' matches any WebFetch call)
-    if (toolName === 'WebFetch' && this.sessionApprovedPatterns.has('WebFetch')) {
-      this.securityLogger('[ToolPermissionService] WebFetch wildcard approved this session', { toolName });
-      return { decision: 'allow', scope: 'session' };
-    }
-
-    // Check persisted settings
-    if (await this.isPatternApproved(workspacePath, pattern)) {
-      this.securityLogger('[ToolPermissionService] Pattern already approved in settings', {
-        pattern,
-        toolName,
-      });
-      // Add to session cache for fast lookups
-      this.sessionApprovedPatterns.add(pattern);
-      return { decision: 'allow', scope: 'always' };
+      const response: PermissionDecision = { decision: 'allow', scope: 'session' };
+      this.recordReleasedPermission?.(sessionId, requestId, response);
+      return response;
     }
 
     const rawCommand = toolName === 'Bash' ? toolInput?.command || '' : toolDescription;
@@ -471,6 +530,13 @@ export class ToolPermissionService {
       hasDestructiveActions: isDestructive,
       createdAt: Date.now(),
     };
+
+    this.waitingToolRequests.set(requestId, {
+      sessionId,
+      toolName,
+      pattern,
+      suppressAlwaysAllowRule: options.suppressAlwaysAllowRule || hookAsked,
+    });
 
     // Create promise that will be resolved when user responds
     const responsePromise = new Promise<PermissionDecision>((resolve, reject) => {
@@ -518,20 +584,19 @@ export class ToolPermissionService {
       // Skip compound commands (they must be approved each time)
       const isCompoundCommand = pattern.startsWith('Bash:compound:');
       if (response.decision === 'allow' && response.scope !== 'once' && !isCompoundCommand) {
-        if (response.scope === 'always-all' && toolName === 'WebFetch') {
-          // For "Allow All WebFetches", cache a wildcard pattern
-          this.sessionApprovedPatterns.add('WebFetch');
-          this.securityLogger('[ToolPermissionService] Added wildcard pattern to session cache', {
-            pattern: 'WebFetch',
-            scope: response.scope,
-          });
-        } else {
-          this.sessionApprovedPatterns.add(pattern);
-          this.securityLogger('[ToolPermissionService] Added pattern to session cache', {
-            pattern,
-            scope: response.scope,
-          });
-        }
+        // For "Allow All WebFetches", the rule is the wildcard 'WebFetch' instead of the exact pattern
+        const approvedRule = this.approvedRuleFor(response.scope, toolName, pattern);
+        this.sessionApprovedPatterns.add(approvedRule);
+        this.securityLogger(
+          approvedRule === pattern
+            ? '[ToolPermissionService] Added pattern to session cache'
+            : '[ToolPermissionService] Added wildcard pattern to session cache',
+          { pattern: approvedRule, scope: response.scope },
+        );
+
+        // The model may call the same tool several times at once. Each call is already
+        // waiting on its own prompt, so this answer must settle those prompts too.
+        this.releaseCoveredRequests(requestId, sessionId, approvedRule);
       }
 
       // Save pattern if user chose "Always" or "Always All"
@@ -540,7 +605,7 @@ export class ToolPermissionService {
         if (pathForSave) {
           try {
             // For "Always All WebFetches", save the wildcard pattern
-            const patternToSave = (response.scope === 'always-all' && toolName === 'WebFetch') ? 'WebFetch' : pattern;
+            const patternToSave = this.approvedRuleFor(response.scope, toolName, pattern);
             await this.patternSaver(pathForSave, patternToSave);
             this.securityLogger('[ToolPermissionService] Saved pattern to settings', {
               pattern: patternToSave,
@@ -578,6 +643,55 @@ export class ToolPermissionService {
         error,
       });
       throw error;
+    } finally {
+      this.waitingToolRequests.delete(requestId);
+    }
+  }
+
+  /**
+   * Which rule an answer approves. Usually that is the exact pattern of the call.
+   * "Allow all WebFetches" approves the wildcard 'WebFetch' instead, so every
+   * WebFetch call is covered no matter which site it asks for.
+   */
+  private approvedRuleFor(scope: PermissionDecision['scope'], toolName: string, pattern: string): string {
+    return (scope === 'always-all' && toolName === 'WebFetch') ? 'WebFetch' : pattern;
+  }
+
+  /**
+   * True when this session already approved the call's pattern, or approved
+   * all WebFetches and this call is a WebFetch.
+   */
+  private isApprovedThisSession(toolName: string, pattern: string): boolean {
+    return this.sessionApprovedPatterns.has(pattern)
+      || (toolName === 'WebFetch' && this.sessionApprovedPatterns.has('WebFetch'));
+  }
+
+  /**
+   * Allow every other waiting request that an approved rule covers
+   *
+   * A request is covered when it is in the same session, asks for the same pattern
+   * (or is a WebFetch call and the rule is the "all WebFetches" one), and did not
+   * ask us to keep its approval to one time only. Each released request gets a
+   * "session" answer, the same one a later call gets from the session cache. That
+   * keeps the rule from being saved to settings again for every released request.
+   */
+  private releaseCoveredRequests(answeredRequestId: string, sessionId: string, approvedPattern: string): void {
+    for (const [otherId, other] of this.waitingToolRequests) {
+      if (otherId === answeredRequestId || other.sessionId !== sessionId || other.suppressAlwaysAllowRule) continue;
+      const covered = other.pattern === approvedPattern
+        || (approvedPattern === 'WebFetch' && other.toolName === 'WebFetch');
+      const pending = this.pendingPermissions.get(otherId);
+      if (!covered || !pending) continue;
+
+      const response: PermissionDecision = { decision: 'allow', scope: 'session' };
+      pending.resolve(response);
+      this.pendingPermissions.delete(otherId);
+      this.securityLogger('[ToolPermissionService] Released waiting request covered by approved rule', {
+        requestId: otherId,
+        pattern: approvedPattern,
+      });
+      // Mark its prompt card as answered, like an answer typed into the card would.
+      this.recordReleasedPermission?.(sessionId, otherId, response);
     }
   }
 

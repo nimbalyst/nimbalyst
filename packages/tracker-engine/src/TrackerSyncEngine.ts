@@ -1299,7 +1299,7 @@ export class TrackerSyncEngine {
       );
       if (this.destroyed) return;
       if (snapshot) {
-        await this.persistence.rollbackOptimistic(snapshot.itemId, snapshot.snapshot);
+        if (rejection.code !== 'recoveryConflict') await this.persistence.rollbackOptimistic(snapshot.itemId, snapshot.snapshot);
         if (this.destroyed) return;
         this.rollbackSnapshots.delete(clientMutationId);
         this.config.onRejection?.({
@@ -1341,7 +1341,7 @@ export class TrackerSyncEngine {
       );
       if (this.destroyed) return;
       if (!snapshot) continue;
-      await this.persistence.rollbackOptimistic(snapshot.itemId, snapshot.snapshot);
+      if (rejection.code !== 'recoveryConflict') await this.persistence.rollbackOptimistic(snapshot.itemId, snapshot.snapshot);
       if (this.destroyed) return;
       this.rollbackSnapshots.delete(entry.clientMutationId);
       this.config.onRejection?.({
@@ -1732,6 +1732,7 @@ export class TrackerSyncEngine {
       snapshot = await this.persistence.applyAndEnqueueAtomically(itemId, payload, row);
     } else {
       snapshot = await this.persistence.applyOptimistic(itemId, payload);
+      row.expectedSyncId = snapshot.syncId ?? 0;
       row.rollbackSnapshot = snapshot;
       await this.persistence.enqueueTransaction(row);
     }
@@ -1768,6 +1769,7 @@ export class TrackerSyncEngine {
         type: 'trackerMutation',
         clientMutationId: row.clientMutationId,
         itemId: row.itemId,
+        expectedSyncId: row.expectedSyncId ?? this.rollbackSnapshots.get(row.clientMutationId)?.snapshot.syncId ?? 0,
         encryptedPayload: null,
       });
       return;
@@ -1779,6 +1781,7 @@ export class TrackerSyncEngine {
       type: 'trackerMutation',
       clientMutationId: row.clientMutationId,
       itemId: row.itemId,
+      expectedSyncId: row.expectedSyncId ?? this.rollbackSnapshots.get(row.clientMutationId)?.snapshot.syncId ?? 0,
       encryptedPayload: encodeTrackerPayloadPlaintext(row.payload!),
       ...(row.payload?.issueNumber !== undefined ? { issueNumber: row.payload.issueNumber } : {}),
       ...(row.payload?.issueKey !== undefined ? { issueKey: row.payload.issueKey } : {}),
@@ -1804,6 +1807,7 @@ export class TrackerSyncEngine {
       mutations: rows.map(row => ({
         clientMutationId: row.clientMutationId,
         itemId: row.itemId,
+        expectedSyncId: row.expectedSyncId ?? this.rollbackSnapshots.get(row.clientMutationId)?.snapshot.syncId ?? 0,
         encryptedPayload: encodeTrackerPayloadPlaintext(row.payload!),
         ...(row.payload?.issueNumber !== undefined ? { issueNumber: row.payload.issueNumber } : {}),
         ...(row.payload?.issueKey !== undefined ? { issueKey: row.payload.issueKey } : {}),

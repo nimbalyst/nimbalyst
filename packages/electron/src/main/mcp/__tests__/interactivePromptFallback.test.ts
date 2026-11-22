@@ -3,7 +3,9 @@ import { afterEach, describe, expect, it } from 'vitest';
 import {
   clearPendingInteractiveWaiter,
   countPendingInteractiveWaiters,
+  fallbackAnswerNamesAnotherCard,
   notePendingInteractiveWaiter,
+  sessionFallbackMayCarryAnswer,
   shouldSettleFromSessionFallback,
 } from '../tools/interactivePromptFallback';
 
@@ -69,6 +71,39 @@ describe('shouldSettleFromSessionFallback', () => {
       pendingWaiterCountForSession: 1,
     });
     expect(result).toBe(true);
+  });
+});
+
+// Session 723ddabd: an answer to an older, still-open card was emitted on the
+// session fallback and settled the one live form, a different question. A
+// Claude Code waiter holds its card's own tool_use id (`_meta`), so it never
+// needs the cross-id relaxation, and an answer naming another card is not its.
+describe('answers that name another card', () => {
+  it('never settle a Claude Code tool_use waiter, even as the sole pending prompt', () => {
+    const params = {
+      waiterPromptId: 'toolu_01X5A',
+      promptIdAliasSet: new Set(['toolu_01X5A']),
+      responsePromptIds: ['toolu_012jW'],
+    };
+    expect(shouldSettleFromSessionFallback({ ...params, pendingWaiterCountForSession: 1 })).toBe(false);
+    expect(shouldSettleFromSessionFallback({ ...params, responsePromptIds: ['toolu_01X5A'], pendingWaiterCountForSession: 1 })).toBe(true);
+    expect(fallbackAnswerNamesAnotherCard(params)).toBe(true);
+  });
+
+  it('still settle a waiter whose id only came from the JSON-RPC request', () => {
+    // OpenCode and other clients without `_meta`: the waiter keys on request.id
+    // while the card carries the provider's tool id, so the ids never line up.
+    const params = { waiterPromptId: '7', promptIdAliasSet: new Set(['7']), responsePromptIds: ['toolu_card'] };
+    expect(shouldSettleFromSessionFallback({ ...params, pendingWaiterCountForSession: 1 })).toBe(true);
+    expect(fallbackAnswerNamesAnotherCard(params)).toBe(false);
+  });
+
+  it('are not sent down the session fallback for a Claude Code card', () => {
+    expect(sessionFallbackMayCarryAnswer('claude-code', 'toolu_012jW')).toBe(false);
+    expect(sessionFallbackMayCarryAnswer('claude-code-cli', 'toolu_012jW')).toBe(false);
+    expect(sessionFallbackMayCarryAnswer('opencode', 'toolu_012jW')).toBe(true);
+    expect(sessionFallbackMayCarryAnswer('openai-codex', 'nimtc|exec-8cbfbb2c|123|4')).toBe(true);
+    expect(sessionFallbackMayCarryAnswer('claude-code', 'rui-s1-123')).toBe(true);
   });
 });
 

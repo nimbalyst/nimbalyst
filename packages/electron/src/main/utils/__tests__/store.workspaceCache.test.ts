@@ -129,3 +129,78 @@ describe('app store extension settings cache', () => {
     expect(getExtensionEnabled('a')).toBe(true);
   });
 });
+
+describe('database maintenance settings', () => {
+  beforeEach(() => {
+    backing = {};
+  });
+
+  it('defaults tool output retention to 30 days when unset', async () => {
+    const { getDatabaseMaintenanceSettings } = await import('../store');
+    expect(getDatabaseMaintenanceSettings().toolOutputRetentionDays).toBe(30);
+  });
+
+  it('treats a stored 0 written by an unrelated backup change as unset', async () => {
+    // What every older build persisted after the user touched a backup option.
+    backing.databaseMaintenance = { backupCopiesKept: 1, backupIntervalHours: 12, toolOutputRetentionDays: 0 };
+    const { getDatabaseMaintenanceSettings, setDatabaseMaintenanceSettings } = await import('../store');
+    expect(getDatabaseMaintenanceSettings().toolOutputRetentionDays).toBe(30);
+
+    setDatabaseMaintenanceSettings({ backupCopiesKept: 2 });
+    expect(getDatabaseMaintenanceSettings().toolOutputRetentionDays).toBe(30);
+  });
+
+  it('respects an explicit 0 and keeps it across later backup changes', async () => {
+    const { getDatabaseMaintenanceSettings, setDatabaseMaintenanceSettings } = await import('../store');
+    setDatabaseMaintenanceSettings({ toolOutputRetentionDays: 0 });
+    setDatabaseMaintenanceSettings({ backupIntervalHours: 24 });
+    expect(getDatabaseMaintenanceSettings()).toEqual({
+      backupCopiesKept: 2,
+      backupIntervalHours: 24,
+      toolOutputRetentionDays: 0,
+    });
+  });
+
+  it('persists the retention cursor without disturbing settings', async () => {
+    const { getToolOutputRetentionCursor, setToolOutputRetentionCursor, setDatabaseMaintenanceSettings, getDatabaseMaintenanceSettings } =
+      await import('../store');
+    expect(getToolOutputRetentionCursor()).toBe(0);
+    setDatabaseMaintenanceSettings({ toolOutputRetentionDays: 14 });
+    setToolOutputRetentionCursor(4242);
+    setDatabaseMaintenanceSettings({ backupCopiesKept: 1 });
+    expect(getToolOutputRetentionCursor()).toBe(4242);
+    expect(getDatabaseMaintenanceSettings().toolOutputRetentionDays).toBe(14);
+  });
+
+  it('ignores a cursor an older build stored, so the pass walks once from the start', async () => {
+    // Older builds could leave this far past rows the pass never examined.
+    backing.databaseMaintenance = { toolOutputRetentionCursor: 3712306 };
+    const { getToolOutputRetentionCursor } = await import('../store');
+    expect(getToolOutputRetentionCursor()).toBe(0);
+  });
+});
+
+describe('setWorkspaceTrusted classifier flag', () => {
+  beforeEach(async () => {
+    backing = {};
+    const { invalidateWorkspaceStoreCache } = await import('../store');
+    invalidateWorkspaceStoreCache();
+  });
+
+  it('keeps the stored classifier opt-in when the caller omits it, and overrides it when given', async () => {
+    const { getWorkspaceState, setWorkspaceTrusted } = await import('../store');
+
+    setWorkspaceTrusted(WORKSPACE, true, 'bypass-all', true);
+    setWorkspaceTrusted(WORKSPACE, true, 'allow-all');
+    expect(getWorkspaceState(WORKSPACE).agentPermissions).toEqual({
+      permissionMode: 'allow-all',
+      allowAllUsesClassifier: true,
+    });
+
+    setWorkspaceTrusted(WORKSPACE, true, 'bypass-all', false);
+    expect(getWorkspaceState(WORKSPACE).agentPermissions).toEqual({
+      permissionMode: 'bypass-all',
+      allowAllUsesClassifier: false,
+    });
+  });
+});

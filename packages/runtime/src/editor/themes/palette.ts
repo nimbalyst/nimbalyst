@@ -73,6 +73,23 @@ export const lightThemeColors: ExtendedThemeColors = {
   'quote-text': 'rgb(101, 103, 107)',
   'quote-border': 'rgb(206, 208, 212)',
 
+  // Colored text palette (core/textColorSyntax.ts). Text colors keep at least
+  // 4.5:1 on this theme's bg; backgrounds keep default text at least 4.5:1.
+  'text-color-red': '#c92a2a',
+  'text-color-orange': '#c2410c',
+  'text-color-yellow': '#a16207',
+  'text-color-green': '#237a37',
+  'text-color-blue': '#1971c2',
+  'text-color-purple': '#7048e8',
+  'text-color-gray': '#6b7280',
+  'text-bg-red': '#ff6b6b40',
+  'text-bg-orange': '#ff922b40',
+  'text-bg-yellow': '#ffd43b4d',
+  'text-bg-green': '#51cf6640',
+  'text-bg-blue': '#4dabf740',
+  'text-bg-purple': '#9775fa40',
+  'text-bg-gray': '#adb5bd4d',
+
   // Scrollbar
   'scrollbar-thumb': '#d1d5db',
   'scrollbar-thumb-hover': '#9ca3af',
@@ -186,6 +203,23 @@ export const darkThemeColors: ExtendedThemeColors = {
   'comment-mark': '#ffd27a',
   'quote-text': '#b3b3b3',
   'quote-border': '#4a4a4a',
+
+  // Colored text palette (core/textColorSyntax.ts). Text colors keep at least
+  // 4.5:1 on this theme's bg; backgrounds keep default text at least 4.5:1.
+  'text-color-red': '#ff8787',
+  'text-color-orange': '#ffa94d',
+  'text-color-yellow': '#ffd43b',
+  'text-color-green': '#69db7c',
+  'text-color-blue': '#74c0fc',
+  'text-color-purple': '#b197fc',
+  'text-color-gray': '#adb5bd',
+  'text-bg-red': '#ff6b6b59',
+  'text-bg-orange': '#ff922b59',
+  'text-bg-yellow': '#ffd43b59',
+  'text-bg-green': '#51cf6659',
+  'text-bg-blue': '#4dabf759',
+  'text-bg-purple': '#9775fa59',
+  'text-bg-gray': '#adb5bd59',
 
   // Scrollbar
   'scrollbar-thumb': '#4a4a4a',

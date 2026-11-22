@@ -344,6 +344,8 @@ export interface ToolRetentionPayload {
   retentionDays: number;
   /** Cap on rows examined in one run; omit for "until done". */
   maxRows?: number;
+  /** Retention lane only: resume after this row id (see `RetentionResult.lastId`). */
+  startAfterId?: number;
   /**
    * Prune lane only: delete frames that render nothing regardless of age.
    * Ignored by the retention/tombstone lane, where the cutoff is load-bearing.

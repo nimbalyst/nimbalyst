@@ -1,5 +1,6 @@
+// @vitest-environment node
 import { describe, it, expect, vi } from 'vitest';
-import { handleAskUserQuestionTool } from '../askUserQuestion';
+import { AskUserQuestionDismissedError, handleAskUserQuestionTool } from '../askUserQuestion';
 
 function assertZodCompliantAllow(result: { behavior: string; updatedInput?: any; message?: string }) {
   expect(result.behavior).toBe('allow');
@@ -252,6 +253,77 @@ describe('handleAskUserQuestionTool', () => {
       expect(result.updatedInput.answers).toEqual({ q1: 'Option B' });
       expect(deps.emit.mock.calls.map((c: any[]) => c[0])).not.toContain('askUserQuestion:cancelled');
       expect(deps.pendingAskUserQuestions.size).toBe(0);
+    });
+  });
+
+  describe('unanswered annotation (ask_user_question_unanswered_v1)', () => {
+    const questions = [
+      { question: 'Which DB?', header: 'DB', options: [], multiSelect: false },
+      { question: 'Which cache?', header: 'Cache', options: [], multiSelect: false },
+    ];
+
+    it('a dismissed question answers with unanswered=dismissed when the CLI advertises it', async () => {
+      const deps = createDeps({ supportsUnansweredAnnotation: () => true });
+      const resultPromise = handleAskUserQuestionTool(deps, {
+        input: { questions },
+        signal: new AbortController().signal,
+        toolUseID: 'tool-d1',
+      });
+
+      await vi.waitFor(() => {
+        expect(deps.pendingAskUserQuestions.size).toBe(1);
+      });
+      deps.pendingAskUserQuestions.get('tool-d1').reject(new AskUserQuestionDismissedError('User cancelled'));
+
+      const result = await resultPromise;
+      expect(result.behavior).toBe('allow');
+      // The model never sees `unanswered`; only `answers` text reaches it.
+      expect(Object.keys(result.updatedInput.answers)).toEqual(['Which DB?', 'Which cache?']);
+      for (const text of Object.values(result.updatedInput.answers)) {
+        expect(text).toMatch(/dismissed/i);
+      }
+      expect(result.updatedInput.annotations).toEqual({
+        'Which DB?': { unanswered: 'dismissed' },
+        'Which cache?': { unanswered: 'dismissed' },
+      });
+      expect(deps.emit).toHaveBeenCalledWith('askUserQuestion:cancelled', expect.objectContaining({ questionId: 'tool-d1' }));
+    });
+
+    it('a dismissed question still denies when the CLI does not advertise the capability', async () => {
+      const deps = createDeps({ supportsUnansweredAnnotation: () => false });
+      const resultPromise = handleAskUserQuestionTool(deps, {
+        input: { questions },
+        signal: new AbortController().signal,
+        toolUseID: 'tool-d2',
+      });
+
+      await vi.waitFor(() => {
+        expect(deps.pendingAskUserQuestions.size).toBe(1);
+      });
+      deps.pendingAskUserQuestions.get('tool-d2').reject(new AskUserQuestionDismissedError('User cancelled'));
+
+      const result = await resultPromise;
+      assertZodCompliantDeny(result);
+      expect(result.message).toBe('User cancelled');
+    });
+
+    it('an aborted turn denies even when the CLI advertises the capability', async () => {
+      const controller = new AbortController();
+      const deps = createDeps({ supportsUnansweredAnnotation: () => true });
+      const resultPromise = handleAskUserQuestionTool(deps, {
+        input: { questions },
+        signal: controller.signal,
+        toolUseID: 'tool-d3',
+      });
+
+      await vi.waitFor(() => {
+        expect(deps.pendingAskUserQuestions.size).toBe(1);
+      });
+      controller.abort();
+
+      const result = await resultPromise;
+      assertZodCompliantDeny(result);
+      expect(result.updatedInput).toBeUndefined();
     });
   });
 

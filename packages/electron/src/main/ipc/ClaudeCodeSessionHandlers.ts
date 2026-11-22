@@ -67,8 +67,11 @@ async function sync(
     results,
     successCount,
     failureCount,
+    // A partial failure must still carry the reason; the dialog shows it (GitHub #1989).
     ...(successCount === 0
       ? { error: results[0]?.error ?? "No sessions found to sync" }
+      : failureCount > 0
+      ? { error: results.find((result) => !result.success)?.error ?? "Some sessions failed to import" }
       : {}),
   };
 }

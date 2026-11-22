@@ -213,17 +213,6 @@ body[data-dev-mode="true"] .nav-quick-access::before {
   }
 }
 
-@keyframes extension-dev-menu-appear {
-  from {
-    opacity: 0;
-    transform: translateX(-4px);
-  }
-  to {
-    opacity: 1;
-    transform: translateX(0);
-  }
-}
-
 /* =============================================================================
  * Lexical Change Group Highlighting
  * These classes are applied to Lexical nodes when navigating through diff changes

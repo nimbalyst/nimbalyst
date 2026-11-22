@@ -12,6 +12,7 @@ import { Component, useContext, useEffect, useLayoutEffect, useMemo, useState, t
 import { loadBrowserExtension } from '@nimbalyst/web-editors/registry';
 import type { ExtensionEditorComponent } from '@nimbalyst/collab-bundle/editor';
 import { wikiApi, wikiChanges } from '../api/client';
+import { isStaticSite } from '../api/staticSite';
 import { DraftStoreContext } from '../app/drafts';
 import type { SaveState } from '../app/PageEditor';
 import { createWikiFileEditorHost, type WikiFileEditorState } from '../host/wikiFileEditorHost';
@@ -59,7 +60,7 @@ export function ExtensionPageEditor({
   const [loadError, setLoadError] = useState<string | null>(null);
   // One host per page; `fileName` changes on rename without reopening the file.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  const host = useMemo(() => createWikiFileEditorHost({ pageId, fileName, filePath, embedded, theme: currentTheme(), api: wikiApi, changes: wikiChanges }), [pageId]);
+  const host = useMemo(() => createWikiFileEditorHost({ pageId, fileName, filePath, embedded, theme: currentTheme(), api: wikiApi, changes: wikiChanges, readOnly: isStaticSite() }), [pageId]);
   const [state, setState] = useState(host.getState());
 
   useEffect(() => {

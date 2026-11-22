@@ -14,7 +14,6 @@
     "allowSyntheticDefaultImports": true,
     "esModuleInterop": true,
     "jsx": "react-jsx",
-    "baseUrl": ".",
     "paths": {
       "@nimbalyst/tracker-core": ["../tracker-core/src/index.ts"],
       "@nimbalyst/tracker-core/*": ["../tracker-core/src/*"],

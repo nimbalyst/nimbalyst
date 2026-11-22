@@ -14,7 +14,7 @@ export async function migrateSessionTrees(db: HierarchyDatabase): Promise<{ move
   let moved = 0;
   for (const { workspace_id: workspaceId } of workspaces) {
     moved += await withHierarchyWrite(async () => {
-      const rows = await readHierarchy(db, workspaceId);
+      const rows = await readHierarchy(db, workspaceId, { withMetadata: true });
       const original = new Map(rows.map(row => {
         const metadata = parseJsonObjectColumn(row.metadata);
         const migrated = Number(metadata.sessionTreeMigrationVersion) === 1;

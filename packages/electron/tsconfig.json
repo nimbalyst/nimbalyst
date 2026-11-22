@@ -20,7 +20,6 @@
     "noEmit": true,
     "jsx": "react-jsx",
     "types": [],
-    "baseUrl": ".",
     "paths": {
       "@nimbalyst/tracker-core": ["../tracker-core/src/index.ts"],
       "@nimbalyst/tracker-core/*": ["../tracker-core/src/*"],

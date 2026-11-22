@@ -1,6 +1,7 @@
 import { parentPort } from 'node:worker_threads';
 import { createHash } from 'node:crypto';
 import { readFile, stat } from 'node:fs/promises';
+import { scanProjectSyncCandidatesInline, type ProjectSyncScanRequest } from '../services/sync/projectSyncScan';
 
 /**
  * Reads and hashes markdown files for ProjectFileSync's manifest, off the main
@@ -20,6 +21,11 @@ import { readFile, stat } from 'node:fs/promises';
 interface WorkerRequest {
   id: string;
   files: string[];
+}
+
+interface WorkerScanRequest {
+  id: string;
+  scan: ProjectSyncScanRequest;
 }
 
 export interface HashedFileResult {
@@ -49,8 +55,14 @@ async function hashFile(filePath: string): Promise<HashedFileResult> {
   }
 }
 
-parentPort.on('message', (request: WorkerRequest) => {
+parentPort.on('message', (request: WorkerRequest | WorkerScanRequest) => {
   void (async () => {
+    if ('scan' in request) {
+      // The walk stats every candidate in the workspace (16k files on a large
+      // repo, seconds of main-process work per reconnect); only metadata returns.
+      parentPort?.postMessage({ id: request.id, results: await scanProjectSyncCandidatesInline(request.scan) });
+      return;
+    }
     const results: HashedFileResult[] = [];
     for (const filePath of request.files) {
       results.push(await hashFile(filePath));

@@ -3,7 +3,7 @@ import React from 'react';
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it } from 'vitest';
 import { SelectionChips } from '../SelectionChips';
-import { clearTextSelection, setTextSelection } from '../TextSelectionIndicator';
+import { clearTextSelection, getTextSelection, setTextSelection } from '../TextSelectionIndicator';
 import {
   clearEditorContext,
   getActiveEditorContextItems,
@@ -26,6 +26,24 @@ afterEach(() => {
 });
 
 describe('SelectionChips', () => {
+  it('keeps the named document context when its selection is removed', () => {
+    const { rerender } = render(<SelectionChips currentFilePath={FILE} currentFileName="Architecture" />);
+    act(() => setTextSelection('  First line\n\tsecond line  ', FILE));
+    expect(screen.getByText(': “First line second line”').textContent).toBe(': “First line second line”');
+    expect(getTextSelection()?.text).toBe('  First line\n\tsecond line  ');
+    fireEvent.click(screen.getByLabelText('Remove Selection from context'));
+    expect(getTextSelection()).toBeNull();
+    expect(screen.getByText('Architecture').textContent).toBe('Architecture');
+
+    act(() => setTextSelection('Previous page selection', FILE));
+    rerender(<SelectionChips currentFilePath={COLLAB_FILE} currentFileName="Team handbook" />);
+    expect(screen.queryByText('Architecture')).toBeNull();
+    expect(screen.queryByText('Selection')).toBeNull();
+    expect(screen.getByText('Team handbook').textContent).toBe('Team handbook');
+    rerender(<SelectionChips />);
+    expect(screen.queryByText('Team handbook')).toBeNull();
+  });
+
   it('reacts to text-selection events and removes the selection immediately', () => {
     render(<SelectionChips currentFilePath={FILE} />);
     expect(screen.queryByText('Selection')).toBeNull();

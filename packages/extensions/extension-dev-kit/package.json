@@ -5,11 +5,11 @@
   "type": "module",
   "scripts": {
     "build": "vite build",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "node ../../../scripts/tsc-native.mjs --noEmit"
   },
   "devDependencies": {
     "@nimbalyst/extension-sdk": "workspace:*",
-    "typescript": "^5.0.0",
+    "typescript": "^6.0.3",
     "vite": "^7.1.12"
   }
 }

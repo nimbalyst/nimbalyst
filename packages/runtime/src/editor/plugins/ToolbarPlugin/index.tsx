@@ -86,7 +86,6 @@ import {
   ElementFormatType,
   FORMAT_ELEMENT_COMMAND,
   FORMAT_TEXT_COMMAND,
-  HISTORIC_TAG,
   INDENT_CONTENT_COMMAND,
   LexicalEditor,
   LexicalNode,
@@ -104,8 +103,8 @@ import {
 } from '../../context/ToolbarContext';
 import useModal from '../../hooks/useModal';
 import DropDown, {DropDownItem} from '../../ui/DropDown';
-import DropdownColorPicker from '../../ui/DropdownColorPicker';
 import ThemeToggle from '../../ui/ThemeToggle';
+import {TextColorPicker} from '../TextColorPlugin/TextColorPicker';
 import {getSelectedNode} from '../../utils/getSelectedNode';
 import {sanitizeUrl} from '../../utils/url';
 import {INSERT_COLLAPSIBLE_COMMAND} from '../CollapsiblePlugin';
@@ -769,35 +768,6 @@ export default function ToolbarPlugin({
     );
   }, [$updateToolbar, activeEditor, editor, updateToolbarState]);
 
-  const applyStyleText = useCallback(
-    (styles: Record<string, string>, skipHistoryStack?: boolean) => {
-      activeEditor.update(
-        () => {
-          const selection = $getSelection();
-          if (selection !== null) {
-            $patchStyleText(selection, styles);
-          }
-        },
-        skipHistoryStack ? {tag: HISTORIC_TAG} : {},
-      );
-    },
-    [activeEditor],
-  );
-
-  const onFontColorSelect = useCallback(
-    (value: string, skipHistoryStack: boolean) => {
-      applyStyleText({color: value}, skipHistoryStack);
-    },
-    [applyStyleText],
-  );
-
-  const onBgColorSelect = useCallback(
-    (value: string, skipHistoryStack: boolean) => {
-      applyStyleText({'background-color': value}, skipHistoryStack);
-    },
-    [applyStyleText],
-  );
-
   const insertLink = useCallback(() => {
     if (!toolbarState.isLink) {
       setIsLinkEditMode(true);
@@ -1032,30 +1002,14 @@ export default function ToolbarPlugin({
               <i className="format link" />
             </button>
           </div>
-          {!markdownOnly && (
-            <>
-              <div className="toolbar-colors">
-                <DropdownColorPicker
-                  disabled={!isEditable}
-                  buttonClassName="toolbar-item color-picker"
-                  buttonAriaLabel="Formatting text color"
-                  buttonIconClassName="icon font-color"
-                  color={toolbarState.fontColor}
-                  onChange={onFontColorSelect}
-                  title="text color"
-                />
-                <DropdownColorPicker
-                  disabled={!isEditable}
-                  buttonClassName="toolbar-item color-picker"
-                  buttonAriaLabel="Formatting background color"
-                  buttonIconClassName="icon bg-color"
-                  color={toolbarState.bgColor}
-                  onChange={onBgColorSelect}
-                  title="bg color"
-                />
-              </div>
-            </>
-          )}
+          {/* Colored text is a `<span style>` in markdown, so it is offered in markdown mode too. */}
+          <div className="toolbar-colors">
+            <TextColorPicker
+              editor={activeEditor}
+              disabled={!isEditable}
+              buttonClassName="toolbar-item color-picker"
+            />
+          </div>
           <div className="toolbar-additional">
             <DropDown
               disabled={!isEditable}

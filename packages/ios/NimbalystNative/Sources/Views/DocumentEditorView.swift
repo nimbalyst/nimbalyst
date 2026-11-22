@@ -55,7 +55,7 @@ public struct DocumentEditorView: View {
                 if let header { header }
                 EditorWebView(
                     document: resolvedDocument,
-                    readOnly: readOnly,
+                    readOnly: readOnly || isEmbedOnly,
                     onReady: {
                         isLoading = false
                         errorMessage = nil
@@ -63,6 +63,7 @@ public struct DocumentEditorView: View {
                     onContentChanged: handleContentChanged,
                     onDirtyChanged: { edits.isDirty = $0 },
                     onLinkTapped: handleLink,
+                    readEmbedFile: readEmbedFile,
                     onError: { errorMessage = $0 },
                     onWebViewCreated: { editorWebView = $0 }
                 )
@@ -155,9 +156,26 @@ public struct DocumentEditorView: View {
         (editorWebView as? FormattingWebView)?.coordinator?.flush()
     }
 
+    /// An `.html` file opened on its own shows as its own embed, never as editable markdown.
+    private var isEmbedOnly: Bool { WikiDocuments.isEmbedOnlyFile(document.relativePath) }
+
+    /// The synced text of an `.html` file this document embeds, or why it is unavailable.
+    private func readEmbedFile(_ src: String) -> EmbedFileRead {
+        guard let path = WikiDocuments.embedPath(src: src, fromRelativePath: document.relativePath) else {
+            return .failure("Only .html files in this project can be embedded")
+        }
+        guard let file = try? appState.databaseManager?.document(forProject: document.projectId, relativePath: path) else {
+            return .failure("\(path) has not synced to this device")
+        }
+        guard let content = file.contentDecrypted ?? appState.documentSyncManager?.decryptContentOnDemand(file) else {
+            return .failure("\(path) could not be decrypted")
+        }
+        return .content(content)
+    }
+
     /// Persists an edit; true once it is in the local cache and sent or queued.
     private func handleContentChanged(_ markdown: String) -> Bool {
-        guard !readOnly, let manager = appState.documentSyncManager else { return false }
+        guard !readOnly, !isEmbedOnly, let manager = appState.documentSyncManager else { return false }
         // Encrypt and push to ProjectSyncRoom via DocumentSyncManager. The push
         // queues when offline and writes the local cache; it reports failure
         // only in its log, so the cache is the evidence it worked.
@@ -189,6 +207,8 @@ public struct DocumentEditorView: View {
 
     /// Subscribe to remote content updates for this document's syncId.
     private func subscribeToRemoteUpdates() {
+        // The editor shows an `.html` file as an embed of itself, not its text.
+        guard !isEmbedOnly else { return }
         let syncId = document.id
         let edits = edits
         appState.documentSyncManager?.onRemoteContentUpdate = { [syncId] remoteSyncId, newMarkdown in
@@ -213,6 +233,11 @@ public struct DocumentEditorView: View {
     private func unsubscribeFromRemoteUpdates() {
         appState.documentSyncManager?.onRemoteContentUpdate = nil
     }
+}
+
+enum EmbedFileRead: Equatable {
+    case content(String)
+    case failure(String)
 }
 
 /// Whether the open editor holds edits that have not been pushed yet.
@@ -270,6 +295,7 @@ struct EditorWebView: UIViewRepresentable {
     let onContentChanged: (String) -> Bool
     let onDirtyChanged: (Bool) -> Void
     var onLinkTapped: (String, String?) -> Void = { _, _ in }
+    var readEmbedFile: (String) -> EmbedFileRead = { _ in .failure("Embeds are unavailable here") }
     let onError: (String) -> Void
     let onWebViewCreated: (WKWebView) -> Void
 
@@ -283,6 +309,7 @@ struct EditorWebView: UIViewRepresentable {
             onContentChanged: onContentChanged,
             onDirtyChanged: onDirtyChanged,
             onLinkTapped: onLinkTapped,
+            readEmbedFile: readEmbedFile,
             onError: onError
         )
     }
@@ -318,6 +345,7 @@ struct EditorWebView: UIViewRepresentable {
 
         config.userContentController = contentController
         config.preferences.setValue(true, forKey: "allowFileAccessFromFileURLs")
+        config.setURLSchemeHandler(HtmlEmbedShellSchemeHandler(), forURLScheme: HtmlEmbedShellSchemeHandler.scheme)
 
         let webView = FormattingWebView(frame: .zero, configuration: config)
         webView.navigationDelegate = context.coordinator
@@ -353,6 +381,7 @@ struct EditorWebView: UIViewRepresentable {
         let coordinator = context.coordinator
         coordinator.onContentChanged = onContentChanged
         coordinator.onLinkTapped = onLinkTapped
+        coordinator.readEmbedFile = readEmbedFile
         coordinator.setReadOnly(readOnly)
     }
 
@@ -367,6 +396,7 @@ struct EditorWebView: UIViewRepresentable {
         var onContentChanged: (String) -> Bool
         let onDirtyChanged: (Bool) -> Void
         var onLinkTapped: (String, String?) -> Void
+        var readEmbedFile: (String) -> EmbedFileRead
         let onError: (String) -> Void
         weak var webView: WKWebView?
         private var hasLoadedContent = false
@@ -379,6 +409,7 @@ struct EditorWebView: UIViewRepresentable {
             onContentChanged: @escaping (String) -> Bool,
             onDirtyChanged: @escaping (Bool) -> Void,
             onLinkTapped: @escaping (String, String?) -> Void,
+            readEmbedFile: @escaping (String) -> EmbedFileRead,
             onError: @escaping (String) -> Void
         ) {
             self.document = document
@@ -387,6 +418,7 @@ struct EditorWebView: UIViewRepresentable {
             self.onContentChanged = onContentChanged
             self.onDirtyChanged = onDirtyChanged
             self.onLinkTapped = onLinkTapped
+            self.readEmbedFile = readEmbedFile
             self.onError = onError
         }
 
@@ -454,6 +486,15 @@ struct EditorWebView: UIViewRepresentable {
                     }
                 }
 
+            case "readEmbedFile":
+                guard let requestId = (body["requestId"] as? NSNumber)?.intValue,
+                      let src = body["src"] as? String else { return }
+                DispatchQueue.main.async { [weak self] in
+                    guard let self else { return }
+                    let js = Self.embedFileResultScript(requestId: requestId, result: self.readEmbedFile(src))
+                    self.webView?.evaluateJavaScript(js, completionHandler: nil)
+                }
+
             case "dirty":
                 if let isDirty = body["isDirty"] as? Bool {
                     DispatchQueue.main.async { [weak self] in
@@ -490,6 +531,13 @@ struct EditorWebView: UIViewRepresentable {
                 decisionHandler(.allow)
                 return
             }
+            // An embed's sandbox frame loads the shell; links inside it reach
+            // native through the bundle (`linkClicked`), never as navigations.
+            if navigationAction.targetFrame?.isMainFrame == false,
+               let scheme = url?.scheme?.lowercased(), scheme == HtmlEmbedShellSchemeHandler.scheme || scheme == "about" {
+                decisionHandler(.allow)
+                return
+            }
             if navigationAction.navigationType == .linkActivated, let url {
                 let href = url.absoluteString
                 DispatchQueue.main.async { [weak self] in self?.onLinkTapped(href, nil) }
@@ -510,11 +558,35 @@ struct EditorWebView: UIViewRepresentable {
 
         // MARK: - Content Loading
 
+        /// An `.html` file shown on its own: one embed of itself, resolved beside itself.
+        static func selfEmbedMarkdown(relativePath: String) -> String {
+            let name = WikiFormat.basename(relativePath)
+            let label = name.replacingOccurrences(of: "[", with: "").replacingOccurrences(of: "]", with: "")
+            return "[\(label)](<\(name)>)"
+        }
+
+        /// The bundle call answering `readEmbedFile`; strings are JSON-encoded, never spliced.
+        static func embedFileResultScript(requestId: Int, result: EmbedFileRead) -> String {
+            func literal(_ value: String) -> String {
+                guard let data = try? JSONSerialization.data(withJSONObject: value, options: .fragmentsAllowed),
+                      let json = String(data: data, encoding: .utf8) else { return "null" }
+                return json
+            }
+            switch result {
+            case .content(let text):
+                return "window.nimbalystEditor && window.nimbalystEditor.embedFileResult(\(requestId), \(literal(text)))"
+            case .failure(let reason):
+                return "window.nimbalystEditor && window.nimbalystEditor.embedFileResult(\(requestId), null, \(literal(reason)))"
+            }
+        }
+
         private func loadContent() {
             guard !hasLoadedContent else { return }
             hasLoadedContent = true
 
-            let content = document.contentDecrypted ?? ""
+            let content = WikiDocuments.isEmbedOnlyFile(document.relativePath)
+                ? Self.selfEmbedMarkdown(relativePath: document.relativePath)
+                : document.contentDecrypted ?? ""
             ledger.loaded(content)
             // Escape for JS string
             let escaped = content

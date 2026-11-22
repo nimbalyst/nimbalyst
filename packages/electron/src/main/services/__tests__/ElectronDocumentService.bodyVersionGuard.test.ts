@@ -105,4 +105,38 @@ describe.each(['sqlite', 'pglite'] as const)('typed page body version guard on %
     await service.updateTrackerItemContent('idea_1', 'Autosave.');
     expect(await stored()).toEqual({ content: 'Autosave.', version: 5 });
   });
+
+  it('keeps version 1 and the latest body cache row across saves, and the background pass prunes old rows', async () => {
+    const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'tracker-body-cache-'));
+    await openBackend(backend, directory);
+    await state.db.query(
+      `INSERT INTO tracker_items (id, type, type_tags, data, workspace, sync_status, content, archived, source, body_version, created, updated, last_indexed)
+       VALUES ($1, 'idea', $2, $3, $4, 'local', $5, FALSE, 'native', 1, NOW(), NOW(), NOW())`,
+      ['idea_1', backend === 'sqlite' ? JSON.stringify(['idea']) : ['idea'], JSON.stringify({ title: 'Idea' }), directory,
+        JSON.stringify('Created.')],
+    );
+    await state.db.query(`INSERT INTO tracker_body_cache (item_id, body_version, content, cached_at) VALUES ($1, 1, $2, NOW())`,
+      ['idea_1', JSON.stringify('Created.')]);
+    service = new ElectronDocumentService(directory);
+    const cachedVersions = async (itemId: string) => {
+      const { rows } = await state.db.query(
+        'SELECT body_version FROM tracker_body_cache WHERE item_id = $1 ORDER BY body_version', [itemId]);
+      return rows.map((row: any) => Number(row.body_version));
+    };
+
+    for (const body of ['Edit one.', 'Edit two.', 'Edit three.']) await service.updateTrackerItemContent('idea_1', body);
+    expect(await cachedVersions('idea_1')).toEqual([1, 4]);
+    expect(await service.getTrackerBodyCacheLatest('idea_1')).toEqual({ bodyVersion: 4, content: 'Edit three.' });
+
+    // A database written before saves pruned: the pass keeps 1 and the newest.
+    for (const v of [1, 2, 3]) {
+      await state.db.query(`INSERT INTO tracker_body_cache (item_id, body_version, content, cached_at) VALUES ($1, $2, $3, NOW())`,
+        ['legacy', v, JSON.stringify(`v${v}`)]);
+    }
+    const { runTrackerBodyCacheRetention } = await import('../tracker/trackerBodyCacheRetention');
+    expect(await runTrackerBodyCacheRetention(state.db, { sleep: async () => {} }))
+      .toEqual({ itemsPruned: 1, rowsDeleted: 1 });
+    expect(await cachedVersions('legacy')).toEqual([1, 3]);
+    expect(await cachedVersions('idea_1')).toEqual([1, 4]);
+  });
 });

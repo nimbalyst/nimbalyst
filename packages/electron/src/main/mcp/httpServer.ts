@@ -18,7 +18,10 @@ import { windows } from "../window/windowState";
 import { workspaceToWindowMap } from "./mcpWorkspaceResolver";
 import { requireMcpAuth } from "./mcpAuth";
 import { getAllowedClipOrigin, hasAllowedClipContentType } from "./clipRequestGuards";
+import { pickClipTarget } from "./clipTarget";
+import { loadFileIntoWindow } from "../file/FileOperations";
 import { withTrackerSchemaWorkspace } from "../services/tracker/trackerSchemaScope";
+import { logger } from "../utils/logger";
 
 // Extracted modules
 import {
@@ -514,12 +517,7 @@ function createSharedMcpServer(
   // abort signal so a cancelled call tears its waiter down (#1341).
   server.setRequestHandler(CallToolRequestSchema, withTrackerSchemaWorkspace(workspacePath, async (request: any, extra: any) => {
     const { name, arguments: args } = request.params;
-    if (request.params._meta) {
-      console.log(
-        `[MCP Server] Tool called: ${name}, _meta:`,
-        JSON.stringify(request.params._meta)
-      );
-    }
+    logger.mcp.debug(`[MCP Server] Tool called: ${name}`);
 
     // Strip MCP server prefix if present
     const toolName = name.replace(/^mcp__nimbalyst__/, "");
@@ -1249,28 +1247,23 @@ async function tryCreateServer(port: number): Promise<any> {
             return;
           }
 
-          // Find the most recently focused workspace window.
-          // windowStates and windows Maps are keyed by custom windowId (not BrowserWindow.id).
-          // Pick the workspace window with the highest focus order.
-          let targetWindowId: number | null = null;
-          let targetWindow: BrowserWindow | null = null;
-          let workspacePath: string | null = null;
-          let bestFocusOrder = -1;
-
-          for (const [wid, state] of windowStates) {
-            if (state?.workspacePath && (state.mode === 'workspace' || state.mode === 'agentic-coding')) {
-              const fo = windowFocusOrder.get(wid) || 0;
-              if (fo > bestFocusOrder) {
-                const win = windows.get(wid);
-                if (win && !win.isDestroyed()) {
-                  bestFocusOrder = fo;
-                  targetWindowId = wid;
-                  targetWindow = win;
-                  workspacePath = state.workspacePath;
-                }
-              }
-            }
-          }
+          // Save into the project showing in the most recently focused
+          // workspace window. windowStates and windows Maps are keyed by
+          // custom windowId (not BrowserWindow.id).
+          const target = pickClipTarget(
+            [...windowStates].map(([windowId, state]) => ({
+              windowId,
+              mode: state?.mode,
+              workspacePath: state?.workspacePath,
+              activeWorkspacePath: state?.activeWorkspacePath,
+              focusOrder: windowFocusOrder.get(windowId) || 0,
+            })).filter((candidate) => {
+              const win = windows.get(candidate.windowId);
+              return !!win && !win.isDestroyed();
+            }),
+          );
+          const targetWindow = target ? windows.get(target.windowId) ?? null : null;
+          const workspacePath = target?.workspacePath ?? null;
 
           if (!workspacePath || !targetWindow) {
             res.writeHead(400);
@@ -1316,8 +1309,8 @@ async function tryCreateServer(port: number): Promise<any> {
           fs.writeFileSync(finalPath, `${frontmatter}\n\n${content}`, "utf-8");
           console.log(`[Clip] Saved: ${finalPath}`);
 
-          // Open the file in the target window
-          targetWindow!.webContents.send("open-document", { path: finalPath });
+          // Open the file in the target window, in the project it was saved to
+          loadFileIntoWindow(targetWindow, finalPath, workspacePath);
 
           res.writeHead(200, { "Content-Type": "application/json" });
           res.end(JSON.stringify({ success: true, path: finalPath }));

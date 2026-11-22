@@ -1,5 +1,8 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { OUTBOX_STUCK_ATTEMPTS } from "../OutboxDrainer";
+import {
+  isConfirmedOutboxRevocationCode,
+  OUTBOX_STUCK_ATTEMPTS,
+} from "../OutboxDrainer";
 import {
   HarnessClient,
   HarnessDocumentServer,
@@ -220,5 +223,15 @@ describe("OutboxDrainer — a document that never converges", () => {
     expect(result.documentsExamined).toBe(0);
     // The row itself is untouched — not enumerating it is not discarding it.
     expect(client.persistedOutboxStates()).toEqual(["rejected"]);
+  });
+});
+
+describe("OutboxDrainer revocation codes", () => {
+  it("never retries a commenter update the room refused", () => {
+    // The room refuses every later update from that client's Y.Doc too, so a
+    // retry cannot succeed; it would only replay the refusal on each reconnect.
+    expect(isConfirmedOutboxRevocationCode("document_comment_update_refused")).toBe(true);
+    expect(isConfirmedOutboxRevocationCode("document_comment_forbidden")).toBe(true);
+    expect(isConfirmedOutboxRevocationCode("write_barrier")).toBe(false);
   });
 });

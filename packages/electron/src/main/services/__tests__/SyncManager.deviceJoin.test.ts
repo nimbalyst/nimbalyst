@@ -15,11 +15,14 @@ const h = vi.hoisted(() => ({
   credentials: vi.fn(() => ({ encryptionKeySeed: 'seed' })),
   hostname: 'original-host', member: 'member', userData: '',
   deviceInfo: undefined as undefined | (() => {deviceId: string}),
+  fetchIndex: vi.fn(async () => ({ complete: true, indexProtocolVersion: 2, sessions: [], projects: [], deletedSessionIds: [] } as Awaited<ReturnType<NonNullable<import('@nimbalyst/runtime/sync/types').SyncProvider['fetchIndex']>>>)),
+  publishRows: vi.fn(async (rows: import('@nimbalyst/runtime/sync/types').SessionIndexData[]) => ({ published: true, publishedSessionIds: rows.map(row => row.id) })),
+  loadLocal: vi.fn(async (_messages: boolean, _options: { isProjectEnabled: (id: string) => boolean }) => [] as import('@nimbalyst/runtime/sync/types').SessionIndexData[]),
 }));
 vi.mock('@nimbalyst/runtime/sync', () => ({
   setSyncImageCompressor: vi.fn(), setSyncLocalImageLoader: vi.fn(), setSyncClientInfo: vi.fn(),
   deriveEncryptionKey: vi.fn(async () => ({})), personalSyncEncryptionSalt: vi.fn(),
-  createCollabV3Sync: (config: {getDeviceInfo: typeof h.deviceInfo}) => { h.deviceInfo = config.getDeviceInfo; return ({ getPersonalSyncWriteGate: () => h.gate, onPersonalSyncWriteGateChange: (cb: typeof h.gateChanged) => { h.gateChanged = cb; return () => {}; }, onDeviceStatusChange: (cb: typeof h.joined) => { h.joined = cb; }, syncSettings: h.sentSettings }); },
+  createCollabV3Sync: (config: {getDeviceInfo: typeof h.deviceInfo}) => { h.deviceInfo = config.getDeviceInfo; return ({ getPersonalSyncWriteGate: () => h.gate, onPersonalSyncWriteGateChange: (cb: typeof h.gateChanged) => { h.gateChanged = cb; return () => {}; }, onDeviceStatusChange: (cb: typeof h.joined) => { h.joined = cb; }, syncSettings: h.sentSettings, fetchIndex: h.fetchIndex, syncSessionsToIndex: h.publishRows }); },
   createSyncedSessionStore: (store: unknown) => store, createMessageSyncHandler: vi.fn(),
 }));
 vi.mock('../sync/projectConfigSync', () => ({ createProjectConfigSync: () => ({ refresh: h.refresh, stop: vi.fn() }) }));
@@ -28,6 +31,11 @@ vi.mock('@nimbalyst/runtime/storage/repositories/AISessionsRepository', () => ({
   AISessionsRepository: { getStore: () => ({ listPendingHierarchyIntents: async () => [] }) },
 }));
 vi.mock('../sync/projectConfigSources', () => ({ projectConfigSources: {} }));
+vi.mock('@nimbalyst/runtime/ai/server/SessionStateManager', () => ({ getSessionStateManager: () => ({ getSessionState: () => ({ status: 'idle' }) }) }));
+vi.mock('../PGLiteSessionStore', () => ({ getAllSessionsForSync: h.loadLocal, getSessionMessagesForSyncBatch: async () => new Map() }));
+vi.mock('../sync/transcriptBackfill', () => ({ transcriptBackfill: {
+  heldProjects: () => new Set(), pendingSessions: () => new Set(), recordReconcile: () => {}, settle: () => true, isWithheld: () => false,
+} }));
 vi.mock('../../utils/store', () => ({
   getSessionSyncConfig: () => ({ enabled: true }), setSessionSyncConfig: vi.fn(),
   getReleaseChannel: () => 'stable', getAlphaFeatures: h.settings, getDefaultAIModel: vi.fn(),
@@ -63,6 +71,8 @@ beforeEach(async () => {
   vi.clearAllMocks();
   h.settings.mockImplementation(() => ({}));
   h.refresh.mockResolvedValue(undefined);
+  h.fetchIndex.mockReset().mockResolvedValue({ complete: true, indexProtocolVersion: 2, sessions: [], projects: [], deletedSessionIds: [] });
+  h.loadLocal.mockReset().mockResolvedValue([]);
   h.joined = undefined;
   h.persisted.clear();
   h.failWrite = false;
@@ -73,6 +83,63 @@ beforeEach(async () => {
   expect(h.joined).toBeTypeOf('function');
 });
 afterEach(() => { vi.clearAllTimers(); vi.useRealTimers(); });
+
+it('recovers an existing phone-created row through the real reconciliation on mobile join', async () => {
+  const now = Date.now();
+  const row = { id: 'already-created', title: 'Existing from phone', provider: 'claude-code',
+    model: 'claude-code:claudex-gpt-6-1-sol', workspaceId: '/workspace',
+    updatedAt: now, createdAt: now, messageCount: 0 };
+  h.persisted.set('sessionSync', { enabledProjects: ['/workspace'] });
+  const existing = { ...row, id: 'already-indexed', title: 'Older local title' };
+  h.fetchIndex.mockResolvedValue({ complete: true, indexProtocolVersion: 2, projects: [], sessions: [
+    { ...existing, sessionId: existing.id, projectId: '/workspace', title: 'Newer remote title', lastMessageAt: now },
+  ] });
+  h.loadLocal.mockImplementation(async (_messages, { isProjectEnabled }) => isProjectEnabled('/workspace') ? [row, existing] : []);
+  h.publishRows.mockClear();
+  h.joined!([{ type: 'mobile', deviceId: 'phone', name: 'Phone', connectedAt: 1 }]);
+  await vi.advanceTimersByTimeAsync(1000);
+  expect(h.fetchIndex).toHaveBeenCalled();
+  expect(h.publishRows).toHaveBeenCalledWith([row], expect.objectContaining({ syncMessages: true }));
+  expect(h.publishRows.mock.calls.flatMap(([rows]) => rows.map(item => item.id))).not.toContain(existing.id);
+});
+
+it.each([
+  { queued: [true], expectFull: false },
+  { queued: [true, false, true], expectFull: true },
+  { queued: [false, true], expectFull: true },
+])('preserves forced-sync intent across an in-flight missing-row pass: $queued', async ({ queued, expectFull }) => {
+  const now = Date.now();
+  const missing = { id: 'missing', title: 'Phone', provider: 'claude-code', workspaceId: '/workspace', createdAt: now, updatedAt: now, messageCount: 0 };
+  const existing = { ...missing, id: 'existing', title: 'Local title' };
+  h.persisted.set('sessionSync', { enabledProjects: ['/workspace'] });
+  h.loadLocal.mockResolvedValue([missing, existing]);
+  const snapshot = { complete: true, indexProtocolVersion: 2 as const, projects: [], sessions: [
+    { ...existing, sessionId: existing.id, projectId: '/workspace', title: 'Remote title', lastMessageAt: now },
+  ] };
+  let release!: (value: typeof snapshot) => void;
+  h.fetchIndex.mockResolvedValue(snapshot).mockImplementationOnce(() => new Promise(resolve => { release = resolve; }));
+  h.publishRows.mockClear();
+  const first = triggerIncrementalSync({ force: true, onlyMissing: true });
+  await vi.waitFor(() => expect(h.fetchIndex).toHaveBeenCalledTimes(1));
+  for (const onlyMissing of queued) await triggerIncrementalSync({ force: true, onlyMissing });
+  release(snapshot);
+  await first;
+  await vi.waitFor(() => expect(h.publishRows).toHaveBeenCalledTimes(2));
+  expect(h.publishRows.mock.calls[0][0]).toEqual([missing]);
+  expect(h.publishRows.mock.calls[1][0].map(row => row.id)).toEqual(expectFull ? ['missing', 'existing'] : ['missing']);
+});
+
+it.each(['tombstone', 'partial'])('does not revive or infer missing rows during mobile recovery: %s', async scenario => {
+  const now = Date.now();
+  h.persisted.set('sessionSync', { enabledProjects: ['/workspace'] });
+  h.loadLocal.mockResolvedValue([{ id: 'already-created', title: 'Existing', provider: 'claude-code', workspaceId: '/workspace', updatedAt: now, createdAt: now, messageCount: 0 }]);
+  h.fetchIndex.mockResolvedValue({ complete: scenario !== 'partial', indexProtocolVersion: 2, sessions: [], projects: [], deletedSessionIds: scenario === 'tombstone' ? ['already-created'] : [] });
+  h.publishRows.mockClear();
+  h.joined!([{ type: 'mobile', deviceId: 'phone', name: 'Phone', connectedAt: 1 }]);
+  await vi.advanceTimersByTimeAsync(1000);
+  expect(h.fetchIndex).toHaveBeenCalled();
+  expect(h.publishRows).not.toHaveBeenCalled();
+});
 
 it('preserves unreadable credentials, reports sync failure, and keeps the local store usable', async () => {
   vi.resetModules();

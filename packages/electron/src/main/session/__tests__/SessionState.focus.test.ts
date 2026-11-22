@@ -148,8 +148,10 @@ describe('restoreSessionState window activation', () => {
     });
     const flushPendingBackups = vi.fn(() => backups.promise);
     const stopExternalSessions = vi.fn(() => drain.promise);
+    const commands = deferred();
+    const stopCommandTerminals = vi.fn(() => commands.promise);
     const shutdown = createRestartShutdown({
-      beginRestart: vi.fn(), stopExternalSessions, saveSessionState, flushPendingBackups, quit,
+      beginRestart: vi.fn(), stopExternalSessions, saveSessionState, stopCommandTerminals, flushPendingBackups, quit,
     });
     app.on('before-quit', (event) => { handlers.push(shutdown(event)); });
 
@@ -157,6 +159,10 @@ describe('restoreSessionState window activation', () => {
     quit(); // Another request while the first is waiting must not tear down windows.
     const projectsDuringDrain = mocks.windowStates.size;
     drain.resolve();
+    // The restart waits for extension-started commands to stop as well.
+    await vi.advanceTimersByTimeAsync(0);
+    expect(flushPendingBackups).not.toHaveBeenCalled();
+    commands.resolve();
     await vi.waitFor(() => expect(flushPendingBackups).toHaveBeenCalledOnce());
     const projectsDuringBackup = mocks.windowStates.size;
     backups.resolve();
@@ -170,17 +176,20 @@ describe('restoreSessionState window activation', () => {
     expect(projectsDuringBackup).toBe(3);
     expect(mocks.windowStates.size).toBe(0);
     expect(stopExternalSessions).toHaveBeenCalledOnce();
+    expect(stopCommandTerminals).toHaveBeenCalledOnce();
     expect(mocks.saveSessionState).toHaveBeenCalledOnce();
     expect(quit).toHaveBeenCalledTimes(3); // Two requests and the final permitted quit.
   });
 
-  it.each(['saveSessionState', 'stopExternalSessions', 'flushPendingBackups'] as const)(
+  it.each(['saveSessionState', 'stopExternalSessions', 'stopCommandTerminals', 'flushPendingBackups'] as const)(
     'keeps windows open when %s fails and allows an explicit retry',
     async (failedStep) => {
       const deps = {
         beginRestart: vi.fn(),
         stopExternalSessions: vi.fn(async () => undefined),
         saveSessionState: vi.fn(async () => undefined),
+        stopCommandTerminals: vi.fn(async () => undefined),
+        restartAborted: vi.fn(),
         flushPendingBackups: vi.fn(async () => undefined),
         quit: vi.fn(),
       };
@@ -192,6 +201,7 @@ describe('restoreSessionState window activation', () => {
       await expect(shutdown(firstEvent)).rejects.toBe(error);
       expect(firstEvent.preventDefault).toHaveBeenCalledOnce();
       expect(deps.quit).not.toHaveBeenCalled();
+      expect(deps.restartAborted).toHaveBeenCalledOnce();
 
       const retryEvent = { preventDefault: vi.fn() };
       await shutdown(retryEvent);
@@ -238,6 +248,37 @@ describe('restoreSessionState window activation', () => {
     expect(mocks.ensureTrackerSyncForWorkspace).toHaveBeenCalledTimes(2);
     expect(mocks.ensureTrackerSyncForWorkspace).toHaveBeenNthCalledWith(1, '/workspace/older');
     expect(mocks.ensureTrackerSyncForWorkspace).toHaveBeenNthCalledWith(2, '/workspace/newer');
+  });
+
+  it('restores a multi-project window with its rail projects and active project after restart', async () => {
+    mocks.windowStates.set(1, {
+      mode: 'workspace',
+      workspacePath: '/workspace/primary',
+      additionalWorkspacePaths: ['/workspace/b', '/workspace/c'],
+      projectRailOrder: ['/workspace/c', '/workspace/primary', '/workspace/b'],
+      activeWorkspacePath: '/workspace/b',
+    } as never);
+    mocks.windows.set(1, {
+      isDestroyed: () => false,
+      getBounds: () => ({ x: 0, y: 0, width: 800, height: 600 }),
+      isMaximized: () => false,
+    });
+    mocks.saveSessionState.mockImplementation((state) => mocks.getSessionState.mockReturnValue(state));
+
+    await saveSessionState();
+    const restore = restoreSessionState();
+    await vi.runAllTimersAsync();
+    await expect(restore).resolves.toBe(true);
+
+    expect(mocks.createWindow).toHaveBeenCalledWith(false, true, '/workspace/primary', expect.anything(), {
+      showInactive: true,
+      startupReveal: true,
+      startupFrontmost: true,
+      restoredRail: {
+        projectPaths: ['/workspace/c', '/workspace/primary', '/workspace/b'],
+        activeWorkspacePath: '/workspace/b',
+      },
+    });
   });
 
   it('defers saved DevTools restoration until startup foregrounding is done', async () => {

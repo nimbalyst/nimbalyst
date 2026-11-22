@@ -205,6 +205,30 @@ describe.each(PERSISTENCE_BACKENDS)('TrackerSyncEngine ($name)', backend => {
     await Promise.all(persistences.splice(0).map(persistence => persistence.close()));
   });
 
+  it('retains an old queued edit without rolling the recovered projection back or replaying it again', async () => {
+    const server = createFakeServer();
+    const a = await buildEngine({ room: server.room, serverConnect: server.connect, encryptionKey: key });
+    const b = await buildEngine({ room: server.room, serverConnect: server.connect, encryptionKey: key });
+    await a.engine.connect(); await b.engine.connect();
+    await waitUntil(() => a.engine.getStatus() === 'connected' && b.engine.getStatus() === 'connected');
+    await a.engine.upsertItem(basePayload('recovered', { fields: { title: 'Before' } }));
+    await waitUntil(async () => !!await b.persistence.getItem('recovered'));
+    a.engine.disconnect();
+    const queued = await a.engine.upsertItem(basePayload('recovered', { fields: { title: 'Queued edit' } }));
+    await b.engine.upsertItem(basePayload('recovered', { fields: { title: 'Recovered content' } }));
+    await waitUntil(async () => (await b.persistence.getItem('recovered'))?.envelope.syncId === 2);
+    server.room.setRejectAll(true, 'recoveryConflict');
+    await a.engine.connect();
+    await waitUntil(async () => (await a.persistence.getTransaction(queued.clientMutationId))?.lastRejection?.code === 'recoveryConflict');
+    expect((await a.persistence.getItem('recovered'))?.payload?.fields.title).toBe('Recovered content');
+    expect((await a.persistence.getTransaction(queued.clientMutationId))?.payload?.fields.title).toBe('Queued edit');
+    const attempts = server.room.receivedMutationMessages;
+    a.engine.disconnect(); await a.engine.connect();
+    await waitUntil(() => a.engine.getStatus() === 'connected');
+    expect(server.room.receivedMutationMessages).toBe(attempts);
+    a.engine.destroy(); b.engine.destroy();
+  });
+
   it('round-trips an upsert: clientA enqueues, server acks, clientB sees the delta', async () => {
     const server = createFakeServer();
 

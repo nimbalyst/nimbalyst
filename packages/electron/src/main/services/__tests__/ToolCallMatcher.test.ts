@@ -852,6 +852,62 @@ describe('ToolCallMatcher', () => {
       expect(result.reason).toBe('ambiguous');
       expect(result.candidates.length).toBe(2);
     });
+
+    it('does not let a command that names the file beat another session running an unnamed writer', async () => {
+      const assistantToolUse = (sessionId: string, id: number, toolUseId: string, command: string) => ({
+        session_id: sessionId,
+        id,
+        content: JSON.stringify({
+          type: 'assistant',
+          message: { content: [{ type: 'tool_use', id: toolUseId, name: 'Bash', input: { command } }] },
+        }),
+        created_at_ms: baseTime,
+      });
+      (database.query as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+        rows: [
+          assistantToolUse('reader', 21, 'toolu_reader', 'cat /workspace/src/generated.ts'),
+          assistantToolUse('writer', 22, 'toolu_writer', 'node scripts/generate.js'),
+        ],
+      });
+
+      const result = await toolCallMatcher.matchWorkspaceFileEdit({
+        workspacePath: '/workspace',
+        filePath: '/workspace/src/generated.ts',
+        fileTimestamp: baseTime + 100,
+        candidateSessionIds: ['reader', 'writer'],
+      });
+
+      expect(result.winner).toBeNull();
+      expect(result.reason).toBe('competing_writer');
+    });
+
+    // A hook-window session owns its Bash edits through its own tracker. When
+    // its tool is the best explanation, no lower-scored session may take it.
+    it('gives no winner when the best match belongs to an ineligible hook-window session', async () => {
+      (database.query as ReturnType<typeof vi.fn>).mockResolvedValueOnce({
+        rows: [
+          {
+            session_id: 'claude-shell', id: 31, created_at_ms: baseTime,
+            content: JSON.stringify({ type: 'item.completed', item: { type: 'file_change', id: 'item-c', changes: [{ path: '/workspace/src/c.ts', kind: 'update' }] } }),
+          },
+          {
+            session_id: 'opencode', id: 32, created_at_ms: baseTime + 50,
+            content: JSON.stringify({ type: 'item.completed', item: { type: 'command_execution', id: 'item-o', command: 'echo test >> c.ts' } }),
+          },
+        ],
+      });
+
+      const result = await toolCallMatcher.matchWorkspaceFileEdit({
+        workspacePath: '/workspace',
+        filePath: '/workspace/src/c.ts',
+        fileTimestamp: baseTime + 70,
+        candidateSessionIds: ['claude-shell', 'opencode'],
+        ineligibleSessionIds: ['claude-shell'],
+      });
+
+      expect(result.winner).toBeNull();
+      expect(result.reason).toBe('shell_window_owner');
+    });
   });
 
   describe('getDiffsForToolCall (Codex synthetic ID lookup)', () => {

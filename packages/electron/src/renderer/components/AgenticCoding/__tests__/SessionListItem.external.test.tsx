@@ -10,13 +10,14 @@ vi.mock('../../../store', async () => {
 });
 vi.mock('../../../store/atoms/sessions', async () => {
   const { atom } = await import('jotai');
-  return { sessionRegistryAtom: atom(new Map()), convertToWorkstreamAtom: atom(null, () => {}) };
+  return { sessionRegistryAtom: atom(new Map()), pendingSessionRenameAtom: atom(null), createWorkstreamAtom: atom(null, () => {}) };
 });
 vi.mock('../../../store/atoms/teamInbox', async () => {
   const { atom } = await import('jotai'); const value = atom(false);
   return { sessionAgentWakePendingAtom: () => value };
 });
 vi.mock('../SessionContextMenu', () => ({ SessionContextMenu: () => null }));
+vi.mock('../SessionContextUsageBar', () => ({ SessionContextUsageBar: () => null }));
 vi.mock('../SessionProviderIcon', () => ({ SessionProviderIcon: () => <span>Provider badge</span> }));
 vi.mock('../FullTitleTooltip', () => ({ FullTitleTooltip: ({ children }: any) => <span>{children}</span> }));
 import { SessionListItem } from '../SessionListItem';

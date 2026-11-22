@@ -7,6 +7,7 @@ import { readFile, stat } from 'node:fs/promises';
 import { getPackageRoot } from '../utils/appPaths';
 import { logger } from '../utils/logger';
 import type { HashedFileResult } from '../workers/projectManifestWorker';
+import { scanProjectSyncCandidatesInline, type ProjectSyncScanCandidate, type ProjectSyncScanRequest } from './sync/projectSyncScan';
 
 export type { HashedFileResult };
 
@@ -57,7 +58,18 @@ async function hashInline(files: string[]): Promise<HashedFileResult[]> {
  */
 export async function hashProjectFiles(files: string[]): Promise<HashedFileResult[]> {
   if (files.length === 0) return [];
+  return runInManifestWorker({ files }, () => hashInline(files));
+}
 
+/**
+ * Walk the workspace for sync candidates off the main thread. A failed worker
+ * falls back to the same walk inline, never to a short list.
+ */
+export function scanProjectSyncCandidates(request: ProjectSyncScanRequest): Promise<ProjectSyncScanCandidate[]> {
+  return runInManifestWorker({ scan: request }, () => scanProjectSyncCandidatesInline(request));
+}
+
+async function runInManifestWorker<T>(payload: object, inline: () => Promise<T[]>): Promise<T[]> {
   let worker: Worker | null = null;
   try {
     // Constructed here rather than inside the executor so its lifetime is
@@ -65,7 +77,7 @@ export async function hashProjectFiles(files: string[]): Promise<HashedFileResul
     const active = new Worker(resolveProjectManifestWorkerPath());
     worker = active;
 
-    return await new Promise<HashedFileResult[]>((resolve, reject) => {
+    return await new Promise<T[]>((resolve, reject) => {
       const id = randomUUID();
       let settled = false;
 
@@ -77,10 +89,10 @@ export async function hashProjectFiles(files: string[]): Promise<HashedFileResul
       };
 
       const timer = setTimeout(() => {
-        finish(() => reject(new Error(`manifest hashing timed out after ${MANIFEST_HASH_TIMEOUT_MS}ms`)));
+        finish(() => reject(new Error(`manifest worker timed out after ${MANIFEST_HASH_TIMEOUT_MS}ms`)));
       }, MANIFEST_HASH_TIMEOUT_MS);
 
-      active.on('message', (response: { id: string; results: HashedFileResult[] }) => {
+      active.on('message', (response: { id: string; results: T[] }) => {
         if (response?.id !== id) return;
         finish(() => resolve(response.results));
       });
@@ -89,14 +101,14 @@ export async function hashProjectFiles(files: string[]): Promise<HashedFileResul
         if (code !== 0) finish(() => reject(new Error(`manifest worker exited with code ${code}`)));
       });
 
-      active.postMessage({ id, files });
+      active.postMessage({ id, ...payload });
     });
   } catch (error) {
     logger.main.warn(
-      '[ProjectManifestHasher] worker unavailable, hashing inline on the main thread',
+      '[ProjectManifestHasher] worker unavailable, running inline on the main thread',
       error,
     );
-    return hashInline(files);
+    return inline();
   } finally {
     void worker?.terminate();
   }

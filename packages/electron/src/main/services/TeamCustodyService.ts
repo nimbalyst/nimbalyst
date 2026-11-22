@@ -9,7 +9,8 @@
  * The retired client-managed lane (per-device ECDH identity key pairs, org
  * encryption keys, wrapped key envelopes, per-member trust verification, org
  * key rotation) is gone. What remains is the custody marker: reading it, and
- * setting it when a team is created.
+ * setting it when an empty team is created. Populated legacy teams use the
+ * explicit, fenced TeamRecoveryService flow.
  *
  * Personal sync is unaffected and stays zero-knowledge.
  */
@@ -27,7 +28,7 @@ const getCollabServerUrl = getCollabSyncHttpUrl;
 /**
  * Custody as reported by the server. `server-managed` is the only supported
  * value; `unmigrated` means the organization was never converted and the
- * server refuses its team content — it has to be set up again.
+ * server refuses normal team content until an administrator completes in-place recovery.
  */
 export type TeamKeyCustodyMode = 'server-managed' | 'unmigrated';
 
@@ -56,15 +57,19 @@ async function fetchApi(
     const text = await response.text().catch(() => '');
     throw new Error(`${method} ${apiPath} failed (${response.status}): ${text}`);
   }
-  return response.json().catch(() => ({}));
+  return response.json();
 }
 
 async function fetchTeamKeyStatusUncached(orgId: string, orgScopedJwt: string): Promise<TeamKeyStatus> {
   const data = await fetchApi(`/api/teams/${orgId}/key-status`, 'GET', undefined, orgScopedJwt) as {
     mode?: string; dekEpoch?: number | null; dekFingerprint?: string | null;
   };
-  // Any value other than the explicit server-managed marker means unmigrated.
-  // Unknown values must NOT fall through to the permissive reading.
+  if (!data || !['server-managed', 'legacy-e2e', 'unmigrated'].includes(data.mode ?? '')
+      || (data.dekEpoch != null && (!Number.isSafeInteger(data.dekEpoch) || data.dekEpoch < 1))
+      || (data.dekFingerprint != null && typeof data.dekFingerprint !== 'string')) {
+    throw new Error('Invalid team key status; organization custody could not be verified');
+  }
+  // An unavailable response must never become evidence that migration is needed.
   const mode: TeamKeyCustodyMode = data.mode === 'server-managed' ? 'server-managed' : 'unmigrated';
   return { mode, dekEpoch: data.dekEpoch ?? null, dekFingerprint: data.dekFingerprint ?? null };
 }

@@ -1,6 +1,25 @@
 import type { TranscriptViewMessage } from '@nimbalyst/runtime/ai/server/transcript/TranscriptProjector';
 import deepEqual from 'fast-deep-equal';
 
+/** Keep unchanged rows stable even when projection adds, removes or moves rows. */
+export function preserveTranscriptMessageIdentity(
+  current: TranscriptViewMessage[],
+  next: TranscriptViewMessage[],
+): TranscriptViewMessage[] {
+  if (current === next) return current;
+  const previousById = new Map(current.map(message => [message.id, message]));
+  let unchanged = current.length === next.length;
+  const messages = next.map((message, index) => {
+    const previous = previousById.get(message.id);
+    // Equality includes generation, sequence and all tool/metadata fields:
+    // matching text alone must never hide a real update or a rebuilt generation.
+    const retained = previous && deepEqual(previous, message) ? previous : message;
+    if (retained !== current[index]) unchanged = false;
+    return retained;
+  });
+  return unchanged ? current : messages;
+}
+
 /** Missing tags are legacy data, never authority over a tagged generation. */
 export function latestTranscriptGeneration(
   messages: readonly { transcriptGeneration?: number }[],
@@ -124,6 +143,56 @@ export function reconcileTranscriptMessages(
     return false;
   });
   return [...ordered, ...pending];
+}
+
+export type TranscriptMergePath = 'stream' | 'load' | 'reload' | 'update';
+
+const reportedDuplicatePrompts = new Set<string>();
+
+/**
+ * Diagnostic for #919: under load a session's first prompt showed a second
+ * time at the bottom of the transcript, with the saved prompt's timestamp,
+ * until the next full reload. Names the merge path that produced the list,
+ * once per session, path and duplicate.
+ *
+ * Two user messages are the same prompt when they share an id, or their text
+ * and timestamp. Sending the same text again gets a new timestamp, so it is
+ * not flagged. Generation is not compared: a copy from a retired generation
+ * is a suspect. The text is compared but never logged.
+ */
+export function warnOnDuplicateUserPrompt(
+  sessionId: string,
+  mergePath: TranscriptMergePath,
+  messages: readonly TranscriptViewMessage[],
+): void {
+  const indexById = new Map<number, number>();
+  const indexByTimeAndText = new Map<number, Map<string | undefined, number>>();
+  for (let index = 0; index < messages.length; index++) {
+    const message = messages[index];
+    if (message.type !== 'user_message') continue;
+    const time = messageTime(message);
+    let sameTime = indexByTimeAndText.get(time);
+    if (!sameTime) indexByTimeAndText.set(time, (sameTime = new Map()));
+    const first = indexById.get(message.id) ?? sameTime.get(message.text);
+    if (!indexById.has(message.id)) indexById.set(message.id, index);
+    if (!sameTime.has(message.text)) sameTime.set(message.text, index);
+    if (first === undefined) continue;
+
+    const original = messages[first];
+    const key = `${sessionId}|${mergePath}|${original.id}:${original.transcriptGeneration}|${message.id}:${message.transcriptGeneration}`;
+    if (reportedDuplicatePrompts.has(key)) continue;
+    reportedDuplicatePrompts.add(key);
+    console.warn(`[transcriptReconciliation] Duplicate user prompt after ${mergePath} merge (#919) ${JSON.stringify({
+      sessionId,
+      mergePath,
+      length: messages.length,
+      ids: [original.id, message.id],
+      indices: [first, index],
+      transcriptGenerations: [original.transcriptGeneration ?? null, message.transcriptGeneration ?? null],
+      sequences: [original.sequence, message.sequence],
+      createdAt: [messageTime(original), time],
+    })}`);
+  }
 }
 
 /** Match the display/history rule in sessions.ts stripSystemMessageAdditions.

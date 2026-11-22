@@ -6,11 +6,8 @@ import {
   refreshSessionListAtom,
   sessionRegistryAtom,
 } from '../atoms/sessions';
-import {
-  activeWorkspacePathAtom,
-  addOpenProjectAtom,
-  openProjectsAtom,
-} from '../atoms/openProjects';
+import { activateRailProject } from './activateRailProject';
+import { activeWorkspacePathAtom, multiProjectModeAtom } from '../atoms/openProjects';
 import {
   initWorkstreamState,
   loadWorkstreamStates,
@@ -124,44 +121,13 @@ async function lookupTarget(
 
 /**
  * Make the notification's workspace the active one, going through the same
- * rail action the project switcher uses. Registering with main first is what
- * makes the `workspace:set-active` subscriber succeed for a project this window
- * has not hosted before — a bare `activeWorkspacePathAtom` write would leave
- * main scoped to the previous project.
+ * rail action the project switcher uses. A bare `activeWorkspacePathAtom`
+ * write would leave main scoped to the previous project.
  */
 async function activateWorkspace(target: SessionNotificationNavigationTarget): Promise<boolean> {
-  if (store.get(activeWorkspacePathAtom) === target.workspacePath) return true;
-
-  const alreadyOpen = store
-    .get(openProjectsAtom)
-    .some((project) => project.path === target.workspacePath);
-
-  if (!alreadyOpen) {
-    try {
-      const registration = await window.electronAPI.invoke(
-        'workspace:register-additional',
-        { workspacePath: target.workspacePath },
-      );
-      if (!registration?.success) {
-        return showUnavailable(target, 'project-unavailable');
-      }
-    } catch {
-      return showUnavailable(target, 'project-unavailable');
-    }
-  }
-
-  store.set(addOpenProjectAtom, {
-    path: target.workspacePath,
-    name: target.workspacePath.split(/[\\/]/).filter(Boolean).pop() || target.workspacePath,
-    openedAt: Date.now(),
-  });
-
-  // `addOpenProjectAtom` silently no-ops when the rail is at its cap; without
-  // this check we would go on to select a session against the wrong workspace.
-  if (store.get(activeWorkspacePathAtom) !== target.workspacePath) {
-    return showUnavailable(target, 'project-unavailable');
-  }
-  return true;
+  if (await activateRailProject(target.workspacePath)) return true;
+  // Without this we would go on to select a session against the wrong workspace.
+  return showUnavailable(target, 'project-unavailable');
 }
 
 /**
@@ -220,6 +186,13 @@ export async function navigateToNotificationSession(
   ]);
 
   const hydrated = await hydrateTarget(target);
+  // The user can switch projects while the loads above are in flight.
+  // `selectSessionActionAtom` selects under the active project, so selecting
+  // now would put this session into whichever project they moved to.
+  if (store.get(activeWorkspacePathAtom) !== target.workspacePath) {
+    console.warn('[sessionNotificationNavigation] Project changed during navigation; not selecting', target.sessionId);
+    return false;
+  }
   if (!hydrated || hydrated.isArchived) {
     // A registry miss after the pre-flight lookup succeeded is stale renderer
     // state, not a missing session -- see hydrateTarget.
@@ -229,4 +202,26 @@ export async function navigateToNotificationSession(
   store.set(setWindowModeAtom, 'agent');
   await store.set(selectSessionActionAtom, target.sessionId);
   return true;
+}
+
+/**
+ * Open a session that belongs to `target.workspacePath` from a window that may
+ * be showing another project. With the project rail on, this window switches
+ * to the project and selects it. With the rail off this window shows only its
+ * own project, so main focuses or opens that project's window and that window
+ * selects the session -- the same routing a notification click uses.
+ */
+export async function openSessionInOwningProject(
+  target: SessionNotificationNavigationTarget,
+): Promise<boolean> {
+  if (store.get(multiProjectModeAtom) || store.get(activeWorkspacePathAtom) === target.workspacePath) {
+    return navigateToNotificationSession(target);
+  }
+  try {
+    await window.electronAPI.invoke('notifications:navigate-to-session', target);
+    return true;
+  } catch (error) {
+    console.error('[sessionNotificationNavigation] Failed to hand the session to its project window:', error);
+    return showUnavailable(target, 'project-unavailable');
+  }
 }

@@ -49,10 +49,55 @@ export function countPendingInteractiveWaiters(sessionKey: string): number {
 }
 
 /**
+ * Claude Code passes every MCP call its transcript tool_use id in
+ * `_meta['claudecode/toolUseId']`, so a waiter holding a `toolu_` id listens on
+ * exactly the channel of the card it belongs to. The NIM-1981 relaxation exists
+ * for waiters whose id does not line up with their card: Codex (a resolved but
+ * wrong `exec-` id), clients without `_meta` (the JSON-RPC request id, while
+ * OpenCode cards carry `toolu_` ids) and synthetic `rui-` / `ask-` ids. A
+ * Claude Code waiter never needs it.
+ */
+export function isClaudeCodeToolUseId(id: string): boolean {
+  return id.startsWith("toolu_");
+}
+
+/**
+ * True when a session-fallback answer names a card other than this waiter's.
+ * An answer with no ids cannot name another card and is left to the caller.
+ */
+export function fallbackAnswerNamesAnotherCard(params: {
+  waiterPromptId: string;
+  promptIdAliasSet: ReadonlySet<string>;
+  responsePromptIds: readonly string[];
+}): boolean {
+  const { waiterPromptId, promptIdAliasSet, responsePromptIds } = params;
+  return isClaudeCodeToolUseId(waiterPromptId)
+    && responsePromptIds.length > 0
+    && !responsePromptIds.some((id) => promptIdAliasSet.has(id));
+}
+
+/**
+ * Whether an answer whose card has no waiter on its own channel may go down the
+ * session fallback. A Claude Code card's waiter is always on its own channel,
+ * so with none there the card has no live waiter, and any fallback listener is
+ * a different question (session 723ddabd). The caller then closes the card
+ * itself. Other providers keep the fallback (see `isClaudeCodeToolUseId`).
+ */
+export function sessionFallbackMayCarryAnswer(
+  provider: string | null | undefined,
+  cardId: string,
+): boolean {
+  if (provider !== "claude-code" && provider !== "claude-code-cli") return true;
+  return !isClaudeCodeToolUseId(cardId);
+}
+
+/**
  * Decide whether a session-scoped fallback response should settle the waiter.
  *
  * - A synthetic (`rui-`) waiter never had a correlatable id, so accept as before.
  * - Accept when the response carries an id in the waiter's alias set.
+ * - Reject an answer naming another card when the waiter holds a Claude Code
+ *   tool_use id (see `fallbackAnswerNamesAnotherCard`).
  * - Otherwise accept only when this is the sole pending prompt for the session
  *   (the session-scoped fallback is unambiguous); reject when several prompts are
  *   pending to avoid cross-prompt misrouting.
@@ -76,6 +121,10 @@ export function shouldSettleFromSessionFallback(params: {
 
   if (responsePromptIds.some((id) => promptIdAliasSet.has(id))) {
     return true;
+  }
+
+  if (fallbackAnswerNamesAnotherCard({ waiterPromptId, promptIdAliasSet, responsePromptIds })) {
+    return false;
   }
 
   return pendingWaiterCountForSession <= 1;

@@ -5,19 +5,13 @@
 import React, { useState, useEffect } from 'react';
 import { MaterialSymbol } from '@nimbalyst/runtime/ui/icons/MaterialSymbol';
 import { TerminalTabContextMenu } from './TerminalTabContextMenu';
+import type { TerminalInstance } from '../../store/atoms/terminals';
 
-interface TerminalInstance {
-  id: string;
-  title: string;
-  shellName: string;
-  shellPath: string;
-  cwd: string;
-  worktreeId?: string;
-  worktreeName?: string;
-  createdAt: number;
-  lastActiveAt: number;
-  historyFile?: string;
-}
+const STATUS_DOT_COLOR: Record<NonNullable<TerminalInstance['statusTone']>, string> = {
+  success: 'bg-[var(--nim-success)]',
+  warning: 'bg-[var(--nim-warning)]',
+  error: 'bg-[var(--nim-error)]',
+};
 
 interface TerminalTabProps {
   terminal: TerminalInstance;
@@ -119,6 +113,11 @@ export const TerminalTab: React.FC<TerminalTabProps> = ({
     ? 'active bg-[var(--nim-bg)] text-[var(--nim-text)] font-medium'
     : 'bg-transparent text-[var(--nim-text-muted)]';
   const flashClasses = isFocusFlashing ? 'animate-focus-flash' : '';
+  // A command an extension started: its tab is that command's log, not a shell.
+  const isCommand = terminal.kind === 'command';
+  const tooltip = isCommand
+    ? `${terminal.title}\n${terminal.command ?? ''}\n${terminal.cwd}\nClosing the tab stops the command`
+    : `${terminal.title}\n${terminal.cwd}\nShell: ${terminal.shellName}${isActiveWorktree ? '\n(Current worktree)' : ''}`;
 
   return (
     <>
@@ -130,9 +129,23 @@ export const TerminalTab: React.FC<TerminalTabProps> = ({
         role="tab"
         tabIndex={0}
         aria-selected={isActive}
-        title={`${terminal.title}\n${terminal.cwd}\nShell: ${terminal.shellName}${isActiveWorktree ? '\n(Current worktree)' : ''}`}
+        title={tooltip}
+        data-terminal-id={terminal.id}
+        data-terminal-kind={isCommand ? 'command' : 'shell'}
+        data-status-tone={terminal.statusTone}
       >
-      {terminal.worktreeId ? (
+      {isCommand ? (
+        <>
+          <span
+            className={`terminal-tab-status w-2 h-2 rounded-full shrink-0 ${
+              terminal.statusTone ? STATUS_DOT_COLOR[terminal.statusTone] : 'bg-[var(--nim-text-disabled)]'
+            }`}
+          />
+          <span className="terminal-tab-command-badge flex items-center justify-center w-3.5 h-3.5 rounded-[3px] bg-[var(--nim-bg-tertiary)] text-[var(--nim-text-muted)] shrink-0">
+            <MaterialSymbol icon="play_arrow" size={11} fill />
+          </span>
+        </>
+      ) : terminal.worktreeId ? (
         <MaterialSymbol
           icon="alt_route"
           size={14}
@@ -142,20 +155,23 @@ export const TerminalTab: React.FC<TerminalTabProps> = ({
       ) : (
         <MaterialSymbol icon={getShellIcon(terminal.shellName)} size={14} />
       )}
-      {isCommandRunning && (
+      {!isCommand && isCommandRunning && (
         <div
           className="w-1.5 h-1.5 rounded-full bg-yellow-400 animate-pulse shrink-0"
           title="Command running"
         />
       )}
       <span className="terminal-tab-title overflow-hidden text-ellipsis shrink min-w-0">{getDisplayName()}</span>
-      {!terminal.worktreeId && (
+      {isCommand && terminal.pinned && (
+        <MaterialSymbol icon="keep" size={11} fill className="terminal-tab-pin text-[var(--nim-text-disabled)] shrink-0" />
+      )}
+      {!terminal.worktreeId && !isCommand && (
         <span className={`terminal-tab-cwd text-[10px] overflow-hidden text-ellipsis shrink min-w-0 ${isActive ? 'text-[var(--nim-text-muted)]' : 'text-[var(--nim-text-faint)]'}`}>{getAbbreviatedCwd(terminal.cwd)}</span>
       )}
       <button
         className="terminal-tab-close hidden group-hover:flex items-center justify-center w-4 h-4 p-0 bg-transparent border-none text-[var(--nim-text-faint)] cursor-pointer rounded-sm shrink-0 ml-0.5 transition-colors duration-150 hover:bg-[var(--nim-bg-tertiary)] hover:text-[var(--nim-text)]"
         onClick={handleCloseClick}
-        title="Close terminal"
+        title={isCommand ? 'Stop the command and close its tab' : 'Close terminal'}
       >
         <MaterialSymbol icon="close" size={12} />
       </button>

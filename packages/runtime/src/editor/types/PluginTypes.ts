@@ -5,7 +5,7 @@
  * instances published into the runtime extension stores.
  */
 
-import type { LexicalCommand } from 'lexical';
+import type { AnyLexicalCommand } from 'lexical';
 
 export interface UserCommand {
   /** Display name for the command */
@@ -20,8 +20,10 @@ export interface UserCommand {
   /** Keywords for searching */
   keywords?: string[];
 
-  /** The command to execute */
-  command: LexicalCommand<unknown>;
+  /** The command to execute. Lexical 0.49+ made command payloads invariant,
+   * so a specific `LexicalCommand<T>` is no longer assignable to
+   * `LexicalCommand<unknown>`; `payload` is paired with it at dispatch. */
+  command: AnyLexicalCommand;
 
   /** Optional payload for the command */
   payload?: unknown;

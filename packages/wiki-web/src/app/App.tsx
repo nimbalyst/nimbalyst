@@ -21,7 +21,9 @@ import {
 import { createTrackerReferenceResolver, TrackersUIProvider } from '@nimbalyst/collab-bundle/trackers-ui';
 import { PageEditorServicesContext, type PageEditorServices } from './pageEditorServices';
 import { setWorkspaceFileLinkOpener } from '@nimbalyst/collab-bundle/editor';
+import { MaterialSymbol } from '@nimbalyst/runtime-source/ui/icons/MaterialSymbol';
 import { wikiApi, wikiChanges } from '../api/client';
+import { isStaticSite, parseStaticLocation, staticRoutePath } from '../api/staticSite';
 import { LocalCollabHost, routePath } from '../host/LocalCollabHost';
 import type { LocalTrackerDataSource } from '../host/LocalTrackerDataSource';
 import { DraftStore, DraftStoreContext, prepareToLeave, resolveLeave, type LeaveChoice, type LeaveDecision } from './drafts';
@@ -31,11 +33,13 @@ import { setWikiCanvasContext } from '../editors/canvas/WikiCanvasCard';
 import { renderWikiFileEmbed } from '../editors/WikiFileEmbed';
 import { setWikiHtmlNavigator } from '../editors/html/htmlPages';
 import { openWikiHtmlLink } from '../editors/html/wikiHtmlNavigation';
+import { StaticSidebar } from './staticViews';
 
 type Route = ViewRoute;
 
 function parseLocation(): Route {
   const { pathname, search } = window.location;
+  if (isStaticSite()) return parseStaticLocation(pathname, search);
   const [, kind, raw] = pathname.split('/');
   const value = raw ? decodeURIComponent(raw) : '';
   if (kind === 'page' && value) return { kind: 'page', id: value };
@@ -47,6 +51,7 @@ function parseLocation(): Route {
 }
 
 function pathOf(route: Route): string {
+  if (isStaticSite()) return staticRoutePath(route);
   if (route.kind === 'search') return route.query ? `/search?q=${encodeURIComponent(route.query)}` : '/search';
   if (route.kind === 'types') return '/types';
   return routePath(route);
@@ -250,6 +255,19 @@ function Shell({
   const { documents } = useCollabPagesState();
   const [createMenu, setCreateMenu] = useState<CollabSidebarCreateMenu | null>(null);
   const reachable = useServerReachable();
+  const published = isStaticSite();
+  // Narrow screens: the tree is a drawer over the page, opened from the bar; picking a page,
+  // tapping outside it or Escape closes it. Wide screens show the tree as a column and ignore this.
+  const [navOpen, setNavOpen] = useState(false);
+  useEffect(() => setNavOpen(false), [route]);
+  useEffect(() => {
+    if (!navOpen) return undefined;
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setNavOpen(false);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [navOpen]);
 
   // Home is the first top-level page, as `nim wiki init` writes one.
   const home = useMemo(
@@ -265,18 +283,38 @@ function Shell({
   useEffect(() => {
     if (!openPageId) return undefined;
     setWorkspaceFileLinkOpener((href) => {
+      // A published wiki writes links to the items it carries from the app's tracker as site paths (`/items/<id>/`).
+      if (published && href.startsWith('/') && !href.startsWith('//')) {
+        const [pathname, search = ''] = href.split('?');
+        navigate(parseStaticLocation(pathname, search ? `?${search}` : ''));
+        return;
+      }
       const target = host.resolveLink(openPageId, href);
       // An attachment or other file beside the page opens from the server, as the browser shows it.
       if (target.kind === 'outside' && !/\.md$/i.test(target.path) && !/^[a-z][a-z0-9+.-]*:/i.test(href)) {
         window.open(wikiApi.pageFileUrl(openPageId, href.replace(/[?#].*$/, '')), '_blank', 'noopener');
-      } else if (target.kind === 'outside') onNotice(`${target.path} is not a page in this wiki, so it cannot open here. Open it in your editor or in Nimbalyst.`);
+      } else if (target.kind === 'outside') onNotice(published ? `${target.path} is not part of this published wiki.` : `${target.path} is not a page in this wiki, so it cannot open here. Open it in your editor or in Nimbalyst.`);
       else navigate(target);
     });
     return () => setWorkspaceFileLinkOpener(null);
-  }, [host, navigate, onNotice, openPageId]);
+  }, [host, navigate, onNotice, openPageId, published]);
 
   return (
-    <div className="wiki-web-app flex h-full min-h-0">
+    <div className={`wiki-web-app flex h-full min-h-0 ${published ? 'wiki-static-app' : ''}`}>
+      {published ? (
+        <div className="wiki-static-topbar items-center gap-2 border-b border-nim bg-nim-secondary px-3 py-2">
+          <button type="button" className="flex items-center text-nim-muted hover:text-nim" aria-label={navOpen ? 'Hide pages' : 'Show pages'} aria-expanded={navOpen} onClick={() => setNavOpen((open) => !open)}>
+            <MaterialSymbol icon={navOpen ? 'close' : 'menu'} size={20} />
+          </button>
+        </div>
+      ) : null}
+      {published ? <button type="button" className="wiki-static-scrim" data-open={navOpen} aria-label="Hide pages" tabIndex={-1} onClick={() => setNavOpen(false)} /> : null}
+      {published ? (
+        // Shown and hidden by styles.css, not utilities: an extension bundle injects its own `.flex`/`.hidden` later in the page.
+        <aside className="wiki-web-sidebar wiki-static-sidebar-panel w-[280px] shrink-0 flex-col border-r border-nim bg-nim-secondary" data-open={navOpen}>
+          <StaticSidebar activeId={resolved.kind === 'page' || resolved.kind === 'item' ? resolved.id : null} navigate={navigate} />
+        </aside>
+      ) : (
       <aside className="wiki-web-sidebar flex w-[280px] shrink-0 flex-col border-r border-nim bg-nim-secondary">
         <WikiCreateMenu menu={createMenu} />
         <div className="min-h-0 flex-1">
@@ -302,6 +340,7 @@ function Shell({
           />
         </div>
       </aside>
+      )}
       <main className="wiki-web-main flex min-w-0 flex-1 flex-col overflow-auto select-text">
         {reachable ? null : (
           <div className="wiki-web-server-down border-b border-nim bg-nim-secondary px-4 py-2 text-xs text-nim" role="alert">

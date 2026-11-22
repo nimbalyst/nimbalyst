@@ -401,6 +401,41 @@ final class IndexReplicationTests: XCTestCase {
         XCTAssertNil(lenient?.titleDecrypted)
     }
 
+    /// A desktop on SQLite sent hasBeenNamed as 0/1 and every phone-created
+    /// session vanished. Display fields degrade; only a behavioral field or a
+    /// blob that is not an object still skips the row.
+    func testMalformedDisplayFieldInClientMetadataKeepsTheSession() throws {
+        func payload(_ id: String, meta: String) throws -> [String: Any] {
+            var payload = try sessionPayload(id)
+            let sealed = try crypto.encrypt(plaintext: meta)
+            payload["encryptedClientMetadata"] = sealed.encrypted
+            payload["clientMetadataIv"] = sealed.iv
+            return payload
+        }
+        let db = try DatabaseManager()
+        let store = IndexReplicationStore()
+        let page = try validated(try response(mode: "bootstrap", entries: [
+            change(entity: "session", id: "numeric", revision: 1,
+                   session: try payload("numeric", meta: #"{"hasBeenNamed":0,"hasPendingPrompt":1,"tags":["a"]}"#)),
+            change(entity: "session", id: "badPhase", revision: 2,
+                   session: try payload("badPhase", meta: #"{"phase":7,"tags":["b"]}"#)),
+            change(entity: "session", id: "badSyncFlag", revision: 3,
+                   session: try payload("badSyncFlag", meta: #"{"transcriptSyncDisabled":"yes"}"#)),
+            change(entity: "session", id: "notObject", revision: 4,
+                   session: try payload("notObject", meta: "[]")),
+        ], cursor: 4), mode: .bootstrap)
+        try apply(page, store: store, database: db, runId: "client-meta")
+        let numeric = try XCTUnwrap(db.session(byId: "numeric"))
+        XCTAssertEqual(numeric.tagsJson, #"["a"]"#)
+        XCTAssertTrue(numeric.hasQueuedPrompts, "1 reads as true")
+        let badPhase = try XCTUnwrap(db.session(byId: "badPhase"))
+        XCTAssertNil(badPhase.phase)
+        XCTAssertEqual(badPhase.tagsJson, #"["b"]"#, "Readable fields beside the bad one still apply")
+        XCTAssertNil(try db.session(byId: "badSyncFlag"))
+        XCTAssertNil(try db.session(byId: "notObject"))
+        XCTAssertEqual(try db.writer.read { try store.skippedRowCount($0) }, 2)
+    }
+
     func testUnreadableProjectAndFileKeepOrderingAndLastReadableCache() throws {
         let db = try DatabaseManager()
         let store = IndexReplicationStore()

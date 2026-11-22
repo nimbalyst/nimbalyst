@@ -9,7 +9,7 @@
  * visibility, and panel height. No props needed for panel state.
  */
 
-import React, { useState, useCallback, useRef, useEffect } from 'react';
+import React, { useState, useCallback, useRef, useEffect, useMemo } from 'react';
 import { useAtomValue, useSetAtom } from 'jotai';
 import { MaterialSymbol } from '@nimbalyst/runtime/ui/icons/MaterialSymbol';
 import { store } from '@nimbalyst/runtime/store';
@@ -18,10 +18,11 @@ import { TerminalTab } from './TerminalTab';
 import { usePostHog } from 'posthog-js/react';
 import {
   terminalListAtom,
+  terminalListWorkspaceAtom,
+  terminalsForWorkspace,
   activeTerminalIdAtom,
-  terminalPanelVisibleAtom,
-  terminalPanelHeightAtom,
-  terminalPanelHydratedAtom,
+  terminalPanelStateAtomFamily,
+  setTerminalPanelHeight,
   closeTerminalPanelAtom,
   loadTerminals,
   setActiveTerminal,
@@ -29,8 +30,11 @@ import {
   initTerminalListeners,
   setTerminalCommandRunning,
   terminalCommandRunningAtom,
+  orderTerminalTabs,
   type TerminalInstance,
 } from '../../store/atoms/terminals';
+import { activeExtensionBottomPanelAtom } from '../../store/atoms/extensionPanels';
+import { usePanelsByPlacement } from '../../extensions/panels/usePanels';
 import { selectedWorkstreamAtom, sessionWorktreeIdAtom } from '../../store/atoms/sessions';
 
 interface TerminalBottomPanelProps {
@@ -73,19 +77,37 @@ const TerminalTabWrapper: React.FC<TerminalTabWrapperProps> = ({
   );
 };
 
+const TabSeparator: React.FC = () => (
+  <span className="terminal-bottom-panel-tab-separator w-px h-4 mx-1 bg-[var(--nim-border)] shrink-0" aria-hidden="true" />
+);
+
 export const TerminalBottomPanel: React.FC<TerminalBottomPanelProps> = ({
   workspacePath,
   minHeight = 150,
   maxHeight = 600,
 }) => {
-  // Panel state from Jotai atoms
-  const visible = useAtomValue(terminalPanelVisibleAtom);
-  const height = useAtomValue(terminalPanelHeightAtom);
-  const panelStateHydrated = useAtomValue(terminalPanelHydratedAtom);
+  // Panel state for this project; each project in a multi-project window keeps its own
+  const { visible, height } = useAtomValue(terminalPanelStateAtomFamily(workspacePath));
   const closePanel = useSetAtom(closeTerminalPanelAtom);
 
-  // Terminal list state from Jotai atoms
-  const terminals = useAtomValue(terminalListAtom);
+  // Terminal list state from Jotai atoms. After a project switch the shared list
+  // still belongs to the old project until the new one loads, so only use it
+  // while it matches this project (#1818).
+  const loadedTerminals = useAtomValue(terminalListAtom);
+  const terminalListWorkspace = useAtomValue(terminalListWorkspaceAtom);
+  const terminals = useMemo(
+    () => orderTerminalTabs(terminalsForWorkspace(loadedTerminals, terminalListWorkspace, workspacePath)),
+    [loadedTerminals, terminalListWorkspace, workspacePath]
+  );
+  // Extension bottom panels that own a command terminal here get a tab that
+  // leads back to them, since opening a command's log leaves that panel.
+  const bottomPanels = usePanelsByPlacement('bottom');
+  const ownerPanels = useMemo(() => {
+    const ownerIds = new Set(terminals.map((t) => t.owner?.panelId).filter((id): id is string => !!id));
+    return bottomPanels.filter((panel) => ownerIds.has(panel.id));
+  }, [terminals, bottomPanels]);
+  const setActiveExtensionBottomPanel = useSetAtom(activeExtensionBottomPanelAtom);
+  const pinnedCount = useMemo(() => terminals.filter((t) => t.pinned).length, [terminals]);
   const activeTerminalId = useAtomValue(activeTerminalIdAtom);
   const [isResizing, setIsResizing] = useState(false);
   const resizeStartY = useRef<number>(0);
@@ -133,17 +155,18 @@ export const TerminalBottomPanel: React.FC<TerminalBottomPanelProps> = ({
     };
   }, [workspacePath]);
 
-  // Track analytics and persist visibility when panel visibility changes
+  // Track opens. Visibility is persisted by the atom that changes it, so switching
+  // to a project whose panel is already open is not an open.
+  const lastVisibility = useRef({ workspacePath, visible });
   useEffect(() => {
-    if (!panelStateHydrated) return;
-    if (visible && posthog) {
+    const previous = lastVisibility.current;
+    lastVisibility.current = { workspacePath, visible };
+    if (visible && !previous.visible && previous.workspacePath === workspacePath && posthog) {
       posthog.capture('terminal_panel_opened', {
         terminalCount: terminals.length,
       });
     }
-    // Persist visibility state per-workspace
-    window.electronAPI.terminal.setPanelVisible(workspacePath, visible);
-  }, [visible, workspacePath, posthog, terminals.length, panelStateHydrated]);
+  }, [visible, workspacePath, posthog, terminals.length]);
 
   // Create new terminal
   const handleCreateTerminal = useCallback(async () => {
@@ -255,6 +278,12 @@ export const TerminalBottomPanel: React.FC<TerminalBottomPanelProps> = ({
     closePanel();
   }, [closePanel]);
 
+  // Bottom panels are mutually exclusive: opening the owner's panel closes this one.
+  const handleOpenOwnerPanel = useCallback((panelId: string) => {
+    setActiveExtensionBottomPanel(panelId);
+    closePanel();
+  }, [setActiveExtensionBottomPanel, closePanel]);
+
   // Resize handling
   const handleMouseDown = useCallback((e: React.MouseEvent) => {
     e.preventDefault();
@@ -271,8 +300,8 @@ export const TerminalBottomPanel: React.FC<TerminalBottomPanelProps> = ({
       Math.max(resizeStartHeight.current + deltaY, minHeight),
       maxHeight
     );
-    store.set(terminalPanelHeightAtom, newHeight);
-  }, [isResizing, minHeight, maxHeight]);
+    setTerminalPanelHeight(workspacePath, newHeight);
+  }, [isResizing, minHeight, maxHeight, workspacePath]);
 
   const handleMouseUp = useCallback(() => {
     if (isResizing) {
@@ -318,9 +347,23 @@ export const TerminalBottomPanel: React.FC<TerminalBottomPanelProps> = ({
       <div className="terminal-bottom-panel flex flex-col h-full bg-[var(--nim-bg)] overflow-hidden">
         <div className="terminal-bottom-panel-header flex items-center justify-between h-8 px-1.5 bg-[var(--nim-bg-secondary)] border-b border-[var(--nim-border)] shrink-0">
           <div className="terminal-bottom-panel-tabs flex gap-0.5 items-center overflow-x-auto flex-1 min-w-0 [&::-webkit-scrollbar]:h-1 [&::-webkit-scrollbar-thumb]:bg-[var(--nim-bg-tertiary)] [&::-webkit-scrollbar-thumb]:rounded-sm">
+            {ownerPanels.map((panel) => (
+              <button
+                key={panel.id}
+                className="terminal-bottom-panel-owner-tab flex items-center gap-1.5 px-2 py-1 border-none bg-transparent text-xs text-[var(--nim-text-muted)] cursor-pointer rounded whitespace-nowrap shrink-0 transition-colors duration-150 hover:bg-[var(--nim-bg-hover)] hover:text-[var(--nim-text)]"
+                onClick={() => handleOpenOwnerPanel(panel.id)}
+                title={`Back to ${panel.title}`}
+                data-panel-id={panel.id}
+              >
+                <MaterialSymbol icon={panel.icon} size={14} />
+                {panel.title}
+              </button>
+            ))}
+            {ownerPanels.length > 0 && <TabSeparator />}
             {terminals.map((terminal, index) => (
+              <React.Fragment key={terminal.id}>
+              {index === pinnedCount && pinnedCount > 0 && <TabSeparator />}
               <TerminalTabWrapper
-                key={terminal.id}
                 terminal={terminal}
                 isActive={activeTerminalId === terminal.id}
                 isActiveWorktree={!!activeWorktreeId && terminal.worktreeId === activeWorktreeId}
@@ -332,6 +375,7 @@ export const TerminalBottomPanel: React.FC<TerminalBottomPanelProps> = ({
                 onCloseAll={handleCloseAll}
                 onCloseToRight={() => handleCloseToRight(terminal.id)}
               />
+              </React.Fragment>
             ))}
             <button
               className="terminal-bottom-panel-new-tab flex items-center justify-center w-6 h-6 p-0 bg-transparent border-none text-[var(--nim-text-muted)] cursor-pointer rounded shrink-0 transition-colors duration-150 hover:bg-[var(--nim-bg-hover)] hover:text-[var(--nim-text)]"
@@ -344,9 +388,10 @@ export const TerminalBottomPanel: React.FC<TerminalBottomPanelProps> = ({
           <button
             className="terminal-bottom-panel-close flex items-center justify-center w-6 h-6 p-0 bg-transparent border-none text-[var(--nim-text-muted)] cursor-pointer rounded ml-2 shrink-0 transition-colors duration-150 hover:bg-[var(--nim-bg-hover)] hover:text-[var(--nim-text)]"
             onClick={handleClose}
-            title="Close panel"
+            title="Hide panel"
+            aria-label="Hide Terminal panel"
           >
-            <MaterialSymbol icon="close" size={18} />
+            <MaterialSymbol icon="remove" size={18} />
           </button>
         </div>
         <div className="terminal-bottom-panel-content flex-1 overflow-hidden flex flex-col min-h-0">
@@ -361,6 +406,7 @@ export const TerminalBottomPanel: React.FC<TerminalBottomPanelProps> = ({
                 workspacePath={workspacePath}
                 isActive={activeTerminalId === terminal.id}
                 panelVisible={visible}
+                launchMode={terminal.kind === 'command' ? 'command' : 'shell'}
                 onExit={(exitCode) => handleTerminalExit(terminal.id, exitCode)}
               />
             </div>

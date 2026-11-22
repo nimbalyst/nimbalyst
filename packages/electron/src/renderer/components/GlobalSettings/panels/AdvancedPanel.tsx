@@ -78,6 +78,65 @@ function DropdownRow({
  * All settings subscribe directly to Jotai atoms or load via IPC.
  * Developer mode is a global app setting.
  */
+type ShellCommandStatus =
+  | { state: 'unsupported'; reason: string }
+  | { state: 'not-installed' | 'installed'; linkPath: string }
+  | { state: 'other-nimbalyst' | 'foreign'; linkPath: string; target: string | null };
+
+/** Install or remove the `nimbalyst` terminal command (`nimbalyst .` opens a folder). */
+function ShellCommandRow() {
+  const [status, setStatus] = useState<ShellCommandStatus | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    window.electronAPI.invoke('shell-command:get-status').then(setStatus).catch(() => setStatus(null));
+  }, []);
+
+  const run = async (channel: 'shell-command:install' | 'shell-command:uninstall') => {
+    setBusy(true);
+    try {
+      setStatus(await window.electronAPI.invoke(channel));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const description = !status
+    ? 'Open folders and files from a terminal with "nimbalyst ."'
+    : status.state === 'installed'
+      ? `Installed at ${status.linkPath}. Run "nimbalyst ." in a terminal to open the current folder.`
+      : status.state === 'unsupported'
+        ? status.reason
+        : status.state === 'other-nimbalyst'
+          ? `${status.linkPath} points to another copy of Nimbalyst. Reinstall to point it at this one.`
+          : status.state === 'foreign'
+            ? `${status.linkPath} already exists and was not installed by Nimbalyst.`
+            : 'Open folders and files from a terminal with "nimbalyst ." Installs a link in /usr/local/bin.';
+
+  return (
+    <div className="shell-command-setting setting-item py-2 flex items-center justify-between gap-4">
+      <div className="setting-text flex flex-col gap-0 min-w-0">
+        <span className="setting-name text-sm font-medium text-[var(--nim-text)]">Shell Command</span>
+        <span className="setting-description text-xs leading-snug text-[var(--nim-text-muted)] select-text">{description}</span>
+      </div>
+      {status && status.state !== 'unsupported' && (
+        <div className="flex shrink-0 gap-2">
+          {status.state !== 'installed' && (
+            <button className="nim-btn-secondary text-xs" disabled={busy} onClick={() => run('shell-command:install')}>
+              Install
+            </button>
+          )}
+          {(status.state === 'installed' || status.state === 'other-nimbalyst') && (
+            <button className="nim-btn-secondary text-xs" disabled={busy} onClick={() => run('shell-command:uninstall')}>
+              Uninstall
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function AdvancedPanel() {
   const posthog = usePostHog();
   // App-level advanced settings from Jotai atoms
@@ -468,6 +527,8 @@ export function AdvancedPanel() {
       {/* ── Tools & Environment ── */}
       <div className="provider-panel-section py-4 mb-4 border-b border-[var(--nim-border)] last:border-b-0 last:mb-0 last:pb-0">
         <h4 className="provider-panel-section-title text-base font-semibold mb-2 text-[var(--nim-text)]">Tools & Environment</h4>
+
+        {process.platform === 'darwin' && <ShellCommandRow />}
 
         <DropdownRow
           value={externalEditorType}

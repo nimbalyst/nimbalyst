@@ -515,6 +515,35 @@ Use this when the user needs a helper workflow.
     expect(codexEntries.some(entry => entry.name === 'legacy-tools-helper')).toBe(true);
   });
 
+  it('does not import markdown files under a plugin node_modules as commands', async () => {
+    const pluginRoot = path.join(workspacePath, 'npm-plugin');
+    fs.mkdirSync(path.join(pluginRoot, '.claude-plugin'), { recursive: true });
+    fs.mkdirSync(path.join(pluginRoot, 'commands'), { recursive: true });
+    fs.mkdirSync(path.join(pluginRoot, 'node_modules', 'some-dep'), { recursive: true });
+    fs.writeFileSync(
+      path.join(pluginRoot, '.claude-plugin', 'plugin.json'),
+      JSON.stringify({ name: 'npm-tools', version: '0.1.0', description: 'Npm tools' }),
+      'utf-8',
+    );
+    fs.writeFileSync(path.join(pluginRoot, 'commands', 'real.md'), '---\ndescription: Real command\n---\n\nDo the thing.\n', 'utf-8');
+    fs.writeFileSync(
+      path.join(pluginRoot, 'node_modules', 'some-dep', 'README.md'),
+      '---\ndescription: Dependency readme\n---\n\nNot a command.\n',
+      'utf-8',
+    );
+
+    const service = new AgentWorkflowService(workspacePath, {
+      userHomePath,
+      extensionDirectoriesLoader: async () => [],
+      nativeClaudePluginPathsLoader: async () => [{ type: 'local', path: pluginRoot }],
+      releaseChannelLoader: () => 'stable',
+    });
+
+    const names = (await service.listEntries({ provider: 'claude-code' })).map(entry => entry.name);
+    expect(names).toContain('npm-tools:real');
+    expect(names.filter(name => name.startsWith('npm-tools:'))).toEqual(['npm-tools:real']);
+  });
+
   // #1465: Claude loads the user's `/plugin`-installed plugins itself. Handing
   // those same directories back as SDK `plugins` / CLI `--plugin-dir` entries
   // made a second, unconfigured `@inline` copy of each. Injection carries the

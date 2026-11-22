@@ -83,6 +83,7 @@ export class TranscriptWriter {
       mode?: 'agent' | 'planning' | 'auto';
       createdAt?: Date;
       thinking?: string;
+      progressUpdate?: boolean;
       thinkingSignature?: string;
       model?: string;
     },
@@ -119,6 +120,7 @@ export class TranscriptWriter {
     const payload: AssistantMessagePayload = {
       mode,
       ...(options?.thinking !== undefined ? { thinking: options.thinking } : {}),
+      ...(options?.progressUpdate ? { progressUpdate: true } : {}),
       ...(options?.thinkingSignature !== undefined
         ? { thinkingSignature: options.thinkingSignature }
         : {}),

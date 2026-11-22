@@ -90,6 +90,14 @@ describe('runQueueDriveAttempt', () => {
     expect(await run(deps, 'send-now')).toEqual({ kind: 'dispatched', promptId: 'p1' });
   });
 
+  // #1682: a prompt landing mid-commit makes the SDK report a rejection while the commit lands.
+  it('holds even a send-now while a commit proposal call is in flight', async () => {
+    const deps = createDeps({ isCommitProposalInFlight: vi.fn(() => true), canDispatchIntoDrain: vi.fn(() => true) });
+
+    expect(await run(deps, 'send-now')).toEqual({ kind: 'deferred', reason: 'session-busy' });
+    expect(deps.dispatch).not.toHaveBeenCalled();
+  });
+
   it('defers as no-window rather than dropping the prompt', async () => {
     const deps = createDeps({
       resolveWindow: vi.fn(async () => ({ kind: 'deferred', reason: 'no-window' }) as const),

@@ -343,6 +343,21 @@ describe('trackerRelationshipIndexStore (SQLite, migration 0014)', () => {
       expect((await getOutgoingRelationships(WS, 'page-1', db)).length).toBe(3);
     });
 
+    // tracker_get and search read tracker_items.content, which remote sync never
+    // writes; a teammate's (or the CLI's) edit stayed invisible to them (#1879).
+    it('refreshRemoteBodyLinks carries the remote body into the local copy at that version only', async () => {
+      await db.query(`UPDATE tracker_items SET sync_id = 7, body_version = 4, content = $1 WHERE id = 'page-1'`, [JSON.stringify('old body')]);
+      const content = async () => JSON.parse((await db.query(`SELECT content FROM tracker_items WHERE id = 'page-1'`) as any).rows[0].content);
+
+      expect(await refreshRemoteBodyLinks(WS, 'page-1', 4, { readBody: async () => BODY, db })).toBe(true);
+      expect(await content()).toBe(BODY);
+
+      // A local save has moved past the fetched version: it is newer than the room read.
+      await db.query(`UPDATE tracker_items SET body_version = 6, content = $1 WHERE id = 'page-1'`, [JSON.stringify('local edit')]);
+      expect(await refreshRemoteBodyLinks(WS, 'page-1', 5, { readBody: async () => 'room at 5', db })).toBe(true);
+      expect(await content()).toBe('local edit');
+    });
+
     it('ignores links inside fenced code, inline code, and escaped brackets', async () => {
       const body = [
         'Real: [Yjs](nimbalyst://NIM-2 "rel=built-on").',

@@ -4,9 +4,17 @@
  * History lives on the tab in memory; it does not survive a restart.
  */
 
+/** How far a page was scrolled: the scrolled element's class and its offset. */
+export interface PageScroll {
+  scroller: string;
+  top: number;
+}
+
 export interface TabHistoryEntry {
   filePath: string;
   fileName: string;
+  /** Where the page was scrolled when the tab left it, restored when Back or Forward returns. */
+  scroll?: PageScroll;
 }
 
 export interface TabHistory {

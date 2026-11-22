@@ -7,7 +7,7 @@
 
 import { atom } from 'jotai';
 
-import type { ClaudeUsageData } from '../../../shared/claudeUsage';
+import { claudeUsageHeadline, type ClaudeUsageData } from '../../../shared/claudeUsage';
 export type { ClaudeUsageData, ClaudeUsageWindow } from '../../../shared/claudeUsage';
 
 /**
@@ -37,12 +37,13 @@ export const claudeUsageAvailableAtom = atom((get) => {
 });
 
 /**
- * Derived atom: color for the session (5-hour) indicator
+ * Derived atom: color for the headline window (the 5-hour session, or the
+ * weekly window on plans without a session limit)
  */
 export const claudeUsageSessionColorAtom = atom((get) => {
   const usage = get(claudeUsageAtom);
   if (!usage) return 'muted';
-  const util = usage.fiveHour.utilization;
+  const util = claudeUsageHeadline(usage).utilization;
   if (util >= 80) return 'red';
   if (util >= 50) return 'yellow';
   return 'green';

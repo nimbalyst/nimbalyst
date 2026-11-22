@@ -1,11 +1,11 @@
 import { createHash } from 'node:crypto';
 import type { TrackerItem } from '@nimbalyst/runtime';
 import { getDatabase } from '../database/initialize';
-import { jsonKeyExpr } from '../database/jsonKeyExpr';
 import type { DatabaseEngine } from '../database/PGLiteDatabaseWorker';
 import { documentServices } from '../window/WindowManager';
 import type { ElectronDocumentService } from './ElectronDocumentService';
 import { assertGithubIssueNumber, assertGithubRemote, assertWorkspacePath } from './ghApiHelpers';
+import { findGithubOverlayByUrl } from './githubOverlayLookup';
 
 export const GITHUB_ISSUE_OVERLAY_TYPE = 'github-issue';
 
@@ -97,28 +97,17 @@ function existingUpdates(
 }
 
 export function createGithubIssueOverlayService(dependencies: GithubIssueOverlayDependencies) {
-  const findExisting = async (
-    workspacePath: string,
-    issueUrl: string,
-  ): Promise<ExistingOverlay | null> => {
-    const { rows } = await dependencies.db.query<{ id: string; data: unknown }>(
-      `SELECT id, data
-       FROM tracker_items
-       WHERE workspace = $1
-         AND type = '${GITHUB_ISSUE_OVERLAY_TYPE}'
-         AND deleted_at IS NULL
-         AND LOWER(${jsonKeyExpr(dependencies.engine, 'data', 'issueUrl')}) = $2
-       ORDER BY created ASC
-       LIMIT 1`,
-      [workspacePath, issueUrl.toLowerCase()],
+  // Every storage shape, so a teammate's synced overlay (fields nested under
+  // customFields) is reused instead of duplicated.
+  const findExisting = (workspacePath: string, issueUrl: string): Promise<ExistingOverlay | null> =>
+    findGithubOverlayByUrl(
+      dependencies.db,
+      dependencies.engine,
+      workspacePath,
+      GITHUB_ISSUE_OVERLAY_TYPE,
+      'issueUrl',
+      issueUrl,
     );
-    const row = rows[0];
-    if (!row) return null;
-    const data = typeof row.data === 'string'
-      ? JSON.parse(row.data) as Record<string, unknown>
-      : (row.data ?? {}) as Record<string, unknown>;
-    return { id: row.id, data };
-  };
 
   const updateExisting = async (
     documentService: DocumentServiceLike,

@@ -2,6 +2,7 @@ import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 import { fileURLToPath, URL } from 'node:url';
 import { resolve } from 'node:path';
+import { HTML_EMBED_SHELL_CSP, HTML_EMBED_SHELL_HTML } from '../collab-protocol/src/htmlEmbedShell';
 
 /**
  * Vite config for the mobile Lexical editor bundle loaded by the document
@@ -44,6 +45,15 @@ export default defineConfig({
         '../runtime/**/*.{tsx,ts,jsx,js}',
       ],
     }),
+    // The HTML embed sandbox shell and its CSP, served by native at
+    // `https://nimbalyst-embed.invalid/shell` (DocumentEditorWebView.kt).
+    {
+      name: 'html-embed-shell',
+      generateBundle() {
+        this.emitFile({ type: 'asset', fileName: 'html-embed-shell.html', source: HTML_EMBED_SHELL_HTML });
+        this.emitFile({ type: 'asset', fileName: 'html-embed-shell.csp', source: HTML_EMBED_SHELL_CSP });
+      },
+    },
     // file:// loading: module scripts enforce CORS against the null origin, so
     // strip crossorigin and load the IIFE with defer (same as the transcript).
     {

@@ -36,6 +36,7 @@ interface InitialWorkspaceWindowState {
   workspacePath?: string;
   activeWorkspacePath?: string | null;
   openProjectPaths?: string[];
+  restorePreviousProjects?: boolean;
 }
 
 interface ResolveInitialOpenProjectsInput {
@@ -66,6 +67,13 @@ export const activeWorkspacePathAtom = atom<string | null>(null);
  * launch by an effect that reads `app:get-multi-project-mode`.
  */
 export const multiProjectModeAtom = atom<boolean>(false);
+
+/**
+ * Container at the bottom of the ProjectRail that the navigation gutter
+ * portals its app-wide items (usage, theme, feedback, account) into. Null
+ * while the rail is hidden, so those items stay in the gutter.
+ */
+export const projectRailGlobalSlotAtom = atom<HTMLElement | null>(null);
 
 /**
  * When true, the rail rehydrates with the projects that were open at last
@@ -259,7 +267,9 @@ export function resolveInitialOpenProjectsState({
     };
   }
 
-  if (restorePreviousProjects && normalizedPersistedPaths.length > 0) {
+  // An explicit "Open in new window" targets one project, even when app
+  // startup normally restores a rail. Live rail state above still wins on reload.
+  if (restorePreviousProjects && windowState?.restorePreviousProjects !== false && normalizedPersistedPaths.length > 0) {
     return {
       paths: normalizedPersistedPaths,
       activePath:

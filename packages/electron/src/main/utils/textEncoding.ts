@@ -33,6 +33,8 @@ export interface DecodedText {
   encoding: BufferEncoding;
 }
 
+const CHARDET_SAMPLE_BYTES = 64 * 1024;
+
 export function decodeTextFileBuffer(buffer: Buffer): DecodedText {
   // UTF-8 BOM -> strip it and decode as UTF-8.
   if (buffer.length >= 3 && buffer[0] === 0xef && buffer[1] === 0xbb && buffer[2] === 0xbf) {
@@ -55,8 +57,14 @@ export function decodeTextFileBuffer(buffer: Buffer): DecodedText {
     return { content: buffer.toString('utf8'), encoding: 'utf8' };
   }
 
-  // Genuinely not UTF-8 -> fall back to statistical detection.
-  const detected = chardet.detect(buffer);
+  // Genuinely not UTF-8 -> fall back to statistical detection on a bounded
+  // sample: chardet over a whole multi-MB file blocks the main process for
+  // seconds. Start the sample at the first non-ASCII byte (one must exist, since
+  // pure ASCII is valid UTF-8); an ASCII-only head would otherwise detect as
+  // UTF-8 and decode the later high bytes as replacement characters.
+  let firstNonAscii = 0;
+  while (firstNonAscii < buffer.length && buffer[firstNonAscii] < 0x80) firstNonAscii++;
+  const detected = chardet.detect(buffer.subarray(firstNonAscii, firstNonAscii + CHARDET_SAMPLE_BYTES));
   const encoding = (detected && CHARDET_TO_NODE[detected]) || 'utf8';
   return { content: buffer.toString(encoding), encoding };
 }

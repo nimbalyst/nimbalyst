@@ -65,3 +65,53 @@ body {
 .wiki-web-html-page-frame {
   height: 100% !important;
 }
+
+/*
+ * A published wiki (static export): the page tree is a column on wide screens
+ * and a drawer over the page on narrow ones, opened from the top bar and closed
+ * by picking a page, tapping outside it or Escape. Two classes deep on
+ * purpose: the mockup editor's bundle injects unscoped `.flex`/`.hidden` rules
+ * after this stylesheet, which beat single-class utilities such as `md:hidden`.
+ */
+.wiki-static-app .wiki-static-topbar,
+.wiki-static-app .wiki-static-scrim {
+  display: none;
+}
+.wiki-static-app .wiki-static-sidebar-panel {
+  display: flex;
+}
+@media (max-width: 767px) {
+  .wiki-web-app.wiki-static-app {
+    position: relative;
+    flex-direction: column;
+  }
+  .wiki-static-app .wiki-static-topbar {
+    display: flex;
+    height: 40px;
+    flex-shrink: 0;
+  }
+  .wiki-static-app .wiki-static-sidebar-panel {
+    display: none;
+    position: absolute;
+    top: 40px;
+    bottom: 0;
+    left: 0;
+    z-index: 40;
+    width: min(320px, 85vw);
+    box-shadow: 0 8px 24px rgb(0 0 0 / 0.35);
+  }
+  .wiki-static-app .wiki-static-sidebar-panel[data-open='true'] {
+    display: flex;
+  }
+  .wiki-static-app .wiki-static-scrim[data-open='true'] {
+    display: block;
+    position: absolute;
+    top: 40px;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 39;
+    border: 0;
+    background: rgb(0 0 0 / 0.4);
+  }
+}

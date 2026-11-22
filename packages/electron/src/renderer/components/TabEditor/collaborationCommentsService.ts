@@ -126,6 +126,13 @@ export interface HostedCollaborationComments {
   /** Live view + platform-only mutations for the host's comments panel. */
   panelSource: HostedCommentsPanelSource;
   service: CollaborationCommentsService;
+  /**
+   * Re-resolve capabilities now. The host calls this when the body's
+   * writability changes (the room's verdict arrived or the user was demoted),
+   * so the extension sees `editBody: false` before its next write rather than
+   * at its next comment mutation.
+   */
+  refreshCapabilities(): Promise<CommentCapabilities>;
 }
 
 function asSdkComment(comment: Readonly<Comment>): CollaborativeComment {
@@ -238,6 +245,8 @@ export function createHostedCollaborationComments(input: {
         next = Object.freeze({
           read: resolved.read,
           comment: resolved.read && resolved.comment,
+          // Only an explicit false locks the body (commenter mode).
+          ...(resolved.editBody === false ? { editBody: false } : {}),
         });
       }
     } catch {
@@ -246,7 +255,8 @@ export function createHostedCollaborationComments(input: {
     if (destroyed) return NO_COMMENT_CAPABILITIES;
     if (
       next.read !== capabilities.read ||
-      next.comment !== capabilities.comment
+      next.comment !== capabilities.comment ||
+      next.editBody !== capabilities.editBody
     ) {
       capabilities = next;
       capabilityEpoch += 1;
@@ -659,6 +669,7 @@ export function createHostedCollaborationComments(input: {
     controller,
     panelSource,
     service,
+    refreshCapabilities,
     destroy() {
       if (destroyed) return;
       destroyed = true;

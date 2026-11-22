@@ -347,7 +347,7 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "export PATH=\"/opt/homebrew/bin:/usr/local/bin:$HOME/.nvm/versions/node/$(cat $HOME/.nvm/alias/default 2>/dev/null)/bin:$PATH\"\ncd \"${SRCROOT}/..\"\nVITE_BIN=\"${SRCROOT}/../../../node_modules/.bin/vite\"\nif [ ! -x \"$VITE_BIN\" ]; then\n  echo \"error: $VITE_BIN missing; run 'pnpm install' at the monorepo root\" >&2\n  exit 1\nfi\n\"$VITE_BIN\" build --config vite.config.editor.ts\n# Copy editor dist to Resources (clean first to remove stale hashed assets)\nrm -rf \"${SRCROOT}/Resources/editor-dist\"\nmkdir -p \"${SRCROOT}/Resources/editor-dist\"\ncp dist-editor/editor.html \"${SRCROOT}/Resources/editor-dist/\"\ncp -R dist-editor/assets \"${SRCROOT}/Resources/editor-dist/\"\n";
+			shellScript = "export PATH=\"/opt/homebrew/bin:/usr/local/bin:$HOME/.nvm/versions/node/$(cat $HOME/.nvm/alias/default 2>/dev/null)/bin:$PATH\"\ncd \"${SRCROOT}/..\"\nVITE_BIN=\"${SRCROOT}/../../../node_modules/.bin/vite\"\nif [ ! -x \"$VITE_BIN\" ]; then\n  echo \"error: $VITE_BIN missing; run 'pnpm install' at the monorepo root\" >&2\n  exit 1\nfi\n\"$VITE_BIN\" build --config vite.config.editor.ts\n# Copy editor dist to Resources (clean first to remove stale hashed assets)\nrm -rf \"${SRCROOT}/Resources/editor-dist\"\nmkdir -p \"${SRCROOT}/Resources/editor-dist\"\ncp dist-editor/editor.html dist-editor/html-embed-shell.html dist-editor/html-embed-shell.csp \"${SRCROOT}/Resources/editor-dist/\"\ncp -R dist-editor/assets \"${SRCROOT}/Resources/editor-dist/\"\n";
 		};
 		A1281D1B3FB2BBEF46421DE4 /* Build Transcript Web Bundle */ = {
 			isa = PBXShellScriptBuildPhase;

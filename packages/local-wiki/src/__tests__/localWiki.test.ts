@@ -255,6 +255,25 @@ describe('names', () => {
     await wiki!.rescan();
     expect((await wiki!.snapshot()).pages.find((p) => p.id === lower)!.title).toBe('Renamed');
   });
+
+  it('merges frontmatter written in the body into the one block it creates', async () => {
+    await open();
+    const { id } = await wiki!.command({
+      type: 'register-document',
+      title: 'Pricing',
+      parentFolderId: null,
+      fields: { owner: 'greg' },
+      body: '---\nid: ignored\ntype: decision\nstatus: open\nowner: someone\n---\n# Pricing\n',
+    });
+    const text = await read('Pricing.md');
+    expect(text.match(/^---$/gm)).toHaveLength(2);
+    expect(text).toMatch(new RegExp(`^---\\nid: ${id}\\ntype: decision\\norder: [\\d.]+\\nstatus: open\\nowner: greg\\n---\\n# Pricing\\n$`));
+    const page = (await wiki!.snapshot()).pages.find((p) => p.id === id)!;
+    expect(page.type).toBe('decision');
+
+    await expect(wiki!.command({ type: 'register-document', title: 'Bad', parentFolderId: null, body: '---\n: [\n---\n' })).rejects.toMatchObject({ code: 'invalid' });
+    expect(await exists(path.join(root, 'Bad.md'))).toBe(false);
+  });
 });
 
 describe('bodies', () => {

@@ -7,15 +7,13 @@
  * from the model, and sends nothing anywhere: the only text that leaves the
  * machine is a quote the agent decides to paste into a page.
  *
- * Bundled into plugins/nimbalyst-wiki/scripts/session-inputs.mjs by
- * scripts/build-wiki-plugin.mjs. Newline-delimited JSON-RPC on stdio, no SDK.
+ * The plugin starts it as `nim hook session-inputs` (packages/cli), which
+ * calls `main`. Newline-delimited JSON-RPC on stdio, no SDK.
  */
 
 import { execFileSync } from 'node:child_process';
-import { readFileSync, realpathSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { createInterface } from 'node:readline';
-import { fileURLToPath } from 'node:url';
-import path from 'node:path';
 
 import { citableInputsFromTranscript, selectInputs, type SessionInputKind } from './claudeTranscriptInputs';
 import { locateTranscript, type LocatorDeps } from './claudeTranscriptLocator';
@@ -116,7 +114,8 @@ export async function handleMessage(message: JsonRpcRequest, deps: ServerDeps): 
   }
 }
 
-function main(): void {
+/** Serves `list_session_inputs` on stdio until stdin closes. */
+export function main(): void {
   const env = process.env;
   const deps: ServerDeps = {
     env: {
@@ -142,15 +141,3 @@ function main(): void {
     });
   });
 }
-
-/** Whether this file is the process entry. Node resolves symlinks in `import.meta.url` but not in argv (macOS `/tmp` is `/private/tmp`). */
-export function isEntry(argv1: string | undefined, moduleUrl: string): boolean {
-  if (!argv1) return false;
-  try {
-    return realpathSync(path.resolve(argv1)) === realpathSync(fileURLToPath(moduleUrl));
-  } catch {
-    return false;
-  }
-}
-
-if (isEntry(process.argv[1], import.meta.url)) main();

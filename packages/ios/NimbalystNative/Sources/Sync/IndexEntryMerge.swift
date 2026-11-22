@@ -58,6 +58,7 @@ enum IndexEntryDecryptor {
             encryptedBase64: entry.encryptedProjectId,
             ivBase64: entry.projectIdIv
         ) else {
+            if strict { IndexRowDiagnostics.skipped(field: "projectId") }
             return nil
         }
 
@@ -66,18 +67,28 @@ enum IndexEntryDecryptor {
             ivBase64: entry.titleIv
         )
         if strict, entry.encryptedTitle != nil, entry.titleIv != nil, titleDecrypted == nil {
+            IndexRowDiagnostics.skipped(field: "title")
             return nil
         }
 
         var clientMeta: ClientMetadata?
         if let encryptedMeta = entry.encryptedClientMetadata,
            let metaIv = entry.clientMetadataIv {
-            let metaJson = crypto.decryptOrNil(encryptedBase64: encryptedMeta, ivBase64: metaIv)
-            let metaData = metaJson?.data(using: .utf8)
-            clientMeta = metaData.flatMap { try? JSONDecoder().decode(ClientMetadata.self, from: $0) }
-            // Covers both an unreadable blob and one that does not parse: under
-            // strict both mean this entry's phase, draft and context are unknown.
-            if strict, clientMeta == nil { return nil }
+            let metaData = crypto.decryptOrNil(encryptedBase64: encryptedMeta, ivBase64: metaIv)?.data(using: .utf8)
+            let decoded = metaData.flatMap { try? ClientMetadataDecoding.decode($0) }
+            if let decoded {
+                if strict, let field = decoded.unreadableFields.first(where: ClientMetadataDecoding.fieldsThatMustBeRead.contains) {
+                    IndexRowDiagnostics.skipped(field: "clientMetadata.\(field)")
+                    return nil
+                }
+                decoded.unreadableFields.forEach { IndexRowDiagnostics.degraded(field: $0) }
+                clientMeta = decoded.metadata
+            } else if strict {
+                // An undecryptable blob, or one that is not an object, says
+                // nothing reliable about the entry: skip the row.
+                IndexRowDiagnostics.skipped(field: metaData == nil ? "clientMetadata.decrypt" : "clientMetadata.shape")
+                return nil
+            }
         }
 
         var tagsJson: String?
@@ -104,7 +115,10 @@ enum IndexEntryDecryptor {
                 )
             }
             // A dropped prompt would silently shrink the queue the user sees.
-            if strict, decryptedPrompts.count != encryptedPrompts.count { return nil }
+            if strict, decryptedPrompts.count != encryptedPrompts.count {
+                IndexRowDiagnostics.skipped(field: "queuedPrompts")
+                return nil
+            }
             remoteQueuedPrompts = decryptedPrompts
         } else if entry.queuedPromptCount == 0 || entry.encryptedQueuedPrompts?.isEmpty == true {
             // An explicit clear, distinct from an entry that omitted the queue.
